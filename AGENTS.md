@@ -106,9 +106,8 @@ routes; the skill owns judgment, the CLI owns live state, and hooks automate
 lifecycle edges. Package work also reads
 [`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md).
 
-Local build: `packages/octocode-awareness/out/index.js` (programmatic/library
-entry) + `out/octocode-awareness.js` (CLI binary). The running harness exposes the
-CLI via `$OCTOCODE_AWARENESS_CLI` (the skill's `scripts/awareness.mjs`).
+Local build: `packages/octocode-awareness/out/index.js` (library) +
+`out/octocode-awareness.js` (CLI binary); harness sets `$OCTOCODE_AWARENESS_CLI`.
 
 Loop: claim a ready task or open WORK; declare edited paths; reserve exclusivity for
 sensitive work; check while present; submit/end → `verify mark` → `verify audit`.
@@ -122,8 +121,7 @@ Exact flags: `schema command <noun> [action]`. Full lifecycle:
 
 Skill source: `skills/octocode-awareness`; use the local build here or
 `npx @octocodeai/octocode-awareness` when installed. Rebuild after changes; never
-edit `.agents/skills/` or `out/skills/`. Concept owners:
-[`packages/octocode-awareness/docs/README.md`](packages/octocode-awareness/docs/README.md).
+edit `.agents/skills/` or `out/skills/`.
 
 ## Docs and references
 

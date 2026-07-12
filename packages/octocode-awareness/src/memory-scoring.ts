@@ -226,6 +226,7 @@ export interface LexicalScopeOptions {
   ref?: string | null;
   strictScope?: boolean;
   globalOnly?: boolean;
+  allWorkspaces?: boolean;
   cwd?: string;
   asOf?: string | null;
   candidateMemoryIds?: string[];
@@ -237,6 +238,28 @@ export function applyScopeConditions(
   options: LexicalScopeOptions = {},
 ): void {
   const artifact = normalizeArtifact(options.artifact);
+
+  if (options.allWorkspaces) {
+    // Search across all workspaces: skip workspace_path entirely and do NOT
+    // auto-infer repo/ref from cwd's git repo (fillScope would otherwise scope
+    // the query to the cwd repo and silently filter out every other workspace).
+    // Only explicitly provided provenance filters still apply, so --all-workspaces
+    // composes with --artifact/--repo/--ref without surprising defaults.
+    if (artifact) {
+      conditions.push(options.strictScope ? 'm.artifact = ?' : '(m.artifact IS NULL OR m.artifact = ?)');
+      params.push(artifact);
+    }
+    if (options.repo) {
+      conditions.push(options.strictScope ? 'm.repo = ?' : '(m.repo IS NULL OR m.repo = ?)');
+      params.push(options.repo);
+    }
+    if (options.ref) {
+      conditions.push(options.strictScope ? 'm.ref = ?' : '(m.ref IS NULL OR m.ref = ?)');
+      params.push(options.ref);
+    }
+    return;
+  }
+
   const scope = fillScope(
     {
       workspace_path: options.workspacePath ?? null,

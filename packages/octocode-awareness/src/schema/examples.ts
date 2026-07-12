@@ -27,6 +27,7 @@ export const examples = {
     artifact: "pkg",
     repo: "repo",
     strict_scope: false,
+    all_workspaces: false,
     sort: "smart",
     smart: true,
   },

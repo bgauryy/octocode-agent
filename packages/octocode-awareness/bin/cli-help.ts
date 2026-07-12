@@ -12,9 +12,10 @@ note: --supersedes atomically records a replacement and preserves the replaced r
 schema: octocode-awareness schema json-schema memory_record --compact`,
   'get-memory': `usage: octocode-awareness memory recall [options]
 filters: [--query <text>] [--limit <n>] [--min-importance <n>] [--label <l>]... [--tag <t>]... [--reference <r>]... [--file <p>]... [--regex <r>]... [--file-regex <r>]...
-scope: [--workspace <p>] [--artifact <a>] [--repo <r>] [--ref <r>] [--strict-scope] [--global-only]
+scope: [--workspace <p>] [--artifact <a>] [--repo <r>] [--ref <r>] [--strict-scope] [--global-only] [--all-workspaces]
 rank: [--smart] [--sort smart|score|importance|recent|accessed] [--state ACTIVE|SUPERSEDED]... [--as-of <iso>] [--semantic] [--explain]
 output: lean/truncated by default; --full restores full memory rows
+scope: default = this-workspace + truly-global; --strict-scope = exactly this-workspace; --global-only = only truly-global (all-NULL provenance); --all-workspaces = search across all workspaces (skip workspace_path scoping)
 example: octocode-awareness memory recall --query "current task" --workspace "$PWD" --smart --compact
 schema: octocode-awareness schema json-schema memory_recall --compact`,
   'memory-archive': `usage: octocode-awareness memory archive --memory-id <id>... [--workspace <p>] [--artifact <a>] [--repo <r>] [--ref <r>] [--dry-run]

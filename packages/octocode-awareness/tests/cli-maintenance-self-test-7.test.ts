@@ -108,7 +108,7 @@ it('--help --compact returns a short agent guide', () => {
     expect(r.stdout).toMatch(/bundled-skills\(\d+\):/);
     expect(r.stdout).toContain('out/skills');
     expect(r.stdout).toContain('schema commands --compact');
-    expect(r.stdout).toContain('refinement set|get|delete');
+    expect(r.stdout).toContain('refinement set|get|list|delete');
     expect(r.stdout).toMatch(/exits 0 ok/);
     expect(r.stdout).not.toContain('<awareness-package>');
     expect(r.stdout.split('\n').filter(Boolean).length).toBeLessThanOrEqual(8);

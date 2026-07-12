@@ -29,6 +29,7 @@ import {
   SUBAGENT_REGISTRY,
   SUBAGENT_NAMES,
   loadSystemPrompt,
+  resolveSubagentSkills,
   type SubagentConfig,
   type SubagentName,
 } from '../subagents.js';
@@ -47,6 +48,11 @@ interface SpawnSubagentParams {
   name?: string;
   cwd?: string;
   model?: string;
+  // Pi provider name. When the model lives on a custom provider (e.g. a user-defined
+  // provider whose model id collides with a builtin namespace like `claude-*`), passing
+  // the provider explicitly disambiguates `--model` resolution. Without it, pi may match
+  // the model id against a builtin provider and fail with "No API key found".
+  provider?: string;
   thinking?: string;
   // browser-agent extras (injected into task context block)
   url?: string;
@@ -130,8 +136,8 @@ export function registerSpawnSubagentTool(
     return `  ${name} — ${config.description} Tools: ${config.tools.join(', ')}.`;
   }).join('\n');
   const skillGuideline = isChromeDebugEnabled()
-    ? 'Every typed subagent loads all bundled Octocode skills; browser-agent also loads its browser-agent skill.'
-    : 'Every available typed subagent loads all bundled Octocode skills; browser-agent is unavailable while Chrome debug is disabled.';
+    ? 'Every typed subagent loads any Octocode skills already installed; browser-agent also loads its browser-agent skill.'
+    : 'Every available typed subagent loads any Octocode skills already installed; browser-agent is unavailable while Chrome debug is disabled.';
 
   registerFn(pi, registeredToolNames, {
     name: 'spawnSubagent',
@@ -187,6 +193,9 @@ export function registerSpawnSubagentTool(
       model: Type.Optional(
         Type.String({ description: 'Model override from `pi -ne --list-models [search]`. Defaults to subagent default. Choose from the live user-configured table; `--models` only sets model-cycling scope.' }),
       ),
+      provider: Type.Optional(
+        Type.String({ description: 'Pi provider name for the model. REQUIRED when the model id collides with a builtin provider namespace (e.g. a custom provider offering `claude-*`); without it pi may resolve to the builtin provider and fail with "No API key found". Look up via `pi -ne --list-models [search]`.' }),
+      ),
       thinking: Type.Optional(
         Type.String({ description: 'Thinking level: off|minimal|low|medium|high|xhigh. Defaults to subagent default.' }),
       ),
@@ -228,11 +237,12 @@ export function registerSpawnSubagentTool(
         name: buildAgentName(params),
         cwd: params.cwd,
         tools: [...config.tools],
-        skills: config.skills,
+        skills: resolveSubagentSkills(config),
         resourceMode: config.resourceMode,
         systemPrompt,
         thinking: params.thinking ?? config.thinking,
         model: params.model ?? config.model,
+        provider: params.provider ?? config.provider,
         noSession: true,
       };
 
@@ -251,7 +261,7 @@ export function registerSpawnSubagentTool(
         `[SPAWNED] ${config.label} · agentId: ${agentId}`,
         `[SPAWNED] name: ${record.name}`,
         `[SPAWNED] tools: ${config.tools.join(', ')}`,
-        `[SPAWNED] skills: ${(config.skills ?? []).map((skillPath) => skillPath.split(/[\\/]/).at(-1)).join(', ')}`,
+        `[SPAWNED] skills: ${resolveSubagentSkills(config).map((skillPath) => skillPath.split(/[\/]/).at(-1)).join(', ')}`,
         `[SPAWNED] resourceMode: ${config.resourceMode}`,
         `[SPAWNED] task: ${params.task.slice(0, 120)}${params.task.length > 120 ? '…' : ''}`,
         '',

@@ -14,6 +14,7 @@ export const searchAndResearch = section('search-and-research.md');
 export const octocodeCli = section('octocode-cli.md');
 export const skills = section('skills.md');
 export const code = section('code.md');
+export const testing = section('testing.md');
 export const docs = section('docs.md');
 export const output = section('output.md');
 export const context = section('context.md');

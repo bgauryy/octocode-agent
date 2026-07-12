@@ -12,7 +12,7 @@ import { COMMAND_DISPLAY, COMMAND_EXAMPLE, COMMAND_TO_SCHEMA } from './cli-help-
 
 export const KNOWN_FLAGS: Record<string, string[]> = {
   'tell-memory': ['agent_id', 'task_context', 'observation', 'importance', 'label', 'tag', 'reference', 'supersedes', 'failure_signature', 'valid_from', 'valid_to', 'workspace', 'artifact', 'repo', 'ref', 'file', 'file_tree_fingerprint', 'allow_similar'],
-  'get-memory': ['query', 'limit', 'min_importance', 'label', 'tag', 'smart', 'workspace', 'artifact', 'repo', 'ref', 'state', 'sort', 'global_only', 'strict_scope', 'as_of', 'reference', 'regex', 'file_regex', 'file', 'explain', 'semantic', 'full'],
+  'get-memory': ['query', 'limit', 'min_importance', 'label', 'tag', 'smart', 'workspace', 'artifact', 'repo', 'ref', 'state', 'sort', 'global_only', 'strict_scope', 'all_workspaces', 'as_of', 'reference', 'regex', 'file_regex', 'file', 'explain', 'semantic', 'full'],
   'forget': ['memory_id', 'tag', 'tags', 'before', 'max_importance', 'workspace', 'artifact', 'repo', 'ref', 'dry_run'],
   'memory-archive': ['memory_id', 'workspace', 'artifact', 'repo', 'ref', 'dry_run'],
   'memory-restore': ['memory_id', 'workspace', 'artifact', 'repo', 'ref', 'dry_run'],
@@ -155,6 +155,7 @@ export const COMMAND_ROUTES: Record<string, CommandRoute> = {
   'verify audit': { command: 'audit-unverified' },
   'refinement set': { command: 'refine-set' },
   'refinement get': { command: 'refine-get' },
+  'refinement list': { command: 'refine-get' },
   'refinement delete': { command: 'refine-delete' },
   'signal publish': { command: 'agent-signal', prepend: ['--action', 'publish'] },
   'signal list': { command: 'agent-signal', prepend: ['--action', 'list'] },

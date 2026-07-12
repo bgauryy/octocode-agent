@@ -18,8 +18,11 @@ AgentMessage({action:"kill", agentId, remove:true})
 ```
 
 Output protocol — parse these prefixes from `lastOutput`:
+- `[STATUS]` — progress update during a long CDP operation
 - `[FINDING]` — issue found; relay to user
 - `[ACTION]` — next step recommendation
+- `[METRIC]` — performance / coverage number
+- `[SCREENSHOT]` — local screenshot path written to disk
 - `[BLOCKED]` — needs input; send answer via `AgentMessage(send)`
 - `[DONE]` — phase complete; send next instruction or kill
 

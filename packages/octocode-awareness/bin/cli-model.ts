@@ -123,7 +123,7 @@ export const RETENTION_DAY_FLAGS = new Set([
 // token as false let required scalar values such as `--agent-id` and
 // `--task-context` evade validation.
 export const BOOLEAN_FLAGS = new Set([
-  'compact', 'help', 'smart', 'global_only', 'strict_scope', 'explain',
+  'compact', 'help', 'smart', 'global_only', 'strict_scope', 'all_workspaces', 'explain',
   'semantic', 'full', 'dry_run', 'include_handoffs', 'strict_agent_id',
   'verified', 'expired_only', 'all_pending', 'propose',
   'include_bodies', 'explain_organ', 'check', 'include_view', 'all',

@@ -27,6 +27,7 @@ export function getMemory(db: DatabaseSync, params: GetMemoryParams = {}): GetMe
     sort = 'smart',
     globalOnly = false,
     strictScope = false,
+    allWorkspaces = false,
     asOf,
     references = [],
     regex = [],
@@ -90,6 +91,7 @@ export function getMemory(db: DatabaseSync, params: GetMemoryParams = {}): GetMe
     ref: refArg,
     strictScope,
     globalOnly,
+    allWorkspaces,
     cwd: cwdParam,
     asOf: normalizedAsOf,
     candidateMemoryIds: candidateIds ? [...candidateIds] : undefined,
@@ -203,6 +205,7 @@ export function getMemory(db: DatabaseSync, params: GetMemoryParams = {}): GetMe
     sort,
     as_of: normalizedAsOf,
     global_only: Boolean(globalOnly),
+    all_workspaces: Boolean(allWorkspaces),
     states,
     ...(explain ? {
       applied_filters: {
@@ -221,6 +224,7 @@ export function getMemory(db: DatabaseSync, params: GetMemoryParams = {}): GetMe
         ref: refArg ?? null,
         strict_scope: Boolean(strictScope),
         global_only: Boolean(globalOnly),
+        all_workspaces: Boolean(allWorkspaces),
         states,
         as_of: normalizedAsOf,
         sort,

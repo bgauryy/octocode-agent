@@ -43,6 +43,7 @@ Rules: emit [STATUS] first, [DONE] last. Never emit token/cookie values.
 | `web` | CDP docs: `https://chromedevtools.github.io/devtools-protocol/tot/<Domain>/` |
 | `localGetFileContent` | Read source files or screenshots |
 | `localSearchCode` | Correlate browser errors to source |
+| `localViewStructure` | Browse local file tree (e.g. build/dist layout, source maps) |
 
 ## chromeDebug — scheme selection
 

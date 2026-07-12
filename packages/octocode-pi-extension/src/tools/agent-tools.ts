@@ -103,9 +103,9 @@ const MAX_VISIBLE_OUTPUT = 12000;
 const MAX_AGENT_RECORDS = 50;
 const SUBAGENT_ENV_VAR = 'OCTOCODE_PI_SUBAGENT';
 const AWARENESS_AGENT_ENV_VAR = 'OCTOCODE_AGENT_ID';
-const FORBIDDEN_WORKER_TOOLS = new Set(['spawnAgent', 'AgentMessage']);
+const FORBIDDEN_WORKER_TOOLS = new Set(['spawnAgent', 'AgentMessage', 'spawnSubagent']);
 const agents = new Map<string, AgentRecord>();
-const EXIT_SIGNALS: NodeJS.Signals[] = ['SIGTERM', 'SIGHUP'];
+const EXIT_SIGNALS: NodeJS.Signals[] = ['SIGTERM', 'SIGHUP', 'SIGINT'];
 let processFactory: AgentProcessFactory = (command, args, options) => spawn(command, args, options) as unknown as AgentProcess;
 let processCleanupHandlersInstalled = false;
 
@@ -437,16 +437,31 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   const args = buildPiArgs(params, name, promptFiles);
   const invocation = getPiInvocation(args);
   const awarenessAgentId = workerAwarenessAgentId(id);
-  const proc = processFactory(invocation.command, invocation.args, {
-    cwd,
-    shell: false,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      [SUBAGENT_ENV_VAR]: '1',
-      [AWARENESS_AGENT_ENV_VAR]: awarenessAgentId,
-    },
-  });
+  let proc;
+  try {
+    proc = processFactory(invocation.command, invocation.args, {
+      cwd,
+      shell: false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        [SUBAGENT_ENV_VAR]: '1',
+        [AWARENESS_AGENT_ENV_VAR]: awarenessAgentId,
+      },
+    });
+  } catch (error) {
+    // processFactory threw before the record was added to `agents`, so removePromptFiles()
+    // (wired to the record's 'close'/'error' handlers) would never run. Clean up the temp
+    // system-prompt files buildPiArgs wrote so a failing factory does not leak files in os.tmpdir.
+    for (const filePath of promptFiles) {
+      try {
+        fs.rmSync(path.dirname(filePath), { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup only
+      }
+    }
+    throw error;
+  }
 
   const record: AgentRecord = {
     id,
@@ -712,7 +727,8 @@ export function registerAgentTools(
       const statusStr = theme?.fg('dim', displayStatus) ?? displayStatus;
       const header = `${icon} ${label} \u00b7 ${nameStr} \u00b7 ${statusStr}`;
       if (!opts.expanded) {
-        return makeRenderer((w) => [truncateToWidth(`${header}${theme?.fg('dim', ' \u00b7 expand for output') ?? ' \u00b7 expand for output'}`, w)]);
+        const hint = theme?.fg('dim', ' \u00b7 use AgentMessage wait/status') ?? ' \u00b7 use AgentMessage wait/status';
+        return makeRenderer((w) => [truncateToWidth(`${header}${hint}`, w)]);
       }
       const text = result.content.find((p) => p.type === 'text')?.text ?? '';
       const outputLines = text.split('\n').slice(2); // skip agent-header + status lines
@@ -833,8 +849,8 @@ export function registerAgentTools(
       const det = result.details as {
         agent?: { name?: string; status?: AgentStatus } | null;
         agents?: Array<{ name: string; agentId: string; status: string; exitCode?: number }>;
+        output?: string;
       } | null;
-      // list action \u2014 compact agent count summary
       if (det?.agents) {
         const count = det.agents.length;
         const running = det.agents.filter((a) => a.status === 'running').length;
@@ -858,7 +874,9 @@ export function registerAgentTools(
       const statusStr = theme?.fg('dim', agentStatus) ?? agentStatus;
       const header = `${icon} ${label} \u00b7 ${nameStr} \u00b7 ${statusStr}`;
       if (!opts.expanded) {
-        return makeRenderer((w) => [truncateToWidth(`${header}${theme?.fg('dim', ' \u00b7 expand for output') ?? ' \u00b7 expand for output'}`, w)]);
+        const preview = det?.output ? det.output.split('\n').find((line) => line.trim())?.trim() : '';
+        const suffix = preview ? ` \u2014 ${preview}` : ' \u00b7 no output yet';
+        return makeRenderer((w) => [truncateToWidth(`${header}${theme?.fg('dim', suffix) ?? suffix}`, w)]);
       }
       const text = result.content.find((p) => p.type === 'text')?.text ?? '';
       const outputLines = text.split('\n').slice(2); // skip agent-header + status lines

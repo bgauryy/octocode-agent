@@ -1,11 +1,18 @@
 <agents>
+At the start of every task, check whether the work should be decomposed, batched, or delegated before doing serial work.
 Delegate only when it saves wall time or parent context, isolates a long-running operation, or adds independent adversarial coverage.
 Load `octocode-subagent` for host-agnostic decomposition, packets, model routing, and recovery. Map its coordinate actions to Pi `spawnSubagent` / `spawnAgent` / `AgentMessage`.
+
+**Decomposition gate (before tool calls or spawning):**
+- Decide whether the task has independent known-input reads/checks that can run in one parallel tool batch; if yes, launch them together and synthesize.
+- Decide whether separate ownership, long-running execution, or adversarial/coverage checks justify subagents; if yes, spawn all independent agents before waiting on any result.
+- Choose each spawned agent's `model` from the live user-configured table (`pi -ne --list-models [search]`), using the smallest capable configured model for its bounded objective.
+- Keep dependent steps, shared decisions, and evolving context in the parent.
 
 **Delegation gate (before spawning):**
 - **Parent** — dependent steps, shared decisions, ordinary navigation, synthesis, and edits.
 - **Batch** — independent tool calls with known inputs and no coordination; launch together, then synthesize.
-- **Typed specialist** — `spawnSubagent` for `browser-agent`, `researcher`, `planner`, or `architect`; these load the bundled Octocode skills.
+- **Typed specialist** — `spawnSubagent` for `browser-agent`, `researcher`, `planner`, or `architect`; these load any Octocode skills already installed (`octocode-awareness` always; others require `npx octocode skill --name <skill> --platform pi` — see `<skills>`).
 - **Clean worker** — `spawnAgent` for one purpose-built objective with only the tools and extra `systemPrompt` it needs (no `skills` param; default `resourceMode:"lean"`).
 - IF the parent or one batched call can finish cheaply → do not spawn.
 - IF subtasks depend on one another or need the same evolving context → keep them serial in the parent.
@@ -30,7 +37,7 @@ Load `octocode-subagent` for host-agnostic decomposition, packets, model routing
 Workers share the current `cwd`, filesystem, environment-backed services, and Awareness database. Treat that state as mutable: read exact current files, respect advisory ownership, and never assume another worker cannot change the workspace.
 
 **Model selection — use the live Pi CLI, never hardcoded config paths:**
-- Before the first spawn in a session, run `pi -ne --list-models [search]` unless a current result is already available. Do not inspect hardcoded config paths.
+- Before the first spawn in a session, run `pi -ne --list-models [search]` (`-ne` = non-interactive, no-extensions: suppresses spinner/TUI and loads no extension so the table is clean and fast) unless a current result is already available. Do not inspect hardcoded config paths.
 - Pass the smallest capable configured model as `model`: fast/cheap for bounded lookup, balanced for ordinary reasoning, strongest for architecture, security, migration, root-cause, or high-risk multi-file work.
 
 **Communication (`AgentMessage`):**
@@ -43,6 +50,12 @@ Workers share the current `cwd`, filesystem, environment-backed services, and Aw
 - `kill` — terminate an obsolete, irrecoverable, or finished worker; use `remove:true` when no follow-up is needed.
 
 `[DONE]` means the reported phase ended. The parent marks the objective complete only after the request packet's acceptance criteria pass.
+
+**Cross-agent coordination (all workers + parent):**
+- Workers share the awareness SQLite store at `~/.octocode/memory/awareness.sqlite3` — `signal`, `lock`, and `memory recall` work across spawned agents with no extra plumbing, even concurrently. Use them to coordinate multi-worker progress instead of editing each other's files ad hoc; this is the always-on cross-agent channel.
+- Workers emit typed-prefixed lines mid-turn (`[STATUS]` / `[EVIDENCE]` / `[FINDING]` / `[BLOCKED]` / `[DONE]` are common; each typed subagent also emits role-specific prefixes: researcher → `[GAP]`/`[QUERY]`; planner → `[PLAN]`/`[RISK]`/`[VERIFY]`; architect → `[ROOT]`/`[IMPACT]`/`[FIX]`; browser-agent → `[METRIC]`/`[SCREENSHOT]`/`[ACTION]`). The parent reads these via `AgentMessage({action:"status"})` without disturbing the running turn — poll periodically so an early `[BLOCKED]` is caught before `wait()` resolves. Parse any `[UPPER_CASE]` line as a signal, not just the common set.
+- A `[BLOCKED]` is a worker's question to the parent. Answer with `AgentMessage({action:"send", message:"…"})`, then `wait` for the worker to resume and emit its next `[DONE]`.
+- Worker→worker direct messaging is intentionally forbidden (recursion hazard); route through the parent OR the shared awareness store (signals/locks), not through newly-spawned processes.
 
 **Recovery and synthesis:**
 - Worker failed or stalled → inspect `status`, preserve useful output, and diagnose before retrying.

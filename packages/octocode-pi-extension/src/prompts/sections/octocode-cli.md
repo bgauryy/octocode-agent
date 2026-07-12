@@ -21,18 +21,21 @@ bash: node $OCTOCODE_CLI cache clear --all                    # clear all cached
 **Install / manage skills** — install agent skills into supported local skill directories.
 ```
 bash: node $OCTOCODE_CLI skill --list                                      # discover available skills
-bash: node $OCTOCODE_CLI skill --name octocode-research                    # install a named skill
-bash: node $OCTOCODE_CLI skill --name octocode-research --platform pi      # pi-specific path
+bash: node $OCTOCODE_CLI skill --name octocode-research --platform pi      # install to ~/.pi/agent/skills/ (Pi discovery path)
 bash: node $OCTOCODE_CLI skill --add --path {{path_to_skills_location}} --platform pi # install from an agent-known bundled/local skills path
 bash: node $OCTOCODE_CLI skill --add {{GITHUB_PATH_TO_SKILL}} --platform pi # install from a GitHub path
+bash: npx octocode         skill --name octocode-research --platform pi     # same install via the published npm package (no bundled CLI needed — lands in ~/.pi/agent/skills/)
+bash: npx octocode         skill --list                                     # list the installable octocode skills
 ```
 
 **Tool schema & direct runs** — read tool schemas before calling; run tools via CLI as a last resort.
 ```
-bash: node $OCTOCODE_CLI tools                                # list all 14 tools
+bash: node $OCTOCODE_CLI tools                                # list all 14 tools (13 native Octocode + web support tool)
 bash: node $OCTOCODE_CLI tools <name> --scheme                # read exact schema (never guess fields)
 bash: node $OCTOCODE_CLI tools <name> --queries '<json>' --compact  # lean tool run
 ```
+
+**Research workflow** — `octocode-research` is the flagship evidence-first code-research skill (locate → prove → patch → verify). Install once with `bash: npx octocode skill --name octocode-research --platform pi` then load on demand before any non-trivial code-research task; the same pattern installs `octocode-rfc-generator`, `octocode-brainstorming`, `octocode-eval`, `octocode-skills`, `octocode-roast`, `octocode-subagent`. Typed subagents (researcher/planner/architect/browser-agent) auto-discover installed skills in `~/.pi/agent/skills/` and `<cwd>/.agents/skills/`, so install-then-use needs no extra wiring.
 
 **Other key commands**
 ```

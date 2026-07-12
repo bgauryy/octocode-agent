@@ -844,10 +844,12 @@ export async function connectToChrome(opts: ChromeDebugConnectOptions): Promise<
     sessionMeta['_openedTabId'] = openedTabId;
   }
   sessionMeta['_port'] = port;
-  // Record the pid of a Chrome we launched so cleanup can terminate it (else it
-  // orphans, since Chrome is spawned detached+unref). Attach-mode leaves this unset.
+  // Record the pid + profile dir of a Chrome we launched so cleanup can
+  // terminate it and remove the profile (else both orphan, since Chrome is
+  // spawned detached+unref). Attach-mode leaves both unset.
   if (launchedPid !== undefined) {
     sessionMeta['_launchedPid'] = launchedPid;
+    sessionMeta['_launchedUserDataDir'] = userDataDir;
   }
 
   return { session, version, metadata, screenshotDir, sessionFile };
@@ -880,5 +882,16 @@ export async function cleanupConnection(
       // Already gone or not killable — nothing to do.
     }
     s['_launchedPid'] = undefined;
+
+    // Remove the profile dir we created to prevent chrome-debug/ accumulation.
+    const launchedUserDataDir = s['_launchedUserDataDir'] as string | undefined;
+    if (launchedUserDataDir) {
+      try {
+        fs.rmSync(launchedUserDataDir, { recursive: true, force: true });
+      } catch {
+        // Best-effort: ignore if already gone or locked.
+      }
+      s['_launchedUserDataDir'] = undefined;
+    }
   }
 }

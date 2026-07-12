@@ -138,12 +138,12 @@ export function inspectSchemaState(db: DatabaseSync): SchemaState {
   }
   if (identity.applicationId !== 0) {
     throw new Error(
-      `refusing foreign Awareness application_id ${identity.applicationId}; expected ${AWARENESS_APPLICATION_ID}`,
+      `refusing foreign Awareness application_id ${identity.applicationId}; expected ${AWARENESS_APPLICATION_ID}. Another app owns this DB file — back it up, move it aside, then re-run to create a fresh Awareness store.`,
     );
   }
   if (identity.relations.length === 0) return 'fresh';
   const names = identity.relations.map(({ name }) => name).join(', ');
-  throw new Error(`refusing unrecognized or unrelated SQLite store; relations: ${names}`);
+  throw new Error(`refusing unrecognized or unrelated SQLite store; relations: ${names}. An unrelated DB owns this file — back it up, move it aside, then re-run to create a fresh Awareness store.`);
 }
 
 export function assertDatabaseIntegrity(db: DatabaseSync): void {

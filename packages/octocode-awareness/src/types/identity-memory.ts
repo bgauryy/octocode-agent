@@ -230,6 +230,8 @@ export interface GetMemoryParams {
   sort?: string;
   globalOnly?: boolean;
   strictScope?: boolean;
+  /** Skip workspace_path scoping entirely; search across all workspaces. */
+  allWorkspaces?: boolean;
   asOf?: string | null;
   references?: string[];       // exact provenance filter
   regex?: string[];             // regex matched against all text fields
@@ -251,6 +253,7 @@ export interface GetMemoryResult {
   sort: string;
   as_of: string | null;
   global_only: boolean;
+  all_workspaces: boolean;
   states: string[];
   /** Present with explain=true so callers can audit the effective query after smart widening. */
   applied_filters?: {
@@ -269,6 +272,7 @@ export interface GetMemoryResult {
     ref: string | null;
     strict_scope: boolean;
     global_only: boolean;
+    all_workspaces: boolean;
     states: string[];
     as_of: string | null;
     sort: string;

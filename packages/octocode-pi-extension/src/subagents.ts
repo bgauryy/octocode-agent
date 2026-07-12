@@ -43,12 +43,26 @@ export interface SubagentConfig {
   thinking?: string;
   /** Default model override. */
   model?: string;
+  /** Default Pi provider override. Set when a subagent's default model lives on a custom
+   *  provider whose id collides with a builtin namespace (e.g. claude-*), so pi resolves
+   *  --model to the right provider without the caller passing --provider each time. */
+  provider?: string;
   /**
    * Absolute path to SYSTEM_PROMPT.md for this subagent.
    * Loaded at runtime from dist/subagents/<name>/SYSTEM_PROMPT.md.
    */
   systemPromptPath: string;
-  /** Skill dirs passed via --skill (loaded even with --no-skills). */
+  /**
+   * Static extra skill paths specific to this subagent (e.g. browser-agent's local
+   * skill dir). Combined with all installed Octocode skills at spawn time by
+   * resolveSubagentSkills(). If `skills` is set explicitly, these are ignored.
+   */
+  extraSkillPaths?: string[];
+  /**
+   * Explicit skill override. When set, resolveSubagentSkills returns it as-is.
+   * If undefined (the normal case for SUBAGENT_REGISTRY entries), skills are
+   * resolved lazily at spawn time via allOctocodeSkillPaths(extraSkillPaths).
+   */
   skills?: string[];
 }
 
@@ -76,6 +90,26 @@ function resolveSkillsDir(): string {
 
 const SKILLS_DIR = resolveSkillsDir();
 
+/**
+ * Returns external skill search roots, re-evaluated on every call so skills
+ * installed after process start are discovered without a restart.
+ *
+ * `npx octocode skill --name <skill> --platform pi` lands in ~/.pi/agent/skills/;
+ * monorepo / standalone workspaces often stage skills at <cwd>/.agents/skills/ via
+ * `octocode skill --add --path`. No existsSync filter here — bundledSkillPath checks
+ * for SKILL.md presence in each root, so absent dirs are handled gracefully.
+ *
+ * Exported for testing dynamic cwd behaviour.
+ */
+export function getExternalSkillDirs(): string[] {
+  const dirs: string[] = [];
+  const home = process.env.HOME;
+  if (home) dirs.push(path.join(home, '.pi', 'agent', 'skills'));
+  const cwdAgentsSkills = path.resolve(process.cwd(), '.agents', 'skills');
+  if (!dirs.includes(cwdAgentsSkills)) dirs.push(cwdAgentsSkills);
+  return dirs;
+}
+
 export const OCTOCODE_SKILL_NAMES = [
   'octocode-awareness',
   'octocode-brainstorming',
@@ -93,15 +127,53 @@ function subagentSkillPath(name: SubagentName, skillName: string): string {
 
 function bundledSkillPath(
   skillName: (typeof OCTOCODE_SKILL_NAMES)[number]
-): string {
-  return path.join(SKILLS_DIR, skillName);
+): string | null {
+  // Preferred: a skill staged in the package's dist/skills/ (what build.mjs composes).
+  // Fallbacks: skills installed outside the package — `npx octocode skill --name <skill>
+  // --platform pi` lands in ~/.pi/agent/skills/, and monorepo layouts often stage skills
+  // at <cwd>/.agents/skills/ via `octocode skill --add --path ...`. Surfacing them lets
+  // typed subagents load skills the package itself doesn't ship (this extension ships
+  // only octocode-awareness); a manual install (`npx octocode skill ... --platform pi`)
+  // is required for the rest. First hit wins — the bundled copy wins over an external install
+  // when both exist, keeping tests deterministic.
+  for (const root of [SKILLS_DIR, ...getExternalSkillDirs()]) {
+    if (fs.existsSync(path.join(root, skillName, 'SKILL.md'))) {
+      return path.join(root, skillName);
+    }
+  }
+  return null;
 }
 
 function allOctocodeSkillPaths(...extraSkillPaths: string[]): string[] {
+  // Only pass skills whose SKILL.md is present in the bundled dir OR any external
+  // install root (see bundledSkillPath). Filter removes nulls so bundled-and-installed
+  // resolves to one list with no duplicates (each root is searched in fixed order;
+  // first hit wins, so the bundled copy wins over an external install when both exist).
+  const shipped = OCTOCODE_SKILL_NAMES
+    .map(skillName => bundledSkillPath(skillName))
+    .filter((dir: string | null): dir is string => dir !== null);
+  // Apply the same existence guard to caller/subagent-supplied skill paths, so a partial
+  // build (e.g. browser-agent skill dir not yet copied) does not pass a nonexistent --skill
+  // path to pi (which warns per path). Consistent with the named-skill filter above.
+  const extraShipped = extraSkillPaths.filter(skillPath =>
+    fs.existsSync(path.join(skillPath, 'SKILL.md'))
+  );
   return [
-    ...OCTOCODE_SKILL_NAMES.map(skillName => bundledSkillPath(skillName)),
-    ...extraSkillPaths,
+    ...shipped,
+    ...extraShipped,
   ];
+}
+
+/**
+ * Resolves the full skill list for a subagent at CALL TIME (not at import time).
+ *
+ * - If config.skills is set explicitly, returns it as-is (override path).
+ * - Otherwise computes allOctocodeSkillPaths(extraSkillPaths) on every call,
+ *   so late-installed skills (added after process start) are discovered without restart.
+ */
+export function resolveSubagentSkills(config: SubagentConfig): string[] {
+  if (config.skills !== undefined) return config.skills;
+  return allOctocodeSkillPaths(...(config.extraSkillPaths ?? []));
 }
 
 function subagentPromptPath(name: SubagentName): string {
@@ -139,9 +211,7 @@ export const SUBAGENT_REGISTRY = {
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'low',
     systemPromptPath: subagentPromptPath('browser-agent'),
-    skills: allOctocodeSkillPaths(
-      subagentSkillPath('browser-agent', 'browser-agent')
-    ),
+    extraSkillPaths: [subagentSkillPath('browser-agent', 'browser-agent')],
   },
   researcher: {
     name: 'researcher' as SubagentName,
@@ -168,7 +238,6 @@ export const SUBAGENT_REGISTRY = {
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'low',
     systemPromptPath: subagentPromptPath('researcher'),
-    skills: allOctocodeSkillPaths(),
   },
   planner: {
     name: 'planner' as SubagentName,
@@ -195,7 +264,6 @@ export const SUBAGENT_REGISTRY = {
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'low',
     systemPromptPath: subagentPromptPath('planner'),
-    skills: allOctocodeSkillPaths(),
   },
   architect: {
     name: 'architect' as SubagentName,
@@ -223,7 +291,6 @@ export const SUBAGENT_REGISTRY = {
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'medium',
     systemPromptPath: subagentPromptPath('architect'),
-    skills: allOctocodeSkillPaths(),
   },
 } satisfies Record<SubagentName, SubagentConfig>;
 

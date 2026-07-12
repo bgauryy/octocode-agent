@@ -128,6 +128,7 @@ export function cmdGetMemory(db: DatabaseSync, args: ParsedArgs, dbPath: string,
     sort,
     globalOnly: Boolean(args['global_only']),
     strictScope: Boolean(args['strict_scope']),
+    allWorkspaces: Boolean(args['all_workspaces']),
     asOf: args['as_of'] ? String(args['as_of']) : null,
     references,
     regex,
@@ -226,6 +227,7 @@ export function cmdGetMemory(db: DatabaseSync, args: ParsedArgs, dbPath: string,
     if (memories.length > 0) payload['projection'] = 'lean';
     if (payload['as_of'] == null) delete payload['as_of'];
     if (payload['global_only'] === false) delete payload['global_only'];
+    if (payload['all_workspaces'] === false) delete payload['all_workspaces'];
     if (Array.isArray(payload['states']) && payload['states'].length === 1 && payload['states'][0] === 'ACTIVE') {
       delete payload['states'];
     }

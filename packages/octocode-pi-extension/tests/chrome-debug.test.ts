@@ -1122,12 +1122,15 @@ test('cleanupConnection closes opened tabs and only kills launched browser proce
       session['_openedTabId'] = 'opened-tab';
       session['_port'] = port;
       session['_launchedPid'] = 123456;
+      // Point at a nonexistent path — rmSync with force:true handles it cleanly.
+      session['_launchedUserDataDir'] = path.join(os.tmpdir(), `octocode-test-profile-${port}`);
 
       await cleanupConnection(session, false, true);
 
       assert.equal(session.closed, true);
       assert.deepEqual(killed, [{ pid: 123456, signal: 'SIGTERM' }]);
       assert.equal(session['_launchedPid'], undefined);
+      assert.equal(session['_launchedUserDataDir'], undefined);
     });
   } finally {
     process.kill = previousKill;

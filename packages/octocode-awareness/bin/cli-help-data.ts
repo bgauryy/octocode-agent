@@ -21,7 +21,7 @@ bundled-skills(${BUNDLED_SKILLS.length}): ${BUNDLED_SKILLS_DIR} — octocode-awa
 start: attend; workspace status; plan create|list|show|join|doc|status; task create|list|ready|show|claim|heartbeat|submit|release|depend; memory recall; signal list; docs list
 edit: work start|touch|end|list|show; lock acquire|wait|release|prune; verify audit|mark
 msg: signal publish|list|reply|ack|resolve|prune; agent register|list
-learn: memory record|archive|restore|forget; refinement set|get|delete; reflect record|mine-weakness|export-harness|developer-review; maintenance digest
+learn: memory record|archive|restore|forget; refinement set|get|list|delete; reflect record|mine-weakness|export-harness|developer-review; maintenance digest
 wiki: wiki sync; query files|workboard|all|developer-review --format json|table|csv|markdown|html
 inspect: schema commands --compact; docs list|show; <command> --help; exits 0 ok / 1 validation|verify debt / 2 live claim|lock|wait|hooks --strict`;
 

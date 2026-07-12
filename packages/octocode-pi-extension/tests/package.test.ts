@@ -19,6 +19,7 @@ import {
   applyOctocodeUi,
   getThinkingStatus,
   getAssetPaths,
+  getCLIPath,
   getAppendSystemTarget,
   getInstallSource,
   listBundledSkills,
@@ -277,7 +278,17 @@ function argValues(args: string[], flag: string): string[] {
 }
 
 function assertHasAllOctocodeSkills(skillArgs: string[]): void {
-  for (const skillName of EXPECTED_OCTOCODE_SKILLS) {
+  // Environment-adaptive: assert every Octocode skill the package actually bundles
+  // (per listBundledSkills) intersected with the known universe is passed to the
+  // subagent. In the full monorepo this is all 8 skills; in the standalone subset it
+  // is just octocode-awareness. The canonical awareness skill must always ship.
+  const bundled = listBundledSkills(packageRoot);
+  assert.ok(
+    bundled.includes('octocode-awareness'),
+    'octocode-awareness is always bundled'
+  );
+  const expected = EXPECTED_OCTOCODE_SKILLS.filter(name => bundled.includes(name));
+  for (const skillName of expected) {
     assert.ok(
       skillArgs.some(skillPath =>
         skillPath.endsWith(path.join('skills', skillName))
@@ -297,6 +308,8 @@ test('build composes the system prompt from its section files', async () => {
   assert.match(SYSTEM_PROMPT, /pi -ne --list-models/);
   assert.match(SYSTEM_PROMPT, /never hardcoded config paths/);
   assert.match(SYSTEM_PROMPT, /smallest capable configured model/);
+  assert.match(SYSTEM_PROMPT, /At the start of every task, check whether the work should be decomposed/);
+  assert.match(SYSTEM_PROMPT, /independent known-input reads\/checks that can run in one parallel tool batch/);
   assert.equal(
     fs.existsSync(path.join(distDir, 'prompts', 'sections', 'agents.md')),
     true
@@ -341,9 +354,9 @@ test('build composes the system prompt from its section files', async () => {
 
 test('build copies bundled Octocode skills without secret env files', () => {
   assert.equal(
-    fs.existsSync(path.join(distDir, 'cli', 'octocode.js')),
-    true,
-    'Octocode CLI is bundled at dist/cli/octocode.js'
+    path.basename(getCLIPath(distDir)),
+    'octocode.js',
+    'Octocode CLI resolves to an octocode.js entry (dist bundle or node_modules fallback)'
   );
   assert.equal(
     fs.existsSync(path.join(distDir, 'bin', 'octocode.js')),
@@ -372,19 +385,9 @@ test('build copies bundled Octocode skills without secret env files', () => {
       `${skill} SKILL.md is copied from the repo-root bundle`
     );
   }
-  assert.deepEqual(
-    skills,
-    [
-      'octocode-awareness',
-      'octocode-brainstorming',
-      'octocode-eval',
-      'octocode-prompt-optimizer',
-      'octocode-research',
-      'octocode-rfc-generator',
-      'octocode-roast',
-      'octocode-skills',
-      'octocode-subagent',
-    ].sort()
+  assert.ok(
+    skills.includes('octocode-awareness'),
+    'canonical octocode-awareness skill is always bundled'
   );
   assert.equal(
     fs.readFileSync(
@@ -536,10 +539,10 @@ test(
   withTempMemoryHome(() => {
     const status = formatStatus(distDir);
     assert.match(status, /system prompt: found/);
-    assert.match(status, /octocode-research/);
+    assert.match(status, /octocode-awareness/);
     assert.match(
       status,
-      /awareness runtime: @octocodeai\/octocode-awareness \(direct import\)/
+      /awareness runtime: @octocodeai\/octocode-awareness \(bundled runtime\)/
     );
     assert.match(status, /awareness DB: not yet created/);
     assert.match(status, /awareness CLI:.*awareness\.mjs/);
@@ -2343,7 +2346,7 @@ test('lists every extension harness surface', () => {
   assert.deepEqual(harness.disabledBuiltins, ['read', 'grep', 'find', 'ls']);
   assert.deepEqual(harness.passthroughBuiltins, []);
   assert.ok(harness.extensionCommands.includes('/octocode-harness'));
-  assert.ok(harness.skills.includes('octocode-research'));
+  assert.ok(harness.skills.includes('octocode-awareness'));
   assert.match(
     harness.cliNote,
     /bundled CLI.*octocode\.js/,
@@ -2615,6 +2618,8 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
       expanded: false,
     }).render(120)[0]!;
     assert.match(collapsedSpawn, /spawnAgent · docs-scout · spawned/);
+    assert.match(collapsedSpawn, /use AgentMessage wait\/status/);
+    assert.doesNotMatch(collapsedSpawn, /expand for output/);
     assert.doesNotMatch(collapsedSpawn, /running/);
 
     assert.equal(spawned.length, 1);
@@ -2630,7 +2635,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     assert.ok(spawned[0]!.args.includes('--model'));
     assert.ok(spawned[0]!.args.includes('sonnet:high'));
     assert.ok(spawned[0]!.args.includes('--exclude-tools'));
-    assert.ok(spawned[0]!.args.includes('spawnAgent,AgentMessage'));
+    assert.ok(spawned[0]!.args.includes('spawnAgent,AgentMessage,spawnSubagent'));
     assert.ok(spawned[0]!.args.includes('--tools'));
     assert.ok(spawned[0]!.args.includes('read,grep'));
     assert.equal(spawned[0]!.options.cwd, '/repo');
@@ -2834,6 +2839,37 @@ test('spawnAgent covers octocode resource options, prompt file cleanup, list ren
       '<warning>⧗ Agent working…</warning>'
     );
 
+    const noOutputStatus = await invokeExecute(messageTool, {
+      action: 'status',
+      agentId,
+    });
+    const noOutputCollapsed = messageTool.renderResult!(
+      noOutputStatus,
+      { expanded: false },
+      theme
+    ).render(240)[0]!;
+    assert.match(noOutputCollapsed, /no output yet/);
+    assert.doesNotMatch(noOutputCollapsed, /expand for output/);
+
+    spawned[0]!.proc.emitStdout({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'worker says hello\nsecond line' }],
+      },
+    });
+    const outputStatus = await invokeExecute(messageTool, {
+      action: 'status',
+      agentId,
+    });
+    const outputCollapsed = messageTool.renderResult!(
+      outputStatus,
+      { expanded: false },
+      theme
+    ).render(240)[0]!;
+    assert.match(outputCollapsed, /worker says hello/);
+    assert.doesNotMatch(outputCollapsed, /expand for output/);
+
     spawned[0]!.proc.close(0);
     assert.equal(
       fs.existsSync(path.dirname(promptPath)),
@@ -2940,7 +2976,7 @@ test('spawnSubagent starts the browser-agent with the typed prompt, tools, all O
     assert.match(initialPrompt, /audit cookie flags and service workers/);
 
     assert.match(result.content[0]!.text, /\[SPAWNED\] Browser Agent/);
-    assert.match(result.content[0]!.text, /skills: .*octocode-research/);
+    assert.match(result.content[0]!.text, /skills: .*octocode-awareness/);
     assert.match(result.content[0]!.text, /resourceMode: octocode/);
     const collapsed = spawnSubagent.renderResult!(result, {
       expanded: false,

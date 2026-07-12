@@ -326,9 +326,18 @@ export async function readCapped(
   const { signal } = opts;
   if (!res.body || typeof res.body.getReader !== 'function') {
     const text = await res.text();
-    return text.length > maxBytes
-      ? { text: text.slice(0, maxBytes), truncated: true }
-      : { text, truncated: false };
+    // Compare byte length (not char length) against the byte cap, otherwise
+    // multi-byte UTF-8 content reports truncated:false past the cap and the
+    // model loses the pagination signal. Slice at the largest char boundary
+    // that still fits in maxBytes bytes.
+    const byteLen = Buffer.byteLength(text, 'utf8');
+    if (byteLen <= maxBytes) return { text, truncated: false };
+    // O(1) Buffer-based UTF-8 boundary finder: allocate once, walk back at most
+    // 3 bytes to skip any trailing continuation bytes (0x80–0xBF), then decode.
+    const buf = Buffer.from(text, 'utf8');
+    let cut = maxBytes;
+    while (cut > 0 && (buf[cut]! & 0xc0) === 0x80) cut--;
+    return { text: buf.subarray(0, cut).toString('utf8'), truncated: true };
   }
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8', { fatal: false });

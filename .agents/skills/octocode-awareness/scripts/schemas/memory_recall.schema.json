@@ -144,6 +144,11 @@
       "description": "Only unscoped rows.",
       "type": "boolean"
     },
+    "all_workspaces": {
+      "default": false,
+      "description": "Search across all workspaces (skip workspace_path scoping).",
+      "type": "boolean"
+    },
     "sort": {
       "default": "smart",
       "description": "Sort order.",
@@ -209,6 +214,7 @@
     "references",
     "strict_scope",
     "global_only",
+    "all_workspaces",
     "sort",
     "smart",
     "states",
@@ -238,6 +244,7 @@
       "artifact": "pkg",
       "repo": "repo",
       "strict_scope": false,
+      "all_workspaces": false,
       "sort": "smart",
       "smart": true
     }

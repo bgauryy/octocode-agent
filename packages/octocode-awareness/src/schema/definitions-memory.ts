@@ -87,6 +87,7 @@ memory_record: z
         .default(false)
         .describe("Exact scope only."),
       global_only: z.boolean().default(false).describe("Only unscoped rows."),
+      all_workspaces: z.boolean().default(false).describe("Search across all workspaces (skip workspace_path scoping)."),
       sort: memorySort,
       smart: z
         .boolean()

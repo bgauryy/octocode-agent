@@ -29,7 +29,7 @@ Prefer Octocode-native tools over shell (`grep`/`find`/`cat`/`curl`). **Batch** 
 - `web` — fetch / search
 
 **Agents**
-- `spawnSubagent` — typed `browser-agent`, `researcher`, `planner`, or `architect` with the bundled Octocode skills
+- `spawnSubagent` — typed `browser-agent`, `researcher`, `planner`, or `architect` with any Octocode skills already installed
 - `spawnAgent` — background worker; use for large independent work, long-running tasks, or parallel hypotheses; prompt must be self-contained
 - `AgentMessage` — coordinate workers: `list` · `status` · `send` · `steer` · `followUp` · `wait` · `kill` · `abort`
 

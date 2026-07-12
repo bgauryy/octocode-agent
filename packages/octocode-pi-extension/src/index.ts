@@ -5,7 +5,7 @@ import {
   getPiAwarenessAgentId,
   resolveDbPath,
   wirePiAwarenessHooks,
-} from '@octocodeai/octocode-awareness';
+} from './awareness.js';
 import { propagateOctocodeEnv, getOctocodeHome } from './env.js';
 import {
   OCTOCODE_DIRECT_TOOL_NAMES,
@@ -79,7 +79,7 @@ export {
   getAppendSystemTarget,
   truncateUserVisibleToolOutput,
 } from './utils.js';
-export { extractPiWriteTargetPaths as extractWriteTargetPaths } from '@octocodeai/octocode-awareness';
+export { extractPiWriteTargetPaths as extractWriteTargetPaths } from './awareness.js';
 export { runWebTool, renderWebResult, pickProvider } from './web.js';
 export {
   cleanupSpawnedAgentsForShutdown,
@@ -191,7 +191,7 @@ export function formatStatus(baseDir?: string): string {
     `system prompt: ${promptStatus}`,
     `skills: ${skills.length}${skills.length > 0 ? ` (${skills.join(', ')})` : ''}`,
     `awareness DB: ${dbStatus}`,
-    `awareness runtime: @octocodeai/octocode-awareness (direct import)`,
+    `awareness runtime: @octocodeai/octocode-awareness (bundled runtime)`,
     `awareness CLI: ${getAwarenessCLIPath(baseDir)} — use via: node $OCTOCODE_AWARENESS_CLI <noun> <verb>`,
     `octocode tools: ${formatOctocodeToolStatus()}`,
     `bundled CLI: ${getCLIPath(baseDir)} — use via: node $OCTOCODE_CLI <command>`,
@@ -355,7 +355,18 @@ async function wireOctocodePiExtension(
   disableBuiltinTools(pi);
 
   if (pi.on) {
-    createAwarenessHooksAddon()(pi);
+    // Awareness hook wiring must not take down the whole extension: a failure here
+    // (unexpected Pi API shape, awareness library error) would skip every downstream
+    // pi.on() handler (resources_discover, session_start, session_shutdown). Surface it
+    // and continue so the rest of the harness stays wired.
+    try {
+      createAwarenessHooksAddon()(pi);
+    } catch (error) {
+      console.error(
+        '[octocode-pi-extension] Failed to wire awareness hooks:',
+        error instanceof Error ? error.message : error,
+      );
+    }
 
     pi.on('resources_discover', async () => {
       const paths = getAssetPaths();
@@ -555,6 +566,10 @@ async function wireOctocodePiExtension(
   pi.registerCommand('octocode-skills-update', {
     description: 'Update this Pi package, then reload Pi resources.',
     handler: async (_args, ctx) => {
+      if (!ctx?.hasUI) {
+        notify(ctx, '/octocode-skills-update requires an interactive session to confirm. Run from the Pi UI.', 'error');
+        return;
+      }
       const source = getInstallSource();
       const cmdStr = `pi update ${source}`;
       const ok = await confirm(ctx, 'Update Octocode Pi package?', `Execute: ${cmdStr}`);
