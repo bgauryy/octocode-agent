@@ -1,0 +1,51 @@
+{
+  "name": "octocode-monorepo",
+  "version": "1.0.0",
+  "description": "Monorepo for Octocode MCP and related packages - Model Context Protocol server for advanced GitHub repository analysis and code discovery.",
+  "author": "Guy Bary <bgauryy@octocodeai.com>",
+  "homepage": "https://octocode.ai",
+  "repository": "bgauryy/octocode-mcp.git",
+  "bugs": "https://github.com/bgauryy/octocode-mcp/issues",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "yarn@4.9.1",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build:native:all": "yarn workspace @octocodeai/octocode-engine build:all",
+    "platforms:check": "yarn workspace @octocodeai/octocode-engine platforms:check",
+    "build:publish": "yarn prepublish && yarn build:native:all && yarn platforms:check && yarn workspace @octocodeai/mcp build:publish",
+    "docs:verify": "node ./scripts/docs-verify.mjs",
+    "health:check": "node ./scripts/workspace-health.mjs check",
+    "health:report": "node ./scripts/workspace-health.mjs report",
+    "build": "yarn workspaces foreach -Apt run build",
+    "lint": "yarn workspaces foreach -Apt run lint",
+    "lint:fix": "yarn workspaces foreach -Apt run lint:fix",
+    "local:check": "node ./release/sync-packages-local.mjs",
+    "local:fix": "node ./release/sync-packages-local.mjs --fix",
+    "sync:version": "node ./release/sync-packages-version.mjs",
+    "sync:version:publish": "node ./release/sync-packages-version.mjs --pin-for-publish",
+    "deps:dedupe": "node ./scripts/dedupe-deps.mjs",
+    "deps:dedupe:fix": "node ./scripts/dedupe-deps.mjs --fix",
+    "test": "yarn workspaces foreach -Apt run test",
+    "test:quiet": "yarn workspaces foreach -Apt run test:quiet",
+    "typecheck": "yarn workspaces foreach -Apt run typecheck"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
+    "prettier": "^3.8.4",
+    "tsx": "^4.23.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.61.1"
+  },
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "packages/octocode-engine/npm/*",
+    "skills"
+  ]
+}
