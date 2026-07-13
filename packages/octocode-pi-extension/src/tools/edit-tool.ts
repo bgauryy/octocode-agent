@@ -1,11 +1,25 @@
 import { constants } from 'node:fs';
-import { access, readFile, stat, writeFile } from 'node:fs/promises';
-import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
 import { makeRenderer, truncateToWidth, wrapText } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
+import {
+  withFileMutationQueue,
+  recordFileReadState,
+  checkReadState,
+  clearReadStatesForTests,
+  resolveFilePath,
+  type ReadStateCheck,
+} from './file-state.js';
+
+// ─── Backward-compat re-exports ───────────────────────────────────────────────
+// Tests (package.test.ts) and historical callers import these from edit-tool.
+// write-tool.ts and octocode-tools.ts now import directly from file-state.ts.
+export { withFileMutationQueue, recordFileReadState } from './file-state.js';
+export function clearEditReadStateForTests(): void {
+  clearReadStatesForTests();
+}
 
 const require = createRequire(import.meta.url);
 
@@ -86,39 +100,7 @@ interface EditReasoningEntry {
   reasoning: string;
 }
 
-interface ReadState {
-  mtimeMs: number;
-  size: number;
-  contentHash: string;
-  readAt: number;
-}
-
-interface ReadStateCheck {
-  state: 'fresh' | 'missing' | 'stale';
-  message: string;
-}
-
-const readStates = new Map<string, ReadState>();
-
-// ─── File mutation queue ──────────────────────────────────────────────────────
-// Per-file serialization queue: ensures that parallel tool calls on the same
-// file don't race (read-modify-write is atomic within each file's queue).
-// Equivalent to Pi's withFileMutationQueue from @earendil-works/pi-coding-agent,
-// implemented locally since that package is not a declared dependency.
-const fileQueues = new Map<string, Promise<void>>();
-
-export function withFileMutationQueue<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  // Get the current settled tail (always resolves, never rejects)
-  const prev = fileQueues.get(key) ?? Promise.resolve();
-  // Schedule fn after prev settles
-  const execution = prev.then(() => fn());
-  // New tail: suppress errors so future operations still run
-  const tail = execution.then(() => {}, () => {});
-  fileQueues.set(key, tail);
-  // Clean up once this tail settles (no further operations queued)
-  void tail.then(() => { if (fileQueues.get(key) === tail) fileQueues.delete(key); });
-  return execution;
-}
+// ReadStateCheck is imported from file-state.ts above (type re-used in PreparedEdit).
 const ANSI_GREEN = '\x1b[32m';
 const ANSI_RED = '\x1b[31m';
 const ANSI_RESET = '\x1b[0m';
@@ -139,54 +121,9 @@ function stripBom(text: string): { bom: string; text: string } {
   return text.startsWith('\uFEFF') ? { bom: '\uFEFF', text: text.slice(1) } : { bom: '', text };
 }
 
-function contentHash(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
-}
-
-function resolveEditPath(filePath: string, cwd = process.cwd()): string {
-  return path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
-}
-
-export async function recordFileReadState(filePath: string, cwd = process.cwd()): Promise<void> {
-  const absolutePath = resolveEditPath(filePath, cwd);
-  const [stats, content] = await Promise.all([stat(absolutePath), readFile(absolutePath, 'utf8')]);
-  readStates.set(absolutePath, {
-    mtimeMs: stats.mtimeMs,
-    size: stats.size,
-    contentHash: contentHash(content),
-    readAt: Date.now(),
-  });
-}
-
-export function clearEditReadStateForTests(): void {
-  readStates.clear();
-}
-
-async function checkReadState(absolutePath: string, requireRecentRead: boolean): Promise<ReadStateCheck> {
-  const state = readStates.get(absolutePath);
-  if (!state) {
-    const message = 'No prior localGetFileContent read state recorded for this file.';
-    if (requireRecentRead) throw new Error(`${message} Re-read the file before editing or set requireRecentRead:false intentionally.`);
-    return { state: 'missing', message };
-  }
-  // Fast path: mtime AND size unchanged => definitively not stale; skip the hash read.
-  // If either differs, fall back to the authoritative content hash so an
-  // identical-content re-write (e.g. editor that reformats-on-save but yields
-  // the same bytes) is NOT falsely reported stale. mtime/size are cheap
-  // pre-checks; the hash is the source of truth.
-  const stats = await stat(absolutePath);
-  let stale: boolean;
-  if (stats.mtimeMs === state.mtimeMs && stats.size === state.size) {
-    stale = false;
-  } else {
-    const current = await readFile(absolutePath, 'utf8');
-    stale = contentHash(current) !== state.contentHash;
-  }
-  if (stale) {
-    throw new Error('File changed since last recorded read. Re-read the target range before editing.');
-  }
-  return { state: 'fresh', message: `Fresh read state recorded ${Math.max(0, Date.now() - state.readAt)}ms ago.` };
-}
+// resolveEditPath is an alias for resolveFilePath from file-state.ts; all call sites below
+// use this local name to keep the diff surface minimal.
+const resolveEditPath = resolveFilePath;
 
 function findOccurrences(content: string, needle: string): number[] {
   if (needle.length === 0) return [];

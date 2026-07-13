@@ -9,6 +9,7 @@
 import type { PiContext, PiCommandContext, PiInstance, ToolDefinition, PiTheme } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { isSubagentProcess } from './agent-tools.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -118,6 +119,19 @@ export function registerContextTools(
       ctx?: PiContext,
     ) {
       if (params['type'] === 'new') {
+        // type:"new" is only meaningful in the host Pi process: it queues a
+        // /_octocode-clear-context-impl command that was registered only there.
+        // Inside a spawned worker that command doesn't exist, so the follow-up
+        // would be delivered as a user message and treated as unknown input.
+        if (isSubagentProcess()) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: 'manage_context type:"new" is not supported inside a spawned worker process. Use it from the parent agent session instead.',
+            }],
+            isError: true,
+          };
+        }
         pi.sendUserMessage('/_octocode-clear-context-impl', { deliverAs: 'followUp' });
         return {
           content: [

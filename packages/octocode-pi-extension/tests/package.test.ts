@@ -2234,6 +2234,30 @@ test('manage_context type:new, missing compact support, and render states are ex
   });
 });
 
+test('manage_context type:new returns isError when called inside a spawned worker', async () => {
+  // The /_octocode-clear-context-impl command is registered only in the host Pi
+  // process. Sending it from inside a worker would silently fail as an unknown
+  // command. Verify the guard returns a clear error instead.
+  const { tools } = await captureExtensions();
+  const compactTool = tools.get('manage_context')!;
+  const prev = process.env['OCTOCODE_PI_SUBAGENT'];
+  process.env['OCTOCODE_PI_SUBAGENT'] = '1';
+  try {
+    const result = await invokeExecute(compactTool, { type: 'new' });
+    assert.equal(result.isError, true, 'must be flagged as an error in worker context');
+    assert.match(
+      result.content[0]!.text,
+      /not supported inside a spawned worker/
+    );
+  } finally {
+    if (prev === undefined) {
+      delete process.env['OCTOCODE_PI_SUBAGENT'];
+    } else {
+      process.env['OCTOCODE_PI_SUBAGENT'] = prev;
+    }
+  }
+});
+
 test('turn_end auto-compact queues a continuation after compaction completes (no stuck agent)', async () => {
   const { handlers, sentUserMessages } = await captureExtensions();
   const turnEndHandlers = handlers.get('turn_end');
@@ -3680,6 +3704,59 @@ test('cleanupSpawnedAgentsForShutdown kills only non-terminal spawned workers', 
       agentId: runningId,
     });
     assert.match(runningStatus.content[0]!.text, /status: killed/);
+  } finally {
+    setAgentProcessFactoryForTests(null);
+  }
+});
+
+test('AgentMessage send with broken stdin (EPIPE) sets isError:true on result', async () => {
+  // When sendRpc throws (e.g. EPIPE because the process already exited but
+  // exitCode/signalCode haven't been reaped yet), record.error is set while
+  // status stays 'running'. renderSingleAgentResult must flag isError:true so
+  // the LLM sees the failure rather than a misleading successful-looking result.
+  let brokenProc: MockAgentProcess | undefined;
+  setAgentProcessFactoryForTests((_command, _args, _options) => {
+    brokenProc = createMockAgentProcess();
+    // Allow the first write (initial prompt delivery), then throw EPIPE.
+    let callCount = 0;
+    const origWrite = brokenProc.stdin.write.bind(brokenProc.stdin);
+    brokenProc.stdin.write = (data: string) => {
+      callCount++;
+      if (callCount > 1) {
+        throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+      }
+      return origWrite(data);
+    };
+    return brokenProc;
+  });
+  try {
+    const { tools } = await captureExtensions();
+    const spawnTool = tools.get('spawnAgent')!;
+    const messageTool = tools.get('AgentMessage')!;
+
+    const spawnResult = await invokeExecute(
+      spawnTool,
+      { task: 'epipe target', name: 'epipe-target' },
+      { cwd: '/repo' }
+    );
+    const agentId = (spawnResult.details as { agent: { agentId: string } }).agent.agentId;
+
+    // Second write (callCount = 2) triggers the EPIPE throw.
+    const sendResult = await invokeExecute(
+      messageTool,
+      { action: 'send', agentId, message: 'hello' }
+    );
+
+    assert.equal(
+      sendResult.isError,
+      true,
+      'result must be isError:true when sendRpc catches EPIPE'
+    );
+    assert.match(
+      sendResult.content[0]!.text,
+      /EPIPE|write/,
+      'error text must surface the EPIPE message'
+    );
   } finally {
     setAgentProcessFactoryForTests(null);
   }

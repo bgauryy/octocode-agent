@@ -12,7 +12,7 @@ import {
   loadToolContent,
 } from '@octocodeai/octocode-tools-core/schema';
 import { OCTOCODE_DIRECT_TOOL_NAMES } from '../constants.js';
-import { recordFileReadState } from './edit-tool.js';
+import { recordFileReadState } from './file-state.js';
 import type { TSchema, ToolDefinition, ToolCallResult, PiTheme } from '../types.js';
 
 // ─── Shared rendering helpers (ANSI truncation + smart call/result renderers) ──

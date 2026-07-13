@@ -338,6 +338,10 @@ async function wireOctocodePiExtension(
   // derived for one Pi session as explicit configuration for the next session.
   const configuredAwarenessAgentId = process.env.OCTOCODE_AGENT_ID?.trim() || null;
   let derivedAwarenessAgentId: string | null = null;
+  // Cache the system prompt text: the file doesn't change during a session, so
+  // reading it once (lazily on the first before_agent_start) avoids a sync disk
+  // read on every turn start across long sessions.
+  let cachedSystemPromptText: string | null = null;
 
   // Register --no-context CLI flag before any session starts so Pi can parse it.
   // default:false → context files load normally (octocode-agent launcher already
@@ -480,7 +484,10 @@ async function wireOctocodePiExtension(
         event.systemPromptOptions.contextFiles = [];
       }
 
-      const prompt = readTextIfExists(getAssetPaths().systemPrompt);
+      if (cachedSystemPromptText === null) {
+        cachedSystemPromptText = readTextIfExists(getAssetPaths().systemPrompt);
+      }
+      const prompt = cachedSystemPromptText;
       if (!shouldAppendSystemPrompt(event.systemPrompt, prompt)) {
         return;
       }

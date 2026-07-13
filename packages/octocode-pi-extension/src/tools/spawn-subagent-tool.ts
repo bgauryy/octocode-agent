@@ -232,12 +232,13 @@ export function registerSpawnSubagentTool(
       const systemPrompt = loadSystemPrompt(config);
 
       // Build spawn params
+      const skills = resolveSubagentSkills(config);
       const spawnParams: SpawnAgentParams = {
         task: buildTaskWithContext(params),
         name: buildAgentName(params),
         cwd: params.cwd,
         tools: [...config.tools],
-        skills: resolveSubagentSkills(config),
+        skills,
         resourceMode: config.resourceMode,
         systemPrompt,
         thinking: params.thinking ?? config.thinking,
@@ -261,7 +262,7 @@ export function registerSpawnSubagentTool(
         `[SPAWNED] ${config.label} · agentId: ${agentId}`,
         `[SPAWNED] name: ${record.name}`,
         `[SPAWNED] tools: ${config.tools.join(', ')}`,
-        `[SPAWNED] skills: ${resolveSubagentSkills(config).map((skillPath) => skillPath.split(/[\/]/).at(-1)).join(', ')}`,
+        `[SPAWNED] skills: ${skills.map((skillPath) => skillPath.split(/[\/]/).at(-1)).join(', ')}`,
         `[SPAWNED] resourceMode: ${config.resourceMode}`,
         `[SPAWNED] task: ${params.task.slice(0, 120)}${params.task.length > 120 ? '…' : ''}`,
         '',

@@ -8,7 +8,7 @@ import path from 'node:path';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
-import { recordFileReadState, withFileMutationQueue } from './edit-tool.js';
+import { recordFileReadState, withFileMutationQueue } from './file-state.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 

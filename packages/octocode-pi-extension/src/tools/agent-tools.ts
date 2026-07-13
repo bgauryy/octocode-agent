@@ -618,7 +618,7 @@ function renderSingleAgentResult(record: AgentRecord, header: string): ToolCallR
       outputTruncated: output.truncated,
       omittedChars: output.omittedChars,
     },
-    isError: record.status === 'failed',
+    isError: record.status === 'failed' || Boolean(record.error),
   };
 }
 
