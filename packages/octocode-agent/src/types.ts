@@ -1,0 +1,85 @@
+/**
+ * Shared type definitions for octocode-agent launcher.
+ * No runtime imports — purely declaration.
+ */
+
+export interface PiBinInfo {
+  bin: string;
+  pkgRoot: string;
+  source: 'env-bin' | 'env-package' | 'bundled';
+}
+
+/** Minimal spawn return shape (subset of SpawnSyncReturns). */
+export interface SpawnResult {
+  status: number | null;
+  error?: Error;
+}
+
+export type SpawnFn = (
+  command: string,
+  args?: ReadonlyArray<string>,
+  options?: { stdio?: string; env?: NodeJS.ProcessEnv },
+) => SpawnResult;
+
+export type Command =
+  | 'version'
+  | 'help'
+  | 'config'
+  | 'setup'
+  | 'auth'
+  | 'models'
+  | 'sessions'
+  | 'update'
+  | 'run';
+
+export interface ParsedInvocation {
+  command: Command;
+  target?: 'core' | 'platform';
+  args?: string[];
+  rest?: string[];
+}
+
+export interface UpdateCommandResult {
+  cmd: string;
+  args: string[];
+}
+
+// ── SDK deps ──────────────────────────────────────────────────────────────────
+
+/** Minimal typed surface of the Pi SDK module (rest is unknown). */
+export type PiSdkModule = Record<string, unknown>;
+
+/** Factory function returned by importExtensionFactory. */
+export type ExtensionFactory = (opts?: Record<string, unknown>) => unknown;
+
+export interface SdkDeps {
+  log?: (msg: string) => void;
+  env?: NodeJS.ProcessEnv;
+  importPiSdk?: () => Promise<PiSdkModule | null>;
+  importExtensionFactory?: () => Promise<ExtensionFactory | null>;
+  resolveHome?: (env: NodeJS.ProcessEnv) => string;
+}
+
+// ── Launch deps ───────────────────────────────────────────────────────────────
+
+export interface LaunchDeps extends SdkDeps {
+  out?: (msg: string) => void;
+  spawn?: SpawnFn;
+  launchWithSdk?: (argv: string[], deps: SdkDeps) => Promise<number | null>;
+  resolvePiBin?: (env: NodeJS.ProcessEnv) => PiBinInfo | null;
+  resolveCoreSpec?: (env: NodeJS.ProcessEnv) => string;
+  /** Prefix dir used by updateCommand for 'core' target. */
+  prefix?: string;
+}
+
+// ── SDK arg parser ─────────────────────────────────────────────────────────────
+
+export interface ParsedSdkArgs {
+  mode: 'interactive' | 'print' | 'rpc' | 'json';
+  continue: boolean;
+  noSession: boolean;
+  name?: string;
+  sessionPath?: string;
+  initialMessage?: string;
+  rest: string[];
+}

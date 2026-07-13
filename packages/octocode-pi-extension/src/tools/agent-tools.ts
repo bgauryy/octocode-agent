@@ -56,7 +56,14 @@ export interface SpawnAgentParams {
   systemPrompt?: string;
   resourceMode?: ResourceMode;
   noSession?: boolean;
-  /** Absolute paths to skill directories to load via --skill (additive, works with --no-skills). */
+  /**
+   * Absolute paths to skill directories to load via --skill (additive, works with --no-skills).
+   * L9: This field is intentionally NOT exposed in the `spawnAgent` tool's TypeBox schema;
+   * it is used internally by `spawnSubagent` which resolves skill directories from the
+   * installed skill registry before calling `spawnRpcAgent`. Passing skills directly via
+   * the `spawnAgent` tool params is unsupported and will be silently ignored by the schema
+   * validator; use `spawnSubagent` instead.
+   */
   skills?: string[];
 }
 
@@ -100,7 +107,8 @@ interface AgentDetails {
 const MAX_STORED_EVENTS = 200;
 const MAX_STDERR_CHARS = 64_000;
 const MAX_VISIBLE_OUTPUT = 12000;
-const MAX_AGENT_RECORDS = 50;
+/** Maximum number of simultaneously active (non-droppable) agent records. Hard limit enforced on spawn. */
+export const MAX_AGENT_RECORDS = 50;
 const SUBAGENT_ENV_VAR = 'OCTOCODE_PI_SUBAGENT';
 const AWARENESS_AGENT_ENV_VAR = 'OCTOCODE_AGENT_ID';
 const FORBIDDEN_WORKER_TOOLS = new Set(['spawnAgent', 'AgentMessage', 'spawnSubagent']);
@@ -408,16 +416,25 @@ function processRpcLine(record: AgentRecord, line: string): void {
   }
 }
 
-function sendRpc(record: AgentRecord, payload: Record<string, unknown>): void {
+/**
+ * Send an RPC message to the spawned agent process.
+ * Returns true on success, false on failure (EPIPE / ERR_STREAM_WRITE_AFTER_END).
+ * On failure the record is transitioned to 'failed' and all waiters are notified
+ * so AgentMessage action:'wait' resolves immediately instead of hanging to timeout.
+ */
+function sendRpc(record: AgentRecord, payload: Record<string, unknown>): boolean {
   const id = `${record.id}-${record.nextRequestId++}`;
   try {
     record.process.stdin.write(`${JSON.stringify({ id, ...payload })}\n`);
+    return true;
   } catch (error) {
-    // Writing to a destroyed/closed stdin (child already exited) throws EPIPE /
-    // ERR_STREAM_WRITE_AFTER_END. Surface it as the record error instead of
-    // letting an unhandled stream error crash the host process.
+    // Writing to a destroyed/closed stdin throws EPIPE / ERR_STREAM_WRITE_AFTER_END.
+    // H4: Transition to 'failed' and notify waiters — without this, any pending
+    // action:'wait' would hang until timeout because the record stays in 'starting'.
     record.error = error instanceof Error ? error.message : String(error);
-    touch(record);
+    touch(record, 'failed');
+    notifyWaiters(record);
+    return false;
   }
 }
 
@@ -437,6 +454,23 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   const args = buildPiArgs(params, name, promptFiles);
   const invocation = getPiInvocation(args);
   const awarenessAgentId = workerAwarenessAgentId(id);
+
+  // M7: Enforce a hard cap on active (non-droppable) agents before spawning a new process.
+  // Evict droppable (exited/failed/killed) agents first to reclaim slots, then refuse if
+  // non-droppable agents still fill the registry. Checked before processFactory to ensure
+  // no process is leaked when the cap is exceeded.
+  evictStaleAgents();
+  const _activeCount = [...agents.values()].filter((r) => !isDroppable(r)).length;
+  if (_activeCount >= MAX_AGENT_RECORDS) {
+    for (const filePath of promptFiles) {
+      try { fs.rmSync(path.dirname(filePath), { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+    throw new Error(
+      `Agent registry at capacity: ${_activeCount}/${MAX_AGENT_RECORDS} active agents. ` +
+      `Kill or wait for existing agents before spawning more.`,
+    );
+  }
+
   let proc;
   try {
     proc = processFactory(invocation.command, invocation.args, {
@@ -484,6 +518,11 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     nextRequestId: 1,
   };
   agents.set(id, record);
+  // Evict droppable agents to keep registry size ≤ MAX_AGENT_RECORDS.
+  // The pre-spawn call (M7 cap check) runs before processFactory to avoid leaking
+  // a process when the non-droppable cap is exceeded. This post-set call cleans up
+  // droppable (exited/failed/killed) agents after the new record is in the map so
+  // the total registry size stays bounded even when non-droppable count < cap.
   evictStaleAgents();
 
   let stdoutBuffer = '';
@@ -516,8 +555,12 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     notifyWaiters(record);
   });
 
-  sendRpc(record, { type: 'prompt', message: task });
-  touch(record, 'running');
+  // H4: Only advance to 'running' when the initial RPC write succeeded.
+  // If sendRpc returned false, it already transitioned the record to 'failed'
+  // and notified waiters; overwriting with 'running' here would mask the failure.
+  if (sendRpc(record, { type: 'prompt', message: task })) {
+    touch(record, 'running');
+  }
   return record;
 }
 
@@ -689,7 +732,7 @@ export function registerAgentTools(
       name: Type.Optional(Type.String({ description: 'Human label for the worker/session.' })),
       cwd: Type.Optional(Type.String({ description: 'Working directory for the worker process. Defaults to current cwd.' })),
       model: Type.Optional(Type.String({ description: 'Pi model pattern or ID from `pi -ne --list-models [search]`. Choose from the live user-configured table; `--models` only sets model-cycling scope.' })),
-      provider: Type.Optional(Type.String({ description: 'Optional Pi provider name.' })),
+      provider: Type.Optional(Type.String({ description: 'Pi provider name for the model. REQUIRED when the model lives on a custom provider defined in models.json (e.g. "guy-provider-anthropic") — without it, pi resolves --model against builtin providers and may fail with "No API key found" or a 400. Look up via `pi -ne --list-models [search]`.' })),
       thinking: Type.Optional(Type.String({ description: 'Pi thinking level: off|minimal|low|medium|high|xhigh.' })),
       tools: Type.Optional(Type.Array(Type.String(), { description: 'Optional allowlist of enabled tool names for the worker. spawnAgent and AgentMessage are always removed.' })),
       systemPrompt: Type.Optional(Type.String({ description: 'Optional extra system prompt appended via a temporary file.' })),

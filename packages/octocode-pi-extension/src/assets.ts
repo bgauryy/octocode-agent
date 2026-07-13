@@ -61,8 +61,20 @@ export function getCLIPath(baseDir = extensionDir): string {
  * `node <awarenessCliPath> <noun> <verb>`. Also exposed via the
  * OCTOCODE_AWARENESS_CLI env var (set at extension load) so bash-spawned CLI
  * calls share the same interface the skill documents.
+ *
+ * M8: The result is cached per baseDir to avoid repeated fs.existsSync calls AND
+ * to suppress the "awareness CLI not found" warning from firing on every turn.
+ * The cache is intentional and process-scoped: the CLI path does not change
+ * after the extension loads. Tests that need to invalidate it can call
+ * `clearAwarenessCLIPathCacheForTests()`.
  */
 const _awarenessCliPathCache = new Map<string, string>();
+
+/** Clears the path cache for tests that need to re-resolve the awareness CLI path. */
+export function clearAwarenessCLIPathCacheForTests(): void {
+  _awarenessCliPathCache.clear();
+}
+
 export function getAwarenessCLIPath(baseDir = extensionDir): string {
   const cached = _awarenessCliPathCache.get(baseDir);
   if (cached !== undefined) return cached;

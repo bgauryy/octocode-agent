@@ -207,26 +207,27 @@ function getPinnedDispatcher(): Promise<unknown | null> {
         };
         return new undici.Agent({
           connect: {
-            // net-style lookup: undici passes this straight to the socket connect.
+            // undici v8 lookup: callback receives (err, [{address,family}]) array
+            // (undici v7 and earlier used the net-style (err, address, family) form).
             lookup: (
               hostname: string,
               _options: unknown,
-              cb: (err: Error | null, address: string, family: number) => void,
+              cb: (err: Error | null, addresses: Array<{ address: string; family: number }>) => void,
             ): void => {
-              // node:dns/promises API — resolve, validate every IP, pin to the first.
+              // Resolve, validate every IP against the SSRF block-list, pass the
+              // full valid list so undici can do its own happy-eyeballs selection.
               dns.lookup(hostname, { all: true })
                 .then((addresses) => {
                   const list = Array.isArray(addresses) ? addresses : [addresses];
-                  if (list.length === 0) return cb(new Error(`Could not resolve host: ${hostname}`), '', 0);
+                  if (list.length === 0)
+                    return cb(new Error(`Could not resolve host: ${hostname}`), []);
                   for (const rec of list) {
-                    if (isBlockedIp(rec.address)) {
-                      return cb(new Error(`Blocked private/loopback address: ${rec.address}`), '', 0);
-                    }
+                    if (isBlockedIp(rec.address))
+                      return cb(new Error(`Blocked private/loopback address: ${rec.address}`), []);
                   }
-                  const chosen = list[0]!;
-                  cb(null, chosen.address, chosen.family);
+                  cb(null, list);
                 })
-                .catch((err: Error) => cb(err, '', 0));
+                .catch((err: Error) => cb(err, []));
             },
           },
         });
@@ -287,6 +288,7 @@ export async function safeFetch(
             'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
           'accept-language': 'en-US,en;q=0.9',
           'accept-encoding': 'gzip, deflate, br',
+          'upgrade-insecure-requests': '1',
           ...headers,
         },
       });
@@ -596,6 +598,8 @@ interface SearchOptions extends DeadlineOptions {
   timeRange?: string;
   includeDomains?: string[];
   excludeDomains?: string[];
+  exaType?: string;
+  exaCategory?: string;
   gl?: string;
   hl?: string;
   _timeRangeFallback?: boolean;
@@ -787,8 +791,73 @@ export async function serperSearch(
 }
 
 /**
+ * Exa /search — AI-native neural search with category, date range, and highlight filters. Never throws.
+ */
+export async function exaSearch(
+  query: string,
+  opts: SearchOptions = {},
+  deps: PostJsonDeps = {},
+): Promise<WebSearchResult> {
+  const apiKey = normalizeApiKey(opts.apiKey);
+  if (!apiKey) return { error: 'EXA_API_KEY not set' };
+  const numResults = Math.max(1, Math.min(100, opts.maxResults ?? 5));
+  const body: Record<string, unknown> = {
+    query,
+    type: opts.exaType ?? 'auto',
+    numResults,
+    contents: { highlights: true },
+  };
+  if (opts.exaCategory) body['category'] = opts.exaCategory;
+  if (opts.includeDomains?.length) body['includeDomains'] = opts.includeDomains;
+  if (opts.excludeDomains?.length) body['excludeDomains'] = opts.excludeDomains;
+  if (opts.timeRange) {
+    const days: Record<string, number> = { day: 1, week: 7, month: 30, year: 365 };
+    const d = days[opts.timeRange];
+    if (d !== undefined) {
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - d);
+      body['startPublishedDate'] = cutoff.toISOString().split('T')[0];
+    }
+  }
+  try {
+    const raw = (await postJson('https://api.exa.ai/search', {
+      headers: { 'x-api-key': apiKey },
+      body,
+      fetchImpl: deps.fetchImpl,
+      signal: opts.signal,
+      timeoutMs: opts.timeoutMs,
+    })) as {
+      autopromptString?: string;
+      results?: Array<{ title?: string; url?: string; highlights?: string[]; summary?: string }>;
+    };
+    return {
+      engine: 'exa',
+      query,
+      answer: raw.autopromptString ?? '',
+      results: (raw.results ?? []).map((r) => ({
+        title: r.title ?? '',
+        url: r.url ?? '',
+        snippet: Array.isArray(r.highlights) && r.highlights.length
+          ? r.highlights.join(' … ')
+          : (r.summary ?? ''),
+      })),
+    };
+  } catch (err) {
+    const e = err as { status?: number; message?: string };
+    return { error: `Exa API ${e.status ?? 'error'}: ${e.message ?? String(err)}` };
+  }
+}
+
+/** Returns the next provider after `current` in the auto-ladder, or null if already at the end. */
+export function nextProvider(current: string): string | null {
+  const ladder = ['tavily', 'serper', 'exa', 'duckduckgo'] as const;
+  const idx = ladder.indexOf(current as (typeof ladder)[number]);
+  return idx >= 0 && idx < ladder.length - 1 ? ladder[idx + 1]! : null;
+}
+
+/**
  * Pick the search provider: explicit `engine` wins, else the ladder
- * Tavily → Serper → DuckDuckGo by which key is present in env.
+ * Tavily → Serper → Exa → DuckDuckGo by which key is present in env.
  */
 export function pickProvider(
   opts: { engine?: string; env?: Record<string, string | undefined> } = {},
@@ -797,11 +866,13 @@ export function pickProvider(
   if (
     opts.engine === 'tavily' ||
     opts.engine === 'serper' ||
+    opts.engine === 'exa' ||
     opts.engine === 'duckduckgo'
   )
     return opts.engine;
   if (normalizeApiKey(env['TAVILY_API_KEY'] ?? env['TAVILY_API_TOKEN'])) return 'tavily';
   if (normalizeApiKey(env['SERPER_API_KEY'])) return 'serper';
+  if (normalizeApiKey(env['EXA_API_KEY'])) return 'exa';
   return 'duckduckgo';
 }
 
@@ -831,6 +902,12 @@ export async function webSearch(
         { ...opts, apiKey: env['SERPER_API_KEY'] },
         opts,
       );
+    } else if (provider === 'exa') {
+      result = await exaSearch(
+        query,
+        { ...opts, apiKey: env['EXA_API_KEY'] },
+        opts,
+      );
     } else {
       result = await duckDuckGoSearch(query, opts);
     }
@@ -846,6 +923,15 @@ export async function webSearch(
         timeRange: undefined,
         _timeRangeFallback: true,
       });
+    }
+    // Auth-error fallback: when the provider was auto-selected (no explicit engine)
+    // and returns a 401 / unauthorized error, cascade to the next ladder position.
+    // Explicit engine= callers see the error as-is so they know their key is bad.
+    if (!opts.engine && result.error && /\b(401|unauthorized|invalid.*key|key.*invalid)/i.test(result.error)) {
+      const next = nextProvider(provider);
+      if (next) {
+        return webSearch(query, { ...opts, engine: next });
+      }
     }
     return result;
   } catch (err) {
@@ -901,12 +987,22 @@ export interface WebToolParams {
   timeRange?: string;
   includeDomains?: string[];
   excludeDomains?: string[];
+  exaType?: string;
+  exaCategory?: string;
 }
 
 export interface WebToolDeps {
   signal?: AbortSignal;
   fetchImpl?: FetchImpl;
   lookup?: LookupFn;
+  /**
+   * Env snapshot to read API keys from. Defaults to process.env.
+   * Pass explicitly from execute() so the snapshot is taken at call time
+   * (not module-import time) and so tests can inject without touching global state.
+   * Subagents: Node.js inherits process.env at spawn — no extra work needed as long
+   * as propagateOctocodeEnv() ran in the parent before spawning.
+   */
+  env?: Record<string, string | undefined>;
 }
 
 /** Dispatch the single `web` tool: url → fetch/read a page; query → search. */
@@ -923,12 +1019,14 @@ export async function runWebTool(
     });
   if (params.query) {
     return webSearch(params.query, {
-      ...deps,
+      ...deps,               // carries signal, fetchImpl, env
       maxResults: params.maxResults,
       engine: params.engine,
       timeRange: params.timeRange,
       includeDomains: params.includeDomains,
       excludeDomains: params.excludeDomains,
+      exaType: params.exaType,
+      exaCategory: params.exaCategory,
     });
   }
   return { error: 'Provide either `url` (to read a page) or `query` (to search).' };

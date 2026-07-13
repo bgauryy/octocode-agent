@@ -39,6 +39,7 @@ Workers share the current `cwd`, filesystem, environment-backed services, and Aw
 **Model selection — use the live Pi CLI, never hardcoded config paths:**
 - Before the first spawn in a session, run `pi -ne --list-models [search]` (`-ne` = non-interactive, no-extensions: suppresses spinner/TUI and loads no extension so the table is clean and fast) unless a current result is already available. Do not inspect hardcoded config paths.
 - Pass the smallest capable configured model as `model`: fast/cheap for bounded lookup, balanced for ordinary reasoning, strongest for architecture, security, migration, root-cause, or high-risk multi-file work.
+- **Always pass `provider`** when the model lives on a custom provider (one defined in `models.json`, e.g. `guy-provider-anthropic`). Pi resolves `--model` against the `provider` column in `pi -ne --list-models`; without it, a model ID like `claude-haiku-4-5-20251001` collides with the builtin `anthropic` namespace and pi falls back to the wrong provider (failing with "No API key found" or a 400). `provider` maps directly to pi's `--provider` flag in both `spawnAgent` and `spawnSubagent`.
 
 **Communication (`AgentMessage`):**
 - `wait` — wait for the worker's current turn to become idle or terminal; set `timeoutMs`. This does not prove the delegated objective is complete.

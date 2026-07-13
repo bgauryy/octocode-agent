@@ -3,7 +3,7 @@
  * Adds path-guard (home + ALLOWED_PATHS + cwd/tmp) and records read-state
  * so a subsequent `edit` stale-check can see the fresh bytes.
  */
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
@@ -78,8 +78,16 @@ export function registerWriteTool(
         if (signal?.aborted) throw new Error('Operation aborted');
         await mkdir(path.dirname(absolutePath), { recursive: true });
         if (signal?.aborted) throw new Error('Operation aborted');
-        await writeFile(absolutePath, content, 'utf8');
-        if (signal?.aborted) throw new Error('Operation aborted');
+        // H3: Atomic write — write to a temp file then rename to the final path.
+        // rename(2) is atomic on POSIX: a crash or kill between writeFile and rename
+        // leaves the original file intact and the .tmp~ file as the only corruption.
+        const tmpPath = `${absolutePath}.octocode-tmp~`;
+        await writeFile(tmpPath, content, 'utf8');
+        if (signal?.aborted) {
+          await rename(tmpPath, absolutePath).catch(() => undefined); // best-effort: promote anyway
+          throw new Error('Operation aborted');
+        }
+        await rename(tmpPath, absolutePath);
         await recordFileReadState(absolutePath, cwd);
       });
 

@@ -5,11 +5,12 @@ export function shouldAppendSystemPrompt(
   systemPrompt: string,
   octocodePrompt: string,
 ): boolean {
-  const trimmedPrompt = octocodePrompt.trim();
-  if (trimmedPrompt.length === 0) return false;
-  if (systemPrompt.includes(SYSTEM_PROMPT_MARKER)) return false;
-  const proofSlice = trimmedPrompt.slice(0, Math.min(160, trimmedPrompt.length));
-  return !systemPrompt.includes(proofSlice);
+  if (octocodePrompt.trim().length === 0) return false;
+  // Rely solely on the unique marker rather than a content probe slice.
+  // A probe-slice false-negative would silently skip the append when Pi's own
+  // system prompt happens to share the same boilerplate prefix as the Octocode
+  // prompt (e.g. the same authority/safety preamble).
+  return !systemPrompt.includes(SYSTEM_PROMPT_MARKER);
 }
 
 export function renderSystemPromptAddendum(octocodePrompt: string): string {

@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { access, readFile, writeFile } from 'node:fs/promises';
+import { access, readFile, rename, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
 import { makeRenderer, truncateToWidth, wrapText } from './render-helpers.js';
@@ -821,7 +821,11 @@ export function registerEditTool(
                   `(concurrent edit or external write). Re-read the file and retry.`,
               );
             }
-            await writeFile(item.absolutePath, item.finalContent, 'utf8');
+            // H3: Atomic write — write to temp then rename.
+            // Keeps the original file intact if the process is killed between the two steps.
+            const tmpPath = `${item.absolutePath}.octocode-tmp~`;
+            await writeFile(tmpPath, item.finalContent, 'utf8');
+            await rename(tmpPath, item.absolutePath);
             await recordFileReadState(item.absolutePath);
           }),
         ),

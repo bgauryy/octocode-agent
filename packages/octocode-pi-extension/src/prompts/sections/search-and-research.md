@@ -31,6 +31,14 @@ Nav: `symbols`/AST → anchor → `matchString`/range `none` → LSP `lineHint`.
 - local → verify upstream: `localSearchCode` → `ghSearchCode` / `ghGetFileContent`
 - GitHub finding → validate locally: `ghGetFileContent` → `localSearchCode` / `lspGetSemantics`
 
+**Web research — delegate to a lean worker to protect main context:**
+For multi-step web research (search + read multiple pages + synthesize), spawn a small-model worker with only the `web` tool so raw page dumps never fill the main context:
+```
+spawnAgent({ task: "search for X, read the top 2 results, return key facts in < 200 words",
+             tools: ["web"], model: "<smallest-capable>", provider: "<provider>" })
+```
+Single-call lookups (one `web({query})` or one `web({url})`) are fine inline. Delegate when the task needs ≥2 web calls or synthesis of multiple pages. Always run `pi -ne --list-models` first to pick the smallest capable configured model.
+
 Ask before: broad public-contract changes, destructive actions, cloning many repos, untrusted execution.
 Reviews: lead with severity; each finding needs `file:line`, impact, proof, confidence, smallest safe fix.
 </search_and_research>

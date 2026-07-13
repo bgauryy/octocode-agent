@@ -15,6 +15,7 @@ import {
   normalizeApiKey,
   tavilySearch,
   serperSearch,
+  exaSearch,
   resolveUserAgent,
   DEFAULT_USER_AGENT,
   DEFAULT_SEC_CH_UA,
@@ -24,7 +25,9 @@ import {
   webFetch,
   duckDuckGoSearch,
   webSearch,
+  nextProvider,
   type WebFetchResult,
+  type WebToolDeps,
 } from '../src/web.js';
 
 // ── test helpers ──────────────────────────────────────────────────────────────
@@ -435,6 +438,47 @@ test('safeFetch sends a browser-like User-Agent (overridable via env)', async ()
   assert.equal(hdrs['sec-ch-ua'], undefined, 'sec-ch-ua omitted when custom UA is set');
 });
 
+test('nextProvider returns the next rung in the ladder, null at the end', () => {
+  assert.equal(nextProvider('tavily'), 'serper');
+  assert.equal(nextProvider('serper'), 'exa');
+  assert.equal(nextProvider('exa'), 'duckduckgo');
+  assert.equal(nextProvider('duckduckgo'), null, 'no provider after duckduckgo');
+  assert.equal(nextProvider('unknown'), null, 'unknown provider → null');
+});
+
+test('webSearch cascades to next provider on auth error when engine not explicit', async () => {
+  let calls: string[] = [];
+  const fetchImpl = async (url: string) => {
+    calls.push(url);
+    if (url.includes('tavily.com')) {
+      return { ok: false, status: 401, json: async () => ({ detail: 'Unauthorized' }) } as unknown as Response;
+    }
+    // serper succeeds
+    return {
+      ok: true,
+      json: async () => ({ organic: [{ title: 'S', link: 'https://s', snippet: 'snippet' }] }),
+    } as unknown as Response;
+  };
+  const result = await webSearch('q', {
+    env: { TAVILY_API_KEY: 'bad-key', SERPER_API_KEY: 'good-key' },
+    fetchImpl,
+  });
+  assert.equal(result.engine, 'serper', 'fell back to serper after tavily 401');
+  assert.equal(result.results?.length, 1);
+});
+
+test('webSearch does NOT cascade when engine is explicit (surface the 401)', async () => {
+  const fetchImpl = async () =>
+    ({ ok: false, status: 401, json: async () => ({}) }) as unknown as Response;
+  const result = await webSearch('q', {
+    engine: 'tavily',
+    env: { TAVILY_API_KEY: 'bad-key' },
+    fetchImpl,
+  });
+  assert.ok(result.error, 'should surface the error, not cascade');
+  assert.match(result.error!, /401/);
+});
+
 test('pickProvider: explicit engine wins, else ladder Tavily→Serper→DuckDuckGo by key', () => {
   assert.equal(pickProvider({ engine: 'serper', env: {} }), 'serper');
   assert.equal(pickProvider({ env: { TAVILY_API_KEY: 't', SERPER_API_KEY: 's' } }), 'tavily');
@@ -506,6 +550,51 @@ test('serperSearch normalizes organic + answerBox and sends X-API-KEY + tbs', as
   assert.deepEqual(out.results, [{ title: 'OT', url: 'https://o', snippet: 'OS' }]);
 });
 
+test('exaSearch normalizes {answer, results[{title,url,snippet}]} and sends x-api-key', async () => {
+  let sent: { url: string; key: string; body: Record<string, unknown> } = { url: '', key: '', body: {} };
+  const fetchImpl = async (url: string, init?: RequestInit) => {
+    sent = {
+      url,
+      key: (init?.headers as Record<string, string>)['x-api-key']!,
+      body: JSON.parse(init?.body as string) as Record<string, unknown>,
+    };
+    return {
+      ok: true,
+      json: async () => ({
+        autopromptString: 'EA',
+        results: [{ title: 'ET', url: 'https://e', highlights: ['H1', 'H2'] }],
+      }),
+    } as unknown as Response;
+  };
+  const out = await exaSearch('q', { apiKey: 'ek', maxResults: 4, exaType: 'neural' }, { fetchImpl });
+  assert.equal(sent.url, 'https://api.exa.ai/search');
+  assert.equal(sent.key, 'ek');
+  assert.equal(sent.body['type'], 'neural');
+  assert.equal(out.engine, 'exa');
+  assert.equal(out.answer, 'EA');
+  assert.deepEqual(out.results, [{ title: 'ET', url: 'https://e', snippet: 'H1 … H2' }]);
+});
+
+test('exaSearch returns {error} on missing key or bad status (never throws)', async () => {
+  assert.match(
+    (await exaSearch('q', {}, { fetchImpl: async () => ({}) as unknown as Response })).error ?? '',
+    /EXA_API_KEY/,
+  );
+  const out = await exaSearch(
+    'q',
+    { apiKey: 'ek' },
+    { fetchImpl: async () => ({ ok: false, status: 429 }) as unknown as Response },
+  );
+  assert.match(out.error ?? '', /Exa API 429/);
+});
+
+test('pickProvider: adds exa between serper and duckduckgo in ladder', () => {
+  assert.equal(pickProvider({ engine: 'exa', env: {} }), 'exa');
+  assert.equal(pickProvider({ env: { SERPER_API_KEY: 's', EXA_API_KEY: 'e' } }), 'serper', 'serper wins over exa');
+  assert.equal(pickProvider({ env: { EXA_API_KEY: 'e' } }), 'exa', 'exa used when serper key absent');
+  assert.equal(pickProvider({ env: {} }), 'duckduckgo', 'duckduckgo fallback unchanged');
+});
+
 test('renderWebResult surfaces the answer and serving engine', () => {
   const rendered = renderWebResult({
     query: 'q',
@@ -566,4 +655,20 @@ test('runWebTool: page param dispatched to webFetch and reflected in result', as
   assert.equal(f2.page, 2);
   assert.ok(f1.text !== f2.text, 'different slices');
   assert.equal(f1.truncated, true);
+});
+
+test('runWebTool forwards WebToolDeps.env to webSearch (pickProvider uses injected env, not process.env)', async () => {
+  const fetchImpl = async (_url: string) => {
+    // serper-shaped response so we can confirm the right provider ran
+    return {
+      ok: true,
+      json: async () => ({ organic: [{ title: 'T', link: 'https://t', snippet: 's' }] }),
+    } as unknown as Response;
+  };
+  // Inject a custom env that has SERPER_API_KEY but not TAVILY
+  const injectedEnv: Record<string, string | undefined> = { SERPER_API_KEY: 'test-key' };
+  const deps: WebToolDeps = { fetchImpl, env: injectedEnv };
+  const result = await runWebTool({ query: 'hello' }, deps) as import('../src/web.js').WebSearchResult;
+  assert.equal(result.engine, 'serper', 'injected env should select serper (has SERPER_API_KEY)');
+  assert.equal(result.results?.length, 1);
 });

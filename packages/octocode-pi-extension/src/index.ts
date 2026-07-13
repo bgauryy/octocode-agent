@@ -148,6 +148,23 @@ export function applyOctocodeUi(ctx: PiContext | undefined, level?: string): voi
     'octocode-thinking',
     ui.theme?.fg ? ui.theme.fg('dim', thinkingStatus) : thinkingStatus,
   );
+  // Branded working indicator — pulsing ◆ animation during agent turns.
+  // setWorkingIndicator is TUI-only and optional-chained throughout.
+  const t = ui.theme;
+  ui.setWorkingIndicator?.({
+    // Use only 'accent' and 'dim' — the two colors confirmed safe in this extension.
+    frames: t
+      ? [
+          t.fg('accent', '◆') + ' Octocode',
+          t.fg('dim', '◇') + ' Octocode',
+          t.fg('accent', '◆') + ' Octocode',
+          t.fg('dim', '◇') + ' Octocode',
+        ]
+      : ['◆ Octocode', '◇ Octocode', '◆ Octocode', '◇ Octocode'],
+    intervalMs: 350,
+  });
+  // Custom working message shown during agent streaming.
+  ui.setWorkingMessage?.('Octocode working…');
 }
 
 function notify(ctx: PiContext | undefined, message: string, level = 'info'): void {
@@ -270,14 +287,14 @@ export function disableBuiltinTools(pi: PiInstance): boolean {
     pi.setActiveTools(nextTools);
     return true;
   } catch (error) {
-    if (
-      String((error as Error)?.message ?? error).includes(
-        'Extension runtime not initialized',
-      )
-    ) {
-      return false;
+    // Swallow all errors from getActiveTools/setActiveTools — the Pi API shape can
+    // change across versions and races during initialization must never prevent the
+    // extension from loading. Log unexpected errors for diagnostics but never rethrow.
+    const msg = String((error as Error)?.message ?? error);
+    if (!msg.includes('Extension runtime not initialized')) {
+      console.warn('[octocode-pi-extension] disableBuiltinTools non-critical error:', msg);
     }
-    throw error;
+    return false;
   }
 }
 

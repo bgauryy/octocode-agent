@@ -45,6 +45,41 @@ afterEach(() => {
   vi.resetModules();
 });
 
+async function loadRegisteredWebToolWithEnvMock(out: Record<string, unknown>) {
+  vi.resetModules();
+  const runWebTool = vi.fn(async () => out);
+  const renderWebResult = vi.fn(() => 'ok');
+  const propagateOctocodeEnv = vi.fn(() => ({ applied: [], skippedExisting: [], skippedProtected: [], keys: [], sources: {} }));
+  const getOctocodeHome = vi.fn(() => '/mock/home');
+  vi.doMock('../src/web.js', () => ({ runWebTool, renderWebResult }));
+  vi.doMock('../src/env.js', () => ({ propagateOctocodeEnv, getOctocodeHome }));
+
+  const { registerWebTool } = await import('../src/tools/web-tool.js');
+  const tools = new Map<string, import('../src/types.js').ToolDefinition>();
+  const pi = { registerTool(def: import('../src/types.js').ToolDefinition) { tools.set(def.name, def); } };
+  const registeredNames = new Set<string>();
+  const registerFn = (_pi: { registerTool?(def: import('../src/types.js').ToolDefinition): void }, names: Set<string>, def: import('../src/types.js').ToolDefinition) => {
+    names.add(def.name); _pi.registerTool?.(def);
+  };
+  registerWebTool(pi, Type, registeredNames, registerFn);
+  return { tool: tools.get('web')!, runWebTool, propagateOctocodeEnv, getOctocodeHome };
+}
+
+test('execute() passes process.env as env dep to runWebTool (explicit env threading)', async () => {
+  const { tool, runWebTool } = await loadRegisteredWebToolWithEnvMock({ url: 'https://x.com' });
+  await tool.execute('c1', { url: 'https://x.com' });
+  const deps = (runWebTool.mock.calls[0] as unknown as [unknown, { env?: unknown }])[1];
+  assert.strictEqual(deps.env, process.env, 'env dep must be process.env snapshot, not undefined');
+});
+
+test('ensureWebEnv calls propagateOctocodeEnv exactly once across multiple execute() calls', async () => {
+  const { tool, propagateOctocodeEnv } = await loadRegisteredWebToolWithEnvMock({ url: 'https://x.com' });
+  await tool.execute('c1', { url: 'https://x.com' });
+  await tool.execute('c2', { url: 'https://x.com' });
+  await tool.execute('c3', { query: 'test' });
+  assert.equal(propagateOctocodeEnv.mock.calls.length, 1, 'must be idempotent — called only on first execute()');
+});
+
 test('registerWebTool registers schema and executes through runWebTool', async () => {
   const { tool, runWebTool, renderWebResult } = await loadRegisteredWebTool({
     title: 'Example',

@@ -18,11 +18,18 @@ const DEFAULT_MAX_BYTES = 50 * 1024;
 
 /** Catastrophic patterns we refuse even when paths look local. */
 const BLOCKED_COMMAND_PATTERNS: RegExp[] = [
+  // Disk/filesystem destruction
   /\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|--force\s+)*\/\s*$/m,
   /\brm\s+(-[a-zA-Z]*rf[a-zA-Z]*|-[a-zA-Z]*fr[a-zA-Z]*)\s+\/(\s|$)/,
   /\bmkfs\b/,
   /\bdd\s+.*\bof=\/dev\//,
   />\s*\/dev\/sd[a-z]/,
+  // Power-state commands (shutdown, restart, halt) — matched only when they appear as
+  // the command itself, not as an argument. Patterns: command-start or after a shell
+  // separator (; & | ( { newline), optionally preceded by sudo/nohup/exec.
+  // Case-insensitive to catch REBOOT, SHUTDOWN, etc.
+  // Limitation: does not detect power commands inside backtick or $() subshells.
+  /(^|[;|&({\n])\s*(?:sudo\s+|nohup\s+|exec\s+)*\s*(?:shutdown|reboot|halt|poweroff)\b/im,
 ];
 
 /**
@@ -43,7 +50,11 @@ export function extractBashWriteTargets(command: string, cwd: string): string[] 
     targets.push(path.isAbsolute(cleaned) ? cleaned : path.resolve(cwd, cleaned));
   };
 
-  // Redirects: > file, >> file, 2> file, &> file
+  // Redirects: > file, >> file, 2> file, &> file, exec > file.
+  // Note: destinations containing shell variable references ($VAR, ${VAR}) are recorded
+  // as the literal token (resolved relative to cwd if not absolute) and passed to the
+  // path guard. This is intentionally fail-open: the guard sees "$OUTFILE" as a relative
+  // path inside cwd, which is allowed. Agents should use explicit paths instead.
   const redirectRe = /(?:^|[\s;|&])(?:\d*)?>>?\s*([^\s;|&<>]+)/g;
   let match: RegExpExecArray | null;
   while ((match = redirectRe.exec(command)) !== null) {
@@ -70,7 +81,7 @@ export function extractBashWriteTargets(command: string, cwd: string): string[] 
   return [...new Set(targets)];
 }
 
-function assertBashCommandAllowed(command: string, cwd: string): void {
+export function assertBashCommandAllowed(command: string, cwd: string): void {
   for (const pattern of BLOCKED_COMMAND_PATTERNS) {
     if (pattern.test(command)) {
       throw new Error(

@@ -1,7 +1,5 @@
 #!/usr/bin/env node
-// Executable entry for the octocode-agent platform.
-// All logic lives in ./launcher.mjs (side-effect-free, unit-tested); this wrapper
-// only bridges the process to it and forwards the exit code.
-import { main } from './launcher.mjs';
-
-process.exitCode = main(process.argv.slice(2));
+// Thin shim — the real launcher is compiled TypeScript in ../out/launcher.js.
+// Run `yarn build` in this package to compile src/ → out/ before first use.
+import { main } from '../out/launcher.js';
+process.exitCode = await main(process.argv.slice(2));

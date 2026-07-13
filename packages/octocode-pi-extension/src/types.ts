@@ -375,6 +375,12 @@ export interface PiInstance {
 
 // ─── Extension options ───────────────────────────────────────────────────────
 
+/**
+ * How the Octocode system prompt is merged with Pi's own system prompt.
+ * - `append` (default): Pi's prompt first, Octocode addendum appended.
+ * - `octocode-first`: Octocode prompt leads; Pi's prompt follows.
+ * - `replace`: @deprecated — alias for `octocode-first`. Use `octocode-first` directly.
+ */
 export type PromptMode = 'append' | 'octocode-first' | 'replace';
 
 export interface OctocodePiExtensionOptions {

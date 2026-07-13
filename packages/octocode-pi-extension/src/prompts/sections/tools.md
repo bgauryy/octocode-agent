@@ -26,7 +26,7 @@ Prefer Octocode-native tools over shell (`grep`/`find`/`cat`/`curl`). **Batch** 
 
 **Package & web**
 - `npmSearch` — repo/path resolution
-- `web` — fetch / search
+- `web` — fetch a URL (`url`) or search (`query`); providers auto-ladder: Tavily (AI-curated, set `TAVILY_API_KEY`) → Serper (Google SERP, `SERPER_API_KEY`) → Exa (AI-native neural, `EXA_API_KEY`) → DuckDuckGo (free fallback); explicit override: `engine:"exa"` for academic/neural, `engine:"serper"` for broad Google; Exa extras: `exaType:"neural"`, `exaCategory:"research paper"|"github"|"news"`; keys in `~/.octocode/.env`; auth errors auto-cascade to next provider; **multi-step web research → delegate to a lean `spawnAgent({tools:["web"]})` worker** (see the search_and_research section); for live page interaction use `chromeDebug` instead
 
 **Agents**
 - `spawnSubagent` — typed `browser-agent`, `researcher`, `planner`, or `architect` with any Octocode skills already installed

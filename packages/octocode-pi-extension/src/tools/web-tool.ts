@@ -4,12 +4,30 @@
  * SSRF-hardened: private/loopback/link-local/metadata IPs blocked.
  */
 import { runWebTool, renderWebResult } from '../web.js';
+import { propagateOctocodeEnv, getOctocodeHome } from '../env.js';
 import type { ToolDefinition, PiTheme, ToolCallResult } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
+
+// Lazy env-refresh: propagateOctocodeEnv runs once at activation, but if Pi
+// started before all keys existed in ~/.octocode/.env, this ensures they land
+// in process.env on the first web-tool call instead of failing silently.
+// applyOctocodeEnv is idempotent (skips existing non-empty keys), so this is
+// always safe to run. Subagents spawned after this call inherit the populated
+// process.env automatically via Node.js process inheritance — no extra passing.
+let _webEnvEnsured = false;
+function ensureWebEnv(): void {
+  if (_webEnvEnsured) return;
+  _webEnvEnsured = true;
+  try {
+    propagateOctocodeEnv({ home: getOctocodeHome(), trusted: false });
+  } catch {
+    // Non-fatal: fall back to whatever is already in process.env.
+  }
+}
 
 export function registerWebTool(
   pi: { registerTool?(def: ToolDefinition): void },
@@ -23,7 +41,7 @@ export function registerWebTool(
     description:
       'Browse the live web. Pass `url` to fetch and read a page as clean text (like visiting it), ' +
       'or `query` to run a web search and get ranked {title, url, snippet} results (plus an AI answer when available). ' +
-      'Search uses the best configured provider (Tavily → Serper → DuckDuckGo); set a key in ~/.octocode/.env to upgrade. ' +
+      'Search uses the best configured provider (Tavily → Serper → Exa → DuckDuckGo); set a key in ~/.octocode/.env to upgrade. Use engine:"exa" for AI-native neural/academic search. ' +
       'Use for docs, changelogs, error messages, and current info beyond the codebase and training data. ' +
       'One of `url` or `query` is required.',
     promptSnippet: 'Search the web or fetch and read a page',
@@ -64,7 +82,7 @@ export function registerWebTool(
       engine: Type.Optional(
         Type.String({
           description:
-            'Search: force a provider — "tavily", "serper", or "duckduckgo" (default: auto by available key).',
+            'Search: force a provider — "tavily", "serper", "exa", or "duckduckgo" (default: auto by available key).',
         }),
       ),
       timeRange: Type.Optional(
@@ -82,6 +100,18 @@ export function registerWebTool(
           description: 'Search (Tavily): blocklist domains to drop noise.',
         }),
       ),
+      exaType: Type.Optional(
+        Type.String({
+          description:
+            'Search (Exa): result type — "auto" (default), "neural", or "keyword". "neural" for semantic/AI-native queries; "keyword" for exact-match.',
+        }),
+      ),
+      exaCategory: Type.Optional(
+        Type.String({
+          description:
+            'Search (Exa): category filter — "research paper", "news", "github", "company", "pdf". Narrows Exa results to a specific content type.',
+        }),
+      ),
     }),
 
     async execute(
@@ -89,9 +119,13 @@ export function registerWebTool(
       params: Record<string, unknown>,
       signal?: AbortSignal,
     ) {
+      // Refresh API keys from ~/.octocode/.env on first call (idempotent after that).
+      // Subagents spawned by the agent AFTER this point will inherit process.env and
+      // therefore get all loaded keys — no explicit env-passing to spawnAgent needed.
+      ensureWebEnv();
       const out = await runWebTool(
         params as Parameters<typeof runWebTool>[0],
-        { signal },
+        { signal, env: process.env },
       );
       const errorMsg = (out as { error?: string }).error;
       if (errorMsg) {

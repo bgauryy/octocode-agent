@@ -10,6 +10,7 @@ import { beforeAll, test } from 'vitest';
 import {
   MANAGED_BLOCK_END,
   MANAGED_BLOCK_START,
+  SYSTEM_PROMPT_MARKER,
   OCTOCODE_DIRECT_TOOL_NAMES,
   OCTOCODE_SUPPORT_TOOL_NAMES,
   createAwarenessBridge,
@@ -507,9 +508,15 @@ test('path, asset, and output helpers cover edge cases', () => {
 });
 
 test('system prompt append guard detects existing prompt', () => {
-  const prompt = '<system_prompt>\nabc\n</system_prompt>';
-  assert.equal(shouldAppendSystemPrompt('', prompt), true);
-  assert.equal(shouldAppendSystemPrompt(prompt, prompt), false);
+  const octocodePrompt = 'Some Octocode system prompt content.';
+  // Should append when the system prompt is empty or lacks the marker.
+  assert.equal(shouldAppendSystemPrompt('', octocodePrompt), true);
+  // M3: Only the SYSTEM_PROMPT_MARKER signals prior inclusion (proofSlice removed).
+  // Without the marker, always append — even if content overlaps.
+  assert.equal(shouldAppendSystemPrompt(octocodePrompt, octocodePrompt), true);
+  // When the system prompt already carries the marker, do not append again.
+  const withMarker = `Pi prompt.\n\n${SYSTEM_PROMPT_MARKER}\n${octocodePrompt}\n${SYSTEM_PROMPT_MARKER}`;
+  assert.equal(shouldAppendSystemPrompt(withMarker, octocodePrompt), false);
 });
 
 test('getInstallSource returns npm source for node_modules installs, local path otherwise', () => {
@@ -1975,15 +1982,16 @@ test('disableBuiltinReadTool is defensive and only removes disabled built-ins', 
     } as unknown as DisablePi),
     false
   );
-  assert.throws(
-    () =>
-      disableBuiltinReadTool({
-        getActiveTools: () => {
-          throw new Error('unexpected runtime failure');
-        },
-        setActiveTools: () => undefined,
-      } as unknown as DisablePi),
-    /unexpected runtime failure/
+  // L7: All errors from the Pi active-tool API are now swallowed (logged + return false)
+  // so a renamed/changed error message cannot crash the extension load.
+  assert.equal(
+    disableBuiltinReadTool({
+      getActiveTools: () => {
+        throw new Error('unexpected runtime failure');
+      },
+      setActiveTools: () => undefined,
+    } as unknown as DisablePi),
+    false,
   );
 });
 
