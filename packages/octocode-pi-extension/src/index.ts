@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import { propagateOctocodeEnv, getOctocodeHome } from './env.js';
 import {
   OCTOCODE_DIRECT_TOOL_NAMES,
@@ -41,6 +40,8 @@ import { registerSpawnSubagentTool } from './tools/spawn-subagent-tool.js';
 import { registerEditTool } from './tools/edit-tool.js';
 import { registerWriteTool } from './tools/write-tool.js';
 import { registerBashTool } from './tools/bash-tool.js';
+import { atomicWriteUtf8 } from './tools/file-state.js';
+import { assertPathAllowed } from './tools/path-guard.js';
 import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
 import { pickProvider } from './web.js';
 import { createHookComposer } from './hook-composer.js';
@@ -410,8 +411,8 @@ async function installAppendSystem(args: string, ctx: PiContext | undefined): Pr
   const existing = readTextIfExists(targetPath);
   const nextContent = mergeManagedAppendSystem(existing, prompt);
   try {
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, nextContent, 'utf8');
+    assertPathAllowed(targetPath, ctx?.cwd ?? process.cwd(), 'octocode setup');
+    await atomicWriteUtf8(targetPath, nextContent);
     notify(ctx, `Octocode APPEND_SYSTEM.md installed at ${targetPath}`, 'info');
   } catch (error) {
     notify(

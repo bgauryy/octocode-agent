@@ -13,6 +13,7 @@ import {
   spawnRpcAgent,
   setAgentProcessFactoryForTests,
   isSubagentProcess,
+  MAX_AGENT_LAST_OUTPUT_CHARS,
   MAX_AGENT_RECORDS,
 } from '../src/tools/agent-tools.js';
 
@@ -141,6 +142,27 @@ test('H4: waiters are resolved immediately when EPIPE transitions agent to faile
 test('M7: MAX_AGENT_RECORDS is exported and has the expected value', () => {
   assert.equal(typeof MAX_AGENT_RECORDS, 'number');
   assert.ok(MAX_AGENT_RECORDS > 0);
+});
+
+test('worker lastOutput is capped to a recent tail to bound memory use', () => {
+  if (isSubagentProcess()) return;
+
+  const mock = makeMockProcess({ stdinThrows: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  const record = spawnRpcAgent({ task: 'large output', resourceMode: 'lean' });
+  const hugeText = `${'x'.repeat(MAX_AGENT_LAST_OUTPUT_CHARS + 500)}\n[DONE] tail`;
+
+  mock._emit(
+    'stdout:data',
+    Buffer.from(`${JSON.stringify({
+      type: 'message_end',
+      message: { content: [{ type: 'text', text: hugeText }] },
+    })}\n`),
+  );
+
+  assert.equal(record.lastOutput.length, MAX_AGENT_LAST_OUTPUT_CHARS);
+  assert.match(record.lastOutput, /\[DONE\] tail$/);
+  assert.equal(record.normalizedResult?.status, 'done');
 });
 
 test('M7: spawning beyond MAX_AGENT_RECORDS non-droppable agents throws', function () {

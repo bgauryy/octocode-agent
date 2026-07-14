@@ -144,6 +144,7 @@ interface AgentDetails {
 const MAX_STORED_EVENTS = 200;
 const MAX_LEDGER_EVENTS = 80;
 const MAX_STDERR_CHARS = 64_000;
+export const MAX_AGENT_LAST_OUTPUT_CHARS = 64_000;
 const MAX_VISIBLE_OUTPUT = 12000;
 /** Maximum number of simultaneously active (non-droppable) agent records. Hard limit enforced on spawn. */
 export const MAX_AGENT_RECORDS = 50;
@@ -563,7 +564,9 @@ function refreshNormalizedResult(record: AgentRecord): void {
 function updateLastOutput(record: AgentRecord, message: unknown): void {
   const text = extractTextFromMessage(message);
   if (text) {
-    record.lastOutput = text;
+    record.lastOutput = text.length > MAX_AGENT_LAST_OUTPUT_CHARS
+      ? text.slice(-MAX_AGENT_LAST_OUTPUT_CHARS)
+      : text;
     refreshNormalizedResult(record);
   }
 }

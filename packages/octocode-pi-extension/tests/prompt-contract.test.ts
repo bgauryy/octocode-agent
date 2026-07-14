@@ -180,10 +180,14 @@ test('persistence and compaction are conditional instead of mandatory ceremony',
     SYSTEM_PROMPT,
     /When a plan, RFC, handoff, or research result must outlive the current context/
   );
+  assert.match(SYSTEM_PROMPT, /\.octocode\/tmp\/YYYYMMDD-HHMM-slug/);
+  assert.match(SYSTEM_PROMPT, /read (the )?handoff back/i);
   assert.match(SYSTEM_PROMPT, /Do not create an artifact for an ordinary answer\/review/);
   assert.match(SYSTEM_PROMPT, /Persist a handoff only when work must survive/);
   assert.match(SYSTEM_PROMPT, /same logical task: continue from the summary/);
   assert.match(SYSTEM_PROMPT, /do not restart finished work/);
+  assert.match(SYSTEM_PROMPT, /Pi['’]s native compaction/);
+  assert.match(SYSTEM_PROMPT, /`ctx\.compact\(\)` \/ `\/compact`/);
   assert.doesNotMatch(SYSTEM_PROMPT, /write findings to a doc → compact → execute/);
 });
 

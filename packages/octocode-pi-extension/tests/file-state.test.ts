@@ -11,10 +11,12 @@ import path from 'node:path';
 import { test, beforeEach, afterEach } from 'vitest';
 import {
   resolveFilePath,
+  atomicWriteUtf8,
   withFileMutationQueue,
   recordFileReadState,
   checkReadState,
   clearReadStatesForTests,
+  MAX_RECORDED_READ_STATES,
 } from '../src/tools/file-state.js';
 
 let tmpDir: string;
@@ -44,6 +46,27 @@ test('resolveFilePath: relative path is resolved against cwd', () => {
 test('resolveFilePath: defaults to process.cwd() when cwd omitted', () => {
   const rel = 'some/file.ts';
   assert.equal(resolveFilePath(rel), path.resolve(rel));
+});
+
+// ─── atomicWriteUtf8 ──────────────────────────────────────────────────────────
+
+test('atomicWriteUtf8: creates parent directories and writes UTF-8 content', async () => {
+  const file = path.join(tmpDir, 'nested', 'atomic.txt');
+  await atomicWriteUtf8(file, 'héllo');
+  assert.equal(fs.readFileSync(file, 'utf8'), 'héllo');
+});
+
+test('atomicWriteUtf8: uses unique temp files and leaves no shared temp artifact', async () => {
+  const file = path.join(tmpDir, 'atomic-collision.txt');
+  await Promise.all([
+    atomicWriteUtf8(file, 'first'),
+    atomicWriteUtf8(file, 'second'),
+  ]);
+  assert.match(fs.readFileSync(file, 'utf8'), /^(first|second)$/);
+  assert.deepEqual(
+    fs.readdirSync(tmpDir).filter((name) => name.includes('.octocode-')),
+    [],
+  );
 });
 
 // ─── withFileMutationQueue ────────────────────────────────────────────────────
@@ -155,6 +178,19 @@ test('clearReadStatesForTests removes all recorded states', async () => {
   // After clearing, state is missing → should not throw with requireRecentRead=false
   const result = await checkReadState(file, false);
   assert.equal(result.state, 'missing');
+});
+
+test('recordFileReadState evicts the oldest read state when the cache exceeds its cap', async () => {
+  const files = Array.from({ length: MAX_RECORDED_READ_STATES + 1 }, (_, index) =>
+    path.join(tmpDir, `tracked-${index}.txt`),
+  );
+  for (const [index, file] of files.entries()) {
+    fs.writeFileSync(file, `content-${index}`);
+    await recordFileReadState(file, tmpDir);
+  }
+
+  assert.equal((await checkReadState(files[0]!, false)).state, 'missing');
+  assert.equal((await checkReadState(files.at(-1)!, true)).state, 'fresh');
 });
 
 test('recordFileReadState accepts an absolute path (cwd unused)', async () => {

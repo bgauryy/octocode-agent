@@ -12,8 +12,8 @@
  * Keeping these in one place removes the coupling where write-tool and
  * octocode-tools previously imported from edit-tool.
  */
-import { readFile, stat } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -32,6 +32,8 @@ export interface ReadStateCheck {
 
 // ─── Module-level state ───────────────────────────────────────────────────────
 
+export const MAX_RECORDED_READ_STATES = 1_000;
+
 const readStates = new Map<string, ReadState>();
 
 /**
@@ -46,6 +48,14 @@ const fileQueues = new Map<string, Promise<void>>();
 
 function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex');
+}
+
+function pruneOldReadStates(): void {
+  while (readStates.size > MAX_RECORDED_READ_STATES) {
+    const oldestPath = readStates.keys().next().value;
+    if (oldestPath === undefined) return;
+    readStates.delete(oldestPath);
+  }
 }
 
 // ─── Path resolution ──────────────────────────────────────────────────────────
@@ -74,18 +84,42 @@ export function withFileMutationQueue<T>(key: string, fn: () => Promise<T>): Pro
   return execution;
 }
 
+// ─── Atomic writes ────────────────────────────────────────────────────────────
+
+/**
+ * Write UTF-8 content through a same-directory temp file and atomic rename.
+ *
+ * Same-directory temp files keep rename atomic on POSIX and avoid cross-device
+ * failures. A unique suffix prevents concurrent writers from sharing one temp
+ * path; the per-file queue still controls the final write order where needed.
+ */
+export async function atomicWriteUtf8(filePath: string, content: string): Promise<void> {
+  const absolutePath = resolveFilePath(filePath);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  const tmpPath = `${absolutePath}.octocode-${process.pid}-${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmpPath, content, 'utf8');
+    await rename(tmpPath, absolutePath);
+  } catch (error) {
+    await rm(tmpPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
 // ─── Read-state tracking ──────────────────────────────────────────────────────
 
 /** Record a content-hash snapshot of the file for later stale detection. */
 export async function recordFileReadState(filePath: string, cwd = process.cwd()): Promise<void> {
   const absolutePath = resolveFilePath(filePath, cwd);
   const [stats, content] = await Promise.all([stat(absolutePath), readFile(absolutePath, 'utf8')]);
+  readStates.delete(absolutePath);
   readStates.set(absolutePath, {
     mtimeMs: stats.mtimeMs,
     size: stats.size,
     contentHash: contentHash(content),
     readAt: Date.now(),
   });
+  pruneOldReadStates();
 }
 
 /**

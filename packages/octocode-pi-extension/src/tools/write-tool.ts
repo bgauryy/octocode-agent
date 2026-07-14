@@ -3,12 +3,11 @@
  * Adds path-guard (home + ALLOWED_PATHS + cwd/tmp) and records read-state
  * so a subsequent `edit` stale-check can see the fresh bytes.
  */
-import { mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
-import { recordFileReadState, withFileMutationQueue } from './file-state.js';
+import { atomicWriteUtf8, recordFileReadState, withFileMutationQueue } from './file-state.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 
@@ -76,21 +75,8 @@ export function registerWriteTool(
 
       await withFileMutationQueue(absolutePath, async () => {
         if (signal?.aborted) throw new Error('Operation aborted');
-        await mkdir(path.dirname(absolutePath), { recursive: true });
+        await atomicWriteUtf8(absolutePath, content);
         if (signal?.aborted) throw new Error('Operation aborted');
-        // H3: Atomic write — write to a temp file then rename to the final path.
-        // rename(2) is atomic on POSIX: a crash or kill between writeFile and rename
-        // leaves the original file intact and the .tmp~ file as the only corruption.
-        const tmpPath = `${absolutePath}.octocode-tmp~`;
-        await writeFile(tmpPath, content, 'utf8');
-        if (signal?.aborted) {
-          // The content has already reached disk; finish the atomic rename so callers
-          // never see a half-written target. If promotion fails, surface that cause
-          // instead of hiding it behind the abort error.
-          await rename(tmpPath, absolutePath);
-          throw new Error('Operation aborted');
-        }
-        await rename(tmpPath, absolutePath);
         await recordFileReadState(absolutePath, cwd);
       });
 
