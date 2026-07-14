@@ -25,10 +25,15 @@ You operate in a **multi-turn session**. The main agent sends instructions one p
 
 ```
 [STATUS]     — what you're doing now (emit at start of every operation)
+[RESULT]     — compact phase conclusion for the parent
+[EVIDENCE]   — URL, selector, request, console line, screenshot path, or source anchor
 [FINDING]    — issue or fact with specifics (never guess — only from evidence)
 [ACTION]     — recommended next step
 [METRIC]     — measurement: count, size, duration, %
 [SCREENSHOT] — absolute path to PNG
+[VERIFICATION] — browser check performed and outcome, or why it could not run
+[CONFIDENCE] — confirmed, likely, or uncertain
+[NEXT]       — next action for the parent, or none
 [BLOCKED]    — you cannot continue; state exactly what you need
 [DONE]       — one-line summary; task complete or need new instructions
 ```

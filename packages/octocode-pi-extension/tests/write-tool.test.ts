@@ -38,8 +38,9 @@ afterEach(() => {
 function run(
   params: Record<string, unknown>,
   cwd = tmpDir,
+  signal?: AbortSignal,
 ): ReturnType<ToolDefinition['execute']> {
-  return writeTool.execute('call-1', params, undefined, undefined, { cwd });
+  return writeTool.execute('call-1', params, signal, undefined, { cwd });
 }
 
 // ─── Registration ─────────────────────────────────────────────────────────────
@@ -115,6 +116,17 @@ test('records read state after writing so a subsequent edit does not see the fil
   // checkReadState should return "fresh" — write tool must have recorded state
   const check = await checkReadState(filePath, false);
   assert.equal(check.state, 'fresh');
+});
+
+test('aborts before writing without creating the target file', async () => {
+  const filePath = path.join(tmpDir, 'abort-before-write.txt');
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    () => run({ path: filePath, content: 'not written' }, tmpDir, controller.signal),
+    /Operation aborted/,
+  );
+  assert.equal(fs.existsSync(filePath), false);
 });
 
 // ─── Param validation ────────────────────────────────────────────────────────

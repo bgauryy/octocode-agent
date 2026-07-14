@@ -26,6 +26,7 @@
 
 ## UX contract
 
+- `/octocode-agents help` shows examples, lifecycle hints, and id-prefix guidance.
 - `/octocode-agents` and `/octocode-agents list` show the in-session ledger.
 - `/octocode-agents status` refreshes footer/widget state.
 - `/octocode-agents inspect <id-or-prefix>` shows one worker's full status and normalized handback.
@@ -33,6 +34,8 @@
 - `/octocode-agents kill-all` terminates all non-terminal workers.
 - `/octocode-agents prune` removes terminal worker records from the in-session ledger.
 - `/octocode-agents hide` clears the footer/widget for the session.
+
+Slash completions include per-subcommand descriptions so users can discover actions without opening this document.
 
 Worker handbacks are parsed from typed prefixes such as `[EVIDENCE]`, `[CONFIDENCE]`, `[BLOCKED]`, `[DONE]`, and `[FAILED]`. Unstructured output remains available, but normalized handbacks are the default UX because they are smaller and easier for the parent agent to verify.
 

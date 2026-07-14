@@ -39,8 +39,10 @@ export interface WorkerLedgerEntry {
   startedAt: string;
   updatedAt: string;
   normalizedStatus?: string;
+  result?: string;
   confidence?: string;
   evidence?: string[];
+  verification?: string;
   next?: string;
   recentEvents: WorkerLedgerEvent[];
 }

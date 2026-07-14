@@ -21,6 +21,15 @@ function simpleRenderer(line: string) {
   return makeRenderer((w) => [truncateToWidth(line, w)]);
 }
 
+function clearCompactionWorkingState(ctx: PiContext | undefined): void {
+  if (!ctx?.hasUI) return;
+  // Pi owns the compaction spinner/message, but extension-triggered compaction
+  // queues a follow-up turn. Clear stale working UI first so the resumed agent
+  // cannot leave users staring at "Compacting context…" after callbacks fire.
+  ctx.ui?.setWorkingMessage?.(undefined);
+  ctx.ui?.setWorkingVisible?.(false);
+}
+
 export function registerContextTools(
   pi: PiInstance,
   Type: TypeBoxBuilder,
@@ -43,20 +52,19 @@ export function registerContextTools(
       if (fill < AUTO_COMPACT_THRESHOLD) return;
       if (prevFill !== null && prevFill >= AUTO_COMPACT_THRESHOLD) return;
 
-      const pctStr = `${Math.round(fill * 100)}%`;
-      if (ctx.hasUI) {
-        ctx.ui?.notify?.(
-          `Auto-compacting: context at ${pctStr} of context window.`,
-          'info',
-        );
+      if (!ctx.compact) {
+        notify(ctx, 'Auto-compaction skipped: ctx.compact is not available in this runtime.', 'warning');
+        return;
       }
+
+      const pctStr = `${Math.round(fill * 100)}%`;
+      notify(ctx, `Auto-compacting: context at ${pctStr} of context window.`, 'info');
       const continuation =
         'Auto-compaction complete. Re-orient from the compacted context, then continue the user task.';
-      ctx.compact?.({
+      ctx.compact({
         onComplete: () => {
-          if (ctx.hasUI) {
-            ctx.ui?.notify?.('Auto-compaction complete. Resuming…', 'info');
-          }
+          clearCompactionWorkingState(ctx);
+          notify(ctx, 'Auto-compaction complete. Resuming…', 'info');
           // ctx.compact() drives pi's manual compaction path, which aborts the
           // running agent operation and never auto-continues (willRetry:false).
           // Without a queued turn the agent loop halts idle after compaction —
@@ -65,12 +73,8 @@ export function registerContextTools(
           pi.sendUserMessage(continuation, { deliverAs: 'followUp' });
         },
         onError: (error: Error) => {
-          if (ctx.hasUI) {
-            ctx.ui?.notify?.(
-              `Auto-compaction failed: ${error.message}`,
-              'error',
-            );
-          }
+          clearCompactionWorkingState(ctx);
+          notify(ctx, `Auto-compaction failed: ${error.message}`, 'error');
         },
       });
     });
@@ -154,15 +158,13 @@ export function registerContextTools(
       ctx.compact({
         customInstructions: params['instructions'] as string | undefined,
         onComplete: () => {
-          if (ctx.hasUI) {
-            ctx.ui?.notify?.('Compaction completed. Continuing from the compacted context.', 'info');
-          }
+          clearCompactionWorkingState(ctx);
+          notify(ctx, 'Compaction completed. Continuing from the compacted context.', 'info');
           pi.sendUserMessage(continuation, { deliverAs: 'followUp' });
         },
         onError: (error: Error) => {
-          if (ctx.hasUI) {
-            ctx.ui?.notify?.(`Compaction failed: ${error.message}`, 'error');
-          }
+          clearCompactionWorkingState(ctx);
+          notify(ctx, `Compaction failed: ${error.message}`, 'error');
         },
       });
 

@@ -36,9 +36,17 @@ export interface NormalizedWorkerResult {
   status: NormalizedWorkerStatus;
   result?: string;
   evidence: string[];
+  verification?: string;
   confidence: NormalizedWorkerConfidence;
   next?: string;
   rawPrefixes: Record<string, string[]>;
+}
+
+export interface WorkerRecoveryRisk {
+  warnings: string[];
+  statusOrActionCount: number;
+  evidenceCount: number;
+  hasVerification: boolean;
 }
 
 const REQUIRED_PACKET_SECTIONS = ['goal', 'scope', 'ownership', 'acceptance', 'return'];
@@ -121,6 +129,7 @@ interface AgentRecord {
   toolCalls: AgentToolCall[];
   lastOutput: string;
   normalizedResult?: NormalizedWorkerResult;
+  recoveryRisk: WorkerRecoveryRisk;
   ledgerEvents: WorkerLedgerEvent[];
   policyWarnings: string[];
   promptFiles: string[];
@@ -145,8 +154,18 @@ export const DEFAULT_SPAWN_POLICY: SpawnPolicy = {
 };
 const SPAWN_POLICY_MAX_ACTIVE_ENV = 'OCTOCODE_AGENT_MAX_ACTIVE';
 const SPAWN_POLICY_WARNING_ACTIVE_ENV = 'OCTOCODE_AGENT_WARNING_ACTIVE';
-export const OCTOCODE_AGENTS_COMMAND_USAGE = '/octocode-agents [list|status|inspect <id>|kill <id>|kill-all|prune|hide]';
-export const OCTOCODE_AGENTS_COMMAND_COMPLETIONS = ['list', 'status', 'inspect ', 'kill ', 'kill-all', 'prune', 'hide'] as const;
+export const OCTOCODE_AGENTS_COMMAND_USAGE = '/octocode-agents [help|list|status|inspect <id>|kill <id>|kill-all|prune|hide]';
+export const OCTOCODE_AGENTS_COMMAND_COMPLETIONS = ['help', 'list', 'status', 'inspect ', 'kill ', 'kill-all', 'prune', 'hide'] as const;
+export const OCTOCODE_AGENTS_COMMAND_DESCRIPTIONS: Record<(typeof OCTOCODE_AGENTS_COMMAND_COMPLETIONS)[number], string> = {
+  help: 'Show command examples and lifecycle hints',
+  list: 'Show the worker ledger and refresh footer/widget status',
+  status: 'Alias for list',
+  'inspect ': 'Show full state for one worker by id or prefix',
+  'kill ': 'Stop one live worker by id or prefix',
+  'kill-all': 'Stop every live worker',
+  prune: 'Remove completed idle records from the in-memory ledger',
+  hide: 'Clear the footer/widget ledger for this session',
+};
 const SUBAGENT_ENV_VAR = 'OCTOCODE_PI_SUBAGENT';
 const AWARENESS_AGENT_ENV_VAR = 'OCTOCODE_AGENT_ID';
 const FORBIDDEN_WORKER_TOOLS = new Set(['spawnAgent', 'AgentMessage', 'spawnSubagent']);
@@ -232,13 +251,44 @@ function installProcessCleanupHandlers(): void {
 // ─── TUI rendering helpers ────────────────────────────────────────────────────
 // truncateToWidth + makeRenderer imported from render-helpers.ts (single source)
 
+type AgentDisplayState = 'starting' | 'running' | 'idle' | 'done' | 'blocked' | 'failed' | 'killed';
+
+type AgentDisplaySource = {
+  status?: string;
+  normalizedResult?: { status?: string; result?: string; next?: string; confidence?: string; verification?: string };
+};
+
+function getAgentDisplayState(agent: AgentDisplaySource): AgentDisplayState {
+  const workerStatus = agent.normalizedResult?.status;
+  if (agent.status === 'killed') return 'killed';
+  if (agent.status === 'failed' || workerStatus === 'failed') return 'failed';
+  if (workerStatus === 'blocked') return 'blocked';
+  if (agent.status === 'running') return 'running';
+  if (workerStatus === 'done' || agent.status === 'exited') return 'done';
+  if (agent.status === 'idle') return 'idle';
+  return 'starting';
+}
+
+function agentDisplayMeta(state: AgentDisplayState, theme?: PiTheme): { icon: string; label: string } {
+  const raw = (() => {
+    switch (state) {
+      case 'done': return { icon: '\u2713', label: 'done', color: 'success' };
+      case 'failed': return { icon: '\u2717', label: 'failed', color: 'error' };
+      case 'killed': return { icon: '\u2717', label: 'killed', color: 'warning' };
+      case 'blocked': return { icon: '!', label: 'blocked', color: 'warning' };
+      case 'running': return { icon: '\u29D7', label: 'running', color: 'warning' };
+      case 'idle': return { icon: '\u25CE', label: 'idle', color: 'success' };
+      case 'starting': return { icon: '\u25CB', label: 'starting', color: 'dim' };
+    }
+  })();
+  return {
+    icon: theme?.fg(raw.color, raw.icon) ?? raw.icon,
+    label: theme?.fg(raw.color, raw.label) ?? raw.label,
+  };
+}
+
 function statusIcon(status: AgentStatus, theme?: PiTheme): string {
-  if (status === 'exited') return theme?.fg('success', '\u2713') ?? '\u2713'; // ✓
-  if (status === 'failed') return theme?.fg('error', '\u2717') ?? '\u2717';   // ✗
-  if (status === 'killed') return theme?.fg('warning', '\u2717') ?? '\u2717'; // ✗
-  if (status === 'running') return theme?.fg('warning', '\u29D7') ?? '\u29D7'; // ⧗
-  if (status === 'idle') return theme?.fg('success', '\u25CE') ?? '\u25CE';   // ◎
-  return theme?.fg('dim', '\u25CB') ?? '\u25CB'; // ○ starting
+  return agentDisplayMeta(getAgentDisplayState({ status }), theme).icon;
 }
 
 function shortId(id: string): string {
@@ -386,6 +436,11 @@ function resolveSpawnPolicy(policy: SpawnPolicy): SpawnPolicy {
   };
 }
 
+function looksLikeProviderScopedModel(model: string): boolean {
+  return /\//.test(model)
+    || /^(?:claude|gpt|llama|mistral|gemini|qwen|zai|deepseek|kimi|codestral)[-_:/.]/i.test(model);
+}
+
 export function evaluateSpawnPolicy(params: SpawnAgentParams, activeCount = activeAgentCount(), policy: SpawnPolicy = DEFAULT_SPAWN_POLICY): SpawnPolicyResult {
   const effectivePolicy = resolveSpawnPolicy(policy);
   const warnings: string[] = [];
@@ -405,8 +460,8 @@ export function evaluateSpawnPolicy(params: SpawnAgentParams, activeCount = acti
     warnings.push(`Worker packet is missing recommended section(s): ${missingSections.join(', ')}.`);
   }
   const model = String(params.model ?? '');
-  if (/^claude[-:]/i.test(model) && !params.provider) {
-    warnings.push('Model looks like a Claude/custom-provider model; pass provider from `pi -ne --list-models` when required.');
+  if (model && looksLikeProviderScopedModel(model) && !params.provider) {
+    warnings.push('Model looks provider-scoped or custom-provider-hosted; pass provider from `pi -ne --list-models` when required.');
   }
   const strippedTools = (params.tools ?? []).filter((toolName) => FORBIDDEN_WORKER_TOOLS.has(toolName));
   if (strippedTools.length > 0) {
@@ -446,24 +501,62 @@ export function normalizeWorkerOutput(output: string): NormalizedWorkerResult {
   const blocked = last('BLOCKED');
   const done = last('DONE');
   const failed = last('FAILED') ?? last('ERROR');
-  const result = last('RESULT') ?? last('FINDING') ?? last('FIX') ?? last('PLAN') ?? undefined;
+  const result =
+    last('RESULT')
+    ?? last('FINDING')
+    ?? last('ROOT')
+    ?? last('FIX')
+    ?? last('PLAN')
+    ?? last('ACTION')
+    ?? undefined;
+  const verification = last('VERIFICATION') ?? last('VERIFY') ?? undefined;
   const fallback = output.trim();
 
   return {
     status: failed ? 'failed' : blocked ? 'blocked' : done ? 'done' : 'unknown',
     result: result || (Object.keys(rawPrefixes).length === 0 && fallback ? fallback : undefined),
     evidence,
+    verification,
     confidence: normalizeConfidence(last('CONFIDENCE')),
-    next: done || blocked || last('NEXT') || undefined,
+    next: last('NEXT') || blocked || done || undefined,
     rawPrefixes,
   };
 }
 
+export function evaluateWorkerRecoveryRisk(output: string): WorkerRecoveryRisk {
+  const normalized = normalizeWorkerOutput(output);
+  const statusOrActionCount = (normalized.rawPrefixes['STATUS']?.length ?? 0)
+    + (normalized.rawPrefixes['ACTION']?.length ?? 0)
+    + (normalized.rawPrefixes['FIX']?.length ?? 0);
+  const evidenceCount = normalized.evidence.length;
+  const hasVerification = Boolean(normalized.verification);
+  const warnings: string[] = [];
+
+  if (statusOrActionCount >= 4 && evidenceCount === 0 && !hasVerification) {
+    warnings.push(
+      `Possible recovery loop: ${statusOrActionCount} status/action updates without evidence or verification; re-diagnose before continuing.`,
+    );
+  }
+
+  if (normalized.status === 'done' && evidenceCount === 0 && !hasVerification) {
+    warnings.push('Worker claims done without evidence or verification; parent must independently verify acceptance.');
+  }
+
+  return { warnings, statusOrActionCount, evidenceCount, hasVerification };
+}
+
 function refreshNormalizedResult(record: AgentRecord): void {
   const previousStatus = record.normalizedResult?.status;
-  record.normalizedResult = normalizeWorkerOutput(record.lastOutput || record.stderr || record.error || '');
+  const previousWarnings = record.recoveryRisk.warnings.join('\n');
+  const output = record.lastOutput || record.stderr || record.error || '';
+  record.normalizedResult = normalizeWorkerOutput(output);
+  record.recoveryRisk = evaluateWorkerRecoveryRisk(output);
   if (record.normalizedResult.status !== 'unknown' && record.normalizedResult.status !== previousStatus) {
     pushLedgerEvent(record, 'handback', `worker handback: ${record.normalizedResult.status}`, record.normalizedResult);
+  }
+  const currentWarnings = record.recoveryRisk.warnings.join('\n');
+  if (currentWarnings && currentWarnings !== previousWarnings) {
+    pushLedgerEvent(record, 'policy', `recovery risk: ${record.recoveryRisk.warnings.join(' | ')}`, record.recoveryRisk);
   }
 }
 
@@ -662,6 +755,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     toolCalls: [],
     lastOutput: '',
     normalizedResult: normalizeWorkerOutput(''),
+    recoveryRisk: evaluateWorkerRecoveryRisk(''),
     ledgerEvents: [],
     policyWarnings: policyResult.warnings,
     promptFiles,
@@ -740,6 +834,7 @@ function summarizeAgent(record: AgentRecord) {
     lastOutput: preview.text,
     outputTruncated: preview.truncated,
     normalizedResult: normalized,
+    recoveryRisk: record.recoveryRisk,
     policyWarnings: [...record.policyWarnings],
     ledgerEvents: record.ledgerEvents.slice(-10),
     toolCalls: record.toolCalls.slice(-10),
@@ -759,8 +854,10 @@ export function listWorkerLedgerEntries(): WorkerLedgerEntry[] {
         startedAt: new Date(record.startedAt).toISOString(),
         updatedAt: new Date(record.updatedAt).toISOString(),
         normalizedStatus: normalized?.status,
+        result: normalized?.result,
         confidence: normalized?.confidence,
         evidence: normalized?.evidence,
+        verification: normalized?.verification,
         next: normalized?.next,
         recentEvents: record.ledgerEvents.slice(-10),
       };
@@ -807,18 +904,31 @@ function waitForAgent(record: AgentRecord, timeoutMs: number): Promise<void> {
   });
 }
 
+function agentRiskBadge(summary: ReturnType<typeof summarizeAgent>, theme?: PiTheme): string {
+  if (summary.recoveryRisk?.warnings.length) return theme?.fg('warning', '⚠ recovery') ?? '⚠ recovery';
+  if (summary.normalizedResult?.status === 'done' && summary.normalizedResult.evidence.length === 0 && !summary.normalizedResult.verification) {
+    return theme?.fg('warning', '⚠ needs verify') ?? '⚠ needs verify';
+  }
+  return '';
+}
+
 function renderAgentResult(records: AgentRecord[], header: string): ToolCallResult {
   const summaries = records.map(summarizeAgent);
   const lines: string[] = [`${header} (${records.length}):`];
   for (const s of summaries) {
     const exit = s.exitCode !== undefined ? ` (exit ${s.exitCode})` : '';
     const elapsed = formatElapsed(new Date(s.startedAt).getTime());
+    const state = getAgentDisplayState(s);
+    const meta = agentDisplayMeta(state);
     const handback = s.normalizedResult?.status && s.normalizedResult.status !== 'unknown'
-      ? ` \u00b7 ${s.normalizedResult.status}`
+      ? ` \u00b7 ${s.normalizedResult.status}/${s.normalizedResult.confidence}`
       : '';
-    const preview = s.lastOutput ? ` \u2014 ${s.lastOutput.slice(0, 60).replace(/\n/g, ' ')}${s.outputTruncated ? '\u2026' : ''}` : '';
+    const risk = agentRiskBadge(s);
+    const riskText = risk ? ` \u00b7 ${risk}` : '';
+    const result = s.normalizedResult?.result ?? s.normalizedResult?.next ?? s.lastOutput;
+    const preview = result ? ` \u2014 ${result.slice(0, 60).replace(/\n/g, ' ')}${s.outputTruncated ? '\u2026' : ''}` : '';
     const toolInfo = typeof s.activeTool === 'string' ? ` \u00b7 tool: ${s.activeTool}` : '';
-    lines.push(`  ${s.name} (${shortId(s.agentId)}) \u00b7 ${s.status}${exit}${handback} \u00b7 ${elapsed}${toolInfo}${preview}`);
+    lines.push(`  ${meta.icon} ${s.name} (${shortId(s.agentId)}) \u00b7 ${meta.label}${exit}${handback}${riskText} \u00b7 ${elapsed}${toolInfo}${preview}`);
   }
   return {
     content: [{ type: 'text', text: lines.join('\n') }],
@@ -826,36 +936,68 @@ function renderAgentResult(records: AgentRecord[], header: string): ToolCallResu
   };
 }
 
+function countAgentStates(records: AgentDisplaySource[]): Record<AgentDisplayState, number> {
+  const counts: Record<AgentDisplayState, number> = {
+    starting: 0,
+    running: 0,
+    idle: 0,
+    done: 0,
+    blocked: 0,
+    failed: 0,
+    killed: 0,
+  };
+  for (const record of records) counts[getAgentDisplayState(record)] += 1;
+  return counts;
+}
+
+function formatAgentStateCounts(records: AgentDisplaySource[]): string {
+  const counts = countAgentStates(records);
+  return `${records.length} total · ${counts.running} running · ${counts.blocked} blocked · ${counts.done} done · ${counts.failed} failed`;
+}
+
 export function formatAgentLedger(): string {
   const records = [...agents.values()].sort((a, b) => b.updatedAt - a.updatedAt);
   if (records.length === 0) return 'Octocode agents: none';
-  const running = records.filter((record) => record.status === 'running').length;
-  const blocked = records.filter((record) => record.normalizedResult?.status === 'blocked').length;
-  const failed = records.filter((record) => record.status === 'failed' || record.normalizedResult?.status === 'failed').length;
-  const done = records.filter((record) => record.normalizedResult?.status === 'done' || record.status === 'exited').length;
-  return `Octocode agents: ${records.length} total · ${running} running · ${blocked} blocked · ${done} done · ${failed} failed`;
+  return `Octocode agents: ${formatAgentStateCounts(records)}`;
+}
+
+function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
+  const records = [...agents.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  const title = theme?.fg('toolTitle', 'Octocode agents') ?? 'Octocode agents';
+  if (records.length === 0) return [`${title}: none`];
+
+  const counts = formatAgentStateCounts(records);
+  const lines = [`${title}: ${theme?.fg('dim', counts) ?? counts}`];
+  for (const record of records.slice(0, limit)) {
+    const summary = summarizeAgent(record);
+    const state = getAgentDisplayState(summary);
+    const meta = agentDisplayMeta(state, theme);
+    const handback = summary.normalizedResult?.status && summary.normalizedResult.status !== 'unknown'
+      ? ` · ${summary.normalizedResult.status}/${summary.normalizedResult.confidence}`
+      : '';
+    const active = summary.activeTool ? ` · tool:${summary.activeTool}` : '';
+    const risk = agentRiskBadge(summary, theme);
+    const riskText = risk ? ` · ${risk}` : '';
+    const result = summary.normalizedResult?.result ?? summary.normalizedResult?.next ?? summary.lastOutput;
+    const preview = result ? ` — ${result.replace(/\n/g, ' ').slice(0, 90)}${summary.outputTruncated ? '…' : ''}` : '';
+    const name = theme?.fg('accent', summary.name) ?? summary.name;
+    const id = theme?.fg('dim', shortId(summary.agentId)) ?? shortId(summary.agentId);
+    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${active} · ${formatElapsed(record.startedAt)}${theme?.fg('dim', preview) ?? preview}`);
+  }
+  if (records.length > limit) lines.push(theme?.fg('muted', `… ${records.length - limit} more; use AgentMessage list for full details.`) ?? `… ${records.length - limit} more; use AgentMessage list for full details.`);
+  return lines;
 }
 
 export function formatAgentLedgerDetails(limit = 10): string {
-  const records = [...agents.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-  const lines = [formatAgentLedger()];
-  for (const record of records.slice(0, limit)) {
-    const summary = summarizeAgent(record);
-    const handback = summary.normalizedResult?.status && summary.normalizedResult.status !== 'unknown'
-      ? ` · handback:${summary.normalizedResult.status}/${summary.normalizedResult.confidence}`
-      : '';
-    const active = summary.activeTool ? ` · tool:${summary.activeTool}` : '';
-    const preview = summary.lastOutput ? ` — ${summary.lastOutput.replace(/\n/g, ' ').slice(0, 90)}${summary.outputTruncated ? '…' : ''}` : '';
-    lines.push(`- ${summary.name} (${shortId(summary.agentId)}) · ${summary.status}${handback}${active} · ${formatElapsed(record.startedAt)}${preview}`);
-  }
-  if (records.length > limit) lines.push(`… ${records.length - limit} more; use AgentMessage list for full details.`);
-  return lines.join('\n');
+  return buildAgentLedgerLines(limit).join('\n');
 }
 
-function agentLedgerWidgetLines(): string[] | undefined {
-  const records = [...agents.values()].filter((record) => !isDroppable(record) || record.normalizedResult?.status === 'blocked' || record.status === 'failed');
-  if (records.length === 0) return undefined;
-  return formatAgentLedgerDetails(6).split('\n');
+function hasVisibleAgentLedgerRecords(): boolean {
+  return [...agents.values()].some((record) => !isDroppable(record) || record.normalizedResult?.status === 'blocked' || record.status === 'failed');
+}
+
+function agentLedgerWidget(theme?: PiTheme) {
+  return makeRenderer((width) => buildAgentLedgerLines(6, theme).map((line) => truncateToWidth(line, width)));
 }
 
 export function refreshAgentLedgerUi(ctx?: PiContext): void {
@@ -867,12 +1009,37 @@ export function refreshAgentLedgerUi(ctx?: PiContext): void {
     return;
   }
   ctx.ui?.setStatus?.('octocode-agents', formatAgentLedger().replace(/^Octocode agents: /, 'agents: '));
-  ctx.ui?.setWidget?.('octocode-agents', agentLedgerWidgetLines(), { placement: 'belowEditor' });
+  ctx.ui?.setWidget?.(
+    'octocode-agents',
+    hasVisibleAgentLedgerRecords() ? (_tui: unknown, theme: PiTheme) => agentLedgerWidget(theme) : undefined,
+    { placement: 'belowEditor' },
+  );
+}
+
+function formatOctocodeAgentsHelp(): string {
+  return [
+    OCTOCODE_AGENTS_COMMAND_USAGE,
+    '',
+    'Commands:',
+    '- help — show this command reference',
+    '- list/status — show the ledger and refresh footer/widget state',
+    '- inspect <id-or-prefix> — show full worker state, handback, evidence, recent events, and stderr',
+    '- kill <id-or-prefix> — stop one live worker',
+    '- kill-all — stop every live worker',
+    '- prune — remove completed idle records from the in-memory ledger',
+    '- hide — clear the footer/widget ledger for this session',
+    '',
+    'Tip: ids can be full ids or short prefixes shown by list/status.',
+  ].join('\n');
 }
 
 export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext): Promise<void> {
   const [actionRaw, targetRaw] = args.trim().split(/\s+/, 2);
   const action = (actionRaw || 'list').toLowerCase();
+  if (action === 'help' || action === '--help' || action === '-h' || action === '?') {
+    ctx?.ui?.notify?.(formatOctocodeAgentsHelp(), 'info');
+    return;
+  }
   if (action === 'hide' || action === 'clear') {
     ctx?.ui?.setStatus?.('octocode-agents', undefined);
     ctx?.ui?.setWidget?.('octocode-agents', undefined);
@@ -918,7 +1085,7 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
     return;
   }
   if (action !== 'list' && action !== 'status') {
-    ctx?.ui?.notify?.(`Usage: ${OCTOCODE_AGENTS_COMMAND_USAGE}`, 'warning');
+    ctx?.ui?.notify?.(formatOctocodeAgentsHelp(), 'warning');
     return;
   }
   refreshAgentLedgerUi(ctx);
@@ -945,10 +1112,15 @@ function renderSingleAgentResult(record: AgentRecord, header: string): ToolCallR
   if (summary.policyWarnings?.length) contentParts.push(`policy: ${summary.policyWarnings.join(' | ')}`);
   if (summary.normalizedResult?.status && summary.normalizedResult.status !== 'unknown') {
     contentParts.push(`handback: ${summary.normalizedResult.status} · confidence: ${summary.normalizedResult.confidence}`);
+    if (summary.normalizedResult.result) contentParts.push(`result: ${summary.normalizedResult.result}`);
     if (summary.normalizedResult.evidence.length > 0) {
       contentParts.push(`evidence: ${summary.normalizedResult.evidence.slice(0, 3).join('; ')}`);
     }
+    if (summary.normalizedResult.verification) contentParts.push(`verification: ${summary.normalizedResult.verification}`);
     if (summary.normalizedResult.next) contentParts.push(`next: ${summary.normalizedResult.next}`);
+  }
+  if (summary.recoveryRisk?.warnings.length) {
+    contentParts.push(`recovery-risk: ${summary.recoveryRisk.warnings.join(' | ')}`);
   }
   if (output.text) contentParts.push('', output.text);
   if (output.truncated) contentParts.push(`\u2026 output truncated (${output.omittedChars} chars hidden; full content in details)`);
@@ -1127,7 +1299,7 @@ export function registerAgentTools(
         try {
           await waitForAgent(record, Number(params['timeoutMs'] ?? 300000));
         } finally {
-          if (ctx?.hasUI) ctx.ui?.setStatus?.('agent-wait', '');
+          if (ctx?.hasUI) ctx.ui?.setStatus?.('agent-wait', undefined);
         }
         const waitResult = renderSingleAgentResult(record, 'Agent turn completed');
         if (params['remove'] === true) agents.delete(record.id);
@@ -1206,12 +1378,9 @@ export function registerAgentTools(
         output?: string;
       } | null;
       if (det?.agents) {
-        const count = det.agents.length;
-        const running = det.agents.filter((a) => a.status === 'running').length;
-        const exited = det.agents.filter((a) => a.status === 'exited').length;
-        const failed = det.agents.filter((a) => a.status === 'failed').length;
         const squareIcon = theme?.fg('toolTitle', '\u25A6') ?? '\u25A6';
-        const summary = theme?.fg('dim', `${count} agents \u00b7 ${running} running \u00b7 ${exited} done \u00b7 ${failed} failed`) ?? `${count} agents`;
+        const summaryText = formatAgentStateCounts(det.agents);
+        const summary = theme?.fg('dim', summaryText) ?? summaryText;
         const header = `${squareIcon} ${theme?.fg('toolTitle', 'AgentMessage') ?? 'AgentMessage'} list \u00b7 ${summary}`;
         if (!opts.expanded) {
           return makeRenderer((w) => [truncateToWidth(header, w)]);
@@ -1221,12 +1390,11 @@ export function registerAgentTools(
       }
       // single-agent actions
       const agentName = det?.agent?.name ?? 'agent';
-      const agentStatus = det?.agent?.status ?? (ok ? 'idle' : 'failed');
-      const icon = statusIcon(ok ? agentStatus : 'failed', theme);
+      const state = getAgentDisplayState(ok ? (det?.agent ?? { status: 'idle' }) : { status: 'failed' });
+      const meta = agentDisplayMeta(state, theme);
       const label = theme?.fg('toolTitle', 'AgentMessage') ?? 'AgentMessage';
       const nameStr = theme?.fg('accent', agentName) ?? agentName;
-      const statusStr = theme?.fg('dim', agentStatus) ?? agentStatus;
-      const header = `${icon} ${label} \u00b7 ${nameStr} \u00b7 ${statusStr}`;
+      const header = `${meta.icon} ${label} \u00b7 ${nameStr} \u00b7 ${meta.label}`;
       if (!opts.expanded) {
         const preview = det?.output ? det.output.split('\n').find((line) => line.trim())?.trim() : '';
         const suffix = preview ? ` \u2014 ${preview}` : ' \u00b7 no output yet';

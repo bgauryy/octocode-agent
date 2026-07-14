@@ -26,8 +26,10 @@ import { registerOctocodeTools, registerUniqueTool } from './tools/octocode-tool
 import { registerContextTools } from './tools/context-tools.js';
 import {
   cleanupSpawnedAgentsForShutdown,
+  formatAgentLedger,
   handleOctocodeAgentsCommand,
   OCTOCODE_AGENTS_COMMAND_COMPLETIONS,
+  OCTOCODE_AGENTS_COMMAND_DESCRIPTIONS,
   OCTOCODE_AGENTS_COMMAND_USAGE,
   refreshAgentLedgerUi,
   registerAgentTools,
@@ -39,13 +41,17 @@ import { registerSpawnSubagentTool } from './tools/spawn-subagent-tool.js';
 import { registerEditTool } from './tools/edit-tool.js';
 import { registerWriteTool } from './tools/write-tool.js';
 import { registerBashTool } from './tools/bash-tool.js';
+import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
 import { pickProvider } from './web.js';
 import { createHookComposer } from './hook-composer.js';
 import type {
+  BeforeAgentStartEvent,
   PiInstance,
   PiContext,
   OctocodePiExtensionOptions,
   PromptMode,
+  SessionShutdownEvent,
+  ThinkingLevelEvent,
 } from './types.js';
 
 // ─── Re-exports (stable public API) ──────────────────────────────────────────
@@ -88,12 +94,14 @@ export {
   DEFAULT_SPAWN_POLICY,
   evaluateSpawnPolicy,
   OCTOCODE_AGENTS_COMMAND_COMPLETIONS,
+  OCTOCODE_AGENTS_COMMAND_DESCRIPTIONS,
   OCTOCODE_AGENTS_COMMAND_USAGE,
   formatAgentLedger,
   formatAgentLedgerDetails,
   handleOctocodeAgentsCommand,
   listWorkerLedgerEntries,
   normalizeWorkerOutput,
+  evaluateWorkerRecoveryRisk,
   refreshAgentLedgerUi,
   setAgentProcessFactoryForTests,
 } from './tools/agent-tools.js';
@@ -120,12 +128,65 @@ export function getThinkingStatus(ctx: PiContext | undefined, level?: string): s
   return `thinking: ${level ?? 'default'} (${model.id ?? 'model'})`;
 }
 
+export interface OctocodeMetricsState {
+  sessionStartedAt: number;
+  activeTurnStartedAt?: number;
+  lastTurnMs?: number;
+  completedTurns: number;
+}
+
+function formatCompactNumber(value: number): string {
+  if (!Number.isFinite(value)) return 'unknown';
+  if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, '')}m`;
+  if (Math.abs(value) >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
+  return String(Math.round(value));
+}
+
+function formatDuration(ms: number | undefined): string {
+  if (ms === undefined || !Number.isFinite(ms) || ms < 0) return 'n/a';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return seconds > 0 ? `${minutes}m${seconds}s` : `${minutes}m`;
+}
+
+function formatContextUsage(ctx: PiContext | undefined): { text: string; percent?: number } {
+  const usage = ctx?.getContextUsage?.();
+  if (!usage || usage.contextWindow <= 0) return { text: 'ctx n/a' };
+  const percent = Math.round((usage.tokens / usage.contextWindow) * 100);
+  const filled = Math.max(0, Math.min(10, Math.floor(percent / 10)));
+  const bar = `${'▓'.repeat(filled)}${'░'.repeat(10 - filled)}`;
+  return {
+    text: `ctx ${bar} ${percent}% (${formatCompactNumber(usage.tokens)}/${formatCompactNumber(usage.contextWindow)})`,
+    percent,
+  };
+}
+
+export function formatOctocodeMetrics(ctx: PiContext | undefined, state: OctocodeMetricsState, now = Date.now()): string {
+  const context = formatContextUsage(ctx).text;
+  const active = state.activeTurnStartedAt !== undefined ? `active ${formatDuration(now - state.activeTurnStartedAt)}` : `last ${formatDuration(state.lastTurnMs)}`;
+  return `${context} · turns ${state.completedTurns} · ${active} · session ${formatDuration(now - state.sessionStartedAt)}`;
+}
+
+function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetricsState): void {
+  if (!ctx?.hasUI) return;
+  const metrics = formatOctocodeMetrics(ctx, state);
+  ctx.ui?.setStatus?.('octocode-metrics', ctx.ui.theme?.fg('dim', metrics) ?? metrics);
+}
+
 export function applyOctocodeUi(ctx: PiContext | undefined, level?: string): void {
   // setStatus / setHiddenThinkingLabel are TUI-only; guard with hasUI.
   if (!ctx?.hasUI) return;
   const ui = ctx?.ui;
   if (!ui) return;
   ui.setHiddenThinkingLabel?.('Octocode thinking');
+  ui.setTitle?.('Octocode Agent');
+  ui.setHeader?.((_tui: unknown, theme) => makeRenderer((width) => [
+    truncateToWidth(theme.fg('accent', theme.bold('◆ Octocode Agent')), width),
+    truncateToWidth(theme.fg('dim', 'local/GitHub/npm/LSP/chrome/browser/agents'), width),
+    truncateToWidth(theme.fg('muted', 'Try /octocode · /octocode-agents · /octocode-status'), width),
+  ]));
   const label = ui.theme?.fg ? ui.theme.fg('accent', '◆ Octocode') : '◆ Octocode';
   ui.setStatus?.('octocode', label);
   const thinkingStatus = getThinkingStatus(ctx, level);
@@ -133,28 +194,33 @@ export function applyOctocodeUi(ctx: PiContext | undefined, level?: string): voi
     'octocode-thinking',
     ui.theme?.fg ? ui.theme.fg('dim', thinkingStatus) : thinkingStatus,
   );
-  // Branded working indicator — pulsing ◆ animation during agent turns.
-  // setWorkingIndicator is TUI-only and optional-chained throughout.
+  // Glyph-only indicator + branded message: Pi renders these side-by-side,
+  // so keeping "Octocode" out of the frames avoids "Octocode Octocode …".
   const t = ui.theme;
   ui.setWorkingIndicator?.({
     // Use only 'accent' and 'dim' — the two colors confirmed safe in this extension.
     frames: t
       ? [
-          t.fg('accent', '◆') + ' Octocode',
-          t.fg('dim', '◇') + ' Octocode',
-          t.fg('accent', '◆') + ' Octocode',
-          t.fg('dim', '◇') + ' Octocode',
+          t.fg('accent', '✦'),
+          t.fg('dim', '✧'),
+          t.fg('accent', '✶'),
+          t.fg('dim', '✧'),
         ]
-      : ['◆ Octocode', '◇ Octocode', '◆ Octocode', '◇ Octocode'],
-    intervalMs: 350,
+      : ['✦', '✧', '✶', '✧'],
+    intervalMs: 220,
   });
   // Custom working message shown during agent streaming.
-  ui.setWorkingMessage?.('Octocode working…');
+  ui.setWorkingMessage?.('🐙 Octocode thinking…');
 }
 
 function notify(ctx: PiContext | undefined, message: string, level = 'info'): void {
-  // Optional-chain defensively; pi's ui.notify is a no-op in non-UI modes.
-  ctx?.ui?.notify?.(message, level);
+  if (ctx?.ui?.notify) {
+    ctx.ui.notify(message, level);
+    return;
+  }
+
+  const log = level === 'error' ? console.error : level === 'warning' ? console.warn : console.info;
+  log(`[octocode:${level}] ${message}`);
 }
 
 async function confirm(
@@ -215,14 +281,56 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
     disabledBuiltins: [...DISABLED_BUILTIN_TOOL_NAMES],
     passthroughBuiltins: [],
     extensionCommands: [
+      '/octocode',
       '/octocode-status',
       '/octocode-harness',
+      '/octocode-agents',
       '/octocode-setup',
       '/octocode-skills-update',
     ],
     skills: listBundledSkills(baseDir),
     cliNote: `bundled CLI at ${getCLIPath(baseDir)} — run via: node $OCTOCODE_CLI <command>`,
   };
+}
+
+export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string): string {
+  const paths = getAssetPaths(baseDir);
+  const skills = listBundledSkills(baseDir);
+  const context = formatContextUsage(ctx);
+  const promptOk = fs.existsSync(paths.systemPrompt);
+  const cliPath = getCLIPath(baseDir);
+  const searchProvider = pickProvider({});
+  const warnings = [
+    context.percent !== undefined && context.percent >= 90 ? `⚠ context above 90% (${context.percent}%) — consider compacting soon` : '',
+    promptOk ? '' : `⚠ missing system prompt at ${paths.systemPrompt}`,
+    searchProvider === 'duckduckgo' ? '⚠ web search using DuckDuckGo fallback; add Tavily/Serper for stronger results' : '',
+  ].filter(Boolean);
+
+  return [
+    '◆ Octocode dashboard',
+    '',
+    'Status',
+    `${promptOk ? '✓' : '⚠'} system prompt: ${promptOk ? 'found' : 'missing'}`,
+    `✓ tools: ${formatOctocodeToolStatus()} + ${OCTOCODE_SUPPORT_TOOL_NAMES.length} support tools`,
+    `✓ metrics: ${context.text}`,
+    `CLI: node $OCTOCODE_CLI <command> (${cliPath})`,
+    '',
+    'Agents',
+    formatAgentLedger(),
+    '',
+    'Setup',
+    `project APPEND_SYSTEM: ${getAppendSystemTarget('project', ctx?.cwd ?? process.cwd())}`,
+    `global APPEND_SYSTEM: ${getAppendSystemTarget('global', ctx?.cwd ?? process.cwd())}`,
+    '',
+    'Skills',
+    `${skills.length} bundled: ${skills.join(', ') || '(none)'}`,
+    '',
+    'Health',
+    ...(warnings.length > 0 ? warnings : ['✓ no dashboard warnings']),
+    '',
+    'Next actions',
+    '/octocode-agents · /octocode-status · /octocode-harness · /octocode-setup · /octocode-skills-update',
+  ].join('\n');
 }
 
 function renderExtensionHarness(baseDir?: string): string {
@@ -329,6 +437,10 @@ async function wireOctocodePiExtension(
   // reading it once (lazily on the first before_agent_start) avoids a sync disk
   // read on every turn start across long sessions.
   let cachedSystemPromptText: string | null = null;
+  const metricsState: OctocodeMetricsState = {
+    sessionStartedAt: Date.now(),
+    completedTurns: 0,
+  };
 
   // Register --no-context CLI flag before any session starts so Pi can parse it.
   // default:false → context files load normally (octocode-agent launcher already
@@ -359,8 +471,13 @@ async function wireOctocodePiExtension(
       return skillPath ? { skillPaths: [skillPath] } : {};
     });
 
-    hooks.on('session_start', 'octocode-session-start', async (_event, ctx) => {
+    hooks.on('session_start', 'octocode-session-start', async (_event: unknown, ctx: PiContext | undefined) => {
+      metricsState.sessionStartedAt = Date.now();
+      metricsState.activeTurnStartedAt = undefined;
+      metricsState.lastTurnMs = undefined;
+      metricsState.completedTurns = 0;
       applyOctocodeUi(ctx, pi.getThinkingLevel?.());
+      updateOctocodeMetricsUi(ctx, metricsState);
       // Disable weak built-ins (read/grep/find/ls) in favor of Octocode locals.
       try {
         if (disableBuiltinTools(pi)) {
@@ -411,31 +528,38 @@ async function wireOctocodePiExtension(
 
     // Clean up status labels and spawned workers when the session tears down
     // so they don't leak across /new, /resume, /fork, reload, or quit.
-    hooks.on('session_shutdown', 'octocode-session-shutdown', async (_event, ctx) => {
+    hooks.on('session_shutdown', 'octocode-session-shutdown', async (_event: SessionShutdownEvent, ctx: PiContext | undefined) => {
       const cleanedAgents = cleanupSpawnedAgentsForShutdown();
       if (ctx?.hasUI) {
         ctx.ui?.setStatus?.('octocode', '');
         ctx.ui?.setStatus?.('octocode-thinking', '');
+        ctx.ui?.setStatus?.('octocode-metrics', undefined);
         ctx.ui?.setStatus?.('octocode-agents', undefined);
+        ctx.ui?.setStatus?.('agent-wait', undefined);
+        ctx.ui?.setStatus?.('chrome-debug', undefined);
         ctx.ui?.setWidget?.('octocode-agents', undefined);
+        ctx.ui?.setWorkingMessage?.(undefined);
+        ctx.ui?.setWorkingVisible?.(false);
         if (cleanedAgents > 0) {
           ctx.ui?.notify?.(`Octocode closed ${cleanedAgents} spawned subagent(s).`, 'info');
         }
       }
     });
 
-    hooks.on('model_select', 'octocode-model-select', async (_event, ctx) => {
+    hooks.on('model_select', 'octocode-model-select', async (_event: unknown, ctx: PiContext | undefined) => {
       // thinking_level_select fires before model_select when the model change
       // clamps the thinking level, so pi.getThinkingLevel() is already updated.
       applyOctocodeUi(ctx, pi.getThinkingLevel?.());
+      updateOctocodeMetricsUi(ctx, metricsState);
       refreshAgentLedgerUi(ctx);
     });
 
-    hooks.on('thinking_level_select', 'octocode-thinking-select', async (event, ctx) => {
+    hooks.on('thinking_level_select', 'octocode-thinking-select', async (event: ThinkingLevelEvent, ctx: PiContext | undefined) => {
       applyOctocodeUi(ctx, event.level);
+      updateOctocodeMetricsUi(ctx, metricsState);
     });
 
-    hooks.on('before_agent_start', 'octocode-system-prompt', async (event) => {
+    hooks.on('before_agent_start', 'octocode-system-prompt', async (event: BeforeAgentStartEvent) => {
       // Suppress AGENTS.md / CLAUDE.md when --no-context flag is set.
       // For octocode-agent sessions the launcher already passes --no-context-files
       // to pi, so contextFiles is empty before this handler fires — this guard
@@ -483,6 +607,22 @@ async function wireOctocodePiExtension(
 
     registerContextTools(pi, Type, registeredToolNames, registerUniqueTool, notify);
 
+    if (typeof pi.on === 'function') {
+      pi.on('turn_start', async (_event: unknown, ctx: PiContext) => {
+        metricsState.activeTurnStartedAt = Date.now();
+        updateOctocodeMetricsUi(ctx, metricsState);
+      });
+      pi.on('turn_end', async (_event: unknown, ctx: PiContext) => {
+        const now = Date.now();
+        if (metricsState.activeTurnStartedAt !== undefined) {
+          metricsState.lastTurnMs = now - metricsState.activeTurnStartedAt;
+          metricsState.activeTurnStartedAt = undefined;
+        }
+        metricsState.completedTurns += 1;
+        updateOctocodeMetricsUi(ctx, metricsState);
+      });
+    }
+
     registerAgentTools(pi, Type, registeredToolNames, registerUniqueTool);
 
     // Re-assert disabled builtins after registration so a concurrent setActiveTools
@@ -491,6 +631,13 @@ async function wireOctocodePiExtension(
   }
 
   if (!pi.registerCommand) return;
+
+  pi.registerCommand('octocode', {
+    description: 'Show the Octocode dashboard: status, agents, setup, skills, health, and next actions.',
+    handler: async (_args, ctx) => {
+      notify(ctx, formatOctocodeDashboard(ctx), 'info');
+    },
+  });
 
   pi.registerCommand('octocode-status', {
     description: 'Show Octocode Pi extension assets, tools, CLI, and bundled skills.',
@@ -512,7 +659,7 @@ async function wireOctocodePiExtension(
     getArgumentCompletions: (prefix: string) => {
       return OCTOCODE_AGENTS_COMMAND_COMPLETIONS
         .filter((s) => s.startsWith(prefix))
-        .map((s) => ({ value: s, label: s.trim(), description: 'Manage Octocode worker ledger' }));
+        .map((s) => ({ value: s, label: s.trim(), description: OCTOCODE_AGENTS_COMMAND_DESCRIPTIONS[s] }));
     },
     handler: async (args, ctx) => {
       await handleOctocodeAgentsCommand(args, ctx);

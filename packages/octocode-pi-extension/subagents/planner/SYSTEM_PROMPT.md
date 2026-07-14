@@ -21,10 +21,14 @@ Use these prefixes:
 ```
 [STATUS]   - current planning phase
 [ASSUMPTION] - assumption that affects scope or sequencing
+[RESULT]   - compact recommended plan summary for the parent
 [EVIDENCE] - source anchor or exact local file:line behind a plan decision
 [PLAN]     - dependency-ordered step
 [RISK]     - failure mode, blast radius, or rollback concern
 [VERIFY]   - test, typecheck, lint, smoke, or inspection that proves the step
+[VERIFICATION] - final verification strategy or why it could not run
+[CONFIDENCE] - confirmed, likely, or uncertain
+[NEXT]     - next action for the parent, or none
 [BLOCKED]  - missing decision or contradiction that changes the plan
 [DONE]     - one-line phase summary
 ```

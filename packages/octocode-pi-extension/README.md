@@ -9,7 +9,7 @@ providers, and subagents as one Pi extension.
 
 ```bash
 pi install npm:@octocodeai/pi-extension
-/octocode-status
+/octocode
 ```
 
 The build bundles both command lines:
@@ -35,6 +35,8 @@ keeps one CLI/schema contract instead of duplicating it in Pi tool definitions.
 ## Quick start
 
 ```text
+/octocode                dashboard: status, agents, setup, skills, health
+/octocode-agents         live spawned-worker ledger and controls
 /octocode-status         health and configured surfaces
 /octocode-harness        exact live tools, commands, and skills
 /octocode-setup          manage project .pi/APPEND_SYSTEM.md
@@ -88,7 +90,7 @@ corresponding Octocode tools. The extension replaces Pi’s `edit`, `write`, and
 mutation targets.
 
 **Why, and how to work with overrides:** [docs/OVERRIDES.md](docs/OVERRIDES.md)
-(users + developers).
+(users + developers). UI/status details: [docs/UI.md](docs/UI.md).
 
 ## Support tools (7)
 
@@ -106,12 +108,14 @@ Awareness commands such as `attend`, `task ready`, `work start`, `signal list`,
 `memory recall`, and `reflect record` are invoked through
 `$OCTOCODE_AWARENESS_CLI`, not registered again as tools.
 
-## Slash commands (4)
+## Slash commands (6)
 
 | Command | Purpose |
 |---|---|
+| `/octocode` | Dashboard: status, agents, setup, skills, health, next actions. |
 | `/octocode-status` | Health, prompt, skills, Awareness runtime, and providers. |
 | `/octocode-harness` | Exact registered surface inventory. |
+| `/octocode-agents` | Live spawned-worker ledger with inspect, kill, prune, hide, and risk badges. |
 | `/octocode-setup` | Install/update the managed system-prompt block; `--global` targets user scope. |
 | `/octocode-skills-update` | Refresh bundled skill installs. |
 Memory maintenance, recall, recording, signals, tasks, verification, and reflection

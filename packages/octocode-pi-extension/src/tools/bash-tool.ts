@@ -134,14 +134,25 @@ async function runBash(
     let stdout = '';
     let stderr = '';
     let settled = false;
+    const terminateChild = () => {
+      try {
+        if (process.platform !== 'win32' && child.pid) {
+          process.kill(-child.pid, 'SIGTERM');
+        } else {
+          child.kill('SIGTERM');
+        }
+      } catch {
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          /* ignore */
+        }
+      }
+    };
     const timer =
       timeoutSec && timeoutSec > 0
         ? setTimeout(() => {
-            try {
-              child.kill('SIGTERM');
-            } catch {
-              /* ignore */
-            }
+            terminateChild();
             if (!settled) {
               settled = true;
               reject(new Error(`bash timed out after ${timeoutSec}s`));
@@ -150,11 +161,7 @@ async function runBash(
         : null;
 
     const onAbort = () => {
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        /* ignore */
-      }
+      terminateChild();
     };
     signal?.addEventListener('abort', onAbort, { once: true });
 

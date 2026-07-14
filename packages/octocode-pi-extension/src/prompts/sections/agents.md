@@ -27,12 +27,12 @@ Load `octocode-subagent` for host-agnostic decomposition, packets, model routing
 - `return` — name the required result format. Typed specialists may use their declared prefixes.
 
 **Worker result packet (required):**
-- `status` — `complete`, `partial`, or `blocked`.
-- `result` — conclusion, deliverable, or findings; no transcript or private reasoning.
-- `evidence` — at most 8 decisive `path:line`, URL, command, or artifact anchors.
-- `verification` — check performed and outcome, or why it could not run.
-- `confidence` — confirmed, likely, or uncertain, with remaining gaps.
-- `next` — next action or `none`.
+- `[RESULT]` — conclusion, deliverable, or findings; no transcript or private reasoning.
+- `[EVIDENCE]` — at most 8 decisive `path:line`, URL, command, or artifact anchors.
+- `[VERIFICATION]` — check performed and outcome, or why it could not run (`[VERIFY]` is accepted from typed specialists).
+- `[CONFIDENCE]` — confirmed, likely, or uncertain, with remaining gaps.
+- `[NEXT]` — next action or `none`.
+- `[DONE]`, `[BLOCKED]`, or `[FAILED]` — final phase status.
 
 Workers share the current `cwd`, filesystem, and environment-backed services. Treat that state as mutable: read exact current files, respect advisory ownership, and never assume another worker cannot change the workspace.
 
@@ -53,7 +53,7 @@ Workers share the current `cwd`, filesystem, and environment-backed services. Tr
 `[DONE]` means the reported phase ended. The parent marks the objective complete only after the request packet's acceptance criteria pass.
 
 **Cross-agent coordination (all workers + parent):**
-- Workers emit typed-prefixed lines mid-turn (`[STATUS]` / `[EVIDENCE]` / `[FINDING]` / `[BLOCKED]` / `[DONE]` are common; each typed subagent also emits role-specific prefixes: researcher → `[GAP]`/`[QUERY]`; planner → `[PLAN]`/`[RISK]`/`[VERIFY]`; architect → `[ROOT]`/`[IMPACT]`/`[FIX]`; browser-agent → `[METRIC]`/`[SCREENSHOT]`/`[ACTION]`). The parent reads these via `AgentMessage({action:"status"})` without disturbing the running turn — poll periodically so an early `[BLOCKED]` is caught before `wait()` resolves. Parse any `[UPPER_CASE]` line as a signal, not just the common set.
+- Workers emit typed-prefixed lines (`[STATUS]` / `[RESULT]` / `[EVIDENCE]` / `[VERIFICATION]` / `[CONFIDENCE]` / `[NEXT]` / `[BLOCKED]` / `[DONE]` are canonical; typed subagents may also emit role-specific prefixes: researcher → `[FINDING]`/`[GAP]`/`[QUERY]`; planner → `[PLAN]`/`[RISK]`/`[VERIFY]`; architect → `[ROOT]`/`[IMPACT]`/`[FIX]`; browser-agent → `[METRIC]`/`[SCREENSHOT]`/`[ACTION]`). The parent reads available output via `AgentMessage({action:"status"})` without disturbing the worker. `status` reflects completed message chunks and turn-end output; use `wait` when no new output is visible yet. Parse any `[UPPER_CASE]` line as a signal, not just the common set.
 - A `[BLOCKED]` is a worker's question to the parent. Answer with `AgentMessage({action:"send", message:"…"})`, then `wait` for the worker to resume and emit its next `[DONE]`.
 - Worker→worker direct messaging is intentionally forbidden (recursion hazard); route through the parent, not through newly-spawned processes.
 

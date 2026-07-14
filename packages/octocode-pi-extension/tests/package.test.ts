@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { beforeAll, test } from 'vitest';
+import { beforeAll, test, vi } from 'vitest';
 import {
   MANAGED_BLOCK_END,
   MANAGED_BLOCK_START,
@@ -14,6 +14,8 @@ import {
   disableBuiltinReadTool,
   formatStatus,
   applyOctocodeUi,
+  formatOctocodeDashboard,
+  formatOctocodeMetrics,
   getThinkingStatus,
   getAssetPaths,
   getCLIPath,
@@ -33,6 +35,7 @@ import {
   runHookMiddleware,
   setAgentProcessFactoryForTests,
   normalizeWorkerOutput,
+  evaluateWorkerRecoveryRisk,
 } from '../src/index.js';
 import {
   applyCustomEditsToContent,
@@ -1682,14 +1685,29 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
       },
       setHiddenThinkingLabel: (label: string) =>
         calls.push(['thinking', label]),
+      setTitle: (title: string) => calls.push(['title', title]),
+      setHeader: (factory: unknown) => {
+        const component = (factory as (tui: unknown, theme: unknown) => { render: (w?: number) => string[] })(undefined, {
+          fg: (_color: string, text: string) => `<${text}>`,
+          bold: (t: string) => t,
+        });
+        calls.push(['header', component.render(120).join(' | ')]);
+      },
       setStatus: (key: string, value: string) =>
         calls.push(['status', key, value]),
+      setWorkingIndicator: (indicator: { frames: string[]; intervalMs?: number }) =>
+        calls.push(['indicator', indicator.frames.join(''), String(indicator.intervalMs)]),
+      setWorkingMessage: (message?: string) => calls.push(['working', message ?? '']),
     },
   });
   assert.deepEqual(calls, [
     ['thinking', 'Octocode thinking'],
+    ['title', 'Octocode Agent'],
+    ['header', '<◆ Octocode Agent> | <local/GitHub/npm/LSP/chrome/browser/agents> | <Try /octocode · /octocode-agents · /octocode-status>'],
     ['status', 'octocode', '<◆ Octocode>'],
     ['status', 'octocode-thinking', '<thinking: unknown model>'],
+    ['indicator', '<✦><✧><✶><✧>', '220'],
+    ['working', '🐙 Octocode thinking…'],
   ]);
   assert.equal(
     getThinkingStatus({ model: { id: 'gpt-5.5', reasoning: false } }, 'high'),
@@ -1701,9 +1719,103 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
   );
 });
 
+test('formats Octocode metrics with context tokens and timing', () => {
+  const metrics = formatOctocodeMetrics(
+    { getContextUsage: () => ({ tokens: 12_345, contextWindow: 200_000 }) },
+    {
+      sessionStartedAt: 1_000,
+      activeTurnStartedAt: 4_000,
+      completedTurns: 2,
+    },
+    65_000
+  );
+
+  assert.equal(metrics, 'ctx ░░░░░░░░░░ 6% (12.3k/200k) · turns 2 · active 1m1s · session 1m4s');
+  assert.equal(
+    formatOctocodeMetrics(undefined, { sessionStartedAt: 0, completedTurns: 0 }, 500),
+    'ctx n/a · turns 0 · last n/a · session 500ms'
+  );
+});
+
+test('Octocode metrics status updates on session and turn lifecycle', async () => {
+  const { handlers } = await captureExtensions();
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const ctx = {
+    hasUI: true,
+    getContextUsage: () => ({ tokens: 50_000, contextWindow: 100_000 }),
+    ui: {
+      theme: {
+        fg: (color: string, text: string) => `<${color}:${text}>`,
+        bold: (text: string) => text,
+      },
+      setHiddenThinkingLabel: () => undefined,
+      setTitle: () => undefined,
+      setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]),
+      setWorkingIndicator: () => undefined,
+      setWorkingMessage: () => undefined,
+    },
+  };
+
+  await handlers.get('session_start')![0]!(undefined, ctx);
+  assert.ok(statusCalls.some(([key, value]) => key === 'octocode-metrics' && /ctx ▓▓▓▓▓░░░░░ 50% \(50k\/100k\)/.test(value ?? '')));
+
+  const turnStart = handlers.get('turn_start')!.at(-1)!;
+  const turnEnd = handlers.get('turn_end')!.at(-1)!;
+  await turnStart(undefined, ctx);
+  await turnEnd(undefined, ctx);
+
+  const latestMetrics = [...statusCalls].reverse().find(([key]) => key === 'octocode-metrics')?.[1] ?? '';
+  assert.match(latestMetrics, /turns 1/);
+  assert.match(latestMetrics, /last \d+(ms|s)/);
+});
+
+test('Octocode dashboard command summarizes status, agents, setup, skills, and help', async () => {
+  const { commands } = await captureExtensions();
+  const notices: Array<{ message: string; level?: string }> = [];
+  const ctx = {
+    hasUI: true,
+    cwd: packageRoot,
+    getContextUsage: () => ({ tokens: 75_000, contextWindow: 100_000 }),
+    ui: {
+      notify: (message: string, level?: string) => notices.push({ message, level }),
+    },
+  };
+
+  assert.equal(commands.has('octocode'), true, 'top-level /octocode command is registered');
+  await commands.get('octocode')!.handler('', ctx);
+
+  assert.equal(notices.at(-1)?.level, 'info');
+  const dashboard = notices.at(-1)?.message ?? '';
+  assert.match(dashboard, /^◆ Octocode dashboard/m);
+  assert.match(dashboard, /Status/);
+  assert.match(dashboard, /Agents/);
+  assert.match(dashboard, /Setup/);
+  assert.match(dashboard, /Skills/);
+  assert.match(dashboard, /Next actions/);
+  assert.match(dashboard, /\/octocode-agents/);
+});
+
+test('formatOctocodeDashboard is scan-friendly and includes health warnings', () => {
+  const dashboard = formatOctocodeDashboard({
+    getContextUsage: () => ({ tokens: 92_000, contextWindow: 100_000 }),
+    cwd: packageRoot,
+  });
+
+  assert.match(dashboard, /^◆ Octocode dashboard/m);
+  assert.match(dashboard, /ctx ▓▓▓▓▓▓▓▓▓░ 92%/);
+  assert.match(dashboard, /⚠ context above 90%/);
+  assert.match(dashboard, /CLI:/);
+  assert.match(dashboard, /\/octocode-status/);
+});
+
 test('CLI slash commands removed — extension commands are lean', async () => {
   const { commands } = await captureExtensions();
   // Extension-only commands still registered.
+  assert.equal(
+    commands.has('octocode'),
+    true,
+    'friendly dashboard command is registered'
+  );
   assert.equal(
     commands.has('octocode-status'),
     true,
@@ -1723,6 +1835,11 @@ test('CLI slash commands removed — extension commands are lean', async () => {
     commands.has('octocode-skills-update'),
     true,
     'skills-update command is registered'
+  );
+  assert.deepEqual(
+    listExtensionHarness().extensionCommands,
+    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-agents', '/octocode-setup', '/octocode-skills-update'],
+    'harness inventory lists every public Octocode slash command'
   );
   assert.equal(commands.has('octocode-memory-digest'), false, 'legacy memory digest command removed');
   assert.equal(commands.has('octocode-memory-forget'), false, 'legacy memory forget command removed');
@@ -1811,7 +1928,9 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
   const { commands, flags, flagValues, handlers, sentUserMessages } =
     await captureExtensions();
   const notifications: Array<{ message: string; level?: string }> = [];
-  const statuses: Array<[string, string]> = [];
+  const statuses: Array<[string, string | undefined]> = [];
+  const widgets: Array<[string, unknown]> = [];
+  const working: Array<{ kind: 'message'; value?: string } | { kind: 'visible'; value: boolean }> = [];
   let reloads = 0;
   let confirmAnswer = false;
   const ctx = {
@@ -1830,7 +1949,12 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
       notify: (message: string, level?: string) =>
         notifications.push({ message, level }),
       confirm: async () => confirmAnswer,
-      setStatus: (key: string, value: string) => statuses.push([key, value]),
+      setStatus: (key: string, value: string | undefined) => statuses.push([key, value]),
+      setWidget: (key: string, value: unknown) => widgets.push([key, value]),
+      setWorkingMessage: (message?: string) =>
+        working.push({ kind: 'message', value: message }),
+      setWorkingVisible: (visible: boolean) =>
+        working.push({ kind: 'visible', value: visible }),
       setHiddenThinkingLabel: (label: string) =>
         statuses.push(['hidden-thinking', label]),
     },
@@ -1901,11 +2025,33 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
     assert.ok(
       statuses.some(
         ([key, value]) =>
-          key === 'octocode-thinking' && value.includes('thinking: low')
+          key === 'octocode-thinking' && value?.includes('thinking: low')
       )
     );
+
+    await handlers.get('session_shutdown')![0]!({ reason: 'new' }, ctx);
+    assert.ok(statuses.some(([key, value]) => key === 'agent-wait' && value === undefined));
+    assert.ok(statuses.some(([key, value]) => key === 'chrome-debug' && value === undefined));
+    assert.ok(widgets.some(([key, value]) => key === 'octocode-agents' && value === undefined));
+    assert.deepEqual(working.at(-2), { kind: 'message', value: undefined });
+    assert.deepEqual(working.at(-1), { kind: 'visible', value: false });
   } finally {
     fs.rmSync(ctx.cwd, { recursive: true, force: true });
+  }
+});
+
+test('extension lifecycle notifications fall back to console outside UI contexts', async () => {
+  const { commands } = await captureExtensions();
+  const infos: string[] = [];
+  const originalInfo = console.info;
+  console.info = (message?: unknown) => {
+    infos.push(String(message));
+  };
+  try {
+    await commands.get('octocode-status')!.handler('', undefined);
+    assert.ok(infos.some((message) => /\[octocode:info\].*Octocode Pi extension/.test(message)));
+  } finally {
+    console.info = originalInfo;
   }
 });
 
@@ -1918,12 +2064,12 @@ test('manage_context type:compact queues a continuation after compaction complet
     onError?: (err: Error) => void;
   } = {};
   const notifications: Array<{ message: string; level: string }> = [];
+  const working: Array<{ kind: 'message'; value?: string } | { kind: 'visible'; value: boolean }> = [];
 
   const result = await invokeExecute(
     compactTool,
     { type: 'compact', instructions: 'focus on recent file changes' },
     {
-      // hasUI:true required so onComplete notification fires (notify is guarded in TUI/RPC mode)
       hasUI: true,
       compact: (options: typeof compactOptions) => {
         compactOptions = options;
@@ -1931,6 +2077,10 @@ test('manage_context type:compact queues a continuation after compaction complet
       ui: {
         notify: (message: string, level: string) =>
           notifications.push({ message, level }),
+        setWorkingMessage: (message?: string) =>
+          working.push({ kind: 'message', value: message }),
+        setWorkingVisible: (visible: boolean) =>
+          working.push({ kind: 'visible', value: visible }),
       },
     }
   );
@@ -1957,6 +2107,10 @@ test('manage_context type:compact queues a continuation after compaction complet
     message: 'Compaction completed. Continuing from the compacted context.',
     level: 'info',
   });
+  assert.deepEqual(working, [
+    { kind: 'message', value: undefined },
+    { kind: 'visible', value: false },
+  ]);
 });
 
 test('manage_context type:compact reports compaction errors without queueing continuation', async () => {
@@ -1964,12 +2118,12 @@ test('manage_context type:compact reports compaction errors without queueing con
   const compactTool = tools.get('manage_context')!;
   let compactOptions: { onError?: (err: Error) => void } = {};
   const notifications: Array<{ message: string; level: string }> = [];
+  const working: Array<{ kind: 'message'; value?: string } | { kind: 'visible'; value: boolean }> = [];
 
   await invokeExecute(
     compactTool,
     { type: 'compact' },
     {
-      // hasUI:true required so onError notification fires (notify is guarded in TUI/RPC mode)
       hasUI: true,
       compact: (options: typeof compactOptions) => {
         compactOptions = options;
@@ -1977,6 +2131,10 @@ test('manage_context type:compact reports compaction errors without queueing con
       ui: {
         notify: (message: string, level: string) =>
           notifications.push({ message, level }),
+        setWorkingMessage: (message?: string) =>
+          working.push({ kind: 'message', value: message }),
+        setWorkingVisible: (visible: boolean) =>
+          working.push({ kind: 'visible', value: visible }),
       },
     }
   );
@@ -1987,6 +2145,10 @@ test('manage_context type:compact reports compaction errors without queueing con
     message: 'Compaction failed: Nothing to compact',
     level: 'error',
   });
+  assert.deepEqual(working, [
+    { kind: 'message', value: undefined },
+    { kind: 'visible', value: false },
+  ]);
 });
 
 test('manage_context type:new, missing compact support, and render states are explicit', async () => {
@@ -2092,6 +2254,7 @@ test('turn_end auto-compact queues a continuation after compaction completes (no
     onError?: (err: Error) => void;
   } = {};
   const notifications: Array<{ message: string; level?: string }> = [];
+  const working: Array<{ kind: 'message'; value?: string } | { kind: 'visible'; value: boolean }> = [];
   const ctx = (usage: { tokens: number; contextWindow: number }) => ({
     hasUI: true,
     getContextUsage: () => usage,
@@ -2101,6 +2264,10 @@ test('turn_end auto-compact queues a continuation after compaction completes (no
     ui: {
       notify: (message: string, level?: string) =>
         notifications.push({ message, level }),
+      setWorkingMessage: (message?: string) =>
+        working.push({ kind: 'message', value: message }),
+      setWorkingVisible: (visible: boolean) =>
+        working.push({ kind: 'visible', value: visible }),
     },
   });
 
@@ -2146,6 +2313,10 @@ test('turn_end auto-compact queues a continuation after compaction completes (no
     message: 'Auto-compaction complete. Resuming…',
     level: 'info',
   });
+  assert.deepEqual(working, [
+    { kind: 'message', value: undefined },
+    { kind: 'visible', value: false },
+  ]);
 });
 
 test('turn_end auto-compact reports errors without queueing a continuation', async () => {
@@ -2156,6 +2327,7 @@ test('turn_end auto-compact reports errors without queueing a continuation', asy
     onError?: (err: Error) => void;
   } = {};
   const notifications: Array<{ message: string; level?: string }> = [];
+  const working: Array<{ kind: 'message'; value?: string } | { kind: 'visible'; value: boolean }> = [];
 
   await handler(undefined, {
     hasUI: true,
@@ -2166,6 +2338,10 @@ test('turn_end auto-compact reports errors without queueing a continuation', asy
     ui: {
       notify: (message: string, level?: string) =>
         notifications.push({ message, level }),
+      setWorkingMessage: (message?: string) =>
+        working.push({ kind: 'message', value: message }),
+      setWorkingVisible: (visible: boolean) =>
+        working.push({ kind: 'visible', value: visible }),
     },
   });
 
@@ -2180,6 +2356,31 @@ test('turn_end auto-compact reports errors without queueing a continuation', asy
     message: 'Auto-compaction failed: summary request failed',
     level: 'error',
   });
+  assert.deepEqual(working, [
+    { kind: 'message', value: undefined },
+    { kind: 'visible', value: false },
+  ]);
+});
+
+test('turn_end auto-compact warns instead of silently no-oping when compact is unavailable', async () => {
+  const { handlers, sentUserMessages } = await captureExtensions();
+  const handler = handlers.get('turn_end')![0]!;
+  const notifications: Array<{ message: string; level?: string }> = [];
+
+  await handler(undefined, {
+    hasUI: true,
+    getContextUsage: () => ({ tokens: 850, contextWindow: 1000 }),
+    ui: {
+      notify: (message: string, level?: string) =>
+        notifications.push({ message, level }),
+    },
+  });
+
+  assert.deepEqual(notifications.at(-1), {
+    message: 'Auto-compaction skipped: ctx.compact is not available in this runtime.',
+    level: 'warning',
+  });
+  assert.equal(sentUserMessages.length, 0);
 });
 
 test('lists every extension harness surface', () => {
@@ -2292,6 +2493,7 @@ test('native Octocode tool wrapper throws so Pi marks execution failed', async (
 
 interface MockAgentProcess {
   stdinWrites: string[];
+  killSignals: Array<NodeJS.Signals | undefined>;
   stdin: { write(data: string): void; end(): void };
   stdout: { on(event: string, cb: (chunk: Buffer | string) => void): void };
   stderr: { on(event: string, cb: (chunk: Buffer | string) => void): void };
@@ -2312,6 +2514,7 @@ function createMockAgentProcess(): MockAgentProcess {
   const errorHandlers: Array<(...args: unknown[]) => void> = [];
   const proc: MockAgentProcess = {
     stdinWrites: [],
+    killSignals: [],
     stdin: {
       write(data: string) {
         proc.stdinWrites.push(data);
@@ -2334,7 +2537,8 @@ function createMockAgentProcess(): MockAgentProcess {
       if (event === 'close') closeHandlers.push(cb);
       if (event === 'error') errorHandlers.push(cb);
     },
-    kill() {
+    kill(signal?: NodeJS.Signals) {
+      proc.killSignals.push(signal);
       proc.killed = true;
       return true;
     },
@@ -2359,16 +2563,32 @@ test('normalizeWorkerOutput extracts typed worker handbacks', () => {
     '[STATUS] scanning repo',
     '[EVIDENCE] packages/foo.ts:12 proves the claim',
     '[FINDING] found the issue',
+    '[VERIFICATION] yarn test passed',
     '[CONFIDENCE] likely',
+    '[NEXT] parent should inspect the linked file',
     '[DONE] ready for parent verification',
   ].join('\n'));
 
   assert.equal(normalized.status, 'done');
   assert.equal(normalized.result, 'found the issue');
   assert.deepEqual(normalized.evidence, ['packages/foo.ts:12 proves the claim']);
+  assert.equal(normalized.verification, 'yarn test passed');
   assert.equal(normalized.confidence, 'likely');
-  assert.equal(normalized.next, 'ready for parent verification');
+  assert.equal(normalized.next, 'parent should inspect the linked file');
   assert.deepEqual(normalized.rawPrefixes.STATUS, ['scanning repo']);
+});
+
+test('normalizeWorkerOutput accepts role-specific verification and result prefixes', () => {
+  const normalized = normalizeWorkerOutput([
+    '[ROOT] cache key ignored provider',
+    '[VERIFY] yarn workspace @octocodeai/pi-extension test passed',
+    '[DONE] root cause isolated',
+  ].join('\n'));
+
+  assert.equal(normalized.status, 'done');
+  assert.equal(normalized.result, 'cache key ignored provider');
+  assert.equal(normalized.verification, 'yarn workspace @octocodeai/pi-extension test passed');
+  assert.equal(normalized.next, 'root cause isolated');
 });
 
 test('normalizeWorkerOutput falls back safely for unstructured output', () => {
@@ -2378,6 +2598,30 @@ test('normalizeWorkerOutput falls back safely for unstructured output', () => {
   assert.equal(normalized.confidence, 'uncertain');
   assert.deepEqual(normalized.evidence, []);
   assert.equal(normalized.result, 'plain worker response');
+});
+
+test('evaluateWorkerRecoveryRisk warns on long evidence-free repair loops', () => {
+  const risk = evaluateWorkerRecoveryRisk([
+    '[STATUS] repairing the parser',
+    '[ACTION] retry the same parser fix',
+    '[STATUS] repairing the parser',
+    '[ACTION] retry the same parser fix',
+  ].join('\n'));
+
+  assert.ok(risk.warnings.some((warning) => /recovery loop/i.test(warning)));
+  assert.ok(risk.warnings.some((warning) => /evidence/i.test(warning)));
+});
+
+test('evaluateWorkerRecoveryRisk stays quiet when recovery has evidence and verification', () => {
+  const risk = evaluateWorkerRecoveryRisk([
+    '[STATUS] reproducing failure',
+    '[EVIDENCE] tests/parser.test.ts:42 fails before fix',
+    '[ACTION] patch parser guard',
+    '[VERIFICATION] yarn workspace @octocodeai/pi-extension test passed',
+    '[DONE] ready',
+  ].join('\n'));
+
+  assert.deepEqual(risk.warnings, []);
 });
 
 test('runHookMiddleware preserves order, merges results, and stops tool_call on block', async () => {
@@ -2414,6 +2658,46 @@ test('runHookMiddleware blocks tool_call when middleware throws', async () => {
   });
 });
 
+test('AgentMessage status surfaces recovery-risk warnings for looping workers', async () => {
+  const spawned: Array<{ proc: MockAgentProcess }> = [];
+  setAgentProcessFactoryForTests(() => {
+    const proc = createMockAgentProcess();
+    spawned.push({ proc });
+    return proc;
+  });
+  try {
+    const { tools } = await captureExtensions();
+    const spawnTool = tools.get('spawnAgent')!;
+    const messageTool = tools.get('AgentMessage')!;
+    const result = await invokeExecute(spawnTool, { task: 'repair parser', name: 'repair-loop' });
+    const agentId = (result.details as { agent: { agentId: string } }).agent.agentId;
+
+    spawned[0]!.proc.emitStdout({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'text',
+          text: '[STATUS] repairing parser\n[ACTION] retry parser fix\n[STATUS] repairing parser\n[ACTION] retry parser fix',
+        }],
+      },
+    });
+
+    const list = await invokeExecute(messageTool, { action: 'list' });
+    const listText = list.content[0]!.text;
+    assert.match(listText, /⚠ recovery/);
+
+    const status = await invokeExecute(messageTool, { action: 'status', agentId });
+    const text = status.content[0]!.text;
+    const summary = (status.details as { agent: { recoveryRisk?: { warnings: string[] } } }).agent;
+    assert.match(text, /recovery-risk:/);
+    assert.ok(summary.recoveryRisk?.warnings.some((warning) => /recovery loop/i.test(warning)));
+  } finally {
+    cleanupSpawnedAgentsForShutdown();
+    setAgentProcessFactoryForTests(null);
+  }
+});
+
 test('evaluateSpawnPolicy warns about packet gaps, provider guidance, fan-out, and recursive tools', () => {
   const result = evaluateSpawnPolicy({
     task: 'Goal: check docs\nScope: docs only',
@@ -2426,6 +2710,19 @@ test('evaluateSpawnPolicy warns about packet gaps, provider guidance, fan-out, a
   assert.ok(result.warnings.some((warning) => /ownership/i.test(warning)));
   assert.ok(result.warnings.some((warning) => /provider/i.test(warning)));
   assert.ok(result.warnings.some((warning) => /Recursive worker tool/i.test(warning)));
+
+  const scoped = evaluateSpawnPolicy({
+    task: 'Goal: check docs\nScope: docs only\nOwnership: read-only\nAcceptance: summary\nReturn: packet',
+    model: 'zai-org/GLM-5.2',
+  });
+  assert.ok(scoped.warnings.some((warning) => /provider/i.test(warning)));
+
+  const withProvider = evaluateSpawnPolicy({
+    task: 'Goal: check docs\nScope: docs only\nOwnership: read-only\nAcceptance: summary\nReturn: packet',
+    model: 'zai-org/GLM-5.2',
+    provider: 'nebius',
+  });
+  assert.ok(!withProvider.warnings.some((warning) => /provider/i.test(warning)));
 
   const blocked = evaluateSpawnPolicy({ task: 'Goal: overflow' }, 50);
   assert.equal(blocked.allowed, false);
@@ -2474,9 +2771,15 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     assert.ok(messageTool, 'AgentMessage registered');
     assert.ok(agentsCommand, 'octocode-agents command registered');
     assert.match(agentsCommand.description, /inspect <id>/);
+    const inspectCompletion = agentsCommand.getArgumentCompletions?.('i')?.find(item => item.value === 'inspect ');
     assert.ok(
-      agentsCommand.getArgumentCompletions?.('i')?.some(item => item.value === 'inspect '),
+      inspectCompletion,
       'octocode-agents completions include inspect from the centralized command contract'
+    );
+    assert.match(inspectCompletion.description ?? '', /full state/);
+    assert.ok(
+      agentsCommand.getArgumentCompletions?.('h')?.some(item => item.value === 'help'),
+      'octocode-agents completions include help'
     );
     assert.match(
       spawnTool.promptGuidelines?.join('\n') ?? '',
@@ -2569,58 +2872,97 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
         role: 'assistant',
         content: [{
           type: 'text',
-          text: '[STATUS] checking docs\n[EVIDENCE] docs/a.md:1\n[CONFIDENCE] confirmed\n[DONE] ready for synthesis',
+          text: '[STATUS] checking docs\n[RESULT] docs are current\n[EVIDENCE] docs/a.md:1\n[VERIFICATION] inspected docs/a.md\n[CONFIDENCE] confirmed\n[NEXT] parent can synthesize\n[DONE] ready for synthesis',
         }],
       },
     });
     spawned[0]!.proc.emitStdout({ type: 'agent_end', messages: [] });
-    const waitResult = await invokeExecute(messageTool, {
-      action: 'wait',
-      agentId,
-      timeoutMs: 1000,
-    });
-    const waitAgent = (waitResult.details as { agent: { normalizedResult?: { status: string; evidence: string[]; confidence: string; next?: string }; ledgerEvents?: Array<{ type: string; message?: string }>; policyWarnings?: string[] } }).agent;
+    const waitStatuses: Array<[string, string | undefined]> = [];
+    const waitResult = await invokeExecute(
+      messageTool,
+      {
+        action: 'wait',
+        agentId,
+        timeoutMs: 1000,
+      },
+      {
+        hasUI: true,
+        ui: {
+          setStatus: (key: string, value: string | undefined) =>
+            waitStatuses.push([key, value]),
+        },
+      }
+    );
+    const waitText = waitResult.content[0]!.text;
+    const waitAgent = (waitResult.details as { agent: { normalizedResult?: { status: string; result?: string; evidence: string[]; verification?: string; confidence: string; next?: string }; ledgerEvents?: Array<{ type: string; message?: string }>; policyWarnings?: string[] } }).agent;
     assert.equal(waitAgent.normalizedResult?.status, 'done');
+    assert.equal(waitAgent.normalizedResult?.result, 'docs are current');
     assert.deepEqual(waitAgent.normalizedResult?.evidence, ['docs/a.md:1']);
+    assert.equal(waitAgent.normalizedResult?.verification, 'inspected docs/a.md');
     assert.equal(waitAgent.normalizedResult?.confidence, 'confirmed');
-    assert.equal(waitAgent.normalizedResult?.next, 'ready for synthesis');
+    assert.equal(waitAgent.normalizedResult?.next, 'parent can synthesize');
+    assert.match(waitText, /result: docs are current/);
+    assert.match(waitText, /verification: inspected docs\/a\.md/);
     assert.ok(waitAgent.ledgerEvents?.some(event => event.type === 'spawned'));
     assert.ok(waitAgent.ledgerEvents?.some(event => event.type === 'handback'));
+    assert.deepEqual(
+      waitStatuses.filter(([key]) => key === 'agent-wait'),
+      [
+        ['agent-wait', '⧗ Waiting for “docs-scout”…'],
+        ['agent-wait', undefined],
+      ]
+    );
     assert.ok(waitAgent.policyWarnings?.some(warning => /missing recommended section/i.test(warning)));
     const ledgerEntries = listWorkerLedgerEntries();
-    assert.ok(ledgerEntries.some(entry => entry.agentId === agentId && entry.normalizedStatus === 'done'));
+    assert.ok(ledgerEntries.some(entry =>
+      entry.agentId === agentId
+      && entry.normalizedStatus === 'done'
+      && entry.result === 'docs are current'
+      && entry.verification === 'inspected docs/a.md'
+    ));
 
+    type TestTheme = { fg(color: string, text: string): string; bold(text: string): string };
+    type TestWidgetContent = string[] | ((tui: unknown, theme: TestTheme) => { render(width: number): string[] });
+    const widgetCalls: Array<{
+      name: string;
+      content: TestWidgetContent | undefined;
+      opts?: { placement?: 'aboveEditor' | 'belowEditor' };
+    }> = [];
     const notifications: Array<{ message: string; level?: string }> = [];
-    await agentsCommand.handler('', {
+    const agentCommandCtx = () => ({
       hasUI: true,
       ui: {
         notify: (message: string, level?: string) => notifications.push({ message, level }),
         setStatus: () => undefined,
-        setWidget: () => undefined,
+        setWidget: (name: string, content: TestWidgetContent | undefined, opts?: { placement?: 'aboveEditor' | 'belowEditor' }) =>
+          widgetCalls.push({ name, content, opts }),
       },
     });
+    await agentsCommand.handler('help', agentCommandCtx());
+    assert.match(notifications.at(-1)?.message ?? '', /inspect <id-or-prefix>/);
+    assert.match(notifications.at(-1)?.message ?? '', /ids can be full ids or short prefixes/);
+
+    await agentsCommand.handler('', agentCommandCtx());
     assert.match(notifications.at(-1)?.message ?? '', /docs-scout/);
     assert.match(notifications.at(-1)?.message ?? '', /done/);
-
-    await agentsCommand.handler(`inspect ${agentId.slice(0, 8)}`, {
-      hasUI: true,
-      ui: {
-        notify: (message: string, level?: string) => notifications.push({ message, level }),
-        setStatus: () => undefined,
-        setWidget: () => undefined,
-      },
+    const widgetCall = widgetCalls.find(call => call.name === 'octocode-agents' && typeof call.content === 'function');
+    assert.equal(widgetCall?.opts?.placement, 'belowEditor');
+    const widget = (widgetCall?.content as (tui: unknown, theme: TestTheme) => { render(width: number): string[] })(null, {
+      fg: (color: string, text: string) => `<${color}:${text}>`,
+      bold: (text: string) => `*${text}*`,
     });
+    const widgetLines = widget.render(160);
+    assert.match(widgetLines[0] ?? '', /<toolTitle:Octocode agents>/);
+    assert.ok(
+      widgetLines.some(line => /<success:✓>/.test(line) && /<accent:docs-scout>/.test(line)),
+      'agent ledger widget uses theme-aware status and name coloring'
+    );
+
+    await agentsCommand.handler(`inspect ${agentId.slice(0, 8)}`, agentCommandCtx());
     assert.match(notifications.at(-1)?.message ?? '', /Agent status \[docs-scout\]/);
     assert.match(notifications.at(-1)?.message ?? '', /evidence: docs\/a\.md:1/);
 
-    await agentsCommand.handler('prune', {
-      hasUI: true,
-      ui: {
-        notify: (message: string, level?: string) => notifications.push({ message, level }),
-        setStatus: () => undefined,
-        setWidget: () => undefined,
-      },
-    });
+    await agentsCommand.handler('prune', agentCommandCtx());
     assert.match(notifications.at(-1)?.message ?? '', /Pruned 0 Octocode agent/);
     await invokeExecute(messageTool, {
       action: 'send',
@@ -2792,7 +3134,7 @@ test('spawnAgent covers octocode resource options, prompt file cleanup, list ren
       messageTool.renderResult!(list, { expanded: false }, theme).render(
         120
       )[0]!,
-      /1 agents/
+      /1 total · 1 running/
     );
     assert.ok(
       messageTool.renderResult!(list, { expanded: true }, theme).render(160)
@@ -3269,6 +3611,39 @@ test('AgentMessage wait collects worker output and kill terminates stale workers
     assert.match(killed.content[0]!.text, /killed/);
     assert.equal(spawned[1]!.killed, true);
   } finally {
+    setAgentProcessFactoryForTests(null);
+  }
+});
+
+test('AgentMessage kill escalates to SIGKILL when a worker does not exit after SIGTERM', async () => {
+  vi.useFakeTimers();
+  const spawned: MockAgentProcess[] = [];
+  setAgentProcessFactoryForTests((_command, _args, _options) => {
+    const proc = createMockAgentProcess();
+    spawned.push(proc);
+    return proc;
+  });
+  try {
+    const { tools } = await captureExtensions();
+    const spawnTool = tools.get('spawnAgent')!;
+    const messageTool = tools.get('AgentMessage')!;
+
+    const result = await invokeExecute(
+      spawnTool,
+      { task: 'ignore sigterm', name: 'stubborn-worker' },
+      { cwd: '/repo' }
+    );
+    const agentId = (result.details as { agent: { agentId: string } }).agent
+      .agentId;
+
+    await invokeExecute(messageTool, { action: 'kill', agentId });
+    assert.deepEqual(spawned[0]!.killSignals, ['SIGTERM']);
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    assert.deepEqual(spawned[0]!.killSignals, ['SIGTERM', 'SIGKILL']);
+  } finally {
+    vi.useRealTimers();
     setAgentProcessFactoryForTests(null);
   }
 });

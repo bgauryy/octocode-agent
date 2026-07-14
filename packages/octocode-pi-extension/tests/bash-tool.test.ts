@@ -26,6 +26,54 @@ test('extractBashWriteTargets finds cp/mv destinations', () => {
   assert.deepEqual(targets, [path.join(cwd, 'b.ts')]);
 });
 
+test('bash abort terminates the shell process and resolves without hanging', async () => {
+  const { default: extension } = await import('../src/index.js');
+  const tools = new Map<
+    string,
+    {
+      name: string;
+      execute: (
+        id: string,
+        params: Record<string, unknown>,
+        sig?: AbortSignal,
+        upd?: unknown,
+        ctx?: { cwd?: string },
+      ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+    }
+  >();
+  await extension({
+    on: () => undefined,
+    sendUserMessage: () => undefined,
+    registerTool: (def: { name: string }) => {
+      tools.set(def.name, def as (typeof tools extends Map<string, infer V> ? V : never));
+    },
+    getActiveTools: () => ['bash'],
+    setActiveTools: () => undefined,
+  });
+  const bash = tools.get('bash')!;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-bash-abort-'));
+  const controller = new AbortController();
+  try {
+    const promise = bash.execute(
+      'abort',
+      { command: 'trap "exit 143" TERM; while true; do echo err >&2; sleep 0.05; done' },
+      controller.signal,
+      undefined,
+      { cwd: tmp },
+    );
+    setTimeout(() => controller.abort(), 50);
+    const result = await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('bash abort timed out')), 2_000)),
+    ]);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]!.text, /err/);
+  } finally {
+    controller.abort();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('bash override blocks writes outside allowed roots', async () => {
   const { default: extension } = await import('../src/index.js');
   const tools = new Map<

@@ -24,10 +24,11 @@ export default defineConfig({
         'src/awareness.ts',
       ],
       thresholds: {
-        // branches: CDP/bash-subprocess paths require live Chrome/OS — 65% is the
-        // realistic floor. Raise this as new integration harnesses land.
+        // Package exception to the repo-wide 90% branch target: CDP and bash
+        // subprocess branches require live Chrome/OS integration harnesses, so
+        // 65% is the realistic floor for unit coverage. Raise this as new
+        // integration harnesses land; never lower it without code-reviewed proof.
         // statements/lines/functions cover pure logic; keep these higher.
-        // Never lower these numbers without a code-reviewed justification.
         branches: 65,
         functions: 80,
         lines: 85,

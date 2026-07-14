@@ -84,7 +84,10 @@ export function registerWriteTool(
         const tmpPath = `${absolutePath}.octocode-tmp~`;
         await writeFile(tmpPath, content, 'utf8');
         if (signal?.aborted) {
-          await rename(tmpPath, absolutePath).catch(() => undefined); // best-effort: promote anyway
+          // The content has already reached disk; finish the atomic rename so callers
+          // never see a half-written target. If promotion fails, surface that cause
+          // instead of hiding it behind the abort error.
+          await rename(tmpPath, absolutePath);
           throw new Error('Operation aborted');
         }
         await rename(tmpPath, absolutePath);

@@ -1,6 +1,6 @@
 import type { PiContext, PiInstance } from './types.js';
 
-export type HookMiddleware = (...args: any[]) => unknown | Promise<unknown>;
+export type HookMiddleware = (...args: unknown[]) => unknown | Promise<unknown>;
 
 export interface HookMiddlewareEntry {
   name: string;
@@ -34,7 +34,7 @@ function formatHookError(error: unknown, event: string, middleware: string): str
 export async function runHookMiddleware(
   event: string,
   middlewares: HookMiddlewareEntry[],
-  args: any[],
+  args: unknown[],
   options: HookComposerOptions = {},
 ): Promise<unknown> {
   let aggregate: unknown;
@@ -62,9 +62,9 @@ export class OctocodeHookComposer {
     private readonly options: HookComposerOptions = {},
   ) {}
 
-  on(event: string, name: string, handler: HookMiddleware): void {
+  on<TArgs extends unknown[]>(event: string, name: string, handler: (...args: TArgs) => unknown | Promise<unknown>): void {
     const entries = this.middlewares.get(event) ?? [];
-    entries.push({ name, handler });
+    entries.push({ name, handler: handler as HookMiddleware });
     this.middlewares.set(event, entries);
     if (this.registeredEvents.has(event)) return;
     this.registeredEvents.add(event);

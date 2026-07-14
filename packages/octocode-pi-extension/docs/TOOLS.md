@@ -162,7 +162,14 @@ Key params: `scheme` (required), `url`, `port` (default 9222), `launch`, `headle
 Routes a natural-language browser task to the right CDP scheme(s), runs initial analysis, and returns a spawn config for a dedicated `browser-agent` subagent. Use when the task type is unclear; the tool selects the optimal schemes.
 
 ### `spawnSubagent`
-Spawn a typed, pre-configured Pi subagent. Currently supports `agent: "browser-agent"`.
+Spawn a typed, pre-configured Pi subagent. Supported agents are:
+
+|Agent|Use|
+|---|---|
+|`browser-agent`|Multi-turn Chrome DevTools work: security, network, DOM, coverage, workers, emulation, automation.|
+|`researcher`|Evidence gathering across web, GitHub, npm, local files, binaries, and LSP.|
+|`planner`|Dependency-ordered implementation plans, risks, verification strategy, and RFC handoffs.|
+|`architect`|Root-cause and architecture analysis with local/LSP/binary tools, history, web, and targeted bash.|
 
 ```
 spawnSubagent({
@@ -177,7 +184,7 @@ AgentMessage({action:"wait", agentId:"abc123", timeoutMs:60000})
 AgentMessage({action:"kill", agentId:"abc123", remove:true})
 ```
 
-Params: `agent`, `task`, `context`, `url`, `port`, `launch`, `headless`, `model`, `thinking`, `name`, `cwd`.
+Params: `agent`, `task`, `context`, `url`, `port`, `launch`, `headless`, `model`, `provider`, `thinking`, `name`, `cwd`. `url`, `port`, `launch`, and `headless` apply to `browser-agent`; other agents ignore browser-only params.
 
 ---
 
@@ -192,11 +199,15 @@ Spawn policy is centralized and warning-first: packets should include goal, scop
 
 `FORBIDDEN_WORKER_TOOLS`: `spawnAgent`, `AgentMessage`, `spawnSubagent` — workers cannot spawn sub-workers.
 
+### `/octocode`
+Top-level dashboard for users: status, live agents, setup paths, bundled skills, health warnings, and next actions. It is the fastest way to confirm the extension is active.
+
 ### `/octocode-agents`
-Interactive command for the in-session worker ledger. It updates the Octocode agents footer/widget and sends a compact notification. Maintainer architecture and Pi SDK mapping are documented in [`AGENT_ORCHESTRATOR.md`](./AGENT_ORCHESTRATOR.md).
+Interactive command for the in-session worker ledger. It updates the Octocode agents footer/widget and sends a compact notification. Recovery-risk badges (`⚠ recovery`, `⚠ needs verify`) appear in list output and the widget. Maintainer architecture and Pi SDK mapping are documented in [`AGENT_ORCHESTRATOR.md`](./AGENT_ORCHESTRATOR.md).
 
 |Command|Use|
 |---|---|
+|`/octocode-agents help`|Show examples, lifecycle hints, and id-prefix guidance|
 |`/octocode-agents` or `/octocode-agents list`|List worker id, name, status, handback, active tool, age, and output preview|
 |`/octocode-agents status`|Refresh status/widget and show the ledger|
 |`/octocode-agents inspect <id-or-prefix>`|Show one worker's full status, normalized handback, evidence, policy warnings, and output preview|
@@ -205,7 +216,9 @@ Interactive command for the in-session worker ledger. It updates the Octocode ag
 |`/octocode-agents prune`|Remove terminal worker records from the in-session ledger|
 |`/octocode-agents hide`|Clear the footer/widget for this session|
 
-Worker handbacks are normalized from typed prefixes like `[EVIDENCE]`, `[CONFIDENCE]`, `[BLOCKED]`, `[DONE]`, and `[FAILED]`. Raw output remains available through `AgentMessage` details/expanded result.
+Slash completions expose these subcommands with action-specific descriptions.
+
+Worker handbacks are normalized from typed prefixes like `[EVIDENCE]`, `[VERIFICATION]`, `[CONFIDENCE]`, `[BLOCKED]`, `[DONE]`, and `[FAILED]`. Raw output remains available through `AgentMessage` details/expanded result.
 
 ### `AgentMessage`
 Coordinate spawned workers. Always set explicit `timeoutMs` on `wait`.

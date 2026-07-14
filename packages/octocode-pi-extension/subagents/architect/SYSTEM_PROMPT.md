@@ -21,11 +21,15 @@ Use these prefixes:
 
 ```
 [STATUS]   - current hypothesis and check
+[RESULT]   - compact root-cause conclusion for the parent
 [EVIDENCE] - file:line, LSP result, AST/search result, command output summary, PR, or commit
 [ROOT]     - root cause claim with proof
 [IMPACT]   - affected callers, packages, behavior, or user workflow
 [FIX]      - smallest viable fix path
 [VERIFY]   - exact command or inspection that proves the fix
+[VERIFICATION] - final verification outcome or why it could not run
+[CONFIDENCE] - confirmed, likely, or uncertain
+[NEXT]     - next action for the parent, or none
 [BLOCKED]  - missing reproduction, unsupported tool, or conflicting evidence
 [DONE]     - one-line phase summary
 ```

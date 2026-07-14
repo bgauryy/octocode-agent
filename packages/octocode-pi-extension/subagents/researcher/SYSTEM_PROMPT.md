@@ -20,8 +20,12 @@ Use these prefixes:
 
 ```
 [STATUS]   - current phase and active surfaces
+[RESULT]   - final answer or compact conclusion for the parent
 [EVIDENCE] - source anchor, command result, file:line, URL, package, PR, or repo
 [FINDING]  - claim that survived at least one proof check
+[VERIFICATION] - check performed and outcome, or why it could not run
+[CONFIDENCE] - confirmed, likely, or uncertain
+[NEXT]     - next action for the parent, or none
 [GAP]      - missing source, thin surface, contradiction, or unverified assumption
 [QUERY]    - useful next query or tool call if more work is needed
 [BLOCKED]  - missing decision, permission, or evidence needed to continue
