@@ -1,11 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {
-  createPiAwarenessBridge,
-  getPiAwarenessAgentId,
-  resolveDbPath,
-  wirePiAwarenessHooks,
-} from './awareness.js';
 import { propagateOctocodeEnv, getOctocodeHome } from './env.js';
 import {
   OCTOCODE_DIRECT_TOOL_NAMES,
@@ -13,15 +7,11 @@ import {
   OVERRIDDEN_BUILTIN_TOOL_NAMES,
   OCTOCODE_SUPPORT_TOOL_NAMES,
 } from './constants.js';
-import { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getCLIPath, getAwarenessCLIPath } from './assets.js';
+import { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getCLIPath } from './assets.js';
 
 // Expose the bundled CLI path as an env var so agents can use: node $OCTOCODE_CLI <command>
 // Set once at module load — inherited by all bash subprocesses spawned during the session.
 process.env.OCTOCODE_CLI = getCLIPath();
-// The awareness memory/coordination CLI is the sole agent-facing interface to
-// awareness state (the in-process memory tools were retired). Expose it as
-// node $OCTOCODE_AWARENESS_CLI <noun> <verb> — inherited by bash subprocesses.
-process.env.OCTOCODE_AWARENESS_CLI = getAwarenessCLIPath();
 import {
   shouldAppendSystemPrompt,
   mergeManagedAppendSystem,
@@ -64,7 +54,7 @@ export {
   MANAGED_BLOCK_START,
   MANAGED_BLOCK_END,
 } from './constants.js';
-export { getAssetPaths, getAwarenessCLIPath, readTextIfExists, listBundledSkills, getInstallSource, getCLIPath } from './assets.js';
+export { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getCLIPath } from './assets.js';
 export {
   shouldAppendSystemPrompt,
   renderSystemPromptAddendum,
@@ -79,51 +69,12 @@ export {
   getAppendSystemTarget,
   truncateUserVisibleToolOutput,
 } from './utils.js';
-export { extractPiWriteTargetPaths as extractWriteTargetPaths } from './awareness.js';
 export { runWebTool, renderWebResult, pickProvider } from './web.js';
 export {
   cleanupSpawnedAgentsForShutdown,
   setAgentProcessFactoryForTests,
 } from './tools/agent-tools.js';
 export type { PromptMode, OctocodePiExtensionOptions, SkillInfo, BuildSystemPromptOptions } from './types.js';
-
-export const getAwarenessAgentId = getPiAwarenessAgentId;
-
-// ─── Awareness bridge ────────────────────────────────────────────────────────
-
-/**
- * The octocode-awareness harness skill dir bundled with this extension. It is
- * passed as `skillRoot` so the harness self-edit gate engages under Pi exactly
- * as it does for shell hosts, whose pre-edit.sh derives its own
- * OCTOCODE_SKILL_ROOT from the script location. Without a skillRoot the Pi gate
- * is a silent no-op. Returns undefined if the bundle is absent (dev checkouts),
- * leaving the awareness default (env OCTOCODE_SKILL_ROOT, else disabled).
- */
-export function bundledAwarenessSkillRoot(): string | undefined {
-  const dir = path.join(getAssetPaths().skillsDir, 'octocode-awareness');
-  return fs.existsSync(dir) ? dir : undefined;
-}
-
-function withAwarenessSkillRoot<T extends { skillRoot?: unknown }>(options: T): T {
-  if (options.skillRoot != null) return options;
-  const skillRoot = bundledAwarenessSkillRoot();
-  return skillRoot ? { ...options, skillRoot } : options;
-}
-
-export function createAwarenessBridge(
-  options: Record<string, unknown> = {},
-): ReturnType<typeof createPiAwarenessBridge> {
-  return createPiAwarenessBridge(withAwarenessSkillRoot(options));
-}
-
-export function createAwarenessHooksAddon(
-  options: Parameters<typeof wirePiAwarenessHooks>[1] = {},
-): (pi: PiInstance) => ReturnType<typeof wirePiAwarenessHooks> {
-  const merged = withAwarenessSkillRoot(options ?? {});
-  return function octocodeAwarenessHooksAddon(pi: PiInstance): ReturnType<typeof wirePiAwarenessHooks> {
-    return wirePiAwarenessHooks(pi as unknown as Parameters<typeof wirePiAwarenessHooks>[0], merged);
-  };
-}
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
 
@@ -192,11 +143,6 @@ export function formatStatus(baseDir?: string): string {
   const skills = listBundledSkills(baseDir);
   const promptStatus = fs.existsSync(paths.systemPrompt) ? 'found' : 'missing';
 
-  const dbPath = resolveDbPath(null);
-  const dbStatus = fs.existsSync(dbPath)
-    ? `found (${dbPath})`
-    : `not yet created (${dbPath})`;
-
   const searchProvider = pickProvider({});
   const searchKeys = ['TAVILY_API_KEY', 'TAVILY_API_TOKEN', 'SERPER_API_KEY'].filter(
     (k) => process.env[k],
@@ -207,9 +153,6 @@ export function formatStatus(baseDir?: string): string {
     'Octocode Pi extension',
     `system prompt: ${promptStatus}`,
     `skills: ${skills.length}${skills.length > 0 ? ` (${skills.join(', ')})` : ''}`,
-    `awareness DB: ${dbStatus}`,
-    `awareness runtime: @octocodeai/octocode-awareness (bundled runtime)`,
-    `awareness CLI: ${getAwarenessCLIPath(baseDir)} — use via: node $OCTOCODE_AWARENESS_CLI <noun> <verb>`,
     `octocode tools: ${formatOctocodeToolStatus()}`,
     `bundled CLI: ${getCLIPath(baseDir)} — use via: node $OCTOCODE_CLI <command>`,
     `disabled/replaced built-ins: overridden: ${OVERRIDDEN_BUILTIN_TOOL_NAMES.join(', ')}${DISABLED_BUILTIN_TOOL_NAMES.length ? `; removed: ${DISABLED_BUILTIN_TOOL_NAMES.join(', ')}` : ''}`,
@@ -228,7 +171,6 @@ export interface ExtensionHarness {
   extensionCommands: string[];
   skills: string[];
   cliNote: string;
-  awarenessCliNote: string;
 }
 
 export function listExtensionHarness(baseDir?: string): ExtensionHarness {
@@ -246,7 +188,6 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
     ],
     skills: listBundledSkills(baseDir),
     cliNote: `bundled CLI at ${getCLIPath(baseDir)} — run via: node $OCTOCODE_CLI <command>`,
-    awarenessCliNote: `bundled Awareness CLI at ${getAwarenessCLIPath(baseDir)} — run via: node $OCTOCODE_AWARENESS_CLI <noun> <verb>`,
   };
 }
 
@@ -263,7 +204,6 @@ function renderExtensionHarness(baseDir?: string): string {
       : 'builtin passthrough: (none)',
     `extension commands: ${harness.extensionCommands.join(', ')}`,
     `CLI: ${harness.cliNote}`,
-    `Awareness CLI: ${harness.awarenessCliNote}`,
     `skills (${harness.skills.length}): ${harness.skills.join(', ')}`,
   ].join('\n');
 }
@@ -351,10 +291,6 @@ async function wireOctocodePiExtension(
   opts: { promptMode: PromptMode },
 ): Promise<void> {
   const { promptMode } = opts;
-  // Preserve a user-configured stable identity, but never mistake an identity
-  // derived for one Pi session as explicit configuration for the next session.
-  const configuredAwarenessAgentId = process.env.OCTOCODE_AGENT_ID?.trim() || null;
-  let derivedAwarenessAgentId: string | null = null;
   // Cache the system prompt text: the file doesn't change during a session, so
   // reading it once (lazily on the first before_agent_start) avoids a sync disk
   // read on every turn start across long sessions.
@@ -376,19 +312,6 @@ async function wireOctocodePiExtension(
   disableBuiltinTools(pi);
 
   if (pi.on) {
-    // Awareness hook wiring must not take down the whole extension: a failure here
-    // (unexpected Pi API shape, awareness library error) would skip every downstream
-    // pi.on() handler (resources_discover, session_start, session_shutdown). Surface it
-    // and continue so the rest of the harness stays wired.
-    try {
-      createAwarenessHooksAddon()(pi);
-    } catch (error) {
-      console.error(
-        '[octocode-pi-extension] Failed to wire awareness hooks:',
-        error instanceof Error ? error.message : error,
-      );
-    }
-
     pi.on('resources_discover', async () => {
       const paths = getAssetPaths();
       const skillPath = existingDirectory(paths.skillsDir);
@@ -397,26 +320,6 @@ async function wireOctocodePiExtension(
 
     pi.on('session_start', async (_event, ctx) => {
       applyOctocodeUi(ctx, pi.getThinkingLevel?.());
-      // Pin the current session's agent id into the environment so it is shared by BOTH the
-      // in-process awareness hooks (which read OCTOCODE_AGENT_ID first) and any
-      // `octocode-awareness` CLI calls the agent spawns via bash — those child
-      // processes inherit this env. Without it the CLI defaults to the literal
-      // "agent" and verify/reflect/lock calls fail the ownership check against
-      // hook-declared runs. Explicit user configuration stays stable; derived
-      // identities refresh on every /new, /resume, or sequential session.
-      try {
-        if (configuredAwarenessAgentId) {
-          process.env.OCTOCODE_AGENT_ID = configuredAwarenessAgentId;
-        } else {
-          if (process.env.OCTOCODE_AGENT_ID === derivedAwarenessAgentId) {
-            delete process.env.OCTOCODE_AGENT_ID;
-          }
-          derivedAwarenessAgentId = getAwarenessAgentId(ctx);
-          process.env.OCTOCODE_AGENT_ID = derivedAwarenessAgentId;
-        }
-      } catch {
-        /* fail-open: id pinning is non-critical; hooks still derive one per call */
-      }
       // Disable weak built-ins (read/grep/find/ls) in favor of Octocode locals.
       try {
         if (disableBuiltinTools(pi)) {
@@ -475,10 +378,6 @@ async function wireOctocodePiExtension(
         if (cleanedAgents > 0) {
           ctx.ui?.notify?.(`Octocode closed ${cleanedAgents} spawned subagent(s).`, 'info');
         }
-      }
-      if (!configuredAwarenessAgentId && process.env.OCTOCODE_AGENT_ID === derivedAwarenessAgentId) {
-        delete process.env.OCTOCODE_AGENT_ID;
-        derivedAwarenessAgentId = null;
       }
     });
 
@@ -545,13 +444,6 @@ async function wireOctocodePiExtension(
     // Re-assert disabled builtins after registration so a concurrent setActiveTools
     // (or Pi defaulting the full builtin set) cannot leave read/grep/find/ls active.
     disableBuiltinTools(pi);
-
-    // Awareness is NOT duplicated as Pi tools or commands. The agent reaches
-    // awareness state through the octocode-awareness CLI (node $OCTOCODE_AWARENESS_CLI …),
-    // driven by the octocode-awareness skill; the lifecycle (file presence,
-    // conflict block, verify gate, briefings, handoff) is automated by the
-    // awareness hooks wired above. Memory remains available through that CLI
-    // (`memory recall`, `memory record`, `memory forget`) and its bundled skill.
   }
 
   if (!pi.registerCommand) return;

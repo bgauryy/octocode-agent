@@ -25,10 +25,7 @@ export const DISABLED_BUILTIN_TOOL_NAMES = ['read', 'grep', 'find', 'ls'] as con
 // Same-name registerTool overrides (Pi keeps the name; Octocode owns the implementation).
 export const OVERRIDDEN_BUILTIN_TOOL_NAMES = ['edit', 'write', 'bash'] as const;
 
-// Awareness memory/coordination is intentionally absent: it is not exposed as
-// agent tools. Agents drive it through the octocode-awareness CLI
-// (node $OCTOCODE_AWARENESS_CLI <noun> <verb>) and the octocode-awareness skill,
-// with the edit/verify lifecycle automated by the awareness hooks.
+// Support tools: typed subagent orchestration, web, and browser surfaces.
 export const OCTOCODE_SUPPORT_TOOL_NAMES = [
   'web',
   'chromeDebug',

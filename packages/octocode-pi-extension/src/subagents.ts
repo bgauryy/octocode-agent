@@ -111,7 +111,6 @@ export function getExternalSkillDirs(): string[] {
 }
 
 export const OCTOCODE_SKILL_NAMES = [
-  'octocode-awareness',
   'octocode-brainstorming',
   'octocode-prompt-optimizer',
   'octocode-research',
@@ -132,10 +131,9 @@ function bundledSkillPath(
   // Fallbacks: skills installed outside the package — `npx octocode skill --name <skill>
   // --platform pi` lands in ~/.pi/agent/skills/, and monorepo layouts often stage skills
   // at <cwd>/.agents/skills/ via `octocode skill --add --path ...`. Surfacing them lets
-  // typed subagents load skills the package itself doesn't ship (this extension ships
-  // only octocode-awareness); a manual install (`npx octocode skill ... --platform pi`)
-  // is required for the rest. First hit wins — the bundled copy wins over an external install
-  // when both exist, keeping tests deterministic.
+  // typed subagents load skills the package itself doesn't ship; install them via
+  // `npx octocode skill ... --platform pi` as needed. First hit wins — the bundled
+  // copy wins over an external install when both exist, keeping tests deterministic.
   for (const root of [SKILLS_DIR, ...getExternalSkillDirs()]) {
     if (fs.existsSync(path.join(root, skillName, 'SKILL.md'))) {
       return path.join(root, skillName);

@@ -48,8 +48,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@octocodeai/config": "workspace:*",
-    "@octocodeai/octocode-awareness": "workspace:*",
+    "@octocodeai/config": "^17.0.1",
     "@types/node": "^25.9.3",
     "@vitest/coverage-v8": "^4.1.9",
     "typescript": "^5.8.3",

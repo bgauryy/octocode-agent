@@ -1,6 +1,4 @@
-// Contract tests for the pi-extension. The awareness bridge uses direct imports
-// from @octocodeai/octocode-awareness for runtime behavior, while the package also
-// bundles the awareness/reflection skill folders for Pi's skill loader.
+// Contract tests for the pi-extension.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,9 +11,7 @@ import {
   SYSTEM_PROMPT_MARKER,
   OCTOCODE_DIRECT_TOOL_NAMES,
   OCTOCODE_SUPPORT_TOOL_NAMES,
-  createAwarenessBridge,
   disableBuiltinReadTool,
-  extractWriteTargetPaths,
   formatStatus,
   applyOctocodeUi,
   getThinkingStatus,
@@ -40,12 +36,10 @@ import {
   recordFileReadState,
 } from '../src/tools/edit-tool.js';
 import { assertPathAllowed } from '../src/tools/path-guard.js';
-import { connectDb, startWork } from '@octocodeai/octocode-awareness';
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
 const distDir = path.join(packageRoot, 'dist');
 const EXPECTED_OCTOCODE_SKILLS = [
-  'octocode-awareness',
   'octocode-brainstorming',
   'octocode-prompt-optimizer',
   'octocode-research',
@@ -59,10 +53,7 @@ let distAssetsReady = false;
 
 function ensureDistAssetsForUnitTests(): void {
   if (distAssetsReady) return;
-  if (
-    fs.existsSync(path.join(distDir, 'index.js'))
-    && fs.existsSync(path.join(distDir, 'skills', 'octocode-awareness', 'scripts', 'schema.mjs'))
-  ) {
+  if (fs.existsSync(path.join(distDir, 'index.js'))) {
     distAssetsReady = true;
     return;
   }
@@ -93,26 +84,6 @@ function withTempMemoryHome(fn: (tmp?: string) => void | Promise<void>) {
     } finally {
       if (previous === undefined) delete process.env['OCTOCODE_MEMORY_HOME'];
       else process.env['OCTOCODE_MEMORY_HOME'] = previous;
-      fs.rmSync(tmp, { recursive: true, force: true });
-    }
-  };
-}
-
-interface IsolatedDbCtx {
-  cwd: string;
-  dbPath: string;
-}
-
-function withIsolatedDb(fn: (ctx: IsolatedDbCtx) => Promise<void>) {
-  return async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-pi-db-'));
-    const ctx: IsolatedDbCtx = {
-      cwd: tmp,
-      dbPath: path.join(tmp, 'awareness.sqlite3'),
-    };
-    try {
-      await fn(ctx);
-    } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   };
@@ -279,15 +250,10 @@ function argValues(args: string[], flag: string): string[] {
 }
 
 function assertHasAllOctocodeSkills(skillArgs: string[]): void {
-  // Environment-adaptive: assert every Octocode skill the package actually bundles
-  // (per listBundledSkills) intersected with the known universe is passed to the
-  // subagent. In the full monorepo this is all 8 skills; in the standalone subset it
-  // is just octocode-awareness. The canonical awareness skill must always ship.
+  // Assert every Octocode skill the package actually bundles (per listBundledSkills)
+  // is passed to the subagent. Subset checkouts ship no skills here, so this is a
+  // no-op when the package bundles none.
   const bundled = listBundledSkills(packageRoot);
-  assert.ok(
-    bundled.includes('octocode-awareness'),
-    'octocode-awareness is always bundled'
-  );
   const expected = EXPECTED_OCTOCODE_SKILLS.filter(name => bundled.includes(name));
   for (const skillName of expected) {
     assert.ok(
@@ -386,23 +352,6 @@ test('build copies bundled Octocode skills without secret env files', () => {
       `${skill} SKILL.md is copied from the repo-root bundle`
     );
   }
-  assert.ok(
-    skills.includes('octocode-awareness'),
-    'canonical octocode-awareness skill is always bundled'
-  );
-  assert.equal(
-    fs.readFileSync(
-      path.join(distDir, 'skills', 'octocode-awareness', 'SKILL.md'),
-      'utf8'
-    ),
-    fs.readFileSync(
-      path.resolve(
-        packageRoot,
-        '../octocode-awareness/out/skills/octocode-awareness/SKILL.md'
-      ),
-      'utf8'
-    )
-  );
   assert.equal(
     fs.existsSync(path.join(distDir, 'skills', 'octocode-reflection')),
     false
@@ -542,17 +491,10 @@ test('getInstallSource returns npm source for node_modules installs, local path 
 });
 
 test(
-  'formatStatus reports the dist assets and Awareness runtime',
+  'formatStatus reports the dist assets',
   withTempMemoryHome(() => {
     const status = formatStatus(distDir);
     assert.match(status, /system prompt: found/);
-    assert.match(status, /octocode-awareness/);
-    assert.match(
-      status,
-      /awareness runtime: @octocodeai\/octocode-awareness \(bundled runtime\)/
-    );
-    assert.match(status, /awareness DB: not yet created/);
-    assert.match(status, /awareness CLI:.*awareness\.mjs/);
     assert.match(status, /octocode tools: 13 native Pi tools/);
     assert.match(status, /bundled CLI:.*octocode\.js/);
     assert.match(
@@ -561,128 +503,6 @@ test(
     );
     assert.match(status, /removed: read, grep, find, ls/);
     assert.doesNotMatch(status, /passthrough: bash/);
-  })
-);
-
-test('write target extraction supports Pi write and edit inputs', () => {
-  assert.deepEqual(extractWriteTargetPaths('read', { path: 'src/a.js' }), []);
-  assert.deepEqual(
-    extractWriteTargetPaths('write', {
-      path: ' src/a.js ',
-      filePaths: ['src/b.js', 'src/a.js'],
-    }),
-    ['src/a.js', 'src/b.js']
-  );
-  assert.deepEqual(
-    extractWriteTargetPaths('edit', {
-      file_path: 'src/c.js',
-      paths: ['src/d.js'],
-    }),
-    ['src/c.js', 'src/d.js']
-  );
-});
-
-test(
-  'awareness bridge aggregates advisory work and finalizes its automatic HOOK run PENDING at shutdown',
-  withIsolatedDb(async ctx => {
-    await withAgentId('pi-test-agent', async () => {
-      const bridge = createAwarenessBridge();
-
-      const result = await bridge.handleToolCall(
-        {
-          toolName: 'write',
-          toolCallId: 'tool-1',
-          input: { path: 'src/a.js' },
-        },
-        ctx
-      );
-      assert.equal(result, undefined);
-      assert.deepEqual(bridge.pendingToolFiles.get('tool-1'), ['src/a.js']);
-      assert.match(bridge.pendingToolRuns.get('tool-1')!, /^run_/);
-
-      assert.equal(fs.existsSync(ctx.dbPath), true);
-      const { DatabaseSync } = await import('node:sqlite');
-      const db = new DatabaseSync(ctx.dbPath);
-      const active = db
-        .prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status='ACTIVE'")
-        .get() as { c: number };
-      assert.equal(active.c, 1);
-      const locks = db.prepare('SELECT COUNT(*) AS c FROM locks').get() as {
-        c: number;
-      };
-      assert.equal(locks.c, 0, 'ordinary bridge edits do not acquire exclusive locks');
-      const activePresence = db.prepare(
-        'SELECT COUNT(*) AS c FROM run_files WHERE ended_at IS NULL'
-      ).get() as { c: number };
-      assert.equal(activePresence.c, 1);
-      db.close();
-
-      await bridge.handleToolResult({ toolCallId: 'tool-1' }, ctx);
-      assert.equal(bridge.pendingToolFiles.has('tool-1'), false);
-
-      const beforeShutdown = new DatabaseSync(ctx.dbPath);
-      assert.equal((beforeShutdown.prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status='ACTIVE'").get() as { c: number }).c, 1);
-      beforeShutdown.close();
-      await bridge.handleSessionShutdown({}, ctx);
-
-      const db2 = new DatabaseSync(ctx.dbPath);
-      const pending = db2
-        .prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status='PENDING'")
-        .get() as { c: number };
-      assert.equal(
-        pending.c,
-        1,
-        'shutdown finalizes the aggregate PENDING (verification still owed)'
-      );
-      const noLocks = db2.prepare('SELECT COUNT(*) AS c FROM locks').get() as {
-        c: number;
-      };
-      assert.equal(noLocks.c, 0, 'advisory work never created a lock row');
-      const endedPresence = db2.prepare(
-        'SELECT COUNT(*) AS c FROM run_files WHERE ended_at IS NOT NULL'
-      ).get() as { c: number };
-      assert.equal(endedPresence.c, 1);
-      db2.close();
-    });
-  })
-);
-
-test(
-  'awareness bridge blocks only on lock conflicts',
-  withIsolatedDb(async ctx => {
-    const db = connectDb(ctx.dbPath!);
-    const explicit = startWork(db, {
-      agentId: 'other-agent',
-      workspacePath: ctx.cwd,
-      targetFiles: ['src/conflict.js'],
-      rationale: 'sensitive migration',
-      testPlan: 'migration checks',
-      ttlMs: 60_000,
-      exclusive: true,
-    });
-    assert.equal(explicit.ok, true);
-    db.close();
-
-    await withAgentId('pi-test-agent', async () => {
-      const bridge = createAwarenessBridge();
-      const result = (await bridge.handleToolCall(
-        {
-          toolName: 'edit',
-          toolCallId: 'tool-2',
-          input: { path: 'src/conflict.js' },
-        },
-        ctx
-      )) as { block: boolean; reason: string };
-
-      assert.equal(result.block, true);
-      assert.match(result.reason, /Octocode awareness blocked this edit/);
-      assert.match(
-        result.reason,
-        /other-agent/,
-        'conflict message names the holding agent'
-      );
-      assert.equal(bridge.pendingToolFiles.has('tool-2'), false);
-    });
   })
 );
 
@@ -2378,16 +2198,10 @@ test('lists every extension harness surface', () => {
   assert.deepEqual(harness.disabledBuiltins, ['read', 'grep', 'find', 'ls']);
   assert.deepEqual(harness.passthroughBuiltins, []);
   assert.ok(harness.extensionCommands.includes('/octocode-harness'));
-  assert.ok(harness.skills.includes('octocode-awareness'));
   assert.match(
     harness.cliNote,
     /bundled CLI.*octocode\.js/,
     'cliNote shows bundled CLI path'
-  );
-  assert.match(
-    harness.awarenessCliNote,
-    /bundled Awareness CLI.*awareness\.mjs/,
-    'awarenessCliNote shows bundled Awareness CLI path'
   );
   assert.ok(!('cliCommands' in harness), 'cliCommands removed from harness');
 });
@@ -2480,37 +2294,6 @@ test('native Octocode tool wrapper throws so Pi marks execution failed', async (
       ),
     /path|expected string/
   );
-});
-
-test('awareness bridge fails open on non-conflict errors', async () => {
-  await withAgentId('pi-test-agent', async () => {
-    const messages: Array<{ level: string; message: string }> = [];
-    const bridge = createAwarenessBridge();
-    const result = await bridge.handleToolCall(
-      { toolName: 'write', toolCallId: 'tool-3', input: { path: 'src/a.js' } },
-      {
-        cwd: '/repo',
-        dbPath: '/dev/null/cannot-create-dir/awareness.sqlite3',
-        ui: {
-          notify: (message: string, level?: string) =>
-            messages.push({ level: level ?? 'info', message }),
-        },
-      }
-    );
-
-    assert.equal(result, undefined, 'fail-open: undefined, not {block}');
-    assert.equal(
-      bridge.pendingToolFiles.has('tool-3'),
-      false,
-      'no pending entry when pre-flight threw'
-    );
-    assert.equal(messages.length, 1);
-    assert.equal(messages[0]!.level, 'warning');
-    assert.match(
-      messages[0]!.message,
-      /Octocode awareness warning; continuing:/
-    );
-  });
 });
 
 // ─── spawnAgent / AgentMessage: real parallel process orchestration ─────────
@@ -3008,7 +2791,7 @@ test('spawnSubagent starts the browser-agent with the typed prompt, tools, all O
     assert.match(initialPrompt, /audit cookie flags and service workers/);
 
     assert.match(result.content[0]!.text, /\[SPAWNED\] Browser Agent/);
-    assert.match(result.content[0]!.text, /skills: .*octocode-awareness/);
+    assert.match(result.content[0]!.text, /skills: [^\n]*browser-agent/);
     assert.match(result.content[0]!.text, /resourceMode: octocode/);
     const collapsed = spawnSubagent.renderResult!(result, {
       expanded: false,

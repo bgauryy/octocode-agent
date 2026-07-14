@@ -14,10 +14,7 @@
     "noFallthroughCasesInSwitch": true,
     "resolveJsonModule": true,
     "types": ["node"],
-    "baseUrl": ".",
-    "paths": {
-      "@octocodeai/octocode-awareness": ["../octocode-awareness/dist/src/index"]
-    }
+    "baseUrl": "."
   },
   "include": ["src/**/*", "tests/**/*"],
   "exclude": ["node_modules", "dist"]
