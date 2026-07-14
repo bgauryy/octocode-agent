@@ -25,14 +25,26 @@ test('coder prompt exposes an explicit delegation and worker lifecycle contract'
     assert.doesNotMatch(SYSTEM_PROMPT, /block until done/);
     assert.doesNotMatch(SYSTEM_PROMPT, /2 failed steers|correction failure 2/);
 });
-test('coder prompt keeps safety and delegation before detailed tool routing', () => {
+test('coder prompt orders setup before delegation and delegation before detailed tool routing', () => {
     const safety = SYSTEM_PROMPT.indexOf('<safety>');
+    const workMode = SYSTEM_PROMPT.indexOf('<work_mode>');
+    const thinkFirst = SYSTEM_PROMPT.indexOf('<think_first>');
+    const octocodeCli = SYSTEM_PROMPT.indexOf('<octocode_cli>');
+    const skills = SYSTEM_PROMPT.indexOf('<skills>');
     const agents = SYSTEM_PROMPT.indexOf('<agents>');
     const tools = SYSTEM_PROMPT.indexOf('<tools>');
+    const browserAgent = SYSTEM_PROMPT.indexOf('<browser_agent>');
+    const search = SYSTEM_PROMPT.indexOf('<search_and_research>');
     const output = SYSTEM_PROMPT.indexOf('<output>');
-    assert.ok(safety >= 0 && agents > safety, 'safety precedes delegation');
+    assert.ok(safety >= 0 && workMode > safety, 'safety precedes work classification');
+    assert.ok(thinkFirst > workMode, 'think-first follows task classification');
+    assert.ok(octocodeCli > thinkFirst, 'CLI/skill acquisition follows core reasoning policy');
+    assert.ok(skills > octocodeCli, 'skill contract follows skill installation guidance');
+    assert.ok(agents > skills, 'delegation sees skill contract before spawning');
     assert.ok(agents < tools, 'delegation gate precedes detailed tool routing');
-    assert.ok(output > tools, 'output contract remains at the end of execution guidance');
+    assert.ok(browserAgent > tools, 'browser agent routing follows tool catalog');
+    assert.ok(search > browserAgent, 'research workflow follows browser-specific routing');
+    assert.ok(output > search, 'output contract remains at the end of execution guidance');
 });
 test('every active skill catalog entry resolves to a shipped SKILL.md or carries an explicit install command', () => {
     const content = fs.readFileSync(path.join(packageRoot, 'src', 'prompts', 'sections', 'skills.md'), 'utf8');
@@ -105,5 +117,27 @@ test('persistence and compaction are conditional instead of mandatory ceremony',
     assert.match(SYSTEM_PROMPT, /When a plan, RFC, handoff, or research result must outlive the current context/);
     assert.match(SYSTEM_PROMPT, /Do not create an artifact for an ordinary answer\/review/);
     assert.match(SYSTEM_PROMPT, /Persist a handoff only when work must survive/);
+    assert.match(SYSTEM_PROMPT, /same logical task: continue from the summary/);
+    assert.match(SYSTEM_PROMPT, /do not restart finished work/);
     assert.doesNotMatch(SYSTEM_PROMPT, /write findings to a doc → compact → execute/);
+});
+test('work-mode handles mid-task user messages without broadening scope', () => {
+    assert.match(SYSTEM_PROMPT, /new message while work is in progress/);
+    assert.match(SYSTEM_PROMPT, /classify it as replace, append, or status/);
+    assert.match(SYSTEM_PROMPT, /replace means drop the stale path/);
+    assert.match(SYSTEM_PROMPT, /append means satisfy both within the same scoped task/);
+});
+test('skills contract requires local instruction reading before action or delegation', () => {
+    assert.match(SYSTEM_PROMPT, /If the user names a skill or the task clearly matches one/);
+    assert.match(SYSTEM_PROMPT, /read its `SKILL\.md` completely/);
+    assert.match(SYSTEM_PROMPT, /references required files\/resources/);
+    assert.match(SYSTEM_PROMPT, /do not delegate reading or interpreting skill instructions to a worker/);
+    assert.match(SYSTEM_PROMPT, /continue with the best fallback/);
+});
+test('output contract preserves user-visible progress and restrained visuals', () => {
+    assert.match(SYSTEM_PROMPT, /Lead with findings and outcomes, not process/);
+    assert.match(SYSTEM_PROMPT, /Before tool-heavy work, send a brief commentary update/);
+    assert.match(SYSTEM_PROMPT, /about 60 seconds pass without user-visible progress/);
+    assert.match(SYSTEM_PROMPT, /Use the minimum formatting that makes the answer clear/);
+    assert.match(SYSTEM_PROMPT, /tables\/diagrams only when relationships, mappings, or multi-step state changes/);
 });
