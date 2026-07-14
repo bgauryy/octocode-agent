@@ -23,6 +23,42 @@ export interface ToolCallResult {
   details?: unknown;
 }
 
+export type WorkerLedgerEventType = 'spawned' | 'status' | 'message' | 'tool' | 'handback' | 'exit' | 'error' | 'killed' | 'policy';
+
+export interface WorkerLedgerEvent {
+  type: WorkerLedgerEventType;
+  timestamp: number;
+  message?: string;
+  details?: unknown;
+}
+
+export interface WorkerLedgerEntry {
+  agentId: string;
+  name: string;
+  status: string;
+  startedAt: string;
+  updatedAt: string;
+  normalizedStatus?: string;
+  confidence?: string;
+  evidence?: string[];
+  next?: string;
+  recentEvents: WorkerLedgerEvent[];
+}
+
+export interface SpawnPolicy {
+  maxActiveAgents: number;
+  warningActiveAgents: number;
+  requiredPacketSections: string[];
+}
+
+export interface SpawnPolicyResult {
+  allowed: boolean;
+  warnings: string[];
+  reason?: string;
+}
+
+export type LedgerEvent = WorkerLedgerEvent;
+
 export interface RenderCallReturn {
   render(width: number): string[];
   invalidate(): void;

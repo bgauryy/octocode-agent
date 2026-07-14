@@ -3,3 +3,4 @@ node_modules
 out
 coverage
 /packages/octocode-pi-extension/skills/
+.octocode

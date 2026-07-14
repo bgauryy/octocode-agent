@@ -16,6 +16,7 @@ the same SQLite store.
 - Otherwise Pi derives `pi:<session-file>` for the current session.
 - Sequential `/new`, `/resume`, and forked sessions refresh the derived identity.
 - Hooks and CLI subprocesses inherit that same current identity.
+- Spawned Pi workers derive child identities as `<parent>:worker:<short-id>` and record that mapping in the in-session worker ledger (`/octocode-agents`; see [`AGENT_ORCHESTRATOR.md`](./AGENT_ORCHESTRATOR.md)). Durable Awareness writes for raw worker output stay deferred until privacy/storage review accepts them.
 
 ## Start
 

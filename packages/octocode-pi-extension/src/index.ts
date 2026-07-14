@@ -24,7 +24,14 @@ import {
 } from './utils.js';
 import { registerOctocodeTools, registerUniqueTool } from './tools/octocode-tools.js';
 import { registerContextTools } from './tools/context-tools.js';
-import { cleanupSpawnedAgentsForShutdown, registerAgentTools } from './tools/agent-tools.js';
+import {
+  cleanupSpawnedAgentsForShutdown,
+  handleOctocodeAgentsCommand,
+  OCTOCODE_AGENTS_COMMAND_COMPLETIONS,
+  OCTOCODE_AGENTS_COMMAND_USAGE,
+  refreshAgentLedgerUi,
+  registerAgentTools,
+} from './tools/agent-tools.js';
 import { registerWebTool } from './tools/web-tool.js';
 import { registerChromeDebugTool } from './tools/chrome-debug-tool.js';
 import { registerBrowserAgentTool } from './tools/browser-agent-tool.js';
@@ -33,6 +40,7 @@ import { registerEditTool } from './tools/edit-tool.js';
 import { registerWriteTool } from './tools/write-tool.js';
 import { registerBashTool } from './tools/bash-tool.js';
 import { pickProvider } from './web.js';
+import { createHookComposer } from './hook-composer.js';
 import type {
   PiInstance,
   PiContext,
@@ -71,10 +79,36 @@ export {
 } from './utils.js';
 export { runWebTool, renderWebResult, pickProvider } from './web.js';
 export {
+  createHookComposer,
+  OctocodeHookComposer,
+  runHookMiddleware,
+} from './hook-composer.js';
+export {
   cleanupSpawnedAgentsForShutdown,
+  DEFAULT_SPAWN_POLICY,
+  evaluateSpawnPolicy,
+  OCTOCODE_AGENTS_COMMAND_COMPLETIONS,
+  OCTOCODE_AGENTS_COMMAND_USAGE,
+  formatAgentLedger,
+  formatAgentLedgerDetails,
+  handleOctocodeAgentsCommand,
+  listWorkerLedgerEntries,
+  normalizeWorkerOutput,
+  refreshAgentLedgerUi,
   setAgentProcessFactoryForTests,
 } from './tools/agent-tools.js';
-export type { PromptMode, OctocodePiExtensionOptions, SkillInfo, BuildSystemPromptOptions } from './types.js';
+export type {
+  PromptMode,
+  OctocodePiExtensionOptions,
+  SkillInfo,
+  BuildSystemPromptOptions,
+  LedgerEvent,
+  SpawnPolicy,
+  SpawnPolicyResult,
+  WorkerLedgerEntry,
+  WorkerLedgerEvent,
+  WorkerLedgerEventType,
+} from './types.js';
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
 
@@ -311,14 +345,21 @@ async function wireOctocodePiExtension(
   // — the calls are idempotent.
   disableBuiltinTools(pi);
 
-  if (pi.on) {
-    pi.on('resources_discover', async () => {
+  if (typeof (pi as { on?: unknown }).on === 'function') {
+    const hooks = createHookComposer(pi, {
+      onError: (error, event, middleware, args) => {
+        const ctx = args[1] as PiContext | undefined;
+        notify(ctx, `Octocode hook ${event}/${middleware} failed: ${(error as Error)?.message ?? String(error)}`, 'warning');
+      },
+    });
+
+    hooks.on('resources_discover', 'bundled-skills', async () => {
       const paths = getAssetPaths();
       const skillPath = existingDirectory(paths.skillsDir);
       return skillPath ? { skillPaths: [skillPath] } : {};
     });
 
-    pi.on('session_start', async (_event, ctx) => {
+    hooks.on('session_start', 'octocode-session-start', async (_event, ctx) => {
       applyOctocodeUi(ctx, pi.getThinkingLevel?.());
       // Disable weak built-ins (read/grep/find/ls) in favor of Octocode locals.
       try {
@@ -370,28 +411,31 @@ async function wireOctocodePiExtension(
 
     // Clean up status labels and spawned workers when the session tears down
     // so they don't leak across /new, /resume, /fork, reload, or quit.
-    pi.on('session_shutdown', async (_event, ctx) => {
+    hooks.on('session_shutdown', 'octocode-session-shutdown', async (_event, ctx) => {
       const cleanedAgents = cleanupSpawnedAgentsForShutdown();
       if (ctx?.hasUI) {
         ctx.ui?.setStatus?.('octocode', '');
         ctx.ui?.setStatus?.('octocode-thinking', '');
+        ctx.ui?.setStatus?.('octocode-agents', undefined);
+        ctx.ui?.setWidget?.('octocode-agents', undefined);
         if (cleanedAgents > 0) {
           ctx.ui?.notify?.(`Octocode closed ${cleanedAgents} spawned subagent(s).`, 'info');
         }
       }
     });
 
-    pi.on('model_select', async (_event, ctx) => {
+    hooks.on('model_select', 'octocode-model-select', async (_event, ctx) => {
       // thinking_level_select fires before model_select when the model change
       // clamps the thinking level, so pi.getThinkingLevel() is already updated.
       applyOctocodeUi(ctx, pi.getThinkingLevel?.());
+      refreshAgentLedgerUi(ctx);
     });
 
-    pi.on('thinking_level_select', async (event, ctx) => {
+    hooks.on('thinking_level_select', 'octocode-thinking-select', async (event, ctx) => {
       applyOctocodeUi(ctx, event.level);
     });
 
-    pi.on('before_agent_start', async (event) => {
+    hooks.on('before_agent_start', 'octocode-system-prompt', async (event) => {
       // Suppress AGENTS.md / CLAUDE.md when --no-context flag is set.
       // For octocode-agent sessions the launcher already passes --no-context-files
       // to pi, so contextFiles is empty before this handler fires — this guard
@@ -460,6 +504,18 @@ async function wireOctocodePiExtension(
       'List every Octocode Pi extension harness surface: native tools, support tools, extension commands, CLI entry point, and skills.',
     handler: async (_args, ctx) => {
       notify(ctx, renderExtensionHarness(), 'info');
+    },
+  });
+
+  pi.registerCommand('octocode-agents', {
+    description: `Show, refresh, inspect, prune, hide, or kill Octocode spawned worker agents (usage: ${OCTOCODE_AGENTS_COMMAND_USAGE}).`,
+    getArgumentCompletions: (prefix: string) => {
+      return OCTOCODE_AGENTS_COMMAND_COMPLETIONS
+        .filter((s) => s.startsWith(prefix))
+        .map((s) => ({ value: s, label: s.trim(), description: 'Manage Octocode worker ledger' }));
+    },
+    handler: async (args, ctx) => {
+      await handleOctocodeAgentsCommand(args, ctx);
     },
   });
 

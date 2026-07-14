@@ -188,7 +188,24 @@ Spawn a background Pi worker process. Returns `agentId` immediately. Prompt must
 
 Key params: `task`, `prompt`, `context`, `name`, `cwd`, `model`, `provider`, `thinking`, `tools`, `systemPrompt`, `resourceMode` (`lean` / `octocode` / `default`), `noSession`.
 
-`FORBIDDEN_WORKER_TOOLS`: `spawnAgent`, `AgentMessage` — workers cannot spawn sub-workers.
+Spawn policy is centralized and warning-first: packets should include goal, scope, ownership, acceptance, and return shape; Claude/custom-provider model IDs should pass `provider` from `pi -ne --list-models`; recursive worker tools are stripped. The hard active-worker cap still blocks spawns before a process is created. Defaults can be tuned with `OCTOCODE_AGENT_MAX_ACTIVE` and `OCTOCODE_AGENT_WARNING_ACTIVE`.
+
+`FORBIDDEN_WORKER_TOOLS`: `spawnAgent`, `AgentMessage`, `spawnSubagent` — workers cannot spawn sub-workers.
+
+### `/octocode-agents`
+Interactive command for the in-session worker ledger. It updates the Octocode agents footer/widget and sends a compact notification. Maintainer architecture and Pi SDK mapping are documented in [`AGENT_ORCHESTRATOR.md`](./AGENT_ORCHESTRATOR.md).
+
+|Command|Use|
+|---|---|
+|`/octocode-agents` or `/octocode-agents list`|List worker id, name, status, handback, active tool, age, and output preview|
+|`/octocode-agents status`|Refresh status/widget and show the ledger|
+|`/octocode-agents inspect <id-or-prefix>`|Show one worker's full status, normalized handback, evidence, policy warnings, and output preview|
+|`/octocode-agents kill <id-or-prefix>`|Terminate one worker by full id or readable prefix|
+|`/octocode-agents kill-all`|Terminate all non-terminal workers|
+|`/octocode-agents prune`|Remove terminal worker records from the in-session ledger|
+|`/octocode-agents hide`|Clear the footer/widget for this session|
+
+Worker handbacks are normalized from typed prefixes like `[EVIDENCE]`, `[CONFIDENCE]`, `[BLOCKED]`, `[DONE]`, and `[FAILED]`. Raw output remains available through `AgentMessage` details/expanded result.
 
 ### `AgentMessage`
 Coordinate spawned workers. Always set explicit `timeoutMs` on `wait`.

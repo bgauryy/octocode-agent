@@ -5,7 +5,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { getInstallSource } from '../assets.js';
 import { truncateUserVisibleToolOutput } from '../utils.js';
-import type { PiContext, PiInstance, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
+import type {
+  PiContext,
+  PiInstance,
+  SpawnPolicy,
+  SpawnPolicyResult,
+  ToolCallResult,
+  ToolDefinition,
+  PiTheme,
+  WorkerLedgerEntry,
+  WorkerLedgerEvent,
+  WorkerLedgerEventType,
+} from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { stringEnumSchema } from './schema-helpers.js';
@@ -16,7 +27,21 @@ type RegisterFn = typeof registerUniqueTool;
 
 export type AgentStatus = 'starting' | 'running' | 'idle' | 'exited' | 'failed' | 'killed';
 export type ResourceMode = 'lean' | 'octocode' | 'default';
+export type NormalizedWorkerStatus = 'done' | 'blocked' | 'failed' | 'unknown';
+export type NormalizedWorkerConfidence = 'confirmed' | 'likely' | 'uncertain';
+
 type MessageAction = 'list' | 'status' | 'send' | 'steer' | 'followUp' | 'wait' | 'kill' | 'abort';
+
+export interface NormalizedWorkerResult {
+  status: NormalizedWorkerStatus;
+  result?: string;
+  evidence: string[];
+  confidence: NormalizedWorkerConfidence;
+  next?: string;
+  rawPrefixes: Record<string, string[]>;
+}
+
+const REQUIRED_PACKET_SECTIONS = ['goal', 'scope', 'ownership', 'acceptance', 'return'];
 
 type StreamHandler = (event: string, cb: (chunk: Buffer | string) => void) => void;
 type ProcessHandler = (event: string, cb: (...args: unknown[]) => void) => void;
@@ -95,6 +120,9 @@ interface AgentRecord {
   responses: unknown[];
   toolCalls: AgentToolCall[];
   lastOutput: string;
+  normalizedResult?: NormalizedWorkerResult;
+  ledgerEvents: WorkerLedgerEvent[];
+  policyWarnings: string[];
   promptFiles: string[];
   waiters: Set<() => void>;
   nextRequestId: number;
@@ -105,10 +133,20 @@ interface AgentDetails {
 }
 
 const MAX_STORED_EVENTS = 200;
+const MAX_LEDGER_EVENTS = 80;
 const MAX_STDERR_CHARS = 64_000;
 const MAX_VISIBLE_OUTPUT = 12000;
 /** Maximum number of simultaneously active (non-droppable) agent records. Hard limit enforced on spawn. */
 export const MAX_AGENT_RECORDS = 50;
+export const DEFAULT_SPAWN_POLICY: SpawnPolicy = {
+  maxActiveAgents: MAX_AGENT_RECORDS,
+  warningActiveAgents: 6,
+  requiredPacketSections: REQUIRED_PACKET_SECTIONS,
+};
+const SPAWN_POLICY_MAX_ACTIVE_ENV = 'OCTOCODE_AGENT_MAX_ACTIVE';
+const SPAWN_POLICY_WARNING_ACTIVE_ENV = 'OCTOCODE_AGENT_WARNING_ACTIVE';
+export const OCTOCODE_AGENTS_COMMAND_USAGE = '/octocode-agents [list|status|inspect <id>|kill <id>|kill-all|prune|hide]';
+export const OCTOCODE_AGENTS_COMMAND_COMPLETIONS = ['list', 'status', 'inspect ', 'kill ', 'kill-all', 'prune', 'hide'] as const;
 const SUBAGENT_ENV_VAR = 'OCTOCODE_PI_SUBAGENT';
 const AWARENESS_AGENT_ENV_VAR = 'OCTOCODE_AGENT_ID';
 const FORBIDDEN_WORKER_TOOLS = new Set(['spawnAgent', 'AgentMessage', 'spawnSubagent']);
@@ -301,6 +339,16 @@ function touch(record: AgentRecord, status?: AgentStatus): void {
   if (status) record.status = status;
 }
 
+function pushLedgerEvent(record: AgentRecord, type: WorkerLedgerEventType, message?: string, details?: unknown): void {
+  pushCapped(record.ledgerEvents, {
+    type,
+    timestamp: Date.now(),
+    message,
+    details,
+  });
+  if (record.ledgerEvents.length > MAX_LEDGER_EVENTS) record.ledgerEvents.splice(0, record.ledgerEvents.length - MAX_LEDGER_EVENTS);
+}
+
 function notifyWaiters(record: AgentRecord): void {
   for (const waiter of record.waiters) waiter();
   record.waiters.clear();
@@ -309,6 +357,62 @@ function notifyWaiters(record: AgentRecord): void {
 function pushCapped<T>(items: T[], item: T): void {
   items.push(item);
   if (items.length > MAX_STORED_EVENTS) items.splice(0, items.length - MAX_STORED_EVENTS);
+}
+
+function activeAgentCount(): number {
+  return [...agents.values()].filter((record) => !isDroppable(record)).length;
+}
+
+function lowerIncludesAll(text: string, sections: string[]): string[] {
+  const lower = text.toLowerCase();
+  return sections.filter((section) => !lower.includes(section));
+}
+
+function readPositiveIntegerEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) return undefined;
+  return value;
+}
+
+function resolveSpawnPolicy(policy: SpawnPolicy): SpawnPolicy {
+  const maxActiveAgents = readPositiveIntegerEnv(SPAWN_POLICY_MAX_ACTIVE_ENV) ?? policy.maxActiveAgents;
+  const warningActiveAgents = readPositiveIntegerEnv(SPAWN_POLICY_WARNING_ACTIVE_ENV) ?? policy.warningActiveAgents;
+  return {
+    ...policy,
+    maxActiveAgents,
+    warningActiveAgents: Math.min(warningActiveAgents, maxActiveAgents),
+  };
+}
+
+export function evaluateSpawnPolicy(params: SpawnAgentParams, activeCount = activeAgentCount(), policy: SpawnPolicy = DEFAULT_SPAWN_POLICY): SpawnPolicyResult {
+  const effectivePolicy = resolveSpawnPolicy(policy);
+  const warnings: string[] = [];
+  if (activeCount >= effectivePolicy.maxActiveAgents) {
+    return {
+      allowed: false,
+      warnings,
+      reason: `Agent registry at capacity: ${activeCount}/${effectivePolicy.maxActiveAgents} active agents.`,
+    };
+  }
+  if (activeCount >= effectivePolicy.warningActiveAgents) {
+    warnings.push(`High worker fan-out: ${activeCount}/${effectivePolicy.maxActiveAgents} active agents already exist.`);
+  }
+  const task = buildInitialPrompt(params);
+  const missingSections = lowerIncludesAll(task, effectivePolicy.requiredPacketSections);
+  if (missingSections.length > 0) {
+    warnings.push(`Worker packet is missing recommended section(s): ${missingSections.join(', ')}.`);
+  }
+  const model = String(params.model ?? '');
+  if (/^claude[-:]/i.test(model) && !params.provider) {
+    warnings.push('Model looks like a Claude/custom-provider model; pass provider from `pi -ne --list-models` when required.');
+  }
+  const strippedTools = (params.tools ?? []).filter((toolName) => FORBIDDEN_WORKER_TOOLS.has(toolName));
+  if (strippedTools.length > 0) {
+    warnings.push(`Recursive worker tool(s) stripped: ${strippedTools.join(', ')}.`);
+  }
+  return { allowed: true, warnings };
 }
 
 function extractTextFromMessage(message: unknown): string {
@@ -320,9 +424,55 @@ function extractTextFromMessage(message: unknown): string {
     .join('\n');
 }
 
+function normalizeConfidence(value: string | undefined): NormalizedWorkerConfidence {
+  const lower = String(value ?? '').toLowerCase();
+  if (lower.includes('confirmed')) return 'confirmed';
+  if (lower.includes('likely')) return 'likely';
+  return 'uncertain';
+}
+
+export function normalizeWorkerOutput(output: string): NormalizedWorkerResult {
+  const rawPrefixes: Record<string, string[]> = {};
+  const lines = output.split(/\r?\n/);
+  for (const line of lines) {
+    const match = line.match(/^\s*\[([A-Z][A-Z0-9_-]*)\]\s*(.*)$/);
+    if (!match) continue;
+    const prefix = match[1]!;
+    (rawPrefixes[prefix] ??= []).push(match[2]!.trim());
+  }
+
+  const last = (prefix: string): string | undefined => rawPrefixes[prefix]?.at(-1);
+  const evidence = rawPrefixes['EVIDENCE'] ?? [];
+  const blocked = last('BLOCKED');
+  const done = last('DONE');
+  const failed = last('FAILED') ?? last('ERROR');
+  const result = last('RESULT') ?? last('FINDING') ?? last('FIX') ?? last('PLAN') ?? undefined;
+  const fallback = output.trim();
+
+  return {
+    status: failed ? 'failed' : blocked ? 'blocked' : done ? 'done' : 'unknown',
+    result: result || (Object.keys(rawPrefixes).length === 0 && fallback ? fallback : undefined),
+    evidence,
+    confidence: normalizeConfidence(last('CONFIDENCE')),
+    next: done || blocked || last('NEXT') || undefined,
+    rawPrefixes,
+  };
+}
+
+function refreshNormalizedResult(record: AgentRecord): void {
+  const previousStatus = record.normalizedResult?.status;
+  record.normalizedResult = normalizeWorkerOutput(record.lastOutput || record.stderr || record.error || '');
+  if (record.normalizedResult.status !== 'unknown' && record.normalizedResult.status !== previousStatus) {
+    pushLedgerEvent(record, 'handback', `worker handback: ${record.normalizedResult.status}`, record.normalizedResult);
+  }
+}
+
 function updateLastOutput(record: AgentRecord, message: unknown): void {
   const text = extractTextFromMessage(message);
-  if (text) record.lastOutput = text;
+  if (text) {
+    record.lastOutput = text;
+    refreshNormalizedResult(record);
+  }
 }
 
 function getEventToolName(event: Record<string, unknown>): string {
@@ -343,6 +493,7 @@ function recordToolStart(record: AgentRecord, event: Record<string, unknown>): v
     status: 'running',
     startedAt: Date.now(),
   });
+  pushLedgerEvent(record, 'tool', `tool started: ${toolName}`);
   touch(record, 'running');
 }
 
@@ -368,6 +519,7 @@ function recordToolEnd(record: AgentRecord, event: Record<string, unknown>): voi
       isError,
     });
   }
+  if (toolName) pushLedgerEvent(record, 'tool', `tool ${isError ? 'failed' : 'finished'}: ${toolName}`);
   touch(record);
 }
 
@@ -397,6 +549,7 @@ function processRpcLine(record: AgentRecord, line: string): void {
     const resp = event as { success?: boolean; command?: string; error?: string };
     if (resp.success === false) {
       if (!record.error) record.error = resp.error ?? `RPC command failed: ${resp.command ?? 'unknown'}`;
+      pushLedgerEvent(record, 'error', record.error);
       touch(record);
     }
   } else if (eventType === 'agent_start') {
@@ -443,6 +596,12 @@ function workerAwarenessAgentId(workerId: string): string {
   return `${parentId}:worker:${workerId.slice(0, 8)}`;
 }
 
+function cleanupPromptFiles(promptFiles: string[]): void {
+  for (const filePath of promptFiles) {
+    try { fs.rmSync(path.dirname(filePath), { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+}
+
 export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentRecord {
   const task = buildInitialPrompt(params);
   if (!task) throw new Error('spawnAgent requires task or prompt.');
@@ -460,15 +619,10 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   // non-droppable agents still fill the registry. Checked before processFactory to ensure
   // no process is leaked when the cap is exceeded.
   evictStaleAgents();
-  const _activeCount = [...agents.values()].filter((r) => !isDroppable(r)).length;
-  if (_activeCount >= MAX_AGENT_RECORDS) {
-    for (const filePath of promptFiles) {
-      try { fs.rmSync(path.dirname(filePath), { recursive: true, force: true }); } catch { /* best-effort */ }
-    }
-    throw new Error(
-      `Agent registry at capacity: ${_activeCount}/${MAX_AGENT_RECORDS} active agents. ` +
-      `Kill or wait for existing agents before spawning more.`,
-    );
+  const policyResult = evaluateSpawnPolicy(params, activeAgentCount());
+  if (!policyResult.allowed) {
+    cleanupPromptFiles(promptFiles);
+    throw new Error(`${policyResult.reason} Kill or wait for existing agents before spawning more.`);
   }
 
   let proc;
@@ -487,13 +641,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     // processFactory threw before the record was added to `agents`, so removePromptFiles()
     // (wired to the record's 'close'/'error' handlers) would never run. Clean up the temp
     // system-prompt files buildPiArgs wrote so a failing factory does not leak files in os.tmpdir.
-    for (const filePath of promptFiles) {
-      try {
-        fs.rmSync(path.dirname(filePath), { recursive: true, force: true });
-      } catch {
-        // best-effort cleanup only
-      }
-    }
+    cleanupPromptFiles(promptFiles);
     throw error;
   }
 
@@ -513,10 +661,15 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     responses: [],
     toolCalls: [],
     lastOutput: '',
+    normalizedResult: normalizeWorkerOutput(''),
+    ledgerEvents: [],
+    policyWarnings: policyResult.warnings,
     promptFiles,
     waiters: new Set(),
     nextRequestId: 1,
   };
+  pushLedgerEvent(record, 'spawned', `spawned ${name}`, { awarenessAgentId });
+  for (const warning of policyResult.warnings) pushLedgerEvent(record, 'policy', warning);
   agents.set(id, record);
   // Evict droppable agents to keep registry size ≤ MAX_AGENT_RECORDS.
   // The pre-spawn call (M7 cap check) runs before processFactory to avoid leaking
@@ -538,10 +691,12 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     if (record.stderr.length > MAX_STDERR_CHARS) {
       record.stderr = record.stderr.slice(-MAX_STDERR_CHARS);
     }
+    pushLedgerEvent(record, 'status', 'stderr received');
     touch(record);
   });
   proc.on('error', (error) => {
     record.error = error instanceof Error ? error.message : String(error);
+    pushLedgerEvent(record, 'error', record.error);
     touch(record, 'failed');
     removePromptFiles(record);
     notifyWaiters(record);
@@ -551,6 +706,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     record.exitCode = typeof code === 'number' ? code : undefined;
     record.signal = typeof signal === 'string' ? signal : undefined;
     if (record.status !== 'killed') touch(record, code === 0 ? 'exited' : 'failed');
+    pushLedgerEvent(record, record.status === 'failed' ? 'error' : 'exit', `process closed with code ${record.exitCode ?? 'unknown'}`);
     removePromptFiles(record);
     notifyWaiters(record);
   });
@@ -559,13 +715,17 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   // If sendRpc returned false, it already transitioned the record to 'failed'
   // and notified waiters; overwriting with 'running' here would mask the failure.
   if (sendRpc(record, { type: 'prompt', message: task })) {
+    pushLedgerEvent(record, 'message', 'initial prompt sent');
     touch(record, 'running');
   }
   return record;
 }
 
 function summarizeAgent(record: AgentRecord) {
-  const preview = truncateUserVisibleToolOutput(record.lastOutput || record.stderr || record.error || '', 1000);
+  refreshNormalizedResult(record);
+  const normalized = record.normalizedResult;
+  const summaryText = normalized?.result || normalized?.next || record.lastOutput || record.stderr || record.error || '';
+  const preview = truncateUserVisibleToolOutput(summaryText, 1000);
   return {
     agentId: record.id,
     name: record.name,
@@ -579,14 +739,43 @@ function summarizeAgent(record: AgentRecord) {
     error: record.error,
     lastOutput: preview.text,
     outputTruncated: preview.truncated,
+    normalizedResult: normalized,
+    policyWarnings: [...record.policyWarnings],
+    ledgerEvents: record.ledgerEvents.slice(-10),
     toolCalls: record.toolCalls.slice(-10),
     activeTool: [...record.toolCalls].reverse().find((call) => call.status === 'running')?.toolName,
   };
 }
 
+export function listWorkerLedgerEntries(): WorkerLedgerEntry[] {
+  return [...agents.values()]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map((record) => {
+      const normalized = record.normalizedResult;
+      return {
+        agentId: record.id,
+        name: record.name,
+        status: record.status,
+        startedAt: new Date(record.startedAt).toISOString(),
+        updatedAt: new Date(record.updatedAt).toISOString(),
+        normalizedStatus: normalized?.status,
+        confidence: normalized?.confidence,
+        evidence: normalized?.evidence,
+        next: normalized?.next,
+        recentEvents: record.ledgerEvents.slice(-10),
+      };
+    });
+}
+
 function getArgValue(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag);
   return index >= 0 ? args[index + 1] : undefined;
+}
+
+function findAgentByIdOrPrefix(agentId: unknown): AgentRecord | undefined {
+  const id = String(agentId ?? '').trim();
+  if (!id) return undefined;
+  return agents.get(id) ?? [...agents.values()].find((record) => record.id.startsWith(id));
 }
 
 function getAgent(agentId: unknown): AgentRecord {
@@ -595,7 +784,7 @@ function getAgent(agentId: unknown): AgentRecord {
     'AgentMessage requires agentId for all actions except action:"list". '
     + 'Use action:"list" to see all active agents.',
   );
-  const record = agents.get(id);
+  const record = findAgentByIdOrPrefix(id);
   if (!record) throw new Error(
     `No agent found with id: ${id.slice(0, 16)}${id.length > 16 ? '\u2026' : ''}. `
     + `Use action:"list" to see all active agents (${agents.size} registered).`,
@@ -624,14 +813,116 @@ function renderAgentResult(records: AgentRecord[], header: string): ToolCallResu
   for (const s of summaries) {
     const exit = s.exitCode !== undefined ? ` (exit ${s.exitCode})` : '';
     const elapsed = formatElapsed(new Date(s.startedAt).getTime());
+    const handback = s.normalizedResult?.status && s.normalizedResult.status !== 'unknown'
+      ? ` \u00b7 ${s.normalizedResult.status}`
+      : '';
     const preview = s.lastOutput ? ` \u2014 ${s.lastOutput.slice(0, 60).replace(/\n/g, ' ')}${s.outputTruncated ? '\u2026' : ''}` : '';
     const toolInfo = typeof s.activeTool === 'string' ? ` \u00b7 tool: ${s.activeTool}` : '';
-    lines.push(`  ${s.name} (${shortId(s.agentId)}) \u00b7 ${s.status}${exit} \u00b7 ${elapsed}${toolInfo}${preview}`);
+    lines.push(`  ${s.name} (${shortId(s.agentId)}) \u00b7 ${s.status}${exit}${handback} \u00b7 ${elapsed}${toolInfo}${preview}`);
   }
   return {
     content: [{ type: 'text', text: lines.join('\n') }],
     details: { agents: summaries } satisfies AgentDetails,
   };
+}
+
+export function formatAgentLedger(): string {
+  const records = [...agents.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  if (records.length === 0) return 'Octocode agents: none';
+  const running = records.filter((record) => record.status === 'running').length;
+  const blocked = records.filter((record) => record.normalizedResult?.status === 'blocked').length;
+  const failed = records.filter((record) => record.status === 'failed' || record.normalizedResult?.status === 'failed').length;
+  const done = records.filter((record) => record.normalizedResult?.status === 'done' || record.status === 'exited').length;
+  return `Octocode agents: ${records.length} total · ${running} running · ${blocked} blocked · ${done} done · ${failed} failed`;
+}
+
+export function formatAgentLedgerDetails(limit = 10): string {
+  const records = [...agents.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  const lines = [formatAgentLedger()];
+  for (const record of records.slice(0, limit)) {
+    const summary = summarizeAgent(record);
+    const handback = summary.normalizedResult?.status && summary.normalizedResult.status !== 'unknown'
+      ? ` · handback:${summary.normalizedResult.status}/${summary.normalizedResult.confidence}`
+      : '';
+    const active = summary.activeTool ? ` · tool:${summary.activeTool}` : '';
+    const preview = summary.lastOutput ? ` — ${summary.lastOutput.replace(/\n/g, ' ').slice(0, 90)}${summary.outputTruncated ? '…' : ''}` : '';
+    lines.push(`- ${summary.name} (${shortId(summary.agentId)}) · ${summary.status}${handback}${active} · ${formatElapsed(record.startedAt)}${preview}`);
+  }
+  if (records.length > limit) lines.push(`… ${records.length - limit} more; use AgentMessage list for full details.`);
+  return lines.join('\n');
+}
+
+function agentLedgerWidgetLines(): string[] | undefined {
+  const records = [...agents.values()].filter((record) => !isDroppable(record) || record.normalizedResult?.status === 'blocked' || record.status === 'failed');
+  if (records.length === 0) return undefined;
+  return formatAgentLedgerDetails(6).split('\n');
+}
+
+export function refreshAgentLedgerUi(ctx?: PiContext): void {
+  if (!ctx?.hasUI) return;
+  const records = [...agents.values()];
+  if (records.length === 0) {
+    ctx.ui?.setStatus?.('octocode-agents', undefined);
+    ctx.ui?.setWidget?.('octocode-agents', undefined);
+    return;
+  }
+  ctx.ui?.setStatus?.('octocode-agents', formatAgentLedger().replace(/^Octocode agents: /, 'agents: '));
+  ctx.ui?.setWidget?.('octocode-agents', agentLedgerWidgetLines(), { placement: 'belowEditor' });
+}
+
+export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext): Promise<void> {
+  const [actionRaw, targetRaw] = args.trim().split(/\s+/, 2);
+  const action = (actionRaw || 'list').toLowerCase();
+  if (action === 'hide' || action === 'clear') {
+    ctx?.ui?.setStatus?.('octocode-agents', undefined);
+    ctx?.ui?.setWidget?.('octocode-agents', undefined);
+    ctx?.ui?.notify?.('Octocode agent ledger hidden for this session.', 'info');
+    return;
+  }
+  if (action === 'prune') {
+    const droppable = [...agents.entries()].filter(([, record]) => isDroppable(record));
+    for (const [id, record] of droppable) {
+      removePromptFiles(record);
+      agents.delete(id);
+    }
+    refreshAgentLedgerUi(ctx);
+    ctx?.ui?.notify?.(`Pruned ${droppable.length} Octocode agent record(s).\n${formatAgentLedgerDetails()}`, 'info');
+    return;
+  }
+  if (action === 'inspect') {
+    const record = findAgentByIdOrPrefix(targetRaw);
+    if (!record) {
+      ctx?.ui?.notify?.(`No Octocode agent matches: ${targetRaw ?? '(missing id)'}\n${formatAgentLedgerDetails()}`, 'error');
+      return;
+    }
+    refreshAgentLedgerUi(ctx);
+    ctx?.ui?.notify?.(renderSingleAgentResult(record, 'Agent status').content[0]?.text ?? '', 'info');
+    return;
+  }
+  if (action === 'kill-all') {
+    const alive = [...agents.values()].filter((record) => !isDroppable(record));
+    for (const record of alive) killAgent(record);
+    refreshAgentLedgerUi(ctx);
+    ctx?.ui?.notify?.(`Killed ${alive.length} Octocode agent(s).\n${formatAgentLedgerDetails()}`, 'warning');
+    return;
+  }
+  if (action === 'kill') {
+    const record = findAgentByIdOrPrefix(targetRaw);
+    if (!record) {
+      ctx?.ui?.notify?.(`No Octocode agent matches: ${targetRaw ?? '(missing id)'}\n${formatAgentLedgerDetails()}`, 'error');
+      return;
+    }
+    killAgent(record);
+    refreshAgentLedgerUi(ctx);
+    ctx?.ui?.notify?.(`Killed Octocode agent ${record.name} (${shortId(record.id)}).\n${formatAgentLedgerDetails()}`, 'warning');
+    return;
+  }
+  if (action !== 'list' && action !== 'status') {
+    ctx?.ui?.notify?.(`Usage: ${OCTOCODE_AGENTS_COMMAND_USAGE}`, 'warning');
+    return;
+  }
+  refreshAgentLedgerUi(ctx);
+  ctx?.ui?.notify?.(formatAgentLedgerDetails(), 'info');
 }
 
 function renderSingleAgentResult(record: AgentRecord, header: string): ToolCallResult {
@@ -651,6 +942,14 @@ function renderSingleAgentResult(record: AgentRecord, header: string): ToolCallR
   ];
   const toolSummary = formatToolCalls(record.toolCalls);
   if (toolSummary) contentParts.push(`tools: ${toolSummary}`);
+  if (summary.policyWarnings?.length) contentParts.push(`policy: ${summary.policyWarnings.join(' | ')}`);
+  if (summary.normalizedResult?.status && summary.normalizedResult.status !== 'unknown') {
+    contentParts.push(`handback: ${summary.normalizedResult.status} · confidence: ${summary.normalizedResult.confidence}`);
+    if (summary.normalizedResult.evidence.length > 0) {
+      contentParts.push(`evidence: ${summary.normalizedResult.evidence.slice(0, 3).join('; ')}`);
+    }
+    if (summary.normalizedResult.next) contentParts.push(`next: ${summary.normalizedResult.next}`);
+  }
   if (output.text) contentParts.push('', output.text);
   if (output.truncated) contentParts.push(`\u2026 output truncated (${output.omittedChars} chars hidden; full content in details)`);
   return {
@@ -666,6 +965,7 @@ function renderSingleAgentResult(record: AgentRecord, header: string): ToolCallR
 }
 
 function killAgent(record: AgentRecord, opts: { forceKillDelayMs?: number } = {}): void {
+  pushLedgerEvent(record, 'killed', 'kill requested');
   touch(record, 'killed');
   try {
     record.process.stdin.end?.();
@@ -741,6 +1041,7 @@ export function registerAgentTools(
     }),
     async execute(_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal, _onUpdate?: unknown, ctx?: PiContext) {
       const record = spawnRpcAgent(params as SpawnAgentParams, ctx);
+      refreshAgentLedgerUi(ctx);
       return renderSingleAgentResult(record, 'Spawned agent');
     },
     renderCall(args: unknown, theme?: PiTheme) {
@@ -810,10 +1111,16 @@ export function registerAgentTools(
     }),
     async execute(_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal, _onUpdate?: unknown, ctx?: PiContext) {
       const action = (params['action'] as MessageAction | undefined) ?? 'status';
-      if (action === 'list') return renderAgentResult([...agents.values()], 'Spawned agents');
+      if (action === 'list') {
+        refreshAgentLedgerUi(ctx);
+        return renderAgentResult([...agents.values()], 'Spawned agents');
+      }
 
       const record = getAgent(params['agentId']);
-      if (action === 'status') return renderSingleAgentResult(record, 'Agent status');
+      if (action === 'status') {
+        refreshAgentLedgerUi(ctx);
+        return renderSingleAgentResult(record, 'Agent status');
+      }
 
       if (action === 'wait') {
         if (ctx?.hasUI) ctx.ui?.setStatus?.('agent-wait', `\u29D7 Waiting for \u201C${record.name}\u201D\u2026`);
@@ -824,6 +1131,7 @@ export function registerAgentTools(
         }
         const waitResult = renderSingleAgentResult(record, 'Agent turn completed');
         if (params['remove'] === true) agents.delete(record.id);
+        refreshAgentLedgerUi(ctx);
         return waitResult;
       }
 
@@ -831,6 +1139,7 @@ export function registerAgentTools(
         killAgent(record);
         const result = renderSingleAgentResult(record, 'Agent killed');
         if (params['remove'] === true) agents.delete(record.id);
+        refreshAgentLedgerUi(ctx);
         return result;
       }
 
@@ -839,6 +1148,7 @@ export function registerAgentTools(
           sendRpc(record, { type: 'abort' });
           touch(record);
         }
+        refreshAgentLedgerUi(ctx);
         return renderSingleAgentResult(record, 'Agent aborted');
       }
 
@@ -864,6 +1174,7 @@ export function registerAgentTools(
           streamingBehavior: params['streamingBehavior'] ?? (wasRunning ? 'followUp' : undefined),
         });
       }
+      refreshAgentLedgerUi(ctx);
       return renderSingleAgentResult(record, 'Agent messaged');
     },
     renderCall(args: unknown, theme?: PiTheme) {

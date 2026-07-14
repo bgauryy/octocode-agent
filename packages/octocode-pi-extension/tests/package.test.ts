@@ -28,7 +28,11 @@ import {
   splitArgs,
   truncateUserVisibleToolOutput,
   cleanupSpawnedAgentsForShutdown,
+  evaluateSpawnPolicy,
+  listWorkerLedgerEntries,
+  runHookMiddleware,
   setAgentProcessFactoryForTests,
+  normalizeWorkerOutput,
 } from '../src/index.js';
 import {
   applyCustomEditsToContent,
@@ -133,15 +137,15 @@ interface ToolDef {
   prepareArguments?: (args: unknown) => unknown;
 }
 
+interface CommandDef {
+  description: string;
+  handler: (args: string, ctx: unknown) => Promise<void>;
+  getArgumentCompletions?: (prefix: string) => Array<{ value: string; label: string; description?: string }> | null;
+}
+
 interface CaptureResult {
   tools: Map<string, ToolDef>;
-  commands: Map<
-    string,
-    {
-      description: string;
-      handler: (args: string, ctx: unknown) => Promise<void>;
-    }
-  >;
+  commands: Map<string, CommandDef>;
   flags: Map<string, { description: string; type: string; default?: unknown }>;
   flagValues: Map<string, unknown>;
   sentUserMessages: Array<{ msg: string; opts?: Record<string, unknown> }>;
@@ -157,13 +161,7 @@ interface CaptureResult {
 }
 async function captureExtensions(): Promise<CaptureResult> {
   const tools = new Map<string, ToolDef>();
-  const commands = new Map<
-    string,
-    {
-      description: string;
-      handler: (args: string, ctx: unknown) => Promise<void>;
-    }
-  >();
+  const commands = new Map<string, CommandDef>();
   const flags = new Map<
     string,
     { description: string; type: string; default?: unknown }
@@ -182,13 +180,7 @@ async function captureExtensions(): Promise<CaptureResult> {
     registerTool: (def: ToolDef) => {
       tools.set(def.name, def);
     },
-    registerCommand: (
-      name: string,
-      cmd: {
-        description: string;
-        handler: (args: string, ctx: unknown) => Promise<void>;
-      }
-    ) => {
+    registerCommand: (name: string, cmd: CommandDef) => {
       commands.set(name, cmd);
     },
     registerFlag: (
@@ -2362,6 +2354,105 @@ function createMockAgentProcess(): MockAgentProcess {
   return proc;
 }
 
+test('normalizeWorkerOutput extracts typed worker handbacks', () => {
+  const normalized = normalizeWorkerOutput([
+    '[STATUS] scanning repo',
+    '[EVIDENCE] packages/foo.ts:12 proves the claim',
+    '[FINDING] found the issue',
+    '[CONFIDENCE] likely',
+    '[DONE] ready for parent verification',
+  ].join('\n'));
+
+  assert.equal(normalized.status, 'done');
+  assert.equal(normalized.result, 'found the issue');
+  assert.deepEqual(normalized.evidence, ['packages/foo.ts:12 proves the claim']);
+  assert.equal(normalized.confidence, 'likely');
+  assert.equal(normalized.next, 'ready for parent verification');
+  assert.deepEqual(normalized.rawPrefixes.STATUS, ['scanning repo']);
+});
+
+test('normalizeWorkerOutput falls back safely for unstructured output', () => {
+  const normalized = normalizeWorkerOutput('plain worker response');
+
+  assert.equal(normalized.status, 'unknown');
+  assert.equal(normalized.confidence, 'uncertain');
+  assert.deepEqual(normalized.evidence, []);
+  assert.equal(normalized.result, 'plain worker response');
+});
+
+test('runHookMiddleware preserves order, merges results, and stops tool_call on block', async () => {
+  const calls: string[] = [];
+  const blocked = await runHookMiddleware('tool_call', [
+    { name: 'first', handler: async () => { calls.push('first'); return { reason: 'warn' }; } },
+    { name: 'blocker', handler: async () => { calls.push('blocker'); return { block: true, reason: 'blocked' }; } },
+    { name: 'after', handler: async () => { calls.push('after'); return { reason: 'late' }; } },
+  ], [{ toolName: 'write' }, {}]);
+
+  assert.deepEqual(calls, ['first', 'blocker']);
+  assert.deepEqual(blocked, { reason: 'blocked', block: true });
+
+  const nonBlocking = await runHookMiddleware('session_start', [
+    { name: 'a', handler: async () => ({ a: 1 }) },
+    { name: 'b', handler: async () => ({ b: 2 }) },
+  ], [{}, {}]);
+  assert.deepEqual(nonBlocking, { a: 1, b: 2 });
+});
+
+test('runHookMiddleware blocks tool_call when middleware throws', async () => {
+  const errors: string[] = [];
+  const result = await runHookMiddleware('tool_call', [
+    { name: 'gate', handler: async () => { throw new Error('boom'); } },
+    { name: 'after', handler: async () => ({ reason: 'late' }) },
+  ], [{ toolName: 'write' }, {}], {
+    onError: (error, event, middleware) => errors.push(`${event}/${middleware}:${(error as Error).message}`),
+  });
+
+  assert.deepEqual(errors, ['tool_call/gate:boom']);
+  assert.deepEqual(result, {
+    block: true,
+    reason: 'Octocode hook tool_call/gate failed: boom',
+  });
+});
+
+test('evaluateSpawnPolicy warns about packet gaps, provider guidance, fan-out, and recursive tools', () => {
+  const result = evaluateSpawnPolicy({
+    task: 'Goal: check docs\nScope: docs only',
+    model: 'claude-haiku-4-5-20251001',
+    tools: ['web', 'spawnAgent'],
+  }, 6);
+
+  assert.equal(result.allowed, true);
+  assert.ok(result.warnings.some((warning) => /fan-out/i.test(warning)));
+  assert.ok(result.warnings.some((warning) => /ownership/i.test(warning)));
+  assert.ok(result.warnings.some((warning) => /provider/i.test(warning)));
+  assert.ok(result.warnings.some((warning) => /Recursive worker tool/i.test(warning)));
+
+  const blocked = evaluateSpawnPolicy({ task: 'Goal: overflow' }, 50);
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.reason ?? '', /capacity/);
+});
+
+test('evaluateSpawnPolicy honors OCTOCODE_AGENT_MAX_ACTIVE and warning env overrides', () => {
+  const previousMax = process.env['OCTOCODE_AGENT_MAX_ACTIVE'];
+  const previousWarn = process.env['OCTOCODE_AGENT_WARNING_ACTIVE'];
+  process.env['OCTOCODE_AGENT_MAX_ACTIVE'] = '2';
+  process.env['OCTOCODE_AGENT_WARNING_ACTIVE'] = '1';
+  try {
+    const warned = evaluateSpawnPolicy({ task: 'Goal: docs\nScope: docs\nOwnership: read-only\nAcceptance: summary\nReturn: packet' }, 1);
+    assert.equal(warned.allowed, true);
+    assert.ok(warned.warnings.some((warning) => /1\/2 active agents/i.test(warning)));
+
+    const blocked = evaluateSpawnPolicy({ task: 'Goal: docs' }, 2);
+    assert.equal(blocked.allowed, false);
+    assert.match(blocked.reason ?? '', /2\/2 active agents/);
+  } finally {
+    if (previousMax === undefined) delete process.env['OCTOCODE_AGENT_MAX_ACTIVE'];
+    else process.env['OCTOCODE_AGENT_MAX_ACTIVE'] = previousMax;
+    if (previousWarn === undefined) delete process.env['OCTOCODE_AGENT_WARNING_ACTIVE'];
+    else process.env['OCTOCODE_AGENT_WARNING_ACTIVE'] = previousWarn;
+  }
+});
+
 test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/send', async () => {
   const spawned: Array<{
     command: string;
@@ -2375,11 +2466,18 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     return proc;
   });
   try {
-    const { tools } = await captureExtensions();
+    const { tools, commands } = await captureExtensions();
     const spawnTool = tools.get('spawnAgent')!;
     const messageTool = tools.get('AgentMessage')!;
+    const agentsCommand = commands.get('octocode-agents')!;
     assert.ok(spawnTool, 'spawnAgent registered');
     assert.ok(messageTool, 'AgentMessage registered');
+    assert.ok(agentsCommand, 'octocode-agents command registered');
+    assert.match(agentsCommand.description, /inspect <id>/);
+    assert.ok(
+      agentsCommand.getArgumentCompletions?.('i')?.some(item => item.value === 'inspect '),
+      'octocode-agents completions include inspect from the centralized command contract'
+    );
     assert.match(
       spawnTool.promptGuidelines?.join('\n') ?? '',
       /delegation materially helps/
@@ -2465,12 +2563,65 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     const list = await invokeExecute(messageTool, { action: 'list' });
     // list content shows shortId (first 8 chars) for readability; full agentId is in details
     assert.match(list.content[0]!.text, new RegExp(agentId.slice(0, 8)));
+    spawned[0]!.proc.emitStdout({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'text',
+          text: '[STATUS] checking docs\n[EVIDENCE] docs/a.md:1\n[CONFIDENCE] confirmed\n[DONE] ready for synthesis',
+        }],
+      },
+    });
     spawned[0]!.proc.emitStdout({ type: 'agent_end', messages: [] });
-    await invokeExecute(messageTool, {
+    const waitResult = await invokeExecute(messageTool, {
       action: 'wait',
       agentId,
       timeoutMs: 1000,
     });
+    const waitAgent = (waitResult.details as { agent: { normalizedResult?: { status: string; evidence: string[]; confidence: string; next?: string }; ledgerEvents?: Array<{ type: string; message?: string }>; policyWarnings?: string[] } }).agent;
+    assert.equal(waitAgent.normalizedResult?.status, 'done');
+    assert.deepEqual(waitAgent.normalizedResult?.evidence, ['docs/a.md:1']);
+    assert.equal(waitAgent.normalizedResult?.confidence, 'confirmed');
+    assert.equal(waitAgent.normalizedResult?.next, 'ready for synthesis');
+    assert.ok(waitAgent.ledgerEvents?.some(event => event.type === 'spawned'));
+    assert.ok(waitAgent.ledgerEvents?.some(event => event.type === 'handback'));
+    assert.ok(waitAgent.policyWarnings?.some(warning => /missing recommended section/i.test(warning)));
+    const ledgerEntries = listWorkerLedgerEntries();
+    assert.ok(ledgerEntries.some(entry => entry.agentId === agentId && entry.normalizedStatus === 'done'));
+
+    const notifications: Array<{ message: string; level?: string }> = [];
+    await agentsCommand.handler('', {
+      hasUI: true,
+      ui: {
+        notify: (message: string, level?: string) => notifications.push({ message, level }),
+        setStatus: () => undefined,
+        setWidget: () => undefined,
+      },
+    });
+    assert.match(notifications.at(-1)?.message ?? '', /docs-scout/);
+    assert.match(notifications.at(-1)?.message ?? '', /done/);
+
+    await agentsCommand.handler(`inspect ${agentId.slice(0, 8)}`, {
+      hasUI: true,
+      ui: {
+        notify: (message: string, level?: string) => notifications.push({ message, level }),
+        setStatus: () => undefined,
+        setWidget: () => undefined,
+      },
+    });
+    assert.match(notifications.at(-1)?.message ?? '', /Agent status \[docs-scout\]/);
+    assert.match(notifications.at(-1)?.message ?? '', /evidence: docs\/a\.md:1/);
+
+    await agentsCommand.handler('prune', {
+      hasUI: true,
+      ui: {
+        notify: (message: string, level?: string) => notifications.push({ message, level }),
+        setStatus: () => undefined,
+        setWidget: () => undefined,
+      },
+    });
+    assert.match(notifications.at(-1)?.message ?? '', /Pruned 0 Octocode agent/);
     await invokeExecute(messageTool, {
       action: 'send',
       agentId,
