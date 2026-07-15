@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { propagateOctocodeEnv, getOctocodeHome } from './env.js';
 import {
   OCTOCODE_DIRECT_TOOL_NAMES,
@@ -214,7 +215,105 @@ export function applyOctocodeUi(ctx: PiContext | undefined, level?: string): voi
   ui.setWorkingMessage?.('🐙 Octocode thinking…');
 }
 
+export function getInternalErrorLogPath(cwd = process.cwd()): string {
+  return path.join(cwd, '.octocode', 'logs', 'error.txt');
+}
+
+function normalizeError(error: unknown): { name?: string; message: string; stack?: string; cause?: string } {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      cause: error.cause === undefined ? undefined : String(error.cause),
+    };
+  }
+  return { message: String(error) };
+}
+
+function redactForLog(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') {
+    return value
+      .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [REDACTED]')
+      .replace(/(api[_-]?key|token|secret|password)=([^\s&]+)/gi, '$1=[REDACTED]');
+  }
+  if (typeof value !== 'object') return value;
+  if (seen.has(value)) return '[Circular]';
+  if (depth >= 6) return '[MaxDepth]';
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.slice(0, 50).map((item) => redactForLog(item, depth + 1, seen));
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, 100)) {
+    if (/authorization|cookie|set-cookie|token|secret|password|api[_-]?key|access[_-]?key|credential/i.test(key)) {
+      out[key] = '[REDACTED]';
+    } else {
+      out[key] = redactForLog(item, depth + 1, seen);
+    }
+  }
+  return out;
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(redactForLog(value), null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function formatContextForLog(ctx: PiContext | undefined): string[] {
+  const usage = ctx?.getContextUsage?.();
+  return [
+    `cwd: ${ctx?.cwd ?? process.cwd()}`,
+    ctx?.mode ? `mode: ${ctx.mode}` : '',
+    ctx?.model?.id ? `model: ${ctx.model.id}` : '',
+    ctx?.model ? `modelReasoning: ${String(ctx.model.reasoning)}` : '',
+    usage ? `context: ${usage.tokens}/${usage.contextWindow} (${Math.round((usage.tokens / usage.contextWindow) * 100)}%)` : '',
+  ].filter(Boolean);
+}
+
+export function logInternalError(
+  source: string,
+  error: unknown,
+  details: Record<string, unknown> = {},
+  ctx?: PiContext,
+): void {
+  try {
+    const logPath = getInternalErrorLogPath(ctx?.cwd ?? process.cwd());
+    const normalized = normalizeError(error);
+    const durationMs = typeof details['durationMs'] === 'number' ? details['durationMs'] : undefined;
+    const redactedDetails = Object.keys(details).length > 0 ? safeJson(details) : '';
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.appendFileSync(
+      logPath,
+      [
+        '=== Octocode Pi Extension Error ===',
+        `timestamp: ${new Date().toISOString()}`,
+        `uptimeMs: ${Math.round(process.uptime() * 1000)}`,
+        `source: ${source}`,
+        durationMs === undefined ? '' : `durationMs: ${durationMs}`,
+        ...formatContextForLog(ctx),
+        normalized.name ? `error.name: ${normalized.name}` : '',
+        `error.message: ${normalized.message}`,
+        normalized.cause ? `error.cause: ${normalized.cause}` : '',
+        redactedDetails ? `details: ${redactedDetails}` : '',
+        normalized.stack ? `stack:\n${normalized.stack}` : '',
+        '---',
+      ].filter(Boolean).join('\n') + '\n',
+    );
+  } catch {
+    // Logging must never become the reason the extension fails.
+  }
+}
+
 function notify(ctx: PiContext | undefined, message: string, level = 'info'): void {
+  if (level === 'error') {
+    logInternalError('notify', new Error(message), { mode: ctx?.mode }, ctx);
+  }
+
   if (ctx?.ui?.notify) {
     ctx.ui.notify(message, level);
     return;
@@ -258,6 +357,7 @@ export function formatStatus(baseDir?: string): string {
     `bundled CLI: ${getCLIPath(baseDir)} — use via: node $OCTOCODE_CLI <command>`,
     `disabled/replaced built-ins: overridden: ${OVERRIDDEN_BUILTIN_TOOL_NAMES.join(', ')}${DISABLED_BUILTIN_TOOL_NAMES.length ? `; removed: ${DISABLED_BUILTIN_TOOL_NAMES.join(', ')}` : ''}`,
     `web search: ${searchStatus}`,
+    `internal error log: ${getInternalErrorLogPath(process.cwd())}`,
     `package assets: ${paths.baseDir}`,
     `flags: --no-context (suppress AGENTS.md/CLAUDE.md context files for this run)`,
   ].join('\n');
@@ -442,6 +542,8 @@ async function wireOctocodePiExtension(
     sessionStartedAt: Date.now(),
     completedTurns: 0,
   };
+  const toolStartTimes = new Map<string, number>();
+  let providerRequestStartedAt: number | undefined;
 
   // Register --no-context CLI flag before any session starts so Pi can parse it.
   // default:false → context files load normally (octocode-agent launcher already
@@ -462,6 +564,7 @@ async function wireOctocodePiExtension(
     const hooks = createHookComposer(pi, {
       onError: (error, event, middleware, args) => {
         const ctx = args[1] as PiContext | undefined;
+        logInternalError('hook', error, { event, middleware }, ctx);
         notify(ctx, `Octocode hook ${event}/${middleware} failed: ${(error as Error)?.message ?? String(error)}`, 'warning');
       },
     });
@@ -558,6 +661,40 @@ async function wireOctocodePiExtension(
     hooks.on('thinking_level_select', 'octocode-thinking-select', async (event: ThinkingLevelEvent, ctx: PiContext | undefined) => {
       applyOctocodeUi(ctx, event.level);
       updateOctocodeMetricsUi(ctx, metricsState);
+    });
+
+    hooks.on('tool_execution_start', 'octocode-tool-error-timing', async (event: { toolCallId?: string; toolName?: string }) => {
+      const key = event.toolCallId ?? event.toolName;
+      if (key) toolStartTimes.set(key, Date.now());
+    });
+
+    hooks.on('tool_execution_end', 'octocode-tool-error-log', async (event: { toolCallId?: string; toolName?: string; result?: unknown; isError?: boolean }, ctx: PiContext | undefined) => {
+      const key = event.toolCallId ?? event.toolName;
+      const startedAt = key ? toolStartTimes.get(key) : undefined;
+      if (key) toolStartTimes.delete(key);
+      if (!event.isError) return;
+      logInternalError('tool_execution_end', new Error(`Tool ${event.toolName ?? 'unknown'} failed`), {
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        durationMs: startedAt === undefined ? undefined : Date.now() - startedAt,
+        result: event.result,
+      }, ctx);
+    });
+
+    hooks.on('before_provider_request', 'octocode-provider-error-timing', async () => {
+      providerRequestStartedAt = Date.now();
+    });
+
+    hooks.on('after_provider_response', 'octocode-provider-error-log', async (event: { status?: number; headers?: Record<string, string> }, ctx: PiContext | undefined) => {
+      const status = Number(event.status);
+      const durationMs = providerRequestStartedAt === undefined ? undefined : Date.now() - providerRequestStartedAt;
+      providerRequestStartedAt = undefined;
+      if (!Number.isFinite(status) || status < 400) return;
+      logInternalError('after_provider_response', new Error(`Provider response HTTP ${status}`), {
+        status,
+        durationMs,
+        headers: event.headers,
+      }, ctx);
     });
 
     hooks.on('before_agent_start', 'octocode-system-prompt', async (event: BeforeAgentStartEvent) => {

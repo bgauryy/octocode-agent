@@ -261,6 +261,23 @@ Compact or reset the conversation context.
 
 Param: `instructions` — focus hint for compaction summary (used with `compact` only).
 
+If Pi reports `Nothing to compact`, the extension treats it as a benign no-op and reports `Compaction skipped: session is too small to compact.` No continuation is queued.
+
+---
+
+## Internal error log
+
+The extension appends extension-visible errors to repo-local `.octocode/logs/error.txt`:
+
+- user-visible extension `error` notifications;
+- hook middleware exceptions;
+- tool executions that end with `isError: true`;
+- provider responses with HTTP status `>= 400`.
+
+Each entry includes timestamp, process uptime, source, cwd, Pi mode, model id/reasoning, context usage when available, duration for tool/provider failures, redacted details, stack, and cause. Secret-like fields (`authorization`, `cookie`, `token`, `secret`, `password`, API keys, credentials) are redacted before writing.
+
+Pi-core/runtime banners that do not pass through extension hooks, such as a model-runtime `maximum output token limit` stop, may still require Pi-side logging.
+
 ---
 
 ## Memory / Awareness (CLI + skill, not agent tools)

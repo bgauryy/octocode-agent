@@ -17,6 +17,10 @@ type Notifier = (ctx: PiContext | undefined, msg: string, level?: string) => voi
 
 const AUTO_COMPACT_THRESHOLD = 0.80;
 
+function isNothingToCompact(error: Error): boolean {
+  return /nothing to compact/i.test(error.message);
+}
+
 function simpleRenderer(line: string) {
   return makeRenderer((w) => [truncateToWidth(line, w)]);
 }
@@ -74,6 +78,10 @@ export function registerContextTools(
         },
         onError: (error: Error) => {
           clearCompactionWorkingState(ctx);
+          if (isNothingToCompact(error)) {
+            notify(ctx, 'Auto-compaction skipped: session is too small to compact.', 'info');
+            return;
+          }
           notify(ctx, `Auto-compaction failed: ${error.message}`, 'error');
         },
       });
@@ -164,6 +172,10 @@ export function registerContextTools(
         },
         onError: (error: Error) => {
           clearCompactionWorkingState(ctx);
+          if (isNothingToCompact(error)) {
+            notify(ctx, 'Compaction skipped: session is too small to compact.', 'info');
+            return;
+          }
           notify(ctx, `Compaction failed: ${error.message}`, 'error');
         },
       });

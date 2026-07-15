@@ -186,6 +186,9 @@ Never put secrets into prompts, logs, Awareness memory, or committed config.
 | Awareness command missing | Check `$OCTOCODE_AWARENESS_CLI` exists and run `node "$OCTOCODE_AWARENESS_CLI" schema commands --compact`. |
 | Finish warning remains | Run the stated test, `verify audit` for your agent, then `verify mark --run-id <exact-run>`. |
 | Stale dead-session work | Audit exact ownership and explicitly abandon only after review. |
+| Compaction says “Nothing to compact” | Benign: the session is too small to summarize, so the extension reports it as skipped. |
+| Internal/model/tool errors need debugging | Check repo-local `.octocode/logs/error.txt`. Entries include timestamp, uptime, cwd, mode, model/context usage when available, duration, details, stack/cause, and redacted secrets. |
+| “Model stopped because it reached the maximum output token limit” | This banner is emitted by Pi/model runtime; extension-visible provider/tool failures are logged to `.octocode/logs/error.txt`, but Pi-core-only banners require Pi-side logging. |
 | Local research tools absent | Check `ENABLE_LOCAL`. |
 | Clone tool absent | Set `ENABLE_CLONE=1`. |
 

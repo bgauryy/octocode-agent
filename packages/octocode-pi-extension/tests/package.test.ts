@@ -18,6 +18,7 @@ import {
   formatOctocodeMetrics,
   getThinkingStatus,
   getAssetPaths,
+  getInternalErrorLogPath,
   getCLIPath,
   getAppendSystemTarget,
   getInstallSource,
@@ -84,13 +85,17 @@ beforeAll(() => {
 function withTempMemoryHome(fn: (tmp?: string) => void | Promise<void>) {
   return async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-pi-test-'));
-    const previous = process.env['OCTOCODE_MEMORY_HOME'];
+    const previousMemory = process.env['OCTOCODE_MEMORY_HOME'];
+    const previousHome = process.env['OCTOCODE_HOME'];
     process.env['OCTOCODE_MEMORY_HOME'] = tmp;
+    process.env['OCTOCODE_HOME'] = tmp;
     try {
       await fn(tmp);
     } finally {
-      if (previous === undefined) delete process.env['OCTOCODE_MEMORY_HOME'];
-      else process.env['OCTOCODE_MEMORY_HOME'] = previous;
+      if (previousMemory === undefined) delete process.env['OCTOCODE_MEMORY_HOME'];
+      else process.env['OCTOCODE_MEMORY_HOME'] = previousMemory;
+      if (previousHome === undefined) delete process.env['OCTOCODE_HOME'];
+      else process.env['OCTOCODE_HOME'] = previousHome;
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   };
@@ -492,6 +497,7 @@ test(
     assert.match(status, /system prompt: found/);
     assert.match(status, /octocode tools: 13 native Pi tools/);
     assert.match(status, /bundled CLI:.*octocode\.js/);
+    assert.match(status, /internal error log: .*\.octocode\/logs\/error\.txt/);
     assert.match(
       status,
       /disabled\/replaced built-ins: overridden: edit, write, bash/
@@ -2055,6 +2061,58 @@ test('extension lifecycle notifications fall back to console outside UI contexts
   }
 });
 
+test('extension logs rich internal errors to repo .octocode/logs/error.txt', async () => {
+  const { commands, handlers } = await captureExtensions();
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-error-log-'));
+  const logPath = getInternalErrorLogPath(tmp);
+  try {
+    await commands.get('_octocode-clear-context-impl')!.handler('', { cwd: tmp, mode: 'tui' });
+    await handlers.get('tool_execution_start')!.at(-1)!({
+      toolCallId: 'call-1',
+      toolName: 'exampleTool',
+    }, { cwd: tmp, mode: 'tui', model: { id: 'test-model', reasoning: true } });
+    await handlers.get('tool_execution_end')!.at(-1)!({
+      toolCallId: 'call-1',
+      toolName: 'exampleTool',
+      result: {
+        isError: true,
+        message: 'bad tool token=secret-value',
+        authorization: 'Bearer abc123',
+      },
+      isError: true,
+    }, {
+      cwd: tmp,
+      mode: 'tui',
+      model: { id: 'test-model', reasoning: true },
+      getContextUsage: () => ({ tokens: 50, contextWindow: 100 }),
+    });
+    await handlers.get('before_provider_request')!.at(-1)!({ payload: {} }, { cwd: tmp, mode: 'tui' });
+    await handlers.get('after_provider_response')!.at(-1)!({
+      status: 429,
+      headers: { authorization: 'Bearer should-redact', 'x-ratelimit-remaining': '0' },
+    }, { cwd: tmp, mode: 'tui' });
+
+    const text = fs.readFileSync(logPath, 'utf8');
+    assert.match(text, /=== Octocode Pi Extension Error ===/);
+    assert.match(text, /timestamp:/);
+    assert.match(text, /uptimeMs:/);
+    assert.match(text, /cwd: /);
+    assert.match(text, /mode: tui/);
+    assert.match(text, /model: test-model/);
+    assert.match(text, /context: 50\/100 \(50%\)/);
+    assert.match(text, /source: notify/);
+    assert.match(text, /source: tool_execution_end/);
+    assert.match(text, /source: after_provider_response/);
+    assert.match(text, /durationMs:/);
+    assert.match(text, /stack:/);
+    assert.doesNotMatch(text, /secret-value/);
+    assert.doesNotMatch(text, /should-redact/);
+    assert.match(text, /\[REDACTED\]/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('manage_context type:compact queues a continuation after compaction completes', async () => {
   const { tools, sentUserMessages } = await captureExtensions();
   const compactTool = tools.get('manage_context')!;
@@ -2113,7 +2171,7 @@ test('manage_context type:compact queues a continuation after compaction complet
   ]);
 });
 
-test('manage_context type:compact reports compaction errors without queueing continuation', async () => {
+test('manage_context type:compact treats empty-session compaction as a no-op', async () => {
   const { tools, sentUserMessages } = await captureExtensions();
   const compactTool = tools.get('manage_context')!;
   let compactOptions: { onError?: (err: Error) => void } = {};
@@ -2142,8 +2200,8 @@ test('manage_context type:compact reports compaction errors without queueing con
   compactOptions.onError?.(new Error('Nothing to compact'));
   assert.equal(sentUserMessages.length, 0);
   assert.deepEqual(notifications[0], {
-    message: 'Compaction failed: Nothing to compact',
-    level: 'error',
+    message: 'Compaction skipped: session is too small to compact.',
+    level: 'info',
   });
   assert.deepEqual(working, [
     { kind: 'message', value: undefined },
@@ -2346,17 +2404,25 @@ test('turn_end auto-compact reports errors without queueing a continuation', asy
   });
 
   const onError = compactOptions.onError as (err: Error) => void;
-  onError(new Error('summary request failed'));
+  onError(new Error('Nothing to compact'));
   assert.equal(
     sentUserMessages.length,
     0,
-    'no continuation on compaction error'
+    'no continuation on empty-session compaction'
   );
   assert.deepEqual(notifications[1], {
+    message: 'Auto-compaction skipped: session is too small to compact.',
+    level: 'info',
+  });
+
+  onError(new Error('summary request failed'));
+  assert.deepEqual(notifications[2], {
     message: 'Auto-compaction failed: summary request failed',
     level: 'error',
   });
   assert.deepEqual(working, [
+    { kind: 'message', value: undefined },
+    { kind: 'visible', value: false },
     { kind: 'message', value: undefined },
     { kind: 'visible', value: false },
   ]);
