@@ -1605,7 +1605,7 @@ test('registers all Octocode direct tools as native Pi tools', async () => {
       { expanded: false },
       theme
     ).render(80)[0],
-    '✓ localViewStructure · 2 queries · expand for full output'
+    '✓ localViewStructure · 2 queries'
   );
   // Build 30 newline-separated lines so the 25-line limit is exceeded (5 lines omitted).
   const manyLines = Array.from({ length: 30 }, (_, i) => `line${i + 1}`).join(
@@ -1725,9 +1725,8 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
   );
 });
 
-test('formats Octocode metrics with context tokens and timing', () => {
+test('formats Octocode metrics with turn timing only', () => {
   const metrics = formatOctocodeMetrics(
-    { getContextUsage: () => ({ tokens: 12_345, contextWindow: 200_000 }) },
     {
       sessionStartedAt: 1_000,
       activeTurnStartedAt: 4_000,
@@ -1736,10 +1735,10 @@ test('formats Octocode metrics with context tokens and timing', () => {
     65_000
   );
 
-  assert.equal(metrics, 'ctx ░░░░░░░░░░ 6% (12.3k/200k) · turns 2 · active 1m1s · session 1m4s');
+  assert.equal(metrics, 'turns 2 · active 1m1s · session 1m4s');
   assert.equal(
-    formatOctocodeMetrics(undefined, { sessionStartedAt: 0, completedTurns: 0 }, 500),
-    'ctx n/a · turns 0 · last n/a · session 500ms'
+    formatOctocodeMetrics({ sessionStartedAt: 0, completedTurns: 0 }, 500),
+    'turns 0 · last n/a · session 500ms'
   );
 });
 
@@ -1763,7 +1762,7 @@ test('Octocode metrics status updates on session and turn lifecycle', async () =
   };
 
   await handlers.get('session_start')![0]!(undefined, ctx);
-  assert.ok(statusCalls.some(([key, value]) => key === 'octocode-metrics' && /ctx ▓▓▓▓▓░░░░░ 50% \(50k\/100k\)/.test(value ?? '')));
+  assert.ok(statusCalls.some(([key, value]) => key === 'octocode-metrics' && /turns 0 · last n\/a · session \d+(ms|s)/.test(value ?? '')));
 
   const turnStart = handlers.get('turn_start')!.at(-1)!;
   const turnEnd = handlers.get('turn_end')!.at(-1)!;
@@ -1838,13 +1837,18 @@ test('CLI slash commands removed — extension commands are lean', async () => {
     'setup command is registered'
   );
   assert.equal(
+    commands.has('octocode-cron'),
+    true,
+    'session jobs command is registered'
+  );
+  assert.equal(
     commands.has('octocode-skills-update'),
     true,
     'skills-update command is registered'
   );
   assert.deepEqual(
     listExtensionHarness().extensionCommands,
-    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-agents', '/octocode-setup', '/octocode-skills-update'],
+    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-agents', '/octocode-cron', '/octocode-setup', '/octocode-skills-update'],
     'harness inventory lists every public Octocode slash command'
   );
   assert.equal(commands.has('octocode-memory-digest'), false, 'legacy memory digest command removed');
@@ -1977,6 +1981,9 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
     assert.match(notifications.at(-1)!.message, /builtin overrides: edit, write, bash/);
     assert.match(notifications.at(-1)!.message, /builtin removed: read, grep, find, ls/);
     assert.match(notifications.at(-1)!.message, /builtin passthrough: \(none\)/);
+
+    await commands.get('octocode-cron')!.handler('list', ctx);
+    assert.match(notifications.at(-1)!.message, /Octocode session jobs/);
 
     await commands.get('octocode-setup')!.handler('', { ...ctx, hasUI: false });
     assert.match(

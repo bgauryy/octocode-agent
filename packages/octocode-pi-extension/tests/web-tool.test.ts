@@ -146,7 +146,6 @@ test('web renderResult covers partial, search stats, page stats, expanded text, 
   ).render(120)[0]!;
   assert.match(search, /<success>✓<\/success>/);
   assert.match(search, /2 results/);
-  assert.match(search, /expand for full output/);
 
   const page = tool.renderResult!(
     textResult('page', { url: 'https://example.com', page: 3, truncated: true }),

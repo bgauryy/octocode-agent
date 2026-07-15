@@ -480,8 +480,7 @@ export function buildOctocodeRenderResult(
   const header = `${icon} ${nameStr}${statStr}`;
 
   if (!opts.expanded) {
-    const hint = theme?.fg('dim', ' · expand for full output') ?? ' · expand for full output';
-    return singleLineRenderer(`${header}${hint}`);
+    return singleLineRenderer(header);
   }
 
   // Expanded: show up to 25 lines of text content + truncation notice

@@ -23,6 +23,7 @@ why, the user-facing rules, and the developer code map.
 | **Context** | `manage_context` |
 | **Memory + coordination** | *No tools.* Use the `octocode-awareness` CLI: `node $OCTOCODE_AWARENESS_CLI <noun> <verb>` (see Memory / Awareness below) |
 
+Session-scoped maintenance jobs are controlled by `/octocode-cron`; see [CRON.md](./CRON.md).
 Source of truth for names: `OCTOCODE_DIRECT_TOOL_NAMES` + `OCTOCODE_SUPPORT_TOOL_NAMES` in `src/constants.ts`.
 
 ---
@@ -287,7 +288,7 @@ CLI: `node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact` (agent id + workspac
 inherited from the environment), following the **octocode-awareness skill**. The
 edit/verify lifecycle is automated by the awareness hooks.
 
-See [`AWARENESS_AGENT_FLOW.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) for live coordination and [`REFLECT.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-pi-extension/docs/REFLECT.md) for the Awareness learning loop.
+See [`AWARENESS_AGENT_FLOW.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) for live coordination, [`REFLECT.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-pi-extension/docs/REFLECT.md) for the Awareness learning loop, and [`CRON.md`](./CRON.md) for session job controls.
 
 ### Lifecycle pattern
 

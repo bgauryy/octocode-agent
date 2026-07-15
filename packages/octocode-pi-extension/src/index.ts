@@ -46,6 +46,12 @@ import { assertPathAllowed } from './tools/path-guard.js';
 import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
 import { pickProvider } from './web.js';
 import { createHookComposer } from './hook-composer.js';
+import {
+  createOctocodeCronScheduler,
+  handleOctocodeCronCommand,
+  OCTOCODE_CRON_COMMAND_COMPLETIONS,
+  OCTOCODE_CRON_COMMAND_USAGE,
+} from './scheduler.js';
 import type {
   BeforeAgentStartEvent,
   PiInstance,
@@ -91,6 +97,20 @@ export {
   OctocodeHookComposer,
   runHookMiddleware,
 } from './hook-composer.js';
+export {
+  createOctocodeCronScheduler,
+  formatOctocodeCronStatus,
+  handleOctocodeCronCommand,
+  OCTOCODE_CRON_COMMAND_COMPLETIONS,
+  OCTOCODE_CRON_COMMAND_USAGE,
+} from './scheduler.js';
+export type {
+  OctocodeCronJobDefinition,
+  OctocodeCronJobSnapshot,
+  OctocodeCronRunResult,
+  OctocodeCronScheduler,
+  OctocodeCronSchedulerOptions,
+} from './scheduler.js';
 export {
   cleanupSpawnedAgentsForShutdown,
   DEFAULT_SPAWN_POLICY,
@@ -165,15 +185,14 @@ function formatContextUsage(ctx: PiContext | undefined): { text: string; percent
   };
 }
 
-export function formatOctocodeMetrics(ctx: PiContext | undefined, state: OctocodeMetricsState, now = Date.now()): string {
-  const context = formatContextUsage(ctx).text;
+export function formatOctocodeMetrics(state: OctocodeMetricsState, now = Date.now()): string {
   const active = state.activeTurnStartedAt !== undefined ? `active ${formatDuration(now - state.activeTurnStartedAt)}` : `last ${formatDuration(state.lastTurnMs)}`;
-  return `${context} · turns ${state.completedTurns} · ${active} · session ${formatDuration(now - state.sessionStartedAt)}`;
+  return `turns ${state.completedTurns} · ${active} · session ${formatDuration(now - state.sessionStartedAt)}`;
 }
 
 function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetricsState): void {
   if (!ctx?.hasUI) return;
-  const metrics = formatOctocodeMetrics(ctx, state);
+  const metrics = formatOctocodeMetrics(state);
   ctx.ui?.setStatus?.('octocode-metrics', ctx.ui.theme?.fg('dim', metrics) ?? metrics);
 }
 
@@ -386,6 +405,7 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
       '/octocode-status',
       '/octocode-harness',
       '/octocode-agents',
+      '/octocode-cron',
       '/octocode-setup',
       '/octocode-skills-update',
     ],
@@ -430,7 +450,7 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string): stri
     ...(warnings.length > 0 ? warnings : ['✓ no dashboard warnings']),
     '',
     'Next actions',
-    '/octocode-agents · /octocode-status · /octocode-harness · /octocode-setup · /octocode-skills-update',
+    '/octocode-agents · /octocode-cron · /octocode-status · /octocode-harness · /octocode-setup · /octocode-skills-update',
   ].join('\n');
 }
 
@@ -538,6 +558,7 @@ async function wireOctocodePiExtension(
   // reading it once (lazily on the first before_agent_start) avoids a sync disk
   // read on every turn start across long sessions.
   let cachedSystemPromptText: string | null = null;
+  const cronScheduler = createOctocodeCronScheduler({ pi });
   const metricsState: OctocodeMetricsState = {
     sessionStartedAt: Date.now(),
     completedTurns: 0,
@@ -582,6 +603,7 @@ async function wireOctocodePiExtension(
       metricsState.completedTurns = 0;
       applyOctocodeUi(ctx, pi.getThinkingLevel?.());
       updateOctocodeMetricsUi(ctx, metricsState);
+      cronScheduler.start(ctx);
       // Disable weak built-ins (read/grep/find/ls) in favor of Octocode locals.
       try {
         if (disableBuiltinTools(pi)) {
@@ -633,6 +655,7 @@ async function wireOctocodePiExtension(
     // Clean up status labels and spawned workers when the session tears down
     // so they don't leak across /new, /resume, /fork, reload, or quit.
     hooks.on('session_shutdown', 'octocode-session-shutdown', async (_event: SessionShutdownEvent, ctx: PiContext | undefined) => {
+      cronScheduler.stop();
       const cleanedAgents = cleanupSpawnedAgentsForShutdown();
       if (ctx?.hasUI) {
         ctx.ui?.setStatus?.('octocode', '');
@@ -801,6 +824,18 @@ async function wireOctocodePiExtension(
     },
     handler: async (args, ctx) => {
       await handleOctocodeAgentsCommand(args, ctx);
+    },
+  });
+
+  pi.registerCommand('octocode-cron', {
+    description: `List, run, restart, or cancel Octocode session jobs (usage: ${OCTOCODE_CRON_COMMAND_USAGE}).`,
+    getArgumentCompletions: (prefix: string) => {
+      return OCTOCODE_CRON_COMMAND_COMPLETIONS
+        .filter((s) => s.startsWith(prefix))
+        .map((s) => ({ value: s, label: s, description: `/octocode-cron ${s}` }));
+    },
+    handler: async (args, ctx) => {
+      await handleOctocodeCronCommand(args, ctx, cronScheduler, notify);
     },
   });
 

@@ -1,0 +1,380 @@
+import { execFile } from 'node:child_process';
+import type { PiContext, PiExecResult, PiInstance } from './types.js';
+
+const DEFAULT_JOB_TIMEOUT_MS = 60_000;
+export const DEFAULT_MAINTENANCE_DIGEST_INTERVAL_MS = 30 * 60 * 1000;
+
+export type OctocodeCronJobStatus =
+  | 'idle'
+  | 'scheduled'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled';
+
+export interface OctocodeCronJobDefinition {
+  name: string;
+  label: string;
+  description: string;
+  intervalMs: number;
+  enabledByDefault: boolean;
+  awarenessArgs(ctx: PiContext | undefined): string[];
+}
+
+export interface OctocodeCronJobSnapshot {
+  name: string;
+  label: string;
+  description: string;
+  intervalMs: number;
+  enabled: boolean;
+  status: OctocodeCronJobStatus;
+  running: boolean;
+  nextRunAt?: string;
+  lastStartedAt?: string;
+  lastFinishedAt?: string;
+  lastExitCode?: number | null;
+  lastMessage?: string;
+}
+
+interface MutableJobState {
+  definition: OctocodeCronJobDefinition;
+  enabled: boolean;
+  status: OctocodeCronJobStatus;
+  running: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+  nextRunAt?: number;
+  lastStartedAt?: number;
+  lastFinishedAt?: number;
+  lastExitCode?: number | null;
+  lastMessage?: string;
+}
+
+export interface OctocodeCronRunResult {
+  job: string;
+  status: OctocodeCronJobStatus;
+  exitCode?: number | null;
+  message: string;
+}
+
+export interface OctocodeCronExecutor {
+  (command: string, args: string[], opts: { signal?: AbortSignal; timeout?: number }): Promise<PiExecResult>;
+}
+
+export interface OctocodeCronScheduler {
+  start(ctx?: PiContext): void;
+  stop(): void;
+  cancel(jobName?: string): string[];
+  runNow(jobName: string | undefined, ctx?: PiContext): Promise<OctocodeCronRunResult[]>;
+  list(): OctocodeCronJobSnapshot[];
+}
+
+export interface OctocodeCronSchedulerOptions {
+  pi?: Pick<PiInstance, 'exec'>;
+  executor?: OctocodeCronExecutor;
+  env?: NodeJS.ProcessEnv;
+  now?: () => number;
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (value === undefined || value.trim() === '') return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function workspaceOf(ctx: PiContext | undefined): string {
+  return ctx?.cwd ?? process.cwd();
+}
+
+function defaultJobs(env: NodeJS.ProcessEnv): OctocodeCronJobDefinition[] {
+  return [
+    {
+      name: 'maintenance-digest',
+      label: 'Awareness maintenance digest',
+      description: 'Report-first Awareness maintenance summary; runs with --dry-run and never mutates data.',
+      intervalMs: parsePositiveInt(
+        env['OCTOCODE_CRON_DIGEST_INTERVAL_MS'],
+        DEFAULT_MAINTENANCE_DIGEST_INTERVAL_MS,
+      ),
+      enabledByDefault: env['OCTOCODE_CRON_DIGEST'] !== '0',
+      awarenessArgs: (ctx) => [
+        'maintenance',
+        'digest',
+        '--workspace',
+        workspaceOf(ctx),
+        '--dry-run',
+        '--compact',
+      ],
+    },
+  ];
+}
+
+function normalizeJobName(jobName: string | undefined): string | undefined {
+  if (!jobName) return undefined;
+  const trimmed = jobName.trim();
+  if (!trimmed || trimmed === 'all' || trimmed === '*') return undefined;
+  return trimmed;
+}
+
+function truncateOutput(text: string, maxChars = 1200): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  return `${trimmed.slice(0, maxChars)}…`;
+}
+
+function formatDuration(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.round(minutes / 60)}h`;
+}
+
+function makeExecutor(pi: Pick<PiInstance, 'exec'> | undefined): OctocodeCronExecutor {
+  if (pi?.exec) return (command, args, opts) => pi.exec!(command, args, opts);
+  return (command, args, opts) =>
+    new Promise<PiExecResult>((resolve) => {
+      const child = execFile(
+        command,
+        args,
+        {
+          timeout: opts.timeout,
+          signal: opts.signal,
+          maxBuffer: 1024 * 1024,
+        },
+        (error, stdout, stderr) => {
+          const errorCode = (error as NodeJS.ErrnoException | null)?.code;
+          const code = typeof errorCode === 'number' ? errorCode : error ? 1 : 0;
+          resolve({ stdout, stderr, code });
+        },
+      );
+      opts.signal?.addEventListener('abort', () => child.kill(), { once: true });
+    });
+}
+
+export function createOctocodeCronScheduler(
+  options: OctocodeCronSchedulerOptions = {},
+): OctocodeCronScheduler {
+  const env = options.env ?? process.env;
+  const now = options.now ?? Date.now;
+  const executor = options.executor ?? makeExecutor(options.pi);
+  const states = new Map<string, MutableJobState>();
+  let active = false;
+  let lastCtx: PiContext | undefined;
+
+  for (const definition of defaultJobs(env)) {
+    states.set(definition.name, {
+      definition,
+      enabled: definition.enabledByDefault,
+      status: definition.enabledByDefault ? 'idle' : 'cancelled',
+      running: false,
+    });
+  }
+
+  const clearTimer = (state: MutableJobState): void => {
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = undefined;
+    state.nextRunAt = undefined;
+  };
+
+  const schedule = (state: MutableJobState): void => {
+    clearTimer(state);
+    if (!active || !state.enabled || state.running) return;
+    const delay = state.definition.intervalMs;
+    state.nextRunAt = now() + delay;
+    state.status = 'scheduled';
+    state.timer = setTimeout(() => {
+      void runOne(state.definition.name, lastCtx, true);
+    }, delay);
+    (state.timer as { unref?: () => void }).unref?.();
+  };
+
+  const runOne = async (
+    jobName: string,
+    ctx: PiContext | undefined,
+    rescheduleAfterRun: boolean,
+  ): Promise<OctocodeCronRunResult> => {
+    const state = states.get(jobName);
+    if (!state) {
+      return { job: jobName, status: 'failed', message: `Unknown cron job: ${jobName}` };
+    }
+    clearTimer(state);
+    if (state.running) {
+      return { job: jobName, status: 'skipped', message: `${state.definition.label} is already running.` };
+    }
+
+    const awarenessCli = env['OCTOCODE_AWARENESS_CLI'];
+    if (!awarenessCli) {
+      state.status = 'skipped';
+      state.lastStartedAt = now();
+      state.lastFinishedAt = state.lastStartedAt;
+      state.lastExitCode = null;
+      state.lastMessage = 'OCTOCODE_AWARENESS_CLI is not set; job skipped.';
+      if (rescheduleAfterRun) schedule(state);
+      return { job: jobName, status: 'skipped', message: state.lastMessage };
+    }
+
+    state.running = true;
+    state.status = 'running';
+    state.lastStartedAt = now();
+    state.lastMessage = undefined;
+    try {
+      const result = await executor(
+        process.execPath,
+        [awarenessCli, ...state.definition.awarenessArgs(ctx)],
+        { timeout: DEFAULT_JOB_TIMEOUT_MS },
+      );
+      const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join('\n'));
+      state.lastExitCode = result.code;
+      state.status = result.code === 0 ? 'succeeded' : 'failed';
+      state.lastMessage = output || (result.code === 0 ? 'completed' : `exited with ${result.code}`);
+      return {
+        job: jobName,
+        status: state.status,
+        exitCode: result.code,
+        message: state.lastMessage,
+      };
+    } catch (error) {
+      state.lastExitCode = 1;
+      state.status = 'failed';
+      state.lastMessage = error instanceof Error ? error.message : String(error);
+      return { job: jobName, status: 'failed', exitCode: 1, message: state.lastMessage };
+    } finally {
+      state.running = false;
+      state.lastFinishedAt = now();
+      if (rescheduleAfterRun) schedule(state);
+    }
+  };
+
+  return {
+    start(ctx?: PiContext): void {
+      lastCtx = ctx;
+      active = env['OCTOCODE_CRON'] !== '0';
+      for (const state of states.values()) {
+        if (active && state.enabled) schedule(state);
+        else if (!active) {
+          clearTimer(state);
+          state.status = 'cancelled';
+        }
+      }
+    },
+
+    stop(): void {
+      active = false;
+      for (const state of states.values()) clearTimer(state);
+    },
+
+    cancel(jobName?: string): string[] {
+      const normalized = normalizeJobName(jobName);
+      const targets = normalized ? [states.get(normalized)].filter(Boolean) as MutableJobState[] : [...states.values()];
+      for (const state of targets) {
+        state.enabled = false;
+        state.status = 'cancelled';
+        clearTimer(state);
+      }
+      return targets.map((state) => state.definition.name);
+    },
+
+    async runNow(jobName?: string, ctx?: PiContext): Promise<OctocodeCronRunResult[]> {
+      lastCtx = ctx ?? lastCtx;
+      const normalized = normalizeJobName(jobName);
+      const targets = normalized ? [states.get(normalized)].filter(Boolean) as MutableJobState[] : [...states.values()];
+      if (normalized && targets.length === 0) {
+        return [{ job: normalized, status: 'failed', message: `Unknown cron job: ${normalized}` }];
+      }
+      const results: OctocodeCronRunResult[] = [];
+      for (const state of targets) results.push(await runOne(state.definition.name, lastCtx, active && state.enabled));
+      return results;
+    },
+
+    list(): OctocodeCronJobSnapshot[] {
+      return [...states.values()].map((state) => ({
+        name: state.definition.name,
+        label: state.definition.label,
+        description: state.definition.description,
+        intervalMs: state.definition.intervalMs,
+        enabled: state.enabled && active,
+        status: state.status,
+        running: state.running,
+        nextRunAt: state.nextRunAt === undefined ? undefined : new Date(state.nextRunAt).toISOString(),
+        lastStartedAt: state.lastStartedAt === undefined ? undefined : new Date(state.lastStartedAt).toISOString(),
+        lastFinishedAt: state.lastFinishedAt === undefined ? undefined : new Date(state.lastFinishedAt).toISOString(),
+        lastExitCode: state.lastExitCode,
+        lastMessage: state.lastMessage,
+      }));
+    },
+  };
+}
+
+export function formatOctocodeCronStatus(snapshots: OctocodeCronJobSnapshot[]): string {
+  const lines = ['Octocode session jobs', ''];
+  if (snapshots.length === 0) return 'Octocode session jobs\n\n(no jobs registered)';
+  for (const job of snapshots) {
+    lines.push(`${job.enabled ? '✓' : '–'} ${job.name} — ${job.status}`);
+    lines.push(`  ${job.description}`);
+    lines.push(`  interval: ${formatDuration(job.intervalMs)}`);
+    if (job.nextRunAt) lines.push(`  next: ${job.nextRunAt}`);
+    if (job.lastFinishedAt) lines.push(`  last: ${job.lastFinishedAt} (${job.lastExitCode ?? 'n/a'})`);
+    if (job.lastMessage) lines.push(`  message: ${job.lastMessage}`);
+  }
+  lines.push('', 'Commands: /octocode-cron list · check [job|all] · run [job|all] · cancel [job|all] · start');
+  return lines.join('\n');
+}
+
+export const OCTOCODE_CRON_COMMAND_COMPLETIONS = [
+  'list',
+  'status',
+  'check',
+  'run',
+  'cancel',
+  'start',
+  'help',
+] as const;
+
+export const OCTOCODE_CRON_COMMAND_USAGE = 'list|status|check [job|all]|run [job|all]|cancel [job|all]|start|help';
+
+function formatRunResults(results: OctocodeCronRunResult[]): string {
+  return [
+    'Octocode session job check',
+    '',
+    ...results.map((result) => {
+      const exit = result.exitCode === undefined ? '' : ` exit=${result.exitCode}`;
+      return `${result.job}: ${result.status}${exit}\n${result.message}`;
+    }),
+  ].join('\n');
+}
+
+export async function handleOctocodeCronCommand(
+  args: string,
+  ctx: PiContext | undefined,
+  scheduler: OctocodeCronScheduler,
+  notify: (ctx: PiContext | undefined, message: string, level?: string) => void,
+): Promise<void> {
+  const [command = 'list', target] = args.trim().split(/\s+/).filter(Boolean);
+  switch (command) {
+    case 'list':
+    case 'status':
+      notify(ctx, formatOctocodeCronStatus(scheduler.list()), 'info');
+      return;
+    case 'check':
+    case 'run': {
+      const results = await scheduler.runNow(target, ctx);
+      notify(ctx, formatRunResults(results), results.some((result) => result.status === 'failed') ? 'warning' : 'info');
+      return;
+    }
+    case 'cancel': {
+      const cancelled = scheduler.cancel(target);
+      notify(ctx, `Cancelled Octocode session job(s): ${cancelled.join(', ') || '(none)'}`, 'info');
+      return;
+    }
+    case 'start':
+      scheduler.start(ctx);
+      notify(ctx, formatOctocodeCronStatus(scheduler.list()), 'info');
+      return;
+    case 'help':
+      notify(ctx, `Usage: /octocode-cron ${OCTOCODE_CRON_COMMAND_USAGE}`, 'info');
+      return;
+    default:
+      notify(ctx, `Unknown /octocode-cron command: ${command}\nUsage: /octocode-cron ${OCTOCODE_CRON_COMMAND_USAGE}`, 'warning');
+  }
+}

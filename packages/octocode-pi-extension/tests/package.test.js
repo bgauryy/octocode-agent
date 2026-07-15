@@ -1089,7 +1089,7 @@ test('registers all Octocode direct tools as native Pi tools', async () => {
         isError: false,
         content: [{ type: 'text', text: 'ok' }],
         details: { results: [1, 2] },
-    }, { expanded: false }, theme).render(80)[0], '✓ localViewStructure · 2 queries · expand for full output');
+    }, { expanded: false }, theme).render(80)[0], '✓ localViewStructure · 2 queries');
     // Build 30 newline-separated lines so the 25-line limit is exceeded (5 lines omitted).
     const manyLines = Array.from({ length: 30 }, (_, i) => `line${i + 1}`).join('\n');
     const expanded = localViewStructure.renderResult({

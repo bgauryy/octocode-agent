@@ -149,7 +149,6 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   ).render(180)[0]!;
   assert.match(collapsed, /<success>✓<\/success>/);
   assert.match(collapsed, /4 matches, 2 files/);
-  assert.match(collapsed, /expand for full output/);
 
   const expanded = buildOctocodeRenderResult(
     'ghGetFileContent',

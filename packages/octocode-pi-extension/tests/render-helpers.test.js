@@ -117,7 +117,6 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
     const collapsed = buildOctocodeRenderResult('localSearchCode', textResult('ok', { results: [{ data: { totalMatches: 4, totalFiles: 2 } }] }), { expanded: false }, theme).render(180)[0];
     assert.match(collapsed, /<success>✓<\/success>/);
     assert.match(collapsed, /4 matches, 2 files/);
-    assert.match(collapsed, /expand for full output/);
     const expanded = buildOctocodeRenderResult('ghGetFileContent', textResult(Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n'), { results: [{ data: { path: 'src/a.ts' } }] }), { expanded: true }, theme).render(80);
     assert.equal(expanded.length, 27);
     assert.match(expanded.at(-1), /5 more lines hidden/);

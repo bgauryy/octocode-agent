@@ -178,8 +178,7 @@ export function registerWebTool(
       }
       const header = `${icon} ${nameStr}${stat}`;
       if (!opts.expanded) {
-        const hint = theme?.fg('dim', ' · expand for full output') ?? ' · expand for full output';
-        return makeRenderer((w) => [truncateToWidth(`${header}${hint}`, w)]);
+        return makeRenderer((w) => [truncateToWidth(header, w)]);
       }
       const text = (result.content as Array<{ type: string; text: string }>)
         ?.find?.((p) => p.type === 'text')?.text ?? '';

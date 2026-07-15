@@ -79,7 +79,6 @@ test('web renderResult covers partial, search stats, page stats, expanded text, 
     const search = tool.renderResult(textResult('search', { results: [{}, {}] }), { expanded: false }, theme).render(120)[0];
     assert.match(search, /<success>✓<\/success>/);
     assert.match(search, /2 results/);
-    assert.match(search, /expand for full output/);
     const page = tool.renderResult(textResult('page', { url: 'https://example.com', page: 3, truncated: true }), { expanded: false }, theme).render(120)[0];
     assert.match(page, /page p3 \(more pages available\)/);
     const expanded = tool.renderResult(textResult(Array.from({ length: 25 }, (_, i) => `line ${i + 1}`).join('\n'), { url: 'https://example.com' }), { expanded: true }, theme).render(120);
