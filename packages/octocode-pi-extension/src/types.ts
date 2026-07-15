@@ -38,6 +38,10 @@ export interface WorkerLedgerEntry {
   status: string;
   startedAt: string;
   updatedAt: string;
+  model?: string;
+  provider?: string;
+  thinking?: string;
+  tools?: string[];
   normalizedStatus?: string;
   result?: string;
   confidence?: string;

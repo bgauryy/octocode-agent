@@ -28,6 +28,7 @@ import {
   cleanupSpawnedAgentsForShutdown,
   formatAgentLedger,
   handleOctocodeAgentsCommand,
+  listWorkerLedgerEntries,
   OCTOCODE_AGENTS_COMMAND_COMPLETIONS,
   OCTOCODE_AGENTS_COMMAND_DESCRIPTIONS,
   OCTOCODE_AGENTS_COMMAND_USAGE,
@@ -48,12 +49,14 @@ import { pickProvider } from './web.js';
 import { createHookComposer } from './hook-composer.js';
 import {
   createOctocodeCronScheduler,
+  formatOctocodeCronSummary,
   handleOctocodeCronCommand,
   OCTOCODE_CRON_COMMAND_COMPLETIONS,
   OCTOCODE_CRON_COMMAND_USAGE,
 } from './scheduler.js';
 import type {
   BeforeAgentStartEvent,
+  CommandDefinition,
   PiInstance,
   PiContext,
   OctocodePiExtensionOptions,
@@ -185,14 +188,15 @@ function formatContextUsage(ctx: PiContext | undefined): { text: string; percent
   };
 }
 
-export function formatOctocodeMetrics(state: OctocodeMetricsState, now = Date.now()): string {
+export function formatOctocodeMetrics(ctx: PiContext | undefined, state: OctocodeMetricsState, now = Date.now()): string {
+  const context = formatContextUsage(ctx).text;
   const active = state.activeTurnStartedAt !== undefined ? `active ${formatDuration(now - state.activeTurnStartedAt)}` : `last ${formatDuration(state.lastTurnMs)}`;
-  return `turns ${state.completedTurns} · ${active} · session ${formatDuration(now - state.sessionStartedAt)}`;
+  return `${context} · turns ${state.completedTurns} · ${active} · session ${formatDuration(now - state.sessionStartedAt)}`;
 }
 
 function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetricsState): void {
   if (!ctx?.hasUI) return;
-  const metrics = formatOctocodeMetrics(state);
+  const metrics = formatOctocodeMetrics(ctx, state);
   ctx.ui?.setStatus?.('octocode-metrics', ctx.ui.theme?.fg('dim', metrics) ?? metrics);
 }
 
@@ -204,9 +208,9 @@ export function applyOctocodeUi(ctx: PiContext | undefined, level?: string): voi
   ui.setHiddenThinkingLabel?.('Octocode thinking');
   ui.setTitle?.('Octocode Agent');
   ui.setHeader?.((_tui: unknown, theme) => makeRenderer((width) => [
-    truncateToWidth(theme.fg('accent', theme.bold('◆ Octocode Agent')), width),
-    truncateToWidth(theme.fg('dim', 'local/GitHub/npm/LSP/chrome/browser/agents'), width),
-    truncateToWidth(theme.fg('muted', 'Try /octocode · /octocode-agents · /octocode-status'), width),
+    truncateToWidth(theme.fg('accent', theme.bold('◆ Octocode Terminal Agent')), width),
+    truncateToWidth(theme.fg('dim', 'research · edit/write/bash guard · browser · agents · session jobs'), width),
+    truncateToWidth(theme.fg('muted', 'Try /octocode · /octocode-agents · /octocode-cron · /compact'), width),
   ]));
   const label = ui.theme?.fg ? ui.theme.fg('accent', '◆ Octocode') : '◆ Octocode';
   ui.setStatus?.('octocode', label);
@@ -354,7 +358,16 @@ async function confirm(
 // ─── Status / harness ────────────────────────────────────────────────────────
 
 function formatOctocodeToolStatus(): string {
-  return `${OCTOCODE_DIRECT_TOOL_NAMES.length} native Pi tools`;
+  return `${OCTOCODE_DIRECT_TOOL_NAMES.length} native research · ${OCTOCODE_SUPPORT_TOOL_NAMES.length} support · ${OVERRIDDEN_BUILTIN_TOOL_NAMES.length} guarded built-ins · ${DISABLED_BUILTIN_TOOL_NAMES.length} replaced`;
+}
+
+function formatToolCapabilitySummary(): string {
+  return [
+    `research: ${OCTOCODE_DIRECT_TOOL_NAMES.length} GitHub/local/LSP/npm tools`,
+    `support: ${OCTOCODE_SUPPORT_TOOL_NAMES.join(', ')}`,
+    `guarded mutations: ${OVERRIDDEN_BUILTIN_TOOL_NAMES.join(', ')}`,
+    `replaced weak built-ins: ${DISABLED_BUILTIN_TOOL_NAMES.join(', ')}`,
+  ].join('\n');
 }
 
 export function formatStatus(baseDir?: string): string {
@@ -406,6 +419,7 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
       '/octocode-harness',
       '/octocode-agents',
       '/octocode-cron',
+      '/cron',
       '/octocode-setup',
       '/octocode-skills-update',
     ],
@@ -414,7 +428,7 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
   };
 }
 
-export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string): string {
+export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessionJobs?: string): string {
   const paths = getAssetPaths(baseDir);
   const skills = listBundledSkills(baseDir);
   const context = formatContextUsage(ctx);
@@ -432,12 +446,19 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string): stri
     '',
     'Status',
     `${promptOk ? '✓' : '⚠'} system prompt: ${promptOk ? 'found' : 'missing'}`,
-    `✓ tools: ${formatOctocodeToolStatus()} + ${OCTOCODE_SUPPORT_TOOL_NAMES.length} support tools`,
+    `✓ tools: ${formatOctocodeToolStatus()}`,
     `✓ metrics: ${context.text}`,
     `CLI: node $OCTOCODE_CLI <command> (${cliPath})`,
     '',
     'Agents',
     formatAgentLedger(),
+    `ledger entries: ${listWorkerLedgerEntries().length} · details: /octocode-agents list`,
+    '',
+    'Tools',
+    formatToolCapabilitySummary(),
+    '',
+    'Session jobs',
+    sessionJobs ?? 'session jobs: use /octocode-cron list',
     '',
     'Setup',
     `project APPEND_SYSTEM: ${getAppendSystemTarget('project', ctx?.cwd ?? process.cwd())}`,
@@ -796,7 +817,7 @@ async function wireOctocodePiExtension(
   pi.registerCommand('octocode', {
     description: 'Show the Octocode dashboard: status, agents, setup, skills, health, and next actions.',
     handler: async (_args, ctx) => {
-      notify(ctx, formatOctocodeDashboard(ctx), 'info');
+      notify(ctx, formatOctocodeDashboard(ctx, undefined, formatOctocodeCronSummary(cronScheduler.list())), 'info');
     },
   });
 
@@ -827,8 +848,8 @@ async function wireOctocodePiExtension(
     },
   });
 
-  pi.registerCommand('octocode-cron', {
-    description: `List, run, restart, or cancel Octocode session jobs (usage: ${OCTOCODE_CRON_COMMAND_USAGE}).`,
+  const cronCommand: CommandDefinition = {
+    description: `List, check, or cancel Octocode session jobs (usage: ${OCTOCODE_CRON_COMMAND_USAGE}).`,
     getArgumentCompletions: (prefix: string) => {
       return OCTOCODE_CRON_COMMAND_COMPLETIONS
         .filter((s) => s.startsWith(prefix))
@@ -837,6 +858,11 @@ async function wireOctocodePiExtension(
     handler: async (args, ctx) => {
       await handleOctocodeCronCommand(args, ctx, cronScheduler, notify);
     },
+  };
+  pi.registerCommand('octocode-cron', cronCommand);
+  pi.registerCommand('cron', {
+    ...cronCommand,
+    description: `Alias for /octocode-cron — list, check, or cancel Octocode session jobs (usage: ${OCTOCODE_CRON_COMMAND_USAGE}).`,
   });
 
   pi.registerCommand('octocode-setup', {

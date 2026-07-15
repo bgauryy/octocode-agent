@@ -495,7 +495,7 @@ test(
   withTempMemoryHome(() => {
     const status = formatStatus(distDir);
     assert.match(status, /system prompt: found/);
-    assert.match(status, /octocode tools: 13 native Pi tools/);
+    assert.match(status, /octocode tools: 13 native research · 7 support · 3 guarded built-ins · 4 replaced/);
     assert.match(status, /bundled CLI:.*octocode\.js/);
     assert.match(status, /internal error log: .*\.octocode\/logs\/error\.txt/);
     assert.match(
@@ -1709,7 +1709,7 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
   assert.deepEqual(calls, [
     ['thinking', 'Octocode thinking'],
     ['title', 'Octocode Agent'],
-    ['header', '<◆ Octocode Agent> | <local/GitHub/npm/LSP/chrome/browser/agents> | <Try /octocode · /octocode-agents · /octocode-status>'],
+    ['header', '<◆ Octocode Terminal Agent> | <research · edit/write/bash guard · browser · agents · session jobs> | <Try /octocode · /octocode-agents · /octocode-cron · /compact>'],
     ['status', 'octocode', '<◆ Octocode>'],
     ['status', 'octocode-thinking', '<thinking: unknown model>'],
     ['indicator', '<✦><✧><✶><✧>', '220'],
@@ -1725,8 +1725,9 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
   );
 });
 
-test('formats Octocode metrics with turn timing only', () => {
+test('formats Octocode metrics with context tokens and timing', () => {
   const metrics = formatOctocodeMetrics(
+    { getContextUsage: () => ({ tokens: 12_345, contextWindow: 200_000 }) },
     {
       sessionStartedAt: 1_000,
       activeTurnStartedAt: 4_000,
@@ -1735,10 +1736,10 @@ test('formats Octocode metrics with turn timing only', () => {
     65_000
   );
 
-  assert.equal(metrics, 'turns 2 · active 1m1s · session 1m4s');
+  assert.equal(metrics, 'ctx ░░░░░░░░░░ 6% (12.3k/200k) · turns 2 · active 1m1s · session 1m4s');
   assert.equal(
-    formatOctocodeMetrics({ sessionStartedAt: 0, completedTurns: 0 }, 500),
-    'turns 0 · last n/a · session 500ms'
+    formatOctocodeMetrics(undefined, { sessionStartedAt: 0, completedTurns: 0 }, 500),
+    'ctx n/a · turns 0 · last n/a · session 500ms'
   );
 });
 
@@ -1762,7 +1763,7 @@ test('Octocode metrics status updates on session and turn lifecycle', async () =
   };
 
   await handlers.get('session_start')![0]!(undefined, ctx);
-  assert.ok(statusCalls.some(([key, value]) => key === 'octocode-metrics' && /turns 0 · last n\/a · session \d+(ms|s)/.test(value ?? '')));
+  assert.ok(statusCalls.some(([key, value]) => key === 'octocode-metrics' && /ctx ▓▓▓▓▓░░░░░ 50% \(50k\/100k\)/.test(value ?? '')));
 
   const turnStart = handlers.get('turn_start')!.at(-1)!;
   const turnEnd = handlers.get('turn_end')!.at(-1)!;
@@ -1794,10 +1795,16 @@ test('Octocode dashboard command summarizes status, agents, setup, skills, and h
   assert.match(dashboard, /^◆ Octocode dashboard/m);
   assert.match(dashboard, /Status/);
   assert.match(dashboard, /Agents/);
+  assert.match(dashboard, /Tools/);
+  assert.match(dashboard, /research: 13 GitHub\/local\/LSP\/npm tools/);
+  assert.match(dashboard, /guarded mutations: edit, write, bash/);
+  assert.match(dashboard, /Session jobs/);
+  assert.match(dashboard, /session jobs:/);
   assert.match(dashboard, /Setup/);
   assert.match(dashboard, /Skills/);
   assert.match(dashboard, /Next actions/);
   assert.match(dashboard, /\/octocode-agents/);
+  assert.match(dashboard, /\/octocode-cron/);
 });
 
 test('formatOctocodeDashboard is scan-friendly and includes health warnings', () => {
@@ -1842,13 +1849,18 @@ test('CLI slash commands removed — extension commands are lean', async () => {
     'session jobs command is registered'
   );
   assert.equal(
+    commands.has('cron'),
+    true,
+    'short session jobs command alias is registered'
+  );
+  assert.equal(
     commands.has('octocode-skills-update'),
     true,
     'skills-update command is registered'
   );
   assert.deepEqual(
     listExtensionHarness().extensionCommands,
-    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-agents', '/octocode-cron', '/octocode-setup', '/octocode-skills-update'],
+    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-agents', '/octocode-cron', '/cron', '/octocode-setup', '/octocode-skills-update'],
     'harness inventory lists every public Octocode slash command'
   );
   assert.equal(commands.has('octocode-memory-digest'), false, 'legacy memory digest command removed');
@@ -1984,6 +1996,9 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
 
     await commands.get('octocode-cron')!.handler('list', ctx);
     assert.match(notifications.at(-1)!.message, /Octocode session jobs/);
+
+    await commands.get('cron')!.handler('check', ctx);
+    assert.match(notifications.at(-1)!.message, /Octocode session job check/);
 
     await commands.get('octocode-setup')!.handler('', { ...ctx, hasUI: false });
     assert.match(
@@ -2899,7 +2914,9 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
         context: 'Relevant file: docs/a.md',
         name: 'docs-scout',
         model: 'sonnet:high',
-        tools: ['read', 'grep'],
+        provider: 'guy-provider-anthropic',
+        thinking: 'medium',
+        tools: ['localSearchCode', 'web', 'read', 'grep'],
       },
       { cwd: '/repo' }
     );
@@ -2921,12 +2938,16 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
       false,
       'clean spawnAgent has no skills unless provided'
     );
+    assert.ok(spawned[0]!.args.includes('--provider'));
+    assert.ok(spawned[0]!.args.includes('guy-provider-anthropic'));
     assert.ok(spawned[0]!.args.includes('--model'));
     assert.ok(spawned[0]!.args.includes('sonnet:high'));
+    assert.ok(spawned[0]!.args.includes('--thinking'));
+    assert.ok(spawned[0]!.args.includes('medium'));
     assert.ok(spawned[0]!.args.includes('--exclude-tools'));
     assert.ok(spawned[0]!.args.includes('spawnAgent,AgentMessage,spawnSubagent'));
     assert.ok(spawned[0]!.args.includes('--tools'));
-    assert.ok(spawned[0]!.args.includes('read,grep'));
+    assert.ok(spawned[0]!.args.includes('localSearchCode,web,read,grep'));
     assert.equal(spawned[0]!.options.cwd, '/repo');
     assert.match(
       spawned[0]!.proc.stdinWrites[0]!,
@@ -2990,6 +3011,10 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     assert.ok(ledgerEntries.some(entry =>
       entry.agentId === agentId
       && entry.normalizedStatus === 'done'
+      && entry.model === 'sonnet:high'
+      && entry.provider === 'guy-provider-anthropic'
+      && entry.thinking === 'medium'
+      && entry.tools?.join(',') === 'localSearchCode,web,read,grep'
       && entry.result === 'docs are current'
       && entry.verification === 'inspected docs/a.md'
     ));
@@ -3018,6 +3043,9 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     await agentsCommand.handler('', agentCommandCtx());
     assert.match(notifications.at(-1)?.message ?? '', /docs-scout/);
     assert.match(notifications.at(-1)?.message ?? '', /done/);
+    assert.match(notifications.at(-1)?.message ?? '', /guy-provider-anthropic\/sonnet:high/);
+    assert.match(notifications.at(-1)?.message ?? '', /think:medium/);
+    assert.match(notifications.at(-1)?.message ?? '', /tools:4/);
     const widgetCall = widgetCalls.find(call => call.name === 'octocode-agents' && typeof call.content === 'function');
     assert.equal(widgetCall?.opts?.placement, 'belowEditor');
     const widget = (widgetCall?.content as (tui: unknown, theme: TestTheme) => { render(width: number): string[] })(null, {
@@ -3027,8 +3055,8 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     const widgetLines = widget.render(160);
     assert.match(widgetLines[0] ?? '', /<toolTitle:Octocode agents>/);
     assert.ok(
-      widgetLines.some(line => /<success:✓>/.test(line) && /<accent:docs-scout>/.test(line)),
-      'agent ledger widget uses theme-aware status and name coloring'
+      widgetLines.some(line => /<success:✓>/.test(line) && /<accent:docs-scout>/.test(line) && /guy-provider-anthropic\/sonnet:high/.test(line) && /think:medium/.test(line)),
+      'agent ledger widget uses theme-aware status/name coloring and shows provider/model/thinking'
     );
 
     await agentsCommand.handler(`inspect ${agentId.slice(0, 8)}`, agentCommandCtx());

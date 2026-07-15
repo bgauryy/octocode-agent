@@ -829,6 +829,9 @@ function summarizeAgent(record: AgentRecord) {
     status: record.status,
     cwd: record.cwd,
     model: getArgValue(record.args, '--model'),
+    provider: getArgValue(record.args, '--provider'),
+    thinking: getArgValue(record.args, '--thinking'),
+    tools: getArgCsv(record.args, '--tools'),
     startedAt: new Date(record.startedAt).toISOString(),
     updatedAt: new Date(record.updatedAt).toISOString(),
     exitCode: record.exitCode,
@@ -856,6 +859,10 @@ export function listWorkerLedgerEntries(): WorkerLedgerEntry[] {
         status: record.status,
         startedAt: new Date(record.startedAt).toISOString(),
         updatedAt: new Date(record.updatedAt).toISOString(),
+        model: getArgValue(record.args, '--model'),
+        provider: getArgValue(record.args, '--provider'),
+        thinking: getArgValue(record.args, '--thinking'),
+        tools: getArgCsv(record.args, '--tools'),
         normalizedStatus: normalized?.status,
         result: normalized?.result,
         confidence: normalized?.confidence,
@@ -870,6 +877,19 @@ export function listWorkerLedgerEntries(): WorkerLedgerEntry[] {
 function getArgValue(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag);
   return index >= 0 ? args[index + 1] : undefined;
+}
+
+function getArgCsv(args: string[], flag: string): string[] | undefined {
+  const value = getArgValue(args, flag);
+  return value ? value.split(',').map((item) => item.trim()).filter(Boolean) : undefined;
+}
+
+function formatAgentModelLine(summary: ReturnType<typeof summarizeAgent>): string {
+  const model = summary.model ?? 'default model';
+  const provider = summary.provider ? `${summary.provider}/` : '';
+  const thinking = summary.thinking ? ` · think:${summary.thinking}` : '';
+  const tools = summary.tools?.length ? ` · tools:${summary.tools.length}` : '';
+  return `${provider}${model}${thinking}${tools}`;
 }
 
 function findAgentByIdOrPrefix(agentId: unknown): AgentRecord | undefined {
@@ -930,8 +950,9 @@ function renderAgentResult(records: AgentRecord[], header: string): ToolCallResu
     const riskText = risk ? ` \u00b7 ${risk}` : '';
     const result = s.normalizedResult?.result ?? s.normalizedResult?.next ?? s.lastOutput;
     const preview = result ? ` \u2014 ${result.slice(0, 60).replace(/\n/g, ' ')}${s.outputTruncated ? '\u2026' : ''}` : '';
-    const toolInfo = typeof s.activeTool === 'string' ? ` \u00b7 tool: ${s.activeTool}` : '';
-    lines.push(`  ${meta.icon} ${s.name} (${shortId(s.agentId)}) \u00b7 ${meta.label}${exit}${handback}${riskText} \u00b7 ${elapsed}${toolInfo}${preview}`);
+    const toolInfo = typeof s.activeTool === 'string' ? ` \u00b7 active:${s.activeTool}` : '';
+    const modelInfo = ` \u00b7 ${formatAgentModelLine(s)}`;
+    lines.push(`  ${meta.icon} ${s.name} (${shortId(s.agentId)}) \u00b7 ${meta.label}${exit}${handback}${riskText}${modelInfo} \u00b7 ${elapsed}${toolInfo}${preview}`);
   }
   return {
     content: [{ type: 'text', text: lines.join('\n') }],
@@ -978,14 +999,15 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
     const handback = summary.normalizedResult?.status && summary.normalizedResult.status !== 'unknown'
       ? ` · ${summary.normalizedResult.status}/${summary.normalizedResult.confidence}`
       : '';
-    const active = summary.activeTool ? ` · tool:${summary.activeTool}` : '';
+    const active = summary.activeTool ? ` · active:${summary.activeTool}` : '';
+    const modelInfo = ` · ${formatAgentModelLine(summary)}`;
     const risk = agentRiskBadge(summary, theme);
     const riskText = risk ? ` · ${risk}` : '';
     const result = summary.normalizedResult?.result ?? summary.normalizedResult?.next ?? summary.lastOutput;
     const preview = result ? ` — ${result.replace(/\n/g, ' ').slice(0, 90)}${summary.outputTruncated ? '…' : ''}` : '';
     const name = theme?.fg('accent', summary.name) ?? summary.name;
     const id = theme?.fg('dim', shortId(summary.agentId)) ?? shortId(summary.agentId);
-    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${active} · ${formatElapsed(record.startedAt)}${theme?.fg('dim', preview) ?? preview}`);
+    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${modelInfo}${active} · ${formatElapsed(record.startedAt)}${theme?.fg('dim', preview) ?? preview}`);
   }
   if (records.length > limit) lines.push(theme?.fg('muted', `… ${records.length - limit} more; use AgentMessage list for full details.`) ?? `… ${records.length - limit} more; use AgentMessage list for full details.`);
   return lines;

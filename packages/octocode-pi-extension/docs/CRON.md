@@ -16,17 +16,15 @@ cleared on `session_shutdown`, `/new`, reload, resume, fork, or quit.
 
 ```text
 /octocode-cron list
-/octocode-cron status
-/octocode-cron check [job|all]
-/octocode-cron run [job|all]
-/octocode-cron cancel [job|all]
-/octocode-cron start
+/octocode-cron check [default|all|job]
+/octocode-cron cancel [default|all|job]
 /octocode-cron help
 ```
 
-`check` and `run` are aliases. They execute the selected job immediately and
-report the Awareness CLI output in the session. `cancel` disables timers for the
-current session only; use `start` to re-read enabled jobs and schedule again.
+`list` shows every session job. Bare `check` runs the default job
+(`maintenance-digest`); `check all` runs every registered job; `check <job>` runs
+one named job. `cancel` follows the same target rules and disables timers for the
+current session only.
 
 ## Default job
 

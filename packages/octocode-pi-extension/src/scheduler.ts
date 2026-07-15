@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import type { PiContext, PiExecResult, PiInstance } from './types.js';
 
 const DEFAULT_JOB_TIMEOUT_MS = 60_000;
+const DEFAULT_CRON_JOB_NAME = 'maintenance-digest';
 export const DEFAULT_MAINTENANCE_DIGEST_INTERVAL_MS = 30 * 60 * 1000;
 
 export type OctocodeCronJobStatus =
@@ -109,11 +110,17 @@ function defaultJobs(env: NodeJS.ProcessEnv): OctocodeCronJobDefinition[] {
   ];
 }
 
-function normalizeJobName(jobName: string | undefined): string | undefined {
-  if (!jobName) return undefined;
-  const trimmed = jobName.trim();
-  if (!trimmed || trimmed === 'all' || trimmed === '*') return undefined;
+function normalizeJobName(jobName: string | undefined): string {
+  const trimmed = jobName?.trim();
+  if (!trimmed || trimmed === 'default') return DEFAULT_CRON_JOB_NAME;
   return trimmed;
+}
+
+function selectJobs(states: Map<string, MutableJobState>, jobName: string | undefined): MutableJobState[] {
+  const normalized = normalizeJobName(jobName);
+  if (normalized === 'all' || normalized === '*') return [...states.values()];
+  const state = states.get(normalized);
+  return state ? [state] : [];
 }
 
 function truncateOutput(text: string, maxChars = 1200): string {
@@ -265,8 +272,7 @@ export function createOctocodeCronScheduler(
     },
 
     cancel(jobName?: string): string[] {
-      const normalized = normalizeJobName(jobName);
-      const targets = normalized ? [states.get(normalized)].filter(Boolean) as MutableJobState[] : [...states.values()];
+      const targets = selectJobs(states, jobName);
       for (const state of targets) {
         state.enabled = false;
         state.status = 'cancelled';
@@ -278,8 +284,8 @@ export function createOctocodeCronScheduler(
     async runNow(jobName?: string, ctx?: PiContext): Promise<OctocodeCronRunResult[]> {
       lastCtx = ctx ?? lastCtx;
       const normalized = normalizeJobName(jobName);
-      const targets = normalized ? [states.get(normalized)].filter(Boolean) as MutableJobState[] : [...states.values()];
-      if (normalized && targets.length === 0) {
+      const targets = selectJobs(states, jobName);
+      if (targets.length === 0) {
         return [{ job: normalized, status: 'failed', message: `Unknown cron job: ${normalized}` }];
       }
       const results: OctocodeCronRunResult[] = [];
@@ -306,8 +312,17 @@ export function createOctocodeCronScheduler(
   };
 }
 
+export function formatOctocodeCronSummary(snapshots: OctocodeCronJobSnapshot[]): string {
+  if (snapshots.length === 0) return 'session jobs: none';
+  const enabled = snapshots.filter((job) => job.enabled).length;
+  const running = snapshots.filter((job) => job.running).length;
+  const failed = snapshots.filter((job) => job.status === 'failed').length;
+  const scheduled = snapshots.filter((job) => job.status === 'scheduled').length;
+  return `session jobs: ${enabled}/${snapshots.length} enabled · ${scheduled} scheduled · ${running} running · ${failed} failed`;
+}
+
 export function formatOctocodeCronStatus(snapshots: OctocodeCronJobSnapshot[]): string {
-  const lines = ['Octocode session jobs', ''];
+  const lines = ['Octocode session jobs', '', formatOctocodeCronSummary(snapshots), ''];
   if (snapshots.length === 0) return 'Octocode session jobs\n\n(no jobs registered)';
   for (const job of snapshots) {
     lines.push(`${job.enabled ? '✓' : '–'} ${job.name} — ${job.status}`);
@@ -317,21 +332,20 @@ export function formatOctocodeCronStatus(snapshots: OctocodeCronJobSnapshot[]): 
     if (job.lastFinishedAt) lines.push(`  last: ${job.lastFinishedAt} (${job.lastExitCode ?? 'n/a'})`);
     if (job.lastMessage) lines.push(`  message: ${job.lastMessage}`);
   }
-  lines.push('', 'Commands: /octocode-cron list · check [job|all] · run [job|all] · cancel [job|all] · start');
+  lines.push('', 'Commands: /octocode-cron list · check [default|all|job] · cancel [default|all|job] · help');
   return lines.join('\n');
 }
 
 export const OCTOCODE_CRON_COMMAND_COMPLETIONS = [
   'list',
-  'status',
   'check',
-  'run',
+  'check all',
   'cancel',
-  'start',
+  'cancel all',
   'help',
 ] as const;
 
-export const OCTOCODE_CRON_COMMAND_USAGE = 'list|status|check [job|all]|run [job|all]|cancel [job|all]|start|help';
+export const OCTOCODE_CRON_COMMAND_USAGE = 'list|check [default|all|job]|cancel [default|all|job]|help';
 
 function formatRunResults(results: OctocodeCronRunResult[]): string {
   return [
@@ -353,11 +367,9 @@ export async function handleOctocodeCronCommand(
   const [command = 'list', target] = args.trim().split(/\s+/).filter(Boolean);
   switch (command) {
     case 'list':
-    case 'status':
       notify(ctx, formatOctocodeCronStatus(scheduler.list()), 'info');
       return;
-    case 'check':
-    case 'run': {
+    case 'check': {
       const results = await scheduler.runNow(target, ctx);
       notify(ctx, formatRunResults(results), results.some((result) => result.status === 'failed') ? 'warning' : 'info');
       return;
@@ -367,10 +379,6 @@ export async function handleOctocodeCronCommand(
       notify(ctx, `Cancelled Octocode session job(s): ${cancelled.join(', ') || '(none)'}`, 'info');
       return;
     }
-    case 'start':
-      scheduler.start(ctx);
-      notify(ctx, formatOctocodeCronStatus(scheduler.list()), 'info');
-      return;
     case 'help':
       notify(ctx, `Usage: /octocode-cron ${OCTOCODE_CRON_COMMAND_USAGE}`, 'info');
       return;

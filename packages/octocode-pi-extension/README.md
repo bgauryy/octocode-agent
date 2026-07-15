@@ -116,7 +116,7 @@ Awareness commands such as `attend`, `task ready`, `work start`, `signal list`,
 | `/octocode-status` | Health, prompt, skills, Awareness runtime, and providers. |
 | `/octocode-harness` | Exact registered surface inventory. |
 | `/octocode-agents` | Live spawned-worker ledger with inspect, kill, prune, hide, and risk badges. |
-| `/octocode-cron` | List, check/run, start, or cancel session-scoped Octocode jobs. |
+| `/octocode-cron` / `/cron` | List, check, or cancel session-scoped Octocode jobs. |
 | `/octocode-setup` | Install/update the managed system-prompt block; `--global` targets user scope. |
 | `/octocode-skills-update` | Refresh bundled skill installs. |
 Memory maintenance, recall, recording, signals, tasks, verification, and reflection

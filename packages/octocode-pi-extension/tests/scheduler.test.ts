@@ -26,7 +26,7 @@ test('cron scheduler lists the non-mutating maintenance digest job', () => {
   assert.match(formatOctocodeCronStatus(jobs), /dry-run/);
 });
 
-test('cron scheduler can run the maintenance digest on demand', async () => {
+test('cron scheduler can run the default maintenance digest on demand', async () => {
   const calls: Array<{ command: string; args: string[] }> = [];
   const scheduler = createOctocodeCronScheduler({
     env: {
@@ -39,7 +39,7 @@ test('cron scheduler can run the maintenance digest on demand', async () => {
     },
   });
 
-  const results = await scheduler.runNow('maintenance-digest', { cwd: '/repo' });
+  const results = await scheduler.runNow(undefined, { cwd: '/repo' });
 
   assert.deepEqual(results, [
     {
@@ -76,7 +76,7 @@ test('cron scheduler skips manual runs when awareness CLI is missing', async () 
   assert.match(results[0]!.message, /OCTOCODE_AWARENESS_CLI/);
 });
 
-test('cron command supports list, check, cancel, and help', async () => {
+test('cron command supports list, check default, check all, cancel, and help', async () => {
   const messages: Array<{ message: string; level?: string }> = [];
   const scheduler = createOctocodeCronScheduler({
     env: {
@@ -91,17 +91,27 @@ test('cron command supports list, check, cancel, and help', async () => {
   };
 
   scheduler.start({ cwd: '/repo' });
-  await handleOctocodeCronCommand('list', undefined, scheduler, notify);
+  await handleOctocodeCronCommand('', undefined, scheduler, notify);
   assert.match(messages.at(-1)!.message, /Octocode session jobs/);
+  assert.match(messages.at(-1)!.message, /Commands: \/octocode-cron list · check \[default\|all\|job\]/);
 
-  await handleOctocodeCronCommand('check maintenance-digest', undefined, scheduler, notify);
+  await handleOctocodeCronCommand('check', undefined, scheduler, notify);
+  assert.match(messages.at(-1)!.message, /maintenance-digest: succeeded/);
   assert.match(messages.at(-1)!.message, /checked/);
 
-  await handleOctocodeCronCommand('cancel maintenance-digest', undefined, scheduler, notify);
-  assert.match(messages.at(-1)!.message, /Cancelled/);
+  await handleOctocodeCronCommand('check all', undefined, scheduler, notify);
+  assert.match(messages.at(-1)!.message, /maintenance-digest: succeeded/);
+  assert.match(messages.at(-1)!.message, /checked/);
+
+  await handleOctocodeCronCommand('cancel', undefined, scheduler, notify);
+  assert.match(messages.at(-1)!.message, /Cancelled Octocode session job\(s\): maintenance-digest/);
 
   await handleOctocodeCronCommand('help', undefined, scheduler, notify);
-  assert.match(messages.at(-1)!.message, /Usage: \/octocode-cron/);
+  assert.match(messages.at(-1)!.message, /Usage: \/octocode-cron list\|check \[default\|all\|job\]\|cancel \[default\|all\|job\]\|help/);
+
+  await handleOctocodeCronCommand('run', undefined, scheduler, notify);
+  assert.equal(messages.at(-1)!.level, 'warning');
+  assert.match(messages.at(-1)!.message, /Unknown \/octocode-cron command: run/);
 
   scheduler.stop();
 });
