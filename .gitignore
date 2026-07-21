@@ -4,3 +4,4 @@ out
 coverage
 /packages/octocode-pi-extension/skills/
 .octocode
+.agents

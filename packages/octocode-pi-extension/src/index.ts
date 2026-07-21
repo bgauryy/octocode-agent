@@ -7,11 +7,20 @@ import {
   OVERRIDDEN_BUILTIN_TOOL_NAMES,
   OCTOCODE_SUPPORT_TOOL_NAMES,
 } from './constants.js';
-import { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getCLIPath } from './assets.js';
+import { wirePiAwarenessHooks } from '@octocodeai/octocode-awareness';
+import {
+  getAssetPaths,
+  readTextIfExists,
+  listBundledSkills,
+  getInstallSource,
+  getCLIPath,
+  getAwarenessCLIPath,
+} from './assets.js';
 
-// Expose the bundled CLI path as an env var so agents can use: node $OCTOCODE_CLI <command>
+// Expose bundled CLI paths as env vars so agents can use them from bash subprocesses.
 // Set once at module load — inherited by all bash subprocesses spawned during the session.
 process.env.OCTOCODE_CLI = getCLIPath();
+process.env.OCTOCODE_AWARENESS_CLI = getAwarenessCLIPath();
 import {
   shouldAppendSystemPrompt,
   mergeManagedAppendSystem,
@@ -79,7 +88,7 @@ export {
   MANAGED_BLOCK_START,
   MANAGED_BLOCK_END,
 } from './constants.js';
-export { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getCLIPath } from './assets.js';
+export { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getCLIPath, getAwarenessCLIPath } from './assets.js';
 export {
   shouldAppendSystemPrompt,
   renderSystemPromptAddendum,
@@ -387,6 +396,7 @@ export function formatStatus(baseDir?: string): string {
     `skills: ${skills.length}${skills.length > 0 ? ` (${skills.join(', ')})` : ''}`,
     `octocode tools: ${formatOctocodeToolStatus()}`,
     `bundled CLI: ${getCLIPath(baseDir)} — use via: node $OCTOCODE_CLI <command>`,
+    `awareness CLI: ${getAwarenessCLIPath(baseDir)} — use via: node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact`,
     `disabled/replaced built-ins: overridden: ${OVERRIDDEN_BUILTIN_TOOL_NAMES.join(', ')}${DISABLED_BUILTIN_TOOL_NAMES.length ? `; removed: ${DISABLED_BUILTIN_TOOL_NAMES.join(', ')}` : ''}`,
     `web search: ${searchStatus}`,
     `internal error log: ${getInternalErrorLogPath(process.cwd())}`,
@@ -404,6 +414,7 @@ export interface ExtensionHarness {
   extensionCommands: string[];
   skills: string[];
   cliNote: string;
+  awarenessCliNote: string;
 }
 
 export function listExtensionHarness(baseDir?: string): ExtensionHarness {
@@ -425,6 +436,7 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
     ],
     skills: listBundledSkills(baseDir),
     cliNote: `bundled CLI at ${getCLIPath(baseDir)} — run via: node $OCTOCODE_CLI <command>`,
+    awarenessCliNote: `bundled Awareness CLI at ${getAwarenessCLIPath(baseDir)} — run via: node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact`,
   };
 }
 
@@ -434,6 +446,7 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessi
   const context = formatContextUsage(ctx);
   const promptOk = fs.existsSync(paths.systemPrompt);
   const cliPath = getCLIPath(baseDir);
+  const awarenessCliPath = getAwarenessCLIPath(baseDir);
   const searchProvider = pickProvider({});
   const warnings = [
     context.percent !== undefined && context.percent >= 90 ? `⚠ context above 90% (${context.percent}%) — consider compacting soon` : '',
@@ -449,6 +462,7 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessi
     `✓ tools: ${formatOctocodeToolStatus()}`,
     `✓ metrics: ${context.text}`,
     `CLI: node $OCTOCODE_CLI <command> (${cliPath})`,
+    `Awareness: node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact (${awarenessCliPath})`,
     '',
     'Agents',
     formatAgentLedger(),
@@ -488,6 +502,7 @@ function renderExtensionHarness(baseDir?: string): string {
       : 'builtin passthrough: (none)',
     `extension commands: ${harness.extensionCommands.join(', ')}`,
     `CLI: ${harness.cliNote}`,
+    `Awareness CLI: ${harness.awarenessCliNote}`,
     `skills (${harness.skills.length}): ${harness.skills.join(', ')}`,
   ].join('\n');
 }
@@ -616,6 +631,15 @@ async function wireOctocodePiExtension(
       const skillPath = existingDirectory(paths.skillsDir);
       return skillPath ? { skillPaths: [skillPath] } : {};
     });
+
+    const awarenessSkillRoot = existingDirectory(path.join(getAssetPaths().skillsDir, 'octocode-awareness'));
+    if (awarenessSkillRoot) process.env.OCTOCODE_SKILL_ROOT = awarenessSkillRoot;
+    try {
+      wirePiAwarenessHooks(pi as Parameters<typeof wirePiAwarenessHooks>[0], { skillRoot: awarenessSkillRoot });
+    } catch (error) {
+      logInternalError('awareness-hooks', error, { skillRoot: awarenessSkillRoot }, undefined);
+      console.warn(`[octocode-pi-extension] Awareness hook wiring failed: ${(error as Error)?.message ?? String(error)}`);
+    }
 
     hooks.on('session_start', 'octocode-session-start', async (_event: unknown, ctx: PiContext | undefined) => {
       metricsState.sessionStartedAt = Date.now();

@@ -2,6 +2,10 @@
 The Octocode CLI is **bundled** inside the extension and available as `$OCTOCODE_CLI` (set at startup).
 Run it with `node`: `bash: node $OCTOCODE_CLI <command>`
 
+The Awareness CLI is also **bundled** and available as `$OCTOCODE_AWARENESS_CLI` (set at startup).
+Run it with `node`: `bash: node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact`
+Use it for Awareness live state — attend, work/tasks, locks, verification, memory, signals, wiki, maintenance — following the bundled `octocode-awareness` skill.
+
 `node $OCTOCODE_CLI` is the **bundled equivalent of `npx octocode`** — same commands and flags, no separate installation needed.
 
 **Archive unpacking** — unpack an archive to a local dir, then research it with local tools.
@@ -46,5 +50,5 @@ bash: node $OCTOCODE_CLI auth login               # authenticate with GitHub —
 ```
 
 **When to use** — prefer native Pi tools for all code reads/searches; use `node $OCTOCODE_CLI` for archive unpacking, cache materialization, skill management, and schema lookups.
-**Find path** — run `/octocode-status` to see the exact `bundled CLI:` path if `$OCTOCODE_CLI` is unset.
+**Find paths** — run `/octocode-status` to see the exact `bundled CLI:` and `awareness CLI:` paths if either env var is unset.
 </octocode_cli>

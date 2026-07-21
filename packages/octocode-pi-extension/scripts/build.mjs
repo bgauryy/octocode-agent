@@ -13,20 +13,26 @@ const distDir = path.join(packageRoot, 'dist');
 
 const require = createRequire(import.meta.url);
 
-// Resolve @octocodeai/config source via workspace link — no path hardcoding.
+// Resolve workspace/package sources via package resolution — no path hardcoding.
 const CONFIG_LOADER_SRC = require.resolve('@octocodeai/config');
+const AWARENESS_PACKAGE_ROOT = path.dirname(path.dirname(require.resolve('@octocodeai/octocode-awareness')));
+const OCTOCODE_PACKAGE_ROOT = path.dirname(require.resolve('octocode/package.json'));
 
 const SOURCE_PATHS = {
   // TypeScript source is compiled by tsc (see compileTsc()). Only non-code assets — each is copied flat into dist/.
   // are managed here. @octocodeai/config source injected as octocode-config.mjs into every skill that
   // has a scripts/ directory — zero npm publish dependency for standalone skills.
   configLoader: CONFIG_LOADER_SRC,
-  rootSkills: path.join(repoRoot, 'skills'),
+  awarenessSourceSkills: path.join(AWARENESS_PACKAGE_ROOT, 'skills'),
   subagents: path.join(packageRoot, 'subagents'),
   skills: path.join(packageRoot, 'skills'),
   // The system prompt is composed from per-section files (see src/prompts/compose.mjs),
   // not copied from a single monolithic file.
   promptSections: path.join(packageRoot, 'src', 'prompts', 'sections'),
+  // Awareness runtime + bundled skills — bundled at build time so the pi-extension is self-contained.
+  awarenessOut: path.join(AWARENESS_PACKAGE_ROOT, 'out'),
+  awarenessSkills: path.join(AWARENESS_PACKAGE_ROOT, 'out', 'skills'),
+  octocodeSkills: path.join(OCTOCODE_PACKAGE_ROOT, 'skills'),
   // octocode CLI — bundled at build time so the pi-extension is self-contained.
   // Optional in subset checkouts: if missing, the published `octocode` runtime dep is
   // resolved at runtime by getCLIPath() instead and bundleOctocodeCLI() skips gracefully.
@@ -40,6 +46,8 @@ const OUTPUT_PATHS = {
   systemPrompt: path.join(distDir, 'system', 'SYSTEM_PROMPT.md'),
   // bundled octocode CLI — agent uses: node $OCTOCODE_CLI <command>
   cli: path.join(distDir, 'cli'),
+  // bundled Awareness CLI/runtime — agent uses: node $OCTOCODE_AWARENESS_CLI <noun> <verb>
+  awareness: path.join(distDir, 'awareness'),
 };
 
 const SKIPPED_DIRECTORIES = new Set([
@@ -189,31 +197,46 @@ function clean() {
   fs.rmSync(distDir, { recursive: true, force: true });
 }
 
+function copySkillDirectories(sourceRoot, targetRoot) {
+  if (!fs.existsSync(sourceRoot)) return 0;
+  let copied = 0;
+  for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const src = path.join(sourceRoot, entry.name);
+    if (!fs.existsSync(path.join(src, 'SKILL.md'))) continue;
+    fs.rmSync(path.join(targetRoot, entry.name), { recursive: true, force: true });
+    copyDirectory(src, path.join(targetRoot, entry.name));
+    copied++;
+  }
+  return copied;
+}
+
 function refreshPackageSkills() {
   fs.rmSync(SOURCE_PATHS.skills, { recursive: true, force: true });
   fs.mkdirSync(SOURCE_PATHS.skills, { recursive: true });
-  // Copy any repo-root skill directories (each must contain a SKILL.md). The
-  // root skills/ tree is optional: subset checkouts ship no skills here.
-  if (fs.existsSync(SOURCE_PATHS.rootSkills)) {
-    for (const entry of fs.readdirSync(SOURCE_PATHS.rootSkills, {
-      withFileTypes: true,
-    })) {
-      if (!entry.isDirectory()) continue;
-      const src = path.join(SOURCE_PATHS.rootSkills, entry.name);
-      if (!fs.existsSync(path.join(src, 'SKILL.md'))) continue;
-      copyDirectory(src, path.join(SOURCE_PATHS.skills, entry.name));
-    }
-  }
+  // Copy package-local Awareness skill sources when present, then overlay the
+  // Awareness package's bundled skill set. This keeps subset checkouts
+  // self-contained and avoids repo-root skills as a source or destination.
+  const sourceCopied = copySkillDirectories(SOURCE_PATHS.awarenessSourceSkills, SOURCE_PATHS.skills);
+  let awarenessCopied = copySkillDirectories(SOURCE_PATHS.awarenessSkills, SOURCE_PATHS.skills);
+  const fallbackCopied = awarenessCopied === 0
+    ? copySkillDirectories(SOURCE_PATHS.octocodeSkills, SOURCE_PATHS.skills)
+    : 0;
+  awarenessCopied += fallbackCopied;
   assertNoHiddenLocalOnlyEntries(SOURCE_PATHS.skills);
+  if (awarenessCopied === 0) {
+    throw new Error(`No Awareness/Octocode skills found in ${SOURCE_PATHS.awarenessSkills} or ${SOURCE_PATHS.octocodeSkills}`);
+  }
+  return { sourceCopied, awarenessCopied, fallbackCopied };
 }
 
 function syncPackageSkills() {
   assertRequiredSources();
-  refreshPackageSkills();
+  const { sourceCopied, awarenessCopied, fallbackCopied } = refreshPackageSkills();
   const skillNames = listSkillNames(SOURCE_PATHS.skills);
   console.log(`Synced ${skillNames.length} skill(s) into ${SOURCE_PATHS.skills}`);
   if (skillNames.length > 0) console.log(`Skills: ${skillNames.join(', ')}`);
-  console.log('Sources: root skills/');
+  console.log(`Sources: awareness package skills/ (${sourceCopied}), awareness out/skills/ (${awarenessCopied - fallbackCopied}), octocode fallback skills/ (${fallbackCopied})`);
   return skillNames;
 }
 
@@ -226,6 +249,20 @@ function syncPackageSkills() {
  *
  * Prerequisite: `yarn workspace octocode build` must run before this step.
  */
+function bundleAwarenessRuntime() {
+  const src = SOURCE_PATHS.awarenessOut;
+  const dest = OUTPUT_PATHS.awareness;
+  const entry = path.join(src, 'octocode-awareness.js');
+  if (!fs.existsSync(entry)) {
+    throw new Error(
+      `Awareness CLI output not found at ${entry}. Run \`yarn workspace @octocodeai/octocode-awareness build\` before building pi-extension.`
+    );
+  }
+  copyDirectory(src, dest);
+  console.log(`Awareness CLI bundled: ${dest}/octocode-awareness.js`);
+  return dest;
+}
+
 function bundleOctocodeCLI() {
   const src = SOURCE_PATHS.octocodeCLI;
   const dest = OUTPUT_PATHS.cli;
@@ -303,6 +340,7 @@ async function build() {
   // Inject @octocodeai/config source into every skill scripts/ dir — standalone, no npm needed.
   const configInjected = injectConfigIntoSkills(OUTPUT_PATHS.skills);
 
+  bundleAwarenessRuntime();
   bundleOctocodeCLI();
 
   assertNoHiddenLocalOnlyEntries(distDir);

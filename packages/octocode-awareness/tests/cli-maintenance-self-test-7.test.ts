@@ -10,8 +10,9 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '../out/octocode-awareness.js');
-const SKILL_SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../skills/octocode-awareness/scripts/awareness.mjs');
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SCRIPT = resolve(PACKAGE_ROOT, 'out/octocode-awareness.js');
+const SKILL_SCRIPT = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
 const NODE = process.execPath;
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function mktemp(): string {
@@ -173,7 +174,7 @@ it('removed flat commands are plain unknown commands with no compatibility metad
     } finally { rmSync(dir, { recursive: true }); }
   });
 it('schema list maps to canonical CLI commands', () => {
-    const schemaScript = resolve(dirname(fileURLToPath(import.meta.url)), '../../../skills/octocode-awareness/scripts/schema.mjs');
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
     expect(existsSync(schemaScript), 'generated schema.mjs must exist after build').toBe(true);
     const schema = spawnSync(NODE, [schemaScript, 'list'], { encoding: 'utf8', timeout: 5000 });
     expect(schema.status).toBe(0);
@@ -232,7 +233,7 @@ it('schema list maps to canonical CLI commands', () => {
     }
   });
 it('schema commands is grouped and core-first for agents', () => {
-    const schemaScript = resolve(dirname(fileURLToPath(import.meta.url)), '../../../skills/octocode-awareness/scripts/schema.mjs');
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
     const result = spawnSync(NODE, [schemaScript, 'commands', '--compact'], { encoding: 'utf8', timeout: 5000 });
     expect(result.status).toBe(0);
     expect(result.stdout.trim().split('\n')).toHaveLength(1);
@@ -248,7 +249,7 @@ it('schema commands is grouped and core-first for agents', () => {
     expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(2 * 1024);
   });
 it('schema commands --examples restores recipe lines', () => {
-    const schemaScript = resolve(dirname(fileURLToPath(import.meta.url)), '../../../skills/octocode-awareness/scripts/schema.mjs');
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
     const result = spawnSync(NODE, [schemaScript, 'commands', '--all', '--examples', '--compact'], { encoding: 'utf8', timeout: 5000 });
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout) as {

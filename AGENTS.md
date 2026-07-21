@@ -119,7 +119,7 @@ Never hand-edit projections; refresh them with `wiki sync` only for file readers
 Exact flags: `schema command <noun> [action]`. Full lifecycle:
 [`docs/HOW_IT_WORKS.md`](packages/octocode-awareness/docs/HOW_IT_WORKS.md).
 
-Skill source: `skills/octocode-awareness`; use the local build here or
+Skill source: `packages/octocode-awareness/skills/octocode-awareness`; use the local build here or
 `npx @octocodeai/octocode-awareness` when installed. Rebuild after changes; never
 edit `.agents/skills/` or `out/skills/`.
 

@@ -20,6 +20,7 @@ import {
   getAssetPaths,
   getInternalErrorLogPath,
   getCLIPath,
+  getAwarenessCLIPath,
   getAppendSystemTarget,
   getInstallSource,
   listBundledSkills,
@@ -331,25 +332,48 @@ test('build copies bundled Octocode skills without secret env files', () => {
     'legacy dist/bin CLI path should not be used'
   );
   assert.equal(
-    fs.existsSync(path.join(distDir, 'awareness')),
-    false,
-    'awareness runtime assets are not copied as a separate dist/awareness directory'
+    path.basename(getAwarenessCLIPath(distDir)),
+    'octocode-awareness.js',
+    'Awareness CLI resolves to an octocode-awareness.js entry (dist bundle or node_modules fallback)'
   );
+  assert.equal(
+    fs.existsSync(path.join(distDir, 'awareness', 'octocode-awareness.js')),
+    true,
+    'awareness runtime assets are bundled under dist/awareness'
+  );
+
+  const schemaOutput = execFileSync(
+    process.execPath,
+    [getAwarenessCLIPath(distDir), 'schema', 'commands', '--compact'],
+    { encoding: 'utf8' }
+  );
+  const commandSchema = JSON.parse(schemaOutput) as {
+    commands: Record<string, Record<string, string[]>>;
+  };
+  const hasCommand = (noun: string, verb: string) =>
+    Object.values(commandSchema.commands).some((group) => group[noun]?.includes(verb));
+  for (const [noun, verb] of [
+    ['attend', 'run'],
+    ['work', 'start'],
+    ['lock', 'acquire'],
+    ['verify', 'audit'],
+    ['signal', 'list'],
+    ['memory', 'recall'],
+    ['reflect', 'record'],
+    ['wiki', 'sync'],
+  ] as const) {
+    assert.equal(hasCommand(noun, verb), true, `Awareness schema includes ${noun} ${verb}`);
+  }
 
   const skills = listBundledSkills(distDir);
   const sourceSkills = listBundledSkills(packageRoot);
-  const rootSkills = listBundledSkills(path.resolve(packageRoot, '../..'));
   assert.deepEqual(skills, sourceSkills, 'dist matches package skills');
-  assert.deepEqual(
-    sourceSkills,
-    rootSkills,
-    'every repo-root skill is staged into the npm package'
-  );
-  for (const skill of rootSkills) {
+  assert.ok(skills.includes('octocode-awareness'), 'Awareness skill is staged into the npm package');
+  for (const skill of skills) {
     assert.equal(
-      fs.readFileSync(path.join(packageRoot, 'skills', skill, 'SKILL.md'), 'utf8'),
-      fs.readFileSync(path.resolve(packageRoot, '../..', 'skills', skill, 'SKILL.md'), 'utf8'),
-      `${skill} SKILL.md is copied from the repo-root bundle`
+      fs.existsSync(path.join(packageRoot, 'skills', skill, 'SKILL.md')),
+      true,
+      `${skill} SKILL.md is staged in the npm package skills bundle`
     );
   }
   assert.equal(
@@ -375,6 +399,12 @@ test('build copies bundled Octocode skills without secret env files', () => {
     'generated npm skill staging remains gitignored'
   );
 
+  assert.ok(skills.includes('octocode-awareness'), 'dist bundles the octocode-awareness skill');
+  assert.equal(
+    fs.existsSync(path.join(distDir, 'skills', 'octocode-awareness', 'SKILL.md')),
+    true,
+    'Awareness skill SKILL.md is bundled for Pi resource discovery'
+  );
   const forbiddenEnv = path.join(
     distDir,
     'skills',
@@ -497,6 +527,7 @@ test(
     assert.match(status, /system prompt: found/);
     assert.match(status, /octocode tools: 13 native research · 7 support · 3 guarded built-ins · 4 replaced/);
     assert.match(status, /bundled CLI:.*octocode\.js/);
+    assert.match(status, /awareness CLI:.*octocode-awareness\.js/);
     assert.match(status, /internal error log: .*\.octocode\/logs\/error\.txt/);
     assert.match(
       status,
@@ -1762,7 +1793,7 @@ test('Octocode metrics status updates on session and turn lifecycle', async () =
     },
   };
 
-  await handlers.get('session_start')![0]!(undefined, ctx);
+  await handlers.get('session_start')!.at(-1)!(undefined, ctx);
   assert.ok(statusCalls.some(([key, value]) => key === 'octocode-metrics' && /ctx ▓▓▓▓▓░░░░░ 50% \(50k\/100k\)/.test(value ?? '')));
 
   const turnStart = handlers.get('turn_start')!.at(-1)!;
@@ -1817,11 +1848,12 @@ test('formatOctocodeDashboard is scan-friendly and includes health warnings', ()
   assert.match(dashboard, /ctx ▓▓▓▓▓▓▓▓▓░ 92%/);
   assert.match(dashboard, /⚠ context above 90%/);
   assert.match(dashboard, /CLI:/);
+  assert.match(dashboard, /Awareness: node \$OCTOCODE_AWARENESS_CLI/);
   assert.match(dashboard, /\/octocode-status/);
 });
 
 test('CLI slash commands removed — extension commands are lean', async () => {
-  const { commands } = await captureExtensions();
+  const { commands, handlers } = await captureExtensions();
   // Extension-only commands still registered.
   assert.equal(
     commands.has('octocode'),
@@ -1863,6 +1895,9 @@ test('CLI slash commands removed — extension commands are lean', async () => {
     ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-agents', '/octocode-cron', '/cron', '/octocode-setup', '/octocode-skills-update'],
     'harness inventory lists every public Octocode slash command'
   );
+  for (const eventName of ['tool_execution_start', 'tool_execution_end', 'session_start', 'before_agent_start', 'agent_end', 'session_before_compact', 'session_shutdown']) {
+    assert.ok((handlers.get(eventName)?.length ?? 0) > 0, `Awareness-aligned hook registered for ${eventName}`);
+  }
   assert.equal(commands.has('octocode-memory-digest'), false, 'legacy memory digest command removed');
   assert.equal(commands.has('octocode-memory-forget'), false, 'legacy memory forget command removed');
   // Session-control internal trampoline stays for manage_context type:"new" path.
@@ -2045,8 +2080,7 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
       undefined,
       'source-mode missing generated prompt skips prompt injection'
     );
-
-    await handlers.get('session_start')![0]!(undefined, ctx);
+    await handlers.get('session_start')!.at(-1)!(undefined, ctx);
     await handlers.get('model_select')![0]!(undefined, ctx);
     await handlers.get('thinking_level_select')![0]!({ level: 'low' }, ctx);
     assert.ok(statuses.some(([key]) => key === 'octocode'));
@@ -2057,7 +2091,7 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
       )
     );
 
-    await handlers.get('session_shutdown')![0]!({ reason: 'new' }, ctx);
+    await handlers.get('session_shutdown')!.at(-1)!({ reason: 'new' }, ctx);
     assert.ok(statuses.some(([key, value]) => key === 'agent-wait' && value === undefined));
     assert.ok(statuses.some(([key, value]) => key === 'chrome-debug' && value === undefined));
     assert.ok(widgets.some(([key, value]) => key === 'octocode-agents' && value === undefined));
@@ -2483,6 +2517,11 @@ test('lists every extension harness surface', () => {
     harness.cliNote,
     /bundled CLI.*octocode\.js/,
     'cliNote shows bundled CLI path'
+  );
+  assert.match(
+    harness.awarenessCliNote,
+    /Awareness CLI.*octocode-awareness\.js/,
+    'awarenessCliNote shows bundled Awareness CLI path'
   );
   assert.ok(!('cliCommands' in harness), 'cliCommands removed from harness');
 });

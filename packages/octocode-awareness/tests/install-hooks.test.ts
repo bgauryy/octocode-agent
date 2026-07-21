@@ -6,12 +6,12 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hooksInstallUsage, runHooksInstall } from '../src/hooks-install.js';
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(TEST_DIR, '../../..');
-const SCRIPT = resolve(REPO_ROOT, 'packages/octocode-awareness/out/octocode-awareness.js');
-const INDEX_SCRIPT = resolve(REPO_ROOT, 'packages/octocode-awareness/out/index.js');
-const SKILL_SCRIPT = resolve(REPO_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
-const SKILL_INSTALL_SCRIPT = resolve(REPO_ROOT, 'skills/octocode-awareness/scripts/install.mjs');
-const SKILL_SMOKE_SCRIPT = resolve(REPO_ROOT, 'skills/octocode-awareness/scripts/smoke-multi-agent.mjs');
+const PACKAGE_ROOT = resolve(TEST_DIR, '..');
+const SCRIPT = resolve(PACKAGE_ROOT, 'out/octocode-awareness.js');
+const INDEX_SCRIPT = resolve(PACKAGE_ROOT, 'out/index.js');
+const SKILL_SCRIPT = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+const SKILL_INSTALL_SCRIPT = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/install.mjs');
+const SKILL_SMOKE_SCRIPT = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/smoke-multi-agent.mjs');
 const NODE = process.execPath;
 function runInstallHooks(args: string[], script = SCRIPT) {
     const result = spawnSync(NODE, [script, ...args], {
@@ -83,7 +83,7 @@ it('serializes concurrent installers and never exposes partial JSON', { timeout:
 it('runs the hook installer directly for help, install, strict check, and remove', () => {
     expect(hooksInstallUsage()).toContain('hooks install|check|remove');
     const projectDir = mkdtempSync(resolve(tmpdir(), 'octocode-direct-hooks-'));
-    const hookDir = resolve(REPO_ROOT, 'skills/octocode-awareness/scripts/hooks');
+    const hookDir = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/hooks');
     try {
       const help = runHooksInstall(['--help'], { cwd: projectDir, hookDir });
       expect(help.exitCode).toBe(0);
@@ -123,7 +123,7 @@ it('runs the hook installer directly for help, install, strict check, and remove
   });
 it('reports direct installer validation failures', () => {
     const projectDir = mkdtempSync(resolve(tmpdir(), 'octocode-direct-hooks-fail-'));
-    const hookDir = resolve(REPO_ROOT, 'skills/octocode-awareness/scripts/hooks');
+    const hookDir = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/hooks');
     try {
       expect(runHooksInstall(['--global', '--project-dir', projectDir], { cwd: projectDir, hookDir }).payload).toMatchObject({
         ok: false,

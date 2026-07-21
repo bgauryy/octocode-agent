@@ -13,11 +13,11 @@ const REPO_ROOT = resolve(PACKAGE_ROOT, '../..');
 // ever drops a skill without also retiring it, or vice versa.
 const RETIRED_PACKAGE_SKILLS = ['octocode-agent-communication', 'octocode-reflection'];
 
-// Discovered from repo skills/ (not hardcoded) so every skill build.mjs
+// Discovered from package skills/ (not hardcoded) so every skill build.mjs
 // bundles is automatically covered by this parity test — adding a new skill
 // folder requires no test edits.
 function discoverPackageSkills(): string[] {
-  const skillsRoot = resolve(REPO_ROOT, 'skills');
+  const skillsRoot = resolve(PACKAGE_ROOT, 'skills');
   return readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
@@ -62,7 +62,7 @@ describe('package-bundled skill mirrors', () => {
   for (const skill of PACKAGE_SKILLS) {
     for (const mirrorRoot of MIRROR_ROOTS) {
       it(`${skill} matches ${relative(REPO_ROOT, mirrorRoot)}`, () => {
-        const source = resolve(REPO_ROOT, 'skills', skill);
+        const source = resolve(PACKAGE_ROOT, 'skills', skill);
         const mirror = resolve(mirrorRoot, skill);
         expect(existsSync(mirror), `${mirror} should exist after awareness build`).toBe(true);
         expect(statSync(mirror).isDirectory()).toBe(true);

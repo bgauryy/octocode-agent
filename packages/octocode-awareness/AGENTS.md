@@ -31,10 +31,10 @@ never bypass a conflict.
 ## Package Constraints
 
 - Edit runtime/CLI and Zod contracts in `src/**` and `bin/**`.
-- Edit the canonical skill only in repo-root `skills/octocode-awareness/**`.
+- Edit the canonical skill only in package-local `skills/octocode-awareness/**`.
 - Edit package guidance in `README.md` and `docs/**`.
 - Never hand-edit `out/**`, `.agents/skills/**`, or build-generated Awareness
-  helpers/schemas under repo-root `skills/octocode-awareness/scripts/**`.
+  helpers/schemas under `skills/octocode-awareness/scripts/**`.
 - `out/**` is the ignored, publishable build tree: separate CLI, import-only
   library/schema API, declarations, per-contract JSON schemas, and bundled skills.
   Do not restore `dist/**` or a package-local `skills/**` source tree.

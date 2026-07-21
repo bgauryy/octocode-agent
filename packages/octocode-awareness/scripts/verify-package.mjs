@@ -18,7 +18,9 @@ if (process.env.OCTOCODE_VERIFY_PACKAGE_INNER === '1') process.exit(0);
 // agreeing with whatever build.mjs produced.
 const RETIRED_PACKAGE_SKILLS = ['octocode-agent-communication', 'octocode-reflection'];
 function discoverPackageSkills() {
-  const skillsRoot = join(packageRoot, '..', '..', 'skills');
+  const candidateRoots = [join(packageRoot, 'skills'), join(packageRoot, 'out', 'skills')];
+  const skillsRoot = candidateRoots.find((root) => existsSync(root));
+  if (!skillsRoot) return [];
   return readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
@@ -86,7 +88,7 @@ assert(pkg.types === './out/types/src/index.d.ts', `package types must point at 
 assert(readFileSync(join(packageRoot, 'out/types/src/index.d.ts'), 'utf8').includes('export'), 'declaration entry is empty or malformed');
 assert(Object.keys(pkg.dependencies ?? {}).length === 0, 'Awareness must keep zero npm runtime dependencies');
 assert(!files.some((path) => path.startsWith('dist/')), 'legacy dist/ artifacts must not ship');
-assert(packageSkills.length > 0, 'skill discovery found zero skills under repo-root skills/');
+assert(packageSkills.length > 0, 'skill discovery found zero skills under package skills/ or out/skills/');
 for (const skill of packageSkills) {
   assert(
     files.filter((path) => path.endsWith(`skills/${skill}/SKILL.md`)).length === 1,
