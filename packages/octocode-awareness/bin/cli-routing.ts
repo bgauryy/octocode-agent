@@ -21,7 +21,7 @@ export const KNOWN_FLAGS: Record<string, string[]> = {
   'refine-get': ['workspace', 'artifact', 'repo', 'ref', 'quality', 'include_handoffs', 'state', 'limit', 'full'],
   'refine-delete': ['refinement_id', 'workspace', 'artifact', 'dry_run'],
   'pre-flight-intent': ['agent_id', 'workspace', 'artifact', 'run_id', 'rationale', 'test_plan', 'context_ref', 'target_file', 'file', 'ttl_minutes', 'ttl_seconds', 'wait_seconds', 'retry_interval', 'strict_agent_id'],
-  'release-file-lock': ['agent_id', 'run_id', 'lock_id', 'target_file', 'file', 'status', 'workspace', 'artifact'],
+  'release-file-lock': ['agent_id', 'run_id', 'target_file', 'file', 'status', 'workspace', 'artifact'],
   'status': ['workspace', 'artifact', 'limit'],
   'init': [],
   'self-test': [],

@@ -44,7 +44,7 @@ case 'workspace_status': {
           reasons: row['reasons'],
           omitted_peer_count: row['omitted_peer_count'],
           locked: row['locked'],
-          ...(row['lock_agent_id'] ? { lock_agent_id: row['lock_agent_id'] } : {}),
+          ...(row['lock_agent_id'] ? { lock_agent: row['lock_agent_id'] } : {}),
           ...(row['lock_expires_at'] ? { lock_expires_at: row['lock_expires_at'] } : {}),
         }));
       const payload: Record<string, unknown> = {
@@ -66,14 +66,7 @@ case 'workspace_status': {
       payload['lock_shown_count'] = shownLocks.length;
       payload['lock_omitted_count'] = Math.max(0, result.lock_count - shownLocks.length);
       if (shownLocks.length > 0) {
-        payload['locks'] = shownLocks.map((l) => ({
-          file: l.file_path,
-          run_id: l.run_id,
-          agent: l.agent_id,
-          type: l.lock_type,
-          since: l.acquired_at,
-          ...(l.expires_at ? { expires: l.expires_at } : {}),
-        }));
+        payload['locks'] = shownLocks;
       }
       return { payload, exitCode: 0 };
     }

@@ -259,7 +259,7 @@ export function helpReport(): string {
     'octocode-agent — self-working coding agent (Pi + Octocode harness core)',
     '',
     'Usage:',
-    '  octocode-agent [pi args...]   Launch the agent (SDK embed by default)',
+    '  octocode-agent [agent args...] Launch the agent (SDK embed by default)',
     '  octocode-agent update         Self-update the platform',
     '  octocode-agent update core    Update the bundled core extension in this install',
     '  octocode-agent config         Show current configuration and diagnostics',

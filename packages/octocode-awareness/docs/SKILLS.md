@@ -24,21 +24,11 @@ npx octocode skill --add \
 when the host does not scan that shared directory. Verify the bundled runtime with
 `node "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness/scripts/install.mjs"`.
 
-The Awareness skill is the only required skill and teaches the collaboration lifecycle. The bundled
-`octocode-skills` skill is optional and is only needed for skill
-install/review/improvement:
-
-```bash
-npx octocode skill --add \
-  --path "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-skills" \
-  --platform common --dry-run
-# after approval, rerun with --force
-```
-
-The package also bundles every other repo skill under `out/skills/`; all are optional
-and installed the same way. Discover the full, always-current list (with resolved
-paths) via `octocode-awareness --help` or the `bundled_skills` field printed by
-`scripts/install.mjs` — do not hardcode a skill list from prose.
+The package bundles only the Awareness skill, which teaches the collaboration
+lifecycle. Install other workflow skills separately with
+`npx octocode skill --name <skill>` when that work is needed. Discover the
+package-bundled list via `octocode-awareness --help` or the `bundled_skills`
+field printed by `scripts/install.mjs` — do not hardcode a skill list from prose.
 
 The examples below use the globally installed binary. For a one-off command, use
 `npx @octocodeai/octocode-awareness`. In octocode monorepo after build, use

@@ -153,26 +153,10 @@ export function cmdReleaseFileLock(db: DatabaseSync, args: ParsedArgs, dbPath: s
     ? (Array.isArray(rawTarget) ? rawTarget : [String(rawTarget)])
     : [];
 
-  let runId = firstValue(args, 'run_id');
-
-  // lock acquire surfaces lock_id on each lock row, so accept it here too and
-  // resolve it to the run+file pair the release engine actually keys on.
-  const lockId = firstValue(args, 'lock_id');
-  if (lockId) {
-    const lock = db.prepare('SELECT run_id, file_path FROM locks WHERE lock_id = ?')
-      .get(lockId) as { run_id: string; file_path: string } | undefined;
-    if (!lock) {
-      return emit({ error: `lock not found: ${lockId} (it may already be released)` }, 1, opts);
-    }
-    if (runId && runId !== lock.run_id) {
-      return emit({ error: `--lock-id ${lockId} belongs to run ${lock.run_id}, not --run-id ${runId}` }, 1, opts);
-    }
-    runId = lock.run_id;
-    if (!targetFiles.includes(lock.file_path)) targetFiles.push(lock.file_path);
-  }
+  const runId = firstValue(args, 'run_id');
 
   if (!runId && targetFiles.length === 0) {
-    return emit({ error: 'lock release requires --run-id, --lock-id, or --target-file' }, 1, opts);
+    return emit({ error: 'lock release requires --run-id or --target-file' }, 1, opts);
   }
 
   const status = String(args['status'] ?? 'PENDING').toUpperCase();

@@ -32,25 +32,25 @@ Because the harness — prompt, skills, tools, memory — all lives in the core 
 ## Usage
 
 ```bash
-octocode-agent [pi args...]   # Launch the agent; extra args are forwarded to the Pi host
+octocode-agent [agent args...] # Launch the agent; supported Pi-compatible args are mapped by the launcher
 octocode-agent update         # Self-update the platform (pulls the newest core)
 octocode-agent update core    # Update @octocodeai/pi-extension inside this install
 octocode-agent --version      # Print launcher, core, and Pi host versions
 octocode-agent --agent-help   # Launcher help (reserved subcommands only)
 ```
 
-Any argument that isn't a reserved subcommand (`update`, `--version`, `--agent-help`) is forwarded verbatim to Pi.
+Any argument that isn't a reserved subcommand (`update`, `--version`, `--agent-help`) is handled by the SDK launcher when supported (`--print`, `--mode rpc`, `--continue`, `--session`, `--no-session`, `--name`, initial message) or passed to the subprocess fallback.
 
 ## How it works
 
 On launch the platform:
 
-1. Resolves the Pi host executable from its installed package (`bin` field — data-driven, so a Pi version bump can't break a hardcoded path).
-2. Resolves the bundled core (`@octocodeai/pi-extension`).
-3. Sets the launch environment: `OCTOCODE_PROMPT_MODE=octocode-first` (harness leads; Pi prompt is preserved below) and `OCTOCODE_AGENT=1`. It never overrides an `OCTOCODE_PROMPT_MODE` you set yourself.
-4. Execs Pi with `-e <core>`, forwarding your args and the exit code. `pi -e <dir>` loads the extension **and its packaged skills** for that run only — no global settings mutation, no trust prompt for our own package.
+1. Imports Pi's SDK from its installed package and imports the bundled core factory (`createOctocodePiExtension`) from `@octocodeai/pi-extension`.
+2. Sets the launch environment: `OCTOCODE_PROMPT_MODE=octocode-first` (harness leads; Pi prompt is preserved below), `OCTOCODE_AGENT=1`, and long Pi cache retention. It never overrides an `OCTOCODE_PROMPT_MODE` you set yourself.
+3. Starts Pi in-process with `extensionFactories: [createOctocodePiExtension({ promptMode: 'octocode-first' })]`, so the Octocode core loads without global Pi settings mutation.
+4. Falls back to resolving the Pi executable and running `pi --no-extensions -e <core>` when the SDK path is unavailable. The fallback loads the extension **and its packaged skills** for that run only — no global settings mutation, no trust prompt for our own package.
 
-The core's default export stays append-mode and single-arg-callable, so the same package also works as a plain `pi install npm:@octocodeai/pi-extension`. Octocode-first mode is selected purely by the environment the launcher sets — no divergent code path. The legacy value `OCTOCODE_PROMPT_MODE=replace` remains accepted as an alias.
+The core's default export stays append-mode and single-arg-callable, so the same package also works as a plain `pi install npm:@octocodeai/pi-extension`. Octocode-first mode is selected purely by the launcher/core contract — no divergent harness code path. The legacy value `OCTOCODE_PROMPT_MODE=replace` remains accepted as an alias.
 
 **Tunables (env):**
 - `OCTOCODE_AGENT_EXTENSION_SPEC` — override the core spec Pi loads (`npm:…`, `git:…`, or a path). Default: the bundled package.

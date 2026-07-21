@@ -1,4 +1,4 @@
-import type { LockType, ReflectionOutcome, RunRecord, RunStatus } from '../types.js';
+import type { FileLock, ReflectionOutcome, RunRecord, RunStatus } from './identity-memory.js';
 
 /** Run pre-flight — checks for lock conflicts before acquiring. */
 export interface PreFlightRunParams {
@@ -19,23 +19,12 @@ export interface PreFlightRunSuccess {
   run: RunRecord;
 }
 
+export type SimpleFileLock = FileLock;
+
 export interface PreFlightRunConflict {
   ok: false;
   conflict: true;
-  conflicts: Array<{
-    file_path: string;
-    lock_type: LockType;
-    agent_id: string;
-    acquired_at: string;
-    expires_at: string | null;
-    // Who/why context so a blocked agent can decide (wait / work elsewhere /
-    // signal the holder) instead of only seeing who holds the lock and until when.
-    run_id: string;
-    reasoning: string;      // the holder's rationale — WHY the file is claimed
-    test_plan: string;      // what the holder intends to verify before release
-    session_id: string | null;
-    holder_session_active: boolean;  // false = holder's session ended → likely abandoned
-  }>;
+  conflicts: SimpleFileLock[];
 }
 
 export type PreFlightRunResult = PreFlightRunSuccess | PreFlightRunConflict;
@@ -78,29 +67,12 @@ export interface ReleaseFileLockResult {
   ambiguousRelease?: string;
 }
 
-export interface FileLockStatusEntry {
-  lock_id: string;
-  run_id: string;
-  file_path: string;
-  agent_id: string;
-  session_id: string | null;
-  workspace_path: string | null;
-  artifact: string | null;
-  reasoning: string;
-  test_plan?: string;
-  lock_type: LockType;
-  acquired_at: string;
-  expires_at: string | null;
-}
+export type FileLockStatusEntry = SimpleFileLock;
 
 export interface AcquireFileLockResult {
   ok: true;
   type: 'lock';
-  runId: string;
-  files: string[];
-  reasoning: string;
-  acquiredAt: string | null;
-  expiresAt: string | null;
+  run_id: string;
   locks: FileLockStatusEntry[];
 }
 
@@ -109,7 +81,7 @@ export type FileLockResult =
   | { ok: false; type: 'lock'; conflict: true; conflicts: PreFlightRunConflict['conflicts'] }
   | ({ ok: boolean; type: 'release' } & ReleaseFileLockResult)
   | { ok: true; type: 'status'; locks: FileLockStatusEntry[] }
-  | { ok: true; type: 'renew'; runId: string; renewed: boolean; locks_renewed: number; expiresAt: string | null };
+  | { ok: true; type: 'renew'; run_id: string; renewed: boolean; locks_renewed: number; expires_at: string | null };
 
 /** One failed binary-eval question, treated as a diagnostic packet. */
 export interface EvalFailure {

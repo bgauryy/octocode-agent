@@ -214,7 +214,6 @@ export async function launchWithSdk(
     runRpcMode,
     SessionManager,
     SettingsManager,
-    DefaultResourceLoader,
   } = sdk as Record<string, unknown>;
 
   // Ensure home dir exists; back up auth credentials if this is the first SDK run
@@ -267,7 +266,7 @@ export async function launchWithSdk(
     sessionManager = (SessionManager as Record<string, (c: string) => unknown>)['create']!(cwd);
   }
 
-  // Build runtime factory — loads extension in-process via extensionFactories
+  // Build runtime factory — loads extension in-process via Pi service resource loading.
   const extensionFactory = createExtension({ promptMode: 'octocode-first' });
 
   const createRuntime = async ({
@@ -279,20 +278,17 @@ export async function launchWithSdk(
     sessionManager: unknown;
     sessionStartEvent: unknown;
   }) => {
-    const loaderOpts: Record<string, unknown> = {
+    const serviceOptions: Record<string, unknown> = {
       cwd: rCwd,
       agentDir,
-      extensionFactories: [extensionFactory],
+      resourceLoaderOptions: {
+        extensionFactories: [extensionFactory],
+      },
     };
-    if (settingsManager) loaderOpts['settingsManager'] = settingsManager;
-    const DRL = DefaultResourceLoader as new (opts: Record<string, unknown>) => {
-      reload: () => Promise<void>;
-    };
-    const loader = new DRL(loaderOpts);
-    await loader.reload();
+    if (settingsManager) serviceOptions['settingsManager'] = settingsManager;
     const services = await (
-      createAgentSessionServices as (opts: { cwd: string }) => Promise<unknown>
-    )({ cwd: rCwd });
+      createAgentSessionServices as (opts: Record<string, unknown>) => Promise<unknown>
+    )(serviceOptions);
     return {
       ...((await (
         createAgentSessionFromServices as (opts: {

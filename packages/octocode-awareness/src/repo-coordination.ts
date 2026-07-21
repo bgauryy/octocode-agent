@@ -37,7 +37,7 @@ export function lockRows(db: DatabaseSync, params: AwarenessQueryParams): Awaren
   }
   const sqlWhere = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
   const rows = db.prepare(
-    `SELECT l.lock_id, l.file_path, l.run_id, t.agent_id, t.session_id, 'EXCLUSIVE' AS lock_type,
+    `SELECT l.file_path, l.run_id, t.agent_id, t.rationale AS reason,
             l.acquired_at, l.expires_at, t.task_id, t.workspace_path, t.artifact, t.status
        FROM locks l
        JOIN task_runs t ON t.run_id = l.run_id
@@ -47,17 +47,16 @@ export function lockRows(db: DatabaseSync, params: AwarenessQueryParams): Awaren
   ).all(...binds, limitOf(params.limit)) as unknown as Array<Record<string, string | null>>;
 
   return rows.map(row => ({
-    lock_id: String(row['lock_id']),
-    file_path: String(row['file_path']),
+    path: String(row['file_path']),
+    agent: String(row['agent_id']),
+    state: row['status'] === 'PENDING' ? 'pending_verification' : 'locked',
+    reason: String(row['reason'] ?? ''),
     run_id: String(row['run_id']),
-    task_id: row['task_id'] ?? null,
-    agent_id: String(row['agent_id']),
-    lock_type: String(row['lock_type']),
-    run_status: String(row['status']),
-    acquired_at: String(row['acquired_at']),
     expires_at: row['expires_at'] ?? null,
+    task_id: row['task_id'] ?? null,
     workspace_path: row['workspace_path'] ?? null,
     artifact: row['artifact'] ?? null,
+    acquired_at: String(row['acquired_at']),
   }));
 }
 

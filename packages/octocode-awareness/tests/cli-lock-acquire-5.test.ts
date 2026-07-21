@@ -88,13 +88,17 @@ describe('lock acquire', () => {
     expect(r.parsed?.['conflicts']).toBeTruthy();
   });
 
-  it('conflict details include file_path and agent_id', () => {
+  it('conflict details use the simple lock shape', () => {
     const r = run(db, [
       'lock', 'acquire', '--agent-id', 'agent-c', '--target-file', targetFile,
     ]);
     const conflicts = r.parsed?.['conflicts'] as Record<string, unknown>[] | undefined;
-    expect(conflicts?.[0]?.['file_path']).toBe(realpathSync(targetFile));
-    expect(conflicts?.[0]?.['agent_id']).toBe('agent-a');
+    expect(conflicts?.[0]).toMatchObject({
+      path: realpathSync(targetFile),
+      agent: 'agent-a',
+      state: 'conflict',
+      reason: 'test write',
+    });
   });
 
   it('rejects ttl-minutes below schema minimum', () => {

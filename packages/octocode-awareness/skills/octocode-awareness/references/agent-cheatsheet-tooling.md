@@ -14,15 +14,13 @@ Core loop: `references/agent-cheatsheet.md`. Finish/handoffs: `references/agent-
 reference. Neither indexes package `docs/**`.
 
 ## Skills (install / update / lint)
-Sibling skill `octocode-skills` ships next to this skill in the awareness package bundle. Use `npx octocode` for skill install/update/lint and for Octocode research/search operations — gate every write.
+This package bundles only the Awareness skill. Use `npx octocode` for other skill install/update/lint and for Octocode research/search operations — gate every write.
 ```bash
 # `common` means ~/.agents/skills; use claude/cursor/codex/pi for a host-specific destination.
 npm install --global @octocodeai/octocode-awareness
 npx octocode skill --add --path "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness" --platform common --dry-run
 # after reviewing destinations and approving the write:
 npx octocode skill --add --path "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness" --platform common --force
-npx octocode skill --add --path "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-skills" --platform common --force
-# every other repo skill is also bundled (optional) — see `<cli> --help` or install.mjs's bundled_skills
 # Initialize store and smoke the CLI
 export OCTOCODE_AGENT_ID="${OCTOCODE_AGENT_ID:-my-agent}"
 <cli> maintenance init --compact
@@ -37,7 +35,7 @@ Noncompact dry-run/check exposes settings and runtime-health detail; compact out
 Claude skill frontmatter is already a hook surface; do not also install project
 settings. Use `--host claude` only when frontmatter is unsupported or disabled.
 
-Load `octocode-skills` when the job is skill discovery/install/review; keep using this skill for workspace awareness. Do not install `octocode-awareness` by registry name: the `@octocodeai/octocode-awareness` package already bundles the canonical skill.
+Install dedicated workflow skills separately when the job is skill discovery/install/review; keep using this skill for workspace awareness. Do not install `octocode-awareness` by registry name: the `@octocodeai/octocode-awareness` package already bundles the canonical skill.
 ## Code search (not bundled here)
 
 ```bash

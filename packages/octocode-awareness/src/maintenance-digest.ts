@@ -5,6 +5,7 @@ import { checkpointWal, hasFts, rebuildFts } from './db.js';
 import { normalizeWorkspacePath } from './git.js';
 import { normalizeArtifact } from './helpers.js';
 import { pruneStale } from './maintenance-stale.js';
+import type { SimpleFileLock } from './types.js';
 
 // ─── Explicit maintenance digest ─────────────────────────────────────────
 
@@ -31,7 +32,7 @@ export interface DigestResult {
   candidate_ids?: {
     expire_memory_ids: string[];
     purge_memory_ids: string[];
-    lock_ids: string[];
+    locks: SimpleFileLock[];
     refinement_ids: string[];
     run_ids: string[];
   };
@@ -252,7 +253,7 @@ export function digest(
       candidate_ids: {
         expire_memory_ids: expireMemoryIds,
         purge_memory_ids: purgeMemoryIds,
-        lock_ids: lockDryRun.lock_ids ?? [],
+        locks: lockDryRun.locks ?? [],
         refinement_ids: refinementIds,
         run_ids: runIds,
       },

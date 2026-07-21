@@ -20,8 +20,8 @@ const quote = (value) => JSON.stringify(value);
 const awarenessCommand = `${quote(nodeBin)} ${quote(join(scriptsDir, "awareness.mjs"))}`;
 const schemaCommand = `${quote(nodeBin)} ${quote(join(scriptsDir, "schema.mjs"))}`;
 
-// Discovered at runtime — a sibling of this skill's own folder — so this list
-// can never silently drift from whatever build.mjs actually bundled here.
+// Discovered at runtime from this package's skill bundle so install receipts
+// cannot silently drift from what build.mjs actually bundled here.
 const REQUIRED_BUNDLED_SKILLS = new Set(["octocode-awareness"]);
 function discoverBundledSkills(dir) {
   if (!existsSync(dir)) return [];
@@ -169,8 +169,8 @@ console.log(
         pi_bridge: "import { wirePiAwarenessHooks } from '@octocodeai/octocode-awareness'; wirePiAwarenessHooks(pi, { skillRoot })",
       },
       next_steps: [
-        `This package bundles ${bundledSkills.length} skill(s) under bundled_skills above (only octocode-awareness is required; the rest are optional); install any optional skill with npx octocode skill --add --path <bundled_skills[i].path> --platform common.`,
-        "Use npx octocode for skill install/update/lint and research/search operations; do not fetch bundled skills by registry name — always install from the bundled path above.",
+        `This package bundles ${bundledSkills.length} skill(s) under bundled_skills above; octocode-awareness is the package skill to install from this path.`,
+        "Use npx octocode for other workflow skill install/update/lint and research/search operations when needed.",
         "Export one stable OCTOCODE_AGENT_ID for the CLI and host hooks.",
         "Run maintenance init once for the store, then workspace status and attend from each repo.",
         "When Claude skill frontmatter is active, use it as the hook surface and do not also install duplicate project settings; hooks check inspects settings files only.",

@@ -2,20 +2,12 @@ import type { DatabaseSync } from 'node:sqlite';
 import { normalizeWorkspacePath } from './git.js';
 import { normalizeArtifact, parseJsonList, utcNow } from './helpers.js';
 import { openRefinementCount } from './maintenance-stale.js';
+import { toSimpleLock } from './intents-preflight.js';
+import type { SimpleFileLock } from './types.js';
 
 // ─── Workspace status ──────────────────────────────────────────────────────
 
-export interface WorkspaceLockEntry {
-  file_path: string;
-  agent_id: string;
-  session_id: string | null;
-  workspace_path: string | null;
-  artifact: string | null;
-  run_id: string;
-  lock_type: string;
-  acquired_at: string;
-  expires_at: string | null;
-}
+export type WorkspaceLockEntry = SimpleFileLock;
 
 export interface WorkspaceStatusResult {
   ok: true;
@@ -102,7 +94,7 @@ export function getWorkspaceStatus(
     includeHandoffs: true,
   });
 
-  type LockRow = { file_path: string; agent_id: string; session_id: string | null; workspace_path: string | null; artifact: string | null; run_id: string; lock_type: string; acquired_at: string; expires_at: string | null };
+  type LockRow = { file_path: string; agent_id: string; run_id: string; reason: string; expires_at: string | null };
   const lockWhereParts: string[] = ['(fl.expires_at IS NULL OR fl.expires_at > ?)', "ai.status = 'ACTIVE'"];
   const lockParams: (string | number)[] = [utcNow()];
   if (wsPath) { lockWhereParts.push('ai.workspace_path = ?'); lockParams.push(wsPath); }
@@ -114,15 +106,21 @@ export function getWorkspaceStatus(
      JOIN task_runs ai ON ai.run_id = fl.run_id
      ${lockWhere}`
   ).get(...lockParams) as { count: number }).count;
-  const locks = db.prepare(
-    `SELECT fl.file_path, ai.agent_id, ai.session_id, ai.workspace_path, ai.artifact, fl.run_id,
-            'EXCLUSIVE' AS lock_type, fl.acquired_at, fl.expires_at
+  const lockRows = db.prepare(
+    `SELECT fl.file_path, ai.agent_id, fl.run_id, ai.rationale AS reason, fl.expires_at
      FROM locks fl
      JOIN task_runs ai ON ai.run_id = fl.run_id
      ${lockWhere}
      ORDER BY fl.acquired_at DESC
      LIMIT 50`
   ).all(...lockParams) as unknown as LockRow[];
+  const locks = lockRows.map((row) => toSimpleLock({
+    filePath: row.file_path,
+    agentId: row.agent_id,
+    runId: row.run_id,
+    reason: row.reason,
+    expiresAt: row.expires_at,
+  }));
 
   return {
     ok: true,

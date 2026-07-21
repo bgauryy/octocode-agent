@@ -28,7 +28,7 @@ npx octocode search owner/repo/path --target commits --no-color
 npx octocode search --scheme --compact --no-color
 ```
 
-Treat hits as leads. Cite paths/lines/IDs in locks, signals, memories, and refinements. Zero matches require one scope/mode/spelling adjustment before an absence claim. Load `octocode-research` for deeper evidence workflows when available.
+Treat hits as leads. Cite paths/lines/IDs in locks, signals, memories, and refinements. Zero matches require one scope/mode/spelling adjustment before an absence claim. Install a dedicated research workflow skill separately when deeper evidence workflows are needed.
 
 ## Skill Management
 

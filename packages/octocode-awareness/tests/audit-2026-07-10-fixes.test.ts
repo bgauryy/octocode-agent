@@ -7,7 +7,7 @@
  *     (permanent) locks that the conflict checker still honors.
  *  3. domain-validation CLI errors were bare {error} while flag-parse errors
  *     carried {command,schema,example} recovery context.
- *  5. lock release did not accept the lock_id that lock acquire returns.
+ *  5. lock release accepts the safe run_id returned by lock acquire.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -243,8 +243,8 @@ describe('structured domain errors (finding 3)', () => {
   });
 });
 
-describe('lock release --lock-id (finding 5)', () => {
-  it('releases via the lock_id returned by lock acquire', () => {
+describe('lock release by run handle (finding 5)', () => {
+  it('releases via the run_id returned by lock acquire', () => {
     const tmp = mktemp('oc-lockid-');
     try {
       const dbPath = join(tmp, 'db.sqlite3');
@@ -259,14 +259,13 @@ describe('lock release --lock-id (finding 5)', () => {
       ]);
       expect(acquired.status, acquired.stdout).toBe(0);
       const runInfo = acquired.parsed?.['run'] as Record<string, unknown>;
-      const locks = runInfo['locks'] as Array<Record<string, unknown>>;
-      const lockId = String(locks[0]?.['lock_id']);
-      expect(lockId).toBeTruthy();
+      const runId = String(runInfo['run_id']);
+      expect(runId).toMatch(/^run_/);
 
       const released = run(dbPath, [
         'lock', 'release',
         '--agent-id', 'agent',
-        '--lock-id', lockId,
+        '--run-id', runId,
         '--status', 'PENDING',
         '--compact',
       ]);
@@ -278,18 +277,17 @@ describe('lock release --lock-id (finding 5)', () => {
     }
   });
 
-  it('rejects an unknown lock id with a clear error', () => {
+  it('requires a run id or target file to release', () => {
     const tmp = mktemp('oc-lockid2-');
     try {
       const dbPath = join(tmp, 'db.sqlite3');
       const r = run(dbPath, [
         'lock', 'release',
         '--agent-id', 'agent',
-        '--lock-id', 'lok_does_not_exist',
         '--compact',
       ]);
       expect(r.status).toBe(1);
-      expect(String(r.parsed?.['error'])).toContain('lock not found');
+      expect(String(r.parsed?.['error'])).toContain('lock release requires --run-id or --target-file');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

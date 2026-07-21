@@ -68,13 +68,7 @@ yarn workspace @octocodeai/octocode-awareness pack:check
 yarn workspace @octocodeai/octocode-awareness verify
 ```
 
-Skill changes also require:
-
-```bash
-node skills/octocode-skills/scripts/skill-review.mjs \
-  skills/octocode-awareness
-```
-
-Preserve failed-check evidence. Record only reusable learning. The executable user
+Skill changes also require `yarn workspace @octocodeai/octocode-awareness build`
+and focused tests for the edited skill behavior. Preserve failed-check evidence. Record only reusable learning. The executable user
 flow lives in `docs/SKILLS.md`; host automation in `docs/HOOKS.md`; architecture and
 the complete lifecycle in `docs/HOW_IT_WORKS.md`; all concept owners in `docs/README.md`.

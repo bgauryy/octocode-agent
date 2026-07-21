@@ -68,7 +68,7 @@ case 'file_lock': {
         reasoning: request['reasoning'] as string | undefined,
       }) as FileLockResult;
       if (result.type === 'lock' && result.ok === false && request['signal_on_conflict'] !== false) {
-        const conflictAgents = [...new Set(result.conflicts.map((conflict) => conflict.agent_id))];
+        const conflictAgents = [...new Set(result.conflicts.map((conflict) => conflict.agent))];
         agentSignal(db, {
           action: 'publish',
           agentId: lockAgentId,

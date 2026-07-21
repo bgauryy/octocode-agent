@@ -13,12 +13,6 @@
       "minLength": 1,
       "maxLength": 128
     },
-    "lock_id": {
-      "description": "Lock id from lock acquire; resolved to its run and file.",
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128
-    },
     "workspace": {
       "type": "string",
       "minLength": 1,

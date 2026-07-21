@@ -32,9 +32,8 @@ Each layer has one job:
    It routes; it does not duplicate the operating manual or command inventory.
 2. **Agent Skills own judgment.** `octocode-awareness` decides when to attend, plan,
    claim, declare, coordinate, lock, verify, remember, clean, or project.
-   `octocode-research` owns code/repository evidence; `octocode-skills` owns skill
-   lifecycle work; other bundled skills add focused workflows. Skills do not own live
-   coordination state.
+   Other workflow skills can add focused research, evaluation, or skill-lifecycle
+   guidance when installed separately. Skills do not own live coordination state.
 3. **The Awareness CLI is the only agent-facing control plane for durable Awareness state.**
    It creates and changes plans, tasks, runs, file presence, locks, verification,
    signals, refinements, sessions, memory, maintenance, queries, and projections.

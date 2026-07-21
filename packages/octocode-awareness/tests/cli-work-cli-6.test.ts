@@ -215,6 +215,11 @@ describe('workspace status', () => {
       expect(compact.status).toBe(0);
       expect(compact.parsed).toMatchObject({ lock_count: 3, lock_shown_count: 1, lock_omitted_count: 2 });
       expect(compact.parsed?.['locks']).toHaveLength(1);
+      expect((compact.parsed?.['locks'] as Record<string, unknown>[])[0]).toMatchObject({
+        agent: expect.stringMatching(/^agent-/),
+        state: 'locked',
+        reason: expect.stringMatching(/^protect /),
+      });
       expect(Buffer.byteLength(compact.stdout, 'utf8')).toBeLessThanOrEqual(2 * 1024);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
