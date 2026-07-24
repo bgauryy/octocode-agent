@@ -49,7 +49,7 @@ describe('preFlightIntent', () => {
       expect(b.ok).toBe(false);
       if (!b.ok) {
         expect(b.conflicts).toHaveLength(1);
-        expect(b.conflicts[0]!.agent_id).toBe('agent-a');
+        expect(b.conflicts[0]!.agent).toBe('agent-a');
       }
     } finally { cleanup(); }
   });
@@ -66,7 +66,11 @@ describe('preFlightIntent', () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.run.target_files).toEqual([canonicalizePath(join(dir, 'src/a.ts'))]);
-        expect(result.run.locks[0]!.file_path).toBe(canonicalizePath(join(dir, 'src/a.ts')));
+        expect(result.run.locks[0]!).toMatchObject({
+          path: canonicalizePath(join(dir, 'src/a.ts')),
+          agent: 'agent-a',
+          state: 'locked',
+        });
       }
     } finally { cleanup(); }
   });

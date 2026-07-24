@@ -142,7 +142,7 @@ export type {
   InsertRefinementParams, InsertRefinementResult,
   GetRefinementsParams, GetRefinementsResult,
   PreFlightRunParams, PreFlightRunResult, PreFlightRunSuccess, PreFlightRunConflict,
-  ReleaseFileLockParams, ReleaseFileLockResult, FileLockParams, FileLockResult, FileLockStatusEntry,
+  ReleaseFileLockParams, ReleaseFileLockResult, FileLockParams, FileLockResult, FileLockStatusEntry, SimpleFileLock,
   ReflectParams, ReflectResult,
   Scope, ScopePartial,
   MemoryState, LockType, RunStatus, RunOrigin, WorkSource,

@@ -1,8 +1,10 @@
 import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-const SCRIPT = resolve(import.meta.dirname, '../../../skills/octocode-awareness/scripts/install.mjs');
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SCRIPT = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/install.mjs');
 
 describe('skill install diagnosis', () => {
   it('prints a bounded compact readiness receipt', () => {

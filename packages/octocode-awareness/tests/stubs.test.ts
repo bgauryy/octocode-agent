@@ -169,7 +169,7 @@ describe('digest dry_run', () => {
       pressure_samples: { run_ids: [], signal_ids: [], memory_ids: [] },
       candidate_limit: 20,
       candidate_ids: {
-        expire_memory_ids: [], purge_memory_ids: [], lock_ids: [], refinement_ids: [], run_ids: [],
+        expire_memory_ids: [], purge_memory_ids: [], locks: [], refinement_ids: [], run_ids: [],
       },
     });
   });
@@ -287,8 +287,12 @@ describe('getWorkspaceStatus', () => {
       expect(intent.ok).toBe(true);
       const result = getWorkspaceStatus(db, {});
       expect(result.locks.length).toBeGreaterThanOrEqual(1);
-      expect(result.locks[0]).toHaveProperty('file_path');
-      expect(result.locks[0]).toHaveProperty('agent_id');
+      expect(result.locks[0]).toMatchObject({
+        agent: 'agent-a',
+        state: 'locked',
+      });
+      expect(result.locks[0]?.path).toContain('/oc-stubs-test-');
+      expect(result.locks[0]?.path).toMatch(/\/f\.txt$/);
     } finally { cleanup(); }
   });
 });

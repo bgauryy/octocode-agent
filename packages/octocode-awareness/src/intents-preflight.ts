@@ -7,7 +7,7 @@ import { normalizeArtifact, utcNow } from './helpers.js';
 import { evictExpiredLocks } from './db.js';
 import { canonicalizePath, normalizeWorkspacePath } from './git.js';
 import { startWork } from './work.js';
-import type { PreFlightRunParams, PreFlightRunResult, FileLockStatusEntry } from './types.js';
+import type { PreFlightRunParams, PreFlightRunResult, FileLockStatusEntry, SimpleFileLock } from './types.js';
 
 export const MAX_LOCK_TTL_MS = 10 * 60_000;
 export const VALID_RELEASE_STATUSES = new Set(['PENDING', 'ACTIVE', 'SUCCESS', 'FAILED']);
@@ -29,6 +29,24 @@ export function workspaceFileBase(workspacePath?: string | null): string {
 export function resolveTargetFiles(targetFiles: string[] = [], workspacePath?: string | null): string[] {
   const root = workspaceFileBase(workspacePath);
   return targetFiles.map((file) => canonicalizePath(isAbsolute(file) ? resolve(file) : resolve(root, file)));
+}
+
+export function toSimpleLock(params: {
+  filePath: string;
+  agentId: string;
+  runId: string;
+  reason: string;
+  expiresAt: string | null;
+  state?: SimpleFileLock['state'];
+}): SimpleFileLock {
+  return {
+    path: params.filePath,
+    agent: params.agentId,
+    state: params.state ?? 'locked',
+    reason: params.reason,
+    run_id: params.runId,
+    expires_at: params.expiresAt,
+  };
 }
 
 export function activeLockRows(
@@ -65,15 +83,26 @@ export function activeLockRows(
     binds.push(params.runId);
   }
 
-  return db.prepare(
-    `SELECT fl.lock_id, fl.run_id, fl.file_path, ai.agent_id, ai.session_id, ai.workspace_path, ai.artifact,
-            ai.rationale AS reasoning, ai.test_plan AS test_plan, 'EXCLUSIVE' AS lock_type,
-            fl.acquired_at, fl.expires_at
+  const rows = db.prepare(
+    `SELECT fl.run_id, fl.file_path, ai.agent_id, ai.rationale AS reason, fl.expires_at
        FROM locks fl
        JOIN task_runs ai ON ai.run_id = fl.run_id
       WHERE ${clauses.join(' AND ')}
       ORDER BY fl.acquired_at DESC`
-  ).all(...binds) as unknown as FileLockStatusEntry[];
+  ).all(...binds) as unknown as Array<{
+    run_id: string;
+    file_path: string;
+    agent_id: string;
+    reason: string;
+    expires_at: string | null;
+  }>;
+  return rows.map((row) => toSimpleLock({
+    filePath: row.file_path,
+    agentId: row.agent_id,
+    runId: row.run_id,
+    reason: row.reason,
+    expiresAt: row.expires_at,
+  }));
 }
 
 /**
@@ -104,30 +133,14 @@ export function preFlightIntent(
     return {
       ok: false,
       conflict: true,
-      conflicts: result.conflicts.map((conflict) => {
-        const holder = db.prepare(`SELECT tr.session_id, s.ended_at, l.acquired_at
-          FROM task_runs tr
-          LEFT JOIN sessions s ON s.session_id = tr.session_id
-          LEFT JOIN locks l ON l.run_id = tr.run_id AND l.file_path = ?
-          WHERE tr.run_id = ?`).get(conflict.file_path, conflict.run_id) as {
-            session_id: string | null;
-            ended_at: string | null;
-            acquired_at: string | null;
-          } | undefined;
-        return {
-          file_path: conflict.file_path,
-          lock_type: 'EXCLUSIVE' as const,
-          agent_id: conflict.agent_id,
-          acquired_at: holder?.acquired_at ?? conflict.heartbeat_at,
-          expires_at: conflict.expires_at,
-          run_id: conflict.run_id,
-          reasoning: conflict.rationale,
-          test_plan: db.prepare('SELECT test_plan FROM task_runs WHERE run_id = ?')
-            .get(conflict.run_id)?.['test_plan'] as string ?? 'post-edit verification',
-          session_id: holder?.session_id ?? null,
-          holder_session_active: !holder?.ended_at,
-        };
-      }),
+      conflicts: result.conflicts.map((conflict) => toSimpleLock({
+        filePath: conflict.file_path,
+        agentId: conflict.agent_id,
+        runId: conflict.run_id,
+        reason: conflict.rationale,
+        expiresAt: conflict.expires_at,
+        state: 'conflict',
+      })),
     };
   }
   const locks = activeLockRows(db, { runId: result.run.run_id });
@@ -143,15 +156,7 @@ export function preFlightIntent(
       artifact: result.run.artifact,
       context_ref: result.run.context_ref,
       target_files: result.files.filter((file) => file.ended_at == null).map((file) => file.file_path),
-      locks: locks.map((lock) => ({
-        lock_id: lock.lock_id,
-        file_path: lock.file_path,
-        lock_type: 'EXCLUSIVE',
-        agent_id: lock.agent_id,
-        session_id: lock.session_id,
-        acquired_at: lock.acquired_at,
-        expires_at: lock.expires_at,
-      })),
+      locks,
       status: result.run.status,
       created_at: result.run.created_at,
     },

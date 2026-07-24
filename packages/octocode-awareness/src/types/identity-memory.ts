@@ -112,13 +112,14 @@ export interface MemoryRecord {
   };
 }
 
+export type LockState = 'locked' | 'conflict' | 'pending_verification' | 'expired';
+
 export interface FileLock {
-  lock_id: string;
-  file_path: string;
-  lock_type: LockType;
-  agent_id: string;
-  session_id?: string | null;
-  acquired_at: string;
+  path: string;
+  agent: string;
+  state: LockState;
+  reason: string;
+  run_id: string;
   expires_at: string | null;
 }
 

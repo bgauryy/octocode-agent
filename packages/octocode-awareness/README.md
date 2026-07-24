@@ -47,19 +47,9 @@ node "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-aw
 ```
 
 The Awareness skill is required because it teaches agents when to use the CLI.
-The bundled `octocode-skills` skill is optional and useful only for discovering,
-reviewing, or improving skills:
-
-```bash
-npx octocode skill --add \
-  --path "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-skills" \
-  --platform common --dry-run
-# after approval, rerun with --force
-```
-
-The package bundles every other repo skill under `out/skills/` too, all optional and
-installed the same way; run `octocode-awareness --help` or
-`scripts/install.mjs` (see its `bundled_skills` field) for the current, resolved list.
+This package now bundles only the `octocode-awareness` skill under `out/skills/`.
+Install other workflow skills separately with `npx octocode skill --name <skill>`
+when that work is needed.
 
 Published surfaces:
 
@@ -157,7 +147,7 @@ yarn workspace @octocodeai/octocode-awareness pack:check
 yarn workspace @octocodeai/octocode-awareness verify
 ```
 
-Edit the canonical skill only under repo-root `skills/octocode-awareness`; the
+Edit the canonical skill only under package-local `skills/octocode-awareness`; the
 package build refreshes its generated runtime/schema helpers, `out/`, and
-`.agents/skills/`. There is no package-local skill source tree. The Pi-extension
+`.agents/skills/`. There is no repo-root `skills/` source tree. The Pi-extension
 build owns its packaged copy.

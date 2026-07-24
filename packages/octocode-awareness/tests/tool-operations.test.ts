@@ -192,7 +192,7 @@ describe('runAwarenessToolOperation', () => {
         ttl_ms: 60_000,
       }, dir);
       expect(lock.exitCode).toBe(0);
-      const runId = (lock.payload as { runId: string }).runId;
+      const runId = (lock.payload as { run_id: string }).run_id;
       expect(runId).toMatch(/^run_/);
 
       const status = run(db, 'file_lock', { type: 'status', target_files: [file] }, dir);
@@ -221,8 +221,8 @@ describe('runAwarenessToolOperation', () => {
 
       const first = run(db, 'file_lock', { type: 'lock', target_files: [join(dir, 'b.ts')], reasoning: 'batch 1' }, dir);
       const second = run(db, 'file_lock', { type: 'lock', target_files: [join(dir, 'c.ts')], reasoning: 'batch 2' }, dir);
-      const firstTask = (first.payload as { runId: string }).runId;
-      const secondTask = (second.payload as { runId: string }).runId;
+      const firstTask = (first.payload as { run_id: string }).run_id;
+      const secondTask = (second.payload as { run_id: string }).run_id;
       run(db, 'file_lock', { type: 'release', run_id: firstTask, status: 'PENDING' }, dir);
       run(db, 'file_lock', { type: 'release', run_id: secondTask, status: 'PENDING' }, dir);
       const batch = run(db, 'verify', { run_ids: [firstTask, secondTask, firstTask], status: 'FAILED' }, dir);
@@ -230,8 +230,8 @@ describe('runAwarenessToolOperation', () => {
 
       const third = run(db, 'file_lock', { type: 'lock', target_files: [join(dir, 'd.ts')], reasoning: 'mixed pending' }, dir);
       const fourth = run(db, 'file_lock', { type: 'lock', target_files: [join(dir, 'e.ts')], reasoning: 'mixed pending two' }, dir);
-      const thirdTask = (third.payload as { runId: string }).runId;
-      const fourthTask = (fourth.payload as { runId: string }).runId;
+      const thirdTask = (third.payload as { run_id: string }).run_id;
+      const fourthTask = (fourth.payload as { run_id: string }).run_id;
       run(db, 'file_lock', { type: 'release', run_id: thirdTask, status: 'PENDING' }, dir);
       run(db, 'file_lock', { type: 'release', run_id: fourthTask, status: 'PENDING' }, dir);
       const mixed = run(db, 'verify', { run_id: thirdTask, all_pending: true, status: 'SUCCESS', message: 'mixed batch checks passed' }, dir);
@@ -289,7 +289,7 @@ describe('runAwarenessToolOperation', () => {
       expect(workspace.payload).toHaveProperty('active_runs');
       const workspacePayload = workspace.payload as {
         files_under_work: Array<{ path: string; peer_count: number; locked: boolean }>;
-        locks: Array<{ file: string; type: string; expires?: string }>;
+        locks: Array<{ path: string; agent: string; state: string; reason: string; run_id: string; expires_at: string | null }>;
       };
       expect(workspacePayload.files_under_work).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -299,13 +299,13 @@ describe('runAwarenessToolOperation', () => {
         }),
       ]));
       expect(workspacePayload.locks).toEqual(expect.arrayContaining([
-        expect.objectContaining({ type: 'EXCLUSIVE' }),
+        expect.objectContaining({ state: 'locked', agent: 'agent-a', reason: 'exclusive migration' }),
       ]));
-      const sensitiveLock = workspacePayload.locks.find((entry) => entry.file.endsWith('/src/sensitive.ts'));
-      expect(sensitiveLock?.expires).toBeTruthy();
+      const sensitiveLock = workspacePayload.locks.find((entry) => entry.path.endsWith('/src/sensitive.ts'));
+      expect(sensitiveLock?.expires_at).toBeTruthy();
 
       const stale = run(db, 'file_lock', { type: 'lock', target_files: [join(dir, 'stale.ts')], reasoning: 'stale active' }, dir);
-      const staleTask = (stale.payload as { runId: string }).runId;
+      const staleTask = (stale.payload as { run_id: string }).run_id;
       db.prepare('DELETE FROM locks WHERE run_id = ?').run(staleTask);
       db.prepare('UPDATE run_files SET expires_at = ? WHERE run_id = ?')
         .run('2000-01-01T00:00:00Z', staleTask);

@@ -30,54 +30,26 @@ launcher that boots Pi with that package as the authoritative core.
 
 ## 2. How octocode-agent launches Pi
 
-### Current strategy — subprocess with `-e` (implemented)
+### Current strategy — SDK embed first, subprocess fallback
 
-```
-pi -e <coreRoot> [--no-extensions --no-skills] [passthrough…]
-```
-
-- `-e, --extension <source>` loads an extension from a **path, npm, or git** *for that
-  run only* — no global settings write, no trust prompt for our own package
-  (`usage.md` §Resource Options; `packages.md` §Install/`-e`).
-- `-e <directory>` loads by **package rules**, so one flag brings the extension **and its
-  bundled skills** (`packages.md` §Local Paths). We point it at the resolved package root
-  of `@octocodeai/pi-extension`.
-- The launcher sets `OCTOCODE_PROMPT_MODE=octocode-first` + `OCTOCODE_AGENT=1` in the child env;
-  the core reads the mode (no divergent code path — same package works under plain
-  `pi install` in append mode). Legacy `replace` is accepted as an alias.
-- `OCTOCODE_AGENT_EXTENSION_SPEC` overrides the spec (`npm:…@ver`, `git:…`, path).
-- Project `AGENTS.md`/`CLAUDE.md` context files load by default so repository rules remain authoritative.
-  `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` or `OCTOCODE_AGENT_CLEAN=1` adds `--no-context-files`.
-- `OCTOCODE_AGENT_CLEAN=1` adds `--no-skills --no-context-files` → deterministic harness-only mode.
-
-This replaced an earlier `pi install <spec>` approach, which mutated global settings and
-required trust — `-e` is side-effect-free and the documented "load exactly what you need"
-recipe (`usage.md`: `pi --no-extensions -e ./my-extension.ts`).
-
-Pi bin is resolved data-driven from `@earendil-works/pi-coding-agent`'s `package.json`
-`bin` field, so a Pi version bump can't break a hardcoded path.
-
-### Evolution — SDK embed (designed, not yet built)
-
-For a fully branded "own the launch" agent (custom header, default theme/provider,
-startup chrome), Pi exposes a documented SDK (`sdk.md`) that lets us pass our extension
-**factory** directly — no subprocess, no `-e`:
+The default path imports Pi's documented SDK and passes the Octocode extension **factory**
+directly to Pi's resource loader — no subprocess and no `-e`:
 
 ```ts
 import {
   createAgentSessionRuntime, createAgentSessionServices,
-  createAgentSessionFromServices, InteractiveMode, DefaultResourceLoader, getAgentDir, SessionManager,
+  createAgentSessionFromServices, InteractiveMode, getAgentDir, SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { createOctocodePiExtension } from "@octocodeai/pi-extension"; // the factory we added
+import { createOctocodePiExtension } from "@octocodeai/pi-extension";
 
 const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
-  const loader = new DefaultResourceLoader({
-    cwd, agentDir: getAgentDir(),
-    extensionFactories: [ createOctocodePiExtension({ promptMode: "octocode-first" }) ], // core, in-process
-    // systemPromptOverride, skillsOverride, themes… all available here
+  const services = await createAgentSessionServices({
+    cwd,
+    agentDir: getAgentDir(),
+    resourceLoaderOptions: {
+      extensionFactories: [createOctocodePiExtension({ promptMode: "octocode-first" })],
+    },
   });
-  await loader.reload();
-  const services = await createAgentSessionServices({ cwd, resourceLoader: loader });
   return { ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
            services, diagnostics: services.diagnostics };
 };
@@ -88,13 +60,37 @@ const runtime = await createAgentSessionRuntime(createRuntime, {
 await new InteractiveMode(runtime, { /* initialMessage, … */ }).run();
 ```
 
-**Why this is the "platform" endgame:** `extensionFactories` takes `(pi) => …` functions —
-exactly what `createOctocodePiExtension({promptMode:'octocode-first'})` returns. We get in-process
-type safety, direct control of tools/prompt/theme, and no reliance on Pi's package
-discovery. Trade-off: it couples to Pi's SDK exports (documented and stable, unlike the
-internal `dist/` paths the RFC's replace-mode mirrors) and must re-`bindExtensions` on
-session replacement (`/new`, `/fork`). Keep the subprocess path as the zero-risk default
-until the SDK path is validated against an installed Pi.
+The launcher sets `OCTOCODE_PROMPT_MODE=octocode-first` + `OCTOCODE_AGENT=1`; the core
+reads the mode with no divergent harness code path. Legacy `replace` is accepted as an alias.
+Supported SDK-level args include `--print`, `--mode rpc`, `--continue`, `--session`,
+`--no-session`, `--name`, and an initial message. `OCTOCODE_AGENT_CLEAN=1` and
+`OCTOCODE_AGENT_NO_CONTEXT_FILES=1` remain honored by the subprocess fallback.
+
+If SDK import or runtime creation fails, the launcher falls back to:
+
+```
+pi --no-extensions -e <coreRoot> [--no-skills] [passthrough…]
+```
+
+- `-e, --extension <source>` loads an extension from a **path, npm, or git** *for that
+  run only* — no global settings write, no trust prompt for our own package
+  (`usage.md` §Resource Options; `packages.md` §Install/`-e`).
+- `-e <directory>` loads by **package rules**, so one flag brings the extension **and its
+  bundled skills** (`packages.md` §Local Paths). We point it at the resolved package root
+  of `@octocodeai/pi-extension`.
+- `OCTOCODE_AGENT_EXTENSION_SPEC` overrides the fallback spec (`npm:…@ver`, `git:…`, path).
+- Project `AGENTS.md`/`CLAUDE.md` context files load by default so repository rules remain authoritative.
+  `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` or `OCTOCODE_AGENT_CLEAN=1` adds `--no-context-files`.
+- `OCTOCODE_AGENT_CLEAN=1` adds `--no-skills --no-context-files` → deterministic harness-only mode.
+
+This replaced an earlier `pi install <spec>` approach, which mutated global settings and
+required trust. Pi bin resolution is still data-driven from `@earendil-works/pi-coding-agent`'s
+`package.json` `bin` field for the fallback, so a Pi version bump can't break a hardcoded path.
+
+**Why this is the platform path:** `extensionFactories` takes `(pi) => …` functions — exactly
+what `createOctocodePiExtension({promptMode:'octocode-first'})` returns. We get in-process
+startup, direct runtime control, and the same core package that still works under plain
+`pi install npm:@octocodeai/pi-extension` in append mode.
 
 ---
 

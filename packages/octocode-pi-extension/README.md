@@ -190,7 +190,7 @@ Never put secrets into prompts, logs, Awareness memory, or committed config.
 | Stale dead-session work | Audit exact ownership and explicitly abandon only after review. |
 | Compaction says “Nothing to compact” | Benign: the session is too small to summarize, so the extension reports it as skipped. |
 | Internal/model/tool errors need debugging | Check repo-local `.octocode/logs/error.txt`. Entries include timestamp, uptime, cwd, mode, model/context usage when available, duration, details, stack/cause, and redacted secrets. |
-| “Model stopped because it reached the maximum output token limit” | This banner is emitted by Pi/model runtime; extension-visible provider/tool failures are logged to `.octocode/logs/error.txt`, but Pi-core-only banners require Pi-side logging. |
+| “Model stopped because it reached the maximum output token limit” | The answer was too large for one model response. Compaction does not increase that output budget; ask for a concise/chunked continuation or write long output to a file and return a path plus summary. |
 | Local research tools absent | Check `ENABLE_LOCAL`. |
 | Clone tool absent | Set `ENABLE_CLONE=1`. |
 

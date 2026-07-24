@@ -6,8 +6,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runHooksInstall } from '../src/hooks-install.js';
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+const PACKAGE_ROOT = resolve(TEST_DIR, '..');
 const REPO_ROOT = resolve(TEST_DIR, '../../..');
-const SCRIPT = resolve(REPO_ROOT, 'packages/octocode-awareness/out/octocode-awareness.js');
+const SCRIPT = resolve(PACKAGE_ROOT, 'out/octocode-awareness.js');
 const NODE = process.execPath;
 function runInstallHooks(args: string[], script = SCRIPT) {
     const result = spawnSync(NODE, [script, ...args], {
@@ -190,7 +191,7 @@ it('strict check reports drifted hooks and install repairs them', () => {
   });
 it('removes the obsolete standalone harness guard during repair', () => {
     const projectDir = mkdtempSync(resolve(tmpdir(), 'octocode-obsolete-guard-'));
-    const hookDir = resolve(REPO_ROOT, 'skills/octocode-awareness/scripts/hooks');
+    const hookDir = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/hooks');
     try {
       mkdirSync(resolve(projectDir, '.codex'), { recursive: true });
       writeFileSync(resolve(projectDir, '.codex/hooks.json'), JSON.stringify({

@@ -14,15 +14,22 @@ import { fileURLToPath } from 'node:url';
 export const __bin = dirname(fileURLToPath(import.meta.url));
 const invokedDir = process.argv[1] ? dirname(resolve(process.argv[1])) : __bin;
 // out/octocode-awareness.js -> out/skills/; standalone skill scripts/awareness.mjs
-// -> the sibling skills/ directory that contains both packaged skills.
-export const BUNDLED_SKILLS_DIR = process.env.OCTOCODE_SKILL_ROOT
-  ? resolve(process.env.OCTOCODE_SKILL_ROOT, '..')
-  : basename(invokedDir) === 'scripts' && basename(dirname(invokedDir)) === 'octocode-awareness'
+// -> the sibling skills/ directory that contains packaged skills. Prefer
+// the invoked package/script layout over ambient harness env so local package
+// tests and standalone installs are not shadowed by a parent Pi extension.
+const bundledSkillDirCandidates = [
+  basename(invokedDir) === 'scripts' && basename(dirname(invokedDir)) === 'octocode-awareness'
     ? resolve(invokedDir, '..', '..')
-    : resolve(invokedDir, 'skills');
+    : null,
+  resolve(invokedDir, 'skills'),
+  resolve(invokedDir, '..', 'skills'),
+  process.env.OCTOCODE_SKILL_ROOT ? resolve(process.env.OCTOCODE_SKILL_ROOT, '..') : null,
+].filter((candidate): candidate is string => Boolean(candidate));
+export const BUNDLED_SKILLS_DIR = bundledSkillDirCandidates.find((candidate) => existsSync(candidate))
+  ?? bundledSkillDirCandidates[0]!;
 
-// Awareness is the only required operating skill. Skill lifecycle support and
-// every other bundled skill are optional and installed only when needed.
+// Awareness is the only package-bundled operating skill. Install other
+// workflow skills separately when needed.
 export const REQUIRED_BUNDLED_SKILLS = new Set(['octocode-awareness']);
 
 export interface BundledSkill {

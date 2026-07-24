@@ -72,7 +72,7 @@ export function fileRows(db: DatabaseSync, params: AwarenessQueryParams): Awaren
     for (const file of row['files'] as string[]) trackFile(files, file, 'runs', String(row['created_at']), scope.workspacePath);
   }
   for (const row of lockRows(db, withScope(params, { limit: 500 }))) {
-    trackFile(files, String(row['file_path']), 'locks', String(row['acquired_at']), scope.workspacePath);
+    trackFile(files, String(row['path']), 'locks', String(row['acquired_at']), scope.workspacePath);
   }
   for (const row of refinementRows(db, withScope(params, { limit: 500 }))) {
     for (const file of row['files'] as string[]) trackFile(files, file, 'refinements', String(row['updated_at']), scope.workspacePath);
@@ -295,7 +295,7 @@ export function filesUnderWorkRows(db: DatabaseSync, params: AwarenessQueryParam
       reasons: shown.map(peer => summarize(String(peer['reason'] ?? ''), 80)),
       omitted_peer_count: Math.max(0, peers.length - shown.length),
       locked: Boolean(lock),
-      lock_agent_id: lock == null ? null : String(lock['agent_id']),
+      lock_agent: lock == null ? null : String(lock['agent_id']),
       lock_expires_at: lock?.['lock_expires_at'] ?? null,
     };
   });

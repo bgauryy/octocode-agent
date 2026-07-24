@@ -181,8 +181,11 @@ describe('getWorkspaceStatus — current schema', () => {
     const status = getWorkspaceStatus(db, {});
     expect(status.lock_count).toBe(1);
     expect(status.locks.length).toBeGreaterThanOrEqual(1);
-    expect(status.locks[0]).toHaveProperty('file_path');
-    expect(status.locks[0]).toHaveProperty('agent_id');
+    expect(status.locks[0]).toMatchObject({
+      path: '/ws/a.ts',
+      agent: 'agent-test',
+      state: 'locked',
+    });
   });
 
   it('filters expired locks without mutating status during a read', () => {

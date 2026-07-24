@@ -23,11 +23,7 @@ export function fileLock(db: DatabaseSync, params: FileLockParams): FileLockResu
       return {
         ok: true,
         type: 'lock',
-        runId: result.run.run_id,
-        files: result.run.target_files,
-        reasoning: params.reasoning?.trim() || 'manual: fileLock lock',
-        acquiredAt: result.run.locks[0]?.acquired_at ?? null,
-        expiresAt: result.run.locks[0]?.expires_at ?? null,
+        run_id: result.run.run_id,
         locks,
       };
     }
@@ -73,10 +69,10 @@ export function fileLock(db: DatabaseSync, params: FileLockParams): FileLockResu
       return {
         ok: true,
         type: 'renew',
-        runId: params.runId,
+        run_id: params.runId,
         renewed: renewed.locksRenewed > 0,
         locks_renewed: renewed.locksRenewed,
-        expiresAt: renewed.expiresAt,
+        expires_at: renewed.expiresAt,
       };
     }
   }

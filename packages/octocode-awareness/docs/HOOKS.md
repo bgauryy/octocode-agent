@@ -1,7 +1,8 @@
 # Hooks And Host Integration
 
-Hooks automate Awareness lifecycle edges; the CLI works without them. All hosts call
-the same runtime and canonical SQLite database.
+Hooks automate Awareness lifecycle edges after the skill/CLI has chosen work; they do
+not choose tasks, prove success, or replace `attend`/verify. The CLI works without
+them. All hosts call the same runtime and canonical SQLite database.
 
 ## Lifecycle
 

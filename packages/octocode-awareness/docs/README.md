@@ -21,7 +21,7 @@ complete command inventory.
 | [FEATURE_SWEEP.md](FEATURE_SWEEP.md) | Isolated end-to-end proof for planning, learning, wiki, registry, and maintenance surfaces |
 | [REFERENCES.md](REFERENCES.md) | Evidence map, prior art, hypotheses, and design limits |
 
-Agent-facing procedures live under repo-root `skills/octocode-awareness/references/` and
+Agent-facing procedures live under package-local `skills/octocode-awareness/references/` and
 are listed by `octocode-awareness docs list --compact`.
 
 Canonical data lives in the global Awareness SQLite database. Generated

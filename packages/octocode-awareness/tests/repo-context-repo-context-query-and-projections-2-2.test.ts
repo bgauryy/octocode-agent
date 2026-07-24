@@ -216,7 +216,7 @@ it('groups active file work by relative path, caps peers, and shows exclusive lo
         peer_count: 4,
         omitted_peer_count: 1,
         locked: true,
-        lock_agent_id: 'agent-a',
+        lock_agent: 'agent-a',
       });
       expect(row?.agents).toEqual(['agent-a', 'agent-b', 'agent-c']);
       expect(row?.task_ids).toEqual(['task_file_work']);

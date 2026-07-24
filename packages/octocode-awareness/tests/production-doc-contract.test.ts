@@ -4,7 +4,7 @@ import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = resolve(PACKAGE_ROOT, '../..');
-const SKILL_ROOT = resolve(REPO_ROOT, 'skills/octocode-awareness');
+const SKILL_ROOT = resolve(PACKAGE_ROOT, 'skills/octocode-awareness');
 function read(path: string): string {
   return readFileSync(path, 'utf8');
 }
@@ -185,7 +185,8 @@ describe('production guidance contract', () => {
       expect(installDoc).not.toContain('<package>');
       expect(installDoc).toContain('npm install --global @octocodeai/octocode-awareness');
       expect(installDoc).toContain('$(npm root --global)/@octocodeai/octocode-awareness');
-      expect(installDoc).toMatch(/octocode-skills.{0,80}optional|optional.{0,80}octocode-skills/is);
+      expect(installDoc).toContain('bundles only');
+      expect(installDoc).not.toContain('out/skills/octocode-skills');
     }
 
     expect(readme).not.toContain('Installed skill: `node scripts/awareness.mjs`');
@@ -223,9 +224,9 @@ describe('production guidance contract', () => {
     const skill = read(resolve(SKILL_ROOT, 'SKILL.md'));
     const finish = read(resolve(SKILL_ROOT, 'references/agent-cheatsheet-finish.md'));
     expect(Buffer.byteLength(skill, 'utf8')).toBeLessThanOrEqual(6 * 1024);
-    expect(finish).toContain('Always');
-    expect(finish).toContain('Only when');
-    expect(finish).toContain('verify audit');
+    expect(skill).toContain('smallest capable configured low-cost agent');
+    expect(skill).not.toMatch(/Haiku|Composer 2\.5/);
+    expect(finish).toMatch(/Always[\s\S]*verify audit[\s\S]*Only when/);
     expect(finish).not.toMatch(/query all[^\n]*repo inject/is);
   });
 
@@ -240,7 +241,7 @@ describe('production guidance contract', () => {
     expect(generator).not.toContain('attend|work list|query|memory recall|workspace status');
     expect(generator).not.toContain('`repo inject` after important memories');
     expect(repoFlow).not.toMatch(/attend --compact`, then read `.octocode\/AGENTS\.md`/i);
-    expect(skill).toContain('CLEAN? -> PROJECT?');
+    expect(skill).toContain('clean only under pressure');
     expect(taskFlow).toContain('# run the acceptance check');
   });
 
@@ -275,8 +276,8 @@ describe('production guidance contract', () => {
     expect(packageAgents).not.toContain('## Lifecycle');
     expect(packageAgents).not.toContain('## Hooks');
     expect(packageAgents).not.toContain('Standalone WORK');
-    expect(skill).toContain('## Lifecycle');
-    expect(skill).toContain('## Feature map');
+    expect(skill).toContain('Core loop:');
+    expect(skill).toContain('Load one reference when needed:');
     expect(userGuide).toContain('## Operating Loop');
     expect(hooks).toContain('## Lifecycle');
     expect(architecture).toMatch(/AGENTS\.md \/ CLAUDE\.md[\s\S]*Agent Skill[\s\S]*CLI[\s\S]*hooks/i);
@@ -304,7 +305,8 @@ describe('production guidance contract', () => {
     expect(verification).toContain('wirePiAwarenessHooks(pi)');
     expect(verification).toContain('yarn workspace @octocodeai/octocode-awareness lint');
     expect(verification).toContain('yarn workspace @octocodeai/octocode-awareness pack:check');
-    expect(verification).toContain('skill-review.mjs');
+    expect(verification).toContain('focused skill-behavior checks');
+    expect(verification).not.toContain('skill-review.mjs');
     expect(verification).toMatch(/PASS[\s\S]*FAIL[\s\S]*BLOCKED/);
     expect(verification).toContain('## Receipt');
     expect(verification).toMatch(/Yarn's isolated packed artifact/i);
@@ -379,9 +381,7 @@ describe('production guidance contract', () => {
     expect(readme).toContain('docs/THESIS.md');
     expect(docsIndex).toContain('THESIS.md');
     expect(thesis).toMatch(/human\/agent-in-the-loop software controller/i);
-    expect(thesis).toContain('## Why Homeostasis');
-    expect(thesis).toMatch(/dynamic regulation.*viable range/is);
-    expect(thesis).toMatch(/not.*equilibrium/is);
+    expect(thesis).toMatch(/## Why Homeostasis[\s\S]*dynamic regulation.*viable range[\s\S]*not.*equilibrium/is);
     expect(thesis).toMatch(/SENSE[\s\S]*COMPARE[\s\S]*ACT[\s\S]*REMEASURE/);
     expect(thesis).toMatch(/living-system.*metaphor|metaphor.*living-system/is);
     expect(thesis).toMatch(/not sentience|not.*sentien/i);
@@ -390,8 +390,7 @@ describe('production guidance contract', () => {
     expect(thesis.trim().split(/\s+/).length).toBeLessThanOrEqual(1400);
     expect(references).toContain('## Homeostasis And Collective Memory');
     expect(references).toContain('**Homeostasis — adjacent prior art:**');
-    expect(homeostatic).toContain('CHOOSE/DECLARE');
-    expect(homeostatic).toContain('REMEASURE');
+    expect(homeostatic).toMatch(/CHOOSE\/DECLARE[\s\S]*REMEASURE/);
     expect(homeostatic).not.toContain('CONSOLIDATE');
     expect(homeostatic).not.toMatch(/who owns this file|claim on edit/i);
     expect(homeostatic.trim().split('\n').length).toBeLessThanOrEqual(50);

@@ -10,8 +10,9 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '../out/octocode-awareness.js');
-const SKILL_SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../skills/octocode-awareness/scripts/awareness.mjs');
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SCRIPT = resolve(PACKAGE_ROOT, 'out/octocode-awareness.js');
+const SKILL_SCRIPT = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
 const NODE = process.execPath;
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function mktemp(): string {
@@ -79,7 +80,7 @@ it('--help exits 0', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('memory record');
     expect(r.stdout).toContain('octocode-awareness');
-    expect(r.stdout).toContain('octocode-skills');
+    expect(r.stdout).not.toContain('octocode-skills');
     expect(r.stdout).toContain('out/skills');
     expect(r.stdout).toContain('octocode-awareness schema commands --compact');
     expect(Buffer.byteLength(r.stdout, 'utf8')).toBeLessThanOrEqual(1536);
@@ -108,10 +109,12 @@ it('--help --compact returns a short agent guide', () => {
     expect(r.stdout).toMatch(/bundled-skills\(\d+\):/);
     expect(r.stdout).toContain('out/skills');
     expect(r.stdout).toContain('schema commands --compact');
+    expect(r.stdout).toContain('attend -> work start -> work end -> verify mark -> verify audit');
+    expect(r.stdout).toContain('follow attend.next');
     expect(r.stdout).toContain('refinement set|get|list|delete');
     expect(r.stdout).toMatch(/exits 0 ok/);
     expect(r.stdout).not.toContain('<awareness-package>');
-    expect(r.stdout.split('\n').filter(Boolean).length).toBeLessThanOrEqual(8);
+    expect(r.stdout.split('\n').filter(Boolean).length).toBeLessThanOrEqual(9);
   });
 it('no command with --compact prints compact discovery instead of unknown-command JSON', () => {
     const r = spawnSync(NODE, [SCRIPT, '--compact'], { encoding: 'utf8', timeout: 5000 });
@@ -173,7 +176,7 @@ it('removed flat commands are plain unknown commands with no compatibility metad
     } finally { rmSync(dir, { recursive: true }); }
   });
 it('schema list maps to canonical CLI commands', () => {
-    const schemaScript = resolve(dirname(fileURLToPath(import.meta.url)), '../../../skills/octocode-awareness/scripts/schema.mjs');
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
     expect(existsSync(schemaScript), 'generated schema.mjs must exist after build').toBe(true);
     const schema = spawnSync(NODE, [schemaScript, 'list'], { encoding: 'utf8', timeout: 5000 });
     expect(schema.status).toBe(0);
@@ -232,15 +235,18 @@ it('schema list maps to canonical CLI commands', () => {
     }
   });
 it('schema commands is grouped and core-first for agents', () => {
-    const schemaScript = resolve(dirname(fileURLToPath(import.meta.url)), '../../../skills/octocode-awareness/scripts/schema.mjs');
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
     const result = spawnSync(NODE, [schemaScript, 'commands', '--compact'], { encoding: 'utf8', timeout: 5000 });
     expect(result.status).toBe(0);
     expect(result.stdout.trim().split('\n')).toHaveLength(1);
     const parsed = JSON.parse(result.stdout) as {
       ok: boolean;
+      hint: string;
       commands: { core: Record<string, string[]>; advanced: Record<string, string[]> };
     };
     expect(parsed.ok).toBe(true);
+    expect(parsed.hint).toContain('minimum agent loop');
+    expect(parsed.hint).toContain('Follow attend.next');
     expect(parsed.commands.core.plan).toEqual(expect.arrayContaining(['create', 'status']));
     expect(parsed.commands.core.task).toContain('claim');
     expect(parsed.commands.core.wiki).toEqual(['sync']);
@@ -248,7 +254,7 @@ it('schema commands is grouped and core-first for agents', () => {
     expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(2 * 1024);
   });
 it('schema commands --examples restores recipe lines', () => {
-    const schemaScript = resolve(dirname(fileURLToPath(import.meta.url)), '../../../skills/octocode-awareness/scripts/schema.mjs');
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
     const result = spawnSync(NODE, [schemaScript, 'commands', '--all', '--examples', '--compact'], { encoding: 'utf8', timeout: 5000 });
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout) as {
@@ -268,6 +274,8 @@ it('schema commands --examples restores recipe lines', () => {
     expect(taskSubmit?.example).not.toContain('tests pass');
     const workStart = parsed.commands.find((row) => row.command === 'work start');
     expect(workStart?.example).toContain('--workspace');
+    const workTouch = parsed.commands.find((row) => row.command === 'work touch');
+    expect(workTouch?.use).toMatch(/refresh.*already-declared.*start --run-id.*add files/i);
   });
 
 });

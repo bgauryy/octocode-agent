@@ -25,7 +25,7 @@ function activeSkillCatalog(): string[] {
 }
 
 test('coder prompt exposes an explicit delegation and worker lifecycle contract', () => {
-  assert.match(SYSTEM_PROMPT, /Delegation gate \(before spawning\)/);
+  assert.match(SYSTEM_PROMPT, /choose the cheapest correct form/);
   assert.match(SYSTEM_PROMPT, /Worker request packet \(required\)/);
   assert.match(SYSTEM_PROMPT, /workers inherit no parent conversation/i);
   assert.match(SYSTEM_PROMPT, /share the current `cwd`, filesystem/);
@@ -181,13 +181,24 @@ test('persistence and compaction are conditional instead of mandatory ceremony',
     /When a plan, RFC, handoff, or research result must outlive the current context/
   );
   assert.match(SYSTEM_PROMPT, /\.octocode\/tmp\/YYYYMMDD-HHMM-slug/);
-  assert.match(SYSTEM_PROMPT, /read (the )?handoff back/i);
+  assert.match(SYSTEM_PROMPT, /SUMMARY-\{\{title\}\}\.md/);
+  assert.match(SYSTEM_PROMPT, /future you or other agents/);
+  assert.match(SYSTEM_PROMPT, /read (the )?handoff\/summary back/i);
   assert.match(SYSTEM_PROMPT, /Do not create an artifact for an ordinary answer\/review/);
   assert.match(SYSTEM_PROMPT, /Persist a handoff only when work must survive/);
   assert.match(SYSTEM_PROMPT, /same logical task: continue from the summary/);
   assert.match(SYSTEM_PROMPT, /do not restart finished work/);
   assert.match(SYSTEM_PROMPT, /Pi['’]s native compaction/);
   assert.match(SYSTEM_PROMPT, /`ctx\.compact\(\)` \/ `\/compact`/);
+  assert.match(SYSTEM_PROMPT, /Compact handoff structure/);
+  assert.match(SYSTEM_PROMPT, /`state`.*why compacting now.*user sentiment\/preference/s);
+  assert.match(SYSTEM_PROMPT, /`context`.*goal, constraints, decisions made.*decisive evidence anchors/s);
+  assert.match(SYSTEM_PROMPT, /`leftovers`.*blockers, open questions.*live workers\/locks/s);
+  assert.match(SYSTEM_PROMPT, /`plan\/task`.*next 1-3 dependent steps.*verification still owed/s);
+  assert.match(SYSTEM_PROMPT, /`pickup`.*exact file, command, tool call, worker message, or user question/s);
+  assert.match(SYSTEM_PROMPT, /After compaction.*read the summary\/handoff first/);
+  assert.match(SYSTEM_PROMPT, /resume at `pickup`/);
+  assert.match(SYSTEM_PROMPT, /verified reusable gotcha.*Awareness memory/s);
   assert.doesNotMatch(SYSTEM_PROMPT, /write findings to a doc → compact → execute/);
 });
 
@@ -207,9 +218,50 @@ test('skills contract requires local instruction reading before action or delega
 });
 
 test('output contract preserves user-visible progress and restrained visuals', () => {
-  assert.match(SYSTEM_PROMPT, /Lead with findings and outcomes, not process/);
+  assert.match(SYSTEM_PROMPT, /Be concise, clear, and actionable/);
+  assert.match(SYSTEM_PROMPT, /Lead with findings\/outcomes, not process/);
+  assert.match(SYSTEM_PROMPT, /When several viable solutions exist, explain the options, trade-offs, and impact/);
+  assert.match(SYSTEM_PROMPT, /recommend the smallest sound path/);
+  assert.match(SYSTEM_PROMPT, /Never invent time estimates, dates, counts, model names, status, ownership, or other metadata/);
   assert.match(SYSTEM_PROMPT, /Before tool-heavy work, send a brief commentary update/);
   assert.match(SYSTEM_PROMPT, /about 60 seconds pass without user-visible progress/);
   assert.match(SYSTEM_PROMPT, /Use the minimum formatting that makes the answer clear/);
-  assert.match(SYSTEM_PROMPT, /tables\/diagrams only when relationships, mappings, or multi-step state changes/);
+  assert.match(SYSTEM_PROMPT, /tables\/diagrams only when relationships, mappings, complex flows, or design explanations/);
+});
+
+test('deep-check workflow uses Octocode tools, awareness, learning, and flexible delegation', () => {
+  assert.match(SYSTEM_PROMPT, /do a deep check: orient, trace blast radius, inspect real callers\/contracts/);
+  assert.match(SYSTEM_PROMPT, /Octocode local tools \(search, AST, LSP\)/);
+  assert.match(SYSTEM_PROMPT, /visible workspace state from attend\/FilesUnderWork\/signals/);
+  assert.match(SYSTEM_PROMPT, /exclusive locks only for non-mergeable files or\s+risky shared state/);
+  assert.match(SYSTEM_PROMPT, /Record reusable verified learnings\/gotchas with references/);
+  assert.match(SYSTEM_PROMPT, /\.octocode\/<kind>\/\.\.\./);
+  assert.match(SYSTEM_PROMPT, /classifying task shape: goal, unknowns, dependencies, shared state, expected proof/);
+  assert.match(SYSTEM_PROMPT, /choose the cheapest correct form/);
+  assert.match(SYSTEM_PROMPT, /Communicate in small phases/);
+  assert.match(SYSTEM_PROMPT, /combine `ghSearchCode` \/ `ghGetFileContent` \/ `ghViewRepoStructure` \/ `ghHistoryResearch` with `npmSearch` and `web`/);
+  assert.match(SYSTEM_PROMPT, /Use web search when current docs, releases, issues, errors, or ecosystem knowledge can change the decision/);
+  assert.match(SYSTEM_PROMPT, /independent lanes exist \(local code, GitHub\/npm, web\/current docs, tests\/logs, adversarial review\)/);
+  assert.match(SYSTEM_PROMPT, /`web` only, GitHub\/npm only, read-only local research/);
+  assert.doesNotMatch(SYSTEM_PROMPT, /rigid all-or-nothing research/i);
+});
+
+test('prompt requires logical assumption resolution and planning artifacts', () => {
+  assert.match(SYSTEM_PROMPT, /If logic depends on an unknown, resolve it with code search, external\/GitHub\/npm research, web research, relevant skills\/evals, or one focused user question/);
+  assert.match(SYSTEM_PROMPT, /Follow the RDD manifest \(`\/Users\/bgaryy\/code\/octocode\/MANIFEST\.md`\)/);
+  assert.match(SYSTEM_PROMPT, /move from guessing to knowing with minimal sufficient evidence/);
+  assert.match(SYSTEM_PROMPT, /For planning work, create a concise temp plan under `<workspace>\/\.octocode\/plans\/YYYYMMDD-HHMM-slug\/PLAN\.md`/);
+  assert.match(SYSTEM_PROMPT, /for consequential designs, offer\/use `octocode-rfc-generator` instead of an ad-hoc plan/);
+});
+
+test('coder prompt enforces blast radius, quality, and evidence-first fixes', () => {
+  assert.match(SYSTEM_PROMPT, /blast radius\/impact/);
+  assert.match(SYSTEM_PROMPT, /define change, blast radius, and impact before touching anything/);
+  assert.match(SYSTEM_PROMPT, /correctness and maintainability beat “get it done at any cost\.”/);
+  assert.match(SYSTEM_PROMPT, /Do not hide uncertainty with rigid rules, workarounds, or surface patches/);
+  assert.match(SYSTEM_PROMPT, /fix the cause or state the blocker/);
+  assert.match(SYSTEM_PROMPT, /Use checks, evals, and relevant skills to verify claims and solutions/);
+  assert.match(SYSTEM_PROMPT, /when multiple fixes are viable, explain choices and impact to the user/);
+  assert.match(SYSTEM_PROMPT, /Work like a researcher-architect: facts and logic first, hunches never/);
+  assert.match(SYSTEM_PROMPT, /Solutions also need impact\/blast-radius notes and an executed check\/eval/);
 });

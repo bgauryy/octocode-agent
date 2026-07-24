@@ -2,6 +2,7 @@ import { isAbsolute, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { canonicalizePath, fillScope, normalizeWorkspacePath } from './git.js';
 import { normalizeArtifact, utcNow } from './helpers.js';
+import type { SimpleFileLock } from './types.js';
 
 export const SESSION_CAPTURE_FILE_LIMIT = 20;
 export const SESSION_CAPTURE_VISIBLE_FILE_LIMIT = 10;
@@ -17,7 +18,7 @@ export interface PruneStaleResult {
   pruned_locks: number;
   dry_run?: true;
   would_prune?: number;
-  lock_ids?: string[];
+  locks?: SimpleFileLock[];
 }
 
 export interface NotifyGetResult {
@@ -116,11 +117,12 @@ export function pruneStale(db: DatabaseSync, params: Record<string, unknown> = {
   const where = conditions.join(' AND ');
   const from = 'locks l JOIN task_runs t ON t.run_id = l.run_id';
 
-  let staleLocks: Array<{ lock_id: string; run_id: string }> = [];
+  let staleLocks: Array<{ lock_id: string; run_id: string; file_path: string; agent_id: string; reason: string; expires_at: string | null }> = [];
   try {
     staleLocks = db.prepare(
-      `SELECT l.lock_id, l.run_id FROM ${from} WHERE ${where}`
-    ).all(...binds) as Array<{ lock_id: string; run_id: string }>;
+      `SELECT l.lock_id, l.run_id, l.file_path, t.agent_id, t.rationale AS reason, l.expires_at
+         FROM ${from} WHERE ${where}`
+    ).all(...binds) as Array<{ lock_id: string; run_id: string; file_path: string; agent_id: string; reason: string; expires_at: string | null }>;
   } catch { /* non-critical stale-lock scan */ }
 
   if (dryRun) {
@@ -128,7 +130,14 @@ export function pruneStale(db: DatabaseSync, params: Record<string, unknown> = {
       pruned_locks: 0,
       dry_run: true,
       would_prune: staleLocks.length,
-      lock_ids: staleLocks.map(lock => lock.lock_id).slice(0, 20),
+      locks: staleLocks.slice(0, 20).map(lock => ({
+        path: lock.file_path,
+        agent: lock.agent_id,
+        state: 'expired',
+        reason: lock.reason,
+        run_id: lock.run_id,
+        expires_at: lock.expires_at,
+      })),
     };
   }
   if (staleLocks.length === 0) {
@@ -139,8 +148,9 @@ export function pruneStale(db: DatabaseSync, params: Record<string, unknown> = {
   if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
   try {
     staleLocks = db.prepare(
-      `SELECT l.lock_id, l.run_id FROM ${from} WHERE ${where}`
-    ).all(...binds) as Array<{ lock_id: string; run_id: string }>;
+      `SELECT l.lock_id, l.run_id, l.file_path, t.agent_id, t.rationale AS reason, l.expires_at
+         FROM ${from} WHERE ${where}`
+    ).all(...binds) as Array<{ lock_id: string; run_id: string; file_path: string; agent_id: string; reason: string; expires_at: string | null }>;
     if (staleLocks.length === 0) {
       if (ownsTransaction) db.exec('COMMIT');
       return { pruned_locks: 0 };

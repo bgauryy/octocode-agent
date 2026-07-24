@@ -207,14 +207,7 @@ export function cmdStatus(db: DatabaseSync, dbPath: string, args: ParsedArgs, op
     lock_count: status.lock_count,
     lock_shown_count: locks.length,
     lock_omitted_count: Math.max(0, status.lock_count - locks.length),
-    locks: opts.compact
-      ? locks.map(lock => ({
-          file_path: lock.file_path,
-          agent_id: lock.agent_id,
-          run_id: lock.run_id,
-          expires_at: lock.expires_at,
-        }))
-      : locks,
+    locks,
     workspace_path: wsPath,
     artifact,
   }, 0, opts);

@@ -7,9 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { connectDb } from '../src/db.js';
 import { insertMemory } from '../src/memory.js';
-const DIST_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../out');
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const DIST_DIR = resolve(PACKAGE_ROOT, 'out');
 const HOOK_RUNNER = resolve(DIST_DIR, 'hook-runner.js');
-const SKILL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../skills/octocode-awareness');
+const SKILL_ROOT = resolve(PACKAGE_ROOT, 'skills/octocode-awareness');
 const HOOKS_DIR = resolve(SKILL_ROOT, 'scripts/hooks');
 const NODE = process.execPath;
 function runScript(script: string, args: string[], payload: unknown, env: Record<string, string | undefined> = {}, cwd?: string) {

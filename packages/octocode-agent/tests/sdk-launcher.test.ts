@@ -148,6 +148,11 @@ describe('parseSdkArgs', () => {
 function buildMockSdk({
   runtimeShouldThrow = false,
   sessionThrows = false,
+  onCreateServices,
+}: {
+  runtimeShouldThrow?: boolean;
+  sessionThrows?: boolean;
+  onCreateServices?: (opts: unknown) => void;
 } = {}): SdkDeps['importPiSdk'] {
   return async () => {
     const makeInteractiveMode = () =>
@@ -162,12 +167,19 @@ function buildMockSdk({
     const makeRpcMode = () => async () => {};
 
     return {
-      createAgentSessionRuntime: async (factory: unknown) => {
+      createAgentSessionRuntime: async (factory: unknown, opts: Record<string, unknown>) => {
         if (runtimeShouldThrow) throw new Error('runtime failed');
-        return factory;
+        return (factory as (args: Record<string, unknown>) => Promise<unknown>)({
+          cwd: '/fake/cwd',
+          sessionManager: opts['sessionManager'],
+          sessionStartEvent: {},
+        });
       },
       createAgentSessionFromServices: async () => ({}),
-      createAgentSessionServices: async () => ({ diagnostics: null }),
+      createAgentSessionServices: async (opts: unknown) => {
+        onCreateServices?.(opts);
+        return { diagnostics: null };
+      },
       getAgentDir: () => '/fake/agent',
       InteractiveMode: makeInteractiveMode(),
       runPrintMode: makePrintMode(),
@@ -228,6 +240,47 @@ describe('launchWithSdk', () => {
       env: {},
     } satisfies SdkDeps);
     expect(result).toBe(0);
+  });
+
+  it('passes the Octocode extension factory into Pi service resource loading', async () => {
+    const serviceOptions: unknown[] = [];
+    const extensionFactory = { kind: 'octocode-extension' };
+    const result = await launchWithSdk([], {
+      importPiSdk: buildMockSdk({ onCreateServices: (opts) => serviceOptions.push(opts) }),
+      importExtensionFactory: async () => (opts?: Record<string, unknown>) => {
+        expect(opts).toEqual({ promptMode: 'octocode-first' });
+        return extensionFactory;
+      },
+      env: {},
+    } satisfies SdkDeps);
+
+    expect(result).toBe(0);
+    expect(serviceOptions).toHaveLength(1);
+    expect(serviceOptions[0]).toMatchObject({
+      cwd: '/fake/cwd',
+      agentDir: '/fake/agent',
+      resourceLoaderOptions: {
+        extensionFactories: [extensionFactory],
+      },
+    });
+  });
+
+  it('passes noExtensions: true so a discovered @octocodeai/pi-extension package does not double-load the inline factory', async () => {
+    const serviceOptions: unknown[] = [];
+    const result = await launchWithSdk([], {
+      importPiSdk: buildMockSdk({ onCreateServices: (opts) => serviceOptions.push(opts) }),
+      importExtensionFactory: noopExtensionFactory,
+      env: {},
+    } satisfies SdkDeps);
+
+    expect(result).toBe(0);
+    expect(serviceOptions).toHaveLength(1);
+    expect(
+      (serviceOptions[0] as { resourceLoaderOptions: Record<string, unknown> }).resourceLoaderOptions,
+    ).toMatchObject({
+      noExtensions: true,
+      extensionFactories: expect.any(Array),
+    });
   });
 
   it('returns 0 on successful print mode run', async () => {

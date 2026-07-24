@@ -9,7 +9,7 @@ generated projections. Architecture narrative lives in [HOW_IT_WORKS.md](HOW_IT_
   contain narrative only.
 - `schema commands` and JSON schemas own the public command contract.
 - Canonical code and Zod contracts live in `src/**` and `bin/**`.
-- Canonical skill guidance lives in repo-root `skills/octocode-awareness/**`.
+- Canonical skill guidance lives in package-local `skills/octocode-awareness/**`.
 - Build outputs and `.agents/skills/**` are regenerated, never hand-edited.
 
 ## Execution Invariants
@@ -86,8 +86,6 @@ yarn workspace @octocodeai/octocode-awareness typecheck
 yarn workspace @octocodeai/octocode-awareness test:quiet
 yarn workspace @octocodeai/octocode-awareness build
 yarn workspace @octocodeai/octocode-awareness test:smoke
-node skills/octocode-skills/scripts/skill-review.mjs \
-  skills/octocode-awareness
 ```
 
 Migration tests must cover legacy generation-1 execution tables, generation-2
