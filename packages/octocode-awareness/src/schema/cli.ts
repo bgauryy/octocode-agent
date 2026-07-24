@@ -44,7 +44,7 @@ const commandIndex = [
   { command: "task release", schema: "task", use: "Release or block claimed work without declaring success.", example: "octocode-awareness task release --task-id task_123 --run-id run_123 --agent-id agent --compact" },
   { command: "task depend", schema: "task", use: "Add dependency edges within one plan.", example: "octocode-awareness task depend --task-id task_2 --depends-on task_1 --agent-id lead --compact" },
   { command: "work start", schema: "work", use: "Declare advisory file work; add --exclusive only for sensitive changes.", example: 'octocode-awareness work start --agent-id agent --workspace "$PWD" --file src/a.ts --rationale "edit parser" --test-plan "yarn test" --compact' },
-  { command: "work touch", schema: "work", use: "Heartbeat active file presence without repeating its reasoning.", example: "octocode-awareness work touch --agent-id agent --run-id run_123 --compact" },
+  { command: "work touch", schema: "work", use: "Refresh already-declared active run files; use work start --run-id to add files.", example: "octocode-awareness work touch --agent-id agent --run-id run_123 --compact" },
   { command: "work end", schema: "work", use: "End standalone WORK presence and move its run to verification.", example: "octocode-awareness work end --agent-id agent --run-id run_123 --compact" },
   { command: "work list", schema: "work", use: "List active file presence in the workspace.", example: 'octocode-awareness work list --workspace "$PWD" --compact' },
   { command: "work show", schema: "work", use: "Show all active agents and reasons for one file.", example: 'octocode-awareness work show --workspace "$PWD" --file src/a.ts --compact' },
@@ -275,7 +275,7 @@ export async function runSchemaCli(argv: string[]): Promise<number> {
       ok: true,
       hint: includeAll
         ? "Flat command detail. Use `<command> --help` or `schema command <noun> [action]` for one exact contract."
-        : "Core first; advanced remains available. Pass --all for the flat catalog.",
+        : "Core first; minimum agent loop is attend -> work start -> work end -> verify mark -> verify audit. Follow attend.next; pass --all for the flat catalog.",
       commands,
     }, compact);
     return 0;

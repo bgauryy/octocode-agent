@@ -109,10 +109,12 @@ it('--help --compact returns a short agent guide', () => {
     expect(r.stdout).toMatch(/bundled-skills\(\d+\):/);
     expect(r.stdout).toContain('out/skills');
     expect(r.stdout).toContain('schema commands --compact');
+    expect(r.stdout).toContain('attend -> work start -> work end -> verify mark -> verify audit');
+    expect(r.stdout).toContain('follow attend.next');
     expect(r.stdout).toContain('refinement set|get|list|delete');
     expect(r.stdout).toMatch(/exits 0 ok/);
     expect(r.stdout).not.toContain('<awareness-package>');
-    expect(r.stdout.split('\n').filter(Boolean).length).toBeLessThanOrEqual(8);
+    expect(r.stdout.split('\n').filter(Boolean).length).toBeLessThanOrEqual(9);
   });
 it('no command with --compact prints compact discovery instead of unknown-command JSON', () => {
     const r = spawnSync(NODE, [SCRIPT, '--compact'], { encoding: 'utf8', timeout: 5000 });
@@ -239,9 +241,12 @@ it('schema commands is grouped and core-first for agents', () => {
     expect(result.stdout.trim().split('\n')).toHaveLength(1);
     const parsed = JSON.parse(result.stdout) as {
       ok: boolean;
+      hint: string;
       commands: { core: Record<string, string[]>; advanced: Record<string, string[]> };
     };
     expect(parsed.ok).toBe(true);
+    expect(parsed.hint).toContain('minimum agent loop');
+    expect(parsed.hint).toContain('Follow attend.next');
     expect(parsed.commands.core.plan).toEqual(expect.arrayContaining(['create', 'status']));
     expect(parsed.commands.core.task).toContain('claim');
     expect(parsed.commands.core.wiki).toEqual(['sync']);
@@ -269,6 +274,8 @@ it('schema commands --examples restores recipe lines', () => {
     expect(taskSubmit?.example).not.toContain('tests pass');
     const workStart = parsed.commands.find((row) => row.command === 'work start');
     expect(workStart?.example).toContain('--workspace');
+    const workTouch = parsed.commands.find((row) => row.command === 'work touch');
+    expect(workTouch?.use).toMatch(/refresh.*already-declared.*start --run-id.*add files/i);
   });
 
 });

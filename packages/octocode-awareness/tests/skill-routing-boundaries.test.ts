@@ -36,33 +36,36 @@ describe('skill routing boundaries', () => {
   it('makes awareness the primary workflow skill', () => {
     const text = skill('octocode-awareness');
     const desc = description(text);
-    expect(desc).toMatch(/^Use when planning, editing, reviewing, testing, or handing off work in a shared repo/);
-    expect(desc).toContain('solo across sessions');
+    expect(desc).toMatch(/^Use before starting and before finishing any repo task/);
+    expect(desc).toContain('planning, edits, reviews, tests, handoffs');
+    expect(desc).toContain('multi-agent/file overlap');
     expect(desc).toContain('verification debt');
     expect(desc).toContain('memory/wiki');
-    expect(desc).toContain('hooks setup/debug');
+    expect(desc).toContain('hooks');
+    expect(desc).toContain('even solo');
     expect(desc.length).toBeLessThanOrEqual(1024);
     expect(desc).not.toContain('dogfood');
     expect(desc).not.toContain('packages/octocode-awareness');
+    expect(text).toContain('Use at repo task start and finish');
     expect(text).toMatch(/run live-state actions through the CLI/i);
     expect(text).toContain('npx @octocodeai/octocode-awareness');
     expect(text).toContain('node packages/octocode-awareness/out/octocode-awareness.js');
-    expect(text).toContain('## Lifecycle');
-    expect(text).toContain('BEFORE/READ+REASON');
-    expect(text).toContain('DURING/DO');
-    expect(text).toContain('AFTER/VERIFY');
-    expect(text).toContain('LEARN? -> CLEAN? -> PROJECT?');
-    expect(text).toContain('goal, acceptance, affected scope, and evidence');
+    expect(text).toContain('Core loop:');
+    expect(text).toContain('BEFORE:');
+    expect(text).toContain('DURING:');
+    expect(text).toContain('AFTER:');
+    expect(text).toContain('OPTIONAL:');
+    expect(text).toContain('goal, acceptance, scope, evidence');
     expect(text).toContain('work start');
     expect(text).toMatch(/ordinary overlap is allowed/i);
     expect(text).toContain('scripts/schema.mjs');
     expect(text).toContain('first activation');
     expect(text).toContain('agent-cheatsheet.md');
-    expect(text).toContain('Feature map — all features');
+    expect(text).toContain('Load one reference when needed:');
     expect(text).toContain('clean only under pressure');
     expect(text).toContain('docs list --compact');
     expect(text).toContain('yarn workspace @octocodeai/octocode-awareness build');
-    expect(text).toContain('scripts/smoke-multi-agent.mjs');
+    expect(awarenessSkillFile('references/hooks.md')).toContain('Smoke:');
     expect(existsSync(resolve(PACKAGE_ROOT, 'skills/octocode-awareness/SKILL.md'))).toBe(true);
     expect(existsSync(resolve(PACKAGE_ROOT, 'skills/octocode-skills'))).toBe(false);
   });
@@ -70,10 +73,10 @@ describe('skill routing boundaries', () => {
   it('teaches the complete agent lifecycle without assigning judgment to hooks', () => {
     const text = skill('octocode-awareness');
     const ordered = [
-      'BEFORE/READ+REASON',
-      'DURING/DO',
-      'AFTER/VERIFY',
-      'LEARN? -> CLEAN? -> PROJECT?',
+      'BEFORE:',
+      'DURING:',
+      'AFTER:',
+      'OPTIONAL:',
     ];
     for (let index = 1; index < ordered.length; index += 1) {
       expect(text.indexOf(ordered[index - 1]!)).toBeLessThan(text.indexOf(ordered[index]!));
@@ -86,29 +89,29 @@ describe('skill routing boundaries', () => {
     expect(text).toContain('lock wait/prune');
     expect(text).toContain('verify mark');
     expect(text).toContain('verify audit');
-    expect(text).toContain('memory recall --smart');
+    expect(text).toContain('Recall memory only if it can change the plan');
     expect(text).toContain('reflect record --lesson');
     expect(text).toContain('query');
-    expect(text).toContain('wiki sync');
-    expect(text).toContain('Never hand-edit `.octocode/`');
-    expect(text).toMatch(/hooks never choose plans, locks, success, learning, cleanup, or projection/i);
+    expect(text).toContain('Output/wiki/query/docs');
+    expect(text).toContain('never hand-edit `.octocode/`');
+    expect(text).toMatch(/Hooks automate edges, not judgment[\s\S]*never choose plans, locks, success, learning, cleanup, or projection/i);
     expect(text).toMatch(/expiry.*never.*success/i);
   });
 
   it('shows a lean overview of every Awareness feature family', () => {
     const text = skill('octocode-awareness');
-    expect(text).toContain('## Feature map');
+    expect(text).toContain('Load one reference when needed:');
     for (const feature of [
-      'attend', 'workspace status', 'plan', 'task', 'WORK', 'lock', 'verify',
-      'signal', 'refinement', 'agent registry', 'query', 'memory', 'session capture',
-      'reflect', 'docs', 'wiki sync', 'hooks', 'maintenance', 'schema',
+      'attend', 'plan', 'task', 'WORK', 'lock', 'verify', 'Signals', 'refinements',
+      'query', 'Memory', 'Reflection', 'Output/wiki', 'hooks', 'schema',
     ]) {
-      expect(text, `missing feature overview: ${feature}`).toContain(feature);
+      expect(text, `missing lean feature route: ${feature}`).toContain(feature);
     }
-    expect(text).toMatch(/dependencies.*readiness.*claim.*heartbeat.*submit.*release/i);
-    expect(text).toMatch(/recall.*record.*forget.*archive.*restore/i);
-    expect(text).toMatch(/install.*check.*remove.*run/i);
-    expect(text).toMatch(/commands.*list.*path.*json-schema.*example.*validate/i);
+    expect(text).toMatch(/Plan\/task\/WORK choice/i);
+    expect(text).toMatch(/Memory trust\/write\/archive/i);
+    expect(text).toMatch(/Hooks\/hosts\/Pi\/Codex\/Cursor\/Claude/i);
+    expect(awarenessSkillFile('references/hooks.md')).toMatch(/do not choose tasks or replace\s+`attend`\/verify/i);
+    expect(text).toContain('scripts/schema.mjs');
   });
 
   it('keeps held-out repository intent behavior distinct from near misses', () => {
@@ -139,18 +142,17 @@ describe('skill routing boundaries', () => {
   it('routes each fresh-agent feature question to one direct owner', () => {
     const text = skill('octocode-awareness');
     const journeys = [
-      ['**Recipes:**', 'agent-cheatsheet.md'],
-      ['**Plan/task:**', 'plan-task-workflow.md'],
-      ['**Work/files:**', 'files-awareness.md'],
-      ['**Exclusive work/verify:**', 'lock-protocol.md'],
-      ['**Signals/refinements:**', 'coordination-protocol.md'],
-      ['**Hooks/hosts:**', 'hooks.md'],
-      ['**Knowledge/wiki:**', 'output-routing.md'],
-      ['**Memory:**', 'memory-recall.md'],
-      ['**Maintenance/contracts:**', 'bookkeeping.md'],
-      ['**Orient/state:**', 'architecture.md'],
-      ['**Reflection/review:**', 'improve-loop.md'],
-      ['**Skill evolution:**', 'skill-evolution.md'],
+      ['Start/finish/unknown command:', 'agent-cheatsheet.md'],
+      ['Plan/task/WORK choice:', 'plan-task-workflow.md'],
+      ['Work/files/overlap:', 'files-awareness.md'],
+      ['Exclusive work/verify debt:', 'lock-protocol.md'],
+      ['Signals/refinements/peers:', 'coordination-protocol.md'],
+      ['Hooks/hosts/Pi/Codex/Cursor/Claude:', 'hooks.md'],
+      ['Output/wiki/query/docs:', 'output-routing.md'],
+      ['Memory trust/write/archive:', 'memory-recall.md'],
+      ['Architecture/session/storage:', 'architecture.md'],
+      ['Reflection/skill changes/cleanup:', 'improve-loop.md'],
+      ['Reflection/skill changes/cleanup:', 'skill-evolution.md'],
     ] as const;
     for (const [trigger, owner] of journeys) {
       expect(text).toContain(trigger);

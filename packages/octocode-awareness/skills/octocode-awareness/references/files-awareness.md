@@ -32,7 +32,9 @@ before cleanup. Expiry removes coordination, never proves completion; use
 ## Coverage
 
 Hooks cover recognized write payloads. Arbitrary shell/external writes may only be
-found by dirty-tree reconciliation; without hooks, call `work start|touch` manually.
+found by dirty-tree reconciliation; without hooks, call `work start` manually.
+Use `work touch` only to refresh files already declared on that active run; add new
+paths with `work start --run-id <run> --file <path>`.
 Keep one normalized workspace and absolute operational paths so the same file joins.
 
 Task paths are non-exclusive planning scope. Run files are live work. Locks are

@@ -108,7 +108,8 @@ schema: octocode-awareness schema json-schema task --compact`,
   'work-command': `usage: octocode-awareness work start|touch|end|list|show [options]
 start new WORK: --file <path>... --agent-id <id> [--workspace <repo>] --rationale <text> --test-plan <text> [--exclusive]
 attach task run: --run-id <claimed-task-run> --file <path>... --agent-id <id> [--exclusive]
-touch/end: --run-id <id> --agent-id <id> [--file <path>]...
+touch: --run-id <id> --agent-id <id> [--file <path>]... refreshes already-declared active files; use start --run-id to add files
+end: --run-id <id> --agent-id <id> [--file <path>]...
 list: [--workspace <repo>] [--agent-id <id>] [--run-id <id>] [--all] [--limit <1-200>] [--full]
 show: --workspace <repo> --file <path> [--all] [--limit <1-200>] [--full]
 example: octocode-awareness work start --agent-id agent --workspace "$PWD" --file src/a.ts --rationale "edit parser" --test-plan "yarn test" --compact
