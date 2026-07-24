@@ -1,54 +1,25 @@
 <octocode_cli>
-The Octocode CLI is **bundled** inside the extension and available as `$OCTOCODE_CLI` (set at startup).
-Run it with `node`: `bash: node $OCTOCODE_CLI <command>`
+The Octocode CLI is bundled as `$OCTOCODE_CLI`; run with `node $OCTOCODE_CLI <command>`. The Awareness CLI is bundled as `$OCTOCODE_AWARENESS_CLI`; run with `node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact` and follow the `octocode-awareness` skill.
 
-The Awareness CLI is also **bundled** and available as `$OCTOCODE_AWARENESS_CLI` (set at startup).
-Run it with `node`: `bash: node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact`
-Use it for Awareness live state — attend, work/tasks, locks, verification, memory, signals, wiki, maintenance — following the bundled `octocode-awareness` skill.
+`node $OCTOCODE_CLI` is the bundled equivalent of `npx octocode` — same commands and flags, no separate install. Prefer native Pi tool functions for research; use the CLI for skill management, archive/cache materialization, schema lookup, context/status, and auth commands that the user must run.
 
-`node $OCTOCODE_CLI` is the **bundled equivalent of `npx octocode`** — same commands and flags, no separate installation needed.
-
-**Archive unpacking** — unpack an archive to a local dir, then research it with local tools.
+**Common CLI uses**
 ```
-bash: node $OCTOCODE_CLI unzip path/to/archive.zip
-# returns localPath → then use localViewStructure, localSearchCode, localGetFileContent
-```
-
-**Cache — materialize GitHub content locally** — fetch repos/files into local cache for local-tool research.
-```
-bash: node $OCTOCODE_CLI cache fetch owner/repo [path]        # materialize a repo or subtree
-bash: node $OCTOCODE_CLI cache fetch owner/repo@branch [path] # specific branch
-bash: node $OCTOCODE_CLI cache status                         # see what is cached
-bash: node $OCTOCODE_CLI cache clear --all                    # clear all cached data
+bash: node $OCTOCODE_CLI unzip path/to/archive.zip                 # returns localPath for local tools
+bash: node $OCTOCODE_CLI cache fetch owner/repo[@branch] [path]    # materialize GitHub content
+bash: node $OCTOCODE_CLI cache status | cache clear --all
+bash: node $OCTOCODE_CLI skill --list
+bash: node $OCTOCODE_CLI skill --name octocode-research --platform pi
+bash: node $OCTOCODE_CLI skill --add --path {{path_to_skills_location}} --platform pi
+bash: npx octocode skill --name <skill> --platform pi              # published package fallback
+bash: node $OCTOCODE_CLI tools <name> --scheme                     # exact schema; never guess fields
+bash: node $OCTOCODE_CLI clone owner/repo[/path]
+bash: node $OCTOCODE_CLI context
+bash: node $OCTOCODE_CLI lsp-server list
+bash: node $OCTOCODE_CLI auth login                                # USER ONLY
 ```
 
-**Install / manage skills** — install agent skills into supported local skill directories.
-```
-bash: node $OCTOCODE_CLI skill --list                                      # discover available skills
-bash: node $OCTOCODE_CLI skill --name octocode-research --platform pi      # install to ~/.pi/agent/skills/ (Pi discovery path)
-bash: node $OCTOCODE_CLI skill --add --path {{path_to_skills_location}} --platform pi # install from an agent-known bundled/local skills path
-bash: node $OCTOCODE_CLI skill --add {{GITHUB_PATH_TO_SKILL}} --platform pi # install from a GitHub path
-bash: npx octocode         skill --name octocode-research --platform pi     # same install via the published npm package (no bundled CLI needed — lands in ~/.pi/agent/skills/)
-bash: npx octocode         skill --list                                     # list the installable octocode skills
-```
+**Skills:** `octocode-research` is the evidence-first workflow (locate → prove → patch → verify). Install once with `npx octocode skill --name octocode-research --platform pi`, then load on demand before non-trivial code research. The same pattern installs `octocode-rfc-generator`, `octocode-brainstorming`, `octocode-eval`, `octocode-skills`, `octocode-roast`, and `octocode-subagent`. Typed subagents auto-discover installed skills in `~/.pi/agent/skills/` and `<cwd>/.agents/skills/`.
 
-**Tool schema & direct runs** — read tool schemas before calling; run tools via CLI as a last resort.
-```
-bash: node $OCTOCODE_CLI tools                                # list all 14 tools (13 native Octocode + web support tool)
-bash: node $OCTOCODE_CLI tools <name> --scheme                # read exact schema (never guess fields)
-bash: node $OCTOCODE_CLI tools <name> --queries '<json>' --compact  # lean tool run
-```
-
-**Research workflow** — `octocode-research` is the flagship evidence-first code-research skill (locate → prove → patch → verify). Install once with `bash: npx octocode skill --name octocode-research --platform pi` then load on demand before any non-trivial code-research task; the same pattern installs `octocode-rfc-generator`, `octocode-brainstorming`, `octocode-eval`, `octocode-skills`, `octocode-roast`, `octocode-subagent`. Typed subagents (researcher/planner/architect/browser-agent) auto-discover installed skills in `~/.pi/agent/skills/` and `<cwd>/.agents/skills/`, so install-then-use needs no extra wiring.
-
-**Other key commands**
-```
-bash: node $OCTOCODE_CLI clone owner/repo[/path]  # materialize a repo subtree locally
-bash: node $OCTOCODE_CLI context                  # show agent protocol + tool playbook
-bash: node $OCTOCODE_CLI lsp-server list          # list/install LSP language servers
-bash: node $OCTOCODE_CLI auth login               # authenticate with GitHub — USER ONLY
-```
-
-**When to use** — prefer native Pi tools for all code reads/searches; use `node $OCTOCODE_CLI` for archive unpacking, cache materialization, skill management, and schema lookups.
-**Find paths** — run `/octocode-status` to see the exact `bundled CLI:` and `awareness CLI:` paths if either env var is unset.
+**Find paths:** run `/octocode-status` to see exact `bundled CLI:` and `awareness CLI:` paths if env vars are unset.
 </octocode_cli>

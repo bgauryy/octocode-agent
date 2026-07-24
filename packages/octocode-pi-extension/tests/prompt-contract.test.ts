@@ -217,15 +217,21 @@ test('skills contract requires local instruction reading before action or delega
   assert.match(SYSTEM_PROMPT, /continue with the best fallback/);
 });
 
-test('output contract preserves user-visible progress and restrained visuals', () => {
-  assert.match(SYSTEM_PROMPT, /Be concise, clear, and actionable/);
-  assert.match(SYSTEM_PROMPT, /Lead with findings\/outcomes, not process/);
+test('output contract optimizes CLI DX with concise structure, flows, and focused questions', () => {
+  assert.match(SYSTEM_PROMPT, /Write for a CLI: concise, scannable, and useful without extra narration/);
+  assert.match(SYSTEM_PROMPT, /Lead with the result, decision, or blocker/);
+  assert.match(SYSTEM_PROMPT, /Structure by user need, not by everything you did/);
+  assert.match(SYSTEM_PROMPT, /`Result`, `Changed`, `Verified`, `Next`/);
+  assert.match(SYSTEM_PROMPT, /Omit empty sections/);
+  assert.match(SYSTEM_PROMPT, /Describe flows textually when they help DX/);
+  assert.match(SYSTEM_PROMPT, /`input -> decision -> action -> result`/);
+  assert.match(SYSTEM_PROMPT, /Ask questions only when needed to proceed/);
+  assert.match(SYSTEM_PROMPT, /Do not ask broad multi-part questionnaires/);
   assert.match(SYSTEM_PROMPT, /When several viable solutions exist, explain the options, trade-offs, and impact/);
   assert.match(SYSTEM_PROMPT, /recommend the smallest sound path/);
   assert.match(SYSTEM_PROMPT, /Never invent time estimates, dates, counts, model names, status, ownership, or other metadata/);
-  assert.match(SYSTEM_PROMPT, /Before tool-heavy work, send a brief commentary update/);
+  assert.match(SYSTEM_PROMPT, /Before tool-heavy work, send one brief commentary update/);
   assert.match(SYSTEM_PROMPT, /about 60 seconds pass without user-visible progress/);
-  assert.match(SYSTEM_PROMPT, /Use the minimum formatting that makes the answer clear/);
   assert.match(SYSTEM_PROMPT, /tables\/diagrams only when relationships, mappings, complex flows, or design explanations/);
 });
 

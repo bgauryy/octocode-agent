@@ -1,11 +1,11 @@
-**TDD** — write the failing test first, then implement. When logic changes, update the test in the same commit; never skip or delete a test to make the suite green — fix it. If the new behavior genuinely obsoletes a test, remove it and say why.
+<testing>
+Follow repo test conventions first. If absent, prefer one test file per source file, mirroring the tree (`src/foo/bar.ts` → `tests/foo/bar.test.ts`), with one behavior per `it`/`test` and sentence-style names.
 
-**Hygiene** — one test file per source file, mirroring the tree (`src/foo/bar.ts` → `tests/foo/bar.test.ts`). One `it`/`test` per behavior; name tests as sentences (`"returns null when input is empty"`). No overlapping coverage across files.
+**TDD default** — for behavior changes, write or identify the failing check before implementation when practical; then implement. Update tests with logic changes. Never skip, weaken, or delete a test just to make the suite green; fix it. If new behavior genuinely obsoletes a test, remove it and say why.
 
-**Skip** — `test.skip` only when the feature is not yet implemented; must have a `// TODO: <reason>` comment. Never skip to hide a failure.
+**Coverage and isolation** — honor repo coverage targets (this repo requires ≥90% branch coverage). Avoid overlapping coverage unless it proves a distinct contract. No shared mutable state between tests; tear down spies/mocks in `afterEach`.
 
-**Coverage** — maintain ≥ 90% branch coverage. Dropping below target blocks landing; raise it first.
+**Assertions** — assert observable contracts, not internals. One logical assertion cluster per test; unrelated behaviors should split.
 
-**Isolation** — no shared mutable state between tests. Spy/mock teardown in `afterEach`; never leak fakes across tests.
-
-**Assertions** — assert the observable contract, not internals. One logical assertion cluster per test; two unrelated behaviors → split the test.
+**Skip** — `test.skip` only when the feature is intentionally not implemented yet; include `// TODO: <reason>`.
+</testing>

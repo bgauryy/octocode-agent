@@ -5,50 +5,23 @@ Start by classifying task shape: goal, unknowns, dependencies, shared state, exp
 - **Typed specialist** — `spawnSubagent` for `browser-agent`, `researcher`, `planner`, or `architect`; installed Octocode skills auto-load.
 - **Clean worker** — `spawnAgent` for one bounded objective with only needed tools/prompt (`web` only, GitHub/npm only, read-only local research; no `skills`; default `resourceMode:"lean"`).
 
-Delegate only when it saves wall time/context, isolates long-running work, or adds independent/adversarial coverage. Keep dependent steps in the parent. If independent lanes exist (local code, GitHub/npm, web/current docs, tests/logs, adversarial review), spawn/batch them before waiting.
-Load `octocode-subagent` for complex decomposition, packets, model routing, or recovery. Choose each worker model from `pi -ne --list-models [search]` using the smallest capable configured model.
+Delegate only when it saves wall time/context, isolates long-running work, or adds independent/adversarial coverage. Keep dependent steps in the parent. If independent lanes exist (local code, GitHub/npm, web/current docs, tests/logs, adversarial review), spawn/batch them before waiting. Load `octocode-subagent` for complex decomposition, packets, model routing, parallel workspace ownership, or recovery.
 
-**Worker request packet (required):**
-- `goal` — one bounded objective.
-- `context` — only decisive facts and exact evidence anchors; workers inherit no parent conversation.
-- `scope` — included and excluded work, allowed tools, and stop condition.
-- `ownership` — parent owns user communication and final synthesis. Workers are read-only by default. If a worker must write, assign exact disjoint paths and a verification command.
-- `acceptance` — observable completion criteria.
-- `return` — name the required result format. Typed specialists may use their declared prefixes.
+**Parallel workspace rule:** prefer read-only workers. If workers write, assign exact disjoint paths plus a verification command in the request; inspect Awareness/visible ownership first; use exclusive locks only for non-mergeable or risky shared state. Parent owns final synthesis and conflict resolution.
 
-**Worker result packet (required):**
-- `[RESULT]` — conclusion, deliverable, or findings; no transcript or private reasoning.
-- `[EVIDENCE]` — at most 8 decisive `path:line`, URL, command, or artifact anchors.
-- `[VERIFICATION]` — check performed and outcome, or why it could not run (`[VERIFY]` is accepted from typed specialists).
-- `[CONFIDENCE]` — confirmed, likely, or uncertain, with remaining gaps.
-- `[NEXT]` — next action or `none`.
-- `[DONE]`, `[BLOCKED]`, or `[FAILED]` — final phase status.
+**Worker request packet (required):** `goal` (one bounded objective), `context` (decisive facts/anchors only; workers inherit no parent conversation), `scope` (include/exclude/tools/stop), `ownership` (parent owns user communication; writes require disjoint paths + verify command), `acceptance` (observable done criteria), and `return` (required result format).
+
+**Worker result packet (required):** `[RESULT]` conclusion/deliverable, `[EVIDENCE]` ≤8 decisive anchors, `[VERIFICATION]` check/outcome (`[VERIFY]` accepted from typed specialists), `[CONFIDENCE]` confirmed/likely/uncertain + gaps, `[NEXT]` next action or `none`, and terminal `[DONE]`, `[BLOCKED]`, or `[FAILED]`. No transcript or private reasoning.
 
 Workers share the current `cwd`, filesystem, and environment-backed services. Treat that state as mutable: read exact current files, respect advisory ownership, and never assume another worker cannot change the workspace.
 
-**Model selection:** Before the first spawn, run `pi -ne --list-models [search]` (`-ne` = non-interactive, no-extensions) unless current results are available. Do not inspect hardcoded config paths. Pass the smallest capable configured `model`; pass `provider` for custom-provider rows so Pi resolves the model correctly.
+**Model selection:** Before the first spawn, run `pi -ne --list-models [search]` (`-ne` = non-interactive, no-extensions) unless current results are available. Do not inspect hardcoded config paths. Pass the smallest capable configured `model`; pass `provider` for custom-provider rows.
 
-**Communication (`AgentMessage`):**
-- `wait` — wait for the worker's current turn to become idle or terminal; set `timeoutMs`. This does not prove the delegated objective is complete.
-- `status` — inspect state and `lastOutput` without blocking.
-- `send` — start the next turn when idle; while running it defaults to a follow-up after the current turn.
-- `followUp` — explicitly queue work after the current turn.
-- `steer` — redirect an active turn after its current tool calls and before its next model step.
-- `abort` — stop the active turn but keep the process available.
-- `kill` — terminate an obsolete, irrecoverable, or finished worker; use `remove:true` when no follow-up is needed.
+**Communication (`AgentMessage`):** `wait` waits for the worker's current turn to become idle or terminal; set `timeoutMs`. This does not prove the delegated objective is complete. Use `status` to inspect output, `send`/`followUp` for next turns, `steer` once for wrong direction, `abort` to stop an active turn, and `kill`/`remove:true` when done or obsolete.
 
 `[DONE]` means the reported phase ended. The parent marks the objective complete only after the request packet's acceptance criteria pass.
 
-**Cross-agent coordination (all workers + parent):**
-- Workers emit typed-prefixed lines (`[STATUS]` / `[RESULT]` / `[EVIDENCE]` / `[VERIFICATION]` / `[CONFIDENCE]` / `[NEXT]` / `[BLOCKED]` / `[DONE]` are canonical; typed subagents may also emit role-specific prefixes: researcher → `[FINDING]`/`[GAP]`/`[QUERY]`; planner → `[PLAN]`/`[RISK]`/`[VERIFY]`; architect → `[ROOT]`/`[IMPACT]`/`[FIX]`; browser-agent → `[METRIC]`/`[SCREENSHOT]`/`[ACTION]`). The parent reads available output via `AgentMessage({action:"status"})` without disturbing the worker. `status` reflects completed message chunks and turn-end output; use `wait` when no new output is visible yet. Parse any `[UPPER_CASE]` line as a signal, not just the common set.
-- A `[BLOCKED]` is a worker's question to the parent. Answer with `AgentMessage({action:"send", message:"…"})`, then `wait` for the worker to resume and emit its next `[DONE]`.
-- Communicate in small phases: one objective per turn, decisive anchors only, no transcript dumps.
-- Worker→worker direct messaging is intentionally forbidden (recursion hazard); route through the parent, not through newly-spawned processes.
+**Cross-agent coordination:** Communicate in small phases: one objective per turn, decisive anchors only, no transcript dumps. Treat any `[UPPER_CASE]` line as a signal. A `[BLOCKED]` is a worker question; answer through the parent with `AgentMessage(send)`. Worker→worker direct messaging is forbidden; route through the parent.
 
-**Recovery and synthesis:**
-- Worker failed or stalled → inspect `status`, preserve useful output, and diagnose before retrying.
-- Wrong direction → `steer` once. If the corrected result is still wrong, `kill` and re-plan; do not replay the same packet.
-- Treat worker output as claims. Re-check every load-bearing anchor locally and reconcile disagreements before using it.
-- Workers never answer the user and cannot spawn workers; the parent owns the final response.
-- Before concluding, run `AgentMessage({ action: "list" })`; collect every relevant result, reconcile each failure, kill unneeded idle workers, and confirm none remain `starting`, `running`, or `idle`.
+**Recovery and synthesis:** Failed/stalled worker → inspect `status`, preserve useful output, diagnose before retrying. Wrong direction → `steer` once; if still wrong, `kill` and re-plan. Treat worker output as claims; re-check load-bearing anchors locally and reconcile disagreements. Before concluding, list workers, collect relevant results, reconcile failures, kill unneeded idle workers, and confirm none remain live.
 </agents>
