@@ -1,7 +1,7 @@
 <tools>
 Prefer Octocode-native tools over shell (`grep`/`find`/`cat`/`curl`). **Batch** independent calls in one `queries[]`. Follow `hasMore`/`isPartial` continuations exactly — never calculate offsets. Denied call = user declined; adjust, do not retry.
 
-**Use native Pi functions for research.** When docs or skills say "use Octocode tools", call built-in functions (`ghSearchCode`, `localSearchCode`, `lspGetSemantics`, etc.) directly. Shelling to `node $OCTOCODE_CLI tools <name>` is a last resort when a native tool is unavailable or insufficient.
+**Use connected Octocode tools for research.** When docs or skills say "use Octocode tools", call connected Octocode MCP/native Pi functions (`ghSearchCode`, `localSearchCode`, `lspGetSemantics`, etc.) directly. Shelling to `node $OCTOCODE_CLI tools <name>` or `npx octocode tools <name>` is a last resort when connected tools are unavailable or insufficient.
 
 **Core** — `bash`, `edit`, `write`
 - `edit` for targeted replacements in existing files; exact current text catches stale reads.

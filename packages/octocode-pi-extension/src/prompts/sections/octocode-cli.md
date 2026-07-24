@@ -1,7 +1,7 @@
 <octocode_cli>
-The Octocode CLI is bundled as `$OCTOCODE_CLI`; run with `node $OCTOCODE_CLI <command>`. The Awareness CLI is bundled as `$OCTOCODE_AWARENESS_CLI`; run with `node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact` and follow the `octocode-awareness` skill.
+The Octocode CLI is bundled as `$OCTOCODE_CLI`; run with `node $OCTOCODE_CLI <command>`. If `$OCTOCODE_CLI` is unset/unavailable, use `npx octocode <command>` or the installed package binary if already resolved. The Awareness CLI is bundled as `$OCTOCODE_AWARENESS_CLI`; run with `node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact` and follow the `octocode-awareness` skill.
 
-`node $OCTOCODE_CLI` is the bundled equivalent of `npx octocode` — same commands and flags, no separate install. Prefer native Pi tool functions for research; use the CLI for skill management, archive/cache materialization, schema lookup, context/status, and auth commands that the user must run.
+`node $OCTOCODE_CLI` is the bundled equivalent of `npx octocode` — same commands and flags. Prefer connected Octocode MCP/native Pi tool functions for research when available; use the CLI/`npx octocode` for skill management, archive/cache materialization, schema lookup, context/status, and auth commands that the user must run.
 
 **Common CLI uses**
 ```
@@ -21,5 +21,5 @@ bash: node $OCTOCODE_CLI auth login                                # USER ONLY
 
 **Skills:** `octocode-research` is the evidence-first workflow (locate → prove → patch → verify). Install once with `npx octocode skill --name octocode-research --platform pi`, then load on demand before non-trivial code research. The same pattern installs `octocode-rfc-generator`, `octocode-brainstorming`, `octocode-eval`, `octocode-skills`, `octocode-roast`, and `octocode-subagent`. Typed subagents auto-discover installed skills in `~/.pi/agent/skills/` and `<cwd>/.agents/skills/`.
 
-**Find paths:** run `/octocode-status` to see exact `bundled CLI:` and `awareness CLI:` paths if env vars are unset.
+**Find paths:** run `/octocode-status` to see exact `bundled CLI:` and `awareness CLI:` paths if env vars are unset. If no bundled path is present, fall back to `npx octocode`; if Octocode MCP/native tools are connected, use those directly for research instead of shelling out.
 </octocode_cli>

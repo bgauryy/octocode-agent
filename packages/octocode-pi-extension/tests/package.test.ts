@@ -165,6 +165,8 @@ interface CaptureResult {
   pi: {
     getActiveTools(): string[];
     setActiveTools(names: string[]): void;
+    execCalls: Array<{ command: string; args: string[] }>;
+    execResults: Map<string, { stdout: string; stderr?: string; code: number | null }>;
   };
   activeTools: string[];
 }
@@ -181,6 +183,8 @@ async function captureExtensions(): Promise<CaptureResult> {
     opts?: Record<string, unknown>;
   }> = [];
   const activeTools = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
+  const execCalls: Array<{ command: string; args: string[] }> = [];
+  const execResults = new Map<string, { stdout: string; stderr?: string; code: number | null }>();
   const handlers = new Map<
     string,
     Array<(event: unknown, ctx: unknown) => void | Promise<void>>
@@ -206,6 +210,12 @@ async function captureExtensions(): Promise<CaptureResult> {
     getActiveTools: () => [...activeTools],
     setActiveTools: (names: string[]) => {
       activeTools.splice(0, activeTools.length, ...names);
+    },
+    execCalls,
+    execResults,
+    exec: async (command: string, args: string[]) => {
+      execCalls.push({ command, args });
+      return execResults.get(args.join(' ')) ?? { stdout: '', stderr: '', code: 1 };
     },
     on: (
       event: string,
@@ -2108,6 +2118,78 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
   }
 });
 
+test('input hook injects lightweight repo state but skips low-latency steering', async () => {
+  const { handlers, pi } = await captureExtensions();
+  const inputHandlers = handlers.get('input') ?? [];
+  assert.ok(inputHandlers.length > 0, 'input hooks registered');
+  pi.execResults.set('status --short --branch', {
+    stdout: '## main...origin/main\n M src/a.ts\nA  src/b.ts',
+    code: 0,
+  });
+  pi.execResults.set('log -1 --oneline --decorate', {
+    stdout: 'abc123 (HEAD -> main) last change',
+    code: 0,
+  });
+  pi.execResults.set('diff --staged --stat', {
+    stdout: ' src/b.ts | 2 ++',
+    code: 0,
+  });
+  pi.execResults.set('diff --stat', {
+    stdout: ' src/a.ts | 1 +',
+    code: 0,
+  });
+
+  let transformed: unknown;
+  for (const handler of inputHandlers) {
+    transformed = await handler({
+      text: 'check current repo changes before editing',
+      images: [],
+      source: 'interactive',
+    }, {});
+    if ((transformed as { action?: string } | undefined)?.action === 'transform') break;
+  }
+  assert.equal((transformed as { action?: string }).action, 'transform');
+  const text = (transformed as { text?: string }).text ?? '';
+  assert.match(text, /<repo_state>/);
+  assert.match(text, /M src\/a\.ts/);
+  assert.match(text, /last commit: abc123/);
+  assert.match(text, /staged diffstat/);
+  assert.match(text, /unstaged diffstat/);
+
+  pi.execCalls.splice(0, pi.execCalls.length);
+  const steeringResults: unknown[] = [];
+  for (const handler of inputHandlers) {
+    steeringResults.push(await handler({
+      text: 'change direction: inspect diff later',
+      images: [],
+      source: 'interactive',
+      streamingBehavior: 'steer',
+    }, {}));
+  }
+  assert.ok(
+    steeringResults.some((result) => (result as { action?: string } | undefined)?.action === 'continue'),
+    'repo-state hook explicitly continues steering prompts'
+  );
+  assert.equal(
+    pi.execCalls.length,
+    0,
+    'steering skips git probes so user corrections reach the next model step quickly'
+  );
+
+  const extensionResults: unknown[] = [];
+  for (const handler of inputHandlers) {
+    extensionResults.push(await handler({
+      text: 'check repo status',
+      images: [],
+      source: 'extension',
+    }, {}));
+  }
+  assert.ok(
+    extensionResults.some((result) => (result as { action?: string } | undefined)?.action === 'continue'),
+    'extension-injected continuation messages are not transformed with repo state'
+  );
+});
+
 test('extension lifecycle notifications fall back to console outside UI contexts', async () => {
   const { commands } = await captureExtensions();
   const infos: string[] = [];
@@ -2209,9 +2291,17 @@ test('manage_context type:compact queues a continuation after compaction complet
     result.content[0]!.text,
     /will continue after the summary is saved/
   );
-  assert.equal(
-    compactOptions.customInstructions,
-    'focus on recent file changes'
+  assert.match(
+    compactOptions.customInstructions ?? '',
+    /focus on recent file changes/
+  );
+  assert.match(
+    compactOptions.customInstructions ?? '',
+    /Preserve continuation state, not transcript/
+  );
+  assert.match(
+    compactOptions.customInstructions ?? '',
+    /live workers\/locks, blockers\/open questions, verification owed, and exact next pickup/
   );
   assert.equal(
     sentUserMessages.length,
@@ -2370,6 +2460,7 @@ test('turn_end auto-compact queues a continuation after compaction completes (no
   const handler = turnEndHandlers![0]!;
 
   let compactOptions: {
+    customInstructions?: string;
     onComplete?: (opts?: unknown) => void;
     onError?: (err: Error) => void;
   } = {};
@@ -2412,6 +2503,14 @@ test('turn_end auto-compact queues a continuation after compaction completes (no
     message: 'Auto-compacting: context at 81% of context window.',
     level: 'info',
   });
+  assert.match(
+    compactOptions.customInstructions ?? '',
+    /Preserve continuation state, not transcript/
+  );
+  assert.match(
+    compactOptions.customInstructions ?? '',
+    /exact next pickup/
+  );
   assert.equal(
     sentUserMessages.length,
     0,
@@ -3186,6 +3285,122 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
       'running send defaults to followUp'
     );
   } finally {
+    setAgentProcessFactoryForTests(null);
+  }
+});
+
+test('agent ledger UI refreshes live worker transitions and renders every display state', async () => {
+  const spawned: MockAgentProcess[] = [];
+  setAgentProcessFactoryForTests((_command, _args, _options) => {
+    const proc = createMockAgentProcess();
+    spawned.push(proc);
+    return proc;
+  });
+  try {
+    const { tools } = await captureExtensions();
+    const spawnTool = tools.get('spawnAgent')!;
+    const messageTool = tools.get('AgentMessage')!;
+    const statusCalls: Array<[string, string | undefined]> = [];
+    const widgetCalls: Array<{ key: string; value: unknown }> = [];
+    const ctx = {
+      cwd: '/repo',
+      hasUI: true,
+      ui: {
+        setStatus: (key: string, value: string | undefined) =>
+          statusCalls.push([key, value]),
+        setWidget: (key: string, value: unknown) =>
+          widgetCalls.push({ key, value }),
+      },
+    };
+
+    const result = await invokeExecute(
+      spawnTool,
+      { task: 'review docs', name: 'ui-worker' },
+      ctx
+    );
+    const agentId = (result.details as { agent: { agentId: string } }).agent
+      .agentId;
+    assert.ok(
+      statusCalls.some(
+        ([key, value]) => key === 'octocode-agents' && /1 total.*1 running/.test(value ?? '')
+      ),
+      'spawn refresh shows the worker as running in the footer status'
+    );
+
+    spawned[0]!.emitStdout({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '[BLOCKED] need parent input' }],
+      },
+    });
+    spawned[0]!.emitStdout({ type: 'agent_end', messages: [] });
+    assert.ok(
+      statusCalls.some(
+        ([key, value]) => key === 'octocode-agents' && /1 total.*1 blocked/.test(value ?? '')
+      ),
+      'async worker handback refreshes the ledger to blocked without an AgentMessage call'
+    );
+
+    await invokeExecute(
+      messageTool,
+      { action: 'send', agentId, message: 'answer: proceed' },
+      ctx
+    );
+    assert.ok(
+      statusCalls.some(
+        ([key, value]) => key === 'octocode-agents' && /1 total.*1 running/.test(value ?? '')
+      ),
+      'new worker turn overrides stale blocked handback in the UI'
+    );
+
+    spawned[0]!.emitStdout({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '[RESULT] ok\n[DONE] complete' }],
+      },
+    });
+    spawned[0]!.emitStdout({ type: 'agent_end', messages: [] });
+    spawned[0]!.close(0);
+    assert.ok(
+      statusCalls.some(
+        ([key, value]) => key === 'octocode-agents' && /1 total.*1 done/.test(value ?? '')
+      ),
+      'completed/exited workers stay visible as done until explicit prune/hide/remove'
+    );
+    assert.ok(
+      widgetCalls.some(
+        (call) => call.key === 'octocode-agents' && typeof call.value === 'function'
+      ),
+      'completed records still render the below-editor ledger widget'
+    );
+
+    const stateSummary = messageTool.renderResult!(
+      {
+        content: [{ type: 'text', text: 'Spawned agents (6):' }],
+        details: {
+          agents: [
+            { name: 'starting', agentId: 'a', status: 'starting' },
+            { name: 'running', agentId: 'b', status: 'running' },
+            { name: 'idle', agentId: 'c', status: 'idle' },
+            { name: 'exited', agentId: 'd', status: 'exited' },
+            { name: 'failed', agentId: 'e', status: 'failed' },
+            { name: 'killed', agentId: 'f', status: 'killed' },
+          ],
+        },
+      },
+      { expanded: false },
+      { fg: (_color: string, text: string) => text, bold: (text: string) => text }
+    ).render(240)[0]!;
+    assert.match(stateSummary, /1 starting/);
+    assert.match(stateSummary, /1 running/);
+    assert.match(stateSummary, /1 idle/);
+    assert.match(stateSummary, /1 done/);
+    assert.match(stateSummary, /1 failed/);
+    assert.match(stateSummary, /1 killed/);
+  } finally {
+    cleanupSpawnedAgentsForShutdown();
     setAgentProcessFactoryForTests(null);
   }
 });

@@ -24,7 +24,7 @@ function activeSkillCatalog(): string[] {
   );
 }
 
-test('coder prompt exposes an explicit delegation and worker lifecycle contract', () => {
+test('coder prompt exposes explicit multi-worker orchestration and lifecycle contract', () => {
   assert.match(SYSTEM_PROMPT, /choose the cheapest correct form/);
   assert.match(SYSTEM_PROMPT, /Worker request packet \(required\)/);
   assert.match(SYSTEM_PROMPT, /workers inherit no parent conversation/i);
@@ -32,6 +32,12 @@ test('coder prompt exposes an explicit delegation and worker lifecycle contract'
   assert.match(SYSTEM_PROMPT, /current turn to become idle or terminal/);
   assert.match(SYSTEM_PROMPT, /does not prove the delegated objective is complete/);
   assert.match(SYSTEM_PROMPT, /acceptance criteria pass/);
+  assert.match(SYSTEM_PROMPT, /fan-out → barrier → reducer/);
+  assert.match(SYSTEM_PROMPT, /Spawn all independent workers before waiting/);
+  assert.match(SYSTEM_PROMPT, /`status`\/`wait` every relevant worker/);
+  assert.match(SYSTEM_PROMPT, /keep `partial`\/`failed` separate/);
+  assert.match(SYSTEM_PROMPT, /synthesize one parent answer/);
+  assert.match(SYSTEM_PROMPT, /confirm no relevant worker remains starting\/running\/idle/);
   assert.match(SYSTEM_PROMPT, /steer` once/);
 
   assert.doesNotMatch(SYSTEM_PROMPT, /octocode-subagents/);
@@ -98,6 +104,14 @@ test('every active skill catalog entry resolves to a shipped SKILL.md or carries
 });
 
 // ─── Items 3-7: new TDD tests (RED until fixes applied) ────────────────────
+
+test('octocode-cli documents MCP/native-first and npx fallback routing', () => {
+  assert.match(SYSTEM_PROMPT, /If `\$OCTOCODE_CLI` is unset\/unavailable, use `npx octocode <command>`/);
+  assert.match(SYSTEM_PROMPT, /Prefer connected Octocode MCP\/native Pi tool functions for research when available/);
+  assert.match(SYSTEM_PROMPT, /fall back to `npx octocode`/);
+  assert.match(SYSTEM_PROMPT, /if Octocode MCP\/native tools are connected, use those directly for research/);
+  assert.match(SYSTEM_PROMPT, /Shelling to `node \$OCTOCODE_CLI tools <name>` or `npx octocode tools <name>` is a last resort/);
+});
 
 test('octocode-cli: every skill --name command carries --platform', () => {
   // Item 3: the first "skill --name" line was shown without --platform pi,
@@ -184,12 +198,19 @@ test('persistence and compaction are conditional instead of mandatory ceremony',
   assert.match(SYSTEM_PROMPT, /SUMMARY-\{\{title\}\}\.md/);
   assert.match(SYSTEM_PROMPT, /future you or other agents/);
   assert.match(SYSTEM_PROMPT, /read (the )?handoff\/summary back/i);
+  assert.match(SYSTEM_PROMPT, /Prefer a handoff over compaction when starting a focused new session\/thread/);
   assert.match(SYSTEM_PROMPT, /Do not create an artifact for an ordinary answer\/review/);
   assert.match(SYSTEM_PROMPT, /Persist a handoff only when work must survive/);
   assert.match(SYSTEM_PROMPT, /same logical task: continue from the summary/);
   assert.match(SYSTEM_PROMPT, /do not restart finished work/);
+  assert.match(SYSTEM_PROMPT, /handoff is explicit and reviewable while compaction is lossy/);
+  assert.match(SYSTEM_PROMPT, /Pi compaction is lossy/);
+  assert.match(SYSTEM_PROMPT, /reloads as `summary \+ kept messages`/);
   assert.match(SYSTEM_PROMPT, /Pi['’]s native compaction/);
   assert.match(SYSTEM_PROMPT, /`ctx\.compact\(\)` \/ `\/compact`/);
+  assert.match(SYSTEM_PROMPT, /adds continuation-focused summary instructions/);
+  assert.match(SYSTEM_PROMPT, /queues a follow-up only after `onComplete`/);
+  assert.match(SYSTEM_PROMPT, /Do not send a separate plain "continue"/);
   assert.match(SYSTEM_PROMPT, /Compact handoff structure/);
   assert.match(SYSTEM_PROMPT, /`state`.*why compacting now.*user sentiment\/preference/s);
   assert.match(SYSTEM_PROMPT, /`context`.*goal, constraints, decisions made.*decisive evidence anchors/s);
@@ -197,16 +218,32 @@ test('persistence and compaction are conditional instead of mandatory ceremony',
   assert.match(SYSTEM_PROMPT, /`plan\/task`.*next 1-3 dependent steps.*verification still owed/s);
   assert.match(SYSTEM_PROMPT, /`pickup`.*exact file, command, tool call, worker message, or user question/s);
   assert.match(SYSTEM_PROMPT, /After compaction.*read the summary\/handoff first/);
+  assert.match(SYSTEM_PROMPT, /list\/status live workers when any were active/);
   assert.match(SYSTEM_PROMPT, /resume at `pickup`/);
+  assert.match(SYSTEM_PROMPT, /If `pickup` is missing or stale/);
   assert.match(SYSTEM_PROMPT, /verified reusable gotcha.*Awareness memory/s);
   assert.doesNotMatch(SYSTEM_PROMPT, /write findings to a doc → compact → execute/);
 });
 
-test('work-mode handles mid-task user messages without broadening scope', () => {
+test('prompt encodes leading agent best practices: action bias, non-ceremonial planning, parent-owned mutation', () => {
+  assert.match(SYSTEM_PROMPT, /Action bias: do the next useful step instead of narrating intent/);
+  assert.match(SYSTEM_PROMPT, /Plan only when it changes execution; skip ceremonial or single-step plans/);
+  assert.match(SYSTEM_PROMPT, /do not load skills as ceremony/);
+  assert.match(SYSTEM_PROMPT, /Keep dependent steps, shared decisions, user-facing synthesis, and final edits in the parent/);
+  assert.match(SYSTEM_PROMPT, /prefer read-only workers and let the parent apply mutations/);
+});
+
+test('work-mode handles repo awareness and mid-task steering without broadening scope', () => {
   assert.match(SYSTEM_PROMPT, /new message while work is in progress/);
-  assert.match(SYSTEM_PROMPT, /classify it as replace, append, or status/);
+  assert.match(SYSTEM_PROMPT, /steering\/follow-up, not noise/);
+  assert.match(SYSTEM_PROMPT, /Classify it as replace, append, or status/);
   assert.match(SYSTEM_PROMPT, /replace means drop the stale path/);
   assert.match(SYSTEM_PROMPT, /append means satisfy both within the same scoped task/);
+  assert.match(SYSTEM_PROMPT, /Steering should change the next decision quickly/);
+  assert.match(SYSTEM_PROMPT, /do not run expensive re-orientation before applying it/);
+  assert.match(SYSTEM_PROMPT, /Be repo-aware/);
+  assert.match(SYSTEM_PROMPT, /working tree state, staged\/unstaged changes, branch\/HEAD, and recent commit context/);
+  assert.match(SYSTEM_PROMPT, /never overwrite user\/peer work/);
 });
 
 test('skills contract requires local instruction reading before action or delegation', () => {
@@ -218,8 +255,10 @@ test('skills contract requires local instruction reading before action or delega
 });
 
 test('output contract optimizes CLI DX with concise structure, flows, and focused questions', () => {
-  assert.match(SYSTEM_PROMPT, /Write for a CLI: concise, scannable, and useful without extra narration/);
-  assert.match(SYSTEM_PROMPT, /Lead with the result, decision, or blocker/);
+  assert.match(SYSTEM_PROMPT, /Write for a CLI: concise, scannable, and token-efficient/);
+  assert.match(SYSTEM_PROMPT, /User-visible output is not thinking/);
+  assert.match(SYSTEM_PROMPT, /omit private reasoning, self-talk, and tool narration/);
+  assert.match(SYSTEM_PROMPT, /lead with the result, decision, or blocker/);
   assert.match(SYSTEM_PROMPT, /Structure by user need, not by everything you did/);
   assert.match(SYSTEM_PROMPT, /`Result`, `Changed`, `Verified`, `Next`/);
   assert.match(SYSTEM_PROMPT, /Omit empty sections/);
@@ -232,6 +271,8 @@ test('output contract optimizes CLI DX with concise structure, flows, and focuse
   assert.match(SYSTEM_PROMPT, /Never invent time estimates, dates, counts, model names, status, ownership, or other metadata/);
   assert.match(SYSTEM_PROMPT, /Before tool-heavy work, send one brief commentary update/);
   assert.match(SYSTEM_PROMPT, /about 60 seconds pass without user-visible progress/);
+  assert.match(SYSTEM_PROMPT, /Keep these updates distinct from final output/);
+  assert.match(SYSTEM_PROMPT, /never turn them into a transcript/);
   assert.match(SYSTEM_PROMPT, /tables\/diagrams only when relationships, mappings, complex flows, or design explanations/);
 });
 
@@ -258,6 +299,16 @@ test('prompt requires logical assumption resolution and planning artifacts', () 
   assert.match(SYSTEM_PROMPT, /move from guessing to knowing with minimal sufficient evidence/);
   assert.match(SYSTEM_PROMPT, /For planning work, create a concise temp plan under `<workspace>\/\.octocode\/plans\/YYYYMMDD-HHMM-slug\/PLAN\.md`/);
   assert.match(SYSTEM_PROMPT, /for consequential designs, offer\/use `octocode-rfc-generator` instead of an ad-hoc plan/);
+});
+
+test('code prompt requires before and after architecture flow review', () => {
+  assert.match(SYSTEM_PROMPT, /Before\/after edit review/);
+  assert.match(SYSTEM_PROMPT, /before editing, review relevant code, architecture, and logic flows/);
+  assert.match(SYSTEM_PROMPT, /input → processing → output graph/);
+  assert.match(SYSTEM_PROMPT, /After editing, re-check the same flow/);
+  assert.match(SYSTEM_PROMPT, /report flaws that remain or were introduced, with reasons/);
+  assert.match(SYSTEM_PROMPT, /rigidities, workaround layers, looks-fixed patches, hidden blockers/);
+  assert.match(SYSTEM_PROMPT, /fail future refactoring/);
 });
 
 test('coder prompt enforces blast radius, quality, and evidence-first fixes', () => {

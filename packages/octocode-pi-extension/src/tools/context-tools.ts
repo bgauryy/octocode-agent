@@ -16,6 +16,15 @@ type RegisterFn = typeof registerUniqueTool;
 type Notifier = (ctx: PiContext | undefined, msg: string, level?: string) => void;
 
 const AUTO_COMPACT_THRESHOLD = 0.80;
+const COMPACTION_CONTINUATION_INSTRUCTIONS =
+  'Preserve continuation state, not transcript: goal, constraints, current mode, decisions, read/modified files, live workers/locks, blockers/open questions, verification owed, and exact next pickup. Mark partial/failed work separately.';
+
+function buildCompactionInstructions(instructions: unknown): string {
+  const userInstructions = typeof instructions === 'string' ? instructions.trim() : '';
+  return userInstructions
+    ? `${userInstructions}\n\n${COMPACTION_CONTINUATION_INSTRUCTIONS}`
+    : COMPACTION_CONTINUATION_INSTRUCTIONS;
+}
 
 function isNothingToCompact(error: Error): boolean {
   return /nothing to compact/i.test(error.message);
@@ -83,6 +92,7 @@ export function registerContextTools(
       const continuation =
         'Auto-compaction complete. Re-orient from the compacted context, then continue with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.';
       ctx.compact({
+        customInstructions: COMPACTION_CONTINUATION_INSTRUCTIONS,
         onComplete: () => {
           clearCompactionWorkingState(ctx);
           notify(ctx, 'Auto-compaction complete. Resuming…', 'info');
@@ -181,7 +191,7 @@ export function registerContextTools(
         'Compaction is complete. Continue from the compacted context with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.';
 
       ctx.compact({
-        customInstructions: params['instructions'] as string | undefined,
+        customInstructions: buildCompactionInstructions(params['instructions']),
         onComplete: () => {
           clearCompactionWorkingState(ctx);
           notify(ctx, 'Compaction completed. Continuing from the compacted context.', 'info');

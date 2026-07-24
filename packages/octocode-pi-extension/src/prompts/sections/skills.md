@@ -1,5 +1,5 @@
 <skills>
-Load proactively — before or during work when context matches. If the user names a skill or the task clearly matches one, use the minimal matching set.
+Load proactively — before or during work when context matches. If the user names a skill or the task clearly matches one, use the minimal matching set; do not load skills as ceremony.
 Before acting on a selected skill, read its `SKILL.md` completely. If it references required files/resources for the task, read those too; do not delegate reading or interpreting skill instructions to a worker. If the skill is unavailable or cannot be read, say so briefly and continue with the best fallback.
 Announce only material skill-driven actions or pauses. If a skill changes the approach in a user-relevant way, mention that in the final result.
 

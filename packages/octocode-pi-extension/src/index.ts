@@ -209,6 +209,43 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
   ctx.ui?.setStatus?.('octocode-metrics', ctx.ui.theme?.fg('dim', metrics) ?? metrics);
 }
 
+const REPO_STATE_TRIGGER = /\b(repo|git|status|staged|unstaged|changes?|diff|commit|branch|dirty|modified|working tree|worktree)\b/i;
+
+async function execGitSummary(pi: PiInstance, args: string[], timeout = 1200): Promise<string> {
+  if (!pi.exec) return '';
+  try {
+    const result = await pi.exec('git', args, { timeout });
+    if (result.code !== 0) return '';
+    return result.stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
+async function buildRepoStateHint(pi: PiInstance, event: { text: string; source?: string; streamingBehavior?: string }): Promise<string> {
+  if (event.source === 'extension') return '';
+  if (event.streamingBehavior === 'steer') return '';
+  if (!REPO_STATE_TRIGGER.test(event.text)) return '';
+  const status = await execGitSummary(pi, ['status', '--short', '--branch']);
+  if (!status) return '';
+  const [lastCommit, stagedStat, unstagedStat] = await Promise.all([
+    execGitSummary(pi, ['log', '-1', '--oneline', '--decorate'], 800),
+    execGitSummary(pi, ['diff', '--staged', '--stat'], 800),
+    execGitSummary(pi, ['diff', '--stat'], 800),
+  ]);
+  return [
+    '<repo_state>',
+    'Auto-captured lightweight Git state. Treat as a hint; re-run git/status checks before edits or final claims.',
+    '```',
+    status,
+    lastCommit ? `\nlast commit: ${lastCommit}` : '',
+    stagedStat ? `\nstaged diffstat:\n${stagedStat}` : '',
+    unstagedStat ? `\nunstaged diffstat:\n${unstagedStat}` : '',
+    '```',
+    '</repo_state>',
+  ].filter(Boolean).join('\n');
+}
+
 export function applyOctocodeUi(ctx: PiContext | undefined, level?: string): void {
   // setStatus / setHiddenThinkingLabel are TUI-only; guard with hasUI.
   if (!ctx?.hasUI) return;
@@ -729,6 +766,16 @@ async function wireOctocodePiExtension(
     hooks.on('thinking_level_select', 'octocode-thinking-select', async (event: ThinkingLevelEvent, ctx: PiContext | undefined) => {
       applyOctocodeUi(ctx, event.level);
       updateOctocodeMetricsUi(ctx, metricsState);
+    });
+
+    hooks.on('input', 'octocode-repo-state-hint', async (event: { text: string; images?: unknown[]; source?: string; streamingBehavior?: string }) => {
+      const repoState = await buildRepoStateHint(pi, event);
+      if (!repoState) return { action: 'continue' as const };
+      return {
+        action: 'transform' as const,
+        text: `${event.text}\n\n${repoState}`,
+        images: event.images,
+      };
     });
 
     hooks.on('tool_execution_start', 'octocode-tool-error-timing', async (event: { toolCallId?: string; toolName?: string }) => {

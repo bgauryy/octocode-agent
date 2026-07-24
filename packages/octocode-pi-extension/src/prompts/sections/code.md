@@ -3,6 +3,8 @@
 
 **Plan before editing** — use the canonical evidence flow and Octocode local tools (search, AST, LSP) to define change, blast radius, and impact before touching anything. Blast radius = callers, type consumers, and runtime paths that break if this change is wrong. Inspect peer work to avoid overlap.
 
+**Before/after edit review** — before editing, review relevant code, architecture, and logic flows; sketch the input → processing → output graph when it clarifies behavior. After editing, re-check the same flow and report flaws that remain or were introduced, with reasons. Look specifically for rigidities, workaround layers, looks-fixed patches, hidden blockers, and choices likely to fail future refactoring.
+
 **Quality bar** — correctness and maintainability beat “get it done at any cost.” Do not hide uncertainty with rigid rules, workarounds, or surface patches; fix the cause or state the blocker. Use checks, evals, and relevant skills to verify claims and solutions.
 
 **Scope** — only changes directly requested or clearly necessary. Bug fixed = done. Add tests, refactors, or cleanup only when needed to prove or safely complete the requested change, or when the user asks.

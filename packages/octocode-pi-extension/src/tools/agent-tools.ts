@@ -263,8 +263,8 @@ function getAgentDisplayState(agent: AgentDisplaySource): AgentDisplayState {
   const workerStatus = agent.normalizedResult?.status;
   if (agent.status === 'killed') return 'killed';
   if (agent.status === 'failed' || workerStatus === 'failed') return 'failed';
-  if (workerStatus === 'blocked') return 'blocked';
   if (agent.status === 'running') return 'running';
+  if (workerStatus === 'blocked') return 'blocked';
   if (workerStatus === 'done' || agent.status === 'exited') return 'done';
   if (agent.status === 'idle') return 'idle';
   return 'starting';
@@ -781,6 +781,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     const lines = stdoutBuffer.split('\n');
     stdoutBuffer = lines.pop() ?? '';
     for (const line of lines) processRpcLine(record, line);
+    refreshAgentLedgerUi(ctx);
   });
   proc.stderr.on('data', (chunk) => {
     record.stderr += chunk.toString();
@@ -790,6 +791,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     }
     pushLedgerEvent(record, 'status', 'stderr received');
     touch(record);
+    refreshAgentLedgerUi(ctx);
   });
   proc.on('error', (error) => {
     record.error = error instanceof Error ? error.message : String(error);
@@ -797,6 +799,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     touch(record, 'failed');
     removePromptFiles(record);
     notifyWaiters(record);
+    refreshAgentLedgerUi(ctx);
   });
   proc.on('close', (code, signal) => {
     if (stdoutBuffer.trim()) processRpcLine(record, stdoutBuffer);
@@ -806,6 +809,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     pushLedgerEvent(record, record.status === 'failed' ? 'error' : 'exit', `process closed with code ${record.exitCode ?? 'unknown'}`);
     removePromptFiles(record);
     notifyWaiters(record);
+    refreshAgentLedgerUi(ctx);
   });
 
   // H4: Only advance to 'running' when the initial RPC write succeeded.
@@ -976,7 +980,11 @@ function countAgentStates(records: AgentDisplaySource[]): Record<AgentDisplaySta
 
 function formatAgentStateCounts(records: AgentDisplaySource[]): string {
   const counts = countAgentStates(records);
-  return `${records.length} total · ${counts.running} running · ${counts.blocked} blocked · ${counts.done} done · ${counts.failed} failed`;
+  const order: AgentDisplayState[] = ['starting', 'running', 'idle', 'blocked', 'done', 'failed', 'killed'];
+  const parts = order
+    .filter((state) => counts[state] > 0)
+    .map((state) => `${counts[state]} ${state}`);
+  return [`${records.length} total`, ...parts].join(' · ');
 }
 
 export function formatAgentLedger(): string {
@@ -1018,7 +1026,7 @@ export function formatAgentLedgerDetails(limit = 10): string {
 }
 
 function hasVisibleAgentLedgerRecords(): boolean {
-  return [...agents.values()].some((record) => !isDroppable(record) || record.normalizedResult?.status === 'blocked' || record.status === 'failed');
+  return agents.size > 0;
 }
 
 function agentLedgerWidget(theme?: PiTheme) {

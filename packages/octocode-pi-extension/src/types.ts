@@ -383,7 +383,7 @@ export interface PiInstance {
   on(event: 'resources_discover', handler: (event: { cwd: string; reason: string }, ctx: PiContext) => Promise<ResourcesDiscoverResult | void>): void;
   on(event: 'project_trust', handler: (event: { cwd: string }, ctx: PiContext) => Promise<{ trusted: 'yes' | 'no' | 'undecided'; remember?: boolean }>): void;
   on(event: 'context', handler: (event: { messages: unknown[] }, ctx: PiContext) => Promise<{ messages: unknown[] } | void>): void;
-  on(event: 'input', handler: (event: { text: string; images: unknown[] }, ctx: PiContext) => Promise<{ text?: string; handled?: boolean } | void>): void;
+  on(event: 'input', handler: (event: { text: string; images?: unknown[]; source?: 'interactive' | 'rpc' | 'extension'; streamingBehavior?: 'steer' | 'followUp' }, ctx: PiContext) => Promise<{ action?: 'continue' | 'transform' | 'handled'; text?: string; images?: unknown[] } | void>): void;
   on(event: 'message_start', handler: (event: { message: unknown }, ctx: PiContext) => Promise<void>): void;
   on(event: 'message_end', handler: (event: { message: unknown }, ctx: PiContext) => Promise<{ message?: unknown } | void>): void;
   on(event: 'tool_call', handler: (event: { toolCallId: string; toolName: string; input: Record<string, unknown> }, ctx: PiContext) => Promise<{ block?: boolean; reason?: string } | void>): void;
