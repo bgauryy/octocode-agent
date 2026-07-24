@@ -224,6 +224,8 @@ describe('production guidance contract', () => {
     const skill = read(resolve(SKILL_ROOT, 'SKILL.md'));
     const finish = read(resolve(SKILL_ROOT, 'references/agent-cheatsheet-finish.md'));
     expect(Buffer.byteLength(skill, 'utf8')).toBeLessThanOrEqual(6 * 1024);
+    expect(skill).toContain('smallest capable configured low-cost agent');
+    expect(skill).not.toMatch(/Haiku|Composer 2\.5/);
     expect(finish).toContain('Always');
     expect(finish).toContain('Only when');
     expect(finish).toContain('verify audit');

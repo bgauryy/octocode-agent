@@ -101,30 +101,16 @@ Prefer `node packages/octocode/out/octocode.js` over global `octocode` / npx whe
 
 ## Awareness
 
-For non-trivial repo work, activate `octocode-awareness` and run the local CLI
-`node "$OCTOCODE_AWARENESS_CLI" attend --query "<task>" --compact`. This file
-routes; the skill owns judgment, the CLI owns live state, and hooks automate
-lifecycle edges. Package work also reads
-[`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md).
+For non-trivial repo work, activate `octocode-awareness` and run
+`node "$OCTOCODE_AWARENESS_CLI" attend --query "<task>" --compact`. This file routes;
+the skill owns judgment, the CLI owns live state, and hooks automate lifecycle edges.
+Package work also reads [`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md).
 
-Local build: `packages/octocode-awareness/out/index.js` (library) +
-`out/octocode-awareness.js` (CLI binary); harness sets `$OCTOCODE_AWARENESS_CLI`.
+Loop: claim a ready task or open WORK; declare edited paths; use `--exclusive` only for sensitive work; check while present; submit/end → `verify mark` → `verify audit`. Use `memory recall --smart` only when prior learning may change the approach; record only verified reusable outcomes.
 
-Loop: claim a ready task or open WORK; declare edited paths; reserve exclusivity for
-sensitive work; check while present; submit/end → `verify mark` → `verify audit`.
-Use `memory recall --smart` for prior learning; record only verified reusable outcomes.
+SQLite is canonical. `.octocode/` is a discovery shelf; never hand-edit projections, and refresh with `wiki sync` only for file readers. Exact flags: `schema command <noun> [action]`. Full lifecycle: [`docs/HOW_IT_WORKS.md`](packages/octocode-awareness/docs/HOW_IT_WORKS.md).
 
-SQLite is canonical. `.octocode/` is a discovery shelf: plan docs explain intent;
-generated wiki/memory files route to live `attend`, `query`, or `memory recall`.
-Never hand-edit projections; refresh them with `wiki sync` only for file readers.
-Exact flags: `schema command <noun> [action]`. Full lifecycle:
-[`docs/HOW_IT_WORKS.md`](packages/octocode-awareness/docs/HOW_IT_WORKS.md).
-
-Skill source: `packages/octocode-awareness/skills/octocode-awareness`; use the local build here or
-`npx @octocodeai/octocode-awareness` when installed. Rebuild after changes; never
-edit `.agents/skills/` or `out/skills/`.
-
-Verified implementation note: generated skill `scripts/awareness.mjs` is the standalone Node drop-in built from `packages/octocode-awareness/bin/awareness.ts` (`packages/octocode-awareness/buildConfig.mjs`). It uses built-in `node:sqlite` through the package DB layer, requires Node >=22.13.0, and wires `tell-memory` to `cmdTellMemory`; keep it zero npm runtime deps.
+Skill source: `packages/octocode-awareness/skills/octocode-awareness`; use local build `packages/octocode-awareness/out/octocode-awareness.js` or installed `npx @octocodeai/octocode-awareness`. Rebuild after changes; never edit `.agents/skills/` or `out/skills/`. Generated `scripts/awareness.mjs` comes from `bin/awareness.ts`, uses built-in `node:sqlite`, and stays zero npm runtime deps.
 
 ## Docs and references
 

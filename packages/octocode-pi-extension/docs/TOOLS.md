@@ -264,6 +264,8 @@ Param: `instructions` — focus hint for compaction summary (used with `compact`
 
 If Pi reports `Nothing to compact`, the extension treats it as a benign no-op and reports `Compaction skipped: session is too small to compact.` No continuation is queued.
 
+A model-runtime `maximum output token limit` stop is different from context pressure: the answer was too large for one response. The extension does not auto-compact/retry that stop; continue with a shorter/chunked response or write long output to a file and return a concise summary plus path.
+
 ---
 
 ## Internal error log

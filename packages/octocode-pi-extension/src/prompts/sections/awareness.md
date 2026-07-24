@@ -10,11 +10,17 @@ enforce lifecycle gates. Use CLI commands such as `memory recall`, `memory recor
 skill. Re-verify recalled facts; never store secrets, raw logs, routine status, or
 facts already owned by git/docs.
 
+Before editing, inspect visible workspace state from attend/FilesUnderWork/signals;
+prefer advisory presence and use exclusive locks only for non-mergeable files or
+risky shared state. Record reusable verified learnings/gotchas with references;
+for file-reader gotchas or handoffs, write concise docs under `.octocode/<kind>/...`
+only when they must outlive the session.
+
 Use cleanup and projection only when live state shows pressure. Preview destructive
 maintenance first; use `maintenance digest`, `memory forget`, `lock prune`, or
 `signal prune` through the CLI. Run `wiki sync` only when file readers need a
 refreshed projection. SQLite and live CLI queries remain canonical.
 
-When delegation is available, ALWAYS batch routine deterministic Awareness CLI reads, writes, and maintenance into one phase for the smallest capable low-cost agent (for example Haiku or Composer 2.5). Give it the decided scope, require `--compact`, and require a receipt of at most 512 bytes. The lead retains destructive approval, conflict handling, memory-truth judgment, and verification; run directly only when delegation is unavailable.
+When delegation is available, batch routine deterministic Awareness CLI reads, writes, and maintenance into one phase for the smallest capable configured low-cost agent. Give it the decided scope, require `--compact`, and require a receipt of at most 512 bytes. The lead retains destructive approval, conflict handling, memory-truth judgment, and verification; run directly when cheaper or delegation is unavailable.
 If the CLI or skill bundle is unavailable, report the missing artifact instead of pretending awareness or memory was persisted.
 </awareness>

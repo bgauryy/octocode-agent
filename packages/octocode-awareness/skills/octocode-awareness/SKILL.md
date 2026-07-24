@@ -15,10 +15,10 @@ hooks:
 # Octocode Awareness
 AGENTS routes; skill decides; CLI/SQLite acts; hooks automate deterministic edges. Memory and `.octocode/` are leads. Never hand-edit `.octocode/`.
 Run live-state actions through the CLI.
-When the host supports delegation, ALWAYS batch routine deterministic Awareness CLI reads, writes, and maintenance into one phase.
-Use the smallest capable low-cost agent (for example Haiku or Composer 2.5); supply decided scope, require `--compact`, and cap its receipt at 512 bytes.
+When the host supports delegation, batch routine deterministic Awareness CLI reads, writes, and maintenance into one phase when it saves context or wall time.
+Use the smallest capable configured low-cost agent; supply decided scope, require `--compact`, and cap its receipt at 512 bytes.
 The lead retains destructive approval, conflict handling, memory-truth judgment, and verification.
-Run directly only when the host cannot delegate.
+Run directly when cheaper or delegation is unavailable.
 ## Lifecycle
 `<cli>`: local `node packages/octocode-awareness/out/octocode-awareness.js`; installed `npx @octocodeai/octocode-awareness`. Set `OCTOCODE_AGENT_ID` per agent/session.
 **BEFORE/READ+REASON -> DURING/DO -> AFTER/VERIFY -> LEARN? -> CLEAN? -> PROJECT?**

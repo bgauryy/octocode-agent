@@ -274,10 +274,16 @@ test('build composes the system prompt from its section files', async () => {
   assert.equal(fs.existsSync(paths.systemPrompt), true);
   assert.ok(SYSTEM_PROMPT.includes('<authority>'), 'sections are composed');
   assert.match(SYSTEM_PROMPT, /pi -ne --list-models/);
-  assert.match(SYSTEM_PROMPT, /never hardcoded config paths/);
+  assert.match(SYSTEM_PROMPT, /Do not inspect hardcoded config paths/);
   assert.match(SYSTEM_PROMPT, /smallest capable configured model/);
-  assert.match(SYSTEM_PROMPT, /At the start of every task, check whether the work should be decomposed/);
-  assert.match(SYSTEM_PROMPT, /independent known-input reads\/checks that can run in one parallel tool batch/);
+  assert.match(SYSTEM_PROMPT, /classifying task shape: goal, unknowns, dependencies, shared state, expected proof/);
+  assert.match(SYSTEM_PROMPT, /independent known-input tool calls; launch together, then synthesize/);
+  assert.match(SYSTEM_PROMPT, /Compact handoff structure/);
+  assert.match(SYSTEM_PROMPT, /Store it at `<workspace>\/\.octocode\/tmp\/YYYYMMDD-HHMM-slug\/HANDOFF\.md`/);
+  assert.match(SYSTEM_PROMPT, /SUMMARY-\{\{title\}\}\.md/);
+  assert.match(SYSTEM_PROMPT, /When several viable solutions exist, explain the options, trade-offs, and impact/);
+  assert.match(SYSTEM_PROMPT, /Never invent time estimates, dates, counts, model names, status, ownership, or other metadata/);
+  assert.match(SYSTEM_PROMPT, /resume at `pickup`/);
   assert.equal(
     fs.existsSync(path.join(distDir, 'prompts', 'sections', 'agents.md')),
     true
@@ -2420,7 +2426,7 @@ test('turn_end auto-compact queues a continuation after compaction completes (no
   );
   assert.match(
     sentUserMessages[0]!.msg,
-    /Auto-compaction complete.*continue the user task/i
+    /Auto-compaction complete.*next small step only/i
   );
   assert.equal(sentUserMessages[0]!.opts?.['deliverAs'], 'followUp');
   assert.deepEqual(notifications[1], {
@@ -2431,6 +2437,56 @@ test('turn_end auto-compact queues a continuation after compaction completes (no
     { kind: 'message', value: undefined },
     { kind: 'visible', value: false },
   ]);
+});
+
+test('turn_end auto-compact skips output length stops because compaction cannot fix response budget', async () => {
+  const { handlers, sentUserMessages } = await captureExtensions();
+  const handler = handlers.get('turn_end')![0]!;
+  let compactCalled = false;
+  const notifications: Array<{ message: string; level?: string }> = [];
+
+  await handler(
+    { message: { stopReason: 'length', usage: { input: 100, output: 4096 } } },
+    {
+      hasUI: true,
+      getContextUsage: () => ({ tokens: 850, contextWindow: 1000 }),
+      compact: () => {
+        compactCalled = true;
+      },
+      ui: {
+        notify: (message: string, level?: string) =>
+          notifications.push({ message, level }),
+      },
+    }
+  );
+
+  assert.equal(compactCalled, false);
+  assert.equal(sentUserMessages.length, 0);
+  assert.deepEqual(notifications.at(-1), {
+    message: 'Model hit the maximum output token limit. Compaction does not increase one-response output budget; continue with a shorter/chunked response or write long output to a file.',
+    level: 'warning',
+  });
+});
+
+test('turn_end auto-compact still allows zero-output length stops to flow to context checks', async () => {
+  const { handlers, sentUserMessages } = await captureExtensions();
+  const handler = handlers.get('turn_end')![0]!;
+  let compactOptions: { onComplete?: (opts?: unknown) => void } = {};
+
+  await handler(
+    { message: { stopReason: 'length', usage: { input: 990, output: 0 } } },
+    {
+      hasUI: true,
+      getContextUsage: () => ({ tokens: 850, contextWindow: 1000 }),
+      compact: (options: typeof compactOptions) => {
+        compactOptions = options;
+      },
+      ui: { notify: () => undefined },
+    }
+  );
+
+  assert.equal(typeof compactOptions.onComplete, 'function');
+  assert.equal(sentUserMessages.length, 0);
 });
 
 test('turn_end auto-compact reports errors without queueing a continuation', async () => {

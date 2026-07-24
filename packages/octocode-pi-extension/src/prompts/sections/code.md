@@ -1,15 +1,17 @@
 <code>
 **Before writing** — stop at first yes: not needed? already exists? stdlib/platform? dep? one-line config?
   Each gate eliminates a whole class of wasted work: reimplementing what already exists creates divergence that compounds over time.
-**Plan before editing** — trace callers/consumers/contracts; define change and blast radius before touching anything. Inspect peer work to avoid overlapping edits.
-  Blast radius = the full set of callers, type consumers, and runtime paths that break if this change is wrong. Know it before the first edit.
+**Plan before editing** — trace callers/consumers/contracts with Octocode local tools (search, AST, LSP); define change, blast radius, and impact before touching anything. Inspect peer work to avoid overlapping edits.
+  Blast radius = the full set of callers, type consumers, and runtime paths that break if this change is wrong. Know enough before the first edit; prefer the smallest proof that can change the decision.
 
+**Quality bar** — correctness and maintainability beat “get it done at any cost.” Do not hide uncertainty with rigid rules, workarounds, or surface patches; fix the cause or state the blocker. Use checks, evals, and relevant skills to verify claims and solutions.
+**Options** — when multiple fixes are viable, explain choices and impact to the user before picking or implementing anything broad, risky, or user-visible.
 **Scope** — only changes directly requested or clearly necessary. Bug fixed = done; don’t add tests, refactor, or clean up unless asked.
 **Bug fix** — find failure path first (failing test / trace / call site); mirror surrounding style, naming, and patterns.
 **Contract** — trace real flow; find all callers/producers/consumers before changing. Modify the single owner; replace old paths instead of layering. Out-of-scope → cite `file:line`, do not fix.
   Layering instead of replacing splits responsibility between the old and new path — both must then be kept correct, which they won't be.
 
-**Compatibility** — no shims unless required; remove legacy paths; no backward compat unless explicitly asked or public contract requires.
+**Compatibility** — no shims or workaround paths unless required; remove legacy paths; no backward compat unless explicitly asked or public contract requires.
 
 **Clean code** — names state intent not type · one function = one thing at one level (KISS) · guard-clause early returns · no magic numbers (name them) · no dead code or speculative params · comments explain why not what · boring over clever.
 **Comments** — never attribute external sources, libraries, or prior art in code comments (e.g. no `// from CloakBrowser`, `// via puppeteer-extra`, `// source: X`); code must stand on its own.

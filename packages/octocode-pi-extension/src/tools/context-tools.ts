@@ -6,7 +6,7 @@
  * available in ExtensionCommandContext (registerCommand handlers). They are
  * NOT exposed to tool execute() contexts and will always be undefined there.
  */
-import type { PiContext, PiCommandContext, PiInstance, ToolDefinition, PiTheme } from '../types.js';
+import type { PiContext, PiCommandContext, PiInstance, ToolDefinition, PiTheme, TurnEndEvent } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { isSubagentProcess } from './agent-tools.js';
@@ -23,6 +23,14 @@ function isNothingToCompact(error: Error): boolean {
 
 function simpleRenderer(line: string) {
   return makeRenderer((w) => [truncateToWidth(line, w)]);
+}
+
+function isOutputLengthStop(event: TurnEndEvent | undefined): boolean {
+  if (event?.message?.stopReason !== 'length') return false;
+  // Pi-ai treats length + output=0 + full input as a possible context overflow.
+  // Any positive or unknown output means the model used its response budget;
+  // compaction will not make the current answer fit in one message.
+  return event.message.usage?.output !== 0;
 }
 
 function clearCompactionWorkingState(ctx: PiContext | undefined): void {
@@ -44,7 +52,16 @@ export function registerContextTools(
   let lastAutoCompactTokens: number | null = null;
 
   if (pi.on) {
-    pi.on('turn_end', (_event, ctx) => {
+    pi.on('turn_end', (event, ctx) => {
+      if (isOutputLengthStop(event)) {
+        notify(
+          ctx,
+          'Model hit the maximum output token limit. Compaction does not increase one-response output budget; continue with a shorter/chunked response or write long output to a file.',
+          'warning',
+        );
+        return;
+      }
+
       const usage = ctx.getContextUsage?.();
       if (!usage) return;
       if (!(usage.contextWindow > 0)) return; // guard divide-by-zero → NaN spurious compaction
@@ -64,7 +81,7 @@ export function registerContextTools(
       const pctStr = `${Math.round(fill * 100)}%`;
       notify(ctx, `Auto-compacting: context at ${pctStr} of context window.`, 'info');
       const continuation =
-        'Auto-compaction complete. Re-orient from the compacted context, then continue the user task.';
+        'Auto-compaction complete. Re-orient from the compacted context, then continue with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.';
       ctx.compact({
         onComplete: () => {
           clearCompactionWorkingState(ctx);
@@ -161,7 +178,7 @@ export function registerContextTools(
       }
 
       const continuation =
-        'Compaction is complete. Continue from the compacted context. Re-orient if needed, then proceed with the user task.';
+        'Compaction is complete. Continue from the compacted context with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.';
 
       ctx.compact({
         customInstructions: params['instructions'] as string | undefined,
