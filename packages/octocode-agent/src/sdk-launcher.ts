@@ -282,6 +282,14 @@ export async function launchWithSdk(
       cwd: rCwd,
       agentDir,
       resourceLoaderOptions: {
+        // Match the subprocess path's `--no-extensions` (buildPiArgs): load ONLY
+        // the inline Octocode extension factory, never auto-discovered package
+        // extensions. Without this, a pi-package `@octocodeai/pi-extension`
+        // configured in settings (or installed via `pi install`) is discovered AND
+        // loaded here too, re-registering every tool/flag and emitting "Extension
+        // issues" collisions. `noExtensions` drops discovery; `extensionFactories`
+        // keeps the inline harness.
+        noExtensions: true,
         extensionFactories: [extensionFactory],
       },
     };

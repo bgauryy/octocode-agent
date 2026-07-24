@@ -265,6 +265,24 @@ describe('launchWithSdk', () => {
     });
   });
 
+  it('passes noExtensions: true so a discovered @octocodeai/pi-extension package does not double-load the inline factory', async () => {
+    const serviceOptions: unknown[] = [];
+    const result = await launchWithSdk([], {
+      importPiSdk: buildMockSdk({ onCreateServices: (opts) => serviceOptions.push(opts) }),
+      importExtensionFactory: noopExtensionFactory,
+      env: {},
+    } satisfies SdkDeps);
+
+    expect(result).toBe(0);
+    expect(serviceOptions).toHaveLength(1);
+    expect(
+      (serviceOptions[0] as { resourceLoaderOptions: Record<string, unknown> }).resourceLoaderOptions,
+    ).toMatchObject({
+      noExtensions: true,
+      extensionFactories: expect.any(Array),
+    });
+  });
+
   it('returns 0 on successful print mode run', async () => {
     const result = await launchWithSdk(['-p', 'write a test'], {
       importPiSdk: buildMockSdk(),

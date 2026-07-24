@@ -1460,7 +1460,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@octocodeai/octocode-awareness@workspace:packages/octocode-awareness":
+"@octocodeai/octocode-awareness@workspace:*, @octocodeai/octocode-awareness@workspace:packages/octocode-awareness":
   version: 0.0.0-use.local
   resolution: "@octocodeai/octocode-awareness@workspace:packages/octocode-awareness"
   dependencies:
@@ -1583,6 +1583,7 @@ __metadata:
   resolution: "@octocodeai/pi-extension@workspace:packages/octocode-pi-extension"
   dependencies:
     "@octocodeai/config": "npm:^17.0.1"
+    "@octocodeai/octocode-awareness": "workspace:*"
     "@octocodeai/octocode-core": "npm:^16.6.3"
     "@octocodeai/octocode-engine": "npm:^16.7.0"
     "@octocodeai/octocode-tools-core": "npm:16.6.3"
