@@ -1,6 +1,6 @@
 {
   "name": "@octocodeai/pi-extension",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Official Octocode Pi package: native tools, bundled CLIs, Awareness runtime and skills, prompts, and harness wiring.",
   "keywords": [
     "ai-coding",
@@ -43,7 +43,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@octocodeai/octocode-awareness": "^1.0.1",
-    "@octocodeai/octocode-engine": "^16.7.0"
+    "@octocodeai/octocode-engine": "^16.7.0",
+    "typebox": "^1.1.38"
   },
   "devDependencies": {
     "@octocodeai/config": "^17.0.1",
@@ -53,14 +54,6 @@
     "typescript": "^5.8.3",
     "vitest": "^4.1.9",
     "zod": "^4.4.3"
-  },
-  "peerDependencies": {
-    "typebox": "*"
-  },
-  "peerDependenciesMeta": {
-    "typebox": {
-      "optional": true
-    }
   },
   "scripts": {
     "build": "node scripts/build.mjs",
