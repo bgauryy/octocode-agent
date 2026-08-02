@@ -116,6 +116,10 @@ describe('parseInvocation', () => {
     expect(parseInvocation(['-v']).command).toBe('version');
     expect(parseInvocation(['version']).command).toBe('version');
     expect(parseInvocation(['--agent-help']).command).toBe('help');
+    // `npx octocode-agent --help` must print help, never open the TUI
+    expect(parseInvocation(['--help']).command).toBe('help');
+    expect(parseInvocation(['-h']).command).toBe('help');
+    expect(parseInvocation(['help']).command).toBe('help');
     expect(parseInvocation(['config']).command).toBe('config');
     expect(parseInvocation(['setup']).command).toBe('setup');
     expect(parseInvocation(['auth']).command).toBe('auth');

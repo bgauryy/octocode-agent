@@ -201,10 +201,8 @@ export const SUBAGENT_REGISTRY = {
       'DOM inspection, coverage, workers, service workers, emulation, and automation.',
     tools: [
       'chromeDebug', // CDP execution — primary tool
-      'web', // CDP docs + web research
-      'localGetFileContent', // read source files, screenshots
-      'localSearchCode', // correlate browser errors to local source
-      'localViewStructure', // navigate file trees
+      'web',         // CDP docs + web research
+      'MCPTool',     // octocode MCP server: localGetFileContent, localSearchCode, localViewStructure, etc.
     ],
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'low',
@@ -219,19 +217,7 @@ export const SUBAGENT_REGISTRY = {
       'Use for evidence gathering, prior art, package/repo lookup, and concise claim ledgers.',
     tools: [
       'web',
-      'ghSearchCode',
-      'ghGetFileContent',
-      'ghViewRepoStructure',
-      'ghSearchRepos',
-      'ghHistoryResearch',
-      'ghCloneRepo',
-      'npmSearch',
-      'localSearchCode',
-      'localViewStructure',
-      'localFindFiles',
-      'localGetFileContent',
-      'localBinaryInspect',
-      'lspGetSemantics',
+      'MCPTool', // octocode MCP server: all GitHub, local, LSP, npm research tools
     ],
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'low',
@@ -245,19 +231,7 @@ export const SUBAGENT_REGISTRY = {
       'Use for dependency-ordered plans, risks, verification strategy, and RFC handoff packets.',
     tools: [
       'web',
-      'ghSearchCode',
-      'ghGetFileContent',
-      'ghViewRepoStructure',
-      'ghSearchRepos',
-      'ghHistoryResearch',
-      'ghCloneRepo',
-      'npmSearch',
-      'localSearchCode',
-      'localViewStructure',
-      'localFindFiles',
-      'localGetFileContent',
-      'localBinaryInspect',
-      'lspGetSemantics',
+      'MCPTool', // octocode MCP server: all GitHub, local, LSP, npm research tools
     ],
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'low',
@@ -272,19 +246,7 @@ export const SUBAGENT_REGISTRY = {
     tools: [
       'bash',
       'web',
-      'ghSearchCode',
-      'ghGetFileContent',
-      'ghViewRepoStructure',
-      'ghSearchRepos',
-      'ghHistoryResearch',
-      'ghCloneRepo',
-      'npmSearch',
-      'localSearchCode',
-      'localViewStructure',
-      'localFindFiles',
-      'localGetFileContent',
-      'localBinaryInspect',
-      'lspGetSemantics',
+      'MCPTool', // octocode MCP server: all GitHub, local, LSP, npm research tools
     ],
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'medium',

@@ -1,25 +1,16 @@
 <octocode_cli>
-The Octocode CLI is bundled as `$OCTOCODE_CLI`; run with `node $OCTOCODE_CLI <command>`. The Awareness CLI is bundled as `$OCTOCODE_AWARENESS_CLI`; run with `node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact` and follow the `octocode-awareness` skill.
+Use `npx octocode` for skill, config, and LSP management commands not covered by native tools or MCPTool.
 
-`node $OCTOCODE_CLI` is the bundled equivalent of `npx octocode` — same commands and flags, no separate install. Prefer native Pi tool functions for research; use the CLI for skill management, archive/cache materialization, schema lookup, context/status, and auth commands that the user must run.
+**MCPTool handles all research** — `ghSearchCode`, `localSearchCode`, `lspGetSemantics`, etc. are served via the built-in `octocode` MCP server; never shell to `npx octocode` for research. Use `MCPTool({action:"call",server:"octocode",tool:"..."})` directly.
 
-**Common CLI uses**
+**Management-only uses** — npx octocode handles skill/config/LSP management commands only (no native tool equivalent):
 ```
-bash: node $OCTOCODE_CLI unzip path/to/archive.zip                 # returns localPath for local tools
-bash: node $OCTOCODE_CLI cache fetch owner/repo[@branch] [path]    # materialize GitHub content
-bash: node $OCTOCODE_CLI cache status | cache clear --all
-bash: node $OCTOCODE_CLI skill --list
-bash: node $OCTOCODE_CLI skill --name octocode-research --platform pi
-bash: node $OCTOCODE_CLI skill --add --path {{path_to_skills_location}} --platform pi
-bash: npx octocode skill --name <skill> --platform pi              # published package fallback
-bash: node $OCTOCODE_CLI tools <name> --scheme                     # exact schema; never guess fields
-bash: node $OCTOCODE_CLI clone owner/repo[/path]
-bash: node $OCTOCODE_CLI context
-bash: node $OCTOCODE_CLI lsp-server list
-bash: node $OCTOCODE_CLI auth login                                # USER ONLY
+npx octocode skill --name <skill> --platform pi    # install skill to ~/.pi/agent/skills/
+npx octocode skill --add --path <path> --platform pi  # install local skill
+npx octocode skill --list                          # list installed skills
+npx octocode lsp-server list                       # list / check LSP servers
+npx octocode lsp-server install <lang>             # install an LSP server
 ```
 
-**Skills:** `octocode-research` is the evidence-first workflow (locate → prove → patch → verify). Install once with `npx octocode skill --name octocode-research --platform pi`, then load on demand before non-trivial code research. The same pattern installs `octocode-rfc-generator`, `octocode-brainstorming`, `octocode-eval`, `octocode-skills`, `octocode-roast`, and `octocode-subagent`. Typed subagents auto-discover installed skills in `~/.pi/agent/skills/` and `<cwd>/.agents/skills/`.
-
-**Find paths:** run `/octocode-status` to see exact `bundled CLI:` and `awareness CLI:` paths if env vars are unset.
+The Awareness CLI is bundled as `$OCTOCODE_AWARENESS_CLI`; run with `node "$OCTOCODE_AWARENESS_CLI" <noun> <verb> --compact` and follow the `octocode-awareness` skill.
 </octocode_cli>

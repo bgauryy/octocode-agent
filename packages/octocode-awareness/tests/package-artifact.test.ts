@@ -48,7 +48,7 @@ describe('published package artifact', () => {
   it('runs every schema command from an isolated package with no dependencies', { timeout: 30_000 }, () => {
     const root = isolatedPackage();
     const cli = resolve(root, 'out/octocode-awareness.js');
-    const schema = resolve(root, 'out/skills/octocode-awareness/scripts/schema.mjs');
+    const schema = cli;
 
     const listed = spawnSync(process.execPath, [cli, 'schema', 'list', '--compact'], {
       cwd: root,
@@ -59,21 +59,21 @@ describe('published package artifact', () => {
     const names = JSON.parse(listed.stdout) as string[];
 
     for (const name of names) {
-      const jsonSchema = spawnSync(process.execPath, [schema, 'json-schema', name, '--compact'], {
+      const jsonSchema = spawnSync(process.execPath, [schema, 'schema', 'json-schema', name, '--compact'], {
         cwd: root,
         encoding: 'utf8',
         timeout: 5_000,
       });
       expect(jsonSchema.status, `${name}: ${jsonSchema.stderr || jsonSchema.stdout}`).toBe(0);
 
-      const example = spawnSync(process.execPath, [schema, 'example', name, '--compact'], {
+      const example = spawnSync(process.execPath, [schema, 'schema', 'example', name, '--compact'], {
         cwd: root,
         encoding: 'utf8',
         timeout: 5_000,
       });
       expect(example.status, `${name}: ${example.stderr || example.stdout}`).toBe(0);
 
-      const validation = spawnSync(process.execPath, [schema, 'validate', name, '-', '--compact'], {
+      const validation = spawnSync(process.execPath, [schema, 'schema', 'validate', name, '-', '--compact'], {
         cwd: root,
         encoding: 'utf8',
         input: example.stdout,

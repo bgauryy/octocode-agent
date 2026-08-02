@@ -112,12 +112,12 @@ snapshot. Command flags and payloads come from focused help and schema:
 ```bash
 octocode-awareness <command> --help
 octocode-awareness schema commands --compact
-octocode-awareness schema path memory_recall --compact
+octocode-awareness schema json-schema memory_recall --compact
 ```
 
-`schema path <name>` exposes the matching generated
-`out/schemas/<name>.schema.json` file to an agent. Consumers can import Zod-backed
-contracts from `@octocodeai/octocode-awareness/schema`.
+`schema json-schema|example|validate <name>` serve every contract dynamically —
+no static schema files ship. Consumers can import Zod-backed contracts from
+`@octocodeai/octocode-awareness/schema`.
 
 ## Documentation
 

@@ -198,7 +198,7 @@ export function parseInvocation(argv: string[] = []): ParsedInvocation {
   if (first === '--version' || first === '-v' || first === 'version') {
     return { command: 'version' };
   }
-  if (first === '--agent-help') {
+  if (first === '--agent-help' || first === '--help' || first === '-h' || first === 'help') {
     return { command: 'help' };
   }
   if (first === 'config') return { command: 'config', args: argv.slice(1) };

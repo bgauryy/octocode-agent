@@ -33,13 +33,13 @@ describe('sessionCapture', () => {
       const result = sessionCapture(db, { workspace: dir, agent_id: 'agent' });
       expect(result.ok).toBe(true);
       expect(result.captured).toBe(false);
-      expect(result.refinement_id).toBeNull();
+      expect(result.signal_id).toBeNull();
     } finally {
       cleanup();
     }
   });
 
-  it('records unresolved intents as an open handoff refinement', () => {
+  it('records unresolved intents as an open broadcast handoff signal', () => {
     const db = freshDb();
     const { path, cleanup } = tempFile();
     try {
@@ -60,17 +60,29 @@ describe('sessionCapture', () => {
 
       expect(result.ok).toBe(true);
       expect(result.captured).toBe(true);
-      expect(result.refinement_id).toMatch(/^ref_/);
+      expect(result.signal_id).toMatch(/^ntf_/);
       expect(result.active_runs).toBe(1);
       expect(result.files).toContain(canonicalizePath(path));
 
-      const refinement = db.prepare(
-        'SELECT remember, quality, state, files_json FROM refinements WHERE refinement_id = ?'
-      ).get(result.refinement_id) as { remember: string; quality: string; state: string; files_json: string };
-      expect(refinement.quality).toBe('handoff');
-      expect(refinement.state).toBe('open');
-      expect(refinement.remember).toContain('Review session handoff for agent-a');
-      expect(JSON.parse(refinement.files_json)).toContain(canonicalizePath(path));
+      const signal = db.prepare(
+        'SELECT kind, status, to_agent, subject, body, files_json FROM signals WHERE signal_id = ?'
+      ).get(result.signal_id) as { kind: string; status: string; to_agent: string; subject: string; body: string; files_json: string };
+      expect(signal.kind).toBe('handoff');
+      expect(signal.status).toBe('open');
+      // broadcast: any next agent in the workspace can see and resolve it —
+      // derived per-session identities churn, so self-addressing is a dead letter
+      expect(signal.to_agent).toBeNull();
+      expect(signal.subject).toContain('Review session handoff for agent-a');
+      expect(JSON.parse(signal.files_json)).toContain(canonicalizePath(path));
+
+      // one inbox: no parallel refinement row is created any more
+      const refinementCount = db.prepare('SELECT COUNT(*) AS c FROM refinements').get() as { c: number };
+      expect(refinementCount.c).toBe(0);
+
+      // dedup: capturing the same unresolved state again reuses the signal
+      const repeat = sessionCapture(db, { agent_id: 'agent-a', workspace: process.cwd(), reason: 'quit' });
+      expect(repeat.deduplicated).toBe(true);
+      expect(repeat.signal_id).toBe(result.signal_id);
     } finally {
       cleanup();
     }

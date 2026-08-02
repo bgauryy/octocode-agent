@@ -20,7 +20,6 @@ describe('build config contract', () => {
       'awareness.mjs',
       'extract-hook-files.mjs',
       'hook-runner.mjs',
-      'schema.mjs',
     ]);
   });
 
@@ -37,7 +36,6 @@ describe('build config contract', () => {
       'hook-runner',
       'index',
       'octocode-awareness',
-      'schema',
       'schema-api',
     ]);
   });

@@ -168,7 +168,7 @@ isolated.
 | RunFile | declared/active -> heartbeat/extend -> ended or expired | Presence is mandatory and advisory; it is not a lock. |
 | Lock | acquire -> renew -> release, expiry, or prune | Only `EXCLUSIVE`; reserved for sensitive work and attached to a run. |
 | Signal | publish -> deliver/read/ack -> resolve -> optional prune | Messages are coordination evidence, not authority or a task queue. |
-| Refinement | `open -> ongoing -> done` | Owned follow-up/handoff; terminal closure requires a check receipt. |
+| Refinement | `open -> ongoing -> done` | Owned repo-fix follow-up; terminal closure requires a check receipt. Session handoffs are broadcast `kind=handoff` signals, not refinements. |
 | Memory | record `ACTIVE` -> supersede/expire/archive -> optional restore or reviewed forget | Recall is a ranked lead; replacement history is immutable. |
 | Session | register/start -> prompts/turns -> compact capture -> shutdown/end | PreCompact preserves the active session; end marks it inactive without success. |
 | Projection | generate -> snapshot ages -> refresh or prune owned orphans | SQLite remains canonical; authored plan docs are preserved. |

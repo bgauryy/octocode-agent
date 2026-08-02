@@ -49,7 +49,7 @@ export interface WorkerRecoveryRisk {
   hasVerification: boolean;
 }
 
-const REQUIRED_PACKET_SECTIONS = ['goal', 'scope', 'ownership', 'acceptance', 'return'];
+const REQUIRED_PACKET_SECTIONS = ['goal', 'context', 'scope', 'ownership', 'acceptance', 'return'];
 
 type StreamHandler = (event: string, cb: (chunk: Buffer | string) => void) => void;
 type ProcessHandler = (event: string, cb: (...args: unknown[]) => void) => void;
@@ -263,8 +263,8 @@ function getAgentDisplayState(agent: AgentDisplaySource): AgentDisplayState {
   const workerStatus = agent.normalizedResult?.status;
   if (agent.status === 'killed') return 'killed';
   if (agent.status === 'failed' || workerStatus === 'failed') return 'failed';
-  if (workerStatus === 'blocked') return 'blocked';
   if (agent.status === 'running') return 'running';
+  if (workerStatus === 'blocked') return 'blocked';
   if (workerStatus === 'done' || agent.status === 'exited') return 'done';
   if (agent.status === 'idle') return 'idle';
   return 'starting';
@@ -781,6 +781,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     const lines = stdoutBuffer.split('\n');
     stdoutBuffer = lines.pop() ?? '';
     for (const line of lines) processRpcLine(record, line);
+    refreshAgentLedgerUi(ctx);
   });
   proc.stderr.on('data', (chunk) => {
     record.stderr += chunk.toString();
@@ -790,6 +791,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     }
     pushLedgerEvent(record, 'status', 'stderr received');
     touch(record);
+    refreshAgentLedgerUi(ctx);
   });
   proc.on('error', (error) => {
     record.error = error instanceof Error ? error.message : String(error);
@@ -797,6 +799,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     touch(record, 'failed');
     removePromptFiles(record);
     notifyWaiters(record);
+    refreshAgentLedgerUi(ctx);
   });
   proc.on('close', (code, signal) => {
     if (stdoutBuffer.trim()) processRpcLine(record, stdoutBuffer);
@@ -806,6 +809,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     pushLedgerEvent(record, record.status === 'failed' ? 'error' : 'exit', `process closed with code ${record.exitCode ?? 'unknown'}`);
     removePromptFiles(record);
     notifyWaiters(record);
+    refreshAgentLedgerUi(ctx);
   });
 
   // H4: Only advance to 'running' when the initial RPC write succeeded.
@@ -976,7 +980,11 @@ function countAgentStates(records: AgentDisplaySource[]): Record<AgentDisplaySta
 
 function formatAgentStateCounts(records: AgentDisplaySource[]): string {
   const counts = countAgentStates(records);
-  return `${records.length} total · ${counts.running} running · ${counts.blocked} blocked · ${counts.done} done · ${counts.failed} failed`;
+  const order: AgentDisplayState[] = ['starting', 'running', 'idle', 'blocked', 'done', 'failed', 'killed'];
+  const parts = order
+    .filter((state) => counts[state] > 0)
+    .map((state) => `${counts[state]} ${state}`);
+  return [`${records.length} total`, ...parts].join(' · ');
 }
 
 export function formatAgentLedger(): string {
@@ -1018,7 +1026,7 @@ export function formatAgentLedgerDetails(limit = 10): string {
 }
 
 function hasVisibleAgentLedgerRecords(): boolean {
-  return [...agents.values()].some((record) => !isDroppable(record) || record.normalizedResult?.status === 'blocked' || record.status === 'failed');
+  return agents.size > 0;
 }
 
 function agentLedgerWidget(theme?: PiTheme) {
@@ -1214,12 +1222,13 @@ export function registerAgentTools(
     promptGuidelines: [
       'Use spawnAgent only when delegation materially helps: independent work ownership, long-running tasks, or adversarial/coverage checks.',
       'Do not spawn agents for ordinary bug fixes/refactors that need shared context; stay in the parent or batch independent tool calls instead.',
+      'Before spawning, break the request into explicit subtasks and delegate only one independent, bounded subtask per worker.',
       'For useful parallelism, spawn all independent workers first, then use AgentMessage action:"wait" or action:"status" to collect results.',
       'Workers inherit no parent conversation but share cwd, files, and environment-backed services. Pass a bounded request packet and assign disjoint paths for any writes.',
       'spawnAgent defaults to resourceMode:"lean". Use resourceMode:"octocode" only when the worker needs Octocode extension tools.',
       'Use `pi -ne --list-models [search]` as the source of truth for the user-configured model table; do not read hardcoded config paths.',
       'Pass model for each worker: fastest capable configured model for small tasks, balanced coding/reasoning model for medium tasks, strongest configured model for large/high-risk work.',
-      'Spawned-agent registry and output previews live in the current Pi process; collect needed results before session shutdown or reload.',
+      'Spawned-agent registry and output previews live in the current Pi process and are visible in /octocode-agents plus the below-editor ledger; collect needed results before session shutdown or reload.',
       'spawnAgent prevents recursive subagents: workers never receive spawnAgent or AgentMessage, even in resourceMode:"octocode" or resourceMode:"default".',
     ],
     parameters: Type.Object({
@@ -1286,7 +1295,7 @@ export function registerAgentTools(
       'Manage spawned agents. Actions: list, status, send, steer, followUp, wait, kill, abort. Use this after spawnAgent to coordinate parallel workers.',
     promptSnippet: 'Message, wait for, list, status, or kill spawned background agents.',
     promptGuidelines: [
-      'Use AgentMessage action:"list" or action:"status" before claiming a spawned worker is done.',
+      'Use AgentMessage action:"list" or action:"status" before claiming a spawned worker is done; in the UI, also check /octocode-agents or the below-editor spawned-agent ledger for running/blocked/failed workers.',
       'Use AgentMessage action:"wait" to collect the current turn result. Idle means the turn ended, not necessarily that the delegated objective passed acceptance.',
       'AgentMessage reads the in-memory spawned-agent registry; after session shutdown or reload, spawn fresh workers instead of relying on old agentIds.',
       'Before final answers, wait/status every relevant worker, reconcile disagreements, and synthesize findings instead of dumping raw worker JSON.',

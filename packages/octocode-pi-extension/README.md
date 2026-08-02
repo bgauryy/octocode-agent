@@ -1,7 +1,7 @@
 # @octocodeai/pi-extension
 
 <div align="center">
-<img src="https://github.com/bgauryy/octocode-mcp/raw/main/packages/octocode-pi-extension/assets/logo.png" width="640px" alt="Octocode + Pi">
+<img src="../../../packages/assets/extension.png" width="640px" alt="Octocode + Pi">
 </div>
 
 Octocode’s research tools, Awareness coordination, system prompt, skills, web
@@ -22,9 +22,9 @@ The build bundles both command lines:
 | Surface | Count |
 |---|---:|
 | Native Octocode research tools | 13 |
-| Pi support tools | 7 |
+| Pi support tools | 9 |
 | Replacement edit + write + bash tools | 3 |
-| Slash commands | 6 |
+| Slash commands | 9 |
 | Bundled main-agent skills | 9 |
 
 Awareness memory and coordination are deliberately not Pi tools. Agents use the
@@ -39,6 +39,7 @@ keeps one CLI/schema contract instead of duplicating it in Pi tool definitions.
 /octocode-agents         live spawned-worker ledger and controls
 /octocode-status         health and configured surfaces
 /octocode-harness        exact live tools, commands, and skills
+/octocode-mcp            inspect/manage .pi/agent/mcp.json servers
 /octocode-setup          manage project .pi/APPEND_SYSTEM.md
 ```
 
@@ -92,7 +93,7 @@ mutation targets.
 **Why, and how to work with overrides:** [docs/OVERRIDES.md](docs/OVERRIDES.md)
 (users + developers). UI/status details: [docs/UI.md](docs/UI.md).
 
-## Support tools (7)
+## Support tools (9)
 
 | Tool | Purpose |
 |---|---|
@@ -100,6 +101,8 @@ mutation targets.
 | `chromeDebug` | Chrome DevTools Protocol operations. |
 | `browserAgent` | Multi-turn browser subagent. |
 | `spawnSubagent` | Spawn a declared packaged subagent. |
+| `MCPTool` | Dedicated SDK-backed stdio MCP bridge using `.pi/agent/mcp.json` or `~/.pi/agent/mcp.json`. |
+| `mcp` | Compatibility alias for `MCPTool`. |
 | `manage_context` | Inspect and compact Pi context. |
 | `spawnAgent` | Start a background Pi worker. |
 | `AgentMessage` | List, message, steer, wait for, abort, or kill workers. |
@@ -108,7 +111,34 @@ Awareness commands such as `attend`, `task ready`, `work start`, `signal list`,
 `memory recall`, and `reflect record` are invoked through
 `$OCTOCODE_AWARENESS_CLI`, not registered again as tools.
 
-## Slash commands (7)
+`MCPTool` includes one built-in lazy server named `octocode` that runs
+`npx -y octocode-mcp@latest` when used. Project config loads only after Pi
+trusts the project; global config always loads from `~/.pi/agent/mcp.json`.
+Configured entries can override the built-in default. `MCPTool action:list`
+returns server instructions plus every tool name, description, and schema
+summary; `action:describe` returns the full selected tool schema before
+`action:call`. Supported servers are stdio command servers via
+`@modelcontextprotocol/sdk`:
+
+```json
+{
+  "mcpServers": {
+    "octocode": {
+      "command": "npx",
+      "args": ["-y", "octocode-mcp@latest"]
+    },
+    "example": {
+      "command": "npx",
+      "args": ["-y", "@example/mcp-server"],
+      "env": {},
+      "cwd": ".",
+      "timeoutMs": 30000
+    }
+  }
+}
+```
+
+## Slash commands (9)
 
 | Command | Purpose |
 |---|---|
@@ -117,6 +147,7 @@ Awareness commands such as `attend`, `task ready`, `work start`, `signal list`,
 | `/octocode-harness` | Exact registered surface inventory. |
 | `/octocode-agents` | Live spawned-worker ledger with inspect, kill, prune, hide, and risk badges. |
 | `/octocode-cron` / `/cron` | List, check, or cancel session-scoped Octocode jobs. |
+| `/octocode-mcp` / `/mcp` | Inspect/manage configured stdio MCP servers. |
 | `/octocode-setup` | Install/update the managed system-prompt block; `--global` targets user scope. |
 | `/octocode-skills-update` | Refresh bundled skill installs. |
 Memory maintenance, recall, recording, signals, tasks, verification, and reflection

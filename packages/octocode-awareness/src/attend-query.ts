@@ -39,7 +39,7 @@ export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): At
       Number(String(right['agent_id'] ?? '') === agentId) - Number(String(left['agent_id'] ?? '') === agentId));
   }
   const handoffRows = (rawWorkboard['Inbox'] ?? [])
-    .filter(row => row['item_type'] === 'refinement' && row['quality'] === 'handoff')
+    .filter(row => row['item_type'] === 'signal' && String(row['title'] ?? '').startsWith('handoff:'))
     .slice(0, packetLimit)
     .map(row => compact ? compactRow(row) : row);
   const workboard = compact ? compactWorkboard(rawWorkboard, packetLimit) : rawWorkboard;

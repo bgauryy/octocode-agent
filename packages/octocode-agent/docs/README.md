@@ -9,4 +9,4 @@ Docs in this directory belong to the branded launcher package. Keep launcher, Pi
 | [coding-agent-failure-modes.md](coding-agent-failure-modes.md) | Research inventory of common coding-agent failures. |
 | [coding-agent-mistakes-prevention.md](coding-agent-mistakes-prevention.md) | Prevention checklist mapped to agent/harness behavior. |
 
-Command truth lives in `package.json` scripts and the launcher binary help (`octocode-agent --agent-help`, `octocode-agent config`, `octocode-agent models`). If a command changes, update code/help first and keep docs as routing or rationale only.
+Command truth lives in `package.json` scripts and the launcher binary help (`octocode-agent --help`, `octocode-agent config`, `octocode-agent models`). If a command changes, update code/help first and keep docs as routing or rationale only.

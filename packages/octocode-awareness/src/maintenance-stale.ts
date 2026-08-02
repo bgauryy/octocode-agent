@@ -30,7 +30,7 @@ export interface NotifyGetResult {
 export interface SessionCaptureResult {
   ok: true;
   captured: boolean;
-  refinement_id: string | null;
+  signal_id: string | null;
   pending_runs: number;
   active_runs: number;
   files: string[];

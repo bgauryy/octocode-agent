@@ -8,7 +8,7 @@ This monorepo is the platform. Use what we ship — do not reinvent with host de
 
 | Need | Use | Not |
 |---|---|---|
-| Local code search / structure / files / content / binary / LSP | Octocode MCP **or** `node packages/octocode/out/octocode.js tools …` — all local tools below | bare `find` / `grep` / `rg` / `cat` / `ls` |
+| Local code search / structure / files / content / binary / LSP | Octocode MCP **or** `npx octocode tools …` — all local tools below | bare `find` / `grep` / `rg` / `cat` / `ls` |
 | GitHub code, repos, PRs/commits, clone | same — all GitHub tools below | ad-hoc `gh` / raw API (except when Octocode is unavailable) |
 | npm lookup | `npmSearch` | ad-hoc registry curls |
 | Unified research / OQL | CLI `search` (and `oqlSearch` when `ENABLE_OQL`) | hand-rolled multi-tool scripts |
@@ -47,7 +47,7 @@ Three workspace packages (plus one vendored CLI build when present). Prefer each
 
 Config: `@octocodeai/config` is external to this checkout. `packages/octocode-pi-extension/src/env.ts` re-exports it for repo-time use; the extension build inlines it into `dist/env.js` and injects `octocode-config.mjs` into skill script directories.
 
-Vendored CLI: `packages/octocode/out/octocode.js` is the build output of the external `octocode` CLI — run it locally as `node packages/octocode/out/octocode.js` (aliased `$OCTO`). It has no `package.json` here and is not a workspace member.
+Octocode CLI: this checkout does not vendor the external `octocode` CLI. Wherever `$OCTO` appears below, use `OCTO='npx octocode'` (or a local build of the sibling `octocode` monorepo when you have one). Prefer the Octocode MCP tools for research; use the CLI only for management tasks (`skill`, `lsp-server`, `auth`) and `search`/`tools` introspection.
 
 External (not in this workspace): `@octocodeai/octocode-tools-core` (tool runners / Octokit / security / providers), `@octocodeai/octocode-engine` (Rust/napi: search, minify, AST, LSP, secrets), `@octocodeai/octocode-core` (schemas, tool descriptions, system prompt text), `@octocodeai/mcp` (stdio MCP server), `octocode-mcp-vscode` (VS Code / multi-editor extension). Published from sibling repos, pulled in as npm deps by `@octocodeai/pi-extension`. Never hand-write tool guidance in interface packages.
 
@@ -74,30 +74,28 @@ Evidence: research analyze packets are **candidates** — upgrade with `target:g
 ## Build and local run
 
 ```bash
-yarn build · yarn test · yarn lint · yarn typecheck
+yarn build · yarn test · yarn lint · yarn typecheck   # root: fan out to all workspaces
 yarn workspace <pkg-name> verify          # per-package (no root `verify`)
-yarn build:native:all · yarn platforms:check
-yarn local:fix · yarn local:check          # workspace:* ↔ publish pins
-yarn sync:version:publish                    # before publish: restore pins
 ```
+
+Native-engine builds, platform checks, and version/pin sync scripts live in the sibling `octocode` monorepo, not here.
 
 Coverage target 90% (Vitest + v8). Rust/engine tests live in the sibling `octocode-engine` repo, not here.
 
 Local end-to-end (when changing a local package):
 
 ```bash
-yarn local:fix
 yarn workspace @octocodeai/octocode-awareness build
 yarn workspace @octocodeai/pi-extension build
 yarn workspace octocode-agent build
-OCTO='node packages/octocode/out/octocode.js'
+OCTO='npx octocode'   # no vendored CLI in this checkout
 $OCTO --help
 $OCTO context --compact
 $OCTO tools --json
 $OCTO tools localSearchCode lspGetSemantics --scheme
 ```
 
-Prefer `node packages/octocode/out/octocode.js` over global `octocode` / npx when validating. After editing a local package, rebuild it (`yarn workspace <pkg> build`) before claiming done.
+After editing a local package, rebuild it (`yarn workspace <pkg> build`) before claiming done.
 
 ## Awareness
 

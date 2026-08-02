@@ -1,13 +1,13 @@
-import { randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { evictExpiredLocks } from './db.js';
 import { canonicalizePath, fillScope, normalizeWorkspacePath } from './git.js';
-import { normalizeArtifact, parseJsonList, utcNow } from './helpers.js';
+import { normalizeArtifact, parseJsonList } from './helpers.js';
+import { insertNotification } from './notifications-core.js';
 import { boundedMs, compactText, DEFAULT_RETRY_MS, DEFAULT_WAIT_MS, listSummary, MAX_RETRY_MS, MAX_WAIT_MS, SESSION_CAPTURE_FILE_LIMIT, SESSION_CAPTURE_RUN_DETAIL_LIMIT, SESSION_CAPTURE_RUN_FILE_LIMIT, SessionCaptureResult, WaitForLockResult } from './maintenance-stale.js';
 import { gitDirtyFiles } from './maintenance-briefing.js';
 
-/** REAL: Capture unresolved session state as an open handoff refinement. */
+/** REAL: Capture unresolved session state as an open, self-addressed handoff signal (one inbox; no parallel refinement row). */
 export function sessionCapture(
   db: DatabaseSync,
   params: Record<string, unknown> = {},
@@ -76,7 +76,7 @@ export function sessionCapture(
     return {
       ok: true,
       captured: false,
-      refinement_id: null,
+      signal_id: null,
       pending_runs: 0,
       active_runs: 0,
       files: [],
@@ -86,8 +86,6 @@ export function sessionCapture(
     };
   }
 
-  const now = utcNow();
-  const refinementId = 'ref_' + randomUUID().replace(/-/g, '');
   const allCapturedFiles = [...new Set([...files, ...dirtyFiles])];
   const capturedFiles = allCapturedFiles.slice(0, SESSION_CAPTURE_FILE_LIMIT);
   const capturedDirtyFiles = dirtyFiles.slice(0, SESSION_CAPTURE_FILE_LIMIT);
@@ -118,11 +116,11 @@ export function sessionCapture(
   ].filter(Boolean).join(' ');
 
   const existing = db.prepare(
-    `SELECT refinement_id FROM refinements
-      WHERE agent_id = ? AND workspace_path = ? AND artifact IS ? AND repo IS ? AND ref IS ?
-        AND quality = 'handoff' AND state IN ('open', 'ongoing')
-        AND files_json = ? AND reasoning = ? AND remember = ?
-      ORDER BY datetime(updated_at) DESC LIMIT 1`,
+    `SELECT signal_id FROM signals
+      WHERE from_agent = ? AND workspace_path = ? AND artifact IS ? AND repo IS ? AND ref IS ?
+        AND kind = 'handoff' AND status = 'open'
+        AND files_json = ? AND subject = ? AND body = ?
+      ORDER BY datetime(created_at) DESC LIMIT 1`,
   ).get(
     agentId,
     workspacePath,
@@ -130,15 +128,15 @@ export function sessionCapture(
     scope.repo,
     scope.ref,
     JSON.stringify(capturedFiles),
-    reasoning,
     remember,
-  ) as { refinement_id: string } | undefined;
+    reasoning,
+  ) as { signal_id: string } | undefined;
   if (existing) {
     return {
       ok: true,
       captured: false,
       deduplicated: true,
-      refinement_id: existing.refinement_id,
+      signal_id: existing.signal_id,
       pending_runs: pendingRuns,
       active_runs: activeRuns,
       files: capturedFiles,
@@ -152,29 +150,27 @@ export function sessionCapture(
     };
   }
 
-  db.prepare(
-    `INSERT INTO refinements (
-       refinement_id, agent_id, workspace_path, repo, ref,
-       artifact, files_json, reasoning, remember, quality, state, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'handoff', 'open', ?, ?)`
-  ).run(
-    refinementId,
+  const published = insertNotification(db, {
     agentId,
+    toAgent: null, // broadcast: derived per-session identities churn (126 IDs/213
+    // sessions observed), so self-addressing is a dead letter — any next agent in
+    // the workspace sees and resolves the handoff
+    kind: 'handoff',
+    subject: remember,
+    body: reasoning,
+    files: capturedFiles,
+    importance: pendingRuns > 0 ? 7 : 5,
     workspacePath,
-    scope.repo,
-    scope.ref,
     artifact,
-    JSON.stringify(capturedFiles),
-    reasoning,
-    remember,
-    now,
-    now,
-  );
+    repo: scope.repo,
+    ref: scope.ref,
+    cwd: workspacePath,
+  });
 
   return {
     ok: true,
     captured: true,
-    refinement_id: refinementId,
+    signal_id: published.signal_id,
     pending_runs: pendingRuns,
     active_runs: activeRuns,
     files: capturedFiles,

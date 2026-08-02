@@ -116,10 +116,10 @@ describe('sessionCapture — tasks table', () => {
     const res = sessionCapture(db, { agent_id: 'agent-cap', workspace: '/ws' });
     expect(res.ok).toBe(true);
     expect(res.captured).toBe(false);
-    expect(res.refinement_id).toBeNull();
+    expect(res.signal_id).toBeNull();
   });
 
-  it('captures active tasks from the tasks table and creates a handoff refinement', () => {
+  it('captures active tasks from the tasks table and publishes a handoff signal', () => {
     const db = freshDb();
     insertTask(db, { agentId: 'agent-cap', workspacePath: '/ws' });
 
@@ -127,14 +127,15 @@ describe('sessionCapture — tasks table', () => {
     expect(res.ok).toBe(true);
     expect(res.captured).toBe(true);
     expect(res.active_runs).toBeGreaterThanOrEqual(1);
-    expect(res.refinement_id).toBeTruthy();
+    expect(res.signal_id).toBeTruthy();
 
-    // Verify the refinement was written to the refinements table
-    const ref = db.prepare(
-      "SELECT quality, state FROM refinements WHERE refinement_id = ?"
-    ).get(res.refinement_id!) as { quality: string; state: string } | undefined;
-    expect(ref?.quality).toBe('handoff');
-    expect(ref?.state).toBe('open');
+    // Verify the handoff was written to the signals table (one inbox)
+    const sig = db.prepare(
+      "SELECT kind, status, to_agent FROM signals WHERE signal_id = ?"
+    ).get(res.signal_id!) as { kind: string; status: string; to_agent: string | null } | undefined;
+    expect(sig?.kind).toBe('handoff');
+    expect(sig?.status).toBe('open');
+    expect(sig?.to_agent).toBeNull();
   });
 
   it('includes context_ref in handoff task details', () => {
@@ -148,10 +149,10 @@ describe('sessionCapture — tasks table', () => {
     const res = sessionCapture(db, { agent_id: 'agent-cap', workspace: '/ws' });
     expect(res.captured).toBe(true);
 
-    const ref = db.prepare(
-      'SELECT reasoning FROM refinements WHERE refinement_id = ?'
-    ).get(res.refinement_id!) as { reasoning: string } | undefined;
-    expect(ref?.reasoning).toContain('plan=docs/plans/session.md');
+    const sig = db.prepare(
+      'SELECT body FROM signals WHERE signal_id = ?'
+    ).get(res.signal_id!) as { body: string } | undefined;
+    expect(sig?.body).toContain('plan=docs/plans/session.md');
   });
 
   it('bounds handoff file arrays and visible task text', () => {
@@ -174,14 +175,14 @@ describe('sessionCapture — tasks table', () => {
     expect(res.file_count).toBe(60);
     expect(res.omitted_files).toBe(40);
 
-    const ref = db.prepare(
-      'SELECT reasoning, remember, files_json FROM refinements WHERE refinement_id = ?'
-    ).get(res.refinement_id!) as { reasoning: string; remember: string; files_json: string };
-    expect(JSON.parse(ref.files_json)).toHaveLength(20);
-    expect(ref.reasoning).toContain('(+57 more)');
-    expect(ref.remember).toContain('showing 10 of 60');
-    expect(ref.remember).toContain('50 omitted');
-    expect(ref.reasoning).not.toContain('file-59.ts');
+    const sig = db.prepare(
+      'SELECT body, subject, files_json FROM signals WHERE signal_id = ?'
+    ).get(res.signal_id!) as { body: string; subject: string; files_json: string };
+    expect(JSON.parse(sig.files_json)).toHaveLength(20);
+    expect(sig.body).toContain('(+57 more)');
+    expect(sig.subject).toContain('showing 10 of 60');
+    expect(sig.subject).toContain('50 omitted');
+    expect(sig.body).not.toContain('file-59.ts');
   });
 
   it('does not create a duplicate handoff when unresolved state is unchanged', () => {
@@ -192,9 +193,9 @@ describe('sessionCapture — tasks table', () => {
     const second = sessionCapture(db, { agent_id: 'agent-cap', workspace: '/ws' });
 
     expect(first.captured).toBe(true);
-    expect(second).toMatchObject({ captured: false, deduplicated: true, refinement_id: first.refinement_id });
+    expect(second).toMatchObject({ captured: false, deduplicated: true, signal_id: first.signal_id });
     const count = db.prepare(
-      "SELECT COUNT(*) AS c FROM refinements WHERE agent_id = 'agent-cap' AND quality = 'handoff' AND state = 'open'"
+      "SELECT COUNT(*) AS c FROM signals WHERE from_agent = 'agent-cap' AND kind = 'handoff' AND status = 'open'"
     ).get() as { c: number };
     expect(count.c).toBe(1);
   });

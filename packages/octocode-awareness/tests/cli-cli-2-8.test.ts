@@ -132,8 +132,8 @@ it('focused help exposes skill-prescribed reflection and projection flags', () =
     expect(inject.stdout).toContain('--prune-orphans');
   });
 it('every command in schema commands has focused help or is schema/hook utility', () => {
-    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
-    const result = spawnSync(NODE, [schemaScript, 'commands', '--all', '--compact'], { encoding: 'utf8', timeout: 5000 });
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+    const result = spawnSync(NODE, [schemaScript, 'schema', 'commands', '--all', '--compact'], { encoding: 'utf8', timeout: 5000 });
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout) as { commands: Array<{ command: string }> };
     const commandNames = parsed.commands.map((row) => row.command);
@@ -160,20 +160,20 @@ it('generated skill CLI delegates schema commands to its sibling schema script',
     ]));
   });
 it('every listed schema resolves and its example validates', { timeout: 30_000 }, () => {
-    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
-    expect(existsSync(schemaScript), 'generated schema.mjs must exist after build').toBe(true);
-    const schema = spawnSync(NODE, [schemaScript, 'list'], { encoding: 'utf8', timeout: 5000 });
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+    expect(existsSync(schemaScript), 'generated awareness.mjs must exist after build').toBe(true);
+    const schema = spawnSync(NODE, [schemaScript, 'schema', 'list'], { encoding: 'utf8', timeout: 5000 });
     expect(schema.status).toBe(0);
     const listed = JSON.parse(schema.stdout) as string[];
     for (const key of listed) {
-      const jsonSchema = spawnSync(NODE, [schemaScript, 'json-schema', key], { encoding: 'utf8', timeout: 5000 });
+      const jsonSchema = spawnSync(NODE, [schemaScript, 'schema', 'json-schema', key], { encoding: 'utf8', timeout: 5000 });
       expect(jsonSchema.status, `${key} json-schema failed: ${jsonSchema.stderr || jsonSchema.stdout}`).toBe(0);
 
-      const example = spawnSync(NODE, [schemaScript, 'example', key], { encoding: 'utf8', timeout: 5000 });
+      const example = spawnSync(NODE, [schemaScript, 'schema', 'example', key], { encoding: 'utf8', timeout: 5000 });
       expect(example.status, `${key} example failed: ${example.stderr || example.stdout}`).toBe(0);
       expect(() => JSON.parse(example.stdout)).not.toThrow();
 
-      const validated = spawnSync(NODE, [schemaScript, 'validate', key, '-'], {
+      const validated = spawnSync(NODE, [schemaScript, 'schema', 'validate', key, '-'], {
         encoding: 'utf8',
         input: example.stdout,
         timeout: 5000,
@@ -182,17 +182,17 @@ it('every listed schema resolves and its example validates', { timeout: 30_000 }
     }
   });
 it('memory label schema stays aligned with runtime labels', () => {
-    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
-    expect(existsSync(schemaScript), 'generated schema.mjs must exist after build').toBe(true);
-    const schema = spawnSync(NODE, [schemaScript, 'json-schema', 'memory_record'], { encoding: 'utf8', timeout: 5000 });
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+    expect(existsSync(schemaScript), 'generated awareness.mjs must exist after build').toBe(true);
+    const schema = spawnSync(NODE, [schemaScript, 'schema', 'json-schema', 'memory_record'], { encoding: 'utf8', timeout: 5000 });
     expect(schema.status).toBe(0);
     expect(schema.stdout).toContain('"EXPERIENCE"');
     expect(schema.stdout).toContain('"OVERRIDE"');
   });
 it('schema exposes only implemented memory recall options', () => {
-    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
-    expect(existsSync(schemaScript), 'generated schema.mjs must exist after build').toBe(true);
-    const schema = spawnSync(NODE, [schemaScript, 'json-schema', 'memory_recall'], { encoding: 'utf8', timeout: 5000 });
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+    expect(existsSync(schemaScript), 'generated awareness.mjs must exist after build').toBe(true);
+    const schema = spawnSync(NODE, [schemaScript, 'schema', 'json-schema', 'memory_recall'], { encoding: 'utf8', timeout: 5000 });
     expect(schema.status).toBe(0);
     const parsed = JSON.parse(schema.stdout) as { properties: Record<string, Record<string, unknown>> };
     const sortSchema = parsed.properties['sort'];
@@ -202,16 +202,16 @@ it('schema exposes only implemented memory recall options', () => {
     expect(parsed.properties).not.toHaveProperty('half_life');
   });
 it('attend schema exposes the agent identity used by CLI and skill guidance', () => {
-    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
-    const schema = spawnSync(NODE, [schemaScript, 'json-schema', 'attend'], { encoding: 'utf8', timeout: 5000 });
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+    const schema = spawnSync(NODE, [schemaScript, 'schema', 'json-schema', 'attend'], { encoding: 'utf8', timeout: 5000 });
     expect(schema.status).toBe(0);
     const parsed = JSON.parse(schema.stdout) as { properties: Record<string, Record<string, unknown>> };
     expect(parsed.properties).toHaveProperty('agent_id');
   });
 it('schema aligns pre-flight ttl and retry contract with CLI/runtime', () => {
-    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
-    expect(existsSync(schemaScript), 'generated schema.mjs must exist after build').toBe(true);
-    const schema = spawnSync(NODE, [schemaScript, 'json-schema', 'lock_acquire'], { encoding: 'utf8', timeout: 5000 });
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+    expect(existsSync(schemaScript), 'generated awareness.mjs must exist after build').toBe(true);
+    const schema = spawnSync(NODE, [schemaScript, 'schema', 'json-schema', 'lock_acquire'], { encoding: 'utf8', timeout: 5000 });
     expect(schema.status).toBe(0);
     const parsed = JSON.parse(schema.stdout) as { properties: Record<string, Record<string, unknown>> };
     const ttlSchema = parsed.properties['ttl_minutes'];
@@ -230,27 +230,27 @@ it('schema aligns pre-flight ttl and retry contract with CLI/runtime', () => {
     expect(retrySchema?.['maximum']).toBe(300);
   });
 it('schema covers runtime drift cases for verify, audit, and handoff refinements', () => {
-    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
-    expect(existsSync(schemaScript), 'generated schema.mjs must exist after build').toBe(true);
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+    expect(existsSync(schemaScript), 'generated awareness.mjs must exist after build').toBe(true);
 
-    const verify = spawnSync(NODE, [schemaScript, 'json-schema', 'verify'], { encoding: 'utf8', timeout: 5000 });
+    const verify = spawnSync(NODE, [schemaScript, 'schema', 'json-schema', 'verify'], { encoding: 'utf8', timeout: 5000 });
     expect(verify.status).toBe(0);
     const verifySchema = JSON.parse(verify.stdout) as { properties: Record<string, Record<string, unknown>> };
     expect(verifySchema.properties['status']?.['enum']).toEqual(['SUCCESS', 'FAILED']);
 
-    const audit = spawnSync(NODE, [schemaScript, 'json-schema', 'verify_audit'], { encoding: 'utf8', timeout: 5000 });
+    const audit = spawnSync(NODE, [schemaScript, 'schema', 'json-schema', 'verify_audit'], { encoding: 'utf8', timeout: 5000 });
     expect(audit.status).toBe(0);
     expect(audit.stdout).not.toContain('"abandon"');
 
-    const refinement = spawnSync(NODE, [schemaScript, 'json-schema', 'refinement'], { encoding: 'utf8', timeout: 5000 });
+    const refinement = spawnSync(NODE, [schemaScript, 'schema', 'json-schema', 'refinement'], { encoding: 'utf8', timeout: 5000 });
     expect(refinement.status).toBe(0);
     const refinementSchema = JSON.parse(refinement.stdout) as { properties: Record<string, Record<string, unknown>> };
     expect(refinementSchema.properties['quality']?.['enum']).toEqual(['good', 'bad', 'handoff', 'instructions']);
   });
 it('schema exposes implemented forget scope filters', () => {
-    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
-    expect(existsSync(schemaScript), 'generated schema.mjs must exist after build').toBe(true);
-    const schema = spawnSync(NODE, [schemaScript, 'json-schema', 'forget_memory'], { encoding: 'utf8', timeout: 5000 });
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+    expect(existsSync(schemaScript), 'generated awareness.mjs must exist after build').toBe(true);
+    const schema = spawnSync(NODE, [schemaScript, 'schema', 'json-schema', 'forget_memory'], { encoding: 'utf8', timeout: 5000 });
     expect(schema.status).toBe(0);
     const parsed = JSON.parse(schema.stdout) as { properties: Record<string, Record<string, unknown>> };
     expect(parsed.properties['workspace_path']).toBeDefined();

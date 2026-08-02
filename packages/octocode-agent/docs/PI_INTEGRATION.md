@@ -125,12 +125,9 @@ extension commands. On 0.80.x, `registerCommand` **keeps all** same-named comman
 assigns numeric suffixes in load order (`/review:1`, `/review:2`) (`extensions.md`
 §registerCommand). Implication: name collisions no longer silently drop our command — but
 the `/octocode` umbrella is still the right UX (one discoverable namespace) and avoids
-`:1` suffixes. `/new` (not `/clear`) remains Pi's native wipe; a `/clear` alias is still
-free and maps to `ctx.newSession()`.
+`:1` suffixes. `/new` (not `/clear`) remains Pi's native wipe; Octocode exposes reset/compaction through the guarded `manage_context` tool and the private `_octocode-clear-context-impl` command.
 
-The core registers: `octocode-status`, `octocode-setup`, `octocode-mcp-install`,
-`octocode-handoff` (internal), `octocode-skills-update`. Model-facing tools:
-`compact_context`, `clear_context`, `handoff_context`, `memory_recall/record/reflect`.
+The core registers: `/octocode`, `/octocode-status`, `/octocode-harness`, `/octocode-agents`, `/octocode-cron` (`/cron` alias), `/octocode-mcp` (`/mcp` alias), `/octocode-setup`, and `/octocode-skills-update`. Model-facing support tools include `web`, `chromeDebug`, `browserAgent`, `spawnSubagent`, `MCPTool` (`mcp` alias), `manage_context`, `spawnAgent`, and `AgentMessage`. Awareness is driven through the bundled `octocode-awareness` CLI and skill hooks, not legacy memory tools.
 
 ---
 

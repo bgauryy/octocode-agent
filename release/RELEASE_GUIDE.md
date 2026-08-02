@@ -42,7 +42,8 @@ octocode (CLI)                                    ✅ publish
   └─ @octocodeai/octocode-tools-core + @octocodeai/config  ← BUNDLED by esbuild (devDeps), NOT runtime deps
 
 @octocodeai/octocode-awareness                    ✅ publish
-  └─ (none — Node builtins only; Zod is bundled into schema.mjs)
+  └─ (none — Node builtins only; Zod is bundled into the CLI, which serves
+     schemas dynamically: `schema json-schema|example|validate`)
      shared plans/tasks, advisory file work, exclusive locks, hooks, and skills
 
 @octocodeai/pi-extension                          ✅ publish
@@ -52,6 +53,10 @@ octocode (CLI)                                    ✅ publish
   └─ @octocodeai/config  ← BUNDLED (devDep): inlined into dist/env.js AND copied into
        each skill's scripts/ as octocode-config.mjs at build time. NOT a runtime dep —
        the published extension needs nothing from npm for env/config.
+
+octocode-agent (branded launcher CLI)             ✅ publish  — the `npx octocode-agent` entry
+  ├─ @earendil-works/pi-coding-agent                  (runtime dep — Pi SDK host)
+  └─ @octocodeai/pi-extension                         (runtime dep — loaded in-process)
 
 octocode-mcp-vscode (VS Code extension)           ✅ publish  (separate release)
 
@@ -274,6 +279,9 @@ npm publish packages/octocode-awareness --access public --provenance
 
 # ── Pi extension ────────────────────────────────────────────────────
 npm publish packages/octocode-pi-extension --access public --provenance
+
+# ── Branded launcher (after the extension it embeds) ───────────────────
+npm publish packages/octocode-agent --access public --provenance
 ```
 
 ### Restore workspace refs after publish

@@ -11,6 +11,33 @@ function freshDb(): DatabaseSync {
 }
 
 describe('notifications', () => {
+  it('inbox includes handoffs (broadcast or self-addressed) but not own non-handoff broadcasts', () => {
+    const db = freshDb();
+    // broadcast handoff from self (sessionCapture pattern): visible when the same
+    // identity returns AND to any other agent in the workspace
+    const broadcastHandoff = insertNotification(db, {
+      agentId: 'agent-a', kind: 'handoff',
+      subject: 'resume pending runs', workspacePath: '/repo',
+    });
+    // self-addressed handoff: also visible
+    const selfHandoff = insertNotification(db, {
+      agentId: 'agent-a', toAgent: 'agent-a', kind: 'handoff',
+      subject: 'self handoff', workspacePath: '/repo',
+    });
+    // own non-handoff broadcast — must stay excluded from own inbox
+    insertNotification(db, {
+      agentId: 'agent-a', kind: 'fyi', subject: 'own broadcast', workspacePath: '/repo',
+    });
+    const own = getNotifications(db, { agentId: 'agent-a', workspacePath: '/repo' });
+    const ownIds = own.signals.map(n => n.signal_id);
+    expect(ownIds).toContain(broadcastHandoff.signal_id);
+    expect(ownIds).toContain(selfHandoff.signal_id);
+    expect(own.signals.some(n => n.subject === 'own broadcast')).toBe(false);
+    // a different agent in the workspace also sees the broadcast handoff
+    const peer = getNotifications(db, { agentId: 'agent-b', workspacePath: '/repo' });
+    expect(peer.signals.map(n => n.signal_id)).toContain(broadcastHandoff.signal_id);
+  });
+
   it('enforces importance bounds in the domain layer', () => {
     const db = freshDb();
     for (const importance of [0, 1.5, 11]) {

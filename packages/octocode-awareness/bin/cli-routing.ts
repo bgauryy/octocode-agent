@@ -244,7 +244,7 @@ export function packageSkillScriptPath(...segments: string[]): string {
     join(here, '..', 'skills', 'octocode-awareness', 'scripts'),
   ].filter((candidate): candidate is string => Boolean(candidate));
   const scriptsDir = candidates.find((candidate) =>
-    existsSync(join(candidate, 'schema.mjs')) || existsSync(join(candidate, 'hooks')),
+    existsSync(join(candidate, 'awareness.mjs')) || existsSync(join(candidate, 'hooks')),
   ) ?? candidates[0]!;
   return join(scriptsDir, ...segments);
 }
