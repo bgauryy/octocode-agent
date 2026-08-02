@@ -53,21 +53,48 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-const yarnPath = process.env.npm_execpath;
-assert(yarnPath && existsSync(yarnPath), 'pack verification must run through the repository Yarn runtime');
-const packLines = run(yarnPath, ['pack', '--dry-run', '--json'], {
+const packRunner = process.env.npm_execpath;
+assert(packRunner && existsSync(packRunner), 'pack verification must run through a package-manager runtime (yarn or npm)');
+const isYarn = /yarn/i.test(packRunner);
+// npm_execpath is a JS entry under npm (needs node) but may be an executable
+// shell shim under yarn (must be executed directly).
+const [packCommand, packPrefixArgs] = /\.[cm]?js$/.test(packRunner)
+  ? [process.execPath, [packRunner]]
+  : [packRunner, []];
+const packOutput = run(packCommand, [...packPrefixArgs, 'pack', '--dry-run', '--json'], {
   env: { ...process.env, OCTOCODE_VERIFY_PACKAGE_INNER: '1' },
 });
-// yarn pack --json emits NDJSON, but prepack lifecycle output (yarn build
-// banners) is interleaved on the same stdout — parse only valid JSON rows.
-const files = packLines.trim().split('\n').flatMap((line) => {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith('{')) return [];
-  let row;
-  try { row = JSON.parse(trimmed); } catch { return []; }
-  return row && typeof row === 'object' && row.location ? [String(row.location)] : [];
-});
-assert(files.length > 0, 'yarn pack --dry-run --json produced no parseable file rows');
+
+/**
+ * Extract the packed file list from either runner's --json output. Lifecycle
+ * (prepack → yarn build) banners are interleaved on the same stdout, so parse
+ * defensively:
+ * - yarn pack --json: NDJSON rows, one { location } object per line.
+ * - npm pack --json: one pretty-printed JSON array [{ files: [{ path }] }],
+ *   starting at the first line that begins with '['.
+ */
+function parsePackedFiles(output, yarn) {
+  if (yarn) {
+    return output.trim().split('\n').flatMap((line) => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('{')) return [];
+      let row;
+      try { row = JSON.parse(trimmed); } catch { return []; }
+      return row && typeof row === 'object' && row.location ? [String(row.location)] : [];
+    });
+  }
+  const lines = output.split('\n');
+  const start = lines.findIndex((line) => line.trimStart().startsWith('['));
+  if (start === -1) return [];
+  let parsed;
+  try { parsed = JSON.parse(lines.slice(start).join('\n')); } catch { return []; }
+  const entry = Array.isArray(parsed) ? parsed[0] : parsed;
+  const rows = entry && typeof entry === 'object' && Array.isArray(entry.files) ? entry.files : [];
+  return rows.flatMap((row) => (row && typeof row === 'object' && row.path ? [String(row.path)] : []));
+}
+
+const files = parsePackedFiles(packOutput, isYarn);
+assert(files.length > 0, `${isYarn ? 'yarn' : 'npm'} pack --dry-run --json produced no parseable file rows`);
 for (const required of [
   'LICENSE',
   'README.md',
@@ -86,8 +113,8 @@ for (const required of [
 const topLevelGroups = new Set(files.map((path) => path.split('/')[0]));
 for (const group of topLevelGroups) {
   assert(
-    ['out', 'LICENSE', 'README.md', 'package.json'].includes(group),
-    `unexpected top-level published path "${group}" — everything but out/, LICENSE, README.md, package.json must nest under out/`,
+    ['out', 'skills', 'LICENSE', 'README.md', 'package.json'].includes(group),
+    `unexpected top-level published path "${group}" — everything but out/, skills/, LICENSE, README.md, package.json must nest under out/`,
   );
 }
 assert(pkg.types === './out/types/src/index.d.ts', `package types must point at the verified declaration entry, got ${String(pkg.types)}`);
@@ -96,12 +123,17 @@ assert(Object.keys(pkg.dependencies ?? {}).length === 0, 'Awareness must keep ze
 assert(!files.some((path) => path.startsWith('dist/')), 'legacy dist/ artifacts must not ship');
 assert(packageSkills.length > 0, 'skill discovery found zero skills under package skills/ or out/skills/');
 for (const skill of packageSkills) {
+  // Both copies ship deliberately: skills/ is the user-facing tree (works
+  // without the extension); out/skills/ is the runtime-bundled copy.
   assert(
-    files.filter((path) => path.endsWith(`skills/${skill}/SKILL.md`)).length === 1,
-    `packed artifact must contain exactly one ${skill} skill tree`,
+    files.includes(`skills/${skill}/SKILL.md`),
+    `packed artifact must ship skills/${skill}/SKILL.md`,
+  );
+  assert(
+    files.includes(`out/skills/${skill}/SKILL.md`),
+    `packed artifact must ship out/skills/${skill}/SKILL.md`,
   );
 }
-assert(!files.some((path) => path.startsWith('skills/')), 'source skills/ must not duplicate out/skills/');
 assert(!files.some((path) => path.endsWith('.map')), 'source maps must not ship in the package');
 assert(
   !files.some((path) => path.endsWith('octocode-config.mjs')),

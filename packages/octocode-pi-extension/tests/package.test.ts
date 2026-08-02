@@ -292,10 +292,10 @@ test('build composes the system prompt from its section files', async () => {
   assert.match(SYSTEM_PROMPT, /Do not inspect hardcoded config paths/);
   assert.match(SYSTEM_PROMPT, /smallest capable configured model/);
   assert.match(SYSTEM_PROMPT, /Classify task shape: goal, unknowns, dependencies, shared state, proof/);
-  assert.match(SYSTEM_PROMPT, /Task breakdown gate: at the start of every task/);
+  assert.match(SYSTEM_PROMPT, /Task breakdown gate \(canonical/);
   assert.match(SYSTEM_PROMPT, /you MUST break it into explicit tasks before acting/);
   assert.match(SYSTEM_PROMPT, /independent known-input tool calls; launch together, synthesize after/);
-  assert.match(SYSTEM_PROMPT, /large initiatives.*bounded tasks rather than one giant worker/s);
+  assert.match(SYSTEM_PROMPT, /Fan out in bounded tasks, never one giant worker/);
   assert.match(SYSTEM_PROMPT, /context budget for the next decision, not for completeness/);
   assert.match(SYSTEM_PROMPT, /Compact handoff structure/);
   assert.match(SYSTEM_PROMPT, /Store it at `<workspace>\/\.octocode\/tmp\/YYYYMMDD-HHMM-slug\/HANDOFF\.md`/);

@@ -126,7 +126,7 @@ Served via the `resources_discover` hook. Installed at `dist/skills/` inside the
 
 | Skill | Source |
 |---|---|
-| `octocode-awareness` | `packages/octocode-awareness/skills/octocode-awareness` → synced into `dist/skills/` at build time |
+| `octocode-awareness` | repo-root `skills/octocode-awareness` → synced into package `skills/` and `dist/skills/` at build time |
 
 Env var `OCTOCODE_SKILL_ROOT` is set to the skill root so the awareness skill can locate its own assets.
 

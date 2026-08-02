@@ -3,5 +3,6 @@ node_modules
 out
 coverage
 /packages/octocode-pi-extension/skills/
+/packages/octocode-awareness/skills/
 .octocode
 .agents
