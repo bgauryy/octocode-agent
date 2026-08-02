@@ -42,9 +42,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@octocodeai/octocode-awareness": "workspace:*",
-    "@octocodeai/octocode-engine": "^16.7.0",
-    "zod": "^4.4.3"
+    "@octocodeai/octocode-awareness": "^1.0.1",
+    "@octocodeai/octocode-engine": "^16.7.0"
   },
   "devDependencies": {
     "@octocodeai/config": "^17.0.1",
@@ -52,7 +51,8 @@
     "@vitest/coverage-v8": "^4.1.9",
     "octocode": "^2.3.0",
     "typescript": "^5.8.3",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.9",
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "typebox": "*"
