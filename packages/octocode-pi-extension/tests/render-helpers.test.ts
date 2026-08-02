@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { visibleWidth as piVisibleWidth } from '@earendil-works/pi-tui';
 import { test } from 'vitest';
 import {
   buildOctocodeRenderCall,
@@ -6,6 +7,7 @@ import {
   buildResultStats,
   buildToolCallSummary,
   makeRenderer,
+  sanitizeLine,
   singleLineRenderer,
   truncateToWidth,
   visibleWidth,
@@ -28,10 +30,43 @@ function textResult(text: string, details: unknown = {}, isError = false): ToolC
 
 test('ANSI-aware rendering helpers keep visible width stable', () => {
   assert.equal(visibleWidth('\x1b[31mred\x1b[0m plain'), 9);
-  assert.equal(truncateToWidth('abcdef', 4), 'abc…\x1b[0m');
+  assert.equal(truncateToWidth('abcdef', 4), 'abc\x1b[0m…\x1b[0m');
   assert.equal(truncateToWidth('abcdef', 0), '');
-  assert.equal(truncateToWidth('abcdef', 1), '…');
-  assert.equal(truncateToWidth('\x1b[31mabcdef\x1b[0m', 5), '\x1b[31mabcd…\x1b[0m');
+  assert.equal(truncateToWidth('abcdef', 1), '\x1b[0m…\x1b[0m');
+  assert.equal(truncateToWidth('\x1b[31mabcdef\x1b[0m', 5), '\x1b[31mabcd\x1b[0m…\x1b[0m');
+
+  // Regression: tab in agent-ledger preview crashed pi TUI (width undercount)
+  assert.equal(visibleWidth('a\tb'), 5); // tab expands to 3 spaces, pi-tui parity
+  assert.equal(truncateToWidth('27:\tkeypress', 20), '27:   keypress');
+  assert.ok(!truncateToWidth('x\ty\tz', 5).includes('\t'));
+  assert.equal(visibleWidth('\u{1F600}'), 2); // emoji counts 2 cols
+  assert.equal(visibleWidth('⧗'), 1); // ledger icon stays narrow, pi-tui parity
+  const wide = truncateToWidth('\u{1F600}\u{1F600}\u{1F600}', 4);
+  assert.ok(visibleWidth(wide) <= 4);
+  assert.equal(visibleWidth('a\rb\x00c'), 5); // control chars become spaces
+
+  // Regression: truncated output must never exceed maxWidth as measured by
+  // pi-tui itself (the renderer crashes on `piVisibleWidth(line) > width`).
+  // These char classes undercounted in the hand-rolled width model: EAW-wide
+  // singletons (⌚ ⭐ ⬛), VS16 emoji (©️ ‼️), keycaps (1️⃣), flags, ZWJ families.
+  const nasty = [
+    '⌚⏳⭐⬛◽ watch',
+    '©️™️‼️↩️ vs16',
+    '1️⃣2️⃣#️⃣ keycaps',
+    '🇺🇸🇯🇵 flags',
+    '👨‍👩‍👧‍👦 family',
+    '\x1b[31m⭐ tab\there\x1b[0m',
+    'あいうえお漢字',
+  ];
+  for (const s of nasty) {
+    for (const w of [3, 5, 8, 12]) {
+      assert.ok(
+        piVisibleWidth(truncateToWidth(s, w)) <= w,
+        `pi-tui width of truncate(${JSON.stringify(s)}, ${w})`,
+      );
+    }
+    assert.equal(visibleWidth(s), piVisibleWidth(sanitizeLine(s)));
+  }
 
   assert.deepEqual(wrapText('alpha beta gamma', 10), ['alpha beta', 'gamma']);
   assert.deepEqual(wrapText('superlongword tiny', 5), ['super', 'tiny']);
@@ -40,7 +75,7 @@ test('ANSI-aware rendering helpers keep visible width stable', () => {
 
   const renderer = makeRenderer(() => ['x'.repeat(20)]);
   assert.equal(visibleWidth(renderer.render(6)[0]!), 6);
-  assert.equal(singleLineRenderer('single long line').render(8)[0], 'single …\x1b[0m');
+  assert.equal(singleLineRenderer('single long line').render(8)[0], 'single \x1b[0m…\x1b[0m');
 });
 
 test('buildToolCallSummary formats each Octocode direct-tool family', () => {
