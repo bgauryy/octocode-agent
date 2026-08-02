@@ -38,7 +38,10 @@ describe('published package artifact', () => {
     };
 
     expect(pkg.files).toContain('out/**');
-    expect(pkg.files).not.toContain('skills/**');
+    // The package-local skills/ tree is a build-time sync of the repo-root
+    // canonical skill and ships in the tarball so users get the skill with the
+    // CLI, independent of the pi-extension.
+    expect(pkg.files).toContain('skills/**');
     expect(pkg.scripts?.prepack).toContain('build');
     expect(pkg.scripts?.prepack).toContain('verify-package.mjs');
     expect(pkg.dependencies ?? {}).not.toHaveProperty('zod');

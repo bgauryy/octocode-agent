@@ -1,6 +1,7 @@
 <awareness>
 Use the bundled CLI at `$OCTOCODE_AWARENESS_CLI`. Load the octocode-awareness skill
-for repository planning, edits, review, tests, or handoff; trivial read-only questions may skip it.
+before starting and before finishing any repository task — planning, edits, review, tests,
+handoff, or multi-agent overlap; only trivial read-only questions may answer directly without it.
 The skill owns routing and the CLI owns live state, coordination, memory, verification, and maintenance.
 
 Run `node "$OCTOCODE_AWARENESS_CLI" attend --workspace "$PWD" --query "<task>" --compact`

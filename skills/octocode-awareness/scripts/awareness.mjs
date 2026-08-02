@@ -987,7 +987,7 @@ show: --workspace <repo> --file <path> [--all] [--limit <1-200>] [--full]
 example: octocode-awareness work start --agent-id agent --workspace "$PWD" --file src/a.ts --rationale "edit parser" --test-plan "yarn test" --compact
 schema: octocode-awareness schema json-schema work --compact`,"hook-run":`usage: octocode-awareness hook run <pre-edit|post-edit|stop-verify|notify-deliver|session-compact|session-end> < hook-payload.json
 payload: host JSON on stdin; common fields are cwd/workspace, session_id, tool_name, and tool_input/path
-store: hook run intentionally rejects --db; set OCTOCODE_MEMORY_HOME to select the hook database`,"hooks-install":vo(),schema:`usage: octocode-awareness schema commands|list|path <name>|command <noun> [action]|json-schema <name>|example <name>|validate <name> <json-file|->
+store: hook run intentionally rejects --db; set OCTOCODE_MEMORY_HOME to select the hook database`,"hooks-install":vo(),schema:`usage: octocode-awareness schema commands|list|command <noun> [action]|json-schema <name>|example <name>|validate <name> <json-file|->
 examples:
   octocode-awareness schema commands --compact
   octocode-awareness schema command memory recall --compact

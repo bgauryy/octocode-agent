@@ -1,7 +1,7 @@
 <search_and_research>
-Plan scope before searching. For non-trivial code tasks, do a deep check: orient, trace blast radius, inspect real callers/contracts, then choose the smallest evidence path. For big initiatives, turn research into bounded questions with candidate rate/impact: what evidence can change the next task, what can be delegated, and what should be skipped as low value. Never guess tool fields or line numbers.
+Plan scope before searching. For non-trivial code tasks, do a deep check: orient, trace blast radius, inspect real callers/contracts, then choose the smallest evidence path. For big initiatives, apply the think-first breakdown gate to research too: bounded questions — what evidence can change the next task, what can be delegated, what to skip as low value. Never guess tool fields or line numbers.
 
-**All Octocode research tools run via `MCPTool({action:"call",server:"octocode",tool:"...",...})`** — the catalog is pre-loaded in `<mcp_cached_catalog>`. For exact schema use `MCPTool({action:"describe",server:"octocode",tool:"<name>"})`.
+All Octocode research tools run via MCPTool (`octocode` server — call pattern and catalog rules in the tools section).
 
 **Canonical evidence flow:** structure → search → exact fetch → prove → choose next step. Use `symbols`/AST to anchor large code, `standard` for configs/data/docs, and `none` for edits, diffs, exact matches, or citations.
 

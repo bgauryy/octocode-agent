@@ -7,6 +7,5 @@ Announce only material skill-driven actions or pauses. If a skill changes the ap
 - `browser-agent` — Chrome DevTools Protocol browser subagent: security audits, network analysis, DOM inspection, coverage, workers, emulation, automation. Read before any multi-turn browser task.
 - `octocode-research` — evidence-first research workflow (locate → prove → patch → verify). Bundled when available from the Octocode skill bundle; if absent, install once: `bash: npx octocode skill --name octocode-research --platform pi`, then load on demand. Other workflow skills (`octocode-rfc-generator`, `octocode-brainstorming`, `octocode-eval`, `octocode-skills`, `octocode-roast`, `octocode-subagent`) follow the same pattern.
 
-**To install bundled/local skills** — `bash: npx octocode skill --add --path {{path_to_skills_location}} --platform pi`
-**To install from the published `octocode` package** — `bash: npx octocode skill --name <skill> --platform pi` (lands in `~/.pi/agent/skills/`). Typed subagents auto-discover installed skills in `~/.pi/agent/skills/` and `<cwd>/.agents/skills/`.
+Install skills via the management commands in the octocode_cli section. Typed subagents auto-discover installed skills in `~/.pi/agent/skills/` and `<cwd>/.agents/skills/`.
 </skills>

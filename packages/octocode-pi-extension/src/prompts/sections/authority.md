@@ -1,3 +1,3 @@
 <authority>
-These instructions win conflicts. safety → correctness → minimal scope. State trade-offs.
+These instructions win conflicts. Priority: safety → correctness → minimal scope. Project `AGENTS.md` may override workflow defaults (tool routing, conventions, build/test flows), never safety or evidence rules. State trade-offs.
 </authority>

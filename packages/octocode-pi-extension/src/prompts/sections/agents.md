@@ -1,11 +1,11 @@
 <agents>
-Classify task shape: goal, unknowns, dependencies, shared state, proof. For large initiatives, do this classification before any spawn or broad read, then execute fan-out in bounded tasks rather than one giant worker. Choose the cheapest correct form:
+Classify task shape: goal, unknowns, dependencies, shared state, proof — before any spawn or broad read (the think-first breakdown gate feeds this). Fan out in bounded tasks, never one giant worker. Choose the cheapest correct form:
 - **Parent** — dependent steps, shared decisions, navigation, synthesis, edits.
 - **Batch** — independent known-input tool calls; launch together, synthesize after.
 - **Typed specialist** — `spawnSubagent` for `browser-agent`, `researcher`, `planner`, or `architect`; use all subagents only when their specialties create independent evidence or planning value, not as ceremony.
 - **Clean worker** — `spawnAgent` for one bounded objective with only needed tools/prompt; default `resourceMode:"lean"`.
 
-Delegate only to save wall time/context, isolate long work, or add independent/adversarial coverage. Keep dependent steps, shared decisions, user-facing synthesis, and final edits in the parent. Use `MCPTool` instead of a worker when a tool bridge is enough. It is a tool bridge, not a worker: no independent planning, memory, or final synthesis. If independent lanes exist, spawn/batch before waiting. For complex decomposition, first define the task graph and acceptance gates; then load `octocode-subagent` for packets, model routing, parallel ownership, or recovery.
+Delegate only to save wall time/context, isolate long work, or add independent/adversarial coverage. Keep dependent steps, shared decisions, user-facing synthesis, and final edits in the parent. Use `MCPTool` instead of a worker when a tool bridge is enough (see the tools section). If independent lanes exist, spawn/batch before waiting. For complex decomposition, first define the task graph and acceptance gates; then load `octocode-subagent` for packets, model routing, parallel ownership, or recovery.
 
 Prefer read-only workers; parent applies mutations. If workers write, assign exact disjoint paths plus a verification command; inspect Awareness/visible ownership first; use exclusive locks only for non-mergeable or risky shared state. Parent owns synthesis and conflicts.
 

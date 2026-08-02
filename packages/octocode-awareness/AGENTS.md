@@ -31,7 +31,7 @@ never bypass a conflict.
 ## Package Constraints
 
 - Edit runtime/CLI and Zod contracts in `src/**` and `bin/**`.
-- Edit the canonical skill only in package-local `skills/octocode-awareness/**`.
+- Edit the canonical skill only in repo-root `skills/octocode-awareness/**`; package-local `skills/` is a generated build sync (gitignored).
 - Edit package guidance in `README.md` and `docs/**`.
 - Never hand-edit `out/**`, `.agents/skills/**`, or build-generated Awareness
   helpers/schemas under `skills/octocode-awareness/scripts/**`.

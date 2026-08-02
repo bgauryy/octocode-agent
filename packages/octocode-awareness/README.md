@@ -147,7 +147,7 @@ yarn workspace @octocodeai/octocode-awareness pack:check
 yarn workspace @octocodeai/octocode-awareness verify
 ```
 
-Edit the canonical skill only under package-local `skills/octocode-awareness`; the
+Edit the canonical skill only under repo-root `skills/octocode-awareness`; the
 package build refreshes its generated runtime/schema helpers, `out/`, and
 `.agents/skills/`. There is no repo-root `skills/` source tree. The Pi-extension
 build owns its packaged copy.

@@ -20,6 +20,7 @@ why, the user-facing rules, and the developer code map.
 | **Browser** | `chromeDebug` · `browserAgent` · `spawnSubagent` |
 | **Agents** | `spawnAgent` · `AgentMessage` |
 | **Web** | `web` |
+| **MCP** | `MCPTool` (alias `mcp`) |
 | **Context** | `manage_context` |
 | **Memory + coordination** | *No tools.* Use the `octocode-awareness` CLI: `node $OCTOCODE_AWARENESS_CLI <noun> <verb>` (see Memory / Awareness below) |
 
@@ -54,6 +55,7 @@ Source of truth for names: `OCTOCODE_DIRECT_TOOL_NAMES` + `OCTOCODE_SUPPORT_TOOL
 | Spawn background Pi worker | `spawnAgent` |
 | Coordinate spawned workers | `AgentMessage` |
 | Fetch a URL / web search | `web` |
+| List / call an external MCP server tool | `MCPTool` |
 | Compact / reset context | `manage_context` |
 | Recall prior lessons | `awareness memory recall` (CLI) |
 | Record a root cause / decision | `awareness memory record` (CLI) |
@@ -317,6 +319,94 @@ See [`AWARENESS_AGENT_FLOW.md`](https://github.com/bgauryy/octocode-mcp/blob/mai
 | `verify audit` | List pending execution runs needing verification |
 | `verify mark` | Mark one exact owned run verified/failed after its declared check; never batch another agent's work. |
 | `reflect export-harness` | Export human-reviewed skill/harness proposals; never writes files |
+
+## MCP Servers
+
+`MCPTool` (alias `mcp`) is a dedicated stdio MCP client built into the extension. It
+lets the agent list, describe, and call tools exposed by any Model Context Protocol
+server — without those tools being registered individually in Pi.
+
+The built-in `octocode` research server is always available (`npx -y octocode-mcp@latest`,
+lazy-started on first `list`/`call`). Add your own servers by dropping an `mcp.json` file
+in one of the config locations below — **no code change or rebuild is needed.**
+
+### 1. Where config is read from
+
+Servers are merged from three sources, later overriding earlier by server name:
+
+| Precedence | Scope | Path | Loaded when |
+|---|---|---|---|
+| 1 | built-in | `npx -y octocode-mcp@latest` | always (`octocode` server) |
+| 2 | global | `~/.pi/agent/mcp.json` | if the file exists |
+| 3 | project | `<workspace>/.pi/agent/mcp.json` | only if the project is **trusted** |
+
+Untrusted project configs are skipped with a warning (they never spawn a process).
+Run `MCPTool({action:"config"})` to see the resolved servers, sources, and warnings.
+
+### 2. Config file format
+
+JSON with a `mcpServers` object (a bare `servers` object or a top-level name→config map
+also work). Each server entry:
+
+```json
+{
+  "mcpServers": {
+    "my-server": {
+      "command": "npx",
+      "args": ["-y", "@acme/mcp-server@latest"],
+      "env": { "ACME_TOKEN": "..." },
+      "cwd": "./sub/dir",
+      "timeoutMs": 30000,
+      "disabled": false,
+      "description": "Acme knowledge base"
+    }
+  }
+}
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `command` | yes | Executable to spawn (stdio transport). |
+| `args` | no | Array of string arguments. |
+| `env` | no | Extra environment vars, merged over `process.env`. |
+| `cwd` | no | Working dir; relative paths resolve from the workspace and are path-guarded. |
+| `timeoutMs` | no | Per-request timeout, clamped `1000..120000` (default `30000`). |
+| `disabled` | no | `true` skips the server entirely. |
+| `description` | no | Human label shown in `list`/`config`. |
+
+Server names must match `^[A-Za-z0-9_.-]{1,64}$`. A user entry named `octocode` overrides
+the built-in one (its `env` still gets the full-text + npm-cache defaults merged in).
+
+### 3. Using MCP tools
+
+`MCPTool` is a tool bridge, not a worker — no planning, memory, or synthesis. Actions:
+
+| Action | Purpose |
+|---|---|
+| `list` | List servers (or one server's tools + schemas). Populates the catalog. |
+| `describe` | Full schema for one `server`/`tool`. |
+| `call` | Invoke `server`/`tool` with `arguments`. |
+| `status` | Show configured vs. running servers. |
+| `config` | Show resolved config sources + warnings. |
+| `restart` | Stop and relaunch one `server`. |
+| `stop` | Stop one `server`, or all if omitted. |
+
+```jsonc
+// discover what a server offers (also refreshes the cached catalog)
+MCPTool({ action: "list", server: "my-server" })
+
+// inspect one tool's exact schema before calling
+MCPTool({ action: "describe", server: "my-server", tool: "searchDocs" })
+
+// call it
+MCPTool({ action: "call", server: "my-server", tool: "searchDocs",
+          arguments: { query: "retry policy" } })
+```
+
+Servers are spawned lazily on first `list`/`call` and reused for the session; `stop`/
+`restart` recycle them. Treat any MCP server as arbitrary code — only add config you trust.
+
+---
 
 ## Configuration
 

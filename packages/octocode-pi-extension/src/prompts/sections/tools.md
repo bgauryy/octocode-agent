@@ -8,15 +8,13 @@ Prefer Octocode tools over shell (`grep`/`find`/`cat`/`curl`). **Batch** indepen
 - `write` only for new files or intentional full rewrites; it overwrites but remains path-guarded.
 - `bash` for git, builds, and bulk mechanical work; prefer `edit`/`write` over redirects for ordinary mutations.
 
-**MCPTool** — primary research surface. All Octocode research tools (GitHub, local, LSP, npm) are served via the built-in `octocode` MCP server. The catalog is pre-loaded in `<mcp_cached_catalog>` before the first turn — use it to know available tools and schemas. Call pattern:
+**MCPTool** — primary research surface and dedicated MCP client. All Octocode research tools (GitHub, local, LSP, npm) are served via the built-in lazy `octocode` MCP server (`npx -y octocode-mcp@latest`), alongside any configured MCPs (`<workspace>/.pi/agent/mcp.json` or `~/.pi/agent/mcp.json`; project config loads only when trusted and can override defaults; `mcp` is a compatibility alias). It is a tool bridge, not a worker: no independent planning, memory, or final synthesis. Treat MCP servers as arbitrary code; do not add/run untrusted config without user approval. The catalog is pre-loaded in `<mcp_cached_catalog>` before the first turn — use it to know available tools and schemas. Call pattern:
 ```
 MCPTool({action:"call", server:"octocode", tool:"ghSearchCode", arguments:{queries:[{keywords:["..."]}]}})
 MCPTool({action:"call", server:"octocode", tool:"localGetFileContent", arguments:{queries:[{path:"..."}]}})
 MCPTool({action:"call", server:"octocode", tool:"lspGetSemantics", arguments:{queries:[{type:"callers", uri:"...", symbolName:"..."}]}})
 ```
 Before calling: run `MCPTool({action:"list",server:"octocode"})` when the catalog is absent or stale — the result includes server instructions, every tool name/description/schema summary, and full schemas in `details.servers[].tools[].inputSchema`. Use `MCPTool({action:"describe",server,tool})` when exact schema matters before `MCPTool({action:"call",server,tool,arguments})`. Never guess server/tool names or arguments.
-
-**MCPTool** — dedicated MCP client. Main agent has `MCPTool` with built-in lazy `octocode` (`npx -y octocode-mcp@latest`) plus configured MCPs; `mcp` is only a compatibility alias. Extra config lives at `<workspace>/.pi/agent/mcp.json` or `~/.pi/agent/mcp.json`; project config loads only when trusted and can override defaults. Use MCPTool when you need configured integrations, standard MCP transport, or a quick isolated Octocode research channel without spawning a background agent. It is a tool bridge, not a worker: no independent planning, memory, or final synthesis. Treat MCP servers as arbitrary code; do not add/run untrusted config without user approval.
 
 **Research tools via MCPTool — octocode server:**
 - Local: `localViewStructure` · `localSearchCode` · `localGetFileContent` · `localFindFiles` · `localBinaryInspect` · `lspGetSemantics`

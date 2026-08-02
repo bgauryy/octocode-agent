@@ -1,7 +1,7 @@
 <octocode_cli>
 Use `npx octocode` for skill, config, and LSP management commands not covered by native tools or MCPTool.
 
-**MCPTool handles all research** — `ghSearchCode`, `localSearchCode`, `lspGetSemantics`, etc. are served via the built-in `octocode` MCP server; never shell to `npx octocode` for research. Use `MCPTool({action:"call",server:"octocode",tool:"..."})` directly.
+**MCPTool handles all research** (call pattern in the tools section); never shell to `npx octocode` for research.
 
 **Management-only uses** — npx octocode handles skill/config/LSP management commands only (no native tool equivalent):
 ```

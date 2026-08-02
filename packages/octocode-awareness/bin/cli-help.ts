@@ -118,7 +118,7 @@ schema: octocode-awareness schema json-schema work --compact`,
 payload: host JSON on stdin; common fields are cwd/workspace, session_id, tool_name, and tool_input/path
 store: hook run intentionally rejects --db; set OCTOCODE_MEMORY_HOME to select the hook database`,
   'hooks-install': hooksInstallUsage(),
-  'schema': `usage: octocode-awareness schema commands|list|path <name>|command <noun> [action]|json-schema <name>|example <name>|validate <name> <json-file|->
+  'schema': `usage: octocode-awareness schema commands|list|command <noun> [action]|json-schema <name>|example <name>|validate <name> <json-file|->
 examples:
   octocode-awareness schema commands --compact
   octocode-awareness schema command memory recall --compact

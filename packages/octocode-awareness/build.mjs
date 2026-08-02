@@ -20,7 +20,11 @@ const legacyDistDir = join(packageRoot, 'dist');
 // Staged home for standalone skill bundles. The completed tree is atomically
 // promoted to out/, and every other copy derives from these generated files.
 const skillScriptsOutDir = join(outDir, 'skill-scripts');
-const canonicalSkillsRoot = join(packageRoot, 'skills');
+// Canonical skill source lives at the repo root so the skill is usable and
+// editable independently of any package; the package-local skills/ tree is a
+// generated sync target so npm consumers get the skill alongside the CLI.
+const canonicalSkillsRoot = join(repoRoot, 'skills');
+const packageSkillsRoot = join(packageRoot, 'skills');
 const canonicalAwarenessSkill = join(canonicalSkillsRoot, 'octocode-awareness');
 const canonicalAwarenessScripts = join(canonicalAwarenessSkill, 'scripts');
 const agentSkillsRoot = join(repoRoot, '.agents', 'skills');
@@ -36,6 +40,9 @@ function hasSkillDirectories(root) {
 
 function resolveSkillSourceRoot() {
   if (hasSkillDirectories(canonicalSkillsRoot)) return canonicalSkillsRoot;
+  // Published tarball / subset checkout: the synced package-local copy ships
+  // with the package and stands in for the repo-root source.
+  if (hasSkillDirectories(packageSkillsRoot)) return packageSkillsRoot;
   try {
     const installedSkillsRoot = join(dirname(require.resolve('octocode/package.json')), 'skills');
     if (hasSkillDirectories(installedSkillsRoot)) return installedSkillsRoot;
@@ -188,6 +195,15 @@ for (const skillName of bundledSkills) {
   });
   if (usingCanonicalSkillSource) {
     cpSync(source, mirrored, {
+      recursive: true,
+      filter: (path) => shouldCopySkillFile(source, path),
+    });
+    // Sync the repo-root source into the package-local skills/ tree so the
+    // published package (and the pi-extension build) carry the skill without
+    // depending on the monorepo layout.
+    const packageCopy = join(packageSkillsRoot, skillName);
+    rmSync(packageCopy, { recursive: true, force: true });
+    cpSync(source, packageCopy, {
       recursive: true,
       filter: (path) => shouldCopySkillFile(source, path),
     });
