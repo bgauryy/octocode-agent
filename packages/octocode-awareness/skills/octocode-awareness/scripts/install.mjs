@@ -18,7 +18,7 @@ const compact = args.delete("--compact");
 const nodeBin = process.execPath;
 const quote = (value) => JSON.stringify(value);
 const awarenessCommand = `${quote(nodeBin)} ${quote(join(scriptsDir, "awareness.mjs"))}`;
-const schemaCommand = `${quote(nodeBin)} ${quote(join(scriptsDir, "schema.mjs"))}`;
+const schemaCommand = `${quote(nodeBin)} ${quote(join(scriptsDir, "awareness.mjs"))} schema`;
 
 // Discovered at runtime from this package's skill bundle so install receipts
 // cannot silently drift from what build.mjs actually bundled here.
@@ -83,7 +83,7 @@ function fail(message, details = {}) {
 
 function ensureRuntime() {
   if (!ok(nodeBin, ["-e", ""])) {
-    fail("Node.js runtime is not executable for scripts/schema.mjs.", { node: nodeBin });
+    fail("Node.js runtime is not executable for scripts/awareness.mjs.", { node: nodeBin });
   }
   const sqliteProbe = [
     "process.removeAllListeners('warning');",
@@ -96,7 +96,7 @@ function ensureRuntime() {
 }
 
 function runSmokeChecks() {
-  const schema = run(nodeBin, [join(scriptsDir, "schema.mjs"), "example", "memory_record"], {
+  const schema = run(nodeBin, [join(scriptsDir, "awareness.mjs"), "schema", "example", "memory_record"], {
     cwd: scriptsDir,
     capture: true,
   });
@@ -106,7 +106,7 @@ function runSmokeChecks() {
 
   const validate = spawnSync(
     nodeBin,
-    [join(scriptsDir, "schema.mjs"), "validate", "memory_record", "-"],
+    [join(scriptsDir, "awareness.mjs"), "schema", "validate", "memory_record", "-"],
     {
       cwd: scriptsDir,
       input: schema.stdout,

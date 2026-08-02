@@ -12,14 +12,17 @@ describe('Awareness out build contract', () => {
     const pkg = JSON.parse(read('package.json')) as {
       main?: string;
       types?: string;
-      bin?: Record<string, string>;
+      bin?: string | Record<string, string>;
       files?: string[];
       dependencies?: Record<string, string>;
     };
 
     expect(pkg.main).toBe('./out/index.js');
     expect(pkg.types).toBe('./out/types/src/index.d.ts');
-    expect(pkg.bin?.['octocode-awareness']).toBe('./out/octocode-awareness.js');
+    // Yarn 4 normalizes a single-entry bin object keyed by the unscoped package
+    // name to string form on install; both forms name the binary octocode-awareness.
+    const bin = typeof pkg.bin === 'string' ? { 'octocode-awareness': pkg.bin } : pkg.bin;
+    expect(bin?.['octocode-awareness']).toBe('./out/octocode-awareness.js');
     expect(pkg.files).toContain('out/**');
     expect(pkg.files).not.toContain('dist/**');
     expect(pkg.dependencies ?? {}).not.toHaveProperty('octocode');

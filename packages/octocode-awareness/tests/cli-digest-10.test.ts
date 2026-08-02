@@ -173,7 +173,9 @@ describe('digest', () => {
       ]);
       expect(result['dry_run']).toBe(true);
       expect(result['would_prune_old']).toBe(1);
-      expect(result['would_prune_refinements']).toBe(2);
+      // legacy handoffs past retention prune in ANY state (dead letters):
+      // old open handoff + old closed handoff + old done refinement
+      expect(result['would_prune_refinements']).toBe(3);
 
       const applied = ok(db, [
         'maintenance', 'digest',
@@ -181,11 +183,12 @@ describe('digest', () => {
         '--refinement-handoff-retention-days', '1',
         '--refinement-done-retention-days', '2',
       ]);
-      expect(applied['pruned_refinements']).toBe(2);
+      expect(applied['pruned_refinements']).toBe(3);
       const verifyConn = new DatabaseSync(db);
       try {
         const openId = (oldHandoff['refinement'] as Record<string, unknown>)['refinement_id'] as string;
-        expect(verifyConn.prepare('SELECT state FROM refinements WHERE refinement_id = ?').get(openId)).toEqual({ state: 'open' });
+        // stale open handoffs are dead letters and prune with the rest
+        expect(verifyConn.prepare('SELECT state FROM refinements WHERE refinement_id = ?').get(openId)).toBeUndefined();
         expect(verifyConn.prepare('SELECT state FROM refinements WHERE refinement_id = ?').get(oldClosedHandoffId)).toBeUndefined();
       } finally { verifyConn.close(); }
     } finally { rmSync(dir, { recursive: true }); }

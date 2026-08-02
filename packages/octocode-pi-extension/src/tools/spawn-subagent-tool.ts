@@ -163,9 +163,11 @@ export function registerSpawnSubagentTool(
       `Use spawnSubagent for typed Octocode specialists: ${availableSubagentNames.join(', ')}.`,
       skillGuideline,
       'Use spawnAgent for clean arbitrary workers. spawnAgent defaults to lean/no-skills and only uses tools/skills you pass.',
+      'Before spawning, break the request into explicit subtasks and delegate only one independent, bounded subtask per typed specialist.',
       'Use `pi -ne --list-models [search]` as the source of truth for the user-configured model table; do not read hardcoded config paths.',
       'Pass model for each typed subagent: fastest capable configured model for small tasks, balanced coding/reasoning model for medium tasks, strongest configured model for large/high-risk work.',
-      'Use AgentMessage(wait) to collect the current turn; treat [DONE] as phase completion and check the delegated acceptance criteria before declaring the objective complete.',
+      'Use AgentMessage(wait) to collect the current turn; treat [DONE] as phase completion and check /octocode-agents or the below-editor ledger plus the delegated acceptance criteria before declaring the objective complete.',
+      'Use AgentMessage(abort) to gracefully interrupt the active turn without killing the process — the subagent stays alive for follow-up send/steer turns.',
       'Typed subagents emit structured prefixed lines such as [FINDING], [EVIDENCE], [ACTION], [PLAN], [BLOCKED], and [DONE] — parse these for synthesis.',
       'Kill the agent with AgentMessage(kill, remove:true) when done to free resources.',
     ],
@@ -255,6 +257,7 @@ export function registerSpawnSubagentTool(
         `AgentMessage({action:"wait",   agentId:"${agentId}", timeoutMs:60000})`,
         `AgentMessage({action:"send",   agentId:"${agentId}", message:"<follow-up>"})`,
         `AgentMessage({action:"status", agentId:"${agentId}"})`,
+        `AgentMessage({action:"abort",  agentId:"${agentId}"})`,
         `AgentMessage({action:"kill",   agentId:"${agentId}", remove:true})`,
       ].join('\n');
 

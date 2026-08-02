@@ -51,11 +51,11 @@ export function getNotifications(
       where.push('nr.signal_id IS NULL');
     }
   } else {
-    // inbox: addressed to me OR broadcasts (to_agent IS NULL)
-    where.push('(n.to_agent IS NULL OR n.to_agent = ?)');
-    binds.push(agentId);
-    where.push('n.from_agent <> ?');
-    binds.push(agentId);
+    // inbox: explicitly addressed to me OR broadcasts. Own broadcasts stay
+    // excluded EXCEPT handoffs — a returning session must see its own workspace
+    // handoff (identities churn, so handoffs broadcast and bind to no recipient).
+    where.push("(n.to_agent = ? OR (n.to_agent IS NULL AND (n.from_agent <> ? OR n.kind = 'handoff')))");
+    binds.push(agentId, agentId);
 
     if (unreadOnly) {
       where.push("n.status = 'open'");

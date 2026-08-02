@@ -50,6 +50,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.80.3",
+    "@octocodeai/config": "^17.0.1",
     "@octocodeai/pi-extension": "workspace:*"
   },
   "devDependencies": {

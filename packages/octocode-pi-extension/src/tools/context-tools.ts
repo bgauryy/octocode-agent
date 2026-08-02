@@ -10,11 +10,10 @@ import type { PiContext, PiCommandContext, PiInstance, ToolDefinition, PiTheme, 
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { isSubagentProcess } from './agent-tools.js';
+import { clearCompactionWorkingState, scheduleCompactionContinuation, type Notifier } from './compaction-resume.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
-type Notifier = (ctx: PiContext | undefined, msg: string, level?: string) => void;
-
 const AUTO_COMPACT_THRESHOLD = 0.80;
 const COMPACTION_CONTINUATION_INSTRUCTIONS =
   'Preserve continuation state, not transcript: goal, constraints, current mode, decisions, read/modified files, live workers/locks, blockers/open questions, verification owed, and exact next pickup. Mark partial/failed work separately.';
@@ -42,13 +41,13 @@ function isOutputLengthStop(event: TurnEndEvent | undefined): boolean {
   return event.message.usage?.output !== 0;
 }
 
-function clearCompactionWorkingState(ctx: PiContext | undefined): void {
-  if (!ctx?.hasUI) return;
-  // Pi owns the compaction spinner/message, but extension-triggered compaction
-  // queues a follow-up turn. Clear stale working UI first so the resumed agent
-  // cannot leave users staring at "Compacting context…" after callbacks fire.
-  ctx.ui?.setWorkingMessage?.(undefined);
-  ctx.ui?.setWorkingVisible?.(false);
+function once(fn: () => void): () => void {
+  let called = false;
+  return () => {
+    if (called) return;
+    called = true;
+    fn();
+  };
 }
 
 export function registerContextTools(
@@ -93,16 +92,19 @@ export function registerContextTools(
         'Auto-compaction complete. Re-orient from the compacted context, then continue with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.';
       ctx.compact({
         customInstructions: COMPACTION_CONTINUATION_INSTRUCTIONS,
-        onComplete: () => {
-          clearCompactionWorkingState(ctx);
-          notify(ctx, 'Auto-compaction complete. Resuming…', 'info');
+        onComplete: once(() => {
           // ctx.compact() drives pi's manual compaction path, which aborts the
           // running agent operation and never auto-continues (willRetry:false).
           // Without a queued turn the agent loop halts idle after compaction —
-          // the "stuck after compaction" state. Queue a followUp to resume,
-          // mirroring the compact_context tool.
-          pi.sendUserMessage(continuation, { deliverAs: 'followUp' });
-        },
+          // the "stuck after compaction" state. Queue a deferred followUp to resume.
+          scheduleCompactionContinuation(
+            pi,
+            ctx,
+            notify,
+            continuation,
+            'Auto-compaction complete. Resuming…',
+          );
+        }),
         onError: (error: Error) => {
           clearCompactionWorkingState(ctx);
           if (isNothingToCompact(error)) {
@@ -192,11 +194,15 @@ export function registerContextTools(
 
       ctx.compact({
         customInstructions: buildCompactionInstructions(params['instructions']),
-        onComplete: () => {
-          clearCompactionWorkingState(ctx);
-          notify(ctx, 'Compaction completed. Continuing from the compacted context.', 'info');
-          pi.sendUserMessage(continuation, { deliverAs: 'followUp' });
-        },
+        onComplete: once(() => {
+          scheduleCompactionContinuation(
+            pi,
+            ctx,
+            notify,
+            continuation,
+            'Compaction completed. Continuing from the compacted context.',
+          );
+        }),
         onError: (error: Error) => {
           clearCompactionWorkingState(ctx);
           if (isNothingToCompact(error)) {

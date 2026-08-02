@@ -159,7 +159,7 @@ describe('source CLI regressions', () => {
 
       const conn = new DatabaseSync(db);
       try {
-        const row = conn.prepare("SELECT agent_id FROM refinements WHERE quality = 'handoff'").get() as { agent_id: string };
+        const row = conn.prepare("SELECT from_agent AS agent_id FROM signals WHERE kind = 'handoff'").get() as { agent_id: string };
         expect(row.agent_id).toBe('agent-from-env');
       } finally {
         conn.close();

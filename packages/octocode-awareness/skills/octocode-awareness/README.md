@@ -81,16 +81,15 @@ node packages/octocode-awareness/out/octocode-awareness.js schema commands --com
 
 | Script | Purpose |
 |---|---|
-| `scripts/awareness.mjs` | Standalone bundled CLI/runtime. |
-| `scripts/schema.mjs` | Zod-built contracts; `schema path <name>` exposes each JSON Schema file. |
+| `scripts/awareness.mjs` | Standalone bundled CLI/runtime; `schema commands|command|json-schema|example|validate` serves every contract dynamically. |
 | `scripts/hook-runner.mjs` | Shared host lifecycle implementation. |
 | `scripts/extract-hook-files.mjs` | Host payload path extraction. |
 | `scripts/install.mjs` | Runtime check and hook setup guidance. |
 | `scripts/smoke-multi-agent.mjs` | Native multi-agent end-to-end smoke. |
 | `scripts/hooks/*.sh` | Thin lifecycle wrappers. |
 
-Compiled scripts and `scripts/schemas/*.schema.json` are generated artifacts. Do
-not hand-edit them; package maintainers regenerate them from `src/schema/*.ts`.
+Compiled scripts are generated artifacts. Do not hand-edit them; package
+maintainers regenerate them from `src/schema/*.ts` and `bin/*.ts`.
 
 ## Hosts
 

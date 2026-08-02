@@ -332,6 +332,22 @@ export interface TurnEndEvent {
   };
 }
 
+export interface SessionBeforeCompactEvent {
+  preparation: unknown;
+  branchEntries?: unknown[];
+  customInstructions?: string;
+  reason: 'manual' | 'threshold' | 'overflow' | string;
+  willRetry: boolean;
+  signal: AbortSignal;
+}
+
+export interface SessionCompactEvent {
+  compactionEntry: unknown;
+  fromExtension: boolean;
+  reason: 'manual' | 'threshold' | 'overflow' | string;
+  willRetry: boolean;
+}
+
 export interface SessionShutdownEvent {
   reason?: 'quit' | 'reload' | 'new' | 'resume' | 'fork';
 }
@@ -371,8 +387,8 @@ export interface PiInstance {
   on(event: 'session_info_changed', handler: (event: { name?: string }, ctx: PiContext) => Promise<void>): void;
   on(event: 'session_before_switch', handler: (event: { reason: 'new' | 'resume'; targetSessionFile?: string }, ctx: PiContext) => Promise<{ cancel?: boolean } | void>): void;
   on(event: 'session_before_fork', handler: (event: { entryId: string; position: string }, ctx: PiContext) => Promise<{ cancel?: boolean } | void>): void;
-  on(event: 'session_before_compact', handler: (event: { preparation: unknown; reason: string; willRetry: boolean; signal: AbortSignal }, ctx: PiContext) => Promise<{ cancel?: boolean; compaction?: unknown } | void>): void;
-  on(event: 'session_compact', handler: (event: { compactionEntry: unknown; fromExtension: boolean; reason: string; willRetry: boolean }, ctx: PiContext) => Promise<void>): void;
+  on(event: 'session_before_compact', handler: (event: SessionBeforeCompactEvent, ctx: PiContext) => Promise<{ cancel?: boolean; compaction?: unknown } | void>): void;
+  on(event: 'session_compact', handler: (event: SessionCompactEvent, ctx: PiContext) => Promise<void>): void;
   on(event: 'model_select', handler: (event: { model: PiModel; previousModel?: PiModel; source: string }, ctx: PiContext) => Promise<void>): void;
   on(event: 'thinking_level_select', handler: (event: ThinkingLevelEvent, ctx: PiContext) => Promise<void>): void;
   on(event: 'before_agent_start', handler: (event: BeforeAgentStartEvent, ctx?: PiContext) => Promise<BeforeAgentStartResult | void>): void;

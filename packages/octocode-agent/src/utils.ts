@@ -2,8 +2,7 @@
  * Shared pure utilities — no side effects at import time.
  */
 
-import os from 'node:os';
-import path from 'node:path';
+import { getOctocodeHome as configGetOctocodeHome } from '@octocodeai/config';
 
 /** All API key names checked for presence in env. */
 export const API_KEY_NAMES = [
@@ -20,12 +19,13 @@ export const API_KEY_NAMES = [
 
 /**
  * Resolve the Octocode home directory.
- * Precedence: OCTOCODE_AGENT_DIR › OCTOCODE_HOME › ~/.octocode
+ * Precedence: OCTOCODE_AGENT_DIR › @octocodeai/config (OCTOCODE_HOME › platform default).
  *
- * Single source of truth — used by both launcher and sdk-launcher.
+ * The launcher-specific OCTOCODE_AGENT_DIR override lives here; everything else
+ * delegates to @octocodeai/config — never reimplement home/env resolution.
  */
 export function getOctocodeHome(env: NodeJS.ProcessEnv = process.env): string {
-  return env.OCTOCODE_AGENT_DIR ?? env.OCTOCODE_HOME ?? path.join(os.homedir(), '.octocode');
+  return env.OCTOCODE_AGENT_DIR ?? configGetOctocodeHome(env);
 }
 
 /** Return the names of API keys that are set in `env`. */

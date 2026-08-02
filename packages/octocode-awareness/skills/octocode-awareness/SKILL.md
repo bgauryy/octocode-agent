@@ -19,7 +19,7 @@ Use at repo task start and finish. AGENTS routes; skill decides; CLI/SQLite acts
 
 Core loop: `attend -> work start -> edit/check -> work end -> verify mark -> verify audit`.
 1. BEFORE: `attend --query "<task>" --compact`; follow `next`; state goal, acceptance, scope, evidence. Recall memory only if it can change the plan.
-2. DURING: choose task or WORK; declare paths by hooks or `work start`; read peers. Ordinary overlap is allowed; never bypass conflict.
+2. DURING: open WORK (default) or claim a plan task (shared backlogs); declare paths by hooks or `work start`; read peers. Ordinary overlap is allowed; never bypass conflict.
 3. AFTER: check while present; `task submit`/`work end`; `verify mark`; `verify audit`. Expiry never means success.
 4. OPTIONAL: `reflect record --lesson` only for verified reusable outcomes; clean only under pressure; project only for file readers.
 
@@ -28,7 +28,7 @@ Hooks automate edges, not judgment: they never choose plans, locks, success, lea
 Delegate only routine deterministic Awareness CLI reads/writes/maintenance when cheaper. Use the smallest capable configured low-cost agent, require `--compact`, cap receipt at 512 bytes. Lead keeps destructive approval, conflict handling, memory truth, and verification.
 
 Load one reference when needed:
-- Start/finish/unknown command: `references/agent-cheatsheet.md`; exact flags: `scripts/schema.mjs` or `<command> --help`.
+- Start/finish/unknown command: `references/agent-cheatsheet.md`; exact flags: `<cli> schema command <noun> [action]` or `<command> --help`.
 - Plan/task/WORK choice: `references/plan-task-workflow.md`.
 - Work/files/overlap: `references/files-awareness.md` (`touch` refreshes run files; `start --run-id` adds paths).
 - Exclusive work/verify debt: `references/lock-protocol.md`.

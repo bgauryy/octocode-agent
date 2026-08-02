@@ -1,7 +1,5 @@
 /* v8 ignore file -- exercised through built CLI and isolated-package subprocess tests */
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 import { memorySchemas } from './definitions-memory.js';
 import { workSchemas } from './definitions-work.js';
@@ -93,7 +91,6 @@ const commandIndex = [
   { command: "hook run", schema: null, use: "Internal hook dispatcher used by wrappers.", example: "octocode-awareness hook run pre-edit < hook-payload.json" },
   { command: "schema commands", schema: null, use: "Print this command-to-schema map.", example: "octocode-awareness schema commands --compact" },
   { command: "schema list", schema: null, use: "Print schema names only.", example: "octocode-awareness schema list --compact" },
-  { command: "schema path", schema: null, use: "Expose one standalone JSON Schema file to an agent.", example: "octocode-awareness schema path memory_recall --compact" },
   { command: "schema json-schema", schema: null, use: "Print one JSON schema.", example: "octocode-awareness schema json-schema memory_recall --compact" },
   { command: "schema example", schema: null, use: "Print example JSON for one schema.", example: "octocode-awareness schema example memory_recall --compact" },
   { command: "schema validate", schema: null, use: "Validate JSON payload against one schema.", example: "octocode-awareness schema validate memory_recall payload.json --compact" },
@@ -151,9 +148,20 @@ const CLI_ALLOWED: Record<string, string[]> = {
   "signal resolve": ["agent_id", "signal_id", "thread_id"],
 };
 
+// Rare/expert/redundant commands stay fully available under `--all` and
+// `<command> --help`, but are hidden from the default lobby catalog to keep the
+// agent-facing surface small. Removing them here removes catalog verbosity, not
+// capability.
+const COMPACT_HIDE = new Set<string>([
+  "reflect mine-weakness", "reflect export-harness", "reflect developer-review",
+  "query developer-review", "docs staleness",
+  "schema list", "schema json-schema", "schema example", "schema validate",
+]);
+
 function groupedCommandIndex() {
   const grouped: Record<"core" | "advanced", Record<string, string[]>> = { core: {}, advanced: {} };
   for (const row of commandIndex) {
+    if (COMPACT_HIDE.has(row.command)) continue;
     const [noun, ...rest] = row.command.split(" ");
     const tier = CORE_NOUNS.has(noun!) ? "core" : "advanced";
     (grouped[tier][noun!] ??= []).push(rest.length > 0 ? rest.join(" ") : noun === "query" ? "<view>" : "run");
@@ -170,7 +178,6 @@ function usage() {
   octocode-awareness schema commands [--compact] [--all] [--examples]
   octocode-awareness schema command <noun> [action] [--compact]
   octocode-awareness schema list
-  octocode-awareness schema path <schema-name>
   octocode-awareness schema json-schema <schema-name>
   octocode-awareness schema example <schema-name>
   octocode-awareness schema validate <schema-name> <json-file|->`;
@@ -246,15 +253,6 @@ function printJsonError(payload: Record<string, unknown>, code = 2, compact = fa
   return code;
 }
 
-function schemaFilePath(schemaName: SchemaName): string {
-  const argvDir = process.argv[1] ? dirname(resolve(process.argv[1])) : process.cwd();
-  const candidates = [
-    process.env.OCTOCODE_AWARENESS_SCHEMA_DIR,
-    resolve(argvDir, 'schemas'),
-  ].filter((candidate): candidate is string => Boolean(candidate));
-  return resolve(candidates.find((candidate) => existsSync(resolve(candidate, `${schemaName}.schema.json`))) ?? candidates[0]!, `${schemaName}.schema.json`);
-}
-
 export async function runSchemaCli(argv: string[]): Promise<number> {
   const compact = argv.includes("--compact") || process.env.OCTOCODE_AWARENESS_COMPACT === "1";
   const includeExamples = argv.includes("--examples");
@@ -311,11 +309,6 @@ export async function runSchemaCli(argv: string[]): Promise<number> {
       hint: "Use one of the schemas returned by `schema list`.",
       ...(compact ? {} : { known_schemas: listableSchemas }),
     }, 1, compact);
-  }
-
-  if (command === "path") {
-    printJson({ ok: true, schema: knownSchemaName, path: schemaFilePath(knownSchemaName!) }, compact);
-    return 0;
   }
 
   if (command === "json-schema") {

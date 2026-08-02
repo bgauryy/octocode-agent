@@ -99,7 +99,7 @@ export const repoContextMode = z
 // act, instead of parsing free prose.
 export const NOTIFICATION_KINDS = [
   "claim", // "I'm taking these files / this area"
-  "handoff", // "finished X, you can start Y" (pair with a refinement id in refs)
+  "handoff", // "finished X, you can start Y" — also session handoffs (self-addressed; pair with a run id in refs)
   "question", // ask another agent something
   "reply", // answer within a thread
   "blocker", // "don't touch X — mid-change / broken"

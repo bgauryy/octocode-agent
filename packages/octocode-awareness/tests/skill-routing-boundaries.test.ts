@@ -58,7 +58,7 @@ describe('skill routing boundaries', () => {
     expect(text).toContain('goal, acceptance, scope, evidence');
     expect(text).toContain('work start');
     expect(text).toMatch(/ordinary overlap is allowed/i);
-    expect(text).toContain('scripts/schema.mjs');
+    expect(text).toMatch(/schema command|schema commands/);
     expect(text).toContain('first activation');
     expect(text).toContain('agent-cheatsheet.md');
     expect(text).toContain('Load one reference when needed:');
@@ -111,7 +111,7 @@ describe('skill routing boundaries', () => {
     expect(text).toMatch(/Memory trust\/write\/archive/i);
     expect(text).toMatch(/Hooks\/hosts\/Pi\/Codex\/Cursor\/Claude/i);
     expect(awarenessSkillFile('references/hooks.md')).toMatch(/do not choose tasks or replace\s+`attend`\/verify/i);
-    expect(text).toContain('scripts/schema.mjs');
+    expect(text).toMatch(/schema command|schema commands/);
   });
 
   it('keeps held-out repository intent behavior distinct from near misses', () => {

@@ -49,7 +49,7 @@ export interface WorkerRecoveryRisk {
   hasVerification: boolean;
 }
 
-const REQUIRED_PACKET_SECTIONS = ['goal', 'scope', 'ownership', 'acceptance', 'return'];
+const REQUIRED_PACKET_SECTIONS = ['goal', 'context', 'scope', 'ownership', 'acceptance', 'return'];
 
 type StreamHandler = (event: string, cb: (chunk: Buffer | string) => void) => void;
 type ProcessHandler = (event: string, cb: (...args: unknown[]) => void) => void;
@@ -1222,12 +1222,13 @@ export function registerAgentTools(
     promptGuidelines: [
       'Use spawnAgent only when delegation materially helps: independent work ownership, long-running tasks, or adversarial/coverage checks.',
       'Do not spawn agents for ordinary bug fixes/refactors that need shared context; stay in the parent or batch independent tool calls instead.',
+      'Before spawning, break the request into explicit subtasks and delegate only one independent, bounded subtask per worker.',
       'For useful parallelism, spawn all independent workers first, then use AgentMessage action:"wait" or action:"status" to collect results.',
       'Workers inherit no parent conversation but share cwd, files, and environment-backed services. Pass a bounded request packet and assign disjoint paths for any writes.',
       'spawnAgent defaults to resourceMode:"lean". Use resourceMode:"octocode" only when the worker needs Octocode extension tools.',
       'Use `pi -ne --list-models [search]` as the source of truth for the user-configured model table; do not read hardcoded config paths.',
       'Pass model for each worker: fastest capable configured model for small tasks, balanced coding/reasoning model for medium tasks, strongest configured model for large/high-risk work.',
-      'Spawned-agent registry and output previews live in the current Pi process; collect needed results before session shutdown or reload.',
+      'Spawned-agent registry and output previews live in the current Pi process and are visible in /octocode-agents plus the below-editor ledger; collect needed results before session shutdown or reload.',
       'spawnAgent prevents recursive subagents: workers never receive spawnAgent or AgentMessage, even in resourceMode:"octocode" or resourceMode:"default".',
     ],
     parameters: Type.Object({
@@ -1294,7 +1295,7 @@ export function registerAgentTools(
       'Manage spawned agents. Actions: list, status, send, steer, followUp, wait, kill, abort. Use this after spawnAgent to coordinate parallel workers.',
     promptSnippet: 'Message, wait for, list, status, or kill spawned background agents.',
     promptGuidelines: [
-      'Use AgentMessage action:"list" or action:"status" before claiming a spawned worker is done.',
+      'Use AgentMessage action:"list" or action:"status" before claiming a spawned worker is done; in the UI, also check /octocode-agents or the below-editor spawned-agent ledger for running/blocked/failed workers.',
       'Use AgentMessage action:"wait" to collect the current turn result. Idle means the turn ended, not necessarily that the delegated objective passed acceptance.',
       'AgentMessage reads the in-memory spawned-agent registry; after session shutdown or reload, spawn fresh workers instead of relying on old agentIds.',
       'Before final answers, wait/status every relevant worker, reconcile disagreements, and synthesize findings instead of dumping raw worker JSON.',

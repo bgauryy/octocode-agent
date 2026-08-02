@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { propagateOctocodeEnv, getOctocodeHome } from './env.js';
 import {
-  OCTOCODE_DIRECT_TOOL_NAMES,
   DISABLED_BUILTIN_TOOL_NAMES,
   OVERRIDDEN_BUILTIN_TOOL_NAMES,
   OCTOCODE_SUPPORT_TOOL_NAMES,
@@ -13,13 +12,11 @@ import {
   readTextIfExists,
   listBundledSkills,
   getInstallSource,
-  getCLIPath,
   getAwarenessCLIPath,
 } from './assets.js';
 
-// Expose bundled CLI paths as env vars so agents can use them from bash subprocesses.
+// Expose the Awareness CLI path as an env var so agents can invoke it from bash subprocesses.
 // Set once at module load — inherited by all bash subprocesses spawned during the session.
-process.env.OCTOCODE_CLI = getCLIPath();
 process.env.OCTOCODE_AWARENESS_CLI = getAwarenessCLIPath();
 import {
   shouldAppendSystemPrompt,
@@ -31,8 +28,9 @@ import {
   parseSetupScope,
   getAppendSystemTarget,
 } from './utils.js';
-import { registerOctocodeTools, registerUniqueTool } from './tools/octocode-tools.js';
+import { registerUniqueTool } from './tools/octocode-tools.js';
 import { registerContextTools } from './tools/context-tools.js';
+import { registerCompactionHooks } from './tools/compaction-hooks.js';
 import {
   cleanupSpawnedAgentsForShutdown,
   formatAgentLedger,
@@ -51,6 +49,7 @@ import { registerSpawnSubagentTool } from './tools/spawn-subagent-tool.js';
 import { registerEditTool } from './tools/edit-tool.js';
 import { registerWriteTool } from './tools/write-tool.js';
 import { registerBashTool } from './tools/bash-tool.js';
+import { getCachedMcpCatalogAddendum, handleOctocodeMcpCommand, patchGlobalMcpOctocodeEnv, registerMcpTool, stopAllMcpServers, warmMcpCatalog } from './tools/mcp-tool.js';
 import { atomicWriteUtf8 } from './tools/file-state.js';
 import { assertPathAllowed } from './tools/path-guard.js';
 import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
@@ -77,7 +76,6 @@ import type {
 // ─── Re-exports (stable public API) ──────────────────────────────────────────
 
 export {
-  OCTOCODE_DIRECT_TOOL_NAMES,
   DISABLED_BUILTIN_TOOL_NAMES,
   OVERRIDDEN_BUILTIN_TOOL_NAMES,
   OCTOCODE_SUPPORT_TOOL_NAMES,
@@ -88,7 +86,7 @@ export {
   MANAGED_BLOCK_START,
   MANAGED_BLOCK_END,
 } from './constants.js';
-export { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getCLIPath, getAwarenessCLIPath } from './assets.js';
+export { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getAwarenessCLIPath } from './assets.js';
 export {
   shouldAppendSystemPrompt,
   renderSystemPromptAddendum,
@@ -255,7 +253,7 @@ export function applyOctocodeUi(ctx: PiContext | undefined, level?: string): voi
   ui.setTitle?.('Octocode Agent');
   ui.setHeader?.((_tui: unknown, theme) => makeRenderer((width) => [
     truncateToWidth(theme.fg('accent', theme.bold('◆ Octocode Terminal Agent')), width),
-    truncateToWidth(theme.fg('dim', 'research · edit/write/bash guard · browser · agents · session jobs'), width),
+    truncateToWidth(theme.fg('dim', 'research · edit/write/bash guard · browser · agents · mcp · skills · session jobs'), width),
     truncateToWidth(theme.fg('muted', 'Try /octocode · /octocode-agents · /octocode-cron · /compact'), width),
   ]));
   const label = ui.theme?.fg ? ui.theme.fg('accent', '◆ Octocode') : '◆ Octocode';
@@ -281,7 +279,7 @@ export function applyOctocodeUi(ctx: PiContext | undefined, level?: string): voi
     intervalMs: 220,
   });
   // Custom working message shown during agent streaming.
-  ui.setWorkingMessage?.('🐙 Octocode thinking…');
+  ui.setWorkingMessage?.('◆ Octocode thinking…');
 }
 
 export function getInternalErrorLogPath(cwd = process.cwd()): string {
@@ -404,12 +402,12 @@ async function confirm(
 // ─── Status / harness ────────────────────────────────────────────────────────
 
 function formatOctocodeToolStatus(): string {
-  return `${OCTOCODE_DIRECT_TOOL_NAMES.length} native research · ${OCTOCODE_SUPPORT_TOOL_NAMES.length} support · ${OVERRIDDEN_BUILTIN_TOOL_NAMES.length} guarded built-ins · ${DISABLED_BUILTIN_TOOL_NAMES.length} replaced`;
+  return `MCP research (octocode server) · ${OCTOCODE_SUPPORT_TOOL_NAMES.length} support · ${OVERRIDDEN_BUILTIN_TOOL_NAMES.length} guarded built-ins · ${DISABLED_BUILTIN_TOOL_NAMES.length} replaced`;
 }
 
 function formatToolCapabilitySummary(): string {
   return [
-    `research: ${OCTOCODE_DIRECT_TOOL_NAMES.length} GitHub/local/LSP/npm tools`,
+    `research: GitHub/local/LSP/npm via MCPTool (octocode server)`,
     `support: ${OCTOCODE_SUPPORT_TOOL_NAMES.join(', ')}`,
     `guarded mutations: ${OVERRIDDEN_BUILTIN_TOOL_NAMES.join(', ')}`,
     `replaced weak built-ins: ${DISABLED_BUILTIN_TOOL_NAMES.join(', ')}`,
@@ -432,8 +430,8 @@ export function formatStatus(baseDir?: string): string {
     `system prompt: ${promptStatus}`,
     `skills: ${skills.length}${skills.length > 0 ? ` (${skills.join(', ')})` : ''}`,
     `octocode tools: ${formatOctocodeToolStatus()}`,
-    `bundled CLI: ${getCLIPath(baseDir)} — use via: node $OCTOCODE_CLI <command>`,
     `awareness CLI: ${getAwarenessCLIPath(baseDir)} — use via: node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact`,
+    `management CLI: npx octocode skill | lsp-server | auth (no bundled CLI — use npx octocode for management tasks)`,
     `disabled/replaced built-ins: overridden: ${OVERRIDDEN_BUILTIN_TOOL_NAMES.join(', ')}${DISABLED_BUILTIN_TOOL_NAMES.length ? `; removed: ${DISABLED_BUILTIN_TOOL_NAMES.join(', ')}` : ''}`,
     `web search: ${searchStatus}`,
     `internal error log: ${getInternalErrorLogPath(process.cwd())}`,
@@ -456,7 +454,7 @@ export interface ExtensionHarness {
 
 export function listExtensionHarness(baseDir?: string): ExtensionHarness {
   return {
-    tools: [...OCTOCODE_DIRECT_TOOL_NAMES],
+    tools: [], // research tools served via MCPTool → octocode MCP server
     supportTools: [...OCTOCODE_SUPPORT_TOOL_NAMES],
     overriddenBuiltins: [...OVERRIDDEN_BUILTIN_TOOL_NAMES],
     disabledBuiltins: [...DISABLED_BUILTIN_TOOL_NAMES],
@@ -468,11 +466,13 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
       '/octocode-agents',
       '/octocode-cron',
       '/cron',
+      '/octocode-mcp',
+      '/mcp',
       '/octocode-setup',
       '/octocode-skills-update',
     ],
     skills: listBundledSkills(baseDir),
-    cliNote: `bundled CLI at ${getCLIPath(baseDir)} — run via: node $OCTOCODE_CLI <command>`,
+    cliNote: `management: npx octocode skill | lsp-server | auth (no bundled CLI — use npx octocode for management tasks)`,
     awarenessCliNote: `bundled Awareness CLI at ${getAwarenessCLIPath(baseDir)} — run via: node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact`,
   };
 }
@@ -482,7 +482,6 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessi
   const skills = listBundledSkills(baseDir);
   const context = formatContextUsage(ctx);
   const promptOk = fs.existsSync(paths.systemPrompt);
-  const cliPath = getCLIPath(baseDir);
   const awarenessCliPath = getAwarenessCLIPath(baseDir);
   const searchProvider = pickProvider({});
   const warnings = [
@@ -498,8 +497,8 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessi
     `${promptOk ? '✓' : '⚠'} system prompt: ${promptOk ? 'found' : 'missing'}`,
     `✓ tools: ${formatOctocodeToolStatus()}`,
     `✓ metrics: ${context.text}`,
-    `CLI: node $OCTOCODE_CLI <command> (${cliPath})`,
     `Awareness: node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact (${awarenessCliPath})`,
+    `Management: npx octocode skill | lsp-server | auth`,
     '',
     'Agents',
     formatAgentLedger(),
@@ -509,7 +508,7 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessi
     formatToolCapabilitySummary(),
     '',
     'Session jobs',
-    sessionJobs ?? 'session jobs: use /octocode-cron list',
+    sessionJobs ?? 'No session jobs scheduled — use /octocode-cron to schedule repeating tasks.',
     '',
     'Setup',
     `project APPEND_SYSTEM: ${getAppendSystemTarget('project', ctx?.cwd ?? process.cwd())}`,
@@ -630,6 +629,9 @@ async function wireOctocodePiExtension(
   // Cache the system prompt text: the file doesn't change during a session, so
   // reading it once (lazily on the first before_agent_start) avoids a sync disk
   // read on every turn start across long sessions.
+  // Trade-off: if the system prompt file is updated mid-session (e.g. after
+  // /octocode-skills-update), the stale cached text persists until session reload.
+  // This is intentional — prompt updates take effect on the next Pi session.
   let cachedSystemPromptText: string | null = null;
   const cronScheduler = createOctocodeCronScheduler({ pi });
   const metricsState: OctocodeMetricsState = {
@@ -686,12 +688,18 @@ async function wireOctocodePiExtension(
       applyOctocodeUi(ctx, pi.getThinkingLevel?.());
       updateOctocodeMetricsUi(ctx, metricsState);
       cronScheduler.start(ctx);
+      // Ensure ~/.pi/agent/mcp.json has the correct npm_config_cache env vars so
+      // Pi's own MCP client can start octocode-mcp with the darwin native addon.
+      patchGlobalMcpOctocodeEnv();
+      // Pre-warm the octocode MCP server catalog so the <mcp_cached_catalog> block
+      // is ready in the system prompt before the agent's first turn. Fire-and-forget.
+      void warmMcpCatalog(ctx);
       // Disable weak built-ins (read/grep/find/ls) in favor of Octocode locals.
       try {
         if (disableBuiltinTools(pi)) {
           notify(
             ctx,
-            `Octocode disabled Pi built-ins (${DISABLED_BUILTIN_TOOL_NAMES.join(', ')}); use Octocode local tools instead. Overrides: ${OVERRIDDEN_BUILTIN_TOOL_NAMES.join(', ')}.`,
+            `Octocode disabled Pi built-ins (${DISABLED_BUILTIN_TOOL_NAMES.join(', ')}); use MCPTool({action:'call',server:'octocode',tool:'...'}) for research. Overrides: ${OVERRIDDEN_BUILTIN_TOOL_NAMES.join(', ')}.`,
             'info',
           );
         }
@@ -739,6 +747,7 @@ async function wireOctocodePiExtension(
     hooks.on('session_shutdown', 'octocode-session-shutdown', async (_event: SessionShutdownEvent, ctx: PiContext | undefined) => {
       cronScheduler.stop();
       const cleanedAgents = cleanupSpawnedAgentsForShutdown();
+      const stoppedMcpServers = stopAllMcpServers();
       if (ctx?.hasUI) {
         ctx.ui?.setStatus?.('octocode', '');
         ctx.ui?.setStatus?.('octocode-thinking', '');
@@ -746,11 +755,15 @@ async function wireOctocodePiExtension(
         ctx.ui?.setStatus?.('octocode-agents', undefined);
         ctx.ui?.setStatus?.('agent-wait', undefined);
         ctx.ui?.setStatus?.('chrome-debug', undefined);
+        ctx.ui?.setStatus?.('octocode-mcp', undefined);
         ctx.ui?.setWidget?.('octocode-agents', undefined);
         ctx.ui?.setWorkingMessage?.(undefined);
         ctx.ui?.setWorkingVisible?.(false);
         if (cleanedAgents > 0) {
           ctx.ui?.notify?.(`Octocode closed ${cleanedAgents} spawned subagent(s).`, 'info');
+        }
+        if (stoppedMcpServers > 0) {
+          ctx.ui?.notify?.(`Octocode stopped ${stoppedMcpServers} MCP server(s).`, 'info');
         }
       }
     });
@@ -812,7 +825,7 @@ async function wireOctocodePiExtension(
       }, ctx);
     });
 
-    hooks.on('before_agent_start', 'octocode-system-prompt', async (event: BeforeAgentStartEvent) => {
+    hooks.on('before_agent_start', 'octocode-system-prompt', async (event: BeforeAgentStartEvent, ctx: PiContext | undefined) => {
       // Suppress AGENTS.md / CLAUDE.md when --no-context flag is set.
       // For octocode-agent sessions the launcher already passes --no-context-files
       // to pi, so contextFiles is empty before this handler fires — this guard
@@ -824,7 +837,8 @@ async function wireOctocodePiExtension(
       if (cachedSystemPromptText === null) {
         cachedSystemPromptText = readTextIfExists(getAssetPaths().systemPrompt);
       }
-      const prompt = cachedSystemPromptText;
+      const mcpCatalog = getCachedMcpCatalogAddendum(ctx);
+      const prompt = [cachedSystemPromptText, mcpCatalog].filter((part) => part.trim().length > 0).join('\n\n');
       if (!shouldAppendSystemPrompt(event.systemPrompt, prompt)) {
         return;
       }
@@ -847,8 +861,6 @@ async function wireOctocodePiExtension(
     registerWriteTool(pi, Type);
     registerBashTool(pi, Type);
 
-    await registerOctocodeTools(pi, Type, registeredToolNames);
-
     registerWebTool(pi, Type, registeredToolNames, registerUniqueTool);
 
     if (process.env['OCTOCODE_CHROME_DEBUG'] !== '0') {
@@ -858,6 +870,9 @@ async function wireOctocodePiExtension(
 
     registerSpawnSubagentTool(pi, Type, registeredToolNames, registerUniqueTool, notify);
 
+    registerMcpTool(pi, Type, registeredToolNames, registerUniqueTool);
+
+    registerCompactionHooks(pi, notify);
     registerContextTools(pi, Type, registeredToolNames, registerUniqueTool, notify);
 
     if (typeof pi.on === 'function') {
@@ -934,6 +949,23 @@ async function wireOctocodePiExtension(
   pi.registerCommand('cron', {
     ...cronCommand,
     description: `Alias for /octocode-cron — list, check, or cancel Octocode session jobs (usage: ${OCTOCODE_CRON_COMMAND_USAGE}).`,
+  });
+
+  const mcpCommand: CommandDefinition = {
+    description: 'Inspect/manage configured MCP servers (usage: /octocode-mcp [status|config|list|stop] [server]). Config: .pi/agent/mcp.json or ~/.pi/agent/mcp.json.',
+    getArgumentCompletions: (prefix: string) => {
+      return ['status', 'config', 'list', 'stop']
+        .filter((s) => s.startsWith(prefix))
+        .map((s) => ({ value: s, label: s, description: `/octocode-mcp ${s}` }));
+    },
+    handler: async (args, ctx) => {
+      await handleOctocodeMcpCommand(args, ctx, notify);
+    },
+  };
+  pi.registerCommand('octocode-mcp', mcpCommand);
+  pi.registerCommand('mcp', {
+    ...mcpCommand,
+    description: `Alias for /octocode-mcp — ${mcpCommand.description}`,
   });
 
   pi.registerCommand('octocode-setup', {

@@ -157,9 +157,10 @@ describe('digest dry_run', () => {
     const result = digest(db, { dry_run: true });
     expect(Object.keys(result).sort()).toEqual([
       'archived_memories', 'candidate_ids', 'candidate_limit', 'dry_run', 'fts_rebuilt', 'ok', 'pressure_age_days',
-      'pressure_samples', 'pruned_locks', 'pruned_old', 'pruned_refinements', 'pruned_runs',
+      'pressure_samples', 'pruned_locks', 'pruned_old', 'pruned_refinements', 'pruned_runs', 'resolved_handoff_signals',
       'stale_missing_refs', 'stale_open_signals', 'stale_pending_runs',
       'would_archive', 'would_prune_locks', 'would_prune_old', 'would_prune_refinements', 'would_prune_runs',
+      'would_resolve_handoff_signals',
     ]);
     expect(result).toMatchObject({
       pressure_age_days: 1,

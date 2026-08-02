@@ -14,7 +14,8 @@ export interface DigestResult {
   archived_memories: number;   // valid_to expired (or would_archive in dry_run)
   pruned_old: number;          // SUPERSEDED older than retention_days
   pruned_locks: number;        // expired file locks
-  pruned_refinements: number;  // old handoffs and done refinements
+  pruned_refinements: number;  // legacy handoffs (any state) and done refinements
+  resolved_handoff_signals: number; // open handoff signals auto-resolved past TTL
   pruned_runs: number;         // old terminal standalone WORK/HOOK rows
   fts_rebuilt: boolean;
   dry_run?: true;
@@ -22,6 +23,7 @@ export interface DigestResult {
   would_prune_old?: number;
   would_prune_locks?: number;
   would_prune_refinements?: number;
+  would_resolve_handoff_signals?: number;
   would_prune_runs?: number;
   pressure_age_days?: number;
   stale_pending_runs?: number;
@@ -205,10 +207,15 @@ export function digest(
       dry_run: true,
     });
     const wouldPruneLocks = lockDryRun.would_prune ?? 0;
+    // Handoff refinements are legacy dead letters (handoffs now live in signals):
+    // prune them past retention in ANY state — their addressed identity never returns.
     const wouldPruneRefinements = (db.prepare(`SELECT COUNT(*) AS c FROM refinements
-       WHERE ((quality = 'handoff' AND state = 'done' AND updated_at < ?)
+       WHERE ((quality = 'handoff' AND updated_at < ?)
           OR (quality IN ('good','bad') AND state = 'done' AND updated_at < ?))${refinementScopeSql}`)
       .get(handoffCutoff, doneCutoff, ...refinementScopeBinds) as { c: number }).c;
+    const wouldResolveHandoffSignals = (db.prepare(
+      `SELECT COUNT(*) AS c FROM signals WHERE kind = 'handoff' AND status = 'open' AND created_at < ?${workspacePath ? ' AND workspace_path = ?' : ''}`
+    ).get(handoffCutoff, ...(workspacePath ? [workspacePath] : [])) as { c: number }).c;
     const wouldPruneRuns = (db.prepare(`SELECT COUNT(*) AS c FROM task_runs
       WHERE task_id IS NULL AND origin IN ('WORK','HOOK')
         AND status IN ('SUCCESS','FAILED') AND updated_at < ?${memoryScopeSql}`)
@@ -225,7 +232,7 @@ export function digest(
     ).all(cutoff, ...memoryScopeBinds, candidateLimit) as Array<{ memory_id: string }>).map(row => row.memory_id);
     const refinementIds = (db.prepare(
       `SELECT refinement_id FROM refinements
-       WHERE ((quality = 'handoff' AND state = 'done' AND updated_at < ?)
+       WHERE ((quality = 'handoff' AND updated_at < ?)
           OR (quality IN ('good','bad') AND state = 'done' AND updated_at < ?))${refinementScopeSql}
        ORDER BY datetime(updated_at), refinement_id LIMIT ?`
     ).all(handoffCutoff, doneCutoff, ...refinementScopeBinds, candidateLimit) as Array<{ refinement_id: string }>).map(row => row.refinement_id);
@@ -241,6 +248,7 @@ export function digest(
       pruned_old: 0,
       pruned_locks: 0,
       pruned_refinements: 0,
+      resolved_handoff_signals: 0,
       pruned_runs: 0,
       fts_rebuilt: false,
       dry_run: true,
@@ -248,6 +256,7 @@ export function digest(
       would_prune_old: wouldPruneOld,
       would_prune_locks: wouldPruneLocks,
       would_prune_refinements: wouldPruneRefinements,
+      would_resolve_handoff_signals: wouldResolveHandoffSignals,
       would_prune_runs: wouldPruneRuns,
       candidate_limit: candidateLimit,
       candidate_ids: {
@@ -265,6 +274,7 @@ export function digest(
   let deleteRes: { changes: number } = { changes: 0 };
   let prunedLocks = 0;
   let pruneRefinementsRes: { changes: number } = { changes: 0 };
+  let resolvedHandoffSignals = 0;
   let pruneRunsRes: { changes: number } = { changes: 0 };
   let ftsRebuilt = false;
   const ownsDigestTransaction = !db.isTransaction;
@@ -290,13 +300,20 @@ export function digest(
       expired_only: true,
     }).pruned_locks;
 
-    // 4. Prune only terminal session handoffs and completed repo-fix refinements.
-    // Open/ongoing handoffs remain until their owner consumes and closes them.
+    // 4. Prune legacy handoff refinements past retention in ANY state (dead
+    // letters — handoffs live in signals now) and completed repo-fix refinements.
     pruneRefinementsRes = db.prepare(
       `DELETE FROM refinements
-       WHERE ((quality = 'handoff' AND state = 'done' AND updated_at < ?)
+       WHERE ((quality = 'handoff' AND updated_at < ?)
           OR (quality IN ('good','bad') AND state = 'done' AND updated_at < ?))${refinementScopeSql}`
     ).run(handoffCutoff, doneCutoff, ...refinementScopeBinds) as { changes: number };
+
+    // 4b. TTL: auto-resolve open handoff signals past retention so the broadcast
+    // inbox cannot accumulate unbounded stale handoffs.
+    resolvedHandoffSignals = (db.prepare(
+      `UPDATE signals SET status = 'resolved', resolved_at = ?
+       WHERE kind = 'handoff' AND status = 'open' AND created_at < ?${workspacePath ? ' AND workspace_path = ?' : ''}`
+    ).run(now, handoffCutoff, ...(workspacePath ? [workspacePath] : [])) as { changes: number }).changes;
 
     // 5. Compact terminal standalone execution rows. Run-file presence cascades;
     // verification receipts remain in run_log with run_id set null by the FK.
@@ -328,6 +345,7 @@ export function digest(
     pruned_old: deleteRes.changes,
     pruned_locks: prunedLocks,
     pruned_refinements: pruneRefinementsRes.changes,
+    resolved_handoff_signals: resolvedHandoffSignals,
     pruned_runs: pruneRunsRes.changes,
     fts_rebuilt: ftsRebuilt,
     ...pressureFields,

@@ -3,7 +3,7 @@ import { inspectMaintenancePressure } from './maintenance.js';
 import { AwarenessQueryParams, AwarenessQueryRow, limitOf, utcNow } from './repo-model.js';
 import { filesUnderWorkRows, pushLimited, repoProfileRows, rowFiles } from './repo-files.js';
 import { scopeFromParams, withScope } from './repo-scope.js';
-import { countPendingStandaloneRuns, developerReviewRows, refinementRows, signalRows } from './repo-coordination.js';
+import { countPendingStandaloneRuns, developerReviewRows, signalRows } from './repo-coordination.js';
 import { summarize } from './repo-formats.js';
 import { countTaskRows, memoryRows, runRows, taskRows } from './repo-plans.js';
 
@@ -42,23 +42,9 @@ export function workboardRows(db: DatabaseSync, params: AwarenessQueryParams): A
     }, limit);
   }
 
-  const handoffs = refinementRows(db, withScope(params, { state: ['open', 'ongoing'], limit: 200 }))
-    .filter(row => String(row['quality']) === 'handoff');
-  for (const row of handoffs) {
-    pushLimited(columns, counts, 'Inbox', {
-      item_type: 'refinement',
-      id: String(row['refinement_id']),
-      title: summarize(String(row['remember']), 100),
-      detail: summarize(String(row['reasoning']), 180),
-      agent_id: String(row['agent_id']),
-      status: String(row['state']),
-      quality: String(row['quality']),
-      raw_ids: [String(row['refinement_id'])],
-      files: rowFiles(row),
-      created_at: String(row['created_at']),
-      updated_at: String(row['updated_at']),
-    }, limit);
-  }
+  // Session handoffs are published as self-addressed `kind='handoff'` signals and
+  // surface through the openSignals lane above — one inbox, no parallel refinement
+  // stream. The repo-fix refinement queue stays out of Inbox (query it explicitly).
 
   for (const row of taskRows(db, withScope(params, { state: ['VERIFY'], limit: 500 }))) {
     pushLimited(columns, counts, 'Verify', {

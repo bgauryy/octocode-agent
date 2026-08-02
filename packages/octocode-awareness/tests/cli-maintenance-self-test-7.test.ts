@@ -65,15 +65,18 @@ it('package metadata exposes the scoped public npx binary', () => {
     const packageJsonPath = resolve(dirname(fileURLToPath(import.meta.url)), '../package.json');
     const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {
       name?: string;
-      bin?: Record<string, string>;
+      bin?: string | Record<string, string>;
       engines?: Record<string, string>;
       publishConfig?: Record<string, string>;
     };
     expect(pkg.name).toBe('@octocodeai/octocode-awareness');
     expect(pkg.publishConfig?.access).toBe('public');
-    expect(pkg.bin?.['octocode-awareness']).toBe('./out/octocode-awareness.js');
+    // Yarn 4 normalizes a single-entry bin object keyed by the unscoped package
+    // name to string form on install; both forms name the binary octocode-awareness.
+    const bin = typeof pkg.bin === 'string' ? { 'octocode-awareness': pkg.bin } : (pkg.bin ?? {});
+    expect(bin['octocode-awareness']).toBe('./out/octocode-awareness.js');
     expect(pkg.engines?.['node']).toBe('>=22.13.0');
-    expect(pkg.bin ?? {}).not.toHaveProperty('awareness');
+    expect(bin).not.toHaveProperty('awareness');
   });
 it('--help exits 0', () => {
     const r = spawnSync(NODE, [SCRIPT, '--help'], { encoding: 'utf8', timeout: 5000 });
@@ -176,9 +179,9 @@ it('removed flat commands are plain unknown commands with no compatibility metad
     } finally { rmSync(dir, { recursive: true }); }
   });
 it('schema list maps to canonical CLI commands', () => {
-    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
-    expect(existsSync(schemaScript), 'generated schema.mjs must exist after build').toBe(true);
-    const schema = spawnSync(NODE, [schemaScript, 'list'], { encoding: 'utf8', timeout: 5000 });
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+    expect(existsSync(schemaScript), 'generated awareness.mjs must exist after build').toBe(true);
+    const schema = spawnSync(NODE, [schemaScript, 'schema', 'list'], { encoding: 'utf8', timeout: 5000 });
     expect(schema.status).toBe(0);
     const listed = JSON.parse(schema.stdout) as string[];
     const commands: Record<string, string> = {
@@ -235,8 +238,8 @@ it('schema list maps to canonical CLI commands', () => {
     }
   });
 it('schema commands is grouped and core-first for agents', () => {
-    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
-    const result = spawnSync(NODE, [schemaScript, 'commands', '--compact'], { encoding: 'utf8', timeout: 5000 });
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+    const result = spawnSync(NODE, [schemaScript, 'schema', 'commands', '--compact'], { encoding: 'utf8', timeout: 5000 });
     expect(result.status).toBe(0);
     expect(result.stdout.trim().split('\n')).toHaveLength(1);
     const parsed = JSON.parse(result.stdout) as {
@@ -254,8 +257,8 @@ it('schema commands is grouped and core-first for agents', () => {
     expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(2 * 1024);
   });
 it('schema commands --examples restores recipe lines', () => {
-    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/schema.mjs');
-    const result = spawnSync(NODE, [schemaScript, 'commands', '--all', '--examples', '--compact'], { encoding: 'utf8', timeout: 5000 });
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+    const result = spawnSync(NODE, [schemaScript, 'schema', 'commands', '--all', '--examples', '--compact'], { encoding: 'utf8', timeout: 5000 });
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout) as {
       commands: Array<{ command: string; use: string; example: string }>;

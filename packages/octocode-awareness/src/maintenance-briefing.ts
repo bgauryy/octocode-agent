@@ -7,7 +7,7 @@
  * getWorkspaceStatus:  reads active locks, agents, and memory store stats.
  * exportMemoryDoc:     queries all active memories and returns a markdown report string.
  * exportHarness:       returns top recurring lessons as an AGENTS.md block.
- * sessionCapture:      records unresolved session work as an open handoff refinement.
+ * sessionCapture:      publishes unresolved session work as an open self-addressed handoff signal.
  * waitForLock:         polls active exclusive locks until clear or timeout.
  */
 import { spawnSync } from 'node:child_process';
