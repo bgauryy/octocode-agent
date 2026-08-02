@@ -600,6 +600,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@earendil-works/pi-tui@npm:^0.80.7":
+  version: 0.80.10
+  resolution: "@earendil-works/pi-tui@npm:0.80.10"
+  dependencies:
+    get-east-asian-width: "npm:1.6.0"
+    marked: "npm:18.0.5"
+  checksum: 10c0/b963478e67f50f425dd27cd5e7b1358f1efbcc0c02b30f9929b00bd99aad61cb1023fa219479ecda86a8ab9ff68f4aa62bca7003e2c6c149c702805fec8e3407
+  languageName: node
+  linkType: hard
+
 "@emnapi/core@npm:1.11.1":
   version: 1.11.1
   resolution: "@emnapi/core@npm:1.11.1"
@@ -1565,6 +1575,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@octocodeai/pi-extension@workspace:packages/octocode-pi-extension"
   dependencies:
+    "@earendil-works/pi-tui": "npm:^0.80.7"
     "@modelcontextprotocol/sdk": "npm:^1.29.0"
     "@octocodeai/config": "npm:^17.0.1"
     "@octocodeai/octocode-awareness": "npm:^1.0.1"

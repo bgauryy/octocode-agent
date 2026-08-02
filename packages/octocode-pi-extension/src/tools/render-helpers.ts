@@ -8,47 +8,51 @@
  *  - A tiny `makeRenderer` factory for the Component interface
  */
 
+import { truncateToWidth as piTruncateToWidth, visibleWidth as piVisibleWidth } from '@earendil-works/pi-tui';
+
 import type { PiTheme, RenderCallReturn, ToolCallResult } from '../types.js';
 
 // ─── ANSI-safe width helpers ──────────────────────────────────────────────────
+//
+// Width measurement and truncation delegate to pi-tui's own visibleWidth /
+// truncateToWidth. pi's renderer crashes any line whose pi-tui-measured width
+// exceeds the terminal width, and pi's extension loader aliases the
+// `@earendil-works/pi-tui` import to the host's bundled copy — so delegating
+// guarantees we can never disagree with the arbiter of that check.
 
-/** Matches CSI sequences (ESC [ … m) and 2-char ESC sequences. */
-export const ANSI_ESC_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+/** C0/C1 control chars except tab (expanded below) and ESC (0x1B, ANSI). */
+const CONTROL_CHAR_RE = /[\x00-\x08\x0A-\x1A\x1C-\x1F\x7F-\x9F]/g;
+
+/**
+ * Replace tabs with 3 spaces and other control characters with a space so the
+ * string renders exactly as measured: pi-tui *counts* a tab as 3 columns but
+ * emits it raw (terminals advance to their own tab stops), and counts other
+ * control chars as 0 columns even though e.g. `\r` moves the cursor.
+ */
+export function sanitizeLine(str: string): string {
+  if (!str.includes('\t') && !CONTROL_CHAR_RE.test(str)) {
+    CONTROL_CHAR_RE.lastIndex = 0;
+    return str;
+  }
+  CONTROL_CHAR_RE.lastIndex = 0;
+  return str.replace(/\t/g, '   ').replace(CONTROL_CHAR_RE, ' ');
+}
 
 export function visibleWidth(str: string): number {
-  return str.replace(ANSI_ESC_RE, '').length;
+  return piVisibleWidth(sanitizeLine(str));
 }
 
 /**
  * Truncate `str` so its *visible* width (ANSI codes excluded) ≤ `maxWidth`.
- * Appends an ellipsis and an SGR reset so open colour sequences don't bleed.
+ * When truncated, pi-tui inserts SGR resets around the appended ellipsis so
+ * open colour sequences don't bleed into subsequent lines.
  */
 export function truncateToWidth(
   str: string,
   maxWidth: number,
   ellipsis = '\u2026',
 ): string {
-  if (maxWidth <= 0) return '';
-  if (visibleWidth(str) <= maxWidth) return str;
-  const ellipsisLen = visibleWidth(ellipsis);
-  const target = maxWidth - ellipsisLen;
-  if (target <= 0) return ellipsis.slice(0, maxWidth);
-
-  let visible = 0;
-  let i = 0;
-  while (i < str.length) {
-    const esc = ANSI_ESC_RE.exec(str.slice(i));
-    if (esc && esc.index === 0) {
-      i += esc[0].length;
-      ANSI_ESC_RE.lastIndex = 0;
-      continue;
-    }
-    ANSI_ESC_RE.lastIndex = 0;
-    if (visible >= target) break;
-    visible++;
-    i++;
-  }
-  return str.slice(0, i) + ellipsis + '\x1b[0m';
+  return piTruncateToWidth(sanitizeLine(str), maxWidth, ellipsis);
 }
 
 /**
