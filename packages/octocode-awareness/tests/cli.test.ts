@@ -46,8 +46,14 @@ describe('source CLI regressions', () => {
   it('advertises every supported schema discovery route', () => {
     const result = runSource(['schema', '--help']);
     expect(result.status, result.stderr || result.stdout).toBe(0);
-    expect(result.stdout).toContain('path <name>');
+    // schemas are served dynamically — there is no `schema path` route and the
+    // help must not advertise one.
+    expect(result.stdout).not.toContain('path <name>');
     expect(result.stdout).toContain('command <noun> [action]');
+    expect(result.stdout).toContain('json-schema <name>');
+    expect(result.stdout).toContain('example <name>');
+    expect(result.stdout).toContain('validate <name>');
+    expect(result.stdout).toContain('list');
   });
 
   it('hard-errors on a missing --db path before opening the canonical store', () => {

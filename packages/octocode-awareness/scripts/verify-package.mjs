@@ -58,10 +58,16 @@ assert(yarnPath && existsSync(yarnPath), 'pack verification must run through the
 const packLines = run(yarnPath, ['pack', '--dry-run', '--json'], {
   env: { ...process.env, OCTOCODE_VERIFY_PACKAGE_INNER: '1' },
 });
+// yarn pack --json emits NDJSON, but prepack lifecycle output (yarn build
+// banners) is interleaved on the same stdout — parse only valid JSON rows.
 const files = packLines.trim().split('\n').flatMap((line) => {
-  const row = JSON.parse(line);
-  return row.location ? [String(row.location)] : [];
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('{')) return [];
+  let row;
+  try { row = JSON.parse(trimmed); } catch { return []; }
+  return row && typeof row === 'object' && row.location ? [String(row.location)] : [];
 });
+assert(files.length > 0, 'yarn pack --dry-run --json produced no parseable file rows');
 for (const required of [
   'LICENSE',
   'README.md',
@@ -69,7 +75,7 @@ for (const required of [
   'out/index.js',
   'out/types/src/index.d.ts',
   'out/octocode-awareness.js',
-  'out/schema.js',
+  'out/schema-api.js',
   'out/docs/README.md',
   'out/assets/logo.png',
 ]) {
@@ -117,19 +123,13 @@ try {
   writeFileSync(join(isolated, 'package.json'), JSON.stringify(pkg));
 
   const cli = join(isolated, 'out/octocode-awareness.js');
+  // Schemas are served dynamically by the CLI — no static out/schemas files.
   const names = JSON.parse(run(process.execPath, [cli, 'schema', 'list', '--compact'], { cwd: isolated }));
-  const schemaFiles = readdirSync(join(isolated, 'out/schemas'))
-    .filter((name) => name.endsWith('.schema.json'))
-    .sort();
-  assert(schemaFiles.length === names.length, 'out/schemas must contain exactly one file per public schema');
+  assert(Array.isArray(names) && names.length > 0, 'schema list must return a non-empty schema name array');
+  assert(!existsSync(join(isolated, 'out/schemas')), 'static out/schemas must not ship — schemas are served dynamically');
   for (const name of names) {
-    const exposed = JSON.parse(run(process.execPath, [cli, 'schema', 'path', name, '--compact'], { cwd: isolated }));
-    assert(exposed.ok === true && existsSync(exposed.path), `schema path must expose ${name}`);
-    assert(exposed.path === join(isolated, 'out/schemas', `${name}.schema.json`), `schema path for ${name} escaped the package artifact`);
-    const staticSchema = JSON.parse(readFileSync(exposed.path, 'utf8'));
-    assert(staticSchema.$id === `urn:octocode-awareness:schema:${name}`, `${name} schema has a wrong or missing $id`);
-    assert(Array.isArray(staticSchema.examples) && staticSchema.examples.length === 1, `${name} schema needs one generated example`);
-    run(process.execPath, [cli, 'schema', 'json-schema', name, '--compact'], { cwd: isolated });
+    const schema = JSON.parse(run(process.execPath, [cli, 'schema', 'json-schema', name, '--compact'], { cwd: isolated }));
+    assert(schema && typeof schema === 'object' && schema.type === 'object', `${name} json-schema must be an object schema`);
     const example = run(process.execPath, [cli, 'schema', 'example', name, '--compact'], { cwd: isolated });
     run(process.execPath, [cli, 'schema', 'validate', name, '-', '--compact'], { cwd: isolated, input: example });
   }
