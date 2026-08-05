@@ -1,6 +1,6 @@
 # Homeostatic Awareness Loop
 
-Use this for the living-system intuition behind work, learning, cleanup, and publication. It is a human/agent-in-the-loop software control model—not sentience, a persona, or authority. `bookkeeping.md` owns triggers; `drive-state.md` owns diagnostics.
+Living-system intuition behind work, learning, cleanup, and publication. A human/agent-in-the-loop software control model — not sentience, a persona, or authority.
 
 ## Control Contract
 
@@ -10,7 +10,6 @@ Use this for the living-system intuition behind work, learning, cleanup, and pub
 | Coordination | file presence, claims, locks, signals | CHOOSE/DECLARE, signal, sensitive lock | ordinary overlap stays allowed; locks do not authorize edits |
 | Verification | pending/stale runs | declared check + `verify mark` | TTL/end/submit never mean success |
 | Memory | stale/missing refs, weak recall | reflect, supersede, digest/forget preview | retrieved rows are leads; dry-run before removal |
-| Projection | manifest budgets/staleness | optional `wiki sync` | SQLite stays canonical; wiki is not a live sensor |
 | Harness | recurring failures/evals | proposal + human apply | held-out validation; no silent self-edit |
 
 ## Loop
@@ -21,15 +20,26 @@ SENSE -> ATTEND -> CHOOSE/DECLARE -> ACT -> VERIFY -> REFLECT
   `- REMEASURE <- PROJECT? <- HYGIENE <- REPLAY <- CAPTURE
 ```
 
-The loop closes only when its output has an owner, is applied, freshly verified, terminal, and remeasured. Publication is optional. “Metabolism” means reviewed replay/hygiene; no `sleep` or dedicated trust-gate CLI is shipped.
-
-## Rules
-
-- Measure before and after an intervention; keep it only if target pressure falls without a quality/safety regression.
-- Store scoped, provenance-linked future value—not routine status or raw dialogue.
-- Prefer supersession/archive/dry-run; explicit live digest/prune/forget may mutate after review.
-- Preserve work/signals/open-or-ongoing refinements until their owner acts and closes them; digest may age-prune terminal `done` refinements only.
+Closes only when output has an owner, is applied, freshly verified, terminal, and remeasured. Rules:
+- Measure before and after an intervention; keep only if target pressure falls without regression.
+- Store scoped, provenance-linked future value — not routine status or raw dialogue.
+- Prefer supersession/archive/dry-run; live digest/prune/forget require review first.
+- Preserve work/signals/open refinements until their owner acts; digest may age-prune terminal `done` refinements only.
 - Keep agent context bounded; use targeted query, CSV, or HTML for complete data.
-- Treat memory, generated wiki, drive fields, and role dialogue as diagnostic leads; current user instructions, source, and tests win.
+- Treat memory, drive fields, and role dialogue as diagnostic leads; current user instructions, source, and tests win.
 
-Start with `attend --compact`; inspect targeted pressure; use reflection only for reusable outcomes; preview cleanup; re-run live reads after action; sync only when file readers need a snapshot.
+Start with `attend --compact`; inspect targeted pressure; reflect only for reusable outcomes; preview cleanup; re-run live reads after action.
+
+## Drive State Fields
+
+`attend --compact` omits `drive_state`/`organ_state` to save tokens. Re-run without `--compact` or pass `--explain-organ` when those fields are needed.
+
+Operational workspace orientation, not a persona. Fields: `goal` (current outcome); `mode` (explore/exploit/mixed); `learning_gaps` (uncertainty a probe can reduce); `resource_leads` (provenance sources — verify first); `alternatives` (options before commitment); `team_norms` (evidence-first/bounded/cooperative); `transactive_map` (shared-state IDs + freshness, not expertise); `organ_state` (pressure across senses, memory, verification, bridge, projection health).
+
+When drive state suggests action, route through the normal lifecycle: claim work, verify results, reflect only durable learning, close rows. Re-attend after a material task/verification/signal change. Do not store a fictional personality.
+
+## Subagent Rubber-Duck Review
+
+Use a real second agent for a hard explanation, risky decision, recurring weakness, or important reflection; skip it when an internal role pass or a direct test is cheaper. `reflect record --duo` returns prompts but launches no subagent; if the host cannot spawn one, say so — never label a fallback as subagent review. The duck is **always read-only**: no edits, claims, or durable rows.
+
+Loop: `FRAME → EXPLAIN → DUCK RESTATES → CHALLENGE → REVISE → VERIFY → CAPTURE`. Frame one question with acceptance criteria and file/row IDs; explain facts+hypothesis but withhold your recommendation; dispatch one read-only subagent; it restates the problem independently first, then challenges assumptions/edge cases/falsifications; you compare models keeping dissent, run one decisive source/test check, and capture only verified synthesis (none/memory/refinement/signal) via `references/learning-loop.md`. Agreement is not the check; one pass unless new evidence changes the model. After the loop, edits need user/task authorization with a distinct agent id, disjoint locks, own verification, and handoff — locks never authorize edits.

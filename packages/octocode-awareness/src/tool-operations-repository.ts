@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { attendAwareness } from './attend.js';
-import { injectRepoContext, queryAwareness, writeAwarenessView } from './repo-context.js';
+import { queryAwareness, writeAwarenessView } from './repo-context.js';
 import type { AwarenessToolOperation, AwarenessToolOperationContext, AwarenessToolOperationResult } from './tool-operations.js';
 
 export function runRepositoryOperation(
@@ -56,22 +56,6 @@ case 'view': {
         query: request['query'] as string | undefined,
         limit: request['limit'] as number | undefined,
         out: request['out'] as string | undefined,
-        cwd,
-      });
-      return { payload: result, exitCode: 0 };
-    }
-case 'wiki_sync': {
-      const result = injectRepoContext(db, {
-        workspacePath: (request['workspace_path'] as string | undefined) ?? cwd,
-        artifact: request['artifact'] as string | undefined,
-        repo: request['repo'] as string | undefined,
-        ref: request['ref'] as string | undefined,
-        query: request['query'] as string | undefined,
-        limit: request['limit'] as number | undefined,
-        outDir: request['out_dir'] as string | undefined,
-        mode: request['mode'] as string | undefined,
-        includeView: request['include_view'] as boolean | undefined,
-        check: request['check'] as boolean | undefined,
         cwd,
       });
       return { payload: result, exitCode: 0 };

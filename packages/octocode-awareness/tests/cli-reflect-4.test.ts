@@ -61,7 +61,7 @@ describe('reflect', () => {
   afterAll(() => rmSync(dir, { recursive: true }));
 
   it('emits exactly ONE JSON object (no stdout monkey-patching)', () => {
-    const r = run(db, ['reflect', 'record', '--agent-id', 'a', '--task', 'some task', '--outcome', 'worked']);
+    const r = run(db, ['reflect', 'record', '--agent-id', 'a', '--task', 'some task', '--outcome', 'worked', '--lesson', 'durable lesson about emit']);
     expect(r.status).toBe(0);
     // Must be parseable as a single document
     const parsed = JSON.parse(r.stdout.trim()) as Record<string, unknown>;
@@ -78,7 +78,7 @@ describe('reflect', () => {
   });
 
   it('without fix_repo, repo_fix_refinement_id is null', () => {
-    const result = ok(db, ['reflect', 'record', '--agent-id', 'a', '--task', 'simple', '--outcome', 'worked']);
+    const result = ok(db, ['reflect', 'record', '--agent-id', 'a', '--task', 'simple', '--outcome', 'worked', '--lesson', 'durable lesson without a repo fix']);
     expect(result['repo_fix_refinement_id']).toBeNull();
   });
 
@@ -118,7 +118,7 @@ describe('reflect', () => {
   });
 
   it('includes canonical next commands that close the reflection loop', () => {
-    const result = ok(db, ['reflect', 'record', '--agent-id', 'a', '--task', 't', '--outcome', 'worked']);
+    const result = ok(db, ['reflect', 'record', '--agent-id', 'a', '--task', 't', '--outcome', 'worked', '--lesson', 'durable lesson for next-commands']);
     expect(typeof result['next']).toBe('string');
     expect(result['next']).toContain('octocode-awareness refinement get');
     expect(result['next']).toContain('octocode-awareness reflect mine-weakness');
@@ -127,6 +127,12 @@ describe('reflect', () => {
 
   it('missing --task exits 1', () => {
     fail(db, ['reflect', 'record', '--agent-id', 'a', '--outcome', 'worked']);
+  });
+
+  it('routine reflect with no reusable signal exits 1', () => {
+    const r = run(db, ['reflect', 'record', '--agent-id', 'a', '--task', 'routine', '--outcome', 'worked']);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toMatch(/reusable lesson, failure, or fix/);
   });
 
   it('accepts judgment-note, duo, and eval-failure-json flags', () => {

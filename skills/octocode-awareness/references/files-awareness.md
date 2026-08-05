@@ -41,4 +41,4 @@ Task paths are non-exclusive planning scope. Run files are live work. Locks are
 exclusive safety. Edit log is completed history; do not conflate these four layers.
 
 Command/verification detail: `lock-protocol.md`; timing/handoffs:
-`session-observability.md`.
+`architecture.md`.

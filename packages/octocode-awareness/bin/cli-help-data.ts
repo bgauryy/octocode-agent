@@ -7,7 +7,7 @@ common: --db <path> --compact; hook run uses OCTOCODE_MEMORY_HOME
 agent loop: attend -> work start -> work end -> verify mark -> verify audit
 start: attend; workspace status; plan list; task ready; memory recall; signal list
 work: plan; task; work; lock; verify; signal; refinement
-learn: memory record|recall; reflect; docs; wiki; query
+learn: memory record|recall; reflect; docs; query
 operate: agent; session; hooks; hook; maintenance; schema
 first: octocode-awareness attend --workspace "$PWD" --query "<task>" --compact; follow returned next
 map: octocode-awareness schema commands --compact
@@ -24,7 +24,7 @@ start: attend; workspace status; plan create|list|show|join|doc|status; task cre
 edit: work start|touch|end|list|show; lock acquire|wait|release|prune; verify audit|mark
 msg: signal publish|list|reply|ack|resolve|prune; agent register|list
 learn: memory record|archive|restore|forget; refinement set|get|list|delete; reflect record|mine-weakness|export-harness|developer-review; maintenance digest
-wiki: wiki sync; query files|workboard|all|developer-review --format json|table|csv|markdown|html
+views: query files|workboard|all|developer-review --format json|table|csv|markdown|html
 inspect: schema commands --compact; docs list|show; <command> --help; exits 0 ok / 1 validation|verify debt / 2 live claim|lock|wait|hooks --strict`;
 
 export const COMMAND_TO_SCHEMA: Record<string, string> = {
@@ -49,7 +49,6 @@ export const COMMAND_TO_SCHEMA: Record<string, string> = {
   'attend': 'attend',
   'export-harness': 'export_harness',
   'query': 'query',
-  'repo-inject': 'wiki_sync',
   'session-capture': 'session_capture',
   'mine-weakness': 'mine_weakness',
   'doc-staleness': 'doc_staleness',
@@ -84,7 +83,6 @@ export const COMMAND_DISPLAY: Record<string, string> = {
   'export-harness': 'reflect export-harness',
   'developer-review': 'reflect developer-review',
   'query': 'query',
-  'repo-inject': 'wiki sync',
   'session-capture': 'session capture',
   'mine-weakness': 'reflect mine-weakness',
   'doc-staleness': 'docs staleness',
@@ -124,7 +122,6 @@ export const COMMAND_EXAMPLE: Record<string, string> = {
   'export-harness': 'octocode-awareness reflect export-harness --workspace "$PWD" --compact',
   'developer-review': 'octocode-awareness reflect developer-review --workspace "$PWD" --format markdown --compact',
   'query': 'octocode-awareness query workboard --workspace "$PWD" --format json --limit 1 --compact',
-  'repo-inject': 'octocode-awareness wiki sync --workspace "$PWD" --out .octocode --mode local --compact',
   'session-capture': 'octocode-awareness session capture --agent-id agent --workspace "$PWD" --reason handoff --compact',
   'mine-weakness': 'octocode-awareness reflect mine-weakness --workspace "$PWD" --compact',
   'doc-staleness': 'octocode-awareness docs staleness --targets-json \'[{"docFile":"README.md","sourceDirs":["src"]}]\' --compact',

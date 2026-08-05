@@ -336,6 +336,17 @@ export function cmdRefineGet(db: DatabaseSync, args: ParsedArgs, dbPath: string,
 export function cmdReflect(db: DatabaseSync, args: ParsedArgs, dbPath: string, opts: EmitOptions): number {
   if (!args['task']) die('--task is required');
 
+  // Reflection must carry reusable signal — a lesson, a fix, or a failure.
+  // Routine status (task + outcome only) is rejected so the memory store stays
+  // high-signal. Mirrors the library tool-operations guard and the skill docs.
+  const hasReusableSignal =
+    args['lesson'] || args['didnt_work'] || args['worked'] ||
+    args['fix_repo'] || args['fix_harness'] || args['fix_instructions'] ||
+    args['failure_signature'] || args['eval_failure_json'];
+  if (!hasReusableSignal) {
+    die('reflect needs a reusable lesson, failure, or fix: pass --lesson, --worked, --didnt-work, --fix-repo, --fix-harness, --fix-instructions, or --failure-signature. Skip routine status.');
+  }
+
   let evalFailures: EvalFailure[] = [];
   if (args['eval_failure_json']) {
     try {

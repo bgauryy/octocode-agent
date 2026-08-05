@@ -11,7 +11,7 @@
     { "prompt": "Why did the pre-edit hook block this change?", "expect": true },
     { "prompt": "Check pending verification before we finish.", "expect": true },
     { "prompt": "Save this gotcha for the next coding session.", "expect": true },
-    { "prompt": "Refresh the .octocode wiki for future file readers.", "expect": true },
+    { "prompt": "Export a summary of current tasks and memory to HTML for review.", "expect": true },
     { "prompt": "chekc what agnets work on same fiel then fix it", "expect": true }
   ],
   "train_near_miss": [

@@ -198,48 +198,4 @@ describe('repo context projections', () => {
     }
   });
 
-  it('injects .octocode repo context without editing gitignore', () => {
-    const dir = mktemp();
-    const db = join(dir, 'test.sqlite3');
-    try {
-      writeFileSync(join(dir, '.gitignore'), '.octocode\n', 'utf8');
-      spawnSync('git', ['init', '-q'], { cwd: dir, encoding: 'utf8', timeout: 5000 });
-      ok(db, [
-        'memory', 'record',
-        '--agent-id', 'agent-a',
-        '--workspace', dir,
-        '--task-context', 'inject projection',
-        '--observation', 'inject writes lean knowledge and manifest',
-        '--importance', '7',
-        '--label', 'DECISION',
-        '--reference', 'https://example.com/inject-guide',
-        '--reference', 'repo:bgauryy/octocode-mcp',
-      ]);
-
-      const result = ok(db, ['repo', 'inject', '--workspace', dir, '--mode', 'share']);
-      expect(result['out_dir']).toBe(join(dir, '.octocode'));
-      expect(result['files']).toEqual(expect.arrayContaining([
-        join(dir, '.octocode', 'AGENTS.md'),
-        join(dir, '.octocode', 'KNOWLEDGE.md'),
-        join(dir, '.octocode', 'awareness', 'manifest.json'),
-      ]));
-      const manifest = JSON.parse(readFileSync(join(dir, '.octocode', 'awareness', 'manifest.json'), 'utf8')) as Record<string, unknown>;
-      expect(manifest['policy']).toMatchObject({ gitignore_modified: false, share_decision: 'user-owned' });
-      expect(manifest['budgets']).toMatchObject({
-        markdown: {
-          'AGENTS.md': { max_lines: 80, within_budget: true },
-        },
-      });
-      expect(manifest['warnings']).toEqual(expect.arrayContaining([
-        expect.stringContaining('gitignored'),
-      ]));
-      expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toBe('.octocode\n');
-      expect(readFileSync(join(dir, '.octocode', 'AGENTS.md'), 'utf8')).toContain('Octocode Awareness Map');
-      expect(readFileSync(join(dir, '.octocode', 'AGENTS.md'), 'utf8')).toContain('Projection Health');
-      expect(readFileSync(join(dir, '.octocode', 'KNOWLEDGE.md'), 'utf8')).toContain('https://example.com/inject-guide');
-      expect(existsSync(join(dir, '.octocode', 'BOOKMARKS.md'))).toBe(false);
-      expect(existsSync(join(dir, '.octocode', 'awareness', 'csv', 'lessons.csv'))).toBe(false);
-      expect(existsSync(join(dir, '.octocode', 'awareness', 'index.html'))).toBe(false);
-    } finally { rmSync(dir, { recursive: true }); }
-  });
 });

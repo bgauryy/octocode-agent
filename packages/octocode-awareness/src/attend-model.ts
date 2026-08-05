@@ -1,7 +1,7 @@
 /**
  * attend.ts - bounded agent start packet over awareness state.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { type AwarenessQueryRow } from './repo-context.js';
 
@@ -53,7 +53,6 @@ export interface AttendResult {
   workboard: Record<string, AwarenessQueryRow[]>;
   evidence: AttendEvidence[];
   gaps?: string[];
-  bloat_warnings?: string[];
   verification_targets?: AwarenessQueryRow[];
   trust_warnings?: string[];
   trace?: Array<{ step: string; count?: number; note?: string }>;
@@ -168,86 +167,6 @@ export function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
-export function lineCount(path: string): number | null {
-  if (!existsSync(path)) return null;
-  try {
-    return readFileSync(path, 'utf8').split(/\r?\n/).length;
-  } catch {
-    return null;
-  }
-}
-
-export function projectionStats(workspacePath: string): Array<{ file: string; lines: number | null; mtime_ms: number | null }> {
-  return ['AGENTS.md', 'KNOWLEDGE.md', join('awareness', 'manifest.json')].map(file => {
-    const path = join(workspacePath, '.octocode', file);
-    let mtimeMs: number | null = null;
-    try { mtimeMs = existsSync(path) ? statSync(path).mtimeMs : null; } catch { /* ignore projection stat errors */ }
-    return { file: `.octocode/${file.replace(/\\/g, '/')}`, lines: lineCount(path), mtime_ms: mtimeMs };
-  });
-}
-
-export function manifestWarnings(
-  workspacePath: string,
-  stats: Array<{ file: string; mtime_ms: number | null }>,
-  liveSourceRevision: string | (() => string),
-): string[] {
-  const manifestPath = join(workspacePath, '.octocode', 'awareness', 'manifest.json');
-  if (!existsSync(manifestPath)) return ['.octocode/awareness/manifest.json missing; run wiki sync when projection context is needed'];
-  try {
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
-      generated_at?: string;
-      files?: string[];
-      source?: { revision?: string };
-      completeness?: Record<string, { is_partial?: boolean; omitted_count?: number | null }>;
-      budgets?: { markdown?: Record<string, { within_budget?: boolean }> };
-    };
-    const warnings: string[] = [];
-    const files = manifest.files ?? [];
-    const missingManagedCount = files.filter(file => !existsSync(resolve(workspacePath, file))).length;
-    if (missingManagedCount > 0) warnings.push(`manifest has ${missingManagedCount} missing generated file(s); regenerate repo projection`);
-    const markdownBudgets = manifest.budgets?.markdown ?? {};
-    for (const [file, budget] of Object.entries(markdownBudgets)) {
-      if (budget.within_budget === false) warnings.push(`manifest budget exceeded for ${file}`);
-    }
-    const partialSections = Object.values(manifest.completeness ?? {}).filter(section => section.is_partial);
-    if (partialSections.length > 0) {
-      warnings.push(`manifest is a partial snapshot (${partialSections.length} section(s)); use live SQLite for omitted rows`);
-    } else if (!manifest.source?.revision) {
-      warnings.push('manifest missing source revision; regenerate repo projection');
-    } else if (manifest.source.revision !== (typeof liveSourceRevision === 'function' ? liveSourceRevision() : liveSourceRevision)) {
-      warnings.push('manifest source revision differs from live SQLite; regenerate repo projection');
-    }
-    if (manifest.generated_at) {
-      const generatedMs = new Date(manifest.generated_at).getTime();
-      if (Number.isFinite(generatedMs) && stats.some(stat => stat.file !== '.octocode/awareness/manifest.json' && stat.mtime_ms != null && stat.mtime_ms > generatedMs + 1000)) {
-        warnings.push('manifest older than generated projection files; regenerate repo projection');
-      }
-    }
-    return warnings;
-  } catch {
-    return ['.octocode/awareness/manifest.json unreadable; regenerate repo projection'];
-  }
-}
-
-export function projectionWarnings(
-  workspacePath: string,
-  stats: Array<{ file: string; lines: number | null; mtime_ms: number | null }>,
-  liveSourceRevision: string | (() => string),
-): string[] {
-  const budgets: Record<string, number> = {
-    '.octocode/AGENTS.md': 80,
-    '.octocode/KNOWLEDGE.md': 200,
-  };
-  const markdownWarnings = stats.flatMap(stat => {
-    const budget = budgets[stat.file];
-    if (stat.file === '.octocode/KNOWLEDGE.md' && stat.lines == null) return [];
-    if (stat.lines == null) return [`${stat.file} missing; run wiki sync when projection context is needed`];
-    if (budget != null && stat.lines > budget) return [`${stat.file} has ${stat.lines} lines over budget ${budget}`];
-    return [];
-  });
-  return [...markdownWarnings, ...manifestWarnings(workspacePath, stats, liveSourceRevision)];
-}
-
 export function evidenceTrust(references: string[], workspacePath: string): AttendEvidence['trust'] {
   if (references.length === 0) return 'needs_refs';
   const missingFileReference = references.some(reference => {
@@ -267,7 +186,7 @@ export function resourceLeads(query: string, workspacePath: string): Array<Recor
   const add = (source: string, why: string, verification = 'lead_to_verify') => {
     leads.push({ source, why, verification });
   };
-  if (/(awareness|homeostatic|attend|workboard|memory|wiki|task|reflection|drive|motivation|resource|creative|personality)/.test(haystack)) {
+  if (/(awareness|homeostatic|attend|workboard|memory|task|reflection|drive|motivation|resource|creative|personality)/.test(haystack)) {
     add(
       join(workspacePath, '.octocode', 'rfc', 'homeostatic-awareness-loop', 'RFC.md'),
       'RFC goals and decision for the awareness loop',

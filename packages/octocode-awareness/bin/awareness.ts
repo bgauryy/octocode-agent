@@ -12,7 +12,7 @@ import { cmdAgentRegistry, cmdAgentSignal, cmdInit, cmdNotifyPrune, cmdSelfTest,
 import { cmdGetMemory, cmdRefineGet, cmdRefineSet, cmdReflect, cmdTellMemory } from './cli-memory.js';
 import { cmdAuditUnverified, cmdPreFlightIntent, cmdReleaseFileLock, cmdVerify, cmdWork } from './cli-work.js';
 import { cmdExportHarness, cmdForget, cmdMemoryLifecycle, cmdPlan, cmdRefineDelete, cmdTask } from './cli-plans.js';
-import { cmdAttend, cmdDeveloperReview, cmdDocStaleness, cmdDocsCatalog, cmdQuery, cmdRepoInject } from './cli-repo.js';
+import { cmdAttend, cmdDeveloperReview, cmdDocStaleness, cmdDocsCatalog, cmdQuery } from './cli-repo.js';
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
@@ -216,7 +216,6 @@ try {
     case 'developer-review': exitCode = cmdDeveloperReview(db, args, dbPath, opts); break;
     case 'query':           exitCode = cmdQuery(db, args, dbPath, opts); break;
     case 'attend':          exitCode = cmdAttend(db, args, dbPath, opts); break;
-    case 'repo-inject':     exitCode = cmdRepoInject(db, args, dbPath, opts); break;
     case 'agent-registry':  exitCode = cmdAgentRegistry(db, args, dbPath, opts); break;
     case 'agent-signal': {
       const signalFormat = String(args['format'] ?? 'json');

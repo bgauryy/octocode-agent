@@ -5,8 +5,9 @@ path is `$OCTOCODE_MEMORY_HOME/awareness.sqlite3`; without that environment
 variable it uses the platform memory-home directory resolved by
 `src/db-runtime.ts`.
 
-`<workspace>/.octocode/` is not the database. It contains generated projections
-for readers that cannot query Awareness directly. SQLite remains authoritative.
+`<workspace>/.octocode/` is not the database. It holds optional read-only query
+exports written on request for readers that cannot query Awareness directly, plus
+authored plan narrative. SQLite remains authoritative.
 
 ## One executable contract
 

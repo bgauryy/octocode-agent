@@ -21,8 +21,13 @@ export type AwarenessToolOperation =
   | 'export_harness'
   | 'attend'
   | 'query'
-  | 'view'
-  | 'wiki_sync';
+  | 'view';
+/** Operations that runAwarenessToolOperation can route. Keep in sync with AwarenessToolOperation. */
+export const ROUTABLE_OPERATIONS: readonly AwarenessToolOperation[] = [
+  'recall', 'record', 'reflect', 'workspace_status', 'refine_get', 'verify_audit',
+  'verify', 'digest', 'forget', 'agent_signal', 'file_lock', 'mine_weakness',
+  'export_harness', 'attend', 'query', 'view',
+];
 export interface AwarenessToolOperationContext {
   agentId?: string | null;
   cwd?: string | null;
@@ -47,6 +52,10 @@ export function runAwarenessToolOperation(
     runRepositoryOperation(db, operation, request, context),
     runSignalsOperation(db, operation, request, context),
   ].find(candidate => candidate !== null);
-  if (!result) throw new Error(`unsupported awareness operation: ${operation}`);
+  if (!result) throw new Error(
+    `unsupported awareness operation: "${operation}". ` +
+    `runAwarenessToolOperation routes only these operations: ${ROUTABLE_OPERATIONS.join(', ')}. ` +
+    `Nouns like memory/task/plan/maintenance are CLI-only (run them via the octocode-awareness binary), not library-routed.`,
+  );
   return result;
 }

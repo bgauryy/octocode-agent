@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initDb } from '../src/db.js';
@@ -237,31 +237,6 @@ it('groups active file work by relative path, caps peers, and shows exclusive lo
       db.prepare("UPDATE locks SET expires_at = '2000-01-01T00:00:00Z'").run();
       const expiredProfile = queryAwareness(db, { workspacePath: dir, artifact: 'svc', view: 'repo-profile' });
       expect(expiredProfile.rows).toContainEqual({ metric: 'active_locks', count: 0 });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-it('routes bloat to one valid bounded review command when verify is clear', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'oc-attend-bloat-'));
-    try {
-      const { db } = seededDb(dir);
-      mkdirSync(join(dir, '.octocode'), { recursive: true });
-      writeFileSync(join(dir, '.octocode', 'KNOWLEDGE.md'), `${'x\n'.repeat(250)}`, 'utf8');
-      // Clear mid-loop lanes so projection bloat drives next.
-      db.prepare(`UPDATE task_runs SET status = 'SUCCESS'`).run();
-      db.prepare(`UPDATE run_files SET ended_at = '2000-01-01T00:00:00Z', expires_at = '2000-01-01T00:00:00Z'`).run();
-      db.prepare(`UPDATE signals SET status = 'resolved', resolved_at = '2000-01-01T00:00:00Z' WHERE status != 'resolved'`).run();
-      db.prepare(`UPDATE refinements SET state = 'done' WHERE state != 'done'`).run();
-      const result = attendAwareness(db, {
-        workspacePath: dir,
-        limit: 10,
-        compact: true,
-      });
-      expect(result.next).toBe(
-        `octocode-awareness query workboard --workspace '${dir}' --format json --limit 5 --compact`,
-      );
-      expect(result.next).not.toContain(';');
-      expect(result.next).not.toContain('memory forget --workspace');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

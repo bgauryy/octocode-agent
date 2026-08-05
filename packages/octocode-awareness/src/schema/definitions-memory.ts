@@ -3,7 +3,7 @@ import { z } from 'zod';
 import {
   agentId, nonEmptyText, tags, workspacePath, artifactScope, repoScope,
   refScope, references, memoryLabel, memorySort, importanceLevel, targetFiles,
-  awarenessQueryView, awarenessOutputFormat, repoContextMode,
+  awarenessQueryView, awarenessOutputFormat,
 } from './common.js';
 
 export const memorySchemas = {
@@ -162,23 +162,6 @@ memory_record: z
     })
     .strict()
     .describe("Build a bounded read-only lobby: actionable workboard state, relevant evidence/gaps, and one next command; noncompact mode adds diagnostics."),
-  wiki_sync: z
-    .object({
-      workspace_path: workspacePath.optional().describe("Workspace filter."),
-      artifact: artifactScope.optional(),
-      repo: repoScope.optional().describe("Repo filter."),
-      ref: refScope.optional().describe("Ref filter."),
-      query: z.string().trim().max(1000).default("").describe("Optional text filter."),
-      limit: z.number().int().min(1).max(500).default(50),
-      out_dir: z.string().trim().min(1).max(1024).optional().describe("Output directory, defaults to <workspace>/.octocode."),
-      mode: repoContextMode,
-      include_view: z.boolean().default(true).describe("Write awareness/index.html."),
-      prune_orphans: z.boolean().default(false)
-        .describe("Remove retired files owned by the previous Awareness manifest; run once without it to preview candidates."),
-      check: z.boolean().default(true).describe("Report gitignore/share policy warnings."),
-    })
-    .strict()
-    .describe("Generate .octocode repo context projections without editing .gitignore."),
   export_harness: z
     .object({
       limit: z.number().int().min(1).max(200).default(10),

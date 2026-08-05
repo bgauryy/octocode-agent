@@ -189,6 +189,47 @@ export function fileReferenceCandidates(files: string[], baseDir?: string | null
   return [...refs];
 }
 
+/**
+ * Normalize `--file` inputs to comparable path suffix tokens: strip the `file:`
+ * prefix, a leading `./`, a trailing `:<line>` locator, and normalize separators.
+ * Used for basename/suffix recall so `bar.ts` matches `file:/abs/src/widgets/bar.ts`.
+ */
+export function fileSuffixTokens(files: string[]): string[] {
+  const tokens = new Set<string>();
+  for (const raw of files) {
+    let file = String(raw ?? '').trim();
+    if (!file) continue;
+    if (file.startsWith('file:')) file = file.slice(5);
+    file = file.replace(/\\/g, '/').replace(/^\.\//, '').replace(/:\d+$/, '');
+    if (file) tokens.add(file);
+  }
+  return [...tokens];
+}
+
+/** True when a stored reference's file path matches the token by full path or path-segment suffix. */
+export function fileReferenceMatchesToken(reference: string, token: string): boolean {
+  if (!reference.startsWith('file:')) return false;
+  const path = reference.slice(5).replace(/\\/g, '/').replace(/:\d+$/, '');
+  if (!path) return false;
+  return path === token || path.endsWith('/' + token) || token.endsWith('/' + path) || token === path;
+}
+
+/** Candidate memory ids whose any file: reference matches any token by path suffix (OR semantics). */
+export function fileSuffixCandidateIds(db: DatabaseSync, tokens: string[]): Set<string> {
+  const normTokens = [...new Set(tokens.map(t => String(t ?? '').trim()).filter(Boolean))];
+  if (normTokens.length === 0) return new Set();
+  const rows = db.prepare(
+    `SELECT DISTINCT memory_id, reference
+     FROM memory_refs
+     WHERE kind = 'file' OR reference LIKE 'file:%'`
+  ).all() as unknown as Array<{ memory_id: string; reference: string }>;
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (normTokens.some(token => fileReferenceMatchesToken(row.reference, token))) ids.add(row.memory_id);
+  }
+  return ids;
+}
+
 export function anyReferenceCandidateIds(db: DatabaseSync, references: string[]): Set<string> {
   const refs = [...new Set(references.map(ref => String(ref ?? '').trim().slice(0, 512)).filter(Boolean))];
   if (refs.length === 0) return new Set();

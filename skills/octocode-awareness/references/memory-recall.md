@@ -1,12 +1,11 @@
-# Memory Recall Workflow
+# Memory Recall
 
-Read this before planning, editing, recording, superseding, or trusting a remembered fact. Ranking and semantic behavior live in `references/memory-ranking.md`; output selection lives in `references/output-routing.md`.
+Read this before planning, editing, recording, superseding, or trusting a remembered fact. Output selection: `references/output-routing.md`.
 
 ## Recall
 
-`memory recall` reads canonical SQLite rows, not `.octocode/MEMORY.md`. Run it when prior lessons may change the plan:
-
-A successful explicit recall updates bounded popularity metadata, not evidence recency; startup `attend` opts out of that feedback.
+`memory recall` reads canonical SQLite rows, not `.octocode/MEMORY.md`. Run it when prior lessons may change the plan.
+A successful explicit recall updates bounded popularity metadata; startup `attend` opts out of that feedback.
 
 ```bash
 octocode-awareness memory recall --query "<task>" --workspace "$PWD" --smart --compact
@@ -21,6 +20,24 @@ Useful filters:
 - Judgment: `--smart`, `--semantic`, `--explain`; explain adds score components and effective `applied_filters` after widening.
 
 Use `schema command memory recall` when payload fields matter. CLI flags and schema property names can differ, such as `--file` versus stored arrays.
+
+## Ranking
+
+- `--sort smart|score` (default) blends lexical relevance, importance, recency, and access.
+- `--sort importance|recent|accessed` isolates one ordering signal.
+- `--explain` adds score components so the agent can justify selection.
+- `--smart` safely broadens an under-filled strict query by lowering minimum importance then dropping label/tag filters.
+- `--as-of <ISO>` evaluates memory validity at a prior time.
+
+`--semantic` reranks only when embeddings exist. Configure `OCTOCODE_EMBED_CMD` as a command that reads text on stdin and prints JSON:
+
+```json
+{"embedding":[0.1,0.2],"model":"host-model"}
+```
+
+With the command set, `memory record` stores vectors and semantic recall ranks by cosine similarity. When unset/failing, CLI warns and falls back to lexical/salience mode. Pi needs the same host env/API; library callers may use `storeEmbedding` and `searchByEmbedding`.
+
+Inspect mode and `score_components` before trusting order. Increase `--limit` only when comparison needs more candidates; compact context is the default. Treat semantic similarity as retrieval help, not truth.
 
 ## Automatic Prompt-Time Lead
 
@@ -44,6 +61,6 @@ Reserve `memory forget --dry-run` plus apply for reviewed irreversible deletion;
 - Zero results mean broaden vocabulary/filtering or use `--smart`; they do not prove absence.
 - A low-confidence result with `judgment_required` needs more evidence before use.
 - After using a memory, verify the claim in current context. An existing path is only a lead.
-- When the claim changes, supersede/archive it; forget only after review. Regenerate projections only if file readers need the update.
+- When the claim changes, supersede/archive it; forget only after review.
 
 Use recall to inform the plan; proof comes from current artifacts and checks.

@@ -86,7 +86,7 @@ path stores the prompt.
 
 ## Evidence Rules
 
-Memory, peers, signals, and generated projections are leads. Check current files,
+Memory, peers, signals, and query exports are leads. Check current files,
 tests, and user instructions before acting. Zero recall results mean broaden one
 query/filter; they do not prove absence.
 

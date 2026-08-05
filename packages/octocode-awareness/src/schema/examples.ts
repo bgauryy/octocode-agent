@@ -54,13 +54,6 @@ export const examples = {
     include_bodies: false,
     explain_organ: false,
   },
-  wiki_sync: {
-    workspace_path: "/repo",
-    out_dir: "/repo/.octocode",
-    mode: "local",
-    include_view: true,
-    check: true,
-  },
   export_harness: {
     limit: 10,
     min_importance: 7,

@@ -17,7 +17,7 @@ vars inline per command — an open stdin hangs instead of failing, and a droppe
 | Tasks and verify | dependency block/unblock; submit/mark/audit | predecessor stays blocked until verified; zero final debt |
 | Communication | register; signal publish/list/reply/ack/resolve; refinement lifecycle | recipient/thread/unread ownership holds; unrelated work is preserved |
 | Memory and reflection | record/recall/supersede/archive/restore; reflect record | scoped/ranked SQLite truth; immutable replacement history; current evidence wins |
-| Wiki | sync; manifest; source-revision comparison; local/share review | bounded/stale-aware projection; `manifest.source.canonical` matches the run's real `db_path`; live work is not treated as wiki truth |
+| Query exports | `query --format csv/html/json` export; live-DB read vs export content comparison | export reflects live SQLite; no stale state injected; `wiki sync` projection feature was removed |
 | Hooks | strict check; harmless observed host event; lifecycle edge | config ready and runtime observed; guard/presence/audit/finalize parity |
 | Skill | docs list/show; bundled-skill inspection; skill review | live-state routing, manual fallback, no secret handling, focused owners |
 | Token delivery | compact tests; unchanged repeat; changed signal/peer/memory lead | stable state silent; one bounded decision packet; full details queryable |
@@ -38,7 +38,7 @@ vars inline per command — an open stdin hangs instead of failing, and a droppe
 Do not average away safety or authority failures. **PASS** requires every applicable
 row at 4–5, a mean of at least 4.5, no blocked rows, and zero final debt/active
 locks. **PARTIAL** requires every safety/authority row (store/schema, locks,
-verification, wiki authority, and applicable hooks) at least 4 but misses the
+verification, query-export correctness, and applicable hooks) at least 4 but misses the
 overall score threshold. **FAIL** is any safety/authority row at 0–3, a failed
 required behavior, or final debt/active locks. **BLOCKED** prevents a comprehensive
 verdict.
@@ -52,7 +52,7 @@ truncation metadata where needed, and targeted full-row retrieval. The tested
 
 ```text
 Comprehensive audit: PASS | PARTIAL | FAIL | BLOCKED
-Ratings: store=<0-5|blocked> reads=<0-5|blocked> work=<0-5|blocked> locks=<0-5|blocked> verify=<0-5|blocked> comms=<0-5|blocked> memory=<0-5|blocked> wiki=<0-5|blocked> hooks=<0-5|n/a|blocked> skill=<0-5|blocked> tokens=<0-5|blocked> maintenance=<0-5|blocked>
+Ratings: store=<0-5|blocked> reads=<0-5|blocked> work=<0-5|blocked> locks=<0-5|blocked> verify=<0-5|blocked> comms=<0-5|blocked> memory=<0-5|blocked> exports=<0-5|blocked> hooks=<0-5|n/a|blocked> skill=<0-5|blocked> tokens=<0-5|blocked> maintenance=<0-5|blocked>
 Score: mean=<0.0-5.0> low_rows=<none or area=score list>
 Debt: pending=<count> active=<count> locks=<count>
 Blocked/skipped: <none or exact prerequisite + next action>

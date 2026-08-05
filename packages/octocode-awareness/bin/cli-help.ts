@@ -80,10 +80,6 @@ schema: octocode-awareness schema json-schema query --compact`,
 example: octocode-awareness attend --query "current task" --workspace "$PWD" --agent-id "$OCTOCODE_AGENT_ID" --compact
 note: pass --agent-id (or OCTOCODE_AGENT_ID) so next routes owned Verify/Claimed before generic evidence
 schema: octocode-awareness schema json-schema attend --compact`,
-  'repo-inject': `usage: octocode-awareness wiki sync [--workspace <repo>] [--out .octocode] [--mode local|share] [--no-check] [--no-include-view] [--prune-orphans]
-example: octocode-awareness wiki sync --workspace "$PWD" --out .octocode --mode local --compact
-note: review orphan_candidates before rerunning with --prune-orphans
-schema: octocode-awareness schema json-schema wiki_sync --compact`,
   'docs-catalog': `usage: octocode-awareness docs list|show [name] [--full]
 examples:
   octocode-awareness docs list --compact

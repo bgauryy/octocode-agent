@@ -16,7 +16,7 @@ export type SchemaName = keyof typeof schemas;
 
 const listableSchemas = [
   "memory_record", "memory_recall",
-  "attend", "query", "wiki_sync",
+  "attend", "query",
   "workspace_status", "export_harness", "session_capture",
   "plan", "task", "work", "lock_acquire", "lock_wait", "lock_prune", "lock_release", "verify", "verify_audit",
   "forget_memory", "memory_lifecycle", "refinement", "refine_query", "refine_delete",
@@ -73,7 +73,6 @@ const commandIndex = [
   { command: "query workboard", schema: "query", use: "Read the smart agent queue, including stale_file_refs memory-review items.", example: 'octocode-awareness query workboard --workspace "$PWD" --format json --limit 1 --compact' },
   { command: "query all", schema: "query", use: "Export all live views; use html for the sortable/filterable browser view.", example: 'octocode-awareness query all --workspace "$PWD" --format html --out .octocode/awareness/index.html' },
   { command: "query developer-review", schema: "query", use: "Read instruction-feedback rows; request Markdown only for an explicit export.", example: 'octocode-awareness query developer-review --workspace "$PWD" --format markdown --compact' },
-  { command: "wiki sync", schema: "wiki_sync", use: "Refresh the local .octocode wiki/projections from canonical SQLite state.", example: 'octocode-awareness wiki sync --workspace "$PWD" --mode local --compact' },
   { command: "session capture", schema: "session_capture", use: "Hook-driven handoff capture from locks + dirty git tree.", example: 'octocode-awareness session capture --agent-id agent --workspace "$PWD" --reason handoff --compact' },
   { command: "reflect record", schema: "reflect", use: "Record outcome and lessons after work.", example: 'octocode-awareness reflect record --agent-id agent --task "fix CLI" --outcome worked --lesson "lesson" --compact' },
   { command: "reflect mine-weakness", schema: "mine_weakness", use: "Find recurring failure clusters.", example: 'octocode-awareness reflect mine-weakness --workspace "$PWD" --compact' },
@@ -96,7 +95,7 @@ const commandIndex = [
   { command: "schema validate", schema: null, use: "Validate JSON payload against one schema.", example: "octocode-awareness schema validate memory_recall payload.json --compact" },
 ];
 
-const CORE_NOUNS = new Set(["attend", "plan", "task", "work", "verify", "memory", "signal", "wiki", "query"]);
+const CORE_NOUNS = new Set(["attend", "plan", "task", "work", "verify", "memory", "signal", "query"]);
 const CLI_REQUIRED: Record<string, string[]> = {
   "plan create": ["name", "objective", "lead_agent_id", "workspace"],
   "plan show": ["plan_id"],

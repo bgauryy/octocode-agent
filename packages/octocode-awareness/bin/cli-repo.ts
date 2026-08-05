@@ -10,7 +10,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { mineDocStaleness, proposeDocRefresh } from '../src/docs.js';
 import { listSkillDocs, showSkillDoc } from '../src/docs-catalog.js';
 import { attendAwareness } from '../src/attend.js';
-import { developerReviewDoc, formatAwarenessQueryResult, injectRepoContext, queryAwareness } from '../src/repo-context.js';
+import { developerReviewDoc, formatAwarenessQueryResult, queryAwareness } from '../src/repo-context.js';
 import { ParsedArgs } from './cli-model.js';
 import { EmitOptions, emit, flagBool, resolveAgentId } from './cli-routing.js';
 
@@ -93,37 +93,6 @@ export function cmdAttend(db: DatabaseSync, args: ParsedArgs, dbPath: string, op
     explainOrgan: flagBool(args['explain_organ']),
     compact: opts.compact,
   });
-  return emit({ db_path: dbPath, ...result }, 0, opts);
-}
-
-export function cmdRepoInject(db: DatabaseSync, args: ParsedArgs, dbPath: string, opts: EmitOptions): number {
-  const outDir = args['out_dir'] ?? args['out'];
-  const result = injectRepoContext(db, {
-    workspacePath: args['workspace'] ? String(args['workspace']) : process.cwd(),
-    artifact: args['artifact'] ? String(args['artifact']) : null,
-    repo: args['repo'] ? String(args['repo']) : null,
-    ref: args['ref'] ? String(args['ref']) : null,
-    query: args['query'] ? String(args['query']) : null,
-    limit: args['limit'] ? parseInt(String(args['limit']), 10) : undefined,
-    outDir: outDir ? String(outDir) : undefined,
-    mode: args['mode'] ? String(args['mode']) : undefined,
-    includeView: flagBool(args['include_view']),
-    pruneOrphans: flagBool(args['prune_orphans']),
-    check: flagBool(args['check']),
-    dbPath,
-  });
-  if (opts.compact) {
-    return emit({
-      ok: result.ok,
-      mode: result.mode,
-      out_dir: result.out_dir,
-      written: result.count,
-      warning_count: result.warnings.length,
-      orphan_count: result.orphan_candidates.length,
-      pruned_count: result.pruned_orphans.length,
-      manifest: `${result.out_dir}/awareness/manifest.json`,
-    }, 0, opts);
-  }
   return emit({ db_path: dbPath, ...result }, 0, opts);
 }
 

@@ -53,7 +53,6 @@ export {
   formatAwarenessQueryResult,
   renderAwarenessHtml,
   writeAwarenessView,
-  injectRepoContext,
 } from './repo-context.js';
 export type {
   AwarenessQueryFormat,
