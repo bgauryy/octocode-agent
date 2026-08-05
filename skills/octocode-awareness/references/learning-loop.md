@@ -1,23 +1,25 @@
-# Learning Loop Closure
+# Learning Loop, Bookkeeping & Skill Evolution
 
-Use this when reflection, evals, recurring failures, developer review, or harness proposals should change future behavior.
-Learning-loop work is **bookkeeping (learning)**. Consult `references/bookkeeping.md` only when cleanup/trigger policy is still needed and not already loaded. Skip routine successful edits with no reusable lesson.
+Use this for outcomes, failures, developer-review, housekeep, improve loops, and skill evolution.
+A loop closes only when its output has an owner, an applied action, fresh verification, and a terminal state.
 
-A loop is closed only when its output has an owner, an applied action, fresh verification, and a terminal state or refreshed projection.
+**Bookkeeping (learning)** turns verified outcomes into routed, durable knowledge.
+**Housekeep (cleanup)** removes or supersedes stale locks, signals, terminal refinements, and weak/redundant memories.
+`query workboard` is the shared upkeep sensor for both.
 
-## Routes
+## Routes (Bookkeeping — Learn)
 
 | Trigger | Produce | Consume | Close |
 |---|---|---|---|
-| Reusable outcome | `reflect record --lesson` | later `attend` / `memory recall` | Re-check; supersede/forget when stale. |
-| Repo/code fix | `--fix-repo` refinement | `refinement get --state open` | Apply, verify, then close with agent and check receipt. |
+| Reusable outcome | `reflect record --lesson` | later `attend`/`memory recall` | Re-check; supersede/forget when stale. |
+| Repo/code fix | `--fix-repo` refinement | `refinement get --state open` | Apply, verify, close with agent and check receipt. |
 | Harness gap | `--fix-harness` memory | `reflect export-harness` | Human applies; skill review/tests; re-reflect. |
-| Bad instructions | `--fix-instructions` | `reflect developer-review` | Update instructions; mark done; confirm the live view. |
-| Repeated failure | `--failure-signature` / `--eval-failure-json` | `reflect mine-weakness` | One cluster → one fix → re-reflect same signature. |
-| Role prompts | `reflect record --duo` | one internal dialogue | Capture synthesis only. |
-| Independent challenge | rubber-duck subagent | main revises + next check | Never treat agreement as proof. |
+| Bad instructions | `--fix-instructions` | `reflect developer-review` | Update instructions; mark done; confirm live view. |
+| Repeated failure | `--failure-signature`/`--eval-failure-json` | `reflect mine-weakness` | One cluster → one fix → re-reflect same signature. |
+| Goal/KPI improve | SET GOAL+KPI → smallest change → measure actual results → accept\|revert | — | Reject: undefined KPI, narrative-only accept, checks not run. |
+| Role prompt | `reflect record --duo` | one internal dialogue | Capture synthesis only. |
+| Independent challenge | rubber-duck subagent | main revises + next check | Never treat agreement as proof; see `references/homeostatic-loop.md`. |
 | Stale docs | `docs staleness` | source owner | Update + regenerate needed projections. |
-| Cleanup pressure | digest/prune/forget dry-runs | reviewed IDs | Mutate, then re-`attend`/`query`. |
 
 Terminal recipe: `refinement set --refinement-id <id> --agent-id "$OCTOCODE_AGENT_ID" --state done --check-receipt "<check and result>"`.
 
@@ -25,17 +27,58 @@ Terminal recipe: `refinement set --refinement-id <id> --agent-id "$OCTOCODE_AGEN
 
 Capture so errors cluster: `reflect record --outcome failed --failure-signature "<stable key>" --lesson "…"`. Stable key = `test:<name>` or `<class>:<site>`, not the full message. Bulk: `--eval-failure-json '[...]'`. Mine with `reflect mine-weakness`; route `--fix-repo|harness|instructions`; re-reflect with the **same** signature. `--outcome` must be `worked|partial|failed`.
 
-## Durable output (after `wiki sync`)
+## Developer Review (Fix Instructions)
+
+When human-authored instructions caused time loss, guessing, or a wrong turn — name the source, cost, and proposed replacement; attach instruction files with `--fix-file`; keep one concern per call:
+
+```bash
+octocode-awareness reflect record --agent-id "$OCTOCODE_AGENT_ID" \
+  --workspace "$PWD" --task "add lock retry" --outcome partial \
+  --fix-instructions "AGENTS.md omits the lock TTL; document the limit and extension path." \
+  --fix-file AGENTS.md --compact
+```
+
+Consume: `reflect developer-review --format markdown` or `query developer-review` JSON. Workboard: `DeveloperReview` column for open feedback. After updating the owning instruction, close with `refinement set --refinement-id <id> --state done --check-receipt "<check and result>"`. Use `--fix-repo` for code behavior, `--fix-harness` for skill/hook machinery.
+
+## Housekeep (Cleanup)
+
+Ops: reversible `memory archive|restore`; reviewed `maintenance digest`, `lock prune`, `signal prune`, `memory forget`, `refinement delete`; automatic salience decay.
+
+Triggers (workboard-driven):
+- Workboard shows items → drain memory-review/`stale_file_refs` rows; prune stale locks/signals the board flags.
+- Before finishing, only when sensors show pressure → `reflect mine-weakness` if failures repeated; `maintenance digest --dry-run` (reports pressure, prunes only expired/superseded/terminal rows).
+- End of session → prune expired/resolved rows only when workboard lists them; dry-run first.
+- Idle → `maintenance digest --dry-run`, review IDs, then apply.
+
+Rules: dry-run before any mutation; report evidence before removing. Delete exact synthetic duplicates and expired handoffs; archive weak old memories. Never delete or mark work successful from age alone: stale unproved runs become `FAILED`. Prefer supersession/archive/decay over destructive deletion; restore is valid only for archived rows, not replacement history.
+
+## Durable Output
 
 | Write with | Lands in |
 |---|---|
-| Verified reusable knowledge, gotchas, lessons, or external references | bounded `.octocode/KNOWLEDGE.md` when nonempty |
-| Local `--reference file:…` / `--file` paths | live `query files`; projection only when the selected knowledge lead includes them |
-| `--fix-instructions` feedback | live `reflect developer-review` / `query developer-review`; not projected by default |
-| Discovery and command routing | lean `.octocode/AGENTS.md` |
-| Projection ownership/completeness | `.octocode/awareness/manifest.json` |
+| Verified knowledge, gotchas, lessons, external references | live `query memory`/`memory recall` |
+| `--reference file:…`/`--file` paths | live `query files` |
+| `--fix-instructions` feedback | live `reflect developer-review`/`query developer-review` |
 
-SQLite is canonical; sync only when file readers need refresh. Current projection ownership: `references/wiki-files-map.md`.
+SQLite is canonical. Use live `attend`/`query`/`memory recall` to read current state.
+
+## Skill Evolution (SkillOpt)
+
+Treat the skill folder as the **trainable external state** of a frozen agent. Accept only edits that improve a held-out check; keep rejected proposals as learning evidence (`reflect record --fix-harness`).
+
+Operator loop: `ATTEND → SET GOAL+KPI → RESEARCH → PLAN (bounded edits) → USER GATE → ACT → REVIEW → VALIDATE → REFLECT`
+
+- **Research**: inspect real `SKILL.md` folders; use `references/self-reflection-dialogue.md` for hard judgment.
+- **Improve/update**: READ→PLAN→EDIT→VERIFY; prefer patch-mode (one concept per round); smoke on a task outside the failure that motivated the edit; no write without user approval when skill is shared.
+- **Reject path**: revert, record why it hurt (`memory record`/`reflect record --fix-harness`), propose a smaller edit.
+- **Ship**: prune orphans; `npx octocode skill --add --path <skill-dir> --platform <host> --force`.
+
+Hard rules:
+- Do **not** one-shot regenerate a working skill from a summary — read every behavior-affecting file first.
+- Do **not** treat a plausible diagnosis as an accepted edit — held-out validation is mandatory.
+- Do **not** dump trajectory logs into `SKILL.md` — procedural rules only; instance detail stays in memory/reflect.
+
+Stop when: one clear path exists; two high-rated candidates → pick one; three research angles add nothing; or a user gate is pending.
 
 ## Sequence
 
@@ -43,4 +86,4 @@ SQLite is canonical; sync only when file readers need refresh. Current projectio
 VERIFIED OUTCOME -> REFLECT -> ROUTE -> APPLY -> VERIFY -> CLOSE ROW -> PROJECT IF USEFUL -> ATTEND
 ```
 
-Use `--duo` for hard judgments; `subagent-rubber-duck.md` for a real second agent. `none` closes when nothing durable remains. `export-harness` is preview-only; `wiki sync` publishes DB state separately. Keep memory/refinement IDs until closure.
+`none` closes when nothing durable remains. `export-harness` is preview-only. Keep memory/refinement IDs until closure. Re-run `attend`/`query` after any action to confirm health.

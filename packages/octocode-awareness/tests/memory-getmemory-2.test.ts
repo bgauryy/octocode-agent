@@ -10,6 +10,39 @@ function freshDb(): DatabaseSync {
     return db;
 }
 
+describe('getMemory --file suffix/basename recall', () => {
+  it('matches a memory by basename and path-suffix, not only exact resolved path', () => {
+    const db = freshDb();
+    const m = insertMemory(db, {
+      taskContext: 'widget bug', observation: 'the widget breaks on resize', importance: 7,
+      references: ['file:/abs/project/src/widgets/bar.ts'],
+    });
+    expect(getMemory(db, { query: 'widget', files: ['bar.ts'], limit: 10 }).memories.map(x => x.memory_id))
+      .toContain(m.memoryId);
+    expect(getMemory(db, { query: 'widget', files: ['widgets/bar.ts'], limit: 10 }).memories.map(x => x.memory_id))
+      .toContain(m.memoryId);
+  });
+
+  it('does not match an unrelated basename', () => {
+    const db = freshDb();
+    insertMemory(db, {
+      taskContext: 'widget bug', observation: 'the widget breaks on resize', importance: 7,
+      references: ['file:/abs/project/src/widgets/bar.ts'],
+    });
+    expect(getMemory(db, { query: 'widget', files: ['other.ts'], limit: 10 }).count).toBe(0);
+  });
+
+  it('matches when the stored reference carries a trailing line locator', () => {
+    const db = freshDb();
+    const m = insertMemory(db, {
+      taskContext: 'parser', observation: 'parser edge case', importance: 6,
+      references: ['file:/abs/project/src/parser.ts:42'],
+    });
+    expect(getMemory(db, { query: 'parser', files: ['parser.ts'], limit: 10 }).memories.map(x => x.memory_id))
+      .toContain(m.memoryId);
+  });
+});
+
 describe('getMemory', () => {
   it('returns memories sorted by decay score', () => {
     const db = freshDb();

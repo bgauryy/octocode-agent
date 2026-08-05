@@ -160,7 +160,7 @@ describe('integration: full round-trip', () => {
         '--observation', `${unique} observation`,
         '--importance', '8',
       ]);
-      ok(db, ['reflect', 'record', '--agent-id', 'a', '--task', unique, '--outcome', 'worked']);
+      ok(db, ['reflect', 'record', '--agent-id', 'a', '--task', unique, '--outcome', 'worked', '--lesson', `${unique} durable lesson`]);
       const found = ok(db, ['memory', 'recall', '--query', unique, '--min-importance', '1', '--limit', '5']);
       expect(found['count'] as number).toBeGreaterThanOrEqual(1);
     } finally { rmSync(dir, { recursive: true }); }

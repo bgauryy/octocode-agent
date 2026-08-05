@@ -2,7 +2,7 @@
 
 Use role dialogue when an important, fuzzy, risky, or creative idea needs challenge.
 Skip routine edits, status checks, and obvious verification.
-Use `references/subagent-rubber-duck.md` for a real second agent; loop closure lives in `references/learning-loop.md`.
+Use `references/homeostatic-loop.md` (subagent rubber-duck section) for a real second agent; loop closure lives in `references/learning-loop.md`.
 
 ## Pattern
 

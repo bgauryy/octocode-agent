@@ -1,15 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { initDb } from '../src/db.js';
-import { evidenceTrust, manifestWarnings } from '../src/attend-model.js';
 import { projectMemoryLean } from '../src/helpers.js';
 import { getMemory, insertMemory } from '../src/memory.js';
 import { decayComponents } from '../src/memory-scoring.js';
-import { injectRepoContext } from '../src/repo-context.js';
-import { sanitizeShareString } from '../src/repo-projection.js';
 import type { MemoryRecord } from '../src/types.js';
 
 function freshDb(): DatabaseSync {
@@ -19,7 +13,7 @@ function freshDb(): DatabaseSync {
   return db;
 }
 
-describe('memory and wiki trust with lean retrieval', () => {
+describe('memory trust with lean retrieval', () => {
   it('keeps explicit smart filters until the requested result set under-fills', () => {
     const db = freshDb();
     insertMemory(db, {
@@ -81,56 +75,6 @@ describe('memory and wiki trust with lean retrieval', () => {
     expect((db.prepare('SELECT COUNT(*) AS count FROM memories').get() as { count: number }).count).toBe(1);
   });
 
-  it('labels existing files as leads and never embeds memory prose in generated AGENTS', () => {
-    const workspace = mkdtempSync(join(tmpdir(), 'oc-wiki-trust-'));
-    try {
-      mkdirSync(join(workspace, 'src'), { recursive: true });
-      const source = join(workspace, 'src', 'current.ts');
-      writeFileSync(source, 'export const current = true;\n', 'utf8');
-      expect(evidenceTrust([`file:${source}:1`], workspace)).toBe('existing_file_lead');
-
-      const db = freshDb();
-      insertMemory(db, {
-        taskContext: 'trusted-looking gotcha', observation: 'MEMORY_PROSE_MUST_NOT_BECOME_INSTRUCTIONS',
-        importance: 10, label: 'GOTCHA', references: [`file:${source}:1`], workspacePath: workspace,
-      });
-      insertMemory(db, {
-        taskContext: 'unreferenced lesson', observation: 'UNREFERENCED_PROSE_MUST_NOT_BECOME_INSTRUCTIONS',
-        importance: 10, label: 'WORKFLOW', workspacePath: workspace,
-      });
-      injectRepoContext(db, { workspacePath: workspace, outDir: join(workspace, '.octocode'), check: false, includeView: false });
-      const agents = readFileSync(join(workspace, '.octocode', 'AGENTS.md'), 'utf8');
-      expect(agents).not.toContain('MEMORY_PROSE_MUST_NOT_BECOME_INSTRUCTIONS');
-      expect(agents).not.toContain('UNREFERENCED_PROSE_MUST_NOT_BECOME_INSTRUCTIONS');
-      expect(agents).not.toContain('## Top Gotchas');
-      expect(agents).not.toContain('## Top Lessons');
-    } finally {
-      rmSync(workspace, { recursive: true, force: true });
-    }
-  });
-
-  it('skips an expensive live revision when a manifest already admits partial coverage', () => {
-    const workspace = mkdtempSync(join(tmpdir(), 'oc-manifest-partial-'));
-    try {
-      mkdirSync(join(workspace, '.octocode', 'awareness'), { recursive: true });
-      writeFileSync(join(workspace, '.octocode', 'awareness', 'manifest.json'), JSON.stringify({
-        generated_at: '2026-01-01T00:00:00Z',
-        files: ['.octocode/AGENTS.md', '.octocode/KNOWLEDGE.md'],
-        source: { revision: 'sha256:bounded' },
-        completeness: { memories: { is_partial: true, omitted_count: 10 } },
-      }), 'utf8');
-      let revisionCalls = 0;
-      const warnings = manifestWarnings(workspace, [], () => {
-        revisionCalls += 1;
-        return 'sha256:live';
-      });
-      expect(revisionCalls).toBe(0);
-      expect(warnings.join(' ')).toMatch(/partial.*live SQLite/i);
-    } finally {
-      rmSync(workspace, { recursive: true, force: true });
-    }
-  });
-
   it('caps list fields and omits absent optional fields from lean memory rows', () => {
     const memory = {
       memory_id: 'mem_1', label: 'GOTCHA', importance: 8,
@@ -146,15 +90,5 @@ describe('memory and wiki trust with lean retrieval', () => {
     expect(lean).not.toHaveProperty('score');
     expect(lean).not.toHaveProperty('failure_signature');
     expect(lean).not.toHaveProperty('created_at');
-  });
-
-  it('redacts recognized secrets from share projections', () => {
-    const shared = sanitizeShareString(
-      'token=github_pat_1234567890abcdefghijkl password=hunterhunter',
-      '/workspace',
-    );
-    expect(shared).not.toContain('github_pat_1234567890abcdefghijkl');
-    expect(shared).not.toContain('hunterhunter');
-    expect(shared.match(/<redacted-secret>/g)).toHaveLength(2);
   });
 });

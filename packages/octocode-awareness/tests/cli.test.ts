@@ -56,6 +56,26 @@ describe('source CLI regressions', () => {
     expect(result.stdout).toContain('list');
   });
 
+  it('rejects a routine reflect (task + outcome only) with no reusable signal', () => {
+    const dir = mktemp();
+    const db = join(dir, 'aw.db');
+    try {
+      runSource(['--db', db, 'maintenance', 'init', '--compact']);
+      const routine = runSource([
+        '--db', db, 'reflect', 'record', '--task', 'routine status', '--outcome', 'worked', '--compact',
+      ]);
+      expect(routine.status).toBe(1);
+      expect(String(routine.parsed?.['error'] ?? routine.stdout)).toMatch(/reusable lesson, failure, or fix/);
+
+      const withLesson = runSource([
+        '--db', db, 'reflect', 'record', '--task', 'real', '--outcome', 'worked',
+        '--lesson', 'run build before tests', '--compact',
+      ]);
+      expect(withLesson.status, withLesson.stderr || withLesson.stdout).toBe(0);
+      expect(String(withLesson.parsed?.['learning_memory_id'] ?? '')).toMatch(/^mem_/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('hard-errors on a missing --db path before opening the canonical store', () => {
     const dir = mktemp();
     try {
@@ -115,25 +135,14 @@ describe('source CLI regressions', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it('forwards schema --examples and rejects repo inject --include-bodies', () => {
+  it('forwards schema --examples', () => {
     const dir = mktemp();
-    const db = join(dir, 'test.sqlite3');
     try {
         const schema = runSource(['schema', 'commands', '--all', '--examples', '--compact']);
       expect(schema.status, schema.stderr || schema.stdout).toBe(0);
       const commands = schema.parsed?.['commands'] as Array<Record<string, unknown>>;
       expect(commands.length).toBeGreaterThan(10);
       expect(commands[0]).toHaveProperty('example');
-
-      const inject = runSource([
-        '--db', db,
-        'repo', 'inject',
-        '--workspace', dir,
-        '--include-bodies',
-        '--compact',
-      ]);
-      expect(inject.status).toBe(1);
-      expect(String(inject.parsed?.['error'])).toContain('unknown flag(s): --include-bodies');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

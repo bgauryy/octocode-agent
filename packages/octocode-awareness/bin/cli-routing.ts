@@ -35,7 +35,6 @@ export const KNOWN_FLAGS: Record<string, string[]> = {
   'developer-review': ['workspace', 'artifact', 'repo', 'ref', 'state', 'limit', 'format', 'query'],
   'query': ['view', 'query', 'limit', 'format', 'out', 'workspace', 'artifact', 'repo', 'ref', 'agent_id', 'state', 'label', 'file', 'since', 'include_bodies'],
   'attend': ['agent_id', 'query', 'limit', 'workspace', 'artifact', 'repo', 'ref', 'file', 'include_bodies', 'explain_organ'],
-  'repo-inject': ['query', 'limit', 'out', 'out_dir', 'workspace', 'artifact', 'repo', 'ref', 'mode', 'check', 'include_view', 'prune_orphans'],
   'agent-registry': ['action', 'agent_id', 'agent_name', 'workspace', 'artifact', 'context', 'limit'],
   'agent-signal': ['action', 'agent_id', 'workspace', 'artifact', 'repo', 'ref', 'kind', 'subject', 'body', 'to_agent', 'file', 'ref_id', 'importance', 'in_reply_to', 'thread_id', 'signal_id', 'all', 'unread_only', 'mark_read', 'limit', 'include_bodies', 'format'],
   'notify-prune': ['agent_id', 'signal_id', 'resolved', 'older_than_days', 'dry_run', 'workspace', 'artifact'],
@@ -176,8 +175,6 @@ export const COMMAND_ROUTES: Record<string, CommandRoute> = {
   'maintenance digest': { command: 'digest' },
   'maintenance init': { command: 'init' },
   'maintenance self-test': { command: 'self-test' },
-  'wiki sync': { command: 'repo-inject' },
-  'repo inject': { command: 'repo-inject' },
 };
 
 export const SINGLE_COMMANDS = new Set(['query', 'attend', 'schema']);

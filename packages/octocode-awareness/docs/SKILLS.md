@@ -52,9 +52,9 @@ Follow `attend.next`. Load inventories only when the next action needs them.
 | Hooks / Pi bridge | Automate deterministic start/write/failure/stop/compact/session edges; never replace judgment. |
 | `.octocode/` | Discover authored plan docs and bounded generated snapshots when live SQLite is unavailable to a reader. |
 
-Agents should begin with `attend`, not by reading all of `.octocode/`. A plan document
-may explain intent; generated AGENTS/KNOWLEDGE/manifest files only identify targeted
-`memory recall`, `query`, or `docs show` calls. Never hand-edit projections.
+Agents should begin with `attend`, not by reading `.octocode/`. A plan document may
+explain intent; live state comes from `attend`, `query`, `memory recall`, or `docs show`.
+`.octocode/` query exports are read-only snapshots — never hand-edit them or read them as state.
 
 When the host supports delegation, batch routine deterministic Awareness CLI operations
 into one phase for the smallest capable low-cost agent. The lead retains scope and
@@ -73,7 +73,7 @@ judgment, destructive approvals, conflicts, memory truth, and final verification
 | Signal | Typed peer message/thread. |
 | Refinement | Owned follow-up/handoff; never another task queue. |
 | Memory | Reusable verified learning; routine status does not belong here. |
-| Projection | Bounded `.octocode/` files generated from the live DB. |
+| Query export | Read-only `.octocode/` snapshot written on request via `query --format html/json/csv`. |
 
 ## Operating Loop
 
@@ -246,12 +246,10 @@ See [HOOKS.md](HOOKS.md) for host differences.
 octocode-awareness query workboard --workspace "$PWD" --format table --limit 3
 octocode-awareness query all --workspace "$PWD" --format html \
   --out .octocode/awareness/index.html
-octocode-awareness wiki sync --workspace "$PWD" --mode local --compact
 ```
 
-SQLite is canonical. Generated Markdown is bounded and may contain local absolute
-paths; review before sharing. `wiki sync` preserves plan documents. `attend` reports
-projection freshness; `docs staleness` compares authored docs with source edit times.
+SQLite is canonical. Use `query --format html/json/csv` for snapshot exports. `attend` reports
+current state; `docs staleness` compares authored docs with source edit times.
 
 ## Command Discovery
 
@@ -267,6 +265,5 @@ octocode-awareness docs list --compact
 octocode-awareness docs show <name>
 ```
 
-Database details: [DB.md](DB.md). File semantics: [LOCKS.md](LOCKS.md). Live/write/wiki
-semantics: [WIKI.md](WIKI.md). Architecture: [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
+Database details: [DB.md](DB.md). File semantics: [LOCKS.md](LOCKS.md). Architecture: [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 Evidence and prior-art boundaries: [REFERENCES.md](REFERENCES.md).

@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { normalizeReferences, normalizeLabel } from './helpers.js';
 import { hasFts } from './db.js';
 import type { GetMemoryParams, GetMemoryResult } from './types.js';
-import { anyReferenceCandidateIds, attachMemoryReferences, compileRecallRegex, exactReferenceCandidateIds, fileReferenceCandidates, fileRegexCandidateIds, intersectCandidateIds, lexicalSearch, regexCandidateIds } from './memory-search.js';
+import { anyReferenceCandidateIds, attachMemoryReferences, compileRecallRegex, exactReferenceCandidateIds, fileReferenceCandidates, fileReferenceMatchesToken, fileRegexCandidateIds, fileSuffixCandidateIds, fileSuffixTokens, intersectCandidateIds, lexicalSearch, regexCandidateIds } from './memory-search.js';
 import { bumpAccess } from './memory-write.js';
 import { canonicalMemoryInstant, decayComponents, JUDGMENT_RELEVANCE_FLOOR, LexicalScopeOptions, SCORING_PREFETCH_FACTOR } from './memory-scoring.js';
 
@@ -68,14 +68,22 @@ export function getMemory(db: DatabaseSync, params: GetMemoryParams = {}): GetMe
     : null;
   const refFilters = normalizeReferences(references);
   const fileRefFilters = fileReferenceCandidates(files, effectiveCwd);
+  // Suffix tokens enable basename/path-suffix recall (e.g. `bar.ts` matching
+  // `file:/abs/src/widgets/bar.ts`), in addition to the exact cwd-resolved match.
+  const fileSuffixFilters = fileSuffixTokens(files);
   const compiledRegex = regex.map(compileRecallRegex);
   const compiledFileRegex = fileRegex.map(compileRecallRegex);
 
   if (refFilters.length > 0) {
     candidateIds = intersectCandidateIds(candidateIds, exactReferenceCandidateIds(db, refFilters));
   }
-  if (fileRefFilters.length > 0) {
-    candidateIds = intersectCandidateIds(candidateIds, anyReferenceCandidateIds(db, fileRefFilters));
+  if (fileSuffixFilters.length > 0) {
+    // OR across the exact-reference and suffix candidate sets so both the
+    // cwd-resolved absolute match and basename/suffix matches survive the prefilter.
+    const exactIds = anyReferenceCandidateIds(db, fileRefFilters);
+    const suffixIds = fileSuffixCandidateIds(db, fileSuffixFilters);
+    const unionIds = new Set<string>([...exactIds, ...suffixIds]);
+    candidateIds = intersectCandidateIds(candidateIds, unionIds);
   }
   if (compiledFileRegex.length > 0) {
     candidateIds = intersectCandidateIds(candidateIds, fileRegexCandidateIds(db, compiledFileRegex));
@@ -128,10 +136,11 @@ export function getMemory(db: DatabaseSync, params: GetMemoryParams = {}): GetMe
   // Exact file filter — the `file` column was removed from the schema (files are
   // now tracked via memory_refs with prefix "file:"). For forward compatibility we
   // keep the filter logic but match against the references array instead.
-  if (fileRefFilters.length > 0) {
+  if (fileSuffixFilters.length > 0) {
     const normFiles = new Set(fileRefFilters);
     memories = memories.filter(m =>
-      m.references.some(r => normFiles.has(r))
+      m.references.some(r => normFiles.has(r)) ||
+      m.references.some(r => fileSuffixFilters.some(token => fileReferenceMatchesToken(r, token)))
     );
   }
 

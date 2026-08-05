@@ -14,5 +14,3 @@ export { developerReviewDoc } from './repo-query.js';
 export { formatAwarenessQueryResult } from './repo-query.js';
 export { renderAwarenessHtml } from './repo-query.js';
 export { writeAwarenessView } from './repo-query.js';
-export { projectionSourceRevision } from './repo-projection.js';
-export { injectRepoContext } from './repo-projection.js';

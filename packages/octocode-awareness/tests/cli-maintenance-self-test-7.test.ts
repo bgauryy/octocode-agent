@@ -212,7 +212,6 @@ it('schema list maps to canonical CLI commands', () => {
       reflect: 'reflect record',
       attend: 'attend',
       query: 'query',
-      wiki_sync: 'wiki sync',
       plan: 'plan create',
       task: 'task create',
       work: 'work start',
@@ -252,7 +251,7 @@ it('schema commands is grouped and core-first for agents', () => {
     expect(parsed.hint).toContain('Follow attend.next');
     expect(parsed.commands.core.plan).toEqual(expect.arrayContaining(['create', 'status']));
     expect(parsed.commands.core.task).toContain('claim');
-    expect(parsed.commands.core.wiki).toEqual(['sync']);
+    expect(parsed.commands.core).not.toHaveProperty('wiki');
     expect(parsed.commands.advanced.lock).toEqual(expect.arrayContaining(['acquire', 'release']));
     expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(2 * 1024);
   });

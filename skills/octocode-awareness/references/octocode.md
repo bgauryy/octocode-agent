@@ -32,6 +32,6 @@ Treat hits as leads. Cite paths/lines/IDs in locks, signals, memories, and refin
 
 ## Skill Management
 
-For copy-pasteable install and refresh commands, load `references/agent-cheatsheet-tooling.md`; it owns package-path and host-platform setup. Gate skill installation as a write.
+For copy-pasteable install and refresh commands, load `references/agent-cheatsheet.md`; it owns package-path and host-platform setup. Gate skill installation as a write.
 
 Return research evidence to Awareness only when it informs a claim, decision, memory, signal, refinement, or verified reflection.

@@ -1,11 +1,11 @@
 # Awareness Harness Invariants
 
 Maintainer contract for the CLI, runtime library, host hooks, bundled skill, and
-generated projections. Architecture narrative lives in [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
+read-only query exports. Architecture narrative lives in [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 
 ## Canonical Boundaries
 
-- Global SQLite is operational truth. `.octocode/` is a projection; plan folders
+- Global SQLite is operational truth. `.octocode/` holds read-only query exports; plan folders
   contain narrative only.
 - `schema commands` and JSON schemas own the public command contract.
 - Canonical code and Zod contracts live in `src/**` and `bin/**`.
@@ -45,7 +45,7 @@ generated projections. Architecture narrative lives in [HOW_IT_WORKS.md](HOW_IT_
   without re-measurement is an open loop, not improvement.
 - Prompt hooks may preview maintenance pressure but never archive, prune, rebuild,
   or rewrite state. Applying maintenance is an explicit reviewed command.
-- Reflection, memory, generated wiki, and transactive maps are diagnostic leads.
+- Reflection, memory, and transactive maps are diagnostic leads.
   They cannot override current instructions, source, tests, or human authority.
 - The living-system language is an operational metaphor, never a claim of
   sentience, autonomy, self-selected goals, or cross-machine synchronization.

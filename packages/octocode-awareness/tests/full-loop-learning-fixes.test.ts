@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initDb } from '../src/db.js';
@@ -10,7 +10,7 @@ import { getMemory, insertMemory } from '../src/memory.js';
 import { agentSignal } from '../src/notifications.js';
 import { insertRefinement, updateRefinement } from '../src/refinements.js';
 import { reflect } from '../src/reflect.js';
-import { formatAwarenessQueryResult, injectRepoContext, queryAwareness } from '../src/repo-context.js';
+import { formatAwarenessQueryResult, queryAwareness } from '../src/repo-context.js';
 
 function freshDb(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
@@ -129,7 +129,7 @@ describe('READ -> DO -> LEARN closure fixes', () => {
     }
   });
 
-  it('marks bounded explicit exports partial and publishes a complete sanitized lean snapshot atomically', () => {
+  it('marks bounded explicit exports partial and escapes CSV formula injection', () => {
     const dir = mkdtempSync(join(tmpdir(), 'awareness-share-safe-'));
     try {
       const db = freshDb();
@@ -166,24 +166,7 @@ describe('READ -> DO -> LEARN closure fixes', () => {
         'csv',
       );
 
-      const injected = injectRepoContext(db, {
-        workspacePath: dir, outDir: '.octocode-share', mode: 'share', check: false, limit: 500,
-      });
-      const manifest = injected.manifest as {
-        counts: Record<string, number>;
-        completeness: Record<string, { is_partial: boolean; visible: number }>;
-        workspace_path: string;
-      };
-      expect(manifest.counts['memories']).toBe(55);
-      expect(manifest.completeness['memories']).toMatchObject({ is_partial: false, visible: 55 });
-      expect(manifest.workspace_path).not.toContain(dir);
-
       expect(explicitCsv).toContain("'=HYPERLINK");
-      expect(existsSync(join(dir, '.octocode-share', 'awareness', 'csv'))).toBe(false);
-      expect(existsSync(join(dir, '.octocode-share', 'awareness', 'index.html'))).toBe(false);
-      const leakingFiles = injected.files.filter(file => readFileSync(file, 'utf8').includes('PRIVATE_PLACEHOLDER'));
-      expect(leakingFiles).toEqual([]);
-      expect(injected.files.some(file => file.includes('.tmp-'))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -99,7 +99,7 @@ it('lock acquire help omits rejected --lock-type flag', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
-it('focused help exposes skill-prescribed reflection and projection flags', () => {
+it('focused help exposes skill-prescribed reflection flags', () => {
     const reflect = runSource(['reflect', 'record', '--help']);
     expect(reflect.status).toBe(0);
     for (const flag of ['--fix-harness', '--duo', '--eval-failure-json', '--worked', '--didnt-work', '--judgment-note', '--allow-similar', '--artifact', '--repo', '--ref']) {
@@ -126,10 +126,6 @@ it('focused help exposes skill-prescribed reflection and projection flags', () =
     expect(hook.status).toBe(0);
     expect(hook.stdout).toContain('session-compact');
     expect(hook.stdout).toContain('intentionally rejects --db');
-
-    const inject = runSource(['repo', 'inject', '--help']);
-    expect(inject.status).toBe(0);
-    expect(inject.stdout).toContain('--prune-orphans');
   });
 it('every command in schema commands has focused help or is schema/hook utility', () => {
     const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');

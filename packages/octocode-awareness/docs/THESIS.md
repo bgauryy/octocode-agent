@@ -13,7 +13,7 @@ SENSE -> ATTEND -> CHOOSE/DECLARE -> ACT -> VERIFY -> REFLECT
   `- REMEASURE <- PROJECT? <- HYGIENE <- REPLAY <- CAPTURE
 ```
 
-Its purpose is not to accumulate the most memories, tasks, skills, or wiki pages.
+Its purpose is not to accumulate the most memories, tasks, skills, or generated files.
 It keeps observable workspace pressures inside useful ranges while preserving
 evidence, user authority, and current source/tests.
 
@@ -61,7 +61,7 @@ the behavior.
 | **Verification pressure** | pending/stale runs, `verify audit` | no owned unverified debt at completion | run declared check, `verify mark`, route failures | TTL and work end never equal success |
 | **Memory pressure** | missing refs, weak recall, duplicates, stale rows | small, scoped, provenance-linked reusable lessons that affect the next decision only when grounded | reflect, record, selective transient reminder, supersede, forget/digest preview | retrieved memory is a lead; unrelated recall stays silent; dry-run before removal |
 | **Communication pressure** | open signals/refinements/handoffs | one owner and terminal state | reply/ack/resolve; update the same refinement | peers provide evidence, not authority |
-| **Projection pressure** | manifest budgets, missing refs, stale timestamps | bounded optional file view | `wiki sync` when file readers need it | SQLite stays canonical; generated wiki is not default live state |
+| **Export pressure** | query export requests | optional snapshot export | `query --format html/json/csv` on request | SQLite stays canonical; exports are read-only snapshots |
 | **Harness pressure** | recurring failure signatures, evals, developer review | fewer repeated failures with stable trigger and token metrics | export proposal, human apply, held-out review | no silent skill/AGENTS mutation or automatic acceptance |
 
 Targets are ranges, not immortal constants. A busy migration may justify more
@@ -76,8 +76,8 @@ a reviewed product decision, not a drive invented by the system.
    apply it, verify again, and close the same row.
 3. **Metabolism:** inspect pressure, replay failures/handoffs, preview digest/prune/
    forget, apply only reviewed cleanup, then remeasure. There is no `sleep` command.
-4. **Projection:** publish a bounded `.octocode/` snapshot only when file readers
-   need it; live SQLite remains the operational source.
+4. **Export:** use `query --format html/json/csv` for snapshot exports on request;
+   live SQLite remains the operational source.
 
 These loops are event-driven. Awareness has no background mind, daemon, survival
 goal, or self-directed purpose. Optional hooks are reflexes around host events, not
@@ -89,7 +89,7 @@ an autonomous agent.
 database home and normalized workspace can share Plans, Tasks, file presence,
 signals, verification, and memory. This supports one agent across sessions and many
 agents across hosts on the same machine. It is not network replication or a claim
-that every host automatically loads the skill or wiki.
+that every host automatically loads the skill or generated files.
 
 The layers have distinct jobs:
 
@@ -100,7 +100,7 @@ The layers have distinct jobs:
 | Hooks | Observe supported events and automate bounded reflexes. |
 | CLI/library | Apply explicit state transitions and queries. |
 | SQLite | Preserve complete canonical state. |
-| `.octocode/` | Project capped leads and authored plan narrative. |
+| `.octocode/` | Optional query exports and authored plan narrative. |
 | Human + tests | Authorize risky changes and decide whether the loop improved artifacts. |
 
 ## Non-Claims

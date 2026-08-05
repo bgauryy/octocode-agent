@@ -168,14 +168,14 @@ describe('CLI token efficiency', () => {
     }
   });
 
-  it('keeps discovery, exact contracts, hooks, and wiki receipts byte-lean', () => {
+  it('keeps discovery, exact contracts, and hooks receipts byte-lean', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'oc-token-contract-'));
     const db = join(workspace, 'awareness.sqlite3');
     try {
       const commands = run(db, ['schema', 'commands', '--compact']);
       expect(commands.status).toBe(0);
       expect(commands.parsed?.['commands']).toMatchObject({
-        core: { wiki: ['sync'], task: expect.arrayContaining(['create', 'claim']) },
+        core: { task: expect.arrayContaining(['create', 'claim']) },
         advanced: { lock: expect.arrayContaining(['acquire', 'release']) },
       });
       expect(Buffer.byteLength(commands.stdout, 'utf8')).toBeLessThanOrEqual(2 * 1024);
@@ -186,12 +186,6 @@ describe('CLI token efficiency', () => {
       expect((taskCreate.parsed?.['properties'] as Record<string, unknown>)).not.toHaveProperty('action');
       expect((taskCreate.parsed?.['properties'] as Record<string, unknown>)).not.toHaveProperty('run_id');
       expect(Buffer.byteLength(taskCreate.stdout, 'utf8')).toBeLessThanOrEqual(2 * 1024);
-
-      const wiki = run(db, ['wiki', 'sync', '--workspace', workspace, '--out', join(workspace, '.octocode'), '--compact']);
-      expect(wiki.status).toBe(0);
-      expect(wiki.parsed).toMatchObject({ ok: true, written: expect.any(Number), warning_count: 0 });
-      expect(wiki.parsed).not.toHaveProperty('files');
-      expect(Buffer.byteLength(wiki.stdout, 'utf8')).toBeLessThanOrEqual(768);
 
       const hooks = run(db, ['hooks', 'install', '--host', 'claude', '--project-dir', workspace, '--dry-run', '--compact']);
       expect(hooks.status).toBe(0);

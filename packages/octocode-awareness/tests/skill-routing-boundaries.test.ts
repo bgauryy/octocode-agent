@@ -40,7 +40,7 @@ describe('skill routing boundaries', () => {
     expect(desc).toContain('planning, edits, reviews, tests, handoffs');
     expect(desc).toContain('multi-agent/file overlap');
     expect(desc).toContain('verification debt');
-    expect(desc).toContain('memory/wiki');
+    expect(desc).toContain('memory, locks, signals');
     expect(desc).toContain('hooks');
     expect(desc).toContain('even solo');
     expect(desc.length).toBeLessThanOrEqual(1024);
@@ -61,8 +61,8 @@ describe('skill routing boundaries', () => {
     expect(text).toMatch(/schema command|schema commands/);
     expect(text).toContain('first activation');
     expect(text).toContain('agent-cheatsheet.md');
-    expect(text).toContain('Load one reference when needed:');
-    expect(text).toContain('clean only under pressure');
+    expect(text).toContain('Feature map — when to use what');
+    expect(text).toContain('cleanup only under real pressure');
     expect(text).toContain('docs list --compact');
     expect(text).toContain('yarn workspace @octocodeai/octocode-awareness build');
     expect(awarenessSkillFile('references/hooks.md')).toContain('Smoke:');
@@ -83,7 +83,7 @@ describe('skill routing boundaries', () => {
     }
 
     expect(text).toContain('AGENTS routes; skill decides; CLI/SQLite acts; hooks automate deterministic edges');
-    expect(text).toMatch(/plan\/task/i);
+    expect(text).toMatch(/Plan vs task vs WORK/i);
     expect(text).toContain('work start');
     expect(text).toContain('work start --exclusive');
     expect(text).toContain('lock wait/prune');
@@ -92,24 +92,23 @@ describe('skill routing boundaries', () => {
     expect(text).toContain('Recall memory only if it can change the plan');
     expect(text).toContain('reflect record --lesson');
     expect(text).toContain('query');
-    expect(text).toContain('Output/wiki/query/docs');
-    expect(text).toContain('never hand-edit `.octocode/`');
-    expect(text).toMatch(/Hooks automate edges, not judgment[\s\S]*never choose plans, locks, success, learning, cleanup, or projection/i);
+    expect(text).toContain('Query views & docs output');
+    expect(text).toMatch(/Hooks automate deterministic edges, not judgment[\s\S]*never choose plans, locks, success, learning, or cleanup/i);
     expect(text).toMatch(/expiry.*never.*success/i);
   });
 
   it('shows a lean overview of every Awareness feature family', () => {
     const text = skill('octocode-awareness');
-    expect(text).toContain('Load one reference when needed:');
+    expect(text).toContain('Feature map — when to use what');
     for (const feature of [
-      'attend', 'plan', 'task', 'WORK', 'lock', 'verify', 'Signals', 'refinements',
-      'query', 'Memory', 'Reflection', 'Output/wiki', 'hooks', 'schema',
+      'attend', 'plan', 'task', 'WORK', 'lock', 'verify', 'signal', 'refinement',
+      'query', 'memory', 'Reflection', 'hooks', 'schema',
     ]) {
       expect(text, `missing lean feature route: ${feature}`).toContain(feature);
     }
-    expect(text).toMatch(/Plan\/task\/WORK choice/i);
-    expect(text).toMatch(/Memory trust\/write\/archive/i);
-    expect(text).toMatch(/Hooks\/hosts\/Pi\/Codex\/Cursor\/Claude/i);
+    expect(text).toMatch(/Plan vs task vs WORK/i);
+    expect(text).toMatch(/Recall\/record durable lessons/i);
+    expect(text).toMatch(/Hooks \+ hosts \(Pi\/Codex\/Cursor\/Claude\)/i);
     expect(awarenessSkillFile('references/hooks.md')).toMatch(/do not choose tasks or replace\s+`attend`\/verify/i);
     expect(text).toMatch(/schema command|schema commands/);
   });
@@ -142,17 +141,16 @@ describe('skill routing boundaries', () => {
   it('routes each fresh-agent feature question to one direct owner', () => {
     const text = skill('octocode-awareness');
     const journeys = [
-      ['Start/finish/unknown command:', 'agent-cheatsheet.md'],
-      ['Plan/task/WORK choice:', 'plan-task-workflow.md'],
-      ['Work/files/overlap:', 'files-awareness.md'],
-      ['Exclusive work/verify debt:', 'lock-protocol.md'],
-      ['Signals/refinements/peers:', 'coordination-protocol.md'],
-      ['Hooks/hosts/Pi/Codex/Cursor/Claude:', 'hooks.md'],
-      ['Output/wiki/query/docs:', 'output-routing.md'],
-      ['Memory trust/write/archive:', 'memory-recall.md'],
-      ['Architecture/session/storage:', 'architecture.md'],
-      ['Reflection/skill changes/cleanup:', 'improve-loop.md'],
-      ['Reflection/skill changes/cleanup:', 'skill-evolution.md'],
+      ['Orient / next action:', 'agent-cheatsheet.md'],
+      ['Plan vs task vs WORK', 'plan-task-workflow.md'],
+      ['File presence & overlap', 'files-awareness.md'],
+      ['Exclusivity for unsafe', 'lock-protocol.md'],
+      ['Communicate with other agents', 'coordination-protocol.md'],
+      ['Hooks + hosts', 'hooks.md'],
+      ['Query views & docs output', 'output-routing.md'],
+      ['Recall/record durable lessons', 'memory-recall.md'],
+      ['Architecture / session / storage', 'architecture.md'],
+      ['Reflection / skill changes / cleanup', 'learning-loop.md'],
     ] as const;
     for (const [trigger, owner] of journeys) {
       expect(text).toContain(trigger);
@@ -177,16 +175,15 @@ describe('skill routing boundaries', () => {
 
   it('keeps standalone guidance portable outside the monorepo', () => {
     const readme = awarenessSkillFile('README.md');
-    const tooling = awarenessSkillFile('references/agent-cheatsheet-tooling.md');
+    const tooling = awarenessSkillFile('references/agent-cheatsheet.md');
     const octocode = awarenessSkillFile('references/octocode.md');
     const dataModel = awarenessSkillFile('references/data-model.md');
-    const repoContext = awarenessSkillFile('references/repo-context-management.md');
-    const combined = [readme, tooling, octocode, dataModel, repoContext].join('\n');
+    const combined = [readme, tooling, octocode, dataModel].join('\n');
 
     expect(combined).not.toMatch(/<package>|<awareness-package>|default for this monorepo/);
     expect(combined).not.toContain('package migration truth: `docs/DB.md`');
     expect(readme).toContain('$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness');
     expect(tooling).not.toContain('out/skills/octocode-skills');
-    expect(octocode).toContain('references/agent-cheatsheet-tooling.md');
+    expect(octocode).toContain('references/agent-cheatsheet.md');
   });
 });

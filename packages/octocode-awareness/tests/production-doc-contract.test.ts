@@ -201,7 +201,6 @@ describe('production guidance contract', () => {
     const docsIndex = read(resolve(PACKAGE_ROOT, 'docs/README.md'));
     const references = read(resolve(PACKAGE_ROOT, 'docs/REFERENCES.md'));
     const navigation = read(resolve(PACKAGE_ROOT, 'docs/MEMORY_NAVIGATION.md'));
-    const wiki = read(resolve(PACKAGE_ROOT, 'docs/WIKI.md'));
     const guide = read(resolve(PACKAGE_ROOT, 'docs/SKILLS.md'));
     const skill = read(resolve(SKILL_ROOT, 'SKILL.md'));
     const skillReadme = read(resolve(SKILL_ROOT, 'README.md'));
@@ -211,8 +210,6 @@ describe('production guidance contract', () => {
     expect(references).toMatch(/implemented invariant/i);
     expect(references).toMatch(/adjacent prior art/i);
     expect(references).toMatch(/follow-on hypothesis/i);
-    expect(wiki).toContain('## Read And Write Map');
-    expect(wiki).toMatch(/access metadata|expiry cleanup/i);
     expect(navigation).toMatch(/limit applies per lane/i);
     expect(navigation).toMatch(/minifies JSON/i);
     expect(guide).not.toMatch(/verify audit[^\n]*--all-pending/i);
@@ -222,7 +219,7 @@ describe('production guidance contract', () => {
 
   it('keeps the always-loaded skill lobby byte-bounded and finish work conditional', () => {
     const skill = read(resolve(SKILL_ROOT, 'SKILL.md'));
-    const finish = read(resolve(SKILL_ROOT, 'references/agent-cheatsheet-finish.md'));
+    const finish = read(resolve(SKILL_ROOT, 'references/agent-cheatsheet.md'));
     expect(Buffer.byteLength(skill, 'utf8')).toBeLessThanOrEqual(6 * 1024);
     expect(skill).toContain('smallest capable configured low-cost agent');
     expect(skill).not.toMatch(/Haiku|Composer 2\.5/);
@@ -230,18 +227,17 @@ describe('production guidance contract', () => {
     expect(finish).not.toMatch(/query all[^\n]*repo inject/is);
   });
 
-  it('keeps the generated wiki conditional, copy-runnable, and stale-safe', () => {
+  it('removes retired wiki/projection generation guidance and stays copy-runnable', () => {
     const rootAgents = read(resolve(REPO_ROOT, 'AGENTS.md'));
     const generator = read(resolve(PACKAGE_ROOT, 'src/repo-context.ts'));
     const skill = read(resolve(SKILL_ROOT, 'SKILL.md'));
     const taskFlow = read(resolve(SKILL_ROOT, 'references/plan-task-workflow.md'));
-    const repoFlow = read(resolve(SKILL_ROOT, 'references/repo-context-management.md'));
 
     expect(rootAgents).not.toMatch(/attend --compact`, then read `.octocode\/AGENTS\.md`/i);
-    expect(generator).not.toContain('attend|work list|query|memory recall|workspace status');
-    expect(generator).not.toContain('`repo inject` after important memories');
-    expect(repoFlow).not.toMatch(/attend --compact`, then read `.octocode\/AGENTS\.md`/i);
-    expect(skill).toContain('clean only under pressure');
+    expect(rootAgents).not.toContain('wiki sync');
+    expect(generator).not.toContain('injectRepoContext');
+    expect(skill).toContain('cleanup only under real pressure');
+    expect(skill).not.toContain('wiki sync');
     expect(taskFlow).toContain('# run the acceptance check');
   });
 
@@ -277,7 +273,7 @@ describe('production guidance contract', () => {
     expect(packageAgents).not.toContain('## Hooks');
     expect(packageAgents).not.toContain('Standalone WORK');
     expect(skill).toContain('Core loop:');
-    expect(skill).toContain('Load one reference when needed:');
+    expect(skill).toContain('Feature map — when to use what');
     expect(userGuide).toContain('## Operating Loop');
     expect(hooks).toContain('## Lifecycle');
     expect(architecture).toMatch(/AGENTS\.md \/ CLAUDE\.md[\s\S]*Agent Skill[\s\S]*CLI[\s\S]*hooks/i);
@@ -314,7 +310,7 @@ describe('production guidance contract', () => {
   });
 
   it('keeps lifecycle recipes scoped, executable, and ordered around active presence', () => {
-    const finish = read(resolve(SKILL_ROOT, 'references/agent-cheatsheet-finish.md'));
+    const finish = read(resolve(SKILL_ROOT, 'references/agent-cheatsheet.md'));
     expect(finish).toMatch(/reflect record --agent-id "\$OCTOCODE_AGENT_ID" --workspace "\$PWD" --task/);
     expect(finish).toMatch(/memory archive --memory-id <id> --workspace "\$PWD" --dry-run/);
     expect(finish).toMatch(/maintenance digest --workspace "\$PWD" --dry-run/);
@@ -352,7 +348,7 @@ describe('production guidance contract', () => {
     const userGuide = read(resolve(PACKAGE_ROOT, 'docs/SKILLS.md'));
     const skillReadme = read(resolve(SKILL_ROOT, 'README.md'));
     const skillLobby = read(resolve(SKILL_ROOT, 'SKILL.md'));
-    const tooling = read(resolve(SKILL_ROOT, 'references/agent-cheatsheet-tooling.md'));
+    const tooling = read(resolve(SKILL_ROOT, 'references/agent-cheatsheet.md'));
     const hooks = read(resolve(SKILL_ROOT, 'references/hooks.md'));
     const packageHooks = read(resolve(PACKAGE_ROOT, 'docs/HOOKS.md'));
 
@@ -361,7 +357,7 @@ describe('production guidance contract', () => {
       expect(guide.indexOf('--dry-run')).toBeLessThan(guide.indexOf('--force'));
       expect(guide).toMatch(/common[\s\S]{0,240}(?:claude|cursor|codex|pi)/i);
     }
-    expect(tooling.indexOf('export OCTOCODE_AGENT_ID')).toBeLessThan(tooling.indexOf('attend --workspace'));
+    expect(tooling).toContain('export OCTOCODE_AGENT_ID');
     expect(skillLobby).toContain('first activation');
     expect(skillLobby).toContain('scripts/install.mjs');
     for (const guide of [skillLobby, hooks, packageHooks]) {

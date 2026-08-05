@@ -1,8 +1,8 @@
 import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { getMemory } from './memory.js';
-import { projectionSourceRevision, queryAwareness } from './repo-context.js';
-import { AttendEvidence, AttendParams, AttendResult, chooseMode, compactRow, compactWorkboard, evidenceTrust, groupWorkboard, limitOf, ORGAN_REFERENCE, profileMap, projectionStats, projectionWarnings, resourceLeads, shellQuote, stringList, summarize, TEAM_NORMS, uniqueStrings } from './attend-model.js';
+import { queryAwareness } from './repo-context.js';
+import { AttendEvidence, AttendParams, AttendResult, chooseMode, compactRow, compactWorkboard, evidenceTrust, groupWorkboard, limitOf, ORGAN_REFERENCE, profileMap, resourceLeads, shellQuote, stringList, summarize, TEAM_NORMS, uniqueStrings } from './attend-model.js';
 
 export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): AttendResult {
   const cwd = params.cwd ? resolve(params.cwd) : process.cwd();
@@ -48,21 +48,6 @@ export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): At
     .slice(0, packetLimit);
   const readyTasks = rawWorkboard['Ready'] ?? [];
   const claimedTasks = (rawWorkboard['Claimed'] ?? []).filter(row => row['item_type'] === 'task');
-  const projectionHealth = projectionStats(workspacePath);
-  const bloatWarnings = projectionWarnings(workspacePath, projectionHealth, () => projectionSourceRevision(db, {
-    workspacePath,
-    artifact: scope.artifact,
-    repo: scope.repo,
-    ref: scope.ref,
-    limit: 500,
-  }));
-  const outputBloatWarnings = compact
-    ? bloatWarnings.map(warning => warning
-      .replace(/\.octocode\//g, '')
-      .replace(/ has /g, ' ')
-      .replace(/ lines over budget /g, '>')
-      .replace(/ lines/g, 'l'))
-    : bloatWarnings;
 
   const memoryQuery = query || files.join(' ');
   const recall = memoryQuery
@@ -115,7 +100,6 @@ export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): At
     query ? null : 'No query supplied; packet is a general workspace briefing.',
     evidence.length === 0 && memoryQuery ? `No memory evidence selected for "${summarize(memoryQuery, 80)}".` : null,
     verificationTargets.length === 0 ? null : `${verificationTargets.length} verification target(s) need attention.`,
-    bloatWarnings.length === 0 ? null : `${bloatWarnings.length} projection/bloat warning(s) present.`,
   ].filter((gap): gap is string => Boolean(gap));
 
   const mode = chooseMode(query, evidence.length, verificationTargets.length, gaps.length);
@@ -129,18 +113,14 @@ export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): At
     });
   const alternatives = mode === 'explore' || mode === 'mixed'
     ? [
-      { option: 'derive_view_first', why: 'Prefer read-only DB projections before new canonical storage.' },
+      { option: 'derive_view_first', why: 'Prefer read-only DB views before new canonical storage.' },
       { option: 'narrow_scope', why: 'Use query/file filters if the packet is too broad.' },
     ]
     : [];
 
-  const compactProjectionHealth = compact
-    ? projectionHealth.map(item => ({ file: item.file, lines: item.lines }))
-    : projectionHealth;
   const organState = {
     senses: {
       ...(compact ? {} : { profile }),
-      projection_health: compactProjectionHealth,
     },
     attention: {
       selected_evidence: evidence.length,
@@ -161,7 +141,6 @@ export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): At
     },
     pruning_candidates: {
       memory_review: workboard['MemoryReview']?.length ?? 0,
-      projection_warnings: bloatWarnings.length,
     },
     bridge: {
       inbox: workboard['Inbox']?.length ?? 0,
@@ -171,9 +150,6 @@ export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): At
       open_signals: profile['open_signals'] ?? 0,
       plans: profile['plans'] ?? 0,
       tasks: profile['tasks'] ?? 0,
-    },
-    projection: {
-      warnings: outputBloatWarnings,
     },
   };
 
@@ -241,11 +217,9 @@ export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): At
           ? `octocode-awareness work show --workspace ${workspaceArg} --file ${shellQuote(filesUnderWorkPath)} --compact; read peer reason before overlapping edits`
         : inboxCount > 0
           ? `octocode-awareness signal list --agent-id ${agentArg} --workspace ${workspaceArg} --limit 3 --compact`
-          : !query && bloatWarnings.length > 0
-            ? `octocode-awareness query workboard --workspace ${workspaceArg} --format json --limit 5 --compact`
-            : evidence.length > 0
-              ? 'Treat evidence as leads; re-check cited files, then work start before edits'
-              : `octocode-awareness attend --workspace ${workspaceArg} --agent-id ${agentArg} --query "<narrower task>" --compact`;
+          : evidence.length > 0
+            ? 'Treat evidence as leads; re-check cited files, then work start before edits'
+            : `octocode-awareness attend --workspace ${workspaceArg} --agent-id ${agentArg} --query "<narrower task>" --compact`;
 
   if (compact) {
     const columnCount = (column: string): number => {
@@ -286,14 +260,12 @@ export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): At
     workboard,
     evidence,
     gaps,
-    bloat_warnings: outputBloatWarnings,
     verification_targets: verificationTargets,
     trust_warnings: trustWarnings,
     trace: [
       { step: 'repo-profile', count: profileResult.count },
       { step: 'workboard', count: workboardResult.count },
       { step: 'memory-recall', count: evidence.length, note: memoryQuery ? undefined : 'skipped-empty-query' },
-      { step: 'projection-health', count: projectionHealth.length },
     ],
     next,
   };

@@ -75,7 +75,7 @@ clearance, signal delivery, stale-lock cleanup, and a zero-debt final audit.
 ## Full Feature Sweep
 
 Run the isolated [full feature sweep](FEATURE_SWEEP.md) for planning, learning,
-wiki, registry, and maintenance surfaces. Every listed pass signal is required;
+docs catalog, registry, and maintenance surfaces. Every listed pass signal is required;
 an errored, missing, or wrong-workspace step makes Installed scope FAIL.
 
 ## Host Hook Check
@@ -165,7 +165,6 @@ Scope: quick | installed | host:<name> | monorepo | release
 Runtime: node=<version> awareness=<version/path> workspace=<path>
 Checks: <command/lane>=<exit + decisive signal>; ...
 Hooks: config=<ready|missing|drifted|n/a> runtime=<observed|unverified|n/a>
-Wiki: sync=<generated|stale|not_run> manifest_complete=<true|false|n/a>
 Debt: pending=<count> active=<count> locks=<count>
 Blocked/skipped: <none or exact prerequisite + next action>
 Evidence: <test counts, coverage, smoke receipt, relevant paths>
@@ -173,4 +172,4 @@ Evidence: <test counts, coverage, smoke receipt, relevant paths>
 
 Close any explicit verification WORK only after its checks run, then `verify mark`
 and `verify audit`. Record reusable failures only; do not publish routine check logs
-to memory or `.octocode/` projections.
+to memory or `.octocode/` query exports.

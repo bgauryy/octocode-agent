@@ -4,8 +4,24 @@ import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initDb } from '../src/db.js';
-import { runAwarenessToolOperation } from '../src/tool-operations.js';
+import { runAwarenessToolOperation, ROUTABLE_OPERATIONS } from '../src/tool-operations.js';
 import { startWork } from '../src/work.js';
+
+describe('runAwarenessToolOperation unsupported-operation error', () => {
+  it('lists routable operations and flags CLI-only nouns for an unrouted noun', () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec('PRAGMA foreign_keys = ON');
+    initDb(db);
+    expect(() => runAwarenessToolOperation(db, 'memory' as never, {}, {})).toThrow(/CLI-only/);
+    try {
+      runAwarenessToolOperation(db, 'memory' as never, {}, {});
+    } catch (e) {
+      const msg = (e as Error).message;
+      expect(msg).toContain('"memory"');
+      for (const op of ROUTABLE_OPERATIONS) expect(msg).toContain(op);
+    }
+  });
+});
 
 function freshDb(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
@@ -84,7 +100,7 @@ describe('runAwarenessToolOperation', () => {
     }
   });
 
-  it('covers memory, reflection, refinement, query, wiki, digest, and harness operations', () => {
+  it('covers memory, reflection, refinement, query, view, digest, and harness operations', () => {
     const dir = mkdtempSync(join(tmpdir(), 'oc-tool-ops-'));
     try {
       const db = freshDb();
@@ -164,9 +180,6 @@ describe('runAwarenessToolOperation', () => {
       const view = run(db, 'view', { view: 'all', workspace_path: dir, out: htmlPath }, dir);
       expect(view.payload).toMatchObject({ ok: true, path: htmlPath });
       expect(existsSync(htmlPath)).toBe(true);
-
-      const injected = run(db, 'wiki_sync', { workspace_path: dir, out_dir: join(dir, '.octocode'), mode: 'local', check: false }, dir);
-      expect((injected.payload as { files: string[] }).files.some(file => file.endsWith('AGENTS.md'))).toBe(true);
 
       const forgotten = run(db, 'forget', { memory_id: memoryId, dry_run: true, workspace_path: dir }, dir);
       expect(forgotten.exitCode).toBe(0);

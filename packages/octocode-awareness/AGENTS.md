@@ -20,9 +20,9 @@ $AWARENESS attend --workspace "$PWD" --query "<current task>" \
 Always follow `attend.next`. Use `schema command <noun> [action]` only for unclear flags;
 load one reference only when the action needs depth. Do not preload inventories.
 
-Use `.octocode/` as a menu, not state. Confirm live work with `attend`/`query`, recall
-learning with `memory recall --smart`, and refresh generated knowledge with `wiki sync`.
-Never edit projections; only authored `.octocode/plan/**` docs are source.
+SQLite is canonical. Confirm live work with `attend`/`query` and recall
+learning with `memory recall --smart`.
+Never hand-edit `.octocode/` files; only authored `.octocode/plan/**` docs are source.
 
 Manual fallback: attend; `work start`; check while present; `work end`; `verify mark`;
 `verify audit`. Overlap is advisory; use `--exclusive` only for sensitive work and

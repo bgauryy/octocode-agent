@@ -30,6 +30,6 @@ Use refinements for workspace work state that must survive a run. Scope them by 
 - Session handoffs are hidden unless `--include-handoffs` or `--quality handoff` is requested.
 - Use `refinement delete --refinement-id <id> --dry-run` only for stale rows that should be removed rather than completed.
 
-Consume a refinement by checking current code, applying the owned action, verifying it, and marking the same row `done`. Instruction-feedback rows use `reflect developer-review`; see `references/developer-review.md`.
+Consume a refinement by checking current code, applying the owned action, verifying it, and marking the same row `done`. Instruction-feedback rows use `reflect developer-review`; see `references/learning-loop.md`.
 
 Inspect exact contracts with `schema json-schema agent_signal`, `refinement`, `refine_query`, or `refine_delete`. Data-model detail lives in `references/data-model.md`.

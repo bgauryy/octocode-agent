@@ -2,7 +2,7 @@
 
 This is the canonical end-to-end lifecycle for Awareness. It owns how an agent enters
 through `AGENTS.md`, activates skills, uses the CLI to create and mutate live state,
-receives hook automation, verifies work, records learning, publishes projections,
+receives hook automation, verifies work, records learning,
 and exits or hands off. Command recipes live in [SKILLS.md](SKILLS.md); host wiring
 lives in [HOOKS.md](HOOKS.md); schema detail lives in [DB.md](DB.md).
 
@@ -20,7 +20,7 @@ Host starts
        |-> attend / targeted query / workboard
        |-> plans, tasks, runs, files, locks, verification
        |-> signals, refinements, sessions, memory
-       `-> optional .octocode/ projections
+       `-> optional .octocode/ query exports (read-only, on request)
 
 Hooks / Pi bridge --------------> same library and SQLite (edge automation)
 ```
@@ -36,29 +36,28 @@ Each layer has one job:
    guidance when installed separately. Skills do not own live coordination state.
 3. **The Awareness CLI is the only agent-facing control plane for durable Awareness state.**
    It creates and changes plans, tasks, runs, file presence, locks, verification,
-   signals, refinements, sessions, memory, maintenance, queries, and projections.
-   CLI help and JSON schemas own exact flags and payloads.
+   signals, refinements, sessions, memory, maintenance, and queries (with optional
+   read-only exports). CLI help and JSON schemas own exact flags and payloads.
 4. **Hooks and the Pi bridge automate deterministic edges.** They call the same
    library used by the CLI. They can register sessions, declare writes, heartbeat,
    roll back failed writes, finalize fallback runs, deliver changed context, and
    surface verification debt. They never choose goals, create a plan, decide a lock
    is warranted, mark tests successful, or turn memory into authority.
 5. **Human docs and `.octocode/` are read surfaces.** Authored plan documents explain
-   intent. Generated AGENTS/KNOWLEDGE/manifest output is a bounded snapshot that
-   routes readers back to live commands; it is never canonical state.
+   intent. Generated output files are bounded snapshots;
+   they are never canonical state.
 
 Authority descends from current user instructions and current source/tests, to live
 SQLite state and fresh command evidence, to verified memory/signals, and finally to
-generated projections. A lower layer cannot override a higher one.
+read-only query exports. A lower layer cannot override a higher one.
 
 Rows are isolated by normalized `workspace_path` and optional artifact/repo/ref scope.
 
 The default agent surface is deliberately small: `attend`, `plan`, `task`, `work`,
-`verify`, `memory`, `signal`, `wiki`, and `query`. `schema commands --compact` groups
+`verify`, `memory`, `signal`, and `query`. `schema commands --compact` groups
 these before advanced recovery/diagnostic nouns; `schema command <noun> [action]`
 returns one action contract with router-injected fields removed. Locks are normally
-requested through `work start --exclusive`, and generated knowledge is refreshed
-through `wiki sync`. Raw lock, hook, maintenance, refinement, session, docs, and schema
+requested through `work start --exclusive`. Raw lock, hook, maintenance, refinement, session, docs, and schema
 commands remain available when the lifecycle requires them.
 
 ## Bootstrap Lifecycle
@@ -90,8 +89,8 @@ Awareness is a supervised software control loop, not an autonomous agent. It
 senses operational pressure in SQLite and hooks, compares that evidence with
 bounded targets, recommends an actuator, and preserves human/agent choice at the
 guard. Typical corrections are `attend --compact`, declaring file presence,
-resolving a signal, verifying a run, previewing maintenance, or refreshing a
-projection. Re-measurement closes the loop; unchanged state should inject no new
+resolving a signal, verifying a run, previewing maintenance, or exporting a
+query snapshot. Re-measurement closes the loop; unchanged state should inject no new
 prompt text.
 
 “Living repository” is a useful systems metaphor for continuous sensing,
@@ -171,7 +170,7 @@ isolated.
 | Refinement | `open -> ongoing -> done` | Owned repo-fix follow-up; terminal closure requires a check receipt. Session handoffs are broadcast `kind=handoff` signals, not refinements. |
 | Memory | record `ACTIVE` -> supersede/expire/archive -> optional restore or reviewed forget | Recall is a ranked lead; replacement history is immutable. |
 | Session | register/start -> prompts/turns -> compact capture -> shutdown/end | PreCompact preserves the active session; end marks it inactive without success. |
-| Projection | generate -> snapshot ages -> refresh or prune owned orphans | SQLite remains canonical; authored plan docs are preserved. |
+| Query export | `query --format html/json/csv` writes a read-only `.octocode/` snapshot on request | SQLite is canonical; exports are never auto-generated and never read back as state; authored plan docs are preserved. |
 
 Task, WORK, and HOOK are run origins, not interchangeable queues:
 
@@ -212,7 +211,7 @@ silent; signals and overrides remain independent. Stop output is capped.
 | Handoff/exit | compact/end capture | signal, refinement, or `session capture` |
 
 Hooks never replace `attend`, plan/task choice, deliberate exclusivity, verification
-receipts, memory judgment, cleanup approval, or projection requests.
+receipts, memory judgment, cleanup approval, or query-export requests.
 
 Host wiring details live in [HOOKS.md](HOOKS.md).
 
@@ -230,7 +229,7 @@ Persist everything needed for coordination; prompt only actionable changes:
 
 This separates database completeness from token cost.
 
-## Knowledge And Projection
+## Knowledge And Memory
 
 Memory is durable verified learning, not routine status. Signals are typed peer
 messages. Refinements are owned follow-up/handoff state, not another task queue.
@@ -245,9 +244,8 @@ The memory lifecycle is deliberately conservative:
 5. Correct facts with `--supersedes`; archive reversibly; hard-forget only after a
    narrow dry-run and review.
 
-`query <view>` reads the live DB. `wiki sync` publishes lean AGENTS, optional nonempty
-bounded KNOWLEDGE, and a manifest under `.octocode/`. Explicit query exports provide
-CSV/HTML when requested. Generated files are leads and may contain machine-local paths;
+`query <view>` reads the live DB. Explicit query exports provide
+CSV/HTML when requested (`query --format html/json/csv`). SQLite is canonical;
 current source/tests/user instructions always win.
 
 ## Completion Contract
@@ -261,11 +259,11 @@ Awareness work is complete only when:
 - `verify audit` shows no unintended debt for the agent/scope;
 - necessary peer threads or handoffs are resolved or explicitly owned;
 - reusable learning was recorded only when warranted;
-- cleanup/projection was previewed and applied only when due.
+- cleanup was previewed and applied only when due.
 
 ## Boundaries
 
-- Awareness owns coordination, memory, verification, hooks, and projection.
+- Awareness owns coordination, memory, verification, hooks, and read-only query exports.
 - `npx octocode` or Octocode MCP owns code/GitHub/package research and skill
   install/review operations.
 - Harness proposals never self-apply. A human/user authorizes source or instruction

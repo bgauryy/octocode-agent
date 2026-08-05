@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initDb } from '../src/db.js';
@@ -10,7 +10,7 @@ import { insertMemory } from '../src/memory.js';
 import { agentSignal } from '../src/notifications.js';
 import { insertRefinement } from '../src/refinements.js';
 import { reflect } from '../src/reflect.js';
-import { injectRepoContext, queryAwareness, writeAwarenessView } from '../src/repo-context.js';
+import { queryAwareness, writeAwarenessView } from '../src/repo-context.js';
 function freshDb(): DatabaseSync {
     const db = new DatabaseSync(':memory:');
     db.exec('PRAGMA foreign_keys = ON');
@@ -139,24 +139,6 @@ it('surfaces missing file references across query, workboard, projections, and H
       const review = workboard.rows.find(row => row['column'] === 'MemoryReview');
       expect(review?.['reasons']).toEqual(expect.arrayContaining(['stale_file_refs', 'failure_signature']));
       expect(review?.['missing_references']).toEqual([`file:${missing}:27`]);
-
-      injectRepoContext(db, {
-        workspacePath: dir,
-        outDir: join(dir, '.octocode'),
-        mode: 'local',
-        includeView: false,
-        check: false,
-      });
-      const knowledge = readFileSync(join(dir, '.octocode', 'KNOWLEDGE.md'), 'utf8');
-      expect(knowledge).toContain('Missing refs: file:src/missing.ts:27');
-      expect(knowledge).not.toContain(missing);
-      const sourceIds = [...knowledge.matchAll(/Source id: `([^`]+)`/g)].map(match => match[1]);
-      expect(sourceIds).toEqual([...new Set(sourceIds)]);
-      const agents = readFileSync(join(dir, '.octocode', 'AGENTS.md'), 'utf8');
-      expect(agents).toContain('MissingFiles 1');
-      expect(agents).not.toContain('Do not trust old generated viewer paths without checking file refs');
-      expect(existsSync(join(dir, '.octocode', 'awareness', 'index.html'))).toBe(false);
-      expect(existsSync(join(dir, '.octocode', 'awareness', 'csv', 'files.csv'))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -176,72 +158,11 @@ it('resolves relative projection output paths against the requested workspace', 
       });
       expect(view.path).toBe(join(workspaceDir, '.octocode', 'awareness', 'index.html'));
       expect(existsSync(view.path)).toBe(true);
-
-      const injected = injectRepoContext(db, {
-        workspacePath: workspaceDir,
-        outDir: '.octocode',
-        mode: 'local',
-        includeView: false,
-        check: false,
-      });
-      expect(injected.out_dir).toBe(join(workspaceDir, '.octocode'));
-      expect(existsSync(join(workspaceDir, '.octocode', 'AGENTS.md'))).toBe(true);
-      expect(existsSync(join(cwdDir, '.octocode', 'AGENTS.md'))).toBe(false);
+      expect(existsSync(join(cwdDir, '.octocode', 'awareness', 'index.html'))).toBe(false);
     } finally {
       process.chdir(previousCwd);
       rmSync(workspaceDir, { recursive: true, force: true });
       rmSync(cwdDir, { recursive: true, force: true });
-    }
-  });
-// Inserts and projection writes contend with the full parallel package suite.
-  it('keeps generated knowledge markdown within projection budgets', { timeout: 15_000 }, () => {
-    const dir = mkdtempSync(join(tmpdir(), 'oc-repo-budget-'));
-    try {
-      const db = freshDb();
-      for (let i = 0; i < 80; i++) {
-        insertMemory(db, {
-          agentId: 'agent-a',
-          taskContext: `budget memory ${i}`,
-          observation: `budget observation ${i}`,
-          importance: 5,
-          label: 'OTHER',
-          workspacePath: dir,
-          preComputedSimilar: [],
-        });
-      }
-
-      injectRepoContext(db, {
-        workspacePath: dir,
-        outDir: join(dir, '.octocode'),
-        mode: 'local',
-        includeView: false,
-        check: false,
-      });
-
-      const memoryMarkdown = readFileSync(join(dir, '.octocode', 'KNOWLEDGE.md'), 'utf8');
-      const memoryLines = memoryMarkdown.split(/\r?\n/).length;
-      expect(memoryLines).toBeLessThanOrEqual(200);
-      expect(memoryMarkdown).toContain('Omitted by projection cap');
-      const summary = memoryMarkdown.match(/Total: (\d+) · Shown: (\d+) · Omitted: (\d+)/);
-      expect(summary).not.toBeNull();
-      const renderedRows = memoryMarkdown.match(/^## /gm)?.length ?? 0;
-      const renderedIds = [...memoryMarkdown.matchAll(/Source id: `([^`]+)`/g)].map(match => match[1]);
-      expect(new Set(renderedIds).size).toBe(renderedRows);
-      expect({
-        total: Number(summary?.[1]),
-        shown: Number(summary?.[2]),
-        omitted: Number(summary?.[3]),
-      }).toEqual({
-        total: 80,
-        shown: renderedRows,
-        omitted: 80 - renderedRows,
-      });
-      const manifest = JSON.parse(readFileSync(join(dir, '.octocode', 'awareness', 'manifest.json'), 'utf8')) as {
-        budgets: { markdown: Record<string, { within_budget: boolean }> };
-      };
-      expect(manifest.budgets.markdown['KNOWLEDGE.md']).toMatchObject({ within_budget: true });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
     }
   });
 it('surfaces instruction feedback via the developer-review view and KNOWLEDGE.md projection', () => {
@@ -261,47 +182,9 @@ it('surfaces instruction feedback via the developer-review view and KNOWLEDGE.md
       expect(String(view.rows[0]!['feedback'])).toContain('default lock TTL');
       expect(view.rows[0]!['source']).toBe('refinement');
       expect(view.rows[0]!['state']).toBe('open');
-
-      injectRepoContext(db, {
-        workspacePath: dir,
-        outDir: join(dir, '.octocode'),
-        mode: 'local',
-        includeView: false,
-        check: false,
-      });
-
-      const devReview = readFileSync(join(dir, '.octocode', 'KNOWLEDGE.md'), 'utf8');
-      expect(devReview).toContain('# Octocode Knowledge');
-      expect(devReview).toContain('default lock TTL');
-
-      const agentsMd = readFileSync(join(dir, '.octocode', 'AGENTS.md'), 'utf8');
-      expect(agentsMd).toContain('## Knowledge');
-      expect(agentsMd).toContain('.octocode/KNOWLEDGE.md');
-
-      const manifest = JSON.parse(readFileSync(join(dir, '.octocode', 'awareness', 'manifest.json'), 'utf8')) as {
-        counts: Record<string, number>;
-        budgets: { markdown: Record<string, { within_budget: boolean }> };
-      };
-      expect(manifest.counts['developer-review']).toBe(1);
-      expect(manifest.budgets.markdown['KNOWLEDGE.md']).toMatchObject({ within_budget: true });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
-
-it('omits KNOWLEDGE.md when the workspace has no knowledge rows', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'oc-repo-empty-knowledge-'));
-  try {
-    const db = freshDb();
-    const result = injectRepoContext(db, { workspacePath: dir, check: false });
-    expect(result.files).toEqual(expect.arrayContaining([
-      join(dir, '.octocode', 'AGENTS.md'),
-      join(dir, '.octocode', 'awareness', 'manifest.json'),
-    ]));
-    expect(existsSync(join(dir, '.octocode', 'KNOWLEDGE.md'))).toBe(false);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
 
 });

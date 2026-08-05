@@ -140,7 +140,7 @@ copied from either source.
   retaining exact provenance beside summaries; HOLA is a model architecture, not
   evidence for an agent-memory ranking policy.
 
-Generated wiki files remain leads because none of these papers makes retrieved or
+Generated output and reflected text remain leads because none of these papers makes retrieved or
 reflected text authoritative. Current user instructions, source, and tests win.
 
 - **Adjacent prior art:** a systematic study of
