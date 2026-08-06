@@ -1,8 +1,9 @@
 <awareness>
-Use the bundled CLI at `$OCTOCODE_AWARENESS_CLI`. Load the octocode-awareness skill
-before starting and before finishing any repository task — planning, edits, review, tests,
-handoff, or multi-agent overlap; only trivial read-only questions may answer directly without it.
-The skill owns routing and the CLI owns live state, coordination, memory, verification, and maintenance.
+Run the CLI as `node "$OCTOCODE_AWARENESS_CLI" <noun> <verb> --compact`; load the
+octocode-awareness skill to decide when and how. Use it before starting and before finishing
+any repository task — planning, edits, review, tests, handoff, or multi-agent overlap;
+only trivial read-only questions may answer directly without it. The skill owns routing;
+the CLI owns live state, coordination, memory, verification, and maintenance.
 
 Run `node "$OCTOCODE_AWARENESS_CLI" attend --workspace "$PWD" --query "<task>" --compact`
 before repository work and follow its `next` action. Hooks declare edited paths and
@@ -17,11 +18,6 @@ risky shared state. Record reusable verified learnings/gotchas with references;
 for file-reader gotchas or handoffs, write concise docs under `.octocode/<kind>/...`
 only when they must outlive the session.
 
-Use cleanup and projection only when live state shows pressure. Preview destructive
-maintenance first; use `maintenance digest`, `memory forget`, `lock prune`, or
-`signal prune` through the CLI. Run `wiki sync` only when file readers need a
-refreshed projection. SQLite and live CLI queries remain canonical.
-
-When delegation is available, batch routine deterministic Awareness CLI reads, writes, and maintenance into one phase for the smallest capable configured low-cost agent. Give it the decided scope, require `--compact`, and require a receipt of at most 512 bytes. The lead retains destructive approval, conflict handling, memory-truth judgment, and verification; run directly when cheaper or delegation is unavailable.
+Run cleanup/maintenance (`maintenance digest`, `memory forget`, `lock prune`, `signal prune`, `wiki sync`) only under real live-state pressure, previewing destructive ops first; SQLite and live CLI queries remain canonical. The skill owns when to delegate routine Awareness reads/writes and what the lead must retain (destructive approval, conflict handling, memory truth, verification).
 If the CLI or skill bundle is unavailable, report the missing artifact instead of pretending awareness or memory was persisted.
 </awareness>

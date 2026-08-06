@@ -9,8 +9,7 @@ Delegate only to save wall time/context, isolate long work, or add independent/a
 
 Prefer read-only workers; parent applies mutations. If workers write, assign exact disjoint paths plus a verification command; inspect Awareness/visible ownership first; use exclusive locks only for non-mergeable or risky shared state. Parent owns synthesis and conflicts.
 
-Worker request packet: `goal`, `context` (decisive anchors only), `scope`, `ownership`, `acceptance`, `return`. Include token budget/result limit, evidence required, and whether the worker must produce a plan, research finding, critique, or verification receipt.
-Worker result packet: `[RESULT]`, `[EVIDENCE]` ≤8 anchors, `[VERIFICATION]`/`[VERIFY]`, `[CONFIDENCE]`, `[NEXT]`, terminal `[DONE]`/`[BLOCKED]`/`[FAILED]`. No transcript or private reasoning.
+Give each worker a bounded packet (goal, decisive context, scope, ownership, acceptance, return, plus token/evidence budget); require a structured result that ends in `[DONE]`/`[BLOCKED]`/`[FAILED]`, never a transcript. Load `octocode-subagent` for the full packet and result-marker spec.
 
 Workers share cwd, filesystem, and env-backed services; read current files, respect advisory ownership, and assume workspace state can change.
 

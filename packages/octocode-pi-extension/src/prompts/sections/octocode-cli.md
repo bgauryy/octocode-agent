@@ -12,5 +12,5 @@ npx octocode lsp-server list                       # list / check LSP servers
 npx octocode lsp-server install <lang>             # install an LSP server
 ```
 
-The Awareness CLI is bundled as `$OCTOCODE_AWARENESS_CLI`; run with `node "$OCTOCODE_AWARENESS_CLI" <noun> <verb> --compact` and follow the `octocode-awareness` skill.
+Awareness is separate: see the `<awareness>` section for its bundled `$OCTOCODE_AWARENESS_CLI` and the `octocode-awareness` skill.
 </octocode_cli>

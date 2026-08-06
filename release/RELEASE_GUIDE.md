@@ -310,8 +310,8 @@ test ! -e node_modules/@octocodeai/octocode-tools-core && echo "✅ tools-core b
 
 npx octocode --version
 npx octocode-mcp --help
-npx octocode-awareness schema list --compact
-npx octocode-awareness maintenance self-test --compact
+npx @octocodeai/octocode-awareness schema list --compact
+npx @octocodeai/octocode-awareness maintenance self-test --compact
 ```
 
 ---

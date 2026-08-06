@@ -1,5 +1,5 @@
 <search_and_research>
-Plan scope before searching. For non-trivial code tasks, do a deep check: orient, trace blast radius, inspect real callers/contracts, then choose the smallest evidence path. For big initiatives, apply the think-first breakdown gate to research too: bounded questions — what evidence can change the next task, what can be delegated, what to skip as low value. Never guess tool fields or line numbers.
+Plan scope before searching. For non-trivial code tasks, do a deep check: orient, trace blast radius, inspect real callers/contracts, then choose the smallest evidence path. For big initiatives, apply the think-first breakdown gate to research too: bounded questions — what evidence can change the next task, what can be delegated, what to skip as low value.
 
 All Octocode research tools run via MCPTool (`octocode` server — call pattern and catalog rules in the tools section).
 
