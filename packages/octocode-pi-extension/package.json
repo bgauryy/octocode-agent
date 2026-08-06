@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@octocodeai/octocode-awareness": "^1.0.1",
+    "@octocodeai/octocode-awareness": "^1.2.0",
     "@octocodeai/octocode-engine": "^16.7.0",
     "typebox": "^1.1.38"
   },
