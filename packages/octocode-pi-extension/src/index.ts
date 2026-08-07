@@ -56,7 +56,7 @@ import { getCachedMcpCatalogAddendum, handleOctocodeMcpCommand, patchGlobalMcpOc
 import { getDynamicCapabilitiesAddendum } from './tools/dynamic-catalog.js';
 import { registerPlanTool } from './tools/plan-tool.js';
 import { renderActivePlanAddendum } from './tools/active-plan.js';
-import { handleOctocodePlanCommand, OCTOCODE_PLAN_COMMAND_USAGE, OCTOCODE_PLAN_COMMAND_COMPLETIONS } from './tools/plan-tool.js';
+import { handleOctocodePlanCommand, stopPlanAnimation, OCTOCODE_PLAN_COMMAND_USAGE, OCTOCODE_PLAN_COMMAND_COMPLETIONS } from './tools/plan-tool.js';
 import { atomicWriteUtf8 } from './tools/file-state.js';
 import { assertPathAllowed } from './tools/path-guard.js';
 import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
@@ -777,6 +777,7 @@ async function wireOctocodePiExtension(
     hooks.on('session_shutdown', 'octocode-session-shutdown', async (_event: SessionShutdownEvent, ctx: PiContext | undefined) => {
       cronScheduler.stop();
       stopMcpConfigWatchers();
+      stopPlanAnimation();
       const cleanedAgents = cleanupSpawnedAgentsForShutdown();
       const stoppedMcpServers = stopAllMcpServers();
       if (ctx?.hasUI) {

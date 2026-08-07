@@ -31,19 +31,77 @@ function renderList(steps: PlanStep[]): string {
   return steps.map((s, i) => `${MARK[s.status]} ${i + 1}. ${s.text}`).join('\n');
 }
 
-// ─── User-facing TODO widget (below-editor) ──────────────────────────────────
+// ─── Rich user-facing TODO widget (below-editor) ────────────────────────────
+
+const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const GLYPH: Record<PlanStep['status'], string> = { todo: '○', doing: '⚙', done: '✓' };
+const BAR_CELLS = 12;
+
+/** Unicode progress bar: filled ▰ for done, ▱ for remaining. */
+function progressBar(done: number, total: number): string {
+  if (total <= 0) return '';
+  const filled = Math.round((done / total) * BAR_CELLS);
+  return '▰'.repeat(filled) + '▱'.repeat(BAR_CELLS - filled);
+}
+
+/**
+ * Build the rich plan widget lines. Pure + testable: `color` defaults to identity so tests
+ * assert plain content; `frame` animates the spinner on the in-progress step (advanced by
+ * refreshPlanUi on each update — no self-timer, so no leak).
+ */
+export function buildPlanWidget(
+  steps: PlanStep[],
+  opts: { frame?: number; color?: (c: string, t: string) => string } = {},
+): string[] {
+  const color = opts.color ?? ((_c, t) => t);
+  const frame = opts.frame ?? 0;
+  if (steps.length === 0) return [];
+  const done = steps.filter((s) => s.status === 'done').length;
+  const head = `${color('toolTitle', '◷ Octocode plan')}  ${color('accent', progressBar(done, steps.length))}  ${color('dim', `${done}/${steps.length}`)}`;
+  const rows = steps.map((s, i) => {
+    const glyph = s.status === 'doing' ? SPINNER[frame % SPINNER.length]! : GLYPH[s.status];
+    const body = `${glyph} ${i + 1}. ${s.text}`;
+    if (s.status === 'done') return `  ${color('dim', body)}`;
+    if (s.status === 'doing') return `  ${color('accent', body)}`;
+    return `  ${body}`;
+  });
+  const current = steps.find((s) => s.status === 'doing') ?? steps.find((s) => s.status === 'todo');
+  const next = current ? color('success', `  ↳ next: ${current.text}`) : color('success', '  ✓ all steps done — verify, then /octocode-plan clear');
+  return [head, ...rows, next];
+}
+
+// Frame counter advanced on each refresh (activity) AND by the idle-tick timer below.
+let planFrame = 0;
 
 function planWidgetLines(steps: PlanStep[], theme?: PiTheme): string[] {
-  const done = steps.filter((s) => s.status === 'done').length;
-  const title = theme?.fg('toolTitle', 'Octocode plan') ?? 'Octocode plan';
-  const head = `${title}: ${theme?.fg('dim', `${done}/${steps.length} done`) ?? `${done}/${steps.length} done`}`;
-  const rows = steps.map((s, i) => {
-    const line = `${MARK[s.status]} ${i + 1}. ${s.text}`;
-    if (s.status === 'done') return theme?.fg('dim', line) ?? line;
-    if (s.status === 'doing') return theme?.fg('accent', line) ?? line;
-    return line;
-  });
-  return [head, ...rows];
+  return buildPlanWidget(steps, { frame: planFrame, color: (c, t) => theme?.fg(c, t) ?? t });
+}
+
+// ─── Idle-tick animation (leak-safe managed interval) ───────────────────────
+// A single module-scoped timer spins the in-progress glyph even when idle. It self-stops
+// the moment no step is `doing` (or the plan is cleared), and stopPlanAnimation() is called
+// on session shutdown — so it can never outlive the work or leak across sessions.
+const PLAN_TICK_MS = 120;
+let planTimer: ReturnType<typeof setInterval> | null = null;
+
+function hasDoing(cwd: string): boolean {
+  return getPlan(cwd).some((s) => s.status === 'doing');
+}
+
+/** Start (or keep) the idle spinner for `cwd` while a step is in progress. Idempotent. */
+export function startPlanAnimation(cwd: string, tui: { requestRender?: () => void } | undefined, intervalMs = PLAN_TICK_MS): void {
+  if (planTimer || !tui?.requestRender || !hasDoing(cwd)) return;
+  planTimer = setInterval(() => {
+    if (!hasDoing(cwd)) { stopPlanAnimation(); return; } // self-stop when work ends
+    planFrame += 1;
+    tui.requestRender?.();
+  }, intervalMs);
+  // Do not keep the process alive just for the spinner.
+  (planTimer as unknown as { unref?: () => void }).unref?.();
+}
+
+export function stopPlanAnimation(): void {
+  if (planTimer) { clearInterval(planTimer); planTimer = null; }
 }
 
 /** Mirror the active plan into the below-editor TODO widget + footer, or clear it when empty. */
@@ -52,15 +110,21 @@ export function refreshPlanUi(ctx?: PiContext): void {
   const cwd = ctx.cwd ?? process.cwd();
   const steps = getPlan(cwd);
   if (steps.length === 0) {
+    stopPlanAnimation();
     ctx.ui?.setStatus?.('octocode-plan', undefined);
     ctx.ui?.setWidget?.('octocode-plan', undefined);
     return;
   }
   const done = steps.filter((s) => s.status === 'done').length;
+  planFrame += 1; // advance the spinner one frame per refresh
   ctx.ui?.setStatus?.('octocode-plan', `plan ${done}/${steps.length}`);
   ctx.ui?.setWidget?.(
     'octocode-plan',
-    (_tui: unknown, theme: PiTheme) => makeRenderer((w) => planWidgetLines(steps, theme).map((l) => truncateToWidth(l, w))),
+    (tui: unknown, theme: PiTheme) => {
+      // Capture the live tui + start the idle spinner while a step is in progress.
+      startPlanAnimation(cwd, tui as { requestRender?: () => void } | undefined);
+      return makeRenderer((w) => planWidgetLines(steps, theme).map((l) => truncateToWidth(l, w)));
+    },
     { placement: 'belowEditor' },
   );
 }
