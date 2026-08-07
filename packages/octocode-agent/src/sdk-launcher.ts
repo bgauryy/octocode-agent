@@ -74,6 +74,7 @@ export function migrateAuthIfNeeded(
 export function parseSdkArgs(argv: string[] = []): ParsedSdkArgs {
   const result: ParsedSdkArgs = {
     mode: 'interactive',
+    outputFormat: 'text',
     continue: false,
     noSession: false,
     name: undefined,
@@ -82,20 +83,29 @@ export function parseSdkArgs(argv: string[] = []): ParsedSdkArgs {
     rest: [],
   };
 
+  // -p/--print and --mode are resolved independently while parsing (mirroring
+  // upstream pi's own resolveAppMode/toPrintOutputMode contract), then combined
+  // once at the end. Treating them as the same field let `--mode json` silently
+  // overwrite an earlier `-p`, dropping the print request and falling through to
+  // full interactive mode — which blocks on stdin and never exits when the
+  // caller has no real terminal attached (e.g. `-p --mode json "prompt"`).
+  let printFlag = false;
+  let explicitMode: 'text' | 'json' | 'rpc' | undefined;
+
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i]!;
     switch (arg) {
       case '-p':
       case '--print':
-        result.mode = 'print';
+        printFlag = true;
         i++;
         break;
       case '--mode':
         if (i + 1 < argv.length) {
           const m = argv[i + 1]!;
-          if (m === 'rpc' || m === 'json') {
-            result.mode = m;
+          if (m === 'rpc' || m === 'json' || m === 'text') {
+            explicitMode = m;
             i += 2;
             break;
           }
@@ -122,8 +132,10 @@ export function parseSdkArgs(argv: string[] = []): ParsedSdkArgs {
         i++;
         break;
       default:
-        // First bare non-flag arg in interactive mode becomes the initial prompt
-        if (!arg.startsWith('-') && result.initialMessage == null && result.mode === 'interactive') {
+        // First bare non-flag arg becomes the initial prompt, unless something
+        // already seen forces a non-interactive mode (print-mode reconstructs
+        // the message from `rest` regardless, so this is a best-effort capture).
+        if (!arg.startsWith('-') && result.initialMessage == null && !printFlag && explicitMode === undefined) {
           result.initialMessage = arg;
         } else {
           result.rest.push(arg);
@@ -131,6 +143,17 @@ export function parseSdkArgs(argv: string[] = []): ParsedSdkArgs {
         i++;
     }
   }
+
+  // Resolve run mode + output format together, matching upstream pi's
+  // resolveAppMode: --mode rpc always wins; --mode json forces print+json
+  // even without -p; -p forces print+text; otherwise interactive.
+  if (explicitMode === 'json') result.outputFormat = 'json';
+  if (explicitMode === 'rpc') {
+    result.mode = 'rpc';
+  } else if (explicitMode === 'json' || printFlag) {
+    result.mode = 'print';
+  }
+
   return result;
 }
 
@@ -340,7 +363,7 @@ export async function launchWithSdk(
           r: unknown,
           opts: { mode: string; initialMessage?: string; initialImages: unknown[]; messages: unknown[] },
         ) => Promise<void>
-      )(runtime, { mode: 'text', initialMessage: msg, initialImages: [], messages: [] });
+      )(runtime, { mode: parsed.outputFormat, initialMessage: msg, initialImages: [], messages: [] });
       return 0;
     }
 

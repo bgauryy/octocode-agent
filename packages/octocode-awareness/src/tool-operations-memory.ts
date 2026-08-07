@@ -1,9 +1,22 @@
 import { isAbsolute, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import { getMemory, insertMemoryWithSimilarityGate } from './memory.js';
+import { insertMemoryWithSimilarityGate } from './memory.js';
+import { recallMemory, storeMemoryEmbeddingIfConfigured } from './memory-semantic.js';
 import type { InsertMemoryResult } from './types.js';
 import { defaultImportance, normalizeSupersedes, optionalQuery, requireText, scopeReferences, stringArray } from './tool-operations-shared.js';
 import type { AwarenessToolOperation, AwarenessToolOperationContext, AwarenessToolOperationResult } from './tool-operations.js';
+
+interface RecallResult {
+  memories: unknown[];
+  count: number;
+  mode?: 'lexical' | 'fallback' | 'semantic';
+  embedding_model?: string;
+  warnings?: string[];
+  judgment_required?: boolean;
+  judgment_reason?: string;
+  smart_expanded?: boolean;
+  smart_dropped_filters?: string[];
+}
 
 export function runMemoryOperation(
   db: DatabaseSync,
@@ -25,7 +38,8 @@ case 'recall': {
       const recallLabels = Array.isArray(rawLabels) ? rawLabels.map(String) : rawLabels ? [String(rawLabels)] : undefined;
       const rawStates = request['states'] ?? request['state'];
       const recallStates = Array.isArray(rawStates) ? rawStates.map(String) : rawStates ? [String(rawStates)] : undefined;
-      const result = getMemory(db, {
+      const useSemantic = Boolean(request['semantic']);
+      const result = recallMemory(db, {
         query: optionalQuery(request),
         limit: (request['limit'] as number | undefined) ?? 3,
         minImportance: request['min_importance'] as number | undefined,
@@ -51,7 +65,7 @@ case 'recall': {
         asOf: request['as_of'] as string | undefined ?? null,
         explain: Boolean(request['explain']),
         cwd,
-      });
+      }, useSemantic) as unknown as RecallResult;
       type MemRecord = {
         memory_id: string;
         observation?: string;
@@ -90,6 +104,13 @@ case 'recall': {
         return lean;
       });
       const payload: Record<string, unknown> = { count: result.count, memories };
+      // Only surface mode/embedding_model/warnings when semantic was actually
+      // requested — keeps the default lexical-only response shape unchanged.
+      if (useSemantic) {
+        if (result.mode) payload['mode'] = result.mode;
+        if (result.embedding_model) payload['embedding_model'] = result.embedding_model;
+        if (result.warnings?.length) payload['warnings'] = result.warnings;
+      }
       if (result.count === 0) return { payload, exitCode: 0 };
       if (result.judgment_required) {
         payload['judgment_required'] = true;
@@ -151,6 +172,8 @@ case 'record': {
       }
       if (guarded.similar.length) payload['similar'] = guarded.similar.map((m) => m.memory_id);
       if (superseded.length) payload['superseded'] = superseded;
+      const embeddingResult = storeMemoryEmbeddingIfConfigured(db, memory.memory_id, taskContext, observation);
+      if (embeddingResult) payload['embedding'] = embeddingResult;
       return { payload, exitCode: 0 };
     }
   }

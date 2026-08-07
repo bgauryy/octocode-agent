@@ -39,6 +39,21 @@ describe('auditUnverified', () => {
     expect(result.unverified).toEqual([]);
   });
 
+  it('minAgeMs grace excludes just-created runs but includes them once past the window', () => {
+    const db = freshDb();
+    makePending(db, 'agent-grace', '/tmp/ws-grace');
+    // A large grace window hides the fresh run…
+    expect(auditUnverified(db, { minAgeMs: 60_000 }).count).toBe(0);
+    // …while no/zero grace still reports it (gate behavior is unchanged).
+    expect(auditUnverified(db, { minAgeMs: 0 }).count).toBe(1);
+    expect(auditUnverified(db).count).toBe(1);
+  });
+
+  it('rejects a negative minAgeMs', () => {
+    const db = freshDb();
+    expect(() => auditUnverified(db, { minAgeMs: -1 })).toThrow(/minAgeMs/);
+  });
+
   it('ignores ACTIVE tasks — only PENDING is unverified', () => {
     const db = freshDb();
     // Claim a lock but do NOT release it -> task stays ACTIVE

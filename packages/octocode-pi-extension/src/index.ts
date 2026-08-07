@@ -7,6 +7,7 @@ import {
   OCTOCODE_SUPPORT_TOOL_NAMES,
 } from './constants.js';
 import { wirePiAwarenessHooks } from '@octocodeai/octocode-awareness';
+import { checkForCoreUpdate, readOwnVersion } from './core-update-check.js';
 import {
   getAssetPaths,
   readTextIfExists,
@@ -46,10 +47,15 @@ import { registerWebTool } from './tools/web-tool.js';
 import { registerChromeDebugTool } from './tools/chrome-debug-tool.js';
 import { registerBrowserAgentTool } from './tools/browser-agent-tool.js';
 import { registerSpawnSubagentTool } from './tools/spawn-subagent-tool.js';
+import { registerCallTool } from './tools/call-tool.js';
+import { registerCallSkill } from './tools/call-skill.js';
 import { registerEditTool } from './tools/edit-tool.js';
 import { registerWriteTool } from './tools/write-tool.js';
 import { registerBashTool } from './tools/bash-tool.js';
-import { getCachedMcpCatalogAddendum, handleOctocodeMcpCommand, patchGlobalMcpOctocodeEnv, registerMcpTool, stopAllMcpServers, warmMcpCatalog } from './tools/mcp-tool.js';
+import { getCachedMcpCatalogAddendum, handleOctocodeMcpCommand, patchGlobalMcpOctocodeEnv, registerMcpTool, startMcpConfigWatcher, stopAllMcpServers, stopMcpConfigWatchers, warmMcpCatalog } from './tools/mcp-tool.js';
+import { getDynamicCapabilitiesAddendum } from './tools/dynamic-catalog.js';
+import { registerPlanTool } from './tools/plan-tool.js';
+import { renderActivePlanAddendum } from './tools/active-plan.js';
 import { atomicWriteUtf8 } from './tools/file-state.js';
 import { assertPathAllowed } from './tools/path-guard.js';
 import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
@@ -694,6 +700,29 @@ async function wireOctocodePiExtension(
       // Pre-warm the octocode MCP server catalog so the <mcp_cached_catalog> block
       // is ready in the system prompt before the agent's first turn. Fire-and-forget.
       void warmMcpCatalog(ctx);
+      // Check for a newer @octocodeai/pi-extension on npm — fire-and-forget, never
+      // awaited before the session becomes usable, matching how Pi checks its own
+      // version and installed packages (interactive-mode.js#run). Interactive-only:
+      // Pi's own checks never run in print/rpc mode either, and ctx.hasUI is false
+      // there, so this also skips the npm-view subprocess entirely for scripted use.
+      if (ctx?.hasUI) {
+        void checkForCoreUpdate(readOwnVersion(getAssetPaths().baseDir)).then((update) => {
+          if (!update) return;
+          notify(
+            ctx,
+            `@octocodeai/pi-extension ${update.latestVersion} is available (current: ${update.currentVersion}). Run: octocode-agent update core`,
+            'info',
+          );
+        });
+      }
+      // Watch mcp.json (global + project) for external edits and hot-reload: drop stale
+      // connections + cache and notify the user — no agent restart needed.
+      try {
+        const watched = startMcpConfigWatcher(ctx, notify);
+        if (watched > 0) notify(ctx, `Octocode watching mcp.json for live changes (add/remove/edit apply without restart).`, 'info');
+      } catch (error) {
+        notify(ctx, `Octocode MCP config watcher failed to start: ${(error as Error)?.message ?? String(error)}`, 'warning');
+      }
       // Disable weak built-ins (read/grep/find/ls) in favor of Octocode locals.
       try {
         if (disableBuiltinTools(pi)) {
@@ -746,6 +775,7 @@ async function wireOctocodePiExtension(
     // so they don't leak across /new, /resume, /fork, reload, or quit.
     hooks.on('session_shutdown', 'octocode-session-shutdown', async (_event: SessionShutdownEvent, ctx: PiContext | undefined) => {
       cronScheduler.stop();
+      stopMcpConfigWatchers();
       const cleanedAgents = cleanupSpawnedAgentsForShutdown();
       const stoppedMcpServers = stopAllMcpServers();
       if (ctx?.hasUI) {
@@ -838,7 +868,13 @@ async function wireOctocodePiExtension(
         cachedSystemPromptText = readTextIfExists(getAssetPaths().systemPrompt);
       }
       const mcpCatalog = getCachedMcpCatalogAddendum(ctx);
-      const prompt = [cachedSystemPromptText, mcpCatalog].filter((part) => part.trim().length > 0).join('\n\n');
+      // Live projection of the agent's self-created dynamic tools/skills. Rebuilt every
+      // turn from the on-disk registries (no cache/watcher), so it always reflects the
+      // latest callTool/callSkill state; empty string when there are none.
+      const dynamicCatalog = getDynamicCapabilitiesAddendum();
+      // Compaction-durable task breakdown: re-injected every turn so a plan survives compaction.
+      const activePlan = renderActivePlanAddendum(ctx?.cwd ?? process.cwd());
+      const prompt = [cachedSystemPromptText, mcpCatalog, dynamicCatalog, activePlan].filter((part) => part.trim().length > 0).join('\n\n');
       if (!shouldAppendSystemPrompt(event.systemPrompt, prompt)) {
         return;
       }
@@ -869,6 +905,12 @@ async function wireOctocodePiExtension(
     }
 
     registerSpawnSubagentTool(pi, Type, registeredToolNames, registerUniqueTool, notify);
+
+    registerCallTool(pi, Type, registeredToolNames, registerUniqueTool);
+
+    registerCallSkill(pi, Type, registeredToolNames, registerUniqueTool);
+
+    registerPlanTool(pi, Type, registeredToolNames, registerUniqueTool);
 
     registerMcpTool(pi, Type, registeredToolNames, registerUniqueTool);
 

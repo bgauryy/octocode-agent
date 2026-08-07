@@ -164,6 +164,7 @@ export function registerSpawnSubagentTool(
       skillGuideline,
       'Use spawnAgent for clean arbitrary workers. spawnAgent defaults to lean/no-skills and only uses tools/skills you pass.',
       'Before spawning, break the request into explicit subtasks and delegate only one independent, bounded subtask per typed specialist.',
+      'Structure the task as a labeled packet — lines starting with "Goal:", "Context:", "Scope:", "Ownership:", "Acceptance:", "Return:" (any of "-"/"—"/":" as separator, headings/bullets OK). Missing labels surface as a [POLICY] warning on the spawn response, not silently.',
       'Use `pi -ne --list-models [search]` as the source of truth for the user-configured model table; do not read hardcoded config paths.',
       'Pass model for each typed subagent: fastest capable configured model for small tasks, balanced coding/reasoning model for medium tasks, strongest configured model for large/high-risk work.',
       'Use AgentMessage(wait) to collect the current turn; treat [DONE] as phase completion and check /octocode-agents or the below-editor ledger plus the delegated acceptance criteria before declaring the objective complete.',
@@ -261,6 +262,16 @@ export function registerSpawnSubagentTool(
         `AgentMessage({action:"kill",   agentId:"${agentId}", remove:true})`,
       ].join('\n');
 
+      // Surface spawn-time policy warnings (packet gaps, fan-out, recursive-tool
+      // stripping, provider guidance) immediately — the caller should not have to
+      // spend a round-trip AgentMessage(wait) just to discover the delegation was
+      // under-specified. spawnAgent's own execute already does this via
+      // renderSingleAgentResult; spawnSubagent's custom [SPAWNED] output previously
+      // dropped policyWarnings entirely.
+      const policyLines = record.policyWarnings.length > 0
+        ? ['', '[POLICY]', ...record.policyWarnings.map((warning) => `  ${warning}`)]
+        : [];
+
       const output = [
         `[SPAWNED] ${config.label} · agentId: ${agentId}`,
         `[SPAWNED] name: ${record.name}`,
@@ -268,6 +279,7 @@ export function registerSpawnSubagentTool(
         `[SPAWNED] skills: ${skills.map((skillPath) => skillPath.split(/[\/]/).at(-1)).join(', ')}`,
         `[SPAWNED] resourceMode: ${config.resourceMode}`,
         `[SPAWNED] task: ${params.task.slice(0, 120)}${params.task.length > 120 ? '…' : ''}`,
+        ...policyLines,
         '',
         '[USAGE]',
         usage,

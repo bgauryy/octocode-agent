@@ -3192,6 +3192,35 @@ test('evaluateSpawnPolicy honors OCTOCODE_AGENT_MAX_ACTIVE and warning env overr
   }
 });
 
+test('evaluateSpawnPolicy packet check requires structural labels, not incidental word mentions', () => {
+  // The section words appear in prose but never anchor a line as a label —
+  // this exact phrasing satisfied the old substring-anywhere check.
+  const gamed = evaluateSpawnPolicy({
+    task: 'There is no clear goal, scope, ownership, acceptance, or return shape for this one — just go look around and report back.',
+  });
+  assert.ok(
+    gamed.warnings.some((warning) => /missing recommended section/i.test(warning)),
+    'a packet that only mentions section words in prose (not as labels) must still be flagged',
+  );
+
+  // Real labeled sections — several accepted separator/marker styles — satisfy the check.
+  const structured = evaluateSpawnPolicy({
+    task: [
+      'Goal: audit the auth flow',
+      '- Context: see packages/auth/session.ts',
+      '## Scope: read-only, no writes',
+      '**Ownership:** manager-as-tool',
+      'Acceptance - every claim cites a file:line',
+      'Return: structured [FINDING]/[EVIDENCE] prefixes',
+    ].join('\n'),
+  });
+  assert.equal(
+    structured.warnings.some((warning) => /missing recommended section/i.test(warning)),
+    false,
+    'a packet with genuinely labeled sections must not warn about missing sections',
+  );
+});
+
 test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/send', async () => {
   const spawned: Array<{
     command: string;
@@ -4008,6 +4037,50 @@ test('spawnSubagent starts researcher, planner, and architect with all Octocode 
   }
 });
 
+test('spawnSubagent surfaces packet policy warnings immediately, not just on a later AgentMessage(wait)', async () => {
+  setAgentProcessFactoryForTests((_command, _args, _options) => createMockAgentProcess());
+  try {
+    const { tools } = await captureExtensions();
+    const spawnSubagent = tools.get('spawnSubagent')!;
+
+    const bare = await invokeExecute(
+      spawnSubagent,
+      { agent: 'researcher', task: 'look into the stale-read check', cwd: '/repo' },
+      { cwd: '/fallback' },
+    );
+    assert.match(
+      bare.content[0]!.text,
+      /\[POLICY\]/,
+      'an under-specified packet must surface a [POLICY] warning in the immediate spawn response, not only on a later AgentMessage(wait)',
+    );
+    assert.match(bare.content[0]!.text, /missing recommended section/i);
+
+    const structured = await invokeExecute(
+      spawnSubagent,
+      {
+        agent: 'researcher',
+        task: [
+          'Goal: explain the stale-read check',
+          'Context: packages/octocode-pi-extension/src/tools/file-state.ts',
+          'Scope: read-only research',
+          'Ownership: manager-as-tool',
+          'Acceptance: cites file:line',
+          'Return: [FINDING]/[EVIDENCE] prefixes',
+        ].join('\n'),
+        cwd: '/repo',
+      },
+      { cwd: '/fallback' },
+    );
+    assert.doesNotMatch(
+      structured.content[0]!.text,
+      /missing recommended section/i,
+      'a fully labeled packet must not warn about missing sections',
+    );
+  } finally {
+    setAgentProcessFactoryForTests(null);
+  }
+});
+
 test('spawnSubagent covers context injection, invalid URL name fallback, unknown agent, and render fallback', async () => {
   const spawned: Array<{ args: string[]; proc: MockAgentProcess }> = [];
   setAgentProcessFactoryForTests((_command, args, _options) => {
@@ -4206,6 +4279,69 @@ test('AgentMessage wait collects worker output and kill terminates stale workers
     });
     assert.match(killed.content[0]!.text, /killed/);
     assert.equal(spawned[1]!.killed, true);
+  } finally {
+    setAgentProcessFactoryForTests(null);
+  }
+});
+
+test('AgentMessage full:true returns the complete tool-call/ledger/evidence history instead of the truncated preview', async () => {
+  const spawned: MockAgentProcess[] = [];
+  setAgentProcessFactoryForTests((_command, _args, _options) => {
+    const proc = createMockAgentProcess();
+    spawned.push(proc);
+    return proc;
+  });
+  try {
+    const { tools } = await captureExtensions();
+    const spawnTool = tools.get('spawnAgent')!;
+    const messageTool = tools.get('AgentMessage')!;
+
+    const spawnResult = await invokeExecute(
+      spawnTool,
+      {
+        task: 'Goal: run many searches\nContext: none\nScope: read-only\nOwnership: manager-as-tool\nAcceptance: complete list\nReturn: list',
+        resourceMode: 'default',
+      },
+      { cwd: '/repo' },
+    );
+    const agentId = (spawnResult.details as { agent: { agentId: string } }).agent.agentId;
+
+    // 12 tool calls — past both the text preview cap (3) and the details cap (10).
+    for (let i = 1; i <= 12; i++) {
+      spawned[0]!.emitStdout({ type: 'tool_call', toolCallId: `tool-${i}`, toolName: `search${i}` });
+      spawned[0]!.emitStdout({ type: 'tool_result', toolCallId: `tool-${i}`, toolName: `search${i}`, isError: false });
+    }
+    spawned[0]!.emitStdout({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'text',
+          text: '[FINDING] done\n[EVIDENCE] a:1\n[EVIDENCE] b:2\n[EVIDENCE] c:3\n[EVIDENCE] d:4\n[EVIDENCE] e:5\n[DONE] complete',
+        }],
+      },
+    });
+    spawned[0]!.emitStdout({ type: 'agent_end', messages: [] });
+
+    // Note: the raw worker output (including every [EVIDENCE] line verbatim) is
+    // always echoed at the bottom of the result regardless of capping — so the
+    // capping assertions below target the harness-generated summary lines
+    // ("tools:"/"evidence:") specifically, not text presence anywhere in the blob.
+    const preview = await invokeExecute(messageTool, { action: 'status', agentId });
+    const previewText = preview.content[0]!.text;
+    const previewLines = previewText.split('\n');
+    assert.equal((previewLines.find((l) => l.startsWith('tools:')) ?? '').match(/search\d{1,2}:done/g)?.length, 3, 'default preview "tools:" summary shows only the last 3 tool calls');
+    assert.equal(previewLines.find((l) => l.startsWith('evidence:')), 'evidence: a:1; b:2; c:3', 'default preview "evidence:" summary caps at 3 anchors');
+    const previewDetails = (preview.details as { agent: { toolCalls: unknown[] } }).agent;
+    assert.equal(previewDetails.toolCalls.length, 10, 'default details cap tool calls at the last 10');
+
+    const full = await invokeExecute(messageTool, { action: 'status', agentId, full: true });
+    const fullText = full.content[0]!.text;
+    const fullLines = fullText.split('\n');
+    assert.equal((fullLines.find((l) => l.startsWith('tools:')) ?? '').match(/search\d{1,2}:done/g)?.length, 12, 'full:true "tools:" summary returns every retained tool call');
+    assert.equal(fullLines.find((l) => l.startsWith('evidence:')), 'evidence: a:1; b:2; c:3; d:4; e:5', 'full:true "evidence:" summary returns every retained anchor');
+    const fullDetails = (full.details as { agent: { toolCalls: unknown[] } }).agent;
+    assert.equal(fullDetails.toolCalls.length, 12, 'full:true returns the complete retained toolCalls array, not the 10-entry slice');
   } finally {
     setAgentProcessFactoryForTests(null);
   }

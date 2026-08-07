@@ -55,6 +55,12 @@ export interface SpawnPolicy {
   maxActiveAgents: number;
   warningActiveAgents: number;
   requiredPacketSections: string[];
+  /**
+   * Soft per-worker step (tool-call) budget — a circuit-breaker signal. Research shows
+   * multi-agent failure rates climb sharply without per-run budgets; exceeding this surfaces
+   * a recovery warning so the parent can abort/steer rather than let a worker run away.
+   */
+  maxStepsPerWorker: number;
 }
 
 export interface SpawnPolicyResult {

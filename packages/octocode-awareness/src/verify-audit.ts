@@ -50,6 +50,19 @@ export function auditUnverified(
     where.push(`origin IN (${origins.map(() => '?').join(',')})`);
     binds.push(...origins);
   }
+  let minAgeCutoff: string | null = null;
+  if (params.minAgeMs != null) {
+    if (!Number.isFinite(params.minAgeMs) || params.minAgeMs < 0) {
+      throw new Error('minAgeMs must be a finite number >= 0');
+    }
+    // minAgeMs === 0 means "no grace": don't add a cutoff (a `created_at < now` filter
+    // would wrongly drop runs created in the current millisecond).
+    if (params.minAgeMs > 0) {
+      minAgeCutoff = new Date(Date.now() - Math.floor(params.minAgeMs)).toISOString();
+      where.push('created_at < ?');
+      binds.push(minAgeCutoff);
+    }
+  }
   let before: string | null = null;
   if (params.before) {
     const parsed = new Date(params.before);
@@ -123,6 +136,7 @@ export function auditUnverified(
       staleWhere.push(`ai.origin IN (${origins.map(() => '?').join(',')})`);
       staleBinds.push(...origins);
     }
+    if (minAgeCutoff) { staleWhere.push('ai.created_at < ?'); staleBinds.push(minAgeCutoff); }
     if (before) { staleWhere.push('ai.created_at < ?'); staleBinds.push(before); }
 
     const staleRows = db.prepare(

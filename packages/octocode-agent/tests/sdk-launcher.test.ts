@@ -90,14 +90,50 @@ describe('parseSdkArgs', () => {
     expect(parseSdkArgs(['--mode', 'rpc']).mode).toBe('rpc');
   });
 
-  it('--mode json sets json mode', () => {
-    expect(parseSdkArgs(['--mode', 'json']).mode).toBe('json');
+  it('--mode json alone resolves to print mode with json output format (matches upstream pi: appMode "json" still routes through runPrintMode)', () => {
+    const r = parseSdkArgs(['--mode', 'json']);
+    expect(r.mode).toBe('print');
+    expect(r.outputFormat).toBe('json');
+  });
+
+  it('--mode text alone does not force print mode (matches upstream pi: only json/rpc are mode-forcing, text is just the default format)', () => {
+    const r = parseSdkArgs(['--mode', 'text']);
+    expect(r.mode).toBe('interactive');
+    expect(r.outputFormat).toBe('text');
   });
 
   it('--mode with unknown value preserves default mode and puts flag in rest', () => {
     const r = parseSdkArgs(['--mode', 'unknown']);
     expect(r.mode).toBe('interactive');
     expect(r.rest).toContain('--mode');
+  });
+
+  it('-p --mode json composes: print mode with json output (regression — previously --mode json silently overwrote and discarded the -p print request, falling through to interactive mode and hanging on stdin)', () => {
+    const r = parseSdkArgs(['-p', '--mode', 'json']);
+    expect(r.mode).toBe('print');
+    expect(r.outputFormat).toBe('json');
+  });
+
+  it('--mode json -p composes the same regardless of flag order', () => {
+    const r = parseSdkArgs(['--mode', 'json', '-p']);
+    expect(r.mode).toBe('print');
+    expect(r.outputFormat).toBe('json');
+  });
+
+  it('--mode rpc wins over -p (rpc is a persistent mode, not a print output format)', () => {
+    const r = parseSdkArgs(['-p', '--mode', 'rpc']);
+    expect(r.mode).toBe('rpc');
+  });
+
+  it('plain -p defaults to text output format', () => {
+    const r = parseSdkArgs(['-p']);
+    expect(r.mode).toBe('print');
+    expect(r.outputFormat).toBe('text');
+  });
+
+  it('interactive mode (no flags) defaults to text output format', () => {
+    const r = parseSdkArgs([]);
+    expect(r.outputFormat).toBe('text');
   });
 
   it('-c / --continue sets continue flag', () => {
@@ -149,21 +185,30 @@ function buildMockSdk({
   runtimeShouldThrow = false,
   sessionThrows = false,
   onCreateServices,
+  onPrintMode,
+  onInteractiveMode,
 }: {
   runtimeShouldThrow?: boolean;
   sessionThrows?: boolean;
   onCreateServices?: (opts: unknown) => void;
+  onPrintMode?: (opts: unknown) => void;
+  onInteractiveMode?: (opts: unknown) => void;
 } = {}): SdkDeps['importPiSdk'] {
   return async () => {
     const makeInteractiveMode = () =>
       class {
+        constructor(_runtime: unknown, opts: unknown) {
+          onInteractiveMode?.(opts);
+        }
         run() {
           if (sessionThrows) throw new Error('session error');
           return Promise.resolve();
         }
       };
 
-    const makePrintMode = () => async () => {};
+    const makePrintMode = () => async (_runtime: unknown, opts: unknown) => {
+      onPrintMode?.(opts);
+    };
     const makeRpcMode = () => async () => {};
 
     return {
@@ -290,6 +335,55 @@ describe('launchWithSdk', () => {
       env: {},
     } satisfies SdkDeps);
     expect(result).toBe(0);
+  });
+
+  it('-p --mode json dispatches to print mode with json output — not interactive mode (regression for the SDK-embed hang: unrecognized "json" run-mode previously fell through to InteractiveMode, which blocks on stdin and never exits in non-interactive/piped invocations)', async () => {
+    const printCalls: unknown[] = [];
+    const interactiveCalls: unknown[] = [];
+    const result = await launchWithSdk(['-p', '--mode', 'json', 'describe this file'], {
+      importPiSdk: buildMockSdk({
+        onPrintMode: (opts) => printCalls.push(opts),
+        onInteractiveMode: (opts) => interactiveCalls.push(opts),
+      }),
+      importExtensionFactory: noopExtensionFactory,
+      env: {},
+    } satisfies SdkDeps);
+
+    expect(result).toBe(0);
+    expect(interactiveCalls).toHaveLength(0);
+    expect(printCalls).toHaveLength(1);
+    expect(printCalls[0]).toMatchObject({ mode: 'json' });
+  });
+
+  it('--mode json alone (no -p) also dispatches to print mode, not interactive — matches upstream pi appMode resolution', async () => {
+    const printCalls: unknown[] = [];
+    const interactiveCalls: unknown[] = [];
+    const result = await launchWithSdk(['--mode', 'json', 'describe this file'], {
+      importPiSdk: buildMockSdk({
+        onPrintMode: (opts) => printCalls.push(opts),
+        onInteractiveMode: (opts) => interactiveCalls.push(opts),
+      }),
+      importExtensionFactory: noopExtensionFactory,
+      env: {},
+    } satisfies SdkDeps);
+
+    expect(result).toBe(0);
+    expect(interactiveCalls).toHaveLength(0);
+    expect(printCalls).toHaveLength(1);
+    expect(printCalls[0]).toMatchObject({ mode: 'json' });
+  });
+
+  it('plain -p still dispatches print mode with text output (no regression on the common case)', async () => {
+    const printCalls: unknown[] = [];
+    const result = await launchWithSdk(['-p', 'hello'], {
+      importPiSdk: buildMockSdk({ onPrintMode: (opts) => printCalls.push(opts) }),
+      importExtensionFactory: noopExtensionFactory,
+      env: {},
+    } satisfies SdkDeps);
+
+    expect(result).toBe(0);
+    expect(printCalls).toHaveLength(1);
+    expect(printCalls[0]).toMatchObject({ mode: 'text', initialMessage: 'hello' });
   });
 
   it('returns 0 on successful rpc mode run', async () => {

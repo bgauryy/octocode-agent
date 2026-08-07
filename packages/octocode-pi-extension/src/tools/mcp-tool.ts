@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { PiCommandContext, PiContext, PiInstance, PiTheme, RenderCallReturn, RenderContext, ToolCallResult, ToolDefinition, TSchema } from '../types.js';
 import { assertPathAllowed } from './path-guard.js';
 import { recordFileReadState } from './file-state.js';
@@ -17,7 +18,7 @@ interface TypeBoxBuilder {
 }
 
 type NotifyFn = (ctx: PiContext | undefined, message: string, level?: string) => void;
-type McpAction = 'list' | 'describe' | 'call' | 'status' | 'restart' | 'stop' | 'config';
+type McpAction = 'list' | 'describe' | 'call' | 'status' | 'restart' | 'stop' | 'config' | 'add' | 'remove';
 
 interface McpServerConfig {
   command: string;
@@ -44,6 +45,8 @@ interface McpLoadedConfig {
 interface McpConnection {
   name: string;
   config: McpServerConfig;
+  /** Stable signature of the normalized config; used to auto-reconnect on config drift. */
+  configSig: string;
   client: Client;
   transport: StdioClientTransport;
   stderr: string[];
@@ -165,6 +168,76 @@ function readConfigFile(filePath: string): Map<string, McpServerConfig> | null {
   return parseConfigText(fs.readFileSync(filePath, 'utf8'));
 }
 
+type McpScope = 'project' | 'global';
+
+function scopeTargetPath(scope: McpScope, ctx?: PiContext): string {
+  return scope === 'global' ? globalMcpPath() : projectMcpPath(ctx?.cwd ?? process.cwd());
+}
+
+/**
+ * Return the container object inside a parsed mcp.json that holds the server map,
+ * preserving the file's existing shape (`mcpServers` > `servers` > root object).
+ */
+function serverContainer(raw: Record<string, unknown>): Record<string, unknown> {
+  if (isPlainRecord(raw['mcpServers'])) return raw['mcpServers'] as Record<string, unknown>;
+  if (isPlainRecord(raw['servers'])) return raw['servers'] as Record<string, unknown>;
+  // New/empty file: standardize on the canonical `mcpServers` wrapper.
+  const container: Record<string, unknown> = {};
+  raw['mcpServers'] = container;
+  return container;
+}
+
+function writeMcpJsonAtomic(filePath: string, raw: unknown): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmp, filePath);
+}
+
+/** Insert or update a server in an mcp.json file. Validates via parseServerConfig. */
+export function upsertServerInFile(filePath: string, name: string, serverJson: Record<string, unknown>): McpServerConfig {
+  const parsed = parseServerConfig(name, serverJson); // throws on invalid name/command
+  let raw: Record<string, unknown> = {};
+  if (fs.existsSync(filePath)) {
+    const text = fs.readFileSync(filePath, 'utf8').trim();
+    if (text) {
+      const json = JSON.parse(text) as unknown;
+      if (!isPlainRecord(json)) throw new Error('mcp.json must contain an object');
+      raw = json;
+    }
+  }
+  const container = serverContainer(raw);
+  // Persist only defined fields, in a stable shape.
+  const entry: Record<string, unknown> = { command: parsed.command };
+  if (parsed.args && parsed.args.length) entry['args'] = parsed.args;
+  if (parsed.env && Object.keys(parsed.env).length) entry['env'] = parsed.env;
+  if (parsed.cwd) entry['cwd'] = parsed.cwd;
+  if (parsed.timeoutMs) entry['timeoutMs'] = parsed.timeoutMs;
+  if (parsed.description) entry['description'] = parsed.description;
+  if (parsed.disabled) entry['disabled'] = true;
+  container[name] = entry;
+  writeMcpJsonAtomic(filePath, raw);
+  return parsed;
+}
+
+/** Remove a server from an mcp.json file. Returns false if it wasn't present. */
+export function removeServerFromFile(filePath: string, name: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+  const text = fs.readFileSync(filePath, 'utf8').trim();
+  if (!text) return false;
+  const json = JSON.parse(text) as unknown;
+  if (!isPlainRecord(json)) return false;
+  const container = isPlainRecord(json['mcpServers'])
+    ? (json['mcpServers'] as Record<string, unknown>)
+    : isPlainRecord(json['servers'])
+      ? (json['servers'] as Record<string, unknown>)
+      : json;
+  if (!(name in container)) return false;
+  delete container[name];
+  writeMcpJsonAtomic(filePath, json);
+  return true;
+}
+
 async function loadMcpConfig(ctx?: PiContext): Promise<McpLoadedConfig> {
   const cwd = ctx?.cwd ?? process.cwd();
   const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : true;
@@ -224,11 +297,29 @@ function normalizeServerConfig(name: string, config: McpServerConfig): McpServer
   };
 }
 
-async function ensureConnection(name: string, config: McpServerConfig, ctx?: PiContext, signal?: AbortSignal): Promise<McpConnection> {
-  const existing = connections.get(name);
-  if (existing) return existing;
+/** Stable signature of the fields that determine the spawned process, for drift detection. */
+export function configSignature(config: McpServerConfig): string {
+  return JSON.stringify({
+    command: config.command,
+    args: config.args ?? [],
+    env: config.env ?? {},
+    cwd: config.cwd ?? null,
+    timeoutMs: config.timeoutMs ?? null,
+  });
+}
 
+async function ensureConnection(name: string, config: McpServerConfig, ctx?: PiContext, signal?: AbortSignal): Promise<McpConnection> {
   config = normalizeServerConfig(name, config);
+  const sig = configSignature(config);
+  const existing = connections.get(name);
+  if (existing) {
+    // Reuse only if the config is unchanged; otherwise the live process is stale —
+    // reconnect with the new config so mcp.json edits apply without an agent restart.
+    if (existing.configSig === sig) return existing;
+    await stopConnection(name);
+    invalidateServerCache(name);
+  }
+
   const cwd = resolveServerCwd(config, ctx);
   assertPathAllowed(cwd, ctx?.cwd ?? process.cwd(), `mcp:${name}`);
 
@@ -240,7 +331,16 @@ async function ensureConnection(name: string, config: McpServerConfig, ctx?: PiC
     stderr: 'pipe',
   });
   const client = new Client({ name: 'octocode-pi-extension', version: '1.0.0' }, { capabilities: {} });
-  const connection: McpConnection = { name, config, client, transport, stderr: [], startedAt: Date.now() };
+  const connection: McpConnection = { name, config, configSig: sig, client, transport, stderr: [], startedAt: Date.now() };
+  // Subscribe to tools/list_changed: when the server announces its tool set changed,
+  // drop the cached catalog for this server so the next list/describe re-fetches it.
+  try {
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      invalidateServerCache(name);
+    });
+  } catch {
+    // Older SDKs / servers without the capability — non-fatal.
+  }
   const stderr = transport.stderr;
   stderr?.on('data', (chunk: Buffer) => {
     const text = chunk.toString('utf8').trim();
@@ -283,6 +383,96 @@ export function stopAllMcpServers(): number {
   return names.length;
 }
 
+// ─── mcp.json file watcher: hot-reload on external edits ──────────────────────
+// The config is already re-read per MCPTool call and connections auto-reconnect on
+// drift; the watcher makes that PROACTIVE — it detects external mcp.json edits, drops
+// stale connections + cache immediately, and tells the user, so a long-idle connection
+// never lingers on old config and the model's <mcp_cached_catalog> hint stays honest.
+
+const configWatchers: import('node:fs').FSWatcher[] = [];
+let watchDebounce: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Compare running connections against freshly-loaded config. Returns the servers whose
+ * config drifted (need reconnect) and those removed from config (need shutdown). Pure and
+ * unit-testable — the watcher applies the actions.
+ */
+export function computeReload(
+  running: Map<string, string>,
+  servers: Map<string, McpServerConfig>,
+): { changed: string[]; removed: string[] } {
+  const changed: string[] = [];
+  const removed: string[] = [];
+  for (const [name, sig] of running) {
+    const cfg = servers.get(name);
+    if (!cfg) { removed.push(name); continue; }
+    if (configSignature(normalizeServerConfig(name, cfg)) !== sig) changed.push(name);
+  }
+  return { changed, removed };
+}
+
+async function reconcileMcpConfig(ctx: PiContext | undefined, notify: NotifyFn): Promise<void> {
+  try {
+    const loaded = await loadMcpConfig(ctx);
+    const running = new Map<string, string>();
+    for (const [name, conn] of connections) running.set(name, conn.configSig);
+    const { changed, removed } = computeReload(running, loaded.servers);
+    for (const name of [...changed, ...removed]) {
+      await stopConnection(name);
+      invalidateServerCache(name);
+    }
+    invalidateCwdCache(ctx);
+    if (changed.length || removed.length) {
+      const parts: string[] = [];
+      if (changed.length) parts.push(`reloaded ${changed.join(', ')}`);
+      if (removed.length) parts.push(`removed ${removed.join(', ')}`);
+      notify(ctx, `MCP config changed — ${parts.join('; ')}. New tools apply on the next MCPTool call.`, 'info');
+    }
+  } catch {
+    // Best-effort: a bad transient config write must not crash the watcher.
+  }
+}
+
+/**
+ * Start watching the global + project mcp.json directories for changes. Debounced, and
+ * best-effort (watching is disabled silently if the platform/dir doesn't allow it). Call
+ * stopMcpConfigWatchers() on session shutdown.
+ */
+export function startMcpConfigWatcher(ctx: PiContext | undefined, notify: NotifyFn): number {
+  stopMcpConfigWatchers();
+  const cwd = ctx?.cwd ?? process.cwd();
+  const dirs = new Set([
+    path.dirname(globalMcpPath()),
+    path.dirname(projectMcpPath(cwd)),
+    path.dirname(legacyTypoProjectMcpPath(cwd)),
+  ]);
+  for (const dir of dirs) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const watcher = fs.watch(dir, { persistent: false }, (_event, filename) => {
+        // Match mcp.json and our atomic temp writes (mcp.json.<pid>.<ts>.tmp).
+        if (filename && !String(filename).startsWith('mcp.json')) return;
+        if (watchDebounce) clearTimeout(watchDebounce);
+        watchDebounce = setTimeout(() => { void reconcileMcpConfig(ctx, notify); }, 250);
+      });
+      configWatchers.push(watcher);
+    } catch {
+      // Watching is best-effort; per-call re-read + drift reconnect remain the safety net.
+    }
+  }
+  return configWatchers.length;
+}
+
+export function stopMcpConfigWatchers(): number {
+  const count = configWatchers.length;
+  for (const watcher of configWatchers) {
+    try { watcher.close(); } catch { /* already closed */ }
+  }
+  configWatchers.length = 0;
+  if (watchDebounce) { clearTimeout(watchDebounce); watchDebounce = null; }
+  return count;
+}
+
 /**
  * Interop fallback for MCP call results: octocode-mcp (without
  * OCTOCODE_MCP_FULL_TEXT) replaces text content with a compact
@@ -321,12 +511,44 @@ function result(text: string, details?: unknown, isError = false): ToolCallResul
   return { content: [{ type: 'text', text }], details, isError };
 }
 
+/**
+ * Discovery-cache TTL. The cache is invalidated on stop/restart/add/remove and on
+ * `tools/list_changed`, but a server may change its tool set WITHOUT emitting that
+ * notification; the TTL bounds how long a stale entry is served before a forced re-list.
+ */
+const CACHE_TTL_MS = 10 * 60_000;
+
 function cacheListedCatalog(ctx: PiContext | undefined, listed: ListedMcpServer[]): void {
   if (listed.length === 0) return;
   const key = cacheKey(ctx);
+  const now = Date.now();
   const existing = new Map((cachedCatalogs.get(key) ?? []).map((entry) => [entry.name, entry]));
-  for (const entry of listed) existing.set(entry.name, entry);
+  for (const entry of listed) existing.set(entry.name, { ...entry, cachedAt: now });
   cachedCatalogs.set(key, [...existing.values()].sort((a, b) => a.name.localeCompare(b.name)));
+}
+
+/** True when a cached entry is still within the TTL window. */
+export function isFresh(entry: ListedMcpServer, now = Date.now()): boolean {
+  return entry.cachedAt === undefined || now - entry.cachedAt <= CACHE_TTL_MS;
+}
+
+/** Drop the entire cached catalog for a cwd (used when servers are added/removed/stopped). */
+function invalidateCwdCache(ctx?: PiContext): void {
+  cachedCatalogs.delete(cacheKey(ctx));
+}
+
+/**
+ * Drop one server from every cached catalog. Used on restart / stop / config-drift /
+ * tools/list_changed, where we lack the originating cwd but must not serve a stale entry.
+ */
+function invalidateServerCache(name: string): void {
+  for (const [key, entries] of cachedCatalogs) {
+    const next = entries.filter((entry) => entry.name !== name);
+    if (next.length !== entries.length) {
+      if (next.length === 0) cachedCatalogs.delete(key);
+      else cachedCatalogs.set(key, next);
+    }
+  }
 }
 
 function formatCachedCatalogEntry(entry: ListedMcpServer): string {
@@ -404,11 +626,13 @@ export async function warmMcpCatalog(ctx?: PiContext, signal?: AbortSignal): Pro
 
 export function getCachedMcpCatalogAddendum(ctx?: PiContext): string {
   const cached = cachedCatalogs.get(cacheKey(ctx));
-  if (!cached?.length) return '';
+  // Drop TTL-expired entries so the prompt hint never advertises stale tool sets.
+  const fresh = (cached ?? []).filter((entry) => isFresh(entry));
+  if (!fresh.length) return '';
   return [
     '<mcp_cached_catalog>',
     'Cached MCP catalog from prior MCPTool list/describe calls in this Pi process. Treat as a hint; re-run MCPTool list/describe when exact current schema matters.',
-    ...cached.map(formatCachedCatalogEntry),
+    ...fresh.map(formatCachedCatalogEntry),
     '</mcp_cached_catalog>',
   ].join('\n');
 }
@@ -437,6 +661,8 @@ interface ListedMcpServer {
   instructions?: string;
   tools: unknown[];
   text: string;
+  /** When this catalog entry was fetched; drives the cache TTL. */
+  cachedAt?: number;
 }
 
 function summarizeSchema(tool: Record<string, unknown>): string {
@@ -462,7 +688,7 @@ async function listServerTools(name: string, config: McpServerConfig, ctx: PiCon
   return { name, instructions, tools: payload.tools, text: lines.join('\n') };
 }
 
-async function handleMcpAction(params: Record<string, unknown>, signal?: AbortSignal, ctx?: PiContext): Promise<ToolCallResult> {
+export async function handleMcpAction(params: Record<string, unknown>, signal?: AbortSignal, ctx?: PiContext): Promise<ToolCallResult> {
   const action = (params['action'] ?? 'list') as McpAction;
   const loaded = await loadMcpConfig(ctx);
   const serverName = typeof params['server'] === 'string' ? params['server'] : undefined;
@@ -471,7 +697,59 @@ async function handleMcpAction(params: Record<string, unknown>, signal?: AbortSi
   if (action === 'status') return result(formatStatus(loaded), { running: [...connections.keys()], warnings: loaded.warnings });
   if (action === 'stop') {
     const stopped = serverName ? await stopConnection(serverName) : stopAllMcpServers() > 0;
+    if (serverName) invalidateServerCache(serverName);
+    else invalidateCwdCache(ctx);
     return result(serverName ? `${serverName}: ${stopped ? 'stopped' : 'not running'}` : `stopped ${stopped ? 'MCP servers' : 'no MCP servers'}`);
+  }
+
+  if (action === 'add') {
+    if (!serverName) return result('MCPTool add requires server', undefined, true);
+    const scope: McpScope = params['scope'] === 'global' ? 'global' : 'project';
+    if (scope === 'project') {
+      const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : true;
+      if (!trusted) return result('Refusing to write project mcp.json: project is not trusted. Use scope:"global" or trust the project.', undefined, true);
+    }
+    const cfg = isPlainRecord(params['config']) ? params['config'] : undefined;
+    if (!cfg) return result('MCPTool add requires a config object, e.g. {command, args, env, cwd}.', undefined, true);
+    const target = scopeTargetPath(scope, ctx);
+    let parsed: McpServerConfig;
+    try {
+      parsed = upsertServerInFile(target, serverName, cfg);
+    } catch (error) {
+      return result(`MCPTool add failed: ${(error as Error).message}`, undefined, true);
+    }
+    // Apply immediately: drop any stale connection + cache so the next call spawns fresh.
+    await stopConnection(serverName);
+    invalidateServerCache(serverName);
+    invalidateCwdCache(ctx);
+    const shadowNote = serverName === DEFAULT_OCTOCODE_MCP_SERVER_NAME
+      ? ' (overrides the built-in octocode default — env defaults for full-text + npm cache are still merged in)'
+      : '';
+    return result(`${serverName}: added to ${scope} mcp.json (${target}) as \`${parsed.command}${parsed.args?.length ? ' ' + parsed.args.join(' ') : ''}\`.${shadowNote} Active on next MCPTool call — no agent restart needed.`);
+  }
+
+  if (action === 'remove') {
+    if (!serverName) return result('MCPTool remove requires server', undefined, true);
+    if (serverName === DEFAULT_OCTOCODE_MCP_SERVER_NAME) {
+      return result(`"${DEFAULT_OCTOCODE_MCP_SERVER_NAME}" is the built-in default MCP server (npx octocode-mcp) and cannot be removed. You may override its config with action:add, or stop the live process with action:stop.`, undefined, true);
+    }
+    const scope: McpScope = params['scope'] === 'global' ? 'global' : 'project';
+    if (scope === 'project') {
+      const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : true;
+      if (!trusted) return result('Refusing to write project mcp.json: project is not trusted.', undefined, true);
+    }
+    const target = scopeTargetPath(scope, ctx);
+    let removed: boolean;
+    try {
+      removed = removeServerFromFile(target, serverName);
+    } catch (error) {
+      return result(`MCPTool remove failed: ${(error as Error).message}`, undefined, true);
+    }
+    await stopConnection(serverName);
+    invalidateServerCache(serverName);
+    invalidateCwdCache(ctx);
+    const note = serverName === DEFAULT_OCTOCODE_MCP_SERVER_NAME ? ' (note: the built-in octocode default re-appears unless overridden)' : '';
+    return result(removed ? `${serverName}: removed from ${scope} mcp.json (${target}).${note}` : `${serverName}: not present in ${scope} mcp.json (${target}).${note}`, undefined, !removed);
   }
 
   if (serverName && !loaded.servers.has(serverName)) {
@@ -481,6 +759,7 @@ async function handleMcpAction(params: Record<string, unknown>, signal?: AbortSi
   if (action === 'restart') {
     if (!serverName) return result('mcp restart requires server', undefined, true);
     await stopConnection(serverName);
+    invalidateServerCache(serverName);
     await ensureConnection(serverName, loaded.servers.get(serverName)!, ctx, signal);
     return result(`${serverName}: restarted`);
   }
@@ -581,10 +860,14 @@ export function registerMcpTool(
       Type.Literal('restart'),
       Type.Literal('stop'),
       Type.Literal('config'),
-    ], { description: 'MCP action. Use list or describe before call.' })),
-    server: Type.Optional(Type.String({ description: 'Configured MCP server name from .pi/agent/mcp.json or ~/.pi/agent/mcp.json.' })),
+      Type.Literal('add'),
+      Type.Literal('remove'),
+    ], { description: 'MCP action. list/describe/call to use servers; add/remove/restart/stop to manage them (applied without an agent restart).' })),
+    server: Type.Optional(Type.String({ description: 'MCP server name. For add/remove this is the key written to mcp.json.' })),
     tool: Type.Optional(Type.String({ description: 'MCP tool name for action:call.' })),
-    arguments: Type.Optional(Type.Object({}, { description: 'Arguments object passed to the MCP tool.', additionalProperties: true })),
+    arguments: Type.Optional(Type.Object({}, { description: 'Arguments object passed to the MCP tool (action:call).', additionalProperties: true })),
+    config: Type.Optional(Type.Object({}, { description: 'Server config for action:add: {command, args?, env?, cwd?, timeoutMs?, description?}.', additionalProperties: true })),
+    scope: Type.Optional(Type.Union([Type.Literal('project'), Type.Literal('global')], { description: 'add/remove target: "project" (.pi/agent/mcp.json, trusted only; default) or "global" (~/.pi/agent/mcp.json).' })),
   }, { additionalProperties: false }) as TSchema;
 
   const execute = async (_toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal, _onUpdate?: unknown, ctx?: PiContext): Promise<ToolCallResult> => {
@@ -600,14 +883,16 @@ export function registerMcpTool(
 
   const common = {
     label: 'MCPTool',
-    description: 'Dedicated MCP client: list, describe, call, restart, stop, and inspect stdio MCP servers configured in .pi/agent/mcp.json or ~/.pi/agent/mcp.json.',
+    description: 'Dedicated MCP client: list, describe, call, and manage stdio MCP servers (add, remove, restart, stop, status, config). Config is read fresh per call and connections auto-reconnect on config drift, so add/remove/edit of mcp.json apply WITHOUT restarting the agent. Discovery is cached and auto-invalidated on changes.',
     promptSnippet: 'MCPTool is the dedicated MCP gateway. Main agent has built-in octocode MCP plus configured MCPs; spawned agents may use the Octocode CLI instead. Use MCPTool action:list/describe to read server instructions, tool descriptions, and input schemas before action:call. Never guess server/tool/arguments.',
     promptGuidelines: [
       'MCPTool default server: octocode = npx -y octocode-mcp@latest, lazy-started only when listed/called.',
       'MCPTool config is JSON at <workspace>/.pi/agent/mcp.json or ~/.pi/agent/mcp.json. Project config loads only in trusted projects.',
       'MCPTool action:list returns server instructions plus every tool name, description, and schema summary; details.servers[].tools contains full MCP inputSchema objects.',
       'Use MCPTool action:describe for one tool when exact schema matters before action:call.',
-      'Treat MCP servers as arbitrary code. Do not add or run untrusted MCP config without user approval.',
+      'Manage servers at runtime without restarting the agent: action:add ({server, config:{command,...}, scope}) writes mcp.json and applies on the next call; action:remove deletes it; restart/stop reconnect. Live connections auto-reconnect when mcp.json changes.',
+      'mcp.json (global + project) is watched: external edits hot-reload automatically \u2014 stale connections/cache are dropped and the user is notified; no agent restart needed. The built-in `octocode` server (npx octocode-mcp) is the default and cannot be removed.',
+      'Treat MCP servers as arbitrary code. Do not add or run untrusted MCP config without user approval; project-scope writes require a trusted project.',
     ],
     parameters,
     execute,

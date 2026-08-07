@@ -1,11 +1,8 @@
 # Learning Loop, Bookkeeping & Skill Evolution
 
-Use this for outcomes, failures, developer-review, housekeep, improve loops, and skill evolution.
-A loop closes only when its output has an owner, an applied action, fresh verification, and a terminal state.
+Use this for outcomes, failures, developer-review, housekeep, improve loops, and skill evolution. A loop closes only when its output has an owner, an applied action, fresh verification, and a terminal state.
 
-**Bookkeeping (learning)** turns verified outcomes into routed, durable knowledge.
-**Housekeep (cleanup)** removes or supersedes stale locks, signals, terminal refinements, and weak/redundant memories.
-`query workboard` is the shared upkeep sensor for both.
+**Bookkeeping (learning)** turns verified outcomes into routed, durable knowledge. **Housekeep (cleanup)** removes or supersedes stale locks, signals, terminal refinements, and weak/redundant memories. `query workboard` is the shared upkeep sensor for both.
 
 ## Routes (Bookkeeping — Learn)
 
@@ -25,11 +22,11 @@ Terminal recipe: `refinement set --refinement-id <id> --agent-id "$OCTOCODE_AGEN
 
 ## Failures
 
-Capture so errors cluster: `reflect record --outcome failed --failure-signature "<stable key>" --lesson "…"`. Stable key = `test:<name>` or `<class>:<site>`, not the full message. Bulk: `--eval-failure-json '[...]'`. Mine with `reflect mine-weakness`; route `--fix-repo|harness|instructions`; re-reflect with the **same** signature. `--outcome` must be `worked|partial|failed`.
+Cluster errors: `reflect record --outcome failed --failure-signature "<stable key>" --lesson "…"`. Stable key = `test:<name>` or `<class>:<site>`, not the full message. Bulk: `--eval-failure-json '[...]'`. Mine with `reflect mine-weakness`; route `--fix-repo|harness|instructions`; re-reflect with the **same** signature. `--outcome` must be `worked|partial|failed`.
 
 ## Developer Review (Fix Instructions)
 
-When human-authored instructions caused time loss, guessing, or a wrong turn — name the source, cost, and proposed replacement; attach instruction files with `--fix-file`; keep one concern per call:
+When instructions caused time loss, guessing, or a wrong turn — name the source, cost, and proposed replacement; attach files with `--fix-file`; one concern per call:
 
 ```bash
 octocode-awareness reflect record --agent-id "$OCTOCODE_AGENT_ID" \
@@ -42,9 +39,7 @@ Consume: `reflect developer-review --format markdown` or `query developer-review
 
 ## Housekeep (Cleanup)
 
-Ops: reversible `memory archive|restore`; reviewed `maintenance digest`, `lock prune`, `signal prune`, `memory forget`, `refinement delete`; automatic salience decay.
-
-Triggers (workboard-driven):
+Ops: reversible `memory archive|restore`; reviewed `maintenance digest`, `lock prune`, `signal prune`, `memory forget`, `refinement delete`; automatic salience decay. Triggers (workboard-driven):
 - Workboard shows items → drain memory-review/`stale_file_refs` rows; prune stale locks/signals the board flags.
 - Before finishing, only when sensors show pressure → `reflect mine-weakness` if failures repeated; `maintenance digest --dry-run` (reports pressure, prunes only expired/superseded/terminal rows).
 - End of session → prune expired/resolved rows only when workboard lists them; dry-run first.
@@ -64,9 +59,7 @@ SQLite is canonical. Use live `attend`/`query`/`memory recall` to read current s
 
 ## Skill Evolution (SkillOpt)
 
-Treat the skill folder as the **trainable external state** of a frozen agent. Accept only edits that improve a held-out check; keep rejected proposals as learning evidence (`reflect record --fix-harness`).
-
-Operator loop: `ATTEND → SET GOAL+KPI → RESEARCH → PLAN (bounded edits) → USER GATE → ACT → REVIEW → VALIDATE → REFLECT`
+Treat the skill folder as the **trainable external state** of a frozen agent. Accept only edits that improve a held-out check; keep rejected proposals as learning evidence (`reflect record --fix-harness`). Operator loop: `ATTEND → SET GOAL+KPI → RESEARCH → PLAN (bounded edits) → USER GATE → ACT → REVIEW → VALIDATE → REFLECT`
 
 - **Research**: inspect real `SKILL.md` folders; use `references/self-reflection-dialogue.md` for hard judgment.
 - **Improve/update**: READ→PLAN→EDIT→VERIFY; prefer patch-mode (one concept per round); smoke on a task outside the failure that motivated the edit; no write without user approval when skill is shared.
@@ -77,8 +70,7 @@ Hard rules:
 - Do **not** one-shot regenerate a working skill from a summary — read every behavior-affecting file first.
 - Do **not** treat a plausible diagnosis as an accepted edit — held-out validation is mandatory.
 - Do **not** dump trajectory logs into `SKILL.md` — procedural rules only; instance detail stays in memory/reflect.
-
-Stop when: one clear path exists; two high-rated candidates → pick one; three research angles add nothing; or a user gate is pending.
+- Stop when: one clear path exists; two high-rated candidates → pick one; three research angles add nothing; or a user gate is pending.
 
 ## Sequence
 

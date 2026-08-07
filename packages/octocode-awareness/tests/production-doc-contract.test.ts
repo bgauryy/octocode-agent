@@ -132,7 +132,7 @@ describe('production guidance contract', () => {
       'db-introspection.ts',
       'db-runtime.ts',
       'db-schema.ts',
-      'db-search.ts',
+      'db-maintenance.ts',
     ];
     const databaseSource = databaseFiles
       .map((file) => read(resolve(PACKAGE_ROOT, 'src', file)))

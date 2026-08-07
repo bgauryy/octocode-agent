@@ -1,7 +1,6 @@
 # Awareness Output Routing
 
-Use live output for current work and durable SQLite rows for cross-run state. SQLite
-is canonical; there is no generated wiki projection — only optional read-only query exports.
+Use live output for current work and durable SQLite rows for cross-run state. SQLite is canonical; no generated wiki projection — only optional read-only query exports.
 
 | Need | Output |
 |---|---|
@@ -13,18 +12,10 @@ is canonical; there is no generated wiki projection — only optional read-only 
 | Automation/human bulk | query JSON/CSV or HTML export; not prompt expansion |
 | Contracts | grouped `schema commands --compact`; `schema commands --all` for the flat catalog; exact `schema command <noun> [action]` for schema-backed routes |
 
-Compact `attend` caps paths/peers/bodies/IDs and keeps ≤1 row per actionable lane.
-Compact list defaults are bounded; explicit limits/full flags restore depth.
-`query workboard --limit N` caps each lane and can still be large. Normal hooks emit
-once. Request full rows only for the next decision. Load one `docs show` reference,
-never the whole set.
+Compact `attend` caps paths/peers/bodies/IDs, ≤1 row per actionable lane. Compact list defaults are bounded; explicit limits/full flags restore depth. `query workboard --limit N` caps each lane and can still be large. Normal hooks emit once. Request full rows only for the next decision. Load one `docs show` reference, never the whole set.
 
-Empty results stay empty. Lean rows omit absent optional fields and cap repeated
-tags/references with omitted counts. Filter server-side before raising limits.
+Empty results stay empty. Lean rows omit absent optional fields and cap repeated tags/references with omitted counts. Filter server-side before raising limits.
 
-`query all --format html` (and JSON/CSV) writes a read-only view under `.octocode/` only
-when explicitly requested; it is an export, never a canonical store, and may contain
-local paths. There is no automatic `.octocode/` generation.
+`query all --format html` (and JSON/CSV) writes a read-only view under `.octocode/` only when explicitly requested; it is an export, never a canonical store, and may contain local paths. There is no automatic `.octocode/` generation.
 
-Close the owning row: verify work, ack/resolve signals, complete refinements, supersede
-stale memory, or re-run cleanup/query.
+Close the owning row: verify work, ack/resolve signals, complete refinements, supersede stale memory, or re-run cleanup/query.

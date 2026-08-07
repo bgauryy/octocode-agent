@@ -1,0 +1,80 @@
+import assert from 'node:assert/strict';
+import { afterEach, test } from 'vitest';
+import { Type } from 'typebox';
+import type { ToolDefinition } from '../src/types.js';
+import {
+  setPlan, addStep, startStep, completeStep, clearPlan, getPlan, renderActivePlanAddendum,
+} from '../src/tools/active-plan.js';
+import { registerPlanTool } from '../src/tools/plan-tool.js';
+
+const CWD = '/tmp/plan-test-ws';
+afterEach(() => clearPlan(CWD));
+
+test('empty plan renders no addendum (zero token cost)', () => {
+  assert.equal(renderActivePlanAddendum(CWD), '');
+});
+
+test('setPlan marks the first step doing, rest todo', () => {
+  const steps = setPlan(CWD, ['a', 'b', 'c']);
+  assert.deepEqual(steps.map((s) => s.status), ['doing', 'todo', 'todo']);
+});
+
+test('complete advances the next todo to doing and counts done', () => {
+  setPlan(CWD, ['a', 'b', 'c']);
+  completeStep(CWD, 1);
+  const s = getPlan(CWD);
+  assert.equal(s[0]!.status, 'done');
+  assert.equal(s[1]!.status, 'doing'); // auto-advanced
+  assert.match(renderActivePlanAddendum(CWD), /1\/3 done/);
+});
+
+test('addStep appends a todo; start marks doing', () => {
+  setPlan(CWD, ['a']);
+  addStep(CWD, 'b');
+  startStep(CWD, 2);
+  assert.deepEqual(getPlan(CWD).map((s) => s.status), ['doing', 'doing']);
+});
+
+test('addendum shows markers and a next-step line', () => {
+  setPlan(CWD, ['first', 'second']);
+  const out = renderActivePlanAddendum(CWD);
+  assert.match(out, /^<active_plan>/);
+  assert.match(out, /\[~\] 1\. first/);
+  assert.match(out, /\[ \] 2\. second/);
+  assert.match(out, /next: first/);
+  assert.match(out, /<\/active_plan>$/);
+});
+
+test('clear removes the plan', () => {
+  setPlan(CWD, ['a']);
+  clearPlan(CWD);
+  assert.equal(getPlan(CWD).length, 0);
+  assert.equal(renderActivePlanAddendum(CWD), '');
+});
+
+test('long step text is truncated and the list is capped', () => {
+  const many = Array.from({ length: 60 }, (_v, i) => `step ${i}`);
+  const steps = setPlan(CWD, [...many, 'x'.repeat(400)]);
+  assert.ok(steps.length <= 40, 'capped');
+});
+
+// ─── tool wrapper ─────────────────────────────────────────────────────────────
+function loadTool(): ToolDefinition {
+  const tools = new Map<string, ToolDefinition>();
+  const pi = { registerTool: (d: ToolDefinition) => tools.set(d.name, d) };
+  registerPlanTool(pi, Type, new Set<string>(), (p, n, d) => { n.add(d.name); p.registerTool?.(d); });
+  return tools.get('plan')!;
+}
+
+test('plan tool set→complete→show drives the checklist and returns the addendum', async () => {
+  const tool = loadTool();
+  const ctx = { cwd: '/tmp/plan-tool-ws' } as unknown as import('../src/types.js').PiContext;
+  await tool.execute('id', { action: 'set', steps: ['one', 'two'] }, undefined, undefined, ctx);
+  const res = (await tool.execute('id', { action: 'complete', index: 1 }, undefined, undefined, ctx)) as {
+    content: Array<{ text: string }>; details: { steps: Array<{ status: string }>; addendum: string };
+  };
+  assert.match(res.content[0]!.text, /1\/2 done/);
+  assert.equal(res.details.steps[0]!.status, 'done');
+  assert.match(res.details.addendum, /<active_plan>/);
+  clearPlan('/tmp/plan-tool-ws');
+});

@@ -150,11 +150,17 @@ const MAX_VISIBLE_OUTPUT = 12000;
 export const MAX_AGENT_RECORDS = 50;
 export const DEFAULT_SPAWN_POLICY: SpawnPolicy = {
   maxActiveAgents: MAX_AGENT_RECORDS,
-  warningActiveAgents: 6,
+  // Research (DeepMind 180-config study) shows structured fan-out value plateaus around
+  // ~4 agents; warn early so the orchestrator keeps lanes small and coordination cheap.
+  warningActiveAgents: 4,
   requiredPacketSections: REQUIRED_PACKET_SECTIONS,
+  maxStepsPerWorker: 60,
 };
 const SPAWN_POLICY_MAX_ACTIVE_ENV = 'OCTOCODE_AGENT_MAX_ACTIVE';
 const SPAWN_POLICY_WARNING_ACTIVE_ENV = 'OCTOCODE_AGENT_WARNING_ACTIVE';
+const SPAWN_POLICY_MAX_STEPS_ENV = 'OCTOCODE_AGENT_MAX_STEPS';
+/** Idle worker is reapable after this long with no update (backstop for orphaned agents). */
+export const DEFAULT_IDLE_REAP_MS = 15 * 60_000;
 export const OCTOCODE_AGENTS_COMMAND_USAGE = '/octocode-agents [help|list|status|inspect <id>|kill <id>|kill-all|prune|hide]';
 export const OCTOCODE_AGENTS_COMMAND_COMPLETIONS = ['help', 'list', 'status', 'inspect ', 'kill ', 'kill-all', 'prune', 'hide'] as const;
 export const OCTOCODE_AGENTS_COMMAND_DESCRIPTIONS: Record<(typeof OCTOCODE_AGENTS_COMMAND_COMPLETIONS)[number], string> = {
@@ -414,9 +420,19 @@ function activeAgentCount(): number {
   return [...agents.values()].filter((record) => !isDroppable(record)).length;
 }
 
-function lowerIncludesAll(text: string, sections: string[]): string[] {
-  const lower = text.toLowerCase();
-  return sections.filter((section) => !lower.includes(section));
+/**
+ * A packet section counts as present only when it anchors a line as a label —
+ * e.g. "Goal:", "- Scope:", "## Ownership —", "**Acceptance:**" — optionally
+ * preceded by a bullet/heading marker and wrapped in bold. A bare mention
+ * inside prose ("there is no clear goal here") does not count: the packet
+ * policy exists to catch genuinely unstructured worker briefs, not to be
+ * satisfied by incidentally using the right words.
+ */
+function missingStructuredSections(text: string, sections: string[]): string[] {
+  return sections.filter((section) => {
+    const label = new RegExp(String.raw`^[ \t]*(?:[-*#>]+[ \t]*)*\**${section}\**[ \t]*[:—-]`, 'im');
+    return !label.test(text);
+  });
 }
 
 function readPositiveIntegerEnv(name: string): number | undefined {
@@ -430,11 +446,51 @@ function readPositiveIntegerEnv(name: string): number | undefined {
 function resolveSpawnPolicy(policy: SpawnPolicy): SpawnPolicy {
   const maxActiveAgents = readPositiveIntegerEnv(SPAWN_POLICY_MAX_ACTIVE_ENV) ?? policy.maxActiveAgents;
   const warningActiveAgents = readPositiveIntegerEnv(SPAWN_POLICY_WARNING_ACTIVE_ENV) ?? policy.warningActiveAgents;
+  const maxStepsPerWorker = readPositiveIntegerEnv(SPAWN_POLICY_MAX_STEPS_ENV) ?? policy.maxStepsPerWorker;
   return {
     ...policy,
     maxActiveAgents,
     warningActiveAgents: Math.min(warningActiveAgents, maxActiveAgents),
+    maxStepsPerWorker,
   };
+}
+
+/**
+ * Per-worker step (tool-call) circuit-breaker signal. Returns a warning once a worker's
+ * completed tool calls reach the budget so the parent can abort/steer a runaway worker.
+ */
+export function evaluateStepBudget(
+  steps: number,
+  maxSteps: number = DEFAULT_SPAWN_POLICY.maxStepsPerWorker,
+): { exceeded: boolean; warning?: string } {
+  if (!Number.isFinite(maxSteps) || maxSteps <= 0) return { exceeded: false };
+  if (steps >= maxSteps) {
+    return { exceeded: true, warning: `Worker exceeded step budget (${steps}/${maxSteps} tool calls) — consider abort/steer; a runaway worker burns tokens.` };
+  }
+  return { exceeded: false };
+}
+
+/**
+ * Classify lingering agents for cleanup. TERMINAL records (exited/failed/killed) are always
+ * safe to auto-remove; IDLE records are still reusable for follow-ups, so they are only
+ * flagged (nudge) once idle longer than idleMs — never auto-killed (preserves the follow-up
+ * model). Pure + injectable clock for testing.
+ */
+export function findReapableIdleAgents(
+  records: Array<{ id: string; status: AgentStatus; updatedAt: number }>,
+  opts: { idleMs?: number; now?: number } = {},
+): { terminal: string[]; idle: string[] } {
+  const idleMs = opts.idleMs ?? DEFAULT_IDLE_REAP_MS;
+  const now = opts.now ?? Date.now();
+  const terminalStatuses: AgentStatus[] = ['exited', 'failed', 'killed'];
+  const terminal: string[] = [];
+  const idle: string[] = [];
+  for (const r of records) {
+    const staleFor = now - r.updatedAt;
+    if (terminalStatuses.includes(r.status)) terminal.push(r.id);
+    else if (r.status === 'idle' && staleFor >= idleMs) idle.push(r.id);
+  }
+  return { terminal, idle };
 }
 
 function looksLikeProviderScopedModel(model: string): boolean {
@@ -456,7 +512,7 @@ export function evaluateSpawnPolicy(params: SpawnAgentParams, activeCount = acti
     warnings.push(`High worker fan-out: ${activeCount}/${effectivePolicy.maxActiveAgents} active agents already exist.`);
   }
   const task = buildInitialPrompt(params);
-  const missingSections = lowerIncludesAll(task, effectivePolicy.requiredPacketSections);
+  const missingSections = missingStructuredSections(task, effectivePolicy.requiredPacketSections);
   if (missingSections.length > 0) {
     warnings.push(`Worker packet is missing recommended section(s): ${missingSections.join(', ')}.`);
   }
@@ -552,6 +608,13 @@ function refreshNormalizedResult(record: AgentRecord): void {
   const output = record.lastOutput || record.stderr || record.error || '';
   record.normalizedResult = normalizeWorkerOutput(output);
   record.recoveryRisk = evaluateWorkerRecoveryRisk(output);
+  // Step-budget circuit-breaker: surface a warning when a worker's completed tool calls
+  // reach the budget, so the parent can abort/steer a runaway worker.
+  const steps = record.toolCalls.filter((call) => call.status !== 'running').length;
+  const budget = evaluateStepBudget(steps, resolveSpawnPolicy(DEFAULT_SPAWN_POLICY).maxStepsPerWorker);
+  if (budget.exceeded && budget.warning && !record.recoveryRisk.warnings.includes(budget.warning)) {
+    record.recoveryRisk.warnings.push(budget.warning);
+  }
   if (record.normalizedResult.status !== 'unknown' && record.normalizedResult.status !== previousStatus) {
     pushLedgerEvent(record, 'handback', `worker handback: ${record.normalizedResult.status}`, record.normalizedResult);
   }
@@ -731,6 +794,14 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
         ...process.env,
         [SUBAGENT_ENV_VAR]: '1',
         [AWARENESS_AGENT_ENV_VAR]: awarenessAgentId,
+        // getPiInvocation() re-executes process.argv[1], which for any octocode-agent
+        // process is bin/octocode-agent.mjs. Left unset, a worker spawned from a
+        // parent running in the default SDK-embed mode would inherit that mode and
+        // re-enter launchWithSdk() — whose arg parser does not understand
+        // --tools/--exclude-tools/-e/--append-system-prompt/--skill, silently
+        // dropping the curated allowlist buildPiArgs() just built. Force the
+        // subprocess path, which forwards argv verbatim to the real Pi CLI.
+        OCTOCODE_LAUNCHER_MODE: 'subprocess',
       },
     });
   } catch (error) {
@@ -822,7 +893,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   return record;
 }
 
-function summarizeAgent(record: AgentRecord) {
+function summarizeAgent(record: AgentRecord, opts: { full?: boolean } = {}) {
   refreshNormalizedResult(record);
   const normalized = record.normalizedResult;
   const summaryText = normalized?.result || normalized?.next || record.lastOutput || record.stderr || record.error || '';
@@ -846,8 +917,8 @@ function summarizeAgent(record: AgentRecord) {
     normalizedResult: normalized,
     recoveryRisk: record.recoveryRisk,
     policyWarnings: [...record.policyWarnings],
-    ledgerEvents: record.ledgerEvents.slice(-10),
-    toolCalls: record.toolCalls.slice(-10),
+    ledgerEvents: opts.full ? [...record.ledgerEvents] : record.ledgerEvents.slice(-10),
+    toolCalls: opts.full ? [...record.toolCalls] : record.toolCalls.slice(-10),
     activeTool: [...record.toolCalls].reverse().find((call) => call.status === 'running')?.toolName,
   };
 }
@@ -916,7 +987,7 @@ function getAgent(agentId: unknown): AgentRecord {
   return record;
 }
 
-function waitForAgent(record: AgentRecord, timeoutMs: number): Promise<void> {
+export function waitForAgent(record: AgentRecord, timeoutMs: number): Promise<void> {
   if (isTerminal(record)) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const onDone = () => {
@@ -940,7 +1011,7 @@ function agentRiskBadge(summary: ReturnType<typeof summarizeAgent>, theme?: PiTh
 }
 
 function renderAgentResult(records: AgentRecord[], header: string): ToolCallResult {
-  const summaries = records.map(summarizeAgent);
+  const summaries = records.map((record) => summarizeAgent(record));
   const lines: string[] = [`${header} (${records.length}):`];
   for (const s of summaries) {
     const exit = s.exitCode !== undefined ? ` (exit ${s.exitCode})` : '';
@@ -1056,7 +1127,7 @@ function formatOctocodeAgentsHelp(): string {
     'Commands:',
     '- help — show this command reference',
     '- list/status — show the ledger and refresh footer/widget state',
-    '- inspect <id-or-prefix> — show full worker state, handback, evidence, recent events, and stderr',
+    '- inspect <id-or-prefix> [full] — show worker state, handback, evidence, recent events, and stderr; "full" returns the complete tool-call/ledger/evidence history instead of the truncated preview',
     '- kill <id-or-prefix> — stop one live worker',
     '- kill-all — stop every live worker',
     '- prune — remove completed idle records from the in-memory ledger',
@@ -1067,8 +1138,10 @@ function formatOctocodeAgentsHelp(): string {
 }
 
 export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext): Promise<void> {
-  const [actionRaw, targetRaw] = args.trim().split(/\s+/, 2);
-  const action = (actionRaw || 'list').toLowerCase();
+  const parts = args.trim().split(/\s+/).filter(Boolean);
+  const action = (parts[0] || 'list').toLowerCase();
+  const targetRaw = parts[1];
+  const full = parts.slice(2).some((flag) => /^(?:-v|--verbose|--full|full)$/i.test(flag));
   if (action === 'help' || action === '--help' || action === '-h' || action === '?') {
     ctx?.ui?.notify?.(formatOctocodeAgentsHelp(), 'info');
     return;
@@ -1096,7 +1169,7 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
       return;
     }
     refreshAgentLedgerUi(ctx);
-    ctx?.ui?.notify?.(renderSingleAgentResult(record, 'Agent status').content[0]?.text ?? '', 'info');
+    ctx?.ui?.notify?.(renderSingleAgentResult(record, 'Agent status', { full }).content[0]?.text ?? '', 'info');
     return;
   }
   if (action === 'kill-all') {
@@ -1125,9 +1198,9 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
   ctx?.ui?.notify?.(formatAgentLedgerDetails(), 'info');
 }
 
-function renderSingleAgentResult(record: AgentRecord, header: string): ToolCallResult {
+function renderSingleAgentResult(record: AgentRecord, header: string, opts: { full?: boolean } = {}): ToolCallResult {
   const output = truncateUserVisibleToolOutput(record.lastOutput || record.stderr || record.error || '', MAX_VISIBLE_OUTPUT);
-  const summary = summarizeAgent(record);
+  const summary = summarizeAgent(record, opts);
   const elapsed = formatElapsed(record.startedAt);
   const statusParts = [
     `status: ${record.status}`,
@@ -1140,14 +1213,15 @@ function renderSingleAgentResult(record: AgentRecord, header: string): ToolCallR
     `agentId: ${record.id}`,
     statusParts,
   ];
-  const toolSummary = formatToolCalls(record.toolCalls);
+  const toolSummary = formatToolCalls(record.toolCalls, opts.full ? record.toolCalls.length : 3);
   if (toolSummary) contentParts.push(`tools: ${toolSummary}`);
   if (summary.policyWarnings?.length) contentParts.push(`policy: ${summary.policyWarnings.join(' | ')}`);
   if (summary.normalizedResult?.status && summary.normalizedResult.status !== 'unknown') {
     contentParts.push(`handback: ${summary.normalizedResult.status} · confidence: ${summary.normalizedResult.confidence}`);
     if (summary.normalizedResult.result) contentParts.push(`result: ${summary.normalizedResult.result}`);
     if (summary.normalizedResult.evidence.length > 0) {
-      contentParts.push(`evidence: ${summary.normalizedResult.evidence.slice(0, 3).join('; ')}`);
+      const evidenceLimit = opts.full ? summary.normalizedResult.evidence.length : 3;
+      contentParts.push(`evidence: ${summary.normalizedResult.evidence.slice(0, evidenceLimit).join('; ')}`);
     }
     if (summary.normalizedResult.verification) contentParts.push(`verification: ${summary.normalizedResult.verification}`);
     if (summary.normalizedResult.next) contentParts.push(`next: ${summary.normalizedResult.next}`);
@@ -1225,6 +1299,7 @@ export function registerAgentTools(
       'Before spawning, break the request into explicit subtasks and delegate only one independent, bounded subtask per worker.',
       'For useful parallelism, spawn all independent workers first, then use AgentMessage action:"wait" or action:"status" to collect results.',
       'Workers inherit no parent conversation but share cwd, files, and environment-backed services. Pass a bounded request packet and assign disjoint paths for any writes.',
+      'Structure the task as a labeled packet — lines starting with "Goal:", "Context:", "Scope:", "Ownership:", "Acceptance:", "Return:" (any of "-"/"—"/":" as separator, headings/bullets OK). A real gate checks for these labels, not just the words, and returns a [POLICY] warning on the spawn response when any are missing.',
       'spawnAgent defaults to resourceMode:"lean". Use resourceMode:"octocode" only when the worker needs Octocode extension tools.',
       'Use `pi -ne --list-models [search]` as the source of truth for the user-configured model table; do not read hardcoded config paths.',
       'Pass model for each worker: fastest capable configured model for small tasks, balanced coding/reasoning model for medium tasks, strongest configured model for large/high-risk work.',
@@ -1314,9 +1389,14 @@ export function registerAgentTools(
       ),
       timeoutMs: Type.Optional(Type.Integer({ description: 'wait timeout in milliseconds. Default 300000.' })),
       remove: Type.Optional(Type.Boolean({ description: 'After kill, remove the agent record from the registry.' })),
+      full: Type.Optional(Type.Boolean({
+        description:
+          'For status/wait/kill/abort: return the complete tool-call and ledger history (up to the retained cap \u2014 ~200 tool calls, 80 ledger events, 8 evidence anchors) instead of the truncated preview (last 3 tool calls, last 10 ledger entries, first 3 evidence anchors). Use before trusting a worker\'s claim, not on every call \u2014 the preview is cheaper.',
+      })),
     }),
     async execute(_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal, _onUpdate?: unknown, ctx?: PiContext) {
       const action = (params['action'] as MessageAction | undefined) ?? 'status';
+      const renderOpts = { full: params['full'] === true };
       if (action === 'list') {
         refreshAgentLedgerUi(ctx);
         return renderAgentResult([...agents.values()], 'Spawned agents');
@@ -1325,7 +1405,7 @@ export function registerAgentTools(
       const record = getAgent(params['agentId']);
       if (action === 'status') {
         refreshAgentLedgerUi(ctx);
-        return renderSingleAgentResult(record, 'Agent status');
+        return renderSingleAgentResult(record, 'Agent status', renderOpts);
       }
 
       if (action === 'wait') {
@@ -1335,7 +1415,7 @@ export function registerAgentTools(
         } finally {
           if (ctx?.hasUI) ctx.ui?.setStatus?.('agent-wait', undefined);
         }
-        const waitResult = renderSingleAgentResult(record, 'Agent turn completed');
+        const waitResult = renderSingleAgentResult(record, 'Agent turn completed', renderOpts);
         if (params['remove'] === true) agents.delete(record.id);
         refreshAgentLedgerUi(ctx);
         return waitResult;
@@ -1343,7 +1423,7 @@ export function registerAgentTools(
 
       if (action === 'kill') {
         killAgent(record);
-        const result = renderSingleAgentResult(record, 'Agent killed');
+        const result = renderSingleAgentResult(record, 'Agent killed', renderOpts);
         if (params['remove'] === true) agents.delete(record.id);
         refreshAgentLedgerUi(ctx);
         return result;
@@ -1355,7 +1435,7 @@ export function registerAgentTools(
           touch(record);
         }
         refreshAgentLedgerUi(ctx);
-        return renderSingleAgentResult(record, 'Agent aborted');
+        return renderSingleAgentResult(record, 'Agent aborted', renderOpts);
       }
 
       const message = String(params['message'] ?? '').trim();
@@ -1381,7 +1461,7 @@ export function registerAgentTools(
         });
       }
       refreshAgentLedgerUi(ctx);
-      return renderSingleAgentResult(record, 'Agent messaged');
+      return renderSingleAgentResult(record, 'Agent messaged', renderOpts);
     },
     renderCall(args: unknown, theme?: PiTheme) {
       const p = args as { action?: string; agentId?: string; message?: string };

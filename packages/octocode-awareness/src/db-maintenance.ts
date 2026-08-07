@@ -1,3 +1,8 @@
+/**
+ * FTS5 index maintenance, memory-reference bookkeeping, and expired-lock
+ * eviction. NOT the query/filter layer — for scoping/filtering/pagination
+ * helpers used across tables, see repo-scope.ts and the repo-*.ts row builders.
+ */
 import { parseJsonList, utcNow } from './helpers.js';
 import type { MemoryRow } from './types.js';
 import { DatabaseSync } from './db-runtime.js';

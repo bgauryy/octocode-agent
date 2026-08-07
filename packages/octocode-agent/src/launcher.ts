@@ -191,21 +191,25 @@ export function buildLaunchEnv(
  */
 export function parseInvocation(argv: string[] = []): ParsedInvocation {
   const first = argv[0];
+  const json = argv.includes('--json');
   if (first === 'update' || first === '--update') {
     const target = argv[1] === 'core' ? 'core' : 'platform';
     return { command: 'update', target };
   }
   if (first === '--version' || first === '-v' || first === 'version') {
-    return { command: 'version' };
+    return { command: 'version', json };
   }
   if (first === '--agent-help' || first === '--help' || first === '-h' || first === 'help') {
     return { command: 'help' };
   }
-  if (first === 'config') return { command: 'config', args: argv.slice(1) };
-  if (first === 'setup') return { command: 'setup', args: argv.slice(1) };
-  if (first === 'auth') return { command: 'auth', args: argv.slice(1) };
-  if (first === 'models') return { command: 'models' };
-  if (first === 'sessions') return { command: 'sessions' };
+  if (first === 'completion') {
+    return { command: 'completion', shell: argv[1] };
+  }
+  if (first === 'config') return { command: 'config', args: argv.slice(1), json };
+  if (first === 'setup') return { command: 'setup', args: argv.slice(1), json };
+  if (first === 'auth') return { command: 'auth', args: argv.slice(1), json };
+  if (first === 'models') return { command: 'models', json };
+  if (first === 'sessions') return { command: 'sessions', json };
   return { command: 'run', rest: argv };
 }
 
@@ -254,6 +258,28 @@ export function versionReport(env: NodeJS.ProcessEnv = process.env): string {
   ].join('\n');
 }
 
+export interface VersionData {
+  launcherVersion: string | null;
+  core: { package: string; version: string | null };
+  pi: { package: string; version: string | null; localBinPath: string | null };
+  launchMode: 'sdk-embed' | 'subprocess';
+}
+
+/** JSON-serializable companion to versionReport — same underlying facts, structured. */
+export function versionData(env: NodeJS.ProcessEnv = process.env): VersionData {
+  const effectivePkg = getEffectivePiPackage(env);
+  return {
+    launcherVersion: launcherVersion(),
+    core: { package: CORE_PACKAGE, version: readPackageVersion(CORE_PACKAGE) },
+    pi: {
+      package: effectivePkg,
+      version: env.OCTOCODE_PI_BIN ? null : readPackageVersion(effectivePkg),
+      localBinPath: env.OCTOCODE_PI_BIN ?? null,
+    },
+    launchMode: env.OCTOCODE_LAUNCHER_MODE === 'subprocess' ? 'subprocess' : 'sdk-embed',
+  };
+}
+
 export function helpReport(): string {
   return [
     'octocode-agent — self-working coding agent (Pi + Octocode harness core)',
@@ -267,7 +293,11 @@ export function helpReport(): string {
     '  octocode-agent auth           Show API key configuration instructions',
     '  octocode-agent models         Show model configuration instructions',
     '  octocode-agent sessions       Show session storage location and tips',
+    '  octocode-agent completion <bash|zsh|fish>  Print a shell completion script',
     '  octocode-agent --version      Print launcher, core, and Pi host versions',
+    '',
+    'Add --json to config/setup/auth/models/sessions/--version for machine-readable output:',
+    '  octocode-agent config --json',
     '',
     `The core (${CORE_PACKAGE}) carries the prompt, skills, tools, and memory.`,
     'The core is installed as a platform dependency. Refresh it without reinstalling:',
@@ -324,6 +354,56 @@ export function configReport(env: NodeJS.ProcessEnv = process.env): string {
   ].join('\n');
 }
 
+export interface ConfigData {
+  launchMode: 'sdk-embed' | 'subprocess';
+  octocodeHome: string;
+  octocodeHomeHasAuth: boolean;
+  piAgentDir: string;
+  piAgentDirHasAuth: boolean;
+  core: { spec: string; version: string | null };
+  pi: { bin: string | null; source: PiBinInfo['source'] | null; version: string | null };
+  launcherVersion: string | null;
+  apiKeysSet: string[];
+  env: {
+    OCTOCODE_HOME: string | null;
+    OCTOCODE_AGENT_DIR: string | null;
+    OCTOCODE_LAUNCHER_MODE: string | null;
+    OCTOCODE_PI_BIN: string | null;
+    OCTOCODE_PI_PACKAGE: string | null;
+    OCTOCODE_AGENT_EXTENSION_SPEC: string | null;
+  };
+}
+
+/** JSON-serializable companion to configReport — same underlying facts, structured. */
+export function configData(env: NodeJS.ProcessEnv = process.env): ConfigData {
+  const home = getOctocodeHome(env);
+  const piAgentDir = path.join(os.homedir(), '.pi', 'agent');
+  const piInfo = resolvePiBin(env);
+  return {
+    launchMode: env.OCTOCODE_LAUNCHER_MODE === 'subprocess' ? 'subprocess' : 'sdk-embed',
+    octocodeHome: home,
+    octocodeHomeHasAuth: fs.existsSync(path.join(home, 'auth.json')),
+    piAgentDir,
+    piAgentDirHasAuth: fs.existsSync(path.join(piAgentDir, 'auth.json')),
+    core: { spec: resolveCoreSpec(env), version: readPackageVersion(CORE_PACKAGE) },
+    pi: {
+      bin: piInfo?.bin ?? null,
+      source: piInfo?.source ?? null,
+      version: readPackageVersion(getEffectivePiPackage(env)),
+    },
+    launcherVersion: launcherVersion(),
+    apiKeysSet: presentApiKeys(env),
+    env: {
+      OCTOCODE_HOME: env.OCTOCODE_HOME ?? null,
+      OCTOCODE_AGENT_DIR: env.OCTOCODE_AGENT_DIR ?? null,
+      OCTOCODE_LAUNCHER_MODE: env.OCTOCODE_LAUNCHER_MODE ?? null,
+      OCTOCODE_PI_BIN: env.OCTOCODE_PI_BIN ?? null,
+      OCTOCODE_PI_PACKAGE: env.OCTOCODE_PI_PACKAGE ?? null,
+      OCTOCODE_AGENT_EXTENSION_SPEC: env.OCTOCODE_AGENT_EXTENSION_SPEC ?? null,
+    },
+  };
+}
+
 export function setupReport(env: NodeJS.ProcessEnv = process.env): string {
   const home = getOctocodeHome(env);
   const keys = presentApiKeys(env);
@@ -370,6 +450,41 @@ export function setupReport(env: NodeJS.ProcessEnv = process.env): string {
   ].join('\n');
 }
 
+export interface SetupCheck {
+  name: 'pi-host' | 'core' | 'api-keys';
+  ok: boolean;
+  detail: string;
+}
+
+export interface SetupData {
+  checks: SetupCheck[];
+  allGood: boolean;
+  octocodeHome: string;
+  sessionsDir: string;
+}
+
+/** JSON-serializable companion to setupReport — same checks, structured. */
+export function setupData(env: NodeJS.ProcessEnv = process.env): SetupData {
+  const keys = presentApiKeys(env);
+  const coreVersion = readPackageVersion(CORE_PACKAGE);
+  const piVersion = readPackageVersion(getEffectivePiPackage(env));
+  const checks: SetupCheck[] = [
+    { name: 'pi-host', ok: Boolean(piVersion), detail: piVersion ?? 'not found' },
+    { name: 'core', ok: Boolean(coreVersion), detail: coreVersion ?? 'not found' },
+    {
+      name: 'api-keys',
+      ok: keys.length > 0,
+      detail: keys.length > 0 ? keys.join(', ') : 'none detected',
+    },
+  ];
+  return {
+    checks,
+    allGood: checks.every((c) => c.ok),
+    octocodeHome: getOctocodeHome(env),
+    sessionsDir: path.join(os.homedir(), '.pi', 'agent', 'sessions'),
+  };
+}
+
 export function authReport(env: NodeJS.ProcessEnv = process.env): string {
   const keys = presentApiKeys(env);
   const piAgentDir = path.join(os.homedir(), '.pi', 'agent');
@@ -404,6 +519,19 @@ export function authReport(env: NodeJS.ProcessEnv = process.env): string {
   ].join('\n');
 }
 
+export interface AuthData {
+  detectedKeys: string[];
+  authJsonPath: string;
+}
+
+/** JSON-serializable companion to authReport — the dynamic facts only (not the static option list). */
+export function authData(env: NodeJS.ProcessEnv = process.env): AuthData {
+  return {
+    detectedKeys: presentApiKeys(env),
+    authJsonPath: path.join(os.homedir(), '.pi', 'agent', 'auth.json'),
+  };
+}
+
 export function modelsReport(): string {
   return [
     'octocode-agent — model configuration',
@@ -433,6 +561,37 @@ export function modelsReport(): string {
   ].join('\n');
 }
 
+export interface ModelData {
+  id: string;
+  provider: string;
+  note: string;
+}
+
+export interface ModelsData {
+  commonModels: ModelData[];
+}
+
+/** JSON-serializable companion to modelsReport — the reference model list. */
+export function modelsData(): ModelsData {
+  return {
+    commonModels: [
+      { id: 'claude-opus-4-5', provider: 'anthropic', note: 'strongest; requires ANTHROPIC_API_KEY' },
+      { id: 'claude-sonnet-4-5', provider: 'anthropic', note: 'balanced' },
+      { id: 'gpt-4o', provider: 'openai', note: 'requires OPENAI_API_KEY' },
+      { id: 'gemini-2.5-pro', provider: 'google', note: 'requires GEMINI_API_KEY' },
+    ],
+  };
+}
+
+export interface SessionsData {
+  sessionsDir: string;
+}
+
+/** JSON-serializable companion to sessionsReport — the dynamic fact (sessions dir). */
+export function sessionsData(): SessionsData {
+  return { sessionsDir: path.join(os.homedir(), '.pi', 'agent', 'sessions') };
+}
+
 export function sessionsReport(): string {
   const piSessions = path.join(os.homedir(), '.pi', 'agent', 'sessions');
   return [
@@ -458,6 +617,107 @@ export function sessionsReport(): string {
     '  /compact      Compact long conversation history',
     '  /fork         Fork the conversation at a specific point',
   ].join('\n');
+}
+
+// ── Shell completion ────────────────────────────────────────────────────────────
+
+export const COMPLETION_SHELLS = ['bash', 'zsh', 'fish'] as const;
+export type CompletionShell = (typeof COMPLETION_SHELLS)[number];
+
+/** Reserved subcommands, kept in sync with parseInvocation — single source for completion generation. */
+const SUBCOMMANDS = ['update', 'config', 'setup', 'auth', 'models', 'sessions', 'completion'] as const;
+const UPDATE_TARGETS = ['core', 'platform'] as const;
+
+function bashCompletionScript(): string {
+  return [
+    '_octocode_agent_completions() {',
+    '  local cur prev',
+    '  cur="${COMP_WORDS[COMP_CWORD]}"',
+    '  prev="${COMP_WORDS[COMP_CWORD-1]}"',
+    '  if [[ "$prev" == "update" ]]; then',
+    `    COMPREPLY=($(compgen -W "${UPDATE_TARGETS.join(' ')}" -- "$cur"))`,
+    '    return',
+    '  fi',
+    '  if [[ "$prev" == "completion" ]]; then',
+    `    COMPREPLY=($(compgen -W "${COMPLETION_SHELLS.join(' ')}" -- "$cur"))`,
+    '    return',
+    '  fi',
+    `  COMPREPLY=($(compgen -W "${SUBCOMMANDS.join(' ')} --version --help --json" -- "$cur"))`,
+    '}',
+    'complete -F _octocode_agent_completions octocode-agent',
+    '',
+  ].join('\n');
+}
+
+function zshCompletionScript(): string {
+  return [
+    '#compdef octocode-agent',
+    '_octocode_agent() {',
+    '  local -a subcommands',
+    '  subcommands=(',
+    "    'update:Self-update the platform (or \\`update core\\` to refresh the core extension)'",
+    "    'config:Show current configuration and diagnostics'",
+    "    'setup:First-run setup guide'",
+    "    'auth:Show API key configuration instructions'",
+    "    'models:Show model configuration instructions'",
+    "    'sessions:Show session storage location and tips'",
+    "    'completion:Print a shell completion script'",
+    '  )',
+    '  if (( CURRENT == 3 )); then',
+    '    case ${words[2]} in',
+    `      update) _values 'target' ${UPDATE_TARGETS.join(' ')}; return ;;`,
+    `      completion) _values 'shell' ${COMPLETION_SHELLS.join(' ')}; return ;;`,
+    '    esac',
+    '  fi',
+    "  _describe 'command' subcommands",
+    "  _arguments '--json[machine-readable output]' '--version[print version info]' '--help[show help]'",
+    '}',
+    '_octocode_agent',
+    '',
+  ].join('\n');
+}
+
+function fishCompletionScript(): string {
+  const lines = [
+    'complete -c octocode-agent -f',
+    'complete -c octocode-agent -n "__fish_use_subcommand" -l version -d "Print launcher, core, and Pi host versions"',
+    'complete -c octocode-agent -n "__fish_use_subcommand" -l help -d "Show help"',
+  ];
+  const descriptions: Record<(typeof SUBCOMMANDS)[number], string> = {
+    update: 'Self-update the platform or core',
+    config: 'Show current configuration and diagnostics',
+    setup: 'First-run setup guide',
+    auth: 'Show API key configuration instructions',
+    models: 'Show model configuration instructions',
+    sessions: 'Show session storage location and tips',
+    completion: 'Print a shell completion script',
+  };
+  for (const name of SUBCOMMANDS) {
+    lines.push(
+      `complete -c octocode-agent -n "__fish_use_subcommand" -a ${name} -d "${descriptions[name]}"`,
+    );
+  }
+  lines.push(
+    `complete -c octocode-agent -n "__fish_seen_subcommand_from update" -a "${UPDATE_TARGETS.join(' ')}"`,
+    `complete -c octocode-agent -n "__fish_seen_subcommand_from completion" -a "${COMPLETION_SHELLS.join(' ')}"`,
+    'complete -c octocode-agent -n "__fish_seen_subcommand_from config setup auth models sessions" -l json -d "Machine-readable output"',
+    '',
+  );
+  return lines.join('\n');
+}
+
+/** Generates a shell completion script for the given shell name, or null when unsupported. */
+export function completionScript(shell: string): string | null {
+  switch (shell) {
+    case 'bash':
+      return bashCompletionScript();
+    case 'zsh':
+      return zshCompletionScript();
+    case 'fish':
+      return fishCompletionScript();
+    default:
+      return null;
+  }
 }
 
 // ── Side-effecting runners ────────────────────────────────────────────────────
@@ -547,30 +807,42 @@ export async function runUpdate(
 export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<number> {
   const out = deps.out ?? console.log;
   const env = deps.env ?? process.env;
-  const { command, target, rest } = parseInvocation(argv);
+  const { command, target, shell, json, rest } = parseInvocation(argv);
 
   switch (command) {
     case 'version':
-      out(versionReport(env));
+      out(json ? JSON.stringify(versionData(env), null, 2) : versionReport(env));
       return 0;
     case 'help':
       out(helpReport());
       return 0;
     case 'config':
-      out(configReport(env));
+      out(json ? JSON.stringify(configData(env), null, 2) : configReport(env));
       return 0;
     case 'setup':
-      out(setupReport(env));
+      out(json ? JSON.stringify(setupData(env), null, 2) : setupReport(env));
       return 0;
     case 'auth':
-      out(authReport(env));
+      out(json ? JSON.stringify(authData(env), null, 2) : authReport(env));
       return 0;
     case 'models':
-      out(modelsReport());
+      out(json ? JSON.stringify(modelsData(), null, 2) : modelsReport());
       return 0;
     case 'sessions':
-      out(sessionsReport());
+      out(json ? JSON.stringify(sessionsData(), null, 2) : sessionsReport());
       return 0;
+    case 'completion': {
+      const script = completionScript(shell ?? '');
+      if (!script) {
+        out(
+          `Unknown shell "${shell ?? ''}". Supported: ${COMPLETION_SHELLS.join(', ')}.\n` +
+            `Usage: octocode-agent completion <${COMPLETION_SHELLS.join('|')}>`,
+        );
+        return 1;
+      }
+      out(script);
+      return 0;
+    }
     case 'update':
       return runUpdate((target ?? 'platform') as 'core' | 'platform', deps);
     case 'run':

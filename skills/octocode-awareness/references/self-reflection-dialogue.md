@@ -1,8 +1,6 @@
 # Self-Reflection Dialogue
 
-Use role dialogue when an important, fuzzy, risky, or creative idea needs challenge.
-Skip routine edits, status checks, and obvious verification.
-Use `references/homeostatic-loop.md` (subagent rubber-duck section) for a real second agent; loop closure lives in `references/learning-loop.md`.
+Use role dialogue when an important, fuzzy, risky, or creative idea needs challenge. Skip routine edits, status checks, and obvious verification. For a real second agent, see `references/homeostatic-loop.md` (subagent rubber-duck section); loop closure lives in `references/learning-loop.md`.
 
 ## Pattern
 
@@ -23,13 +21,9 @@ Use two temporary lenses. Add a third only for a distinct user-approved job such
 
 ## Awareness Form
 
-Run `attend` before a hard judgment. For post-task learning, `reflect record --duo` returns advisory supporter/skeptic prompts; it does not spawn a subagent, store role output, or score it.
+Run `attend` before a hard judgment. For post-task learning, `reflect record --duo` returns advisory supporter/skeptic prompts; it does not spawn a subagent, store role output, or score it. Use internal roles for a quick bounded challenge; use a real rubber-duck subagent when independent source inspection, restatement, or assumption checking materially reduces risk.
 
-Use internal roles for a quick bounded challenge. Use a real rubber-duck subagent when independent source inspection, restatement, or assumption checking materially reduces risk.
-
-Use the prompts for one pass: name what improved, one remaining uncertainty, and one concrete check. Structured eval failures belong in `--eval-failure-json` with a stable `failure_signature`; recurring patterns belong in `reflect mine-weakness`.
-
-Publish a signal/refinement only when another run needs the unresolved question. Record memory only after synthesis is reusable, scoped, and verified.
+Use the prompts for one pass: name what improved, one remaining uncertainty, and one concrete check. Structured eval failures belong in `--eval-failure-json` with a stable `failure_signature`; recurring patterns belong in `reflect mine-weakness`. Publish a signal/refinement only when another run needs the unresolved question. Record memory only after synthesis is reusable, scoped, and verified.
 
 ## Guardrails
 

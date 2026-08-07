@@ -30,11 +30,16 @@ export type Command =
   | 'models'
   | 'sessions'
   | 'update'
+  | 'completion'
   | 'run';
 
 export interface ParsedInvocation {
   command: Command;
   target?: 'core' | 'platform';
+  /** Shell name for `completion <shell>`. */
+  shell?: string;
+  /** Whether --json was passed (report commands only). */
+  json?: boolean;
   args?: string[];
   rest?: string[];
 }
@@ -75,7 +80,9 @@ export interface LaunchDeps extends SdkDeps {
 // ── SDK arg parser ─────────────────────────────────────────────────────────────
 
 export interface ParsedSdkArgs {
-  mode: 'interactive' | 'print' | 'rpc' | 'json';
+  mode: 'interactive' | 'print' | 'rpc';
+  /** Output format for print mode (ignored for 'interactive'/'rpc'). Mirrors upstream pi's --mode text|json. */
+  outputFormat: 'text' | 'json';
   continue: boolean;
   noSession: boolean;
   name?: string;

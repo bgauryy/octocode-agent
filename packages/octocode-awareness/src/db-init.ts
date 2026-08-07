@@ -11,7 +11,7 @@ import {
   withSqliteBusyRetry,
 } from './db-runtime.js';
 import { FTS_SCHEMA_DDL, HOOK_RECEIPTS_DDL, SCHEMA_DDL, SCHEMA_INDEX_DDL } from './db-schema.js';
-import { hasFts, rebuildFts } from './db-search.js';
+import { hasFts, rebuildFts } from './db-maintenance.js';
 
 export function initDb(db: DatabaseSync): void {
   initializeDb(db);

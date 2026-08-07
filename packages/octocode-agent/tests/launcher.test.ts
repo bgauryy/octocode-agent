@@ -25,6 +25,14 @@ import {
   readPackageVersion,
   LEAN_EXCLUDE_TOOLS,
   launcherRoot,
+  versionData,
+  configData,
+  setupData,
+  authData,
+  modelsData,
+  sessionsData,
+  completionScript,
+  COMPLETION_SHELLS,
 } from '../src/launcher.js';
 import type { LaunchDeps, PiBinInfo } from '../src/types.js';
 
@@ -140,6 +148,24 @@ describe('parseInvocation', () => {
     expect(parseInvocation(['models']).command).toBe('models');
     expect(parseInvocation(['sessions']).command).toBe('sessions');
   });
+
+  it('detects --json for every report command and defaults to falsy without it', () => {
+    expect(parseInvocation(['config', '--json']).json).toBe(true);
+    expect(parseInvocation(['setup', '--json']).json).toBe(true);
+    expect(parseInvocation(['auth', '--json']).json).toBe(true);
+    expect(parseInvocation(['models', '--json']).json).toBe(true);
+    expect(parseInvocation(['sessions', '--json']).json).toBe(true);
+    expect(parseInvocation(['--version', '--json']).json).toBe(true);
+    expect(parseInvocation(['config']).json).toBeFalsy();
+    expect(parseInvocation(['version']).json).toBeFalsy();
+  });
+
+  it('routes completion <shell>', () => {
+    expect(parseInvocation(['completion', 'bash'])).toEqual({ command: 'completion', shell: 'bash' });
+    expect(parseInvocation(['completion', 'zsh']).shell).toBe('zsh');
+    expect(parseInvocation(['completion', 'fish']).shell).toBe('fish');
+    expect(parseInvocation(['completion']).shell).toBeUndefined();
+  });
 });
 
 // ── buildLaunchEnv ─────────────────────────────────────────────────────────────
@@ -221,6 +247,34 @@ describe('versionReport', () => {
   });
 });
 
+// ── versionData (--json companion) ───────────────────────────────────────────────
+
+describe('versionData', () => {
+  it('reports the same underlying facts as versionReport, structured', () => {
+    const data = versionData({});
+    expect(data.core.package).toBe(CORE_PACKAGE);
+    expect(data.launchMode).toBe('sdk-embed');
+  });
+
+  it('shows subprocess launch mode when forced', () => {
+    expect(versionData({ OCTOCODE_LAUNCHER_MODE: 'subprocess' }).launchMode).toBe('subprocess');
+  });
+
+  it('shows override pi package name when OCTOCODE_PI_PACKAGE is set', () => {
+    expect(versionData({ OCTOCODE_PI_PACKAGE: '@myorg/custom-pi' }).pi.package).toBe('@myorg/custom-pi');
+  });
+
+  it('reports the local binary path and a null version when OCTOCODE_PI_BIN is set', () => {
+    const data = versionData({ OCTOCODE_PI_BIN: '/usr/local/bin/pi' });
+    expect(data.pi.localBinPath).toBe('/usr/local/bin/pi');
+    expect(data.pi.version).toBeNull();
+  });
+
+  it('output is JSON-serializable', () => {
+    expect(() => JSON.stringify(versionData({}))).not.toThrow();
+  });
+});
+
 // ── helpReport ─────────────────────────────────────────────────────────────────
 
 describe('helpReport', () => {
@@ -260,6 +314,35 @@ describe('configReport', () => {
   });
 });
 
+// ── configData (--json companion) ────────────────────────────────────────────────
+
+describe('configData', () => {
+  it('reports the same underlying facts as configReport, structured', () => {
+    const data = configData({});
+    expect(data.core.spec).toBeTruthy();
+    expect(typeof data.octocodeHomeHasAuth).toBe('boolean');
+    expect(data.launchMode).toBe('sdk-embed');
+  });
+
+  it('shows subprocess launch mode when forced', () => {
+    expect(configData({ OCTOCODE_LAUNCHER_MODE: 'subprocess' }).launchMode).toBe('subprocess');
+  });
+
+  it('shows custom OCTOCODE_HOME when set', () => {
+    expect(configData({ OCTOCODE_HOME: '/custom/home' }).octocodeHome).toBe('/custom/home');
+  });
+
+  it('echoes every documented env override as null when unset', () => {
+    const data = configData({});
+    expect(data.env.OCTOCODE_HOME).toBeNull();
+    expect(data.env.OCTOCODE_PI_BIN).toBeNull();
+  });
+
+  it('output is JSON-serializable', () => {
+    expect(() => JSON.stringify(configData({}))).not.toThrow();
+  });
+});
+
 // ── setupReport ────────────────────────────────────────────────────────────────
 
 describe('setupReport', () => {
@@ -269,6 +352,33 @@ describe('setupReport', () => {
     expect(report).toContain('octocode-agent');
     // At least one check present
     expect(report.includes('✓') || report.includes('✗')).toBe(true);
+  });
+});
+
+// ── setupData (--json companion) ─────────────────────────────────────────────────
+
+describe('setupData', () => {
+  it('has one check per prerequisite, matching the ✓/✗ report lines', () => {
+    const data = setupData({});
+    expect(data.checks.map((c) => c.name)).toEqual(['pi-host', 'core', 'api-keys']);
+  });
+
+  it('allGood is true only when every check passes', () => {
+    const data = setupData({ ANTHROPIC_API_KEY: 'sk-test' });
+    const apiKeysCheck = data.checks.find((c) => c.name === 'api-keys')!;
+    expect(apiKeysCheck.ok).toBe(true);
+    expect(data.allGood).toBe(data.checks.every((c) => c.ok));
+  });
+
+  it('api-keys check fails with no keys detected', () => {
+    const data = setupData({});
+    const apiKeysCheck = data.checks.find((c) => c.name === 'api-keys')!;
+    expect(apiKeysCheck.ok).toBe(false);
+    expect(apiKeysCheck.detail).toBe('none detected');
+  });
+
+  it('output is JSON-serializable', () => {
+    expect(() => JSON.stringify(setupData({}))).not.toThrow();
   });
 });
 
@@ -289,6 +399,23 @@ describe('authReport', () => {
   });
 });
 
+// ── authData (--json companion) ──────────────────────────────────────────────────
+
+describe('authData', () => {
+  it('reports detected keys, not the static option list', () => {
+    expect(authData({})).toEqual({
+      detectedKeys: [],
+      authJsonPath: expect.stringContaining('auth.json'),
+    });
+  });
+
+  it('reports keys actually present in env', () => {
+    const data = authData({ ANTHROPIC_API_KEY: 'sk-test', GITHUB_TOKEN: 'gh-token' });
+    expect(data.detectedKeys).toContain('ANTHROPIC_API_KEY');
+    expect(data.detectedKeys).toContain('GITHUB_TOKEN');
+  });
+});
+
 // ── modelsReport ───────────────────────────────────────────────────────────────
 
 describe('modelsReport', () => {
@@ -300,6 +427,22 @@ describe('modelsReport', () => {
   });
 });
 
+// ── modelsData (--json companion) ────────────────────────────────────────────────
+
+describe('modelsData', () => {
+  it('lists the same common models referenced in modelsReport', () => {
+    const data = modelsData();
+    const ids = data.commonModels.map((m) => m.id);
+    expect(ids).toContain('claude-opus-4-5');
+    expect(ids).toContain('gpt-4o');
+    expect(data.commonModels.every((m) => m.provider && m.note)).toBe(true);
+  });
+
+  it('output is JSON-serializable', () => {
+    expect(() => JSON.stringify(modelsData())).not.toThrow();
+  });
+});
+
 // ── sessionsReport ─────────────────────────────────────────────────────────────
 
 describe('sessionsReport', () => {
@@ -308,6 +451,47 @@ describe('sessionsReport', () => {
     expect(report).toContain('sessions');
     expect(report).toContain('--continue');
     expect(report).toContain('--no-session');
+  });
+});
+
+// ── sessionsData (--json companion) ──────────────────────────────────────────────
+
+describe('sessionsData', () => {
+  it('reports the sessions directory', () => {
+    const data = sessionsData();
+    expect(data.sessionsDir).toContain('sessions');
+    expect(data.sessionsDir).toContain('.pi');
+  });
+});
+
+// ── completionScript ──────────────────────────────────────────────────────────────
+
+describe('completionScript', () => {
+  it('generates a script for every supported shell containing every subcommand', () => {
+    for (const shell of COMPLETION_SHELLS) {
+      const script = completionScript(shell);
+      expect(script).toBeTruthy();
+      for (const cmd of ['update', 'config', 'setup', 'auth', 'models', 'sessions', 'completion']) {
+        expect(script).toContain(cmd);
+      }
+    }
+  });
+
+  it('bash script registers a complete -F for octocode-agent', () => {
+    expect(completionScript('bash')).toContain('complete -F');
+  });
+
+  it('zsh script declares a #compdef for octocode-agent', () => {
+    expect(completionScript('zsh')).toContain('#compdef octocode-agent');
+  });
+
+  it('fish script registers complete -c octocode-agent entries', () => {
+    expect(completionScript('fish')).toContain('complete -c octocode-agent');
+  });
+
+  it('returns null for an unsupported/missing shell', () => {
+    expect(completionScript('powershell')).toBeNull();
+    expect(completionScript('')).toBeNull();
   });
 });
 
@@ -530,6 +714,44 @@ describe('main', () => {
     const code = await main(['sessions'], { out: (m) => lines.push(m), env: {} });
     expect(code).toBe(0);
     expect(lines.join('\n')).toContain('--continue');
+  });
+
+  it('--json prints valid, structured JSON instead of the text report, for every report command', async () => {
+    const cases: Array<[string[], (r: unknown) => void]> = [
+      [['--version', '--json'], (r) => expect((r as { core: unknown }).core).toBeDefined()],
+      [['config', '--json'], (r) => expect((r as { octocodeHome: unknown }).octocodeHome).toBeDefined()],
+      [['setup', '--json'], (r) => expect((r as { checks: unknown[] }).checks).toHaveLength(3)],
+      [['auth', '--json'], (r) => expect((r as { detectedKeys: unknown[] }).detectedKeys).toEqual([])],
+      [['models', '--json'], (r) => expect((r as { commonModels: unknown[] }).commonModels.length).toBeGreaterThan(0)],
+      [['sessions', '--json'], (r) => expect((r as { sessionsDir: string }).sessionsDir).toContain('sessions')],
+    ];
+    for (const [argv, assertShape] of cases) {
+      const lines: string[] = [];
+      const code = await main(argv, { out: (m) => lines.push(m), env: {} });
+      expect(code).toBe(0);
+      const parsed: unknown = JSON.parse(lines.join('\n'));
+      assertShape(parsed);
+    }
+  });
+
+  it('completion <shell> prints a script and exits 0', async () => {
+    const lines: string[] = [];
+    const code = await main(['completion', 'zsh'], { out: (m) => lines.push(m), env: {} });
+    expect(code).toBe(0);
+    expect(lines.join('\n')).toContain('#compdef octocode-agent');
+  });
+
+  it('completion with an unsupported shell exits 1 with a helpful message', async () => {
+    const lines: string[] = [];
+    const code = await main(['completion', 'powershell'], { out: (m) => lines.push(m), env: {} });
+    expect(code).toBe(1);
+    expect(lines.join('\n')).toContain('Unknown shell "powershell"');
+    expect(lines.join('\n')).toContain('bash, zsh, fish');
+  });
+
+  it('completion with no shell argument exits 1', async () => {
+    const code = await main(['completion'], { out: () => {}, env: {} });
+    expect(code).toBe(1);
   });
 });
 

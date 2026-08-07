@@ -15,7 +15,46 @@ import {
   isSubagentProcess,
   MAX_AGENT_LAST_OUTPUT_CHARS,
   MAX_AGENT_RECORDS,
+  DEFAULT_SPAWN_POLICY,
+  DEFAULT_IDLE_REAP_MS,
+  evaluateStepBudget,
+  findReapableIdleAgents,
 } from '../src/tools/agent-tools.js';
+
+// ─── Reliability guardrails (research-backed) ─────────────────────────────────
+
+test('fan-out warning threshold is small (~4) per structured-topology research', () => {
+  assert.equal(DEFAULT_SPAWN_POLICY.warningActiveAgents, 4);
+  assert.ok(DEFAULT_SPAWN_POLICY.maxStepsPerWorker > 0);
+});
+
+test('evaluateStepBudget flags a runaway worker at/over budget', () => {
+  assert.equal(evaluateStepBudget(10, 60).exceeded, false);
+  const hit = evaluateStepBudget(60, 60);
+  assert.equal(hit.exceeded, true);
+  assert.match(String(hit.warning), /step budget \(60\/60/);
+  assert.equal(evaluateStepBudget(99, 60).exceeded, true);
+});
+
+test('evaluateStepBudget disabled for non-positive budget', () => {
+  assert.equal(evaluateStepBudget(1000, 0).exceeded, false);
+  assert.equal(evaluateStepBudget(1000, Number.NaN).exceeded, false);
+});
+
+test('findReapableIdleAgents: terminal always reapable, idle only past TTL', () => {
+  const now = 1_000_000_000_000;
+  const recs = [
+    { id: 'exited-1', status: 'exited' as const, updatedAt: now },
+    { id: 'failed-1', status: 'failed' as const, updatedAt: now },
+    { id: 'killed-1', status: 'killed' as const, updatedAt: now },
+    { id: 'idle-fresh', status: 'idle' as const, updatedAt: now - 60_000 },
+    { id: 'idle-stale', status: 'idle' as const, updatedAt: now - (DEFAULT_IDLE_REAP_MS + 1) },
+    { id: 'running-1', status: 'running' as const, updatedAt: now - DEFAULT_IDLE_REAP_MS * 10 },
+  ];
+  const { terminal, idle } = findReapableIdleAgents(recs, { now });
+  assert.deepEqual(terminal.sort(), ['exited-1', 'failed-1', 'killed-1']);
+  assert.deepEqual(idle, ['idle-stale']); // fresh idle + running excluded
+});
 
 // ─── Mock process factory ─────────────────────────────────────────────────────
 
@@ -163,6 +202,36 @@ test('worker lastOutput is capped to a recent tail to bound memory use', () => {
   assert.equal(record.lastOutput.length, MAX_AGENT_LAST_OUTPUT_CHARS);
   assert.match(record.lastOutput, /\[DONE\] tail$/);
   assert.equal(record.normalizedResult?.status, 'done');
+});
+
+// ─── Worker launch mode: workers must not re-enter the SDK-embed launcher ─────
+//
+// getPiInvocation() re-executes process.argv[1], which for any octocode-agent
+// process is bin/octocode-agent.mjs. When the parent runs in the default
+// SDK-embed launch mode, that env is inherited by the child, so the worker also
+// launches via launchWithSdk() — whose custom arg parser (sdk-launcher.ts) does
+// not understand --tools/--exclude-tools/-e/--append-system-prompt/--skill/etc.
+// Confirmed by live reproduction: a worker spawned with --tools web,MCPTool
+// could still call `bash` because the allowlist was silently dropped. Forcing
+// OCTOCODE_LAUNCHER_MODE=subprocess routes workers through octocode-agent's
+// subprocess path, which forwards argv verbatim to the real Pi CLI — the only
+// path that honors the full flag set buildPiArgs() produces.
+test('spawnRpcAgent forces OCTOCODE_LAUNCHER_MODE=subprocess so worker --tools/--exclude-tools/-e flags are actually honored', () => {
+  if (isSubagentProcess()) return;
+
+  let capturedEnv: NodeJS.ProcessEnv | undefined;
+  setAgentProcessFactoryForTests((_command, _args, options) => {
+    capturedEnv = (options as { env?: NodeJS.ProcessEnv }).env;
+    return makeMockProcess() as never;
+  });
+
+  spawnRpcAgent({ task: 'research something', resourceMode: 'octocode', tools: ['web', 'MCPTool'] });
+
+  assert.equal(
+    capturedEnv?.['OCTOCODE_LAUNCHER_MODE'],
+    'subprocess',
+    'worker env must force subprocess launch mode so the curated tool allowlist is not silently dropped',
+  );
 });
 
 test('M7: spawning beyond MAX_AGENT_RECORDS non-droppable agents throws', function () {

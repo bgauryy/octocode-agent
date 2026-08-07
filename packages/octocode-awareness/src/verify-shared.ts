@@ -58,6 +58,12 @@ export interface AuditUnverifiedParams {
   workspacePath?: string | null;
   artifact?: string | null;
   olderThanDays?: number | null;
+  /**
+   * Grace window in milliseconds: exclude runs created within the last `minAgeMs`.
+   * Opt-in — used by maintenance audits to ignore just-created bookkeeping runs.
+   * NOT used by the verify gate, which must still gate the current turn's edits.
+   */
+  minAgeMs?: number | null;
   origins?: Array<'TASK' | 'WORK' | 'HOOK'>;
   before?: string | null;
 }
