@@ -1,6 +1,6 @@
 {
   "name": "@octocodeai/pi-extension",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "description": "Official Octocode Pi package: native tools, bundled CLIs, Awareness runtime and skills, prompts, and harness wiring.",
   "keywords": [
     "ai-coding",

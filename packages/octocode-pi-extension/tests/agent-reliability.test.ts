@@ -19,6 +19,8 @@ import {
   DEFAULT_IDLE_REAP_MS,
   evaluateStepBudget,
   findReapableIdleAgents,
+  formatElapsed,
+  formatAgentLedgerDetails,
 } from '../src/tools/agent-tools.js';
 
 // ─── Reliability guardrails (research-backed) ─────────────────────────────────
@@ -232,6 +234,41 @@ test('spawnRpcAgent forces OCTOCODE_LAUNCHER_MODE=subprocess so worker --tools/-
     'subprocess',
     'worker env must force subprocess launch mode so the curated tool allowlist is not silently dropped',
   );
+});
+
+// ─── L1: ledger elapsed time must freeze once an agent is terminal ───────────
+//
+// formatElapsed(startedAt) used to always compute Date.now() - startedAt, so a
+// finished agent's "elapsed" kept growing forever in the footer/widget ledger
+// (a 5s task from an hour ago would show "elapsed: 1h"). Terminal records must
+// report a fixed end-to-end duration instead of drifting with wall-clock time.
+
+test('L1: formatElapsed freezes at endedAt instead of drifting against Date.now()', () => {
+  const started = 1_700_000_000_000;
+  assert.equal(formatElapsed(started, started + 500), '500ms');
+  assert.equal(formatElapsed(started, started + 5_000), '5s');
+  assert.equal(formatElapsed(started, started + 65_000), '1m5s');
+  // Without endedAt, falls back to Date.now() — still correct for live agents.
+  const liveMs = Date.now() - started;
+  assert.ok(liveMs > 0);
+});
+
+test('L1: ledger elapsed time is frozen for a terminal agent, not growing with wall-clock time', async () => {
+  if (isSubagentProcess()) return;
+
+  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  spawnRpcAgent({ task: 'finishes quickly', resourceMode: 'lean' });
+
+  // Terminate the agent (status -> 'exited', updatedAt frozen at this moment).
+  mock.exitCode = 0;
+  mock._emit('close', 0, null);
+
+  const snapshotA = formatAgentLedgerDetails();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const snapshotB = formatAgentLedgerDetails();
+
+  assert.equal(snapshotB, snapshotA, 'elapsed time for a terminal agent must not change after it finished');
 });
 
 test('M7: spawning beyond MAX_AGENT_RECORDS non-droppable agents throws', function () {

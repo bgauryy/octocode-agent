@@ -64,11 +64,15 @@ const DEFAULT_OCTOCODE_MCP_NPX_CACHE = path.join(os.homedir(), '.cache', 'octoco
  *   "structuredContent available …" stub for structured-content-aware clients;
  *   Pi's MCP surfaces only read text blocks, so full text must stay on or the
  *   model sees counts instead of data.
+ * - ENABLE_LOCAL: turns on the local* tool family (localSearchCode etc). Force
+ *   it rather than trusting octocode-mcp's own internal default — if that
+ *   upstream default ever flips, local tools must not silently disappear here.
  * - npm_config_*: ensure npx resolves the local cache with the native addon.
  * User-supplied env values always take precedence over these defaults.
  */
 export const OCTOCODE_MCP_ENV_DEFAULTS: Record<string, string> = {
   OCTOCODE_MCP_FULL_TEXT: 'true',
+  ENABLE_LOCAL: 'true',
   npm_config_include: 'optional',
   npm_config_cache: DEFAULT_OCTOCODE_MCP_NPX_CACHE,
 };

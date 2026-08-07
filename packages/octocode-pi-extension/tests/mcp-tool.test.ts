@@ -18,20 +18,22 @@ function tmpMcpJson(content: unknown): string {
 
 // ─── OCTOCODE_MCP_ENV_DEFAULTS contract ──────────────────────────────────────
 
-test('env defaults: full-text MCP responses + npm cache vars are always on for the octocode server', () => {
+test('env defaults: full-text MCP responses + local tools + npm cache vars are always on for the octocode server', () => {
   assert.equal(OCTOCODE_MCP_ENV_DEFAULTS['OCTOCODE_MCP_FULL_TEXT'], 'true');
+  assert.equal(OCTOCODE_MCP_ENV_DEFAULTS['ENABLE_LOCAL'], 'true');
   assert.equal(OCTOCODE_MCP_ENV_DEFAULTS['npm_config_include'], 'optional');
   assert.ok(OCTOCODE_MCP_ENV_DEFAULTS['npm_config_cache']!.length > 0);
 });
 
 // ─── patchGlobalMcpOctocodeEnv ───────────────────────────────────────────────
 
-test('patch: adds missing env vars (incl. OCTOCODE_MCP_FULL_TEXT) to the octocode server entry', () => {
+test('patch: adds missing env vars (incl. OCTOCODE_MCP_FULL_TEXT, ENABLE_LOCAL) to the octocode server entry', () => {
   const p = tmpMcpJson({ mcpServers: { octocode: { command: 'node', args: ['x.js'] } } });
   patchGlobalMcpOctocodeEnv(p);
   const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
   const env = raw.mcpServers.octocode.env;
   assert.equal(env.OCTOCODE_MCP_FULL_TEXT, 'true');
+  assert.equal(env.ENABLE_LOCAL, 'true');
   assert.equal(env.npm_config_include, 'optional');
   assert.ok(env.npm_config_cache.length > 0);
 });

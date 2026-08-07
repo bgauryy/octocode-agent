@@ -195,7 +195,7 @@ export function setAgentProcessFactoryForTests(factory: AgentProcessFactory | nu
 }
 
 /** wait() resolves at end-of-turn: idle counts as "done for now", plus true terminals. */
-function isTerminal(record: AgentRecord): boolean {
+function isTerminal(record: { status: AgentStatus }): boolean {
   return ['idle', 'exited', 'failed', 'killed'].includes(record.status);
 }
 
@@ -302,8 +302,13 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-function formatElapsed(startedAt: number): string {
-  const ms = Date.now() - startedAt;
+/**
+ * `endedAt` freezes elapsed time at a terminal agent's last update instead of
+ * letting it keep growing against Date.now() long after the agent finished —
+ * pass it whenever the record/summary is terminal (see isTerminal()).
+ */
+export function formatElapsed(startedAt: number, endedAt?: number): string {
+  const ms = (endedAt ?? Date.now()) - startedAt;
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
   const m = Math.floor(ms / 60_000);
@@ -1015,7 +1020,10 @@ function renderAgentResult(records: AgentRecord[], header: string): ToolCallResu
   const lines: string[] = [`${header} (${records.length}):`];
   for (const s of summaries) {
     const exit = s.exitCode !== undefined ? ` (exit ${s.exitCode})` : '';
-    const elapsed = formatElapsed(new Date(s.startedAt).getTime());
+    const elapsed = formatElapsed(
+      new Date(s.startedAt).getTime(),
+      isTerminal(s) ? new Date(s.updatedAt).getTime() : undefined,
+    );
     const state = getAgentDisplayState(s);
     const meta = agentDisplayMeta(state);
     const handback = s.normalizedResult?.status && s.normalizedResult.status !== 'unknown'
@@ -1092,7 +1100,8 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
     const preview = result ? ` — ${result.replace(/\n/g, ' ').slice(0, 90)}${summary.outputTruncated ? '…' : ''}` : '';
     const name = theme?.fg('accent', summary.name) ?? summary.name;
     const id = theme?.fg('dim', shortId(summary.agentId)) ?? shortId(summary.agentId);
-    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${modelInfo}${active}${toolsInfo} · ${formatElapsed(record.startedAt)}${theme?.fg('dim', preview) ?? preview}`);
+    const elapsed = formatElapsed(record.startedAt, isTerminal(record) ? record.updatedAt : undefined);
+    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${modelInfo}${active}${toolsInfo} · ${elapsed}${theme?.fg('dim', preview) ?? preview}`);
   }
   if (records.length > limit) lines.push(theme?.fg('muted', `… ${records.length - limit} more; use AgentMessage list for full details.`) ?? `… ${records.length - limit} more; use AgentMessage list for full details.`);
   return lines;
