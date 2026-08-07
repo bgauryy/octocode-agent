@@ -1079,6 +1079,12 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
       ? ` · ${summary.normalizedResult.status}/${summary.normalizedResult.confidence}`
       : '';
     const active = summary.activeTool ? ` · active:${summary.activeTool}` : '';
+    // Show what the worker is doing: total tool calls + the distinct tools it has used.
+    const callCount = record.toolCalls.length;
+    const toolNames = [...new Set(record.toolCalls.map((call) => call.toolName).filter(Boolean))].slice(0, 4);
+    const toolsInfo = callCount > 0
+      ? ` · ${callCount} call${callCount === 1 ? '' : 's'}${toolNames.length ? ` [${toolNames.join(',')}${new Set(record.toolCalls.map((c) => c.toolName)).size > toolNames.length ? ',…' : ''}]` : ''}`
+      : '';
     const modelInfo = ` · ${formatAgentModelLine(summary)}`;
     const risk = agentRiskBadge(summary, theme);
     const riskText = risk ? ` · ${risk}` : '';
@@ -1086,7 +1092,7 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
     const preview = result ? ` — ${result.replace(/\n/g, ' ').slice(0, 90)}${summary.outputTruncated ? '…' : ''}` : '';
     const name = theme?.fg('accent', summary.name) ?? summary.name;
     const id = theme?.fg('dim', shortId(summary.agentId)) ?? shortId(summary.agentId);
-    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${modelInfo}${active} · ${formatElapsed(record.startedAt)}${theme?.fg('dim', preview) ?? preview}`);
+    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${modelInfo}${active}${toolsInfo} · ${formatElapsed(record.startedAt)}${theme?.fg('dim', preview) ?? preview}`);
   }
   if (records.length > limit) lines.push(theme?.fg('muted', `… ${records.length - limit} more; use AgentMessage list for full details.`) ?? `… ${records.length - limit} more; use AgentMessage list for full details.`);
   return lines;

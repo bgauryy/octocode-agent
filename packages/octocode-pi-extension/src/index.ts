@@ -56,6 +56,7 @@ import { getCachedMcpCatalogAddendum, handleOctocodeMcpCommand, patchGlobalMcpOc
 import { getDynamicCapabilitiesAddendum } from './tools/dynamic-catalog.js';
 import { registerPlanTool } from './tools/plan-tool.js';
 import { renderActivePlanAddendum } from './tools/active-plan.js';
+import { handleOctocodePlanCommand, OCTOCODE_PLAN_COMMAND_USAGE, OCTOCODE_PLAN_COMMAND_COMPLETIONS } from './tools/plan-tool.js';
 import { atomicWriteUtf8 } from './tools/file-state.js';
 import { assertPathAllowed } from './tools/path-guard.js';
 import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
@@ -786,6 +787,8 @@ async function wireOctocodePiExtension(
         ctx.ui?.setStatus?.('agent-wait', undefined);
         ctx.ui?.setStatus?.('chrome-debug', undefined);
         ctx.ui?.setStatus?.('octocode-mcp', undefined);
+        ctx.ui?.setStatus?.('octocode-plan', undefined);
+        ctx.ui?.setWidget?.('octocode-plan', undefined);
         ctx.ui?.setWidget?.('octocode-agents', undefined);
         ctx.ui?.setWorkingMessage?.(undefined);
         ctx.ui?.setWorkingVisible?.(false);
@@ -964,6 +967,13 @@ async function wireOctocodePiExtension(
     },
   });
 
+  pi.registerCommand('octocode-plan', {
+    description: `Show, complete, start, or clear the active task plan (usage: ${OCTOCODE_PLAN_COMMAND_USAGE}).`,
+    getArgumentCompletions: (prefix) => OCTOCODE_PLAN_COMMAND_COMPLETIONS
+      .filter((cmd) => cmd.startsWith(prefix))
+      .map((cmd) => ({ value: cmd, label: cmd.trim(), description: `/octocode-plan ${cmd}` })),
+    handler: async (args, ctx) => { await handleOctocodePlanCommand(args, ctx, notify); },
+  });
   pi.registerCommand('octocode-agents', {
     description: `Show, refresh, inspect, prune, hide, or kill Octocode spawned worker agents (usage: ${OCTOCODE_AGENTS_COMMAND_USAGE}).`,
     getArgumentCompletions: (prefix: string) => {

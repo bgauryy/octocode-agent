@@ -5,7 +5,23 @@ import type { ToolDefinition } from '../src/types.js';
 import {
   setPlan, addStep, startStep, completeStep, clearPlan, getPlan, renderActivePlanAddendum,
 } from '../src/tools/active-plan.js';
-import { registerPlanTool } from '../src/tools/plan-tool.js';
+import { registerPlanTool, refreshPlanUi, handleOctocodePlanCommand } from '../src/tools/plan-tool.js';
+import type { PiContext } from '../src/types.js';
+
+// Minimal UI spy for widget/status/notify assertions.
+function uiCtx(cwd: string) {
+  const calls = { widget: [] as unknown[], status: [] as unknown[], notify: [] as string[] };
+  const ctx = {
+    cwd,
+    hasUI: true,
+    ui: {
+      setWidget: (name: string, content: unknown) => calls.widget.push({ name, cleared: content === undefined }),
+      setStatus: (name: string, text: unknown) => calls.status.push({ name, text }),
+      notify: (msg: string) => calls.notify.push(msg),
+    },
+  } as unknown as PiContext;
+  return { ctx, calls };
+}
 
 const CWD = '/tmp/plan-test-ws';
 afterEach(() => clearPlan(CWD));
@@ -65,6 +81,28 @@ function loadTool(): ToolDefinition {
   registerPlanTool(pi, Type, new Set<string>(), (p, n, d) => { n.add(d.name); p.registerTool?.(d); });
   return tools.get('plan')!;
 }
+
+test('refreshPlanUi sets a below-editor widget + footer when a plan exists, clears when empty', () => {
+  const { ctx, calls } = uiCtx('/tmp/plan-ui-ws');
+  setPlan('/tmp/plan-ui-ws', ['a', 'b']);
+  refreshPlanUi(ctx);
+  assert.ok(calls.widget.some((w) => (w as { cleared: boolean }).cleared === false), 'widget set');
+  assert.ok(calls.status.some((s) => String((s as { text: unknown }).text).includes('plan 0/2')), 'footer set');
+  clearPlan('/tmp/plan-ui-ws');
+  refreshPlanUi(ctx);
+  assert.ok(calls.widget.some((w) => (w as { cleared: boolean }).cleared === true), 'widget cleared when empty');
+});
+
+test('/octocode-plan command completes a step and clears the plan', async () => {
+  const cwd = '/tmp/plan-cmd-ws';
+  setPlan(cwd, ['x', 'y']);
+  const { ctx, calls } = uiCtx(cwd);
+  await handleOctocodePlanCommand('complete 1', ctx, (_c, m) => calls.notify.push(m));
+  assert.equal(getPlan(cwd)[0]!.status, 'done');
+  await handleOctocodePlanCommand('clear', ctx, (_c, m) => calls.notify.push(m));
+  assert.equal(getPlan(cwd).length, 0);
+  assert.ok(calls.notify.some((m) => /cleared/i.test(m)));
+});
 
 test('plan tool set→complete→show drives the checklist and returns the addendum', async () => {
   const tool = loadTool();

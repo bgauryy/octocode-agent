@@ -24,10 +24,77 @@ interface PlanParams {
   index?: number;
 }
 
+const MARK = { todo: '[ ]', doing: '[~]', done: '[x]' } as const;
+
 function renderList(steps: PlanStep[]): string {
   if (steps.length === 0) return '(no active plan)';
-  const mark = { todo: '[ ]', doing: '[~]', done: '[x]' } as const;
-  return steps.map((s, i) => `${mark[s.status]} ${i + 1}. ${s.text}`).join('\n');
+  return steps.map((s, i) => `${MARK[s.status]} ${i + 1}. ${s.text}`).join('\n');
+}
+
+// ─── User-facing TODO widget (below-editor) ──────────────────────────────────
+
+function planWidgetLines(steps: PlanStep[], theme?: PiTheme): string[] {
+  const done = steps.filter((s) => s.status === 'done').length;
+  const title = theme?.fg('toolTitle', 'Octocode plan') ?? 'Octocode plan';
+  const head = `${title}: ${theme?.fg('dim', `${done}/${steps.length} done`) ?? `${done}/${steps.length} done`}`;
+  const rows = steps.map((s, i) => {
+    const line = `${MARK[s.status]} ${i + 1}. ${s.text}`;
+    if (s.status === 'done') return theme?.fg('dim', line) ?? line;
+    if (s.status === 'doing') return theme?.fg('accent', line) ?? line;
+    return line;
+  });
+  return [head, ...rows];
+}
+
+/** Mirror the active plan into the below-editor TODO widget + footer, or clear it when empty. */
+export function refreshPlanUi(ctx?: PiContext): void {
+  if (!ctx?.hasUI) return;
+  const cwd = ctx.cwd ?? process.cwd();
+  const steps = getPlan(cwd);
+  if (steps.length === 0) {
+    ctx.ui?.setStatus?.('octocode-plan', undefined);
+    ctx.ui?.setWidget?.('octocode-plan', undefined);
+    return;
+  }
+  const done = steps.filter((s) => s.status === 'done').length;
+  ctx.ui?.setStatus?.('octocode-plan', `plan ${done}/${steps.length}`);
+  ctx.ui?.setWidget?.(
+    'octocode-plan',
+    (_tui: unknown, theme: PiTheme) => makeRenderer((w) => planWidgetLines(steps, theme).map((l) => truncateToWidth(l, w))),
+    { placement: 'belowEditor' },
+  );
+}
+
+// ─── /octocode-plan command (user can view / complete / delete tasks) ────────
+
+export const OCTOCODE_PLAN_COMMAND_USAGE = '/octocode-plan [show|complete <n>|start <n>|clear]';
+export const OCTOCODE_PLAN_COMMAND_COMPLETIONS = ['show', 'complete ', 'start ', 'clear'] as const;
+
+type NotifyFn = (ctx: PiContext | undefined, message: string, level?: string) => void;
+
+export async function handleOctocodePlanCommand(args: string, ctx: PiContext | undefined, notify: NotifyFn): Promise<void> {
+  const cwd = ctx?.cwd ?? process.cwd();
+  const [action = 'show', arg] = args.trim().split(/\s+/).filter(Boolean);
+  const n = Number(arg);
+  switch (action) {
+    case 'clear':
+      clearPlan(cwd);
+      notify(ctx, 'Plan cleared.', 'info');
+      break;
+    case 'complete':
+      if (Number.isFinite(n)) completeStep(cwd, n);
+      break;
+    case 'start':
+      if (Number.isFinite(n)) startStep(cwd, n);
+      break;
+    case 'show':
+    default:
+      break;
+  }
+  refreshPlanUi(ctx);
+  const steps = getPlan(cwd);
+  const done = steps.filter((s) => s.status === 'done').length;
+  notify(ctx, steps.length === 0 ? 'No active plan.' : `Plan ${done}/${steps.length} done\n${renderList(steps)}`, 'info');
 }
 
 export function registerPlanTool(
@@ -83,6 +150,7 @@ export function registerPlanTool(
           steps = getPlan(cwd);
           break;
       }
+      refreshPlanUi(ctx);
       const done = steps.filter((s) => s.status === 'done').length;
       const header = p.action === 'clear' ? '[PLAN] cleared' : `[PLAN] ${done}/${steps.length} done`;
       return {
