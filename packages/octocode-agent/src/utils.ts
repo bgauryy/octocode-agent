@@ -4,6 +4,14 @@
 
 import { getOctocodeHome as configGetOctocodeHome } from '@octocodeai/config';
 
+/**
+ * The single Octocode prompt mode. Consumed two ways for the SAME session:
+ *   - env `OCTOCODE_PROMPT_MODE` (subprocess path + anything reading env)
+ *   - the `promptMode` argument to the extension factory (SDK embed path)
+ * Kept here so the two call sites can never drift apart.
+ */
+export const OCTOCODE_PROMPT_MODE = 'octocode-first';
+
 /** All API key names checked for presence in env. */
 export const API_KEY_NAMES = [
   'ANTHROPIC_API_KEY',

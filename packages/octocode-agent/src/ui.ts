@@ -1,6 +1,16 @@
 /**
  * Dependency-free ANSI UI layer for the octocode-agent launcher.
  *
+ * SCOPE (deliberate, do NOT merge with @octocodeai/pi-extension branding/):
+ *   This paints the LAUNCHER's pre-session CLI surfaces (help, version, doctor,
+ *   auth/setup wizards) with zero runtime deps. The extension's `branding/`
+ *   (theme.ts/banner.ts/renderers.ts) paints the IN-SESSION Pi TUI and depends
+ *   on Pi's theme runtime. They intentionally overlap on the brand palette but
+ *   live in different processes/lifecycles and different dependency budgets;
+ *   unifying them would force a shared third package for a ~10-token palette —
+ *   premature. Keep the palette values in sync by eye (both mirror the shipped
+ *   octocode-dark theme); abstract only if a third consumer appears.
+ *
  * Brand system: the Octocode teal ◆ mark + gold accents (matches the in-session
  * octocode-dark/light themes shipped by @octocodeai/pi-extension), 256-color ANSI.
  * All color is opt-out safe: disabled when NO_COLOR is set, when the stream is

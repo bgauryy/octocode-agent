@@ -55,8 +55,21 @@ function defaultIO(): WizardIO {
   };
 }
 
-/** Atomic-ish .env upsert: dir 0700, file 0600, KEY=value replaced-or-appended. */
+/**
+ * Atomic-ish .env upsert: dir 0700, file 0600, `KEY=value` replaced-or-appended.
+ *
+ * The write MUST round-trip through `@octocodeai/config` `parseEnv` (the single
+ * owner of the .env format). parseEnv is line-based and does not unescape, so a
+ * value carrying a newline/CR would silently split into garbage lines. Such a
+ * value can never be a real credential, so we reject it loudly rather than
+ * corrupt the file. `parseEnv` trims surrounding whitespace, keeps `#`/`=`, and
+ * strips one layer of matching surrounding quotes; a bare `KEY=value` therefore
+ * round-trips for every other value (covered by parse-round-trip tests).
+ */
 export function upsertEnvFile(envPath: string, name: string, value: string): void {
+  if (/[\n\r]/.test(value)) {
+    throw new Error(`refusing to write ${name}: value contains a newline (not a valid .env value)`);
+  }
   fs.mkdirSync(path.dirname(envPath), { recursive: true, mode: 0o700 });
   let lines = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8').split('\n') : [];
   const keyLine = `${name}=${value}`;

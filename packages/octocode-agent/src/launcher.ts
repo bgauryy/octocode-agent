@@ -38,7 +38,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import { getOctocodeHome, presentApiKeys } from './utils.js';
+import { getOctocodeHome, OCTOCODE_PROMPT_MODE, presentApiKeys } from './utils.js';
 import { runAuthWizard } from './onboard.js';
 import { AUTH_PROVIDERS } from './auth-providers.js';
 import { selectOne } from './picker.js';
@@ -225,7 +225,7 @@ export function buildLaunchEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const env = { ...baseEnv };
-  if (!env.OCTOCODE_PROMPT_MODE) env.OCTOCODE_PROMPT_MODE = 'octocode-first';
+  if (!env.OCTOCODE_PROMPT_MODE) env.OCTOCODE_PROMPT_MODE = OCTOCODE_PROMPT_MODE;
   env.OCTOCODE_AGENT = '1';
   if (!env.PI_CACHE_RETENTION) env.PI_CACHE_RETENTION = 'long';
   // Octocode owns its update story (`octocode-agent update`) — Pi's own

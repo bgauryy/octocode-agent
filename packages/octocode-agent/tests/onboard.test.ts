@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parseEnv } from '@octocodeai/config';
 import { runAuthWizard, upsertEnvFile, type WizardIO } from '../src/onboard.js';
 
 let tmps: string[] = [];
@@ -41,6 +42,32 @@ describe('upsertEnvFile', () => {
     const content = fs.readFileSync(envPath, 'utf8');
     expect(content).toContain('sk-new-111111');
     expect(content).not.toContain('sk-old-000000');
+  });
+
+  it('round-trips through @octocodeai/config parseEnv for awkward values', () => {
+    // The launcher writes .env; @octocodeai/config parses it. These must agree.
+    const cases = ['sk-plain', 'has#hash', 'a=b=c', 'mid space value', 'sk_-.:/+', 'GhP_tok3n'];
+    for (const value of cases) {
+      const envPath = path.join(tmpHome(), '.env');
+      upsertEnvFile(envPath, 'TOKEN', value);
+      const parsed = parseEnv(fs.readFileSync(envPath, 'utf8'));
+      expect(parsed.TOKEN).toBe(value);
+    }
+  });
+
+  it('keeps other keys intact when upserting, verified via parseEnv', () => {
+    const envPath = path.join(tmpHome(), '.env');
+    upsertEnvFile(envPath, 'ANTHROPIC_API_KEY', 'sk-ant-1');
+    upsertEnvFile(envPath, 'OPENAI_API_KEY', 'sk-oai-2');
+    const parsed = parseEnv(fs.readFileSync(envPath, 'utf8'));
+    expect(parsed).toMatchObject({ ANTHROPIC_API_KEY: 'sk-ant-1', OPENAI_API_KEY: 'sk-oai-2' });
+  });
+
+  it('rejects newline/CR values that parseEnv cannot round-trip', () => {
+    const envPath = path.join(tmpHome(), '.env');
+    expect(() => upsertEnvFile(envPath, 'TOKEN', 'line1\nline2')).toThrow(/newline/);
+    expect(() => upsertEnvFile(envPath, 'TOKEN', 'a\rb')).toThrow(/newline/);
+    expect(fs.existsSync(envPath)).toBe(false);
   });
 });
 
