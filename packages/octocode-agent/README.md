@@ -36,10 +36,18 @@ octocode-agent [agent args...] # Launch the agent; supported Pi-compatible args 
 octocode-agent update         # Self-update the platform (pulls the newest core)
 octocode-agent update core    # Update @octocodeai/pi-extension inside this install
 octocode-agent --version      # Print launcher, core, and Pi host versions
-octocode-agent --agent-help   # Launcher help (reserved subcommands only)
+
+octocode-agent auth [login]   # Credential status; `auth login` is a guided pick-provider wizard (writes ~/.octocode/.env, 0600)
+octocode-agent models         # How to pick models; `models --set [id]` persists your default (interactive picker on a TTY)
+octocode-agent resume         # Resume a session — arrow-key picker over recent sessions on a TTY, picked ID + `-r` fallback
+octocode-agent doctor         # Health checks (core, Pi host, auth, awareness)
+octocode-agent setup [--fix]  # First-run setup summary; --fix walks failing checks interactively
+octocode-agent config         # Runtime/package/key view; add --json for scripting
 ```
 
-Any argument that isn't a reserved subcommand (`update`, `--version`, `--agent-help`) is handled by the SDK launcher when supported (`--print`, `--mode rpc`, `--continue`, `--session`, `--no-session`, `--name`, initial message) or passed to the subprocess fallback.
+Any argument that isn't a reserved subcommand is handled by the SDK launcher when supported (`--print`, `--mode rpc`, `--continue`, `--session`, `--no-session`, `--name`, initial message) or passed to the subprocess fallback. A single bare token within edit distance of a real command gets `did you mean …` and exit 2 instead of a nonsense session.
+
+**Exit codes:** `0` success · `1` runtime failure · `2` usage/unknown input (with suggestion) · `3` needs an interactive terminal.
 
 ## How it works
 

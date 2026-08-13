@@ -1,7 +1,8 @@
 /**
  * Dependency-free ANSI UI layer for the octocode-agent launcher.
  *
- * Brand system: a violet ⬢ mark + amber accents on a small 256-color palette.
+ * Brand system: the Octocode teal ◆ mark + gold accents (matches the in-session
+ * octocode-dark/light themes shipped by @octocodeai/pi-extension), 256-color ANSI.
  * All color is opt-out safe: disabled when NO_COLOR is set, when the stream is
  * not a TTY, or when the terminal is dumb. FORCE_COLOR=1 overrides detection.
  * Pure functions only (no side effects at import) so the launcher stays testable.
@@ -14,6 +15,9 @@
  * breaks the columns.
  */
 
+import os from 'node:os';
+import path from 'node:path';
+
 const CODES = {
   reset: '\x1b[0m',
   bold: '\x1b[1m',
@@ -25,13 +29,13 @@ const CODES = {
   magenta: '\x1b[35m',
   cyan: '\x1b[36m',
   gray: '\x1b[90m',
-  brand: '\x1b[38;5;141m',
+  brand: '\x1b[38;5;86m',
   accent: '\x1b[38;5;214m',
 } as const;
 
 export type ColorName = keyof Omit<typeof CODES, 'reset'>;
 
-export const BRAND_MARK = '⬢';
+export const BRAND_MARK = '◆';
 export const BRAND_NAME = 'octocode-agent';
 
 const RULE_WIDTH = 56;
@@ -86,7 +90,7 @@ export function makePainter(enabled: boolean): Painter {
 /** Strip ANSI codes — used by tests and when piping to non-terminals. */
 export function stripAnsi(s: string): string {
   // eslint-disable-next-line no-control-regex
-  return s.replace(/\x1b\[[0-9;]*m/g, '');
+  return s.replace(/\x1b\[[0-9;]*m/g, '').replace(/\x1b\][^\x1b]*\x1b\\/g, '');
 }
 
 /** Length of the string the user actually sees. */
@@ -100,7 +104,52 @@ export function padEndVisible(s: string, width: number): string {
   return pad > 0 ? s + ' '.repeat(pad) : s;
 }
 
-/** Compact branded one-line banner: `⬢ octocode-agent · <subtitle>`. */
+// ── Width-aware layer (P1) ──────────────────────────────────────────────────
+
+/** Terminal width: stdout.columns → $COLUMNS → fallback, clamped to CLI-sane bounds. */
+export function terminalWidth(fallback = 80): number {
+  const cols = Number(process.stdout.columns) || Number(process.env.COLUMNS) || fallback;
+  return Math.min(Math.max(cols, 40), 200);
+}
+
+/** s if it fits, else tail-truncated with … to exactly `max` visible chars. */
+export function ellipsizeEnd(s: string, max: number): string {
+  if (max < 1) return '';
+  if (visibleLength(s) <= max) return s;
+  if (max === 1) return '…';
+  return stripAnsi(s).slice(0, max - 1) + '…';
+}
+
+/** s if it fits, else middle-collapsed `abc…xyz` to exactly `max` visible chars. */
+export function ellipsizeMiddle(s: string, max: number): string {
+  if (visibleLength(s) <= max) return s;
+  if (max <= 3) return ellipsizeEnd(s, max);
+  const keep = max - 1;
+  const head = Math.ceil(keep * 0.6);
+  const tail = keep - head;
+  const plain = stripAnsi(s);
+  return `${plain.slice(0, head)}…${plain.slice(plain.length - tail)}`;
+}
+
+/** Collapse the user's home prefix to `~` (config/doctor value readability). */
+export function tildePath(filePath: string, home: string = os.homedir()): string {
+  return filePath === home || filePath.startsWith(home + path.sep)
+    ? `~${filePath.slice(home.length)}`
+    : filePath;
+}
+
+/** Width-fit: paths middle-collapse; prose tail-collapses. */
+export function fitText(s: string, max: number): string {
+  return /^[~/.]/.test(stripAnsi(s).trimStart()) ? ellipsizeMiddle(s, max) : ellipsizeEnd(s, max);
+}
+
+/** OSC-8 hyperlink when enabled (interactive TTY); falls back to `text (url)`. */
+export function link(p: Painter, url: string, text: string, interactive = false): string {
+  if (!interactive || !p.enabled) return `${text} (${url})`;
+  return `\x1b]8;;${url}\x1b\\${p.cyan(text)}\x1b]8;;\x1b\\`;
+}
+
+/** Compact branded one-line banner: `◆ octocode-agent · <subtitle>`. */
 export function banner(p: Painter, subtitle: string): string {
   return `${p.brand(BRAND_MARK)} ${p.bold(BRAND_NAME)} ${p.dim('· ' + subtitle)}`;
 }
@@ -111,9 +160,10 @@ export function header(p: Painter, name: string): string {
   return ['', `${p.brand(BRAND_MARK)} ${p.bold(title)}`, rule(p)].join('\n');
 }
 
-/** A thin horizontal rule. */
-export function rule(p: Painter, width: number = RULE_WIDTH): string {
-  return p.gray('─'.repeat(width));
+/** A thin horizontal rule; adapts down on narrow terminals, never wider than RULE_WIDTH. */
+export function rule(p: Painter, width?: number): string {
+  const w = Math.max(20, Math.min(width ?? RULE_WIDTH, terminalWidth() - 2));
+  return p.gray('─'.repeat(w));
 }
 
 /** A section title inside a report. */
@@ -121,9 +171,11 @@ export function section(p: Painter, title: string): string {
   return p.accent(p.bold(title));
 }
 
-/** One aligned key/value fact: gray padded key, plain value. */
+/** One aligned key/value fact: gray padded key, plain value width-fitted. */
 export function kv(p: Painter, key: string, value: string, keyWidth = 18): string {
-  return `${p.gray(padEndVisible(key, keyWidth))} ${value}`;
+  const kw = Math.max(keyWidth, visibleLength(key));
+  const budget = terminalWidth() - kw - 3;
+  return `${p.gray(padEndVisible(key, kw))} ${fitText(value, budget)}`;
 }
 
 export type CheckStatus = 'ok' | 'fail' | 'warn';
@@ -148,8 +200,9 @@ export function checkLines(
       : status === 'fail'
         ? p.red(CHECK_GLYPHS.fail)
         : p.yellow(CHECK_GLYPHS.warn);
-  const lines = [`${mark} ${p.bold(padEndVisible(label, labelWidth))} ${detail}`];
-  if (status === 'fail' && fix) lines.push(p.dim(`   fix: ${fix}`));
+  const budget = terminalWidth() - labelWidth - 4;
+  const lines = [`${mark} ${p.bold(padEndVisible(label, labelWidth))} ${fitText(detail, budget)}`];
+  if (status === 'fail' && fix) lines.push(p.dim(`   fix: ${fitText(fix, budget)}`));
   return lines;
 }
 
@@ -160,8 +213,9 @@ export function cmdRows(
   indent = '  ',
 ): string[] {
   const width = Math.max(...rows.map(([cmd]) => visibleLength(cmd)));
+  const budget = terminalWidth() - indent.length - width - 4;
   return rows.map(
-    ([cmd, desc]) => `${indent}${p.brand(padEndVisible(cmd, width))}  ${p.dim(desc)}`,
+    ([cmd, desc]) => `${indent}${p.brand(padEndVisible(cmd, width))}  ${p.dim(ellipsizeEnd(desc, budget))}`,
   );
 }
 
@@ -170,15 +224,21 @@ export function hint(p: Painter, text: string): string {
   return p.gray(`→ ${text}`);
 }
 
-/** Version trail for the launch banner: `v1.0.2 · core 1.3.0 · pi 0.80.3` (skips unknowns). */
+/** Version trail for the launch banner: `v1.0.2 · core 1.4.0 · pi 0.80.3 · model X` (skips unknowns). */
 export function launchBanner(
   p: Painter,
-  versions: { launcher: string | null; core: string | null; pi: string | null },
+  versions: {
+    launcher: string | null;
+    core: string | null;
+    pi: string | null;
+    model?: string | null;
+  },
 ): string {
   const parts = [
     versions.launcher ? `v${versions.launcher}` : null,
     versions.core ? `core ${versions.core}` : null,
     versions.pi ? `pi ${versions.pi}` : null,
+    versions.model ? `model ${versions.model}` : null,
   ].filter(Boolean) as string[];
   return `${p.brand(BRAND_MARK)} ${p.bold(BRAND_NAME)}${parts.length ? p.dim('  ' + parts.join(' · ')) : ''}`;
 }

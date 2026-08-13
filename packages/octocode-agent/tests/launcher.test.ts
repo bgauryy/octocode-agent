@@ -36,6 +36,7 @@ import {
   printLaunchBanner,
   doctorReport,
 } from '../src/launcher.js';
+import { stripAnsi } from '../src/ui.js';
 import type { LaunchDeps, PiBinInfo } from '../src/types.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -337,9 +338,13 @@ describe('configReport', () => {
     expect(report).toContain('core');
     expect(report).toContain('pi host');
     expect(report).toContain('launcher version');
-    expect(report).toContain('OCTOCODE_HOME');
-    expect(report).toContain('OCTOCODE_LAUNCHER_MODE');
     expect(report).toContain('api keys set');
+  });
+
+  it('lists only SET env overrides', () => {
+    const report = configReport({ OCTOCODE_LAUNCHER_MODE: 'subprocess' });
+    expect(report).toContain('OCTOCODE_LAUNCHER_MODE');
+    expect(report).not.toContain('OCTOCODE_PI_BIN');
   });
 
   it('shows subprocess mode when forced', () => {
@@ -932,7 +937,7 @@ describe('styled surfaces', () => {
 
   it('version aligns fact rows under a branded header', () => {
     const report = versionReport({});
-    expect(report).toContain('⬢ octocode-agent');
+    expect(report).toContain('◆ octocode-agent');
     expect(report).toContain('\nlauncher');
     expect(report).toContain('\nlaunch mode');
   });
@@ -948,6 +953,13 @@ describe('styled surfaces', () => {
     const data = doctorReport({ FORCE_COLOR: '1' });
     expect(data).toContain('octocode-agent doctor');
   });
+
+  it('config is compact: no (not set) rows, ~ paths, no absolute home leaks', () => {
+    const report = configReport({});
+    expect(report).not.toContain('(not set)');
+    expect(report).toContain('~/.octocode');
+    expect(report).not.toContain('/Users/');
+  });
 });
 
 // ── printLaunchBanner ─────────────────────────────────────────────────────────
@@ -955,17 +967,33 @@ describe('styled surfaces', () => {
 describe('printLaunchBanner', () => {
   it('prints the one-line brand banner on a TTY', () => {
     const lines: string[] = [];
-    const printed = printLaunchBanner([], {}, (m) => lines.push(m), true);
+    const printed = printLaunchBanner([
+      '--model',
+      'x',
+    ], { ANTHROPIC_API_KEY: 'sk-x' }, (m) => lines.push(m), true);
     expect(printed).toBe(true);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('octocode-agent');
-    expect(lines[0]).toContain('⬢');
+    expect(lines[0]).toContain('◆');
+  });
+
+  it('points keyless first-runners at the wizard right under the banner', () => {
+    const lines: string[] = [];
+    printLaunchBanner([], {}, (m) => lines.push(m), true);
+    expect(lines).toHaveLength(2);
+    expect(stripAnsi(lines[1])).toContain('octocode-agent auth login');
   });
 
   it('stays silent without a TTY', () => {
     const lines: string[] = [];
     expect(printLaunchBanner([], {}, (m) => lines.push(m), false)).toBe(false);
     expect(lines).toHaveLength(0);
+  });
+
+  it('shows the resolved model when launch flags define one', () => {
+    const lines: string[] = [];
+    printLaunchBanner(['--model', 'claude-opus-5'], {}, (m) => lines.push(m), true);
+    expect(stripAnsi(lines[0])).toContain('model claude-opus-5');
   });
 
   it('honors OCTOCODE_AGENT_NO_BANNER and non-interactive flags', () => {

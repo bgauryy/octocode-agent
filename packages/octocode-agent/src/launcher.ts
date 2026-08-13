@@ -39,6 +39,10 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 import { getOctocodeHome, presentApiKeys } from './utils.js';
+import { runAuthWizard } from './onboard.js';
+import { AUTH_PROVIDERS } from './auth-providers.js';
+import { selectOne } from './picker.js';
+import { piAgentDir, setDefaultModelInSettings } from './settings.js';
 import {
   buildSurfaceSpec,
   loadProfile,
@@ -50,12 +54,16 @@ import {
   cmdRows,
   colorEnabled,
   diagLine,
+  fitText,
   header,
   hint,
   kv,
   launchBanner,
+  link,
   makePainter,
   section,
+  terminalWidth,
+  tildePath,
 } from './ui.js';
 import type {
   PiBinInfo,
@@ -228,7 +236,7 @@ export function parseInvocation(argv: string[] = []): ParsedInvocation {
   if (first === 'config') return { command: 'config', args: argv.slice(1), json };
   if (first === 'setup') return { command: 'setup', args: argv.slice(1), json };
   if (first === 'auth') return { command: 'auth', args: argv.slice(1), json };
-  if (first === 'models') return { command: 'models', json };
+  if (first === 'models') return { command: 'models', args: argv.slice(1), json };
   if (first === 'sessions') return { command: 'sessions', json };
   if (first === 'doctor') return { command: 'doctor', json };
   if (first === 'run') return { command: 'run', rest: argv.slice(1), json, profile };
@@ -369,7 +377,17 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
     `  ${kv(p, 'OCTOCODE_PI_BIN', p.dim('absolute path to a locally-built Pi binary'))}`,
     `  ${kv(p, 'OCTOCODE_PI_PACKAGE', p.dim('npm package override (e.g. @octocodeai/pi-coding-agent)'))}`,
     '',
-    p.dim(`The core (${CORE_PACKAGE}) carries the prompt, skills, tools, and memory.`),
+    section(p, 'Exit codes'),
+    ...cmdRows(p, [
+      ['0', 'success'],
+      ['1', 'failure / unhealthy check'],
+      ['2', 'usage (unknown input — with suggestion)'],
+      ['3', 'needs an interactive terminal'],
+    ]),
+    '',
+    p.dim(
+      fitText(`The core (${CORE_PACKAGE}) carries the prompt, skills, tools, and memory.`, terminalWidth() - 2),
+    ),
     hint(p, 'shell completions: eval "$(octocode-agent completion zsh)"'),
   ].join('\n');
 }
@@ -380,7 +398,7 @@ export function configReport(env: NodeJS.ProcessEnv = process.env): string {
   const launchMode =
     env.OCTOCODE_LAUNCHER_MODE === 'subprocess'
       ? 'subprocess (forced via OCTOCODE_LAUNCHER_MODE)'
-      : 'SDK embed (default; set OCTOCODE_LAUNCHER_MODE=subprocess to force subprocess)';
+      : 'SDK embed (default)';
   const authInHome = fs.existsSync(path.join(home, 'auth.json'));
   const authInPi = fs.existsSync(path.join(piAgentDir, 'auth.json'));
   const keys = presentApiKeys(env);
@@ -388,28 +406,38 @@ export function configReport(env: NodeJS.ProcessEnv = process.env): string {
   const piInfo = resolvePiBin(env);
 
   const p = makePainter(colorEnabled(env));
+  const envNames = [
+    'OCTOCODE_HOME',
+    'OCTOCODE_AGENT_DIR',
+    'OCTOCODE_LAUNCHER_MODE',
+    'OCTOCODE_PI_BIN',
+    'OCTOCODE_PI_PACKAGE',
+    'OCTOCODE_AGENT_EXTENSION_SPEC',
+  ] as const;
+  const setEnv = envNames.filter((n) => env[n] !== undefined);
+  const envBudget = terminalWidth() - 4;
   const envRow = (name: string): string =>
-    `  ${p.gray(name)}=${(env[name] as string | undefined) ?? p.dim('(not set)')}`;
+    `  ${p.gray(name)}=${fitText(tildePath(String(env[name] ?? '')), envBudget - name.length - 3)}`;
 
   return [
     header(p, 'config'),
     '',
     section(p, 'Runtime'),
     kv(p, 'launch mode', launchMode),
-    kv(p, 'octocode home', `${home}${authInHome ? p.dim(' (auth.json present)') : ''}`),
-    kv(p, 'pi agent dir', `${piAgentDir}${authInPi ? p.dim(' (auth.json present)') : ''}`),
+    kv(p, 'octocode home', `${tildePath(home)}${authInHome ? p.dim(' (auth.json ✓)') : ''}`),
+    kv(p, 'pi agent dir', `${tildePath(piAgentDir)}${authInPi ? p.dim(' (auth.json ✓)') : ''}`),
     '',
     section(p, 'Packages'),
     kv(
       p,
       'core',
-      `${coreSpec} ${p.dim(readPackageVersion(CORE_PACKAGE) ?? 'not installed locally')}`,
+      `${tildePath(coreSpec)} ${p.dim(readPackageVersion(CORE_PACKAGE) ?? 'not installed locally')}`,
     ),
     kv(
       p,
       'pi host',
       piInfo
-        ? `${piInfo.bin} (${piInfo.source})`
+        ? `${tildePath(piInfo.bin)} ${p.dim(`(${piInfo.source})`)}`
         : p.red('not found — run: octocode-agent update'),
     ),
     kv(p, 'pi version', readPackageVersion(getEffectivePiPackage(env)) ?? 'unknown'),
@@ -419,16 +447,11 @@ export function configReport(env: NodeJS.ProcessEnv = process.env): string {
     kv(
       p,
       'api keys set',
-      keys.length > 0 ? keys.join(', ') : p.red('(none detected — see: octocode-agent auth)'),
+      keys.length > 0 ? keys.join(', ') : p.red('(none detected — run: octocode-agent auth login)'),
     ),
     '',
     section(p, 'Env overrides'),
-    envRow('OCTOCODE_HOME'),
-    envRow('OCTOCODE_AGENT_DIR'),
-    envRow('OCTOCODE_LAUNCHER_MODE'),
-    envRow('OCTOCODE_PI_BIN'),
-    envRow('OCTOCODE_PI_PACKAGE'),
-    envRow('OCTOCODE_AGENT_EXTENSION_SPEC'),
+    ...(setEnv.length > 0 ? setEnv.map(envRow) : [p.dim('  none set')]),
   ].join('\n');
 }
 
@@ -590,12 +613,21 @@ export function authReport(env: NodeJS.ProcessEnv = process.env): string {
     header(p, 'auth'),
     '',
     section(p, 'Providers (env keys — recommended)'),
+    ...cmdRows(
+      p,
+      AUTH_PROVIDERS.map((provider) => [
+        provider.keyVar,
+        `${provider.label} — ${link(p, provider.url, provider.host, Boolean(process.stdout.isTTY))}`,
+      ]),
+    ),
+    `  ${p.dim('Or guided setup:')} ${p.brand('octocode-agent auth login')}`,
+    '',
+    section(p, 'Exit codes'),
     ...cmdRows(p, [
-      ['ANTHROPIC_API_KEY', 'Claude (Anthropic) — https://console.anthropic.com'],
-      ['OPENAI_API_KEY', 'GPT-4 (OpenAI) — https://platform.openai.com/api-keys'],
-      ['GEMINI_API_KEY', 'Gemini (Google) — https://aistudio.google.com/app/apikey'],
-      ['MISTRAL_API_KEY', 'Mistral — https://console.mistral.ai'],
-      ['GROQ_API_KEY', 'Groq — https://console.groq.com'],
+      ['0', 'success'],
+      ['1', 'runtime failure (e.g. unhealthy doctor)'],
+      ['2', 'usage / unknown input (did you mean?)'],
+      ['3', 'needs an interactive terminal'],
     ]),
     '',
     section(p, '.env files (loaded at session start)'),
@@ -642,7 +674,7 @@ export function modelsReport(env: NodeJS.ProcessEnv = process.env): string {
       ['octocode-agent --model <id>', 'launch with a model'],
       ['/model <id>', 'switch inside a session'],
       ['--models a,b,c', 'cycle through configured models'],
-      ['~/.pi/agent/models.json', 'persist a default'],
+      ['octocode-agent models --set', 'persist your default model'],
     ]),
     '',
     section(p, 'Common models'),
@@ -1072,6 +1104,27 @@ export async function runUpdate(
 const NON_INTERACTIVE_FLAGS = new Set(['-p', '--print', '--mode', '--json']);
 
 /**
+ * Resolve the model to show in the launch banner: explicit --model flag/env wins,
+ * else the persisted defaultModel from ~/.pi/agent/settings.json.
+ */
+export function resolveLaunchModel(
+  argv: string[] = [],
+  piAgentDir: string = path.join(os.homedir(), '.pi', 'agent'),
+): string | null {
+  const eqArg = argv.find((a) => a.startsWith('--model='));
+  if (eqArg) return eqArg.slice('--model='.length) || null;
+  const flagIdx = argv.indexOf('--model');
+  if (flagIdx !== -1 && argv[flagIdx + 1]) return argv[flagIdx + 1];
+  try {
+    const settings = JSON.parse(fs.readFileSync(path.join(piAgentDir, 'settings.json'), 'utf8'));
+    const model = settings?.defaultModel;
+    return typeof model === 'string' && model ? model : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Print the one-line brand banner before an interactive launch.
  * TTY-stderr only; honors OCTOCODE_AGENT_NO_BANNER=1 and skips print/rpc runs.
  */
@@ -1090,9 +1143,162 @@ export function printLaunchBanner(
       launcher: launcherVersion(),
       core: readPackageVersion(CORE_PACKAGE),
       pi: env.OCTOCODE_PI_BIN ? null : readPackageVersion(getEffectivePiPackage(env)),
+      model: resolveLaunchModel(argv),
     }),
   );
+  if (presentApiKeys(env).length === 0) {
+    log(p.gray('no API keys detected — run `octocode-agent auth login` to set up'));
+  }
   return true;
+}
+
+/**
+ * Guided setup repair (interactive only): re-checks, then walks each failing
+ * check through its fix path (wizard for keys, update for missing core).
+ * Returns 0 when healthy afterwards, 1 when issues remain, 3 without a TTY.
+ */
+export async function runSetupFix(deps: LaunchDeps = {}): Promise<number> {
+  const env = deps.env ?? process.env;
+  const out = deps.out ?? console.log;
+  const p = makePainter(colorEnabled(env));
+  if (!process.stdin.isTTY) {
+    out(`${p.red('✗')} setup --fix needs an interactive terminal`);
+    return 3;
+  }
+  const data = setupData(env);
+  for (const check of data.checks) {
+    if (check.ok) continue;
+    if (check.name === 'api-keys') {
+      await runAuthWizard({ env });
+    } else if (check.name === 'core') {
+      runUpdate('core', deps);
+    }
+  }
+  out('');
+  out(setupReport(env));
+  return setupData(env).allGood ? 0 : 1;
+}
+
+/**
+ * `models --set [model]` — persist the default model Pi will boot with.
+ * No arg + TTY → arrow-key picker over the curated list. Writes
+ * ~/.pi/agent/settings.json defaultProvider+defaultModel (Pi's own contract).
+ */
+export async function runModelsSet(
+  modelArg: string | undefined,
+  deps: LaunchDeps = {},
+  piDir: string = piAgentDir(),
+): Promise<number> {
+  const env = deps.env ?? process.env;
+  const out = deps.out ?? console.log;
+  const p = makePainter(colorEnabled(env));
+  const list = modelsData().commonModels;
+  let provider: string | undefined;
+  let id: string | undefined;
+  if (modelArg) {
+    if (modelArg.includes('/')) [provider, id] = modelArg.split('/', 2);
+    else {
+      id = modelArg;
+      provider = list.find((m) => m.id === id)?.provider;
+    }
+    if (!id || !provider) {
+      out(`${p.red('✗')} unknown model "${modelArg}"`);
+      out(hint(p, `known: ${list.map((m) => m.id).join(', ')} — or pass provider/id`));
+      return 2;
+    }
+  } else {
+    const picked = await selectOne(p, {
+      title: 'default model',
+      rows: list.map((m) => ({ id: `${m.provider}/${m.id}`, label: m.id, meta: m.note })),
+    });
+    if (!picked) {
+      out(p.gray('cancelled'));
+      return 0;
+    }
+    [provider, id] = picked.split('/', 2);
+  }
+  const file = setDefaultModelInSettings(piDir, provider, id);
+  out(`${p.green('✓')} default model ${p.bold(p.brand(`${provider}/${id}`))}`);
+  out(p.dim(`  saved → ${file}`));
+  return 0;
+}
+
+/** `resume` with no id: arrow-key picker over local session files (newest first). */
+export async function runResumePicker(
+  deps: LaunchDeps = {},
+  dir: string = path.join(piAgentDir(), 'sessions'),
+): Promise<string | null> {
+  const env = deps.env ?? process.env;
+  const p = makePainter(colorEnabled(env));
+  let files: string[] = [];
+  try {
+    files = fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)
+      .map((x) => x.f);
+  } catch {
+    return null;
+  }
+  if (files.length === 0) return null;
+  return selectOne(p, {
+    title: 'resume session',
+    rows: files.map((f) => {
+      const t = fs.statSync(path.join(dir, f)).mtimeMs;
+      return { id: f.replace(/\.jsonl$/, ''), label: f, meta: formatAge(Date.now() - t) };
+    }),
+  });
+}
+
+/** Small relative-age formatter (looking at sessions mtimes). */
+export function formatAge(ms: number): string {
+  const m = Math.floor(ms / 60000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+const COMMAND_VERBS = [
+  'help', 'config', 'doctor', 'setup', 'auth', 'models', 'sessions',
+  'update', 'resume', 'run', 'serve', 'completion', 'version',
+];
+
+function editDistance(a: string, b: string): number {
+  const dp: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+/**
+ * Near-verb guard: `octocode-agent confg` should never silently boot a session
+ * with the prompt "confg". Fires only for a single bare token (real prompts
+ * are quoted multi-word strings) within edit distance ≤ 2 of a real verb.
+ */
+export function suggestCommand(token: string | undefined): string | null {
+  if (!token || token.includes('-') || token.includes(' ') || token.includes('"')) return null;
+  const t = token.toLowerCase();
+  if (COMMAND_VERBS.includes(t)) return null;
+  let best: string | null = null;
+  let bestD = 3;
+  for (const verb of COMMAND_VERBS) {
+    const d = editDistance(t, verb);
+    if (d > 0 && d < bestD) {
+      best = verb;
+      bestD = d;
+    }
+  }
+  return best;
 }
 
 export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<number> {
@@ -1110,12 +1316,14 @@ export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<
     case 'config':
       out(json ? JSON.stringify(configData(env), null, 2) : configReport(env));
       return 0;
-    case 'setup':
+    case 'setup': {
+      if ((args ?? []).includes('--fix')) return runSetupFix(deps);
       out(json ? JSON.stringify(setupData(env), null, 2) : setupReport(env));
       return 0;
+    }
     case 'auth': {
       const sub = args?.[0];
-      if (sub === 'login') return launchAgent([], deps);
+      if (sub === 'login') return runAuthWizard({ env });
       if (sub === 'logout') {
         const p = makePainter(colorEnabled(env));
         out(
@@ -1146,9 +1354,13 @@ export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<
       out(json ? JSON.stringify(data, null, 2) : doctorReport(env));
       return data.healthy ? 0 : 1;
     }
-    case 'models':
+    case 'models': {
+      const r = args ?? rest ?? [];
+      const setIdx = r.indexOf('--set');
+      if (setIdx !== -1) return runModelsSet(r[setIdx + 1], deps);
       out(json ? JSON.stringify(modelsData(), null, 2) : modelsReport(env));
       return 0;
+    }
     case 'sessions':
       out(json ? JSON.stringify(sessionsData(), null, 2) : sessionsReport(env));
       return 0;
@@ -1187,11 +1399,22 @@ export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<
     case 'resume': {
       const r = rest ?? [];
       const id = r[0] && !r[0].startsWith('-') ? r[0] : undefined;
-      printLaunchBanner(r, env, deps.log);
+      if (!id && process.stdin.isTTY && process.stdout.isTTY) {
+        const picked = await runResumePicker(deps);
+        if (picked) return launchAgent(['--session', picked], deps);
+        printLaunchBanner(r, env, deps.log);
+      }
       return launchAgent(id ? ['--session', id, ...r.slice(1)] : ['-r', ...r], deps);
     }
     case 'launch':
     default: {
+      const suggestion = suggestCommand(argv.length <= 2 ? argv[0] : undefined);
+      if (suggestion) {
+        const p = makePainter(colorEnabled(env));
+        out(`${p.red('✗')} unknown command "${argv[0]}"`);
+        out(hint(p, `did you mean: octocode-agent ${suggestion}`));
+        return 2;
+      }
       printLaunchBanner(rest ?? [], env, deps.log);
       return launchAgent(applyProfile(rest ?? [], profile, env), deps);
     }

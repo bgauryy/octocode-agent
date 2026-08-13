@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   banner,
   BRAND_MARK,
@@ -7,14 +7,21 @@ import {
   cmdRows,
   colorEnabled,
   diagLine,
+  ellipsizeEnd,
+  ellipsizeMiddle,
+  fitText,
   header,
   hint,
   kv,
   launchBanner,
+  link,
   makePainter,
   padEndVisible,
+  rule,
   section,
   stripAnsi,
+  terminalWidth,
+  tildePath,
   visibleLength,
 } from '../src/ui.js';
 
@@ -142,6 +149,69 @@ describe('launchBanner', () => {
       launchBanner(makePainter(false), { launcher: null, core: '1.3.0', pi: null }),
     );
     expect(text).toBe(`${BRAND_MARK} ${BRAND_NAME}  core 1.3.0`);
+  });
+});
+
+describe('width-aware layer', () => {
+  afterEach(() => {
+    delete process.env.COLUMNS;
+  });
+
+  it('terminalWidth honors COLUMNS and clamps to sane bounds', () => {
+    delete process.env.COLUMNS;
+    expect(terminalWidth()).toBeGreaterThanOrEqual(40);
+    process.env.COLUMNS = '10';
+    expect(terminalWidth()).toBe(40);
+    process.env.COLUMNS = '5000';
+    expect(terminalWidth()).toBe(200);
+    process.env.COLUMNS = '120';
+    expect(terminalWidth()).toBe(120);
+  });
+
+  it('ellipsizeEnd truncates exactly to the visible budget', () => {
+    expect(ellipsizeEnd('hello world', 6)).toBe('hello…');
+    expect(visibleLength(ellipsizeEnd('hello world', 6))).toBe(6);
+    expect(ellipsizeEnd('hi', 6)).toBe('hi');
+    expect(ellipsizeEnd('x', 1)).toBe('x');
+  });
+
+  it('ellipsizeMiddle keeps head and tail at 60/40', () => {
+    const out = ellipsizeMiddle('/a/very/long/path/to/some/place/deep', 20);
+    expect(visibleLength(out)).toBe(20);
+    expect(out.startsWith('/a/')).toBe(true);
+    expect(out.endsWith('deep')).toBe(true);
+    expect(out).toContain('…');
+  });
+
+  it('tildePath collapses the home prefix only', () => {
+    expect(tildePath('/home/u/.pi/agent', '/home/u')).toBe('~/.pi/agent');
+    expect(tildePath('/home/u', '/home/u')).toBe('~');
+    expect(tildePath('/var/tmp/x', '/home/u')).toBe('/var/tmp/x');
+  });
+
+  it('fitText middle-collapses paths, tail-collapses prose', () => {
+    const pathOut = fitText('/x/y/z/aaaaaaaaaaaaaaaaaaaa/w', 12);
+    expect(pathOut).toContain('…');
+    expect(pathOut.startsWith('/x')).toBe(true);
+    const proseOut = fitText('the quick brown fox jumps over', 12);
+    expect(proseOut.endsWith('…')).toBe(true);
+  });
+
+  it('link emits OSC-8 only when interactive+painted; plain fallback keeps info', () => {
+    const p = makePainter(true);
+    expect(link(p, 'https://x.io', 'x.io', true)).toContain('\x1b]8;;https://x.io');
+    expect(stripAnsi(link(p, 'https://x.io', 'x.io', true))).toBe('x.io');
+    expect(link(p, 'https://x.io', 'x.io', false)).toBe('x.io (https://x.io)');
+  });
+
+  it('stripAnsi removes OSC-8 sequences for correct width math', () => {
+    const linked = link(makePainter(true), 'https://example.com', 'example', true);
+    expect(visibleLength(linked)).toBe(7);
+  });
+
+  it('rule adapts to narrow terminals', () => {
+    process.env.COLUMNS = '50';
+    expect(visibleLength(rule(makePainter(false)))).toBe(48);
   });
 });
 
