@@ -47,6 +47,7 @@ import {
   type CdpSession,
   type CdpTargetInfo,
 } from '../src/chrome-debug.js';
+import { closeAllChromeConnections } from '../src/chrome-connection-cache.js';
 
 import {
   SCHEME_REGISTRY,
@@ -185,6 +186,14 @@ class MockCdpSession implements CdpSession {
     switch (method) {
       case 'DOM.getDocument':
         return { root: { nodeName: 'HTML', nodeId: 1 } };
+      case 'DOM.performSearch':
+        return { searchId: 'search-1', resultCount: 2 };
+      case 'DOM.getSearchResults':
+        return { nodeIds: [10, 11] };
+      case 'DOM.getOuterHTML':
+        return { outerHTML: params['nodeId'] === 10 ? '<a href="/issues">Issues</a>' : '<a href="/pulls">Pulls</a>' };
+      case 'DOM.discardSearchResults':
+        return {};
       case 'Runtime.evaluate':
         return runtimeResponseFor(String(params['expression'] ?? ''));
       case 'Performance.getMetrics':
@@ -1348,7 +1357,8 @@ test('chromeDebug tool execute path connects, runs a recipe, cleans up, redacts 
       ),
       /recipe exploded/,
     );
-    assert.equal(mockSession.closed, true, 'failed keepTab:true path closes only the websocket');
+    assert.equal(mockSession.closed, false, 'failed keepTab:true path keeps the CDP connection cached/open for reuse');
+    closeAllChromeConnections(); // clear the module-global cache so later tests are isolated
 
     assert.match(registeredTool.renderCall({ scheme: 'debug', port: 19333 }).render(120)[0]!, /chromeDebug debug/);
     assert.match(

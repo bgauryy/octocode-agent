@@ -40,8 +40,8 @@ Consume: `reflect developer-review --format markdown` or `query developer-review
 ## Housekeep (Cleanup)
 
 Ops: reversible `memory archive|restore`; reviewed `maintenance digest`, `lock prune`, `signal prune`, `memory forget`, `refinement delete`; automatic salience decay. Triggers (workboard-driven):
-- Workboard shows items → drain memory-review/`stale_file_refs` rows; prune stale locks/signals the board flags.
-- Before finishing, only when sensors show pressure → `reflect mine-weakness` if failures repeated; `maintenance digest --dry-run` (reports pressure, prunes only expired/superseded/terminal rows).
+- Workboard shows items → drain memory-review/`stale_file_refs` rows; preview `maintenance digest --dry-run` for stale ACTIVE runs and handoff broadcasts; prune stale locks/signals the board flags.
+- Before finishing, only when sensors show pressure → `reflect mine-weakness` if failures repeated; `maintenance digest --dry-run` (reports pressure, resolves stale handoff broadcasts, fails expired ACTIVE runs with receipts, and prunes only expired/superseded/terminal rows).
 - End of session → prune expired/resolved rows only when workboard lists them; dry-run first.
 - Idle → `maintenance digest --dry-run`, review IDs, then apply.
 

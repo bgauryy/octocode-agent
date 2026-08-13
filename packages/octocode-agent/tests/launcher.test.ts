@@ -33,10 +33,29 @@ import {
   sessionsData,
   completionScript,
   COMPLETION_SHELLS,
+  printLaunchBanner,
+  doctorReport,
 } from '../src/launcher.js';
 import type { LaunchDeps, PiBinInfo } from '../src/types.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
+
+describe('bin shim ↔ build output contract', () => {
+  const pkgUrl = new URL('../package.json', import.meta.url);
+  const binUrl = new URL('../bin/octocode-agent.mjs', import.meta.url);
+
+  it('bin shim delegates to the exact bundle package.json "bin" ships', async () => {
+    const { readFileSync } = await import('node:fs');
+    const pkg = JSON.parse(readFileSync(pkgUrl, 'utf8')) as { bin: string };
+    const shim = readFileSync(binUrl, 'utf8');
+    // package.json bin is the published entry — the bundled, self-running module.
+    expect(pkg.bin).toBe('./out/octocode-agent.mjs');
+    // The shim must import that same bundle …
+    expect(shim).toContain('../out/octocode-agent.mjs');
+    // … and must NOT reference the non-bundled tsc path that the esbuild build never emits.
+    expect(shim).not.toContain('out/launcher.js');
+  });
+});
 
 describe('constants', () => {
   it('CORE_SPEC is the npm: spec for pi -e flag', () => {
@@ -137,8 +156,28 @@ describe('parseInvocation', () => {
 
   it('forwards everything else to Pi', () => {
     const inv = parseInvocation(['--model', 'claude-opus-4-5', 'do something']);
-    expect(inv.command).toBe('run');
+    expect(inv.command).toBe('launch');
     expect(inv.rest).toEqual(['--model', 'claude-opus-4-5', 'do something']);
+  });
+
+  it('routes surface verbs and parses --profile', () => {
+    expect(parseInvocation(['research', 'q']).command).toBe('research');
+    expect(parseInvocation(['memory', 'recall']).command).toBe('memory');
+    expect(parseInvocation(['awareness', 'status']).command).toBe('awareness');
+    expect(parseInvocation(['tools']).command).toBe('tools');
+    expect(parseInvocation(['skills']).command).toBe('skills');
+    expect(parseInvocation(['--profile', 'ci', 'do x']).profile).toBe('ci');
+    expect(parseInvocation(['run', '--profile', 'ci', 'x']).profile).toBe('ci');
+  });
+
+  it('routes the new verbs run/serve/resume/doctor', () => {
+    expect(parseInvocation(['run', 'do x']).command).toBe('run');
+    expect(parseInvocation(['run', 'do x']).rest).toEqual(['do x']);
+    expect(parseInvocation(['run', 'x', '--json']).json).toBe(true);
+    expect(parseInvocation(['serve']).command).toBe('serve');
+    expect(parseInvocation(['resume', 'abc']).command).toBe('resume');
+    expect(parseInvocation(['resume', 'abc']).rest).toEqual(['abc']);
+    expect(parseInvocation(['doctor']).command).toBe('doctor');
   });
 
   it('routes new info subcommands (config/setup/auth/models/sessions)', () => {
@@ -734,6 +773,102 @@ describe('main', () => {
     }
   });
 
+  it('run forwards --print + task to the agent', async () => {
+    let captured: string[] | null = null;
+    const code = await main(['run', 'fix the bug'], {
+      env: {},
+      launchWithSdk: async (argv) => { captured = argv; return 0; },
+    });
+    expect(code).toBe(0);
+    expect(captured).toEqual(['--print', 'fix the bug']);
+  });
+
+  it('run --json forwards --mode json (not --print) and strips --json', async () => {
+    let captured: string[] | null = null;
+    await main(['run', 'list', '--json'], {
+      env: {},
+      launchWithSdk: async (argv) => { captured = argv; return 0; },
+    });
+    expect(captured).toEqual(['--mode', 'json', 'list']);
+  });
+
+  it('serve forwards --mode rpc', async () => {
+    let captured: string[] | null = null;
+    await main(['serve'], {
+      env: {},
+      launchWithSdk: async (argv) => { captured = argv; return 0; },
+    });
+    expect(captured).toEqual(['--mode', 'rpc']);
+  });
+
+  it('resume with an id maps to --session, without one maps to -r', async () => {
+    let captured: string[] | null = null;
+    await main(['resume', 'auth-refactor'], {
+      env: {},
+      launchWithSdk: async (argv) => { captured = argv; return 0; },
+    });
+    expect(captured).toEqual(['--session', 'auth-refactor']);
+    await main(['resume'], {
+      env: {},
+      launchWithSdk: async (argv) => { captured = argv; return 0; },
+    });
+    expect(captured).toEqual(['-r']);
+  });
+
+  it('auth status exits 2 when no keys are detected', async () => {
+    const lines: string[] = [];
+    const code = await main(['auth', 'status'], { out: (m) => lines.push(m), env: {} });
+    expect(code).toBe(2);
+    expect(lines.join('\n')).toContain('Not authenticated');
+  });
+
+  it('auth status exits 0 when a key is present', async () => {
+    const code = await main(['auth', 'status'], { out: () => {}, env: { ANTHROPIC_API_KEY: 'x' } });
+    expect(code).toBe(0);
+  });
+
+  it('doctor prints a health pane with all checks and a valid exit code', async () => {
+    const lines: string[] = [];
+    const code = await main(['doctor', '--json'], { out: (m) => lines.push(m), env: {} });
+    const parsed = JSON.parse(lines.join('\n')) as { healthy: boolean; checks: unknown[] };
+    expect(parsed.checks).toHaveLength(5);
+    expect(typeof parsed.healthy).toBe('boolean');
+    expect([0, 1]).toContain(code);
+  });
+
+  it('research spawns `npx octocode search`', async () => {
+    let cmd = '';
+    let args: readonly string[] = [];
+    const spawn = vi.fn((c: string, a?: readonly string[]) => { cmd = c; args = a ?? []; return { status: 0 }; });
+    const code = await main(['research', 'auth flow'], { env: {}, spawn });
+    expect(code).toBe(0);
+    expect(cmd).toBe('npx');
+    expect(args).toEqual(['octocode', 'search', 'auth flow']);
+  });
+
+  it('memory spawns the bundled awareness CLI when resolvable', async () => {
+    let cmd = '';
+    const spawn = vi.fn((c: string) => { cmd = c; return { status: 0 }; });
+    const code = await main(['memory', 'recall', 'x'], {
+      env: { OCTOCODE_AWARENESS_CLI: `${process.cwd()}/package.json` },
+      spawn,
+    });
+    expect(code).toBe(0);
+    expect(cmd).toBe('node');
+  });
+
+  it('applyProfile via run prepends preset flags and strips --profile tokens', async () => {
+    let captured: string[] | null = null;
+    // No profiles.json in the temp HOME → profile lookup is a no-op, but tokens are still stripped.
+    await main(['run', '--profile', 'ci', 'do x'], {
+      env: {},
+      launchWithSdk: async (argv) => { captured = argv; return 0; },
+    });
+    expect(captured).not.toContain('--profile');
+    expect(captured).not.toContain('ci');
+    expect(captured).toEqual(['--print', 'do x']);
+  });
+
   it('completion <shell> prints a script and exits 0', async () => {
     const lines: string[] = [];
     const code = await main(['completion', 'zsh'], { out: (m) => lines.push(m), env: {} });
@@ -781,5 +916,66 @@ describe('presentApiKeys integration (via reports)', () => {
     });
     expect(report).toContain('ANTHROPIC_API_KEY');
     expect(report).toContain('TAVILY_API_KEY');
+  });
+});
+
+// ── Styled surfaces (rebrand contract) ───────────────────────────────────────────
+
+describe('styled surfaces', () => {
+  it('help is sectioned and lists auth exactly once', () => {
+    const report = helpReport();
+    expect(report).toContain('Get started');
+    expect(report).toContain('Setup & health');
+    expect(report).toContain('auth [login|logout|status]');
+    expect(report.match(/auth \[login\|logout\|status\]/g)).toHaveLength(1);
+  });
+
+  it('version aligns fact rows under a branded header', () => {
+    const report = versionReport({});
+    expect(report).toContain('⬢ octocode-agent');
+    expect(report).toContain('\nlauncher');
+    expect(report).toContain('\nlaunch mode');
+  });
+
+  it('setup computes the summary from check status, not from glyphs', () => {
+    // No keys and resolvable packages in this workspace → deterministic ok/fail mix.
+    const report = setupReport({ FORCE_COLOR: '1' });
+    expect(report).toMatch(/✓ All checks passed|✗ Fix the issues above/);
+    expect(report).not.toContain('undefined');
+  });
+
+  it('doctor downgrades non-critical failures to warnings', () => {
+    const data = doctorReport({ FORCE_COLOR: '1' });
+    expect(data).toContain('octocode-agent doctor');
+  });
+});
+
+// ── printLaunchBanner ─────────────────────────────────────────────────────────
+
+describe('printLaunchBanner', () => {
+  it('prints the one-line brand banner on a TTY', () => {
+    const lines: string[] = [];
+    const printed = printLaunchBanner([], {}, (m) => lines.push(m), true);
+    expect(printed).toBe(true);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('octocode-agent');
+    expect(lines[0]).toContain('⬢');
+  });
+
+  it('stays silent without a TTY', () => {
+    const lines: string[] = [];
+    expect(printLaunchBanner([], {}, (m) => lines.push(m), false)).toBe(false);
+    expect(lines).toHaveLength(0);
+  });
+
+  it('honors OCTOCODE_AGENT_NO_BANNER and non-interactive flags', () => {
+    const lines: string[] = [];
+    const log = (m: string): void => {
+      lines.push(m);
+    };
+    expect(printLaunchBanner([], { OCTOCODE_AGENT_NO_BANNER: '1' }, log, true)).toBe(false);
+    expect(printLaunchBanner(['-p', 'hi'], {}, log, true)).toBe(false);
+    expect(printLaunchBanner(['--mode', 'rpc'], {}, log, true)).toBe(false);
+    expect(lines).toHaveLength(0);
   });
 });

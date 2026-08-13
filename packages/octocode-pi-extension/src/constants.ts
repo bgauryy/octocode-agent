@@ -20,6 +20,8 @@ export const OCTOCODE_SUPPORT_TOOL_NAMES = [
   'spawnSubagent',
   'MCPTool',
   'mcp',
+  'askUser',
+  'memory',
   'manage_context',
   'spawnAgent',
   'AgentMessage',

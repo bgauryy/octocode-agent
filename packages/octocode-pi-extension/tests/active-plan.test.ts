@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { afterEach, test, vi } from 'vitest';
+import { afterEach, test } from 'vitest';
 import { Type } from 'typebox';
 import type { ToolDefinition } from '../src/types.js';
 import {
   setPlan, addStep, startStep, completeStep, clearPlan, getPlan, renderActivePlanAddendum,
 } from '../src/tools/active-plan.js';
-import { registerPlanTool, refreshPlanUi, handleOctocodePlanCommand, buildPlanWidget, startPlanAnimation, stopPlanAnimation } from '../src/tools/plan-tool.js';
+import { registerPlanTool, refreshPlanUi, handleOctocodePlanCommand } from '../src/tools/plan-tool.js';
 import type { PiContext } from '../src/types.js';
 
 // Minimal UI spy for widget/status/notify assertions.
@@ -82,83 +82,15 @@ function loadTool(): ToolDefinition {
   return tools.get('plan')!;
 }
 
-test('buildPlanWidget renders progress bar, glyphs, spinner, and a next line', () => {
-  const steps = [
-    { text: 'research', status: 'done' as const },
-    { text: 'implement', status: 'doing' as const },
-    { text: 'test', status: 'todo' as const },
-  ];
-  const out = buildPlanWidget(steps, { frame: 0 }).join('\n');
-  assert.match(out, /Octocode plan/);
-  assert.match(out, /[\u25b0]+[\u25b1]+\s+1\/3/); // progress bar ▰▱ + 1/3
-  assert.match(out, /\u2713 1\. research/); // done glyph ✓
-  assert.match(out, /1\. research/);
-  assert.match(out, /2\. implement/); // doing row (spinner glyph precedes)
-  assert.match(out, /\u25cb 3\. test/); // todo glyph ○
-  assert.match(out, /\u21b3 next: implement/); // ↳ next
-});
-
-test('buildPlanWidget spinner frame advances the in-progress glyph', () => {
-  const steps = [{ text: 'x', status: 'doing' as const }];
-  const a = buildPlanWidget(steps, { frame: 0 })[1];
-  const b = buildPlanWidget(steps, { frame: 1 })[1];
-  assert.notEqual(a, b, 'spinner glyph changes with the frame');
-});
-
-test('buildPlanWidget is empty for no steps', () => {
-  assert.deepEqual(buildPlanWidget([]), []);
-});
-
-test('idle-tick animation ticks while a step is doing and self-stops when work ends', () => {
-  vi.useFakeTimers();
-  const cwd = '/tmp/plan-anim-ws';
-  try {
-    let renders = 0;
-    const tui = { requestRender: () => { renders += 1; } };
-    setPlan(cwd, ['a', 'b']); // step 1 is doing
-    startPlanAnimation(cwd, tui, 100);
-    startPlanAnimation(cwd, tui, 100); // idempotent — no second timer
-    vi.advanceTimersByTime(350);
-    assert.ok(renders >= 3, `spinner ticks while doing, got ${renders}`);
-    // Completing all steps → next tick self-stops (no doing step).
-    completeStep(cwd, 1);
-    completeStep(cwd, 2);
-    const before = renders;
-    vi.advanceTimersByTime(500);
-    assert.equal(renders, before, 'animation self-stops once no step is doing');
-  } finally {
-    stopPlanAnimation();
-    clearPlan(cwd);
-    vi.useRealTimers();
-  }
-});
-
-test('startPlanAnimation is a no-op without a doing step or requestRender', () => {
-  vi.useFakeTimers();
-  try {
-    setPlan('/tmp/anim-none', ['x']);
-    completeStep('/tmp/anim-none', 1); // no doing step
-    let n = 0;
-    startPlanAnimation('/tmp/anim-none', { requestRender: () => { n += 1; } }, 50);
-    startPlanAnimation('/tmp/anim-none2', undefined, 50); // no tui
-    vi.advanceTimersByTime(300);
-    assert.equal(n, 0);
-  } finally {
-    stopPlanAnimation();
-    clearPlan('/tmp/anim-none');
-    vi.useRealTimers();
-  }
-});
-
-test('refreshPlanUi sets a below-editor widget + footer when a plan exists, clears when empty', () => {
+test('refreshPlanUi keeps plan state compact and clears legacy below-editor widget', () => {
   const { ctx, calls } = uiCtx('/tmp/plan-ui-ws');
   setPlan('/tmp/plan-ui-ws', ['a', 'b']);
   refreshPlanUi(ctx);
-  assert.ok(calls.widget.some((w) => (w as { cleared: boolean }).cleared === false), 'widget set');
-  assert.ok(calls.status.some((s) => String((s as { text: unknown }).text).includes('plan 0/2')), 'footer set');
+  assert.ok(calls.widget.every((w) => (w as { cleared: boolean }).cleared === true), 'legacy widget cleared instead of dangling below the editor');
+  assert.ok(calls.status.some((s) => String((s as { text: unknown }).text).includes('plan 0/2 · a')), 'compact status includes progress and current step');
   clearPlan('/tmp/plan-ui-ws');
   refreshPlanUi(ctx);
-  assert.ok(calls.widget.some((w) => (w as { cleared: boolean }).cleared === true), 'widget cleared when empty');
+  assert.ok(calls.status.some((s) => (s as { text: unknown }).text === undefined), 'status cleared when empty');
 });
 
 test('/octocode-plan command completes a step and clears the plan', async () => {
@@ -170,6 +102,37 @@ test('/octocode-plan command completes a step and clears the plan', async () => 
   await handleOctocodePlanCommand('clear', ctx, (_c, m) => calls.notify.push(m));
   assert.equal(getPlan(cwd).length, 0);
   assert.ok(calls.notify.some((m) => /cleared/i.test(m)));
+});
+
+test('plan tool start/complete with a bad index reports an error and does not mutate', async () => {
+  const tool = loadTool();
+  const ctx = { cwd: '/tmp/plan-badidx-ws' } as unknown as import('../src/types.js').PiContext;
+  await tool.execute('id', { action: 'set', steps: ['one', 'two'] }, undefined, undefined, ctx);
+
+  const oob = (await tool.execute('id', { action: 'complete', index: 9 }, undefined, undefined, ctx)) as {
+    content: Array<{ text: string }>; isError?: boolean; details: { error?: string; steps: Array<{ status: string }> };
+  };
+  assert.equal(oob.isError, true);
+  assert.equal(oob.details.error, 'invalid-index');
+  assert.match(oob.content[0]!.text, /no such step 9/);
+  assert.equal(oob.details.steps.filter((s) => s.status === 'done').length, 0, 'nothing marked done');
+
+  const missing = (await tool.execute('id', { action: 'start' }, undefined, undefined, ctx)) as {
+    content: Array<{ text: string }>; isError?: boolean; details: { error?: string };
+  };
+  assert.equal(missing.isError, true);
+  assert.match(missing.content[0]!.text, /missing index/);
+  clearPlan('/tmp/plan-badidx-ws');
+});
+
+test('plan tool start/complete on an empty plan reports no active plan', async () => {
+  const tool = loadTool();
+  const ctx = { cwd: '/tmp/plan-empty-ws' } as unknown as import('../src/types.js').PiContext;
+  const res = (await tool.execute('id', { action: 'complete', index: 1 }, undefined, undefined, ctx)) as {
+    content: Array<{ text: string }>; isError?: boolean;
+  };
+  assert.equal(res.isError, true);
+  assert.match(res.content[0]!.text, /no active plan/);
 });
 
 test('plan tool set→complete→show drives the checklist and returns the addendum', async () => {

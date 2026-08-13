@@ -22,7 +22,7 @@ The build bundles both command lines:
 | Surface | Count |
 |---|---:|
 | Native Octocode research tools | 13 |
-| Pi support tools | 9 |
+| Pi support tools | 11 |
 | Replacement edit + write + bash tools | 3 |
 | Slash commands | 9 |
 | Bundled main-agent skills | 9 |
@@ -93,7 +93,7 @@ mutation targets.
 **Why, and how to work with overrides:** [docs/OVERRIDES.md](docs/OVERRIDES.md)
 (users + developers). UI/status details: [docs/UI.md](docs/UI.md).
 
-## Support tools (9)
+## Support tools (11)
 
 | Tool | Purpose |
 |---|---|
@@ -103,6 +103,8 @@ mutation targets.
 | `spawnSubagent` | Spawn a declared packaged subagent. |
 | `MCPTool` | Dedicated SDK-backed stdio MCP bridge using `.pi/agent/mcp.json` or `~/.pi/agent/mcp.json`. |
 | `mcp` | Compatibility alias for `MCPTool`. |
+| `askUser` | Ask the user a question via an interactive list picker or text input (falls back to inline prose on non-TUI hosts). |
+| `memory` | Recall/record/forget durable Awareness memory (first-class wrapper over the memory CLI). |
 | `manage_context` | Inspect and compact Pi context. |
 | `spawnAgent` | Start a background Pi worker. |
 | `AgentMessage` | List, message, steer, wait for, abort, or kill workers. |

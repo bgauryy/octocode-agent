@@ -31,7 +31,16 @@ export type Command =
   | 'sessions'
   | 'update'
   | 'completion'
-  | 'run';
+  | 'doctor'
+  | 'run'
+  | 'serve'
+  | 'resume'
+  | 'research'
+  | 'memory'
+  | 'awareness'
+  | 'tools'
+  | 'skills'
+  | 'launch';
 
 export interface ParsedInvocation {
   command: Command;
@@ -42,6 +51,8 @@ export interface ParsedInvocation {
   json?: boolean;
   args?: string[];
   rest?: string[];
+  /** Value of --profile <name>, if present (launch/run only). */
+  profile?: string;
 }
 
 export interface UpdateCommandResult {

@@ -380,7 +380,8 @@ test('build copies bundled Octocode skills without secret env files', () => {
     ['signal', 'list'],
     ['memory', 'recall'],
     ['reflect', 'record'],
-    ['wiki', 'sync'],
+    // note: 'wiki sync' was intentionally removed from Awareness (SQLite is canonical,
+    // no generated wiki projection) — see octocode-awareness docs/FEATURE_SWEEP.md.
   ] as const) {
     assert.equal(hasCommand(noun, verb), true, `Awareness schema includes ${noun} ${verb}`);
   }
@@ -545,7 +546,7 @@ test(
   withTempMemoryHome(() => {
     const status = formatStatus(distDir);
     assert.match(status, /system prompt: found/);
-    assert.match(status, /MCP research \(octocode server\) · 9 support · 3 guarded built-ins · 4 replaced/);
+    assert.match(status, /MCP research \(octocode server\) · 11 support · 3 guarded built-ins · 4 replaced/);
     assert.match(status, /awareness CLI:.*octocode-awareness\.js/);
     assert.match(status, /management CLI: npx octocode/);
     assert.match(status, /internal error log: .*\.octocode\/logs\/error\.txt/);
@@ -1651,7 +1652,15 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
     assert.deepEqual(Object.keys(((listed.details as { servers: Array<{ tools: Array<{ inputSchema: { properties: Record<string, unknown> } }> }> }).servers[0]!.tools[0]!.inputSchema.properties)), ['text']);
 
     const beforeStartWithCachedMcp = await captureExtensions().then(({ handlers }) =>
-      handlers.get('before_agent_start')!.at(-1)!({ systemPrompt: 'Pi base prompt' }, trustedCtx)
+      handlers.get('before_agent_start')!.at(-1)!({
+        systemPrompt: 'Pi base prompt',
+        systemPromptOptions: {
+          skills: [
+            { name: 'octocode-awareness', description: 'Shared workspace coordination and verification.' },
+            { name: 'octocode-roast', description: 'Critical review and adversarial critique.', source: 'user', scope: 'global' },
+          ],
+        },
+      }, trustedCtx)
     );
     const cachedPrompt = (beforeStartWithCachedMcp as { systemPrompt?: string }).systemPrompt ?? '';
     assert.match(cachedPrompt, /<mcp_cached_catalog>/);
@@ -1661,6 +1670,10 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
     assert.match(cachedPrompt, /description: Echo text/);
     assert.match(cachedPrompt, /"inputSchema"/);
     assert.match(cachedPrompt, /"text"/);
+    assert.match(cachedPrompt, /<available_skills>/);
+    assert.match(cachedPrompt, /octocode-awareness: Shared workspace coordination and verification\./);
+    assert.match(cachedPrompt, /octocode-roast: Critical review and adversarial critique\. \[user\/global\]/);
+    assert.match(cachedPrompt, /load the minimal matching skill before acting by reading its SKILL\.md/);
 
     const called = await invokeExecute(mcpTool, { action: 'call', server: 'fake', tool: 'echo', arguments: { text: 'ok' } }, trustedCtx);
     assert.match(called.content[0]!.text, /echo:ok/);
@@ -1825,11 +1838,11 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
         calls.push(['indicator', indicator.frames.join(''), String(indicator.intervalMs)]),
       setWorkingMessage: (message?: string) => calls.push(['working', message ?? '']),
     },
-  });
+  }, undefined, 'Improve toolbar UX\nextra context ignored');
   assert.deepEqual(calls, [
     ['thinking', 'Octocode thinking'],
-    ['title', 'Octocode Agent'],
-    ['header', '<◆ Octocode Terminal Agent> | <research · edit/write/bash guard · browser · agents · mcp · skills · session jobs> | <Try /octocode · /octocode-agents · /octocode-cron · /compact>'],
+    ['title', 'Octocode · Improve toolbar UX'],
+    ['header', '<◆ Improve toolbar UX> | <Ask → inspect → edit → verify · /octocode dashboard · /octocode-plan tasks · /octocode-agents workers>'],
     ['status', 'octocode', '<◆ Octocode>'],
     ['status', 'octocode-thinking', '<thinking: unknown model>'],
     ['indicator', '<✦><✧><✶><✧>', '220'],
@@ -3134,6 +3147,72 @@ test('AgentMessage status surfaces recovery-risk warnings for looping workers', 
     const summary = (status.details as { agent: { recoveryRisk?: { warnings: string[] } } }).agent;
     assert.match(text, /recovery-risk:/);
     assert.ok(summary.recoveryRisk?.warnings.some((warning) => /recovery loop/i.test(warning)));
+  } finally {
+    cleanupSpawnedAgentsForShutdown();
+    setAgentProcessFactoryForTests(null);
+  }
+});
+
+test('activation wires the Awareness lock/lease gate into the Pi tool lifecycle', async () => {
+  // The exclusive-lease enforcement lives in @octocodeai/octocode-awareness and
+  // fires on Pi's tool lifecycle. This proves the seam this package owns: activating
+  // the extension registers the awareness pre-edit (tool_call) gate + post-edit
+  // (tool_result) recorder on Pi. The lease-blocking engine itself is covered by the
+  // awareness package's own suite (needs its SQLite engine + identity resolution).
+  const { handlers } = await captureExtensions();
+  assert.ok(
+    (handlers.get('tool_call') ?? []).length >= 1,
+    'awareness tool_call gate (pre-edit exclusive-lease enforcement) must be wired',
+  );
+  assert.ok(
+    (handlers.get('tool_result') ?? []).length >= 1,
+    'awareness post-edit recorder must be wired',
+  );
+  assert.ok(
+    (handlers.get('agent_end') ?? []).length >= 1,
+    'awareness lifecycle hook must be wired',
+  );
+});
+
+test('AgentMessage routes steer/follow_up RPCs and does not fake running on idle steer', async () => {
+  const spawned: Array<{ proc: MockAgentProcess }> = [];
+  setAgentProcessFactoryForTests(() => {
+    const proc = createMockAgentProcess();
+    spawned.push({ proc });
+    return proc;
+  });
+  try {
+    const { tools } = await captureExtensions();
+    const spawnTool = tools.get('spawnAgent')!;
+    const messageTool = tools.get('AgentMessage')!;
+    const result = await invokeExecute(spawnTool, { task: 'route rpcs', name: 'router' });
+    const agentId = (result.details as { agent: { agentId: string } }).agent.agentId;
+
+    // Drive to idle so there is no in-flight turn to redirect.
+    spawned[0]!.proc.emitStdout({ type: 'agent_end', messages: [] });
+
+    // steer on an idle worker: RPC is still forwarded, but status must NOT flip to running.
+    const idleSteer = await invokeExecute(messageTool, { action: 'steer', agentId, message: 'redirect' });
+    const steerWrite = JSON.parse(spawned[0]!.proc.stdinWrites.at(-1)!);
+    assert.equal(steerWrite.type, 'steer');
+    assert.equal(steerWrite.message, 'redirect');
+    assert.equal(
+      (idleSteer.details as { agent: { status: string } }).agent.status,
+      'idle',
+      'steering an idle worker must not fake a running status',
+    );
+
+    // followUp produces a turn → status running, RPC type follow_up.
+    const fu = await invokeExecute(messageTool, { action: 'followUp', agentId, message: 'next' });
+    const fuWrite = JSON.parse(spawned[0]!.proc.stdinWrites.at(-1)!);
+    assert.equal(fuWrite.type, 'follow_up');
+    assert.equal((fu.details as { agent: { status: string } }).agent.status, 'running');
+
+    // steer while running → status running, RPC type steer.
+    const runSteer = await invokeExecute(messageTool, { action: 'steer', agentId, message: 'again' });
+    const runSteerWrite = JSON.parse(spawned[0]!.proc.stdinWrites.at(-1)!);
+    assert.equal(runSteerWrite.type, 'steer');
+    assert.equal((runSteer.details as { agent: { status: string } }).agent.status, 'running');
   } finally {
     cleanupSpawnedAgentsForShutdown();
     setAgentProcessFactoryForTests(null);

@@ -54,7 +54,7 @@ Loop-safe: de-dups identical run sets, goes quiet after 3 reminders/session. Run
 |---|---|
 | Verified reusable outcome | `reflect record --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" --task "<task>" --outcome worked\|partial\|failed --lesson "<lesson>"` (+ `--fix-repo`/`--fix-harness`/`--fix-instructions`) |
 | Work remains for another run | Publish a handoff signal or `session capture` (broadcasts one) |
-| Cleanup pressure | `memory archive --memory-id <id> --workspace "$PWD" --dry-run --compact`; inspect `maintenance digest --workspace "$PWD" --dry-run --compact` before any prune/forget |
+| Cleanup pressure | `maintenance digest --workspace "$PWD" --dry-run --compact` first; apply only after reviewing IDs. It resolves stale handoff broadcasts and marks expired ACTIVE runs `FAILED` with receipts, never `SUCCESS`. Use `memory archive --memory-id <id> --workspace "$PWD" --dry-run --compact` for memory rows. |
 | Stale file references | `query files --workspace "$PWD" --format table --limit 50`; repair/supersede rows |
 | Human bulk inspection | `query all --workspace "$PWD" --format html --out .octocode/awareness/index.html` |
 | Instructions caused a wrong turn | `reflect developer-review --workspace "$PWD"`; close the feedback row after the fix is verified |

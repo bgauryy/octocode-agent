@@ -116,15 +116,15 @@ export const GLOBAL_FLAGS = ['db', 'compact', 'help'];
 export const NUMERIC_FLAGS = new Set([
   'limit', 'min_importance', 'max_importance', 'min_count', 'min_edits',
   'min_lines', 'older_than_days', 'retention_days',
-  'refinement_handoff_retention_days', 'refinement_done_retention_days',
-  'operational_retention_days',
+  'refinement_handoff_retention_days', 'handoff_signal_retention_days',
+  'refinement_done_retention_days', 'operational_retention_days',
   'pressure_age_days',
   'priority', 'lease_minutes',
 ]);
 export const RETENTION_DAY_FLAGS = new Set([
   'retention_days', 'refinement_handoff_retention_days',
-  'refinement_done_retention_days', 'operational_retention_days',
-  'pressure_age_days',
+  'handoff_signal_retention_days', 'refinement_done_retention_days',
+  'operational_retention_days', 'pressure_age_days',
 ]);
 // Only these flags may use the `--no-*` spelling. Treating every `--no-*`
 // token as false let required scalar values such as `--agent-id` and
@@ -133,7 +133,7 @@ export const BOOLEAN_FLAGS = new Set([
   'compact', 'help', 'smart', 'global_only', 'strict_scope', 'all_workspaces', 'explain',
   'semantic', 'full', 'dry_run', 'include_handoffs', 'strict_agent_id',
   'verified', 'expired_only', 'all_pending', 'propose',
-  'include_bodies', 'explain_organ', 'check', 'include_view', 'all',
+  'fail_stale_active_runs', 'include_bodies', 'explain_organ', 'check', 'include_view', 'all',
   'unread_only', 'mark_read', 'resolved', 'global', 'strict', 'remove',
   'exclusive', 'next', 'duo', 'examples',
   'allow_similar', 'prune_orphans',

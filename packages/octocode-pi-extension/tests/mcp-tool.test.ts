@@ -2,12 +2,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { test } from 'vitest';
+import { afterEach, test } from 'vitest';
 import {
   OCTOCODE_MCP_ENV_DEFAULTS,
+  __test__ as mcpTestHooks,
+  getCachedMcpCatalogAddendum,
   patchGlobalMcpOctocodeEnv,
   resolveMcpCallText,
 } from '../src/tools/mcp-tool.js';
+
+const mcpCtx = { cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-cache-')) } as unknown as import('../src/types.js').PiContext;
+
+afterEach(() => {
+  mcpTestHooks.clearCachedMcpCatalog();
+});
 
 function tmpMcpJson(content: unknown): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-'));
@@ -110,6 +118,52 @@ test('call text: stub without structuredContent stays as-is (nothing better avai
 test('call text: non-record / malformed payloads stringify without throwing', () => {
   assert.doesNotThrow(() => resolveMcpCallText(null));
   assert.doesNotThrow(() => resolveMcpCallText({ content: 'weird' }));
+});
+
+// ─── cached catalog prompt addendum (compaction-surviving turn layer) ─────────
+
+test('cached catalog addendum includes MCP server instructions, tool descriptions, and full input schema', () => {
+  mcpTestHooks.setCachedMcpCatalog(mcpCtx, [{
+    name: 'octocode',
+    instructions: 'Use batched queries and follow continuation cursors.',
+    text: 'octocode: 1 tool(s)',
+    cachedAt: Date.now(),
+    tools: [{
+      name: 'localSearchCode',
+      description: 'Search local source files.',
+      inputSchema: {
+        type: 'object',
+        required: ['queries'],
+        properties: { queries: { type: 'array' }, timeout: { type: 'number' } },
+      },
+    }],
+  }]);
+
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+  assert.match(addendum, /<mcp_cached_catalog>/);
+  assert.match(addendum, /survives compaction/i);
+  assert.match(addendum, /server: octocode/);
+  assert.match(addendum, /cache: fresh/);
+  assert.match(addendum, /instructions: Use batched queries/);
+  assert.match(addendum, /tool: localSearchCode/);
+  assert.match(addendum, /description: Search local source files/);
+  assert.match(addendum, /"inputSchema"/);
+  assert.match(addendum, /"queries"/);
+});
+
+test('cached catalog addendum keeps stale entries visible but labels them as stale', () => {
+  mcpTestHooks.setCachedMcpCatalog(mcpCtx, [{
+    name: 'weather',
+    text: 'weather: 1 tool(s)',
+    cachedAt: Date.now() - 20 * 60_000,
+    tools: [{ name: 'forecast', description: 'Get forecast.', inputSchema: { type: 'object' } }],
+  }]);
+
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+  assert.match(addendum, /server: weather/);
+  assert.match(addendum, /cache: stale/i);
+  assert.match(addendum, /re-run MCPTool list\/describe/i);
+  assert.match(addendum, /tool: forecast/);
 });
 
 // ─── add / remove server (mcp.json CRUD, no agent restart) ────────────────────

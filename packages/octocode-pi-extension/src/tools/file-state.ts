@@ -7,10 +7,20 @@
  *   1. Read-state map — records content hashes so the edit tool can detect
  *      stale reads before writing (a lost-update guard).
  *   2. Per-file mutation queue — serialises concurrent read-modify-write cycles
- *      on the same file path so parallel tool calls cannot race.
+ *      on the same file path so parallel tool calls cannot race (within this
+ *      process only — see the cross-process note below).
  *
  * Keeping these in one place removes the coupling where write-tool and
  * octocode-tools previously imported from edit-tool.
+ *
+ * SCOPE — this guard is PROCESS-LOCAL. The read-state map and mutation queue only
+ * serialise edits issued within *this* Pi process. They do NOT protect against a
+ * second process (e.g. a parallel spawnAgent worker) editing the same file
+ * concurrently. Cross-process safety is a separate layer: declare edited paths
+ * via Awareness (`work start`) and take an exclusive lease (`lock acquire`) for
+ * non-mergeable or risky shared files — the Awareness pre-edit `tool_call` gate
+ * (wired at activation) enforces those leases across processes. See
+ * docs/AWARENESS_AGENT_FLOW.md §"Hooks during edits".
  */
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';

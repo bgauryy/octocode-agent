@@ -174,9 +174,10 @@ export function workboardRows(db: DatabaseSync, params: AwarenessQueryParams): A
     }, limit);
   }
 
+  const pressureScope = scopeFromParams(params);
   const pressure = inspectMaintenancePressure(db, {
-    workspace: scopeFromParams(params).workspacePath,
-    artifact: scopeFromParams(params).artifact,
+    workspace: pressureScope.workspacePath,
+    artifact: pressureScope.artifact,
     pressure_age_days: 1,
     workspace_normalized: true,
   });
@@ -192,11 +193,32 @@ export function workboardRows(db: DatabaseSync, params: AwarenessQueryParams): A
       files: [], created_at: utcNow(),
     });
   }
-  if (pressure.stale_open_signals > 0) {
+  if (pressure.stale_active_runs > 0) {
+    pressureRows.push({
+      item_type: 'pressure', id: 'stale-active-runs', status: 'review',
+      title: `${pressure.stale_active_runs} active run(s) have expired file presence`,
+      detail: 'Preview maintenance digest, then apply to mark stale ACTIVE runs FAILED with an audit receipt.',
+      action: 'maintenance digest --workspace "$PWD" --dry-run --compact',
+      raw_ids: pressure.samples.active_run_ids,
+      files: [], created_at: utcNow(),
+    });
+  }
+  if (pressure.stale_handoff_signals > 0) {
+    pressureRows.push({
+      item_type: 'pressure', id: 'stale-handoff-signals', status: 'review',
+      title: `${pressure.stale_handoff_signals} handoff signal(s) older than ${pressure.pressure_age_days}d`,
+      detail: 'Preview maintenance digest, then apply to auto-resolve stale handoff broadcasts.',
+      action: 'maintenance digest --workspace "$PWD" --dry-run --compact',
+      raw_ids: pressure.samples.handoff_signal_ids,
+      files: [], created_at: utcNow(),
+    });
+  }
+  const nonHandoffSignals = Math.max(0, pressure.stale_open_signals - pressure.stale_handoff_signals);
+  if (nonHandoffSignals > 0) {
     pressureRows.push({
       item_type: 'pressure', id: 'stale-open-signals', status: 'review',
-      title: `${pressure.stale_open_signals} open signal(s) older than ${pressure.pressure_age_days}d`,
-      detail: 'Acknowledge or resolve after review; no signal is silently pruned.',
+      title: `${nonHandoffSignals} non-handoff signal(s) older than ${pressure.pressure_age_days}d`,
+      detail: 'Acknowledge or resolve after review; only stale handoff broadcasts are auto-resolved.',
       action: 'signal list --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" --all --limit 5 --compact',
       raw_ids: pressure.samples.signal_ids,
       files: [], created_at: utcNow(),

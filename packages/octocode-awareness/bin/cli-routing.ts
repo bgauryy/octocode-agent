@@ -40,7 +40,7 @@ export const KNOWN_FLAGS: Record<string, string[]> = {
   'notify-prune': ['agent_id', 'signal_id', 'resolved', 'older_than_days', 'dry_run', 'workspace', 'artifact'],
   'session-capture': ['agent_id', 'workspace', 'artifact', 'repo', 'ref', 'reason', 'cwd'],
   'wait-for-lock': ['agent_id', 'target_file', 'file', 'workspace', 'artifact', 'wait_seconds', 'retry_interval'],
-  'digest': ['retention_days', 'refinement_handoff_retention_days', 'refinement_done_retention_days', 'operational_retention_days', 'pressure_age_days', 'dry_run', 'export_doc', 'workspace', 'artifact'],
+  'digest': ['retention_days', 'refinement_handoff_retention_days', 'handoff_signal_retention_days', 'refinement_done_retention_days', 'operational_retention_days', 'pressure_age_days', 'fail_stale_active_runs', 'dry_run', 'export_doc', 'workspace', 'artifact'],
   'hook-run': [],
   'hooks-install': ['host', 'project_dir', 'global', 'check', 'strict', 'dry_run', 'remove'],
   'schema': ['examples', 'all'],

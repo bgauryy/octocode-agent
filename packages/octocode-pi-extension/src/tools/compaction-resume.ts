@@ -3,8 +3,15 @@ import type { PiContext, PiInstance } from '../types.js';
 export type Notifier = (ctx: PiContext | undefined, msg: string, level?: string) => void;
 
 const RESUME_DEDUPE_WINDOW_MS = 1500;
+const DEFAULT_RESUME_RETRY_DELAY_MS = 400;
 
 let lastResumeScheduledAt = 0;
+let resumeRetryDelayMs = DEFAULT_RESUME_RETRY_DELAY_MS;
+
+/** Test seam: shorten the retry backoff (pass null to restore the default). */
+export function setCompactionResumeRetryDelayForTests(ms: number | null): void {
+  resumeRetryDelayMs = ms ?? DEFAULT_RESUME_RETRY_DELAY_MS;
+}
 
 export function clearCompactionWorkingState(ctx: PiContext | undefined): void {
   if (!ctx?.hasUI) return;
@@ -35,16 +42,34 @@ export function scheduleCompactionContinuation(
   // and queues only while streaming. Defer one macrotask so Pi finishes saving
   // the compaction entry, rebuilding UI/session context, and unwinding the
   // completion callback before the continuation prompt is accepted.
+  const send = () => {
+    const fn = pi.sendUserMessage as (text: string, opts?: { deliverAs?: string }) => void | Promise<void>;
+    return Promise.resolve(fn(continuation, { deliverAs: 'followUp' }));
+  };
   setTimeout(() => {
-    void Promise.resolve()
-      .then(() => {
-        const send = pi.sendUserMessage as (text: string, opts?: { deliverAs?: string }) => void | Promise<void>;
-        return send(continuation, { deliverAs: 'followUp' });
-      })
-      .catch((error) => {
+    void (async () => {
+      try {
+        await send();
+        return;
+      } catch {
+        // First attempt failed — Pi may still have been unwinding the compaction
+        // callback. Retry once after a short backoff before giving up.
+      }
+      await new Promise((r) => setTimeout(r, resumeRetryDelayMs));
+      try {
+        await send();
+      } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        notify(ctx, `Compaction completed, but resume prompt failed: ${message}`, 'error');
-      });
+        // Do not leave the user staring at a dead session: clear working UI and
+        // surface an actionable affordance instead of a single silent error.
+        clearCompactionWorkingState(ctx);
+        notify(
+          ctx,
+          `Compaction completed, but auto-resume failed after a retry (${message}). Type anything to continue where you left off.`,
+          'warning',
+        );
+      }
+    })();
   }, 0);
 }
 

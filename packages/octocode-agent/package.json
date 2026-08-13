@@ -20,26 +20,8 @@
   "bugs": "https://github.com/bgauryy/octocode-mcp/issues",
   "license": "MIT",
   "type": "module",
-  "bin": "./bin/octocode-agent.mjs",
-  "exports": {
-    ".": {
-      "types": "./out/launcher.d.ts",
-      "import": "./out/launcher.js",
-      "default": "./out/launcher.js"
-    },
-    "./launcher": {
-      "types": "./out/launcher.d.ts",
-      "import": "./out/launcher.js",
-      "default": "./out/launcher.js"
-    },
-    "./sdk-launcher": {
-      "types": "./out/sdk-launcher.d.ts",
-      "import": "./out/sdk-launcher.js",
-      "default": "./out/sdk-launcher.js"
-    }
-  },
+  "bin": "./out/octocode-agent.mjs",
   "files": [
-    "bin/**",
     "out/**",
     "docs/**",
     "README.md",
@@ -50,18 +32,19 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.80.3",
-    "@octocodeai/config": "^17.0.1",
-    "@octocodeai/pi-extension": "workspace:*"
+    "@octocodeai/config": "17.0.1",
+    "@octocodeai/pi-extension": "1.3.0"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
     "@vitest/coverage-v8": "^4.1.9",
+    "esbuild": "^0.28.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.9"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "start": "node ./bin/octocode-agent.mjs",
+    "build": "tsc --noEmit -p tsconfig.json && node scripts/build.mjs",
+    "start": "node ./out/octocode-agent.mjs",
     "lint": "tsc --noEmit -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
@@ -69,6 +52,7 @@
     "test:coverage": "vitest run --coverage",
     "verify": "yarn typecheck && yarn test",
     "check:no-workspace": "node scripts/check-no-workspace-protocol.mjs",
+    "sync:version:publish": "node scripts/sync-version.mjs",
     "prepack": "node scripts/check-no-workspace-protocol.mjs && yarn build",
     "prepublishOnly": "node scripts/check-no-workspace-protocol.mjs"
   },

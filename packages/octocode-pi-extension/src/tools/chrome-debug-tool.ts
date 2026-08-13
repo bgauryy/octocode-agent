@@ -14,6 +14,7 @@
 
 import path from 'node:path';
 import { connectToChrome, cleanupConnection, redactObject } from '../chrome-debug.js';
+import { connectionKey, getLiveConnection, cacheConnection, evictConnection } from '../chrome-connection-cache.js';
 import { SCHEME_REGISTRY, SCHEMES, ACTIONS, STEALTH_SCRIPT } from '../chrome-debug-schemes.js';
 import type { ChromeDebugParams, Scheme } from '../chrome-debug-schemes.js';
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
@@ -253,23 +254,36 @@ export function registerChromeDebugTool(
 
       setStatus(ctx, `⧗ chromeDebug · ${scheme}/${action} · connecting on :${port}`);
 
+      // Reuse a live CDP connection across calls (keyed by port+target) so stateful
+      // flows and injected state survive; a fresh tab (newTab) always connects anew.
+      const cacheKey = connectionKey(port, params.targetId ?? params.targetUrl ?? params.targetType);
+      const reusable = params.newTab ? undefined : getLiveConnection(cacheKey);
       let connection;
-      try {
-        connection = await connectToChrome({
-          port,
-          targetId: params.targetId,
-          targetUrl: params.targetUrl,
-          targetType: params.targetType,
-          newTab: params.newTab,
-          launch: params.launch,
-          headless: params.headless,
-          timeoutMs: params.timeoutMs,
-          signal,
-          workspaceCwd,
-        });
-      } catch (err) {
-        setStatus(ctx, undefined);
-        throw new Error(`[CHROME_DEBUG_ERROR] ${(err as Error).message ?? String(err)}`);
+      let reused = false;
+      if (reusable) {
+        connection = reusable;
+        reused = true;
+      } else {
+        try {
+          connection = await connectToChrome({
+            port,
+            targetId: params.targetId,
+            targetUrl: params.targetUrl,
+            targetType: params.targetType,
+            newTab: params.newTab,
+            launch: params.launch,
+            headless: params.headless,
+            timeoutMs: params.timeoutMs,
+            signal,
+            workspaceCwd,
+          });
+        } catch (err) {
+          setStatus(ctx, undefined);
+          throw new Error(`[CHROME_DEBUG_ERROR] ${(err as Error).message ?? String(err)}`);
+        }
+        // Cache non-ephemeral connections for reuse and so shutdown can close them
+        // (includes newTab: it stays open under keepTab, so it must be tracked).
+        if (keepTab && !params.cleanup) cacheConnection(cacheKey, port, connection);
       }
 
       const { session, version, metadata, screenshotDir } = connection;
@@ -277,7 +291,7 @@ export function registerChromeDebugTool(
       // Emit SESSION line
       const identity = metadata.identity;
       const sessionLine =
-        `[SESSION] mode=${metadata.mode} browser=${version.Browser ?? 'unknown'} ` +
+        `[SESSION] mode=${reused ? 'reused' : metadata.mode} browser=${version.Browser ?? 'unknown'} ` +
         `tab=${identity?.tabHost ?? '?'}${identity?.tabPath ?? ''} ` +
         `cookies=${(identity?.cookieNames ?? []).length} names`;
 
@@ -312,9 +326,9 @@ export function registerChromeDebugTool(
 
         if (!keepTab || params.cleanup) {
           await cleanupConnection(session, keepTab, params.cleanup === true).catch(() => undefined);
-        } else {
-          session.close();
+          evictConnection(cacheKey);
         }
+        // keepTab: leave the connection cached/open so a retry can reuse it.
 
         throw new Error(`[CHROME_DEBUG_ERROR] ${e.message} | target: ${JSON.stringify(metadata.activeTarget)}`);
       }
@@ -323,11 +337,15 @@ export function registerChromeDebugTool(
       if (params.cleanup) {
         // Full cleanup: close tab/WS AND terminate a Chrome this tool launched.
         await cleanupConnection(session, false, true).catch(() => undefined);
+        evictConnection(cacheKey);
       } else if (!keepTab) {
         await cleanupConnection(session, false).catch(() => undefined);
+        evictConnection(cacheKey);
       } else {
-        // keepTab: just close the WS, leave the tab open
-        session.close();
+        // keepTab (default): keep the CDP connection OPEN and cached so the next
+        // call reuses the same session (stateful flows + no reconnect latency).
+        // Leak safety: closeAllChromeConnections() runs on session_shutdown and
+        // the cache is LRU-capped + prunes closed sessions.
       }
 
       setStatus(ctx, undefined);

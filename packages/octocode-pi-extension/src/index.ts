@@ -54,9 +54,14 @@ import { registerWriteTool } from './tools/write-tool.js';
 import { registerBashTool } from './tools/bash-tool.js';
 import { getCachedMcpCatalogAddendum, handleOctocodeMcpCommand, patchGlobalMcpOctocodeEnv, registerMcpTool, startMcpConfigWatcher, stopAllMcpServers, stopMcpConfigWatchers, warmMcpCatalog } from './tools/mcp-tool.js';
 import { getDynamicCapabilitiesAddendum } from './tools/dynamic-catalog.js';
+import { renderAvailableSkillsAddendum } from './tools/skill-catalog.js';
 import { registerPlanTool } from './tools/plan-tool.js';
-import { renderActivePlanAddendum } from './tools/active-plan.js';
-import { handleOctocodePlanCommand, stopPlanAnimation, OCTOCODE_PLAN_COMMAND_USAGE, OCTOCODE_PLAN_COMMAND_COMPLETIONS } from './tools/plan-tool.js';
+import { registerAskUserTool } from './tools/ask-user-tool.js';
+import { registerMemoryTool } from './tools/memory-tool.js';
+import { renderActivePlanAddendum, getPlan } from './tools/active-plan.js';
+import { buildFooterSegments, buildWorkingLabel, resolveSystemThemeName, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName } from './ui-extras.js';
+import { listCDPSessions, closeAllChromeConnections } from './chrome-connection-cache.js';
+import { handleOctocodePlanCommand, OCTOCODE_PLAN_COMMAND_USAGE, OCTOCODE_PLAN_COMMAND_COMPLETIONS } from './tools/plan-tool.js';
 import { atomicWriteUtf8 } from './tools/file-state.js';
 import { assertPathAllowed } from './tools/path-guard.js';
 import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
@@ -208,10 +213,46 @@ export function formatOctocodeMetrics(ctx: PiContext | undefined, state: Octocod
   return `${context} · turns ${state.completedTurns} · ${active} · session ${formatDuration(now - state.sessionStartedAt)}`;
 }
 
-function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetricsState): void {
+function activeWorkerCount(): number {
+  try {
+    return listWorkerLedgerEntries().filter((e) => e.status === 'running' || e.status === 'idle' || e.status === 'starting').length;
+  } catch {
+    return 0;
+  }
+}
+
+function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetricsState, now = Date.now()): void {
   if (!ctx?.hasUI) return;
-  const metrics = formatOctocodeMetrics(ctx, state);
+  const metrics = formatOctocodeMetrics(ctx, state, now);
   ctx.ui?.setStatus?.('octocode-metrics', ctx.ui.theme?.fg('dim', metrics) ?? metrics);
+
+  // Consolidated branded footer — one surface for context/tokens/turns/timing/agents/plan.
+  const usage = ctx.getContextUsage?.() ?? { tokens: 0, contextWindow: 0 };
+  const plan = getPlan(ctx.cwd ?? process.cwd());
+  const segments = buildFooterSegments({
+    tokens: usage?.tokens ?? 0,
+    contextWindow: usage?.contextWindow ?? 0,
+    completedTurns: state.completedTurns,
+    activeTurnMs: state.activeTurnStartedAt !== undefined ? now - state.activeTurnStartedAt : undefined,
+    lastTurnMs: state.lastTurnMs,
+    sessionMs: now - state.sessionStartedAt,
+    activeWorkers: activeWorkerCount(),
+    planDone: plan.filter((s) => s.status === 'done').length,
+    planTotal: plan.length,
+    branch: undefined,
+    dirty: false,
+  });
+  ctx.ui?.setFooter?.((_tui: unknown, theme) => makeRenderer((width) => {
+    const brand = theme.fg('accent', theme.bold('\u25c6 Octocode'));
+    const body = theme.fg('dim', segments.join('  \u00b7  '));
+    return [truncateToWidth(`${brand}  ${body}`, width)];
+  }));
+
+  // Live token count beside the working spinner during an active turn.
+  if (state.activeTurnStartedAt !== undefined) {
+    const label = buildWorkingLabel({ startedAt: state.activeTurnStartedAt, now, tokens: usage?.tokens });
+    ctx.ui?.setWorkingMessage?.(ctx.ui.theme?.fg('accent', label) ?? label);
+  }
 }
 
 const REPO_STATE_TRIGGER = /\b(repo|git|status|staged|unstaged|changes?|diff|commit|branch|dirty|modified|working tree|worktree)\b/i;
@@ -251,17 +292,19 @@ async function buildRepoStateHint(pi: PiInstance, event: { text: string; source?
   ].filter(Boolean).join('\n');
 }
 
-export function applyOctocodeUi(ctx: PiContext | undefined, level?: string): void {
+export function applyOctocodeUi(ctx: PiContext | undefined, level?: string, contextTitle?: string): void {
   // setStatus / setHiddenThinkingLabel are TUI-only; guard with hasUI.
   if (!ctx?.hasUI) return;
   const ui = ctx?.ui;
   if (!ui) return;
+  const title = deriveSessionName(contextTitle ?? '');
+  const windowTitle = title ? `Octocode · ${title}` : 'Octocode';
+  const headerTitle = title ? `◆ ${title}` : '◆ Octocode';
   ui.setHiddenThinkingLabel?.('Octocode thinking');
-  ui.setTitle?.('Octocode Agent');
+  ui.setTitle?.(windowTitle);
   ui.setHeader?.((_tui: unknown, theme) => makeRenderer((width) => [
-    truncateToWidth(theme.fg('accent', theme.bold('◆ Octocode Terminal Agent')), width),
-    truncateToWidth(theme.fg('dim', 'research · edit/write/bash guard · browser · agents · mcp · skills · session jobs'), width),
-    truncateToWidth(theme.fg('muted', 'Try /octocode · /octocode-agents · /octocode-cron · /compact'), width),
+    truncateToWidth(theme.fg('accent', theme.bold(headerTitle)), width),
+    truncateToWidth(theme.fg('dim', 'Ask → inspect → edit → verify · /octocode dashboard · /octocode-plan tasks · /octocode-agents workers'), width),
   ]));
   const label = ui.theme?.fg ? ui.theme.fg('accent', '◆ Octocode') : '◆ Octocode';
   ui.setStatus?.('octocode', label);
@@ -777,9 +820,10 @@ async function wireOctocodePiExtension(
     hooks.on('session_shutdown', 'octocode-session-shutdown', async (_event: SessionShutdownEvent, ctx: PiContext | undefined) => {
       cronScheduler.stop();
       stopMcpConfigWatchers();
-      stopPlanAnimation();
       const cleanedAgents = cleanupSpawnedAgentsForShutdown();
       const stoppedMcpServers = stopAllMcpServers();
+      const closedChrome = closeAllChromeConnections();
+      if (closedChrome > 0) notify(ctx, `Closed ${closedChrome} cached CDP connection(s).`, 'info');
       if (ctx?.hasUI) {
         ctx.ui?.setStatus?.('octocode', '');
         ctx.ui?.setStatus?.('octocode-thinking', '');
@@ -813,6 +857,21 @@ async function wireOctocodePiExtension(
     hooks.on('thinking_level_select', 'octocode-thinking-select', async (event: ThinkingLevelEvent, ctx: PiContext | undefined) => {
       applyOctocodeUi(ctx, event.level);
       updateOctocodeMetricsUi(ctx, metricsState);
+    });
+
+    let sessionAutoNamed = false;
+    hooks.on('input', 'octocode-session-autoname', async (event: { text: string; source?: string; streamingBehavior?: string }, ctx: PiContext | undefined) => {
+      // Name the session from the first real user prompt so /resume, the session
+      // picker, and the terminal title are readable. Skip steering/extension input.
+      if (event.source === 'extension' || event.streamingBehavior === 'steer') return { action: 'continue' as const };
+      const name = deriveSessionName(event.text ?? '');
+      if (name) applyOctocodeUi(ctx, pi.getThinkingLevel?.(), name);
+      if (sessionAutoNamed) return { action: 'continue' as const };
+      sessionAutoNamed = true;
+      try {
+        if (!pi.getSessionName?.() && name) pi.setSessionName?.(name);
+      } catch { /* naming is best-effort */ }
+      return { action: 'continue' as const };
     });
 
     hooks.on('input', 'octocode-repo-state-hint', async (event: { text: string; images?: unknown[]; source?: string; streamingBehavior?: string }) => {
@@ -876,9 +935,13 @@ async function wireOctocodePiExtension(
       // turn from the on-disk registries (no cache/watcher), so it always reflects the
       // latest callTool/callSkill state; empty string when there are none.
       const dynamicCatalog = getDynamicCapabilitiesAddendum();
+      // Live projection of Pi-discovered skill names/descriptions. Rebuilt every
+      // turn from systemPromptOptions so it survives compaction and reflects
+      // skills added/removed by Pi discovery without a watcher.
+      const availableSkills = renderAvailableSkillsAddendum(event.systemPromptOptions?.skills);
       // Compaction-durable task breakdown: re-injected every turn so a plan survives compaction.
       const activePlan = renderActivePlanAddendum(ctx?.cwd ?? process.cwd());
-      const prompt = [cachedSystemPromptText, mcpCatalog, dynamicCatalog, activePlan].filter((part) => part.trim().length > 0).join('\n\n');
+      const prompt = [cachedSystemPromptText, mcpCatalog, dynamicCatalog, availableSkills, activePlan].filter((part) => part.trim().length > 0).join('\n\n');
       if (!shouldAppendSystemPrompt(event.systemPrompt, prompt)) {
         return;
       }
@@ -916,6 +979,10 @@ async function wireOctocodePiExtension(
 
     registerPlanTool(pi, Type, registeredToolNames, registerUniqueTool);
 
+    registerAskUserTool(pi, Type, registeredToolNames, registerUniqueTool);
+
+    registerMemoryTool(pi, Type, registeredToolNames, registerUniqueTool);
+
     registerMcpTool(pi, Type, registeredToolNames, registerUniqueTool);
 
     registerCompactionHooks(pi, notify);
@@ -950,6 +1017,64 @@ async function wireOctocodePiExtension(
     description: 'Show the Octocode dashboard: status, agents, setup, skills, health, and next actions.',
     handler: async (_args, ctx) => {
       notify(ctx, formatOctocodeDashboard(ctx, undefined, formatOctocodeCronSummary(cronScheduler.list())), 'info');
+    },
+  });
+
+  pi.registerCommand('octocode-chrome', {
+    description: 'List or close reused CDP connections: /octocode-chrome [list|close].',
+    getArgumentCompletions: (prefix: string) => ['list', 'close']
+      .filter((s) => s.startsWith(prefix))
+      .map((s) => ({ value: s, label: s, description: `octocode-chrome ${s}` })),
+    handler: async (args, ctx) => {
+      const arg = String(args ?? '').trim().toLowerCase() || 'list';
+      if (arg === 'close') {
+        const n = closeAllChromeConnections();
+        notify(ctx, `Closed ${n} cached CDP connection(s).`, 'info');
+        return;
+      }
+      const sessions = listCDPSessions();
+      if (sessions.length === 0) { notify(ctx, 'No cached CDP connections.', 'info'); return; }
+      const lines = sessions.map((s) =>
+        `• :${s.port} ${s.mode} target=${s.targetId.slice(0, 8)} uses=${s.uses} idle=${Math.round(s.idleMs / 1000)}s ${s.closed ? '(closed)' : ''} ${s.url}`,
+      );
+      notify(ctx, `Cached CDP connections (${sessions.length}):\n${lines.join('\n')}`, 'info');
+    },
+  });
+
+  pi.registerCommand('octocode-theme', {
+    description: 'Apply an Octocode theme: /octocode-theme [sync|dark|light]. sync follows the system appearance (macOS) or terminal background (COLORFGBG).',
+    getArgumentCompletions: (prefix: string) => ['sync', 'dark', 'light']
+      .filter((s) => s.startsWith(prefix))
+      .map((s) => ({ value: s, label: s, description: `octocode-${s === 'sync' ? 'dark|light (auto)' : s}` })),
+    handler: async (args, ctx) => {
+      const arg = String(args ?? '').trim().toLowerCase() || 'sync';
+      let themeName: OctocodeThemeName | null;
+      if (arg === 'dark') themeName = OCTOCODE_THEME_DARK;
+      else if (arg === 'light') themeName = OCTOCODE_THEME_LIGHT;
+      else {
+        // sync: cross-platform detection. macOS via AppleInterfaceStyle; other
+        // platforms via the terminal's COLORFGBG background code. Undetectable
+        // (e.g. Linux without COLORFGBG) => keep the current theme, don't force light.
+        let appleInterfaceStyle = '';
+        if (process.platform === 'darwin' && pi.exec) {
+          try {
+            const r = await pi.exec('defaults', ['read', '-g', 'AppleInterfaceStyle'], { timeout: 1500 });
+            if (r?.code === 0) appleInterfaceStyle = r.stdout.trim();
+          } catch { /* key unset in light mode */ }
+        }
+        themeName = resolveSystemThemeName({
+          platform: process.platform,
+          appleInterfaceStyle,
+          colorfgbg: process.env['COLORFGBG'],
+        });
+        if (!themeName) {
+          notify(ctx, 'Could not detect system appearance on this platform. Use /octocode-theme dark|light.', 'warning');
+          return;
+        }
+      }
+      const result = ctx.ui?.setTheme?.(themeName);
+      if (result && result.success === false) notify(ctx, `Could not apply ${themeName}: ${result.error ?? 'unknown error'}`, 'error');
+      else notify(ctx, `Applied ${themeName}.`, 'info');
     },
   });
 

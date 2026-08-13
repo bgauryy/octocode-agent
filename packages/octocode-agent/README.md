@@ -56,6 +56,7 @@ The core's default export stays append-mode and single-arg-callable, so the same
 - `OCTOCODE_AGENT_EXTENSION_SPEC` — override the core spec Pi loads (`npm:…`, `git:…`, or a path). Default: the bundled package.
 - `OCTOCODE_AGENT_CLEAN=1` — also pass `--no-skills --no-context-files`, so only the Octocode harness package loads (deterministic branded agent).
 - `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` — suppress `AGENTS.md` / `CLAUDE.md`; by default project context files stay enabled so repository rules remain authoritative.
+- `OCTOCODE_AGENT_NO_BANNER=1` — suppress the interactive launch banner (never shown for `run`/`serve`/print/json modes or non-TTY runs anyway).
 
 See [`docs/PI_INTEGRATION.md`](docs/PI_INTEGRATION.md) for how Pi works, the launch/UX/commands/instructions model, and the SDK-embed evolution path.
 

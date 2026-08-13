@@ -187,12 +187,16 @@ function buildMockSdk({
   onCreateServices,
   onPrintMode,
   onInteractiveMode,
+  settingsThrows = false,
+  sessionSelectedThrows = false,
 }: {
   runtimeShouldThrow?: boolean;
   sessionThrows?: boolean;
   onCreateServices?: (opts: unknown) => void;
   onPrintMode?: (opts: unknown) => void;
   onInteractiveMode?: (opts: unknown) => void;
+  settingsThrows?: boolean;
+  sessionSelectedThrows?: boolean;
 } = {}): SdkDeps['importPiSdk'] {
   return async () => {
     const makeInteractiveMode = () =>
@@ -231,12 +235,14 @@ function buildMockSdk({
       runRpcMode: makeRpcMode(),
       SessionManager: {
         create: () => ({}),
-        inMemory: () => ({}),
-        continueRecent: () => ({}),
-        open: () => ({}),
+        // The primary (selected) methods throw when sessionSelectedThrows so the
+        // launcher falls back to create() inside the catch block.
+        inMemory: () => { if (sessionSelectedThrows) throw new Error('inMemory failed'); return {}; },
+        continueRecent: () => { if (sessionSelectedThrows) throw new Error('continueRecent failed'); return {}; },
+        open: () => { if (sessionSelectedThrows) throw new Error('open failed'); return {}; },
       },
       SettingsManager: {
-        create: () => ({ applyOverrides: () => {} }),
+        create: () => { if (settingsThrows) throw new Error('settings failed'); return { applyOverrides: () => {} }; },
       },
       DefaultResourceLoader: class {
         reload() {
@@ -432,5 +438,57 @@ describe('launchWithSdk', () => {
       env: {},
     } satisfies SdkDeps);
     expect(result).toBe(0);
+  });
+
+  it('uses the in-memory session manager for --no-session', async () => {
+    const result = await launchWithSdk(['--no-session'], {
+      importPiSdk: buildMockSdk(),
+      importExtensionFactory: noopExtensionFactory,
+      env: {},
+    } satisfies SdkDeps);
+    expect(result).toBe(0);
+  });
+
+  it('uses continueRecent for --continue', async () => {
+    const result = await launchWithSdk(['--continue'], {
+      importPiSdk: buildMockSdk(),
+      importExtensionFactory: noopExtensionFactory,
+      env: {},
+    } satisfies SdkDeps);
+    expect(result).toBe(0);
+  });
+
+  it('falls back to create() when the selected session method throws', async () => {
+    const result = await launchWithSdk(['--no-session'], {
+      importPiSdk: buildMockSdk({ sessionSelectedThrows: true }),
+      importExtensionFactory: noopExtensionFactory,
+      env: {},
+    } satisfies SdkDeps);
+    expect(result).toBe(0);
+  });
+
+  it('tolerates SettingsManager.create throwing (non-critical)', async () => {
+    const result = await launchWithSdk([], {
+      importPiSdk: buildMockSdk({ settingsThrows: true }),
+      importExtensionFactory: noopExtensionFactory,
+      env: {},
+    } satisfies SdkDeps);
+    expect(result).toBe(0);
+  });
+
+  it('mirrors PI_CACHE_RETENTION from deps.env into process.env', async () => {
+    const prev = process.env.PI_CACHE_RETENTION;
+    delete process.env.PI_CACHE_RETENTION;
+    try {
+      await launchWithSdk([], {
+        importPiSdk: buildMockSdk(),
+        importExtensionFactory: noopExtensionFactory,
+        env: { PI_CACHE_RETENTION: 'long' },
+      } satisfies SdkDeps);
+      expect(process.env.PI_CACHE_RETENTION).toBe('long');
+    } finally {
+      if (prev === undefined) delete process.env.PI_CACHE_RETENTION;
+      else process.env.PI_CACHE_RETENTION = prev;
+    }
   });
 });

@@ -555,8 +555,11 @@ function invalidateServerCache(name: string): void {
   }
 }
 
-function formatCachedCatalogEntry(entry: ListedMcpServer): string {
+function formatCachedCatalogEntry(entry: ListedMcpServer, now = Date.now()): string {
   const lines = [`server: ${entry.name}`];
+  const freshness = isFresh(entry, now) ? 'fresh' : 'stale — re-run MCPTool list/describe before relying on exact current schemas';
+  lines.push(`cache: ${freshness}`);
+  if (entry.cachedAt !== undefined) lines.push(`cachedAt: ${new Date(entry.cachedAt).toISOString()}`);
   if (entry.instructions) lines.push(`instructions: ${entry.instructions}`);
   for (const rawTool of entry.tools) {
     if (!isPlainRecord(rawTool)) continue;
@@ -611,35 +614,49 @@ export function patchGlobalMcpOctocodeEnv(configPath = globalMcpPath()): void {
 }
 
 /**
- * Pre-warm the octocode MCP server catalog at session start so that the
+ * Pre-warm every configured MCP server catalog at session start so that the
  * <mcp_cached_catalog> block is already populated when before_agent_start fires
  * for turn 1. Non-blocking — errors are swallowed so a slow/missing MCP server
  * never prevents the session from starting.
  */
 export async function warmMcpCatalog(ctx?: PiContext, signal?: AbortSignal): Promise<void> {
+  const listed: ListedMcpServer[] = [];
   try {
     const loaded = await loadMcpConfig(ctx);
-    const config = loaded.servers.get(DEFAULT_OCTOCODE_MCP_SERVER_NAME);
-    if (!config) return;
-    const listed = await listServerTools(DEFAULT_OCTOCODE_MCP_SERVER_NAME, config, ctx, signal);
-    cacheListedCatalog(ctx, [listed]);
+    for (const [name, config] of loaded.servers) {
+      try {
+        listed.push(await listServerTools(name, config, ctx, signal));
+      } catch {
+        // Best-effort per server: a slow/broken MCP must not prevent the rest of
+        // the catalog from being cached or block session start.
+      }
+    }
+    cacheListedCatalog(ctx, listed);
   } catch {
-    // Best-effort: a slow or missing MCP server must not block session start.
+    // Best-effort: a missing/unreadable MCP config must not block session start.
   }
 }
 
 export function getCachedMcpCatalogAddendum(ctx?: PiContext): string {
   const cached = cachedCatalogs.get(cacheKey(ctx));
-  // Drop TTL-expired entries so the prompt hint never advertises stale tool sets.
-  const fresh = (cached ?? []).filter((entry) => isFresh(entry));
-  if (!fresh.length) return '';
+  if (!cached?.length) return '';
+  const now = Date.now();
   return [
     '<mcp_cached_catalog>',
-    'Cached MCP catalog from prior MCPTool list/describe calls in this Pi process. Treat as a hint; re-run MCPTool list/describe when exact current schema matters.',
-    ...fresh.map(formatCachedCatalogEntry),
+    'Cached MCP server instructions, tool descriptions, and input schemas from session warmup or prior MCPTool list/describe calls in this Pi process. This block is re-injected every turn so it survives compaction. Treat stale entries as hints; re-run MCPTool list/describe when exact current schema matters.',
+    ...cached.map((entry) => formatCachedCatalogEntry(entry, now)),
     '</mcp_cached_catalog>',
   ].join('\n');
 }
+
+export const __test__ = {
+  setCachedMcpCatalog(ctx: PiContext | undefined, entries: ListedMcpServer[]): void {
+    cachedCatalogs.set(cacheKey(ctx), entries);
+  },
+  clearCachedMcpCatalog(): void {
+    cachedCatalogs.clear();
+  },
+};
 
 function formatConfig(config: McpLoadedConfig, cwd = process.cwd()): string {
   const lines = ['Octocode MCP config'];
@@ -660,7 +677,7 @@ function formatStatus(config: McpLoadedConfig): string {
   ].filter(Boolean).join('\n');
 }
 
-interface ListedMcpServer {
+export interface ListedMcpServer {
   name: string;
   instructions?: string;
   tools: unknown[];

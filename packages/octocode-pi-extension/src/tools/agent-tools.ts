@@ -276,6 +276,27 @@ function getAgentDisplayState(agent: AgentDisplaySource): AgentDisplayState {
   return 'starting';
 }
 
+// Live-progress spinner: advanced once per ledger tick while a worker runs.
+const LEDGER_SPINNER = ['\u280b', '\u2819', '\u2839', '\u2838', '\u283c', '\u2834', '\u2826', '\u2827', '\u2807', '\u280f'];
+let ledgerSpinnerFrame = 0;
+/** Single shared 1s ticker; live only while ≥1 worker is non-terminal and the UI is present. */
+let ledgerTicker: ReturnType<typeof setInterval> | undefined;
+
+function stopLedgerTicker(): void {
+  if (ledgerTicker) {
+    clearInterval(ledgerTicker);
+    ledgerTicker = undefined;
+  }
+}
+
+/** Test hook: stop the ticker and report its state so tests never leak a real timer. */
+export function stopLedgerTickerForTests(): void {
+  stopLedgerTicker();
+}
+export function isLedgerTickerActiveForTests(): boolean {
+  return ledgerTicker !== undefined;
+}
+
 function agentDisplayMeta(state: AgentDisplayState, theme?: PiTheme): { icon: string; label: string } {
   const raw = (() => {
     switch (state) {
@@ -283,7 +304,7 @@ function agentDisplayMeta(state: AgentDisplayState, theme?: PiTheme): { icon: st
       case 'failed': return { icon: '\u2717', label: 'failed', color: 'error' };
       case 'killed': return { icon: '\u2717', label: 'killed', color: 'warning' };
       case 'blocked': return { icon: '!', label: 'blocked', color: 'warning' };
-      case 'running': return { icon: '\u29D7', label: 'running', color: 'warning' };
+      case 'running': return { icon: LEDGER_SPINNER[ledgerSpinnerFrame % LEDGER_SPINNER.length], label: 'running', color: 'warning' };
       case 'idle': return { icon: '\u25CE', label: 'idle', color: 'success' };
       case 'starting': return { icon: '\u25CB', label: 'starting', color: 'dim' };
     }
@@ -1123,6 +1144,7 @@ export function refreshAgentLedgerUi(ctx?: PiContext): void {
   if (!ctx?.hasUI) return;
   const records = [...agents.values()];
   if (records.length === 0) {
+    stopLedgerTicker();
     ctx.ui?.setStatus?.('octocode-agents', undefined);
     ctx.ui?.setWidget?.('octocode-agents', undefined);
     return;
@@ -1133,6 +1155,22 @@ export function refreshAgentLedgerUi(ctx?: PiContext): void {
     hasVisibleAgentLedgerRecords() ? (_tui: unknown, theme: PiTheme) => agentLedgerWidget(theme) : undefined,
     { placement: 'belowEditor' },
   );
+  // Live refresh: while any worker is active, advance the spinner and re-render every second.
+  const anyActive = records.some((r) => !isTerminal(r));
+  if (anyActive && !ledgerTicker) {
+    ledgerTicker = setInterval(() => {
+      ledgerSpinnerFrame = (ledgerSpinnerFrame + 1) % LEDGER_SPINNER.length;
+      if ([...agents.values()].some((r) => !isTerminal(r))) {
+        refreshAgentLedgerUi(ctx);
+      } else {
+        stopLedgerTicker();
+      }
+    }, 1000);
+    // Never hold the process open for the ticker alone.
+    (ledgerTicker as { unref?: () => void }).unref?.();
+  } else if (!anyActive && ledgerTicker) {
+    stopLedgerTicker();
+  }
 }
 
 function formatOctocodeAgentsHelp(): string {
@@ -1446,6 +1484,10 @@ export function registerAgentTools(
 
       if (action === 'abort') {
         if (!isTerminal(record)) {
+          // Graceful interrupt: the process stays alive and finishes aborting on its
+          // own, then emits agent_end which resolves any pending wait via
+          // notifyWaiters. We deliberately do NOT resolve waiters here — doing so
+          // would report the turn as done while the worker is still unwinding.
           sendRpc(record, { type: 'abort' });
           touch(record);
         }
@@ -1462,13 +1504,22 @@ export function registerAgentTools(
           `AgentMessage action:${action} cannot reach agent "${record.name}" — it has ${record.status} (process exited). Spawn a fresh worker.`,
         );
       }
+      // sendRpc self-handles a destroyed pipe (EPIPE): it sets status 'failed' and
+      // notifies waiters internally, and isProcessAlive above already rejected the
+      // dead-process case, so the boolean return needs no extra handling here.
       const wasRunning = record.status === 'running';
-      touch(record, 'running');
       if (action === 'steer') {
+        // steer redirects an in-flight turn; on an idle worker there is no turn to
+        // redirect, so forward the RPC but do not fake a 'running' status.
+        if (wasRunning) touch(record, 'running');
         sendRpc(record, { type: 'steer', message });
       } else if (action === 'followUp') {
+        // follow_up runs after the current turn (or immediately when idle) — either
+        // way it produces a turn, so 'running' is accurate.
+        touch(record, 'running');
         sendRpc(record, { type: 'follow_up', message });
       } else {
+        touch(record, 'running');
         sendRpc(record, {
           type: 'prompt',
           message,

@@ -156,21 +156,23 @@ describe('digest dry_run', () => {
     const db = freshDb();
     const result = digest(db, { dry_run: true });
     expect(Object.keys(result).sort()).toEqual([
-      'archived_memories', 'candidate_ids', 'candidate_limit', 'dry_run', 'fts_rebuilt', 'ok', 'pressure_age_days',
+      'archived_memories', 'candidate_ids', 'candidate_limit', 'dry_run', 'failed_stale_active_runs', 'fts_rebuilt', 'ok', 'pressure_age_days',
       'pressure_samples', 'pruned_locks', 'pruned_old', 'pruned_refinements', 'pruned_runs', 'resolved_handoff_signals',
-      'stale_missing_refs', 'stale_open_signals', 'stale_pending_runs',
-      'would_archive', 'would_prune_locks', 'would_prune_old', 'would_prune_refinements', 'would_prune_runs',
+      'stale_active_runs', 'stale_handoff_signals', 'stale_missing_refs', 'stale_open_signals', 'stale_pending_runs',
+      'would_archive', 'would_fail_stale_active_runs', 'would_prune_locks', 'would_prune_old', 'would_prune_refinements', 'would_prune_runs',
       'would_resolve_handoff_signals',
     ]);
     expect(result).toMatchObject({
       pressure_age_days: 1,
       stale_pending_runs: 0,
+      stale_active_runs: 0,
       stale_open_signals: 0,
+      stale_handoff_signals: 0,
       stale_missing_refs: 0,
-      pressure_samples: { run_ids: [], signal_ids: [], memory_ids: [] },
+      pressure_samples: { run_ids: [], active_run_ids: [], signal_ids: [], handoff_signal_ids: [], memory_ids: [] },
       candidate_limit: 20,
       candidate_ids: {
-        expire_memory_ids: [], purge_memory_ids: [], locks: [], refinement_ids: [], run_ids: [],
+        expire_memory_ids: [], purge_memory_ids: [], locks: [], refinement_ids: [], run_ids: [], stale_active_run_ids: [],
       },
     });
   });

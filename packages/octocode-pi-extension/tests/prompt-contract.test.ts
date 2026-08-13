@@ -118,8 +118,8 @@ test('octocode-cli documents MCP-first and npx management routing', () => {
   // MCPTool covers research; CLI section is management-only
   assert.match(SYSTEM_PROMPT, /MCPTool handles all research/);
   assert.match(SYSTEM_PROMPT, /never shell to `npx octocode` for research/);
-  assert.match(SYSTEM_PROMPT, /npx octocode skill --name/);
-  assert.match(SYSTEM_PROMPT, /npx octocode lsp-server/);
+  assert.match(SYSTEM_PROMPT, /npx octocode(@latest)? skill --name/);
+  assert.match(SYSTEM_PROMPT, /npx octocode(@latest)? lsp-server/);
   assert.match(SYSTEM_PROMPT, /\$OCTOCODE_AWARENESS_CLI/);
   // tools.md enforces direct tool calls — no SDK script substitution
   assert.match(SYSTEM_PROMPT, /Do not replace a requested tool run with a hand-written SDK\/Node script/);

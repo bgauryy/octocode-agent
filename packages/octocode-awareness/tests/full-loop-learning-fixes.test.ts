@@ -199,7 +199,9 @@ describe('READ -> DO -> LEARN closure fixes', () => {
     const preview = digest(db, { workspace, dry_run: true });
     expect(preview.pressure_age_days).toBe(1);
     expect(preview.stale_pending_runs).toBe(1);
+    expect(preview.stale_active_runs).toBe(0);
     expect(preview.stale_open_signals).toBe(1);
+    expect(preview.stale_handoff_signals).toBe(0);
     expect(preview.stale_missing_refs).toBe(1);
     expect(db.prepare("SELECT status FROM task_runs WHERE run_id = 'run_old'").get())
       .toEqual({ status: 'PENDING' });

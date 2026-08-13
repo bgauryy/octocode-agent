@@ -21,6 +21,9 @@ import {
   findReapableIdleAgents,
   formatElapsed,
   formatAgentLedgerDetails,
+  refreshAgentLedgerUi,
+  isLedgerTickerActiveForTests,
+  stopLedgerTickerForTests,
 } from '../src/tools/agent-tools.js';
 
 // ─── Reliability guardrails (research-backed) ─────────────────────────────────
@@ -289,4 +292,54 @@ test('M7: spawning beyond MAX_AGENT_RECORDS non-droppable agents throws', functi
     /registry.*capacity|too many|at capacity/i,
     'Expected hard-cap error when non-droppable agents exceed MAX_AGENT_RECORDS',
   );
+});
+
+// ─── L2/L3: live ledger ticker (Wave 3 live-progress) ─────────────────────────
+
+test('L2: live ledger ticker runs while a worker is active and stops when it finishes', () => {
+  if (isSubagentProcess()) return;
+  const ctx = {
+    hasUI: true,
+    ui: { setStatus: () => {}, setWidget: () => {} },
+  } as never;
+
+  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  spawnRpcAgent({ task: 'long job', resourceMode: 'lean' }, ctx);
+
+  refreshAgentLedgerUi(ctx);
+  assert.equal(isLedgerTickerActiveForTests(), true, 'ticker active while a worker runs');
+
+  mock.exitCode = 0;
+  mock._emit('close', 0, null);
+  refreshAgentLedgerUi(ctx);
+  assert.equal(isLedgerTickerActiveForTests(), false, 'ticker stops once no worker is active');
+
+  stopLedgerTickerForTests();
+});
+
+test('L3: refreshAgentLedgerUi with no agents clears the widget and stops the ticker', () => {
+  if (isSubagentProcess()) return;
+  const widgetVals: unknown[] = [];
+  const ctx = {
+    hasUI: true,
+    ui: { setStatus: () => {}, setWidget: (_k: string, v: unknown) => widgetVals.push(v) },
+  } as never;
+
+  refreshAgentLedgerUi(ctx); // registry cleared by beforeEach
+  assert.equal(isLedgerTickerActiveForTests(), false, 'no ticker without active workers');
+  assert.ok(widgetVals.includes(undefined), 'widget cleared to undefined when no agents');
+
+  stopLedgerTickerForTests();
+});
+
+test('L4: no ticker is started when the UI is absent (headless)', () => {
+  if (isSubagentProcess()) return;
+  const ctx = { hasUI: false, ui: { setStatus: () => {}, setWidget: () => {} } } as never;
+  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  spawnRpcAgent({ task: 'headless job', resourceMode: 'lean' }, ctx);
+  refreshAgentLedgerUi(ctx);
+  assert.equal(isLedgerTickerActiveForTests(), false, 'headless mode never starts the ledger ticker');
+  stopLedgerTickerForTests();
 });

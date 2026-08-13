@@ -18,6 +18,6 @@ risky shared state. Record reusable verified learnings/gotchas with references;
 for file-reader gotchas or handoffs, write concise docs under `.octocode/<kind>/...`
 only when they must outlive the session.
 
-Run cleanup/maintenance (`maintenance digest`, `memory forget`, `lock prune`, `signal prune`, `wiki sync`) only under real live-state pressure, previewing destructive ops first; SQLite and live CLI queries remain canonical. The skill owns when to delegate routine Awareness reads/writes and what the lead must retain (destructive approval, conflict handling, memory truth, verification).
+Run cleanup/maintenance (`maintenance digest`, `memory forget`, `lock prune`, `signal prune`) only under real live-state pressure, previewing destructive ops first; SQLite and live CLI queries remain canonical. The skill owns when to delegate routine Awareness reads/writes and what the lead must retain (destructive approval, conflict handling, memory truth, verification).
 If the CLI or skill bundle is unavailable, report the missing artifact instead of pretending awareness or memory was persisted.
 </awareness>

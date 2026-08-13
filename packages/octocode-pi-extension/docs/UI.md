@@ -9,6 +9,7 @@ This extension keeps the TUI compact by default and puts detail behind slash com
 | Header | session start | Brand, loaded capability hint, common commands |
 | Status footer | always-on | Octocode label, thinking level, context/turn metrics, agent counts |
 | Working indicator | during turns | Branded `◆ Octocode` spinner/message |
+| Live agent progress | while workers run | Agent ledger animates: braille spinner + live elapsed, refreshed every 1s until no worker is active (ticker is `unref`-ed and self-stops) |
 | Dashboard | `/octocode` | Status, agents, setup paths, skills, health, next actions |
 | Agent ledger | `/octocode-agents` + below editor | Spawned-worker state and controls |
 
