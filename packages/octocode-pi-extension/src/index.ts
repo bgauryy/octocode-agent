@@ -65,6 +65,7 @@ import { handleOctocodePlanCommand, OCTOCODE_PLAN_COMMAND_USAGE, OCTOCODE_PLAN_C
 import { atomicWriteUtf8 } from './tools/file-state.js';
 import { assertPathAllowed } from './tools/path-guard.js';
 import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
+import { renderBannerWithTagline, type BannerTheme } from './branding/banner.js';
 import { pickProvider } from './web.js';
 import { createHookComposer } from './hook-composer.js';
 import {
@@ -86,6 +87,22 @@ import type {
 } from './types.js';
 
 // ─── Re-exports (stable public API) ──────────────────────────────────────────
+
+import type { OctocodeShell, OctocodeShellDeps, ShellRuntime } from './shell/index.js';
+export type { OctocodeShell, OctocodeShellDeps, ShellRuntime } from './shell/index.js';
+
+/**
+ * Octocode shell entry (Phase C alpha). Lazy: the shell pulls
+ * `@earendil-works/pi-tui` at import time, so it must only load when the
+ * launcher actually runs the shell (OCTOCODE_SHELL=1).
+ */
+export async function createOctocodeShell(
+  runtime: ShellRuntime,
+  deps?: OctocodeShellDeps,
+): Promise<OctocodeShell> {
+  const m = await import('./shell/index.js');
+  return m.createOctocodeShell(runtime, deps);
+}
 
 export {
   DISABLED_BUILTIN_TOOL_NAMES,
@@ -177,6 +194,10 @@ export interface OctocodeMetricsState {
   activeTurnStartedAt?: number;
   lastTurnMs?: number;
   completedTurns: number;
+  /** Cached git branch for the footer, refreshed on turn/session boundaries (not per tick). */
+  gitBranch?: string;
+  /** Whether the working tree was dirty at the last git refresh. */
+  gitDirty?: boolean;
 }
 
 function formatCompactNumber(value: number): string {
@@ -184,15 +205,6 @@ function formatCompactNumber(value: number): string {
   if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, '')}m`;
   if (Math.abs(value) >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
   return String(Math.round(value));
-}
-
-function formatDuration(ms: number | undefined): string {
-  if (ms === undefined || !Number.isFinite(ms) || ms < 0) return 'n/a';
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-  const minutes = Math.floor(ms / 60_000);
-  const seconds = Math.round((ms % 60_000) / 1000);
-  return seconds > 0 ? `${minutes}m${seconds}s` : `${minutes}m`;
 }
 
 function formatContextUsage(ctx: PiContext | undefined): { text: string; percent?: number } {
@@ -207,12 +219,6 @@ function formatContextUsage(ctx: PiContext | undefined): { text: string; percent
   };
 }
 
-export function formatOctocodeMetrics(ctx: PiContext | undefined, state: OctocodeMetricsState, now = Date.now()): string {
-  const context = formatContextUsage(ctx).text;
-  const active = state.activeTurnStartedAt !== undefined ? `active ${formatDuration(now - state.activeTurnStartedAt)}` : `last ${formatDuration(state.lastTurnMs)}`;
-  return `${context} · turns ${state.completedTurns} · ${active} · session ${formatDuration(now - state.sessionStartedAt)}`;
-}
-
 function activeWorkerCount(): number {
   try {
     return listWorkerLedgerEntries().filter((e) => e.status === 'running' || e.status === 'idle' || e.status === 'starting').length;
@@ -223,10 +229,11 @@ function activeWorkerCount(): number {
 
 function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetricsState, now = Date.now()): void {
   if (!ctx?.hasUI) return;
-  const metrics = formatOctocodeMetrics(ctx, state, now);
-  ctx.ui?.setStatus?.('octocode-metrics', ctx.ui.theme?.fg('dim', metrics) ?? metrics);
 
-  // Consolidated branded footer — one surface for context/tokens/turns/timing/agents/plan.
+  // The consolidated branded footer is the SINGLE metrics surface — context /
+  // tokens / turns / timing / agents / plan / git. (Previously the same numbers
+  // were also pushed to a top `octocode-metrics` status line — removed as
+  // on-screen redundancy.)
   const usage = ctx.getContextUsage?.() ?? { tokens: 0, contextWindow: 0 };
   const plan = getPlan(ctx.cwd ?? process.cwd());
   const segments = buildFooterSegments({
@@ -239,8 +246,8 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
     activeWorkers: activeWorkerCount(),
     planDone: plan.filter((s) => s.status === 'done').length,
     planTotal: plan.length,
-    branch: undefined,
-    dirty: false,
+    branch: state.gitBranch,
+    dirty: state.gitDirty ?? false,
   });
   ctx.ui?.setFooter?.((_tui: unknown, theme) => makeRenderer((width) => {
     const brand = theme.fg('accent', theme.bold('\u25c6 Octocode'));
@@ -266,6 +273,19 @@ async function execGitSummary(pi: PiInstance, args: string[], timeout = 1200): P
   } catch {
     return '';
   }
+}
+
+/**
+ * Refresh the footer's cached git branch/dirty. Called only on turn/session
+ * boundaries (never per live tick) so the branch segment stays cheap. Detached
+ * HEAD (`rev-parse` returns "HEAD") is treated as "no branch".
+ */
+async function refreshFooterGitState(pi: PiInstance, state: OctocodeMetricsState): Promise<void> {
+  const branch = await execGitSummary(pi, ['rev-parse', '--abbrev-ref', 'HEAD'], 600);
+  state.gitBranch = branch && branch !== 'HEAD' ? branch : undefined;
+  state.gitDirty = state.gitBranch
+    ? (await execGitSummary(pi, ['status', '--porcelain'], 600)) !== ''
+    : false;
 }
 
 async function buildRepoStateHint(pi: PiInstance, event: { text: string; source?: string; streamingBehavior?: string }): Promise<string> {
@@ -300,12 +320,16 @@ export function applyOctocodeUi(ctx: PiContext | undefined, level?: string, cont
   const title = deriveSessionName(contextTitle ?? '');
   const windowTitle = title ? `Octocode · ${title}` : 'Octocode';
   const headerTitle = title ? `◆ ${title}` : '◆ Octocode';
+  const shortcutsLine = 'Ask → inspect → edit → verify · /octocode dashboard · /octocode-plan tasks · /octocode-agents workers';
   ui.setHiddenThinkingLabel?.('Octocode thinking');
   ui.setTitle?.(windowTitle);
-  ui.setHeader?.((_tui: unknown, theme) => makeRenderer((width) => [
-    truncateToWidth(theme.fg('accent', theme.bold(headerTitle)), width),
-    truncateToWidth(theme.fg('dim', 'Ask → inspect → edit → verify · /octocode dashboard · /octocode-plan tasks · /octocode-agents workers'), width),
-  ]));
+  ui.setHeader?.((_tui: unknown, theme) => makeRenderer((width) => {
+    // Named sessions lead with the title; fresh sessions lead with the wordmark banner.
+    const head = title
+      ? [truncateToWidth(theme.fg('accent', theme.bold(headerTitle)), width)]
+      : renderBannerWithTagline(theme as BannerTheme, width);
+    return [...head, truncateToWidth(theme.fg('dim', shortcutsLine), width)];
+  }));
   const label = ui.theme?.fg ? ui.theme.fg('accent', '◆ Octocode') : '◆ Octocode';
   ui.setStatus?.('octocode', label);
   const thinkingStatus = getThinkingStatus(ctx, level);
@@ -688,6 +712,29 @@ async function wireOctocodePiExtension(
     sessionStartedAt: Date.now(),
     completedTurns: 0,
   };
+  // Live footer ticker: while a turn is active, re-render the footer every second
+  // so `active`/`session` durations advance (they are otherwise only refreshed on
+  // turn/session events). Reads are in-memory only (no git/disk per tick); git
+  // state is refreshed separately on boundaries. unref()'d so it never keeps the
+  // process alive.
+  let metricsTicker: ReturnType<typeof setInterval> | undefined;
+  const stopMetricsTicker = (): void => {
+    if (metricsTicker) {
+      clearInterval(metricsTicker);
+      metricsTicker = undefined;
+    }
+  };
+  const startMetricsTicker = (ctx: PiContext | undefined): void => {
+    stopMetricsTicker();
+    metricsTicker = setInterval(() => {
+      if (metricsState.activeTurnStartedAt === undefined) {
+        stopMetricsTicker();
+        return;
+      }
+      updateOctocodeMetricsUi(ctx, metricsState);
+    }, 1000);
+    metricsTicker.unref?.();
+  };
   const toolStartTimes = new Map<string, number>();
   let providerRequestStartedAt: number | undefined;
 
@@ -735,6 +782,8 @@ async function wireOctocodePiExtension(
       metricsState.activeTurnStartedAt = undefined;
       metricsState.lastTurnMs = undefined;
       metricsState.completedTurns = 0;
+      stopMetricsTicker();
+      await refreshFooterGitState(pi, metricsState);
       applyOctocodeUi(ctx, pi.getThinkingLevel?.());
       updateOctocodeMetricsUi(ctx, metricsState);
       cronScheduler.start(ctx);
@@ -992,14 +1041,17 @@ async function wireOctocodePiExtension(
       pi.on('turn_start', async (_event: unknown, ctx: PiContext) => {
         metricsState.activeTurnStartedAt = Date.now();
         updateOctocodeMetricsUi(ctx, metricsState);
+        startMetricsTicker(ctx); // live `active`/`session` durations during the turn
       });
       pi.on('turn_end', async (_event: unknown, ctx: PiContext) => {
+        stopMetricsTicker();
         const now = Date.now();
         if (metricsState.activeTurnStartedAt !== undefined) {
           metricsState.lastTurnMs = now - metricsState.activeTurnStartedAt;
           metricsState.activeTurnStartedAt = undefined;
         }
         metricsState.completedTurns += 1;
+        await refreshFooterGitState(pi, metricsState); // branch/dirty may have changed this turn
         updateOctocodeMetricsUi(ctx, metricsState);
       });
     }

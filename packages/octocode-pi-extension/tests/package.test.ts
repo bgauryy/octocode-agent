@@ -14,7 +14,6 @@ import {
   formatStatus,
   applyOctocodeUi,
   formatOctocodeDashboard,
-  formatOctocodeMetrics,
   getThinkingStatus,
   getAssetPaths,
   getInternalErrorLogPath,
@@ -1858,54 +1857,44 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
   );
 });
 
-test('formats Octocode metrics with context tokens and timing', () => {
-  const metrics = formatOctocodeMetrics(
-    { getContextUsage: () => ({ tokens: 12_345, contextWindow: 200_000 }) },
-    {
-      sessionStartedAt: 1_000,
-      activeTurnStartedAt: 4_000,
-      completedTurns: 2,
-    },
-    65_000
-  );
-
-  assert.equal(metrics, 'ctx ░░░░░░░░░░ 6% (12.3k/200k) · turns 2 · active 1m1s · session 1m4s');
-  assert.equal(
-    formatOctocodeMetrics(undefined, { sessionStartedAt: 0, completedTurns: 0 }, 500),
-    'ctx n/a · turns 0 · last n/a · session 500ms'
-  );
-});
-
-test('Octocode metrics status updates on session and turn lifecycle', async () => {
+test('Octocode metrics footer updates on session and turn lifecycle (single surface, no status dup)', async () => {
   const { handlers } = await captureExtensions();
   const statusCalls: Array<[string, string | undefined]> = [];
+  const footerCalls: Array<(tui: unknown, theme: unknown) => { render: (w?: number) => string[] }> = [];
+  const theme = { fg: (_c: string, text: string) => text, bold: (text: string) => text };
   const ctx = {
     hasUI: true,
     getContextUsage: () => ({ tokens: 50_000, contextWindow: 100_000 }),
     ui: {
-      theme: {
-        fg: (color: string, text: string) => `<${color}:${text}>`,
-        bold: (text: string) => text,
-      },
+      theme,
       setHiddenThinkingLabel: () => undefined,
       setTitle: () => undefined,
       setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]),
+      setFooter: (fn: (tui: unknown, t: unknown) => { render: (w?: number) => string[] }) => footerCalls.push(fn),
       setWorkingIndicator: () => undefined,
       setWorkingMessage: () => undefined,
     },
   };
+  const renderFooter = () => footerCalls.at(-1)!(null, theme).render(200).join('');
 
   await handlers.get('session_start')!.at(-1)!(undefined, ctx);
-  assert.ok(statusCalls.some(([key, value]) => key === 'octocode-metrics' && /ctx ▓▓▓▓▓░░░░░ 50% \(50k\/100k\)/.test(value ?? '')));
+  // Redundancy fix: the metrics are ONLY on the footer now, never a status line.
+  assert.equal(statusCalls.some(([key]) => key === 'octocode-metrics'), false);
+  assert.ok(footerCalls.length > 0, 'footer set on session_start');
+  const initial = renderFooter();
+  assert.match(initial, /◆ Octocode/);
+  assert.match(initial, /ctx 50% 50\.0k\/100k/);
+  assert.match(initial, /turns 0/);
 
   const turnStart = handlers.get('turn_start')!.at(-1)!;
   const turnEnd = handlers.get('turn_end')!.at(-1)!;
   await turnStart(undefined, ctx);
   await turnEnd(undefined, ctx);
 
-  const latestMetrics = [...statusCalls].reverse().find(([key]) => key === 'octocode-metrics')?.[1] ?? '';
-  assert.match(latestMetrics, /turns 1/);
-  assert.match(latestMetrics, /last \d+(ms|s)/);
+  const latest = renderFooter();
+  assert.match(latest, /turns 1/);
+  assert.match(latest, /last \d+(ms|s)/);
+  assert.match(latest, /session \d/);
 });
 
 test('Octocode dashboard command summarizes status, agents, setup, skills, and help', async () => {
