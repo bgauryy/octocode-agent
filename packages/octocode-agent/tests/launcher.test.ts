@@ -230,6 +230,12 @@ describe('buildLaunchEnv', () => {
     const explicitEnv = buildLaunchEnv({ PI_CACHE_RETENTION: 'short' });
     expect(explicitEnv.PI_CACHE_RETENTION).toBe('short');
   });
+
+  it('defaults PI_SKIP_VERSION_CHECK=1 (our update story wins); explicit values keep control', () => {
+    expect(buildLaunchEnv({}).PI_SKIP_VERSION_CHECK).toBe('1');
+    expect(buildLaunchEnv({ PI_SKIP_VERSION_CHECK: '' }).PI_SKIP_VERSION_CHECK).toBe('');
+    expect(buildLaunchEnv({ PI_SKIP_VERSION_CHECK: '0' }).PI_SKIP_VERSION_CHECK).toBe('0');
+  });
 });
 
 // ── updateCommand ──────────────────────────────────────────────────────────────

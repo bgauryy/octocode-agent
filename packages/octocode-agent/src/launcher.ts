@@ -43,6 +43,8 @@ import { runAuthWizard } from './onboard.js';
 import { AUTH_PROVIDERS } from './auth-providers.js';
 import { selectOne } from './picker.js';
 import {
+  DEFAULT_OCTOCODE_THEME,
+  ensureDefaultSetting,
   getSetting,
   isAllowedConfigKey,
   listSettings,
@@ -226,6 +228,11 @@ export function buildLaunchEnv(
   if (!env.OCTOCODE_PROMPT_MODE) env.OCTOCODE_PROMPT_MODE = 'octocode-first';
   env.OCTOCODE_AGENT = '1';
   if (!env.PI_CACHE_RETENTION) env.PI_CACHE_RETENTION = 'long';
+  // Octocode owns its update story (`octocode-agent update`) — Pi's own
+  // "New version … Run pi update (pi.dev)" widget is the single most visible
+  // Pi-branded surface in a branded session; suppress it by default.
+  // An explicitly-set value (even empty) always wins.
+  if (env.PI_SKIP_VERSION_CHECK === undefined) env.PI_SKIP_VERSION_CHECK = '1';
   // Brand mirroring (OMP's OMP_*→PI_* idea): OCTOCODE_PI_FOO feeds PI_FOO.
   // An explicit PI_FOO always wins — mirroring fills gaps only.
   for (const [key, value] of Object.entries(baseEnv)) {
@@ -1073,6 +1080,10 @@ export async function launchAgent(
   const p = makePainter(colorEnabled(deps.env ?? process.env));
   const log = deps.log ?? ((msg: string) => console.error(diagLine(p, msg)));
   const env = buildLaunchEnv(deps.env ?? process.env);
+
+  // First-launch brand default: pin pi's TUI theme to the shipped Octocode theme.
+  // Write-if-absent — a later user choice (/settings, `config set theme`) always wins.
+  ensureDefaultSetting(piAgentDir(), 'theme', DEFAULT_OCTOCODE_THEME);
 
   // SDK embed path (default)
   if (env.OCTOCODE_LAUNCHER_MODE !== 'subprocess') {

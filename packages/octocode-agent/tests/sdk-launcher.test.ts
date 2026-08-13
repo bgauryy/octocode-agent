@@ -201,6 +201,7 @@ function buildMockSdk({
   sessionSelectedThrows?: boolean;
 } = {}): SdkDeps['importPiSdk'] {
   return async () => {
+    let lastSettingsManager: { applyOverrides: (o: unknown) => void } | undefined;
     const makeInteractiveMode = () =>
       class {
         constructor(_runtime: unknown, opts: unknown) {
@@ -229,7 +230,9 @@ function buildMockSdk({
       createAgentSessionFromServices: async () => ({}),
       createAgentSessionServices: async (opts: unknown) => {
         onCreateServices?.(opts);
-        return { diagnostics: null };
+        // Mirror production: services.settingsManager is the SAME instance the
+        // launcher created — exercising the post-creation override re-apply.
+        return { diagnostics: null, settingsManager: lastSettingsManager };
       },
       getAgentDir: () => '/fake/agent',
       InteractiveMode: makeInteractiveMode(),
@@ -246,7 +249,8 @@ function buildMockSdk({
       SettingsManager: {
         create: () => {
           if (settingsThrows) throw new Error('settings failed');
-          return { applyOverrides: (o: unknown) => onApplyOverrides?.(o) };
+          lastSettingsManager = { applyOverrides: (o: unknown) => onApplyOverrides?.(o) };
+          return lastSettingsManager;
         },
       },
       DefaultResourceLoader: class {
@@ -269,8 +273,12 @@ describe('launchWithSdk', () => {
       importExtensionFactory: noopExtensionFactory,
       env: {},
     } satisfies SdkDeps);
-    expect(overrides).toHaveLength(1);
-    expect(overrides[0]).toMatchObject({ quietStartup: true });
+    // Pi's setProjectTrusted()/reload() inside service creation REBUILDS
+    // settings and wipes applyOverrides — the launcher must apply overrides
+    // once before services and RE-APPLY after: expect exactly two identical
+    // applications, both carrying quietStartup.
+    expect(overrides).toHaveLength(2);
+    for (const o of overrides) expect(o).toMatchObject({ quietStartup: true });
   });
 
   it('returns null when Pi SDK is unavailable', async () => {
@@ -505,6 +513,22 @@ describe('launchWithSdk', () => {
     } finally {
       if (prev === undefined) delete process.env.PI_CACHE_RETENTION;
       else process.env.PI_CACHE_RETENTION = prev;
+    }
+  });
+
+  it('mirrors PI_SKIP_VERSION_CHECK from deps.env into process.env (in-process version check reads it)', async () => {
+    const prev = process.env.PI_SKIP_VERSION_CHECK;
+    delete process.env.PI_SKIP_VERSION_CHECK;
+    try {
+      await launchWithSdk([], {
+        importPiSdk: buildMockSdk(),
+        importExtensionFactory: noopExtensionFactory,
+        env: { PI_SKIP_VERSION_CHECK: '1' },
+      } satisfies SdkDeps);
+      expect(process.env.PI_SKIP_VERSION_CHECK).toBe('1');
+    } finally {
+      if (prev === undefined) delete process.env.PI_SKIP_VERSION_CHECK;
+      else process.env.PI_SKIP_VERSION_CHECK = prev;
     }
   });
 });

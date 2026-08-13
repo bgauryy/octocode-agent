@@ -214,6 +214,12 @@ export async function launchWithSdk(
   if (env.PI_CACHE_RETENTION && !process.env.PI_CACHE_RETENTION) {
     process.env.PI_CACHE_RETENTION = env.PI_CACHE_RETENTION;
   }
+  // Same in-process mirror for the version-check kill switch: Pi's
+  // checkForNewPiVersion reads process.env directly (the built launch env is
+  // otherwise only forwarded to the subprocess path).
+  if (env.PI_SKIP_VERSION_CHECK !== undefined && process.env.PI_SKIP_VERSION_CHECK === undefined) {
+    process.env.PI_SKIP_VERSION_CHECK = env.PI_SKIP_VERSION_CHECK;
+  }
 
   const sdk = await (deps.importPiSdk ?? importPiSdk)();
   if (!sdk) {
@@ -255,22 +261,28 @@ export async function launchWithSdk(
       ? (getAgentDir as () => string)()
       : path.join(os.homedir(), '.pi', 'agent');
 
-  // Settings: read from Pi's default dir, then apply octocode-specific defaults
+  // Settings: read from Pi's default dir, then apply octocode-specific defaults.
+  // keep in sync: re-applied after service creation (see [OVERRIDE-REAPPLY]).
+  const octocodeSessionOverrides = {
+    compaction: { enabled: true },
+    retry: { enabled: true, maxRetries: 3 },
+    // Hide Pi's own startup header for octocode-agent runs. Runtime-only
+    // (applyOverrides never persists) — plain `pi` keeps its header; ours is
+    // the branded banner printed by printLaunchBanner. Subprocess fallback
+    // can't inject this; acceptable for the fork-dev path.
+    quietStartup: true,
+  } as const;
   let settingsManager: unknown;
   try {
     const SM = SettingsManager as {
-      create: (cwd: string, agentDir: string) => { applyOverrides?: (o: unknown) => void };
+      create: (cwd: string, agentDir: string) => {
+        applyOverrides?: (o: unknown) => void;
+      };
     };
     settingsManager = SM.create(cwd, agentDir);
-    (settingsManager as { applyOverrides?: (o: unknown) => void }).applyOverrides?.({
-      compaction: { enabled: true },
-      retry: { enabled: true, maxRetries: 3 },
-      // Hide Pi's own startup header for octocode-agent runs. Runtime-only
-      // (applyOverrides never persists) — plain `pi` keeps its header; ours is
-      // the branded banner printed by printLaunchBanner. Subprocess fallback
-      // can't inject this; acceptable for the fork-dev path.
-      quietStartup: true,
-    });
+    (settingsManager as { applyOverrides?: (o: unknown) => void }).applyOverrides?.(
+      octocodeSessionOverrides,
+    );
   } catch {
     settingsManager = undefined; // non-critical; DefaultResourceLoader handles it
   }
@@ -325,6 +337,14 @@ export async function launchWithSdk(
     const services = await (
       createAgentSessionServices as (opts: Record<string, unknown>) => Promise<unknown>
     )(serviceOptions);
+    // [OVERRIDE-REAPPLY] Pi's SettingsManager.setProjectTrusted()/reload()
+    // REBUILD `settings = merge(global, project)` — wiping anything merged by
+    // applyOverrides, and service creation re-trusts the project (verified:
+    // services.settingsManager is this same instance with quietStartup reverted).
+    // Re-apply now that the last rebuild has happened.
+    (services as Record<string, { applyOverrides?: (o: unknown) => void }>)[
+      'settingsManager'
+    ]?.applyOverrides?.(octocodeSessionOverrides);
     return {
       ...((await (
         createAgentSessionFromServices as (opts: {
