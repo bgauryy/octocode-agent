@@ -185,6 +185,7 @@ function buildMockSdk({
   runtimeShouldThrow = false,
   sessionThrows = false,
   onCreateServices,
+  onApplyOverrides,
   onPrintMode,
   onInteractiveMode,
   settingsThrows = false,
@@ -193,6 +194,7 @@ function buildMockSdk({
   runtimeShouldThrow?: boolean;
   sessionThrows?: boolean;
   onCreateServices?: (opts: unknown) => void;
+  onApplyOverrides?: (overrides: unknown) => void;
   onPrintMode?: (opts: unknown) => void;
   onInteractiveMode?: (opts: unknown) => void;
   settingsThrows?: boolean;
@@ -242,7 +244,10 @@ function buildMockSdk({
         open: () => { if (sessionSelectedThrows) throw new Error('open failed'); return {}; },
       },
       SettingsManager: {
-        create: () => { if (settingsThrows) throw new Error('settings failed'); return { applyOverrides: () => {} }; },
+        create: () => {
+          if (settingsThrows) throw new Error('settings failed');
+          return { applyOverrides: (o: unknown) => onApplyOverrides?.(o) };
+        },
       },
       DefaultResourceLoader: class {
         reload() {
@@ -257,6 +262,17 @@ const noopExtensionFactory: SdkDeps['importExtensionFactory'] = async () =>
   (_opts?: Record<string, unknown>) => ({});
 
 describe('launchWithSdk', () => {
+  it('forces quietStartup so only the octocode banner shows (never the pi header)', async () => {
+    const overrides: unknown[] = [];
+    await launchWithSdk([], {
+      importPiSdk: buildMockSdk({ onApplyOverrides: (o) => overrides.push(o) }),
+      importExtensionFactory: noopExtensionFactory,
+      env: {},
+    } satisfies SdkDeps);
+    expect(overrides).toHaveLength(1);
+    expect(overrides[0]).toMatchObject({ quietStartup: true });
+  });
+
   it('returns null when Pi SDK is unavailable', async () => {
     const result = await launchWithSdk([], {
       importPiSdk: async () => null,

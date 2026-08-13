@@ -265,6 +265,11 @@ export async function launchWithSdk(
     (settingsManager as { applyOverrides?: (o: unknown) => void }).applyOverrides?.({
       compaction: { enabled: true },
       retry: { enabled: true, maxRetries: 3 },
+      // Hide Pi's own startup header for octocode-agent runs. Runtime-only
+      // (applyOverrides never persists) — plain `pi` keeps its header; ours is
+      // the branded banner printed by printLaunchBanner. Subprocess fallback
+      // can't inject this; acceptable for the fork-dev path.
+      quietStartup: true,
     });
   } catch {
     settingsManager = undefined; // non-critical; DefaultResourceLoader handles it
