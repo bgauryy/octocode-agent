@@ -33,6 +33,36 @@ export function setDefaultModelInSettings(piDir: string, provider: string, model
   return file;
 }
 
+// ── Generic settings surface (config get|set|list) ──────────────────────────────
+
+/** Keys `config set` is allowed to write — Pi's own contract fields only. */
+export const ALLOWED_CONFIG_KEYS = ['defaultProvider', 'defaultModel'] as const;
+export type AllowedConfigKey = (typeof ALLOWED_CONFIG_KEYS)[number];
+
+export function isAllowedConfigKey(key: string): key is AllowedConfigKey {
+  return (ALLOWED_CONFIG_KEYS as readonly string[]).includes(key);
+}
+
+/** Read one key from Pi's settings.json (undefined when unset). */
+export function getSetting(piDir: string, key: string): unknown {
+  return readSettings(piDir)[key];
+}
+
+/** Write one allowlisted key without clobbering other settings. Returns the file. */
+export function setSetting(piDir: string, key: AllowedConfigKey, value: string): string {
+  fs.mkdirSync(piDir, { recursive: true });
+  const data = readSettings(piDir);
+  data[key] = value;
+  const file = path.join(piDir, 'settings.json');
+  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+  return file;
+}
+
+/** Full settings doc for diagnostics / `config list`. */
+export function listSettings(piDir: string): Record<string, unknown> {
+  return readSettings(piDir);
+}
+
 /** Current default "provider/model" for the banner; null when unset. */
 export function readDefaultModel(piDir: string): string | null {
   const data = readSettings(piDir);

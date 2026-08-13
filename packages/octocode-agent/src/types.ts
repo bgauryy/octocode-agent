@@ -24,6 +24,7 @@ export type SpawnFn = (
 export type Command =
   | 'version'
   | 'help'
+  | 'smoke'
   | 'config'
   | 'setup'
   | 'auth'

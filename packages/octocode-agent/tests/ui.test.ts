@@ -18,6 +18,7 @@ import {
   makePainter,
   padEndVisible,
   rule,
+  wrapText,
   section,
   stripAnsi,
   terminalWidth,
@@ -134,6 +135,35 @@ describe('cmdRows', () => {
     ]);
     expect(rows[0]).toBe('  run                 headless');
     expect(rows[1]).toBe('  completion <shell>  print script');
+  });
+
+  it('squeezes the command column so rows never exceed the terminal width', () => {
+    const saved = process.env.COLUMNS;
+    process.env.COLUMNS = '40';
+    try {
+      const rows = cmdRows(makePainter(false), [
+        ['--thinking off|minimal|low|medium|high|xhigh', 'long description too'],
+        ['-r', 'short'],
+      ]);
+      for (const row of rows) expect(visibleLength(row)).toBeLessThanOrEqual(40);
+    } finally {
+      if (saved === undefined) delete process.env.COLUMNS;
+      else process.env.COLUMNS = saved;
+    }
+  });
+});
+
+describe('wrapText', () => {
+  it('wraps to width with continuation indent and keeps long words intact', () => {
+    // width floor is 20 (clamped) — 'alpha beta gamma' (16) fits.
+    expect(wrapText('alpha beta gamma delta', 10, '  ')).toEqual(['alpha beta gamma', '  delta']);
+    // >20-char tokens are left intact (never mid-word split).
+    expect(wrapText('x'.repeat(25) + ' a', 6)).toEqual(['x'.repeat(25), 'a']);
+  });
+
+  it('never emits a line wider than the budget for multi-wrap prose', () => {
+    const lines = wrapText('The self-working coding agent: the Pi runtime driven by the Octocode harness.', 40);
+    for (const l of lines) expect(visibleLength(l)).toBeLessThanOrEqual(40);
   });
 });
 

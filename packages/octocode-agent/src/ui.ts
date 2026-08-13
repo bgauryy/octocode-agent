@@ -143,6 +143,29 @@ export function fitText(s: string, max: number): string {
   return /^[~/.]/.test(stripAnsi(s).trimStart()) ? ellipsizeMiddle(s, max) : ellipsizeEnd(s, max);
 }
 
+/**
+ * Word-wrap plain prose to `width` (ANSI-safe via stripAnsi measurement).
+ * Continuation lines get `indent`. Words longer than the width are left intact
+ * (a path/url beats a broken string).
+ */
+export function wrapText(text: string, width: number, indent = ''): string[] {
+  const w = Math.max(width, 20);
+  const words = stripAnsi(text).split(/ +/).filter(Boolean);
+  const lines: string[] = [];
+  let cur = '';
+  for (const word of words) {
+    const candidate = cur === '' ? word : `${cur} ${word}`;
+    if (visibleLength(candidate) <= w) {
+      cur = candidate;
+      continue;
+    }
+    if (cur !== '') lines.push(cur);
+    cur = (lines.length > 0 ? indent : '') + word;
+  }
+  if (cur !== '') lines.push(cur);
+  return lines.length > 0 ? lines : [''];
+}
+
 /** OSC-8 hyperlink when enabled (interactive TTY); falls back to `text (url)`. */
 export function link(p: Painter, url: string, text: string, interactive = false): string {
   if (!interactive || !p.enabled) return `${text} (${url})`;
@@ -212,10 +235,13 @@ export function cmdRows(
   rows: ReadonlyArray<readonly [string, string]>,
   indent = '  ',
 ): string[] {
-  const width = Math.max(...rows.map(([cmd]) => visibleLength(cmd)));
-  const budget = terminalWidth() - indent.length - width - 4;
+  const maxCmd = Math.max(...rows.map(([cmd]) => visibleLength(cmd)));
+  // At narrow widths the command column itself must shrink (it overflowed on
+  // 40-col terminals): keep ≥14 cols for the description, else squeeze cmd.
+  const cmdW = Math.min(maxCmd, Math.max(terminalWidth() - indent.length - 16, 8));
+  const budget = Math.max(terminalWidth() - indent.length - cmdW - 4, 8);
   return rows.map(
-    ([cmd, desc]) => `${indent}${p.brand(padEndVisible(cmd, width))}  ${p.dim(ellipsizeEnd(desc, budget))}`,
+    ([cmd, desc]) => `${indent}${p.brand(padEndVisible(ellipsizeEnd(cmd, cmdW), cmdW))}  ${p.dim(ellipsizeEnd(desc, budget))}`,
   );
 }
 

@@ -493,7 +493,7 @@ describe('sessionsReport', () => {
   it('shows session storage path and management commands', () => {
     const report = sessionsReport();
     expect(report).toContain('sessions');
-    expect(report).toContain('--continue');
+    expect(report).toContain('THIS terminal');
     expect(report).toContain('--no-session');
   });
 });
@@ -757,7 +757,7 @@ describe('main', () => {
     const lines: string[] = [];
     const code = await main(['sessions'], { out: (m) => lines.push(m), env: {} });
     expect(code).toBe(0);
-    expect(lines.join('\n')).toContain('--continue');
+    expect(lines.join('\n')).toContain('THIS terminal');
   });
 
   it('--json prints valid, structured JSON instead of the text report, for every report command', async () => {

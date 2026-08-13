@@ -39,11 +39,17 @@ octocode-agent --version      # Print launcher, core, and Pi host versions
 
 octocode-agent auth [login]   # Credential status; `auth login` is a guided pick-provider wizard (writes ~/.octocode/.env, 0600)
 octocode-agent models         # How to pick models; `models --set [id]` persists your default (interactive picker on a TTY)
-octocode-agent resume         # Resume a session — arrow-key picker over recent sessions on a TTY, picked ID + `-r` fallback
+octocode-agent resume         # Resume a session — picker over ALL projects' sessions; fuzzy `<id>` handled by Pi; `session` is an alias
 octocode-agent doctor         # Health checks (core, Pi host, auth, awareness)
 octocode-agent setup [--fix]  # First-run setup summary; --fix walks failing checks interactively
 octocode-agent config         # Runtime/package/key view; add --json for scripting
+                              #   `config get|set|list` reads/writes Pi's settings.json (writable keys: defaultProvider, defaultModel)
+octocode-agent --smoke-test   # Install/CI self-check: launcher + core + Pi host must resolve
 ```
+
+**Per-terminal `-c`:** in multiplexer terminals (tmux/zellij/kitty/wezterm/iTerm/WT) the launcher drops a breadcrumb per pane; a bare `-c`/`--continue` resumes THIS terminal's last session instead of the cwd-global newest (`~/.octocode/terminal-sessions/`).
+
+**Environment:** `OCTOCODE_PI_*` vars mirror to `PI_*` for the launched session (e.g. `OCTOCODE_PI_CODING_AGENT_DIR` → `PI_CODING_AGENT_DIR`); an explicitly set `PI_*` always wins.
 
 Any argument that isn't a reserved subcommand is handled by the SDK launcher when supported (`--print`, `--mode rpc`, `--continue`, `--session`, `--no-session`, `--name`, initial message) or passed to the subprocess fallback. A single bare token within edit distance of a real command gets `did you mean …` and exit 2 instead of a nonsense session.
 

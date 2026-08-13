@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { getOctocodeHome } from './utils.js';
+import { markSetupDone } from './state.js';
 import { AUTH_PROVIDERS, type AuthProvider } from './auth-providers.js';
 import {
   checkLines,
@@ -100,7 +101,8 @@ export async function runAuthWizard(opts: AuthWizardOpts = {}): Promise<number> 
   const p = makePainter(colorEnabled(env));
 
   if (!opts.io && (!process.stdin.isTTY || !process.stdout.isTTY)) {
-    console.log(
+    // Error notices belong on stderr — stdout stays machine-clean in scripts.
+    console.error(
       [
         '✗ `auth login` needs an interactive terminal (secret input).',
         hint(p, 'in scripts, export the key yourself: export ANTHROPIC_API_KEY=…'),
@@ -126,6 +128,7 @@ export async function runAuthWizard(opts: AuthWizardOpts = {}): Promise<number> 
   const home = opts.octocodeHome ?? getOctocodeHome(env);
   const envPath = path.join(home, '.env');
   upsertEnvFile(envPath, provider.keyVar, key);
+  markSetupDone(home);
   io.out(
     [
       '',
