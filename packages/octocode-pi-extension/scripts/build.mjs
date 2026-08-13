@@ -340,6 +340,13 @@ async function build() {
   // Inject @octocodeai/config source into every skill scripts/ dir — standalone, no npm needed.
   const configInjected = injectConfigIntoSkills(OUTPUT_PATHS.skills);
 
+  // Skills now live ONLY in dist/skills (config-injected; surfaced at runtime via
+  // the resources_discover hook for both plain-pi and the octocode-agent inline
+  // factory). Remove the staging <root>/skills so Pi's package scanner can't
+  // surface a SECOND copy and emit a [Skill conflicts] block. (skills/** is also
+  // dropped from package.json "files", so it never ships either.)
+  fs.rmSync(SOURCE_PATHS.skills, { recursive: true, force: true });
+
   bundleAwarenessRuntime();
   bundleOctocodeCLI();
 

@@ -385,17 +385,24 @@ test('build copies bundled Octocode skills without secret env files', () => {
     assert.equal(hasCommand(noun, verb), true, `Awareness schema includes ${noun} ${verb}`);
   }
 
+  // Skills live ONLY in dist/skills now (single source, surfaced via the
+  // resources_discover hook for both plain-pi and octocode-agent). There is no
+  // redundant root skills/ dir and no pi.skills declaration — that duplicate
+  // package-scanned copy caused [Skill conflicts].
   const skills = listBundledSkills(distDir);
-  const sourceSkills = listBundledSkills(packageRoot);
-  assert.deepEqual(skills, sourceSkills, 'dist matches package skills');
-  assert.ok(skills.includes('octocode-awareness'), 'Awareness skill is staged into the npm package');
+  assert.ok(skills.includes('octocode-awareness'), 'Awareness skill is bundled into dist/skills');
   for (const skill of skills) {
     assert.equal(
-      fs.existsSync(path.join(packageRoot, 'skills', skill, 'SKILL.md')),
+      fs.existsSync(path.join(distDir, 'skills', skill, 'SKILL.md')),
       true,
-      `${skill} SKILL.md is staged in the npm package skills bundle`
+      `${skill} SKILL.md is bundled in dist/skills`
     );
   }
+  assert.equal(
+    fs.existsSync(path.join(packageRoot, 'skills')),
+    false,
+    'no redundant root skills/ dir (would double-surface against dist/skills)'
+  );
   assert.equal(
     fs.existsSync(path.join(distDir, 'skills', 'octocode-reflection')),
     false
@@ -411,13 +418,9 @@ test('build copies bundled Octocode skills without secret env files', () => {
     files?: string[];
     pi?: { skills?: string[] };
   };
-  assert.ok(packageJson.files?.includes('skills/**'), 'npm files includes generated skills');
-  assert.deepEqual(packageJson.pi?.skills, ['./skills']);
-  assert.match(
-    fs.readFileSync(path.resolve(packageRoot, '../..', '.gitignore'), 'utf8'),
-    /^\/packages\/octocode-pi-extension\/skills\/$/m,
-    'generated npm skill staging remains gitignored'
-  );
+  assert.ok(packageJson.files?.includes('dist/**'), 'npm files ships dist (which carries dist/skills)');
+  assert.equal(packageJson.files?.includes('skills/**'), false, 'no root skills/** shipped');
+  assert.equal(packageJson.pi?.skills, undefined, 'pi.skills removed — resources_discover is the single source');
 
   assert.ok(skills.includes('octocode-awareness'), 'dist bundles the octocode-awareness skill');
   assert.equal(

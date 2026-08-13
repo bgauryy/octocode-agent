@@ -5,7 +5,9 @@ import { test } from 'vitest';
 import { SYSTEM_PROMPT } from '../src/prompts/compose.js';
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
-const sourceSkillsDir = path.join(packageRoot, 'skills');
+// Bundled skills live only in dist/skills now (the redundant root skills/ was
+// removed to stop the [Skill conflicts] double-surface).
+const sourceSkillsDir = path.join(packageRoot, 'dist', 'skills');
 const browserSkillDir = path.join(
   packageRoot,
   'subagents',
@@ -363,4 +365,32 @@ test('coder prompt enforces blast radius, quality, and evidence-first fixes', ()
   assert.match(SYSTEM_PROMPT, /what evidence can change the next task, what can be delegated/);
   assert.match(SYSTEM_PROMPT, /What is the next cheapest proof/);
   assert.match(SYSTEM_PROMPT, /Solutions also need impact\/blast-radius notes and an executed check\/eval/);
+});
+
+test('prompt encodes model-agnostic coding-agent norms: ambiguity, parallel calls, git gate, voice, minimality', () => {
+  assert.match(SYSTEM_PROMPT, /ambiguous between answering and doing inside an authorized change\/build loop/);
+  assert.match(SYSTEM_PROMPT, /making them in parallel is HIGHLY RECOMMENDED over sequential rounds/);
+  assert.match(SYSTEM_PROMPT, /never run `git commit`, `git push`, `git reset`, `git rebase`/);
+  assert.match(SYSTEM_PROMPT, /re-confirm each time, even if confirmed earlier in the session/);
+  assert.match(SYSTEM_PROMPT, /Answer in the same language as the user unless instructed otherwise/);
+  assert.match(SYSTEM_PROMPT, /sync progress in stages; never disappear into a long run of tool calls without a word/);
+  assert.match(SYSTEM_PROMPT, /Own mistakes briefly: acknowledge, correct, move on/);
+  assert.match(SYSTEM_PROMPT, /make MINIMAL changes that achieve the goal; the project's existing style wins/);
+  assert.match(SYSTEM_PROMPT, /never claim done from compile alone — this is very important to your performance/);
+  assert.match(SYSTEM_PROMPT, /more than 3 search queries or spans multiple files and patterns/);
+  assert.match(SYSTEM_PROMPT, /deeper `AGENTS\.md` override parent ones; the user's latest message overrides all/);
+  assert.match(SYSTEM_PROMPT, /update that `AGENTS\.md` in the same change/);
+});
+
+test('closing reminders section is present after the output contract', () => {
+  assert.match(SYSTEM_PROMPT, /<ultimate_reminders>/);
+  const outputIdx = SYSTEM_PROMPT.indexOf('<output>');
+  const closingIdx = SYSTEM_PROMPT.indexOf('<ultimate_reminders>');
+  assert.ok(outputIdx >= 0, '<output> section must be present');
+  assert.ok(
+    closingIdx > outputIdx,
+    'closing <ultimate_reminders> must come last, after the output contract (recency priming)'
+  );
+  assert.match(SYSTEM_PROMPT, /code in chat is not code on disk/);
+  assert.match(SYSTEM_PROMPT, /retry only with a changed hypothesis, else surface the blocker/);
 });
