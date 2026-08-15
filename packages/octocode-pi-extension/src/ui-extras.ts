@@ -5,6 +5,8 @@
  * working indicator, theme sync, and session-naming wiring in index.ts.
  */
 
+import { contextGauge, type SemanticToken } from './tui/palette.js';
+
 export const OCTOCODE_SPINNER_FRAMES = ['◆', '◇', '◈', '◇'] as const;
 
 /** Shipped theme ids (single source of truth — used by the theme command + sync). */
@@ -37,17 +39,24 @@ export function formatDurationShort(ms: number | undefined): string {
 export interface WorkingLabelInput {
   startedAt: number;
   now: number;
-  tokens?: number;
 }
 
-/** "◆ Octocode · 12s · 13.4k tokens" (tokens omitted when unknown). */
+/** Word shown in the live working line while a turn is active. */
+export const WORKING_WORD = 'Thinking';
+
+/**
+ * Animated working-line label: `Thinking` with a cycling 1–3 dot tail driven by
+ * elapsed time (advances once per second alongside the footer ticker).
+ *
+ * Deliberately carries NO elapsed time or token count — those already live in
+ * the footer's `active`/`ctx` segments, so repeating them here was on-screen
+ * redundancy. The smooth glyph animation comes from the working *indicator*
+ * frames; this text supplies the "…" pulse.
+ */
 export function buildWorkingLabel(input: WorkingLabelInput): string {
-  const elapsed = formatDurationShort(input.now - input.startedAt);
-  const parts = ['◆ Octocode', elapsed];
-  if (typeof input.tokens === 'number' && input.tokens > 0) {
-    parts.push(`${formatCompact(input.tokens)} tokens`);
-  }
-  return parts.join(' · ');
+  const elapsedMs = Math.max(0, input.now - input.startedAt);
+  const dots = '.'.repeat((Math.floor(elapsedMs / 1000) % 3) + 1);
+  return `${WORKING_WORD}${dots}`;
 }
 
 export interface FooterInput {
@@ -58,34 +67,76 @@ export interface FooterInput {
   lastTurnMs?: number;
   sessionMs: number;
   activeWorkers: number;
+  /** Workers waiting on the lead (normalized [BLOCKED]). */
+  blockedWorkers?: number;
+  /** Workers that failed / crashed. */
+  failedWorkers?: number;
+  /** Live progress note for the most-recent running worker (name or its deltaSummary). */
+  agentDoing?: string;
   planDone: number;
   planTotal: number;
+  /** Text of the plan step currently in progress (status "doing"), if any. */
+  planDoing?: string;
   branch?: string;
   dirty: boolean;
 }
 
-/** Ordered footer segments; optional ones (agents, plan, git) are dropped when empty. */
-export function buildFooterSegments(input: FooterInput): string[] {
-  const segs: string[] = [];
+/** A footer segment plus the semantic colour it should paint with (default: dim). */
+export interface FooterSegment {
+  text: string;
+  token?: SemanticToken;
+}
+
+/** Max width of the inline plan-step label before it is ellipsized. */
+const PLAN_DOING_MAX = 24;
+
+function ellipsize(text: string, max: number): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
+}
+
+/**
+ * Ordered footer segments with per-segment colour. Optional segments (agents,
+ * attention flags, plan, git) are dropped when empty. Attention flags
+ * (blocked/failed workers) get warning/error colour so a stuck worker is
+ * visible in the toolbar without opening /octocode-agents.
+ */
+export function buildFooterSegments(input: FooterInput): FooterSegment[] {
+  const segs: FooterSegment[] = [];
 
   if (input.contextWindow > 0) {
     const pct = Math.round((input.tokens / input.contextWindow) * 100);
-    segs.push(`ctx ${pct}% ${formatCompact(input.tokens)}/${formatCompact(input.contextWindow)}`);
+    const { bar } = contextGauge(pct);
+    segs.push({ text: `ctx ${bar} ${pct}% ${formatCompact(input.tokens)}/${formatCompact(input.contextWindow)}` });
   }
 
-  segs.push(`turns ${input.completedTurns}`);
+  segs.push({ text: `turns ${input.completedTurns}` });
 
-  segs.push(
-    input.activeTurnMs !== undefined
+  segs.push({
+    text: input.activeTurnMs !== undefined
       ? `active ${formatDurationShort(input.activeTurnMs)}`
       : `last ${formatDurationShort(input.lastTurnMs)}`,
-  );
+  });
 
-  segs.push(`session ${formatDurationShort(input.sessionMs)}`);
+  segs.push({ text: `session ${formatDurationShort(input.sessionMs)}` });
 
-  if (input.activeWorkers > 0) segs.push(`agents ${input.activeWorkers}`);
-  if (input.planTotal > 0) segs.push(`plan ${input.planDone}/${input.planTotal}`);
-  if (input.branch) segs.push(`${input.branch}${input.dirty ? '*' : ''}`);
+  if (input.activeWorkers > 0) {
+    const label = input.agentDoing ? ` ‣ ${ellipsize(input.agentDoing, PLAN_DOING_MAX)}` : '';
+    segs.push({ text: `agents ${input.activeWorkers}${label}` });
+  }
+  if (input.blockedWorkers && input.blockedWorkers > 0) {
+    segs.push({ text: `⚠${input.blockedWorkers}`, token: 'warning' });
+  }
+  if (input.failedWorkers && input.failedWorkers > 0) {
+    segs.push({ text: `✗${input.failedWorkers}`, token: 'error' });
+  }
+
+  if (input.planTotal > 0) {
+    const label = input.planDoing ? ` ‣ ${ellipsize(input.planDoing, PLAN_DOING_MAX)}` : '';
+    segs.push({ text: `plan ${input.planDone}/${input.planTotal}${label}` });
+  }
+
+  if (input.branch) segs.push({ text: `${input.branch}${input.dirty ? '*' : ''}` });
 
   return segs;
 }

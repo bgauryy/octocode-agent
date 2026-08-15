@@ -1,4 +1,8 @@
+import os from 'node:os';
+import path from 'node:path';
 import { defineConfig } from 'vitest/config';
+
+const TEST_OCTOCODE_HOME = path.join(os.tmpdir(), 'octocode-pi-ext-test-home', '.octocode');
 
 export default defineConfig({
   test: {
@@ -9,6 +13,7 @@ export default defineConfig({
     // so spawnAgent / AgentMessage would never be registered.
     env: {
       OCTOCODE_PI_SUBAGENT: '',
+      OCTOCODE_HOME: TEST_OCTOCODE_HOME,
     },
     coverage: {
       provider: 'v8',

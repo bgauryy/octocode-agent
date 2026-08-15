@@ -9,6 +9,7 @@
  */
 import assert from 'node:assert/strict';
 import { test, beforeEach, afterEach } from 'vitest';
+import { Type } from 'typebox';
 import {
   spawnRpcAgent,
   setAgentProcessFactoryForTests,
@@ -24,7 +25,29 @@ import {
   refreshAgentLedgerUi,
   isLedgerTickerActiveForTests,
   stopLedgerTickerForTests,
+  extractDeltaSummary,
+  agentPanelLines,
+  handleOctocodeAgentsCommand,
 } from '../src/tools/agent-tools.js';
+import { registerSpawnSubagentTool } from '../src/tools/spawn-subagent-tool.js';
+import type { ToolDefinition } from '../src/types.js';
+
+test('extractDeltaSummary prefers the latest structured worker line', () => {
+  const out = '[STATUS] booting\nsome noise\n[ACTION] editing src/foo.ts\ntrailing chatter';
+  assert.equal(extractDeltaSummary(out), '[ACTION] editing src/foo.ts');
+});
+
+test('extractDeltaSummary falls back to the last non-empty line', () => {
+  assert.equal(extractDeltaSummary('line one\n\nline two\n   '), 'line two');
+});
+
+test('extractDeltaSummary returns undefined for blank output and truncates long lines', () => {
+  assert.equal(extractDeltaSummary('   \n\n'), undefined);
+  const long = `[FINDING] ${'x'.repeat(200)}`;
+  const out = extractDeltaSummary(long)!;
+  assert.ok(out.length <= 120, 'truncated to <=120 chars');
+  assert.ok(out.endsWith('…'), 'ellipsized');
+});
 
 // ─── Reliability guardrails (research-backed) ─────────────────────────────────
 
@@ -200,12 +223,37 @@ test('worker lastOutput is capped to a recent tail to bound memory use', () => {
     'stdout:data',
     Buffer.from(`${JSON.stringify({
       type: 'message_end',
-      message: { content: [{ type: 'text', text: hugeText }] },
+      message: { role: 'assistant', content: [{ type: 'text', text: hugeText }] },
     })}\n`),
   );
 
   assert.equal(record.lastOutput.length, MAX_AGENT_LAST_OUTPUT_CHARS);
   assert.match(record.lastOutput, /\[DONE\] tail$/);
+  assert.equal(record.normalizedResult?.status, 'done');
+});
+
+test('agent_end user prompt echoes do not overwrite assistant worker output', () => {
+  if (isSubagentProcess()) return;
+
+  const mock = makeMockProcess({ stdinThrows: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  const record = spawnRpcAgent({ task: 'review code', resourceMode: 'lean' });
+
+  mock._emit(
+    'stdout:data',
+    Buffer.from(`${JSON.stringify({
+      type: 'agent_end',
+      messages: [
+        { role: 'assistant', content: [{ type: 'text', text: '[RESULT] actual findings\n[DONE] reviewed' }] },
+        { content: [{ type: 'text', text: 'Goal: echoed original task' }] },
+        { role: 'user', content: [{ type: 'text', text: 'Return only your review findings now' }] },
+      ],
+    })}\n`),
+  );
+
+  assert.match(record.lastOutput, /actual findings/);
+  assert.doesNotMatch(record.lastOutput, /Goal: echoed original task/);
+  assert.doesNotMatch(record.lastOutput, /Return only your review findings/);
   assert.equal(record.normalizedResult?.status, 'done');
 });
 
@@ -333,6 +381,32 @@ test('L3: refreshAgentLedgerUi with no agents clears the widget and stops the ti
   stopLedgerTickerForTests();
 });
 
+test('/octocode-agents hide removes the agent section from the unified status panel until list/status shows it again', async () => {
+  if (isSubagentProcess()) return;
+  const widgetCalls: Array<{ name: string; cleared: boolean }> = [];
+  const ctx = {
+    hasUI: true,
+    ui: {
+      setStatus: () => {},
+      setWidget: (name: string, content: unknown) => widgetCalls.push({ name, cleared: content === undefined }),
+      notify: () => {},
+    },
+  } as never;
+  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  spawnRpcAgent({ task: 'visible worker', resourceMode: 'lean' }, ctx);
+  assert.ok(agentPanelLines().length > 0, 'agent panel starts visible');
+
+  await handleOctocodeAgentsCommand('hide', ctx);
+  assert.equal(agentPanelLines().length, 0, 'hide suppresses unified agent panel lines');
+  assert.ok(widgetCalls.some((call) => call.name === 'octocode-status-panel' && call.cleared), 'unified panel is refreshed/cleared');
+
+  await handleOctocodeAgentsCommand('list', ctx);
+  assert.ok(agentPanelLines().length > 0, 'list shows the ledger again');
+
+  stopLedgerTickerForTests();
+});
+
 test('L4: no ticker is started when the UI is absent (headless)', () => {
   if (isSubagentProcess()) return;
   const ctx = { hasUI: false, ui: { setStatus: () => {}, setWidget: () => {} } } as never;
@@ -342,4 +416,83 @@ test('L4: no ticker is started when the UI is absent (headless)', () => {
   refreshAgentLedgerUi(ctx);
   assert.equal(isLedgerTickerActiveForTests(), false, 'headless mode never starts the ledger ticker');
   stopLedgerTickerForTests();
+});
+
+// ─── SEV-1: workers inherit the parent's model/provider when unset ────────────
+
+test('SEV-1: spawnRpcAgent defaults worker --model/--provider to the parent ctx.model', () => {
+  if (isSubagentProcess()) return;
+  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  const ctx = {
+    hasUI: false,
+    cwd: process.cwd(),
+    model: { id: 'claude-haiku-4-5-20251001', provider: 'guy-provider-anthropic' },
+    ui: { setStatus: () => {}, setWidget: () => {} },
+  } as never;
+  const record = spawnRpcAgent({ task: 'inherit model', resourceMode: 'lean' }, ctx);
+  const args = record.args;
+  const modelIdx = args.indexOf('--model');
+  const provIdx = args.indexOf('--provider');
+  assert.ok(modelIdx >= 0 && args[modelIdx + 1] === 'claude-haiku-4-5-20251001', 'worker inherits parent model id');
+  assert.ok(provIdx >= 0 && args[provIdx + 1] === 'guy-provider-anthropic', 'worker inherits parent provider');
+});
+
+test('SEV-1: an explicit model/provider still wins over the parent default', () => {
+  if (isSubagentProcess()) return;
+  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  const ctx = { hasUI: false, model: { id: 'parent-model', provider: 'parent-prov' }, ui: { setStatus: () => {}, setWidget: () => {} } } as never;
+  const record = spawnRpcAgent({ task: 't', resourceMode: 'lean', model: 'chosen-model', provider: 'chosen-prov' }, ctx);
+  assert.equal(record.args[record.args.indexOf('--model') + 1], 'chosen-model');
+  assert.equal(record.args[record.args.indexOf('--provider') + 1], 'chosen-prov');
+});
+
+test('SEV-1: spawnSubagent inherits the parent provider when the caller does not pass one', async () => {
+  if (isSubagentProcess()) return;
+  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  let capturedArgs: string[] = [];
+  setAgentProcessFactoryForTests((_command, args) => {
+    capturedArgs = args;
+    return mock as never;
+  });
+  const tools = new Map<string, ToolDefinition>();
+  registerSpawnSubagentTool(
+    { registerTool: (def) => tools.set(def.name, def) },
+    Type,
+    new Set<string>(),
+    (pi, names, def) => { names.add(def.name); pi.registerTool?.(def); },
+  );
+  const ctx = {
+    hasUI: false,
+    cwd: process.cwd(),
+    model: { id: 'claude-haiku-4-5-20251001', provider: 'guy-provider-anthropic' },
+    ui: { setStatus: () => {}, setWidget: () => {} },
+  } as never;
+
+  await tools.get('spawnSubagent')!.execute('id', {
+    agent: 'researcher',
+    task: 'Goal: test\nContext: test\nScope: test\nOwnership: test\nAcceptance: test\nReturn: test',
+  }, undefined, undefined, ctx);
+
+  const providerIdx = capturedArgs.indexOf('--provider');
+  assert.equal(providerIdx >= 0, true, 'spawnSubagent should pass an inherited --provider');
+  assert.equal(capturedArgs[providerIdx + 1], 'guy-provider-anthropic');
+});
+
+// ─── SEV-2: worker model/turn errors are captured into record.error ───────────
+
+test('SEV-2: an errored agent_end message surfaces the model error on record.error', () => {
+  if (isSubagentProcess()) return;
+  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  const ctx = { hasUI: false, ui: { setStatus: () => {}, setWidget: () => {} } } as never;
+  const record = spawnRpcAgent({ task: 'boom', resourceMode: 'lean' }, ctx);
+  const frame = JSON.stringify({
+    type: 'agent_end',
+    messages: [{ role: 'assistant', content: [], stopReason: 'error', errorMessage: '400 Unsupported model: claude-x' }],
+  });
+  mock._emit('stdout:data', Buffer.from(frame + '\n'));
+  assert.equal(record.error, '400 Unsupported model: claude-x', 'model error captured');
+  assert.ok(record.ledgerEvents.some((e) => /worker turn error/.test(e.message ?? '')), 'ledger records the turn error');
 });

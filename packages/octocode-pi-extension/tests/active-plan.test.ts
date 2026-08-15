@@ -4,6 +4,7 @@ import { Type } from 'typebox';
 import type { ToolDefinition } from '../src/types.js';
 import {
   setPlan, addStep, startStep, completeStep, clearPlan, getPlan, renderActivePlanAddendum,
+  bumpPlanTurn, STALE_PLAN_TURNS, readPersistedPlanForTests, depsMet, displayStatus,
 } from '../src/tools/active-plan.js';
 import { registerPlanTool, refreshPlanUi, handleOctocodePlanCommand } from '../src/tools/plan-tool.js';
 import type { PiContext } from '../src/types.js';
@@ -15,7 +16,8 @@ function uiCtx(cwd: string) {
     cwd,
     hasUI: true,
     ui: {
-      setWidget: (name: string, content: unknown) => calls.widget.push({ name, cleared: content === undefined }),
+      setWidget: (name: string, content: unknown, opts?: unknown) =>
+        calls.widget.push({ name, cleared: content === undefined, isFn: typeof content === 'function', opts, content }),
       setStatus: (name: string, text: unknown) => calls.status.push({ name, text }),
       notify: (msg: string) => calls.notify.push(msg),
     },
@@ -35,6 +37,118 @@ test('setPlan marks the first step doing, rest todo', () => {
   assert.deepEqual(steps.map((s) => s.status), ['doing', 'todo', 'todo']);
 });
 
+test('setPlan accepts {text, activeForm} objects and bare strings interchangeably', () => {
+  const steps = setPlan(CWD, [{ text: 'Edit file', activeForm: 'Editing file' }, 'Run tests']);
+  assert.equal(steps[0]!.text, 'Edit file');
+  assert.equal(steps[0]!.activeForm, 'Editing file');
+  assert.equal(steps[1]!.activeForm, undefined);
+  // The current-step hint prefers the activeForm label.
+  assert.match(renderActivePlanAddendum(CWD), /next: Editing file/);
+});
+
+test('addStep can carry an activeForm label', () => {
+  setPlan(CWD, ['a']);
+  const steps = addStep(CWD, 'Deploy', 'Deploying');
+  assert.equal(steps[1]!.activeForm, 'Deploying');
+});
+
+test('a step with unmet dependencies shows as blocked, then unblocks when the dep is done', () => {
+  const cwd = '/tmp/plan-deps-ws';
+  setPlan(cwd, ['First', { text: 'Second', dependsOn: [1] }]);
+  let list = getPlan(cwd);
+  assert.equal(displayStatus(list[1]!, list), 'blocked');
+  assert.equal(depsMet(list[1]!, list), false);
+  completeStep(cwd, 1); // step 1 done → step 2 unblocks and auto-advances to doing
+  list = getPlan(cwd);
+  assert.equal(list[1]!.status, 'doing');
+  assert.equal(displayStatus(list[1]!, list), 'doing');
+  assert.match(renderActivePlanAddendum(cwd), /\[x\] 1\. First/);
+  clearPlan(cwd);
+});
+
+test('auto-advance skips a blocked step and picks the next satisfiable todo', () => {
+  const cwd = '/tmp/plan-deps2-ws';
+  // Step 2 depends on 3; completing 1 should advance to 3 (satisfiable), not 2 (blocked).
+  setPlan(cwd, ['A', { text: 'B', dependsOn: [3] }, 'C']);
+  completeStep(cwd, 1);
+  const list = getPlan(cwd);
+  assert.equal(list[1]!.status, 'todo', 'blocked step stays todo');
+  assert.equal(displayStatus(list[1]!, list), 'blocked');
+  assert.equal(list[2]!.status, 'doing', 'next satisfiable todo becomes doing');
+  clearPlan(cwd);
+});
+
+test('dependsOn round-trips through disk persistence', () => {
+  const cwd = '/tmp/plan-deps-persist-ws';
+  setPlan(cwd, ['One', { text: 'Two', dependsOn: [1] }]);
+  const onDisk = readPersistedPlanForTests(cwd);
+  assert.deepEqual(onDisk[1]!.dependsOn, [1]);
+  clearPlan(cwd);
+});
+
+test('plan persists to disk (survives restart) and clear removes it', () => {
+  const cwd = '/tmp/plan-persist-ws';
+  setPlan(cwd, [{ text: 'Edit', activeForm: 'Editing' }, 'Test']);
+  completeStep(cwd, 1); // step 2 doing
+  // A fresh process would read exactly this from disk before touching memory.
+  const onDisk = readPersistedPlanForTests(cwd);
+  assert.equal(onDisk.length, 2, 'plan written to disk');
+  assert.equal(onDisk[0]!.status, 'done');
+  assert.equal(onDisk[1]!.status, 'doing');
+  assert.equal(onDisk[0]!.activeForm, 'Editing');
+  clearPlan(cwd);
+  assert.equal(readPersistedPlanForTests(cwd).length, 0, 'clear deletes the persisted plan');
+});
+
+test('stale-plan nudge fires after N idle turns and clears on mutation', () => {
+  const cwd = '/tmp/plan-stale-ws';
+  setPlan(cwd, ['a', 'b']);
+  assert.doesNotMatch(renderActivePlanAddendum(cwd), /not been updated/);
+  for (let i = 0; i < STALE_PLAN_TURNS; i++) bumpPlanTurn(cwd);
+  assert.match(renderActivePlanAddendum(cwd), /not been updated in 10\+ turns/);
+  // Any mutation resets the staleness counter.
+  completeStep(cwd, 1);
+  assert.doesNotMatch(renderActivePlanAddendum(cwd), /not been updated/);
+  clearPlan(cwd);
+});
+
+test('bumpPlanTurn is a no-op when there is no plan', () => {
+  const cwd = '/tmp/plan-noplan-ws';
+  assert.equal(bumpPlanTurn(cwd), 0);
+  assert.equal(renderActivePlanAddendum(cwd), '');
+});
+
+test('normal flow always keeps one step in progress (no invariant nudge)', () => {
+  const cwd = '/tmp/plan-invariant-ws';
+  setPlan(cwd, ['a', 'b', 'c']);
+  assert.doesNotMatch(renderActivePlanAddendum(cwd), /no step is in progress/);
+  completeStep(cwd, 1);
+  assert.equal(getPlan(cwd).filter((s) => s.status === 'doing').length, 1, 'exactly one doing after complete');
+  assert.doesNotMatch(renderActivePlanAddendum(cwd), /no step is in progress/);
+  clearPlan(cwd);
+});
+
+test('plan panel renders a progress bar, glyphs, and the running step activeForm', () => {
+  const cwd = '/tmp/plan-widget-ws';
+  const { ctx, calls } = uiCtx(cwd);
+  setPlan(cwd, [{ text: 'Edit file', activeForm: 'Editing file' }, 'Run tests']);
+  completeStep(cwd, 1); // step 2 becomes doing
+  refreshPlanUi(ctx);
+  const w = calls.widget.find(
+    (x) => (x as { name: string }).name === 'octocode-status-panel' && !(x as { cleared: boolean }).cleared,
+  ) as { content: (tui: unknown, theme: unknown) => { render?: unknown } } | undefined;
+  assert.ok(w, 'a below-editor widget renderer was set');
+  // Invoke the renderer with a no-op theme and read the lines it produces.
+  const theme = { fg: (_c: string, t: string) => t } as unknown;
+  const comp = w!.content(null, theme) as { render: (w: number) => string[] };
+  const lines = comp.render(80);
+  const joined = lines.join('\n');
+  assert.match(joined, /Plan\s+[\u2588\u2591]{8}\s+1\/2/, 'header has an 8-cell progress bar and 1/2');
+  assert.match(joined, /\u2713 1\. Edit file/, 'done step uses the check glyph');
+  assert.match(joined, /\u25b8 2\. Run tests/, 'doing step uses the pointer glyph');
+  clearPlan(cwd);
+});
+
 test('complete advances the next todo to doing and counts done', () => {
   setPlan(CWD, ['a', 'b', 'c']);
   completeStep(CWD, 1);
@@ -44,11 +158,12 @@ test('complete advances the next todo to doing and counts done', () => {
   assert.match(renderActivePlanAddendum(CWD), /1\/3 done/);
 });
 
-test('addStep appends a todo; start marks doing', () => {
+test('addStep appends a todo; start moves the active marker', () => {
   setPlan(CWD, ['a']);
   addStep(CWD, 'b');
   startStep(CWD, 2);
-  assert.deepEqual(getPlan(CWD).map((s) => s.status), ['doing', 'doing']);
+  assert.deepEqual(getPlan(CWD).map((s) => s.status), ['todo', 'doing']);
+  assert.equal(getPlan(CWD).filter((s) => s.status === 'doing').length, 1);
 });
 
 test('addendum shows markers and a next-step line', () => {
@@ -82,15 +197,21 @@ function loadTool(): ToolDefinition {
   return tools.get('plan')!;
 }
 
-test('refreshPlanUi keeps plan state compact and clears legacy below-editor widget', () => {
+test('refreshPlanUi renders a live below-editor checklist and a compact footer status', () => {
   const { ctx, calls } = uiCtx('/tmp/plan-ui-ws');
   setPlan('/tmp/plan-ui-ws', ['a', 'b']);
   refreshPlanUi(ctx);
-  assert.ok(calls.widget.every((w) => (w as { cleared: boolean }).cleared === true), 'legacy widget cleared instead of dangling below the editor');
+  const rendered = calls.widget.find((w) => (w as { name: string }).name === 'octocode-status-panel') as
+    | { cleared: boolean; isFn: boolean; opts?: { placement?: string } }
+    | undefined;
+  assert.ok(rendered && !rendered.cleared, 'below-editor plan widget is rendered while a plan is active');
+  assert.equal(rendered!.isFn, true, 'widget content is a renderer fn (not a static string[])');
+  assert.equal(rendered!.opts?.placement, 'belowEditor', 'plan checklist sits below the input field');
   assert.ok(calls.status.some((s) => String((s as { text: unknown }).text).includes('plan 0/2 · a')), 'compact status includes progress and current step');
   clearPlan('/tmp/plan-ui-ws');
   refreshPlanUi(ctx);
   assert.ok(calls.status.some((s) => (s as { text: unknown }).text === undefined), 'status cleared when empty');
+  assert.ok(calls.widget.some((w) => (w as { cleared: boolean }).cleared === true), 'widget cleared when the plan is empty');
 });
 
 test('/octocode-plan command completes a step and clears the plan', async () => {

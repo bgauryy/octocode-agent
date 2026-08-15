@@ -36,7 +36,10 @@ export function setDefaultModelInSettings(piDir: string, provider: string, model
 // ── Generic settings surface (config get|set|list) ──────────────────────────────
 
 /** Keys `config set` is allowed to write — Pi's own contract fields only. */
-export const ALLOWED_CONFIG_KEYS = ['defaultProvider', 'defaultModel'] as const;
+export const ALLOWED_CONFIG_KEYS = ['defaultProvider', 'defaultModel', 'theme'] as const;
+
+/** Theme name the launcher pins as the first-launch default (shipped by @octocodeai/pi-extension). */
+export const DEFAULT_OCTOCODE_THEME = 'octocode-dark';
 export type AllowedConfigKey = (typeof ALLOWED_CONFIG_KEYS)[number];
 
 export function isAllowedConfigKey(key: string): key is AllowedConfigKey {
@@ -56,6 +59,21 @@ export function setSetting(piDir: string, key: AllowedConfigKey, value: string):
   const file = path.join(piDir, 'settings.json');
   fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
   return file;
+}
+
+/**
+ * Write a settings default only when the key is absent. First-launch identity
+ * defaults (e.g. the branded theme) use this; any later user choice wins.
+ * Returns true when the value was written.
+ */
+export function ensureDefaultSetting(piDir: string, key: string, value: string): boolean {
+  const data = readSettings(piDir);
+  if (data[key] !== undefined) return false;
+  fs.mkdirSync(piDir, { recursive: true });
+  data[key] = value;
+  const file = path.join(piDir, 'settings.json');
+  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+  return true;
 }
 
 /** Full settings doc for diagnostics / `config list`. */

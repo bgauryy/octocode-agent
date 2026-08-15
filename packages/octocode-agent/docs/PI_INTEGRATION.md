@@ -102,10 +102,24 @@ Interactive TUI has four areas (`usage.md` §Interactive Mode): **startup header
 context usage, model).
 
 Extensions drive UX through `ctx.ui` (`extensions.md` §ctx.ui): `notify`, `setStatus`,
-`setWorkingIndicator`, `setWorkingMessage`, `setFooter`, `setHiddenThinkingLabel`,
-plus dialogs, widgets, autocomplete, and custom components. The core already uses
-`ctx.ui.notify`/`confirm`. Branding beyond this (a custom header replacing Pi's logo)
-needs the SDK/settings path — cosmetic and deferred (RFC `quietStartup`).
+`setWorkingIndicator`, `setWorkingMessage`, `setFooter`, `setHeader`, `setHiddenThinkingLabel`,
+`setEditorComponent`, plus dialogs, widgets, autocomplete, and custom components; per-tool
+`renderCall`/`renderResult` restyle tool rows (`extensions.md` §Custom Rendering).
+
+**What the harness brands today:** footer, status areas, working indicator + label, window
+title, and the header via `applyOctocodeUi` (banner from `src/branding/banner.ts`: named
+sessions lead with the title, fresh sessions with the wordmark). Every extension tool row
+is restyled through the single `registerUniqueTool` funnel
+(`src/tools/octocode-tools.ts` → `src/branding/renderers.ts#withOctocodeRender`). Themes
+`octocode-dark/light` are complete 51-token themes (`themes/`); the launcher pins
+`theme: "octocode-dark"` in `~/.pi/agent/settings.json` **write-if-absent** at first launch
+(`settings.ts#ensureDefaultSetting`) so later user choice always wins (`/settings`,
+`/octocode-theme sync|dark|light`, or allowlisted `config set theme <name>`).
+
+**Own shell (Phase C alpha):** `OCTOCODE_SHELL=1` replaces Pi's `InteractiveMode` with
+`createOctocodeShell(runtime)` (lazy export from the core, `src/shell/`, design in
+`docs/SHELL.md`) — banner, streaming transcript, own editor, steer-on-submit; any failure
+falls back to `InteractiveMode`.
 
 Editor niceties the agent inherits for free: `@`-file references, `!cmd`/`!!cmd` shell,
 image paste, message queue (Enter = steer, Alt+Enter = follow-up).
@@ -203,6 +217,9 @@ is a launcher, not a Pi package).
   running an interactive Pi session.
 - **Full SDK embed (§2)** remains designed-not-built. It is the path for deeper branding,
   direct session control, and a true `systemPromptOverride` if octocode-first prepend is not enough.
+- **Shell parity (Phase C):** grow `src/shell/` per `docs/SHELL.md` (slash dispatch, dialogs,
+  autocomplete, session pickers) until `OCTOCODE_SHELL` can become the default; `quietStartup`
+  (SDK overrides) stays the header-suppression story meanwhile.
 
 ## Sources
 `earendil-works/pi` `packages/coding-agent/docs/{usage,packages,sdk,extensions}.md` (branch `main`, npm `0.80.3`);

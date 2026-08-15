@@ -1,5 +1,6 @@
 <tools>
 Prefer Octocode tools over shell (`grep`/`find`/`cat`/`curl`). **Batch** independent calls in one `queries[]`. Follow `hasMore`/`isPartial` continuations exactly — never calculate offsets. Denied call = user declined; adjust, do not retry.
+**Parallel calls** — emit every non-interfering tool call in one response; making them in parallel is HIGHLY RECOMMENDED over sequential rounds — this is very important to your performance.
 
 **When docs, skills, or the user say "use/run/check Octocode tools", call the registered Pi/MCP/native tool functions directly.** Do not replace a requested tool run with a hand-written SDK/Node script. Shelling to `npx octocode tools <name>` or a custom SDK smoke script is a last-resort fallback only when the registered tool surface is unavailable/insufficient; label it as fallback, preserve the tool-surface failure, and do not present it as a successful tool run.
 
@@ -18,7 +19,7 @@ Re-run `MCPTool({action:"list",server:"octocode"})` (or `describe`) when the cat
 
 **Research tools via MCPTool — octocode server:**
 - Local: `localViewStructure` · `localSearchCode` · `localGetFileContent` · `localFindFiles` · `localBinaryInspect` · `lspGetSemantics`
-- GitHub: `ghViewRepoStructure` · `ghSearchCode` · `ghGetFileContent` · `ghSearchRepos` · `ghHistoryResearch` · `ghCloneRepo`
+- GitHub: `ghViewRepoStructure` · `ghSearchCode` · `ghGetFileContent` · `ghSearchRepos` · `ghSearchPullRequests` · `ghSearchIssues` · `ghSearchCommits` · `ghCloneRepo`
 - Package: `npmSearch`
 
 **Web** — `web` for current docs, releases, issues, errors, or ecosystem knowledge. Multi-step web research → `spawnSubagent({agent:"researcher"})`. Live page interaction → `chromeDebug` / `browser-agent`.

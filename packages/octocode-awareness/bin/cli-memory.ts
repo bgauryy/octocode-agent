@@ -148,8 +148,9 @@ export function cmdGetMemory(db: DatabaseSync, args: ParsedArgs, dbPath: string,
 export function cmdRefineSet(db: DatabaseSync, args: ParsedArgs, dbPath: string, opts: EmitOptions): number {
   const rawState = args['state'];
   const stateVal = Array.isArray(rawState) ? rawState[0] : String(rawState ?? 'open');
-  const rawFile = args['file'];
-  const files = Array.isArray(rawFile) ? rawFile : rawFile ? [String(rawFile)] : [];
+  const fileArgs = [args['file'], args['files']].filter((v) => v !== undefined);
+  const files = fileArgs.flatMap((v) => (Array.isArray(v) ? v.map(String) : [String(v)]));
+  const hasFileArgs = fileArgs.length > 0;
 
   // Update path: --refinement-id changes only the passed fields
   // (open → ongoing → done lifecycle).
@@ -162,7 +163,7 @@ export function cmdRefineSet(db: DatabaseSync, args: ParsedArgs, dbPath: string,
       ...(args['quality'] !== undefined ? { quality: String(args['quality']) as RefinementQuality } : {}),
       ...(args['reasoning'] !== undefined ? { reasoning: String(args['reasoning']) } : {}),
       ...(args['remember'] !== undefined ? { remember: String(args['remember']) } : {}),
-      ...(rawFile !== undefined ? { files } : {}),
+      ...(hasFileArgs ? { files } : {}),
       ...(args['state'] !== undefined && stateVal === 'done' ? {
         actorAgentId: resolveAgentId(args),
         checkReceipt: args['check_receipt'] ? String(args['check_receipt']) : '',
@@ -197,8 +198,11 @@ export function cmdRefineSet(db: DatabaseSync, args: ParsedArgs, dbPath: string,
 }
 
 export function cmdRefineGet(db: DatabaseSync, args: ParsedArgs, dbPath: string, opts: EmitOptions): number {
-  const rawState = args['state'];
-  const states = rawState ? (Array.isArray(rawState) ? rawState : [String(rawState)]) : undefined;
+  const rawStatesPlural = args['states'];
+  const rawStateMerged = rawStatesPlural !== undefined ? rawStatesPlural : args['state'];
+  const states = rawStateMerged ? (Array.isArray(rawStateMerged) ? rawStateMerged.map(String) : [String(rawStateMerged)]) : undefined;
+  const rawRefId = args['refinement_id'];
+  const refinementId = Array.isArray(rawRefId) ? String(rawRefId[0]) : rawRefId ? String(rawRefId) : undefined;
   const full = Boolean(args['full']);
   const requestedLimit = parseInt(String(args['limit'] ?? (opts.compact && !full ? '3' : '10')), 10);
 
@@ -209,6 +213,7 @@ export function cmdRefineGet(db: DatabaseSync, args: ParsedArgs, dbPath: string,
     ref: args['ref'] ? String(args['ref']) : null,
     quality: args['quality'] ? String(args['quality']) as RefinementQuality : undefined,
     includeHandoffs: Boolean(args['include_handoffs']),
+    refinementId,
     states,
     limit: opts.compact && !full ? requestedLimit + 1 : requestedLimit,
   });

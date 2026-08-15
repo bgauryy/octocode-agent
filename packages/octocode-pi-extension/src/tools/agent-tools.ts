@@ -19,6 +19,7 @@ import type {
 } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { refreshStatusPanel } from './status-panel.js';
 import { stringEnumSchema } from './schema-helpers.js';
 import { getRandomAgentName } from '../agentNames.js';
 
@@ -75,6 +76,7 @@ interface SpawnOptions {
 }
 
 type AgentProcessFactory = (command: string, args: string[], options: SpawnOptions) => AgentProcess;
+let ledgerHidden = false;
 
 export interface SpawnAgentParams {
   task?: string;
@@ -128,6 +130,8 @@ interface AgentRecord {
   responses: unknown[];
   toolCalls: AgentToolCall[];
   lastOutput: string;
+  /** Rolling 1-line progress note (latest structured/progress line) shown live while the worker runs. */
+  deltaSummary?: string;
   normalizedResult?: NormalizedWorkerResult;
   recoveryRisk: WorkerRecoveryRisk;
   ledgerEvents: WorkerLedgerEvent[];
@@ -192,6 +196,7 @@ export function isSubagentProcess(): boolean {
 export function setAgentProcessFactoryForTests(factory: AgentProcessFactory | null): void {
   processFactory = factory ?? ((command, args, options) => spawn(command, args, options) as unknown as AgentProcess);
   agents.clear();
+  ledgerHidden = false;
 }
 
 /** wait() resolves at end-of-turn: idle counts as "done for now", plus true terminals. */
@@ -650,12 +655,50 @@ function refreshNormalizedResult(record: AgentRecord): void {
   }
 }
 
+const DELTA_PREFIX = /^\s*\[(STATUS|ACTION|FINDING|METRIC|PLAN|BLOCKED|DONE|EVIDENCE)\]/i;
+const MAX_DELTA_SUMMARY_CHARS = 120;
+
+/** Rolling progress note: latest structured worker line, else the last non-empty line. */
+export function extractDeltaSummary(text: string): string | undefined {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return undefined;
+  const structured = [...lines].reverse().find((l) => DELTA_PREFIX.test(l));
+  const chosen = (structured ?? lines[lines.length - 1]!).replace(/\s+/g, ' ');
+  return chosen.length > MAX_DELTA_SUMMARY_CHARS ? `${chosen.slice(0, MAX_DELTA_SUMMARY_CHARS - 1)}…` : chosen;
+}
+
+/**
+ * SEV-2: capture a model/turn-level failure from a worker message. Errored turns emit
+ * an assistant message with stopReason:"error" and errorMessage (e.g. "400 Unsupported
+ * model", "500 Internal Server Error") but no content, so without this the failure is
+ * invisible: record.error stays unset (RPC transport succeeded, process exits 0) and
+ * lastOutput is empty. Recording it lets status/AgentMessage explain why a worker idled.
+ */
+function captureMessageError(record: AgentRecord, message: unknown): void {
+  if (!message || typeof message !== 'object') return;
+  const m = message as { stopReason?: string; errorMessage?: string };
+  const errMsg = typeof m.errorMessage === 'string' ? m.errorMessage.trim() : '';
+  if (m.stopReason !== 'error' && !errMsg) return;
+  const text = errMsg || 'worker model turn failed';
+  if (!record.error) record.error = text;
+  pushLedgerEvent(record, 'error', `worker turn error: ${text}`);
+  touch(record);
+}
+
+function isAssistantOutputMessage(message: unknown): boolean {
+  if (!message || typeof message !== 'object') return false;
+  return (message as { role?: unknown }).role === 'assistant';
+}
+
 function updateLastOutput(record: AgentRecord, message: unknown): void {
+  if (!isAssistantOutputMessage(message)) return;
   const text = extractTextFromMessage(message);
   if (text) {
     record.lastOutput = text.length > MAX_AGENT_LAST_OUTPUT_CHARS
       ? text.slice(-MAX_AGENT_LAST_OUTPUT_CHARS)
       : text;
+    const delta = extractDeltaSummary(text);
+    if (delta) record.deltaSummary = delta;
     refreshNormalizedResult(record);
   }
 }
@@ -742,12 +785,16 @@ function processRpcLine(record: AgentRecord, line: string): void {
   } else if (eventType === 'message_end' && (event as { message?: unknown }).message) {
     const message = (event as { message: unknown }).message;
     pushCapped(record.messages, message);
+    captureMessageError(record, message);
     updateLastOutput(record, message);
     touch(record);
   } else if (eventType === 'agent_end') {
     const messages = (event as { messages?: unknown[] }).messages;
     if (Array.isArray(messages)) {
-      for (const message of messages) updateLastOutput(record, message);
+      for (const message of messages) {
+        captureMessageError(record, message);
+        updateLastOutput(record, message);
+      }
     }
     touch(record, 'idle');
     notifyWaiters(record);
@@ -795,7 +842,16 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   const name = params.name ? String(params.name) : getRandomAgentName();
   const cwd = path.resolve(String(params.cwd ?? ctx?.cwd ?? process.cwd()));
   const promptFiles: string[] = [];
-  const args = buildPiArgs(params, name, promptFiles);
+  // SEV-1: workers resolve models against the same catalog as the parent, but Pi's
+  // bare default (google/grok) is often unconfigured/unreachable — an unset worker
+  // model silently errors every turn (0 tools run). Inherit the parent's known-working
+  // model+provider when the caller didn't pin one, so delegation works by default.
+  const effectiveParams: SpawnAgentParams = {
+    ...params,
+    model: params.model ?? ctx?.model?.id,
+    provider: params.provider ?? ctx?.model?.provider,
+  };
+  const args = buildPiArgs(effectiveParams, name, promptFiles);
   const invocation = getPiInvocation(args);
   const awarenessAgentId = workerAwarenessAgentId(id);
 
@@ -854,6 +910,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     responses: [],
     toolCalls: [],
     lastOutput: '',
+    deltaSummary: undefined,
     normalizedResult: normalizeWorkerOutput(''),
     recoveryRisk: evaluateWorkerRecoveryRisk(''),
     ledgerEvents: [],
@@ -970,6 +1027,7 @@ export function listWorkerLedgerEntries(): WorkerLedgerEntry[] {
         evidence: normalized?.evidence,
         verification: normalized?.verification,
         next: normalized?.next,
+        deltaSummary: record.deltaSummary,
         recentEvents: record.ledgerEvents.slice(-10),
       };
     });
@@ -1118,7 +1176,9 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
     const risk = agentRiskBadge(summary, theme);
     const riskText = risk ? ` · ${risk}` : '';
     const result = summary.normalizedResult?.result ?? summary.normalizedResult?.next ?? summary.lastOutput;
-    const preview = result ? ` — ${result.replace(/\n/g, ' ').slice(0, 90)}${summary.outputTruncated ? '…' : ''}` : '';
+    const live = !isTerminal(record) && record.deltaSummary ? record.deltaSummary : undefined;
+    const previewText = live ?? result;
+    const preview = previewText ? ` — ${previewText.replace(/\n/g, ' ').slice(0, 90)}${!live && summary.outputTruncated ? '…' : ''}` : '';
     const name = theme?.fg('accent', summary.name) ?? summary.name;
     const id = theme?.fg('dim', shortId(summary.agentId)) ?? shortId(summary.agentId);
     const elapsed = formatElapsed(record.startedAt, isTerminal(record) ? record.updatedAt : undefined);
@@ -1133,28 +1193,26 @@ export function formatAgentLedgerDetails(limit = 10): string {
 }
 
 function hasVisibleAgentLedgerRecords(): boolean {
-  return agents.size > 0;
+  return agents.size > 0 && !ledgerHidden;
 }
 
-function agentLedgerWidget(theme?: PiTheme) {
-  return makeRenderer((width) => buildAgentLedgerLines(6, theme).map((line) => truncateToWidth(line, width)));
+/** The Agents section lines for the unified below-editor panel. Empty when there are no workers. */
+export function agentPanelLines(theme?: PiTheme, limit = 6): string[] {
+  return hasVisibleAgentLedgerRecords() ? buildAgentLedgerLines(limit, theme) : [];
 }
 
 export function refreshAgentLedgerUi(ctx?: PiContext): void {
   if (!ctx?.hasUI) return;
   const records = [...agents.values()];
-  if (records.length === 0) {
+  if (records.length === 0 || ledgerHidden) {
     stopLedgerTicker();
     ctx.ui?.setStatus?.('octocode-agents', undefined);
-    ctx.ui?.setWidget?.('octocode-agents', undefined);
+    refreshStatusPanel(ctx);
     return;
   }
   ctx.ui?.setStatus?.('octocode-agents', formatAgentLedger().replace(/^Octocode agents: /, 'agents: '));
-  ctx.ui?.setWidget?.(
-    'octocode-agents',
-    hasVisibleAgentLedgerRecords() ? (_tui: unknown, theme: PiTheme) => agentLedgerWidget(theme) : undefined,
-    { placement: 'belowEditor' },
-  );
+  // The Agents section is rendered by the unified below-editor status panel.
+  refreshStatusPanel(ctx);
   // Live refresh: while any worker is active, advance the spinner and re-render every second.
   const anyActive = records.some((r) => !isTerminal(r));
   if (anyActive && !ledgerTicker) {
@@ -1200,9 +1258,11 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
     return;
   }
   if (action === 'hide' || action === 'clear') {
+    ledgerHidden = true;
     ctx?.ui?.setStatus?.('octocode-agents', undefined);
     ctx?.ui?.setWidget?.('octocode-agents', undefined);
-    ctx?.ui?.notify?.('Octocode agent ledger hidden for this session.', 'info');
+    refreshStatusPanel(ctx);
+    ctx?.ui?.notify?.('Octocode agent ledger hidden for this session. Run /octocode-agents list to show it again.', 'info');
     return;
   }
   if (action === 'prune') {
@@ -1247,6 +1307,7 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
     ctx?.ui?.notify?.(formatOctocodeAgentsHelp(), 'warning');
     return;
   }
+  ledgerHidden = false;
   refreshAgentLedgerUi(ctx);
   ctx?.ui?.notify?.(formatAgentLedgerDetails(), 'info');
 }

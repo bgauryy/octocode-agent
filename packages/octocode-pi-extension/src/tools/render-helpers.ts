@@ -10,6 +10,7 @@
 
 import { truncateToWidth as piTruncateToWidth, visibleWidth as piVisibleWidth } from '@earendil-works/pi-tui';
 
+import { paint } from '../tui/palette.js';
 import type { PiTheme, RenderCallReturn, ToolCallResult } from '../types.js';
 
 // ─── ANSI-safe width helpers ──────────────────────────────────────────────────
@@ -470,15 +471,22 @@ export function buildOctocodeRenderResult(
   const icon = theme?.fg(ok ? 'success' : 'error', ok ? '✓' : '✗') ?? (ok ? '✓' : '✗');
   const nameStr = theme?.fg('toolTitle', toolName) ?? toolName;
 
-  const statParts: string[] = [];
-  if (stats.summary) statParts.push(stats.summary);
-  else if (stats.queryCount !== undefined && stats.queryCount > 1)
-    statParts.push(`${stats.queryCount} queries`);
-  if (stats.paths && stats.paths.length > 0)
-    statParts.push(stats.paths.join(', '));
+  // Summary (counts) stays muted; paths get the dedicated `path` colour so a
+  // glance separates "what happened" from "which files". Painted as separate SGR
+  // spans — safe under pi-tui width measurement (OSC 8 hyperlinks are not, so
+  // clickable links are intentionally omitted from TUI rows).
+  const summarySeg = stats.summary
+    ? stats.summary
+    : stats.queryCount !== undefined && stats.queryCount > 1
+      ? `${stats.queryCount} queries`
+      : '';
+  const pathSeg = stats.paths && stats.paths.length > 0 ? stats.paths.join(', ') : '';
 
-  const statStr = statParts.length > 0
-    ? (theme?.fg('dim', ` · ${statParts.join(' · ')}`) ?? ` · ${statParts.join(' · ')}`)
+  const painted: string[] = [];
+  if (summarySeg) painted.push(paint(theme, 'dim', summarySeg));
+  if (pathSeg) painted.push(paint(theme, 'path', pathSeg));
+  const statStr = painted.length > 0
+    ? `${paint(theme, 'dim', ' · ')}${painted.join(paint(theme, 'dim', ' · '))}`
     : '';
 
   const header = `${icon} ${nameStr}${statStr}`;

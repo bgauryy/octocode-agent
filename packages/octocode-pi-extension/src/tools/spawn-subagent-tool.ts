@@ -246,7 +246,7 @@ export function registerSpawnSubagentTool(
         systemPrompt,
         thinking: params.thinking ?? config.thinking,
         model: params.model ?? config.model,
-        provider: params.provider ?? config.provider,
+        provider: params.provider ?? config.provider ?? ctx?.model?.provider,
         noSession: true,
       };
 

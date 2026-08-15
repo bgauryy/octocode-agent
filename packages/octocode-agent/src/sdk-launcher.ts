@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { getOctocodeHome } from './utils.js';
+import { getOctocodeHome, OCTOCODE_PROMPT_MODE } from './utils.js';
 import type { ParsedSdkArgs, SdkDeps, PiSdkModule, ExtensionFactory } from './types.js';
 
 // Re-export so callers that previously imported resolveOctocodeHome from this
@@ -307,7 +307,7 @@ export async function launchWithSdk(
   }
 
   // Build runtime factory — loads extension in-process via Pi service resource loading.
-  const extensionFactory = createExtension({ promptMode: 'octocode-first' });
+  const extensionFactory = createExtension({ promptMode: OCTOCODE_PROMPT_MODE });
 
   const createRuntime = async ({
     cwd: rCwd,
@@ -390,6 +390,30 @@ export async function launchWithSdk(
         ) => Promise<void>
       )(runtime, { mode: parsed.outputFormat, initialMessage: msg, initialImages: [], messages: [] });
       return 0;
+    }
+
+    // Own TUI shell (Phase C alpha): OCTOCODE_SHELL=1 swaps Pi's InteractiveMode
+    // for the Octocode shell shipped by the core. Any failure → InteractiveMode.
+    if (env.OCTOCODE_SHELL === '1' || env.OCTOCODE_SHELL === 'true') {
+      try {
+        const shellFn =
+          deps.createOctocodeShell ??
+          ((await import('@octocodeai/pi-extension')) as {
+            createOctocodeShell?: (
+              r: unknown,
+              d?: { version?: string },
+            ) => Promise<{ run: () => Promise<number> }>;
+          }).createOctocodeShell;
+        if (typeof shellFn === 'function') {
+          const shell = await shellFn(runtime, {});
+          const code = await shell.run();
+          return typeof code === 'number' ? code : 0;
+        }
+        log('octocode-agent: shell not exported by core; using InteractiveMode');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`octocode-agent: shell failed (${msg}); falling back to InteractiveMode`);
+      }
     }
 
     // Interactive mode (default)

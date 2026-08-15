@@ -11,7 +11,7 @@
  * and closeAllChromeConnections() runs on session shutdown.
  */
 
-import type { ChromeConnection } from './chrome-debug.js';
+import type { ChromeConnection } from "./chrome-debug.js";
 
 export const MAX_CACHED_CONNECTIONS = 8;
 
@@ -39,11 +39,16 @@ export interface CDPSessionInfo {
 // key is the least-recently-used (re-inserted on touch to move to the end).
 const cache = new Map<string, CacheEntry>();
 
-function now(): number { return Date.now(); }
+function now(): number {
+  return Date.now();
+}
 
 /** Stable cache key for a port + optional target selector (targetId/url/newTab). */
-export function connectionKey(port: number, targetSig: string | undefined): string {
-  return `${port}::${targetSig && targetSig.length > 0 ? targetSig : 'default'}`;
+export function connectionKey(
+  port: number,
+  targetSig: string | undefined,
+): string {
+  return `${port}::${targetSig && targetSig.length > 0 ? targetSig : "default"}`;
 }
 
 function isClosed(entry: CacheEntry): boolean {
@@ -83,17 +88,31 @@ export function getLiveConnection(key: string): ChromeConnection | undefined {
 }
 
 function closeEntry(entry: CacheEntry): void {
-  try { entry.connection.session.close(); } catch { /* already gone */ }
+  try {
+    entry.connection.session.close();
+  } catch {
+    /* already gone */
+  }
 }
 
 /** Store a connection, pruning dead entries and enforcing the LRU cap. */
-export function cacheConnection(key: string, port: number, connection: ChromeConnection): void {
+export function cacheConnection(
+  key: string,
+  port: number,
+  connection: ChromeConnection,
+): void {
   pruneClosedConnections();
   // Replace any existing entry for this key (close the old session first).
   const existing = cache.get(key);
   if (existing && existing.connection !== connection) closeEntry(existing);
   cache.delete(key);
-  cache.set(key, { connection, port, createdAt: now(), lastUsedAt: now(), uses: 1 });
+  cache.set(key, {
+    connection,
+    port,
+    createdAt: now(),
+    lastUsedAt: now(),
+    uses: 1,
+  });
   // Enforce cap by evicting least-recently-used (front of the Map).
   while (cache.size > MAX_CACHED_CONNECTIONS) {
     const oldestKey = cache.keys().next().value as string | undefined;
@@ -127,15 +146,19 @@ export function listCDPSessions(): CDPSessionInfo[] {
   const out: CDPSessionInfo[] = [];
   for (const [key, entry] of cache) {
     const target = (() => {
-      try { return entry.connection.session.targetInfo; } catch { return undefined; }
+      try {
+        return entry.connection.session.targetInfo;
+      } catch {
+        return undefined;
+      }
     })();
     const meta = entry.connection.metadata as { mode?: string } | undefined;
     out.push({
       key,
       port: entry.port,
-      mode: meta?.mode ?? 'unknown',
-      targetId: target?.id ?? '?',
-      url: target?.url ?? '?',
+      mode: meta?.mode ?? "unknown",
+      targetId: target?.id ?? "?",
+      url: target?.url ?? "?",
       closed: isClosed(entry),
       uses: entry.uses,
       ageMs: t - entry.createdAt,

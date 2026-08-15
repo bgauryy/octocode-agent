@@ -377,7 +377,7 @@ test('prompt encodes model-agnostic coding-agent norms: ambiguity, parallel call
   assert.match(SYSTEM_PROMPT, /Own mistakes briefly: acknowledge, correct, move on/);
   assert.match(SYSTEM_PROMPT, /make MINIMAL changes that achieve the goal; the project's existing style wins/);
   assert.match(SYSTEM_PROMPT, /never claim done from compile alone — this is very important to your performance/);
-  assert.match(SYSTEM_PROMPT, /more than 3 search queries or spans multiple files and patterns/);
+  assert.match(SYSTEM_PROMPT, /more than 3 independent search questions or spans multiple separable files\/patterns/);
   assert.match(SYSTEM_PROMPT, /deeper `AGENTS\.md` override parent ones; the user's latest message overrides all/);
   assert.match(SYSTEM_PROMPT, /update that `AGENTS\.md` in the same change/);
 });

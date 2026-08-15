@@ -308,6 +308,8 @@ export interface InsertRefinementResult {
 }
 
 export interface GetRefinementsParams {
+  /** Narrow to one refinement row by id; bypasses state/scope filters. */
+  refinementId?: string | null;
   workspacePath?: string | null;
   artifact?: string | null;
   repo?: string | null;

@@ -532,3 +532,56 @@ describe('launchWithSdk', () => {
     }
   });
 });
+
+describe('OCTOCODE_SHELL', () => {
+  it('runs createOctocodeShell and returns its exit code instead of InteractiveMode when OCTOCODE_SHELL=1', async () => {
+    const shellCalls: unknown[] = [];
+    const interactiveCalls: unknown[] = [];
+    const result = await launchWithSdk([], {
+      importPiSdk: buildMockSdk({ onInteractiveMode: (o) => interactiveCalls.push(o) }),
+      importExtensionFactory: noopExtensionFactory,
+      createOctocodeShell: async (runtime: unknown) => {
+        shellCalls.push(runtime);
+        return { run: async () => 0 };
+      },
+      env: { OCTOCODE_SHELL: '1' },
+    } satisfies SdkDeps);
+    expect(result).toBe(0);
+    expect(shellCalls).toHaveLength(1);
+    expect(interactiveCalls).toHaveLength(0);
+  });
+
+  it('falls back to InteractiveMode when the shell factory throws', async () => {
+    const logs: string[] = [];
+    const interactiveCalls: unknown[] = [];
+    const result = await launchWithSdk([], {
+      importPiSdk: buildMockSdk({ onInteractiveMode: (o) => interactiveCalls.push(o) }),
+      importExtensionFactory: noopExtensionFactory,
+      createOctocodeShell: async () => {
+        throw new Error('boom');
+      },
+      log: (m) => logs.push(m),
+      env: { OCTOCODE_SHELL: '1' },
+    } satisfies SdkDeps);
+    expect(result).toBe(0);
+    expect(interactiveCalls).toHaveLength(1);
+    expect(logs.some((m) => m.includes('shell failed (boom); falling back to InteractiveMode'))).toBe(true);
+  });
+
+  it('ignores the shell flag in print mode', async () => {
+    const shellCalls: unknown[] = [];
+    const printCalls: unknown[] = [];
+    const result = await launchWithSdk(['-p', 'hello'], {
+      importPiSdk: buildMockSdk({ onPrintMode: (o) => printCalls.push(o) }),
+      importExtensionFactory: noopExtensionFactory,
+      createOctocodeShell: async (runtime: unknown) => {
+        shellCalls.push(runtime);
+        return { run: async () => 0 };
+      },
+      env: { OCTOCODE_SHELL: '1' },
+    } satisfies SdkDeps);
+    expect(result).toBe(0);
+    expect(printCalls).toHaveLength(1);
+    expect(shellCalls).toHaveLength(0);
+  });
+});

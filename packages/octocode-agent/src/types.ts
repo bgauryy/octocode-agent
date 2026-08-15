@@ -75,6 +75,8 @@ export interface SdkDeps {
   importPiSdk?: () => Promise<PiSdkModule | null>;
   importExtensionFactory?: () => Promise<ExtensionFactory | null>;
   resolveHome?: (env: NodeJS.ProcessEnv) => string;
+  /** OCTOCODE_SHELL=1 shell factory. Defaults to the core's lazy export; inject to test. */
+  createOctocodeShell?: (runtime: unknown, deps?: { version?: string }) => Promise<{ run: () => Promise<number> }>;
 }
 
 // ── Launch deps ───────────────────────────────────────────────────────────────

@@ -21,3 +21,4 @@ export const context = section('context.md');
 export const agents = section('agents.md');
 export const browserAgent = section('browser-agent.md');
 export const safety = section('safety.md');
+export const ultimateReminders = section('ultimate-reminders.md');

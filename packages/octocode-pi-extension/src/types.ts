@@ -48,6 +48,8 @@ export interface WorkerLedgerEntry {
   evidence?: string[];
   verification?: string;
   next?: string;
+  /** Rolling 1-line progress note for a running worker (what it is doing now). */
+  deltaSummary?: string;
   recentEvents: WorkerLedgerEvent[];
 }
 
@@ -202,6 +204,8 @@ export interface NewSessionOptions {
 export interface PiModel {
   id?: string;
   reasoning?: boolean;
+  /** Provider name for this model (e.g. "anthropic", "guy-provider-anthropic"). Present on the active model. */
+  provider?: string;
 }
 
 /**

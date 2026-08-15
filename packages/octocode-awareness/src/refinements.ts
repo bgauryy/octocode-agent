@@ -10,7 +10,7 @@ import { REFINEMENTS_INSERT, REFINEMENTS_DELETE } from './sql/refinements.js';
 import type {
   InsertRefinementParams, InsertRefinementResult,
   GetRefinementsParams, GetRefinementsResult,
-  RefinementRow, RefinementQuality,
+  RefinementRow, RefinementQuality, RefinementRecord,
 } from './types.js';
 
 export const REFINEMENT_QUALITIES: readonly RefinementQuality[] = ['good', 'bad', 'handoff', 'instructions'];
@@ -123,6 +123,7 @@ export function getRefinements(
   params: GetRefinementsParams = {},
 ): GetRefinementsResult {
   const {
+    refinementId,
     workspacePath,
     artifact,
     repo: repoArg,
@@ -133,6 +134,12 @@ export function getRefinements(
     limit: limitRaw = 10,
     cwd,
   } = params;
+
+  if (refinementId) {
+    const row = db.prepare('SELECT * FROM refinements WHERE refinement_id = ?').get(refinementId) as unknown as RefinementRow | undefined;
+    const refinements = row ? [rowToRefinement(row)] : [];
+    return { count: refinements.length, refinements };
+  }
 
   const limit = Math.min(50, Math.max(1, Number(limitRaw) || 10));
   const states = statesRaw ?? ['open', 'ongoing'];
@@ -198,7 +205,18 @@ export function getRefinements(
   }
 
   const rows = db.prepare(sql).all(...queryParams) as unknown as RefinementRow[];
-  const refinements = rows.map(r => ({
+  const refinements = rows.map(rowToRefinement);
+
+  return {
+    count: refinements.length,
+    refinements,
+    ...(handoffCount !== undefined ? { handoff_count: handoffCount } : {}),
+    ...(instructionsCount !== undefined ? { instructions_count: instructionsCount } : {}),
+  };
+}
+
+function rowToRefinement(r: RefinementRow): RefinementRecord {
+  return {
     refinement_id: r.refinement_id,
     agent_id: r.agent_id,
     workspace_path: r.workspace_path,
@@ -212,13 +230,6 @@ export function getRefinements(
     state: r.state as 'open' | 'ongoing' | 'done',
     created_at: r.created_at,
     updated_at: r.updated_at,
-  }));
-
-  return {
-    count: refinements.length,
-    refinements,
-    ...(handoffCount !== undefined ? { handoff_count: handoffCount } : {}),
-    ...(instructionsCount !== undefined ? { instructions_count: instructionsCount } : {}),
   };
 }
 

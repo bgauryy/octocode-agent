@@ -7,6 +7,7 @@
  * token cost. The catalog is pre-warmed at session_start via warmMcpCatalog() so the
  * <mcp_cached_catalog> block is populated before the agent's first turn.
  */
+import { withOctocodeRender } from '../branding/renderers.js';
 import type { ToolDefinition } from '../types.js';
 
 // ─── Registration helper ─────────────────────────────────────────────────────
@@ -22,5 +23,5 @@ export function registerUniqueTool(
     );
   }
   registeredToolNames.add(toolDefinition.name);
-  pi.registerTool?.(toolDefinition);
+  pi.registerTool?.(withOctocodeRender(toolDefinition));
 }

@@ -1848,7 +1848,7 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
     ['status', 'octocode', '<◆ Octocode>'],
     ['status', 'octocode-thinking', '<thinking: unknown model>'],
     ['indicator', '<✦><✧><✶><✧>', '220'],
-    ['working', '◆ Octocode thinking…'],
+    ['working', '<Thinking…>'],
   ]);
   assert.equal(
     getThinkingStatus({ model: { id: 'gpt-5.5', reasoning: false } }, 'high'),
@@ -1886,7 +1886,7 @@ test('Octocode metrics footer updates on session and turn lifecycle (single surf
   assert.ok(footerCalls.length > 0, 'footer set on session_start');
   const initial = renderFooter();
   assert.match(initial, /◆ Octocode/);
-  assert.match(initial, /ctx 50% 50\.0k\/100k/);
+  assert.match(initial, /ctx [▓░]{8} 50% 50\.0k\/100k/);
   assert.match(initial, /turns 0/);
 
   const turnStart = handlers.get('turn_start')!.at(-1)!;
@@ -2195,7 +2195,7 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
     await handlers.get('session_shutdown')!.at(-1)!({ reason: 'new' }, ctx);
     assert.ok(statuses.some(([key, value]) => key === 'agent-wait' && value === undefined));
     assert.ok(statuses.some(([key, value]) => key === 'chrome-debug' && value === undefined));
-    assert.ok(widgets.some(([key, value]) => key === 'octocode-agents' && value === undefined));
+    assert.ok(widgets.some(([key, value]) => key === 'octocode-status-panel' && value === undefined));
     assert.deepEqual(working.at(-2), { kind: 'message', value: undefined });
     assert.deepEqual(working.at(-1), { kind: 'visible', value: false });
   } finally {
@@ -3516,7 +3516,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     assert.match(notifications.at(-1)?.message ?? '', /guy-provider-anthropic\/sonnet:high/);
     assert.match(notifications.at(-1)?.message ?? '', /think:medium/);
     assert.match(notifications.at(-1)?.message ?? '', /tools:4/);
-    const widgetCall = widgetCalls.find(call => call.name === 'octocode-agents' && typeof call.content === 'function');
+    const widgetCall = widgetCalls.find(call => call.name === 'octocode-status-panel' && typeof call.content === 'function');
     assert.equal(widgetCall?.opts?.placement, 'belowEditor');
     const widget = (widgetCall?.content as (tui: unknown, theme: TestTheme) => { render(width: number): string[] })(null, {
       fg: (color: string, text: string) => `<${color}:${text}>`,
@@ -3647,7 +3647,7 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
     );
     assert.ok(
       widgetCalls.some(
-        (call) => call.key === 'octocode-agents' && typeof call.value === 'function'
+        (call) => call.key === 'octocode-status-panel' && typeof call.value === 'function'
       ),
       'completed records still render the below-editor ledger widget'
     );

@@ -15,6 +15,7 @@ import {
   agents,
   browserAgent,
   safety,
+  ultimateReminders,
 } from './sections/index.js';
 
 /** The full Octocode system prompt — sections in the order they appear below. */
@@ -36,4 +37,5 @@ export const SYSTEM_PROMPT =
     docs,
     context,
     output,
+    ultimateReminders,
   ].join('\n\n') + '\n';

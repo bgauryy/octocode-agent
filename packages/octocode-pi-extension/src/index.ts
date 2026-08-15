@@ -58,8 +58,11 @@ import { renderAvailableSkillsAddendum } from './tools/skill-catalog.js';
 import { registerPlanTool } from './tools/plan-tool.js';
 import { registerAskUserTool } from './tools/ask-user-tool.js';
 import { registerMemoryTool } from './tools/memory-tool.js';
-import { renderActivePlanAddendum, getPlan } from './tools/active-plan.js';
-import { buildFooterSegments, buildWorkingLabel, resolveSystemThemeName, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName } from './ui-extras.js';
+import { renderActivePlanAddendum, getPlan, bumpPlanTurn } from './tools/active-plan.js';
+import { refreshAwarenessPanel } from './tools/awareness-status.js';
+import { refreshStatusPanel } from './tools/status-panel.js';
+import { buildFooterSegments, buildWorkingLabel, WORKING_WORD, resolveSystemThemeName, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName } from './ui-extras.js';
+import { contextGauge, paint } from './tui/palette.js';
 import { listCDPSessions, closeAllChromeConnections } from './chrome-connection-cache.js';
 import { handleOctocodePlanCommand, OCTOCODE_PLAN_COMMAND_USAGE, OCTOCODE_PLAN_COMMAND_COMPLETIONS } from './tools/plan-tool.js';
 import { atomicWriteUtf8 } from './tools/file-state.js';
@@ -211,20 +214,34 @@ function formatContextUsage(ctx: PiContext | undefined): { text: string; percent
   const usage = ctx?.getContextUsage?.();
   if (!usage || usage.contextWindow <= 0) return { text: 'ctx n/a' };
   const percent = Math.round((usage.tokens / usage.contextWindow) * 100);
-  const filled = Math.max(0, Math.min(10, Math.floor(percent / 10)));
-  const bar = `${'▓'.repeat(filled)}${'░'.repeat(10 - filled)}`;
+  const { bar } = contextGauge(percent, 10);
   return {
     text: `ctx ${bar} ${percent}% (${formatCompactNumber(usage.tokens)}/${formatCompactNumber(usage.contextWindow)})`,
     percent,
   };
 }
 
-function activeWorkerCount(): number {
+interface WorkerFooterCounts {
+  /** Live workers (starting / running / idle). */
+  active: number;
+  /** Workers waiting on the lead (normalized [BLOCKED]). */
+  blocked: number;
+  /** Workers that failed / crashed. */
+  failed: number;
+}
+
+function workerFooterCounts(): WorkerFooterCounts {
+  const counts: WorkerFooterCounts = { active: 0, blocked: 0, failed: 0 };
   try {
-    return listWorkerLedgerEntries().filter((e) => e.status === 'running' || e.status === 'idle' || e.status === 'starting').length;
+    for (const e of listWorkerLedgerEntries()) {
+      if (e.status === 'failed' || e.normalizedStatus === 'failed') counts.failed += 1;
+      else if (e.normalizedStatus === 'blocked') counts.blocked += 1;
+      if (e.status === 'running' || e.status === 'idle' || e.status === 'starting') counts.active += 1;
+    }
   } catch {
-    return 0;
+    return { active: 0, blocked: 0, failed: 0 };
   }
+  return counts;
 }
 
 function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetricsState, now = Date.now()): void {
@@ -236,6 +253,11 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
   // on-screen redundancy.)
   const usage = ctx.getContextUsage?.() ?? { tokens: 0, contextWindow: 0 };
   const plan = getPlan(ctx.cwd ?? process.cwd());
+  const workers = workerFooterCounts();
+  const activeEntry = listWorkerLedgerEntries().find(
+    (e) => e.status === 'running' || e.status === 'starting' || e.status === 'idle',
+  );
+  const agentDoing = activeEntry ? (activeEntry.deltaSummary ?? activeEntry.name) : undefined;
   const segments = buildFooterSegments({
     tokens: usage?.tokens ?? 0,
     contextWindow: usage?.contextWindow ?? 0,
@@ -243,21 +265,26 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
     activeTurnMs: state.activeTurnStartedAt !== undefined ? now - state.activeTurnStartedAt : undefined,
     lastTurnMs: state.lastTurnMs,
     sessionMs: now - state.sessionStartedAt,
-    activeWorkers: activeWorkerCount(),
+    activeWorkers: workers.active,
+    agentDoing,
+    blockedWorkers: workers.blocked,
+    failedWorkers: workers.failed,
     planDone: plan.filter((s) => s.status === 'done').length,
     planTotal: plan.length,
+    planDoing: plan.find((s) => s.status === 'doing')?.text,
     branch: state.gitBranch,
     dirty: state.gitDirty ?? false,
   });
   ctx.ui?.setFooter?.((_tui: unknown, theme) => makeRenderer((width) => {
     const brand = theme.fg('accent', theme.bold('\u25c6 Octocode'));
-    const body = theme.fg('dim', segments.join('  \u00b7  '));
+    const sep = theme.fg('dim', '  \u00b7  ');
+    const body = segments.map((s) => paint(theme, s.token ?? 'dim', s.text)).join(sep);
     return [truncateToWidth(`${brand}  ${body}`, width)];
   }));
 
   // Live token count beside the working spinner during an active turn.
   if (state.activeTurnStartedAt !== undefined) {
-    const label = buildWorkingLabel({ startedAt: state.activeTurnStartedAt, now, tokens: usage?.tokens });
+    const label = buildWorkingLabel({ startedAt: state.activeTurnStartedAt, now });
     ctx.ui?.setWorkingMessage?.(ctx.ui.theme?.fg('accent', label) ?? label);
   }
 }
@@ -352,8 +379,11 @@ export function applyOctocodeUi(ctx: PiContext | undefined, level?: string, cont
       : ['✦', '✧', '✶', '✧'],
     intervalMs: 220,
   });
-  // Custom working message shown during agent streaming.
-  ui.setWorkingMessage?.('◆ Octocode thinking…');
+  // Custom working message shown during agent streaming. The animated frames
+  // supply motion; the text is just the branded verb (no time/tokens — those
+  // live in the footer). The live ticker replaces this with the animated
+  // "Thinking."/".."/"..." label once a turn is active.
+  ui.setWorkingMessage?.(t?.fg('accent', `${WORKING_WORD}…`) ?? `${WORKING_WORD}…`);
 }
 
 export function getInternalErrorLogPath(cwd = process.cwd()): string {
@@ -786,6 +816,8 @@ async function wireOctocodePiExtension(
       await refreshFooterGitState(pi, metricsState);
       applyOctocodeUi(ctx, pi.getThinkingLevel?.());
       updateOctocodeMetricsUi(ctx, metricsState);
+      // Surface any disk-restored plan / live agents in the below-editor panel right at launch.
+      refreshStatusPanel(ctx);
       cronScheduler.start(ctx);
       // Ensure ~/.pi/agent/mcp.json has the correct npm_config_cache env vars so
       // Pi's own MCP client can start octocode-mcp with the darwin native addon.
@@ -884,6 +916,10 @@ async function wireOctocodePiExtension(
         ctx.ui?.setStatus?.('octocode-plan', undefined);
         ctx.ui?.setWidget?.('octocode-plan', undefined);
         ctx.ui?.setWidget?.('octocode-agents', undefined);
+        // The unified below-editor panel is now persistent (it always shows the main
+        // agent model), so it no longer self-clears via refreshStatusPanel emptiness —
+        // clear it explicitly on shutdown.
+        ctx.ui?.setWidget?.('octocode-status-panel', undefined);
         ctx.ui?.setWorkingMessage?.(undefined);
         ctx.ui?.setWorkingVisible?.(false);
         if (cleanedAgents > 0) {
@@ -989,7 +1025,15 @@ async function wireOctocodePiExtension(
       // skills added/removed by Pi discovery without a watcher.
       const availableSkills = renderAvailableSkillsAddendum(event.systemPromptOptions?.skills);
       // Compaction-durable task breakdown: re-injected every turn so a plan survives compaction.
-      const activePlan = renderActivePlanAddendum(ctx?.cwd ?? process.cwd());
+      // Bump the staleness counter once per turn first so an idle plan surfaces a nudge.
+      const planCwd = ctx?.cwd ?? process.cwd();
+      bumpPlanTurn(planCwd);
+      const activePlan = renderActivePlanAddendum(planCwd);
+      // Live Awareness panel (shared plans/tasks/verify-debt) under the input; async+throttled, never blocks.
+      refreshAwarenessPanel(ctx);
+      // Render the unified below-editor status panel every turn, independent of awareness, so a
+      // persisted plan (or active agents) is always visible under the input if it exists.
+      refreshStatusPanel(ctx);
       const prompt = [cachedSystemPromptText, mcpCatalog, dynamicCatalog, availableSkills, activePlan].filter((part) => part.trim().length > 0).join('\n\n');
       if (!shouldAppendSystemPrompt(event.systemPrompt, prompt)) {
         return;
