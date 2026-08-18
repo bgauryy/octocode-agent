@@ -170,7 +170,8 @@ export const SCHEMA_DDL = `
       task_id    TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
       run_id     TEXT REFERENCES task_runs(run_id) ON DELETE SET NULL,
       agent_id   TEXT NOT NULL,
-      event_type TEXT NOT NULL,
+      event_type TEXT NOT NULL
+                 CHECK(event_type IN ('CREATED','DEPENDENCY_ADDED','CLAIMED','SUBMITTED','BLOCKED','RELEASED','CLAIM_EXPIRED','VERIFIED','VERIFICATION_FAILED')),
       message    TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
@@ -237,7 +238,8 @@ export const SCHEMA_DDL = `
       thread_id      TEXT NOT NULL,
       reply_to       TEXT,
       importance     INTEGER NOT NULL DEFAULT 5,
-      status         TEXT NOT NULL DEFAULT 'open',
+      status         TEXT NOT NULL DEFAULT 'open'
+                     CHECK(status IN ('open','resolved')),
       resolved_at    TEXT,
       created_at     TEXT NOT NULL
     );

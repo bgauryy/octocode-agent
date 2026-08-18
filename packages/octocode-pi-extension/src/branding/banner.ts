@@ -19,10 +19,25 @@ export interface BannerTheme {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const GLYPH = '◆';
-const WORDMARK = 'Octocode';
 const TAGLINE_TEXT = 'Your AI coding agent';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const METALLIC_WORDMARK_PARTS: Array<readonly [color: string, text: string]> = [
+  ['muted', 'Oct'],
+  ['text', 'oco'],
+  ['accent', 'de'],
+];
+
+/**
+ * Static shimmer-style wordmark: use a few semantic color bands so it reads as
+ * metallic without a terminal animation loop, noisy ANSI output, or width drift.
+ */
+function renderMetallicWordmark(theme: BannerTheme): string {
+  return theme.bold(
+    METALLIC_WORDMARK_PARTS.map(([color, text]) => theme.fg(color, text)).join('')
+  );
+}
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -43,7 +58,7 @@ export function renderBannerLines(
   version?: string,
 ): string[] {
   const glyph = theme.fg('accent', GLYPH);
-  const wordmark = theme.bold(theme.fg('accent', WORDMARK));
+  const wordmark = renderMetallicWordmark(theme);
   const versionStr = version ? theme.fg('muted', ` v${version}`) : '';
   const mainLine = `${glyph} ${wordmark}${versionStr}`;
 

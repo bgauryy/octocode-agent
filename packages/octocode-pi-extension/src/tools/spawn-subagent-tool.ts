@@ -19,6 +19,7 @@
 
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
+import { paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import {
   spawnRpcAgent,
@@ -292,11 +293,14 @@ export function registerSpawnSubagentTool(
     },
 
     renderCall(rawParams: unknown) {
-      const p = rawParams as SpawnSubagentParams;
-      const config = SUBAGENT_REGISTRY[p.agent as SubagentName];
-      const label = config?.label ?? p.agent;
+      // Pi invokes renderCall with PARTIAL args during argument streaming; every
+      // field may still be absent.
+      const p = (rawParams ?? {}) as Partial<SpawnSubagentParams>;
+      const config = p.agent ? SUBAGENT_REGISTRY[p.agent as SubagentName] : undefined;
+      const label = config?.label ?? p.agent ?? '…';
       const url = p.url ? ` → ${p.url}` : '';
-      const raw = `spawnSubagent(${label}${url}) "${p.task.slice(0, 45)}${p.task.length > 45 ? '…' : ''}"`;
+      const task = typeof p.task === 'string' ? p.task : '';
+      const raw = `spawnSubagent(${label}${url}) "${task.slice(0, 45)}${task.length > 45 ? '…' : ''}"`;
       return makeRenderer((w) => [truncateToWidth(raw, w)]);
     },
 
@@ -304,7 +308,7 @@ export function registerSpawnSubagentTool(
       const r = result as { content?: Array<{ text?: string }> };
       const text = r?.content?.[0]?.text ?? '';
       const agentLine = text.split('\n').find((l) => l.startsWith('[SPAWNED]')) ?? '';
-      const raw = (theme?.fg('success', agentLine) ?? agentLine) || 'spawnSubagent: spawned';
+      const raw = agentLine ? paint(theme, 'success', agentLine) : 'spawnSubagent: spawned';
       return makeRenderer((w) => [truncateToWidth(raw, w)]);
     },
   });

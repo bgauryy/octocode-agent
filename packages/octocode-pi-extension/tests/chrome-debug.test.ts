@@ -34,7 +34,6 @@ import {
   redactEvidence,
   redactObject,
   readSessionMeta,
-  restrictedFetch,
   selectTarget,
   isLocalhost,
   buildScreenshotFilename,
@@ -689,14 +688,10 @@ describe('isLocalhost', () => {
   });
 });
 
-describe('restrictedFetch and CDP HTTP sandbox', () => {
-  test('restrictedFetch blocks non-localhost URLs before fetch runs', async () => {
-    assert.throws(
-      () => restrictedFetch('https://example.com/json/version'),
-      /only localhost allowed/,
-    );
-  });
-
+// restrictedFetch was removed as dead code (exported but never installed —
+// the implied global "[SANDBOX] fetch blocked" layer never existed); the real
+// guard is cdpHttp's own localhost check, covered below.
+describe('CDP HTTP sandbox', () => {
   test('getVersion, getTargets, and selectTarget read only localhost CDP endpoints', async () => {
     const target = makeTarget({ id: 'target-2', type: 'worker', url: 'https://app.example/worker.js' });
     const seen: string[] = [];
@@ -1204,7 +1199,8 @@ test('chromeDebug tool rejects unknown schemes and renders call/result states', 
     targetUrl: 'https://example.com/this/is/a/really/long/path/that/gets/truncated',
   }, themed).render(120)[0]!;
   assert.match(callLine, /<toolTitle><b>chromeDebug<\/b><\/toolTitle>/);
-  assert.match(callLine, /<accent>network<\/accent>/);
+  // scheme paints with the `link` token → `mdLink` per the palette (TOKEN.link === 'mdLink').
+  assert.match(callLine, /<mdLink>network<\/mdLink>/);
   assert.match(callLine, /:19333/);
 
   assert.equal(

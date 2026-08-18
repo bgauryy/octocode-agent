@@ -125,13 +125,25 @@ test('submitted prompt reaches session.prompt', async () => {
   await done;
 });
 
-test('renders streamed text deltas from runtime events', async () => {
+test('renders streamed text and thinking blocks from runtime events', async () => {
   const runtime = new FakeRuntime();
   const ui = new FakeUi();
   const shell = createOctocodeShell(runtime, { ui });
 
   const done = shell.run();
 
+  runtime.session.emit({
+    type: 'message_update',
+    assistantMessageEvent: { type: 'thinking_start' },
+  });
+  runtime.session.emit({
+    type: 'message_update',
+    assistantMessageEvent: { type: 'thinking_delta', delta: 'checking facts' },
+  });
+  runtime.session.emit({
+    type: 'message_update',
+    assistantMessageEvent: { type: 'thinking_end' },
+  });
   runtime.session.emit({
     type: 'message_update',
     assistantMessageEvent: { type: 'text_delta', delta: 'Hello, ' },
@@ -141,24 +153,27 @@ test('renders streamed text deltas from runtime events', async () => {
     assistantMessageEvent: { type: 'text_delta', delta: 'world!' },
   });
 
-  assert.equal(ui.deltas, 'Hello, world!');
+  assert.ok(ui.lines.some((l) => l.includes('thinking')), 'thinking block should be visible');
+  assert.ok(ui.deltas.includes('checking facts'), 'thinking deltas should stream instead of being dropped');
+  assert.ok(ui.deltas.includes('Hello, world!'), 'text deltas should still stream');
 
   await ui.submit('/quit');
   await done;
 });
 
-test('renders a tool-call notification', async () => {
+test('renders modern tool call, update, and response rows', async () => {
   const runtime = new FakeRuntime();
   const ui = new FakeUi();
   const shell = createOctocodeShell(runtime, { ui });
 
   const done = shell.run();
-  runtime.session.emit({ type: 'tool_execution_start', toolName: 'bash', toolCallId: 't1' });
+  runtime.session.emit({ type: 'tool_execution_start', toolName: 'bash', toolCallId: 't1', args: { command: 'echo ok' } });
+  runtime.session.emit({ type: 'tool_execution_update', toolName: 'bash', toolCallId: 't1', partialResult: { stdout: 'ok' } });
+  runtime.session.emit({ type: 'tool_execution_end', toolName: 'bash', toolCallId: 't1', result: { exitCode: 0 } });
 
-  assert.ok(
-    ui.lines.some((l) => l.includes('bash')),
-    'tool notification should mention the tool name',
-  );
+  assert.ok(ui.lines.some((l) => l.includes('bash') && l.includes('running')), 'tool start should mention the running tool');
+  assert.ok(ui.lines.some((l) => l.includes('stdout')), 'tool update should show a compact payload');
+  assert.ok(ui.lines.some((l) => l.includes('✓') && l.includes('bash')), 'tool completion should show success');
 
   await ui.submit('/quit');
   await done;
@@ -203,6 +218,37 @@ test('blank submissions are ignored (no prompt, no quit)', async () => {
   await ui.submit('   ');
 
   assert.deepEqual(runtime.session.prompted, []);
+
+  await ui.submit('/quit');
+  await done;
+});
+
+test('slash command help is handled locally', async () => {
+  const runtime = new FakeRuntime();
+  const ui = new FakeUi();
+  const shell = createOctocodeShell(runtime, { ui });
+
+  const done = shell.run();
+  await ui.submit('/help');
+
+  assert.deepEqual(runtime.session.prompted, []);
+  assert.ok(ui.lines.some((l) => l.includes('OctocodeShell commands')));
+  assert.ok(ui.lines.some((l) => l.includes('/quit')));
+
+  await ui.submit('/quit');
+  await done;
+});
+
+test('unknown slash commands are rejected locally', async () => {
+  const runtime = new FakeRuntime();
+  const ui = new FakeUi();
+  const shell = createOctocodeShell(runtime, { ui });
+
+  const done = shell.run();
+  await ui.submit('/not-a-command');
+
+  assert.deepEqual(runtime.session.prompted, []);
+  assert.ok(ui.lines.some((l) => l.includes('unknown command: /not-a-command')));
 
   await ui.submit('/quit');
   await done;

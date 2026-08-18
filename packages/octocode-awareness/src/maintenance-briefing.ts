@@ -108,19 +108,75 @@ export function notifyGet(
       artifact,
       unreadOnly: true,
       markRead: false,
-      limit: 5,
+      // Fetch more than the brief displays so repeated handoff broadcasts can
+      // collapse before the top-5 maintenance rows are selected.
+      limit: 50,
       cwd: notifyCwd,
     });
+    type HandoffCluster = {
+      count: number;
+      from: string;
+      target: string;
+      subject: string;
+      body: string;
+      files: string[];
+      importance: number;
+    };
+    const handoffClusters = new Map<string, HandoffCluster>();
+    const normalizeHandoffSubject = (subject: string): string =>
+      subject.replace(/Review session handoff for pi:[^\s:]+(?::[^\s]+)?/g, 'Review session handoff');
+    const normalizeHandoffBody = (body: string): string =>
+      summarizeText(body.replace(/pi:[^\s]+/g, 'pi:<session>'), 120);
+    const isSessionHandoff = (subject: string): boolean =>
+      normalizeHandoffSubject(subject) === 'Review session handoff';
     for (const n of inbox.signals) {
       const target = n.to_agent ? `to ${n.to_agent}` : 'broadcast';
+      const bodySuffix = n.body ? ` — ${summarizeText(n.body, 60)}` : '';
+      if (n.kind === 'handoff') {
+        const normalizedSubject = normalizeHandoffSubject(n.subject);
+        const normalizedBody = normalizeHandoffBody(n.body ?? '');
+        const key = JSON.stringify([
+          n.kind,
+          n.to_agent ?? '',
+          normalizedSubject,
+          isSessionHandoff(n.subject) ? '' : normalizedBody,
+        ]);
+        const existing = handoffClusters.get(key);
+        if (existing) {
+          existing.count += 1;
+          existing.files.push(...n.files);
+          existing.importance = Math.max(existing.importance, n.importance);
+          continue;
+        }
+        handoffClusters.set(key, {
+          count: 1,
+          from: n.from_agent,
+          target,
+          subject: normalizedSubject,
+          body: normalizedBody,
+          files: [...n.files],
+          importance: n.importance,
+        });
+        continue;
+      }
       const fileSuffix = n.files.length > 0
         ? ` files=${n.files.length}[${summarizeText(n.files[0]!, 48)}]`
         : '';
-      const bodySuffix = n.body ? ` — ${summarizeText(n.body, 60)}` : '';
+      const text = `📨 ${n.kind} from ${n.from_agent} (${target})${fileSuffix}: ${summarizeText(n.subject, 72)}${bodySuffix}`;
+      items.push({ kind: 'notification', text, importance: n.importance });
+    }
+    for (const cluster of handoffClusters.values()) {
+      const uniqueFiles = [...new Set(cluster.files)];
+      const fileSuffix = uniqueFiles.length > 0
+        ? ` files=${uniqueFiles.length}[${summarizeText(uniqueFiles[0]!, 48)}]`
+        : '';
+      const bodySuffix = cluster.body ? ` — ${summarizeText(cluster.body, 60)}` : '';
+      const label = cluster.count > 1 ? `handoff cluster (${cluster.count})` : 'handoff';
+      const from = cluster.count > 1 ? 'multiple agents' : cluster.from;
       items.push({
         kind: 'notification',
-        text: `📨 ${n.kind} from ${n.from_agent} (${target})${fileSuffix}: ${summarizeText(n.subject, 72)}${bodySuffix}`,
-        importance: n.importance,
+        text: `📨 ${label} from ${from} (${cluster.target})${fileSuffix}: ${summarizeText(cluster.subject, 72)}${bodySuffix}`,
+        importance: cluster.importance,
       });
     }
   } catch { /* skip signals on error */ }

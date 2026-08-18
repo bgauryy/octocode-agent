@@ -129,6 +129,33 @@ describe('notifyGet', () => {
     expect(second).toEqual({ ok: true, count: 0, notifications: [] });
     expect((db.prepare('SELECT COUNT(*) AS c FROM signal_reads').get() as { c: number }).c).toBe(0);
   });
+
+  it('clusters repeated handoff signals in hook brief output', () => {
+    const db = freshDb();
+    const senders = ['pi:session-a', 'pi:session-b', 'pi:session-b'];
+    const files = ['README.md', '/repo/packages/octocode-awareness/bin/cli-work.ts', 'README.md'];
+    for (let i = 0; i < senders.length; i++) {
+      insertNotification(db, {
+        agentId: senders[i]!,
+        kind: 'handoff',
+        subject: `Review session handoff for ${senders[i]}`,
+        body: `Review session handoff for ${senders[i]} with different run/file summary ${i}`,
+        files: [files[i]!],
+        workspacePath: '/repo',
+        importance: 8,
+      });
+    }
+
+    const result = notifyGet(db, { format: 'hook', agent_id: 'agent-b', workspace: '/repo' });
+    expect(result.ok).toBe(true);
+    expect(result.notifications).toHaveLength(1);
+    expect(result.notifications[0]?.text).toContain('handoff cluster (3)');
+    expect(result.notifications[0]?.text).toContain('files=2[README.md]');
+    expect(result.notifications[0]?.text).toContain('Review session handoff');
+    expect(result.notifications[0]?.text).toContain('from multiple agents');
+    expect(result.notifications[0]?.text).not.toContain('pi:session-a');
+    expect('additionalContext' in result && result.additionalContext).toContain('handoff cluster (3)');
+  });
 });
 
 describe('digest dry_run', () => {

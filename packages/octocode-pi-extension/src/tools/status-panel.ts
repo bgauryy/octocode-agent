@@ -15,8 +15,9 @@
  */
 
 import type { PiContext, PiTheme } from '../types.js';
+import { paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
-import { getPlan } from './active-plan.js';
+import { activePlanScope, getPlan } from './active-plan.js';
 import { planPanelLines } from './plan-tool.js';
 import { agentPanelLines } from './agent-tools.js';
 import { awarenessPanelLines, hasCachedAwarenessSignal } from './awareness-status.js';
@@ -45,11 +46,10 @@ export function collapseSection(section: string[], maxRows: number, noun: string
 export function modelPanelLines(ctx: PiContext | undefined, theme?: PiTheme): string[] {
   const id = ctx?.model?.id;
   if (!id) return [];
-  const paint = (token: string, text: string): string => theme?.fg(token, text) ?? text;
   const provider = ctx?.model?.provider;
   const label = provider ? `${provider}/${id}` : id;
   const think = ctx?.model?.reasoning ? '  ·  thinking' : '';
-  return [paint('muted', `model: ${label}${think}`)];
+  return [paint(theme, 'muted', `model: ${label}${think}`)];
 }
 
 /** Join non-empty sections with a single blank-line separator, within the total budget. */
@@ -69,10 +69,25 @@ function composeSections(sections: string[][]): string[] {
  * awareness + agents). Clears the widget when every section is empty. Safe to
  * call from any refresh trigger; never throws.
  */
+// Set during session_shutdown so late async callbacks (worker close events,
+// awareness CLI refreshes) cannot resurrect the widget into the next session.
+let panelSuppressed = false;
+export function suppressStatusPanel(): void {
+  panelSuppressed = true;
+}
+export function resumeStatusPanel(): void {
+  panelSuppressed = false;
+}
+
 export function refreshStatusPanel(ctx?: PiContext): void {
   if (!ctx?.hasUI) return;
+  if (panelSuppressed) {
+    ctx.ui?.setWidget?.(WIDGET_NAME, undefined);
+    return;
+  }
   const cwd = ctx.cwd ?? process.cwd();
-  const hasPlan = getPlan(cwd).length > 0;
+  const planScope = activePlanScope(ctx);
+  const hasPlan = getPlan(planScope).length > 0;
   const hasAgents = agentPanelLines().length > 0;
   const hasAwareness = hasCachedAwarenessSignal(cwd);
   const hasModel = !!ctx.model?.id;
@@ -86,7 +101,7 @@ export function refreshStatusPanel(ctx?: PiContext): void {
       makeRenderer((width) => {
         const lines = composeSections([
           modelPanelLines(ctx, theme),
-          collapseSection(planPanelLines(getPlan(cwd), theme), PLAN_MAX_ROWS, 'steps'),
+          collapseSection(planPanelLines(getPlan(planScope), theme), PLAN_MAX_ROWS, 'steps'),
           awarenessPanelLines(cwd, theme),
           agentPanelLines(theme),
         ]);

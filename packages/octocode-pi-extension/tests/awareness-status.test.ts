@@ -7,6 +7,7 @@ import {
   refreshAwarenessPanel,
   setAwarenessStatusRunnerForTests,
   resetAwarenessStatusStateForTests,
+  forceAwarenessStatusRefreshForTests,
   type AwarenessStatus,
 } from '../src/tools/awareness-status.js';
 import type { PiContext } from '../src/types.js';
@@ -102,6 +103,21 @@ test('refreshAwarenessPanel throttles repeated calls within the window', async (
   refreshAwarenessPanel(ctx);
   await new Promise((r) => setTimeout(r, 5));
   assert.equal(calls, 1, 'subsequent calls within the window do not re-run the CLI');
+});
+
+test('refreshAwarenessPanel clears stale cached status when the async runner fails', async () => {
+  process.env.OCTOCODE_AWARENESS_CLI = '/fake/cli.js';
+  let calls = 0;
+  setAwarenessStatusRunnerForTests(async () => (calls++ === 0 ? FULL : null));
+  const { ctx, widget } = uiCtx();
+  refreshAwarenessPanel(ctx);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.ok(widget.some((w) => w.isFn && !w.cleared), 'first successful refresh renders a widget');
+
+  forceAwarenessStatusRefreshForTests(ctx.cwd!);
+  refreshAwarenessPanel(ctx);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.ok(widget.some((w) => w.cleared), 'failed refresh clears the unified widget instead of keeping stale Awareness status');
 });
 
 test('refreshAwarenessPanel is a no-op without the CLI env var', () => {

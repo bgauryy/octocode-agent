@@ -236,7 +236,7 @@ it('schema list maps to canonical CLI commands', () => {
       expect(focused.stdout, `${key} should map to CLI command ${command}`).toContain(command!);
     }
   });
-it('schema commands is grouped and core-first for agents', () => {
+  it('schema commands is grouped and core-first for agents', () => {
     const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
     const result = spawnSync(NODE, [schemaScript, 'schema', 'commands', '--compact'], { encoding: 'utf8', timeout: 5000 });
     expect(result.status).toBe(0);
@@ -249,13 +249,28 @@ it('schema commands is grouped and core-first for agents', () => {
     expect(parsed.ok).toBe(true);
     expect(parsed.hint).toContain('minimum agent loop');
     expect(parsed.hint).toContain('Follow attend.next');
+    expect(parsed.commands.core.attend).toEqual(['<direct>']);
     expect(parsed.commands.core.plan).toEqual(expect.arrayContaining(['create', 'status']));
     expect(parsed.commands.core.task).toContain('claim');
     expect(parsed.commands.core).not.toHaveProperty('wiki');
     expect(parsed.commands.advanced.lock).toEqual(expect.arrayContaining(['acquire', 'release']));
     expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(2 * 1024);
   });
-it('schema commands --examples restores recipe lines', () => {
+
+  it('schema command supports direct noun forms and the former run placeholder', () => {
+    const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
+    const direct = spawnSync(NODE, [schemaScript, 'schema', 'command', 'attend', '--compact'], { encoding: 'utf8', timeout: 5000 });
+    const legacy = spawnSync(NODE, [schemaScript, 'schema', 'command', 'attend', 'run', '--compact'], { encoding: 'utf8', timeout: 5000 });
+    expect(direct.status, direct.stderr || direct.stdout).toBe(0);
+    expect(legacy.status, legacy.stderr || legacy.stdout).toBe(0);
+    const directSchema = JSON.parse(direct.stdout) as { 'x-cli-command': string; properties: Record<string, unknown> };
+    const legacySchema = JSON.parse(legacy.stdout) as { 'x-cli-command': string; properties: Record<string, unknown> };
+    expect(directSchema['x-cli-command']).toBe('attend');
+    expect(legacySchema['x-cli-command']).toBe('attend');
+    expect(directSchema.properties).toHaveProperty('query');
+    expect(legacySchema.properties).toHaveProperty('query');
+  });
+  it('schema commands --examples restores recipe lines', () => {
     const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
     const result = spawnSync(NODE, [schemaScript, 'schema', 'commands', '--all', '--examples', '--compact'], { encoding: 'utf8', timeout: 5000 });
     expect(result.status).toBe(0);

@@ -23,6 +23,7 @@ import {
   main,
   resolvePackageJson,
   readPackageVersion,
+  spawnExitStatus,
   LEAN_EXCLUDE_TOOLS,
   launcherRoot,
   versionData,
@@ -68,6 +69,14 @@ describe('constants', () => {
     expect(LEAN_EXCLUDE_TOOLS).toContain('grep');
     expect(LEAN_EXCLUDE_TOOLS).toContain('find');
     expect(LEAN_EXCLUDE_TOOLS).toContain('ls');
+  });
+
+  it('spawnExitStatus treats null or missing status as failure', () => {
+    expect(spawnExitStatus({ status: 0 })).toBe(0);
+    expect(spawnExitStatus({ status: 7 })).toBe(7);
+    expect(spawnExitStatus({ status: null })).toBe(1);
+    expect(spawnExitStatus({ error: new Error('spawn failed') })).toBe(1);
+    expect(spawnExitStatus(undefined)).toBe(1);
   });
 });
 
@@ -699,6 +708,18 @@ describe('launchAgent', () => {
     expect(code).toBe(0);
     expect(spawn).toHaveBeenCalled();
   });
+
+  it('treats subprocess null status as launch failure', async () => {
+    const spawn = vi.fn().mockReturnValue({ status: null });
+    const code = await launchAgent([], {
+      env: {},
+      spawn,
+      launchWithSdk: async () => null,
+      resolvePiBin: () => ({ bin: '/fake/pi', pkgRoot: '/fake', source: 'bundled' }),
+      resolveCoreSpec: () => 'spec',
+    } satisfies LaunchDeps);
+    expect(code).toBe(1);
+  });
 });
 
 // ── main ───────────────────────────────────────────────────────────────────────
@@ -729,6 +750,12 @@ describe('main', () => {
       expect.arrayContaining(['install', '--prefix', '/fake/prefix']),
       expect.any(Object),
     );
+  });
+
+  it('update reports null spawn status as failure', async () => {
+    const spawn = vi.fn().mockReturnValue({ status: null });
+    const code = await main(['update', 'platform'], { spawn, env: {} } satisfies LaunchDeps);
+    expect(code).toBe(1);
   });
 
   it('config prints configuration report', async () => {
@@ -855,6 +882,12 @@ describe('main', () => {
     expect(code).toBe(0);
     expect(cmd).toBe('npx');
     expect(args).toEqual(['octocode', 'search', 'auth flow']);
+  });
+
+  it('surface verbs report null spawn status as failure', async () => {
+    const spawn = vi.fn().mockReturnValue({ status: null });
+    const code = await main(['tools', '--json'], { env: {}, spawn });
+    expect(code).toBe(1);
   });
 
   it('memory spawns the bundled awareness CLI when resolvable', async () => {

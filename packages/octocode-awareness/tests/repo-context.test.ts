@@ -177,6 +177,34 @@ it('builds a delta-sized compact attend packet with only actionable work', () =>
       rmSync(dir, { recursive: true, force: true });
     }
   });
+it('clusters repeated handoff signals in compact attend packets', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'oc-attend-handoff-cluster-'));
+    try {
+      const db = freshDb();
+      const file = join(dir, 'README.md');
+      for (let index = 0; index < 3; index++) {
+        agentSignal(db, {
+          action: 'publish',
+          agentId: 'pi-session-a',
+          workspacePath: dir,
+          kind: 'handoff',
+          subject: 'Review session handoff for pi-session-a',
+          body: 'same summary and next action',
+          files: [file],
+          importance: 5,
+        });
+      }
+
+      const result = attendAwareness(db, { agentId: 'next-agent', workspacePath: dir, compact: true });
+
+      expect(result.counts?.Inbox).toBe(3);
+      expect(result.workboard.Inbox).toHaveLength(1);
+      expect(result.workboard.Inbox?.[0]?.title).toContain('handoff cluster (3)');
+      expect(result.next).toContain('signal list');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 it('keeps global Verify totals exact while routing only the current agent', () => {
     const dir = mkdtempSync(join(tmpdir(), 'oc-attend-owner-'));
     try {

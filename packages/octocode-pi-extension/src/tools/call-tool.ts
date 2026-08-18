@@ -16,6 +16,7 @@
 
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
+import { paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { spawnRpcAgent, waitForAgent, isSubagentProcess } from './agent-tools.js';
 import {
@@ -510,9 +511,9 @@ export function registerCallTool(
       mode: Type.Optional(
         Type.Unsafe({
           type: 'string',
-          enum: ['auto', 'run', 'create', 'enhance', 'fix'],
+          enum: ['auto', 'run', 'create', 'enhance', 'fix', 'list', 'delete'],
           description:
-            'auto (default): reuse or create. run: reuse only, error on miss. create: force (re)generate. enhance/fix: regenerate an existing tool (version bump).',
+            'auto (default): reuse or create. run: reuse only, error on miss. create: force (re)generate. enhance/fix: regenerate an existing tool (version bump). list: inventory. delete: remove a tool.',
         }),
       ),
     }),
@@ -554,8 +555,8 @@ export function registerCallTool(
       const r = result as { content?: Array<{ text?: string }> };
       const first = (r?.content?.[0]?.text ?? '').split('\n')[0] || 'callTool';
       const colored = first.startsWith('[ERROR]') || first.startsWith('[BLOCKED]')
-        ? theme?.fg('warning', first) ?? first
-        : theme?.fg('success', first) ?? first;
+        ? paint(theme, 'warning', first)
+        : paint(theme, 'success', first);
       return makeRenderer((w) => [truncateToWidth(colored, w)]);
     },
   });

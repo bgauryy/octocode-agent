@@ -21,6 +21,7 @@ import type { EditorTheme, SelectListTheme } from '@earendil-works/pi-tui';
 
 import { renderBannerWithTagline } from '../branding/banner.js';
 import type { BannerTheme } from '../branding/banner.js';
+import { CLI_GLYPH, cliPaint, formatCliToolRow, formatThinkingRow } from '../tui/cli-design.js';
 
 // ── Structural Pi runtime surface ───────────────────────────────────────────
 // Verified against @earendil-works/pi-coding-agent@0.80.3 d.ts (see docs/SHELL.md
@@ -47,7 +48,18 @@ export interface ShellSessionEvent {
   type: string;
   toolName?: string;
   toolCallId?: string;
-  assistantMessageEvent?: { type: string; delta?: string };
+  args?: unknown;
+  partialResult?: unknown;
+  result?: unknown;
+  isError?: boolean;
+  assistantMessageEvent?: {
+    type: string;
+    delta?: string;
+    id?: string;
+    toolName?: string;
+    toolCall?: { id?: string; name?: string; input?: unknown; arguments?: unknown };
+    contentIndex?: number;
+  };
 }
 
 /** Structural view of AgentSession (agent-session.d.ts). */
@@ -109,7 +121,13 @@ export interface OctocodeShell {
 
 /** Commands that cleanly exit the shell. */
 const QUIT_COMMANDS = new Set(['/quit', '/exit', 'exit']);
-
+const HELP_COMMANDS = new Set(['/help', '/?']);
+const SHELL_HELP_LINES = [
+  'OctocodeShell commands:',
+  '  /help, /?     Show this help.',
+  '  /quit, /exit  Exit the shell.',
+  'Non-command input is sent to the agent. Unknown /commands are rejected.',
+] as const;
 /** Identity banner theme used when no themed renderer is supplied. */
 const IDENTITY_BANNER_THEME: BannerTheme = {
   fg: (_color, text) => text,
@@ -159,20 +177,41 @@ export function createOctocodeShell(
       // Stream runtime events to the screen.
       const unsubscribe = session.subscribe((event) => {
         switch (event.type) {
-          case 'message_update':
-            // note: alpha renders text deltas only; thinking/tool-arg deltas are
-            // dropped. Full message component rendering is a parity gap.
-            if (
-              event.assistantMessageEvent?.type === 'text_delta' &&
-              typeof event.assistantMessageEvent.delta === 'string'
-            ) {
-              ui.appendDelta(event.assistantMessageEvent.delta);
+          case 'message_update': {
+            const messageEvent = event.assistantMessageEvent;
+            if (messageEvent?.type === 'thinking_start') {
+              ui.print(formatThinkingRow('start', theme));
+            } else if (messageEvent?.type === 'thinking_delta' && typeof messageEvent.delta === 'string') {
+              ui.appendDelta(cliPaint(theme, 'dim', messageEvent.delta));
+            } else if (messageEvent?.type === 'thinking_end') {
+              ui.print(formatThinkingRow('end', theme));
+            } else if (messageEvent?.type === 'toolcall_start') {
+              // No row here: Pi's toolcall_start carries only {contentIndex,
+              // partial} — no tool name — so printing produced a duplicate
+              // "queued" frame with an undefined name. toolcall_end (which
+              // carries the full toolCall) prints the single queued row.
+            } else if (messageEvent?.type === 'toolcall_delta' && typeof messageEvent.delta === 'string') {
+              ui.appendDelta(cliPaint(theme, 'dim', messageEvent.delta));
+            } else if (messageEvent?.type === 'toolcall_end') {
+              ui.print(formatCliToolRow(
+                'queued',
+                messageEvent.toolCall?.name ?? messageEvent.toolName ?? event.toolName,
+                messageEvent.toolCall?.input ?? messageEvent.toolCall?.arguments,
+                theme,
+              ));
+            } else if (messageEvent?.type === 'text_delta' && typeof messageEvent.delta === 'string') {
+              ui.appendDelta(messageEvent.delta);
             }
             break;
+          }
           case 'tool_execution_start':
-            // note: alpha shows a one-line tool notification; no live tool
-            // output, diff rendering, or collapse/expand yet.
-            ui.print(`\u2699 ${event.toolName ?? 'tool'}`);
+            ui.print(formatCliToolRow('running', event.toolName, event.args, theme));
+            break;
+          case 'tool_execution_update':
+            ui.print(formatCliToolRow('update', event.toolName, event.partialResult, theme));
+            break;
+          case 'tool_execution_end':
+            ui.print(formatCliToolRow(event.isError ? 'failed' : 'done', event.toolName, event.result, theme));
             break;
           case 'agent_end':
             // Close the streamed assistant block with a blank line.
@@ -189,11 +228,20 @@ export function createOctocodeShell(
       ui.onSubmit(async (raw) => {
         const text = raw.trim();
         if (text.length === 0) return;
-        if (QUIT_COMMANDS.has(text.toLowerCase())) {
+        const command = text.toLowerCase();
+        if (QUIT_COMMANDS.has(command)) {
           finish(0);
           return;
         }
-        ui.print(`\u203a ${text}`);
+        if (HELP_COMMANDS.has(command)) {
+          for (const line of SHELL_HELP_LINES) ui.print(line);
+          return;
+        }
+        if (command.startsWith('/')) {
+          ui.print(`unknown command: ${text} (try /help)`);
+          return;
+        }
+        ui.print(`${CLI_GLYPH.prompt} ${text}`);
         try {
           // streamingBehavior is required by the host only mid-stream; queue as
           // a steer so a busy agent still accepts the new input.

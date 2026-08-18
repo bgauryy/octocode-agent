@@ -202,6 +202,15 @@ export async function importExtensionFactory(): Promise<ExtensionFactory | null>
  *   - number: process exit code (0 = success, ≥1 = error)
  *   - null: SDK unavailable — caller should fall back to subprocess
  */
+async function loadOctocodeShell(): Promise<SdkDeps['createOctocodeShell']> {
+  const subpath = await import('@octocodeai/pi-extension/shell').catch(() => null);
+  if (subpath && 'createOctocodeShell' in subpath) {
+    return (subpath as { createOctocodeShell?: SdkDeps['createOctocodeShell'] }).createOctocodeShell;
+  }
+  const root = await import('@octocodeai/pi-extension').catch(() => null);
+  return (root as { createOctocodeShell?: SdkDeps['createOctocodeShell'] } | null)?.createOctocodeShell;
+}
+
 export async function launchWithSdk(
   argv: string[] = [],
   deps: SdkDeps = {},
@@ -396,14 +405,7 @@ export async function launchWithSdk(
     // for the Octocode shell shipped by the core. Any failure → InteractiveMode.
     if (env.OCTOCODE_SHELL === '1' || env.OCTOCODE_SHELL === 'true') {
       try {
-        const shellFn =
-          deps.createOctocodeShell ??
-          ((await import('@octocodeai/pi-extension')) as {
-            createOctocodeShell?: (
-              r: unknown,
-              d?: { version?: string },
-            ) => Promise<{ run: () => Promise<number> }>;
-          }).createOctocodeShell;
+        const shellFn = deps.createOctocodeShell ?? (await loadOctocodeShell());
         if (typeof shellFn === 'function') {
           const shell = await shellFn(runtime, {});
           const code = await shell.run();

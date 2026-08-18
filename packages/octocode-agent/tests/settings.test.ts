@@ -6,7 +6,9 @@ import {
   ALLOWED_CONFIG_KEYS,
   DEFAULT_OCTOCODE_THEME,
   ensureDefaultSetting,
+  ensureOctocodeThemeSetting,
   isAllowedConfigKey,
+  isOctocodeTheme,
   readSettings,
 } from '../src/settings.js';
 
@@ -33,6 +35,34 @@ describe('ensureDefaultSetting', () => {
     fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ defaultModel: 'x' }));
     ensureDefaultSetting(dir, 'theme', DEFAULT_OCTOCODE_THEME);
     expect(readSettings(dir)).toEqual({ defaultModel: 'x', theme: 'octocode-dark' });
+  });
+});
+
+describe('ensureOctocodeThemeSetting', () => {
+  it('writes octocode-dark when theme is absent', () => {
+    const dir = tmpDir();
+    expect(ensureOctocodeThemeSetting(dir)).toBe(true);
+    expect(readSettings(dir)['theme']).toBe(DEFAULT_OCTOCODE_THEME);
+  });
+
+  it('replaces plain Pi themes with octocode-dark', () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ theme: 'dark', defaultModel: 'x' }));
+    expect(ensureOctocodeThemeSetting(dir)).toBe(true);
+    expect(readSettings(dir)).toEqual({ theme: DEFAULT_OCTOCODE_THEME, defaultModel: 'x' });
+  });
+
+  it('preserves explicit Octocode theme choices', () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ theme: 'octocode-light' }));
+    expect(ensureOctocodeThemeSetting(dir)).toBe(false);
+    expect(readSettings(dir)['theme']).toBe('octocode-light');
+  });
+
+  it('recognizes only Octocode themes', () => {
+    expect(isOctocodeTheme('octocode-dark')).toBe(true);
+    expect(isOctocodeTheme('octocode-light')).toBe(true);
+    expect(isOctocodeTheme('dark')).toBe(false);
   });
 });
 

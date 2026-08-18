@@ -26,9 +26,9 @@ const SOURCE_PATHS = {
   awarenessSourceSkills: path.join(AWARENESS_PACKAGE_ROOT, 'skills'),
   subagents: path.join(packageRoot, 'subagents'),
   skills: path.join(packageRoot, 'skills'),
-  // The system prompt is composed from per-section files (see src/prompts/compose.mjs),
-  // not copied from a single monolithic file.
-  promptSections: path.join(packageRoot, 'src', 'prompts', 'sections'),
+  // The system prompt is one inlined document (src/prompts/prompt.ts → dist/prompts/prompt.js);
+  // there are no per-section fragment files to copy.
+  promptSource: path.join(packageRoot, 'src', 'prompts', 'prompt.ts'),
   // Awareness runtime + bundled skills — bundled at build time so the pi-extension is self-contained.
   awarenessOut: path.join(AWARENESS_PACKAGE_ROOT, 'out'),
   awarenessSkills: path.join(AWARENESS_PACKAGE_ROOT, 'out', 'skills'),
@@ -104,21 +104,9 @@ function copyDirectory(sourceDir, targetDir) {
   }
 }
 
-function copyMarkdownFiles(sourceDir, targetDir) {
-  fs.mkdirSync(targetDir, { recursive: true });
-
-  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
-    copyFile(
-      path.join(sourceDir, entry.name),
-      path.join(targetDir, entry.name)
-    );
-  }
-}
-
 function assertRequiredSources() {
   const requiredSources = {
-    promptSections: SOURCE_PATHS.promptSections,
+    promptSource: SOURCE_PATHS.promptSource,
   };
 
   for (const [label, sourcePath] of Object.entries(requiredSources)) {
@@ -320,15 +308,10 @@ async function build() {
   // the published extension carries the loader itself (no runtime dep, nothing to publish).
   // src/env.ts stays a workspace re-export for repo-time (tests, IDE); dist is self-contained.
   copyFile(SOURCE_PATHS.configLoader, path.join(distDir, 'env.js'));
-  // Compose the system prompt from its per-section source files into dist/system/.
-  // compileTsc() emits dist/prompts/{compose,sections/index}.js; sections/index.js
-  // reads its sibling .md files, so copy them next to it, then import the composed prompt.
-  copyMarkdownFiles(
-    SOURCE_PATHS.promptSections,
-    path.join(distDir, 'prompts', 'sections')
-  );
+  // The system prompt is one inlined document; compileTsc() emits dist/prompts/prompt.js.
+  // Import the composed prompt and write it to dist/system/ — no per-section copy needed.
   const { SYSTEM_PROMPT } = await import(
-    pathToFileURL(path.join(distDir, 'prompts', 'compose.js')).href
+    pathToFileURL(path.join(distDir, 'prompts', 'prompt.js')).href
   );
   fs.mkdirSync(path.dirname(OUTPUT_PATHS.systemPrompt), { recursive: true });
   fs.writeFileSync(OUTPUT_PATHS.systemPrompt, SYSTEM_PROMPT, 'utf8');

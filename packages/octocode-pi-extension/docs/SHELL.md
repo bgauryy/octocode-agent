@@ -26,9 +26,11 @@ launcher (octocode-agent/sdk-launcher.ts)
   ▼
 OctocodeShell (src/shell/shell.ts)                 ── controller (pure-ish)
   ├── subscribe(runtime.session)  → ShellSessionEvent stream
-  │      message_update.text_delta → ui.appendDelta
-  │      tool_execution_start       → ui.print("⚙ <tool>")
-  │      agent_end                  → ui.print("")   (close block)
+  │      message_update.text_delta      → ui.appendDelta
+  │      message_update.thinking_*       → visible 🧠 block + streamed reasoning
+  │      message_update.toolcall_*       → visible queued tool-call block
+  │      tool_execution_start/update/end → colored call/update/result block
+  │      agent_end                       → ui.print("")   (close block)
   ├── ui.onSubmit(text)
   │      /quit|/exit|exit → finish(0)
   │      else            → session.prompt(text, steer-if-streaming)
@@ -44,12 +46,14 @@ ShellUi (pluggable I/O surface)
 
 The shell subscribes once via `AgentSession.subscribe(listener)`. The listener
 receives `AgentSessionEvent` (the pi-agent-core `AgentEvent` union plus session
-events). Alpha consumes three:
+events). Alpha consumes these render-critical events:
 
 | Event | Source anchor | Rendered as |
 |---|---|---|
 | `message_update` w/ `assistantMessageEvent.type==="text_delta"` | `pi-ai/dist/types.d.ts` `AssistantMessageEvent` → `{ type:"text_delta"; delta:string; partial }` | inline delta (`ui.appendDelta`) |
-| `tool_execution_start` | `pi-agent-core` `AgentEvent` → `{ type:"tool_execution_start"; toolCallId; toolName; args }` | one-line notice `⚙ <toolName>` |
+| `message_update` w/ `thinking_start|thinking_delta|thinking_end` | `pi-ai/dist/types.d.ts` `AssistantMessageEvent` thinking events | visible `🧠 thinking` block; deltas stream dimmed |
+| `message_update` w/ `toolcall_start|toolcall_delta|toolcall_end` | `pi-ai/dist/types.d.ts` and proxy event d.ts toolcall events | queued tool-call block and streamed argument delta |
+| `tool_execution_start|tool_execution_update|tool_execution_end` | `pi-agent-core` `AgentEvent` → `{ toolCallId; toolName; args/result; isError }` | colored call/update/result block with compact JSON detail |
 | `agent_end` | `agent-session.d.ts` `AgentSessionEvent` (`{ type:"agent_end"; messages; willRetry }`) | blank line closing the block |
 
 ### Input flow
@@ -118,7 +122,7 @@ Tracked so the alpha is honest about what it does *not* do yet:
 - **Session ops** — no `/tree`, `/fork`, `/resume`, `/new`, `/import`, `/compact` UI (runtime methods exist; UI unwired).
 - **Model / thinking** — no model picker or thinking-level UI; no `modelFallbackMessage` surfacing.
 - **Compaction UI** — no `compaction_start/end` progress, no summary rendering, no auto-retry (`auto_retry_*`) UI.
-- **Rendering fidelity** — plain `Text` lines only; no markdown, diff, syntax highlight, tool-output collapse/expand, thinking blocks, or user/assistant message components.
+- **Rendering fidelity** — plain `Text` lines only; no markdown, diff, syntax highlight, tool-output collapse/expand, or full user/assistant message components. Thinking and tool-call/result events have compact visible rows, not rich expandable components yet.
 - **Extension surface** — no `ExtensionUIContext` binding: extension widgets, dialogs, custom footer/header, and `registerCommand` are unwired.
 - **Footer / status** — no footer data provider, token/cost/context usage, working indicator, or terminal-title updates.
 - **Bash mode** — no `!`/`!!` bash execution UI.
@@ -133,7 +137,7 @@ the intended wiring is:
 // sdk-launcher.ts, interactive branch — after runtime is built:
 if (env.OCTOCODE_SHELL === '1') {
   try {
-    const { createOctocodeShell } = await import('@octocodeai/pi-extension/shell'); // or subpath export
+    const { createOctocodeShell } = await import('@octocodeai/pi-extension/shell');
     return await createOctocodeShell(runtime as ShellRuntime, {
       version: VERSION, theme: octocodeBannerTheme, width: process.stdout.columns,
     }).run();
@@ -148,16 +152,14 @@ return 0;
 ```
 
 Fallback triggers: `OCTOCODE_SHELL` unset/≠`1`, or `createOctocodeShell(...).run()`
-throws (import failure, unhandled shell error). Note: today `src/shell/index.ts` is
-not yet a published subpath export in `package.json#exports` — Phase D adds the
-`./shell` export (or the launcher imports the built path). This is a **rollout
-prerequisite**, called out as a risk below.
+throws (import failure, unhandled shell error). The package now publishes the
+`./shell` subpath export and keeps the root lazy export as a fallback for older
+local builds.
 
 ## 6. Rollout phases
 
-1. **C (this lane)** — RFC + skeleton controller + pluggable `ShellUi` + headless tests. Off by default; no launcher change.
-2. **D** — launcher wiring behind `OCTOCODE_SHELL=1` with InteractiveMode fallback; add `./shell` package export; dogfood.
-3. **E** — rendering fidelity: markdown/diff/tool-output components, footer + context usage, working indicator.
+1. **C/D (current)** — RFC + shell controller + pluggable `ShellUi` + headless tests; launcher wiring behind `OCTOCODE_SHELL=1`; `./shell` package export; InteractiveMode fallback. Off by default while dogfooding.
+2. **E** — rendering fidelity: markdown/diff/tool-output components, footer + context usage, working indicator.
 4. **F** — interaction: slash commands + autocomplete, keybindings manager, message-queue/steer UI, abort/exit semantics parity.
 5. **G** — dialogs & session ops: model/session/tree/fork/resume/compaction UI, login, extension `ExtensionUIContext` binding.
 6. **H** — flip default (opt-out via `OCTOCODE_SHELL=0`), then remove InteractiveMode dependence.
@@ -165,7 +167,7 @@ prerequisite**, called out as a risk below.
 ## 7. Risks
 
 - **Structural drift**: local interfaces can silently diverge from Pi's real types on host upgrades. Mitigation: the launcher performs the single `runtime as ShellRuntime` cast at the boundary; a contract test there (octocode-agent lane) should assert assignability against the real `AgentSessionRuntime`.
-- **Missing `./shell` export**: shell is unreachable from the installed package until Phase D adds the subpath export. Rollout prerequisite.
+- **Shell import fallback**: the launcher prefers `@octocodeai/pi-extension/shell` and falls back to the root lazy export for older local builds; either import failing falls through to InteractiveMode.
 - **Extension UI unwired**: without `bindExtensions({uiContext})`, extension tools that render overlays/dialogs or register commands won't work in the shell — a functional regression vs InteractiveMode until Phase G.
 - **Auth/model preflight**: `prompt()` throwing on missing model/API key currently only prints an error; users with no configured model get a worse first-run than InteractiveMode's login flow. Address in Phase G.
 - **pi-tui coupling**: deep reliance on pi-tui internals (Editor autocomplete, overlay focus) increases breakage surface on pi-tui upgrades; pin and test against the host-aliased copy.

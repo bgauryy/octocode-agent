@@ -36,6 +36,9 @@ keeps one CLI/schema contract instead of duplicating it in Pi tool definitions.
 
 ```text
 /octocode                dashboard: status, agents, setup, skills, health
+/octocode-now            orientation cockpit: model, context, plan, tasks, agents, git
+/octocode-tasks          local plan + shared Awareness task/verification bridge
+/octocode-skills         discovered skills and load/install guidance
 /octocode-agents         live spawned-worker ledger and controls
 /octocode-status         health and configured surfaces
 /octocode-harness        exact live tools, commands, and skills
@@ -145,6 +148,9 @@ summary; `action:describe` returns the full selected tool schema before
 | Command | Purpose |
 |---|---|
 | `/octocode` | Dashboard: status, agents, setup, skills, health, next actions. |
+| `/octocode-now` | Orientation cockpit: model, context, current plan, shared tasks, agents, and git status. |
+| `/octocode-tasks` | Bridge local `plan` state with shared Awareness task and verification state. |
+| `/octocode-skills` | List Pi-discovered skills and how to load or install them. |
 | `/octocode-status` | Health, prompt, skills, Awareness runtime, and providers. |
 | `/octocode-harness` | Exact registered surface inventory. |
 | `/octocode-agents` | Live spawned-worker ledger with inspect, kill, prune, hide, and risk badges. |

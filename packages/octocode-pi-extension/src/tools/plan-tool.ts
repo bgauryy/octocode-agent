@@ -9,9 +9,10 @@
 
 import type { ToolDefinition, ToolCallResult, PiContext, PiTheme } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
+import { paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel } from './status-panel.js';
-import { setPlan, addStep, startStep, completeStep, clearPlan, getPlan, renderActivePlanAddendum, MARK, stepLabel, displayStatus, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
+import { activePlanScope, setPlan, addStep, startStep, completeStep, clearPlan, getPlan, renderActivePlanAddendum, MARK, stepLabel, displayStatus, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -26,9 +27,15 @@ interface PlanParams {
   index?: number;
 }
 
+const TEXT_MARK: Record<DisplayStatus, string> = { ...MARK, blocked: '[!]' };
+
 function renderList(steps: PlanStep[]): string {
   if (steps.length === 0) return '(no active plan)';
-  return steps.map((s, i) => `${MARK[s.status]} ${i + 1}. ${s.text}`).join('\n');
+  return steps.map((s, i) => {
+    const ds = displayStatus(s, steps);
+    const needs = ds === 'blocked' && s.dependsOn?.length ? ` (needs ${s.dependsOn.join(',')})` : '';
+    return `${TEXT_MARK[ds]} ${i + 1}. ${s.text}${needs}`;
+  }).join('\n');
 }
 
 const GLYPH: Record<DisplayStatus, string> = { todo: '○', doing: '▸', done: '✓', blocked: '⊘' };
@@ -45,27 +52,28 @@ function progressBar(done: number, total: number): string {
 export function planPanelLines(steps: PlanStep[], theme?: PiTheme): string[] {
   if (steps.length === 0) return [];
   const done = steps.filter((s) => s.status === 'done').length;
-  const paint = (status: DisplayStatus, text: string): string => {
-    if (!theme) return text;
-    if (status === 'done') return theme.fg('muted', text) ?? text;
-    if (status === 'doing') return theme.fg('warning', text) ?? text;
-    if (status === 'blocked') return theme.fg('muted', text) ?? text;
-    return theme.fg('accent', text) ?? text;
+  const paintStep = (status: DisplayStatus, text: string): string => {
+    if (status === 'done') return paint(theme, 'muted', text);
+    if (status === 'doing') return paint(theme, 'warning', text);
+    if (status === 'blocked') return paint(theme, 'muted', text);
+    return paint(theme, 'brand', text);
   };
-  const header = `Plan  ${progressBar(done, steps.length)}  ${done}/${steps.length}`;
+  const current = steps.find((s) => s.status === 'doing') ?? steps.find((s) => s.status === 'todo');
+  const currentLabel = current ? ` · now: ${stepLabel(current)}` : '';
+  const header = `Plan  ${progressBar(done, steps.length)}  ${done}/${steps.length}${currentLabel}`;
   const rows = steps.map((s, i) => {
     const ds = displayStatus(s, steps);
     const needs = ds === 'blocked' && s.dependsOn?.length ? ` (needs ${s.dependsOn.join(',')})` : '';
-    return paint(ds, `${GLYPH[ds]} ${i + 1}. ${stepLabel(s)}${needs}`);
+    return paintStep(ds, `${GLYPH[ds]} ${i + 1}. ${stepLabel(s)}${needs}`);
   });
-  return [theme?.fg('success', header) ?? header, ...rows];
+  return [paint(theme, 'success', header), ...rows];
 }
 
 /** Mirror the active plan into the compact footer status AND a live below-editor checklist panel. */
 export function refreshPlanUi(ctx?: PiContext): void {
   if (!ctx?.hasUI) return;
-  const cwd = ctx.cwd ?? process.cwd();
-  const steps = getPlan(cwd);
+  const scope = activePlanScope(ctx);
+  const steps = getPlan(scope);
   if (steps.length === 0) {
     ctx.ui?.setStatus?.('octocode-plan', undefined);
     refreshStatusPanel(ctx);
@@ -86,26 +94,26 @@ export const OCTOCODE_PLAN_COMMAND_COMPLETIONS = ['show', 'complete ', 'start ',
 type NotifyFn = (ctx: PiContext | undefined, message: string, level?: string) => void;
 
 export async function handleOctocodePlanCommand(args: string, ctx: PiContext | undefined, notify: NotifyFn): Promise<void> {
-  const cwd = ctx?.cwd ?? process.cwd();
+  const scope = activePlanScope(ctx);
   const [action = 'show', arg] = args.trim().split(/\s+/).filter(Boolean);
   const n = Number(arg);
   switch (action) {
     case 'clear':
-      clearPlan(cwd);
+      clearPlan(scope);
       notify(ctx, 'Plan cleared.', 'info');
       break;
     case 'complete':
-      if (Number.isFinite(n)) completeStep(cwd, n);
+      if (Number.isFinite(n)) completeStep(scope, n);
       break;
     case 'start':
-      if (Number.isFinite(n)) startStep(cwd, n);
+      if (Number.isFinite(n)) startStep(scope, n);
       break;
     case 'show':
     default:
       break;
   }
   refreshPlanUi(ctx);
-  const steps = getPlan(cwd);
+  const steps = getPlan(scope);
   const done = steps.filter((s) => s.status === 'done').length;
   notify(ctx, steps.length === 0 ? 'No active plan.' : `Plan ${done}/${steps.length} done\n${renderList(steps)}`, 'info');
 }
@@ -153,18 +161,18 @@ export function registerPlanTool(
 
     async execute(_id: string, raw: Record<string, unknown>, _signal, _onUpdate, ctx?: PiContext) {
       const p = raw as unknown as PlanParams;
-      const cwd = ctx?.cwd ?? process.cwd();
+      const scope = activePlanScope(ctx);
       let steps: PlanStep[];
       switch (p.action) {
         case 'set':
-          steps = setPlan(cwd, Array.isArray(p.steps) ? p.steps : []);
+          steps = setPlan(scope, Array.isArray(p.steps) ? p.steps : []);
           break;
         case 'add':
-          steps = addStep(cwd, String(p.text ?? ''), p.activeForm);
+          steps = addStep(scope, String(p.text ?? ''), p.activeForm);
           break;
         case 'start':
         case 'complete': {
-          const current = getPlan(cwd);
+          const current = getPlan(scope);
           const idx = Number(p.index);
           if (!Number.isInteger(idx) || idx < 1 || idx > current.length) {
             const msg = current.length === 0
@@ -173,19 +181,19 @@ export function registerPlanTool(
             return {
               content: [{ type: 'text', text: `${msg}\n${renderList(current)}` }],
               isError: true,
-              details: { action: p.action, steps: current, addendum: renderActivePlanAddendum(cwd), error: 'invalid-index' },
+              details: { action: p.action, steps: current, addendum: renderActivePlanAddendum(scope), error: 'invalid-index' },
             } as unknown as ToolCallResult;
           }
-          steps = p.action === 'start' ? startStep(cwd, idx) : completeStep(cwd, idx);
+          steps = p.action === 'start' ? startStep(scope, idx) : completeStep(scope, idx);
           break;
         }
         case 'clear':
-          clearPlan(cwd);
+          clearPlan(scope);
           steps = [];
           break;
         case 'show':
         default:
-          steps = getPlan(cwd);
+          steps = getPlan(scope);
           break;
       }
       refreshPlanUi(ctx);
@@ -193,7 +201,7 @@ export function registerPlanTool(
       const header = p.action === 'clear' ? '[PLAN] cleared' : `[PLAN] ${done}/${steps.length} done`;
       return {
         content: [{ type: 'text', text: `${header}\n${renderList(steps)}` }],
-        details: { action: p.action, steps, addendum: renderActivePlanAddendum(cwd) },
+        details: { action: p.action, steps, addendum: renderActivePlanAddendum(scope) },
       } as unknown as ToolCallResult;
     },
 
@@ -208,13 +216,13 @@ export function registerPlanTool(
       const steps = r?.details?.steps ?? [];
       if (r?.details?.action === 'clear' || steps.length === 0) {
         const line = '◆ plan cleared';
-        return makeRenderer((w) => [truncateToWidth(theme?.fg('dim', line) ?? line, w)]);
+        return makeRenderer((w) => [truncateToWidth(paint(theme, 'dim', line), w)]);
       }
       const done = steps.filter((s) => s.status === 'done').length;
       const current = steps.find((s) => s.status === 'doing') ?? steps.find((s) => s.status === 'todo');
       const line = `◆ plan ${done}/${steps.length}${current ? ` · ${stepLabel(current)}` : ''}`;
       // Dim, single line — the full checklist lives in the under-input panel.
-      return makeRenderer((w) => [truncateToWidth(theme?.fg('dim', line) ?? line, w)]);
+      return makeRenderer((w) => [truncateToWidth(paint(theme, 'dim', line), w)]);
     },
   });
 }

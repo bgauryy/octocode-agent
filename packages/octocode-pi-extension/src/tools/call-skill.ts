@@ -14,6 +14,7 @@
 
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
+import { paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { spawnRpcAgent, waitForAgent, isSubagentProcess } from './agent-tools.js';
 import {
@@ -345,7 +346,7 @@ export function registerCallSkill(
     renderResult(result: unknown, _opts: unknown, theme?: PiTheme) {
       const r = result as { content?: Array<{ text?: string }> };
       const first = (r?.content?.[0]?.text ?? '').split('\n')[0] || 'callSkill';
-      const colored = first.startsWith('[ERROR]') || first.startsWith('[DECLINED]') ? theme?.fg('warning', first) ?? first : theme?.fg('success', first) ?? first;
+      const colored = first.startsWith('[ERROR]') || first.startsWith('[DECLINED]') ? paint(theme, 'warning', first) : paint(theme, 'success', first);
       return makeRenderer((w) => [truncateToWidth(colored, w)]);
     },
   });

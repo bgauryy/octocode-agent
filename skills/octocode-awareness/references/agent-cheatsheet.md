@@ -11,7 +11,7 @@ Export `OCTOCODE_AGENT_ID` (Claude frontmatter *or* host config, never both). SQ
 
 Read Ready/Claimed/Verify/FilesUnderWork/Inbox; follow `next` (Verify → Ready → owned Claimed → FilesUnderWork → Inbox → evidence).
 If prior learning may change the plan: `memory recall --query "<task>" --workspace "$PWD" --smart --compact`.
-Use `--help` / `schema command <noun> [action]` / docs only when the next action needs them.
+If the lifecycle choice is unclear, read `flow-matrix.md` first. Use `--help` / `schema command <noun> [action]` / docs only when the next action needs them; direct nouns use `schema command attend`, not `attend run`.
 
 ## DURING / DO — Shared Task
 
@@ -54,10 +54,12 @@ Loop-safe: de-dups identical run sets, goes quiet after 3 reminders/session. Run
 |---|---|
 | Verified reusable outcome | `reflect record --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" --task "<task>" --outcome worked\|partial\|failed --lesson "<lesson>"` (+ `--fix-repo`/`--fix-harness`/`--fix-instructions`) |
 | Work remains for another run | Publish a handoff signal or `session capture` (broadcasts one) |
-| Cleanup pressure | `maintenance digest --workspace "$PWD" --dry-run --compact` first; apply only after reviewing IDs. It resolves stale handoff broadcasts and marks expired ACTIVE runs `FAILED` with receipts, never `SUCCESS`. Use `memory archive --memory-id <id> --workspace "$PWD" --dry-run --compact` for memory rows. |
+| Cleanup pressure from `attend`/`verify audit` | `maintenance digest --workspace "$PWD" --dry-run --compact` first; apply only after reviewing IDs. It resolves stale handoff broadcasts and marks expired ACTIVE runs `FAILED` with receipts, never `SUCCESS`. Use `memory archive --memory-id <id> --workspace "$PWD" --dry-run --compact` for memory rows. |
 | Stale file references | `query files --workspace "$PWD" --format table --limit 50`; repair/supersede rows |
 | Human bulk inspection | `query all --workspace "$PWD" --format html --out .octocode/awareness/index.html` |
 | Instructions caused a wrong turn | `reflect developer-review --workspace "$PWD"`; close the feedback row after the fix is verified |
+
+Before finishing, always run `verify audit --workspace "$PWD" --agent-id "$OCTOCODE_AGENT_ID" --compact`; if it reports stale ACTIVE runs or handoff/signal pressure, preview `maintenance digest --dry-run` and either apply reviewed cleanup or report the exact remaining blocker.
 
 ## Hard ideas / Handoffs
 

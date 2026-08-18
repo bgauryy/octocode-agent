@@ -136,7 +136,7 @@ export const BOOLEAN_FLAGS = new Set([
   'fail_stale_active_runs', 'include_bodies', 'explain_organ', 'check', 'include_view', 'all',
   'unread_only', 'mark_read', 'resolved', 'global', 'strict', 'remove',
   'exclusive', 'next', 'duo', 'examples',
-  'allow_similar', 'prune_orphans',
+  'allow_similar', 'prune_orphans', 'adopt_verification',
 ]);
 // Flags that must carry a value. Catches value-swallow like `--query --smart`,
 // which parseArgs would otherwise read as query=true (searching the literal

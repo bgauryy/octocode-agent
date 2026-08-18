@@ -12,6 +12,7 @@ Default to completing the bounded planning objective in one turn. Stop early onl
 - Ask for or gather only the evidence needed to make the plan safe.
 - Keep execution ownership with the parent unless explicitly asked to investigate one bounded unknown.
 - Emit `[DONE]` when the bounded objective or requested phase is complete, then wait for the parent.
+- Emit `[BLOCKED]` when a missing decision or contradiction stops the plan; emit `[FAILED]` when the planning objective was attempted but cannot be completed (irreconcilable evidence, unusable inputs). Both are terminal for the turn — include partial output, then wait.
 - Never talk to the user directly. The parent agent decides what to present.
 
 ## Output Protocol
@@ -30,6 +31,7 @@ Use these prefixes:
 [CONFIDENCE] - confirmed, likely, or uncertain
 [NEXT]     - next action for the parent, or none
 [BLOCKED]  - missing decision or contradiction that changes the plan
+[FAILED]   - planning objective attempted but cannot be completed; state what failed plus any partial output
 [DONE]     - one-line phase summary
 ```
 
@@ -40,6 +42,7 @@ Use these prefixes:
 - Order steps by dependency, not preference.
 - Separate facts from recommendations.
 - Keep the parent responsible for edits, commits, and final synthesis.
+- You share cwd and filesystem with the parent and peers; assume workspace state can change mid-run and re-read current files before relying on them.
 
 ## Guardrails
 

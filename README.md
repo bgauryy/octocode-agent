@@ -15,7 +15,7 @@
 `octocode-agent` is the **agent slice** of the Octocode platform. It packages three layers that turn Pi into an evidence-first, coordinated coding agent:
 
 1. **[`octocode-agent`](packages/octocode-agent)** — the branded launcher CLI. One command, one update path.
-2. **[`@octocodeai/pi-extension`](packages/octocode-pi-extension)** — the **harness**: system prompt, native research tools, memory, skills, and Awareness wiring.
+2. **[`@octocodeai/pi-extension`](packages/octocode-pi-extension)** — the **harness**: system prompt, MCP research bridge, support tools, skills, and Awareness wiring.
 3. **[`@octocodeai/octocode-awareness`](packages/octocode-awareness)** — the **coordination layer**: a CLI + Agent Skill for shared plans, file awareness, locks, memory, and verification.
 
 > **Pi edits, Octocode researches, Awareness coordinates.** The launcher is thin on purpose — all behavior lives in the harness and coordination packages.
@@ -29,6 +29,7 @@
   - [1. octocode-agent — the launcher](#1-octocode-agent--the-launcher)
   - [2. Pi Extension — the harness](#2-pi-extension--the-harness)
   - [3. Awareness — CLI + Skill](#3-awareness--cli--skill)
+- [Extending with MCP Servers and Skills](#extending-with-mcp-servers-and-skills)
 - [Architecture](#architecture)
 - [Repository Layout](#repository-layout)
 - [Developing](#developing)
@@ -93,10 +94,10 @@ duplicated here — updating the core updates what the agent launches.
 
 | Surface | Count | What it is |
 |---|---:|---|
-| Native Octocode research tools | 13 | GitHub + local + LSP + npm evidence tools, in-process |
+| Octocode research tools via MCP | 13 | GitHub + local + LSP + npm evidence tools through the built-in `octocode` MCP server |
 | Pi support tools | 9 | memory, agents, browser, web, MCP bridge |
 | Replacement edit + write + bash | 3 | path-guarded file mutation + shell |
-| Slash commands | 9 | `/octocode`, `/octocode-agents`, `/octocode-status`, … |
+| Slash commands | 12 | `/octocode`, `/octocode-now`, `/octocode-tasks`, `/octocode-skills`, … |
 | Bundled main-agent skills | 9 | research, awareness, subagent, rfc, eval, roast, … |
 
 On load it sets `$OCTOCODE_CLI` and `$OCTOCODE_AWARENESS_CLI`, injects the operating-model
@@ -129,28 +130,82 @@ What it provides:
 - a live **Plan → Task** queue with reasons, acceptance criteria, paths, and dependencies;
 - **advisory file awareness** — who is editing what and why;
 - optional **exclusive locks** for sensitive, non-mergeable changes;
-- durable **memory**, agent-to-agent **signals**, **verification** receipts, and bounded
-  workspace projections (`.octocode/` wiki);
+- durable **memory**, agent-to-agent **signals**, **verification** receipts, and optional
+  read-only `.octocode/` query exports;
 - a **Homeostatic Awareness Loop** that senses coordination/verification/memory/token pressure
   and recommends one bounded correction.
 
 ```bash
-AWARENESS="node packages/octocode-awareness/out/octocode-awareness.js"
+AWARENESS_CLI="packages/octocode-awareness/out/octocode-awareness.js"
 
 # orient before any repo work, then follow attend.next
-$AWARENESS attend --workspace "$PWD" --query "<task>" --compact
+node "$AWARENESS_CLI" attend --workspace "$PWD" --query "<task>" --compact
 
 # core lifecycle
-$AWARENESS work start ...          # declare edited paths / claim a task
-$AWARENESS memory recall --smart   # surface prior verified learning
-$AWARENESS task submit ...
-$AWARENESS verify mark ... && $AWARENESS verify audit
+node "$AWARENESS_CLI" work start ...          # declare edited paths / claim a task
+node "$AWARENESS_CLI" memory recall --smart   # surface prior verified learning
+node "$AWARENESS_CLI" task submit ...
+node "$AWARENESS_CLI" verify mark ... && node "$AWARENESS_CLI" verify audit
 ```
 
 SQLite is canonical; `<workspace>/.octocode/` is a discovery shelf (authored plan docs +
-generated projections), never a second database. No server, no daemon.
+requested query exports), never a second database. No server, no daemon.
 
 ➡️ [`packages/octocode-awareness`](packages/octocode-awareness) · [HOW_IT_WORKS](packages/octocode-awareness/docs/HOW_IT_WORKS.md) · [skill source](packages/octocode-awareness/skills/octocode-awareness)
+
+---
+
+## Extending with MCP Servers and Skills
+
+Use **MCP servers** to expose more tools. Use **skills** to teach the agent a reusable workflow.
+Most integrations only need MCP config — no code change, rebuild, or new skill.
+
+MCP server config is read from:
+
+| Scope | Path | Loaded when |
+|---|---|---|
+| Built-in | `npx -y octocode-mcp@latest` | always, as server `octocode` |
+| Global | `~/.pi/agent/mcp.json` | if the file exists |
+| Project | `<workspace>/.pi/agent/mcp.json` | only after the project is trusted |
+
+Minimal config:
+
+```json
+{
+  "mcpServers": {
+    "my-server": {
+      "command": "npx",
+      "args": ["-y", "@acme/mcp-server@latest"],
+      "env": {},
+      "cwd": ".",
+      "timeoutMs": 30000
+    }
+  }
+}
+```
+
+Inside a session, the agent can also add a trusted server live:
+
+```js
+MCPTool({
+  action: "add",
+  server: "my-server",
+  scope: "project",
+  config: { command: "npx", args: ["-y", "@acme/mcp-server@latest"] }
+})
+```
+
+Discovery is automatic: `MCPTool({ action: "list", server: "my-server" })` lists the
+server's tools and schemas; `describe` reads one exact tool schema; `call` invokes it.
+Config files are watched and hot-reloaded, so new tools apply on the next `MCPTool` call.
+You can also inspect/manage servers from `/octocode-mcp` or `/mcp`.
+
+Create or install a skill only when the integration needs operating guidance: when to use
+the tools, how to combine them, validation rules, pitfalls, or a multi-step workflow. For
+example, a docs-search MCP server can stand alone; a release-management workflow that uses
+several tools and requires checks is a skill.
+
+More detail: [`packages/octocode-pi-extension/docs/TOOLS.md#MCP-Servers`](packages/octocode-pi-extension/docs/TOOLS.md#mcp-servers) and [`packages/octocode-pi-extension/README.md`](packages/octocode-pi-extension/README.md).
 
 ---
 
@@ -160,7 +215,7 @@ generated projections), never a second database. No server, no daemon.
 graph TD
     AGENT["octocode-agent<br/>branded launcher CLI"]
     PI["Pi runtime<br/>(shell, tool loop, providers)"]
-    EXT["@octocodeai/pi-extension<br/>HARNESS: prompt · 13 native tools · memory · skills · hooks"]
+    EXT["@octocodeai/pi-extension<br/>HARNESS: prompt · MCP research · support tools · skills · hooks"]
     AW["@octocodeai/octocode-awareness<br/>COORDINATION: plans/tasks · locks · memory · verify (SQLite)"]
     SKILL["octocode-awareness skill<br/>agent-facing router"]
     BRAIN["External npm brain (sibling repos)<br/>octocode-tools-core · octocode-engine · @octocodeai/config"]
@@ -241,14 +296,14 @@ canonical skill under `packages/octocode-awareness/skills/octocode-awareness/**`
 ## How the Pieces Wire Together
 
 1. `octocode-agent` launches **Pi** with `@octocodeai/pi-extension` loaded as the harness.
-2. On load the extension sets `$OCTOCODE_CLI` + `$OCTOCODE_AWARENESS_CLI`, registers native
-   research tools, injects the operating-model system prompt, and installs edit-safety +
-   Awareness lifecycle hooks.
+2. On load the extension sets `$OCTOCODE_CLI` + `$OCTOCODE_AWARENESS_CLI`, registers support
+   tools, injects the operating-model system prompt, and installs edit-safety + Awareness
+   lifecycle hooks.
 3. For non-trivial repo work the agent activates the **`octocode-awareness` skill** and runs
    `attend`, then follows `attend.next` to claim work, declare edited files, coordinate with
    peers, record verified memory, and gate on verification.
-4. Research runs through the **13 native Octocode tools** (GitHub / local / LSP / npm), backed
-   by the external Rust engine + tools-core packages.
+4. Research runs through `MCPTool` and the built-in **`octocode` MCP server** (GitHub / local /
+   LSP / npm), backed by the external Rust engine + tools-core packages.
 
 **Config is a single source:** all env/config flows through `@octocodeai/config`
 (`getOctocodeHome`, `propagateOctocodeEnv`, `parseEnv`, `loadOctocoderc`). Skills use the
@@ -292,7 +347,7 @@ Bundled and installable skills (all with valid `SKILL.md` contracts): `octocode-
 |---|---|
 | Agent / launcher | [`octocode-agent` docs](packages/octocode-agent/docs/README.md) · [PI_INTEGRATION](packages/octocode-agent/docs/PI_INTEGRATION.md) |
 | Harness (Pi extension) | [docs index](packages/octocode-pi-extension/docs/README.md) · [TOOLS](packages/octocode-pi-extension/docs/TOOLS.md) · [AWARENESS flow](packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) · [REFLECT](packages/octocode-pi-extension/docs/REFLECT.md) · [OVERRIDES](packages/octocode-pi-extension/docs/OVERRIDES.md) |
-| Awareness | [docs index](packages/octocode-awareness/docs/README.md) · [HOW_IT_WORKS](packages/octocode-awareness/docs/HOW_IT_WORKS.md) · [HOOKS](packages/octocode-awareness/docs/HOOKS.md) · [VERIFY](packages/octocode-awareness/docs/VERIFY.md) · [LOCKS](packages/octocode-awareness/docs/LOCKS.md) · [MEMORY_NAVIGATION](packages/octocode-awareness/docs/MEMORY_NAVIGATION.md) · [WIKI](packages/octocode-awareness/docs/WIKI.md) |
+| Awareness | [docs index](packages/octocode-awareness/docs/README.md) · [HOW_IT_WORKS](packages/octocode-awareness/docs/HOW_IT_WORKS.md) · [HOOKS](packages/octocode-awareness/docs/HOOKS.md) · [VERIFY](packages/octocode-awareness/docs/VERIFY.md) · [LOCKS](packages/octocode-awareness/docs/LOCKS.md) · [MEMORY_NAVIGATION](packages/octocode-awareness/docs/MEMORY_NAVIGATION.md) |
 | Platform | Website **[octocode.ai](https://octocode.ai)** · [Pi](https://github.com/earendil-works/pi) |
 
 > The full Octocode platform — MCP server, the `octocode` CLI, the Rust engine, and the VS Code

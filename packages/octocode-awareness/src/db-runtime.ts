@@ -12,7 +12,12 @@ import { join, resolve, dirname } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { utcNow } from './helpers.js';
 import { journalModeForSqliteVersion } from './sqlite-runtime.js';
-import { assertCanonicalRelationContract, assertCanonicalSchemaFingerprint, isExactPriorHookReceiptSchema } from './db-introspection.js';
+import {
+  assertCanonicalRelationContract,
+  assertCanonicalSchemaFingerprint,
+  isExactPriorHookReceiptSchema,
+  isExactPriorLifecycleConstraintSchema,
+} from './db-introspection.js';
 import { initializeDb } from './db-init.js';
 
 export type DatabaseSync = NodeDatabaseSync;
@@ -109,7 +114,7 @@ export interface SchemaIdentity {
   relations: Array<{ name: string; type: string }>;
 }
 
-export type SchemaState = 'fresh' | 'canonical' | 'prior-hook-receipts';
+export type SchemaState = 'fresh' | 'canonical' | 'prior-hook-receipts' | 'prior-lifecycle-constraints';
 
 export function readSchemaIdentity(db: DatabaseSync): SchemaIdentity {
   const application = db.prepare('PRAGMA application_id').get() as { application_id: number };
@@ -132,6 +137,7 @@ export function inspectSchemaState(db: DatabaseSync): SchemaState {
   const identity = readSchemaIdentity(db);
   if (identity.applicationId === AWARENESS_APPLICATION_ID) {
     if (isExactPriorHookReceiptSchema(db, identity.relations)) return 'prior-hook-receipts';
+    if (isExactPriorLifecycleConstraintSchema(db, identity.relations)) return 'prior-lifecycle-constraints';
     assertCanonicalRelationContract(db, identity.relations);
     assertCanonicalSchemaFingerprint(db);
     return 'canonical';

@@ -83,7 +83,8 @@ function envFlag(value: string | undefined): boolean {
 export function colorEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   if (envFlag(env['NO_COLOR'])) return false;
   if (envFlag(env['FORCE_COLOR'])) return true;
-  return true;
+  // Raw SGR codes must not leak into piped/redirected output (logs, files).
+  return process.stdout?.isTTY === true;
 }
 
 /**

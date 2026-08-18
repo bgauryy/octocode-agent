@@ -2,10 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { PiCommandContext, PiContext, PiInstance, PiTheme, RenderCallReturn, RenderContext, ToolCallResult, ToolDefinition, TSchema } from '../types.js';
 import { assertPathAllowed } from './path-guard.js';
+import { runSelectOverlay } from './ui-overlays.js';
 import { recordFileReadState } from './file-state.js';
 import { makeRenderer } from './render-helpers.js';
 
@@ -87,7 +88,31 @@ const DEFAULT_OCTOCODE_MCP_SERVER: McpServerConfig = {
   timeoutMs: DEFAULT_TIMEOUT_MS,
 };
 const connections = new Map<string, McpConnection>();
+const pendingConnections = new Map<string, Promise<McpConnection>>();
 const cachedCatalogs = new Map<string, ListedMcpServer[]>();
+
+/**
+ * Ambient env forwarded to every MCP server: the SDK's minimal safe default
+ * (PATH, HOME, …) plus proxy/CA settings. Process secrets are NOT inherited —
+ * a server that needs a token must receive it explicitly via its mcp.json
+ * `env`. The built-in octocode server additionally gets its own OCTOCODE_* and
+ * GitHub auth vars, since its research tools authenticate from the ambient env.
+ */
+const AMBIENT_ENV_PASSTHROUGH = ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS'];
+function buildServerEnv(name: string, config: McpServerConfig): Record<string, string> {
+  const base = getDefaultEnvironment();
+  for (const key of AMBIENT_ENV_PASSTHROUGH) {
+    const value = process.env[key];
+    if (value) base[key] = value;
+  }
+  if (name === DEFAULT_OCTOCODE_MCP_SERVER_NAME) {
+    for (const [key, value] of Object.entries(process.env)) {
+      if (!value) continue;
+      if (key.startsWith('OCTOCODE_') || key === 'GITHUB_TOKEN' || key === 'GH_TOKEN') base[key] = value;
+    }
+  }
+  return { ...base, ...(config.env ?? {}) };
+}
 
 function cacheKey(ctx?: PiContext): string {
   return path.resolve(ctx?.cwd ?? process.cwd());
@@ -323,7 +348,23 @@ async function ensureConnection(name: string, config: McpServerConfig, ctx?: PiC
     await stopConnection(name);
     invalidateServerCache(name);
   }
+  // Dedupe concurrent connects for the same server: two parallel MCPTool calls
+  // would otherwise both spawn a process and orphan one of them.
+  const pending = pendingConnections.get(name);
+  if (pending) {
+    const conn = await pending;
+    if (conn.configSig === sig) return conn;
+  }
+  const connectPromise = connectServer(name, config, sig, ctx, signal);
+  pendingConnections.set(name, connectPromise);
+  try {
+    return await connectPromise;
+  } finally {
+    pendingConnections.delete(name);
+  }
+}
 
+async function connectServer(name: string, config: McpServerConfig, sig: string, ctx?: PiContext, signal?: AbortSignal): Promise<McpConnection> {
   const cwd = resolveServerCwd(config, ctx);
   assertPathAllowed(cwd, ctx?.cwd ?? process.cwd(), `mcp:${name}`);
 
@@ -331,7 +372,7 @@ async function ensureConnection(name: string, config: McpServerConfig, ctx?: PiC
     command: config.command,
     args: config.args ?? [],
     cwd,
-    env: config.env ? { ...process.env, ...config.env } as Record<string, string> : undefined,
+    env: buildServerEnv(name, config),
     stderr: 'pipe',
   });
   const client = new Client({ name: 'octocode-pi-extension', version: '1.0.0' }, { capabilities: {} });
@@ -353,7 +394,8 @@ async function ensureConnection(name: string, config: McpServerConfig, ctx?: PiC
     while (connection.stderr.length > 20) connection.stderr.shift();
   });
   transport.onclose = () => {
-    connections.delete(name);
+    // Delete only our own entry — a reconnect may already own the slot.
+    if (connections.get(name) === connection) connections.delete(name);
   };
   transport.onerror = (error) => {
     connection.stderr.push(error.message);
@@ -450,9 +492,14 @@ export function startMcpConfigWatcher(ctx: PiContext | undefined, notify: Notify
     path.dirname(projectMcpPath(cwd)),
     path.dirname(legacyTypoProjectMcpPath(cwd)),
   ]);
+  const globalDir = path.dirname(globalMcpPath());
   for (const dir of dirs) {
     try {
-      fs.mkdirSync(dir, { recursive: true });
+      // Only the global dir (under $HOME) may be created; project dirs are
+      // watched only if they already exist — creating them (especially the
+      // legacy "agnet" typo path) pollutes user repos as a watch side effect.
+      if (dir === globalDir) fs.mkdirSync(dir, { recursive: true });
+      else if (!fs.existsSync(dir)) continue;
       const watcher = fs.watch(dir, { persistent: false }, (_event, filename) => {
         // Match mcp.json and our atomic temp writes (mcp.json.<pid>.<ts>.tmp).
         if (filename && !String(filename).startsWith('mcp.json')) return;
@@ -559,7 +606,9 @@ function formatCachedCatalogEntry(entry: ListedMcpServer, now = Date.now()): str
   const lines = [`server: ${entry.name}`];
   const freshness = isFresh(entry, now) ? 'fresh' : 'stale — re-run MCPTool list/describe before relying on exact current schemas';
   lines.push(`cache: ${freshness}`);
-  if (entry.cachedAt !== undefined) lines.push(`cachedAt: ${new Date(entry.cachedAt).toISOString()}`);
+  // No cachedAt timestamp here: any byte change in the system prompt invalidates
+  // the provider conversation cache, and the fresh/stale label already carries
+  // the model-facing signal.
   if (entry.instructions) lines.push(`instructions: ${entry.instructions}`);
   for (const rawTool of entry.tools) {
     if (!isPlainRecord(rawTool)) continue;
@@ -732,6 +781,24 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
     }
     const cfg = isPlainRecord(params['config']) ? params['config'] : undefined;
     if (!cfg) return result('MCPTool add requires a config object, e.g. {command, args, env, cwd}.', undefined, true);
+    if (scope === 'global') {
+      // Adding a server means spawning an arbitrary local process on the next
+      // call — that decision belongs to the user, not the model. Hard gate:
+      // interactive approval, or refuse when no UI is available.
+      const cmd = typeof cfg['command'] === 'string' ? cfg['command'] : '?';
+      const argText = Array.isArray(cfg['args']) ? (cfg['args'] as unknown[]).map(String).join(' ') : '';
+      const choice = await runSelectOverlay(ctx, {
+        title: `Add MCP server "${serverName}" to GLOBAL mcp.json? It will run locally as: ${cmd} ${argText}`.trim(),
+        items: [
+          { value: 'deny', label: 'Deny', description: 'Do not modify ~/.pi/agent/mcp.json' },
+          { value: 'allow', label: 'Allow', description: 'Write the server config; it spawns on next MCPTool call' },
+        ],
+      });
+      if (choice !== 'allow') {
+        const why = choice === undefined ? 'no interactive UI to approve it' : 'the user denied it';
+        return result(`Global MCP add refused: ${why}. Ask the user to edit ~/.pi/agent/mcp.json directly if they want this server.`, undefined, true);
+      }
+    }
     const target = scopeTargetPath(scope, ctx);
     let parsed: McpServerConfig;
     try {

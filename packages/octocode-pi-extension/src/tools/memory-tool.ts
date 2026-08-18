@@ -11,9 +11,13 @@
  * mutate, or reinterpret memory; it shells the same CLI the skill documents.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
+import { CLI_GLYPH, cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
@@ -29,16 +33,20 @@ export type MemoryCliRunner = (args: string[]) => MemoryCliResult | Promise<Memo
 
 const AWARENESS_AGENT_ENV_VAR = 'OCTOCODE_AGENT_ID';
 
-/** Default runner: invoke the bundled Awareness CLI via node. */
-const defaultRunner: MemoryCliRunner = (args) => {
+/**
+ * Default runner: invoke the bundled Awareness CLI via node. Async on purpose —
+ * a sync exec here blocked the whole event loop (TUI freeze, unprocessable
+ * abort) for up to the 20s timeout.
+ */
+const defaultRunner: MemoryCliRunner = async (args) => {
   const cli = process.env['OCTOCODE_AWARENESS_CLI'];
   if (!cli) return { code: 127, stdout: '', stderr: 'OCTOCODE_AWARENESS_CLI is not set' };
   try {
-    const stdout = execFileSync('node', [cli, ...args], { encoding: 'utf8', timeout: 20_000 });
+    const { stdout } = await execFileAsync('node', [cli, ...args], { encoding: 'utf8', timeout: 20_000 });
     return { code: 0, stdout, stderr: '' };
   } catch (err) {
-    const e = err as { status?: number; stdout?: string; stderr?: string; message?: string };
-    return { code: e.status ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? e.message ?? 'memory CLI failed' };
+    const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
+    return { code: typeof e.code === 'number' ? e.code : 1, stdout: e.stdout ?? '', stderr: e.stderr ?? e.message ?? 'memory CLI failed' };
   }
 };
 
@@ -187,8 +195,8 @@ export function registerMemoryTool(
       const p = raw as MemoryParams;
       const action = String(p?.action ?? 'recall');
       const hint = p?.query ? `"${p.query}"` : p?.label ? `[${p.label}]` : p?.memoryId ? p.memoryId : '';
-      const title = theme?.fg('toolTitle', theme.bold('memory')) ?? 'memory';
-      const body = theme?.fg('dim', `${action} ${hint}`.trim()) ?? `${action} ${hint}`.trim();
+      const title = cliToolTitle(theme, 'memory');
+      const body = paint(theme, 'dim', `${action} ${hint}`.trim());
       return makeRenderer((w) => [truncateToWidth(`${title} ${body}`, w)]);
     },
 
@@ -196,8 +204,8 @@ export function registerMemoryTool(
       const ok = !result.isError;
       const first = (result.content?.[0]?.text ?? '').split('\n')[0] || 'memory';
       const line = ok
-        ? (theme?.fg('success', `\u2713 ${first}`) ?? `\u2713 ${first}`)
-        : (theme?.fg('error', `\u2717 ${first}`) ?? `\u2717 ${first}`);
+        ? paint(theme, 'success', `${CLI_GLYPH.success} ${first}`)
+        : paint(theme, 'error', `${CLI_GLYPH.error} ${first}`);
       return makeRenderer((w) => [truncateToWidth(line, w)]);
     },
   });

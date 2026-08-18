@@ -220,11 +220,11 @@ export interface PiContext {
   hasUI?: boolean;
   /** 'tui' = interactive terminal, 'rpc' = JSON RPC, 'json' = event stream, 'print' = -p flag */
   mode?: 'tui' | 'rpc' | 'json' | 'print';
-  /** Path to the Octocode awareness SQLite DB injected by the extension. */
-  dbPath?: string;
-  isProjectTrusted?(): Promise<boolean>;
+  /** Pi's real contract is synchronous boolean (types.d.ts:226); Promise kept in the union for older call sites that await it. */
+  isProjectTrusted?(): boolean | Promise<boolean>;
   compact?(opts: CompactOptions): void;
-  getContextUsage?(): { tokens: number; contextWindow: number } | null | undefined;
+  /** `tokens` is null when unknown — e.g. right after compaction (mirrors Pi's ContextUsage). */
+  getContextUsage?(): { tokens: number | null; contextWindow: number; percent?: number | null } | null | undefined;
   sessionManager?: PiSessionManager;
   modelRegistry?: {
     find(provider: string, id: string): PiModel | undefined;

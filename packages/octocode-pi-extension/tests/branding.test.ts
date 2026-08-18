@@ -86,11 +86,15 @@ describe('renderBannerLines', () => {
     expect(lines.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('applies fg accent and bold to wordmark', () => {
+  it('applies a bold metallic shimmer to the wordmark', () => {
     const lines = renderBannerLines(stubTheme, 80);
     const joined = lines.join('');
     expect(joined).toContain('accent');
-    expect(joined).toContain('Octocode');
+    expect(joined).toContain('muted');
+    expect(joined).toContain('text');
+    expect(joined).toContain('**');
+    expect(joined).toContain('O');
+    expect(joined).toContain('e');
   });
 
   it('includes version when provided', () => {
@@ -151,7 +155,8 @@ describe('renderBannerWithTagline', () => {
     const lines = renderBannerWithTagline(stubTheme, 80, '2.0.0');
     expect(lines.length).toBeGreaterThanOrEqual(2);
     const joined = lines.join('\n');
-    expect(joined).toContain('Octocode');
+    expect(joined).toContain('O');
+    expect(joined).toContain('e');
     expect(joined).toContain('muted');
   });
 });

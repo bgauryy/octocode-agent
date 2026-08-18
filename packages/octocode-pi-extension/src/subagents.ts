@@ -111,6 +111,7 @@ export function getExternalSkillDirs(): string[] {
 }
 
 export const OCTOCODE_SKILL_NAMES = [
+  'octocode-awareness',
   'octocode-brainstorming',
   'octocode-prompt-optimizer',
   'octocode-research',

@@ -11,6 +11,7 @@
  * and closeAllChromeConnections() runs on session shutdown.
  */
 
+import fs from "node:fs";
 import type { ChromeConnection } from "./chrome-debug.js";
 
 export const MAX_CACHED_CONNECTIONS = 8;
@@ -168,11 +169,35 @@ export function listCDPSessions(): CDPSessionInfo[] {
   return out;
 }
 
-/** Close every cached session and clear the cache. Returns the count closed. */
+/**
+ * Close every cached session and clear the cache. Returns the count closed.
+ * Chromes that WE launched (session carries `_launchedPid`) are also terminated
+ * and their throwaway profile dirs removed — spawned detached+unref, they would
+ * otherwise outlive the Pi session whenever the model forgets `cleanup:true`.
+ * Attach-mode connections have no `_launchedPid` and the user's browser is
+ * never touched.
+ */
 export function closeAllChromeConnections(): number {
   let n = 0;
   for (const entry of cache.values()) {
+    const s = entry.connection.session as unknown as Record<string, unknown>;
+    const launchedPid = s["_launchedPid"] as number | undefined;
+    const launchedUserDataDir = s["_launchedUserDataDir"] as string | undefined;
     closeEntry(entry);
+    if (launchedPid !== undefined) {
+      try {
+        process.kill(launchedPid, "SIGTERM");
+      } catch {
+        /* already gone */
+      }
+      if (launchedUserDataDir) {
+        try {
+          fs.rmSync(launchedUserDataDir, { recursive: true, force: true });
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
     n++;
   }
   cache.clear();

@@ -61,6 +61,7 @@ describe('skill routing boundaries', () => {
     expect(text).toMatch(/schema command|schema commands/);
     expect(text).toContain('first activation');
     expect(text).toContain('agent-cheatsheet.md');
+    expect(text).toContain('flow-matrix.md');
     expect(text).toContain('Feature map — when to use what');
     expect(text).toContain('cleanup only under real pressure');
     expect(text).toContain('docs list --compact');
@@ -111,6 +112,7 @@ describe('skill routing boundaries', () => {
     expect(text).toMatch(/Hooks \+ hosts \(Pi\/Codex\/Cursor\/Claude\)/i);
     expect(awarenessSkillFile('references/hooks.md')).toMatch(/do not choose tasks or replace\s+`attend`\/verify/i);
     expect(text).toMatch(/schema command|schema commands/);
+    expect(text).toContain('not `attend run`');
   });
 
   it('keeps held-out repository intent behavior distinct from near misses', () => {

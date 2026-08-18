@@ -78,6 +78,7 @@ export interface MarkVerifiedParams {
   artifact?: string | null;
   message?: string;           // what was verified
   status?: VerifyStatus;
+  adoptVerification?: boolean; // explicit single-run owner handoff for verification only
 }
 
 export interface MarkVerifiedOk {
@@ -118,6 +119,7 @@ export interface IntentDbRow {
 export interface AgentStatusRow {
   agent_id: string;
   status: string;
+  workspace_path: string | null;
 }
 
 /**

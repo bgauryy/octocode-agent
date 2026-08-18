@@ -18,8 +18,9 @@ import type {
   WorkerLedgerEventType,
 } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
+import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
-import { refreshStatusPanel } from './status-panel.js';
+import { refreshStatusPanel, resumeStatusPanel } from './status-panel.js';
 import { stringEnumSchema } from './schema-helpers.js';
 import { getRandomAgentName } from '../agentNames.js';
 
@@ -197,6 +198,9 @@ export function setAgentProcessFactoryForTests(factory: AgentProcessFactory | nu
   processFactory = factory ?? ((command, args, options) => spawn(command, args, options) as unknown as AgentProcess);
   agents.clear();
   ledgerHidden = false;
+  // A prior test's session_shutdown may have suppressed the status panel;
+  // ledger rendering assertions need it live again.
+  resumeStatusPanel();
 }
 
 /** wait() resolves at end-of-turn: idle counts as "done for now", plus true terminals. */
@@ -241,6 +245,12 @@ export function cleanupSpawnedAgentsForShutdown(): number {
   // process stays up between turns and would otherwise survive as an orphan.
   const alive = [...agents.values()].filter((record) => !isDroppable(record));
   for (const record of alive) killAgent(record, { forceKillDelayMs: 0 });
+  // The killed children's close/stderr events fire on later ticks and call
+  // refreshAgentLedgerUi; hide the ledger so those callbacks clear rather than
+  // resurrect the status/widget into the next session. Spawning (or an explicit
+  // list/status action) un-hides it again.
+  ledgerHidden = true;
+  stopLedgerTicker();
   return alive.length;
 }
 
@@ -303,7 +313,7 @@ export function isLedgerTickerActiveForTests(): boolean {
 }
 
 function agentDisplayMeta(state: AgentDisplayState, theme?: PiTheme): { icon: string; label: string } {
-  const raw = (() => {
+  const raw: { icon: string; label: string; color: Parameters<typeof paint>[1] } = (() => {
     switch (state) {
       case 'done': return { icon: '\u2713', label: 'done', color: 'success' };
       case 'failed': return { icon: '\u2717', label: 'failed', color: 'error' };
@@ -315,8 +325,8 @@ function agentDisplayMeta(state: AgentDisplayState, theme?: PiTheme): { icon: st
     }
   })();
   return {
-    icon: theme?.fg(raw.color, raw.icon) ?? raw.icon,
-    label: theme?.fg(raw.color, raw.label) ?? raw.label,
+    icon: paint(theme, raw.color, raw.icon),
+    label: paint(theme, raw.color, raw.label),
   };
 }
 
@@ -527,6 +537,28 @@ export function findReapableIdleAgents(
 function looksLikeProviderScopedModel(model: string): boolean {
   return /\//.test(model)
     || /^(?:claude|gpt|llama|mistral|gemini|qwen|zai|deepseek|kimi|codestral)[-_:/.]/i.test(model);
+}
+
+function resolveWorkerModelParams(params: SpawnAgentParams, ctx?: PiContext): SpawnAgentParams {
+  const explicitModel = typeof params.model === 'string' && params.model.trim().length > 0;
+  const parentModel = ctx?.model;
+  return {
+    ...params,
+    model: explicitModel ? params.model : parentModel?.id,
+    provider: params.provider ?? (!explicitModel || params.model === parentModel?.id ? parentModel?.provider : undefined),
+  };
+}
+
+function validateWorkerModelParams(params: SpawnAgentParams, ctx?: PiContext): void {
+  const model = String(params.model ?? '').trim();
+  const provider = String(params.provider ?? '').trim();
+  if (!model) return;
+  if (!provider && looksLikeProviderScopedModel(model)) {
+    throw new Error(`spawnAgent model "${model}" requires an explicit provider from \`pi -ne --list-models\`.`);
+  }
+  if (provider && ctx?.modelRegistry?.find && !ctx.modelRegistry.find(provider, model)) {
+    throw new Error(`spawnAgent model/provider not found in the active Pi model registry: ${provider}/${model}. Choose a valid pair from \`pi -ne --list-models\`.`);
+  }
 }
 
 export function evaluateSpawnPolicy(params: SpawnAgentParams, activeCount = activeAgentCount(), policy: SpawnPolicy = DEFAULT_SPAWN_POLICY): SpawnPolicyResult {
@@ -796,8 +828,15 @@ function processRpcLine(record: AgentRecord, line: string): void {
         updateLastOutput(record, message);
       }
     }
-    touch(record, 'idle');
-    notifyWaiters(record);
+    // agent_end {willRetry:true} means the worker aborted on context overflow
+    // and Pi is compacting + retrying the turn — it is still working, so a
+    // pending wait must not resolve with the incomplete lastOutput.
+    if ((event as { willRetry?: boolean }).willRetry === true) {
+      touch(record);
+    } else {
+      touch(record, 'idle');
+      notifyWaiters(record);
+    }
   }
 }
 
@@ -846,11 +885,8 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   // bare default (google/grok) is often unconfigured/unreachable — an unset worker
   // model silently errors every turn (0 tools run). Inherit the parent's known-working
   // model+provider when the caller didn't pin one, so delegation works by default.
-  const effectiveParams: SpawnAgentParams = {
-    ...params,
-    model: params.model ?? ctx?.model?.id,
-    provider: params.provider ?? ctx?.model?.provider,
-  };
+  const effectiveParams = resolveWorkerModelParams(params, ctx);
+  validateWorkerModelParams(effectiveParams, ctx);
   const args = buildPiArgs(effectiveParams, name, promptFiles);
   const invocation = getPiInvocation(args);
   const awarenessAgentId = workerAwarenessAgentId(id);
@@ -860,7 +896,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   // non-droppable agents still fill the registry. Checked before processFactory to ensure
   // no process is leaked when the cap is exceeded.
   evictStaleAgents();
-  const policyResult = evaluateSpawnPolicy(params, activeAgentCount());
+  const policyResult = evaluateSpawnPolicy(effectiveParams, activeAgentCount());
   if (!policyResult.allowed) {
     cleanupPromptFiles(promptFiles);
     throw new Error(`${policyResult.reason} Kill or wait for existing agents before spawning more.`);
@@ -1087,9 +1123,9 @@ export function waitForAgent(record: AgentRecord, timeoutMs: number): Promise<vo
 }
 
 function agentRiskBadge(summary: ReturnType<typeof summarizeAgent>, theme?: PiTheme): string {
-  if (summary.recoveryRisk?.warnings.length) return theme?.fg('warning', '⚠ recovery') ?? '⚠ recovery';
+  if (summary.recoveryRisk?.warnings.length) return paint(theme, 'warning', '⚠ recovery');
   if (summary.normalizedResult?.status === 'done' && summary.normalizedResult.evidence.length === 0 && !summary.normalizedResult.verification) {
-    return theme?.fg('warning', '⚠ needs verify') ?? '⚠ needs verify';
+    return paint(theme, 'warning', '⚠ needs verify');
   }
   return '';
 }
@@ -1153,11 +1189,11 @@ export function formatAgentLedger(): string {
 
 function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
   const records = [...agents.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-  const title = theme?.fg('toolTitle', 'Octocode agents') ?? 'Octocode agents';
+  const title = cliToolTitle(theme, 'Octocode agents');
   if (records.length === 0) return [`${title}: none`];
 
   const counts = formatAgentStateCounts(records);
-  const lines = [`${title}: ${theme?.fg('dim', counts) ?? counts}`];
+  const lines = [`${title}: ${paint(theme, 'dim', counts)}`];
   for (const record of records.slice(0, limit)) {
     const summary = summarizeAgent(record);
     const state = getAgentDisplayState(summary);
@@ -1179,12 +1215,12 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
     const live = !isTerminal(record) && record.deltaSummary ? record.deltaSummary : undefined;
     const previewText = live ?? result;
     const preview = previewText ? ` — ${previewText.replace(/\n/g, ' ').slice(0, 90)}${!live && summary.outputTruncated ? '…' : ''}` : '';
-    const name = theme?.fg('accent', summary.name) ?? summary.name;
-    const id = theme?.fg('dim', shortId(summary.agentId)) ?? shortId(summary.agentId);
+    const name = paint(theme, 'brand', summary.name);
+    const id = paint(theme, 'dim', shortId(summary.agentId));
     const elapsed = formatElapsed(record.startedAt, isTerminal(record) ? record.updatedAt : undefined);
-    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${modelInfo}${active}${toolsInfo} · ${elapsed}${theme?.fg('dim', preview) ?? preview}`);
+    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${modelInfo}${active}${toolsInfo} · ${elapsed}${paint(theme, 'dim', preview)}`);
   }
-  if (records.length > limit) lines.push(theme?.fg('muted', `… ${records.length - limit} more; use AgentMessage list for full details.`) ?? `… ${records.length - limit} more; use AgentMessage list for full details.`);
+  if (records.length > limit) lines.push(paint(theme, 'muted', `… ${records.length - limit} more; use AgentMessage list for full details.`));
   return lines;
 }
 
@@ -1443,37 +1479,37 @@ export function registerAgentTools(
       const p = args as Partial<SpawnAgentParams>;
       const name = String(p.name ?? 'worker');
       const task = String(p.task ?? p.prompt ?? '');
-      const taskPreview = task.length > 72 ? `${task.slice(0, 72)}\u2026` : (task || '(no task)');
-      const model = p.model ? ` \u00b7 ${p.model}` : '';
+      const taskPreview = task.length > 72 ? `${task.slice(0, 72)}…` : (task || '(no task)');
+      const model = p.model ? ` · ${p.model}` : '';
       const rawLine = [
-        theme?.fg('toolTitle', theme.bold('spawnAgent')) ?? 'spawnAgent',
-        theme?.fg('accent', name) ?? name,
-        theme?.fg('dim', `\u2014 ${taskPreview}${model}`) ?? `\u2014 ${taskPreview}${model}`,
+        cliToolTitle(theme, 'spawnAgent', { bold: true }),
+        paint(theme, 'brand', name),
+        paint(theme, 'dim', `— ${taskPreview}${model}`),
       ].join(' ');
       return makeRenderer((w) => [truncateToWidth(rawLine, w)]);
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        return makeRenderer((w) => [truncateToWidth(theme?.fg('warning', '\u29D7 Spawning agent\u2026') ?? '\u29D7 Spawning agent\u2026', w)]);
+        return makeRenderer((w) => [truncateToWidth(paint(theme, 'warning', '⧗ Spawning agent…'), w)]);
       }
       const ok = !result.isError;
       const det = result.details as { agent?: { name?: string } } | null;
       const agentName = det?.agent?.name ?? 'agent';
       const displayStatus = ok ? 'spawned' : 'failed';
-      const icon = ok ? (theme?.fg('success', '\u2713') ?? '\u2713') : statusIcon('failed', theme);
-      const label = theme?.fg('toolTitle', 'spawnAgent') ?? 'spawnAgent';
-      const nameStr = theme?.fg('accent', agentName) ?? agentName;
-      const statusStr = theme?.fg('dim', displayStatus) ?? displayStatus;
-      const header = `${icon} ${label} \u00b7 ${nameStr} \u00b7 ${statusStr}`;
+      const icon = ok ? paint(theme, 'success', '✓') : statusIcon('failed', theme);
+      const label = cliToolTitle(theme, 'spawnAgent');
+      const nameStr = paint(theme, 'brand', agentName);
+      const statusStr = paint(theme, 'dim', displayStatus);
+      const header = `${icon} ${label} · ${nameStr} · ${statusStr}`;
       if (!opts.expanded) {
-        const hint = theme?.fg('dim', ' \u00b7 use AgentMessage wait/status') ?? ' \u00b7 use AgentMessage wait/status';
+        const hint = paint(theme, 'dim', ' · use AgentMessage wait/status');
         return makeRenderer((w) => [truncateToWidth(`${header}${hint}`, w)]);
       }
       const text = result.content.find((p) => p.type === 'text')?.text ?? '';
       const outputLines = text.split('\n').slice(2); // skip agent-header + status lines
       return makeRenderer((w) => [
         truncateToWidth(header, w),
-        ...outputLines.map((l) => truncateToWidth(theme?.fg('dim', l) ?? l, w)),
+        ...outputLines.map((l) => truncateToWidth(paint(theme, 'dim', l), w)),
       ]);
     },
   } satisfies ToolDefinition);
@@ -1530,7 +1566,12 @@ export function registerAgentTools(
           if (ctx?.hasUI) ctx.ui?.setStatus?.('agent-wait', undefined);
         }
         const waitResult = renderSingleAgentResult(record, 'Agent turn completed', renderOpts);
-        if (params['remove'] === true) agents.delete(record.id);
+        if (params['remove'] === true) {
+          // An idle (non-terminal) worker's process is still alive; deleting the
+          // record would orphan it beyond the reach of shutdown cleanup.
+          if (!isDroppable(record)) killAgent(record, { forceKillDelayMs: 0 });
+          agents.delete(record.id);
+        }
         refreshAgentLedgerUi(ctx);
         return waitResult;
       }
@@ -1595,14 +1636,14 @@ export function registerAgentTools(
       const action = String(p.action ?? 'status');
       const rec = p.agentId ? agents.get(p.agentId) : undefined;
       const agentLabel = rec
-        ? (theme?.fg('accent', rec.name) ?? rec.name)
-        : (theme?.fg('dim', p.agentId ? shortId(p.agentId) : 'all') ?? (p.agentId ? shortId(p.agentId) : 'all'));
+        ? paint(theme, 'brand', rec.name)
+        : paint(theme, 'dim', p.agentId ? shortId(p.agentId) : 'all');
       const msgPart = p.message
-        ? (theme?.fg('dim', ` \u2014 ${p.message.slice(0, 48)}${p.message.length > 48 ? '\u2026' : ''}`) ?? ` \u2014 ${p.message.slice(0, 48)}`)
+        ? paint(theme, 'dim', ` — ${p.message.slice(0, 48)}${p.message.length > 48 ? '…' : ''}`)
         : '';
       const rawLine = [
-        theme?.fg('toolTitle', theme.bold('AgentMessage')) ?? 'AgentMessage',
-        theme?.fg('accent', action) ?? action,
+        cliToolTitle(theme, 'AgentMessage', { bold: true }),
+        paint(theme, 'brand', action),
         agentLabel,
         msgPart,
       ].filter(Boolean).join(' ');
@@ -1610,7 +1651,7 @@ export function registerAgentTools(
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        return makeRenderer((w) => [truncateToWidth(theme?.fg('warning', '\u29D7 Agent working\u2026') ?? '\u29D7 Agent working\u2026', w)]);
+        return makeRenderer((w) => [truncateToWidth(paint(theme, 'warning', '⧗ Agent working…'), w)]);
       }
       const ok = !result.isError;
       const det = result.details as {
@@ -1619,33 +1660,33 @@ export function registerAgentTools(
         output?: string;
       } | null;
       if (det?.agents) {
-        const squareIcon = theme?.fg('toolTitle', '\u25A6') ?? '\u25A6';
+        const squareIcon = paint(theme, 'title', '▦');
         const summaryText = formatAgentStateCounts(det.agents);
-        const summary = theme?.fg('dim', summaryText) ?? summaryText;
-        const header = `${squareIcon} ${theme?.fg('toolTitle', 'AgentMessage') ?? 'AgentMessage'} list \u00b7 ${summary}`;
+        const summary = paint(theme, 'dim', summaryText);
+        const header = `${squareIcon} ${cliToolTitle(theme, 'AgentMessage')} list · ${summary}`;
         if (!opts.expanded) {
           return makeRenderer((w) => [truncateToWidth(header, w)]);
         }
         const text = result.content.find((p) => p.type === 'text')?.text ?? '';
-        return makeRenderer((w) => [truncateToWidth(header, w), ...text.split('\n').slice(1).map((l) => truncateToWidth(theme?.fg('dim', l) ?? l, w))]);
+        return makeRenderer((w) => [truncateToWidth(header, w), ...text.split('\n').slice(1).map((l) => truncateToWidth(paint(theme, 'dim', l), w))]);
       }
       // single-agent actions
       const agentName = det?.agent?.name ?? 'agent';
       const state = getAgentDisplayState(ok ? (det?.agent ?? { status: 'idle' }) : { status: 'failed' });
       const meta = agentDisplayMeta(state, theme);
-      const label = theme?.fg('toolTitle', 'AgentMessage') ?? 'AgentMessage';
-      const nameStr = theme?.fg('accent', agentName) ?? agentName;
-      const header = `${meta.icon} ${label} \u00b7 ${nameStr} \u00b7 ${meta.label}`;
+      const label = cliToolTitle(theme, 'AgentMessage');
+      const nameStr = paint(theme, 'brand', agentName);
+      const header = `${meta.icon} ${label} · ${nameStr} · ${meta.label}`;
       if (!opts.expanded) {
         const preview = det?.output ? det.output.split('\n').find((line) => line.trim())?.trim() : '';
-        const suffix = preview ? ` \u2014 ${preview}` : ' \u00b7 no output yet';
-        return makeRenderer((w) => [truncateToWidth(`${header}${theme?.fg('dim', suffix) ?? suffix}`, w)]);
+        const suffix = preview ? ` — ${preview}` : ' · no output yet';
+        return makeRenderer((w) => [truncateToWidth(`${header}${paint(theme, 'dim', suffix)}`, w)]);
       }
       const text = result.content.find((p) => p.type === 'text')?.text ?? '';
       const outputLines = text.split('\n').slice(2); // skip agent-header + status lines
       return makeRenderer((w) => [
         truncateToWidth(header, w),
-        ...outputLines.map((l) => truncateToWidth(theme?.fg('dim', l) ?? l, w)),
+        ...outputLines.map((l) => truncateToWidth(paint(theme, 'dim', l), w)),
       ]);
     },
   } satisfies ToolDefinition);

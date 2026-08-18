@@ -111,15 +111,15 @@ title, and the header via `applyOctocodeUi` (banner from `src/branding/banner.ts
 sessions lead with the title, fresh sessions with the wordmark). Every extension tool row
 is restyled through the single `registerUniqueTool` funnel
 (`src/tools/octocode-tools.ts` → `src/branding/renderers.ts#withOctocodeRender`). Themes
-`octocode-dark/light` are complete 51-token themes (`themes/`); the launcher pins
-`theme: "octocode-dark"` in `~/.pi/agent/settings.json` **write-if-absent** at first launch
-(`settings.ts#ensureDefaultSetting`) so later user choice always wins (`/settings`,
-`/octocode-theme sync|dark|light`, or allowlisted `config set theme <name>`).
+`octocode-dark/light` are complete 51-token themes (`themes/`); the launcher enforces
+an Octocode theme in `~/.pi/agent/settings.json`: existing `octocode-dark/light` choices
+are preserved, while plain Pi themes such as `dark`/`light` are normalized to
+`octocode-dark` (`settings.ts#ensureOctocodeThemeSetting`).
 
-**Own shell (Phase C alpha):** `OCTOCODE_SHELL=1` replaces Pi's `InteractiveMode` with
-`createOctocodeShell(runtime)` (lazy export from the core, `src/shell/`, design in
-`docs/SHELL.md`) — banner, streaming transcript, own editor, steer-on-submit; any failure
-falls back to `InteractiveMode`.
+**Own shell (Phase C/D alpha):** `OCTOCODE_SHELL=1` replaces Pi's `InteractiveMode` with
+`createOctocodeShell(runtime)` from `@octocodeai/pi-extension/shell` (root lazy export fallback,
+design in `docs/SHELL.md`) — banner, streaming transcript, own editor, steer-on-submit;
+any failure falls back to `InteractiveMode`.
 
 Editor niceties the agent inherits for free: `@`-file references, `!cmd`/`!!cmd` shell,
 image paste, message queue (Enter = steer, Alt+Enter = follow-up).

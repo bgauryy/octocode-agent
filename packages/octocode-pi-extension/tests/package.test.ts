@@ -282,9 +282,9 @@ function assertHasAllOctocodeSkills(skillArgs: string[]): void {
 
 // ─── Build artifact tests ─────────────────────────────────────────────────────
 
-test('build composes the system prompt from its section files', async () => {
+test('build composes the system prompt from the inlined prompt module', async () => {
   const paths = getAssetPaths(distDir);
-  const { SYSTEM_PROMPT } = await import('../src/prompts/compose.js');
+  const { SYSTEM_PROMPT } = await import('../src/prompts/prompt.js');
   assert.equal(fs.existsSync(paths.systemPrompt), true);
   assert.ok(SYSTEM_PROMPT.includes('<authority>'), 'sections are composed');
   assert.match(SYSTEM_PROMPT, /pi -ne --list-models/);
@@ -296,38 +296,33 @@ test('build composes the system prompt from its section files', async () => {
   assert.match(SYSTEM_PROMPT, /independent known-input tool calls; launch together, synthesize after/);
   assert.match(SYSTEM_PROMPT, /Fan out in bounded tasks, never one giant worker/);
   assert.match(SYSTEM_PROMPT, /context budget for the next decision, not for completeness/);
-  assert.match(SYSTEM_PROMPT, /Compact handoff structure/);
-  assert.match(SYSTEM_PROMPT, /Store it at `<workspace>\/\.octocode\/tmp\/YYYYMMDD-HHMM-slug\/HANDOFF\.md`/);
-  assert.match(SYSTEM_PROMPT, /SUMMARY-\{\{title\}\}\.md/);
+  // Compact handoff note lives under .octocode/tmp and captures enough to resume;
+  // plans live under .octocode/plans. (Concept-level: the exact filename template
+  // was dropped when the section was tightened — the behavior is what we pin.)
+  assert.match(SYSTEM_PROMPT, /Store handoffs under `\.octocode\/tmp\/\.\.\.`/);
+  assert.match(SYSTEM_PROMPT, /goal, current state, next step, open risks/);
+  assert.match(SYSTEM_PROMPT, /plans under `\.octocode\/plans\/\.\.\.`/);
   assert.match(SYSTEM_PROMPT, /When several viable solutions or trade-offs remain, explain the options, impact, and recommendation/);
-  assert.match(SYSTEM_PROMPT, /never invent metadata/);
+  assert.match(SYSTEM_PROMPT, /never invent metadata/i);
   assert.match(SYSTEM_PROMPT, /resume at `pickup`/);
+  // The prompt is one inlined document now: src/prompts/prompt.ts → dist/prompts/prompt.js.
+  // The per-section .md fragments (and sections/index.ts, compose.ts) were consolidated away.
   assert.equal(
-    fs.existsSync(path.join(distDir, 'prompts', 'sections', 'agents.md')),
-    true
+    fs.existsSync(path.join(distDir, 'prompts', 'prompt.js')),
+    true,
+    'compiled single-file prompt module is emitted to dist'
   );
   assert.equal(
-    fs.existsSync(path.join(distDir, 'prompts', 'sections', 'index.ts')),
-    false
+    fs.existsSync(path.join(distDir, 'prompts', 'sections')),
+    false,
+    'no leftover per-section fragment dir in dist'
+  );
+  assert.equal(
+    fs.existsSync(path.join(packageRoot, 'src', 'prompts', 'sections')),
+    false,
+    'per-section sources were consolidated into src/prompts/prompt.ts'
   );
   assert.equal(fs.readFileSync(paths.systemPrompt, 'utf8'), SYSTEM_PROMPT);
-
-  const sourceSections = path.join(packageRoot, 'src', 'prompts', 'sections');
-  const distSections = path.join(distDir, 'prompts', 'sections');
-  const sourceFiles = fs.readdirSync(sourceSections)
-    .filter(file => file.endsWith('.md'))
-    .sort();
-  const distFiles = fs.readdirSync(distSections)
-    .filter(file => file.endsWith('.md'))
-    .sort();
-  assert.deepEqual(distFiles, sourceFiles);
-  for (const file of sourceFiles) {
-    assert.equal(
-      fs.readFileSync(path.join(distSections, file), 'utf8'),
-      fs.readFileSync(path.join(sourceSections, file), 'utf8'),
-      `dist prompt section differs from source: ${file}`
-    );
-  }
 
   for (const agent of ['architect', 'browser-agent', 'planner', 'researcher']) {
     assert.equal(
@@ -372,7 +367,7 @@ test('build copies bundled Octocode skills without secret env files', () => {
   const hasCommand = (noun: string, verb: string) =>
     Object.values(commandSchema.commands).some((group) => group[noun]?.includes(verb));
   for (const [noun, verb] of [
-    ['attend', 'run'],
+    ['attend', '<direct>'],
     ['work', 'start'],
     ['lock', 'acquire'],
     ['verify', 'audit'],
@@ -416,10 +411,20 @@ test('build copies bundled Octocode skills without secret env files', () => {
     fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8')
   ) as {
     files?: string[];
+    exports?: Record<string, unknown>;
     pi?: { skills?: string[] };
   };
   assert.ok(packageJson.files?.includes('dist/**'), 'npm files ships dist (which carries dist/skills)');
   assert.equal(packageJson.files?.includes('skills/**'), false, 'no root skills/** shipped');
+  assert.deepEqual(
+    packageJson.exports?.['./shell'],
+    {
+      types: './dist/shell/index.d.ts',
+      import: './dist/shell/index.js',
+      default: './dist/shell/index.js',
+    },
+    'package exports the Octocode shell subpath for CLI rollout'
+  );
   assert.equal(packageJson.pi?.skills, undefined, 'pi.skills removed — resources_discover is the single source');
 
   assert.ok(skills.includes('octocode-awareness'), 'dist bundles the octocode-awareness skill');
@@ -1928,8 +1933,58 @@ test('Octocode dashboard command summarizes status, agents, setup, skills, and h
   assert.match(dashboard, /Setup/);
   assert.match(dashboard, /Skills/);
   assert.match(dashboard, /Next actions/);
+  assert.match(dashboard, /\/octocode-now/);
+  assert.match(dashboard, /\/octocode-tasks/);
+  assert.match(dashboard, /\/octocode-skills/);
   assert.match(dashboard, /\/octocode-agents/);
   assert.match(dashboard, /\/octocode-cron/);
+});
+
+test('Octocode now, tasks, and skills commands provide orientation surfaces', async () => {
+  const { commands, handlers, pi } = await captureExtensions();
+  const notices: Array<{ message: string; level?: string }> = [];
+  pi.execResults.set('status --short --branch', { stdout: '## main\n M src/index.ts', code: 0 });
+  const ctx = {
+    hasUI: false,
+    cwd: packageRoot,
+    mode: 'tui' as const,
+    model: { provider: 'test-provider', id: 'test-model', reasoning: true },
+    getContextUsage: () => ({ tokens: 42_000, contextWindow: 100_000 }),
+    ui: {
+      notify: (message: string, level?: string) => notices.push({ message, level }),
+      setWidget: () => undefined,
+      theme: { fg: (_c: string, text: string) => text, bold: (text: string) => text },
+    },
+  };
+
+  await handlers.get('before_agent_start')!.at(-1)!({
+    systemPrompt: 'base prompt',
+    systemPromptOptions: {
+      skills: [{ name: 'octocode-awareness', description: 'Shared repo coordination.', source: 'bundled' }],
+    },
+  }, ctx);
+
+  await commands.get('octocode-now')!.handler('', ctx);
+  await commands.get('octocode-tasks')!.handler('', ctx);
+  await commands.get('octocode-skills')!.handler('', ctx);
+
+  const now = notices.find((n) => n.message.startsWith('◆ Octocode now'))?.message ?? '';
+  assert.match(now, /model: test-provider\/test-model · reasoning/);
+  assert.match(now, /ctx ▓▓▓▓░░░░░░ 42%/);
+  assert.match(now, /Current work/);
+  assert.match(now, /Shared work/);
+  assert.match(now, /Repository/);
+  assert.match(now, /M src\/index\.ts/);
+
+  const tasks = notices.find((n) => n.message.startsWith('◆ Octocode tasks'))?.message ?? '';
+  assert.match(tasks, /Local session plan/);
+  assert.match(tasks, /Shared Awareness work/);
+  assert.match(tasks, /Use plan\(\.\.\.\) for your current solo breakdown/);
+
+  const skills = notices.find((n) => n.message.startsWith('◆ Octocode skills'))?.message ?? '';
+  assert.match(skills, /Available now/);
+  assert.match(skills, /- octocode-awareness: Shared repo coordination\. \[bundled\]/);
+  assert.match(skills, /npx octocode skill --name <skill> --platform pi/);
 });
 
 test('formatOctocodeDashboard is scan-friendly and includes health warnings', () => {
@@ -1986,7 +2041,7 @@ test('CLI slash commands removed — extension commands are lean', async () => {
   );
   assert.deepEqual(
     listExtensionHarness().extensionCommands,
-    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-agents', '/octocode-cron', '/cron', '/octocode-mcp', '/mcp', '/octocode-setup', '/octocode-skills-update'],
+    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-now', '/octocode-tasks', '/octocode-skills', '/octocode-agents', '/octocode-cron', '/cron', '/octocode-mcp', '/mcp', '/octocode-setup', '/octocode-skills-update'],
     'harness inventory lists every public Octocode slash command'
   );
   for (const eventName of ['tool_execution_start', 'tool_execution_end', 'session_start', 'before_agent_start', 'agent_end', 'session_before_compact', 'session_compact', 'session_shutdown']) {
@@ -2167,20 +2222,24 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
     );
 
     flagValues.set('no-context', true);
+    // Pi builds the prompt BEFORE before_agent_start; --no-context works by
+    // stripping the <project_context> block from the assembled prompt text
+    // (mutating systemPromptOptions.contextFiles is inspection-only / inert).
     const beforeStartEvent = {
-      systemPrompt: 'already-running',
+      systemPrompt:
+        'already-running\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n<project_instructions path="AGENTS.md">\nrepo rules\n</project_instructions>\n\n</project_context>\n',
       systemPromptOptions: { contextFiles: ['AGENTS.md'] },
     };
-    const beforeStartResult = await handlers.get('before_agent_start')!.at(-1)!(
+    const beforeStartResult = (await handlers.get('before_agent_start')!.at(-1)!(
       beforeStartEvent,
       ctx
+    )) as { systemPrompt?: string } | undefined;
+    assert.ok(
+      beforeStartResult?.systemPrompt !== undefined,
+      'no-context returns a stripped prompt even without an Octocode addendum'
     );
-    assert.deepEqual(beforeStartEvent.systemPromptOptions.contextFiles, []);
-    assert.equal(
-      beforeStartResult,
-      undefined,
-      'source-mode missing generated prompt skips prompt injection'
-    );
+    assert.doesNotMatch(beforeStartResult.systemPrompt, /project_context|repo rules/);
+    assert.match(beforeStartResult.systemPrompt, /already-running/);
     await handlers.get('session_start')!.at(-1)!(undefined, ctx);
     await handlers.get('model_select')![0]!(undefined, ctx);
     await handlers.get('thinking_level_select')![0]!({ level: 'low' }, ctx);
@@ -2342,8 +2401,9 @@ test('extension logs rich internal errors to repo .octocode/logs/error.txt', asy
   }
 });
 
-test('manage_context type:compact queues a continuation after compaction completes', async () => {
-  const { tools, sentUserMessages } = await captureExtensions();
+test('manage_context type:compact defers the continuation to the session_compact hook (single scheduler)', async () => {
+  resetCompactionResumeStateForTests();
+  const { tools, handlers, sentUserMessages } = await captureExtensions();
   const compactTool = tools.get('manage_context')!;
   let compactOptions: {
     customInstructions?: string;
@@ -2394,27 +2454,36 @@ test('manage_context type:compact queues a continuation after compaction complet
     'no follow-up before compaction completes'
   );
 
-  compactOptions.onComplete?.();
-  assert.equal(
-    sentUserMessages.length,
-    0,
-    'resume prompt is deferred until Pi finishes compaction callback unwinding'
-  );
-  await waitForNextMacrotask();
-  assert.equal(sentUserMessages.length, 1);
+  // onComplete only clears working UI — scheduling from BOTH onComplete and the
+  // session_compact hook raced on a wall-clock dedupe window and could double-send.
   compactOptions.onComplete?.();
   await waitForNextMacrotask();
-  assert.equal(sentUserMessages.length, 1, 'duplicate onComplete callbacks do not duplicate resume prompts');
-  assert.match(sentUserMessages[0]!.msg, /Continue from the compacted context/);
-  assert.equal(sentUserMessages[0]!.opts?.['deliverAs'], 'followUp');
-  assert.deepEqual(notifications[0], {
-    message: 'Compaction completed. Continuing from the compacted context.',
-    level: 'info',
-  });
+  assert.equal(sentUserMessages.length, 0, 'onComplete does not schedule the continuation');
   assert.deepEqual(working, [
     { kind: 'message', value: undefined },
     { kind: 'visible', value: false },
   ]);
+
+  // The session_compact hook (fromExtension:true for ctx.compact) is the single scheduler.
+  await handlers.get('session_compact')!.at(-1)!(
+    { compactionEntry: {}, fromExtension: true, reason: 'manual', willRetry: false },
+    {
+      hasUI: true,
+      ui: {
+        notify: (message: string, level: string) => notifications.push({ message, level }),
+        setWorkingMessage: () => undefined,
+        setWorkingVisible: () => undefined,
+      },
+    }
+  );
+  await waitForNextMacrotask();
+  assert.equal(sentUserMessages.length, 1);
+  assert.match(sentUserMessages[0]!.msg, /Compaction is complete\. Re-orient/);
+  assert.equal(sentUserMessages[0]!.opts?.['deliverAs'], 'followUp');
+  assert.deepEqual(notifications.at(-1), {
+    message: 'Compaction complete. Resuming…',
+    level: 'info',
+  });
 });
 
 test('manage_context type:compact treats empty-session compaction as a no-op', async () => {
@@ -2544,52 +2613,62 @@ test('manage_context type:new returns isError when called inside a spawned worke
   }
 });
 
-test('session_before_compact provides deterministic split-turn fallback summary', async () => {
+test('session_before_compact provides the deterministic checkpoint ONLY on overflow, including written files', async () => {
   const { handlers } = await captureExtensions();
   const handler = handlers.get('session_before_compact')!.at(-1)!;
   const notifications: Array<{ message: string; level?: string }> = [];
 
-  const result = await handler(
-    {
-      reason: 'threshold',
-      willRetry: false,
-      customInstructions: 'focus on current task',
-      signal: new AbortController().signal,
-      preparation: {
-        isSplitTurn: true,
-        firstKeptEntryId: 'kept-entry-id',
-        tokensBefore: 123456,
-        previousSummary: 'Previous compacted work.',
-        messagesToSummarize: [
-          { role: 'user', content: [{ type: 'text', text: 'Investigate compaction failures' }] },
-        ],
-        turnPrefixMessages: [
-          { role: 'assistant', content: [{ type: 'text', text: 'Read Pi compaction internals' }] },
-        ],
-        fileOps: {
-          read: new Set(['src/tools/context-tools.ts']),
-          edited: new Set(['src/index.ts']),
-        },
+  const makeEvent = (reason: string) => ({
+    reason,
+    willRetry: false,
+    customInstructions: 'focus on current task',
+    signal: new AbortController().signal,
+    preparation: {
+      isSplitTurn: true,
+      firstKeptEntryId: 'kept-entry-id',
+      tokensBefore: 123456,
+      previousSummary: 'Previous compacted work.',
+      messagesToSummarize: [
+        { role: 'user', content: [{ type: 'text', text: 'Investigate compaction failures' }] },
+      ],
+      turnPrefixMessages: [
+        { role: 'assistant', content: [{ type: 'text', text: 'Read Pi compaction internals' }] },
+      ],
+      // Pi's FileOperations is {read, written, edited} — written files count as
+      // modified, and modified files are excluded from the read list.
+      fileOps: {
+        read: new Set(['src/tools/context-tools.ts', 'src/index.ts']),
+        written: new Set(['src/new-file.ts']),
+        edited: new Set(['src/index.ts']),
       },
     },
-    {
-      hasUI: true,
-      ui: {
-        notify: (message: string, level?: string) => notifications.push({ message, level }),
-      },
-    }
-  ) as { compaction?: { summary: string; firstKeptEntryId: string; tokensBefore: number; details?: unknown } };
+  });
+  const testCtx = {
+    hasUI: true,
+    ui: {
+      notify: (message: string, level?: string) => notifications.push({ message, level }),
+    },
+  };
 
+  // Threshold/manual split turns keep Pi's LLM summarizer (richer summary).
+  assert.equal(await handler(makeEvent('threshold'), testCtx), undefined);
+  assert.equal(await handler(makeEvent('manual'), testCtx), undefined);
+
+  // Overflow is the emergency path where provider summarization can itself fail.
+  const result = (await handler(makeEvent('overflow'), testCtx)) as {
+    compaction?: { summary: string; firstKeptEntryId: string; tokensBefore: number; details?: { readFiles: string[]; modifiedFiles: string[] } };
+  };
   assert.equal(result.compaction?.firstKeptEntryId, 'kept-entry-id');
   assert.equal(result.compaction?.tokensBefore, 123456);
   assert.match(result.compaction?.summary ?? '', /Octocode deterministic compaction checkpoint/);
   assert.match(result.compaction?.summary ?? '', /\*\*Turn Context \(split turn\):\*\*/);
   assert.match(result.compaction?.summary ?? '', /Read Pi compaction internals/);
   assert.match(result.compaction?.summary ?? '', /src\/tools\/context-tools\.ts/);
-  assert.deepEqual(notifications.at(-1), {
-    message: 'Using Octocode deterministic split-turn compaction fallback to avoid provider turn-prefix summarization failures.',
-    level: 'warning',
-  });
+  assert.match(result.compaction?.summary ?? '', /src\/new-file\.ts/, 'files created via write appear as modified');
+  assert.deepEqual(result.compaction?.details?.modifiedFiles, ['src/index.ts', 'src/new-file.ts']);
+  assert.deepEqual(result.compaction?.details?.readFiles, ['src/tools/context-tools.ts'], 'modified files excluded from reads');
+  assert.match(notifications.at(-1)?.message ?? '', /deterministic split-turn compaction checkpoint \(overflow path/);
+  assert.equal(notifications.at(-1)?.level, 'warning');
 });
 
 test('session_before_compact leaves ordinary non-split compaction to Pi default summarizer', async () => {
@@ -2615,25 +2694,40 @@ test('session_before_compact leaves ordinary non-split compaction to Pi default 
   assert.equal(result, undefined);
 });
 
-test('session_compact resumes after manual or Pi-native auto compaction when Pi will not retry', async () => {
+test('session_compact resumes ONLY extension-triggered compaction; manual /compact and retries stop by design', async () => {
   resetCompactionResumeStateForTests();
   const { handlers, sentUserMessages } = await captureExtensions();
   const handler = handlers.get('session_compact')!.at(-1)!;
   const notifications: Array<{ message: string; level?: string }> = [];
   const working: Array<{ kind: 'message'; value?: string } | { kind: 'visible'; value: boolean }> = [];
+  const testCtx = {
+    hasUI: true,
+    ui: {
+      notify: (message: string, level?: string) => notifications.push({ message, level }),
+      setWorkingMessage: (message?: string) => working.push({ kind: 'message', value: message }),
+      setWorkingVisible: (visible: boolean) => working.push({ kind: 'visible', value: visible }),
+    },
+  };
 
+  // User /compact (fromExtension:false): Pi 0.80.3 deliberately stops after
+  // manual compaction — resuming would burn an unrequested agent turn.
   await handler(
     { compactionEntry: {}, fromExtension: false, reason: 'manual', willRetry: false },
-    {
-      hasUI: true,
-      ui: {
-        notify: (message: string, level?: string) => notifications.push({ message, level }),
-        setWorkingMessage: (message?: string) => working.push({ kind: 'message', value: message }),
-        setWorkingVisible: (visible: boolean) => working.push({ kind: 'visible', value: visible }),
-      },
-    }
+    testCtx
   );
+  await waitForNextMacrotask();
+  assert.equal(sentUserMessages.length, 0, 'no auto-resume for a user /compact');
+  assert.deepEqual(working, [
+    { kind: 'message', value: undefined },
+    { kind: 'visible', value: false },
+  ], 'working UI still cleared');
 
+  // Extension-triggered ctx.compact aborts the in-flight run → resume needed.
+  resetCompactionResumeStateForTests();
+  await handler(
+    { compactionEntry: {}, fromExtension: true, reason: 'manual', willRetry: false },
+    testCtx
+  );
   assert.equal(sentUserMessages.length, 0, 'resume prompt waits until next macrotask');
   await waitForNextMacrotask();
   assert.equal(sentUserMessages.length, 1);
@@ -2643,21 +2737,18 @@ test('session_compact resumes after manual or Pi-native auto compaction when Pi 
     message: 'Compaction complete. Resuming…',
     level: 'info',
   });
-  assert.deepEqual(working, [
-    { kind: 'message', value: undefined },
-    { kind: 'visible', value: false },
-  ]);
 
   resetCompactionResumeStateForTests();
   await handler(
-    { compactionEntry: {}, fromExtension: false, reason: 'overflow', willRetry: true },
+    { compactionEntry: {}, fromExtension: true, reason: 'overflow', willRetry: true },
     { hasUI: true, ui: { setWorkingMessage: () => undefined, setWorkingVisible: () => undefined } }
   );
   await waitForNextMacrotask();
   assert.equal(sentUserMessages.length, 1, 'no extra resume when Pi will retry overflow recovery itself');
 });
 
-test('turn_end auto-compact queues a continuation after compaction completes (no stuck agent)', async () => {
+test('turn_end auto-compact triggers ctx.compact; continuation comes from the session_compact hook', async () => {
+  resetCompactionResumeStateForTests();
   const { handlers, sentUserMessages } = await captureExtensions();
   const turnEndHandlers = handlers.get('turn_end');
   assert.ok(
@@ -2724,34 +2815,35 @@ test('turn_end auto-compact queues a continuation after compaction completes (no
     'no continuation queued before onComplete fires'
   );
 
-  onComplete!();
-  assert.equal(
-    sentUserMessages.length,
-    0,
-    'auto-compaction resume prompt waits for the next macrotask'
-  );
-  await waitForNextMacrotask();
-  assert.equal(
-    sentUserMessages.length,
-    1,
-    'followUp queued after auto-compaction completes (prevents stuck agent)'
-  );
+  // onComplete only clears working UI; the session_compact hook (fromExtension
+  // path) is the single continuation scheduler — see the single-scheduler test.
   onComplete!();
   await waitForNextMacrotask();
-  assert.equal(sentUserMessages.length, 1, 'duplicate auto-compaction callbacks do not duplicate resume prompts');
-  assert.match(
-    sentUserMessages[0]!.msg,
-    /Auto-compaction complete.*next small step only/i
-  );
-  assert.equal(sentUserMessages[0]!.opts?.['deliverAs'], 'followUp');
-  assert.deepEqual(notifications[1], {
-    message: 'Auto-compaction complete. Resuming…',
-    level: 'info',
-  });
+  assert.equal(sentUserMessages.length, 0, 'onComplete does not schedule the continuation');
   assert.deepEqual(working, [
     { kind: 'message', value: undefined },
     { kind: 'visible', value: false },
   ]);
+
+  await handlers.get('session_compact')!.at(-1)!(
+    { compactionEntry: {}, fromExtension: true, reason: 'manual', willRetry: false },
+    {
+      hasUI: true,
+      ui: {
+        notify: (message: string, level?: string) => notifications.push({ message, level }),
+        setWorkingMessage: () => undefined,
+        setWorkingVisible: () => undefined,
+      },
+    }
+  );
+  await waitForNextMacrotask();
+  assert.equal(sentUserMessages.length, 1, 'followUp queued via session_compact (prevents stuck agent)');
+  assert.match(sentUserMessages[0]!.msg, /Compaction is complete.*next small step only/i);
+  assert.equal(sentUserMessages[0]!.opts?.['deliverAs'], 'followUp');
+  assert.deepEqual(notifications.at(-1), {
+    message: 'Compaction complete. Resuming…',
+    level: 'info',
+  });
 });
 
 test('turn_end auto-compact skips output length stops because compaction cannot fix response budget', async () => {

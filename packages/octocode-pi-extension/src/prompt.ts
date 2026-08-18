@@ -56,6 +56,17 @@ export function resolvePromptMode(option?: string): PromptMode {
  * - append (default): Pi's prompt, then the Octocode harness addendum.
  * - octocode-first: the Octocode harness leads, with Pi's prompt preserved below.
  */
+/**
+ * Remove Pi's `<project_context>` block (AGENTS.md / CLAUDE.md content) from an
+ * already-built Pi system prompt. Pi assembles the prompt BEFORE
+ * `before_agent_start` fires, so suppressing context files can only happen by
+ * stripping the block from `event.systemPrompt` — mutating
+ * `systemPromptOptions.contextFiles` in the hook has no effect.
+ */
+export function stripProjectContext(piSystemPrompt: string): string {
+  return piSystemPrompt.replace(/\n*<project_context>[\s\S]*?<\/project_context>\n?/g, '\n');
+}
+
 export function composeSystemPrompt(opts: {
   piSystemPrompt: string;
   octocodePrompt: string;

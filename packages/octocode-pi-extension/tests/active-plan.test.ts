@@ -5,6 +5,7 @@ import type { ToolDefinition } from '../src/types.js';
 import {
   setPlan, addStep, startStep, completeStep, clearPlan, getPlan, renderActivePlanAddendum,
   bumpPlanTurn, STALE_PLAN_TURNS, readPersistedPlanForTests, depsMet, displayStatus,
+  activePlanScope,
 } from '../src/tools/active-plan.js';
 import { registerPlanTool, refreshPlanUi, handleOctocodePlanCommand } from '../src/tools/plan-tool.js';
 import type { PiContext } from '../src/types.js';
@@ -100,6 +101,7 @@ test('plan persists to disk (survives restart) and clear removes it', () => {
   assert.equal(readPersistedPlanForTests(cwd).length, 0, 'clear deletes the persisted plan');
 });
 
+
 test('stale-plan nudge fires after N idle turns and clears on mutation', () => {
   const cwd = '/tmp/plan-stale-ws';
   setPlan(cwd, ['a', 'b']);
@@ -143,7 +145,7 @@ test('plan panel renders a progress bar, glyphs, and the running step activeForm
   const comp = w!.content(null, theme) as { render: (w: number) => string[] };
   const lines = comp.render(80);
   const joined = lines.join('\n');
-  assert.match(joined, /Plan\s+[\u2588\u2591]{8}\s+1\/2/, 'header has an 8-cell progress bar and 1/2');
+  assert.match(joined, /Plan\s+[\u2588\u2591]{8}\s+1\/2 · now: Run tests/, 'header has progress and the current running step');
   assert.match(joined, /\u2713 1\. Edit file/, 'done step uses the check glyph');
   assert.match(joined, /\u25b8 2\. Run tests/, 'doing step uses the pointer glyph');
   clearPlan(cwd);
@@ -225,6 +227,16 @@ test('/octocode-plan command completes a step and clears the plan', async () => 
   assert.ok(calls.notify.some((m) => /cleared/i.test(m)));
 });
 
+test('/octocode-plan command text marks blocked steps and their dependencies', async () => {
+  const cwd = '/tmp/plan-cmd-blocked-ws';
+  setPlan(cwd, ['A', { text: 'B', dependsOn: [3] }, 'C']);
+  completeStep(cwd, 1);
+  const { ctx, calls } = uiCtx(cwd);
+  await handleOctocodePlanCommand('show', ctx, (_c, m) => calls.notify.push(m));
+  assert.ok(calls.notify.some((m) => /\[!\] 2\. B \(needs 3\)/.test(m)), 'blocked dependency is visible in text output');
+  clearPlan(cwd);
+});
+
 test('plan tool start/complete with a bad index reports an error and does not mutate', async () => {
   const tool = loadTool();
   const ctx = { cwd: '/tmp/plan-badidx-ws' } as unknown as import('../src/types.js').PiContext;
@@ -267,4 +279,30 @@ test('plan tool set→complete→show drives the checklist and returns the adden
   assert.equal(res.details.steps[0]!.status, 'done');
   assert.match(res.details.addendum, /<active_plan>/);
   clearPlan('/tmp/plan-tool-ws');
+});
+
+test('plan tool state is scoped by Pi session file, not only workspace cwd', async () => {
+  const tool = loadTool();
+  const cwd = '/tmp/plan-session-tool-ws';
+  const ctx1 = {
+    cwd,
+    sessionManager: { getSessionFile: () => '/tmp/pi-sessions/session-one.jsonl' },
+  } as unknown as PiContext;
+  const ctx2 = {
+    cwd,
+    sessionManager: { getSessionFile: () => '/tmp/pi-sessions/session-two.jsonl' },
+  } as unknown as PiContext;
+
+  await tool.execute('id', { action: 'set', steps: ['old session work'] }, undefined, undefined, ctx1);
+  const fresh = (await tool.execute('id', { action: 'show' }, undefined, undefined, ctx2)) as {
+    content: Array<{ text: string }>;
+    details: { steps: Array<{ text: string }>; addendum: string };
+  };
+
+  assert.deepEqual(fresh.details.steps, [], 'fresh session has no active plan');
+  assert.match(fresh.content[0]!.text, /\(no active plan\)/);
+  assert.equal(fresh.details.addendum, '', 'fresh session gets no stale active_plan addendum');
+
+  clearPlan(activePlanScope(ctx1));
+  clearPlan(activePlanScope(ctx2));
 });

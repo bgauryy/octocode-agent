@@ -4,7 +4,7 @@
  * The think-first "task breakdown gate" tells the agent to decompose non-trivial work into
  * explicit steps. Historically that breakdown lived only in the model's prose, so it was
  * lossy across compaction (plan-amnesia). This module gives it a real home:
- *   - an in-memory per-workspace step list (survives compaction — same process)
+ *   - an in-memory per-session step list (survives compaction — same process)
  *   - re-projected into the system prompt every turn via `before_agent_start`
  *     (`renderActivePlanAddendum`), so the plan is immune to summarizer loss — exactly the
  *     mechanism proven for `<dynamic_capabilities>`.
@@ -57,13 +57,25 @@ export function displayStatus(step: PlanStep, list: PlanStep[]): DisplayStatus {
 const MAX_STEPS = 40;
 const MAX_STEP_CHARS = 160;
 
-// Keyed by workspace (cwd). Module-scoped in-memory cache; backed by disk so the plan
-// survives compaction AND process restart. Lazily loaded from disk on first read per cwd.
+// Keyed by session scope (cwd + Pi session file when available). Module-scoped
+// in-memory cache; backed by disk so the plan survives compaction and process
+// restart of the same session without leaking into a fresh session in the same cwd.
 const plans = new Map<string, PlanStep[]>();
 const loaded = new Set<string>();
 
-function planFile(cwd: string): string {
-  const hash = createHash('sha256').update(cwd).digest('hex').slice(0, 16);
+export interface ActivePlanContext {
+  cwd?: string;
+  sessionManager?: { getSessionFile?(): string | undefined };
+}
+
+export function activePlanScope(ctx?: ActivePlanContext): string {
+  const cwd = ctx?.cwd ?? process.cwd();
+  const sessionFile = ctx?.sessionManager?.getSessionFile?.();
+  return sessionFile ? `${cwd}\0${sessionFile}` : cwd;
+}
+
+function planFile(scope: string): string {
+  const hash = createHash('sha256').update(scope).digest('hex').slice(0, 16);
   return path.join(getOctocodeHome(), 'plans', `${hash}.json`);
 }
 
@@ -107,7 +119,7 @@ function writeToDisk(cwd: string, steps: PlanStep[]): void {
     }
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ version: 1, cwd, steps, updatedAt: new Date().toISOString() }));
+    fs.writeFileSync(tmp, JSON.stringify({ version: 1, scope: cwd, steps, updatedAt: new Date().toISOString() }));
     fs.renameSync(tmp, file);
   } catch {
     // Persistence is best-effort; degrade to in-memory.

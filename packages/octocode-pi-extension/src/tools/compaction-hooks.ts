@@ -1,5 +1,6 @@
 import type { PiContext, PiInstance, SessionBeforeCompactEvent, SessionCompactEvent } from '../types.js';
 import { clearCompactionWorkingState, scheduleCompactionContinuation, type Notifier } from './compaction-resume.js';
+import { clearAllReadStates } from './file-state.js';
 
 const SPLIT_TURN_COMPACTION_HEADER = '**Turn Context (split turn):**';
 const CUSTOM_COMPACTION_SUMMARY_LIMIT = 12_000;
@@ -74,10 +75,17 @@ function extractFileOps(preparation: Record<string, unknown>): { readFiles: stri
     if (isRecord(value)) return Object.keys(value);
     return [];
   };
-  return {
-    readFiles: [...new Set(fromSetLike(fileOps.read).concat(fromSetLike(fileOps.readFiles)))].sort(),
-    modifiedFiles: [...new Set(fromSetLike(fileOps.edited).concat(fromSetLike(fileOps.modifiedFiles)))].sort(),
-  };
+  // Pi's FileOperations is {read, written, edited}: files created via the
+  // write tool count as modified, and modified files are excluded from the
+  // read list (mirrors Pi's own computeFileLists).
+  const modifiedFiles = [
+    ...new Set([...fromSetLike(fileOps.edited), ...fromSetLike(fileOps.written), ...fromSetLike(fileOps.modifiedFiles)]),
+  ].sort();
+  const modifiedSet = new Set(modifiedFiles);
+  const readFiles = [...new Set([...fromSetLike(fileOps.read), ...fromSetLike(fileOps.readFiles)])]
+    .filter((file) => !modifiedSet.has(file))
+    .sort();
+  return { readFiles, modifiedFiles };
 }
 
 function formatFileList(title: string, files: string[]): string {
@@ -139,34 +147,46 @@ export function registerCompactionHooks(pi: PiInstance, notify: Notifier): void 
     const turnPrefixMessages = asArray(preparation.turnPrefixMessages);
     const isSplitTurn = preparation.isSplitTurn === true || turnPrefixMessages.length > 0;
     if (!isSplitTurn) return;
+    // The deterministic checkpoint is an EMERGENCY path only: on overflow the
+    // provider summarization call can itself overflow/fail, so a fast local
+    // checkpoint beats losing the compaction entirely. Manual and threshold
+    // split-turn compactions keep Pi's LLM summarizer — it produces a far
+    // richer summary, and replacing it unconditionally was a silent quality
+    // regression on the most common compaction shape.
+    if (event.reason !== 'overflow') return;
 
     const compaction = buildDeterministicCompaction(preparation, event.reason, event.customInstructions);
     if (!compaction) return;
 
     notify(
       ctx,
-      'Using Octocode deterministic split-turn compaction fallback to avoid provider turn-prefix summarization failures.',
+      'Using Octocode deterministic split-turn compaction checkpoint (overflow path — provider summarization could overflow too).',
       'warning',
     );
     return { compaction };
   });
 
   pi.on('session_compact', async (event: SessionCompactEvent, ctx: PiContext) => {
+    // The transcript the read-states were recorded against is gone; the edit
+    // tool's stale-read gate must demand a fresh read, not trust pre-compaction
+    // knowledge the model no longer has.
+    clearAllReadStates();
     if (event.willRetry) {
       clearCompactionWorkingState(ctx);
       return;
     }
+    // Auto-resume ONLY extension-triggered compaction: our ctx.compact aborts
+    // the in-flight agent run, so a queued follow-up is needed to recover. A
+    // user's manual /compact (and Pi's own pre-prompt compaction) stops by
+    // design — Pi 0.80.3 deliberately fixed it to NOT continue; resuming there
+    // would burn an unrequested agent turn.
+    if (!event.fromExtension) {
+      clearCompactionWorkingState(ctx);
+      return;
+    }
     const continuation =
-      event.reason === 'manual'
-        ? 'Compaction is complete. Re-orient from the compacted context, then continue with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.'
-        : 'Auto-compaction complete. Re-orient from the compacted context, then continue with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.';
-    scheduleCompactionContinuation(
-      pi,
-      ctx,
-      notify,
-      continuation,
-      event.reason === 'manual' ? 'Compaction complete. Resuming…' : 'Auto-compaction complete. Resuming…',
-    );
+      'Compaction is complete. Re-orient from the compacted context, then continue with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.';
+    scheduleCompactionContinuation(pi, ctx, notify, continuation, 'Compaction complete. Resuming…');
   });
 }
 

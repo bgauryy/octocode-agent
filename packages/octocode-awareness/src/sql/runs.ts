@@ -4,10 +4,13 @@ export const RUNS_SELECT_PENDING_IDS =
   `SELECT run_id FROM task_runs WHERE status = 'PENDING' AND agent_id = ? {DYNAMIC_WHERE}`;
 
 export const RUNS_SELECT_STATUS =
-  `SELECT agent_id, status FROM task_runs WHERE run_id = ?`;
+  `SELECT agent_id, status, workspace_path FROM task_runs WHERE run_id = ?`;
 
 export const RUNS_UPDATE_PENDING_VERIFIED_BY_AGENT =
   `UPDATE task_runs SET status = ?, updated_at = ? WHERE run_id = ? AND agent_id = ? AND status = 'PENDING'`;
+
+export const RUNS_UPDATE_PENDING_VERIFIED_BY_WORKSPACE =
+  `UPDATE task_runs SET status = ?, updated_at = ? WHERE run_id = ? AND workspace_path = ? AND status = 'PENDING'`;
 
 export const RUNS_UPDATE_PENDING_TO_FAILED =
   `UPDATE task_runs SET status = 'FAILED', updated_at = ? WHERE run_id = ? AND status = 'PENDING'`;

@@ -17,6 +17,7 @@ import { connectToChrome, cleanupConnection, redactObject } from '../chrome-debu
 import { connectionKey, getLiveConnection, cacheConnection, evictConnection } from '../chrome-connection-cache.js';
 import { SCHEME_REGISTRY, SCHEMES, ACTIONS, STEALTH_SCRIPT } from '../chrome-debug-schemes.js';
 import type { ChromeDebugParams, Scheme } from '../chrome-debug-schemes.js';
+import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
@@ -390,12 +391,13 @@ export function registerChromeDebugTool(
       const port = typeof a['port'] === 'number' ? a['port'] : 9222;
       const url = typeof a['url'] === 'string' ? a['url'] : typeof a['targetUrl'] === 'string' ? a['targetUrl'] : '';
 
-      const nameStr = theme?.fg('toolTitle', theme.bold('chromeDebug')) ?? 'chromeDebug';
-      const schemeStr = theme?.fg('accent', scheme) ?? scheme;
-      const actionStr = action ? (theme?.fg('dim', `/${action}`) ?? `/${action}`) : '';
-      const portStr = theme?.fg('dim', ` :${port}`) ?? ` :${port}`;
+      const nameStr = cliToolTitle(theme, 'chromeDebug', { bold: true });
+      const schemeStr = paint(theme, 'link', scheme);
+      const actionStr = action ? paint(theme, 'dim', `/${action}`) : '';
+      const portStr = paint(theme, 'dim', ` :${port}`);
+      const displayUrl = url.length > 50 ? `${url.slice(0, 47)}…` : url;
       const urlStr = url
-        ? (theme?.fg('dim', ` · ${url.length > 50 ? url.slice(0, 47) + '…' : url}`) ?? ` · ${url}`)
+        ? paint(theme, 'dim', ` · ${displayUrl}`)
         : '';
 
       const rawLine = `${nameStr} ${schemeStr}${actionStr}${portStr}${urlStr}`;
@@ -404,17 +406,17 @@ export function registerChromeDebugTool(
 
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        const msg = theme?.fg('warning', '⧗ Connecting to Chrome…') ?? '⧗ Connecting…';
+        const msg = paint(theme, 'warning', CLI_STATUS_TEXT.connectingChrome);
         return makeRenderer((w) => [truncateToWidth(msg, w)]);
       }
 
       const ok = !result.isError;
-      const icon = theme?.fg(ok ? 'success' : 'error', ok ? '✓' : '✗') ?? (ok ? '✓' : '✗');
-      const nameStr = theme?.fg('toolTitle', 'chromeDebug') ?? 'chromeDebug';
+      const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
+      const nameStr = cliToolTitle(theme, 'chromeDebug');
 
       const det = result.details as Record<string, unknown> | null;
       const scheme = typeof det?.['scheme'] === 'string' ? det['scheme'] : '';
-      const schemeStr = scheme ? (theme?.fg('dim', ` · ${scheme}`) ?? ` · ${scheme}`) : '';
+      const schemeStr = scheme ? paint(theme, 'dim', ` · ${scheme}`) : '';
 
       // Count [FINDING] lines
       const text = (result.content as Array<{ type: string; text: string }>)
@@ -424,16 +426,16 @@ export function registerChromeDebugTool(
 
       let stat = '';
       if (findingCount > 0) {
-        stat = theme?.fg('warning', ` · ${findingCount} finding${findingCount === 1 ? '' : 's'}`) ?? ` · ${findingCount} finding(s)`;
+        stat = paint(theme, 'warning', ` · ${findingCount} finding${findingCount === 1 ? '' : 's'}`);
       } else if (screenshotPath) {
         const fname = path.basename(screenshotPath);
-        stat = theme?.fg('dim', ` · ${fname}`) ?? ` · ${fname}`;
+        stat = paint(theme, 'dim', ` · ${fname}`);
       }
 
       const header = `${icon} ${nameStr}${schemeStr}${stat}`;
 
       if (!opts.expanded) {
-        const hint = theme?.fg('dim', ' · expand for evidence') ?? ' · expand for evidence';
+        const hint = paint(theme, 'dim', ' · expand for evidence');
         return makeRenderer((w) => [truncateToWidth(`${header}${hint}`, w)]);
       }
 
@@ -446,17 +448,17 @@ export function registerChromeDebugTool(
         ...lines.map((l) =>
           truncateToWidth(
             l.startsWith('[FINDING]')
-              ? (theme?.fg('warning', l) ?? l)
+              ? paint(theme, 'warning', l)
               : l.startsWith('[ACTION]')
-              ? (theme?.fg('accent', l) ?? l)
+              ? paint(theme, 'link', l)
               : l.startsWith('[SESSION]')
-              ? (theme?.fg('dim', l) ?? l)
-              : (theme?.fg('dim', l) ?? l),
+              ? paint(theme, 'dim', l)
+              : paint(theme, 'dim', l),
             w,
           ),
         ),
         ...(omitted > 0
-          ? [truncateToWidth(theme?.fg('muted', `… ${omitted} more lines`) ?? `… ${omitted} more lines`, w)]
+          ? [truncateToWidth(paint(theme, 'muted', `… ${omitted} more lines`), w)]
           : []),
       ]);
     },

@@ -11,11 +11,10 @@ Awareness gives an agent four things that chat history cannot reliably provide:
 - a live Plan → Task queue with reasons, acceptance criteria, paths, and dependencies;
 - advisory visibility into which files every agent is working on and why;
 - optional exclusive protection for sensitive changes;
-- durable signals, verification receipts, lessons, and bounded workspace projections.
+- durable signals, verification receipts, lessons, and optional query exports.
 
 SQLite is canonical. `<workspace>/.octocode/` contains authored plan documents and
-generated projections, never a second task database. There is no server or daemon.
-
+requested query exports, never a second task database. There is no server or daemon.
 The **Homeostatic Awareness Loop** senses coordination, verification, memory,
 projection, token, and harness pressure, then recommends one bounded correction.
 “Living system” is an operational metaphor—not sentience or authority. See
@@ -105,9 +104,9 @@ only durable work queue. “Today’s tasks” is a query, not another entity. S
 [docs/SKILLS.md](docs/SKILLS.md) for plan creation, task claim/heartbeat/submit,
 overlap decisions, sensitive locks, hooks, memory, and conditional closeout.
 
-SQLite at `~/.octocode/memory/awareness.sqlite3` is canonical. Generated wiki
-files are capped leads; run `wiki sync` only when file readers need a refreshed
-snapshot. Command flags and payloads come from focused help and schema:
+SQLite at `~/.octocode/memory/awareness.sqlite3` is canonical. Query exports are
+read-only `.octocode/` snapshots written only when requested; they are never live
+state. Command flags and payloads come from focused help and schema:
 
 ```bash
 octocode-awareness <command> --help
@@ -130,7 +129,6 @@ no static schema files ship. Consumers can import Zod-backed contracts from
 - [docs/HOOKS.md](docs/HOOKS.md) — host integration
 - [docs/MEMORY_NAVIGATION.md](docs/MEMORY_NAVIGATION.md) — compact retrieval
 - [docs/REFLECTION.md](docs/REFLECTION.md) — supervised learning loop
-- [docs/WIKI.md](docs/WIKI.md) — live reads, durable writes, and generated projections
 - [docs/HARNESS.md](docs/HARNESS.md) — maintainer invariants and verification matrix
 - [docs/VERIFY.md](docs/VERIFY.md) — any-agent end-to-end health and release check
 - [docs/REFERENCES.md](docs/REFERENCES.md) — evidence, prior art, and design limits

@@ -13,6 +13,7 @@ import {
   visibleWidth,
   wrapText,
 } from '../src/tools/render-helpers.js';
+import { CLI_GLYPH, cliSpinnerFrame, formatCliToolRow, formatThinkingRow, summarizeInlineValue } from '../src/tui/cli-design.js';
 import type { PiTheme, ToolCallResult } from '../src/types.js';
 
 const theme: PiTheme = {
@@ -27,6 +28,22 @@ function textResult(text: string, details: unknown = {}, isError = false): ToolC
     details,
   };
 }
+
+test('CLI design contract centralizes glyphs, spinners, and transcript rows', () => {
+  assert.equal(CLI_GLYPH.tool, '◇');
+  assert.equal(cliSpinnerFrame(0), '⠋');
+  assert.equal(cliSpinnerFrame(120), '⠙');
+  assert.equal(summarizeInlineValue({ command: 'echo ok' }), '{"command":"echo ok"}');
+
+  assert.equal(
+    formatCliToolRow('running', 'bash', { command: 'echo ok' }, theme),
+    '<toolTitle>╭─ ⚙</toolTitle> <toolTitle>bash</toolTitle> <dim>running…</dim><dim> · {"command":"echo ok"}</dim>',
+  );
+  assert.equal(
+    formatThinkingRow('start', theme),
+    '<warning>╭─ 🧠 thinking</warning> <dim>model reasoning</dim>',
+  );
+});
 
 test('ANSI-aware rendering helpers keep visible width stable', () => {
   assert.equal(visibleWidth('\x1b[31mred\x1b[0m plain'), 9);
@@ -88,7 +105,7 @@ test('buildToolCallSummary formats each Octocode direct-tool family', () => {
     ['ghHistoryResearch', { queries: [{ owner: 'octo', repo: 'repo', type: 'commits', prNumber: 17 }] }, /octo\/repo commits#17/],
     ['ghCloneRepo', { queries: [{ owner: 'octo', repo: 'repo', sparsePath: 'src' }] }, /octo\/repo\/src/],
     ['ghUnknown', { queries: [{ owner: 'octo', repo: 'repo' }] }, /octo\/repo/],
-    ['localSearchCode', { queries: [{ keywords: 'class Foo', path: '/very/long/path/to/project/src', mode: 'ast' }, { keywords: 'next' }] }, /\[ast\] "class Foo".*project\/src.*\+1/],
+    ['localSearchCode', { queries: [{ searchText: 'class Foo', path: '/very/long/path/to/project/src', mode: 'ast' }, { searchText: 'next' }] }, /\[ast\] "class Foo".*project\/src.*\+1/],
     ['localGetFileContent', { queries: [{ path: '/tmp/src/file.ts', startLine: 10, endLine: 12 }] }, /file\.ts:10-12/],
     ['localGetFileContent', { queries: [{ path: '/tmp/src/file.ts', matchString: 'export function longName' }] }, /file\.ts \/export function long/],
     ['localViewStructure', { queries: [{ path: '/tmp/workspace', maxDepth: 4 }] }, /workspace depth:4/],
@@ -168,13 +185,14 @@ test('buildResultStats extracts meaningful per-tool result summaries', () => {
 
 test('Octocode renderers cover partial, collapsed, expanded, stats, and error states', () => {
   const call = buildOctocodeRenderCall('ghSearchCode', { queries: [{ owner: 'o', repo: 'r', keywords: ['x'] }] }, theme).render(120)[0]!;
+  assert.match(call, /<accent>◇<\/accent>/);
   assert.match(call, /<toolTitle><b>ghSearchCode<\/b><\/toolTitle>/);
-  assert.match(call, /<dim>"x" in o\/r<\/dim>/);
+  assert.match(call, /<dim> · <\/dim><dim>"x" in o\/r<\/dim>/);
 
-  assert.equal(
-    buildOctocodeRenderResult('localSearchCode', textResult('still running'), { isPartial: true }, theme).render(120)[0],
-    '<warning>localSearchCode running…</warning>',
-  );
+  const running = buildOctocodeRenderResult('localSearchCode', textResult('still running'), { isPartial: true }, theme).render(120)[0]!;
+  assert.match(running, /<warning>⠋|<warning>⠙|<warning>⠹|<warning>⠸|<warning>⠼|<warning>⠴|<warning>⠦|<warning>⠧|<warning>⠇|<warning>⠏/);
+  assert.match(running, /<toolTitle>localSearchCode<\/toolTitle>/);
+  assert.match(running, /<dim>running…<\/dim>/);
 
   const collapsed = buildOctocodeRenderResult(
     'localSearchCode',

@@ -120,7 +120,9 @@ test('web renderCall handles url, query, empty args, theming, and truncation', a
 
   const urlLine = tool.renderCall!({ url: 'https://example.com/' }, theme).render(120)[0]!;
   assert.match(urlLine, /<toolTitle><b>web<\/b><\/toolTitle>/);
-  assert.match(urlLine, /<accent>https:\/\/example\.com\//);
+  // URLs paint with the `link` token, which the palette maps to `mdLink`
+  // (lavender, matches markdown links) — see palette.test.ts asserting TOKEN.link === 'mdLink'.
+  assert.match(urlLine, /<mdLink>https:\/\/example\.com\//);
 
   const queryLine = tool.renderCall!({ query: 'what changed in vitest coverage' }, theme).render(120)[0]!;
   assert.match(queryLine, /<dim>"what changed in vitest coverage"/);

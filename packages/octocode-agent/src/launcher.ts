@@ -43,8 +43,7 @@ import { runAuthWizard } from './onboard.js';
 import { AUTH_PROVIDERS } from './auth-providers.js';
 import { selectOne } from './picker.js';
 import {
-  DEFAULT_OCTOCODE_THEME,
-  ensureDefaultSetting,
+  ensureOctocodeThemeSetting,
   getSetting,
   isAllowedConfigKey,
   listSettings,
@@ -106,6 +105,12 @@ export const PI_PACKAGE = '@earendil-works/pi-coding-agent';
 export const LEAN_EXCLUDE_TOOLS = ['grep', 'find', 'ls'];
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
+
+/** Normalize spawnSync-like results: null status means signal/failed child, never success. */
+export function spawnExitStatus(result: { status?: number | null; error?: Error } | undefined): number {
+  if (typeof result?.status === 'number') return result.status;
+  return 1;
+}
 
 /** The effective Pi package name — reads OCTOCODE_PI_PACKAGE override first. */
 export function getEffectivePiPackage(env: NodeJS.ProcessEnv = process.env): string {
@@ -890,7 +895,7 @@ export function runSurface(
     out(`${p.red('✗')} Failed to run ${verb}: ${result.error.message}`);
     return 1;
   }
-  return result.status ?? 0;
+  return spawnExitStatus(result);
 }
 
 /**
@@ -1081,9 +1086,9 @@ export async function launchAgent(
   const log = deps.log ?? ((msg: string) => console.error(diagLine(p, msg)));
   const env = buildLaunchEnv(deps.env ?? process.env);
 
-  // First-launch brand default: pin pi's TUI theme to the shipped Octocode theme.
-  // Write-if-absent — a later user choice (/settings, `config set theme`) always wins.
-  ensureDefaultSetting(piAgentDir(), 'theme', DEFAULT_OCTOCODE_THEME);
+  // Octocode owns the agent theme. Preserve octocode-dark/light, but replace
+  // plain Pi themes such as dark/light so Octocode sessions never look unbranded.
+  ensureOctocodeThemeSetting(piAgentDir());
 
   // SDK embed path (default)
   if (env.OCTOCODE_LAUNCHER_MODE !== 'subprocess') {
@@ -1109,7 +1114,7 @@ export async function launchAgent(
 
   const spec = (deps.resolveCoreSpec ?? resolveCoreSpec)(env);
   const result = spawn(piInfo.bin, buildPiArgs(spec, argv, env), { stdio: 'inherit', env });
-  return typeof result?.status === 'number' ? result.status : result?.error ? 1 : 0;
+  return spawnExitStatus(result);
 }
 
 export async function runUpdate(
@@ -1125,7 +1130,7 @@ export async function runUpdate(
     `octocode-agent: ${target === 'core' ? 'updating core' : 'self-updating platform'} → ${p.dim(`${cmd} ${args.join(' ')}`)}`,
   );
   const result = spawn(cmd, args, { stdio: 'inherit' });
-  const status = typeof result?.status === 'number' ? result.status : result?.error ? 1 : 0;
+  const status = spawnExitStatus(result);
   if (status === 0) {
     const refreshed = target === 'core' ? readPackageVersion(CORE_PACKAGE) : null;
     log(

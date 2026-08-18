@@ -153,6 +153,7 @@ export async function runSelectOverlay(
         },
       };
     },
+    { overlay: true },
   );
 }
 

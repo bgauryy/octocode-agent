@@ -33,7 +33,9 @@ function truncate(text: string): string {
 
 function renderSection(label: string, entries: CatalogEntry[]): string[] {
   if (entries.length === 0) return [];
-  const sorted = [...entries].sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name));
+  // Name-first ordering keeps the injected block byte-stable between turns
+  // (live uses counters would reorder it and churn the provider prompt cache).
+  const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
   const shown = sorted.slice(0, MAX_ENTRIES_PER_KIND);
   const lines = [`${label}:`, ...shown.map((e) => `- ${e.name}: ${truncate(e.description)}`)];
   if (sorted.length > shown.length) {

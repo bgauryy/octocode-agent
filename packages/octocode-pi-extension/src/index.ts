@@ -24,13 +24,14 @@ import {
   mergeManagedAppendSystem,
   resolvePromptMode,
   composeSystemPrompt,
+  stripProjectContext,
 } from './prompt.js';
 import {
   parseSetupScope,
   getAppendSystemTarget,
 } from './utils.js';
 import { registerUniqueTool } from './tools/octocode-tools.js';
-import { registerContextTools } from './tools/context-tools.js';
+import { registerContextTools, resetAutoCompactState } from './tools/context-tools.js';
 import { registerCompactionHooks } from './tools/compaction-hooks.js';
 import {
   cleanupSpawnedAgentsForShutdown,
@@ -54,18 +55,18 @@ import { registerWriteTool } from './tools/write-tool.js';
 import { registerBashTool } from './tools/bash-tool.js';
 import { getCachedMcpCatalogAddendum, handleOctocodeMcpCommand, patchGlobalMcpOctocodeEnv, registerMcpTool, startMcpConfigWatcher, stopAllMcpServers, stopMcpConfigWatchers, warmMcpCatalog } from './tools/mcp-tool.js';
 import { getDynamicCapabilitiesAddendum } from './tools/dynamic-catalog.js';
-import { renderAvailableSkillsAddendum } from './tools/skill-catalog.js';
+import { renderAvailableSkillsAddendum, renderSkillsDashboard } from './tools/skill-catalog.js';
 import { registerPlanTool } from './tools/plan-tool.js';
 import { registerAskUserTool } from './tools/ask-user-tool.js';
 import { registerMemoryTool } from './tools/memory-tool.js';
-import { renderActivePlanAddendum, getPlan, bumpPlanTurn } from './tools/active-plan.js';
-import { refreshAwarenessPanel } from './tools/awareness-status.js';
-import { refreshStatusPanel } from './tools/status-panel.js';
+import { activePlanScope, renderActivePlanAddendum, getPlan, bumpPlanTurn } from './tools/active-plan.js';
+import { getCachedAwarenessStatus, refreshAwarenessPanel, suppressAwarenessPanel, resumeAwarenessPanel } from './tools/awareness-status.js';
+import { refreshStatusPanel, suppressStatusPanel, resumeStatusPanel } from './tools/status-panel.js';
 import { buildFooterSegments, buildWorkingLabel, WORKING_WORD, resolveSystemThemeName, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName } from './ui-extras.js';
 import { contextGauge, paint } from './tui/palette.js';
 import { listCDPSessions, closeAllChromeConnections } from './chrome-connection-cache.js';
 import { handleOctocodePlanCommand, OCTOCODE_PLAN_COMMAND_USAGE, OCTOCODE_PLAN_COMMAND_COMPLETIONS } from './tools/plan-tool.js';
-import { atomicWriteUtf8 } from './tools/file-state.js';
+import { atomicWriteUtf8, clearAllReadStates } from './tools/file-state.js';
 import { assertPathAllowed } from './tools/path-guard.js';
 import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
 import { renderBannerWithTagline, type BannerTheme } from './branding/banner.js';
@@ -87,6 +88,7 @@ import type {
   PromptMode,
   SessionShutdownEvent,
   ThinkingLevelEvent,
+  SkillInfo,
 } from './types.js';
 
 // ─── Re-exports (stable public API) ──────────────────────────────────────────
@@ -213,6 +215,8 @@ function formatCompactNumber(value: number): string {
 function formatContextUsage(ctx: PiContext | undefined): { text: string; percent?: number } {
   const usage = ctx?.getContextUsage?.();
   if (!usage || usage.contextWindow <= 0) return { text: 'ctx n/a' };
+  // tokens is null right after compaction ("unknown", per Pi's ContextUsage).
+  if (usage.tokens == null) return { text: 'ctx …' };
   const percent = Math.round((usage.tokens / usage.contextWindow) * 100);
   const { bar } = contextGauge(percent, 10);
   return {
@@ -252,7 +256,7 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
   // were also pushed to a top `octocode-metrics` status line — removed as
   // on-screen redundancy.)
   const usage = ctx.getContextUsage?.() ?? { tokens: 0, contextWindow: 0 };
-  const plan = getPlan(ctx.cwd ?? process.cwd());
+  const plan = getPlan(activePlanScope(ctx));
   const workers = workerFooterCounts();
   const activeEntry = listWorkerLedgerEntries().find(
     (e) => e.status === 'running' || e.status === 'starting' || e.status === 'idle',
@@ -285,7 +289,7 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
   // Live token count beside the working spinner during an active turn.
   if (state.activeTurnStartedAt !== undefined) {
     const label = buildWorkingLabel({ startedAt: state.activeTurnStartedAt, now });
-    ctx.ui?.setWorkingMessage?.(ctx.ui.theme?.fg('accent', label) ?? label);
+    ctx.ui?.setWorkingMessage?.(paint(ctx.ui.theme, 'brand', label));
   }
 }
 
@@ -442,7 +446,7 @@ function formatContextForLog(ctx: PiContext | undefined): string[] {
     ctx?.mode ? `mode: ${ctx.mode}` : '',
     ctx?.model?.id ? `model: ${ctx.model.id}` : '',
     ctx?.model ? `modelReasoning: ${String(ctx.model.reasoning)}` : '',
-    usage ? `context: ${usage.tokens}/${usage.contextWindow} (${Math.round((usage.tokens / usage.contextWindow) * 100)}%)` : '',
+    usage && usage.tokens != null ? `context: ${usage.tokens}/${usage.contextWindow} (${Math.round((usage.tokens / usage.contextWindow) * 100)}%)` : usage ? 'context: unknown (post-compaction)' : '',
   ].filter(Boolean);
 }
 
@@ -567,6 +571,9 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
       '/octocode',
       '/octocode-status',
       '/octocode-harness',
+      '/octocode-now',
+      '/octocode-tasks',
+      '/octocode-skills',
       '/octocode-agents',
       '/octocode-cron',
       '/cron',
@@ -625,7 +632,89 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessi
     ...(warnings.length > 0 ? warnings : ['✓ no dashboard warnings']),
     '',
     'Next actions',
-    '/octocode-agents · /octocode-cron · /octocode-status · /octocode-harness · /octocode-setup · /octocode-skills-update',
+    '/octocode-now · /octocode-tasks · /octocode-skills · /octocode-agents · /octocode-cron · /octocode-status',
+  ].join('\n');
+}
+
+function formatModelLine(ctx?: PiContext): string {
+  const model = ctx?.model;
+  if (!model?.id) return 'model: unknown';
+  const provider = model.provider ? `${model.provider}/` : '';
+  const thinking = model.reasoning ? ' · reasoning' : '';
+  return `model: ${provider}${model.id}${thinking}`;
+}
+
+function formatPlanLines(ctx?: PiContext): string[] {
+  const steps = getPlan(activePlanScope(ctx));
+  if (steps.length === 0) return ['local plan: none — use plan(set) for multi-step work'];
+  const done = steps.filter((s) => s.status === 'done').length;
+  const current = steps.find((s) => s.status === 'doing') ?? steps.find((s) => s.status !== 'done');
+  return [
+    `local plan: ${done}/${steps.length} done`,
+    current ? `now: ${current.activeForm && current.status === 'doing' ? current.activeForm : current.text}` : 'now: all steps done — verify, then clear',
+  ];
+}
+
+function formatAwarenessLines(ctx?: PiContext): string[] {
+  const cwd = ctx?.cwd ?? process.cwd();
+  const status = getCachedAwarenessStatus(cwd);
+  if (!status) return ['shared tasks: no cached Awareness status yet — refresh queued; run /octocode-now again'];
+  const debt = status.verifyTasks + status.pendingRuns;
+  return [
+    `shared tasks: plans ${status.activePlans} · ready ${status.readyTasks} · doing ${status.inProgressTasks}`,
+    `verify debt: ${debt} · refinements ${status.actionableRefinements}/${status.openRefinements} · locks ${status.lockCount}`,
+  ];
+}
+
+function compactRepoStatus(status: string): string[] {
+  const lines = status.split('\n').filter(Boolean);
+  if (lines.length === 0) return ['git: clean or unavailable'];
+  const shown = lines.slice(0, 8);
+  if (lines.length > shown.length) shown.push(`… ${lines.length - shown.length} more dirty entries`);
+  return shown;
+}
+
+export function formatOctocodeTasks(ctx?: PiContext): string {
+  return [
+    '◆ Octocode tasks',
+    '',
+    'Local session plan',
+    ...formatPlanLines(ctx),
+    '',
+    'Shared Awareness work',
+    ...formatAwarenessLines(ctx),
+    '',
+    'Rule of thumb',
+    'Use plan(...) for your current solo breakdown; use Awareness plan/task/work when state must survive sessions or coordinate agents.',
+    'Commands: /octocode-plan · node $OCTOCODE_AWARENESS_CLI attend --workspace "$PWD" --compact',
+  ].join('\n');
+}
+
+export async function formatOctocodeNow(ctx: PiContext | undefined, pi: PiInstance): Promise<string> {
+  refreshAwarenessPanel(ctx);
+  const repoStatus = await execGitSummary(pi, ['status', '--short', '--branch'], 800);
+  return [
+    '◆ Octocode now',
+    '',
+    'Orientation',
+    formatModelLine(ctx),
+    formatContextUsage(ctx).text,
+    `mode: ${ctx?.mode ?? 'unknown'} · cwd: ${ctx?.cwd ?? process.cwd()}`,
+    '',
+    'Current work',
+    ...formatPlanLines(ctx),
+    '',
+    'Shared work',
+    ...formatAwarenessLines(ctx),
+    '',
+    'Agents',
+    formatAgentLedger(),
+    '',
+    'Repository',
+    ...compactRepoStatus(repoStatus),
+    '',
+    'Next actions',
+    '/octocode-tasks · /octocode-skills · /octocode-agents · /octocode-mcp status · /octocode-cron',
   ].join('\n');
 }
 
@@ -737,6 +826,7 @@ async function wireOctocodePiExtension(
   // /octocode-skills-update), the stale cached text persists until session reload.
   // This is intentional — prompt updates take effect on the next Pi session.
   let cachedSystemPromptText: string | null = null;
+  let latestAvailableSkills: SkillInfo[] | undefined;
   const cronScheduler = createOctocodeCronScheduler({ pi });
   const metricsState: OctocodeMetricsState = {
     sessionStartedAt: Date.now(),
@@ -808,6 +898,14 @@ async function wireOctocodePiExtension(
     }
 
     hooks.on('session_start', 'octocode-session-start', async (_event: unknown, ctx: PiContext | undefined) => {
+      // Undo the shutdown-time suppression from a previous session in this process.
+      resumeStatusPanel();
+      resumeAwarenessPanel();
+      // Read-states recorded in a previous session must not satisfy the edit
+      // tool's stale-read gate in this one, and the auto-compaction edge
+      // trigger must not carry the old session's threshold crossing.
+      clearAllReadStates();
+      resetAutoCompactState();
       metricsState.sessionStartedAt = Date.now();
       metricsState.activeTurnStartedAt = undefined;
       metricsState.lastTurnMs = undefined;
@@ -901,13 +999,20 @@ async function wireOctocodePiExtension(
     hooks.on('session_shutdown', 'octocode-session-shutdown', async (_event: SessionShutdownEvent, ctx: PiContext | undefined) => {
       cronScheduler.stop();
       stopMcpConfigWatchers();
+      // Stop the per-second metrics interval (it would otherwise keep firing
+      // against the replaced session's stale ctx) and suppress the panels so
+      // late async callbacks cannot resurrect widgets after the clears below.
+      stopMetricsTicker();
+      metricsState.activeTurnStartedAt = undefined;
+      suppressStatusPanel();
+      suppressAwarenessPanel();
       const cleanedAgents = cleanupSpawnedAgentsForShutdown();
       const stoppedMcpServers = stopAllMcpServers();
       const closedChrome = closeAllChromeConnections();
       if (closedChrome > 0) notify(ctx, `Closed ${closedChrome} cached CDP connection(s).`, 'info');
       if (ctx?.hasUI) {
-        ctx.ui?.setStatus?.('octocode', '');
-        ctx.ui?.setStatus?.('octocode-thinking', '');
+        ctx.ui?.setStatus?.('octocode', undefined);
+        ctx.ui?.setStatus?.('octocode-thinking', undefined);
         ctx.ui?.setStatus?.('octocode-metrics', undefined);
         ctx.ui?.setStatus?.('octocode-agents', undefined);
         ctx.ui?.setStatus?.('agent-wait', undefined);
@@ -1004,13 +1109,13 @@ async function wireOctocodePiExtension(
     });
 
     hooks.on('before_agent_start', 'octocode-system-prompt', async (event: BeforeAgentStartEvent, ctx: PiContext | undefined) => {
-      // Suppress AGENTS.md / CLAUDE.md when --no-context flag is set.
-      // For octocode-agent sessions the launcher already passes --no-context-files
-      // to pi, so contextFiles is empty before this handler fires — this guard
-      // is a belt-and-suspenders for direct pi usage.
-      if (pi.getFlag?.('no-context') && event.systemPromptOptions?.contextFiles) {
-        event.systemPromptOptions.contextFiles = [];
-      }
+      // Suppress AGENTS.md / CLAUDE.md when --no-context flag is set. Pi builds
+      // the prompt BEFORE this hook fires and systemPromptOptions is
+      // inspection-only, so the block must be stripped from the assembled
+      // prompt text. (octocode-agent sessions also pass --no-context-files to
+      // pi, which prevents the block at the source for that path.)
+      const noContext = Boolean(pi.getFlag?.('no-context'));
+      const piPrompt = noContext ? stripProjectContext(event.systemPrompt) : event.systemPrompt;
 
       if (cachedSystemPromptText === null) {
         cachedSystemPromptText = readTextIfExists(getAssetPaths().systemPrompt);
@@ -1023,25 +1128,28 @@ async function wireOctocodePiExtension(
       // Live projection of Pi-discovered skill names/descriptions. Rebuilt every
       // turn from systemPromptOptions so it survives compaction and reflects
       // skills added/removed by Pi discovery without a watcher.
-      const availableSkills = renderAvailableSkillsAddendum(event.systemPromptOptions?.skills);
+      latestAvailableSkills = event.systemPromptOptions?.skills;
+      const availableSkills = renderAvailableSkillsAddendum(latestAvailableSkills);
       // Compaction-durable task breakdown: re-injected every turn so a plan survives compaction.
       // Bump the staleness counter once per turn first so an idle plan surfaces a nudge.
-      const planCwd = ctx?.cwd ?? process.cwd();
-      bumpPlanTurn(planCwd);
-      const activePlan = renderActivePlanAddendum(planCwd);
+      const planScope = activePlanScope(ctx);
+      bumpPlanTurn(planScope);
+      const activePlan = renderActivePlanAddendum(planScope);
       // Live Awareness panel (shared plans/tasks/verify-debt) under the input; async+throttled, never blocks.
       refreshAwarenessPanel(ctx);
       // Render the unified below-editor status panel every turn, independent of awareness, so a
       // persisted plan (or active agents) is always visible under the input if it exists.
       refreshStatusPanel(ctx);
       const prompt = [cachedSystemPromptText, mcpCatalog, dynamicCatalog, availableSkills, activePlan].filter((part) => part.trim().length > 0).join('\n\n');
-      if (!shouldAppendSystemPrompt(event.systemPrompt, prompt)) {
-        return;
+      // Even with no Octocode addendum to append, a stripped prompt must still
+      // be returned or --no-context silently becomes a no-op.
+      const stripped = piPrompt !== event.systemPrompt;
+      if (prompt.trim().length === 0 || !shouldAppendSystemPrompt(piPrompt, prompt)) {
+        return stripped ? { systemPrompt: piPrompt } : undefined;
       }
-      if (prompt.trim().length === 0) return;
       return {
         systemPrompt: composeSystemPrompt({
-          piSystemPrompt: event.systemPrompt,
+          piSystemPrompt: piPrompt,
           octocodePrompt: prompt,
           promptMode,
         }),
@@ -1089,6 +1197,9 @@ async function wireOctocodePiExtension(
       });
       pi.on('turn_end', async (_event: unknown, ctx: PiContext) => {
         stopMetricsTicker();
+        // Evict timing entries for tools whose tool_execution_end never fired
+        // (aborted turns) — the map otherwise grows for the session lifetime.
+        toolStartTimes.clear();
         const now = Date.now();
         if (metricsState.activeTurnStartedAt !== undefined) {
           metricsState.lastTurnMs = now - metricsState.activeTurnStartedAt;
@@ -1113,6 +1224,28 @@ async function wireOctocodePiExtension(
     description: 'Show the Octocode dashboard: status, agents, setup, skills, health, and next actions.',
     handler: async (_args, ctx) => {
       notify(ctx, formatOctocodeDashboard(ctx, undefined, formatOctocodeCronSummary(cronScheduler.list())), 'info');
+    },
+  });
+
+  pi.registerCommand('octocode-now', {
+    description: 'Show the Octocode orientation cockpit: model, context, current plan, shared tasks, agents, and git status.',
+    handler: async (_args, ctx) => {
+      notify(ctx, await formatOctocodeNow(ctx, pi), 'info');
+    },
+  });
+
+  pi.registerCommand('octocode-tasks', {
+    description: 'Show local plan and shared Awareness task/verification state with guidance on which surface to use.',
+    handler: async (_args, ctx) => {
+      refreshAwarenessPanel(ctx);
+      notify(ctx, formatOctocodeTasks(ctx), 'info');
+    },
+  });
+
+  pi.registerCommand('octocode-skills', {
+    description: 'Show Pi-discovered skills and how to load or install them.',
+    handler: async (_args, ctx) => {
+      notify(ctx, renderSkillsDashboard(latestAvailableSkills), 'info');
     },
   });
 

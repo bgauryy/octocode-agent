@@ -164,7 +164,7 @@ function groupedCommandIndex() {
     if (COMPACT_HIDE.has(row.command)) continue;
     const [noun, ...rest] = row.command.split(" ");
     const tier = CORE_NOUNS.has(noun!) ? "core" : "advanced";
-    (grouped[tier][noun!] ??= []).push(rest.length > 0 ? rest.join(" ") : noun === "query" ? "<view>" : "run");
+    (grouped[tier][noun!] ??= []).push(rest.length > 0 ? rest.join(" ") : noun === "query" ? "<view>" : "<direct>");
   }
   return grouped;
 }
@@ -280,12 +280,15 @@ export async function runSchemaCli(argv: string[]): Promise<number> {
   }
 
   if (command === "command") {
-    const commandName = [schemaName, file].filter(Boolean).join(" ");
+    const requestedCommandName = [schemaName, file].filter(Boolean).join(" ");
+    const commandName = file === "run" && schemaName && cliCommandSchema(schemaName)
+      ? schemaName
+      : requestedCommandName;
     const commandSchema = cliCommandSchema(commandName);
     if (!commandSchema) {
       return printJsonError({
         error_code: "UNKNOWN_CLI_COMMAND",
-        error: `Unknown or schema-less CLI command: ${commandName || "<missing>"}`,
+        error: `Unknown or schema-less CLI command: ${requestedCommandName || "<missing>"}`,
         hint: "Use `schema commands --all --compact` to list command names.",
       }, 1, compact);
     }

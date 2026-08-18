@@ -14,6 +14,7 @@
  * an answer.
  */
 
+import { CLI_GLYPH, CLI_STATUS_TEXT, cliToolTitle, paint } from '../tui/cli-design.js';
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
@@ -189,18 +190,18 @@ export function registerAskUserTool(
       const q = String(p?.question ?? 'ask');
       const count = Array.isArray(p?.options) ? p.options.length : 0;
       const suffix = count > 0 ? ` (${count} options)` : ' (free text)';
-      const title = theme?.fg('toolTitle', theme.bold('askUser')) ?? 'askUser';
-      const body = theme?.fg('dim', q + suffix) ?? q + suffix;
+      const title = cliToolTitle(theme, 'askUser');
+      const body = paint(theme, 'dim', q + suffix);
       return makeRenderer((w) => [truncateToWidth(`${title} ${body}`, w)]);
     },
 
     renderResult(result: ToolCallResult, _opts: unknown, theme?: PiTheme) {
       const d = (result.details ?? {}) as AskOutcome;
       let line: string;
-      if (d.status === 'selected') line = theme?.fg('success', `✓ ${d.label}`) ?? `✓ ${d.label}`;
-      else if (d.status === 'text') line = theme?.fg('success', `✓ ${d.value}`) ?? `✓ ${d.value}`;
-      else if (d.status === 'cancelled') line = theme?.fg('warning', '⨯ cancelled') ?? '⨯ cancelled';
-      else line = theme?.fg('dim', 'no interactive UI') ?? 'no interactive UI';
+      if (d.status === 'selected') line = paint(theme, 'success', `${CLI_GLYPH.success} ${d.label}`);
+      else if (d.status === 'text') line = paint(theme, 'success', `${CLI_GLYPH.success} ${d.value}`);
+      else if (d.status === 'cancelled') line = paint(theme, 'warning', `⨯ ${CLI_STATUS_TEXT.cancelled}`);
+      else line = paint(theme, 'dim', CLI_STATUS_TEXT.unavailable);
       return makeRenderer((w) => [truncateToWidth(line, w)]);
     },
   });

@@ -16,6 +16,7 @@
 
 import { execFile } from 'node:child_process';
 import type { PiContext, PiTheme } from '../types.js';
+import { paint } from '../tui/cli-design.js';
 import { refreshStatusPanel } from './status-panel.js';
 
 export interface AwarenessStatus {
@@ -71,7 +72,6 @@ export function hasAwarenessSignal(s: AwarenessStatus): boolean {
 /** Build the below-editor Awareness panel lines. Empty array when there is nothing to show. */
 export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme): string[] {
   if (!hasAwarenessSignal(s)) return [];
-  const paint = (token: string, text: string): string => theme?.fg(token, text) ?? text;
   const debt = s.verifyTasks + s.pendingRuns;
   const segs: string[] = [];
   if (s.activePlans > 0) segs.push(`plans ${s.activePlans}`);
@@ -83,11 +83,11 @@ export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme): strin
   if (s.lockCount > 0) tail.push(`locks ${s.lockCount}`);
 
   const chunks: string[] = [];
-  if (segs.length) chunks.push(paint('accent', segs.join('  ·  ')));
-  if (tail.length) chunks.push(paint('muted', tail.join('  ·  ')));
-  if (debt > 0) chunks.push(paint('warning', `verify-debt ${debt}`));
+  if (segs.length) chunks.push(paint(theme, 'brand', segs.join('  ·  ')));
+  if (tail.length) chunks.push(paint(theme, 'muted', tail.join('  ·  ')));
+  if (debt > 0) chunks.push(paint(theme, 'warning', `verify-debt ${debt}`));
   if (chunks.length === 0) return [];
-  return [`${paint('toolTitle', 'Awareness')}  ${chunks.join('  ·  ')}`];
+  return [`${paint(theme, 'title', 'Awareness')}  ${chunks.join('  ·  ')}`];
 }
 
 // ─── Async, throttled refresh ────────────────────────────────────────────────
@@ -104,6 +104,11 @@ export function awarenessPanelLines(cwd: string, theme?: PiTheme): string[] {
 export function hasCachedAwarenessSignal(cwd: string): boolean {
   const status = cache.get(cwd)?.status;
   return status ? hasAwarenessSignal(status) : false;
+}
+
+/** Return the last cached Awareness status for command dashboards. */
+export function getCachedAwarenessStatus(cwd: string): AwarenessStatus | null {
+  return cache.get(cwd)?.status ?? null;
 }
 
 interface CacheEntry {
@@ -135,6 +140,10 @@ export function resetAwarenessStatusStateForTests(): void {
   runner = defaultRunner;
   cache.clear();
 }
+export function forceAwarenessStatusRefreshForTests(cwd: string): void {
+  const entry = cache.get(cwd);
+  if (entry) entry.lastRunAt = 0;
+}
 
 function renderWidget(ctx: PiContext, _status: AwarenessStatus | null): void {
   // The Awareness section is composed by the unified status panel from the cached status.
@@ -146,8 +155,18 @@ function renderWidget(ctx: PiContext, _status: AwarenessStatus | null): void {
  * immediately (if any) and kicks off a background refresh at most every
  * MIN_REFRESH_MS. Never blocks the turn; never throws.
  */
+// Set during session_shutdown so the async CLI refresh completing after the
+// widget was cleared cannot re-create it in the replaced session.
+let panelSuppressed = false;
+export function suppressAwarenessPanel(): void {
+  panelSuppressed = true;
+}
+export function resumeAwarenessPanel(): void {
+  panelSuppressed = false;
+}
+
 export function refreshAwarenessPanel(ctx?: PiContext): void {
-  if (!ctx?.hasUI) return;
+  if (!ctx?.hasUI || panelSuppressed) return;
   const cliPath = process.env.OCTOCODE_AWARENESS_CLI;
   if (!cliPath) return;
   const cwd = ctx.cwd ?? process.cwd();
@@ -164,14 +183,18 @@ export function refreshAwarenessPanel(ctx?: PiContext): void {
   void runner(cliPath, cwd)
     .then((stdout) => {
       entry.running = false;
-      if (stdout === null) return;
-      const parsed = parseAwarenessStatus(stdout);
-      if (parsed) {
-        entry.status = parsed;
-        renderWidget(ctx, parsed);
+      if (stdout === null) {
+        entry.status = null;
+        renderWidget(ctx, null);
+        return;
       }
+      const parsed = parseAwarenessStatus(stdout);
+      entry.status = parsed;
+      renderWidget(ctx, parsed);
     })
     .catch(() => {
       entry.running = false;
+      entry.status = null;
+      renderWidget(ctx, null);
     });
 }

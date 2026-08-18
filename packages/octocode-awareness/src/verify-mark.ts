@@ -15,7 +15,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { normalizeArtifact, utcNow } from './helpers.js';
 import { normalizeWorkspacePath } from './git.js';
 import type { RunStatus } from './types.js';
-import { RUN_LOG_INSERT_VERIFIED, RUNS_UPDATE_ACTIVE_TO_FAILED, RUNS_UPDATE_PENDING_VERIFIED_BY_AGENT, RUNS_SELECT_STATUS, RUNS_SELECT_PENDING_IDS } from './sql/runs.js';
+import { RUN_LOG_INSERT_VERIFIED, RUNS_UPDATE_ACTIVE_TO_FAILED, RUNS_UPDATE_PENDING_VERIFIED_BY_AGENT, RUNS_UPDATE_PENDING_VERIFIED_BY_WORKSPACE, RUNS_SELECT_STATUS, RUNS_SELECT_PENDING_IDS } from './sql/runs.js';
 import { AgentStatusRow, closeRunFiles, failStaleLinkedTask, finishLinkedTask, MarkVerifiedParams, MarkVerifiedResult, VALID_VERIFY_STATUSES } from './verify-shared.js';
 
 /**
@@ -29,7 +29,7 @@ export function markVerified(
   db: DatabaseSync,
   params: MarkVerifiedParams,
 ): MarkVerifiedResult {
-  const { agentId = 'agent', allPending = false, message } = params;
+  const { agentId = 'agent', allPending = false, message, adoptVerification = false } = params;
   const workspacePath = params.workspacePath ? normalizeWorkspacePath(params.workspacePath, params.workspacePath) : null;
   const artifact = normalizeArtifact(params.artifact);
   const runId = params.runId ?? '';
@@ -56,6 +56,13 @@ export function markVerified(
       ok: false,
       error: '--all-pending requires --workspace or --artifact; use explicit run ids for cross-workspace verification',
       run_id: null,
+    };
+  }
+  if (adoptVerification && (allPending || !workspacePath)) {
+    return {
+      ok: false,
+      error: '--adopt-verification requires one explicit --run-id and --workspace',
+      run_id: runId || null,
     };
   }
 
@@ -121,12 +128,39 @@ export function markVerified(
         return { ok: false, error: `no run found with run_id=${runId}`, run_id: runId };
       }
       if (row.agent_id !== agentId) {
-        db.exec('ROLLBACK');
-        return {
-          ok: false,
-          error: `run ${runId} belongs to agent "${row.agent_id}", not "${agentId}"`,
-          run_id: runId,
-        };
+        if (!adoptVerification) {
+          db.exec('ROLLBACK');
+          return {
+            ok: false,
+            error: `run ${runId} belongs to agent "${row.agent_id}", not "${agentId}"; pass --agent-id ${row.agent_id} or explicit --adopt-verification with --workspace after verifying the check`,
+            run_id: runId,
+          };
+        }
+        if (!workspacePath || row.workspace_path !== workspacePath || row.status !== 'PENDING') {
+          db.exec('ROLLBACK');
+          return {
+            ok: false,
+            error: `run ${runId} cannot be verification-adopted outside its workspace or non-PENDING state`,
+            run_id: runId,
+          };
+        }
+        const adopted = db.prepare(RUNS_UPDATE_PENDING_VERIFIED_BY_WORKSPACE).run(
+          status, now, runId, workspacePath,
+        ) as { changes: number };
+        if (adopted.changes !== 1) {
+          db.exec('ROLLBACK');
+          return { ok: false, error: `run ${runId} changed while verification adoption was being recorded`, run_id: runId };
+        }
+        const adoptionReceipt = `verification adopted by ${agentId} from ${row.agent_id}: ${receipt}`;
+        closeRunFiles(db, runId, now);
+        finishLinkedTask(db, runId, status, row.agent_id, now, adoptionReceipt);
+        try {
+          db.prepare(RUN_LOG_INSERT_VERIFIED).run(
+            'evt_' + randomUUID().replace(/-/g, ''), runId, agentId, adoptionReceipt, now,
+          );
+        } catch { /* non-critical audit log */ }
+        db.exec('COMMIT');
+        return { ok: true, run_id: runId, status: status as RunStatus, updated_at: now };
       }
       if (row.status === 'ACTIVE' && status === 'FAILED') {
         if (!receipt) {

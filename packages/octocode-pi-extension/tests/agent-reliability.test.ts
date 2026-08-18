@@ -448,6 +448,32 @@ test('SEV-1: an explicit model/provider still wins over the parent default', () 
   assert.equal(record.args[record.args.indexOf('--provider') + 1], 'chosen-prov');
 });
 
+test('SEV-1: an explicit model without provider does not inherit an unrelated parent provider', () => {
+  if (isSubagentProcess()) return;
+  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  const ctx = { hasUI: false, model: { id: 'parent-model', provider: 'parent-prov' }, ui: { setStatus: () => {}, setWidget: () => {} } } as never;
+  assert.throws(
+    () => spawnRpcAgent({ task: 't', resourceMode: 'lean', model: 'claude-haiku-4-5' }, ctx),
+    /requires an explicit provider/,
+  );
+});
+
+test('SEV-1: modelRegistry rejects mismatched model/provider pairs before spawning', () => {
+  if (isSubagentProcess()) return;
+  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  const ctx = {
+    hasUI: false,
+    modelRegistry: { find: () => undefined },
+    ui: { setStatus: () => {}, setWidget: () => {} },
+  } as never;
+  assert.throws(
+    () => spawnRpcAgent({ task: 't', resourceMode: 'lean', model: 'claude-haiku-4-5', provider: 'guy-provider-openai' }, ctx),
+    /model\/provider not found/,
+  );
+});
+
 test('SEV-1: spawnSubagent inherits the parent provider when the caller does not pass one', async () => {
   if (isSubagentProcess()) return;
   const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });

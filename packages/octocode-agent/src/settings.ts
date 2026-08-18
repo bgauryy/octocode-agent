@@ -38,9 +38,15 @@ export function setDefaultModelInSettings(piDir: string, provider: string, model
 /** Keys `config set` is allowed to write — Pi's own contract fields only. */
 export const ALLOWED_CONFIG_KEYS = ['defaultProvider', 'defaultModel', 'theme'] as const;
 
-/** Theme name the launcher pins as the first-launch default (shipped by @octocodeai/pi-extension). */
+/** Theme name the launcher enforces for Octocode-branded sessions. */
 export const DEFAULT_OCTOCODE_THEME = 'octocode-dark';
+export const OCTOCODE_THEME_NAMES = [DEFAULT_OCTOCODE_THEME, 'octocode-light'] as const;
+export type OctocodeThemeName = (typeof OCTOCODE_THEME_NAMES)[number];
 export type AllowedConfigKey = (typeof ALLOWED_CONFIG_KEYS)[number];
+
+export function isOctocodeTheme(value: unknown): value is OctocodeThemeName {
+  return typeof value === 'string' && (OCTOCODE_THEME_NAMES as readonly string[]).includes(value);
+}
 
 export function isAllowedConfigKey(key: string): key is AllowedConfigKey {
   return (ALLOWED_CONFIG_KEYS as readonly string[]).includes(key);
@@ -62,15 +68,28 @@ export function setSetting(piDir: string, key: AllowedConfigKey, value: string):
 }
 
 /**
- * Write a settings default only when the key is absent. First-launch identity
- * defaults (e.g. the branded theme) use this; any later user choice wins.
- * Returns true when the value was written.
+ * Write a settings default only when the key is absent. Returns true when the
+ * value was written. Use narrower helpers when a key needs value validation.
  */
 export function ensureDefaultSetting(piDir: string, key: string, value: string): boolean {
   const data = readSettings(piDir);
   if (data[key] !== undefined) return false;
   fs.mkdirSync(piDir, { recursive: true });
   data[key] = value;
+  const file = path.join(piDir, 'settings.json');
+  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+  return true;
+}
+
+/**
+ * Octocode owns the agent theme: keep octocode-dark/light, replace every plain
+ * Pi theme (including dark/light) with the branded default on launch.
+ */
+export function ensureOctocodeThemeSetting(piDir: string): boolean {
+  const data = readSettings(piDir);
+  if (isOctocodeTheme(data['theme'])) return false;
+  fs.mkdirSync(piDir, { recursive: true });
+  data['theme'] = DEFAULT_OCTOCODE_THEME;
   const file = path.join(piDir, 'settings.json');
   fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
   return true;

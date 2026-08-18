@@ -8,6 +8,7 @@ import { access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
+import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 
@@ -134,20 +135,29 @@ async function runBash(
     let stdout = '';
     let stderr = '';
     let settled = false;
-    const terminateChild = () => {
+    const killChild = (sig: NodeJS.Signals) => {
       try {
         if (process.platform !== 'win32' && child.pid) {
-          process.kill(-child.pid, 'SIGTERM');
+          process.kill(-child.pid, sig);
         } else {
-          child.kill('SIGTERM');
+          child.kill(sig);
         }
       } catch {
         try {
-          child.kill('SIGTERM');
+          child.kill(sig);
         } catch {
           /* ignore */
         }
       }
+    };
+    const terminateChild = () => {
+      killChild('SIGTERM');
+      // A SIGTERM-trapping or uninterruptible child would otherwise leave the
+      // execute promise pending forever (abort has no other backstop).
+      const escalate = setTimeout(() => {
+        if (!settled) killChild('SIGKILL');
+      }, 2000);
+      escalate.unref?.();
     };
     const timer =
       timeoutSec && timeoutSec > 0
@@ -238,8 +248,12 @@ export function registerBashTool(
 
       const { stdout, stderr, code } = await runBash(command, cwd, timeout, signal);
       const combined = [stdout, stderr].filter(Boolean).join('\n');
-      const text = truncateOutput(combined || `(exit ${code ?? 'null'})`);
       const isError = code !== 0 && code !== null;
+      // Always surface a non-zero exit code: Pi records non-throwing results as
+      // success, so the exit line is the model's only failure signal when the
+      // command printed normal-looking output.
+      const body = isError && combined ? `${combined}\n(exit ${code})` : combined;
+      const text = truncateOutput(body || `(exit ${code ?? 'null'})`);
       return {
         content: [{ type: 'text', text }],
         isError,
@@ -249,20 +263,20 @@ export function registerBashTool(
     renderCall(args: unknown, theme?: PiTheme) {
       const input = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
       const command = typeof input['command'] === 'string' ? input['command'] : '(missing command)';
-      const title = theme?.fg('toolTitle', theme.bold('bash')) ?? 'bash';
-      const suffix = theme?.fg('dim', command) ?? command;
+      const title = cliToolTitle(theme, 'bash');
+      const suffix = paint(theme, 'dim', command);
       return makeRenderer((width) => [truncateToWidth(`${title} ${suffix}`, width)]);
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        const prog = theme?.fg('warning', '… running') ?? '… running';
+        const prog = paint(theme, 'warning', '… running');
         return makeRenderer(() => [prog]);
       }
       if (!opts.expanded && !result.isError) {
         return makeRenderer(() => ['']);
       }
       const text = result.content.find((c) => c.type === 'text')?.text ?? '';
-      const colored = result.isError ? (theme?.fg('error', text) ?? text) : text;
+      const colored = result.isError ? paint(theme, 'error', text) : text;
       return makeRenderer((width) =>
         colored.split('\n').map((line) => truncateToWidth(line, width)),
       );

@@ -4,7 +4,7 @@ Read `plan-task-workflow.md` first. Ordinary writes use advisory work, not locks
 
 ## Exclusive
 
-Use `work start --exclusive` or task/run-aware `lock acquire` only when concurrent editing would be unsafe. Locks are exclusive-only.
+Use `work start --exclusive` or task/run-aware `lock acquire` only when concurrent editing would be unsafe: migrations, generated singletons, broad rewrites, lockfiles, or other non-mergeable/sensitive paths. Locks are exclusive-only; normal source/doc edits start as advisory WORK and coordinate on overlap.
 
 ```bash
 # exact acquire (flag is --target-file, not --file); --wait-seconds blocks in-acquire

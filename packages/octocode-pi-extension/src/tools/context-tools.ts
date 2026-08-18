@@ -6,11 +6,12 @@
  * available in ExtensionCommandContext (registerCommand handlers). They are
  * NOT exposed to tool execute() contexts and will always be undefined there.
  */
+import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
 import type { PiContext, PiCommandContext, PiInstance, ToolDefinition, PiTheme, TurnEndEvent } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { isSubagentProcess } from './agent-tools.js';
-import { clearCompactionWorkingState, scheduleCompactionContinuation, type Notifier } from './compaction-resume.js';
+import { clearCompactionWorkingState, type Notifier } from './compaction-resume.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -50,6 +51,15 @@ function once(fn: () => void): () => void {
   };
 }
 
+// Edge-trigger state for extension auto-compaction. Module-level so the
+// session_start handler in index.ts can reset it on session replacement
+// (/new, /resume) — it otherwise leaks the previous session's threshold
+// crossing across sessions in the same process.
+let lastAutoCompactTokens: number | null = null;
+export function resetAutoCompactState(): void {
+  lastAutoCompactTokens = null;
+}
+
 export function registerContextTools(
   pi: PiInstance,
   Type: TypeBoxBuilder,
@@ -57,8 +67,9 @@ export function registerContextTools(
   registerFn: RegisterFn,
   notify: Notifier,
 ): void {
-  let lastAutoCompactTokens: number | null = null;
-
+  // Fresh wiring = fresh edge-trigger state (mirrors the pre-module-level
+  // closure semantics; index.ts also resets on session_start).
+  resetAutoCompactState();
   if (pi.on) {
     pi.on('turn_end', (event, ctx) => {
       if (isOutputLengthStop(event)) {
@@ -71,7 +82,7 @@ export function registerContextTools(
       }
 
       const usage = ctx.getContextUsage?.();
-      if (!usage) return;
+      if (!usage || usage.tokens == null) return; // tokens null = unknown (right after compaction)
       if (!(usage.contextWindow > 0)) return; // guard divide-by-zero → NaN spurious compaction
       const fill = usage.tokens / usage.contextWindow;
       const prevFill = lastAutoCompactTokens !== null
@@ -88,22 +99,14 @@ export function registerContextTools(
 
       const pctStr = `${Math.round(fill * 100)}%`;
       notify(ctx, `Auto-compacting: context at ${pctStr} of context window.`, 'info');
-      const continuation =
-        'Auto-compaction complete. Re-orient from the compacted context, then continue with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.';
       ctx.compact({
         customInstructions: COMPACTION_CONTINUATION_INSTRUCTIONS,
+        // No continuation scheduled here: the session_compact hook (which fires
+        // with fromExtension:true for this ctx.compact) is the single scheduler.
+        // Scheduling from BOTH paths raced on a 1.5s wall-clock dedupe window —
+        // any ordering delay over it sent the continuation twice.
         onComplete: once(() => {
-          // ctx.compact() drives pi's manual compaction path, which aborts the
-          // running agent operation and never auto-continues (willRetry:false).
-          // Without a queued turn the agent loop halts idle after compaction —
-          // the "stuck after compaction" state. Queue a deferred followUp to resume.
-          scheduleCompactionContinuation(
-            pi,
-            ctx,
-            notify,
-            continuation,
-            'Auto-compaction complete. Resuming…',
-          );
+          clearCompactionWorkingState(ctx);
         }),
         onError: (error: Error) => {
           clearCompactionWorkingState(ctx);
@@ -189,19 +192,12 @@ export function registerContextTools(
         throw new Error('manage_context: ctx.compact is not available in this runtime. Use /compact manually.');
       }
 
-      const continuation =
-        'Compaction is complete. Continue from the compacted context with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.';
-
       ctx.compact({
         customInstructions: buildCompactionInstructions(params['instructions']),
+        // Continuation is scheduled by the session_compact hook (fromExtension
+        // path) — the single scheduler; see the auto-compaction comment above.
         onComplete: once(() => {
-          scheduleCompactionContinuation(
-            pi,
-            ctx,
-            notify,
-            continuation,
-            'Compaction completed. Continuing from the compacted context.',
-          );
+          clearCompactionWorkingState(ctx);
         }),
         onError: (error: Error) => {
           clearCompactionWorkingState(ctx);
@@ -227,23 +223,24 @@ export function registerContextTools(
       const a = (args ?? {}) as Record<string, unknown>;
       const type = typeof a['type'] === 'string' ? a['type'] : 'compact';
       const instructions = type === 'compact' && typeof a['instructions'] === 'string' && a['instructions'] ? a['instructions'] : '';
-      const nameStr = theme?.fg('toolTitle', theme.bold('manage_context')) ?? 'manage_context';
-      const typeStr = theme?.fg('dim', ` (${type})`) ?? ` (${type})`;
+      const nameStr = cliToolTitle(theme, 'manage_context', { bold: true });
+      const typeStr = paint(theme, 'dim', ` (${type})`);
+      const displayInstructions = instructions.length > 50 ? `${instructions.slice(0, 47)}…` : instructions;
       const detail = instructions
-        ? (theme?.fg('dim', ` "${instructions.length > 50 ? instructions.slice(0, 47) + '…' : instructions}"`) ?? ` "${instructions}"`)
+        ? paint(theme, 'dim', ` "${displayInstructions}"`)
         : '';
       return simpleRenderer(`${nameStr}${typeStr}${detail}`);
     },
 
     renderResult(result, opts, theme?: PiTheme) {
       if (opts.isPartial) {
-        return simpleRenderer(theme?.fg('warning', 'Processing…') ?? 'Processing…');
+        return simpleRenderer(paint(theme, 'warning', CLI_STATUS_TEXT.processing));
       }
       const ok = !result.isError;
-      const icon = theme?.fg(ok ? 'success' : 'error', ok ? '✓' : '✗') ?? (ok ? '✓' : '✗');
-      const nameStr = theme?.fg('toolTitle', 'manage_context') ?? 'manage_context';
+      const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
+      const nameStr = cliToolTitle(theme, 'manage_context');
       const msg = ok
-        ? (theme?.fg('dim', ' · done') ?? ' · done')
+        ? paint(theme, 'dim', ` · ${CLI_STATUS_TEXT.done}`)
         : '';
       return simpleRenderer(`${icon} ${nameStr}${msg}`);
     },

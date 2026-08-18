@@ -27,6 +27,11 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./shell": {
+      "types": "./dist/shell/index.d.ts",
+      "import": "./dist/shell/index.js",
+      "default": "./dist/shell/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -84,5 +89,13 @@
   },
   "octocode": {
     "readmeSync": false
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-tui": "^0.80.7"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
   }
 }

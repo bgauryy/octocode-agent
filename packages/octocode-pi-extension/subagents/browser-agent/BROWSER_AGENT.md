@@ -13,8 +13,7 @@ Main agent
 browser-agent (subagent)
   ├─ chromeDebug          ← 28 CDP schemes, full CDP via scheme:"raw"
   ├─ web                  ← CDP docs lookup
-  ├─ localGetFileContent  ← read source files, screenshots
-  └─ localSearchCode      ← correlate browser errors to source
+  └─ MCPTool              ← Octocode MCP local tools for source reads/search/tree
 
 subagents/browser-agent/
   SYSTEM_PROMPT.md        ← subagent instructions (loaded at spawn)
@@ -145,7 +144,7 @@ method:"DOM.performSearch" params:{"query":"login","includeUserAgentShadowDOM":f
 # Execute JS in specific iframe
 method:"Page.getFrameTree" params:{}
   → get frameId
-method:"Page.createIsolatedWorld" params:{"frameId":"...","worldName":"cdp","grantUniveralAccess":true}
+method:"Page.createIsolatedWorld" params:{"frameId":"...","worldName":"cdp","grantUniversalAccess":true}
   → get executionContextId
 method:"Runtime.evaluate" params:{"expression":"document.title","contextId":N,"returnByValue":true}
 
@@ -229,7 +228,8 @@ Returns: `{score:N, total:14, verdict:"CLEAN"|"MOSTLY_CLEAN"|"DETECTED"}`
 | `[ACTION]` | Recommended next step |
 | `[METRIC]` | Count, size, duration, % |
 | `[SCREENSHOT]` | Absolute path to PNG |
-| `[BLOCKED]` | Cannot proceed — state what's needed |
+| `[BLOCKED]` | Needs input to proceed — state what's needed |
+| `[FAILED]` | Objective cannot be completed — state what failed + partial findings |
 | `[DONE]` | Phase complete — stop and wait |
 
 ### Multi-turn discipline

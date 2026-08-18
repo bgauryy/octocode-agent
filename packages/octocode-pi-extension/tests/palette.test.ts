@@ -24,26 +24,29 @@ test('paint uses theme token and falls back to raw text', () => {
   assert.equal(paint(undefined, 'path', 'src/a.ts'), 'src/a.ts');
 });
 
-test('colorEnabled honors NO_COLOR and FORCE_COLOR', () => {
-  assert.equal(colorEnabled({}), true);
+test('colorEnabled honors NO_COLOR, FORCE_COLOR, and requires a TTY by default', () => {
+  // No env override → gated on stdout.isTTY so raw SGR never leaks into
+  // piped/redirected output. Vitest runs without a TTY, so the default is
+  // whatever the real stream reports.
+  assert.equal(colorEnabled({}), process.stdout.isTTY === true);
   assert.equal(colorEnabled({ NO_COLOR: '1' }), false);
-  assert.equal(colorEnabled({ NO_COLOR: '' }), true); // empty = not set per convention
-  assert.equal(colorEnabled({ FORCE_COLOR: '1' }), true);
+  assert.equal(colorEnabled({ NO_COLOR: '' }), process.stdout.isTTY === true); // empty = not set per convention
+  assert.equal(colorEnabled({ FORCE_COLOR: '1' }), true); // explicit force wins over non-TTY
   assert.equal(colorEnabled({ NO_COLOR: '1', FORCE_COLOR: '1' }), false); // NO_COLOR wins
 });
 
 test('hyperlinksEnabled follows color unless explicitly overridden', () => {
-  assert.equal(hyperlinksEnabled({}), true);
+  assert.equal(hyperlinksEnabled({ FORCE_COLOR: '1' }), true);
   assert.equal(hyperlinksEnabled({ NO_COLOR: '1' }), false);
   assert.equal(hyperlinksEnabled({ NO_COLOR: '1', OCTOCODE_HYPERLINKS: '1' }), true);
-  assert.equal(hyperlinksEnabled({ OCTOCODE_HYPERLINKS: '0' }), false);
+  assert.equal(hyperlinksEnabled({ OCTOCODE_HYPERLINKS: '0', FORCE_COLOR: '1' }), false);
 });
 
 test('hyperlink wraps in OSC 8 when enabled, plain otherwise', () => {
-  const linked = hyperlink('https://x.dev', 'x', {});
+  const linked = hyperlink('https://x.dev', 'x', { FORCE_COLOR: '1' });
   assert.equal(linked, '\x1b]8;;https://x.dev\x07x\x1b]8;;\x07');
   assert.equal(hyperlink('https://x.dev', 'x', { NO_COLOR: '1' }), 'x');
-  assert.equal(hyperlink('', 'x', {}), 'x'); // empty url → plain
+  assert.equal(hyperlink('', 'x', { FORCE_COLOR: '1' }), 'x'); // empty url → plain
 });
 
 test('isHttpUrl matches only http(s) urls', () => {

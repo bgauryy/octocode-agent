@@ -69,14 +69,19 @@ export type PiSdkModule = Record<string, unknown>;
 /** Factory function returned by importExtensionFactory. */
 export type ExtensionFactory = (opts?: Record<string, unknown>) => unknown;
 
+export type OctocodeShellFactory = (
+  runtime: unknown,
+  deps?: { version?: string },
+) => { run: () => Promise<number> } | Promise<{ run: () => Promise<number> }>;
+
 export interface SdkDeps {
   log?: (msg: string) => void;
   env?: NodeJS.ProcessEnv;
   importPiSdk?: () => Promise<PiSdkModule | null>;
   importExtensionFactory?: () => Promise<ExtensionFactory | null>;
   resolveHome?: (env: NodeJS.ProcessEnv) => string;
-  /** OCTOCODE_SHELL=1 shell factory. Defaults to the core's lazy export; inject to test. */
-  createOctocodeShell?: (runtime: unknown, deps?: { version?: string }) => Promise<{ run: () => Promise<number> }>;
+  /** OCTOCODE_SHELL=1 shell factory. Defaults to the core shell export; inject to test. */
+  createOctocodeShell?: OctocodeShellFactory;
 }
 
 // ── Launch deps ───────────────────────────────────────────────────────────────

@@ -26,18 +26,41 @@ function skillSortKey(skill: SkillInfo): string {
  * installs/removals are reflected without a watcher and the block survives
  * compaction through the normal before_agent_start prompt reinjection.
  */
-export function renderAvailableSkillsAddendum(skills: SkillInfo[] | undefined): string {
-  const valid = (skills ?? [])
+function validSkills(skills: SkillInfo[] | undefined): SkillInfo[] {
+  return (skills ?? [])
     .filter((skill) => clean(skill.name).length > 0)
     .sort((a, b) => skillSortKey(a).localeCompare(skillSortKey(b)));
+}
+
+function formatSkillLine(skill: SkillInfo): string {
+  const description = skill.description ? truncate(skill.description) : '(no description)';
+  const source = [skill.source, skill.scope].filter(Boolean).join('/');
+  return `- ${skill.name}: ${description}${source ? ` [${source}]` : ''}`;
+}
+
+export function renderSkillsDashboard(skills: SkillInfo[] | undefined): string {
+  const valid = validSkills(skills);
+  const shown = valid.slice(0, MAX_SKILLS);
+  return [
+    '◆ Octocode skills',
+    '',
+    'Available now',
+    ...(shown.length > 0 ? shown.map(formatSkillLine) : ['(none discovered — run /reload after installing skills)']),
+    ...(valid.length > shown.length ? [`- …and ${valid.length - shown.length} more skill(s)`] : []),
+    '',
+    'How to use',
+    'Load one explicitly with /skill:<name>, or ask normally and the agent should read SKILL.md when the task matches.',
+    'Install bundled skills with: npx octocode skill --name <skill> --platform pi',
+    'Refresh discovery with /reload after installs/removals.',
+  ].join('\n');
+}
+
+export function renderAvailableSkillsAddendum(skills: SkillInfo[] | undefined): string {
+  const valid = validSkills(skills);
   if (valid.length === 0) return '';
 
   const shown = valid.slice(0, MAX_SKILLS);
-  const lines = shown.map((skill) => {
-    const description = skill.description ? truncate(skill.description) : '(no description)';
-    const source = [skill.source, skill.scope].filter(Boolean).join('/');
-    return `- ${skill.name}: ${description}${source ? ` [${source}]` : ''}`;
-  });
+  const lines = shown.map(formatSkillLine);
   if (valid.length > shown.length) lines.push(`- …and ${valid.length - shown.length} more skill(s)`);
 
   return [
