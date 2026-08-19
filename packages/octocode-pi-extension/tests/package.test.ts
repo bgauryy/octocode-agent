@@ -347,37 +347,38 @@ test('build copies bundled Octocode skills without secret env files', () => {
   );
   assert.equal(
     path.basename(getAwarenessCLIPath(distDir)),
-    'octocode-awareness.js',
-    'Awareness CLI resolves to an octocode-awareness.js entry (dist bundle or node_modules fallback)'
+    'cli.js',
+    'Awareness Lite CLI resolves to a cli.js entry (dist bundle or node_modules fallback)'
   );
   assert.equal(
-    fs.existsSync(path.join(distDir, 'awareness', 'octocode-awareness.js')),
+    fs.existsSync(path.join(distDir, 'awareness', 'cli.js')),
     true,
-    'awareness runtime assets are bundled under dist/awareness'
+    'awareness-lite runtime assets are bundled under dist/awareness'
   );
 
   const schemaOutput = execFileSync(
     process.execPath,
-    [getAwarenessCLIPath(distDir), 'schema', 'commands', '--compact'],
+    [getAwarenessCLIPath(distDir), 'schema'],
     { encoding: 'utf8' }
   );
   const commandSchema = JSON.parse(schemaOutput) as {
-    commands: Record<string, Record<string, string[]>>;
+    commands: Record<string, string[]>;
   };
-  const hasCommand = (noun: string, verb: string) =>
-    Object.values(commandSchema.commands).some((group) => group[noun]?.includes(verb));
-  for (const [noun, verb] of [
-    ['attend', '<direct>'],
-    ['work', 'start'],
+  const hasCommand = (command: string, actionPrefix: string) =>
+    commandSchema.commands[command]?.some((action) => action.startsWith(actionPrefix)) === true;
+  for (const [command, actionPrefix] of [
+    ['status', 'status'],
+    ['plan', 'create'],
+    ['task', 'claim'],
     ['lock', 'acquire'],
-    ['verify', 'audit'],
-    ['signal', 'list'],
+    ['work', 'start'],
+    ['check', 'audit'],
     ['memory', 'recall'],
-    ['reflect', 'record'],
-    // note: 'wiki sync' was intentionally removed from Awareness (SQLite is canonical,
-    // no generated wiki projection) — see octocode-awareness docs/FEATURE_SWEEP.md.
+    ['agent', 'join'],
+    ['message', 'send'],
+    ['hooks', 'pre-edit'],
   ] as const) {
-    assert.equal(hasCommand(noun, verb), true, `Awareness schema includes ${noun} ${verb}`);
+    assert.equal(hasCommand(command, actionPrefix), true, `Awareness Lite schema includes ${command} ${actionPrefix}`);
   }
 
   // Skills live ONLY in dist/skills now (single source, surfaced via the
@@ -385,7 +386,7 @@ test('build copies bundled Octocode skills without secret env files', () => {
   // redundant root skills/ dir and no pi.skills declaration — that duplicate
   // package-scanned copy caused [Skill conflicts].
   const skills = listBundledSkills(distDir);
-  assert.ok(skills.includes('octocode-awareness'), 'Awareness skill is bundled into dist/skills');
+  assert.ok(skills.includes('octocode-awareness-lite'), 'Awareness Lite skill is bundled into dist/skills');
   for (const skill of skills) {
     assert.equal(
       fs.existsSync(path.join(distDir, 'skills', skill, 'SKILL.md')),
@@ -427,11 +428,11 @@ test('build copies bundled Octocode skills without secret env files', () => {
   );
   assert.equal(packageJson.pi?.skills, undefined, 'pi.skills removed — resources_discover is the single source');
 
-  assert.ok(skills.includes('octocode-awareness'), 'dist bundles the octocode-awareness skill');
+  assert.ok(skills.includes('octocode-awareness-lite'), 'dist bundles the octocode-awareness-lite skill');
   assert.equal(
-    fs.existsSync(path.join(distDir, 'skills', 'octocode-awareness', 'SKILL.md')),
+    fs.existsSync(path.join(distDir, 'skills', 'octocode-awareness-lite', 'SKILL.md')),
     true,
-    'Awareness skill SKILL.md is bundled for Pi resource discovery'
+    'Awareness Lite skill SKILL.md is bundled for Pi resource discovery'
   );
   const forbiddenEnv = path.join(
     distDir,
@@ -554,7 +555,7 @@ test(
     const status = formatStatus(distDir);
     assert.match(status, /system prompt: found/);
     assert.match(status, /MCP research \(octocode server\) · 11 support · 3 guarded built-ins · 4 replaced/);
-    assert.match(status, /awareness CLI:.*octocode-awareness\.js/);
+    assert.match(status, /awareness lite CLI:.*cli\.js/);
     assert.match(status, /management CLI: npx octocode/);
     assert.match(status, /internal error log: .*\.octocode\/logs\/error\.txt/);
     assert.match(
@@ -1663,7 +1664,7 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
         systemPrompt: 'Pi base prompt',
         systemPromptOptions: {
           skills: [
-            { name: 'octocode-awareness', description: 'Shared workspace coordination and verification.' },
+            { name: 'octocode-awareness-lite', description: 'Shared workspace coordination and verification.' },
             { name: 'octocode-roast', description: 'Critical review and adversarial critique.', source: 'user', scope: 'global' },
           ],
         },
@@ -1678,7 +1679,7 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
     assert.match(cachedPrompt, /"inputSchema"/);
     assert.match(cachedPrompt, /"text"/);
     assert.match(cachedPrompt, /<available_skills>/);
-    assert.match(cachedPrompt, /octocode-awareness: Shared workspace coordination and verification\./);
+    assert.match(cachedPrompt, /octocode-awareness-lite: Shared workspace coordination and verification\./);
     assert.match(cachedPrompt, /octocode-roast: Critical review and adversarial critique\. \[user\/global\]/);
     assert.match(cachedPrompt, /load the minimal matching skill before acting by reading its SKILL\.md/);
 
@@ -1852,8 +1853,8 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
     ['header', '<◆ Improve toolbar UX> | <Ask → inspect → edit → verify · /octocode dashboard · /octocode-plan tasks · /octocode-agents workers>'],
     ['status', 'octocode', '<◆ Octocode>'],
     ['status', 'octocode-thinking', '<thinking: unknown model>'],
-    ['indicator', '<✦><✧><✶><✧>', '220'],
-    ['working', '<Thinking…>'],
+    ['indicator', '<✦><✧><✶><✺><✹><✷><✶><✧>', '120'],
+    ['working', '<Thinking><…>'],
   ]);
   assert.equal(
     getThinkingStatus({ model: { id: 'gpt-5.5', reasoning: false } }, 'high'),
@@ -1868,8 +1869,19 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
 test('Octocode metrics footer updates on session and turn lifecycle (single surface, no status dup)', async () => {
   const { handlers } = await captureExtensions();
   const statusCalls: Array<[string, string | undefined]> = [];
-  const footerCalls: Array<(tui: unknown, theme: unknown) => { render: (w?: number) => string[] }> = [];
+  const footerCalls: Array<(tui: unknown, theme: unknown, footerData?: unknown) => { render: (w?: number) => string[]; dispose?: () => void }> = [];
   const theme = { fg: (_c: string, text: string) => text, bold: (text: string) => text };
+  let branch = 'update-awareness';
+  let branchChange: (() => void) | undefined;
+  let renderRequests = 0;
+  const tui = { requestRender: () => { renderRequests += 1; } };
+  const footerData = {
+    getGitBranch: () => branch,
+    onBranchChange: (cb: () => void) => {
+      branchChange = cb;
+      return () => { branchChange = undefined; };
+    },
+  };
   const ctx = {
     hasUI: true,
     getContextUsage: () => ({ tokens: 50_000, contextWindow: 100_000 }),
@@ -1878,14 +1890,17 @@ test('Octocode metrics footer updates on session and turn lifecycle (single surf
       setHiddenThinkingLabel: () => undefined,
       setTitle: () => undefined,
       setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]),
-      setFooter: (fn: (tui: unknown, t: unknown) => { render: (w?: number) => string[] }) => footerCalls.push(fn),
+      setFooter: (fn: (tui: unknown, t: unknown, fd?: unknown) => { render: (w?: number) => string[]; dispose?: () => void }) => footerCalls.push(fn),
       setWorkingIndicator: () => undefined,
       setWorkingMessage: () => undefined,
     },
   };
-  const renderFooter = () => footerCalls.at(-1)!(null, theme).render(200).join('');
+  const renderFooterComponent = () => footerCalls.at(-1)!(tui, theme, footerData);
+  const renderFooter = () => renderFooterComponent().render(200).join('');
 
-  await handlers.get('session_start')!.at(-1)!(undefined, ctx);
+  // Run every session_start handler: the composer chain plus feature modules'
+  // own registrations (e.g. agent-inbox context tracking) coexist on the event.
+  for (const handler of handlers.get('session_start')!) await handler(undefined, ctx);
   // Redundancy fix: the metrics are ONLY on the footer now, never a status line.
   assert.equal(statusCalls.some(([key]) => key === 'octocode-metrics'), false);
   assert.ok(footerCalls.length > 0, 'footer set on session_start');
@@ -1893,6 +1908,15 @@ test('Octocode metrics footer updates on session and turn lifecycle (single surf
   assert.match(initial, /◆ Octocode/);
   assert.match(initial, /ctx [▓░]{8} 50% 50\.0k\/100k/);
   assert.match(initial, /turns 0/);
+  assert.match(initial, /update-awareness/);
+
+  const component = renderFooterComponent();
+  branch = 'feature/pi-footer';
+  branchChange?.();
+  assert.equal(renderRequests, 1);
+  assert.match(component.render(200).join(''), /feature\/pi-footer/);
+  component.dispose?.();
+  assert.equal(branchChange, undefined);
 
   const turnStart = handlers.get('turn_start')!.at(-1)!;
   const turnEnd = handlers.get('turn_end')!.at(-1)!;
@@ -1960,7 +1984,7 @@ test('Octocode now, tasks, and skills commands provide orientation surfaces', as
   await handlers.get('before_agent_start')!.at(-1)!({
     systemPrompt: 'base prompt',
     systemPromptOptions: {
-      skills: [{ name: 'octocode-awareness', description: 'Shared repo coordination.', source: 'bundled' }],
+      skills: [{ name: 'octocode-awareness-lite', description: 'Shared repo coordination.', source: 'bundled' }],
     },
   }, ctx);
 
@@ -1983,7 +2007,7 @@ test('Octocode now, tasks, and skills commands provide orientation surfaces', as
 
   const skills = notices.find((n) => n.message.startsWith('◆ Octocode skills'))?.message ?? '';
   assert.match(skills, /Available now/);
-  assert.match(skills, /- octocode-awareness: Shared repo coordination\. \[bundled\]/);
+  assert.match(skills, /- octocode-awareness-lite: Shared repo coordination\. \[bundled\]/);
   assert.match(skills, /npx octocode skill --name <skill> --platform pi/);
 });
 
@@ -1997,7 +2021,7 @@ test('formatOctocodeDashboard is scan-friendly and includes health warnings', ()
   assert.match(dashboard, /ctx ▓▓▓▓▓▓▓▓▓░ 92%/);
   assert.match(dashboard, /⚠ context above 90%/);
   assert.match(dashboard, /Management: npx octocode/);
-  assert.match(dashboard, /Awareness: node \$OCTOCODE_AWARENESS_CLI/);
+  assert.match(dashboard, /Awareness Lite: node \$OCTOCODE_AWARENESS_CLI/);
   assert.match(dashboard, /\/octocode-status/);
 });
 
@@ -2041,7 +2065,7 @@ test('CLI slash commands removed — extension commands are lean', async () => {
   );
   assert.deepEqual(
     listExtensionHarness().extensionCommands,
-    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-now', '/octocode-tasks', '/octocode-skills', '/octocode-agents', '/octocode-cron', '/cron', '/octocode-mcp', '/mcp', '/octocode-setup', '/octocode-skills-update'],
+    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-now', '/octocode-tasks', '/octocode-skills', '/octocode-agents', '/octocode-cron', '/cron', '/octocode-mcp', '/mcp', '/octocode-setup', '/octocode-skills-update', '/octocode-inbox', '/octocode-palette', '/octocode-rewind', '/octocode-dial', '/octocode-watch', '/octocode-export'],
     'harness inventory lists every public Octocode slash command'
   );
   for (const eventName of ['tool_execution_start', 'tool_execution_end', 'session_start', 'before_agent_start', 'agent_end', 'session_before_compact', 'session_compact', 'session_shutdown']) {
@@ -2240,7 +2264,7 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
     );
     assert.doesNotMatch(beforeStartResult.systemPrompt, /project_context|repo rules/);
     assert.match(beforeStartResult.systemPrompt, /already-running/);
-    await handlers.get('session_start')!.at(-1)!(undefined, ctx);
+    for (const handler of handlers.get('session_start')!) await handler(undefined, ctx);
     await handlers.get('model_select')![0]!(undefined, ctx);
     await handlers.get('thinking_level_select')![0]!({ level: 'low' }, ctx);
     assert.ok(statuses.some(([key]) => key === 'octocode'));
@@ -2251,7 +2275,7 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
       )
     );
 
-    await handlers.get('session_shutdown')!.at(-1)!({ reason: 'new' }, ctx);
+    for (const handler of handlers.get('session_shutdown')!) await handler({ reason: 'new' }, ctx);
     assert.ok(statuses.some(([key, value]) => key === 'agent-wait' && value === undefined));
     assert.ok(statuses.some(([key, value]) => key === 'chrome-debug' && value === undefined));
     assert.ok(widgets.some(([key, value]) => key === 'octocode-status-panel' && value === undefined));
@@ -2983,8 +3007,8 @@ test('lists every extension harness surface', () => {
   );
   assert.match(
     harness.awarenessCliNote,
-    /Awareness CLI.*octocode-awareness\.js/,
-    'awarenessCliNote shows bundled Awareness CLI path'
+    /Awareness Lite CLI.*cli\.js/,
+    'awarenessCliNote shows bundled Awareness Lite CLI path'
   );
   assert.ok(!('cliCommands' in harness), 'cliCommands removed from harness');
 });
@@ -3237,27 +3261,50 @@ test('AgentMessage status surfaces recovery-risk warnings for looping workers', 
   }
 });
 
-test('activation wires the Awareness lock/lease gate into the Pi tool lifecycle', async () => {
-  // The exclusive-lease enforcement lives in @octocodeai/octocode-awareness and
-  // fires on Pi's tool lifecycle. This proves the seam this package owns: activating
-  // the extension registers the awareness pre-edit (tool_call) gate + post-edit
-  // (tool_result) recorder on Pi. The lease-blocking engine itself is covered by the
-  // awareness package's own suite (needs its SQLite engine + identity resolution).
+test('activation wires only the Awareness Lite pre-edit lock gate', async () => {
   const { handlers } = await captureExtensions();
-  assert.ok(
-    (handlers.get('tool_call') ?? []).length >= 1,
-    'awareness tool_call gate (pre-edit exclusive-lease enforcement) must be wired',
+  assert.equal(
+    (handlers.get('tool_call') ?? []).length,
+    1,
+    'Awareness Lite wires a minimal pre-edit lock conflict gate',
   );
-  assert.ok(
-    (handlers.get('tool_result') ?? []).length >= 1,
-    'awareness post-edit recorder must be wired',
-  );
-  assert.ok(
-    (handlers.get('agent_end') ?? []).length >= 1,
-    'awareness lifecycle hook must be wired',
+  assert.equal(
+    (handlers.get('tool_result') ?? []).length,
+    0,
+    'Awareness Lite intentionally does not wire the full post-edit recorder',
   );
 });
 
+test('Awareness Lite pre-edit gate blocks lock conflicts through the bundled CLI', async () => {
+  const { handlers, pi } = await captureExtensions();
+  const event = { toolName: 'write', input: { path: 'README.md' } };
+  const ctx = { cwd: '/repo', sessionManager: { getSessionId: () => 'session-a' } };
+  const cliPath = process.env.OCTOCODE_AWARENESS_CLI!;
+  const args = [
+    cliPath,
+    'hooks',
+    'pre-edit',
+    '--host',
+    'pi',
+    '--workspace',
+    '/repo',
+    '--agent-id',
+    'pi:session-a',
+    '--event-json',
+    JSON.stringify(event),
+  ];
+  pi.execResults.set(args.join(' '), {
+    code: 2,
+    stdout: JSON.stringify({ message: 'Awareness Lite lock conflict: /repo/README.md held by agent-b' }),
+  });
+
+  const result = await handlers.get('tool_call')![0]!(event, ctx);
+  assert.deepEqual(result, {
+    block: true,
+    reason: 'Awareness Lite lock conflict: /repo/README.md held by agent-b',
+  });
+  assert.deepEqual(pi.execCalls[0], { command: process.execPath, args });
+});
 test('AgentMessage routes steer/follow_up RPCs and does not fake running on idle steer', async () => {
   const spawned: Array<{ proc: MockAgentProcess }> = [];
   setAgentProcessFactoryForTests(() => {

@@ -24,6 +24,7 @@ import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import {
   spawnRpcAgent,
   isSubagentProcess,
+  prepareSpawnAgentParams,
   type SpawnAgentParams,
 } from './agent-tools.js';
 import {
@@ -55,6 +56,8 @@ interface SpawnSubagentParams {
   // the model id against a builtin provider and fail with "No API key found".
   provider?: string;
   thinking?: string;
+  isolation?: SpawnAgentParams['isolation'];
+  includeUncommitted?: boolean;
   // browser-agent extras (injected into task context block)
   url?: string;
   port?: number;
@@ -203,6 +206,8 @@ export function registerSpawnSubagentTool(
       thinking: Type.Optional(
         Type.String({ description: 'Thinking level: off|minimal|low|medium|high|xhigh. Defaults to subagent default.' }),
       ),
+      isolation: Type.Optional(Type.Unsafe({ type: 'string', enum: ['shared', 'worktree'], description: 'Worker filesystem isolation. "shared" (default) uses the current cwd; "worktree" asks before creating an isolated git worktree.' })),
+      includeUncommitted: Type.Optional(Type.Boolean({ description: 'With isolation:"worktree", apply a tracked-change snapshot from the parent tree. Untracked files are not included.' })),
       // browser-agent specific params (ignored by other subagents)
       url: Type.Optional(
         Type.String({ description: '(browser-agent) Target URL. Injected into task context.' }),
@@ -249,10 +254,13 @@ export function registerSpawnSubagentTool(
         model: params.model ?? config.model,
         provider: params.provider ?? config.provider ?? ctx?.model?.provider,
         noSession: true,
+        isolation: params.isolation,
+        includeUncommitted: params.includeUncommitted,
       };
 
       // Spawn via the same internal function as spawnAgent → same agents Map → AgentMessage works
-      const record = spawnRpcAgent(spawnParams, ctx);
+      const approvedParams = await prepareSpawnAgentParams(spawnParams, ctx);
+      const record = spawnRpcAgent(approvedParams, ctx);
 
       const agentId = record.id;
       const usage = [

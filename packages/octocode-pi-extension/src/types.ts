@@ -1,9 +1,36 @@
 /**
  * Pi runtime API type definitions.
  *
- * These are not published by Pi — defined here against the live API contract
- * observed in the codebase. Use `skipLibCheck: true` for flexibility.
+ * Prefer Pi's published public types and keep only Octocode compatibility
+ * aliases/augmentations here. The local aliases stay intentionally loose so the
+ * extension can still run against older Pi hosts that may omit newer fields.
  */
+
+import type {
+  BuildSystemPromptOptions as PiBuildSystemPromptOptions,
+  ContextUsage as PiContextUsage,
+  ExtensionAPI,
+  ExtensionCommandContext,
+  ExtensionContext,
+  ExtensionUIContext,
+  ReadonlyFooterDataProvider,
+  ToolDefinition as PiToolDefinition,
+  ToolRenderResultOptions,
+  WorkingIndicatorOptions,
+} from '@earendil-works/pi-coding-agent';
+import type { Theme as OfficialPiTheme } from '@earendil-works/pi-coding-agent';
+
+// ─── Official Pi public types ────────────────────────────────────────────────
+
+export type PiApi = ExtensionAPI;
+export type PiOfficialContext = ExtensionContext;
+export type PiOfficialCommandContext = ExtensionCommandContext;
+export type PiOfficialUi = ExtensionUIContext;
+export type PiOfficialTheme = OfficialPiTheme;
+export type PiFooterData = ReadonlyFooterDataProvider;
+export type PiRenderContext<TState = any, TArgs = any> = RenderContext & { state?: TState; args?: TArgs };
+export type PiRenderResultOptions = ToolRenderResultOptions;
+export type PiWorkingIndicator = WorkingIndicatorOptions;
 
 // ─── TypeBox ─────────────────────────────────────────────────────────────────
 
@@ -23,7 +50,16 @@ export interface ToolCallResult {
   details?: unknown;
 }
 
-export type WorkerLedgerEventType = 'spawned' | 'status' | 'message' | 'tool' | 'handback' | 'exit' | 'error' | 'killed' | 'policy';
+export type WorkerLedgerEventType = 'spawned' | 'status' | 'message' | 'tool' | 'handback' | 'exit' | 'error' | 'killed' | 'policy' | 'worktree';
+
+export interface WorkerWorktreeState {
+  path: string;
+  branch: string;
+  baseCommit: string;
+  dirtyFiles: number;
+  aheadCommits: number;
+  mergeState: 'clean' | 'unmerged' | 'conflict' | 'merged' | 'discarded';
+}
 
 export interface WorkerLedgerEvent {
   type: WorkerLedgerEventType;
@@ -50,6 +86,7 @@ export interface WorkerLedgerEntry {
   next?: string;
   /** Rolling 1-line progress note for a running worker (what it is doing now). */
   deltaSummary?: string;
+  worktree?: WorkerWorktreeState;
   recentEvents: WorkerLedgerEvent[];
 }
 
@@ -108,17 +145,14 @@ export interface RenderContext {
   showImages?: boolean;
 }
 
-export interface RenderResultOptions {
+export interface RenderResultOptions extends Partial<PiRenderResultOptions> {
   expanded?: boolean;
   isPartial?: boolean;
 }
 
 // ─── Pi theme / UI ───────────────────────────────────────────────────────────
 
-export interface PiTheme {
-  fg(color: string, text: string): string;
-  bold(text: string): string;
-}
+export interface PiTheme extends Pick<PiOfficialTheme, 'fg' | 'bold'> {}
 
 export interface PiAutocompleteItem {
   value: string;
@@ -134,30 +168,45 @@ export interface PiAutocompleteResult {
 export interface PiAutocompleteProvider {
   triggerCharacters?: string[];
   getSuggestions(
-    lines: string[], line: number, col: number, options: unknown,
+    lines: string[], line: number, col: number, options: { signal?: AbortSignal; force?: boolean },
   ): Promise<PiAutocompleteResult | undefined>;
-  applyCompletion(lines: string[], line: number, col: number, item: PiAutocompleteItem, prefix: string): unknown;
+  applyCompletion(lines: string[], line: number, col: number, item: PiAutocompleteItem, prefix: string): { lines: string[]; cursorLine: number; cursorCol: number };
   shouldTriggerFileCompletion?(lines: string[], line: number, col: number): boolean;
 }
 
-export interface PiWorkingIndicator {
-  frames: string[];
-  intervalMs?: number;
+export interface PiTextContent {
+  type: 'text';
+  text: string;
+}
+
+export interface PiImageContent {
+  type: 'image';
+  /** Base64 image payload; Pi's Image component takes base64 + MIME, not file paths or Buffers. */
+  data: string;
+  mimeType: string;
+}
+
+export type PiMessageContent = string | Array<PiTextContent | PiImageContent>;
+
+export interface PiDialogOptions {
+  signal?: AbortSignal;
+  /** Timeout in milliseconds. */
+  timeout?: number;
 }
 
 export interface PiUi {
   // Dialogs
-  notify?(message: string, level?: string): void;
-  confirm?(title: string, message: string, opts?: { timeout?: number; signal?: AbortSignal }): Promise<boolean>;
-  select?(title: string, items: string[] | PiAutocompleteItem[], opts?: { timeout?: number }): Promise<string | undefined>;
-  input?(title: string, placeholder?: string, opts?: { timeout?: number }): Promise<string | undefined>;
+  notify?(message: string, level?: 'info' | 'warning' | 'error' | string): void;
+  confirm?(title: string, message: string, opts?: PiDialogOptions): Promise<boolean>;
+  select?(title: string, items: string[], opts?: PiDialogOptions): Promise<string | undefined>;
+  input?(title: string, placeholder?: string, opts?: PiDialogOptions): Promise<string | undefined>;
   editor?(title: string, prefill?: string): Promise<string | undefined>;
   custom?<T>(factory: (tui: unknown, theme: PiTheme, keybindings: unknown, done: (value: T) => void) => unknown, opts?: { overlay?: boolean; overlayOptions?: unknown; onHandle?: (handle: unknown) => void }): Promise<T | undefined>;
   // Status / widgets
   setHiddenThinkingLabel?(label: string): void;
   setStatus?(name: string, text: string | undefined): void;
   setWidget?(name: string, content: string[] | ((tui: unknown, theme: PiTheme) => unknown) | undefined, opts?: { placement?: 'aboveEditor' | 'belowEditor' }): void;
-  setFooter?(factory: ((tui: unknown, theme: PiTheme) => unknown) | undefined): void;
+  setFooter?(factory: ((tui: unknown, theme: PiTheme, footerData?: PiFooterData) => unknown) | undefined): void;
   setHeader?(factory: ((tui: unknown, theme: PiTheme) => unknown) | undefined): void;
   setTitle?(title: string): void;
   setWorkingMessage?(message?: string): void;
@@ -183,8 +232,20 @@ export interface PiUi {
 // ─── Pi context ──────────────────────────────────────────────────────────────
 
 export interface PiSessionManager {
+  getCwd?(): string | undefined;
+  getSessionDir?(): string | undefined;
+  getSessionId?(): string | undefined;
   getSessionFile?(): string | undefined;
-  appendMessage?(opts: unknown): void;
+  getSessionName?(): string | undefined;
+  getLeafId?(): string | undefined;
+  getLeafEntry?(): unknown | undefined;
+  getEntry?(entryId: string): unknown | undefined;
+  getLabel?(entryId: string): string | undefined;
+  /** Session entries root→leaf (mirrors Pi's ReadonlySessionManager.getBranch). Entries carry a `type` discriminant, e.g. 'compaction'. */
+  getBranch?(): unknown[];
+  getHeader?(): unknown | undefined;
+  getEntries?(): unknown[];
+  getTree?(): unknown[];
 }
 
 export interface CompactOptions {
@@ -224,7 +285,7 @@ export interface PiContext {
   isProjectTrusted?(): boolean | Promise<boolean>;
   compact?(opts: CompactOptions): void;
   /** `tokens` is null when unknown — e.g. right after compaction (mirrors Pi's ContextUsage). */
-  getContextUsage?(): { tokens: number | null; contextWindow: number; percent?: number | null } | null | undefined;
+  getContextUsage?(): (Partial<PiContextUsage> & { tokens: number | null; contextWindow: number }) | null | undefined;
   sessionManager?: PiSessionManager;
   modelRegistry?: {
     find(provider: string, id: string): PiModel | undefined;
@@ -239,13 +300,19 @@ export interface PiContext {
 export interface PiCommandContext extends PiContext {
   newSession?(opts?: NewSessionOptions): Promise<{ cancelled?: boolean } | undefined>;
   /** Fire-and-forget user message (available in commands and in withSession callbacks). */
-  sendUserMessage?(text: string, opts?: { deliverAs?: string }): void | Promise<void>;
+  sendUserMessage?(content: PiMessageContent, opts?: { deliverAs?: 'steer' | 'followUp' | string }): void | Promise<void>;
   reload?(): Promise<void>;
+  /** Fork the session at an entry into a new session file (mirrors Pi's ExtensionCommandContext.fork). */
+  fork?(entryId: string, opts?: { position?: 'before' | 'at'; withSession?: (ctx: PiCommandContext) => Promise<void> }): Promise<{ cancelled?: boolean }>;
+  /** Programmatic rewind: move the session leaf to targetId in place (mirrors Pi's navigateTree). */
+  navigateTree?(targetId: string, opts?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ cancelled?: boolean }>;
+  switchSession?(sessionPath: string, opts?: { withSession?: (ctx: PiCommandContext) => Promise<void> }): Promise<{ cancelled?: boolean }>;
+  waitForIdle?(): Promise<void>;
 }
 
 // ─── Pi tool ─────────────────────────────────────────────────────────────────
 
-export interface ToolDefinition {
+export interface ToolDefinition extends Partial<Omit<PiToolDefinition<any, unknown, any>, 'parameters' | 'prepareArguments' | 'execute' | 'renderCall' | 'renderResult'>> {
   name: string;
   label: string;
   description: string;
@@ -277,7 +344,7 @@ export interface CommandDefinition {
   description: string;
   handler(args: string, ctx: PiCommandContext): Promise<void>;
   /** Optional tab-completion for command arguments in TUI interactive mode. */
-  getArgumentCompletions?(prefix: string): AutocompleteItem[] | null;
+  getArgumentCompletions?(prefix: string): AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
 }
 
 // ─── Pi event payloads ───────────────────────────────────────────────────────
@@ -301,7 +368,7 @@ export interface SkillInfo {
  * Use to inspect loaded skills, active tools, or custom guidelines without
  * re-parsing the rendered systemPrompt string.
  */
-export interface BuildSystemPromptOptions {
+export interface BuildSystemPromptOptions extends Partial<Omit<PiBuildSystemPromptOptions, 'skills' | 'contextFiles'>> {
   customPrompt?: string;
   selectedTools?: string[];
   toolSnippets?: Record<string, string>;
@@ -431,9 +498,9 @@ export interface PiInstance {
   registerFlag?(name: string, opts: { description: string; type: 'boolean' | 'string'; default?: unknown }): void;
   getFlag?(name: string): unknown;
   // ─── Messages / events bus ──────────────────────────────────────────────────
-  sendUserMessage(text: string, opts?: { deliverAs?: string }): void;
-  sendMessage?(msg: { customType: string; content: string; display?: boolean; details?: unknown }): void;
-  registerMessageRenderer?(customType: string, renderer: (message: unknown, options: { expanded?: boolean }, theme: PiTheme) => unknown): void;
+  sendUserMessage(content: PiMessageContent, opts?: { deliverAs?: 'steer' | 'followUp' | string }): void;
+  sendMessage?(msg: { customType: string; content: PiMessageContent; display?: boolean; details?: unknown }, opts?: { triggerTurn?: boolean; deliverAs?: 'steer' | 'followUp' | 'nextTurn' | string }): void;
+  registerMessageRenderer?(customType: string, renderer: (message: unknown, options: { expanded: boolean }, theme: PiTheme) => unknown): void;
   events?: { on(event: string, cb: (data: unknown) => void): void; emit(event: string, data: unknown): void };
   // ─── Model / thinking ───────────────────────────────────────────────────────
   getThinkingLevel?(): string | undefined;
@@ -442,7 +509,8 @@ export interface PiInstance {
   // ─── Session / labels ───────────────────────────────────────────────────────
   setSessionName?(name: string): void;
   getSessionName?(): string | undefined;
-  appendEntry?(entry: unknown): void;
+  /** Persist a CustomEntry for state only — never rendered, never in LLM context (mirrors Pi's appendEntry). */
+  appendEntry?(customType: string, data?: unknown): void;
   setLabel?(entryId: string, label: string | undefined): void;
   // ─── Providers ──────────────────────────────────────────────────────────────
   registerProvider?(name: string, config: Record<string, unknown>): void;

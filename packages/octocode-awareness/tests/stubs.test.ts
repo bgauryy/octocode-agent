@@ -149,12 +149,45 @@ describe('notifyGet', () => {
     const result = notifyGet(db, { format: 'hook', agent_id: 'agent-b', workspace: '/repo' });
     expect(result.ok).toBe(true);
     expect(result.notifications).toHaveLength(1);
-    expect(result.notifications[0]?.text).toContain('handoff cluster (3)');
-    expect(result.notifications[0]?.text).toContain('files=2[README.md]');
+    expect(result.notifications[0]?.text).toContain('handoff ×3');
+    expect(result.notifications[0]?.text).toContain('files 2: README.md (+1)');
     expect(result.notifications[0]?.text).toContain('Review session handoff');
     expect(result.notifications[0]?.text).toContain('from multiple agents');
+    expect(result.notifications[0]?.text).toContain('broadcast');
+    expect(result.notifications[0]?.text).not.toContain('/repo/packages');
     expect(result.notifications[0]?.text).not.toContain('pi:session-a');
-    expect('additionalContext' in result && result.additionalContext).toContain('handoff cluster (3)');
+    expect('additionalContext' in result && result.additionalContext).toContain('🧠 Brief — showing 1/1');
+    expect('additionalContext' in result && result.additionalContext).toContain('handoff ×3');
+  });
+
+  it('dedupes colon-suffixed session handoff subjects before selecting hook brief rows', () => {
+    const db = freshDb();
+    insertNotification(db, {
+      agentId: 'pi:session-a',
+      kind: 'handoff',
+      subject: 'Review session handoff for pi:session-a',
+      body: 'Review session handoff: 0 active and 0 pending runs remain.',
+      files: ['.gitignore'],
+      workspacePath: '/repo',
+      importance: 8,
+    });
+    insertNotification(db, {
+      agentId: 'pi:session-a',
+      kind: 'handoff',
+      subject: 'Review session handoff: 0 active and 0 pending runs remain.',
+      body: 'Session capture for pi:session-a: 0 active and 0 pending runs remain.',
+      files: ['.gitignore'],
+      workspacePath: '/repo',
+      importance: 8,
+    });
+
+    const result = notifyGet(db, { format: 'hook', agent_id: 'agent-b', workspace: '/repo' });
+    expect(result.ok).toBe(true);
+    expect(result.notifications).toHaveLength(1);
+    expect(result.notifications[0]?.text).toContain('handoff ×2');
+    expect(result.notifications[0]?.text).toContain('files 1: .gitignore');
+    expect(result.notifications[0]?.text).toContain('Review session handoff');
+    expect(result.notifications[0]?.text).not.toContain('Review session handoff: 0 active');
   });
 });
 

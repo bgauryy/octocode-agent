@@ -92,6 +92,7 @@ import type {
   LaunchDeps,
   SdkDeps,
 } from './types.js';
+import { parseServeArgs, runServeStdio as defaultRunServeStdio } from './serve.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -371,7 +372,8 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
       ['octocode-agent [args]', 'launch the agent (SDK embed by default)'],
       ['octocode-agent "<prompt>"', 'launch with an initial message'],
       ['run "<task>" [--json]', 'headless: run once, print result, exit'],
-      ['serve', 'RPC over stdin/stdout for IDE/web embeds'],
+      ['serve [--stdio]', 'Octocode thin-client envelope over stdin/stdout for IDE/web embeds'],
+      ['serve --raw-rpc', 'compat: raw Pi RPC stdin/stdout'],
       ['resume|session [<id>]', 'resume: pick, or fuzzy id; -c resumes THIS terminal'],
     ]),
     '',
@@ -1590,8 +1592,12 @@ export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<
       const mode = json ? ['--mode', 'json'] : ['--print'];
       return launchAgent([...mode, ...passthrough], deps);
     }
-    case 'serve':
-      return launchAgent(['--mode', 'rpc', ...(rest ?? [])], deps);
+    case 'serve': {
+      const serve = parseServeArgs(rest ?? []);
+      if (serve.mode === 'raw-rpc') return launchAgent(['--mode', 'rpc', ...serve.rpcArgs], deps);
+      const runServe = deps.runServeStdio ?? ((argv, d) => defaultRunServeStdio({ argv, env: d.env }));
+      return runServe(rest ?? [], deps);
+    }
     case 'resume': {
       const r = rest ?? [];
       const id = r[0] && !r[0].startsWith('-') ? r[0] : undefined;

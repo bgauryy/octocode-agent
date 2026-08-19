@@ -190,9 +190,9 @@ Registered via `createHookComposer(pi, …)` (middleware composer that catches a
 | `session_before_compact` | Deterministic split-turn checkpoint on the overflow path only |
 | `session_compact` | Clears read-states; schedules the continuation for extension-triggered compaction only |
 
-### Awareness hooks
+### Awareness Lite
 
-`wirePiAwarenessHooks(pi, { skillRoot })` from `@octocodeai/octocode-awareness` is called at load to wire the full awareness lifecycle (attend, work tracking, memory, reflection, hooks) into Pi session events.
+The harness bundles `@octocodeai/octocode-awareness-lite` and exposes its CLI/skill assets. Lite provides explicit SQLite-backed `status`, `plan`, `task`, `lock`, `work`, `handoff`, `check`, and `memory` commands, but it does not wire the full Awareness lifecycle hooks into Pi session/tool events.
 
 ---
 
@@ -221,8 +221,8 @@ Set by the harness at load time.
 
 | Variable | Value |
 |---|---|
-| `OCTOCODE_AWARENESS_CLI` | Absolute path to `dist/awareness/octocode-awareness.js` (bundled) |
-| `OCTOCODE_SKILL_ROOT` | Absolute path to `dist/skills/octocode-awareness/` |
+| `OCTOCODE_AWARENESS_CLI` | Absolute path to `dist/awareness/cli.js` (bundled) |
+| `OCTOCODE_SKILL_ROOT` | Absolute path to `dist/skills/octocode-awareness-lite/` |
 
 Read from env at runtime (not set by harness):
 
@@ -245,7 +245,7 @@ Resolved by `getAssetPaths()` in `src/assets.ts`.
 | Asset | Path |
 |---|---|
 | System prompt | `dist/system/SYSTEM_PROMPT.md` |
-| Awareness CLI | `dist/awareness/octocode-awareness.js` |
+| Awareness Lite CLI | `dist/awareness/cli.js` |
 | Skills dir | `dist/skills/` |
 | APPEND_SYSTEM template | `dist/system/APPEND_SYSTEM.md` |
 

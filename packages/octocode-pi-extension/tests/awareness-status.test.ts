@@ -15,36 +15,47 @@ import type { PiContext } from '../src/types.js';
 afterEach(() => resetAwarenessStatusStateForTests());
 
 const FULL = JSON.stringify({
-  ok: true,
-  active_plans: 1,
-  ready_tasks: 3,
-  in_progress_tasks: 0,
-  verify_tasks: 2,
-  pending_runs: 1,
-  actionable_refinements: 2,
-  all_open_refinements: 5,
-  lock_count: 0,
+  plans: 3,
+  activePlans: 1,
+  tasks: 7,
+  readyTasks: 2,
+  inProgressTasks: 1,
+  locks: 2,
+  work: 1,
+  pendingChecks: 4,
+  verifyTasks: 4,
+  agents: 2,
+  messages: 5,
 });
 
-test('parseAwarenessStatus maps the compact JSON fields', () => {
+test('parseAwarenessStatus maps the Lite status JSON fields', () => {
   const s = parseAwarenessStatus(FULL)!;
   assert.equal(s.activePlans, 1);
-  assert.equal(s.readyTasks, 3);
-  assert.equal(s.verifyTasks, 2);
-  assert.equal(s.pendingRuns, 1);
-  assert.equal(s.actionableRefinements, 2);
-  assert.equal(s.openRefinements, 5);
+  assert.equal(s.readyTasks, 2);
+  assert.equal(s.inProgressTasks, 1);
+  assert.equal(s.verifyTasks, 4);
+  assert.equal(s.lockCount, 2);
+  assert.equal(s.workCount, 1);
+  assert.equal(s.agentCount, 2);
+  assert.equal(s.messageCount, 5);
 });
 
-test('parseAwarenessStatus returns null on bad JSON or ok:false', () => {
+test('parseAwarenessStatus falls back to legacy Lite status totals', () => {
+  const s = parseAwarenessStatus(JSON.stringify({ plans: 1, tasks: 3, pendingChecks: 2 }))!;
+  assert.equal(s.activePlans, 1);
+  assert.equal(s.readyTasks, 3);
+  assert.equal(s.inProgressTasks, 0);
+  assert.equal(s.verifyTasks, 2);
+});
+
+test('parseAwarenessStatus returns null on bad JSON', () => {
   assert.equal(parseAwarenessStatus('not json'), null);
-  assert.equal(parseAwarenessStatus(JSON.stringify({ ok: false })), null);
 });
 
 test('hasAwarenessSignal is false only when everything is zero', () => {
   const zero: AwarenessStatus = {
     activePlans: 0, readyTasks: 0, inProgressTasks: 0, verifyTasks: 0,
-    pendingRuns: 0, actionableRefinements: 0, openRefinements: 0, lockCount: 0,
+    lockCount: 0, workCount: 0, agentCount: 0, messageCount: 0,
   };
   assert.equal(hasAwarenessSignal(zero), false);
   assert.equal(hasAwarenessSignal({ ...zero, readyTasks: 1 }), true);
@@ -56,14 +67,18 @@ test('formatAwarenessPanel renders counts and surfaces verify-debt', () => {
   assert.equal(lines.length, 1);
   assert.match(lines[0]!, /Awareness/);
   assert.match(lines[0]!, /plans 1/);
-  assert.match(lines[0]!, /ready 3/);
-  assert.doesNotMatch(lines[0]!, /doing 0/); // zero-count segments are dropped
-  assert.match(lines[0]!, /refine 2/);       // actionable refinements, not all-open (5)
-  assert.match(lines[0]!, /verify-debt 3/);  // verify_tasks 2 + pending_runs 1
+  assert.match(lines[0]!, /ready 2/);
+  assert.match(lines[0]!, /doing 1/);
+  assert.doesNotMatch(lines[0]!, /tasks 7/); // total task count is not mislabeled as actionable ready work
+  assert.match(lines[0]!, /locks 2/);
+  assert.match(lines[0]!, /work 1/);
+  assert.match(lines[0]!, /agents 2/);
+  assert.match(lines[0]!, /msgs 5/);
+  assert.match(lines[0]!, /verify-debt 4/);
 });
 
 test('formatAwarenessPanel is empty when there is no signal', () => {
-  const zero = parseAwarenessStatus(JSON.stringify({ ok: true }))!;
+  const zero = parseAwarenessStatus(JSON.stringify({}))!;
   assert.deepEqual(formatAwarenessPanel(zero), []);
 });
 

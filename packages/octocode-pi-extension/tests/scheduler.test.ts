@@ -7,7 +7,7 @@ import {
 } from '../src/scheduler.js';
 import type { PiExecResult } from '../src/types.js';
 
-test('cron scheduler lists the non-mutating maintenance digest job', () => {
+test('cron scheduler lists the non-mutating Awareness Lite status job', () => {
   const scheduler = createOctocodeCronScheduler({
     env: {
       OCTOCODE_CRON: '0',
@@ -19,14 +19,14 @@ test('cron scheduler lists the non-mutating maintenance digest job', () => {
   const jobs = scheduler.list();
 
   assert.equal(jobs.length, 1);
-  assert.equal(jobs[0]!.name, 'maintenance-digest');
+  assert.equal(jobs[0]!.name, 'awareness-lite-status');
   assert.equal(jobs[0]!.enabled, false);
   assert.equal(jobs[0]!.status, 'cancelled');
-  assert.match(formatOctocodeCronStatus(jobs), /maintenance-digest/);
-  assert.match(formatOctocodeCronStatus(jobs), /dry-run/);
+  assert.match(formatOctocodeCronStatus(jobs), /awareness-lite-status/);
+  assert.match(formatOctocodeCronStatus(jobs), /never mutates/);
 });
 
-test('cron scheduler can run the default maintenance digest on demand', async () => {
+test('cron scheduler can run the default Awareness Lite status job on demand', async () => {
   const calls: Array<{ command: string; args: string[] }> = [];
   const scheduler = createOctocodeCronScheduler({
     env: {
@@ -35,7 +35,7 @@ test('cron scheduler can run the default maintenance digest on demand', async ()
     } as NodeJS.ProcessEnv,
     executor: async (command, args): Promise<PiExecResult> => {
       calls.push({ command, args });
-      return { stdout: 'digest ok', stderr: '', code: 0 };
+      return { stdout: 'status ok', stderr: '', code: 0 };
     },
   });
 
@@ -43,22 +43,19 @@ test('cron scheduler can run the default maintenance digest on demand', async ()
 
   assert.deepEqual(results, [
     {
-      job: 'maintenance-digest',
+      job: 'awareness-lite-status',
       status: 'succeeded',
       exitCode: 0,
-      message: 'digest ok',
+      message: 'status ok',
     },
   ]);
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.command, process.execPath);
   assert.deepEqual(calls[0]!.args, [
     '/tmp/awareness.js',
-    'maintenance',
-    'digest',
+    'status',
     '--workspace',
     '/repo',
-    '--dry-run',
-    '--compact',
   ]);
 });
 
@@ -70,7 +67,7 @@ test('cron scheduler skips manual runs when awareness CLI is missing', async () 
     },
   });
 
-  const results = await scheduler.runNow('maintenance-digest', { cwd: '/repo' });
+  const results = await scheduler.runNow('awareness-lite-status', { cwd: '/repo' });
 
   assert.equal(results[0]!.status, 'skipped');
   assert.match(results[0]!.message, /OCTOCODE_AWARENESS_CLI/);
@@ -81,7 +78,7 @@ test('cron command supports list, check default, check all, cancel, and help', a
   const scheduler = createOctocodeCronScheduler({
     env: {
       OCTOCODE_CRON: '1',
-      OCTOCODE_CRON_DIGEST_INTERVAL_MS: '600000',
+      OCTOCODE_CRON_STATUS_INTERVAL_MS: '600000',
       OCTOCODE_AWARENESS_CLI: '/tmp/awareness.js',
     } as NodeJS.ProcessEnv,
     executor: async (): Promise<PiExecResult> => ({ stdout: 'checked', stderr: '', code: 0 }),
@@ -96,15 +93,15 @@ test('cron command supports list, check default, check all, cancel, and help', a
   assert.match(messages.at(-1)!.message, /Commands: \/octocode-cron list · check \[default\|all\|job\]/);
 
   await handleOctocodeCronCommand('check', undefined, scheduler, notify);
-  assert.match(messages.at(-1)!.message, /maintenance-digest: succeeded/);
+  assert.match(messages.at(-1)!.message, /awareness-lite-status: succeeded/);
   assert.match(messages.at(-1)!.message, /checked/);
 
   await handleOctocodeCronCommand('check all', undefined, scheduler, notify);
-  assert.match(messages.at(-1)!.message, /maintenance-digest: succeeded/);
+  assert.match(messages.at(-1)!.message, /awareness-lite-status: succeeded/);
   assert.match(messages.at(-1)!.message, /checked/);
 
   await handleOctocodeCronCommand('cancel', undefined, scheduler, notify);
-  assert.match(messages.at(-1)!.message, /Cancelled Octocode session job\(s\): maintenance-digest/);
+  assert.match(messages.at(-1)!.message, /Cancelled Octocode session job\(s\): awareness-lite-status/);
 
   await handleOctocodeCronCommand('help', undefined, scheduler, notify);
   assert.match(messages.at(-1)!.message, /Usage: \/octocode-cron list\|check \[default\|all\|job\]\|cancel \[default\|all\|job\]\|help/);

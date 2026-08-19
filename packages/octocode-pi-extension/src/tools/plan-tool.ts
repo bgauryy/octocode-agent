@@ -12,18 +12,19 @@ import type { registerUniqueTool } from './octocode-tools.js';
 import { paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel } from './status-panel.js';
-import { activePlanScope, setPlan, addStep, startStep, completeStep, clearPlan, getPlan, renderActivePlanAddendum, MARK, stepLabel, displayStatus, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
+import { activePlanScope, setPlan, addStep, startStep, completeStep, removeStep, clearPlan, getPlan, renderActivePlanAddendum, MARK, stepLabel, displayStatus, depsMet, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
 
-type PlanAction = 'set' | 'add' | 'start' | 'complete' | 'clear' | 'show';
+type PlanAction = 'set' | 'add' | 'start' | 'complete' | 'remove' | 'clear' | 'show';
 
 interface PlanParams {
   action: PlanAction;
   steps?: StepInput[];
   text?: string;
   activeForm?: string;
+  dependsOn?: number[];
   index?: number;
 }
 
@@ -88,8 +89,8 @@ export function refreshPlanUi(ctx?: PiContext): void {
 
 // ─── /octocode-plan command (user can view / complete / delete tasks) ────────
 
-export const OCTOCODE_PLAN_COMMAND_USAGE = '/octocode-plan [show|complete <n>|start <n>|clear]';
-export const OCTOCODE_PLAN_COMMAND_COMPLETIONS = ['show', 'complete ', 'start ', 'clear'] as const;
+export const OCTOCODE_PLAN_COMMAND_USAGE = '/octocode-plan [show|complete <n>|start <n>|remove <n>|clear]';
+export const OCTOCODE_PLAN_COMMAND_COMPLETIONS = ['show', 'complete ', 'start ', 'remove ', 'clear'] as const;
 
 type NotifyFn = (ctx: PiContext | undefined, message: string, level?: string) => void;
 
@@ -107,6 +108,9 @@ export async function handleOctocodePlanCommand(args: string, ctx: PiContext | u
       break;
     case 'start':
       if (Number.isFinite(n)) startStep(scope, n);
+      break;
+    case 'remove':
+      if (Number.isFinite(n)) removeStep(scope, n);
       break;
     case 'show':
     default:
@@ -131,16 +135,17 @@ export function registerPlanTool(
       'Record and track the task breakdown from the think-first gate as a visible, compaction-durable checklist.',
       'The plan is re-injected into your context every turn (<active_plan>), so it survives compaction — set it once, then start/complete steps as you go.',
       'Use for non-trivial multi-step work (multiple files/phases/risky edits). Skip for obvious single-step tasks. For shared/persistent multi-agent plans use the awareness plan/task CLI instead.',
-      'Actions: set (replace with an ordered step list) · add (append a step) · start (mark step N doing) · complete (mark step N done, auto-advances) · show · clear (when the task is finished/abandoned).',
+      'Actions: set (replace with an ordered step list; dependsOn expresses ordering) · add (append a step) · start (mark a step doing) · complete (mark a step done, auto-advances) · remove (delete a step, dependencies renumber) · show · clear (when the task is finished/abandoned).',
+      'index is optional for start/complete/remove: complete/remove default to the current doing step; start defaults to the next runnable todo.',
     ].join('\n'),
-    promptSnippet: 'Track a compaction-durable task-breakdown checklist (set/add/start/complete/show/clear)',
+    promptSnippet: 'Track a compaction-durable task-breakdown checklist (set/add/start/complete/remove/show/clear)',
     promptGuidelines: [
-      'When the think-first gate says decompose, record the steps with plan(set:[...]); then work the next step and plan(complete) it. Keep it proportional — no ceremony for single-step work.',
-      'Clear the plan (plan clear) once the task is done or abandoned so a stale checklist does not linger in context.',
+      'When the think-first gate says decompose, record the steps with plan(set:[...]); then work the active step and plan(complete) it — with no index it completes the current step, so the loop is: work, plan(complete), repeat.',
+      'Keep the checklist truthful as scope shifts: plan(add) newly discovered steps, plan(remove) obsolete ones, and clear the plan (plan clear) once the task is done or abandoned so a stale checklist does not linger.',
       'Optionally give each step an activeForm (present-continuous label, e.g. "Editing file") — it is shown in the live plan panel while that step runs.',
     ],
     parameters: Type.Object({
-      action: Type.Unsafe({ type: 'string', enum: ['set', 'add', 'start', 'complete', 'clear', 'show'], description: 'set|add|start|complete|clear|show' }),
+      action: Type.Unsafe({ type: 'string', enum: ['set', 'add', 'start', 'complete', 'remove', 'clear', 'show'], description: 'set|add|start|complete|remove|clear|show' }),
       steps: Type.Optional(
         Type.Array(
           Type.Union([
@@ -156,7 +161,8 @@ export function registerPlanTool(
       ),
       text: Type.Optional(Type.String({ description: 'Step text for action:add.' })),
       activeForm: Type.Optional(Type.String({ description: 'Optional present-continuous label for action:add (e.g. "Editing file").' })),
-      index: Type.Optional(Type.Integer({ minimum: 1, description: '1-based step number for start/complete.' })),
+      dependsOn: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description: 'For action:add — 1-based indices of steps that must be done first.' })),
+      index: Type.Optional(Type.Integer({ minimum: 1, description: '1-based step number for start/complete/remove. Omit to target the current doing step (complete/remove) or the next runnable todo (start).' })),
     }),
 
     async execute(_id: string, raw: Record<string, unknown>, _signal, _onUpdate, ctx?: PiContext) {
@@ -168,23 +174,40 @@ export function registerPlanTool(
           steps = setPlan(scope, Array.isArray(p.steps) ? p.steps : []);
           break;
         case 'add':
-          steps = addStep(scope, String(p.text ?? ''), p.activeForm);
+          steps = addStep(scope, String(p.text ?? ''), p.activeForm, p.dependsOn);
           break;
         case 'start':
-        case 'complete': {
+        case 'complete':
+        case 'remove': {
           const current = getPlan(scope);
-          const idx = Number(p.index);
-          if (!Number.isInteger(idx) || idx < 1 || idx > current.length) {
-            const msg = current.length === 0
-              ? `[PLAN] no active plan — nothing to ${p.action}. Use plan set first.`
-              : `[PLAN] no such step ${p.index ?? '(missing index)'} — plan has ${current.length} step(s). Run plan show for indices.`;
-            return {
-              content: [{ type: 'text', text: `${msg}\n${renderList(current)}` }],
-              isError: true,
-              details: { action: p.action, steps: current, addendum: renderActivePlanAddendum(scope), error: 'invalid-index' },
-            } as unknown as ToolCallResult;
+          const planError = (msg: string, error: string) => ({
+            content: [{ type: 'text' as const, text: `${msg}\n${renderList(current)}` }],
+            isError: true,
+            details: { action: p.action, steps: current, addendum: renderActivePlanAddendum(scope), error },
+          }) as unknown as ToolCallResult;
+          if (current.length === 0) {
+            return planError(`[PLAN] no active plan — nothing to ${p.action}. Use plan set first.`, 'invalid-index');
           }
-          steps = p.action === 'start' ? startStep(scope, idx) : completeStep(scope, idx);
+          let idx: number;
+          if (p.index === undefined || p.index === null) {
+            // Default targets: complete/remove act on the current doing step;
+            // start advances to the next runnable todo.
+            idx = p.action === 'start'
+              ? current.findIndex((s) => s.status === 'todo' && depsMet(s, current)) + 1
+              : current.findIndex((s) => s.status === 'doing') + 1;
+            if (idx < 1) {
+              const why = p.action === 'start'
+                ? '[PLAN] no runnable todo step (all done or blocked)'
+                : '[PLAN] no step is in progress';
+              return planError(`${why} — pass index to target a specific step. Run plan show for indices.`, 'no-target');
+            }
+          } else {
+            idx = Number(p.index);
+            if (!Number.isInteger(idx) || idx < 1 || idx > current.length) {
+              return planError(`[PLAN] no such step ${p.index} — plan has ${current.length} step(s). Run plan show for indices.`, 'invalid-index');
+            }
+          }
+          steps = p.action === 'start' ? startStep(scope, idx) : p.action === 'complete' ? completeStep(scope, idx) : removeStep(scope, idx);
           break;
         }
         case 'clear':

@@ -23,7 +23,7 @@ export default defineConfig({
         'src/ambient.d.ts',
         'src/types.ts',
         // Pure re-export shims — coverage is attributed to the upstream packages
-        // they forward (@octocodeai/config and @octocodeai/octocode-awareness).
+        // they forward (@octocodeai/config and @octocodeai/octocode-awareness-lite).
         // Including them produces misleading 0% rows with no signal.
         'src/env.ts',
         'src/awareness.ts',

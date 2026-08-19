@@ -31,8 +31,6 @@ export interface MemoryCliResult {
 
 export type MemoryCliRunner = (args: string[]) => MemoryCliResult | Promise<MemoryCliResult>;
 
-const AWARENESS_AGENT_ENV_VAR = 'OCTOCODE_AGENT_ID';
-
 /**
  * Default runner: invoke the bundled Awareness CLI via node. Async on purpose —
  * a sync exec here blocked the whole event loop (TUI freeze, unprocessable
@@ -70,19 +68,17 @@ interface MemoryParams {
   memoryId?: string;
 }
 
-function agentId(): string {
-  return process.env[AWARENESS_AGENT_ENV_VAR]?.trim() || 'pi';
-}
+type ParsedJson = Record<string, unknown> | unknown[];
 
-function parseJson(stdout: string): Record<string, unknown> | null {
+function parseJson(stdout: string): ParsedJson | null {
   const trimmed = stdout.trim();
   if (!trimmed) return null;
   // The CLI may emit log lines before the JSON; take the last JSON-looking line.
   const lines = trimmed.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]!.trim();
-    if (line.startsWith('{')) {
-      try { return JSON.parse(line) as Record<string, unknown>; } catch { /* keep scanning */ }
+    if (line.startsWith('{') || line.startsWith('[')) {
+      try { return JSON.parse(line) as ParsedJson; } catch { /* keep scanning */ }
     }
   }
   return null;
@@ -106,7 +102,7 @@ export function registerMemoryTool(
       'recall — retrieve prior verified learnings relevant to a query (use smart:true for scored/expanded recall). Treat results as leads; re-verify against current source/tests.',
       'record — persist a reusable, verified learning/gotcha/decision with a label and importance (1-10). Never store secrets, raw logs, routine status, or facts git/docs already own.',
       'forget — delete a specific memory by id (destructive; only when clearly obsolete).',
-      'Awareness/SQLite is canonical; this tool shells the same CLI the octocode-awareness skill documents.',
+      'Awareness Lite/SQLite is canonical; this tool shells the same CLI the octocode-awareness-lite skill documents.',
     ].join('\n'),
     promptSnippet: 'Recall/record/forget durable Awareness memory (first-class wrapper over the memory CLI)',
     promptGuidelines: [
@@ -132,7 +128,7 @@ export function registerMemoryTool(
       if (p.action === 'recall') {
         const query = String(p.query ?? '').trim();
         if (!query) return errorResult('[memory] recall requires a query.');
-        args = ['memory', 'recall', '--query', query, ...(p.smart ? ['--smart'] : []), '--workspace', cwd, '--compact'];
+        args = ['memory', 'recall', '--query', query, '--workspace', cwd];
       } else if (p.action === 'record') {
         const label = String(p.label ?? '').trim();
         const observation = String(p.observation ?? '').trim();
@@ -142,16 +138,16 @@ export function registerMemoryTool(
         if (!Number.isInteger(importance) || importance < 1 || importance > 10) {
           return errorResult('[memory] record requires importance 1-10.');
         }
+        const text = p.taskContext ? `${String(p.taskContext).trim()}: ${observation}` : observation;
         args = [
-          'memory', 'record', '--agent-id', agentId(), '--label', label,
-          '--observation', observation, '--importance', String(importance),
-          ...(p.taskContext ? ['--task-context', String(p.taskContext)] : []),
-          '--workspace', cwd, '--compact',
+          'memory', 'store', '--label', label,
+          '--text', text,
+          '--workspace', cwd,
         ];
       } else if (p.action === 'forget') {
         const memoryId = String(p.memoryId ?? '').trim();
         if (!memoryId) return errorResult('[memory] forget requires a memoryId.');
-        args = ['memory', 'forget', '--memory-id', memoryId, '--compact'];
+        args = ['memory', 'forget', '--memory-id', memoryId, '--workspace', cwd];
       } else {
         return errorResult(`[memory] unknown action "${String((p as { action?: string }).action)}".`);
       }
@@ -164,25 +160,26 @@ export function registerMemoryTool(
       }
 
       const json = parseJson(out.stdout);
-      const failed = out.code !== 0 || (json && json['ok'] === false);
+      const jsonObject = json && !Array.isArray(json) ? json : null;
+      const failed = out.code !== 0 || (jsonObject && jsonObject['ok'] === false);
       if (failed) {
-        const msg = (json && typeof json['error'] === 'string' ? json['error'] : '') || out.stderr || `memory ${p.action} failed (exit ${out.code})`;
+        const msg = (jsonObject && typeof jsonObject['error'] === 'string' ? jsonObject['error'] : '') || out.stderr || `memory ${p.action} failed (exit ${out.code})`;
         return errorResult(`[memory] ${msg}`);
       }
 
       let summary: string;
       const details: Record<string, unknown> = { action: p.action, result: json };
       if (p.action === 'recall') {
-        const count = json && typeof json['count'] === 'number' ? (json['count'] as number) : 0;
+        const count = Array.isArray(json) ? json.length : (jsonObject && typeof jsonObject['count'] === 'number' ? (jsonObject['count'] as number) : 0);
         summary = `Recalled ${count} memor${count === 1 ? 'y' : 'ies'} for "${p.query}".`;
         details['count'] = count;
       } else if (p.action === 'record') {
-        const mem = (json?.['memory'] ?? {}) as Record<string, unknown>;
-        const id = String(mem['memory_id'] ?? json?.['memory_id'] ?? 'recorded');
+        const mem = (jsonObject?.['memory'] ?? jsonObject ?? {}) as Record<string, unknown>;
+        const id = String(mem['memoryId'] ?? mem['memory_id'] ?? jsonObject?.['memoryId'] ?? jsonObject?.['memory_id'] ?? 'recorded');
         summary = `Recorded ${p.label} memory ${id}.`;
         details['memoryId'] = id;
       } else {
-        const deleted = json && typeof json['deleted'] === 'number' ? (json['deleted'] as number) : 0;
+        const deleted = jsonObject?.['forgotten'] === true ? 1 : (jsonObject && typeof jsonObject['deleted'] === 'number' ? (jsonObject['deleted'] as number) : 0);
         summary = `Forgot ${deleted} memor${deleted === 1 ? 'y' : 'ies'}.`;
         details['deleted'] = deleted;
       }

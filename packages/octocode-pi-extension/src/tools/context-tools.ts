@@ -12,6 +12,7 @@ import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { isSubagentProcess } from './agent-tools.js';
 import { clearCompactionWorkingState, type Notifier } from './compaction-resume.js';
+import { branchTipIsCompaction, clearCompactionInFlight, isCompactionInFlight, markCompactionInFlight, resetCompactionArbiterForTests } from './compaction-state.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -28,6 +29,13 @@ function buildCompactionInstructions(instructions: unknown): string {
 
 function isNothingToCompact(error: Error): boolean {
   return /nothing to compact/i.test(error.message);
+}
+
+// Pi throws "Already compacted" when compact() lands right after a finished
+// compaction (branch tip is already a compaction entry). It means another
+// trigger won the race and the context IS compacted — success, not failure.
+function isAlreadyCompacted(error: Error): boolean {
+  return /already compacted/i.test(error.message);
 }
 
 function simpleRenderer(line: string) {
@@ -70,6 +78,7 @@ export function registerContextTools(
   // Fresh wiring = fresh edge-trigger state (mirrors the pre-module-level
   // closure semantics; index.ts also resets on session_start).
   resetAutoCompactState();
+  resetCompactionArbiterForTests();
   if (pi.on) {
     pi.on('turn_end', (event, ctx) => {
       if (isOutputLengthStop(event)) {
@@ -80,6 +89,10 @@ export function registerContextTools(
         );
         return;
       }
+      // An aborted turn reports the PRE-abort context size — most often it is
+      // the very turn a ctx.compact() just killed, so acting on that usage
+      // fires a second compact straight into "Already compacted".
+      if (event?.message?.stopReason === 'aborted') return;
 
       const usage = ctx.getContextUsage?.();
       if (!usage || usage.tokens == null) return; // tokens null = unknown (right after compaction)
@@ -92,6 +105,11 @@ export function registerContextTools(
       if (fill < AUTO_COMPACT_THRESHOLD) return;
       if (prevFill !== null && prevFill >= AUTO_COMPACT_THRESHOLD) return;
 
+      // Stand down for any compaction that is already running (pi's internal
+      // auto, user /compact, manage_context) and for a branch tip that is
+      // already a compaction entry — pi's exact "Already compacted" condition.
+      if (isCompactionInFlight() || branchTipIsCompaction(ctx)) return;
+
       if (!ctx.compact) {
         notify(ctx, 'Auto-compaction skipped: ctx.compact is not available in this runtime.', 'warning');
         return;
@@ -99,6 +117,7 @@ export function registerContextTools(
 
       const pctStr = `${Math.round(fill * 100)}%`;
       notify(ctx, `Auto-compacting: context at ${pctStr} of context window.`, 'info');
+      markCompactionInFlight();
       ctx.compact({
         customInstructions: COMPACTION_CONTINUATION_INSTRUCTIONS,
         // No continuation scheduled here: the session_compact hook (which fires
@@ -106,12 +125,18 @@ export function registerContextTools(
         // Scheduling from BOTH paths raced on a 1.5s wall-clock dedupe window —
         // any ordering delay over it sent the continuation twice.
         onComplete: once(() => {
+          clearCompactionInFlight();
           clearCompactionWorkingState(ctx);
         }),
         onError: (error: Error) => {
+          clearCompactionInFlight();
           clearCompactionWorkingState(ctx);
           if (isNothingToCompact(error)) {
             notify(ctx, 'Auto-compaction skipped: session is too small to compact.', 'info');
+            return;
+          }
+          if (isAlreadyCompacted(error)) {
+            notify(ctx, 'Auto-compaction skipped: context was already compacted by another trigger.', 'info');
             return;
           }
           notify(ctx, `Auto-compaction failed: ${error.message}`, 'error');
@@ -141,7 +166,8 @@ export function registerContextTools(
     label: 'Manage Context',
     description:
       'Compact or reset the conversation context. ' +
-      'type:"compact" — summarize history to free context window space; call when ≥60% full, at a research→execution boundary, or before a large task. ' +
+      'type:"compact" — summarize history to free context window space; call at a research→execution boundary or before a large new task. ' +
+      'Automatic compaction already runs when the context nears its limit — never call this right after a compaction (it is a no-op), and do not call it on a percentage schedule. ' +
       'type:"new" — start a fresh session with no prior context; call only when the next task is fully unrelated to the current conversation.',
     promptSnippet: 'Compact or reset conversation context',
     parameters: Type.Object({
@@ -192,17 +218,46 @@ export function registerContextTools(
         throw new Error('manage_context: ctx.compact is not available in this runtime. Use /compact manually.');
       }
 
+      // Pre-flight guards: do not race a running compaction, and do not call
+      // into pi's guaranteed "Already compacted" throw (branch tip is already
+      // a compaction entry / usage unknown because no assistant message landed
+      // since the last compaction).
+      if (isCompactionInFlight()) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: 'Compaction skipped: another compaction is already in progress. Continue the task; the context will shrink when it finishes.',
+          }],
+        };
+      }
+      const usage = ctx.getContextUsage?.();
+      if (branchTipIsCompaction(ctx) || (usage != null && usage.tokens === null)) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: 'Compaction skipped: the context was just compacted — there is no new history to summarize. Continue the task from the compacted context.',
+          }],
+        };
+      }
+
+      markCompactionInFlight();
       ctx.compact({
         customInstructions: buildCompactionInstructions(params['instructions']),
         // Continuation is scheduled by the session_compact hook (fromExtension
         // path) — the single scheduler; see the auto-compaction comment above.
         onComplete: once(() => {
+          clearCompactionInFlight();
           clearCompactionWorkingState(ctx);
         }),
         onError: (error: Error) => {
+          clearCompactionInFlight();
           clearCompactionWorkingState(ctx);
           if (isNothingToCompact(error)) {
             notify(ctx, 'Compaction skipped: session is too small to compact.', 'info');
+            return;
+          }
+          if (isAlreadyCompacted(error)) {
+            notify(ctx, 'Compaction skipped: context was already compacted by another trigger.', 'info');
             return;
           }
           notify(ctx, `Compaction failed: ${error.message}`, 'error');

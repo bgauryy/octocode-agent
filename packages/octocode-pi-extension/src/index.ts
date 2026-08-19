@@ -6,7 +6,6 @@ import {
   OVERRIDDEN_BUILTIN_TOOL_NAMES,
   OCTOCODE_SUPPORT_TOOL_NAMES,
 } from './constants.js';
-import { wirePiAwarenessHooks } from '@octocodeai/octocode-awareness';
 import { checkForCoreUpdate, readOwnVersion } from './core-update-check.js';
 import {
   getAssetPaths,
@@ -62,11 +61,20 @@ import { registerMemoryTool } from './tools/memory-tool.js';
 import { activePlanScope, renderActivePlanAddendum, getPlan, bumpPlanTurn } from './tools/active-plan.js';
 import { getCachedAwarenessStatus, refreshAwarenessPanel, suppressAwarenessPanel, resumeAwarenessPanel } from './tools/awareness-status.js';
 import { refreshStatusPanel, suppressStatusPanel, resumeStatusPanel } from './tools/status-panel.js';
-import { buildFooterSegments, buildWorkingLabel, WORKING_WORD, resolveSystemThemeName, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName } from './ui-extras.js';
+import { buildFooterSegments, buildWorkingIndicator, buildWorkingMessage, resolveSystemThemeName, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName } from './ui-extras.js';
 import { contextGauge, paint } from './tui/palette.js';
 import { listCDPSessions, closeAllChromeConnections } from './chrome-connection-cache.js';
 import { handleOctocodePlanCommand, OCTOCODE_PLAN_COMMAND_USAGE, OCTOCODE_PLAN_COMMAND_COMPLETIONS } from './tools/plan-tool.js';
-import { atomicWriteUtf8, clearAllReadStates } from './tools/file-state.js';
+import { atomicWriteUtf8, clearAllReadStates, resolveFilePath } from './tools/file-state.js';
+import { registerAgentInbox, type AgentInboxRegistration } from './tools/agent-inbox.js';
+import { registerCommandPalette } from './tools/command-palette.js';
+import { registerOctocodeAutocomplete } from './tools/autocomplete-providers.js';
+import { registerOctocodeMessageRenderers } from './tools/custom-messages.js';
+import { initCheckpointStore, type CheckpointEngine } from './tools/checkpoints.js';
+import { createCheckpointInputHook, registerRewindCommand } from './tools/rewind-command.js';
+import { registerDialCommand, restoreDialOnStartup, getActiveDialLevel } from './tools/effort-dial.js';
+import { registerAiWatch, markOwnWrite, markBashActivity, stopWatch } from './tools/ai-watch.js';
+import { registerExportCommand } from './tools/export-command.js';
 import { assertPathAllowed } from './tools/path-guard.js';
 import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
 import { renderBannerWithTagline, type BannerTheme } from './branding/banner.js';
@@ -170,6 +178,7 @@ export {
   evaluateWorkerRecoveryRisk,
   refreshAgentLedgerUi,
   setAgentProcessFactoryForTests,
+  setAgentWorktreeGitRunnerForTests,
 } from './tools/agent-tools.js';
 export type {
   PromptMode,
@@ -199,9 +208,7 @@ export interface OctocodeMetricsState {
   activeTurnStartedAt?: number;
   lastTurnMs?: number;
   completedTurns: number;
-  /** Cached git branch for the footer, refreshed on turn/session boundaries (not per tick). */
-  gitBranch?: string;
-  /** Whether the working tree was dirty at the last git refresh. */
+  /** Whether the working tree was dirty at the last git refresh. Branch comes from Pi footerData. */
   gitDirty?: boolean;
 }
 
@@ -276,20 +283,34 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
     planDone: plan.filter((s) => s.status === 'done').length,
     planTotal: plan.length,
     planDoing: plan.find((s) => s.status === 'doing')?.text,
-    branch: state.gitBranch,
+    dial: getActiveDialLevel(),
+    branch: undefined,
     dirty: state.gitDirty ?? false,
   });
-  ctx.ui?.setFooter?.((_tui: unknown, theme) => makeRenderer((width) => {
-    const brand = theme.fg('accent', theme.bold('\u25c6 Octocode'));
-    const sep = theme.fg('dim', '  \u00b7  ');
-    const body = segments.map((s) => paint(theme, s.token ?? 'dim', s.text)).join(sep);
-    return [truncateToWidth(`${brand}  ${body}`, width)];
-  }));
+  ctx.ui?.setFooter?.((tui: unknown, theme, footerData) => {
+    const renderer = makeRenderer((width) => {
+      const branch = footerData?.getGitBranch?.();
+      const renderedSegments = branch
+        ? [...segments, { text: `${branch}${state.gitDirty ? '*' : ''}` }]
+        : segments;
+      const brand = theme.fg('accent', theme.bold('\u25c6 Octocode'));
+      const sep = theme.fg('dim', '  \u00b7  ');
+      const body = renderedSegments.map((s) => paint(theme, s.token ?? 'dim', s.text)).join(sep);
+      return [truncateToWidth(`${brand}  ${body}`, width)];
+    });
+    const unsubscribe = footerData?.onBranchChange?.(() => {
+      renderer.invalidate();
+      (tui as { requestRender?: () => void } | undefined)?.requestRender?.();
+    });
+    return {
+      ...renderer,
+      dispose: () => unsubscribe?.(),
+    };
+  });
 
   // Live token count beside the working spinner during an active turn.
   if (state.activeTurnStartedAt !== undefined) {
-    const label = buildWorkingLabel({ startedAt: state.activeTurnStartedAt, now });
-    ctx.ui?.setWorkingMessage?.(paint(ctx.ui.theme, 'brand', label));
+    ctx.ui?.setWorkingMessage?.(buildWorkingMessage({ startedAt: state.activeTurnStartedAt, now }, ctx.ui?.theme));
   }
 }
 
@@ -306,17 +327,66 @@ async function execGitSummary(pi: PiInstance, args: string[], timeout = 1200): P
   }
 }
 
+const LITE_LOCK_GATE_WRITE_TOOLS = new Set([
+  'write',
+  'edit',
+  'multi_edit',
+  'multiedit',
+  'notebookedit',
+  'notebook_edit',
+  'apply_patch',
+  'applypatch',
+]);
+
+function getAwarenessLiteAgentId(ctx?: PiContext): string {
+  if (process.env.OCTOCODE_AGENT_ID) return process.env.OCTOCODE_AGENT_ID;
+  const sessionId = ctx?.sessionManager?.getSessionId?.()
+    ?? (ctx?.sessionManager?.getSessionFile?.() ? path.basename(ctx.sessionManager.getSessionFile()!) : undefined);
+  const agentId = `pi:${sessionId || process.pid}`;
+  process.env.OCTOCODE_AGENT_ID = agentId;
+  return agentId;
+}
+
+async function runAwarenessLitePreEditLockGate(pi: PiInstance, event: { toolName?: string; input?: Record<string, unknown> }, ctx?: PiContext): Promise<{ block?: boolean; reason?: string } | void> {
+  const toolName = String(event.toolName ?? '').toLowerCase();
+  if (!LITE_LOCK_GATE_WRITE_TOOLS.has(toolName)) return undefined;
+  if (!pi.exec) return undefined;
+  const cwd = ctx?.cwd ?? process.cwd();
+  const args = [
+    getAwarenessCLIPath(),
+    'hooks',
+    'pre-edit',
+    '--host',
+    'pi',
+    '--workspace',
+    cwd,
+    '--agent-id',
+    getAwarenessLiteAgentId(ctx),
+    '--event-json',
+    JSON.stringify(event),
+  ];
+  const result = await pi.exec(process.execPath, args, { timeout: 5000 });
+  if (result.code === 2) {
+    let reason = result.stdout.trim() || 'Awareness Lite lock conflict.';
+    try {
+      const parsed = JSON.parse(result.stdout) as { message?: string };
+      reason = parsed.message ?? reason;
+    } catch { /* stdout was not JSON */ }
+    return { block: true, reason };
+  }
+  if (result.code && result.code !== 0) {
+    notify(ctx, `Awareness Lite lock gate skipped: ${result.stderr || result.stdout || `exit ${result.code}`}`.trim(), 'warning');
+  }
+  return undefined;
+}
+
 /**
- * Refresh the footer's cached git branch/dirty. Called only on turn/session
- * boundaries (never per live tick) so the branch segment stays cheap. Detached
- * HEAD (`rev-parse` returns "HEAD") is treated as "no branch".
+ * Refresh the footer's dirty marker on turn/session boundaries. Pi's footerData
+ * provider owns branch detection/watching, so this keeps our extra `*` marker
+ * without duplicating branch probes.
  */
-async function refreshFooterGitState(pi: PiInstance, state: OctocodeMetricsState): Promise<void> {
-  const branch = await execGitSummary(pi, ['rev-parse', '--abbrev-ref', 'HEAD'], 600);
-  state.gitBranch = branch && branch !== 'HEAD' ? branch : undefined;
-  state.gitDirty = state.gitBranch
-    ? (await execGitSummary(pi, ['status', '--porcelain'], 600)) !== ''
-    : false;
+async function refreshFooterDirtyState(pi: PiInstance, state: OctocodeMetricsState): Promise<void> {
+  state.gitDirty = (await execGitSummary(pi, ['status', '--porcelain'], 600)) !== '';
 }
 
 async function buildRepoStateHint(pi: PiInstance, event: { text: string; source?: string; streamingBehavior?: string }): Promise<string> {
@@ -371,23 +441,12 @@ export function applyOctocodeUi(ctx: PiContext | undefined, level?: string, cont
   // Glyph-only indicator + branded message: Pi renders these side-by-side,
   // so keeping "Octocode" out of the frames avoids "Octocode Octocode …".
   const t = ui.theme;
-  ui.setWorkingIndicator?.({
-    // Use only 'accent' and 'dim' — the two colors confirmed safe in this extension.
-    frames: t
-      ? [
-          t.fg('accent', '✦'),
-          t.fg('dim', '✧'),
-          t.fg('accent', '✶'),
-          t.fg('dim', '✧'),
-        ]
-      : ['✦', '✧', '✶', '✧'],
-    intervalMs: 220,
-  });
+  ui.setWorkingIndicator?.(buildWorkingIndicator(t));
   // Custom working message shown during agent streaming. The animated frames
   // supply motion; the text is just the branded verb (no time/tokens — those
   // live in the footer). The live ticker replaces this with the animated
   // "Thinking."/".."/"..." label once a turn is active.
-  ui.setWorkingMessage?.(t?.fg('accent', `${WORKING_WORD}…`) ?? `${WORKING_WORD}…`);
+  ui.setWorkingMessage?.(buildWorkingMessage(undefined, t));
 }
 
 export function getInternalErrorLogPath(cwd = process.cwd()): string {
@@ -538,7 +597,7 @@ export function formatStatus(baseDir?: string): string {
     `system prompt: ${promptStatus}`,
     `skills: ${skills.length}${skills.length > 0 ? ` (${skills.join(', ')})` : ''}`,
     `octocode tools: ${formatOctocodeToolStatus()}`,
-    `awareness CLI: ${getAwarenessCLIPath(baseDir)} — use via: node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact`,
+    `awareness lite CLI: ${getAwarenessCLIPath(baseDir)} — use via: node $OCTOCODE_AWARENESS_CLI <command> [action] --workspace "$PWD"`,
     `management CLI: npx octocode skill | lsp-server | auth (no bundled CLI — use npx octocode for management tasks)`,
     `disabled/replaced built-ins: overridden: ${OVERRIDDEN_BUILTIN_TOOL_NAMES.join(', ')}${DISABLED_BUILTIN_TOOL_NAMES.length ? `; removed: ${DISABLED_BUILTIN_TOOL_NAMES.join(', ')}` : ''}`,
     `web search: ${searchStatus}`,
@@ -581,10 +640,16 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
       '/mcp',
       '/octocode-setup',
       '/octocode-skills-update',
+      '/octocode-inbox',
+      '/octocode-palette',
+      '/octocode-rewind',
+      '/octocode-dial',
+      '/octocode-watch',
+      '/octocode-export',
     ],
     skills: listBundledSkills(baseDir),
     cliNote: `management: npx octocode skill | lsp-server | auth (no bundled CLI — use npx octocode for management tasks)`,
-    awarenessCliNote: `bundled Awareness CLI at ${getAwarenessCLIPath(baseDir)} — run via: node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact`,
+    awarenessCliNote: `bundled Awareness Lite CLI at ${getAwarenessCLIPath(baseDir)} — run via: node $OCTOCODE_AWARENESS_CLI <command> [action] --workspace "$PWD"`,
   };
 }
 
@@ -608,7 +673,7 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessi
     `${promptOk ? '✓' : '⚠'} system prompt: ${promptOk ? 'found' : 'missing'}`,
     `✓ tools: ${formatOctocodeToolStatus()}`,
     `✓ metrics: ${context.text}`,
-    `Awareness: node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact (${awarenessCliPath})`,
+    `Awareness Lite: node $OCTOCODE_AWARENESS_CLI <command> [action] --workspace "$PWD" (${awarenessCliPath})`,
     `Management: npx octocode skill | lsp-server | auth`,
     '',
     'Agents',
@@ -658,11 +723,10 @@ function formatPlanLines(ctx?: PiContext): string[] {
 function formatAwarenessLines(ctx?: PiContext): string[] {
   const cwd = ctx?.cwd ?? process.cwd();
   const status = getCachedAwarenessStatus(cwd);
-  if (!status) return ['shared tasks: no cached Awareness status yet — refresh queued; run /octocode-now again'];
-  const debt = status.verifyTasks + status.pendingRuns;
+  if (!status) return ['shared tasks: no cached Awareness Lite status yet — refresh queued; run /octocode-now again'];
   return [
     `shared tasks: plans ${status.activePlans} · ready ${status.readyTasks} · doing ${status.inProgressTasks}`,
-    `verify debt: ${debt} · refinements ${status.actionableRefinements}/${status.openRefinements} · locks ${status.lockCount}`,
+    `verify debt: ${status.verifyTasks} · locks ${status.lockCount} · work ${status.workCount}`,
   ];
 }
 
@@ -685,8 +749,8 @@ export function formatOctocodeTasks(ctx?: PiContext): string {
     ...formatAwarenessLines(ctx),
     '',
     'Rule of thumb',
-    'Use plan(...) for your current solo breakdown; use Awareness plan/task/work when state must survive sessions or coordinate agents.',
-    'Commands: /octocode-plan · node $OCTOCODE_AWARENESS_CLI attend --workspace "$PWD" --compact',
+    'Use plan(...) for your current solo breakdown; use Awareness Lite plan/task/work when state must survive sessions or coordinate agents.',
+    'Commands: /octocode-plan · node $OCTOCODE_AWARENESS_CLI status --workspace "$PWD"',
   ].join('\n');
 }
 
@@ -857,6 +921,34 @@ async function wireOctocodePiExtension(
   };
   const toolStartTimes = new Map<string, number>();
   let providerRequestStartedAt: number | undefined;
+  // Agent inbox handle: assigned during tool registration, referenced by the
+  // session_shutdown hook — its suppress flag must flip BEFORE
+  // cleanupSpawnedAgentsForShutdown() kills workers, or the teardown burst of
+  // killed/exit ledger events would spam desktop notifications.
+  let agentInbox: AgentInboxRegistration | undefined;
+  // Checkpoint engine is created lazily on first use (input hook / rewind
+  // command) so sessions that never prompt pay no shadow-git init cost.
+  let checkpointEnginePromise: Promise<CheckpointEngine | undefined> | undefined;
+  const getCheckpointEngine = (ctx?: PiContext): Promise<CheckpointEngine | undefined> => {
+    checkpointEnginePromise ??= initCheckpointStore(ctx?.cwd ?? process.cwd()).catch(() => undefined);
+    return checkpointEnginePromise;
+  };
+  // Latest session cwd for the AI! watcher (registration happens before any ctx exists).
+  let latestSessionCwd: string | undefined;
+  // Feed the watch-mode loop guards: our own edit/write tools and bash runs
+  // cause fs events that must not loop back into the agent as AI! prompts.
+  const suppressWatchForTool = (event: { toolName?: string; args?: unknown }, ctx: PiContext | undefined): void => {
+    const name = event.toolName ?? '';
+    if (name === 'bash') {
+      markBashActivity();
+      return;
+    }
+    if (name !== 'edit' && name !== 'write') return;
+    const args = event.args as { path?: unknown } | undefined;
+    if (typeof args?.path === 'string' && args.path.length > 0) {
+      markOwnWrite(resolveFilePath(args.path, ctx?.cwd ?? process.cwd()));
+    }
+  };
 
   // Register --no-context CLI flag before any session starts so Pi can parse it.
   // default:false → context files load normally (octocode-agent launcher already
@@ -888,14 +980,12 @@ async function wireOctocodePiExtension(
       return skillPath ? { skillPaths: [skillPath] } : {};
     });
 
-    const awarenessSkillRoot = existingDirectory(path.join(getAssetPaths().skillsDir, 'octocode-awareness'));
+    hooks.on('tool_call', 'awareness-lite-lock-gate', async (event: { toolName?: string; input?: Record<string, unknown> }, ctx: PiContext | undefined) => {
+      return runAwarenessLitePreEditLockGate(pi, event, ctx);
+    });
+
+    const awarenessSkillRoot = existingDirectory(path.join(getAssetPaths().skillsDir, 'octocode-awareness-lite'));
     if (awarenessSkillRoot) process.env.OCTOCODE_SKILL_ROOT = awarenessSkillRoot;
-    try {
-      wirePiAwarenessHooks(pi as Parameters<typeof wirePiAwarenessHooks>[0], { skillRoot: awarenessSkillRoot });
-    } catch (error) {
-      logInternalError('awareness-hooks', error, { skillRoot: awarenessSkillRoot }, undefined);
-      console.warn(`[octocode-pi-extension] Awareness hook wiring failed: ${(error as Error)?.message ?? String(error)}`);
-    }
 
     hooks.on('session_start', 'octocode-session-start', async (_event: unknown, ctx: PiContext | undefined) => {
       // Undo the shutdown-time suppression from a previous session in this process.
@@ -911,7 +1001,22 @@ async function wireOctocodePiExtension(
       metricsState.lastTurnMs = undefined;
       metricsState.completedTurns = 0;
       stopMetricsTicker();
-      await refreshFooterGitState(pi, metricsState);
+      latestSessionCwd = ctx?.cwd;
+      // Re-apply the persisted effort dial (thinking level + worker cap) before
+      // the footer renders so `◉ <level>` is correct from the first frame.
+      await restoreDialOnStartup(pi, ctx);
+      // Editor autocomplete for @worker/@skill and #plan-step mentions. The
+      // registration is internally once-per-process (pi has no removal API).
+      if (ctx?.ui) {
+        registerOctocodeAutocomplete(ctx.ui, {
+          listWorkers: () => listWorkerLedgerEntries(),
+          getPlanSteps: () => getPlan(activePlanScope(ctx)),
+          listSkills: () => latestAvailableSkills ?? [],
+        });
+      }
+      // Trim shadow-git checkpoint history in the background (keeps 30).
+      void getCheckpointEngine(ctx).then((engine) => engine?.prune());
+      await refreshFooterDirtyState(pi, metricsState);
       applyOctocodeUi(ctx, pi.getThinkingLevel?.());
       updateOctocodeMetricsUi(ctx, metricsState);
       // Surface any disk-restored plan / live agents in the below-editor panel right at launch.
@@ -1006,6 +1111,11 @@ async function wireOctocodePiExtension(
       metricsState.activeTurnStartedAt = undefined;
       suppressStatusPanel();
       suppressAwarenessPanel();
+      // Order matters: suppress inbox/desktop notifications BEFORE killing the
+      // spawned workers, so the teardown burst of killed/exit ledger events is
+      // ignored instead of flashing OSC 9 notifications at the user.
+      agentInbox?.shutdown();
+      stopWatch();
       const cleanedAgents = cleanupSpawnedAgentsForShutdown();
       const stoppedMcpServers = stopAllMcpServers();
       const closedChrome = closeAllChromeConnections();
@@ -1074,15 +1184,30 @@ async function wireOctocodePiExtension(
       };
     });
 
-    hooks.on('tool_execution_start', 'octocode-tool-error-timing', async (event: { toolCallId?: string; toolName?: string }) => {
+    // Auto-snapshot the working tree (shadow git) before each real user prompt
+    // so /octocode-rewind can restore files. Fire-and-forget inside the hook —
+    // it never blocks input. The hook's { action: 'continue' } result is
+    // swallowed: the composer merges middleware results by object spread, so
+    // returning it here would clobber another input middleware's transform.
+    const checkpointInputHook = createCheckpointInputHook({ getEngine: getCheckpointEngine });
+    hooks.on('input', 'octocode-checkpoint-snapshot', async (event: { text: string; source?: string; streamingBehavior?: string }, ctx: PiContext | undefined) => {
+      await checkpointInputHook(event, ctx);
+      return undefined;
+    });
+
+    hooks.on('tool_execution_start', 'octocode-tool-error-timing', async (event: { toolCallId?: string; toolName?: string; args?: unknown }, ctx: PiContext | undefined) => {
       const key = event.toolCallId ?? event.toolName;
       if (key) toolStartTimes.set(key, Date.now());
+      suppressWatchForTool(event, ctx);
     });
 
     hooks.on('tool_execution_end', 'octocode-tool-error-log', async (event: { toolCallId?: string; toolName?: string; result?: unknown; isError?: boolean }, ctx: PiContext | undefined) => {
       const key = event.toolCallId ?? event.toolName;
       const startedAt = key ? toolStartTimes.get(key) : undefined;
       if (key) toolStartTimes.delete(key);
+      // Re-open the bash suppression window at completion too: a long-running
+      // bash command's fs churn lands at the end of the call, not the start.
+      if (event.toolName === 'bash') markBashActivity();
       if (!event.isError) return;
       logInternalError('tool_execution_end', new Error(`Tool ${event.toolName ?? 'unknown'} failed`), {
         toolCallId: event.toolCallId,
@@ -1187,6 +1312,9 @@ async function wireOctocodePiExtension(
     registerMcpTool(pi, Type, registeredToolNames, registerUniqueTool);
 
     registerCompactionHooks(pi, notify);
+    // Branded conversation cards (compaction checkpoints / awareness handoffs)
+    // — must be registered before compaction-hooks emits the first card.
+    registerOctocodeMessageRenderers(pi);
     registerContextTools(pi, Type, registeredToolNames, registerUniqueTool, notify);
 
     if (typeof pi.on === 'function') {
@@ -1206,12 +1334,16 @@ async function wireOctocodePiExtension(
           metricsState.activeTurnStartedAt = undefined;
         }
         metricsState.completedTurns += 1;
-        await refreshFooterGitState(pi, metricsState); // branch/dirty may have changed this turn
+        await refreshFooterDirtyState(pi, metricsState); // dirty state may have changed this turn; branch comes from Pi footerData
         updateOctocodeMetricsUi(ctx, metricsState);
       });
     }
 
     registerAgentTools(pi, Type, registeredToolNames, registerUniqueTool);
+
+    // Worker inbox overlay (/octocode-inbox) + desktop notifications; must come
+    // after registerAgentTools so the ledger listener seam exists.
+    agentInbox = registerAgentInbox(pi, notify);
 
     // Re-assert disabled builtins after registration so a concurrent setActiveTools
     // (or Pi defaulting the full builtin set) cannot leave read/grep/find/ls active.
@@ -1409,6 +1541,29 @@ async function wireOctocodePiExtension(
       if (ctx?.reload) await ctx.reload();
     },
   });
+
+  // ─── Modern-TUI feature commands (palette / dial / watch / rewind / export) ──
+
+  // Palette: no-arg commands are auto-discovered via pi.getCommands(); list here
+  // only the arg-taking ones (they get an editor prefill instead of a dispatch).
+  registerCommandPalette(pi, {
+    commands: [
+      { name: 'octocode-plan', description: 'Manage the active task plan', takesArgs: true },
+      { name: 'octocode-agents', description: 'Inspect spawned worker agents', takesArgs: true },
+      { name: 'octocode-cron', description: 'Manage Octocode session jobs', takesArgs: true },
+      { name: 'octocode-mcp', description: 'Inspect or manage MCP servers', takesArgs: true },
+      { name: 'octocode-theme', description: 'Switch the Octocode theme', takesArgs: true },
+      { name: 'octocode-chrome', description: 'List or close CDP connections', takesArgs: true },
+      { name: 'octocode-dial', description: 'Set the effort dial level', takesArgs: true },
+      { name: 'octocode-watch', description: 'Toggle AI! comment watch mode', takesArgs: true },
+      { name: 'octocode-rewind', description: 'Restore a file checkpoint', takesArgs: true },
+      { name: 'octocode-export', description: 'Brand a session HTML export', takesArgs: true },
+    ],
+  });
+  registerDialCommand(pi);
+  registerAiWatch(pi, { cwd: () => latestSessionCwd ?? process.cwd() });
+  registerRewindCommand(pi, { getEngine: getCheckpointEngine, notify });
+  registerExportCommand(pi);
 }
 
 // ─── Public factory ───────────────────────────────────────────────────────────

@@ -200,7 +200,7 @@ describe('notifyGet — smart briefing from memories table', () => {
     expect(result.count).toBe(5);
     expect(Buffer.byteLength(result.additionalContext ?? '', 'utf8')).toBeLessThanOrEqual(1024);
     expect(result.additionalContext).toContain('subject-0');
-    expect(result.additionalContext).toContain('files=3');
+    expect(result.additionalContext).toContain('files 3:');
   });
 
   it('surfaces weakness cluster when failure_signature is present', () => {

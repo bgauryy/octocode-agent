@@ -1,6 +1,6 @@
 /**
- * awareness-status — a live below-editor panel for the shared Awareness state
- * (plans, tasks, verify debt, refinements, locks).
+ * awareness-status — a live below-editor panel for the shared Awareness Lite state
+ * (plans, tasks, verify debt, locks, manual work presence, agents, and messages).
  *
  * Awareness is canonical SQLite behind the `$OCTOCODE_AWARENESS_CLI` binary. Its
  * state previously only surfaced in chat when the agent ran a CLI command; this
@@ -24,14 +24,13 @@ export interface AwarenessStatus {
   readyTasks: number;
   inProgressTasks: number;
   verifyTasks: number;
-  pendingRuns: number;
-  /** Refinements that actually need action (drives the panel); openRefinements is informational. */
-  actionableRefinements: number;
-  openRefinements: number;
   lockCount: number;
+  workCount: number;
+  agentCount: number;
+  messageCount: number;
 }
 
-/** Parse the `workspace status --compact` JSON into the fields the panel needs. Null on bad input. */
+/** Parse the Lite `status` JSON into the fields the panel needs. Null on bad input. */
 export function parseAwarenessStatus(json: string): AwarenessStatus | null {
   let raw: Record<string, unknown>;
   try {
@@ -39,20 +38,20 @@ export function parseAwarenessStatus(json: string): AwarenessStatus | null {
   } catch {
     return null;
   }
-  if (!raw || raw.ok !== true) return null;
+  if (!raw || typeof raw !== 'object') return null;
   const num = (key: string): number => {
     const v = raw[key];
     return typeof v === 'number' && Number.isFinite(v) ? v : 0;
   };
   return {
-    activePlans: num('active_plans'),
-    readyTasks: num('ready_tasks'),
-    inProgressTasks: num('in_progress_tasks'),
-    verifyTasks: num('verify_tasks'),
-    pendingRuns: num('pending_runs'),
-    actionableRefinements: num('actionable_refinements'),
-    openRefinements: num('all_open_refinements'),
-    lockCount: num('lock_count'),
+    activePlans: raw['activePlans'] === undefined ? num('plans') : num('activePlans'),
+    readyTasks: raw['readyTasks'] === undefined ? num('tasks') : num('readyTasks'),
+    inProgressTasks: num('inProgressTasks'),
+    verifyTasks: raw['verifyTasks'] === undefined ? num('pendingChecks') : num('verifyTasks'),
+    lockCount: num('locks'),
+    workCount: num('work'),
+    agentCount: num('agents'),
+    messageCount: num('messages'),
   };
 }
 
@@ -63,24 +62,27 @@ export function hasAwarenessSignal(s: AwarenessStatus): boolean {
     s.readyTasks > 0 ||
     s.inProgressTasks > 0 ||
     s.verifyTasks > 0 ||
-    s.pendingRuns > 0 ||
-    s.actionableRefinements > 0 ||
-    s.lockCount > 0
+    s.lockCount > 0 ||
+    s.workCount > 0 ||
+    s.agentCount > 0 ||
+    s.messageCount > 0
   );
 }
 
 /** Build the below-editor Awareness panel lines. Empty array when there is nothing to show. */
 export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme): string[] {
   if (!hasAwarenessSignal(s)) return [];
-  const debt = s.verifyTasks + s.pendingRuns;
+  const debt = s.verifyTasks;
   const segs: string[] = [];
   if (s.activePlans > 0) segs.push(`plans ${s.activePlans}`);
   if (s.readyTasks > 0) segs.push(`ready ${s.readyTasks}`);
   if (s.inProgressTasks > 0) segs.push(`doing ${s.inProgressTasks}`);
 
   const tail: string[] = [];
-  if (s.actionableRefinements > 0) tail.push(`refine ${s.actionableRefinements}`);
   if (s.lockCount > 0) tail.push(`locks ${s.lockCount}`);
+  if (s.workCount > 0) tail.push(`work ${s.workCount}`);
+  if (s.agentCount > 0) tail.push(`agents ${s.agentCount}`);
+  if (s.messageCount > 0) tail.push(`msgs ${s.messageCount}`);
 
   const chunks: string[] = [];
   if (segs.length) chunks.push(paint(theme, 'brand', segs.join('  ·  ')));
@@ -125,7 +127,7 @@ const defaultRunner: StatusRunner = (cliPath, cwd) =>
   new Promise((resolve) => {
     execFile(
       process.execPath,
-      [cliPath, 'workspace', 'status', '--workspace', cwd, '--compact'],
+      [cliPath, 'status', '--workspace', cwd],
       { timeout: 4000, maxBuffer: 1_000_000 },
       (err, stdout) => resolve(err ? null : String(stdout)),
     );

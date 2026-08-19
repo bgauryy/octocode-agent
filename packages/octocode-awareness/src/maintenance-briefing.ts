@@ -35,6 +35,7 @@ import { BriefItem, NotifyGetBriefResult, NotifyGetResult, openRefinementCount }
 export const BRIEFING_LABELS = ['GOTCHA', 'BUG', 'DECISION', 'IMPROVEMENT', 'ARCHITECTURE', 'SECURITY'] as const;
 export const INTERVENTION_CANDIDATE_LIMIT = 50;
 export const HOOK_BRIEF_ITEM_MAX_BYTES = 180;
+export const HOOK_BRIEF_MAX_ITEMS = 5;
 
 export const INTERVENTION_STOP_WORDS = new Set([
   'the', 'and', 'for', 'with', 'from', 'into', 'this', 'that', 'about',
@@ -83,6 +84,63 @@ export function isPromptGroundedMemory(
   return false;
 }
 
+function briefPath(file: string, workspacePath: string | null): string {
+  const value = file.trim();
+  if (!workspacePath) return value;
+  const prefix = workspacePath.endsWith('/') ? workspacePath : `${workspacePath}/`;
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
+}
+
+function briefFiles(files: string[], workspacePath: string | null): string {
+  const unique = [...new Set(files.map(file => briefPath(file, workspacePath)).filter(Boolean))];
+  if (unique.length === 0) return '';
+  const first = summarizeUtf8(unique[0]!, 56);
+  const more = unique.length > 1 ? ` (+${unique.length - 1})` : '';
+  return `files ${unique.length}: ${first}${more}`;
+}
+
+function briefRoute(from: string, target: string): string[] {
+  return [`from ${from}`, target];
+}
+
+function notificationBriefText(params: {
+  kind: string;
+  from: string;
+  target: string;
+  files: string[];
+  subject: string;
+  body?: string;
+  workspacePath: string | null;
+  count?: number;
+}): string {
+  const kind = params.count && params.count > 1 ? `${params.kind} ×${params.count}` : params.kind;
+  const parts = [
+    `📨 ${kind}`,
+    ...briefRoute(params.from, params.target),
+    summarizeUtf8(params.subject, 72),
+    briefFiles(params.files, params.workspacePath),
+  ].filter(Boolean);
+  const bodySuffix = params.body ? ` — ${summarizeUtf8(params.body, 60)}` : '';
+  return `${parts.join(' · ')}${bodySuffix}`;
+}
+
+function compactBriefItems(items: BriefItem[]): BriefItem[] {
+  const grouped = new Map<string, BriefItem & { duplicateCount: number }>();
+  for (const item of items) {
+    const key = `${item.kind}\0${item.text}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.duplicateCount += 1;
+      existing.importance = Math.max(existing.importance ?? 0, item.importance ?? 0) || undefined;
+      continue;
+    }
+    grouped.set(key, { ...item, duplicateCount: 1 });
+  }
+  return [...grouped.values()].map(({ duplicateCount, ...item }) => duplicateCount > 1
+    ? { ...item, text: `${item.text} (duplicate ×${duplicateCount})` }
+    : item);
+}
+
 export function notifyGet(
   db: DatabaseSync,
   params: Record<string, unknown> = {},
@@ -123,23 +181,23 @@ export function notifyGet(
       importance: number;
     };
     const handoffClusters = new Map<string, HandoffCluster>();
-    const normalizeHandoffSubject = (subject: string): string =>
-      subject.replace(/Review session handoff for pi:[^\s:]+(?::[^\s]+)?/g, 'Review session handoff');
+    const normalizeHandoffSubject = (subject: string): string => {
+      const normalized = subject.replace(/Review session handoff for pi:[^\s:]+(?::[^\s]+)?/g, 'Review session handoff');
+      return /^Review session handoff(?:\b|:)/.test(normalized) ? 'Review session handoff' : normalized;
+    };
     const normalizeHandoffBody = (body: string): string =>
       summarizeText(body.replace(/pi:[^\s]+/g, 'pi:<session>'), 120);
-    const isSessionHandoff = (subject: string): boolean =>
-      normalizeHandoffSubject(subject) === 'Review session handoff';
     for (const n of inbox.signals) {
       const target = n.to_agent ? `to ${n.to_agent}` : 'broadcast';
-      const bodySuffix = n.body ? ` — ${summarizeText(n.body, 60)}` : '';
       if (n.kind === 'handoff') {
         const normalizedSubject = normalizeHandoffSubject(n.subject);
-        const normalizedBody = normalizeHandoffBody(n.body ?? '');
+        const sessionHandoff = normalizedSubject === 'Review session handoff';
+        const normalizedBody = sessionHandoff ? '' : normalizeHandoffBody(n.body ?? '');
         const key = JSON.stringify([
           n.kind,
           n.to_agent ?? '',
           normalizedSubject,
-          isSessionHandoff(n.subject) ? '' : normalizedBody,
+          sessionHandoff ? '' : normalizedBody,
         ]);
         const existing = handoffClusters.get(key);
         if (existing) {
@@ -159,23 +217,31 @@ export function notifyGet(
         });
         continue;
       }
-      const fileSuffix = n.files.length > 0
-        ? ` files=${n.files.length}[${summarizeText(n.files[0]!, 48)}]`
-        : '';
-      const text = `📨 ${n.kind} from ${n.from_agent} (${target})${fileSuffix}: ${summarizeText(n.subject, 72)}${bodySuffix}`;
+      const text = notificationBriefText({
+        kind: n.kind,
+        from: n.from_agent,
+        target,
+        files: n.files,
+        subject: n.subject,
+        body: n.body ?? undefined,
+        workspacePath: wsPath,
+      });
       items.push({ kind: 'notification', text, importance: n.importance });
     }
     for (const cluster of handoffClusters.values()) {
-      const uniqueFiles = [...new Set(cluster.files)];
-      const fileSuffix = uniqueFiles.length > 0
-        ? ` files=${uniqueFiles.length}[${summarizeText(uniqueFiles[0]!, 48)}]`
-        : '';
-      const bodySuffix = cluster.body ? ` — ${summarizeText(cluster.body, 60)}` : '';
-      const label = cluster.count > 1 ? `handoff cluster (${cluster.count})` : 'handoff';
       const from = cluster.count > 1 ? 'multiple agents' : cluster.from;
       items.push({
         kind: 'notification',
-        text: `📨 ${label} from ${from} (${cluster.target})${fileSuffix}: ${summarizeText(cluster.subject, 72)}${bodySuffix}`,
+        text: notificationBriefText({
+          kind: 'handoff',
+          count: cluster.count,
+          from,
+          target: cluster.target,
+          files: cluster.files,
+          subject: cluster.subject,
+          body: cluster.body,
+          workspacePath: wsPath,
+        }),
         importance: cluster.importance,
       });
     }
@@ -302,14 +368,23 @@ export function notifyGet(
 
   // Hook format: wrap top items as additionalContext for pi injection
   if (format === 'hook') {
-    const hookItems = items.slice(0, 5).map(item => ({
+    const compactItems = compactBriefItems(items);
+    const hookItems = compactItems.slice(0, HOOK_BRIEF_MAX_ITEMS).map(item => ({
       ...item,
       text: summarizeUtf8(item.text, HOOK_BRIEF_ITEM_MAX_BYTES),
     }));
     result.count = hookItems.length;
     result.notifications = hookItems;
+    const hiddenCount = Math.max(0, compactItems.length - hookItems.length);
+    const duplicateCount = Math.max(0, items.length - compactItems.length);
+    const suffixParts = [
+      items.length > hookItems.length ? `${items.length} total` : '',
+      duplicateCount > 0 ? `${duplicateCount} duplicate${duplicateCount === 1 ? '' : 's'} collapsed` : '',
+      hiddenCount > 0 ? `${hiddenCount} more not shown` : '',
+    ].filter(Boolean);
+    const suffix = suffixParts.length > 0 ? ` — ${suffixParts.join(' · ')}` : '';
     const lines = [
-      `🧠 Brief (${hookItems.length}${items.length > hookItems.length ? `/${items.length}` : ''}):`,
+      `🧠 Brief — showing ${hookItems.length}/${Math.max(items.length, hookItems.length)}${suffix}:`,
       ...hookItems.map(i => `  • ${i.text}`),
     ];
     const additionalContext = lines.join('\n');

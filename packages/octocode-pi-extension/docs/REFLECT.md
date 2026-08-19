@@ -101,15 +101,14 @@ node "$OCTOCODE_AWARENESS_CLI" reflect developer-review \
 Keep feedback specific: quote the conflicting requirement, show the observed
 effect, and propose the smallest correction.
 
-## Cleanup and projection
+## Cleanup
 
-Awareness CLI maintenance is report-first:
+Awareness Lite cleanup is explicit and item-scoped:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" maintenance digest \
-  --workspace "$PWD" --dry-run --compact
+node "$OCTOCODE_AWARENESS_CLI" status --workspace "$PWD"
 node "$OCTOCODE_AWARENESS_CLI" memory forget \
-  --tag EXPERIENCE --before 2026-01-01 --dry-run --compact
+  --workspace "$PWD" --memory-id mem_123
 ```
 
 Review the dry-run output before any mutation. After approved cleanup,

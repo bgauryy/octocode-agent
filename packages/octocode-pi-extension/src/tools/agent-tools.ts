@@ -16,6 +16,7 @@ import type {
   WorkerLedgerEntry,
   WorkerLedgerEvent,
   WorkerLedgerEventType,
+  WorkerWorktreeState,
 } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { cliToolTitle, paint } from '../tui/cli-design.js';
@@ -23,6 +24,16 @@ import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel, resumeStatusPanel } from './status-panel.js';
 import { stringEnumSchema } from './schema-helpers.js';
 import { getRandomAgentName } from '../agentNames.js';
+import {
+  assertWorktreeSpawnAllowed,
+  cleanupWorktreeIfNoWork,
+  createAgentWorktree,
+  removeAgentWorktree,
+  setWorktreeGitRunnerForTests,
+  type InternalWorktreeState,
+  type WorktreeGitRunner,
+  type WorktreeIsolation,
+} from './worktree.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -33,6 +44,7 @@ export type NormalizedWorkerStatus = 'done' | 'blocked' | 'failed' | 'unknown';
 export type NormalizedWorkerConfidence = 'confirmed' | 'likely' | 'uncertain';
 
 type MessageAction = 'list' | 'status' | 'send' | 'steer' | 'followUp' | 'wait' | 'kill' | 'abort';
+type WorktreeDecision = 'shared' | 'create';
 
 export interface NormalizedWorkerResult {
   status: NormalizedWorkerStatus;
@@ -92,6 +104,10 @@ export interface SpawnAgentParams {
   systemPrompt?: string;
   resourceMode?: ResourceMode;
   noSession?: boolean;
+  isolation?: WorktreeIsolation;
+  includeUncommitted?: boolean;
+  /** Internal: set only after the user-decision gate approves worktree creation or explicitly chooses shared cwd. */
+  worktreeDecision?: WorktreeDecision;
   /**
    * Absolute paths to skill directories to load via --skill (additive, works with --no-skills).
    * L9: This field is intentionally NOT exposed in the `spawnAgent` tool's TypeBox schema;
@@ -140,6 +156,7 @@ interface AgentRecord {
   promptFiles: string[];
   waiters: Set<() => void>;
   nextRequestId: number;
+  worktree?: InternalWorktreeState;
 }
 
 interface AgentDetails {
@@ -196,11 +213,16 @@ export function isSubagentProcess(): boolean {
 
 export function setAgentProcessFactoryForTests(factory: AgentProcessFactory | null): void {
   processFactory = factory ?? ((command, args, options) => spawn(command, args, options) as unknown as AgentProcess);
+  setWorktreeGitRunnerForTests(null);
   agents.clear();
   ledgerHidden = false;
   // A prior test's session_shutdown may have suppressed the status panel;
   // ledger rendering assertions need it live again.
   resumeStatusPanel();
+}
+
+export function setAgentWorktreeGitRunnerForTests(runner: WorktreeGitRunner | null): void {
+  setWorktreeGitRunnerForTests(runner);
 }
 
 /** wait() resolves at end-of-turn: idle counts as "done for now", plus true terminals. */
@@ -214,6 +236,7 @@ function isTerminal(record: { status: AgentStatus }): boolean {
  * send/steer/followUp, so evicting or shutdown-skipping it would orphan the child.
  */
 function isDroppable(record: AgentRecord): boolean {
+  if (record.worktree && record.worktree.mergeState !== 'clean' && record.worktree.mergeState !== 'merged' && record.worktree.mergeState !== 'discarded') return false;
   return ['exited', 'failed', 'killed'].includes(record.status);
 }
 
@@ -243,7 +266,7 @@ function evictStaleAgents(): void {
 export function cleanupSpawnedAgentsForShutdown(): number {
   // Kill every worker whose process is still alive — including idle ones, whose
   // process stays up between turns and would otherwise survive as an orphan.
-  const alive = [...agents.values()].filter((record) => !isDroppable(record));
+  const alive = [...agents.values()].filter((record) => isProcessAlive(record));
   for (const record of alive) killAgent(record, { forceKillDelayMs: 0 });
   // The killed children's close/stderr events fire on later ticks and call
   // refreshAgentLedgerUi; hide the ledger so those callbacks clear rather than
@@ -395,6 +418,17 @@ function buildInitialPrompt(params: SpawnAgentParams): string {
   return `Context for this delegated agent:\n\n${context}\n\nTask:\n\n${task}`;
 }
 
+function withWorktreePromptContext(params: SpawnAgentParams, worktree: InternalWorktreeState): SpawnAgentParams {
+  const preamble = [
+    'Worktree isolation is active for this worker.',
+    `- Worktree path: ${worktree.path}`,
+    `- Branch: ${worktree.branch}`,
+    `- Base commit: ${worktree.baseCommit}`,
+    '- Report repo-relative paths in handback; the parent ledger exposes the isolated path for review.',
+  ].join('\n');
+  return { ...params, cwd: worktree.path, context: params.context ? `${preamble}\n\n${params.context}` : preamble };
+}
+
 function getWorkerTools(params: SpawnAgentParams): string[] {
   return (params.tools ?? []).filter((toolName) => !FORBIDDEN_WORKER_TOOLS.has(toolName));
 }
@@ -437,6 +471,18 @@ function touch(record: AgentRecord, status?: AgentStatus): void {
   if (status) record.status = status;
 }
 
+// Ledger listeners: notified on every ledger event (spawned/status/tool/handback/…).
+// Normalized-status flips also funnel through here — refreshNormalizedResult pushes a
+// 'handback' ledger event whenever the normalized status changes, so subscribing to
+// pushLedgerEvent covers all worker state transitions.
+const ledgerListeners = new Set<(entry: WorkerLedgerEntry, type: WorkerLedgerEventType) => void>();
+
+/** Subscribe to worker ledger events. Returns an unsubscribe function. */
+export function registerWorkerLedgerListener(cb: (entry: WorkerLedgerEntry, type: WorkerLedgerEventType) => void): () => void {
+  ledgerListeners.add(cb);
+  return () => { ledgerListeners.delete(cb); };
+}
+
 function pushLedgerEvent(record: AgentRecord, type: WorkerLedgerEventType, message?: string, details?: unknown): void {
   pushCapped(record.ledgerEvents, {
     type,
@@ -445,8 +491,19 @@ function pushLedgerEvent(record: AgentRecord, type: WorkerLedgerEventType, messa
     details,
   });
   if (record.ledgerEvents.length > MAX_LEDGER_EVENTS) record.ledgerEvents.splice(0, record.ledgerEvents.length - MAX_LEDGER_EVENTS);
+  if (ledgerListeners.size > 0) {
+    const entry = toWorkerLedgerEntry(record);
+    for (const listener of ledgerListeners) {
+      // A throwing listener must never break the ledger (or the worker pipeline).
+      try { listener(entry, type); } catch { /* listener errors are isolated */ }
+    }
+  }
 }
 
+function previewMessage(message: string): string {
+  const oneLine = message.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 72 ? `${oneLine.slice(0, 71)}…` : oneLine;
+}
 function notifyWaiters(record: AgentRecord): void {
   for (const waiter of record.waiters) waiter();
   record.waiters.clear();
@@ -564,6 +621,17 @@ function validateWorkerModelParams(params: SpawnAgentParams, ctx?: PiContext): v
 export function evaluateSpawnPolicy(params: SpawnAgentParams, activeCount = activeAgentCount(), policy: SpawnPolicy = DEFAULT_SPAWN_POLICY): SpawnPolicyResult {
   const effectivePolicy = resolveSpawnPolicy(policy);
   const warnings: string[] = [];
+  if (params.isolation === 'worktree') {
+    try {
+      assertWorktreeSpawnAllowed(path.resolve(String(params.cwd ?? process.cwd())));
+    } catch (error) {
+      return {
+        allowed: false,
+        warnings,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
   if (activeCount >= effectivePolicy.maxActiveAgents) {
     return {
       allowed: false,
@@ -873,19 +941,56 @@ function cleanupPromptFiles(promptFiles: string[]): void {
   }
 }
 
+async function approveWorktreeIsolation(params: SpawnAgentParams, ctx?: PiContext): Promise<SpawnAgentParams> {
+  if (params.isolation !== 'worktree') return params;
+  if (!ctx?.hasUI || typeof ctx.ui?.select !== 'function') {
+    throw new Error('isolation:"worktree" requires an interactive UI approval; non-interactive hosts fail closed. Re-run with isolation:"shared" to use the current cwd intentionally.');
+  }
+  const create = 'Create isolated worktree';
+  const shared = 'Use current repo / shared cwd';
+  const cancel = 'Cancel spawn';
+  const picked = await ctx.ui.select('Spawn this worker in an isolated git worktree?', [create, shared, cancel]);
+  if (picked === create) return { ...params, worktreeDecision: 'create' };
+  if (picked === shared) return { ...params, isolation: 'shared', worktreeDecision: 'shared' };
+  throw new Error('Spawn cancelled before creating a worktree.');
+}
+
+function worktreeSnapshot(worktree: WorkerWorktreeState | undefined): WorkerWorktreeState | undefined {
+  return worktree ? { ...worktree } : undefined;
+}
+
+function formatWorktreeState(worktree: WorkerWorktreeState | undefined): string {
+  if (!worktree) return '';
+  const branch = worktree.branch.replace(/^octocode\//, '');
+  return ` ⎇ ${branch} +${worktree.aheadCommits}c ~${worktree.dirtyFiles}f ${worktree.mergeState}`;
+}
+
+function cleanupRecordWorktree(record: AgentRecord): void {
+  if (!record.worktree || record.worktree.mergeState === 'discarded' || record.worktree.mergeState === 'merged') return;
+  try {
+    const outcome = cleanupWorktreeIfNoWork(record.worktree);
+    pushLedgerEvent(record, 'worktree', outcome === 'removed' ? 'removed clean worktree' : 'kept unmerged worktree', record.worktree);
+  } catch (cleanupError) {
+    pushLedgerEvent(record, 'worktree', `worktree cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`, record.worktree);
+  }
+}
+
+export async function prepareSpawnAgentParams(params: SpawnAgentParams, ctx?: PiContext): Promise<SpawnAgentParams> {
+  return approveWorktreeIsolation(params, ctx);
+}
+
 export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentRecord {
-  const task = buildInitialPrompt(params);
-  if (!task) throw new Error('spawnAgent requires task or prompt.');
+  if (!buildInitialPrompt(params)) throw new Error('spawnAgent requires task or prompt.');
 
   const id = randomUUID();
   const name = params.name ? String(params.name) : getRandomAgentName();
-  const cwd = path.resolve(String(params.cwd ?? ctx?.cwd ?? process.cwd()));
+  const requestedCwd = path.resolve(String(params.cwd ?? ctx?.cwd ?? process.cwd()));
   const promptFiles: string[] = [];
   // SEV-1: workers resolve models against the same catalog as the parent, but Pi's
   // bare default (google/grok) is often unconfigured/unreachable — an unset worker
   // model silently errors every turn (0 tools run). Inherit the parent's known-working
   // model+provider when the caller didn't pin one, so delegation works by default.
-  const effectiveParams = resolveWorkerModelParams(params, ctx);
+  const effectiveParams = resolveWorkerModelParams({ ...params, cwd: requestedCwd }, ctx);
   validateWorkerModelParams(effectiveParams, ctx);
   const args = buildPiArgs(effectiveParams, name, promptFiles);
   const invocation = getPiInvocation(args);
@@ -901,6 +1006,25 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     cleanupPromptFiles(promptFiles);
     throw new Error(`${policyResult.reason} Kill or wait for existing agents before spawning more.`);
   }
+
+  let worktree: InternalWorktreeState | undefined;
+  let spawnParams = effectiveParams;
+  let cwd = requestedCwd;
+  if (effectiveParams.isolation === 'worktree') {
+    if (effectiveParams.worktreeDecision !== 'create') {
+      cleanupPromptFiles(promptFiles);
+      throw new Error('isolation:"worktree" requires explicit user approval before creating a git worktree.');
+    }
+    worktree = createAgentWorktree({
+      parentCwd: requestedCwd,
+      agentId: id,
+      name,
+      includeUncommitted: effectiveParams.includeUncommitted,
+    });
+    spawnParams = withWorktreePromptContext(effectiveParams, worktree);
+    cwd = worktree.path;
+  }
+  const task = buildInitialPrompt(spawnParams);
 
   let proc;
   try {
@@ -927,6 +1051,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     // (wired to the record's 'close'/'error' handlers) would never run. Clean up the temp
     // system-prompt files buildPiArgs wrote so a failing factory does not leak files in os.tmpdir.
     cleanupPromptFiles(promptFiles);
+    if (worktree) removeAgentWorktree(worktree, { force: true });
     throw error;
   }
 
@@ -954,8 +1079,10 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     promptFiles,
     waiters: new Set(),
     nextRequestId: 1,
+    worktree,
   };
   pushLedgerEvent(record, 'spawned', `spawned ${name}`, { awarenessAgentId });
+  if (record.worktree) pushLedgerEvent(record, 'worktree', `created worktree ${record.worktree.branch}`, record.worktree);
   for (const warning of policyResult.warnings) pushLedgerEvent(record, 'policy', warning);
   agents.set(id, record);
   // Evict droppable agents to keep registry size ≤ MAX_AGENT_RECORDS.
@@ -988,6 +1115,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     pushLedgerEvent(record, 'error', record.error);
     touch(record, 'failed');
     removePromptFiles(record);
+    cleanupRecordWorktree(record);
     notifyWaiters(record);
     refreshAgentLedgerUi(ctx);
   });
@@ -998,6 +1126,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     if (record.status !== 'killed') touch(record, code === 0 ? 'exited' : 'failed');
     pushLedgerEvent(record, record.status === 'failed' ? 'error' : 'exit', `process closed with code ${record.exitCode ?? 'unknown'}`);
     removePromptFiles(record);
+    cleanupRecordWorktree(record);
     notifyWaiters(record);
     refreshAgentLedgerUi(ctx);
   });
@@ -1039,34 +1168,38 @@ function summarizeAgent(record: AgentRecord, opts: { full?: boolean } = {}) {
     ledgerEvents: opts.full ? [...record.ledgerEvents] : record.ledgerEvents.slice(-10),
     toolCalls: opts.full ? [...record.toolCalls] : record.toolCalls.slice(-10),
     activeTool: [...record.toolCalls].reverse().find((call) => call.status === 'running')?.toolName,
+    worktree: worktreeSnapshot(record.worktree),
+  };
+}
+
+function toWorkerLedgerEntry(record: AgentRecord): WorkerLedgerEntry {
+  const normalized = record.normalizedResult;
+  return {
+    agentId: record.id,
+    name: record.name,
+    status: record.status,
+    startedAt: new Date(record.startedAt).toISOString(),
+    updatedAt: new Date(record.updatedAt).toISOString(),
+    model: getArgValue(record.args, '--model'),
+    provider: getArgValue(record.args, '--provider'),
+    thinking: getArgValue(record.args, '--thinking'),
+    tools: getArgCsv(record.args, '--tools'),
+    normalizedStatus: normalized?.status,
+    result: normalized?.result,
+    confidence: normalized?.confidence,
+    evidence: normalized?.evidence,
+    verification: normalized?.verification,
+    next: normalized?.next,
+    deltaSummary: record.deltaSummary,
+    worktree: worktreeSnapshot(record.worktree),
+    recentEvents: record.ledgerEvents.slice(-10),
   };
 }
 
 export function listWorkerLedgerEntries(): WorkerLedgerEntry[] {
   return [...agents.values()]
     .sort((a, b) => b.updatedAt - a.updatedAt)
-    .map((record) => {
-      const normalized = record.normalizedResult;
-      return {
-        agentId: record.id,
-        name: record.name,
-        status: record.status,
-        startedAt: new Date(record.startedAt).toISOString(),
-        updatedAt: new Date(record.updatedAt).toISOString(),
-        model: getArgValue(record.args, '--model'),
-        provider: getArgValue(record.args, '--provider'),
-        thinking: getArgValue(record.args, '--thinking'),
-        tools: getArgCsv(record.args, '--tools'),
-        normalizedStatus: normalized?.status,
-        result: normalized?.result,
-        confidence: normalized?.confidence,
-        evidence: normalized?.evidence,
-        verification: normalized?.verification,
-        next: normalized?.next,
-        deltaSummary: record.deltaSummary,
-        recentEvents: record.ledgerEvents.slice(-10),
-      };
-    });
+    .map(toWorkerLedgerEntry);
 }
 
 function getArgValue(args: string[], flag: string): string | undefined {
@@ -1146,8 +1279,9 @@ function renderAgentResult(records: AgentRecord[], header: string): ToolCallResu
       : '';
     const risk = agentRiskBadge(s);
     const riskText = risk ? ` \u00b7 ${risk}` : '';
-    const result = s.normalizedResult?.result ?? s.normalizedResult?.next ?? s.lastOutput;
-    const preview = result ? ` \u2014 ${result.slice(0, 60).replace(/\n/g, ' ')}${s.outputTruncated ? '\u2026' : ''}` : '';
+    const latestEvent = s.ledgerEvents.at(-1)?.message;
+    const result = s.normalizedResult?.result ?? s.normalizedResult?.next ?? s.lastOutput ?? latestEvent;
+    const preview = result ? ` — ${result.slice(0, 60).replace(/\n/g, ' ')}${s.outputTruncated ? '…' : ''}` : '';
     const toolInfo = typeof s.activeTool === 'string' ? ` \u00b7 active:${s.activeTool}` : '';
     const modelInfo = ` \u00b7 ${formatAgentModelLine(s)}`;
     lines.push(`  ${meta.icon} ${s.name} (${shortId(s.agentId)}) \u00b7 ${meta.label}${exit}${handback}${riskText}${modelInfo} \u00b7 ${elapsed}${toolInfo}${preview}`);
@@ -1211,14 +1345,16 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
     const modelInfo = ` · ${formatAgentModelLine(summary)}`;
     const risk = agentRiskBadge(summary, theme);
     const riskText = risk ? ` · ${risk}` : '';
-    const result = summary.normalizedResult?.result ?? summary.normalizedResult?.next ?? summary.lastOutput;
+    const worktreeInfo = formatWorktreeState(summary.worktree);
+    const latestEvent = summary.ledgerEvents.at(-1)?.message;
+    const result = summary.normalizedResult?.result ?? summary.normalizedResult?.next ?? summary.lastOutput ?? latestEvent;
     const live = !isTerminal(record) && record.deltaSummary ? record.deltaSummary : undefined;
     const previewText = live ?? result;
     const preview = previewText ? ` — ${previewText.replace(/\n/g, ' ').slice(0, 90)}${!live && summary.outputTruncated ? '…' : ''}` : '';
     const name = paint(theme, 'brand', summary.name);
     const id = paint(theme, 'dim', shortId(summary.agentId));
     const elapsed = formatElapsed(record.startedAt, isTerminal(record) ? record.updatedAt : undefined);
-    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${modelInfo}${active}${toolsInfo} · ${elapsed}${paint(theme, 'dim', preview)}`);
+    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${modelInfo}${active}${toolsInfo}${worktreeInfo} · ${elapsed}${paint(theme, 'dim', preview)}`);
   }
   if (records.length > limit) lines.push(paint(theme, 'muted', `… ${records.length - limit} more; use AgentMessage list for full details.`));
   return lines;
@@ -1379,6 +1515,9 @@ function renderSingleAgentResult(record: AgentRecord, header: string, opts: { fu
   if (summary.recoveryRisk?.warnings.length) {
     contentParts.push(`recovery-risk: ${summary.recoveryRisk.warnings.join(' | ')}`);
   }
+  if (summary.worktree) {
+    contentParts.push(`worktree: ${summary.worktree.branch} @ ${summary.worktree.path} (+${summary.worktree.aheadCommits} commits, ~${summary.worktree.dirtyFiles} files, ${summary.worktree.mergeState})`);
+  }
   if (output.text) contentParts.push('', output.text);
   if (output.truncated) contentParts.push(`\u2026 output truncated (${output.omittedChars} chars hidden; full content in details)`);
   return {
@@ -1417,6 +1556,57 @@ function killAgent(record: AgentRecord, opts: { forceKillDelayMs?: number } = {}
   notifyWaiters(record);
 }
 
+// ─── Programmatic worker seams ────────────────────────────────────────────────
+// Thin exported wrappers over the exact code paths the AgentMessage tool and the
+// /octocode-agents command verbs use, so other features can steer/kill/inspect
+// workers without going through the tool surface.
+
+/**
+ * Steer a live worker by id or prefix. Running workers get the steer RPC
+ * (redirects the in-flight turn, same as AgentMessage action:"steer"); idle
+ * workers have no turn to redirect, so the message is queued via the follow_up
+ * path (same as AgentMessage action:"followUp"). Returns false for unknown ids,
+ * dead processes, or empty messages.
+ */
+export function steerWorkerById(idOrPrefix: string, message: string): boolean {
+  const record = findAgentByIdOrPrefix(idOrPrefix);
+  const text = String(message ?? '').trim();
+  if (!record || !text || !isProcessAlive(record)) return false;
+  if (record.status === 'running') {
+    touch(record, 'running');
+    const sent = sendRpc(record, { type: 'steer', message: text });
+    if (sent) pushLedgerEvent(record, 'message', `steer sent: ${previewMessage(text)}`);
+    return sent;
+  }
+  touch(record, 'running');
+  const queued = sendRpc(record, { type: 'follow_up', message: text });
+  if (queued) pushLedgerEvent(record, 'message', `follow-up queued: ${previewMessage(text)}`);
+  return queued;
+}
+/** Kill a worker by id or prefix (same path as /octocode-agents kill). Returns false for unknown ids. */
+export function killWorkerById(idOrPrefix: string): boolean {
+  const record = findAgentByIdOrPrefix(idOrPrefix);
+  if (!record) return false;
+  killAgent(record);
+  return true;
+}
+
+/**
+ * Render a worker's current state + output by id or prefix — the same
+ * single-agent rendering AgentMessage status / /octocode-agents inspect use.
+ * With maxLines set, keeps the LAST maxLines lines (the freshest output).
+ * Returns undefined for unknown ids.
+ */
+export function getWorkerTranscript(idOrPrefix: string, opts: { maxLines?: number } = {}): string | undefined {
+  const record = findAgentByIdOrPrefix(idOrPrefix);
+  if (!record) return undefined;
+  const text = renderSingleAgentResult(record, 'Agent status').content[0]?.text ?? '';
+  const maxLines = opts.maxLines;
+  if (maxLines === undefined || maxLines <= 0) return text;
+  const lines = text.split('\n');
+  return lines.length <= maxLines ? text : lines.slice(-maxLines).join('\n');
+}
+
 export function registerAgentTools(
   pi: PiInstance,
   Type: TypeBoxBuilder,
@@ -1441,14 +1631,14 @@ export function registerAgentTools(
     name: 'spawnAgent',
     label: 'Agent: Spawn Parallel Worker',
     description:
-      'Spawn a separate background Pi worker process over RPC. Returns immediately with an agentId; use AgentMessage to inspect, send follow-ups, wait, or kill. Workers can run in parallel but share the selected cwd and environment-backed services.',
+      'Spawn a separate background Pi worker process over RPC. Returns immediately with an agentId; use AgentMessage to inspect, send follow-ups, wait, or kill. Workers can run in parallel in the shared cwd by default, or in an explicitly approved git worktree with isolation:"worktree".',
     promptSnippet: 'Spawn a background Pi worker process and return an agentId for AgentMessage.',
     promptGuidelines: [
       'Use spawnAgent only when delegation materially helps: independent work ownership, long-running tasks, or adversarial/coverage checks.',
       'Do not spawn agents for ordinary bug fixes/refactors that need shared context; stay in the parent or batch independent tool calls instead.',
       'Before spawning, break the request into explicit subtasks and delegate only one independent, bounded subtask per worker.',
       'For useful parallelism, spawn all independent workers first, then use AgentMessage action:"wait" or action:"status" to collect results.',
-      'Workers inherit no parent conversation but share cwd, files, and environment-backed services. Pass a bounded request packet and assign disjoint paths for any writes.',
+      'Workers inherit no parent conversation. By default they share cwd/files/environment; pass isolation:"worktree" for an opt-in git worktree after explicit user approval, or isolation:"shared" when sharing is intentional.',
       'Structure the task as a labeled packet — lines starting with "Goal:", "Context:", "Scope:", "Ownership:", "Acceptance:", "Return:" (any of "-"/"—"/":" as separator, headings/bullets OK). A real gate checks for these labels, not just the words, and returns a [POLICY] warning on the spawn response when any are missing.',
       'spawnAgent defaults to resourceMode:"lean". Use resourceMode:"octocode" only when the worker needs Octocode extension tools.',
       'Use `pi -ne --list-models [search]` as the source of truth for the user-configured model table; do not read hardcoded config paths.',
@@ -1469,9 +1659,12 @@ export function registerAgentTools(
       systemPrompt: Type.Optional(Type.String({ description: 'Optional extra system prompt appended via a temporary file.' })),
       resourceMode: Type.Optional(resourceModeSchema),
       noSession: Type.Optional(Type.Boolean({ description: 'Pass --no-session to the worker. Default true.' })),
+      isolation: Type.Optional(stringEnumSchema(Type, ['shared', 'worktree'], 'Worker filesystem isolation. "shared" (default) uses the current cwd; "worktree" asks before creating an isolated git worktree.')),
+      includeUncommitted: Type.Optional(Type.Boolean({ description: 'With isolation:"worktree", apply a tracked-change snapshot from the parent tree using git stash create/apply. Untracked files are not included.' })),
     }),
     async execute(_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal, _onUpdate?: unknown, ctx?: PiContext) {
-      const record = spawnRpcAgent(params as SpawnAgentParams, ctx);
+      const approvedParams = await prepareSpawnAgentParams(params as SpawnAgentParams, ctx);
+      const record = spawnRpcAgent(approvedParams, ctx);
       refreshAgentLedgerUi(ctx);
       return renderSingleAgentResult(record, 'Spawned agent');
     },
@@ -1614,19 +1807,26 @@ export function registerAgentTools(
         // steer redirects an in-flight turn; on an idle worker there is no turn to
         // redirect, so forward the RPC but do not fake a 'running' status.
         if (wasRunning) touch(record, 'running');
-        sendRpc(record, { type: 'steer', message });
+        if (sendRpc(record, { type: 'steer', message })) {
+          pushLedgerEvent(record, 'message', `${wasRunning ? 'steer sent' : 'steer queued'}: ${previewMessage(message)}`);
+        }
       } else if (action === 'followUp') {
         // follow_up runs after the current turn (or immediately when idle) — either
         // way it produces a turn, so 'running' is accurate.
         touch(record, 'running');
-        sendRpc(record, { type: 'follow_up', message });
+        if (sendRpc(record, { type: 'follow_up', message })) {
+          pushLedgerEvent(record, 'message', `follow-up queued: ${previewMessage(message)}`);
+        }
       } else {
         touch(record, 'running');
-        sendRpc(record, {
+        const streamingBehavior = params['streamingBehavior'] ?? (wasRunning ? 'followUp' : undefined);
+        if (sendRpc(record, {
           type: 'prompt',
           message,
-          streamingBehavior: params['streamingBehavior'] ?? (wasRunning ? 'followUp' : undefined),
-        });
+          streamingBehavior,
+        })) {
+          pushLedgerEvent(record, 'message', `${streamingBehavior === 'followUp' ? 'message queued' : 'message sent'}: ${previewMessage(message)}`);
+        }
       }
       refreshAgentLedgerUi(ctx);
       return renderSingleAgentResult(record, 'Agent messaged', renderOpts);

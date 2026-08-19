@@ -1,5 +1,7 @@
 import type { PiContext, PiInstance, SessionBeforeCompactEvent, SessionCompactEvent } from '../types.js';
 import { clearCompactionWorkingState, scheduleCompactionContinuation, type Notifier } from './compaction-resume.js';
+import { clearCompactionInFlight, markCompactionInFlight } from './compaction-state.js';
+import { emitCompactionCheckpoint, type CompactionCheckpointDetails } from './custom-messages.js';
 import { clearAllReadStates } from './file-state.js';
 
 const SPLIT_TURN_COMPACTION_HEADER = '**Turn Context (split turn):**';
@@ -138,10 +140,57 @@ function buildDeterministicCompaction(preparation: Record<string, unknown>, reas
   };
 }
 
+// ─── Compaction checkpoint card (one per compaction event) ───────────────────
+//
+// session_compact can be observed more than once for the same compaction
+// (multiple registrations across reloads, replayed events); the card must be
+// idempotent per compaction. Pi hands us the same compactionEntry object for
+// the same compaction, so object identity is the dedupe key; a string key of
+// the last emission covers hosts that pass a non-object entry.
+
+const emittedCheckpointEntries = new WeakSet<object>();
+let lastCheckpointFallbackKey: string | null = null;
+
+function shouldEmitCheckpointCard(event: SessionCompactEvent): boolean {
+  const entry = event.compactionEntry;
+  if (entry !== null && entry !== undefined && typeof entry === 'object') {
+    if (emittedCheckpointEntries.has(entry)) return false;
+    emittedCheckpointEntries.add(entry);
+    return true;
+  }
+  const key = `${event.reason}:${String(entry)}`;
+  if (lastCheckpointFallbackKey === key) return false;
+  lastCheckpointFallbackKey = key;
+  return true;
+}
+
+function buildCheckpointDetails(event: SessionCompactEvent): CompactionCheckpointDetails {
+  const entry = isRecord(event.compactionEntry) ? event.compactionEntry : {};
+  const tokensBefore = asNumber(entry.tokensBefore);
+  const summary = asString(entry.summary);
+  const details: CompactionCheckpointDetails = {
+    label: asString(entry.id) ?? `${event.reason} compaction`,
+    reason: event.reason,
+    fromExtension: event.fromExtension,
+  };
+  if (tokensBefore !== undefined) details.tokensBefore = tokensBefore;
+  if (summary) details.summary = summary;
+  return details;
+}
+
+export function resetCompactionCheckpointDedupeForTests(): void {
+  lastCheckpointFallbackKey = null;
+}
+
 export function registerCompactionHooks(pi: PiInstance, notify: Notifier): void {
   if (!pi.on) return;
 
   pi.on('session_before_compact', async (event: SessionBeforeCompactEvent, ctx: PiContext) => {
+    // Every compaction path (pi's internal auto, user /compact, extension
+    // ctx.compact) passes through this event — mark the shared arbiter FIRST,
+    // before any early return, so the other triggers stand down instead of
+    // racing into pi's "Already compacted" throw.
+    markCompactionInFlight();
     const preparation = isRecord(event.preparation) ? event.preparation : undefined;
     if (!preparation) return;
     const turnPrefixMessages = asArray(preparation.turnPrefixMessages);
@@ -167,6 +216,7 @@ export function registerCompactionHooks(pi: PiInstance, notify: Notifier): void 
   });
 
   pi.on('session_compact', async (event: SessionCompactEvent, ctx: PiContext) => {
+    clearCompactionInFlight();
     // The transcript the read-states were recorded against is gone; the edit
     // tool's stale-read gate must demand a fresh read, not trust pre-compaction
     // knowledge the model no longer has.
@@ -174,6 +224,13 @@ export function registerCompactionHooks(pi: PiInstance, notify: Notifier): void 
     if (event.willRetry) {
       clearCompactionWorkingState(ctx);
       return;
+    }
+    // Completed compaction → branded checkpoint card in the transcript. The
+    // dedupe guard makes this idempotent even if the hook observes the same
+    // compaction event twice. Content is one terse line (it enters the LLM
+    // context); rich data rides in details for the renderer only.
+    if (shouldEmitCheckpointCard(event)) {
+      emitCompactionCheckpoint(pi, buildCheckpointDetails(event));
     }
     // Auto-resume ONLY extension-triggered compaction: our ctx.compact aborts
     // the in-flight agent run, so a queued follow-up is needed to recover. A

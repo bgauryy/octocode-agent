@@ -250,12 +250,91 @@ test('plan tool start/complete with a bad index reports an error and does not mu
   assert.match(oob.content[0]!.text, /no such step 9/);
   assert.equal(oob.details.steps.filter((s) => s.status === 'done').length, 0, 'nothing marked done');
 
-  const missing = (await tool.execute('id', { action: 'start' }, undefined, undefined, ctx)) as {
-    content: Array<{ text: string }>; isError?: boolean; details: { error?: string };
-  };
-  assert.equal(missing.isError, true);
-  assert.match(missing.content[0]!.text, /missing index/);
   clearPlan('/tmp/plan-badidx-ws');
+});
+
+test('plan tool complete without index completes the current doing step (common loop, no bookkeeping)', async () => {
+  const tool = loadTool();
+  const ctx = { cwd: '/tmp/plan-defidx-ws' } as unknown as import('../src/types.js').PiContext;
+  await tool.execute('id', { action: 'set', steps: ['one', 'two', 'three'] }, undefined, undefined, ctx);
+  const res = (await tool.execute('id', { action: 'complete' }, undefined, undefined, ctx)) as {
+    content: Array<{ text: string }>; isError?: boolean; details: { steps: Array<{ status: string }> };
+  };
+  assert.notEqual(res.isError, true);
+  assert.deepEqual(res.details.steps.map((s) => s.status), ['done', 'doing', 'todo'], 'doing step completed, next auto-advanced');
+  clearPlan('/tmp/plan-defidx-ws');
+});
+
+test('plan tool start without index starts the next runnable todo step', async () => {
+  const tool = loadTool();
+  const ctx = { cwd: '/tmp/plan-defstart-ws' } as unknown as import('../src/types.js').PiContext;
+  await tool.execute('id', { action: 'set', steps: ['one', 'two'] }, undefined, undefined, ctx);
+  const res = (await tool.execute('id', { action: 'start' }, undefined, undefined, ctx)) as {
+    content: Array<{ text: string }>; isError?: boolean; details: { steps: Array<{ status: string }> };
+  };
+  assert.notEqual(res.isError, true);
+  assert.deepEqual(res.details.steps.map((s) => s.status), ['todo', 'doing'], 'next todo becomes the active step');
+  clearPlan('/tmp/plan-defstart-ws');
+});
+
+test('plan tool complete without index errors clearly when no step is in progress', async () => {
+  const tool = loadTool();
+  const cwd = '/tmp/plan-nodoing-ws';
+  const ctx = { cwd } as unknown as import('../src/types.js').PiContext;
+  await tool.execute('id', { action: 'set', steps: ['one'] }, undefined, undefined, ctx);
+  await tool.execute('id', { action: 'complete', index: 1 }, undefined, undefined, ctx); // all done
+  const res = (await tool.execute('id', { action: 'complete' }, undefined, undefined, ctx)) as {
+    content: Array<{ text: string }>; isError?: boolean;
+  };
+  assert.equal(res.isError, true);
+  assert.match(res.content[0]!.text, /no step is in progress/i);
+  clearPlan(cwd);
+});
+
+test('plan tool remove deletes a step, remaps dependsOn indices, and keeps one step doing', async () => {
+  const tool = loadTool();
+  const cwd = '/tmp/plan-remove-ws';
+  const ctx = { cwd } as unknown as import('../src/types.js').PiContext;
+  await tool.execute(
+    'id',
+    { action: 'set', steps: ['A', 'B', { text: 'C', dependsOn: [1, 2] }] },
+    undefined,
+    undefined,
+    ctx,
+  );
+  const res = (await tool.execute('id', { action: 'remove', index: 2 }, undefined, undefined, ctx)) as {
+    content: Array<{ text: string }>; isError?: boolean;
+    details: { steps: Array<{ text: string; status: string; dependsOn?: number[] }> };
+  };
+  assert.notEqual(res.isError, true);
+  assert.deepEqual(res.details.steps.map((s) => s.text), ['A', 'C']);
+  assert.deepEqual(res.details.steps[1]!.dependsOn, [1], 'dep on removed step dropped, later dep renumbered');
+  assert.equal(res.details.steps.filter((s) => s.status === 'doing').length, 1, 'still exactly one active step');
+  clearPlan(cwd);
+});
+
+test('plan tool add supports dependsOn ordering', async () => {
+  const tool = loadTool();
+  const cwd = '/tmp/plan-adddeps-ws';
+  const ctx = { cwd } as unknown as import('../src/types.js').PiContext;
+  await tool.execute('id', { action: 'set', steps: ['A'] }, undefined, undefined, ctx);
+  const res = (await tool.execute(
+    'id',
+    { action: 'add', text: 'B', dependsOn: [1] },
+    undefined,
+    undefined,
+    ctx,
+  )) as { details: { steps: Array<{ dependsOn?: number[] }> } };
+  assert.deepEqual(res.details.steps[1]!.dependsOn, [1]);
+  clearPlan(cwd);
+});
+
+test('plan tool teaches the default-index flow and remove action in its contract', () => {
+  const tool = loadTool();
+  assert.match(tool.description, /remove/);
+  const guidelines = tool.promptGuidelines?.join('\n') ?? '';
+  assert.match(guidelines, /plan\(complete\)/);
+  assert.match(guidelines, /no index/i);
 });
 
 test('plan tool start/complete on an empty plan reports no active plan', async () => {

@@ -1,14 +1,14 @@
-# Awareness Agent Flow in Pi
+# Awareness Lite Agent Flow in Pi
 
-Awareness has one agent-facing interface in Pi: the bundled CLI at
-`$OCTOCODE_AWARENESS_CLI`, guided by the `octocode-awareness` skill. Coordination
+Awareness Lite has one agent-facing interface in Pi: the bundled CLI at
+`$OCTOCODE_AWARENESS_CLI`, guided by the `octocode-awareness-lite` skill. Coordination
 is not duplicated as Pi tools.
 
 ## Why
 
-One CLI/schema keeps flags, help, compact output, hooks, other coding agents, and
-Pi on the same contract. The Pi bridge automates lifecycle events but writes to
-the same SQLite store.
+One CLI/schema keeps flags, help, other coding agents, and Pi on the same
+small SQLite contract. Lite coordination is explicit: the Pi bridge exposes the
+CLI and skill assets but does not automate full lifecycle hooks.
 
 ## Identity
 
@@ -21,11 +21,10 @@ the same SQLite store.
 ## Start
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" attend \
-  --workspace "$PWD" --query "current task" --compact
+node "$OCTOCODE_AWARENESS_CLI" status --workspace "$PWD"
 ```
 
-Inspect Ready, Claimed, Verify, FilesUnderWork, and direct signals. Recalled
+Inspect plan/task/lock/work counts and pending verification checks. Recalled
 memories are leads; verify them against current source/tests.
 
 ## Choose work
@@ -33,56 +32,47 @@ memories are leads; verify them against current source/tests.
 Claim a matching task:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" task ready --plan-id plan_123 --limit 10 --compact
+node "$OCTOCODE_AWARENESS_CLI" task list --workspace "$PWD" --plan-id plan_123 --status OPEN
 node "$OCTOCODE_AWARENESS_CLI" task claim \
-  --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID" --compact
+  --workspace "$PWD" --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID"
 ```
 
 Or open standalone Work:
 
 ```bash
 node "$OCTOCODE_AWARENESS_CLI" work start \
-  --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" \
-  --file src/a.ts --rationale "fix parser" --test-plan "parser tests" --compact
+  --workspace "$PWD" --agent-id "$OCTOCODE_AGENT_ID" \
+  --file src/a.ts --reason "fix parser"
 ```
 
-Every file edit belongs to a Task/Work run with a reason and check. Advisory
-presence is the default and allows informed overlap. Add `--exclusive` only for
-sensitive/non-mergeable changes.
+Every file edit should belong to a Task or manual Work presence with a reason.
+Advisory presence is the default and allows informed overlap. Use `lock acquire`
+for sensitive/non-mergeable changes.
 
 ## Hooks during edits
 
-Pi wires Awareness in process:
-
-1. pre-edit resolves the current agent/session and target paths;
-2. it heartbeats/attaches advisory file presence;
-3. another run’s exclusive lease blocks the mutation;
-4. post-edit records the edit and preserves the owning run;
-5. finish warns about the current agent’s unresolved run.
-
-Pi does not need `hooks install`; that command is for shell-hook hosts.
+Awareness Lite does not wire Pi lifecycle hooks. Agents coordinate explicitly by
+running `task`, `work`, `lock`, `handoff`, and `verify` commands through the
+bundled CLI.
 
 ## Finish exactly owned work
 
 For a task:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" task submit \
-  --task-id task_123 --run-id run_123 --agent-id "$OCTOCODE_AGENT_ID" \
-  --message "parser tests passed" --compact
+node "$OCTOCODE_AWARENESS_CLI" task done \
+  --workspace "$PWD" --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID"
 node "$OCTOCODE_AWARENESS_CLI" verify mark \
-  --run-id run_123 --agent-id "$OCTOCODE_AGENT_ID" \
-  --message "parser tests passed" --compact
+  --workspace "$PWD" --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID" \
+  --message "parser tests passed"
 ```
 
 For standalone Work:
 
 ```bash
 node "$OCTOCODE_AWARENESS_CLI" work end \
-  --run-id run_123 --agent-id "$OCTOCODE_AGENT_ID" --compact
-node "$OCTOCODE_AWARENESS_CLI" verify mark \
-  --run-id run_123 --agent-id "$OCTOCODE_AGENT_ID" \
-  --message "reviewed diff" --compact
+  --workspace "$PWD" --file src/a.ts --agent-id "$OCTOCODE_AGENT_ID"
+node "$OCTOCODE_AWARENESS_CLI" verify audit --workspace "$PWD"
 ```
 
 Never use a batch success operation to clear another agent’s debt. Verification
@@ -94,38 +84,34 @@ Use targeted retrieval only when durable context can change the plan:
 
 ```bash
 node "$OCTOCODE_AWARENESS_CLI" memory recall \
-  --query "parser regression" --workspace "$PWD" --smart --limit 5 --compact
+  --workspace "$PWD" --query "parser regression" --limit 5
 ```
 
 Record only reusable, verified facts:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" memory record \
-  --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" \
-  --task-context "parser regression" \
-  --observation "Malformed escapes must be rejected before tokenization" \
-  --label GOTCHA --importance 8 --reference file:src/parser.ts --compact
+node "$OCTOCODE_AWARENESS_CLI" memory store \
+  --workspace "$PWD" --label GOTCHA \
+  --text "parser regression: Malformed escapes must be rejected before tokenization"
 ```
 
 Skip routine status, raw logs, obvious edits, secrets, and facts already captured
 in source/docs.
 
-## Signals and handoff
+## Handoff
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" signal list \
-  --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" --limit 10 --compact
-node "$OCTOCODE_AWARENESS_CLI" signal publish \
-  --agent-id "$OCTOCODE_AGENT_ID" --to-agent other-agent --kind handoff \
-  --subject "Parser task ready" --body "Run parser tests before finishing" \
-  --ref-id run_123 --workspace "$PWD" --compact
+node "$OCTOCODE_AWARENESS_CLI" handoff list --workspace "$PWD"
+node "$OCTOCODE_AWARENESS_CLI" handoff add \
+  --workspace "$PWD" --agent-id "$OCTOCODE_AGENT_ID" \
+  --summary "Parser task ready; run parser tests before finishing" --file src/parser.ts
 ```
 
-Use a Plan Task for selectable durable work; signals are communication, not a
-second task queue.
+Use a Plan Task for selectable durable work; handoffs are notes, not a second
+task queue.
 
 ## Cleanup
 
-Use the same bundled CLI for maintenance. `maintenance digest` is report-first;
-`memory forget` requires an explicit filter and should be previewed before mutation.
-Repo projection is optional and should run last, only when file readers need refresh.
+Use the same bundled CLI for read-only status and explicit cleanup. Lite has no
+maintenance digest or repo projection flow; `memory forget`/`delete` require a
+specific `--memory-id`.

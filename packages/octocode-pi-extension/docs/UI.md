@@ -15,7 +15,16 @@ This extension keeps the TUI compact by default and puts detail behind slash com
 | Live agent progress | while workers run | Agent ledger animates: braille spinner + live elapsed, refreshed every 1s until no worker is active (ticker is `unref`-ed and self-stops) |
 | Dashboard | `/octocode` | Status, agents, setup paths, skills, health, next actions |
 | Agent ledger | `/octocode-agents` + below editor | Spawned-worker state and controls |
-| Decision picker | `askUser` tool | Focused overlay list for real user choices; falls back to inline questions when no interactive UI is available |
+| Decision picker | `askUser` tool | Focused overlay list for real user choices — single pick, multi-select (space toggles, min/max), per-option previews, and short sequential forms; falls back to inline questions when no interactive UI is available |
+| Inline images | expanded tool renderers | chrome-debug / browser-agent screenshots render inline (Kitty/iTerm2) with a `🖼` placeholder on terminals without image support |
+| Worker inbox | `/octocode-inbox` | Two-stage overlay: pick a worker, then view transcript / steer / kill; completions and failures fire OSC 9 desktop notifications + a terminal-title flash |
+| Command palette | `/octocode-palette` or `ctrl+o` | Prefix-filter picker over every slash command and direct actions (`OCTOCODE_PALETTE_KEY` overrides the shortcut) |
+| Mention autocomplete | editor `@` / `#` | `@` completes worker ids/names and skill names, `#` completes plan steps; delegates to Pi's file completion otherwise |
+| Effort dial | `/octocode-dial` + footer `◉ <level>` | One knob for thinking level + worker parallelism (`low`/`medium`/`high`/`ultra`); persisted and restored per session |
+| Checkpoints | `/octocode-rewind` | Shadow-git snapshots taken automatically before each user prompt; restore files (and optionally rewind the conversation) without ever touching the user's repo |
+| Watch mode | `/octocode-watch` | Comments ending in `AI!` saved from any editor are picked up and injected as prompts (steer mid-turn, follow-up otherwise) |
+| Conversation cards | compaction / handoff events | Branded collapsed/expanded cards for compaction checkpoints and awareness handoffs (rich detail stays out of the LLM context) |
+| Branded export | `/octocode-export` | Takes a pi `/export` HTML file and writes an Octocode-branded `-octocode.html` sibling |
 
 ## Dashboard
 

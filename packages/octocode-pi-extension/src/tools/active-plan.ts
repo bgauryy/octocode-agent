@@ -193,11 +193,14 @@ export function setPlan(cwd: string, steps: StepInput[]): PlanStep[] {
   return next;
 }
 
-export function addStep(cwd: string, text: string, activeForm?: string): PlanStep[] {
+export function addStep(cwd: string, text: string, activeForm?: string, dependsOn?: number[]): PlanStep[] {
   const list = getPlan(cwd).slice();
   const t = clean(text);
   const af = activeForm ? clean(activeForm) : undefined;
-  if (t && list.length < MAX_STEPS) list.push({ text: t, status: 'todo', ...(af ? { activeForm: af } : {}) });
+  const deps = cleanDeps(dependsOn);
+  if (t && list.length < MAX_STEPS) {
+    list.push({ text: t, status: 'todo', ...(af ? { activeForm: af } : {}), ...(deps ? { dependsOn: deps } : {}) });
+  }
   plans.set(cwd, list);
   markUpdated(cwd);
   persist(cwd);
@@ -230,6 +233,33 @@ export function completeStep(cwd: string, index: number): PlanStep[] {
   markUpdated(cwd);
   persist(cwd);
   return list;
+}
+
+/**
+ * Remove a step (1-based). Dependencies are kept consistent: deps on the
+ * removed step are dropped, deps pointing past it are renumbered. If the
+ * removed step was the active one, the next satisfiable todo auto-advances so
+ * the one-step-doing invariant holds.
+ */
+export function removeStep(cwd: string, index: number): PlanStep[] {
+  const list = getPlan(cwd).slice();
+  const i = index - 1;
+  if (i < 0 || i >= list.length) return list;
+  list.splice(i, 1);
+  const next = list.map((step) => {
+    if (!step.dependsOn) return step;
+    const deps = step.dependsOn.filter((d) => d !== index).map((d) => (d > index ? d - 1 : d));
+    const { dependsOn: _dropped, ...rest } = step;
+    return deps.length ? { ...rest, dependsOn: deps } : rest;
+  });
+  if (next.length > 0 && !next.some((s) => s.status === 'doing')) {
+    const nextTodo = next.findIndex((s) => s.status === 'todo' && depsMet(s, next));
+    if (nextTodo >= 0) next[nextTodo] = { ...next[nextTodo]!, status: 'doing' };
+  }
+  plans.set(cwd, next);
+  markUpdated(cwd);
+  persist(cwd);
+  return next;
 }
 
 export function clearPlan(cwd: string): void {

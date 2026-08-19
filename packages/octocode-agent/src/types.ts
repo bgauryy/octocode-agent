@@ -90,6 +90,7 @@ export interface LaunchDeps extends SdkDeps {
   out?: (msg: string) => void;
   spawn?: SpawnFn;
   launchWithSdk?: (argv: string[], deps: SdkDeps) => Promise<number | null>;
+  runServeStdio?: (argv: string[], deps: LaunchDeps) => Promise<number>;
   resolvePiBin?: (env: NodeJS.ProcessEnv) => PiBinInfo | null;
   resolveCoreSpec?: (env: NodeJS.ProcessEnv) => string;
   /** Prefix dir used by updateCommand for 'core' target. */

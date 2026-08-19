@@ -11,6 +11,7 @@
 
 import { Box, Container, SelectList, Text } from "@earendil-works/pi-tui";
 import type { PiTheme, PiContext } from "../types.js";
+import { MultiSelectList, multiSelectKeyAction, type MultiSelectTheme } from "./multi-select-list.js";
 import { truncateToWidth } from "./render-helpers.js";
 
 /** pi-tui SelectList theme shape (5 colorizer fns). */
@@ -26,7 +27,7 @@ const id = (t: string) => t;
 
 /** Map the Octocode/Pi theme to a pi-tui SelectList theme (accent/muted/dim/warning). */
 export function octocodeSelectListTheme(theme?: PiTheme): SelectListThemeFns {
-  const fg = (color: string) => (t: string) => theme?.fg?.(color, t) ?? id(t);
+  const fg = (color: Parameters<PiTheme['fg']>[0]) => (t: string) => theme?.fg?.(color, t) ?? id(t);
   return {
     selectedPrefix: fg("accent"),
     selectedText: fg("accent"),
@@ -67,6 +68,8 @@ export interface SelectOverlayItem {
   value: string;
   label: string;
   description?: string;
+  /** Optional multi-line preview shown under the item while focused (multi-select overlay only). */
+  preview?: string;
 }
 
 export interface SelectOverlayOptions {
@@ -155,6 +158,87 @@ export async function runSelectOverlay(
     },
     { overlay: true },
   );
+}
+
+// ─── Multi-select overlay ─────────────────────────────────────────────────────
+
+export interface MultiSelectOverlayOptions {
+  title: string;
+  items: SelectOverlayItem[];
+  /** Minimum selections required before enter confirms (default 0). */
+  min?: number;
+  /** Maximum selections allowed — extra toggles are no-ops (default unlimited). */
+  max?: number;
+  /** Values pre-toggled when the overlay opens. */
+  initial?: string[];
+}
+
+/**
+ * Present a framed, keyboard-navigable multi-select overlay (space toggles,
+ * enter confirms once min/max are satisfied, esc cancels) and resolve with the
+ * chosen values in display order. Resolves undefined on cancel or when the
+ * host has no interactive UI. All list state lives in the pure MultiSelectList;
+ * this wrapper only owns host plumbing, mirroring runSelectOverlay.
+ */
+export async function runMultiSelectOverlay(
+  ctx: PiContext | undefined,
+  opts: MultiSelectOverlayOptions,
+): Promise<string[] | undefined> {
+  if (!ctx?.hasUI || typeof ctx.ui?.custom !== "function") return undefined;
+
+  const result = await ctx.ui.custom<string[] | null>(
+    (
+      tui: any,
+      theme: PiTheme,
+      _kb: unknown,
+      done: (v: string[] | null) => void,
+    ) => {
+      const heading =
+        theme?.fg?.(
+          "accent",
+          theme?.bold?.("◆ " + opts.title) ?? "◆ " + opts.title,
+        ) ?? "◆ " + opts.title;
+      const help = "↑↓ navigate • space toggle • enter confirm • esc cancel";
+      const helpLine = theme?.fg?.("dim", help) ?? help;
+
+      const list = new MultiSelectList(
+        opts.items.map((o) => ({
+          value: o.value,
+          label: o.label,
+          description: o.description,
+          preview: o.preview,
+        })),
+        { min: opts.min, max: opts.max, initial: opts.initial },
+      );
+
+      return {
+        render: (w: number) =>
+          [heading, ...list.render(w, theme as unknown as MultiSelectTheme), helpLine].map(
+            (line) => truncateToWidth(line, w),
+          ),
+        invalidate: () => {},
+        handleInput: (data: string) => {
+          const action = multiSelectKeyAction(data);
+          if (action === "cancel") {
+            done(null);
+            return;
+          }
+          if (action === "confirm") {
+            if (list.canConfirm()) {
+              done(list.selectedValues());
+              return;
+            }
+            // Not confirmable yet — fall through so the warning footer redraws.
+          } else if (action === "up") list.moveCursor(-1);
+          else if (action === "down") list.moveCursor(1);
+          else if (action === "toggle") list.toggle();
+          tui?.requestRender?.();
+        },
+      };
+    },
+    { overlay: true },
+  );
+  return result ?? undefined;
 }
 
 // Re-export for callers that only need width-safe truncation alongside overlays.

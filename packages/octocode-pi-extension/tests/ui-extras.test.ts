@@ -4,6 +4,8 @@ import {
   formatCompact,
   formatDurationShort,
   buildWorkingLabel,
+  buildWorkingIndicator,
+  buildWorkingMessage,
   buildFooterSegments,
   resolveSystemTheme,
   resolveSystemThemeName,
@@ -42,8 +44,43 @@ test('buildWorkingLabel dot tail cycles 1→3 by the second', () => {
   assert.equal(buildWorkingLabel({ startedAt: 0, now: 3000 }), 'Thinking.'); // wraps
 });
 
-test('spinner frames are non-empty', () => {
-  assert.ok(OCTOCODE_SPINNER_FRAMES.length >= 2);
+test('spinner frames are non-empty and richer than a static pulse', () => {
+  assert.ok(OCTOCODE_SPINNER_FRAMES.length >= 6);
+  assert.ok(new Set(OCTOCODE_SPINNER_FRAMES).size >= 4);
+});
+
+test('buildWorkingIndicator paints spinner frames with a fast semantic color pulse', () => {
+  const calls: Array<[string, string]> = [];
+  const indicator = buildWorkingIndicator({
+    fg: (color: string, text: string) => {
+      calls.push([color, text]);
+      return `<${color}:${text}>`;
+    },
+    bold: (text: string) => text,
+  });
+
+  assert.equal(indicator.intervalMs, 120);
+  assert.equal(indicator.frames.length, OCTOCODE_SPINNER_FRAMES.length);
+  assert.equal(indicator.frames[0], '<accent:✦>');
+  assert.equal(indicator.frames[2], '<warning:✶>');
+  assert.equal(indicator.frames[3], '<success:✺>');
+  assert.deepEqual(calls.slice(0, 4), [
+    ['accent', '✦'],
+    ['dim', '✧'],
+    ['warning', '✶'],
+    ['success', '✺'],
+  ]);
+});
+
+test('buildWorkingMessage paints the stable word and animated suffix separately', () => {
+  const theme = {
+    fg: (color: string, text: string) => `<${color}:${text}>`,
+    bold: (text: string) => text,
+  };
+
+  assert.equal(buildWorkingMessage(undefined, theme), '<accent:Thinking><warning:…>');
+  assert.equal(buildWorkingMessage({ startedAt: 0, now: 2000 }, theme), '<accent:Thinking><warning:...>');
+  assert.equal(buildWorkingMessage({ startedAt: 0, now: 2000 }), 'Thinking...');
 });
 
 test('buildFooterSegments shows the active worker progress note next to the agents count', () => {
@@ -64,14 +101,32 @@ test('buildFooterSegments composes context %, tokens, turns, timing, workers, pl
     branch: 'main', dirty: true,
   });
   const joined = segs.map((s) => s.text).join(' | ');
+  const ctx = segs.find((s) => s.text.startsWith('ctx '))!;
   assert.match(joined, /8%/);          // 16000/200000
   assert.match(joined, /16\.0k\/200k/);
   assert.match(joined, /ctx [▓░]{8} 8%/); // visual gauge precedes the percentage
+  assert.equal(ctx.token, 'success');
   assert.match(joined, /turns 3/);
   assert.match(joined, /active 9s/);
   assert.match(joined, /agents 2/);
   assert.match(joined, /plan 1\/4/);
   assert.match(joined, /main\*/);      // dirty marker
+});
+
+test('buildFooterSegments colors the context gauge by fill severity', () => {
+  const base = {
+    completedTurns: 0,
+    activeTurnMs: 0,
+    sessionMs: 0,
+    activeWorkers: 0,
+    planDone: 0,
+    planTotal: 0,
+    dirty: false,
+  };
+
+  assert.equal(buildFooterSegments({ ...base, tokens: 70, contextWindow: 100 })[0]?.token, 'success');
+  assert.equal(buildFooterSegments({ ...base, tokens: 75, contextWindow: 100 })[0]?.token, 'warning');
+  assert.equal(buildFooterSegments({ ...base, tokens: 90, contextWindow: 100 })[0]?.token, 'error');
 });
 
 test('buildFooterSegments flags blocked/failed workers with warning/error colour', () => {
@@ -107,6 +162,27 @@ test('buildFooterSegments appends the current plan doing step, ellipsized', () =
     dirty: false,
   }).find((s) => s.text.startsWith('plan '))!;
   assert.equal(short.text, 'plan 1/2 ‣ edit footer');
+});
+
+test('buildFooterSegments shows a branded dial segment before the plan segment when set', () => {
+  const segs = buildFooterSegments({
+    tokens: 0, contextWindow: 0, completedTurns: 0,
+    activeTurnMs: 0, sessionMs: 0, activeWorkers: 0,
+    dial: 'deep', planDone: 1, planTotal: 3, dirty: false,
+  });
+  const dial = segs.find((s) => s.text.includes('◉'))!;
+  assert.equal(dial.text, '◉ deep');
+  assert.equal(dial.token, 'brand');
+  const dialIndex = segs.indexOf(dial);
+  const planIndex = segs.findIndex((s) => s.text.startsWith('plan '));
+  assert.ok(dialIndex < planIndex, 'dial segment precedes the plan segment');
+
+  const without = buildFooterSegments({
+    tokens: 0, contextWindow: 0, completedTurns: 0,
+    activeTurnMs: 0, sessionMs: 0, activeWorkers: 0,
+    planDone: 0, planTotal: 0, dirty: false,
+  });
+  assert.equal(without.find((s) => s.text.includes('◉')), undefined);
 });
 
 test('buildFooterSegments omits optional segments cleanly', () => {

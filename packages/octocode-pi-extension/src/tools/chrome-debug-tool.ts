@@ -18,7 +18,8 @@ import { connectionKey, getLiveConnection, cacheConnection, evictConnection } fr
 import { SCHEME_REGISTRY, SCHEMES, ACTIONS, STEALTH_SCRIPT } from '../chrome-debug-schemes.js';
 import type { ChromeDebugParams, Scheme } from '../chrome-debug-schemes.js';
 import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
-import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
+import type { ToolDefinition, ToolCallResult, PiTheme, PiContext, RenderContext } from '../types.js';
+import { appendImageLines } from './image-render.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 
@@ -404,7 +405,7 @@ export function registerChromeDebugTool(
       return makeRenderer((w) => [truncateToWidth(rawLine, w)]);
     },
 
-    renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
+    renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme, context?: RenderContext) {
       if (opts.isPartial) {
         const msg = paint(theme, 'warning', CLI_STATUS_TEXT.connectingChrome);
         return makeRenderer((w) => [truncateToWidth(msg, w)]);
@@ -443,7 +444,7 @@ export function registerChromeDebugTool(
       const lines = allLines.slice(0, 30);
       const omitted = allLines.length - lines.length;
 
-      return makeRenderer((w) => [
+      const base = makeRenderer((w) => [
         truncateToWidth(header, w),
         ...lines.map((l) =>
           truncateToWidth(
@@ -461,6 +462,12 @@ export function registerChromeDebugTool(
           ? [truncateToWidth(paint(theme, 'muted', `… ${omitted} more lines`), w)]
           : []),
       ]);
+
+      // Inline screenshot in the expanded view. appendImageLines keeps the image
+      // escape lines outside makeRenderer's width truncation (see image-render.ts).
+      return screenshotPath
+        ? appendImageLines(base, context, screenshotPath, theme)
+        : base;
     },
   } satisfies ToolDefinition);
 }

@@ -5,4 +5,5 @@ coverage
 /packages/octocode-pi-extension/skills/
 /packages/octocode-awareness/skills/
 .octocode
+.octocode-lite
 .agents

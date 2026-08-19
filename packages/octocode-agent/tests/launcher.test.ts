@@ -830,13 +830,23 @@ describe('main', () => {
     expect(captured).toEqual(['--mode', 'json', 'list']);
   });
 
-  it('serve forwards --mode rpc', async () => {
+  it('serve defaults to the Octocode thin-client stdio envelope', async () => {
     let captured: string[] | null = null;
-    await main(['serve'], {
+    const code = await main(['serve', '--session', 'ide-main'], {
+      env: {},
+      runServeStdio: async (argv) => { captured = argv; return 0; },
+    });
+    expect(code).toBe(0);
+    expect(captured).toEqual(['--session', 'ide-main']);
+  });
+
+  it('serve --raw-rpc preserves the old raw Pi RPC forwarding mode', async () => {
+    let captured: string[] | null = null;
+    await main(['serve', '--raw-rpc', '--no-session'], {
       env: {},
       launchWithSdk: async (argv) => { captured = argv; return 0; },
     });
-    expect(captured).toEqual(['--mode', 'rpc']);
+    expect(captured).toEqual(['--mode', 'rpc', '--no-session']);
   });
 
   it('resume with an id maps to --session, without one maps to -r', async () => {

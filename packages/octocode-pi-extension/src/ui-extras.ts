@@ -5,9 +5,35 @@
  * working indicator, theme sync, and session-naming wiring in index.ts.
  */
 
-import { contextGauge, type SemanticToken } from './tui/palette.js';
+import { contextGauge, paint, type PaintTheme, type SemanticToken } from './tui/palette.js';
 
-export const OCTOCODE_SPINNER_FRAMES = ['◆', '◇', '◈', '◇'] as const;
+export const OCTOCODE_SPINNER_FRAMES = ['✦', '✧', '✶', '✺', '✹', '✷', '✶', '✧'] as const;
+export const OCTOCODE_SPINNER_INTERVAL_MS = 120;
+const OCTOCODE_SPINNER_TOKENS: readonly SemanticToken[] = [
+  'brand',
+  'dim',
+  'warning',
+  'success',
+  'brand',
+  'link',
+  'warning',
+  'dim',
+];
+
+export interface WorkingIndicatorConfig {
+  frames: string[];
+  intervalMs: number;
+}
+
+/** Branded, color-pulsing working spinner frames for Pi's live working row. */
+export function buildWorkingIndicator(theme?: PaintTheme): WorkingIndicatorConfig {
+  return {
+    frames: OCTOCODE_SPINNER_FRAMES.map((frame, index) =>
+      paint(theme, OCTOCODE_SPINNER_TOKENS[index % OCTOCODE_SPINNER_TOKENS.length] ?? 'brand', frame),
+    ),
+    intervalMs: OCTOCODE_SPINNER_INTERVAL_MS,
+  };
+}
 
 /** Shipped theme ids (single source of truth — used by the theme command + sync). */
 export const OCTOCODE_THEME_DARK = 'octocode-dark';
@@ -59,6 +85,15 @@ export function buildWorkingLabel(input: WorkingLabelInput): string {
   return `${WORKING_WORD}${dots}`;
 }
 
+/**
+ * Themed working message. Keeps the accessible word stable while the suffix
+ * pulses in a brighter attention color; without a theme it is plain text.
+ */
+export function buildWorkingMessage(input?: WorkingLabelInput, theme?: PaintTheme): string {
+  const suffix = input ? buildWorkingLabel(input).slice(WORKING_WORD.length) : '…';
+  return `${paint(theme, 'brand', WORKING_WORD)}${paint(theme, 'warning', suffix)}`;
+}
+
 export interface FooterInput {
   tokens: number;
   contextWindow: number;
@@ -77,6 +112,8 @@ export interface FooterInput {
   planTotal: number;
   /** Text of the plan step currently in progress (status "doing"), if any. */
   planDoing?: string;
+  /** Active model-dial label (e.g. the dial preset name), shown as a branded segment. */
+  dial?: string;
   branch?: string;
   dirty: boolean;
 }
@@ -105,9 +142,11 @@ export function buildFooterSegments(input: FooterInput): FooterSegment[] {
   const segs: FooterSegment[] = [];
 
   if (input.contextWindow > 0) {
-    const pct = Math.round((input.tokens / input.contextWindow) * 100);
-    const { bar } = contextGauge(pct);
-    segs.push({ text: `ctx ${bar} ${pct}% ${formatCompact(input.tokens)}/${formatCompact(input.contextWindow)}` });
+    const gauge = contextGauge((input.tokens / input.contextWindow) * 100);
+    segs.push({
+      text: `ctx ${gauge.bar} ${gauge.pct}% ${formatCompact(input.tokens)}/${formatCompact(input.contextWindow)}`,
+      token: gauge.token,
+    });
   }
 
   segs.push({ text: `turns ${input.completedTurns}` });
@@ -129,6 +168,10 @@ export function buildFooterSegments(input: FooterInput): FooterSegment[] {
   }
   if (input.failedWorkers && input.failedWorkers > 0) {
     segs.push({ text: `✗${input.failedWorkers}`, token: 'error' });
+  }
+
+  if (input.dial) {
+    segs.push({ text: `◉ ${input.dial}`, token: 'brand' });
   }
 
   if (input.planTotal > 0) {
