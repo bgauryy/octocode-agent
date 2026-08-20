@@ -24,7 +24,7 @@ why, the user-facing rules, and the developer code map.
 | **Meta** | `callTool` — self-extending dynamic-tool factory (CRUD modes: `list` · `create` · `run` · `enhance`/`fix` update · `delete` · auto-maintain) |
 | **Meta** | `callSkill` — self-extending dynamic-**skill** factory for reusable multi-step workflows (modes: `list` · `create` · `use` · `enhance`/`fix` · `delete` · auto-maintain) |
 | **Context** | `manage_context` |
-| **Memory + coordination** | *No tools.* Use the `octocode-awareness` CLI: `node $OCTOCODE_AWARENESS_CLI <noun> <verb>` (see Memory / Awareness below) |
+| **Memory + coordination** | *No tools.* Use `npx @octocodeai/octocode-awareness-lite <noun> <verb>` (see Memory / Awareness below) |
 
 Session-scoped maintenance jobs are controlled by `/octocode-cron`; see [CRON.md](./CRON.md).
 Source of truth for names: `OCTOCODE_DIRECT_TOOL_NAMES` + `OCTOCODE_SUPPORT_TOOL_NAMES` in `src/constants.ts`.
@@ -64,12 +64,12 @@ Source of truth for names: `OCTOCODE_DIRECT_TOOL_NAMES` + `OCTOCODE_SUPPORT_TOOL
 | Reuse/create/maintain a verified dynamic capability | `callTool` |
 | Reuse/create/maintain a reusable multi-step workflow | `callSkill` |
 | Compact / reset context | `manage_context` |
-| Recall prior lessons | `awareness memory recall` (CLI) |
-| Record a root cause / decision | `awareness memory record` (CLI) |
-| Capture a post-task lesson | `awareness reflect record` (CLI) |
-| Check locks + active agents | `awareness workspace status` (CLI) |
-| Publish / reply to signals | `awareness signal …` (CLI) |
-| Protect sensitive files exclusively | `awareness lock acquire` (CLI) |
+| Recall prior lessons | `npx @octocodeai/octocode-awareness-lite memory recall` (CLI) |
+| Record a root cause / decision | `npx @octocodeai/octocode-awareness-lite memory store` (CLI) |
+| Leave a continuation note | `npx @octocodeai/octocode-awareness-lite handoff add` (CLI) |
+| Check locks + active agents | `npx @octocodeai/octocode-awareness-lite status` (CLI) |
+| Send / read tiny messages | `npx @octocodeai/octocode-awareness-lite message …` (CLI) |
+| Protect sensitive files exclusively | `npx @octocodeai/octocode-awareness-lite lock acquire` (CLI) |
 
 ---
 
@@ -294,22 +294,21 @@ Pi-core/runtime banners that do not pass through extension hooks, such as a mode
 
 ## Memory / Awareness (CLI + skill, not agent tools)
 
-Awareness memory/coordination has **no agent tools**. Drive it through the bundled
-CLI: `node $OCTOCODE_AWARENESS_CLI <noun> <verb> --compact` (agent id + workspace
-inherited from the environment), following the **octocode-awareness skill**. The
-edit/verify lifecycle is automated by the awareness hooks.
+Awareness memory/coordination has **no agent tools**. Drive it through
+`npx @octocodeai/octocode-awareness-lite <noun> <verb>` (pass workspace/agent flags where a
+command needs them), following the **octocode-awareness-lite skill**. Pi only
+automates the pre-edit lock gate; agents run task/work/check commands explicitly.
 
-See [`AWARENESS_AGENT_FLOW.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) for live coordination, [`REFLECT.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-pi-extension/docs/REFLECT.md) for the Awareness learning loop, and [`CRON.md`](./CRON.md) for session job controls.
+See [`AWARENESS_AGENT_FLOW.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) for live coordination, [`REFLECT.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-pi-extension/docs/REFLECT.md) for Lite memory guidance, and [`CRON.md`](./CRON.md) for session job controls.
 
 ### Lifecycle pattern
 
 ```
-[Awareness/start] workspace status → targeted memory recall / refinement get when useful
-[Awareness/work]  signal publish  (coordination inbox: questions, handoffs, blockers)
-                 lock acquire     (optional sensitive-path exclusivity)
-[Awareness/after] verify audit → run the declared check → verify mark --run-id <exact-owned-run>
-[Awareness/learn] memory record (verified root causes, decisions, gotchas)
-                  reflect record (lesson, fix-repo, fix-harness)
+[Awareness/start] status → targeted memory recall when useful
+[Awareness/work]  message send / handoff add (coordination notes, questions, blockers)
+                 lock acquire              (optional sensitive-path exclusivity)
+[Awareness/after] check audit → run the declared check → check mark <exact-owned-task>
+[Awareness/learn] memory store (verified root causes, decisions, gotchas)
 ```
 
 ### CLI quick-reference
@@ -317,15 +316,14 @@ See [`AWARENESS_AGENT_FLOW.md`](https://github.com/bgauryy/octocode-mcp/blob/mai
 | Command | Purpose |
 |------|---------|
 | `memory recall` | Retrieve durable lessons before risky/unfamiliar work; flags `judgment_required` when recall confidence is low |
-| `memory record` | Store verified root cause, decision, workaround, gotcha; reports novelty + similar-memory candidates for supersede decisions |
-| `reflect record` | Capture post-task lesson; creates repo-fix refinements, clusters failure patterns; supports `--judgment-note`, `--duo`, `--eval-failure-json` |
-| `workspace status` | Show advisory files under work, optional exclusive locks, working agents, open signals/refinements, and store stats |
-| `signal publish\|list\|reply\|resolve\|ack` | Coordination inbox |
-| `lock acquire\|release\|wait\|prune` | Optional exclusive protection for sensitive paths |
-| `refinement get` | List open repo-fix refinements |
-| `verify audit` | List pending execution runs needing verification |
-| `verify mark` | Mark one exact owned run verified/failed after its declared check; never batch another agent's work. |
-| `reflect export-harness` | Export human-reviewed skill/harness proposals; never writes files |
+| `memory store` | Store verified root cause, decision, workaround, or gotcha |
+| `memory list\|forget\|delete\|prune` | Inspect or explicitly remove stale memories |
+| `status` | Show plans, tasks, locks, work presence, agents, messages, handoffs, checks, and memory counts |
+| `message send\|inbox\|list\|read\|prune` | Tiny coordination inbox |
+| `handoff add\|list\|clear` | Manual continuation notes for later agents |
+| `lock acquire\|release\|list` | Optional exclusive protection for sensitive paths |
+| `check audit` | List done tasks still needing check receipts |
+| `check mark` | Mark one exact owned task verified after its declared check; never batch another agent's work. |
 
 ## MCP Servers
 

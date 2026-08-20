@@ -48,6 +48,11 @@ test('allows a path inside the OS temp dir', () => {
   assert.doesNotThrow(() => assertPathAllowed(target, '/some/other/cwd'));
 });
 
+test('allows /tmp spelling for macOS temp paths that realpath under /private', () => {
+  if (process.platform !== 'darwin') return;
+  assert.doesNotThrow(() => assertPathAllowed('/tmp/octocode-safe-file.txt', '/some/other/cwd'));
+});
+
 // ─── ALLOWED_PATHS env extension ─────────────────────────────────────────────
 
 test('allows paths inside an ALLOWED_PATHS root', () => {

@@ -11,7 +11,6 @@ test('cron scheduler lists the non-mutating Awareness Lite status job', () => {
   const scheduler = createOctocodeCronScheduler({
     env: {
       OCTOCODE_CRON: '0',
-      OCTOCODE_AWARENESS_CLI: '/tmp/awareness.js',
     } as NodeJS.ProcessEnv,
   });
 
@@ -31,7 +30,6 @@ test('cron scheduler can run the default Awareness Lite status job on demand', a
   const scheduler = createOctocodeCronScheduler({
     env: {
       OCTOCODE_CRON: '0',
-      OCTOCODE_AWARENESS_CLI: '/tmp/awareness.js',
     } as NodeJS.ProcessEnv,
     executor: async (command, args): Promise<PiExecResult> => {
       calls.push({ command, args });
@@ -51,26 +49,30 @@ test('cron scheduler can run the default Awareness Lite status job on demand', a
   ]);
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.command, process.execPath);
-  assert.deepEqual(calls[0]!.args, [
-    '/tmp/awareness.js',
+  assert.match(calls[0]!.args[0]!, /octocode-awareness-lite.*cli\.js$/);
+  assert.deepEqual(calls[0]!.args.slice(1), [
     'status',
     '--workspace',
     '/repo',
   ]);
 });
 
-test('cron scheduler skips manual runs when awareness CLI is missing', async () => {
+test('cron scheduler runs manual checks without an awareness CLI env var', async () => {
+  const calls: Array<{ command: string; args: string[] }> = [];
   const scheduler = createOctocodeCronScheduler({
     env: { OCTOCODE_CRON: '0' } as NodeJS.ProcessEnv,
-    executor: async (): Promise<PiExecResult> => {
-      throw new Error('executor should not run without awareness CLI');
+    executor: async (command, args): Promise<PiExecResult> => {
+      calls.push({ command, args });
+      return { stdout: 'checked through local package CLI', stderr: '', code: 0 };
     },
   });
 
   const results = await scheduler.runNow('awareness-lite-status', { cwd: '/repo' });
 
-  assert.equal(results[0]!.status, 'skipped');
-  assert.match(results[0]!.message, /OCTOCODE_AWARENESS_CLI/);
+  assert.equal(results[0]!.status, 'succeeded');
+  assert.equal(calls[0]!.command, process.execPath);
+  assert.match(calls[0]!.args[0]!, /octocode-awareness-lite.*cli\.js$/);
+  assert.deepEqual(calls[0]!.args.slice(1, 2), ['status']);
 });
 
 test('cron command supports list, check default, check all, cancel, and help', async () => {
@@ -79,7 +81,6 @@ test('cron command supports list, check default, check all, cancel, and help', a
     env: {
       OCTOCODE_CRON: '1',
       OCTOCODE_CRON_STATUS_INTERVAL_MS: '600000',
-      OCTOCODE_AWARENESS_CLI: '/tmp/awareness.js',
     } as NodeJS.ProcessEnv,
     executor: async (): Promise<PiExecResult> => ({ stdout: 'checked', stderr: '', code: 0 }),
   });

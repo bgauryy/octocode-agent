@@ -319,6 +319,7 @@ const LEDGER_SPINNER = ['✦', '✧', '✶', '✺', '✹', '✷', '✶', '✧'];
 let ledgerSpinnerFrame = 0;
 /** Single shared 1s ticker; live only while ≥1 worker is non-terminal and the UI is present. */
 let ledgerTicker: ReturnType<typeof setInterval> | undefined;
+let agentLedgerMetricsRefresh: ((ctx?: PiContext) => void) | undefined;
 
 function stopLedgerTicker(): void {
   if (ledgerTicker) {
@@ -1395,6 +1396,19 @@ export function agentPanelLines(theme?: PiTheme, limit = 6): string[] {
   return hasVisibleAgentLedgerRecords() ? buildAgentLedgerLines(limit, theme) : [];
 }
 
+/** Register the host-level footer/metrics refresher used by refreshAgentLedgerUi. */
+export function setAgentLedgerMetricsRefreshForUi(cb: ((ctx?: PiContext) => void) | undefined): void {
+  agentLedgerMetricsRefresh = cb;
+}
+
+function refreshAgentFooterMetrics(ctx?: PiContext): void {
+  try {
+    agentLedgerMetricsRefresh?.(ctx);
+  } catch {
+    // Footer refresh is best-effort UI work; ledger state must remain authoritative.
+  }
+}
+
 export function refreshAgentLedgerUi(ctx?: PiContext): void {
   if (!ctx?.hasUI) return;
   const records = [...agents.values()];
@@ -1402,12 +1416,14 @@ export function refreshAgentLedgerUi(ctx?: PiContext): void {
     ctx.ui?.setStatus?.('octocode-agents', undefined);
     stopLedgerTicker();
     refreshStatusPanel(ctx);
+    refreshAgentFooterMetrics(ctx);
     return;
   }
   // Keep a compact below-input/footer signal so running workers remain visible
   // even when the richer below-editor status panel is collapsed or off-screen.
   ctx.ui?.setStatus?.('octocode-agents', formatAgentLedger().replace(/^Octocode agents: /, 'agents: '));
   refreshStatusPanel(ctx);
+  refreshAgentFooterMetrics(ctx);
   // Live refresh: while any worker is active, advance the spinner and re-render every second.
   const anyActive = records.some((r) => !isTerminal(r));
   if (anyActive && !ledgerTicker) {

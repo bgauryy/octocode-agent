@@ -2,7 +2,7 @@
  * memory — a first-class wrapper over the Awareness `memory` CLI.
  *
  * Awareness owns durable cross-run memory (SQLite), but recall/record were only
- * reachable by the model shelling `$OCTOCODE_AWARENESS_CLI memory …`. That path
+ * reachable by the model shelling `npx @octocodeai/octocode-awareness-lite memory …`. That path
  * has no tool-stream visibility and depends on the model remembering the exact
  * flags. This tool makes recall/record/forget first-class: validated arguments,
  * a visible tool row (renderCall/renderResult), and structured results.
@@ -13,6 +13,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { buildAwarenessLiteCommand } from '../assets.js';
 
 const execFileAsync = promisify(execFile);
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
@@ -32,15 +33,14 @@ export interface MemoryCliResult {
 export type MemoryCliRunner = (args: string[]) => MemoryCliResult | Promise<MemoryCliResult>;
 
 /**
- * Default runner: invoke the bundled Awareness CLI via node. Async on purpose —
+ * Default runner: invoke the published Awareness Lite CLI via npx. Async on purpose —
  * a sync exec here blocked the whole event loop (TUI freeze, unprocessable
  * abort) for up to the 20s timeout.
  */
 const defaultRunner: MemoryCliRunner = async (args) => {
-  const cli = process.env['OCTOCODE_AWARENESS_CLI'];
-  if (!cli) return { code: 127, stdout: '', stderr: 'OCTOCODE_AWARENESS_CLI is not set' };
+  const spec = buildAwarenessLiteCommand(args);
   try {
-    const { stdout } = await execFileAsync('node', [cli, ...args], { encoding: 'utf8', timeout: 20_000 });
+    const { stdout } = await execFileAsync(spec.cmd, spec.args, { encoding: 'utf8', timeout: 20_000 });
     return { code: 0, stdout, stderr: '' };
   } catch (err) {
     const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };

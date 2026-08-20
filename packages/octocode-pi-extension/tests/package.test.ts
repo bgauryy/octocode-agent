@@ -19,6 +19,7 @@ import {
   getAssetPaths,
   getInternalErrorLogPath,
   getAwarenessCLIPath,
+  buildAwarenessLiteCommand,
   getAppendSystemTarget,
   getInstallSource,
   listBundledSkills,
@@ -362,20 +363,23 @@ test('build copies bundled Octocode skills without secret env files', () => {
     false,
     'no bundled octocode CLI — management commands use npx octocode'
   );
-  assert.equal(
-    path.basename(getAwarenessCLIPath(distDir)),
-    'cli.js',
-    'Awareness Lite CLI resolves to a cli.js entry (dist bundle or node_modules fallback)'
+  assert.match(
+    getAwarenessCLIPath(distDir),
+    /octocode-awareness-lite.*cli\.js/,
+    'Awareness Lite CLI resolves to the installed scoped package runtime'
   );
   assert.equal(
     fs.existsSync(path.join(distDir, 'awareness', 'cli.js')),
-    true,
-    'awareness-lite runtime assets are bundled under dist/awareness'
+    false,
+    'awareness-lite runtime assets are not bundled under dist/awareness'
   );
 
+  const schemaSpec = buildAwarenessLiteCommand(['schema']);
+  assert.equal(schemaSpec.cmd, process.execPath, 'Awareness Lite schema smoke uses local Node runtime');
+  assert.match(schemaSpec.args[0]!, /octocode-awareness-lite.*cli\.js$/, 'schema smoke uses installed scoped package CLI');
   const schemaOutput = execFileSync(
-    process.execPath,
-    [getAwarenessCLIPath(distDir), 'schema'],
+    schemaSpec.cmd,
+    schemaSpec.args,
     { encoding: 'utf8' }
   );
   const commandSchema = JSON.parse(schemaOutput) as {
@@ -595,7 +599,7 @@ test(
     const status = formatStatus(distDir);
     assert.match(status, /system prompt: found/);
     assert.match(status, /MCP research \(octocode server\) · 11 support · 3 guarded built-ins · 4 replaced/);
-    assert.match(status, /awareness lite CLI:.*cli\.js/);
+    assert.match(status, /awareness lite CLI: .*octocode-awareness-lite.*cli\.js/);
     assert.match(status, /management CLI: npx octocode/);
     assert.match(status, /internal error log: .*\.octocode\/logs\/error\.txt/);
     assert.match(
@@ -1911,6 +1915,19 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
     const renderedResult = (mcpTool.renderResult as unknown as (result: unknown, opts: unknown, theme: unknown, context: unknown) => { render(width?: number): string[] })(listed, {}, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, { args: { action: 'list', server: 'fake' }, invalidate: () => undefined }).render(80).join('\n');
     assert.match(renderedResult, /mcp list · fake · fake: 1 tool/);
 
+    const renderedOctocodeCall = mcpTool.renderCall!({ action: 'call', tool: 'localGetFileContent', arguments: { queries: [{ path: '/tmp/a.ts', startLine: 1 }] } }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }).render(120).join('\n');
+    assert.match(renderedOctocodeCall, /localGetFileContent/);
+    assert.match(renderedOctocodeCall, /a\.ts:1/);
+    const renderedOctocodeResult = (mcpTool.renderResult as unknown as (result: unknown, opts: unknown, theme: unknown, context: unknown) => { render(width?: number): string[] })(
+      { content: [{ type: 'text', text: 'ok' }], details: { results: [{ data: { resolvedPath: '/tmp/a.ts', totalLines: 2, content: 'const answer = 42;' } }] } },
+      {},
+      { fg: (_color: string, text: string) => text, bold: (text: string) => text },
+      { args: { action: 'call', tool: 'localGetFileContent' }, invalidate: () => undefined },
+    ).render(120).join('\n');
+    assert.match(renderedOctocodeResult, /localGetFileContent/);
+    assert.match(renderedOctocodeResult, /2 lines/);
+    assert.match(renderedOctocodeResult, /const answer = 42;/);
+
     const stopped = await invokeExecute(mcpTool, { action: 'stop', server: 'fake' }, trustedCtx);
     assert.match(stopped.content[0]!.text, /fake: stopped/);
 
@@ -2254,7 +2271,8 @@ test('formatOctocodeDashboard is scan-friendly and includes health warnings', ()
   assert.match(dashboard, /ctx ▓▓▓▓▓▓▓▓▓░ 92%/);
   assert.match(dashboard, /⚠ context above 90%/);
   assert.match(dashboard, /Management: npx octocode/);
-  assert.match(dashboard, /Awareness Lite: node \$OCTOCODE_AWARENESS_CLI/);
+  assert.match(dashboard, /Awareness Lite: .*octocode-awareness-lite.*cli\.js/);
+  assert.match(dashboard, /user CLI: npx @octocodeai\/octocode-awareness-lite/);
   for (const command of ['/octocode-palette', '/octocode-inbox', '/octocode-dial', '/octocode-watch', '/octocode-status']) {
     assert.match(dashboard, new RegExp(command.replace('/', '\\/')));
   }
@@ -2654,6 +2672,8 @@ test('extension logs rich internal errors to repo .octocode/logs/error.txt', asy
     assert.match(text, /context: 50\/100 \(50%\)/);
     assert.match(text, /source: notify/);
     assert.match(text, /source: tool_execution_end/);
+    assert.match(text, /=== Octocode Pi Extension Warning ===/);
+    assert.match(text, /severity: warning/);
     assert.match(text, /source: after_provider_response/);
     assert.match(text, /durationMs:/);
     assert.match(text, /stack:/);
@@ -3275,8 +3295,8 @@ test('lists every extension harness surface', () => {
   );
   assert.match(
     harness.awarenessCliNote,
-    /Awareness Lite CLI.*cli\.js/,
-    'awarenessCliNote shows bundled Awareness Lite CLI path'
+    /Awareness Lite CLI: .*octocode-awareness-lite.*cli\.js/,
+    'awarenessCliNote shows installed Awareness Lite CLI command'
   );
   assert.ok(!('cliCommands' in harness), 'cliCommands removed from harness');
 });
@@ -3546,13 +3566,13 @@ test('activation wires only the Awareness Lite pre-edit lock gate', async () => 
   );
 });
 
-test('Awareness Lite pre-edit gate blocks lock conflicts through the bundled CLI', async () => {
+test('Awareness Lite pre-edit gate blocks lock conflicts through the installed package CLI', async () => {
   const { handlers, pi } = await captureExtensions();
   const event = { toolName: 'write', input: { path: 'README.md' } };
   const ctx = { cwd: '/repo', sessionManager: { getSessionId: () => 'session-a' } };
-  const cliPath = process.env.OCTOCODE_AWARENESS_CLI!;
+  const cliSpec = buildAwarenessLiteCommand([]);
   const args = [
-    cliPath,
+    cliSpec.args[0]!,
     'hooks',
     'pre-edit',
     '--host',
@@ -3993,14 +4013,17 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
     const messageTool = tools.get('AgentMessage')!;
     const statusCalls: Array<[string, string | undefined]> = [];
     const widgetCalls: Array<{ key: string; value: unknown; opts?: { placement?: string } }> = [];
+    const footerCalls: unknown[] = [];
     const ctx = {
       cwd: '/repo',
       hasUI: true,
+      getContextUsage: () => ({ tokens: 0, contextWindow: 0 }),
       ui: {
         setStatus: (key: string, value: string | undefined) =>
           statusCalls.push([key, value]),
         setWidget: (key: string, value: unknown, opts?: { placement?: string }) =>
           widgetCalls.push({ key, value, opts }),
+        setFooter: (factory: unknown) => footerCalls.push(factory),
       },
     };
 
@@ -4020,6 +4043,15 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
       });
       return component.render(140).join('\n');
     };
+    const footerText = () => {
+      const factory = footerCalls.at(-1);
+      assert.equal(typeof factory, 'function', 'branded footer factory refreshed');
+      const component = (factory as (tui: unknown, theme: unknown, footerData?: unknown) => { render: (w: number) => string[] })(undefined, {
+        fg: (_color: string, text: string) => text,
+        bold: (text: string) => text,
+      });
+      return component.render(240).join('\n');
+    };
     assert.match(panelText(), /Octocode agents: 1 total.*1 running/, 'spawn refresh shows the worker as running in the unified panel');
     assert.equal(
       widgetCalls.filter((entry) => entry.key === 'octocode-status-panel').at(-1)?.opts?.placement,
@@ -4032,6 +4064,7 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
         `octocode-agents compact footer shows ${state} (${when})`
       );
     assertAgentFooterStatus('running', 'after spawn refresh');
+    assert.match(footerText(), /agents 1\/1 live/, 'custom footer shows the running worker immediately after spawn');
 
     spawned[0]!.emitStdout({
       type: 'message_end',
@@ -4047,6 +4080,8 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
       'async worker handback refreshes the unified ledger to blocked without an AgentMessage call',
     );
     assertAgentFooterStatus('blocked', 'after blocked handback');
+    assert.match(footerText(), /agents 1\/1 live/, 'custom footer keeps the blocked worker visible');
+    assert.match(footerText(), /⚠1/, 'custom footer surfaces blocked worker attention count');
 
     await invokeExecute(
       messageTool,
@@ -4075,6 +4110,7 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
       'completed/exited workers stay visible as done until explicit prune/hide/remove',
     );
     assertAgentFooterStatus('done', 'after completion');
+    assert.match(footerText(), /agents 1(?!\/)/, 'custom footer keeps completed worker records visible until prune/hide/remove');
     assert.ok(
       widgetCalls.some(
         (call) => call.key === 'octocode-status-panel' && typeof call.value === 'function'

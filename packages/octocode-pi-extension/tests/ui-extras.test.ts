@@ -89,18 +89,27 @@ test('buildWorkingMessage paints the stable word and animated suffix separately'
 test('buildFooterSegments shows the active worker progress note next to the agents count', () => {
   const segs = buildFooterSegments({
     tokens: 0, contextWindow: 0, completedTurns: 0, activeTurnMs: 0,
-    sessionMs: 0, activeWorkers: 2, agentDoing: 'Editing agent-tools.ts', dirty: false,
+    sessionMs: 0, activeWorkers: 2, workerTotal: 3, agentDoing: 'Editing agent-tools.ts', dirty: false,
   });
   const seg = segs.find((s) => s.text.startsWith('agents '))!;
-  assert.match(seg.text, /^agents 2 ‣ /);
+  assert.match(seg.text, /^agents 3\/2 live ‣ /);
   assert.match(seg.text, /Editing/);
+});
+
+test('buildFooterSegments keeps tracked idle agents visible in the toolbar', () => {
+  const segs = buildFooterSegments({
+    tokens: 0, contextWindow: 0, completedTurns: 0, activeTurnMs: 0,
+    sessionMs: 0, activeWorkers: 0, workerTotal: 2, dirty: false,
+  });
+  const seg = segs.find((s) => s.text.startsWith('agents '))!;
+  assert.equal(seg.text, 'agents 2');
 });
 
 test('buildFooterSegments composes context %, tokens, turns, timing, workers, awareness agents, and git without plan duplication', () => {
   const segs = buildFooterSegments({
     tokens: 16_000, contextWindow: 200_000,
     completedTurns: 3, activeTurnMs: 9000, lastTurnMs: undefined,
-    sessionMs: 120_000, activeWorkers: 2, awarenessAgents: 4,
+    sessionMs: 120_000, activeWorkers: 2, workerTotal: 2, awarenessAgents: 4,
     branch: 'main', dirty: true,
   });
   const joined = segs.map((s) => s.text).join(' | ');

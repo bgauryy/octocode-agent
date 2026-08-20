@@ -10,7 +10,7 @@ import { assertPathAllowed } from './path-guard.js';
 import { stringEnumSchema } from './schema-helpers.js';
 import { runSelectOverlay } from './ui-overlays.js';
 import { recordFileReadState } from './file-state.js';
-import { makeRenderer } from './render-helpers.js';
+import { buildOctocodeRenderCall, buildOctocodeRenderResult, makeRenderer } from './render-helpers.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 
@@ -968,6 +968,12 @@ function clip(text: string, width: number): string {
 }
 
 function renderCall(args: unknown, theme?: PiTheme): RenderCallReturn {
+  const p = isPlainRecord(args) ? args : {};
+  const server = typeof p['server'] === 'string' ? p['server'] : DEFAULT_OCTOCODE_MCP_SERVER_NAME;
+  if (p['action'] === 'call' && server === DEFAULT_OCTOCODE_MCP_SERVER_NAME && typeof p['tool'] === 'string') {
+    return buildOctocodeRenderCall(p['tool'], p['arguments'], theme);
+  }
+
   const { action, target } = formatMcpTarget(args);
   return makeRenderer((width) => {
     const line = `mcp ${action} · ${target}`;
@@ -975,7 +981,13 @@ function renderCall(args: unknown, theme?: PiTheme): RenderCallReturn {
   });
 }
 
-function renderResult(resultValue: ToolCallResult, _opts: unknown, theme?: PiTheme, context?: RenderContext): RenderCallReturn {
+function renderResult(resultValue: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme, context?: RenderContext): RenderCallReturn {
+  const args = isPlainRecord(context?.args) ? context.args : {};
+  const server = typeof args['server'] === 'string' ? args['server'] : DEFAULT_OCTOCODE_MCP_SERVER_NAME;
+  if (args['action'] === 'call' && server === DEFAULT_OCTOCODE_MCP_SERVER_NAME && typeof args['tool'] === 'string') {
+    return buildOctocodeRenderResult(args['tool'], resultValue, opts, theme);
+  }
+
   const { action, target } = formatMcpTarget(context?.args);
   const lines = resultValue.content[0]?.text?.split('\n').filter(Boolean) ?? ['MCP result'];
   const head = lines[0] ?? 'MCP result';

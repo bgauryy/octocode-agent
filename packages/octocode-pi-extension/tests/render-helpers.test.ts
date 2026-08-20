@@ -127,19 +127,22 @@ test('buildToolCallSummary formats each Octocode direct-tool family', () => {
 test('buildResultStats extracts meaningful per-tool result summaries', () => {
   const result = (data: Record<string, unknown>) => ({ data });
 
-  assert.deepEqual(buildResultStats('ghSearchCode', { results: [result({ totalCount: 7 }), result({ items: [{}, {}] })] }), {
+  assert.deepEqual(buildResultStats('ghSearchCode', { results: [result({ totalCount: 7 }), result({ items: [{ path: 'src/a.ts' }, { repository: { fullName: 'octo/repo' } }] })] }), {
     queryCount: 2,
     summary: '9 results',
     paths: undefined,
+    previews: ['src/a.ts', 'octo/repo'],
   });
   assert.deepEqual(buildResultStats('ghSearchRepos', { results: [result({ items: [{ fullName: 'a/repo' }, { name: 'fallback' }] })] }), {
     queryCount: 1,
     summary: '2 results',
     paths: ['a/repo', 'fallback'],
+    previews: ['a/repo', 'fallback'],
   });
-  assert.deepEqual(buildResultStats('ghGetFileContent', { results: [result({ path: 'src/a.ts' }), result({ filePath: 'src/b.ts' })] }), {
+  assert.deepEqual(buildResultStats('ghGetFileContent', { results: [result({ path: 'src/a.ts', content: 'export const a = 1;' }), result({ filePath: 'src/b.ts' })] }), {
     queryCount: 2,
     paths: ['a.ts', 'b.ts'],
+    previews: ['export const a = 1;'],
   });
   assert.deepEqual(buildResultStats('ghViewRepoStructure', { results: [result({ totalEntries: 5 }), result({ files: ['a', 'b'] })] }), {
     queryCount: 2,
@@ -153,10 +156,11 @@ test('buildResultStats extracts meaningful per-tool result summaries', () => {
     queryCount: 2,
     summary: '5 matches, 2 files',
   });
-  assert.deepEqual(buildResultStats('localGetFileContent', { results: [result({ resolvedPath: '/tmp/a.ts', totalLines: 9 })] }), {
+  assert.deepEqual(buildResultStats('localGetFileContent', { results: [result({ resolvedPath: '/tmp/a.ts', totalLines: 9, content: 'function run() {}' })] }), {
     queryCount: 1,
     paths: ['a.ts'],
     summary: '9 lines',
+    previews: ['function run() {}'],
   });
   assert.deepEqual(buildResultStats('localViewStructure', { results: [result({ files: ['a'] })] }), {
     queryCount: 1,
@@ -202,6 +206,15 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   ).render(180)[0]!;
   assert.match(collapsed, /<success>✓<\/success>/);
   assert.match(collapsed, /4 matches, 2 files/);
+
+  const withPreview = buildOctocodeRenderResult(
+    'localGetFileContent',
+    textResult('ok', { results: [{ data: { resolvedPath: '/tmp/a.ts', totalLines: 2, content: 'const answer = 42;' } }] }),
+    { expanded: false },
+    theme,
+  ).render(180)[0]!;
+  assert.match(withPreview, /a\.ts/);
+  assert.match(withPreview, /“const answer = 42;”/);
 
   const expanded = buildOctocodeRenderResult(
     'ghGetFileContent',

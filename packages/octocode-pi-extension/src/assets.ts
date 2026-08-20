@@ -1,17 +1,33 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const extensionDir = path.dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
+const requireFromExtension = createRequire(import.meta.url);
+
+export const AWARENESS_LITE_PACKAGE = '@octocodeai/octocode-awareness-lite';
+
+export interface AwarenessLiteCommandSpec {
+  cmd: string;
+  args: string[];
+}
+
+export function resolveAwarenessLiteCliPath(): string {
+  const mainPath = requireFromExtension.resolve(AWARENESS_LITE_PACKAGE);
+  return path.join(path.dirname(mainPath), 'cli.js');
+}
+
+export function buildAwarenessLiteCommand(args: string[] = []): AwarenessLiteCommandSpec {
+  return { cmd: process.execPath, args: [resolveAwarenessLiteCliPath(), ...args] };
+}
 
 export interface AssetPaths {
   baseDir: string;
   docsDir: string;
   skillsDir: string;
   systemPrompt: string;
-  /** Absolute path to the bundled Awareness Lite CLI entry point (dist/awareness/cli.js). */
+  /** Agent-facing Awareness Lite command display string. */
   awarenessCliPath: string;
 }
 
@@ -21,48 +37,17 @@ export function getAssetPaths(baseDir = extensionDir): AssetPaths {
     docsDir: path.join(baseDir, 'docs'),
     skillsDir: path.join(baseDir, 'skills'),
     systemPrompt: path.join(baseDir, 'system', 'SYSTEM_PROMPT.md'),
-    awarenessCliPath: path.join(baseDir, 'awareness', 'cli.js'),
+    awarenessCliPath: getAwarenessCLIPath(baseDir),
   };
 }
 
-function resolvePackageBin(packageName: string, defaultBin: string, binName = packageName): string | null {
-  try {
-    const pkgPath = require.resolve(`${packageName}/package.json`);
-    const root = path.dirname(pkgPath);
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    const bin = typeof pkg.bin === 'string' ? pkg.bin : (pkg.bin?.[binName] ?? defaultBin);
-    const resolved = path.join(root, bin);
-    if (fs.existsSync(resolved)) return resolved;
-  } catch {
-    // Some packages do not export package.json; fall back to the module export path.
-  }
-  try {
-    const entryPath = require.resolve(packageName);
-    const root = path.dirname(entryPath);
-    const resolved = path.join(root, path.basename(defaultBin));
-    if (fs.existsSync(resolved)) return resolved;
-  } catch {
-    // Package unavailable in this checkout/install — caller handles warning/fallback.
-  }
-  return null;
-}
-
 /**
- * Returns the absolute path to the bundled Awareness Lite CLI entry point.
- * Agents run it with: `node <awarenessCliPath> <command> [action]`
- * Also exposed via the OCTOCODE_AWARENESS_CLI env var (set at extension load).
+ * Returns the agent-facing Awareness Lite command. Kept under the historical
+ * name because launcher/status code imports it, but runtime calls use the
+ * installed scoped package directly instead of an unscoped npx lookup.
  */
-export function getAwarenessCLIPath(baseDir = extensionDir): string {
-  const bundled = path.join(baseDir, 'awareness', 'cli.js');
-  if (fs.existsSync(bundled)) return bundled;
-  const resolved = resolvePackageBin('@octocodeai/octocode-awareness-lite', 'out/cli.js', '@octocodeai/octocode-awareness-lite');
-  if (resolved) return resolved;
-  console.warn(
-    `[octocode-pi-extension] Warning: Awareness Lite CLI not found at ${bundled} or in node_modules. ` +
-      `node $OCTOCODE_AWARENESS_CLI calls will ENOENT. Run \`yarn workspace @octocodeai/octocode-awareness-lite build\` and ` +
-      `\`yarn workspace @octocodeai/pi-extension build\` to resolve.`,
-  );
-  return bundled;
+export function getAwarenessCLIPath(_baseDir = extensionDir): string {
+  return `${process.execPath} ${resolveAwarenessLiteCliPath()}`;
 }
 
 export function readTextIfExists(filePath: string): string {

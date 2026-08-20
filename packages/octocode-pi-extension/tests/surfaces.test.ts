@@ -12,6 +12,11 @@ import {
 
 const selfPath = fileURLToPath(import.meta.url);
 
+function expectCommand(spec: ReturnType<typeof buildSurfaceSpec>): { cmd: string; args: string[] } {
+  if ('error' in spec) throw new Error(spec.error);
+  return spec;
+}
+
 describe('buildSurfaceSpec — external octocode CLI', () => {
   it('research maps to `npx octocode search`', () => {
     expect(buildSurfaceSpec('research', ['auth flow'])).toEqual({
@@ -35,34 +40,27 @@ describe('buildSurfaceSpec — external octocode CLI', () => {
   });
 });
 
-describe('buildSurfaceSpec — bundled awareness CLI', () => {
-  it('memory prefixes the memory noun when the CLI resolves', () => {
-    const spec = buildSurfaceSpec('memory', ['recall', 'x'], { OCTOCODE_AWARENESS_CLI: selfPath });
-    expect(spec).toEqual({ cmd: 'node', args: [selfPath, 'memory', 'recall', 'x'] });
+describe('buildSurfaceSpec — installed awareness-lite CLI', () => {
+  it('memory prefixes the memory noun through the local scoped package CLI', () => {
+    const spec = expectCommand(buildSurfaceSpec('memory', ['recall', 'x'], { OCTOCODE_AWARENESS_CLI: selfPath }));
+    expect(spec.cmd).toBe(process.execPath);
+    expect(spec.args.at(-3)).toBe('memory');
+    expect(spec.args.slice(-2)).toEqual(['recall', 'x']);
+    expect(spec.args[0]).toMatch(/octocode-awareness-lite.*cli\.js$/);
   });
 
-  it('awareness passes through raw when the CLI resolves', () => {
-    const spec = buildSurfaceSpec('awareness', ['attend'], { OCTOCODE_AWARENESS_CLI: selfPath });
-    expect(spec).toEqual({ cmd: 'node', args: [selfPath, 'attend'] });
+  it('awareness passes through raw args through the local scoped package CLI', () => {
+    const spec = expectCommand(buildSurfaceSpec('awareness', ['status']));
+    expect(spec.cmd).toBe(process.execPath);
+    expect(spec.args.slice(-1)).toEqual(['status']);
+    expect(spec.args[0]).toMatch(/octocode-awareness-lite.*cli\.js$/);
   });
 });
 
 describe('resolveAwarenessCli', () => {
-  it('prefers an existing OCTOCODE_AWARENESS_CLI env path', () => {
-    expect(resolveAwarenessCli({ OCTOCODE_AWARENESS_CLI: selfPath })).toBe(selfPath);
-  });
-
-  it('ignores a non-existent env path', () => {
-    expect(resolveAwarenessCli({ OCTOCODE_AWARENESS_CLI: '/no/such/file.js' })).not.toBe(
-      '/no/such/file.js',
-    );
-  });
-
-  it('resolves a real Awareness Lite cli.js path, never the old bundled filename', () => {
-    const resolved = resolveAwarenessCli({});
-    expect(resolved).toBeTruthy();
-    expect(resolved).toMatch(/cli\.js$/);
-    expect(resolved).not.toMatch(new RegExp('octocode-awareness[.]js$'));
+  it('returns the installed Awareness Lite command and ignores stale env file paths', () => {
+    expect(resolveAwarenessCli({ OCTOCODE_AWARENESS_CLI: selfPath })).toMatch(/octocode-awareness-lite.*cli\.js/);
+    expect(resolveAwarenessCli({ OCTOCODE_AWARENESS_CLI: '/no/such/file.js' })).toMatch(/octocode-awareness-lite.*cli\.js/);
   });
 });
 

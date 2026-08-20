@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { openAwarenessLite, type AgentStatus, type TaskStatus } from './index.js';
 import { runPreEditLockGate, type HookHost } from './hooks.js';
 
@@ -400,7 +401,16 @@ export function runCli(argv: string[]): number {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+export function isCliEntrypoint(metaUrl = import.meta.url, argv1 = process.argv[1]): boolean {
+  if (!argv1) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(argv1);
+  } catch {
+    return fileURLToPath(metaUrl) === resolve(argv1);
+  }
+}
+
+if (isCliEntrypoint()) {
   try {
     process.exitCode = runCli(process.argv.slice(2));
   } catch (error) {

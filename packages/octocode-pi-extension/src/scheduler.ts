@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { buildAwarenessLiteCommand } from './assets.js';
 import type { PiContext, PiExecResult, PiInstance } from './types.js';
 
 const DEFAULT_JOB_TIMEOUT_MS = 60_000;
@@ -207,25 +208,15 @@ export function createOctocodeCronScheduler(
       return { job: jobName, status: 'skipped', message: `${state.definition.label} is already running.` };
     }
 
-    const awarenessCli = env['OCTOCODE_AWARENESS_CLI'];
-    if (!awarenessCli) {
-      state.status = 'skipped';
-      state.lastStartedAt = now();
-      state.lastFinishedAt = state.lastStartedAt;
-      state.lastExitCode = null;
-      state.lastMessage = 'OCTOCODE_AWARENESS_CLI is not set; job skipped.';
-      if (rescheduleAfterRun) schedule(state);
-      return { job: jobName, status: 'skipped', message: state.lastMessage };
-    }
-
     state.running = true;
     state.status = 'running';
     state.lastStartedAt = now();
     state.lastMessage = undefined;
     try {
+      const spec = buildAwarenessLiteCommand(state.definition.awarenessArgs(ctx));
       const result = await executor(
-        process.execPath,
-        [awarenessCli, ...state.definition.awarenessArgs(ctx)],
+        spec.cmd,
+        spec.args,
         { timeout: DEFAULT_JOB_TIMEOUT_MS },
       );
       const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join('\n'));

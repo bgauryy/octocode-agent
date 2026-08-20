@@ -13,10 +13,11 @@ import {
   listBundledSkills,
   getInstallSource,
   getAwarenessCLIPath,
+  buildAwarenessLiteCommand,
 } from './assets.js';
 
-// Expose the Awareness CLI path as an env var so agents can invoke it from bash subprocesses.
-// Set once at module load — inherited by all bash subprocesses spawned during the session.
+// Expose the Awareness Lite command for prompt/status compatibility. Runtime
+// calls use the installed scoped package CLI directly, not an unscoped npx lookup.
 process.env.OCTOCODE_AWARENESS_CLI = getAwarenessCLIPath();
 import {
   shouldAppendSystemPrompt,
@@ -42,6 +43,7 @@ import {
   OCTOCODE_AGENTS_COMMAND_USAGE,
   refreshAgentLedgerUi,
   registerAgentTools,
+  setAgentLedgerMetricsRefreshForUi,
   isSubagentProcess,
 } from './tools/agent-tools.js';
 import { registerWebTool } from './tools/web-tool.js';
@@ -129,7 +131,7 @@ export {
   MANAGED_BLOCK_START,
   MANAGED_BLOCK_END,
 } from './constants.js';
-export { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getAwarenessCLIPath } from './assets.js';
+export { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getAwarenessCLIPath, buildAwarenessLiteCommand } from './assets.js';
 export {
   buildSurfaceSpec,
   loadProfile,
@@ -241,6 +243,8 @@ function formatContextUsage(ctx: PiContext | undefined): { text: string; percent
 }
 
 interface WorkerFooterCounts {
+  /** All worker records still tracked in this session. */
+  total: number;
   /** Live workers (starting / running / idle). */
   active: number;
   /** Workers waiting on the lead (normalized [BLOCKED]). */
@@ -250,15 +254,16 @@ interface WorkerFooterCounts {
 }
 
 function workerFooterCounts(): WorkerFooterCounts {
-  const counts: WorkerFooterCounts = { active: 0, blocked: 0, failed: 0 };
+  const counts: WorkerFooterCounts = { total: 0, active: 0, blocked: 0, failed: 0 };
   try {
     for (const e of listWorkerLedgerEntries()) {
+      counts.total += 1;
       if (e.status === 'failed' || e.normalizedStatus === 'failed') counts.failed += 1;
       else if (e.normalizedStatus === 'blocked') counts.blocked += 1;
       if (e.status === 'running' || e.status === 'idle' || e.status === 'starting') counts.active += 1;
     }
   } catch {
-    return { active: 0, blocked: 0, failed: 0 };
+    return { total: 0, active: 0, blocked: 0, failed: 0 };
   }
   return counts;
 }
@@ -285,6 +290,7 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
     lastTurnMs: state.lastTurnMs,
     sessionMs: now - state.sessionStartedAt,
     activeWorkers: workers.active,
+    workerTotal: workers.total,
     agentDoing,
     awarenessAgents,
     blockedWorkers: workers.blocked,
@@ -358,8 +364,7 @@ async function runAwarenessLitePreEditLockGate(pi: PiInstance, event: { toolName
   if (!LITE_LOCK_GATE_WRITE_TOOLS.has(toolName)) return undefined;
   if (!pi.exec) return undefined;
   const cwd = ctx?.cwd ?? process.cwd();
-  const args = [
-    getAwarenessCLIPath(),
+  const spec = buildAwarenessLiteCommand([
     'hooks',
     'pre-edit',
     '--host',
@@ -370,8 +375,8 @@ async function runAwarenessLitePreEditLockGate(pi: PiInstance, event: { toolName
     getAwarenessLiteAgentId(ctx),
     '--event-json',
     JSON.stringify(event),
-  ];
-  const result = await pi.exec(process.execPath, args, { timeout: 5000 });
+  ]);
+  const result = await pi.exec(spec.cmd, spec.args, { timeout: 5000 });
   if (result.code === 2) {
     let reason = result.stdout.trim() || 'Awareness Lite lock conflict.';
     try {
@@ -515,13 +520,21 @@ function formatContextForLog(ctx: PiContext | undefined): string[] {
   ].filter(Boolean);
 }
 
+export interface InternalErrorLogOptions {
+  severity?: 'error' | 'warning';
+  stack?: boolean;
+}
+
 export function logInternalError(
   source: string,
   error: unknown,
   details: Record<string, unknown> = {},
   ctx?: PiContext,
+  options: InternalErrorLogOptions = {},
 ): void {
   try {
+    const severity = options.severity ?? 'error';
+    const includeStack = options.stack ?? severity === 'error';
     const logPath = getInternalErrorLogPath(ctx?.cwd ?? process.cwd());
     const normalized = normalizeError(error);
     const durationMs = typeof details['durationMs'] === 'number' ? details['durationMs'] : undefined;
@@ -530,17 +543,18 @@ export function logInternalError(
     fs.appendFileSync(
       logPath,
       [
-        '=== Octocode Pi Extension Error ===',
+        severity === 'warning' ? '=== Octocode Pi Extension Warning ===' : '=== Octocode Pi Extension Error ===',
         `timestamp: ${new Date().toISOString()}`,
         `uptimeMs: ${Math.round(process.uptime() * 1000)}`,
         `source: ${source}`,
+        `severity: ${severity}`,
         durationMs === undefined ? '' : `durationMs: ${durationMs}`,
         ...formatContextForLog(ctx),
         normalized.name ? `error.name: ${normalized.name}` : '',
         `error.message: ${normalized.message}`,
         normalized.cause ? `error.cause: ${normalized.cause}` : '',
         redactedDetails ? `details: ${redactedDetails}` : '',
-        normalized.stack ? `stack:\n${normalized.stack}` : '',
+        includeStack && normalized.stack ? `stack:\n${normalized.stack}` : '',
         '---',
       ].filter(Boolean).join('\n') + '\n',
     );
@@ -603,7 +617,7 @@ export function formatStatus(baseDir?: string): string {
     `system prompt: ${promptStatus}`,
     `skills: ${skills.length}${skills.length > 0 ? ` (${skills.join(', ')})` : ''}`,
     `octocode tools: ${formatOctocodeToolStatus()}`,
-    `awareness lite CLI: ${getAwarenessCLIPath(baseDir)} — use via: node $OCTOCODE_AWARENESS_CLI <command> [action] --workspace "$PWD"`,
+    `awareness lite CLI: ${getAwarenessCLIPath(baseDir)} — user CLI: npx @octocodeai/octocode-awareness-lite <command> [action] --workspace "$PWD"`,
     `management CLI: npx octocode skill | lsp-server | auth (no bundled CLI — use npx octocode for management tasks)`,
     `disabled/replaced built-ins: overridden: ${OVERRIDDEN_BUILTIN_TOOL_NAMES.join(', ')}${DISABLED_BUILTIN_TOOL_NAMES.length ? `; removed: ${DISABLED_BUILTIN_TOOL_NAMES.join(', ')}` : ''}`,
     `web search: ${searchStatus}`,
@@ -678,7 +692,7 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
     ],
     skills: listBundledSkills(baseDir),
     cliNote: `management: npx octocode skill | lsp-server | auth (no bundled CLI — use npx octocode for management tasks)`,
-    awarenessCliNote: `bundled Awareness Lite CLI at ${getAwarenessCLIPath(baseDir)} — run via: node $OCTOCODE_AWARENESS_CLI <command> [action] --workspace "$PWD"`,
+    awarenessCliNote: `Awareness Lite CLI: ${getAwarenessCLIPath(baseDir)}; user CLI: npx @octocodeai/octocode-awareness-lite <command> [action] --workspace "$PWD"`,
   };
 }
 
@@ -702,7 +716,7 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessi
     `${promptOk ? '✓' : '⚠'} system prompt: ${promptOk ? 'found' : 'missing'}`,
     `✓ tools: ${formatOctocodeToolStatus()}`,
     `✓ metrics: ${context.text}`,
-    `Awareness Lite: node $OCTOCODE_AWARENESS_CLI <command> [action] --workspace "$PWD" (${awarenessCliPath})`,
+    `Awareness Lite: ${awarenessCliPath} (user CLI: npx @octocodeai/octocode-awareness-lite <command> [action] --workspace "$PWD")`,
     `Management: npx octocode skill | lsp-server | auth`,
     '',
     'Agents',
@@ -780,7 +794,7 @@ export function formatOctocodeTasks(ctx?: PiContext): string {
     '',
     'Rule of thumb',
     'Use plan(...) for your current solo breakdown; use Awareness Lite plan/task/work when state must survive sessions or coordinate agents.',
-    'Commands: /octocode-plan · node $OCTOCODE_AWARENESS_CLI status --workspace "$PWD"',
+    'Commands: /octocode-plan · npx @octocodeai/octocode-awareness-lite status --workspace "$PWD"',
   ].join('\n');
 }
 
@@ -1034,6 +1048,7 @@ async function wireOctocodePiExtension(
       // Undo the shutdown-time suppression from a previous session in this process.
       resumeStatusPanel();
       resumeAwarenessPanel();
+      setAgentLedgerMetricsRefreshForUi((ctx) => updateOctocodeMetricsUi(ctx, metricsState));
       // Read-states recorded in a previous session must not satisfy the edit
       // tool's stale-read gate in this one, and the auto-compaction edge
       // trigger must not carry the old session's threshold crossing.
@@ -1163,6 +1178,7 @@ async function wireOctocodePiExtension(
       // spawned workers, so the teardown burst of killed/exit ledger events is
       // ignored instead of flashing OSC 9 notifications at the user.
       agentInbox?.shutdown();
+      setAgentLedgerMetricsRefreshForUi(undefined);
       stopWatch();
       const cleanedAgents = cleanupSpawnedAgentsForShutdown();
       const stoppedMcpServers = stopAllMcpServers();
@@ -1258,7 +1274,7 @@ async function wireOctocodePiExtension(
         toolName: event.toolName,
         durationMs: startedAt === undefined ? undefined : Date.now() - startedAt,
         result: event.result,
-      }, ctx);
+      }, ctx, { severity: 'warning', stack: false });
     });
 
     hooks.on('before_provider_request', 'octocode-provider-error-timing', async () => {
@@ -1389,6 +1405,7 @@ async function wireOctocodePiExtension(
       });
     }
 
+    setAgentLedgerMetricsRefreshForUi((ctx) => updateOctocodeMetricsUi(ctx, metricsState));
     registerAgentTools(pi, Type, registeredToolNames, registerUniqueTool);
 
     // Worker inbox overlay (/octocode-inbox) + desktop notifications; must come

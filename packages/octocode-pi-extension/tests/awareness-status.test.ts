@@ -73,7 +73,7 @@ test('formatAwarenessPanel renders counts and surfaces verify-debt', () => {
   assert.match(lines[0]!, /locks 2/);
   assert.match(lines[0]!, /work 1/);
   assert.doesNotMatch(lines[0]!, /agents 2/); // shown in the lower toolbar, not the below-editor panel
-  assert.match(lines[0]!, /msgs 5/);
+  assert.match(lines[0]!, /peer-msgs 5/);
   assert.match(lines[0]!, /verify-debt 4/);
 });
 
@@ -97,7 +97,7 @@ function uiCtx() {
 }
 
 test('refreshAwarenessPanel renders a widget from the async runner result', async () => {
-  process.env.OCTOCODE_AWARENESS_CLI = '/fake/cli.js';
+  delete process.env.OCTOCODE_AWARENESS_CLI;
   let calls = 0;
   setAwarenessStatusRunnerForTests(async () => { calls++; return FULL; });
   const { ctx, widget } = uiCtx();
@@ -108,7 +108,7 @@ test('refreshAwarenessPanel renders a widget from the async runner result', asyn
 });
 
 test('refreshAwarenessPanel throttles repeated calls within the window', async () => {
-  process.env.OCTOCODE_AWARENESS_CLI = '/fake/cli.js';
+  delete process.env.OCTOCODE_AWARENESS_CLI;
   let calls = 0;
   setAwarenessStatusRunnerForTests(async () => { calls++; return FULL; });
   const { ctx } = uiCtx();
@@ -121,7 +121,7 @@ test('refreshAwarenessPanel throttles repeated calls within the window', async (
 });
 
 test('refreshAwarenessPanel clears stale cached status when the async runner fails', async () => {
-  process.env.OCTOCODE_AWARENESS_CLI = '/fake/cli.js';
+  delete process.env.OCTOCODE_AWARENESS_CLI;
   let calls = 0;
   setAwarenessStatusRunnerForTests(async () => (calls++ === 0 ? FULL : null));
   const { ctx, widget } = uiCtx();
@@ -135,9 +135,12 @@ test('refreshAwarenessPanel clears stale cached status when the async runner fai
   assert.ok(widget.some((w) => w.cleared), 'failed refresh clears the unified widget instead of keeping stale Awareness status');
 });
 
-test('refreshAwarenessPanel is a no-op without the CLI env var', () => {
+test('refreshAwarenessPanel still runs without the CLI env var', async () => {
   delete process.env.OCTOCODE_AWARENESS_CLI;
-  const { ctx, widget } = uiCtx();
+  let calls = 0;
+  setAwarenessStatusRunnerForTests(async () => { calls++; return FULL; });
+  const { ctx } = uiCtx();
   refreshAwarenessPanel(ctx);
-  assert.equal(widget.length, 0, 'no widget calls when CLI is unavailable');
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(calls, 1, 'local package runner is invoked without OCTOCODE_AWARENESS_CLI');
 });

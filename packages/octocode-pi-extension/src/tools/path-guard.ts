@@ -16,6 +16,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+/** macOS may expose /tmp as a symlink to /private/tmp; allow both spellings. */
+function tempRoots(): string[] {
+  const roots = new Set<string>();
+  const tmp = os.tmpdir();
+  roots.add(tmp);
+  if (process.platform === 'darwin') {
+    roots.add('/tmp');
+    roots.add('/private/tmp');
+    if (tmp.startsWith('/var/')) roots.add(`/private${tmp}`);
+  }
+  return [...roots];
+}
+
 /** Expand a leading `~` and resolve to an absolute path. */
 function expandHome(p: string): string {
   if (p === '~') return os.homedir();
@@ -53,7 +66,7 @@ function isWithin(child: string, root: string): boolean {
 
 /** Allowed roots: cwd, home, OS temp dir, and every ALLOWED_PATHS entry. */
 function allowedRoots(cwd: string): string[] {
-  const raw = [cwd, os.homedir(), os.tmpdir()];
+  const raw = [cwd, os.homedir(), ...tempRoots()];
   const extra = (process.env['ALLOWED_PATHS'] ?? '')
     .split(/[:,]/)
     .map((s) => s.trim())

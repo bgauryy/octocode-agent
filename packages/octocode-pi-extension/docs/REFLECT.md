@@ -1,120 +1,53 @@
-# Reflection and Learning in Pi
+# Learning in Pi with Awareness Lite
 
-Reflection uses the bundled Awareness CLI. It is not a Pi tool and it never
-self-approves repository, prompt, skill, or harness changes.
+Awareness Lite does not include the full `reflect` workflow. Use the published
+Lite CLI for small, explicit memory notes, and keep larger improvement proposals
+in normal docs, issues, or reviewed plans.
 
-## When to reflect
+## When to record memory
 
-Reflect after a meaningful outcome when at least one item is reusable:
+Record only reusable, verified facts:
 
-- a verified root cause or workaround;
-- an architectural decision and its reason;
-- a recurring failure signature;
-- a concrete repository fix still required;
-- an evidence-backed skill/harness improvement proposal.
+- a root cause or workaround that is likely to recur;
+- a repository convention that changed the implementation path;
+- a decision and the evidence behind it;
+- a command or test gotcha future agents will need.
 
-Skip routine status, raw test output, obvious changes, secrets, and material
-already authoritative in source/docs.
-
-## Record an outcome
-
-```bash
-node "$OCTOCODE_AWARENESS_CLI" reflect record \
-  --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" \
-  --task "fix parser regression" --outcome worked \
-  --lesson "Reject malformed escapes before tokenization" \
-  --failure-signature "mechanism:tokenization|cause:late-validation" \
-  --compact
-```
-
-Outcomes are `worked`, `partial`, or `failed`. Unknown values hard-error.
-
-Reflection can route one observation to separate destinations:
-
-- `--lesson` → durable learning;
-- `--fix-repo` → repository follow-up/refinement;
-- `--fix-harness` → supervised skill/tooling proposal;
-- `--fix-instructions` → feedback to the human instruction author;
-- `--failure-signature` → weakness clustering.
-
-Do not use reflection as a second task queue. Selectable, dependency-aware work
-belongs in a Plan Task; a live handoff belongs in a signal.
+Skip routine status, raw logs, obvious edits, secrets, and facts already
+authoritative in source/docs.
 
 ## Recall before risky work
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" memory recall \
-  --query "tokenization" --workspace "$PWD" --smart --limit 5 --compact
+npx @octocodeai/octocode-awareness-lite memory recall \
+  --workspace "$PWD" --query "tokenization"
 ```
 
 Treat every result as a lead. Re-read cited source and rerun current checks when
 the fact can affect a change.
 
-## Supersede instead of stacking
-
-When better evidence replaces a memory, create the corrected memory with
-`--supersedes <memory-id>`. Prefer one current abstraction with provenance over
-many near-duplicates.
+## Store a verified learning
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" memory record \
-  --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" \
-  --task-context "parser validation" \
-  --observation "Validation now occurs before tokenization" \
-  --label DECISION --importance 7 --supersedes mem_old \
-  --reference file:src/parser.ts --compact
+npx @octocodeai/octocode-awareness-lite memory store \
+  --workspace "$PWD" --label DECISION \
+  --text "parser validation: malformed escapes are rejected before tokenization"
 ```
 
-## Mine recurrent weakness
-
-Failure signatures make repeated mechanisms queryable:
-
-```bash
-node "$OCTOCODE_AWARENESS_CLI" reflect mine-weakness \
-  --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" \
-  --min-count 2 --limit 10 --compact
-```
-
-Clusters are prompts for investigation, not proof. Confirm exact failures and
-affected files before opening a task or proposing guidance.
-
-## Harness proposals are human-gated
-
-```bash
-node "$OCTOCODE_AWARENESS_CLI" reflect export-harness \
-  --workspace "$PWD" --limit 20 --compact
-```
-
-Export is a preview. A human reviews evidence, scope, regressions, held-out
-behavior, and rollback before changing protected instructions or skills. The
-agent that proposes a rule does not certify it.
-
-## Developer review
-
-Use `--fix-instructions` when the issue is the instruction itself, then inspect:
-
-```bash
-node "$OCTOCODE_AWARENESS_CLI" reflect developer-review \
-  --workspace "$PWD" --format markdown
-```
-
-Keep feedback specific: quote the conflicting requirement, show the observed
-effect, and propose the smallest correction.
+Keep the text short and cite source/test evidence in the wording when useful.
+Do not use memory as a task queue; use `plan`/`task` for work and `handoff` for
+continuation notes.
 
 ## Cleanup
 
 Awareness Lite cleanup is explicit and item-scoped:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" status --workspace "$PWD"
-node "$OCTOCODE_AWARENESS_CLI" memory forget \
+npx @octocodeai/octocode-awareness-lite status --workspace "$PWD"
+npx @octocodeai/octocode-awareness-lite memory forget \
   --workspace "$PWD" --memory-id mem_123
 ```
 
-Review the dry-run output before any mutation. After approved cleanup,
-refresh `.octocode/` only if file-based readers need current projections:
-
-```bash
-node "$OCTOCODE_AWARENESS_CLI" wiki sync \
-  --workspace "$PWD" --mode local --compact
-```
+Review state before any mutation. Lite has no reflection export, weakness mining,
+wiki sync, or automated harness proposal flow; use the full Awareness package
+only when those features are intentionally installed.

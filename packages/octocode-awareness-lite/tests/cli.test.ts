@@ -1,12 +1,13 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { openAwarenessLite } from '../src/index.js';
 import { extractHookTargetPaths, runPreEditLockGate } from '../src/hooks.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runCli } from '../src/cli.js';
+import { isCliEntrypoint, runCli } from '../src/cli.js';
 
 let workspace: string;
 let stdout: string;
@@ -37,6 +38,16 @@ afterEach(async () => {
 function jsonOut<T>(): T {
   return JSON.parse(stdout) as T;
 }
+
+describe('isCliEntrypoint', () => {
+  it('accepts symlinked bin paths used by npx and package-manager shims', async () => {
+    const realCli = join(workspace, 'cli.js');
+    const linkCli = join(workspace, 'octocode-awareness-lite');
+    await import('node:fs/promises').then(fs => fs.writeFile(realCli, '#!/usr/bin/env node\n'));
+    await symlink(realCli, linkCli);
+    expect(isCliEntrypoint(pathToFileURL(realCli).href, linkCli)).toBe(true);
+  });
+});
 
 describe('runCli', () => {
   it('prints help', () => {

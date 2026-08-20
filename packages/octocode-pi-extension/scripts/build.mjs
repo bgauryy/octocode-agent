@@ -29,8 +29,7 @@ const SOURCE_PATHS = {
   // The system prompt is one inlined document (src/prompts/prompt.ts → dist/prompts/prompt.js);
   // there are no per-section fragment files to copy.
   promptSource: path.join(packageRoot, 'src', 'prompts', 'prompt.ts'),
-  // Awareness Lite runtime + bundled skills — bundled at build time so the pi-extension is self-contained.
-  awarenessOut: path.join(AWARENESS_PACKAGE_ROOT, 'out'),
+  // Awareness Lite skill source comes from the published package; runtime invocation uses npx.
   awarenessSkills: path.join(AWARENESS_PACKAGE_ROOT, 'skills'),
   octocodeSkills: path.join(OCTOCODE_PACKAGE_ROOT, 'skills'),
   // octocode CLI — bundled at build time so the pi-extension is self-contained.
@@ -46,8 +45,6 @@ const OUTPUT_PATHS = {
   systemPrompt: path.join(distDir, 'system', 'SYSTEM_PROMPT.md'),
   // bundled octocode CLI — agent uses: node $OCTOCODE_CLI <command>
   cli: path.join(distDir, 'cli'),
-  // bundled Awareness Lite CLI/runtime — agent uses: node $OCTOCODE_AWARENESS_CLI <command> [action]
-  awareness: path.join(distDir, 'awareness'),
 };
 
 const SKIPPED_DIRECTORIES = new Set([
@@ -237,20 +234,6 @@ function syncPackageSkills() {
  *
  * Prerequisite: `yarn workspace octocode build` must run before this step.
  */
-function bundleAwarenessRuntime() {
-  const src = SOURCE_PATHS.awarenessOut;
-  const dest = OUTPUT_PATHS.awareness;
-  const entry = path.join(src, 'cli.js');
-  if (!fs.existsSync(entry)) {
-    throw new Error(
-      `Awareness Lite CLI output not found at ${entry}. Run \`yarn workspace @octocodeai/octocode-awareness-lite build\` before building pi-extension.`
-    );
-  }
-  copyDirectory(src, dest);
-  console.log(`Awareness Lite CLI bundled: ${dest}/cli.js`);
-  return dest;
-}
-
 function bundleOctocodeCLI() {
   const src = SOURCE_PATHS.octocodeCLI;
   const dest = OUTPUT_PATHS.cli;
@@ -316,7 +299,6 @@ async function build() {
   fs.mkdirSync(path.dirname(OUTPUT_PATHS.systemPrompt), { recursive: true });
   fs.writeFileSync(OUTPUT_PATHS.systemPrompt, SYSTEM_PROMPT, 'utf8');
   fs.rmSync(OUTPUT_PATHS.skills, { recursive: true, force: true });
-  fs.rmSync(OUTPUT_PATHS.awareness, { recursive: true, force: true });
   copyDirectory(SOURCE_PATHS.skills, OUTPUT_PATHS.skills);
   // Copy subagents/ to dist/subagents/ (SYSTEM_PROMPT.md files loaded at runtime)
   if (fs.existsSync(SOURCE_PATHS.subagents)) {
@@ -332,7 +314,6 @@ async function build() {
   // dropped from package.json "files", so it never ships either.)
   fs.rmSync(SOURCE_PATHS.skills, { recursive: true, force: true });
 
-  bundleAwarenessRuntime();
   bundleOctocodeCLI();
 
   assertNoHiddenLocalOnlyEntries(distDir);

@@ -2,7 +2,7 @@
  * awareness-status — a live below-editor panel for the shared Awareness Lite state
  * (plans, tasks, verify debt, locks, manual work presence, and messages).
  *
- * Awareness is canonical SQLite behind the `$OCTOCODE_AWARENESS_CLI` binary. Its
+ * Awareness is canonical SQLite behind the `npx @octocodeai/octocode-awareness-lite` CLI. Its
  * state previously only surfaced in chat when the agent ran a CLI command; this
  * module projects it into a persistent under-input panel instead.
  *
@@ -15,6 +15,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { buildAwarenessLiteCommand } from '../assets.js';
 import type { PiContext, PiTheme } from '../types.js';
 import { paint } from '../tui/cli-design.js';
 import { refreshStatusPanel } from './status-panel.js';
@@ -81,7 +82,7 @@ export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme): strin
   const tail: string[] = [];
   if (s.lockCount > 0) tail.push(`locks ${s.lockCount}`);
   if (s.workCount > 0) tail.push(`work ${s.workCount}`);
-  if (s.messageCount > 0) tail.push(`msgs ${s.messageCount}`);
+  if (s.messageCount > 0) tail.push(`peer-msgs ${s.messageCount}`);
 
   const chunks: string[] = [];
   if (segs.length) chunks.push(paint(theme, 'brand', segs.join('  ·  ')));
@@ -120,13 +121,14 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>();
 
 /** Runs the awareness CLI; injectable for tests. Resolves stdout or null on any failure. */
-export type StatusRunner = (cliPath: string, cwd: string) => Promise<string | null>;
+export type StatusRunner = (cwd: string) => Promise<string | null>;
 
-const defaultRunner: StatusRunner = (cliPath, cwd) =>
+const defaultRunner: StatusRunner = (cwd) =>
   new Promise((resolve) => {
+    const spec = buildAwarenessLiteCommand(['status', '--workspace', cwd]);
     execFile(
-      process.execPath,
-      [cliPath, 'status', '--workspace', cwd],
+      spec.cmd,
+      spec.args,
       { timeout: 4000, maxBuffer: 1_000_000 },
       (err, stdout) => resolve(err ? null : String(stdout)),
     );
@@ -168,8 +170,6 @@ export function resumeAwarenessPanel(): void {
 
 export function refreshAwarenessPanel(ctx?: PiContext): void {
   if (!ctx?.hasUI || panelSuppressed) return;
-  const cliPath = process.env.OCTOCODE_AWARENESS_CLI;
-  if (!cliPath) return;
   const cwd = ctx.cwd ?? process.cwd();
   const entry = cache.get(cwd) ?? { status: null, lastRunAt: 0, running: false };
   cache.set(cwd, entry);
@@ -181,7 +181,7 @@ export function refreshAwarenessPanel(ctx?: PiContext): void {
   if (entry.running || now - entry.lastRunAt < MIN_REFRESH_MS) return;
   entry.running = true;
   entry.lastRunAt = now;
-  void runner(cliPath, cwd)
+  void runner(cwd)
     .then((stdout) => {
       entry.running = false;
       if (stdout === null) {

@@ -107,9 +107,9 @@ Served via the `resources_discover` hook. Installed at `dist/skills/` inside the
 
 | Skill | Source |
 |---|---|
-| `octocode-awareness` | repo-root `skills/octocode-awareness` → synced into package `skills/` and `dist/skills/` at build time |
+| `octocode-awareness-lite` | `@octocodeai/octocode-awareness-lite` package skill → synced into `dist/skills/` at build time |
 
-Env var `OCTOCODE_SKILL_ROOT` is set to the skill root so the awareness skill can locate its own assets.
+Env var `OCTOCODE_SKILL_ROOT` is set to the skill root so bundled skills can locate their assets.
 
 ---
 
@@ -192,7 +192,7 @@ Registered via `createHookComposer(pi, …)` (middleware composer that catches a
 
 ### Awareness Lite
 
-The harness bundles `@octocodeai/octocode-awareness-lite` and exposes its CLI/skill assets. Lite provides explicit SQLite-backed `status`, `plan`, `task`, `lock`, `work`, `handoff`, `check`, and `memory` commands, but it does not wire the full Awareness lifecycle hooks into Pi session/tool events.
+The harness depends on `@octocodeai/octocode-awareness-lite`, bundles its skill assets, and invokes the installed package CLI directly with the current Node runtime. Manual users can run `npx @octocodeai/octocode-awareness-lite`. Lite provides explicit SQLite-backed `status`, `plan`, `task`, `lock`, `work`, `handoff`, `check`, and `memory` commands, but it does not wire the full Awareness lifecycle hooks into Pi session/tool events.
 
 ---
 
@@ -221,7 +221,7 @@ Set by the harness at load time.
 
 | Variable | Value |
 |---|---|
-| `OCTOCODE_AWARENESS_CLI` | Absolute path to `dist/awareness/cli.js` (bundled) |
+| `OCTOCODE_AWARENESS_CLI` | Informational compatibility string: installed `@octocodeai/octocode-awareness-lite` CLI path |
 | `OCTOCODE_SKILL_ROOT` | Absolute path to `dist/skills/octocode-awareness-lite/` |
 
 Read from env at runtime (not set by harness):
@@ -245,7 +245,7 @@ Resolved by `getAssetPaths()` in `src/assets.ts`.
 | Asset | Path |
 |---|---|
 | System prompt | `dist/system/SYSTEM_PROMPT.md` |
-| Awareness Lite CLI | `dist/awareness/cli.js` |
+| Awareness Lite runtime | Installed `@octocodeai/octocode-awareness-lite` dependency CLI invoked with the current Node runtime (not bundled under `dist/awareness`) |
 | Skills dir | `dist/skills/` |
 | APPEND_SYSTEM template | `dist/system/APPEND_SYSTEM.md` |
 

@@ -102,6 +102,8 @@ export interface FooterInput {
   lastTurnMs?: number;
   sessionMs: number;
   activeWorkers: number;
+  /** Total spawned worker records still tracked in the session ledger. */
+  workerTotal?: number;
   /** Workers waiting on the lead (normalized [BLOCKED]). */
   blockedWorkers?: number;
   /** Workers that failed / crashed. */
@@ -187,9 +189,11 @@ export function buildFooterSegments(input: FooterInput, density: FooterDensity =
     if (density === 'full') segs.push({ text: `session ${formatDurationShort(input.sessionMs)}` });
   }
 
-  if (input.activeWorkers > 0) {
+  const workerTotal = input.workerTotal ?? input.activeWorkers;
+  if (workerTotal > 0) {
+    const active = input.activeWorkers > 0 ? `/${input.activeWorkers} live` : '';
     const label = !compact && input.agentDoing ? ` ‣ ${ellipsize(input.agentDoing, INLINE_STATUS_MAX)}` : '';
-    segs.push({ text: `agents ${input.activeWorkers}${label}` });
+    segs.push({ text: `agents ${workerTotal}${active}${label}` });
   }
   if (!compact && input.awarenessAgents && input.awarenessAgents > 0) {
     segs.push({ text: `aware-agents ${input.awarenessAgents}`, token: 'brand' });

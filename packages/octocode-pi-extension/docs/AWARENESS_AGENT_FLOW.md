@@ -1,14 +1,14 @@
 # Awareness Lite Agent Flow in Pi
 
-Awareness Lite has one agent-facing interface in Pi: the bundled CLI at
-`$OCTOCODE_AWARENESS_CLI`, guided by the `octocode-awareness-lite` skill. Coordination
-is not duplicated as Pi tools.
+Awareness Lite has one agent-facing interface in Pi: the published CLI invoked as
+`npx @octocodeai/octocode-awareness-lite`, guided by the `octocode-awareness-lite` skill.
+Coordination is not duplicated as Pi tools.
 
 ## Why
 
 One CLI/schema keeps flags, help, other coding agents, and Pi on the same
 small SQLite contract. Lite coordination is explicit: the Pi bridge exposes the
-CLI and skill assets but does not automate full lifecycle hooks.
+Lite skill assets but does not automate full lifecycle hooks or bundle the CLI runtime.
 
 ## Identity
 
@@ -21,7 +21,7 @@ CLI and skill assets but does not automate full lifecycle hooks.
 ## Start
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" status --workspace "$PWD"
+npx @octocodeai/octocode-awareness-lite status --workspace "$PWD"
 ```
 
 Inspect plan/task/lock/work counts and pending verification checks. Recalled
@@ -32,15 +32,15 @@ memories are leads; verify them against current source/tests.
 Claim a matching task:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" task list --workspace "$PWD" --plan-id plan_123 --status OPEN
-node "$OCTOCODE_AWARENESS_CLI" task claim \
+npx @octocodeai/octocode-awareness-lite task list --workspace "$PWD" --plan-id plan_123 --status OPEN
+npx @octocodeai/octocode-awareness-lite task claim \
   --workspace "$PWD" --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID"
 ```
 
 Or open standalone Work:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" work start \
+npx @octocodeai/octocode-awareness-lite work start \
   --workspace "$PWD" --agent-id "$OCTOCODE_AGENT_ID" \
   --file src/a.ts --reason "fix parser"
 ```
@@ -53,16 +53,16 @@ for sensitive/non-mergeable changes.
 
 Awareness Lite does not wire full Pi lifecycle automation. Pi only runs the Lite
 pre-edit lock gate for write tools; agents still coordinate explicitly by running
-`task`, `work`, `lock`, `handoff`, and `verify` commands through the bundled CLI.
+`task`, `work`, `lock`, `handoff`, and `check` commands through `npx @octocodeai/octocode-awareness-lite`.
 
 ## Finish exactly owned work
 
 For a task:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" task done \
+npx @octocodeai/octocode-awareness-lite task done \
   --workspace "$PWD" --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID"
-node "$OCTOCODE_AWARENESS_CLI" verify mark \
+npx @octocodeai/octocode-awareness-lite check mark \
   --workspace "$PWD" --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID" \
   --message "parser tests passed"
 ```
@@ -70,9 +70,9 @@ node "$OCTOCODE_AWARENESS_CLI" verify mark \
 For standalone Work:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" work end \
+npx @octocodeai/octocode-awareness-lite work end \
   --workspace "$PWD" --file src/a.ts --agent-id "$OCTOCODE_AGENT_ID"
-node "$OCTOCODE_AWARENESS_CLI" verify audit --workspace "$PWD"
+npx @octocodeai/octocode-awareness-lite check audit --workspace "$PWD"
 ```
 
 Never use a batch success operation to clear another agent’s debt. Verification
@@ -83,14 +83,14 @@ records evidence; it does not execute the check.
 Use targeted retrieval only when durable context can change the plan:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" memory recall \
+npx @octocodeai/octocode-awareness-lite memory recall \
   --workspace "$PWD" --query "parser regression" --limit 5
 ```
 
 Record only reusable, verified facts:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" memory store \
+npx @octocodeai/octocode-awareness-lite memory store \
   --workspace "$PWD" --label GOTCHA \
   --text "parser regression: Malformed escapes must be rejected before tokenization"
 ```
@@ -101,8 +101,8 @@ in source/docs.
 ## Handoff
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" handoff list --workspace "$PWD"
-node "$OCTOCODE_AWARENESS_CLI" handoff add \
+npx @octocodeai/octocode-awareness-lite handoff list --workspace "$PWD"
+npx @octocodeai/octocode-awareness-lite handoff add \
   --workspace "$PWD" --agent-id "$OCTOCODE_AGENT_ID" \
   --summary "Parser task ready; run parser tests before finishing" --file src/parser.ts
 ```
@@ -112,6 +112,6 @@ task queue.
 
 ## Cleanup
 
-Use the same bundled CLI for read-only status and explicit cleanup. Lite has no
+Use the same `npx @octocodeai/octocode-awareness-lite` CLI for read-only status and explicit cleanup. Lite has no
 maintenance digest or repo projection flow; `memory forget`/`delete` require a
 specific `--memory-id`.

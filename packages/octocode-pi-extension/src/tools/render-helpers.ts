@@ -274,6 +274,8 @@ export interface ResultStats {
   summary?: string;
   /** Short file/repo paths to show inline */
   paths?: string[];
+  /** Small preview values that show what data came back without dumping the full payload. */
+  previews?: string[];
   /** Whether any result had an error */
   hasError?: boolean;
 }
@@ -283,6 +285,11 @@ export interface ResultStats {
  * The structured output from octocode tools is typically:
  *   `{ results: [{ id, data: { ... tool-specific ... } }] }`
  */
+function previewText(value: unknown, max = 72): string {
+  const clean = String(value ?? '').replace(/\s+/g, ' ').trim();
+  return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
+}
+
 export function buildResultStats(toolName: string, details: unknown): ResultStats {
   if (!details || typeof details !== 'object') return {};
   const d = details as Record<string, unknown>;
@@ -295,14 +302,19 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
     // data.items[] is the search result list; data.totalCount is the GH API total
     let total = 0;
     let repos: string[] = [];
+    const previews: string[] = [];
     for (const r of results) {
       const data = (r.data ?? {}) as Record<string, unknown>;
       if (typeof data.totalCount === 'number') total += data.totalCount;
       else if (Array.isArray(data.items)) total += data.items.length;
-      if (toolName === 'ghSearchRepos' && Array.isArray(data.items)) {
+      if (Array.isArray(data.items)) {
         for (const item of (data.items as Record<string, unknown>[]).slice(0, 3)) {
-          const name = str(item.fullName ?? item.name);
-          if (name) repos.push(name);
+          const repo = item.repository && typeof item.repository === 'object'
+            ? item.repository as Record<string, unknown>
+            : undefined;
+          const name = str(item.fullName ?? item.name ?? repo?.fullName ?? item.path);
+          if (toolName === 'ghSearchRepos' && name) repos.push(name);
+          if (name) previews.push(previewText(name));
         }
       }
     }
@@ -310,17 +322,21 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
       queryCount,
       summary: total > 0 ? `${total} results` : undefined,
       paths: repos.length > 0 ? repos : undefined,
+      previews: previews.length > 0 ? previews.slice(0, 3) : undefined,
     };
   }
 
   if (toolName === 'ghGetFileContent') {
     const paths: string[] = [];
+    const previews: string[] = [];
     for (const r of results) {
       const data = (r.data ?? {}) as Record<string, unknown>;
       const p = str(data.path ?? data.filePath);
       if (p) paths.push(basename(p));
+      const text = str(data.content ?? data.text ?? data.contentView);
+      if (text) previews.push(previewText(text));
     }
-    return { queryCount, paths: paths.slice(0, 4) };
+    return { queryCount, paths: paths.slice(0, 4), previews: previews.slice(0, 2) };
   }
 
   if (toolName === 'ghViewRepoStructure') {
@@ -361,17 +377,21 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
 
   if (toolName === 'localGetFileContent') {
     const paths: string[] = [];
+    const previews: string[] = [];
     let lines = 0;
     for (const r of results) {
       const data = (r.data ?? {}) as Record<string, unknown>;
       const p = str(data.path ?? data.resolvedPath);
       if (p) paths.push(basename(p));
       if (typeof data.totalLines === 'number') lines += data.totalLines;
+      const text = str(data.content ?? data.text ?? data.contentView);
+      if (text) previews.push(previewText(text));
     }
     return {
       queryCount,
       paths: paths.slice(0, 4),
       summary: lines > 0 ? `${lines} lines` : undefined,
+      previews: previews.slice(0, 2),
     };
   }
 
@@ -493,9 +513,11 @@ export function buildOctocodeRenderResult(
       : '';
   const pathSeg = stats.paths && stats.paths.length > 0 ? stats.paths.join(', ') : '';
 
+  const previewSeg = stats.previews && stats.previews.length > 0 ? stats.previews.join(' | ') : '';
   const painted: string[] = [];
   if (summarySeg) painted.push(paint(theme, 'dim', summarySeg));
   if (pathSeg) painted.push(paint(theme, 'path', pathSeg));
+  if (previewSeg) painted.push(paint(theme, 'dim', `“${previewSeg}”`));
   const statStr = painted.length > 0
     ? `${paint(theme, 'dim', ' · ')}${painted.join(paint(theme, 'dim', ' · '))}`
     : '';

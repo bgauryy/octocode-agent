@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { getAwarenessCLIPath } from './assets.js';
+import { buildAwarenessLiteCommand, getAwarenessCLIPath } from './assets.js';
 
 /** A command to spawn, or an actionable error explaining why it could not be built. */
 export type SurfaceSpec = { cmd: string; args: string[] } | { error: string };
@@ -9,18 +9,12 @@ export type SurfaceSpec = { cmd: string; args: string[] } | { error: string };
 export type SurfaceVerb = 'research' | 'memory' | 'awareness' | 'tools' | 'skills';
 
 /**
- * Resolve the bundled Awareness Lite CLI path.
- *
- * Precedence: OCTOCODE_AWARENESS_CLI env -> bundled/resolved pi-extension asset.
- * Returns null only when neither path exists; unlike getAwarenessCLIPath(), this
- * does not return a best-effort missing path because launch surfaces need a real
- * executable target before spawning node.
+ * Resolve the Awareness Lite command surface.
+ * Historical name retained for launcher imports; it now returns
+ * `npx @octocodeai/octocode-awareness-lite`, not a local JavaScript file path.
  */
-export function resolveAwarenessCli(env: NodeJS.ProcessEnv = process.env): string | null {
-  const fromEnv = env.OCTOCODE_AWARENESS_CLI;
-  if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
-  const bundled = getAwarenessCLIPath();
-  return fs.existsSync(bundled) ? bundled : null;
+export function resolveAwarenessCli(_env: NodeJS.ProcessEnv = process.env): string {
+  return getAwarenessCLIPath();
 }
 
 /**
@@ -30,20 +24,13 @@ export function resolveAwarenessCli(env: NodeJS.ProcessEnv = process.env): strin
 export function buildSurfaceSpec(
   verb: SurfaceVerb,
   rest: string[] = [],
-  env: NodeJS.ProcessEnv = process.env,
+  _env: NodeJS.ProcessEnv = process.env,
 ): SurfaceSpec {
   switch (verb) {
     case 'memory':
     case 'awareness': {
-      const cli = resolveAwarenessCli(env);
-      if (!cli) {
-        return {
-          error:
-            'Awareness CLI not found. Install/refresh the core: octocode-agent update core',
-        };
-      }
       const prefix = verb === 'memory' ? ['memory'] : [];
-      return { cmd: 'node', args: [cli, ...prefix, ...rest] };
+      return buildAwarenessLiteCommand([...prefix, ...rest]);
     }
     case 'research':
       return { cmd: 'npx', args: ['octocode', 'search', ...rest] };

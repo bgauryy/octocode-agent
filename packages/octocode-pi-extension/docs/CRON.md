@@ -30,7 +30,7 @@ current session only.
 
 | Job | Interval | Action |
 |---|---:|---|
-| `awareness-lite-status` | 30 min | `node $OCTOCODE_AWARENESS_CLI status --workspace <cwd>` |
+| `awareness-lite-status` | 30 min | installed `@octocodeai/octocode-awareness-lite` CLI: `status --workspace <cwd>` |
 
 ## Configuration
 
@@ -40,5 +40,5 @@ current session only.
 | `OCTOCODE_CRON_STATUS` | `1` | Set `0` to leave the status job unscheduled. |
 | `OCTOCODE_CRON_STATUS_INTERVAL_MS` | `1800000` | Override status interval in milliseconds. |
 
-The scheduler requires `$OCTOCODE_AWARENESS_CLI`. If it is absent, manual and
-scheduled runs are skipped with a visible message instead of failing the session.
+The scheduler invokes the installed scoped package CLI directly with the current Node runtime. Manual and scheduled
+runs report command failures visibly instead of failing the session.

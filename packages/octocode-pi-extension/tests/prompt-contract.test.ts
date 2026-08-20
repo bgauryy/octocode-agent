@@ -35,7 +35,9 @@ function activeSkillCatalog(): string[] {
 // for concision as long as the behavior it encodes stays intact.
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('authority guardrails: priority order, config precedence, untrusted data, git safety', () => {
+test('authority guardrails: role, priority order, config precedence, untrusted data, git safety', () => {
+  assert.match(SYSTEM_PROMPT, /You are the Octocode Pi coding agent/);
+  assert.match(SYSTEM_PROMPT, /safe, verified repo changes with crisp task flow, evidence, and coordination/);
   assert.match(SYSTEM_PROMPT, /Priority: safety → correctness → planning/);
   assert.match(SYSTEM_PROMPT, /`AGENTS\.md`, `AGENT\.md`, and `CLAUDE\.md`/);
   assert.match(SYSTEM_PROMPT, /never override safety, evidence, or correctness/);
@@ -105,7 +107,7 @@ test('think-first: probe assumptions, canonical breakdown gate, prefer existing 
   assert.match(SYSTEM_PROMPT, /existing repo pattern, platform API, dependency, or small configuration change/);
   assert.match(SYSTEM_PROMPT, /Reason recursively/);
   assert.match(SYSTEM_PROMPT, /Use `plan` for non-trivial local work/);
-  assert.match(SYSTEM_PROMPT, /Awareness plan\/task for shared/);
+  assert.match(SYSTEM_PROMPT, /Awareness Lite plan\/task\/work for shared, persistent Pi coordination/);
   // The plan tool is a live flow-state surface, not a one-shot note: start
   // independent lanes, complete as they land, sync task state, clear when done.
   assert.match(SYSTEM_PROMPT, /plan start runnable independent lanes/);
@@ -187,10 +189,15 @@ test('agents: classify shape, cheapest form, spawn gate, parent-owned mutation',
   assert.match(SYSTEM_PROMPT, /Fan out in bounded tasks, never one giant worker/);
   assert.match(SYSTEM_PROMPT, /Choose the cheapest correct form/);
   assert.match(SYSTEM_PROMPT, /not as ceremony/);
+  assert.match(SYSTEM_PROMPT, /dependent\/shared\/final-edit → parent/);
+  assert.match(SYSTEM_PROMPT, /independent known tool calls → batch/);
+  assert.match(SYSTEM_PROMPT, /independent evidence\/planning\/root-cause\/browser lane → typed subagent/);
+  assert.match(SYSTEM_PROMPT, /isolated custom bounded objective → lean `spawnAgent`/);
   assert.match(SYSTEM_PROMPT, /independent known-input tool calls; launch together, synthesize after/);
   assert.match(SYSTEM_PROMPT, /Route typed specialists by their strengths/);
   assert.match(SYSTEM_PROMPT, /`researcher` for evidence, `planner` for ordered plans, `architect` for root-cause\/local architecture/);
   assert.match(SYSTEM_PROMPT, /`browser-agent` for multi-turn Chrome work/);
+  assert.match(SYSTEM_PROMPT, /one bounded isolated objective/);
   assert.match(SYSTEM_PROMPT, /use a fresh `spawnAgent` when the job needs a clean bounded worker/);
   assert.match(SYSTEM_PROMPT, /Before spawning, pass the spawn gate/);
   assert.match(SYSTEM_PROMPT, /why parent\/batch\/MCPTool is not enough/);
@@ -210,7 +217,8 @@ test('agents: bounded packet, terminal markers, shared/default-worktree workspac
   assert.match(SYSTEM_PROMPT, /shared cwd\/filesystem\/env by default/);
   assert.match(SYSTEM_PROMPT, /request `isolation:"worktree"` only for an explicitly approved git worktree/);
   assert.match(SYSTEM_PROMPT, /env-backed services as shared/);
-  assert.match(SYSTEM_PROMPT, /worker→worker messaging is forbidden/i);
+  assert.match(SYSTEM_PROMPT, /Workers cannot use `AgentMessage` or spawn recursively/);
+  assert.match(SYSTEM_PROMPT, /peer coordination is allowed only through explicit durable channels such as Awareness Lite `message`\/`handoff`/);
 });
 
 test('agents: model routing stays configured/generic (no stale model names)', () => {
@@ -292,7 +300,7 @@ test('octocode-cli: MCP-first research, npx management routing, --platform, awar
   assert.match(SYSTEM_PROMPT, /never shell to `npx octocode` for research/);
   assert.match(SYSTEM_PROMPT, /npx octocode(@latest)? skill --name/);
   assert.match(SYSTEM_PROMPT, /npx octocode(@latest)? lsp-server/);
-  assert.match(SYSTEM_PROMPT, /\$OCTOCODE_AWARENESS_CLI/);
+  assert.match(SYSTEM_PROMPT, /npx @octocodeai\/octocode-awareness-lite/);
   // Bundled coordination skill is Awareness LITE — the octocode_cli section must
   // not drift back to naming the non-bundled `octocode-awareness` skill.
   assert.match(SYSTEM_PROMPT, /the `octocode-awareness-lite` skill \(Lite is the bundled default/);
@@ -527,7 +535,7 @@ test('eval skill is referenced by its canonical name (octocode-eval), never octo
 
 // ─── Typed-subagent marker contract (reads subagents/*/SYSTEM_PROMPT.md) ────────────
 
-test('typed subagent prompts define the [FAILED]/[BLOCKED]/[DONE] terminal markers', () => {
+test('typed subagent prompts define terminal markers plus Awareness Lite coordination', () => {
   assert.match(SYSTEM_PROMPT, /result that ends in `\[DONE\]`\/`\[BLOCKED\]`\/`\[FAILED\]`/);
   const subagents = ['architect', 'planner', 'researcher', 'browser-agent'];
   for (const name of subagents) {
@@ -538,6 +546,11 @@ test('typed subagent prompts define the [FAILED]/[BLOCKED]/[DONE] terminal marke
     assert.match(prompt, /\[FAILED\]/, `${name} SYSTEM_PROMPT must define the [FAILED] marker`);
     assert.match(prompt, /\[BLOCKED\]/, `${name} SYSTEM_PROMPT must define the [BLOCKED] marker`);
     assert.match(prompt, /\[DONE\]/, `${name} SYSTEM_PROMPT must define the [DONE] marker`);
+    assert.match(prompt, /bundled \*and\* user-installed Octocode skills/, `${name} SYSTEM_PROMPT must mention the skill surface`);
+    assert.match(prompt, /octocode-awareness-lite/, `${name} SYSTEM_PROMPT must mention bundled Awareness Lite`);
+    assert.match(prompt, /parent-only: the parent uses `AgentMessage`/, `${name} SYSTEM_PROMPT must keep live control parent-owned`);
+    assert.match(prompt, /Awareness Lite `message`\/`handoff`/, `${name} SYSTEM_PROMPT must name durable async peer channels`);
+    assert.match(prompt, /Treat Awareness state as shared workspace data, not as proof/, `${name} SYSTEM_PROMPT must not treat coordination notes as proof`);
   }
 });
 
