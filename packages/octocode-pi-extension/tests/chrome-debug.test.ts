@@ -34,7 +34,6 @@ import {
   redactEvidence,
   redactObject,
   readSessionMeta,
-  restrictedFetch,
   selectTarget,
   isLocalhost,
   buildScreenshotFilename,
@@ -47,6 +46,7 @@ import {
   type CdpSession,
   type CdpTargetInfo,
 } from '../src/chrome-debug.js';
+import { closeAllChromeConnections } from '../src/chrome-connection-cache.js';
 
 import {
   SCHEME_REGISTRY,
@@ -185,6 +185,14 @@ class MockCdpSession implements CdpSession {
     switch (method) {
       case 'DOM.getDocument':
         return { root: { nodeName: 'HTML', nodeId: 1 } };
+      case 'DOM.performSearch':
+        return { searchId: 'search-1', resultCount: 2 };
+      case 'DOM.getSearchResults':
+        return { nodeIds: [10, 11] };
+      case 'DOM.getOuterHTML':
+        return { outerHTML: params['nodeId'] === 10 ? '<a href="/issues">Issues</a>' : '<a href="/pulls">Pulls</a>' };
+      case 'DOM.discardSearchResults':
+        return {};
       case 'Runtime.evaluate':
         return runtimeResponseFor(String(params['expression'] ?? ''));
       case 'Performance.getMetrics':
@@ -680,14 +688,10 @@ describe('isLocalhost', () => {
   });
 });
 
-describe('restrictedFetch and CDP HTTP sandbox', () => {
-  test('restrictedFetch blocks non-localhost URLs before fetch runs', async () => {
-    assert.throws(
-      () => restrictedFetch('https://example.com/json/version'),
-      /only localhost allowed/,
-    );
-  });
-
+// restrictedFetch was removed as dead code (exported but never installed —
+// the implied global "[SANDBOX] fetch blocked" layer never existed); the real
+// guard is cdpHttp's own localhost check, covered below.
+describe('CDP HTTP sandbox', () => {
   test('getVersion, getTargets, and selectTarget read only localhost CDP endpoints', async () => {
     const target = makeTarget({ id: 'target-2', type: 'worker', url: 'https://app.example/worker.js' });
     const seen: string[] = [];
@@ -699,8 +703,6 @@ describe('restrictedFetch and CDP HTTP sandbox', () => {
         res.end(JSON.stringify({ Browser: 'Chrome/150.0.0.0', 'Protocol-Version': '1.3', 'User-Agent': 'Chrome' }));
       } else if (req.url === '/json') {
         res.end(JSON.stringify([makeTarget(), target]));
-      } else if (req.url === '/json/activate/target-2') {
-        res.end(JSON.stringify({ ok: true }));
       } else {
         res.statusCode = 404;
         res.end(JSON.stringify({ error: 'not found' }));
@@ -717,7 +719,11 @@ describe('restrictedFetch and CDP HTTP sandbox', () => {
       assert.equal(selected.targetInfo.id, 'target-2');
       assert.ok(seen.includes('GET /json/version'));
       assert.ok(seen.includes('GET /json'));
-      assert.ok(seen.includes('GET /json/activate/target-2'));
+      assert.equal(
+        seen.some(request => request.includes('/json/activate/')),
+        false,
+        'selectTarget must not focus or activate browser tabs just to attach via CDP',
+      );
     });
   });
 });
@@ -1195,7 +1201,8 @@ test('chromeDebug tool rejects unknown schemes and renders call/result states', 
     targetUrl: 'https://example.com/this/is/a/really/long/path/that/gets/truncated',
   }, themed).render(120)[0]!;
   assert.match(callLine, /<toolTitle><b>chromeDebug<\/b><\/toolTitle>/);
-  assert.match(callLine, /<accent>network<\/accent>/);
+  // scheme paints with the `link` token → `mdLink` per the palette (TOKEN.link === 'mdLink').
+  assert.match(callLine, /<mdLink>network<\/mdLink>/);
   assert.match(callLine, /:19333/);
 
   assert.equal(
@@ -1348,7 +1355,8 @@ test('chromeDebug tool execute path connects, runs a recipe, cleans up, redacts 
       ),
       /recipe exploded/,
     );
-    assert.equal(mockSession.closed, true, 'failed keepTab:true path closes only the websocket');
+    assert.equal(mockSession.closed, false, 'failed keepTab:true path keeps the CDP connection cached/open for reuse');
+    closeAllChromeConnections(); // clear the module-global cache so later tests are isolated
 
     assert.match(registeredTool.renderCall({ scheme: 'debug', port: 19333 }).render(120)[0]!, /chromeDebug debug/);
     assert.match(

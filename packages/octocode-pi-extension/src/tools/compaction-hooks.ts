@@ -1,5 +1,8 @@
 import type { PiContext, PiInstance, SessionBeforeCompactEvent, SessionCompactEvent } from '../types.js';
 import { clearCompactionWorkingState, scheduleCompactionContinuation, type Notifier } from './compaction-resume.js';
+import { clearCompactionInFlight, clearCompactionResumeRequest, consumeCompactionResumeRequest, markCompactionInFlight } from './compaction-state.js';
+import { emitCompactionCheckpoint, type CompactionCheckpointDetails } from './custom-messages.js';
+import { clearAllReadStates } from './file-state.js';
 
 const SPLIT_TURN_COMPACTION_HEADER = '**Turn Context (split turn):**';
 const CUSTOM_COMPACTION_SUMMARY_LIMIT = 12_000;
@@ -74,10 +77,17 @@ function extractFileOps(preparation: Record<string, unknown>): { readFiles: stri
     if (isRecord(value)) return Object.keys(value);
     return [];
   };
-  return {
-    readFiles: [...new Set(fromSetLike(fileOps.read).concat(fromSetLike(fileOps.readFiles)))].sort(),
-    modifiedFiles: [...new Set(fromSetLike(fileOps.edited).concat(fromSetLike(fileOps.modifiedFiles)))].sort(),
-  };
+  // Pi's FileOperations is {read, written, edited}: files created via the
+  // write tool count as modified, and modified files are excluded from the
+  // read list (mirrors Pi's own computeFileLists).
+  const modifiedFiles = [
+    ...new Set([...fromSetLike(fileOps.edited), ...fromSetLike(fileOps.written), ...fromSetLike(fileOps.modifiedFiles)]),
+  ].sort();
+  const modifiedSet = new Set(modifiedFiles);
+  const readFiles = [...new Set([...fromSetLike(fileOps.read), ...fromSetLike(fileOps.readFiles)])]
+    .filter((file) => !modifiedSet.has(file))
+    .sort();
+  return { readFiles, modifiedFiles };
 }
 
 function formatFileList(title: string, files: string[]): string {
@@ -119,7 +129,7 @@ function buildDeterministicCompaction(preparation: Record<string, unknown>, reas
       : undefined,
     formatFileList('Read files', readFiles),
     formatFileList('Modified files', modifiedFiles),
-    '## Resume instructions\nRe-orient from retained recent messages. Continue with the next small step only. If output would be long, write it to a file and reply with a concise summary and path.',
+    '## Resume instructions\nRe-orient from retained recent messages. If active work remains, continue with the next small step only; otherwise stop and wait for the user. If output would be long, write it to a file and reply with a concise summary and path.',
   ].filter(Boolean).join('\n\n');
 
   return {
@@ -130,43 +140,112 @@ function buildDeterministicCompaction(preparation: Record<string, unknown>, reas
   };
 }
 
+// ─── Compaction checkpoint card (one per compaction event) ───────────────────
+//
+// session_compact can be observed more than once for the same compaction
+// (multiple registrations across reloads, replayed events); the card must be
+// idempotent per compaction. Pi hands us the same compactionEntry object for
+// the same compaction, so object identity is the dedupe key; a string key of
+// the last emission covers hosts that pass a non-object entry.
+
+const emittedCheckpointEntries = new WeakSet<object>();
+let lastCheckpointFallbackKey: string | null = null;
+
+function shouldEmitCheckpointCard(event: SessionCompactEvent): boolean {
+  const entry = event.compactionEntry;
+  if (entry !== null && entry !== undefined && typeof entry === 'object') {
+    if (emittedCheckpointEntries.has(entry)) return false;
+    emittedCheckpointEntries.add(entry);
+    return true;
+  }
+  const key = `${event.reason}:${String(entry)}`;
+  if (lastCheckpointFallbackKey === key) return false;
+  lastCheckpointFallbackKey = key;
+  return true;
+}
+
+function buildCheckpointDetails(event: SessionCompactEvent): CompactionCheckpointDetails {
+  const entry = isRecord(event.compactionEntry) ? event.compactionEntry : {};
+  const tokensBefore = asNumber(entry.tokensBefore);
+  const summary = asString(entry.summary);
+  const details: CompactionCheckpointDetails = {
+    label: asString(entry.id) ?? `${event.reason} compaction`,
+    reason: event.reason,
+    fromExtension: event.fromExtension,
+  };
+  if (tokensBefore !== undefined) details.tokensBefore = tokensBefore;
+  if (summary) details.summary = summary;
+  return details;
+}
+
+export function resetCompactionCheckpointDedupeForTests(): void {
+  lastCheckpointFallbackKey = null;
+}
+
 export function registerCompactionHooks(pi: PiInstance, notify: Notifier): void {
   if (!pi.on) return;
 
   pi.on('session_before_compact', async (event: SessionBeforeCompactEvent, ctx: PiContext) => {
+    // Every compaction path (pi's internal auto, user /compact, extension
+    // ctx.compact) passes through this event — mark the shared arbiter FIRST,
+    // before any early return, so the other triggers stand down instead of
+    // racing into pi's "Already compacted" throw.
+    markCompactionInFlight();
     const preparation = isRecord(event.preparation) ? event.preparation : undefined;
     if (!preparation) return;
     const turnPrefixMessages = asArray(preparation.turnPrefixMessages);
     const isSplitTurn = preparation.isSplitTurn === true || turnPrefixMessages.length > 0;
     if (!isSplitTurn) return;
+    // The deterministic checkpoint is an EMERGENCY path only: on overflow the
+    // provider summarization call can itself overflow/fail, so a fast local
+    // checkpoint beats losing the compaction entirely. Manual and threshold
+    // split-turn compactions keep Pi's LLM summarizer — it produces a far
+    // richer summary, and replacing it unconditionally was a silent quality
+    // regression on the most common compaction shape.
+    if (event.reason !== 'overflow') return;
 
     const compaction = buildDeterministicCompaction(preparation, event.reason, event.customInstructions);
     if (!compaction) return;
 
     notify(
       ctx,
-      'Using Octocode deterministic split-turn compaction fallback to avoid provider turn-prefix summarization failures.',
+      'Using Octocode deterministic split-turn compaction checkpoint (overflow path — provider summarization could overflow too).',
       'warning',
     );
     return { compaction };
   });
 
   pi.on('session_compact', async (event: SessionCompactEvent, ctx: PiContext) => {
+    clearCompactionInFlight();
+    // The transcript the read-states were recorded against is gone; the edit
+    // tool's stale-read gate must demand a fresh read, not trust pre-compaction
+    // knowledge the model no longer has.
+    clearAllReadStates();
+    const shouldResume = consumeCompactionResumeRequest();
     if (event.willRetry) {
+      clearCompactionResumeRequest();
+      clearCompactionWorkingState(ctx);
+      return;
+    }
+    // Completed compaction → branded checkpoint card in the transcript. The
+    // dedupe guard makes this idempotent even if the hook observes the same
+    // compaction event twice. Content is one terse line (it enters the LLM
+    // context); rich data rides in details for the renderer only.
+    if (shouldEmitCheckpointCard(event)) {
+      emitCompactionCheckpoint(pi, buildCheckpointDetails(event));
+    }
+    // Auto-resume ONLY compactions Octocode requested via ctx.compact: that
+    // aborts the in-flight agent run, so a queued follow-up is needed to
+    // recover. Pi's event.fromExtension means "summary supplied by extension"
+    // (e.g. our overflow fallback), not "ctx.compact was called by extension";
+    // manual /compact and Pi's own pre-prompt compaction still stop by design.
+    if (!shouldResume) {
       clearCompactionWorkingState(ctx);
       return;
     }
     const continuation =
-      event.reason === 'manual'
-        ? 'Compaction is complete. Re-orient from the compacted context, then continue with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.'
-        : 'Auto-compaction complete. Re-orient from the compacted context, then continue with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.';
-    scheduleCompactionContinuation(
-      pi,
-      ctx,
-      notify,
-      continuation,
-      event.reason === 'manual' ? 'Compaction complete. Resuming…' : 'Auto-compaction complete. Resuming…',
-    );
+      'Compaction is complete. Re-orient from the compacted context. If an active task remains, continue with its next small step only; if the prior work was already complete, do not start new work — reply briefly and stop. If the answer would be long, write it to a file and reply with a concise summary and path.';
+    scheduleCompactionContinuation(pi, ctx, notify, continuation, 'Compaction complete. Resuming…');
   });
 }
 

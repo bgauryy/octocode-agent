@@ -29,7 +29,9 @@ The public database layer is split by responsibility:
 - `db-init.ts` serializes first initialization and creates the contract.
 - `db-schema.ts` contains the executable DDL.
 - `db-introspection.ts` derives the expected relation set and fingerprint.
-- `db-search.ts` owns FTS and search-adjacent helpers.
+- `db-maintenance.ts` owns FTS index rebuild, memory-reference bookkeeping, and
+  expired-lock eviction. It is not the query/filter layer — that's `repo-scope.ts`
+  (shared parameterized scoping helpers) and the `repo-*.ts` row builders.
 - `db.ts` is the public barrel.
 
 ## Startup contract

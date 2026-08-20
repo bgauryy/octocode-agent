@@ -19,10 +19,12 @@
 
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
+import { paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import {
   spawnRpcAgent,
   isSubagentProcess,
+  prepareSpawnAgentParams,
   type SpawnAgentParams,
 } from './agent-tools.js';
 import {
@@ -54,6 +56,8 @@ interface SpawnSubagentParams {
   // the model id against a builtin provider and fail with "No API key found".
   provider?: string;
   thinking?: string;
+  isolation?: SpawnAgentParams['isolation'];
+  includeUncommitted?: boolean;
   // browser-agent extras (injected into task context block)
   url?: string;
   port?: number;
@@ -164,6 +168,7 @@ export function registerSpawnSubagentTool(
       skillGuideline,
       'Use spawnAgent for clean arbitrary workers. spawnAgent defaults to lean/no-skills and only uses tools/skills you pass.',
       'Before spawning, break the request into explicit subtasks and delegate only one independent, bounded subtask per typed specialist.',
+      'Structure the task as a labeled packet — lines starting with "Goal:", "Context:", "Scope:", "Ownership:", "Acceptance:", "Return:" (any of "-"/"—"/":" as separator, headings/bullets OK). Missing labels surface as a [POLICY] warning on the spawn response, not silently.',
       'Use `pi -ne --list-models [search]` as the source of truth for the user-configured model table; do not read hardcoded config paths.',
       'Pass model for each typed subagent: fastest capable configured model for small tasks, balanced coding/reasoning model for medium tasks, strongest configured model for large/high-risk work.',
       'Use AgentMessage(wait) to collect the current turn; treat [DONE] as phase completion and check /octocode-agents or the below-editor ledger plus the delegated acceptance criteria before declaring the objective complete.',
@@ -201,6 +206,8 @@ export function registerSpawnSubagentTool(
       thinking: Type.Optional(
         Type.String({ description: 'Thinking level: off|minimal|low|medium|high|xhigh. Defaults to subagent default.' }),
       ),
+      isolation: Type.Optional(Type.Unsafe({ type: 'string', enum: ['shared', 'worktree'], description: 'Worker filesystem isolation. "shared" (default) uses the current cwd; "worktree" asks before creating an isolated git worktree.' })),
+      includeUncommitted: Type.Optional(Type.Boolean({ description: 'With isolation:"worktree", apply a tracked-change snapshot from the parent tree. Untracked files are not included.' })),
       // browser-agent specific params (ignored by other subagents)
       url: Type.Optional(
         Type.String({ description: '(browser-agent) Target URL. Injected into task context.' }),
@@ -245,12 +252,15 @@ export function registerSpawnSubagentTool(
         systemPrompt,
         thinking: params.thinking ?? config.thinking,
         model: params.model ?? config.model,
-        provider: params.provider ?? config.provider,
+        provider: params.provider ?? config.provider ?? ctx?.model?.provider,
         noSession: true,
+        isolation: params.isolation,
+        includeUncommitted: params.includeUncommitted,
       };
 
       // Spawn via the same internal function as spawnAgent → same agents Map → AgentMessage works
-      const record = spawnRpcAgent(spawnParams, ctx);
+      const approvedParams = await prepareSpawnAgentParams(spawnParams, ctx);
+      const record = spawnRpcAgent(approvedParams, ctx);
 
       const agentId = record.id;
       const usage = [
@@ -261,6 +271,16 @@ export function registerSpawnSubagentTool(
         `AgentMessage({action:"kill",   agentId:"${agentId}", remove:true})`,
       ].join('\n');
 
+      // Surface spawn-time policy warnings (packet gaps, fan-out, recursive-tool
+      // stripping, provider guidance) immediately — the caller should not have to
+      // spend a round-trip AgentMessage(wait) just to discover the delegation was
+      // under-specified. spawnAgent's own execute already does this via
+      // renderSingleAgentResult; spawnSubagent's custom [SPAWNED] output previously
+      // dropped policyWarnings entirely.
+      const policyLines = record.policyWarnings.length > 0
+        ? ['', '[POLICY]', ...record.policyWarnings.map((warning) => `  ${warning}`)]
+        : [];
+
       const output = [
         `[SPAWNED] ${config.label} · agentId: ${agentId}`,
         `[SPAWNED] name: ${record.name}`,
@@ -268,6 +288,7 @@ export function registerSpawnSubagentTool(
         `[SPAWNED] skills: ${skills.map((skillPath) => skillPath.split(/[\/]/).at(-1)).join(', ')}`,
         `[SPAWNED] resourceMode: ${config.resourceMode}`,
         `[SPAWNED] task: ${params.task.slice(0, 120)}${params.task.length > 120 ? '…' : ''}`,
+        ...policyLines,
         '',
         '[USAGE]',
         usage,
@@ -280,19 +301,26 @@ export function registerSpawnSubagentTool(
     },
 
     renderCall(rawParams: unknown) {
-      const p = rawParams as SpawnSubagentParams;
-      const config = SUBAGENT_REGISTRY[p.agent as SubagentName];
-      const label = config?.label ?? p.agent;
+      // Pi invokes renderCall with PARTIAL args during argument streaming; every
+      // field may still be absent.
+      const p = (rawParams ?? {}) as Partial<SpawnSubagentParams>;
+      const config = p.agent ? SUBAGENT_REGISTRY[p.agent as SubagentName] : undefined;
+      const label = config?.label ?? p.agent ?? '…';
       const url = p.url ? ` → ${p.url}` : '';
-      const raw = `spawnSubagent(${label}${url}) "${p.task.slice(0, 45)}${p.task.length > 45 ? '…' : ''}"`;
+      const task = typeof p.task === 'string' ? p.task : '';
+      const raw = `spawnSubagent(${label}${url}) "${task.slice(0, 45)}${task.length > 45 ? '…' : ''}"`;
       return makeRenderer((w) => [truncateToWidth(raw, w)]);
     },
 
     renderResult(result: unknown, _opts: unknown, theme?: PiTheme) {
       const r = result as { content?: Array<{ text?: string }> };
       const text = r?.content?.[0]?.text ?? '';
-      const agentLine = text.split('\n').find((l) => l.startsWith('[SPAWNED]')) ?? '';
-      const raw = (theme?.fg('success', agentLine) ?? agentLine) || 'spawnSubagent: spawned';
+      const lines = text.split('\n');
+      const agentLine = lines.find((l) => l.startsWith('[SPAWNED]')) ?? '';
+      const hasUsage = lines.some((l) => l.startsWith('AgentMessage({action:"wait"'));
+      const raw = agentLine
+        ? `${paint(theme, 'success', agentLine)}${hasUsage ? paint(theme, 'dim', ' · use AgentMessage wait/status; see /octocode-agents') : ''}`
+        : 'spawnSubagent: spawned';
       return makeRenderer((w) => [truncateToWidth(raw, w)]);
     },
   });

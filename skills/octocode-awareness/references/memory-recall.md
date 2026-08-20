@@ -1,11 +1,10 @@
 # Memory Recall
 
-Read this before planning, editing, recording, superseding, or trusting a remembered fact. Output selection: `references/output-routing.md`.
+Read before planning, editing, recording, superseding, or trusting a remembered fact. Output selection: `references/output-routing.md`.
 
 ## Recall
 
-`memory recall` reads canonical SQLite rows, not `.octocode/MEMORY.md`. Run it when prior lessons may change the plan.
-A successful explicit recall updates bounded popularity metadata; startup `attend` opts out of that feedback.
+`memory recall` reads canonical SQLite rows, not `.octocode/MEMORY.md`. Run when prior lessons may change the plan. Explicit recall updates bounded popularity metadata; startup `attend` opts out.
 
 ```bash
 octocode-awareness memory recall --query "<task>" --workspace "$PWD" --smart --compact
@@ -35,22 +34,15 @@ Use `schema command memory recall` when payload fields matter. CLI flags and sch
 {"embedding":[0.1,0.2],"model":"host-model"}
 ```
 
-With the command set, `memory record` stores vectors and semantic recall ranks by cosine similarity. When unset/failing, CLI warns and falls back to lexical/salience mode. Pi needs the same host env/API; library callers may use `storeEmbedding` and `searchByEmbedding`.
-
-Inspect mode and `score_components` before trusting order. Increase `--limit` only when comparison needs more candidates; compact context is the default. Treat semantic similarity as retrieval help, not truth.
+With the command set, `memory record` stores vectors and semantic recall ranks by cosine similarity. When unset/failing, CLI warns and falls back to lexical/salience mode. Pi needs the same host env/API; library callers may use `storeEmbedding` and `searchByEmbedding`. Inspect mode and `score_components` before trusting order. Increase `--limit` only when comparison needs more candidates; compact context is the default. Treat semantic similarity as retrieval help, not truth.
 
 ## Automatic Prompt-Time Lead
 
-`format=hook` searches the bounded normal 50-candidate pool, then requires two meaningful
-query-token matches. It emits at most one scoped `Memory lead — verify` or stays silent;
-signals and `OVERRIDE` items remain independent. The prompt is transient: no access-count
-update, memory row, or prompt text in delivery state; Pi clears empty, consumed, and shutdown state.
+`format=hook` searches the bounded normal 50-candidate pool, then requires two meaningful query-token matches. It emits at most one scoped `Memory lead — verify` or stays silent; signals and `OVERRIDE` items remain independent. The prompt is transient: no access-count update, memory row, or prompt text in delivery state; Pi clears empty, consumed, and shutdown state.
 
 ## Trust And Recording
 
-A hit is a lead. Current user instructions, source, tests, and fresh command output win. Validate file-backed claims and inspect `missing_references`/`query files` before acting.
-
-Record only a scoped, reusable, evidence-backed lesson, decision, gotcha, or source lead. Routine status belongs in tasks/signals/refinements, not memory.
+A hit is a lead. Current user instructions, source, tests, and fresh command output win. Validate file-backed claims and inspect `missing_references`/`query files` before acting. Record only a scoped, reusable, evidence-backed lesson, decision, gotcha, or source lead. Routine status belongs in tasks/signals/refinements, not memory.
 
 If new evidence corrects an active row, use `memory record --supersedes <id>`; replacement history stays immutable.
 For reversible cleanup, preview/apply `memory archive`; `memory restore` revives only archived rows, never rows carrying `superseded_by`.

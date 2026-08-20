@@ -5,6 +5,7 @@
  */
 import path from 'node:path';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
+import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import { atomicWriteUtf8, recordFileReadState, withFileMutationQueue } from './file-state.js';
@@ -56,7 +57,10 @@ export function registerWriteTool(
       if (!args || typeof args !== 'object') return args;
       const input = args as Record<string, unknown>;
       if (typeof input['path'] !== 'string' && typeof input['file_path'] === 'string') {
-        return { ...input, path: input['file_path'] };
+        // Drop the legacy key: schema validation runs AFTER prepareArguments and
+        // additionalProperties:false rejects any retained extra key.
+        const { file_path: legacyPath, ...rest } = input;
+        return { ...rest, path: legacyPath };
       }
       return args;
     },
@@ -84,13 +88,13 @@ export function registerWriteTool(
         content: [
           {
             type: 'text',
-            text: `Successfully wrote ${content.length} bytes to ${requestPath}`,
+            text: `Successfully wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${requestPath}`,
           },
         ],
         details: {
           path: requestPath,
           absolutePath,
-          bytes: content.length,
+          bytes: Buffer.byteLength(content, 'utf8'),
         },
       };
     },
@@ -104,22 +108,20 @@ export function registerWriteTool(
             : '(missing path)';
       const content = typeof input['content'] === 'string' ? input['content'] : '';
       const lines = content.length === 0 ? 0 : content.split('\n').length;
-      const title = theme?.fg('toolTitle', theme.bold('write')) ?? 'write';
-      const suffix =
-        theme?.fg('dim', `${filePath} · ${lines} line${lines === 1 ? '' : 's'}`) ??
-        `${filePath} · ${lines} line${lines === 1 ? '' : 's'}`;
+      const title = cliToolTitle(theme, 'write');
+      const suffix = paint(theme, 'dim', `${filePath} · ${lines} line${lines === 1 ? '' : 's'}`);
       return makeRenderer((width) => [truncateToWidth(`${title} ${suffix}`, width)]);
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        const prog = theme?.fg('warning', '… writing') ?? '… writing';
+        const prog = paint(theme, 'warning', '… writing');
         return makeRenderer(() => [prog]);
       }
       if (!result.isError) {
         return makeRenderer(() => ['']);
       }
       const text = result.content.find((c) => c.type === 'text')?.text ?? 'write failed';
-      const err = theme?.fg('error', text) ?? text;
+      const err = paint(theme, 'error', text);
       return makeRenderer((width) => [truncateToWidth(err, width)]);
     },
   });

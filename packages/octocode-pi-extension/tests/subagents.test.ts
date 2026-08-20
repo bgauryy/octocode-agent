@@ -128,6 +128,16 @@ describe('resolveSubagentSkills', () => {
     expect(skills.some(s => s.includes('octocode-research'))).toBe(true);
   });
 
+  it('includes octocode-awareness-lite when it is present in an external skill root', () => {
+    const skillDir = path.join(tmpDir, '.agents', 'skills', 'octocode-awareness-lite');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# octocode-awareness-lite\n');
+
+    process.chdir(tmpDir);
+    const skills = resolveSubagentSkills(SUBAGENT_REGISTRY['architect']);
+    expect(skills.some(s => path.basename(s) === 'octocode-awareness-lite')).toBe(true);
+  });
+
   it('does not include skills from a dir that no longer exists at call time', () => {
     // Skill exists but only in tmpDir which we never chdir into for this call
     // Using a cwd that has no .agents/skills dir

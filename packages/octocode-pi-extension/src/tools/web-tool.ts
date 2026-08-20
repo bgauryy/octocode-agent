@@ -5,6 +5,7 @@
  */
 import { runWebTool, renderWebResult } from '../web.js';
 import { propagateOctocodeEnv, getOctocodeHome } from '../env.js';
+import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
 import type { ToolDefinition, PiTheme, ToolCallResult } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
@@ -145,11 +146,13 @@ export function registerWebTool(
       const a = (args ?? {}) as Record<string, unknown>;
       const url = typeof a.url === 'string' && a.url ? a.url : '';
       const query = typeof a.query === 'string' && a.query ? a.query : '';
-      const nameStr = theme?.fg('toolTitle', theme.bold('web')) ?? 'web';
+      const nameStr = cliToolTitle(theme, 'web', { bold: true });
+      const displayUrl = url.length > 70 ? `${url.slice(0, 67)}…` : url;
+      const displayQuery = query.length > 70 ? `${query.slice(0, 67)}…` : query;
       const detail = url
-        ? (theme?.fg('accent', url.length > 70 ? url.slice(0, 67) + '…' : url) ?? url)
+        ? paint(theme, 'link', displayUrl)
         : query
-        ? (theme?.fg('dim', `"${query.length > 70 ? query.slice(0, 67) + '…' : query}"`) ?? `"${query}"`)
+        ? paint(theme, 'dim', `"${displayQuery}"`)
         : '';
       const rawLine = detail ? `${nameStr} ${detail}` : nameStr;
       return makeRenderer((w) => [truncateToWidth(rawLine, w)]);
@@ -157,24 +160,24 @@ export function registerWebTool(
 
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        const msg = theme?.fg('warning', 'Fetching…') ?? 'Fetching…';
+        const msg = paint(theme, 'warning', CLI_STATUS_TEXT.fetching);
         return makeRenderer((w) => [truncateToWidth(msg, w)]);
       }
       const ok = !result.isError;
-      const icon = theme?.fg(ok ? 'success' : 'error', ok ? '✓' : '✗') ?? (ok ? '✓' : '✗');
-      const nameStr = theme?.fg('toolTitle', 'web') ?? 'web';
+      const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
+      const nameStr = cliToolTitle(theme, 'web');
       // Extract meaningful stats from details
       const det = result.details as Record<string, unknown> | null;
       let stat = '';
       if (Array.isArray((det as Record<string, unknown> | null)?.results)) {
         const n = ((det as Record<string, unknown>).results as unknown[]).length;
-        stat = theme?.fg('dim', ` · ${n} result${n === 1 ? '' : 's'}`) ?? ` · ${n} results`;
+        stat = paint(theme, 'dim', ` · ${n} result${n === 1 ? '' : 's'}`);
       } else if (det?.url) {
         const truncated = det.truncated === true;
         const pg = typeof det.page === 'number' && det.page > 1 ? ` p${det.page}` : '';
         stat = truncated
-          ? (theme?.fg('dim', ` · page${pg} (more pages available)`) ?? ` · page${pg} (more)`)
-          : (theme?.fg('dim', ` · page${pg}`) ?? ` · page${pg}`);
+          ? paint(theme, 'dim', ` · page${pg} (more pages available)`)
+          : paint(theme, 'dim', ` · page${pg}`);
       }
       const header = `${icon} ${nameStr}${stat}`;
       if (!opts.expanded) {
@@ -187,9 +190,9 @@ export function registerWebTool(
       const omitted = allLines.length - lines.length;
       return makeRenderer((w) => [
         truncateToWidth(header, w),
-        ...lines.map((l) => truncateToWidth(theme?.fg('dim', l) ?? l, w)),
+        ...lines.map((l) => truncateToWidth(paint(theme, 'dim', l), w)),
         ...(omitted > 0
-          ? [truncateToWidth(theme?.fg('muted', `… ${omitted} more lines`) ?? `… ${omitted} more lines`, w)]
+          ? [truncateToWidth(paint(theme, 'muted', `… ${omitted} more lines`), w)]
           : []),
       ]);
     },

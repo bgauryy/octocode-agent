@@ -16,11 +16,7 @@ function freshDb(): DatabaseSync {
     initDb(db);
     return db;
 }
-function tempFile(): {
-    dir: string;
-    path: string;
-    cleanup: () => void;
-} {
+function tempFile(): { dir: string; path: string; cleanup: () => void } {
     const dir = mkdtempSync(join(tmpdir(), 'oc-stubs-test-'));
     const path = join(dir, 'f.txt');
     writeFileSync(path, 'seed');
@@ -45,8 +41,7 @@ describe('pruneStale', () => {
       if (!result.ok) throw new Error('claim failed');
       // Age the lock to the past
       const past = new Date(Date.now() - 5000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?')
-        .run(past, result.run.run_id);
+      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(past, result.run.run_id);
 
       const pruned = pruneStale(db, {});
       expect(pruned.pruned_locks).toBeGreaterThanOrEqual(1);
@@ -62,12 +57,10 @@ describe('pruneStale', () => {
       });
       if (!claim.ok) throw new Error('claim failed');
       const past = new Date(Date.now() - 5000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?')
-        .run(past, claim.run.run_id);
+      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(past, claim.run.run_id);
 
       pruneStale(db, {});
-      const intent = db.prepare('SELECT status FROM task_runs WHERE run_id = ?')
-        .get(claim.run.run_id) as { status: string };
+      const intent = db.prepare('SELECT status FROM task_runs WHERE run_id = ?').get(claim.run.run_id) as { status: string };
       expect(intent.status).toBe('ACTIVE');
     } finally { cleanup(); }
   });
@@ -129,6 +122,66 @@ describe('notifyGet', () => {
     expect(second).toEqual({ ok: true, count: 0, notifications: [] });
     expect((db.prepare('SELECT COUNT(*) AS c FROM signal_reads').get() as { c: number }).c).toBe(0);
   });
+
+  it('clusters repeated handoff signals in hook brief output', () => {
+    const db = freshDb();
+    const senders = ['pi:session-a', 'pi:session-b', 'pi:session-b'];
+    const files = ['README.md', '/repo/packages/octocode-awareness/bin/cli-work.ts', 'README.md'];
+    for (let i = 0; i < senders.length; i++) {
+      insertNotification(db, {
+        agentId: senders[i]!,
+        kind: 'handoff',
+        subject: `Review session handoff for ${senders[i]}`,
+        body: `Review session handoff for ${senders[i]} with different run/file summary ${i}`,
+        files: [files[i]!],
+        workspacePath: '/repo',
+        importance: 8,
+      });
+    }
+
+    const result = notifyGet(db, { format: 'hook', agent_id: 'agent-b', workspace: '/repo' });
+    expect(result.ok).toBe(true);
+    expect(result.notifications).toHaveLength(1);
+    expect(result.notifications[0]?.text).toContain('handoff ×3');
+    expect(result.notifications[0]?.text).toContain('files 2: README.md (+1)');
+    expect(result.notifications[0]?.text).toContain('Review session handoff');
+    expect(result.notifications[0]?.text).toContain('from multiple agents');
+    expect(result.notifications[0]?.text).toContain('broadcast');
+    expect(result.notifications[0]?.text).not.toContain('/repo/packages');
+    expect(result.notifications[0]?.text).not.toContain('pi:session-a');
+    expect('additionalContext' in result && result.additionalContext).toContain('🧠 Brief — showing 1/1');
+    expect('additionalContext' in result && result.additionalContext).toContain('handoff ×3');
+  });
+
+  it('dedupes colon-suffixed session handoff subjects before selecting hook brief rows', () => {
+    const db = freshDb();
+    insertNotification(db, {
+      agentId: 'pi:session-a',
+      kind: 'handoff',
+      subject: 'Review session handoff for pi:session-a',
+      body: 'Review session handoff: 0 active and 0 pending runs remain.',
+      files: ['.gitignore'],
+      workspacePath: '/repo',
+      importance: 8,
+    });
+    insertNotification(db, {
+      agentId: 'pi:session-a',
+      kind: 'handoff',
+      subject: 'Review session handoff: 0 active and 0 pending runs remain.',
+      body: 'Session capture for pi:session-a: 0 active and 0 pending runs remain.',
+      files: ['.gitignore'],
+      workspacePath: '/repo',
+      importance: 8,
+    });
+
+    const result = notifyGet(db, { format: 'hook', agent_id: 'agent-b', workspace: '/repo' });
+    expect(result.ok).toBe(true);
+    expect(result.notifications).toHaveLength(1);
+    expect(result.notifications[0]?.text).toContain('handoff ×2');
+    expect(result.notifications[0]?.text).toContain('files 1: .gitignore');
+    expect(result.notifications[0]?.text).toContain('Review session handoff');
+    expect(result.notifications[0]?.text).not.toContain('Review session handoff: 0 active');
+  });
 });
 
 describe('digest dry_run', () => {
@@ -156,21 +209,23 @@ describe('digest dry_run', () => {
     const db = freshDb();
     const result = digest(db, { dry_run: true });
     expect(Object.keys(result).sort()).toEqual([
-      'archived_memories', 'candidate_ids', 'candidate_limit', 'dry_run', 'fts_rebuilt', 'ok', 'pressure_age_days',
+      'archived_memories', 'candidate_ids', 'candidate_limit', 'dry_run', 'failed_stale_active_runs', 'fts_rebuilt', 'ok', 'pressure_age_days',
       'pressure_samples', 'pruned_locks', 'pruned_old', 'pruned_refinements', 'pruned_runs', 'resolved_handoff_signals',
-      'stale_missing_refs', 'stale_open_signals', 'stale_pending_runs',
-      'would_archive', 'would_prune_locks', 'would_prune_old', 'would_prune_refinements', 'would_prune_runs',
+      'stale_active_runs', 'stale_handoff_signals', 'stale_missing_refs', 'stale_open_signals', 'stale_pending_runs',
+      'would_archive', 'would_fail_stale_active_runs', 'would_prune_locks', 'would_prune_old', 'would_prune_refinements', 'would_prune_runs',
       'would_resolve_handoff_signals',
     ]);
     expect(result).toMatchObject({
       pressure_age_days: 1,
       stale_pending_runs: 0,
+      stale_active_runs: 0,
       stale_open_signals: 0,
+      stale_handoff_signals: 0,
       stale_missing_refs: 0,
-      pressure_samples: { run_ids: [], signal_ids: [], memory_ids: [] },
+      pressure_samples: { run_ids: [], active_run_ids: [], signal_ids: [], handoff_signal_ids: [], memory_ids: [] },
       candidate_limit: 20,
       candidate_ids: {
-        expire_memory_ids: [], purge_memory_ids: [], locks: [], refinement_ids: [], run_ids: [],
+        expire_memory_ids: [], purge_memory_ids: [], locks: [], refinement_ids: [], run_ids: [], stale_active_run_ids: [],
       },
     });
   });
@@ -337,7 +392,6 @@ describe('exportMemoryDoc', () => {
     const doc = exportMemoryDoc(db, {});
     expect(doc).toContain('**References:** file:/tmp/provenance.ts, pr:owner/repo#456');
   });
-
   it('returns empty report when no memories exist', () => {
     const db = freshDb();
     const doc = exportMemoryDoc(db, {});

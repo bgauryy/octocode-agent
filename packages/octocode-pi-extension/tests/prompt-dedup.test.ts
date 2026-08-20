@@ -66,3 +66,19 @@ test('returns false when marker appears mid-prompt', () => {
     `Intro text.\n\n${SYSTEM_PROMPT_MARKER}\nSome content.\n${SYSTEM_PROMPT_MARKER}\n\nTrailing.`;
   assert.equal(shouldAppendSystemPrompt(systemWithMarker, OCTOCODE_PROMPT_WITH_PROOF), false);
 });
+
+// ─── stripProjectContext: the real --no-context mechanism ─────────────────────
+
+import { stripProjectContext } from '../src/prompt.js';
+
+test('stripProjectContext removes Pi project_context block, preserves the rest', () => {
+  const pi = `Base prompt.\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n<project_instructions path="AGENTS.md">\nrepo rules\n</project_instructions>\n\n</project_context>\n\nCurrent date: 2026-08-17`;
+  const out = stripProjectContext(pi);
+  assert.doesNotMatch(out, /project_context|repo rules|AGENTS\.md/);
+  assert.match(out, /Base prompt\./);
+  assert.match(out, /Current date: 2026-08-17/);
+});
+
+test('stripProjectContext is a no-op without the block', () => {
+  assert.equal(stripProjectContext('plain prompt'), 'plain prompt');
+});

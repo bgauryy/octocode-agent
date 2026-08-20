@@ -10,6 +10,15 @@
 
 import { truncateToWidth as piTruncateToWidth, visibleWidth as piVisibleWidth } from '@earendil-works/pi-tui';
 
+import {
+  CLI_GLYPH,
+  CLI_STATUS_TEXT,
+  cliSpinnerFrame,
+  cliStatusGlyph,
+  cliStatusToken,
+  cliToolTitle,
+  paint,
+} from '../tui/cli-design.js';
 import type { PiTheme, RenderCallReturn, ToolCallResult } from '../types.js';
 
 // ─── ANSI-safe width helpers ──────────────────────────────────────────────────
@@ -188,7 +197,7 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
   // ── Local tools ───────────────────────────────────────────────────────────
   if (toolName.startsWith('local') || toolName === 'lspGetSemantics') {
     if (toolName === 'localSearchCode') {
-      const kw = str(q.keywords);
+      const kw = str(q.searchText ?? q.keywords);
       const p = str(q.path);
       const mode = str(q.mode);
       const modeTag = mode && mode !== 'paginated' ? `[${mode}] ` : '';
@@ -443,11 +452,12 @@ export function buildOctocodeRenderCall(
   theme?: PiTheme,
 ): RenderCallReturn {
   const summary = buildToolCallSummary(toolName, args);
-  const nameStr = theme?.fg('toolTitle', theme.bold(toolName)) ?? toolName;
+  const icon = paint(theme, 'brand', CLI_GLYPH.tool);
+  const nameStr = cliToolTitle(theme, toolName, { bold: true });
   const summaryStr = summary
-    ? (theme?.fg('dim', summary) ?? summary)
+    ? `${paint(theme, 'dim', ' · ')}${paint(theme, 'dim', summary)}`
     : '';
-  const rawLine = summaryStr ? `${nameStr} ${summaryStr}` : nameStr;
+  const rawLine = `${icon} ${nameStr}${summaryStr}`;
   return singleLineRenderer(rawLine);
 }
 
@@ -459,26 +469,35 @@ export function buildOctocodeRenderResult(
   theme?: PiTheme,
 ): RenderCallReturn {
   if (opts.isPartial) {
-    const running = theme?.fg('warning', `${toolName} running…`) ?? `${toolName} running…`;
+    const spinner = paint(theme, 'warning', cliSpinnerFrame());
+    const nameStr = cliToolTitle(theme, toolName);
+    const running = `${spinner} ${nameStr} ${paint(theme, 'dim', CLI_STATUS_TEXT.running)}`;
     return singleLineRenderer(running);
   }
 
   const ok = !result.isError;
   const stats = buildResultStats(toolName, result.details);
 
-  // Build header: ✓/✗ toolName · stat-summary
-  const icon = theme?.fg(ok ? 'success' : 'error', ok ? '✓' : '✗') ?? (ok ? '✓' : '✗');
-  const nameStr = theme?.fg('toolTitle', toolName) ?? toolName;
+  // Build header: status glyph + toolName · stat-summary
+  const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
+  const nameStr = cliToolTitle(theme, toolName);
 
-  const statParts: string[] = [];
-  if (stats.summary) statParts.push(stats.summary);
-  else if (stats.queryCount !== undefined && stats.queryCount > 1)
-    statParts.push(`${stats.queryCount} queries`);
-  if (stats.paths && stats.paths.length > 0)
-    statParts.push(stats.paths.join(', '));
+  // Summary (counts) stays muted; paths get the dedicated `path` colour so a
+  // glance separates "what happened" from "which files". Painted as separate SGR
+  // spans — safe under pi-tui width measurement (OSC 8 hyperlinks are not, so
+  // clickable links are intentionally omitted from TUI rows).
+  const summarySeg = stats.summary
+    ? stats.summary
+    : stats.queryCount !== undefined && stats.queryCount > 1
+      ? `${stats.queryCount} queries`
+      : '';
+  const pathSeg = stats.paths && stats.paths.length > 0 ? stats.paths.join(', ') : '';
 
-  const statStr = statParts.length > 0
-    ? (theme?.fg('dim', ` · ${statParts.join(' · ')}`) ?? ` · ${statParts.join(' · ')}`)
+  const painted: string[] = [];
+  if (summarySeg) painted.push(paint(theme, 'dim', summarySeg));
+  if (pathSeg) painted.push(paint(theme, 'path', pathSeg));
+  const statStr = painted.length > 0
+    ? `${paint(theme, 'dim', ' · ')}${painted.join(paint(theme, 'dim', ' · '))}`
     : '';
 
   const header = `${icon} ${nameStr}${statStr}`;
@@ -498,13 +517,12 @@ export function buildOctocodeRenderResult(
   return makeRenderer((width) => {
     const out: string[] = [truncateToWidth(header, width)];
     for (const line of shownLines) {
-      out.push(truncateToWidth(theme?.fg('dim', line) ?? line, width));
+      out.push(truncateToWidth(paint(theme, 'dim', line), width));
     }
     if (omitted > 0) {
       out.push(
         truncateToWidth(
-          theme?.fg('muted', `… ${omitted} more line${omitted === 1 ? '' : 's'} hidden (full output available to agent)`) ??
-            `… ${omitted} more lines hidden`,
+          paint(theme, 'muted', `… ${omitted} more line${omitted === 1 ? '' : 's'} hidden (full output available to agent)`),
           width,
         ),
       );

@@ -76,9 +76,11 @@ case 'digest': {
       const digestParams: Record<string, unknown> = {
         retention_days: (request['retention_days'] as number | undefined) ?? 90,
         refinement_handoff_retention_days: (request['refinement_handoff_retention_days'] as number | undefined) ?? 7,
+        handoff_signal_retention_days: (request['handoff_signal_retention_days'] as number | undefined) ?? 1,
         refinement_done_retention_days: (request['refinement_done_retention_days'] as number | undefined) ?? 30,
         operational_retention_days: (request['operational_retention_days'] as number | undefined) ?? 90,
         pressure_age_days: (request['pressure_age_days'] as number | undefined) ?? 1,
+        fail_stale_active_runs: (request['fail_stale_active_runs'] as boolean | undefined) ?? true,
       };
       if (request['workspace'] || request['workspace_path']) {
         digestParams['workspace'] = request['workspace'] ?? request['workspace_path'];
@@ -94,10 +96,14 @@ case 'digest': {
             would_prune_old: result.would_prune_old,
             would_prune_locks: result.would_prune_locks,
             would_prune_refinements: result.would_prune_refinements,
+            would_resolve_handoff_signals: result.would_resolve_handoff_signals,
+            would_fail_stale_active_runs: result.would_fail_stale_active_runs,
             would_prune_runs: result.would_prune_runs,
             pressure_age_days: result.pressure_age_days,
             stale_pending_runs: result.stale_pending_runs,
+            stale_active_runs: result.stale_active_runs,
             stale_open_signals: result.stale_open_signals,
+            stale_handoff_signals: result.stale_handoff_signals,
             stale_missing_refs: result.stale_missing_refs,
             pressure_samples: result.pressure_samples,
           }
@@ -106,11 +112,15 @@ case 'digest': {
             pruned_old: result.pruned_old,
             pruned_locks: result.pruned_locks,
             pruned_refinements: result.pruned_refinements,
+            resolved_handoff_signals: result.resolved_handoff_signals,
+            failed_stale_active_runs: result.failed_stale_active_runs,
             pruned_runs: result.pruned_runs,
             fts_rebuilt: result.fts_rebuilt,
             pressure_age_days: result.pressure_age_days,
             stale_pending_runs: result.stale_pending_runs,
+            stale_active_runs: result.stale_active_runs,
             stale_open_signals: result.stale_open_signals,
+            stale_handoff_signals: result.stale_handoff_signals,
             stale_missing_refs: result.stale_missing_refs,
             pressure_samples: result.pressure_samples,
           };

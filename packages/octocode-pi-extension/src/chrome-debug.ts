@@ -34,8 +34,8 @@ export interface CdpSendOptions {
 
 export interface CdpSession {
   targetInfo: CdpTargetInfo;
-  /** Send a CDP method and receive the result. */
-  send(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<Record<string, unknown>>;
+  /** Send a CDP method and receive the result. `timeoutMs` overrides the per-call default. */
+  send(method: string, params?: Record<string, unknown>, sessionId?: string, timeoutMs?: number): Promise<Record<string, unknown>>;
   /** Subscribe to CDP events. Use '*' to receive all events. */
   on(event: string, handler: (params: Record<string, unknown>, meta: { sessionId?: string }) => void): void;
   /** Unsubscribe a handler. */
@@ -121,19 +121,9 @@ export function isLocalhost(url: string): boolean {
   }
 }
 
+// Captured at module load so a later monkey-patch of globalThis.fetch (e.g. by
+// tooling under test) cannot intercept CDP discovery traffic.
 const _origFetch = globalThis.fetch;
-
-/** Patched fetch that only allows localhost URLs. */
-export function restrictedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const url =
-    typeof input === 'string' ? input
-    : input instanceof URL ? input.href
-    : (input as Request).url ?? '';
-  if (!isLocalhost(url)) {
-    throw new Error(`[SANDBOX] fetch blocked: only localhost allowed (attempted: ${url})`);
-  }
-  return _origFetch(input as RequestInfo, init);
-}
 
 // ─── CDP HTTP discovery ───────────────────────────────────────────────────────
 
@@ -159,10 +149,6 @@ export async function getTargets(port: number): Promise<CdpTargetInfo[]> {
 
 async function openTab(port: number, url: string): Promise<CdpTargetInfo> {
   return cdpHttp<CdpTargetInfo>(port, `/json/new?${encodeURIComponent(url)}`, 'PUT');
-}
-
-async function activateTarget(port: number, id: string): Promise<void> {
-  await cdpHttp(port, `/json/activate/${id}`).catch(() => undefined);
 }
 
 async function closeTab(port: number, id: string): Promise<boolean> {
@@ -315,6 +301,12 @@ export function createCdpSession(
     };
 
     ws.onclose = () => {
+      // Mark closed on EVERY close path (tab/browser died, network drop) — not
+      // just session.close(). The connection cache keys liveness on `closed`;
+      // without this, a dead connection is served from cache and every send
+      // hangs until the CDP timeout.
+      isClosed = true;
+      signal?.removeEventListener('abort', onAbort);
       drainPending('WebSocket closed unexpectedly');
     };
   });
@@ -352,7 +344,6 @@ export async function selectTarget(
     const t = targets.find((x) => x.id === targetId);
     if (!t) throw new Error(`Target ${targetId} not found`);
     if (!t.webSocketDebuggerUrl) throw new Error(`No WebSocket URL for target ${targetId}`);
-    await activateTarget(port, targetId);
     return { wsUrl: t.webSocketDebuggerUrl, targetInfo: t, via: 'target-id' };
   }
 

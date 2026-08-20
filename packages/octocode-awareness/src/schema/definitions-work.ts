@@ -141,11 +141,15 @@ task: z
     .object({
       retention_days: z.number().int().min(1).max(3650).default(90),
       refinement_handoff_retention_days: z.number().int().min(1).max(3650).default(7),
+      handoff_signal_retention_days: z.number().int().min(1).max(3650).default(1)
+        .describe("Auto-resolve old broadcast handoff signals; handoff refinements keep their separate retention."),
       refinement_done_retention_days: z.number().int().min(1).max(3650).default(30),
       operational_retention_days: z.number().int().min(1).max(3650).default(90)
         .describe("Compact old terminal standalone WORK/HOOK rows; receipts remain."),
       pressure_age_days: z.number().int().min(1).max(3650).default(1)
         .describe("Report old pending runs/signals/missing refs without mutating them."),
+      fail_stale_active_runs: z.boolean().default(true)
+        .describe("Mark ACTIVE runs with expired presence as FAILED during digest; use false for preview-only recovery."),
       dry_run: z.boolean().default(false),
       export_doc: z.union([z.boolean(), z.string().trim().min(1).max(1024)]).optional()
         .describe("Write report."),

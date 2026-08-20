@@ -57,6 +57,7 @@ describe('digest — dry_run with new schema', () => {
     for (const key of [
       'retention_days',
       'refinement_handoff_retention_days',
+      'handoff_signal_retention_days',
       'refinement_done_retention_days',
       'operational_retention_days',
       'pressure_age_days',

@@ -2,12 +2,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { test } from 'vitest';
+import { afterEach, test } from 'vitest';
 import {
   OCTOCODE_MCP_ENV_DEFAULTS,
+  __test__ as mcpTestHooks,
+  getCachedMcpCatalogAddendum,
+  markMcpToolUsed,
   patchGlobalMcpOctocodeEnv,
   resolveMcpCallText,
 } from '../src/tools/mcp-tool.js';
+
+const mcpCtx = { cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-cache-')) } as unknown as import('../src/types.js').PiContext;
+
+afterEach(() => {
+  mcpTestHooks.clearCachedMcpCatalog();
+  mcpTestHooks.resetRecentMcpToolUse();
+});
 
 function tmpMcpJson(content: unknown): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-'));
@@ -18,20 +28,22 @@ function tmpMcpJson(content: unknown): string {
 
 // ─── OCTOCODE_MCP_ENV_DEFAULTS contract ──────────────────────────────────────
 
-test('env defaults: full-text MCP responses + npm cache vars are always on for the octocode server', () => {
+test('env defaults: full-text MCP responses + local tools + npm cache vars are always on for the octocode server', () => {
   assert.equal(OCTOCODE_MCP_ENV_DEFAULTS['OCTOCODE_MCP_FULL_TEXT'], 'true');
+  assert.equal(OCTOCODE_MCP_ENV_DEFAULTS['ENABLE_LOCAL'], 'true');
   assert.equal(OCTOCODE_MCP_ENV_DEFAULTS['npm_config_include'], 'optional');
   assert.ok(OCTOCODE_MCP_ENV_DEFAULTS['npm_config_cache']!.length > 0);
 });
 
 // ─── patchGlobalMcpOctocodeEnv ───────────────────────────────────────────────
 
-test('patch: adds missing env vars (incl. OCTOCODE_MCP_FULL_TEXT) to the octocode server entry', () => {
+test('patch: adds missing env vars (incl. OCTOCODE_MCP_FULL_TEXT, ENABLE_LOCAL) to the octocode server entry', () => {
   const p = tmpMcpJson({ mcpServers: { octocode: { command: 'node', args: ['x.js'] } } });
   patchGlobalMcpOctocodeEnv(p);
   const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
   const env = raw.mcpServers.octocode.env;
   assert.equal(env.OCTOCODE_MCP_FULL_TEXT, 'true');
+  assert.equal(env.ENABLE_LOCAL, 'true');
   assert.equal(env.npm_config_include, 'optional');
   assert.ok(env.npm_config_cache.length > 0);
 });
@@ -108,4 +120,281 @@ test('call text: stub without structuredContent stays as-is (nothing better avai
 test('call text: non-record / malformed payloads stringify without throwing', () => {
   assert.doesNotThrow(() => resolveMcpCallText(null));
   assert.doesNotThrow(() => resolveMcpCallText({ content: 'weird' }));
+});
+
+// ─── cached catalog prompt addendum (compaction-surviving turn layer) ─────────
+//
+// Budget contract: the every-turn addendum is COMPACT by default (names, brief
+// descriptions, schema field summaries). Full inputSchema JSON is injected only
+// for tools recently exercised via MCPTool call/describe, and each server entry
+// is char-capped with an explicit truncation marker — "compaction is budget".
+
+const CATALOG_TOOLS = [
+  {
+    name: 'localSearchCode',
+    description: 'Search local source files.',
+    inputSchema: {
+      type: 'object',
+      required: ['queries'],
+      properties: { queries: { type: 'array' }, timeout: { type: 'number' } },
+    },
+  },
+  {
+    name: 'localGetFileContent',
+    description: 'Read a local file.',
+    inputSchema: {
+      type: 'object',
+      required: ['paths'],
+      properties: { paths: { type: 'array' } },
+    },
+  },
+];
+
+function seedCatalog(): void {
+  mcpTestHooks.setCachedMcpCatalog(mcpCtx, [{
+    name: 'octocode',
+    instructions: 'Use batched queries and follow continuation cursors.',
+    text: 'octocode: 2 tool(s)',
+    cachedAt: Date.now(),
+    tools: CATALOG_TOOLS,
+  }]);
+}
+
+test('cached catalog addendum is compact by default: descriptions + schema summaries, no full schema JSON', () => {
+  seedCatalog();
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+  assert.match(addendum, /<mcp_cached_catalog>/);
+  assert.match(addendum, /survives compaction/i);
+  assert.match(addendum, /server: octocode/);
+  assert.match(addendum, /cache: fresh/);
+  assert.match(addendum, /instructions: Use batched queries/);
+  assert.match(addendum, /tool: localSearchCode/);
+  assert.match(addendum, /description: Search local source files/);
+  assert.match(addendum, /schema: queries/, 'compact schema summary lists required fields');
+  assert.doesNotMatch(addendum, /"inputSchema"/, 'full schema JSON is not injected by default');
+  assert.match(addendum, /MCPTool list\/describe/i, 'points at list/describe for exact schemas');
+});
+
+test('cached catalog addendum inlines the full schema ONLY for recently used tools', () => {
+  seedCatalog();
+  markMcpToolUsed(mcpCtx, 'octocode', 'localSearchCode');
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+  const searchBlock = addendum.slice(addendum.indexOf('tool: localSearchCode'), addendum.indexOf('tool: localGetFileContent'));
+  const readBlock = addendum.slice(addendum.indexOf('tool: localGetFileContent'));
+  assert.match(searchBlock, /"inputSchema"/, 'recently used tool carries its exact schema');
+  assert.match(searchBlock, /"queries"/);
+  assert.doesNotMatch(readBlock, /"inputSchema"/, 'unused sibling tool stays compact');
+});
+
+test('recently-used schema set is bounded: oldest entries are evicted beyond the cap', () => {
+  seedCatalog();
+  markMcpToolUsed(mcpCtx, 'octocode', 'localSearchCode');
+  for (let i = 0; i < 24; i += 1) markMcpToolUsed(mcpCtx, 'octocode', `filler-tool-${i}`);
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+  assert.doesNotMatch(
+    addendum,
+    /"inputSchema"/,
+    'localSearchCode schema evicted after 24 newer tool uses (cap keeps the set bounded)'
+  );
+});
+
+test('cached catalog addendum caps oversized server entries with a truncation marker', () => {
+  mcpTestHooks.setCachedMcpCatalog(mcpCtx, [{
+    name: 'bigserver',
+    text: 'bigserver: 200 tool(s)',
+    cachedAt: Date.now(),
+    tools: Array.from({ length: 200 }, (_, i) => ({
+      name: `tool-${i}`,
+      description: 'x'.repeat(160),
+      inputSchema: { type: 'object', properties: { input: { type: 'string' } } },
+    })),
+  }]);
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+  const entry = addendum.slice(addendum.indexOf('server: bigserver'));
+  assert.ok(entry.length <= 5_000, `server entry must be char-capped, got ${entry.length}`);
+  assert.match(entry, /truncated .*MCPTool list/i, 'truncation is explicit and actionable, never silent');
+});
+
+test('cached catalog addendum caps long tool descriptions', () => {
+  mcpTestHooks.setCachedMcpCatalog(mcpCtx, [{
+    name: 'verbose',
+    text: 'verbose: 1 tool(s)',
+    cachedAt: Date.now(),
+    tools: [{ name: 'wordy', description: `${'a'.repeat(400)}TAIL`, inputSchema: { type: 'object' } }],
+  }]);
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+  assert.doesNotMatch(addendum, /TAIL/, 'description is capped in the every-turn block');
+  assert.match(addendum, /description: a+…/, 'capped description carries an ellipsis');
+});
+
+test('cached catalog addendum keeps stale entries visible but labels them as stale', () => {
+  mcpTestHooks.setCachedMcpCatalog(mcpCtx, [{
+    name: 'weather',
+    text: 'weather: 1 tool(s)',
+    cachedAt: Date.now() - 20 * 60_000,
+    tools: [{ name: 'forecast', description: 'Get forecast.', inputSchema: { type: 'object' } }],
+  }]);
+
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+  assert.match(addendum, /server: weather/);
+  assert.match(addendum, /cache: stale/i);
+  assert.match(addendum, /re-run MCPTool list\/describe/i);
+  assert.match(addendum, /tool: forecast/);
+});
+
+// ─── add / remove server (mcp.json CRUD, no agent restart) ────────────────────
+import {
+  upsertServerInFile,
+  removeServerFromFile,
+  configSignature,
+} from '../src/tools/mcp-tool.js';
+
+function freshDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-crud-'));
+}
+
+test('add: creates mcp.json with mcpServers wrapper and only-defined fields', () => {
+  const p = path.join(freshDir(), 'mcp.json');
+  const parsed = upsertServerInFile(p, 'weather', { command: 'node', args: ['w.js'], env: { KEY: 'v' } });
+  assert.equal(parsed.command, 'node');
+  const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.deepEqual(raw.mcpServers.weather, { command: 'node', args: ['w.js'], env: { KEY: 'v' } });
+});
+
+test('add: preserves the existing container shape (servers key) and other top-level keys', () => {
+  const p = tmpMcpJson({ servers: { a: { command: 'x' } }, someOtherKey: 1 });
+  upsertServerInFile(p, 'b', { command: 'y' });
+  const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.ok(raw.servers.a && raw.servers.b, 'writes into existing servers container');
+  assert.equal(raw.someOtherKey, 1, 'preserves unrelated keys');
+});
+
+test('add: updates (upserts) an existing server in place', () => {
+  const p = tmpMcpJson({ mcpServers: { s: { command: 'old' } } });
+  upsertServerInFile(p, 's', { command: 'new', args: ['--flag'] });
+  const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.equal(raw.mcpServers.s.command, 'new');
+  assert.deepEqual(raw.mcpServers.s.args, ['--flag']);
+});
+
+test('add: rejects an invalid server name / missing command', () => {
+  const p = path.join(freshDir(), 'mcp.json');
+  assert.throws(() => upsertServerInFile(p, 'bad name!', { command: 'node' }));
+  assert.throws(() => upsertServerInFile(p, 'ok', {} as Record<string, unknown>));
+});
+
+test('remove: deletes a server and reports presence', () => {
+  const p = tmpMcpJson({ mcpServers: { a: { command: 'x' }, b: { command: 'y' } } });
+  assert.equal(removeServerFromFile(p, 'a'), true);
+  assert.equal(removeServerFromFile(p, 'a'), false, 'second remove is a no-op');
+  const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.equal(raw.mcpServers.a, undefined);
+  assert.ok(raw.mcpServers.b);
+});
+
+test('remove: missing file is a safe no-op', () => {
+  assert.equal(removeServerFromFile(path.join(freshDir(), 'nope.json'), 'x'), false);
+});
+
+// ─── config-drift signature (drives auto-reconnect without restart) ───────────
+test('configSignature changes when command/args/env/cwd/timeout change, stable otherwise', () => {
+  const base = { command: 'node', args: ['a'], env: { K: '1' } };
+  assert.equal(configSignature(base), configSignature({ ...base }), 'stable for equal config');
+  assert.notEqual(configSignature(base), configSignature({ ...base, command: 'deno' }));
+  assert.notEqual(configSignature(base), configSignature({ ...base, args: ['b'] }));
+  assert.notEqual(configSignature(base), configSignature({ ...base, env: { K: '2' } }));
+  assert.notEqual(configSignature(base), configSignature({ ...base, cwd: '/x' }));
+});
+
+// ─── TTL freshness, unremovable default, live connect ─────────────────────────
+import { isFresh, handleMcpAction } from '../src/tools/mcp-tool.js';
+
+function trustedCtx() {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-ctx-'));
+  return { cwd, isProjectTrusted: async () => true } as unknown as import('../src/types.js').PiContext;
+}
+
+test('TTL: a cache entry is fresh within the window and stale past it', () => {
+  const now = 1_000_000_000_000;
+  const mk = (cachedAt?: number) => ({ name: 's', tools: [], text: '', cachedAt }) as never;
+  assert.equal(isFresh(mk(now), now), true);
+  assert.equal(isFresh(mk(now - 5 * 60_000), now), true, 'within 10m TTL');
+  assert.equal(isFresh(mk(now - 20 * 60_000), now), false, 'past 10m TTL');
+  assert.equal(isFresh(mk(undefined), now), true, 'no timestamp treated as fresh');
+});
+
+test('the built-in octocode server cannot be removed (default MCP, no spawn)', async () => {
+  const res = await handleMcpAction({ action: 'remove', server: 'octocode' }, undefined, trustedCtx());
+  assert.equal(res.isError, true);
+  assert.match(res.content[0]!.text, /cannot be removed/i);
+});
+
+test('add: overriding octocode notes the shadow of the built-in default', async () => {
+  const ctx = trustedCtx();
+  const res = await handleMcpAction(
+    { action: 'add', server: 'octocode', config: { command: 'npx', args: ['-y', 'octocode-mcp@latest'] } },
+    undefined,
+    ctx,
+  );
+  assert.equal(res.isError ?? false, false);
+  assert.match(res.content[0]!.text, /overrides the built-in octocode default/i);
+  const written = JSON.parse(fs.readFileSync(path.join((ctx as unknown as { cwd: string }).cwd, '.pi', 'agent', 'mcp.json'), 'utf8'));
+  assert.equal(written.mcpServers.octocode.command, 'npx');
+});
+
+test('add then remove a custom server via handleMcpAction (no agent restart)', async () => {
+  const ctx = trustedCtx();
+  const add = await handleMcpAction({ action: 'add', server: 'weather', config: { command: 'node', args: ['w.js'] } }, undefined, ctx);
+  assert.match(add.content[0]!.text, /added to project mcp.json/i);
+  const rm = await handleMcpAction({ action: 'remove', server: 'weather' }, undefined, ctx);
+  assert.match(rm.content[0]!.text, /removed from project mcp.json/i);
+});
+
+// Live integration — gated (spawns the real octocode MCP server via npx). Run with RUN_MCP_LIVE=1.
+const liveTest = process.env.RUN_MCP_LIVE === '1' ? test : test.skip;
+liveTest('LIVE: connects to the built-in octocode MCP server via npx and lists tools', { timeout: 120_000 }, async () => {
+  const res = await handleMcpAction({ action: 'list', server: 'octocode' }, undefined, trustedCtx());
+  assert.equal(res.isError ?? false, false);
+  const details = res.details as { servers?: Array<{ name: string; tools: unknown[] }> };
+  const octo = details.servers?.find((srv) => srv.name === 'octocode');
+  assert.ok(octo && octo.tools.length > 0, 'octocode server returns a non-empty tool list');
+});
+
+// ─── config watcher: reconcile + lifecycle ────────────────────────────────────
+import {
+  computeReload,
+  configSignature as sig,
+  startMcpConfigWatcher,
+  stopMcpConfigWatchers,
+} from '../src/tools/mcp-tool.js';
+
+test('computeReload flags drifted and removed servers, ignores unchanged', () => {
+  const a = { command: 'node', args: ['a.js'] };
+  const running = new Map<string, string>([
+    ['stable', sig(a)],
+    ['drifted', sig({ command: 'node', args: ['old.js'] })],
+    ['gone', sig({ command: 'x' })],
+  ]);
+  const servers = new Map([
+    ['stable', a],
+    ['drifted', { command: 'node', args: ['new.js'] }],
+    // 'gone' intentionally absent
+  ]);
+  const { changed, removed } = computeReload(running, servers);
+  assert.deepEqual(changed, ['drifted']);
+  assert.deepEqual(removed, ['gone']);
+});
+
+test('startMcpConfigWatcher starts watchers and stop closes them', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-watch-'));
+  const ctx = { cwd } as unknown as import('../src/types.js').PiContext;
+  try {
+    const started = startMcpConfigWatcher(ctx, () => {});
+    assert.ok(started > 0, 'at least the global + project dirs are watched');
+    const stopped = stopMcpConfigWatchers();
+    assert.equal(stopped, started);
+    assert.equal(stopMcpConfigWatchers(), 0, 'idempotent stop');
+  } finally {
+    stopMcpConfigWatchers();
+  }
 });

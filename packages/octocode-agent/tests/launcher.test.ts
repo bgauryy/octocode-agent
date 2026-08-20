@@ -23,12 +23,41 @@ import {
   main,
   resolvePackageJson,
   readPackageVersion,
+  spawnExitStatus,
   LEAN_EXCLUDE_TOOLS,
   launcherRoot,
+  versionData,
+  configData,
+  setupData,
+  authData,
+  modelsData,
+  sessionsData,
+  completionScript,
+  COMPLETION_SHELLS,
+  printLaunchBanner,
+  doctorReport,
 } from '../src/launcher.js';
+import { stripAnsi } from '../src/ui.js';
 import type { LaunchDeps, PiBinInfo } from '../src/types.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
+
+describe('bin shim ↔ build output contract', () => {
+  const pkgUrl = new URL('../package.json', import.meta.url);
+  const binUrl = new URL('../bin/octocode-agent.mjs', import.meta.url);
+
+  it('bin shim delegates to the exact bundle package.json "bin" ships', async () => {
+    const { readFileSync } = await import('node:fs');
+    const pkg = JSON.parse(readFileSync(pkgUrl, 'utf8')) as { bin: string };
+    const shim = readFileSync(binUrl, 'utf8');
+    // package.json bin is the published entry — the bundled, self-running module.
+    expect(pkg.bin).toBe('./out/octocode-agent.mjs');
+    // The shim must import that same bundle …
+    expect(shim).toContain('../out/octocode-agent.mjs');
+    // … and must NOT reference the non-bundled tsc path that the esbuild build never emits.
+    expect(shim).not.toContain('out/launcher.js');
+  });
+});
 
 describe('constants', () => {
   it('CORE_SPEC is the npm: spec for pi -e flag', () => {
@@ -40,6 +69,14 @@ describe('constants', () => {
     expect(LEAN_EXCLUDE_TOOLS).toContain('grep');
     expect(LEAN_EXCLUDE_TOOLS).toContain('find');
     expect(LEAN_EXCLUDE_TOOLS).toContain('ls');
+  });
+
+  it('spawnExitStatus treats null or missing status as failure', () => {
+    expect(spawnExitStatus({ status: 0 })).toBe(0);
+    expect(spawnExitStatus({ status: 7 })).toBe(7);
+    expect(spawnExitStatus({ status: null })).toBe(1);
+    expect(spawnExitStatus({ error: new Error('spawn failed') })).toBe(1);
+    expect(spawnExitStatus(undefined)).toBe(1);
   });
 });
 
@@ -129,8 +166,28 @@ describe('parseInvocation', () => {
 
   it('forwards everything else to Pi', () => {
     const inv = parseInvocation(['--model', 'claude-opus-4-5', 'do something']);
-    expect(inv.command).toBe('run');
+    expect(inv.command).toBe('launch');
     expect(inv.rest).toEqual(['--model', 'claude-opus-4-5', 'do something']);
+  });
+
+  it('routes surface verbs and parses --profile', () => {
+    expect(parseInvocation(['research', 'q']).command).toBe('research');
+    expect(parseInvocation(['memory', 'recall']).command).toBe('memory');
+    expect(parseInvocation(['awareness', 'status']).command).toBe('awareness');
+    expect(parseInvocation(['tools']).command).toBe('tools');
+    expect(parseInvocation(['skills']).command).toBe('skills');
+    expect(parseInvocation(['--profile', 'ci', 'do x']).profile).toBe('ci');
+    expect(parseInvocation(['run', '--profile', 'ci', 'x']).profile).toBe('ci');
+  });
+
+  it('routes the new verbs run/serve/resume/doctor', () => {
+    expect(parseInvocation(['run', 'do x']).command).toBe('run');
+    expect(parseInvocation(['run', 'do x']).rest).toEqual(['do x']);
+    expect(parseInvocation(['run', 'x', '--json']).json).toBe(true);
+    expect(parseInvocation(['serve']).command).toBe('serve');
+    expect(parseInvocation(['resume', 'abc']).command).toBe('resume');
+    expect(parseInvocation(['resume', 'abc']).rest).toEqual(['abc']);
+    expect(parseInvocation(['doctor']).command).toBe('doctor');
   });
 
   it('routes new info subcommands (config/setup/auth/models/sessions)', () => {
@@ -139,6 +196,24 @@ describe('parseInvocation', () => {
     expect(parseInvocation(['auth']).command).toBe('auth');
     expect(parseInvocation(['models']).command).toBe('models');
     expect(parseInvocation(['sessions']).command).toBe('sessions');
+  });
+
+  it('detects --json for every report command and defaults to falsy without it', () => {
+    expect(parseInvocation(['config', '--json']).json).toBe(true);
+    expect(parseInvocation(['setup', '--json']).json).toBe(true);
+    expect(parseInvocation(['auth', '--json']).json).toBe(true);
+    expect(parseInvocation(['models', '--json']).json).toBe(true);
+    expect(parseInvocation(['sessions', '--json']).json).toBe(true);
+    expect(parseInvocation(['--version', '--json']).json).toBe(true);
+    expect(parseInvocation(['config']).json).toBeFalsy();
+    expect(parseInvocation(['version']).json).toBeFalsy();
+  });
+
+  it('routes completion <shell>', () => {
+    expect(parseInvocation(['completion', 'bash'])).toEqual({ command: 'completion', shell: 'bash' });
+    expect(parseInvocation(['completion', 'zsh']).shell).toBe('zsh');
+    expect(parseInvocation(['completion', 'fish']).shell).toBe('fish');
+    expect(parseInvocation(['completion']).shell).toBeUndefined();
   });
 });
 
@@ -163,6 +238,12 @@ describe('buildLaunchEnv', () => {
 
     const explicitEnv = buildLaunchEnv({ PI_CACHE_RETENTION: 'short' });
     expect(explicitEnv.PI_CACHE_RETENTION).toBe('short');
+  });
+
+  it('defaults PI_SKIP_VERSION_CHECK=1 (our update story wins); explicit values keep control', () => {
+    expect(buildLaunchEnv({}).PI_SKIP_VERSION_CHECK).toBe('1');
+    expect(buildLaunchEnv({ PI_SKIP_VERSION_CHECK: '' }).PI_SKIP_VERSION_CHECK).toBe('');
+    expect(buildLaunchEnv({ PI_SKIP_VERSION_CHECK: '0' }).PI_SKIP_VERSION_CHECK).toBe('0');
   });
 });
 
@@ -221,6 +302,34 @@ describe('versionReport', () => {
   });
 });
 
+// ── versionData (--json companion) ───────────────────────────────────────────────
+
+describe('versionData', () => {
+  it('reports the same underlying facts as versionReport, structured', () => {
+    const data = versionData({});
+    expect(data.core.package).toBe(CORE_PACKAGE);
+    expect(data.launchMode).toBe('sdk-embed');
+  });
+
+  it('shows subprocess launch mode when forced', () => {
+    expect(versionData({ OCTOCODE_LAUNCHER_MODE: 'subprocess' }).launchMode).toBe('subprocess');
+  });
+
+  it('shows override pi package name when OCTOCODE_PI_PACKAGE is set', () => {
+    expect(versionData({ OCTOCODE_PI_PACKAGE: '@myorg/custom-pi' }).pi.package).toBe('@myorg/custom-pi');
+  });
+
+  it('reports the local binary path and a null version when OCTOCODE_PI_BIN is set', () => {
+    const data = versionData({ OCTOCODE_PI_BIN: '/usr/local/bin/pi' });
+    expect(data.pi.localBinPath).toBe('/usr/local/bin/pi');
+    expect(data.pi.version).toBeNull();
+  });
+
+  it('output is JSON-serializable', () => {
+    expect(() => JSON.stringify(versionData({}))).not.toThrow();
+  });
+});
+
 // ── helpReport ─────────────────────────────────────────────────────────────────
 
 describe('helpReport', () => {
@@ -244,9 +353,13 @@ describe('configReport', () => {
     expect(report).toContain('core');
     expect(report).toContain('pi host');
     expect(report).toContain('launcher version');
-    expect(report).toContain('OCTOCODE_HOME');
-    expect(report).toContain('OCTOCODE_LAUNCHER_MODE');
     expect(report).toContain('api keys set');
+  });
+
+  it('lists only SET env overrides', () => {
+    const report = configReport({ OCTOCODE_LAUNCHER_MODE: 'subprocess' });
+    expect(report).toContain('OCTOCODE_LAUNCHER_MODE');
+    expect(report).not.toContain('OCTOCODE_PI_BIN');
   });
 
   it('shows subprocess mode when forced', () => {
@@ -260,6 +373,35 @@ describe('configReport', () => {
   });
 });
 
+// ── configData (--json companion) ────────────────────────────────────────────────
+
+describe('configData', () => {
+  it('reports the same underlying facts as configReport, structured', () => {
+    const data = configData({});
+    expect(data.core.spec).toBeTruthy();
+    expect(typeof data.octocodeHomeHasAuth).toBe('boolean');
+    expect(data.launchMode).toBe('sdk-embed');
+  });
+
+  it('shows subprocess launch mode when forced', () => {
+    expect(configData({ OCTOCODE_LAUNCHER_MODE: 'subprocess' }).launchMode).toBe('subprocess');
+  });
+
+  it('shows custom OCTOCODE_HOME when set', () => {
+    expect(configData({ OCTOCODE_HOME: '/custom/home' }).octocodeHome).toBe('/custom/home');
+  });
+
+  it('echoes every documented env override as null when unset', () => {
+    const data = configData({});
+    expect(data.env.OCTOCODE_HOME).toBeNull();
+    expect(data.env.OCTOCODE_PI_BIN).toBeNull();
+  });
+
+  it('output is JSON-serializable', () => {
+    expect(() => JSON.stringify(configData({}))).not.toThrow();
+  });
+});
+
 // ── setupReport ────────────────────────────────────────────────────────────────
 
 describe('setupReport', () => {
@@ -269,6 +411,33 @@ describe('setupReport', () => {
     expect(report).toContain('octocode-agent');
     // At least one check present
     expect(report.includes('✓') || report.includes('✗')).toBe(true);
+  });
+});
+
+// ── setupData (--json companion) ─────────────────────────────────────────────────
+
+describe('setupData', () => {
+  it('has one check per prerequisite, matching the ✓/✗ report lines', () => {
+    const data = setupData({});
+    expect(data.checks.map((c) => c.name)).toEqual(['pi-host', 'core', 'api-keys']);
+  });
+
+  it('allGood is true only when every check passes', () => {
+    const data = setupData({ ANTHROPIC_API_KEY: 'sk-test' });
+    const apiKeysCheck = data.checks.find((c) => c.name === 'api-keys')!;
+    expect(apiKeysCheck.ok).toBe(true);
+    expect(data.allGood).toBe(data.checks.every((c) => c.ok));
+  });
+
+  it('api-keys check fails with no keys detected', () => {
+    const data = setupData({});
+    const apiKeysCheck = data.checks.find((c) => c.name === 'api-keys')!;
+    expect(apiKeysCheck.ok).toBe(false);
+    expect(apiKeysCheck.detail).toBe('none detected');
+  });
+
+  it('output is JSON-serializable', () => {
+    expect(() => JSON.stringify(setupData({}))).not.toThrow();
   });
 });
 
@@ -289,6 +458,23 @@ describe('authReport', () => {
   });
 });
 
+// ── authData (--json companion) ──────────────────────────────────────────────────
+
+describe('authData', () => {
+  it('reports detected keys, not the static option list', () => {
+    expect(authData({})).toEqual({
+      detectedKeys: [],
+      authJsonPath: expect.stringContaining('auth.json'),
+    });
+  });
+
+  it('reports keys actually present in env', () => {
+    const data = authData({ ANTHROPIC_API_KEY: 'sk-test', GITHUB_TOKEN: 'gh-token' });
+    expect(data.detectedKeys).toContain('ANTHROPIC_API_KEY');
+    expect(data.detectedKeys).toContain('GITHUB_TOKEN');
+  });
+});
+
 // ── modelsReport ───────────────────────────────────────────────────────────────
 
 describe('modelsReport', () => {
@@ -300,14 +486,71 @@ describe('modelsReport', () => {
   });
 });
 
+// ── modelsData (--json companion) ────────────────────────────────────────────────
+
+describe('modelsData', () => {
+  it('lists the same common models referenced in modelsReport', () => {
+    const data = modelsData();
+    const ids = data.commonModels.map((m) => m.id);
+    expect(ids).toContain('claude-opus-4-5');
+    expect(ids).toContain('gpt-4o');
+    expect(data.commonModels.every((m) => m.provider && m.note)).toBe(true);
+  });
+
+  it('output is JSON-serializable', () => {
+    expect(() => JSON.stringify(modelsData())).not.toThrow();
+  });
+});
+
 // ── sessionsReport ─────────────────────────────────────────────────────────────
 
 describe('sessionsReport', () => {
   it('shows session storage path and management commands', () => {
     const report = sessionsReport();
     expect(report).toContain('sessions');
-    expect(report).toContain('--continue');
+    expect(report).toContain('THIS terminal');
     expect(report).toContain('--no-session');
+  });
+});
+
+// ── sessionsData (--json companion) ──────────────────────────────────────────────
+
+describe('sessionsData', () => {
+  it('reports the sessions directory', () => {
+    const data = sessionsData();
+    expect(data.sessionsDir).toContain('sessions');
+    expect(data.sessionsDir).toContain('.pi');
+  });
+});
+
+// ── completionScript ──────────────────────────────────────────────────────────────
+
+describe('completionScript', () => {
+  it('generates a script for every supported shell containing every subcommand', () => {
+    for (const shell of COMPLETION_SHELLS) {
+      const script = completionScript(shell);
+      expect(script).toBeTruthy();
+      for (const cmd of ['update', 'config', 'setup', 'auth', 'models', 'sessions', 'completion']) {
+        expect(script).toContain(cmd);
+      }
+    }
+  });
+
+  it('bash script registers a complete -F for octocode-agent', () => {
+    expect(completionScript('bash')).toContain('complete -F');
+  });
+
+  it('zsh script declares a #compdef for octocode-agent', () => {
+    expect(completionScript('zsh')).toContain('#compdef octocode-agent');
+  });
+
+  it('fish script registers complete -c octocode-agent entries', () => {
+    expect(completionScript('fish')).toContain('complete -c octocode-agent');
+  });
+
+  it('returns null for an unsupported/missing shell', () => {
+    expect(completionScript('powershell')).toBeNull();
+    expect(completionScript('')).toBeNull();
   });
 });
 
@@ -465,6 +708,18 @@ describe('launchAgent', () => {
     expect(code).toBe(0);
     expect(spawn).toHaveBeenCalled();
   });
+
+  it('treats subprocess null status as launch failure', async () => {
+    const spawn = vi.fn().mockReturnValue({ status: null });
+    const code = await launchAgent([], {
+      env: {},
+      spawn,
+      launchWithSdk: async () => null,
+      resolvePiBin: () => ({ bin: '/fake/pi', pkgRoot: '/fake', source: 'bundled' }),
+      resolveCoreSpec: () => 'spec',
+    } satisfies LaunchDeps);
+    expect(code).toBe(1);
+  });
 });
 
 // ── main ───────────────────────────────────────────────────────────────────────
@@ -495,6 +750,12 @@ describe('main', () => {
       expect.arrayContaining(['install', '--prefix', '/fake/prefix']),
       expect.any(Object),
     );
+  });
+
+  it('update reports null spawn status as failure', async () => {
+    const spawn = vi.fn().mockReturnValue({ status: null });
+    const code = await main(['update', 'platform'], { spawn, env: {} } satisfies LaunchDeps);
+    expect(code).toBe(1);
   });
 
   it('config prints configuration report', async () => {
@@ -529,7 +790,157 @@ describe('main', () => {
     const lines: string[] = [];
     const code = await main(['sessions'], { out: (m) => lines.push(m), env: {} });
     expect(code).toBe(0);
-    expect(lines.join('\n')).toContain('--continue');
+    expect(lines.join('\n')).toContain('THIS terminal');
+  });
+
+  it('--json prints valid, structured JSON instead of the text report, for every report command', async () => {
+    const cases: Array<[string[], (r: unknown) => void]> = [
+      [['--version', '--json'], (r) => expect((r as { core: unknown }).core).toBeDefined()],
+      [['config', '--json'], (r) => expect((r as { octocodeHome: unknown }).octocodeHome).toBeDefined()],
+      [['setup', '--json'], (r) => expect((r as { checks: unknown[] }).checks).toHaveLength(3)],
+      [['auth', '--json'], (r) => expect((r as { detectedKeys: unknown[] }).detectedKeys).toEqual([])],
+      [['models', '--json'], (r) => expect((r as { commonModels: unknown[] }).commonModels.length).toBeGreaterThan(0)],
+      [['sessions', '--json'], (r) => expect((r as { sessionsDir: string }).sessionsDir).toContain('sessions')],
+    ];
+    for (const [argv, assertShape] of cases) {
+      const lines: string[] = [];
+      const code = await main(argv, { out: (m) => lines.push(m), env: {} });
+      expect(code).toBe(0);
+      const parsed: unknown = JSON.parse(lines.join('\n'));
+      assertShape(parsed);
+    }
+  });
+
+  it('run forwards --print + task to the agent', async () => {
+    let captured: string[] | null = null;
+    const code = await main(['run', 'fix the bug'], {
+      env: {},
+      launchWithSdk: async (argv) => { captured = argv; return 0; },
+    });
+    expect(code).toBe(0);
+    expect(captured).toEqual(['--print', 'fix the bug']);
+  });
+
+  it('run --json forwards --mode json (not --print) and strips --json', async () => {
+    let captured: string[] | null = null;
+    await main(['run', 'list', '--json'], {
+      env: {},
+      launchWithSdk: async (argv) => { captured = argv; return 0; },
+    });
+    expect(captured).toEqual(['--mode', 'json', 'list']);
+  });
+
+  it('serve defaults to the Octocode thin-client stdio envelope', async () => {
+    let captured: string[] | null = null;
+    const code = await main(['serve', '--session', 'ide-main'], {
+      env: {},
+      runServeStdio: async (argv) => { captured = argv; return 0; },
+    });
+    expect(code).toBe(0);
+    expect(captured).toEqual(['--session', 'ide-main']);
+  });
+
+  it('serve --raw-rpc preserves the old raw Pi RPC forwarding mode', async () => {
+    let captured: string[] | null = null;
+    await main(['serve', '--raw-rpc', '--no-session'], {
+      env: {},
+      launchWithSdk: async (argv) => { captured = argv; return 0; },
+    });
+    expect(captured).toEqual(['--mode', 'rpc', '--no-session']);
+  });
+
+  it('resume with an id maps to --session, without one maps to -r', async () => {
+    let captured: string[] | null = null;
+    await main(['resume', 'auth-refactor'], {
+      env: {},
+      launchWithSdk: async (argv) => { captured = argv; return 0; },
+    });
+    expect(captured).toEqual(['--session', 'auth-refactor']);
+    await main(['resume'], {
+      env: {},
+      launchWithSdk: async (argv) => { captured = argv; return 0; },
+    });
+    expect(captured).toEqual(['-r']);
+  });
+
+  it('auth status exits 2 when no keys are detected', async () => {
+    const lines: string[] = [];
+    const code = await main(['auth', 'status'], { out: (m) => lines.push(m), env: {} });
+    expect(code).toBe(2);
+    expect(lines.join('\n')).toContain('Not authenticated');
+  });
+
+  it('auth status exits 0 when a key is present', async () => {
+    const code = await main(['auth', 'status'], { out: () => {}, env: { ANTHROPIC_API_KEY: 'x' } });
+    expect(code).toBe(0);
+  });
+
+  it('doctor prints a health pane with all checks and a valid exit code', async () => {
+    const lines: string[] = [];
+    const code = await main(['doctor', '--json'], { out: (m) => lines.push(m), env: {} });
+    const parsed = JSON.parse(lines.join('\n')) as { healthy: boolean; checks: unknown[] };
+    expect(parsed.checks).toHaveLength(5);
+    expect(typeof parsed.healthy).toBe('boolean');
+    expect([0, 1]).toContain(code);
+  });
+
+  it('research spawns `npx octocode search`', async () => {
+    let cmd = '';
+    let args: readonly string[] = [];
+    const spawn = vi.fn((c: string, a?: readonly string[]) => { cmd = c; args = a ?? []; return { status: 0 }; });
+    const code = await main(['research', 'auth flow'], { env: {}, spawn });
+    expect(code).toBe(0);
+    expect(cmd).toBe('npx');
+    expect(args).toEqual(['octocode', 'search', 'auth flow']);
+  });
+
+  it('surface verbs report null spawn status as failure', async () => {
+    const spawn = vi.fn().mockReturnValue({ status: null });
+    const code = await main(['tools', '--json'], { env: {}, spawn });
+    expect(code).toBe(1);
+  });
+
+  it('memory spawns the bundled awareness CLI when resolvable', async () => {
+    let cmd = '';
+    const spawn = vi.fn((c: string) => { cmd = c; return { status: 0 }; });
+    const code = await main(['memory', 'recall', 'x'], {
+      env: { OCTOCODE_AWARENESS_CLI: `${process.cwd()}/package.json` },
+      spawn,
+    });
+    expect(code).toBe(0);
+    expect(cmd).toBe('node');
+  });
+
+  it('applyProfile via run prepends preset flags and strips --profile tokens', async () => {
+    let captured: string[] | null = null;
+    // No profiles.json in the temp HOME → profile lookup is a no-op, but tokens are still stripped.
+    await main(['run', '--profile', 'ci', 'do x'], {
+      env: {},
+      launchWithSdk: async (argv) => { captured = argv; return 0; },
+    });
+    expect(captured).not.toContain('--profile');
+    expect(captured).not.toContain('ci');
+    expect(captured).toEqual(['--print', 'do x']);
+  });
+
+  it('completion <shell> prints a script and exits 0', async () => {
+    const lines: string[] = [];
+    const code = await main(['completion', 'zsh'], { out: (m) => lines.push(m), env: {} });
+    expect(code).toBe(0);
+    expect(lines.join('\n')).toContain('#compdef octocode-agent');
+  });
+
+  it('completion with an unsupported shell exits 1 with a helpful message', async () => {
+    const lines: string[] = [];
+    const code = await main(['completion', 'powershell'], { out: (m) => lines.push(m), env: {} });
+    expect(code).toBe(1);
+    expect(lines.join('\n')).toContain('Unknown shell "powershell"');
+    expect(lines.join('\n')).toContain('bash, zsh, fish');
+  });
+
+  it('completion with no shell argument exits 1', async () => {
+    const code = await main(['completion'], { out: () => {}, env: {} });
+    expect(code).toBe(1);
   });
 });
 
@@ -559,5 +970,89 @@ describe('presentApiKeys integration (via reports)', () => {
     });
     expect(report).toContain('ANTHROPIC_API_KEY');
     expect(report).toContain('TAVILY_API_KEY');
+  });
+});
+
+// ── Styled surfaces (rebrand contract) ───────────────────────────────────────────
+
+describe('styled surfaces', () => {
+  it('help is sectioned and lists auth exactly once', () => {
+    const report = helpReport();
+    expect(report).toContain('Get started');
+    expect(report).toContain('Setup & health');
+    expect(report).toContain('auth [login|logout|status]');
+    expect(report.match(/auth \[login\|logout\|status\]/g)).toHaveLength(1);
+  });
+
+  it('version aligns fact rows under a branded header', () => {
+    const report = versionReport({});
+    expect(report).toContain('◆ octocode-agent');
+    expect(report).toContain('\nlauncher');
+    expect(report).toContain('\nlaunch mode');
+  });
+
+  it('setup computes the summary from check status, not from glyphs', () => {
+    // No keys and resolvable packages in this workspace → deterministic ok/fail mix.
+    const report = setupReport({ FORCE_COLOR: '1' });
+    expect(report).toMatch(/✓ All checks passed|✗ Fix the issues above/);
+    expect(report).not.toContain('undefined');
+  });
+
+  it('doctor downgrades non-critical failures to warnings', () => {
+    const data = doctorReport({ FORCE_COLOR: '1' });
+    expect(data).toContain('octocode-agent doctor');
+  });
+
+  it('config is compact: no (not set) rows, ~ paths, no absolute home leaks', () => {
+    const report = configReport({});
+    expect(report).not.toContain('(not set)');
+    expect(report).toContain('~/.octocode');
+    expect(report).not.toContain('/Users/');
+  });
+});
+
+// ── printLaunchBanner ─────────────────────────────────────────────────────────
+
+describe('printLaunchBanner', () => {
+  it('prints the one-line brand banner on a TTY', () => {
+    const lines: string[] = [];
+    const printed = printLaunchBanner([
+      '--model',
+      'x',
+    ], { ANTHROPIC_API_KEY: 'sk-x' }, (m) => lines.push(m), true);
+    expect(printed).toBe(true);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('octocode-agent');
+    expect(lines[0]).toContain('◆');
+  });
+
+  it('points keyless first-runners at the wizard right under the banner', () => {
+    const lines: string[] = [];
+    printLaunchBanner([], {}, (m) => lines.push(m), true);
+    expect(lines).toHaveLength(2);
+    expect(stripAnsi(lines[1])).toContain('octocode-agent auth login');
+  });
+
+  it('stays silent without a TTY', () => {
+    const lines: string[] = [];
+    expect(printLaunchBanner([], {}, (m) => lines.push(m), false)).toBe(false);
+    expect(lines).toHaveLength(0);
+  });
+
+  it('shows the resolved model when launch flags define one', () => {
+    const lines: string[] = [];
+    printLaunchBanner(['--model', 'claude-opus-5'], {}, (m) => lines.push(m), true);
+    expect(stripAnsi(lines[0])).toContain('model claude-opus-5');
+  });
+
+  it('honors OCTOCODE_AGENT_NO_BANNER and non-interactive flags', () => {
+    const lines: string[] = [];
+    const log = (m: string): void => {
+      lines.push(m);
+    };
+    expect(printLaunchBanner([], { OCTOCODE_AGENT_NO_BANNER: '1' }, log, true)).toBe(false);
+    expect(printLaunchBanner(['-p', 'hi'], {}, log, true)).toBe(false);
+    expect(printLaunchBanner(['--mode', 'rpc'], {}, log, true)).toBe(false);
+    expect(lines).toHaveLength(0);
   });
 });

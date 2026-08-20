@@ -2,8 +2,8 @@ import { execFile } from 'node:child_process';
 import type { PiContext, PiExecResult, PiInstance } from './types.js';
 
 const DEFAULT_JOB_TIMEOUT_MS = 60_000;
-const DEFAULT_CRON_JOB_NAME = 'maintenance-digest';
-export const DEFAULT_MAINTENANCE_DIGEST_INTERVAL_MS = 30 * 60 * 1000;
+const DEFAULT_CRON_JOB_NAME = 'awareness-lite-status';
+export const DEFAULT_AWARENESS_LITE_STATUS_INTERVAL_MS = 30 * 60 * 1000;
 
 export type OctocodeCronJobStatus =
   | 'idle'
@@ -90,21 +90,18 @@ function workspaceOf(ctx: PiContext | undefined): string {
 function defaultJobs(env: NodeJS.ProcessEnv): OctocodeCronJobDefinition[] {
   return [
     {
-      name: 'maintenance-digest',
-      label: 'Awareness maintenance digest',
-      description: 'Report-first Awareness maintenance summary; runs with --dry-run and never mutates data.',
+      name: 'awareness-lite-status',
+      label: 'Awareness Lite status',
+      description: 'Report-first Awareness Lite status summary; never mutates data.',
       intervalMs: parsePositiveInt(
-        env['OCTOCODE_CRON_DIGEST_INTERVAL_MS'],
-        DEFAULT_MAINTENANCE_DIGEST_INTERVAL_MS,
+        env['OCTOCODE_CRON_STATUS_INTERVAL_MS'],
+        DEFAULT_AWARENESS_LITE_STATUS_INTERVAL_MS,
       ),
-      enabledByDefault: env['OCTOCODE_CRON_DIGEST'] !== '0',
+      enabledByDefault: env['OCTOCODE_CRON_STATUS'] !== '0',
       awarenessArgs: (ctx) => [
-        'maintenance',
-        'digest',
+        'status',
         '--workspace',
         workspaceOf(ctx),
-        '--dry-run',
-        '--compact',
       ],
     },
   ];

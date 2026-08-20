@@ -5,7 +5,7 @@ import { pruneStale, notifyGet, sessionCapture, waitForLock, digest, exportMemor
 import { runHooksInstall } from '../src/hooks-install.js';
 import { runHookCommand } from './hook-runner.js';
 import { commandFromHelpArgv, helpFor } from './cli-help.js';
-import { EmitOptions, KNOWN_FLAGS, UNKNOWN_COMMAND, die, emit, extractGlobalDb, packageSkillScriptPath, parseBoundedSeconds, resolveAgentId, selectCommand, setActiveCommand, validateFlagValues, validateFlags } from './cli-routing.js';
+import { EmitOptions, KNOWN_FLAGS, UNKNOWN_COMMAND, die, emit, extractGlobalDb, flagBool, packageSkillScriptPath, parseBoundedSeconds, resolveAgentId, selectCommand, setActiveCommand, validateFlagValues, validateFlags } from './cli-routing.js';
 import { MAX_CLI_RETRY_INTERVAL_SECONDS, MAX_CLI_WAIT_SECONDS, parseArgs } from './cli-model.js';
 import { COMMAND_DISPLAY, COMMAND_EXAMPLE, COMMAND_TO_SCHEMA, HELP, HELP_COMPACT } from './cli-help-data.js';
 import { cmdAgentRegistry, cmdAgentSignal, cmdInit, cmdNotifyPrune, cmdSelfTest, cmdStatus } from './cli-admin.js';
@@ -155,6 +155,7 @@ try {
     case 'digest': {
       const retDays = args['retention_days'] ? Number(args['retention_days']) : undefined;
       const handoffDays = args['refinement_handoff_retention_days'] ? Number(args['refinement_handoff_retention_days']) : undefined;
+      const signalDays = args['handoff_signal_retention_days'] ? Number(args['handoff_signal_retention_days']) : undefined;
       const doneDays = args['refinement_done_retention_days'] ? Number(args['refinement_done_retention_days']) : undefined;
       const operationalDays = args['operational_retention_days'] ? Number(args['operational_retention_days']) : undefined;
       const pressureAgeDays = args['pressure_age_days'] ? Number(args['pressure_age_days']) : 1;
@@ -162,9 +163,11 @@ try {
       const digestResult = digest(db, {
         ...(retDays !== undefined ? { retention_days: retDays } : {}),
         ...(handoffDays !== undefined ? { refinement_handoff_retention_days: handoffDays } : {}),
+        ...(signalDays !== undefined ? { handoff_signal_retention_days: signalDays } : {}),
         ...(doneDays !== undefined ? { refinement_done_retention_days: doneDays } : {}),
         ...(operationalDays !== undefined ? { operational_retention_days: operationalDays } : {}),
         pressure_age_days: pressureAgeDays,
+        ...(args['fail_stale_active_runs'] !== undefined ? { fail_stale_active_runs: flagBool(args['fail_stale_active_runs']) } : {}),
         ...(args['workspace'] ? { workspace: String(args['workspace']) } : {}),
         ...(args['artifact'] ? { artifact: String(args['artifact']) } : {}),
         ...(isDryRun ? { dry_run: true } : {}),

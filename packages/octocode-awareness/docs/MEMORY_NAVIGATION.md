@@ -112,10 +112,12 @@ The workboard is derived; it has no table. Lanes route actions:
 - Verify: run declared checks and mark results.
 - Inbox: act, acknowledge, resolve.
 - MemoryReview/DeveloperReview/ProjectionHealth: bookkeep or housekeep.
-- Maintenance: pending runs, open signals, and missing memory file references older
-  than one day by default (`--pressure-age-days` may raise the review window). These
-  are read-only sensors with bounded IDs; they never delete,
-  resolve, or verify fresh work.
+- Maintenance: pending runs, stale ACTIVE runs, open signals, and missing memory
+  file references older than one day by default (`--pressure-age-days` may raise
+  the review window). Workboard rows are bounded sensors. `maintenance digest
+  --dry-run` previews recovery; applying digest may resolve stale handoff
+  broadcasts and mark expired ACTIVE runs `FAILED` with an audit receipt, but it
+  never marks work successful from age.
 
 Re-run attend after a material task, peer, signal, or verification transition—not
 after every tool call.

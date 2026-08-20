@@ -16,11 +16,24 @@ import type {
   WorkerLedgerEntry,
   WorkerLedgerEvent,
   WorkerLedgerEventType,
+  WorkerWorktreeState,
 } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
+import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { refreshStatusPanel, resumeStatusPanel } from './status-panel.js';
 import { stringEnumSchema } from './schema-helpers.js';
 import { getRandomAgentName } from '../agentNames.js';
+import {
+  assertWorktreeSpawnAllowed,
+  cleanupWorktreeIfNoWork,
+  createAgentWorktree,
+  removeAgentWorktree,
+  setWorktreeGitRunnerForTests,
+  type InternalWorktreeState,
+  type WorktreeGitRunner,
+  type WorktreeIsolation,
+} from './worktree.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -31,6 +44,7 @@ export type NormalizedWorkerStatus = 'done' | 'blocked' | 'failed' | 'unknown';
 export type NormalizedWorkerConfidence = 'confirmed' | 'likely' | 'uncertain';
 
 type MessageAction = 'list' | 'status' | 'send' | 'steer' | 'followUp' | 'wait' | 'kill' | 'abort';
+type WorktreeDecision = 'shared' | 'create';
 
 export interface NormalizedWorkerResult {
   status: NormalizedWorkerStatus;
@@ -75,6 +89,7 @@ interface SpawnOptions {
 }
 
 type AgentProcessFactory = (command: string, args: string[], options: SpawnOptions) => AgentProcess;
+let ledgerHidden = false;
 
 export interface SpawnAgentParams {
   task?: string;
@@ -89,6 +104,10 @@ export interface SpawnAgentParams {
   systemPrompt?: string;
   resourceMode?: ResourceMode;
   noSession?: boolean;
+  isolation?: WorktreeIsolation;
+  includeUncommitted?: boolean;
+  /** Internal: set only after the user-decision gate approves worktree creation or explicitly chooses shared cwd. */
+  worktreeDecision?: WorktreeDecision;
   /**
    * Absolute paths to skill directories to load via --skill (additive, works with --no-skills).
    * L9: This field is intentionally NOT exposed in the `spawnAgent` tool's TypeBox schema;
@@ -128,6 +147,8 @@ interface AgentRecord {
   responses: unknown[];
   toolCalls: AgentToolCall[];
   lastOutput: string;
+  /** Rolling 1-line progress note (latest structured/progress line) shown live while the worker runs. */
+  deltaSummary?: string;
   normalizedResult?: NormalizedWorkerResult;
   recoveryRisk: WorkerRecoveryRisk;
   ledgerEvents: WorkerLedgerEvent[];
@@ -135,6 +156,7 @@ interface AgentRecord {
   promptFiles: string[];
   waiters: Set<() => void>;
   nextRequestId: number;
+  worktree?: InternalWorktreeState;
 }
 
 interface AgentDetails {
@@ -150,11 +172,17 @@ const MAX_VISIBLE_OUTPUT = 12000;
 export const MAX_AGENT_RECORDS = 50;
 export const DEFAULT_SPAWN_POLICY: SpawnPolicy = {
   maxActiveAgents: MAX_AGENT_RECORDS,
-  warningActiveAgents: 6,
+  // Research (DeepMind 180-config study) shows structured fan-out value plateaus around
+  // ~4 agents; warn early so the orchestrator keeps lanes small and coordination cheap.
+  warningActiveAgents: 4,
   requiredPacketSections: REQUIRED_PACKET_SECTIONS,
+  maxStepsPerWorker: 60,
 };
 const SPAWN_POLICY_MAX_ACTIVE_ENV = 'OCTOCODE_AGENT_MAX_ACTIVE';
 const SPAWN_POLICY_WARNING_ACTIVE_ENV = 'OCTOCODE_AGENT_WARNING_ACTIVE';
+const SPAWN_POLICY_MAX_STEPS_ENV = 'OCTOCODE_AGENT_MAX_STEPS';
+/** Idle worker is reapable after this long with no update (backstop for orphaned agents). */
+export const DEFAULT_IDLE_REAP_MS = 15 * 60_000;
 export const OCTOCODE_AGENTS_COMMAND_USAGE = '/octocode-agents [help|list|status|inspect <id>|kill <id>|kill-all|prune|hide]';
 export const OCTOCODE_AGENTS_COMMAND_COMPLETIONS = ['help', 'list', 'status', 'inspect ', 'kill ', 'kill-all', 'prune', 'hide'] as const;
 export const OCTOCODE_AGENTS_COMMAND_DESCRIPTIONS: Record<(typeof OCTOCODE_AGENTS_COMMAND_COMPLETIONS)[number], string> = {
@@ -185,11 +213,20 @@ export function isSubagentProcess(): boolean {
 
 export function setAgentProcessFactoryForTests(factory: AgentProcessFactory | null): void {
   processFactory = factory ?? ((command, args, options) => spawn(command, args, options) as unknown as AgentProcess);
+  setWorktreeGitRunnerForTests(null);
   agents.clear();
+  ledgerHidden = false;
+  // A prior test's session_shutdown may have suppressed the status panel;
+  // ledger rendering assertions need it live again.
+  resumeStatusPanel();
+}
+
+export function setAgentWorktreeGitRunnerForTests(runner: WorktreeGitRunner | null): void {
+  setWorktreeGitRunnerForTests(runner);
 }
 
 /** wait() resolves at end-of-turn: idle counts as "done for now", plus true terminals. */
-function isTerminal(record: AgentRecord): boolean {
+function isTerminal(record: { status: AgentStatus }): boolean {
   return ['idle', 'exited', 'failed', 'killed'].includes(record.status);
 }
 
@@ -199,6 +236,7 @@ function isTerminal(record: AgentRecord): boolean {
  * send/steer/followUp, so evicting or shutdown-skipping it would orphan the child.
  */
 function isDroppable(record: AgentRecord): boolean {
+  if (record.worktree && record.worktree.mergeState !== 'clean' && record.worktree.mergeState !== 'merged' && record.worktree.mergeState !== 'discarded') return false;
   return ['exited', 'failed', 'killed'].includes(record.status);
 }
 
@@ -228,8 +266,14 @@ function evictStaleAgents(): void {
 export function cleanupSpawnedAgentsForShutdown(): number {
   // Kill every worker whose process is still alive — including idle ones, whose
   // process stays up between turns and would otherwise survive as an orphan.
-  const alive = [...agents.values()].filter((record) => !isDroppable(record));
+  const alive = [...agents.values()].filter((record) => isProcessAlive(record));
   for (const record of alive) killAgent(record, { forceKillDelayMs: 0 });
+  // The killed children's close/stderr events fire on later ticks and call
+  // refreshAgentLedgerUi; hide the ledger so those callbacks clear rather than
+  // resurrect the status/widget into the next session. Spawning (or an explicit
+  // list/status action) un-hides it again.
+  ledgerHidden = true;
+  stopLedgerTicker();
   return alive.length;
 }
 
@@ -270,21 +314,42 @@ function getAgentDisplayState(agent: AgentDisplaySource): AgentDisplayState {
   return 'starting';
 }
 
+// Live-progress spinner: advanced once per ledger tick while a worker runs.
+const LEDGER_SPINNER = ['✦', '✧', '✶', '✺', '✹', '✷', '✶', '✧'];
+let ledgerSpinnerFrame = 0;
+/** Single shared 1s ticker; live only while ≥1 worker is non-terminal and the UI is present. */
+let ledgerTicker: ReturnType<typeof setInterval> | undefined;
+
+function stopLedgerTicker(): void {
+  if (ledgerTicker) {
+    clearInterval(ledgerTicker);
+    ledgerTicker = undefined;
+  }
+}
+
+/** Test hook: stop the ticker and report its state so tests never leak a real timer. */
+export function stopLedgerTickerForTests(): void {
+  stopLedgerTicker();
+}
+export function isLedgerTickerActiveForTests(): boolean {
+  return ledgerTicker !== undefined;
+}
+
 function agentDisplayMeta(state: AgentDisplayState, theme?: PiTheme): { icon: string; label: string } {
-  const raw = (() => {
+  const raw: { icon: string; label: string; color: Parameters<typeof paint>[1] } = (() => {
     switch (state) {
       case 'done': return { icon: '\u2713', label: 'done', color: 'success' };
       case 'failed': return { icon: '\u2717', label: 'failed', color: 'error' };
       case 'killed': return { icon: '\u2717', label: 'killed', color: 'warning' };
       case 'blocked': return { icon: '!', label: 'blocked', color: 'warning' };
-      case 'running': return { icon: '\u29D7', label: 'running', color: 'warning' };
+      case 'running': return { icon: LEDGER_SPINNER[ledgerSpinnerFrame % LEDGER_SPINNER.length], label: 'running', color: 'warning' };
       case 'idle': return { icon: '\u25CE', label: 'idle', color: 'success' };
       case 'starting': return { icon: '\u25CB', label: 'starting', color: 'dim' };
     }
   })();
   return {
-    icon: theme?.fg(raw.color, raw.icon) ?? raw.icon,
-    label: theme?.fg(raw.color, raw.label) ?? raw.label,
+    icon: paint(theme, raw.color, raw.icon),
+    label: paint(theme, raw.color, raw.label),
   };
 }
 
@@ -296,8 +361,13 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-function formatElapsed(startedAt: number): string {
-  const ms = Date.now() - startedAt;
+/**
+ * `endedAt` freezes elapsed time at a terminal agent's last update instead of
+ * letting it keep growing against Date.now() long after the agent finished —
+ * pass it whenever the record/summary is terminal (see isTerminal()).
+ */
+export function formatElapsed(startedAt: number, endedAt?: number): string {
+  const ms = (endedAt ?? Date.now()) - startedAt;
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
   const m = Math.floor(ms / 60_000);
@@ -348,6 +418,17 @@ function buildInitialPrompt(params: SpawnAgentParams): string {
   return `Context for this delegated agent:\n\n${context}\n\nTask:\n\n${task}`;
 }
 
+function withWorktreePromptContext(params: SpawnAgentParams, worktree: InternalWorktreeState): SpawnAgentParams {
+  const preamble = [
+    'Worktree isolation is active for this worker.',
+    `- Worktree path: ${worktree.path}`,
+    `- Branch: ${worktree.branch}`,
+    `- Base commit: ${worktree.baseCommit}`,
+    '- Report repo-relative paths in handback; the parent ledger exposes the isolated path for review.',
+  ].join('\n');
+  return { ...params, cwd: worktree.path, context: params.context ? `${preamble}\n\n${params.context}` : preamble };
+}
+
 function getWorkerTools(params: SpawnAgentParams): string[] {
   return (params.tools ?? []).filter((toolName) => !FORBIDDEN_WORKER_TOOLS.has(toolName));
 }
@@ -365,7 +446,7 @@ function buildPiArgs(params: SpawnAgentParams, name: string, promptFiles: string
 
   if (params.provider) args.push('--provider', params.provider);
   if (params.model) args.push('--model', params.model);
-  if (params.thinking) args.push('--thinking', params.thinking);
+  if (params.thinking && !shouldOmitThinkingForToolCallingWorker(params, workerTools)) args.push('--thinking', params.thinking);
   if (workerTools.length) args.push('--tools', workerTools.join(','));
   args.push('--no-context-files');
 
@@ -390,6 +471,18 @@ function touch(record: AgentRecord, status?: AgentStatus): void {
   if (status) record.status = status;
 }
 
+// Ledger listeners: notified on every ledger event (spawned/status/tool/handback/…).
+// Normalized-status flips also funnel through here — refreshNormalizedResult pushes a
+// 'handback' ledger event whenever the normalized status changes, so subscribing to
+// pushLedgerEvent covers all worker state transitions.
+const ledgerListeners = new Set<(entry: WorkerLedgerEntry, type: WorkerLedgerEventType) => void>();
+
+/** Subscribe to worker ledger events. Returns an unsubscribe function. */
+export function registerWorkerLedgerListener(cb: (entry: WorkerLedgerEntry, type: WorkerLedgerEventType) => void): () => void {
+  ledgerListeners.add(cb);
+  return () => { ledgerListeners.delete(cb); };
+}
+
 function pushLedgerEvent(record: AgentRecord, type: WorkerLedgerEventType, message?: string, details?: unknown): void {
   pushCapped(record.ledgerEvents, {
     type,
@@ -398,6 +491,18 @@ function pushLedgerEvent(record: AgentRecord, type: WorkerLedgerEventType, messa
     details,
   });
   if (record.ledgerEvents.length > MAX_LEDGER_EVENTS) record.ledgerEvents.splice(0, record.ledgerEvents.length - MAX_LEDGER_EVENTS);
+  if (ledgerListeners.size > 0) {
+    const entry = toWorkerLedgerEntry(record);
+    for (const listener of ledgerListeners) {
+      // A throwing listener must never break the ledger (or the worker pipeline).
+      try { listener(entry, type); } catch { /* listener errors are isolated */ }
+    }
+  }
+}
+
+function previewMessage(message: string): string {
+  const oneLine = message.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 72 ? `${oneLine.slice(0, 71)}…` : oneLine;
 }
 
 function notifyWaiters(record: AgentRecord): void {
@@ -414,9 +519,19 @@ function activeAgentCount(): number {
   return [...agents.values()].filter((record) => !isDroppable(record)).length;
 }
 
-function lowerIncludesAll(text: string, sections: string[]): string[] {
-  const lower = text.toLowerCase();
-  return sections.filter((section) => !lower.includes(section));
+/**
+ * A packet section counts as present only when it anchors a line as a label —
+ * e.g. "Goal:", "- Scope:", "## Ownership —", "**Acceptance:**" — optionally
+ * preceded by a bullet/heading marker and wrapped in bold. A bare mention
+ * inside prose ("there is no clear goal here") does not count: the packet
+ * policy exists to catch genuinely unstructured worker briefs, not to be
+ * satisfied by incidentally using the right words.
+ */
+function missingStructuredSections(text: string, sections: string[]): string[] {
+  return sections.filter((section) => {
+    const label = new RegExp(String.raw`^[ \t]*(?:[-*#>]+[ \t]*)*\**${section}\**[ \t]*[:—-]`, 'im');
+    return !label.test(text);
+  });
 }
 
 function readPositiveIntegerEnv(name: string): number | undefined {
@@ -430,11 +545,51 @@ function readPositiveIntegerEnv(name: string): number | undefined {
 function resolveSpawnPolicy(policy: SpawnPolicy): SpawnPolicy {
   const maxActiveAgents = readPositiveIntegerEnv(SPAWN_POLICY_MAX_ACTIVE_ENV) ?? policy.maxActiveAgents;
   const warningActiveAgents = readPositiveIntegerEnv(SPAWN_POLICY_WARNING_ACTIVE_ENV) ?? policy.warningActiveAgents;
+  const maxStepsPerWorker = readPositiveIntegerEnv(SPAWN_POLICY_MAX_STEPS_ENV) ?? policy.maxStepsPerWorker;
   return {
     ...policy,
     maxActiveAgents,
     warningActiveAgents: Math.min(warningActiveAgents, maxActiveAgents),
+    maxStepsPerWorker,
   };
+}
+
+/**
+ * Per-worker step (tool-call) circuit-breaker signal. Returns a warning once a worker's
+ * completed tool calls reach the budget so the parent can abort/steer a runaway worker.
+ */
+export function evaluateStepBudget(
+  steps: number,
+  maxSteps: number = DEFAULT_SPAWN_POLICY.maxStepsPerWorker,
+): { exceeded: boolean; warning?: string } {
+  if (!Number.isFinite(maxSteps) || maxSteps <= 0) return { exceeded: false };
+  if (steps >= maxSteps) {
+    return { exceeded: true, warning: `Worker exceeded step budget (${steps}/${maxSteps} tool calls) — consider abort/steer; a runaway worker burns tokens.` };
+  }
+  return { exceeded: false };
+}
+
+/**
+ * Classify lingering agents for cleanup. TERMINAL records (exited/failed/killed) are always
+ * safe to auto-remove; IDLE records are still reusable for follow-ups, so they are only
+ * flagged (nudge) once idle longer than idleMs — never auto-killed (preserves the follow-up
+ * model). Pure + injectable clock for testing.
+ */
+export function findReapableIdleAgents(
+  records: Array<{ id: string; status: AgentStatus; updatedAt: number }>,
+  opts: { idleMs?: number; now?: number } = {},
+): { terminal: string[]; idle: string[] } {
+  const idleMs = opts.idleMs ?? DEFAULT_IDLE_REAP_MS;
+  const now = opts.now ?? Date.now();
+  const terminalStatuses: AgentStatus[] = ['exited', 'failed', 'killed'];
+  const terminal: string[] = [];
+  const idle: string[] = [];
+  for (const r of records) {
+    const staleFor = now - r.updatedAt;
+    if (terminalStatuses.includes(r.status)) terminal.push(r.id);
+    else if (r.status === 'idle' && staleFor >= idleMs) idle.push(r.id);
+  }
+  return { terminal, idle };
 }
 
 function looksLikeProviderScopedModel(model: string): boolean {
@@ -442,9 +597,55 @@ function looksLikeProviderScopedModel(model: string): boolean {
     || /^(?:claude|gpt|llama|mistral|gemini|qwen|zai|deepseek|kimi|codestral)[-_:/.]/i.test(model);
 }
 
+function isOpenAiGpt5Worker(params: SpawnAgentParams): boolean {
+  const provider = String(params.provider ?? '').toLowerCase();
+  const model = String(params.model ?? '').toLowerCase();
+  return provider.includes('openai') && /^gpt-5(?:[._-]|$)/.test(model);
+}
+
+function shouldOmitThinkingForToolCallingWorker(params: SpawnAgentParams, workerTools: string[]): boolean {
+  // OpenAI's Chat Completions endpoint rejects function tools when reasoning_effort
+  // is also present for GPT-5-series models. Pi maps --thinking to reasoning_effort,
+  // so tool-calling subagents must omit it and let the provider default apply.
+  return workerTools.length > 0 && isOpenAiGpt5Worker(params);
+}
+
+function resolveWorkerModelParams(params: SpawnAgentParams, ctx?: PiContext): SpawnAgentParams {
+  const explicitModel = typeof params.model === 'string' && params.model.trim().length > 0;
+  const parentModel = ctx?.model;
+  return {
+    ...params,
+    model: explicitModel ? params.model : parentModel?.id,
+    provider: params.provider ?? (!explicitModel || params.model === parentModel?.id ? parentModel?.provider : undefined),
+  };
+}
+
+function validateWorkerModelParams(params: SpawnAgentParams, ctx?: PiContext): void {
+  const model = String(params.model ?? '').trim();
+  const provider = String(params.provider ?? '').trim();
+  if (!model) return;
+  if (!provider && looksLikeProviderScopedModel(model)) {
+    throw new Error(`spawnAgent model "${model}" requires an explicit provider from \`pi -ne --list-models\`.`);
+  }
+  if (provider && ctx?.modelRegistry?.find && !ctx.modelRegistry.find(provider, model)) {
+    throw new Error(`spawnAgent model/provider not found in the active Pi model registry: ${provider}/${model}. Choose a valid pair from \`pi -ne --list-models\`.`);
+  }
+}
+
 export function evaluateSpawnPolicy(params: SpawnAgentParams, activeCount = activeAgentCount(), policy: SpawnPolicy = DEFAULT_SPAWN_POLICY): SpawnPolicyResult {
   const effectivePolicy = resolveSpawnPolicy(policy);
   const warnings: string[] = [];
+  if (params.isolation === 'worktree') {
+    try {
+      assertWorktreeSpawnAllowed(path.resolve(String(params.cwd ?? process.cwd())));
+    } catch (error) {
+      return {
+        allowed: false,
+        warnings,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
   if (activeCount >= effectivePolicy.maxActiveAgents) {
     return {
       allowed: false,
@@ -456,13 +657,16 @@ export function evaluateSpawnPolicy(params: SpawnAgentParams, activeCount = acti
     warnings.push(`High worker fan-out: ${activeCount}/${effectivePolicy.maxActiveAgents} active agents already exist.`);
   }
   const task = buildInitialPrompt(params);
-  const missingSections = lowerIncludesAll(task, effectivePolicy.requiredPacketSections);
+  const missingSections = missingStructuredSections(task, effectivePolicy.requiredPacketSections);
   if (missingSections.length > 0) {
     warnings.push(`Worker packet is missing recommended section(s): ${missingSections.join(', ')}.`);
   }
   const model = String(params.model ?? '');
   if (model && looksLikeProviderScopedModel(model) && !params.provider) {
     warnings.push('Model looks provider-scoped or custom-provider-hosted; pass provider from `pi -ne --list-models` when required.');
+  }
+  if (params.thinking && shouldOmitThinkingForToolCallingWorker(params, getWorkerTools(params))) {
+    warnings.push('Omitted --thinking for OpenAI GPT-5 tool-calling worker because Chat Completions rejects reasoning_effort with function tools.');
   }
   const strippedTools = (params.tools ?? []).filter((toolName) => FORBIDDEN_WORKER_TOOLS.has(toolName));
   if (strippedTools.length > 0) {
@@ -552,6 +756,13 @@ function refreshNormalizedResult(record: AgentRecord): void {
   const output = record.lastOutput || record.stderr || record.error || '';
   record.normalizedResult = normalizeWorkerOutput(output);
   record.recoveryRisk = evaluateWorkerRecoveryRisk(output);
+  // Step-budget circuit-breaker: surface a warning when a worker's completed tool calls
+  // reach the budget, so the parent can abort/steer a runaway worker.
+  const steps = record.toolCalls.filter((call) => call.status !== 'running').length;
+  const budget = evaluateStepBudget(steps, resolveSpawnPolicy(DEFAULT_SPAWN_POLICY).maxStepsPerWorker);
+  if (budget.exceeded && budget.warning && !record.recoveryRisk.warnings.includes(budget.warning)) {
+    record.recoveryRisk.warnings.push(budget.warning);
+  }
   if (record.normalizedResult.status !== 'unknown' && record.normalizedResult.status !== previousStatus) {
     pushLedgerEvent(record, 'handback', `worker handback: ${record.normalizedResult.status}`, record.normalizedResult);
   }
@@ -561,12 +772,50 @@ function refreshNormalizedResult(record: AgentRecord): void {
   }
 }
 
+const DELTA_PREFIX = /^\s*\[(STATUS|ACTION|FINDING|METRIC|PLAN|BLOCKED|DONE|EVIDENCE)\]/i;
+const MAX_DELTA_SUMMARY_CHARS = 120;
+
+/** Rolling progress note: latest structured worker line, else the last non-empty line. */
+export function extractDeltaSummary(text: string): string | undefined {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return undefined;
+  const structured = [...lines].reverse().find((l) => DELTA_PREFIX.test(l));
+  const chosen = (structured ?? lines[lines.length - 1]!).replace(/\s+/g, ' ');
+  return chosen.length > MAX_DELTA_SUMMARY_CHARS ? `${chosen.slice(0, MAX_DELTA_SUMMARY_CHARS - 1)}…` : chosen;
+}
+
+/**
+ * SEV-2: capture a model/turn-level failure from a worker message. Errored turns emit
+ * an assistant message with stopReason:"error" and errorMessage (e.g. "400 Unsupported
+ * model", "500 Internal Server Error") but no content, so without this the failure is
+ * invisible: record.error stays unset (RPC transport succeeded, process exits 0) and
+ * lastOutput is empty. Recording it lets status/AgentMessage explain why a worker idled.
+ */
+function captureMessageError(record: AgentRecord, message: unknown): void {
+  if (!message || typeof message !== 'object') return;
+  const m = message as { stopReason?: string; errorMessage?: string };
+  const errMsg = typeof m.errorMessage === 'string' ? m.errorMessage.trim() : '';
+  if (m.stopReason !== 'error' && !errMsg) return;
+  const text = errMsg || 'worker model turn failed';
+  if (!record.error) record.error = text;
+  pushLedgerEvent(record, 'error', `worker turn error: ${text}`);
+  touch(record);
+}
+
+function isAssistantOutputMessage(message: unknown): boolean {
+  if (!message || typeof message !== 'object') return false;
+  return (message as { role?: unknown }).role === 'assistant';
+}
+
 function updateLastOutput(record: AgentRecord, message: unknown): void {
+  if (!isAssistantOutputMessage(message)) return;
   const text = extractTextFromMessage(message);
   if (text) {
     record.lastOutput = text.length > MAX_AGENT_LAST_OUTPUT_CHARS
       ? text.slice(-MAX_AGENT_LAST_OUTPUT_CHARS)
       : text;
+    const delta = extractDeltaSummary(text);
+    if (delta) record.deltaSummary = delta;
     refreshNormalizedResult(record);
   }
 }
@@ -653,15 +902,26 @@ function processRpcLine(record: AgentRecord, line: string): void {
   } else if (eventType === 'message_end' && (event as { message?: unknown }).message) {
     const message = (event as { message: unknown }).message;
     pushCapped(record.messages, message);
+    captureMessageError(record, message);
     updateLastOutput(record, message);
     touch(record);
   } else if (eventType === 'agent_end') {
     const messages = (event as { messages?: unknown[] }).messages;
     if (Array.isArray(messages)) {
-      for (const message of messages) updateLastOutput(record, message);
+      for (const message of messages) {
+        captureMessageError(record, message);
+        updateLastOutput(record, message);
+      }
     }
-    touch(record, 'idle');
-    notifyWaiters(record);
+    // agent_end {willRetry:true} means the worker aborted on context overflow
+    // and Pi is compacting + retrying the turn — it is still working, so a
+    // pending wait must not resolve with the incomplete lastOutput.
+    if ((event as { willRetry?: boolean }).willRetry === true) {
+      touch(record);
+    } else {
+      touch(record, 'idle');
+      notifyWaiters(record);
+    }
   }
 }
 
@@ -698,15 +958,58 @@ function cleanupPromptFiles(promptFiles: string[]): void {
   }
 }
 
+async function approveWorktreeIsolation(params: SpawnAgentParams, ctx?: PiContext): Promise<SpawnAgentParams> {
+  if (params.isolation !== 'worktree') return params;
+  if (!ctx?.hasUI || typeof ctx.ui?.select !== 'function') {
+    throw new Error('isolation:"worktree" requires an interactive UI approval; non-interactive hosts fail closed. Re-run with isolation:"shared" to use the current cwd intentionally.');
+  }
+  const create = 'Create isolated worktree';
+  const shared = 'Use current repo / shared cwd';
+  const cancel = 'Cancel spawn';
+  const picked = await ctx.ui.select('Spawn this worker in an isolated git worktree?', [create, shared, cancel]);
+  if (picked === create) return { ...params, worktreeDecision: 'create' };
+  if (picked === shared) return { ...params, isolation: 'shared', worktreeDecision: 'shared' };
+  throw new Error('Spawn cancelled before creating a worktree.');
+}
+
+function worktreeSnapshot(worktree: WorkerWorktreeState | undefined): WorkerWorktreeState | undefined {
+  return worktree ? { ...worktree } : undefined;
+}
+
+function formatWorktreeState(worktree: WorkerWorktreeState | undefined): string {
+  if (!worktree) return '';
+  const branch = worktree.branch.replace(/^octocode\//, '');
+  return ` ⎇ ${branch} +${worktree.aheadCommits}c ~${worktree.dirtyFiles}f ${worktree.mergeState}`;
+}
+
+function cleanupRecordWorktree(record: AgentRecord): void {
+  if (!record.worktree || record.worktree.mergeState === 'discarded' || record.worktree.mergeState === 'merged') return;
+  try {
+    const outcome = cleanupWorktreeIfNoWork(record.worktree);
+    pushLedgerEvent(record, 'worktree', outcome === 'removed' ? 'removed clean worktree' : 'kept unmerged worktree', record.worktree);
+  } catch (cleanupError) {
+    pushLedgerEvent(record, 'worktree', `worktree cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`, record.worktree);
+  }
+}
+
+export async function prepareSpawnAgentParams(params: SpawnAgentParams, ctx?: PiContext): Promise<SpawnAgentParams> {
+  return approveWorktreeIsolation(params, ctx);
+}
+
 export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentRecord {
-  const task = buildInitialPrompt(params);
-  if (!task) throw new Error('spawnAgent requires task or prompt.');
+  if (!buildInitialPrompt(params)) throw new Error('spawnAgent requires task or prompt.');
 
   const id = randomUUID();
   const name = params.name ? String(params.name) : getRandomAgentName();
-  const cwd = path.resolve(String(params.cwd ?? ctx?.cwd ?? process.cwd()));
+  const requestedCwd = path.resolve(String(params.cwd ?? ctx?.cwd ?? process.cwd()));
   const promptFiles: string[] = [];
-  const args = buildPiArgs(params, name, promptFiles);
+  // SEV-1: workers resolve models against the same catalog as the parent, but Pi's
+  // bare default (google/grok) is often unconfigured/unreachable — an unset worker
+  // model silently errors every turn (0 tools run). Inherit the parent's known-working
+  // model+provider when the caller didn't pin one, so delegation works by default.
+  const effectiveParams = resolveWorkerModelParams({ ...params, cwd: requestedCwd }, ctx);
+  validateWorkerModelParams(effectiveParams, ctx);
+  const args = buildPiArgs(effectiveParams, name, promptFiles);
   const invocation = getPiInvocation(args);
   const awarenessAgentId = workerAwarenessAgentId(id);
 
@@ -715,11 +1018,30 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   // non-droppable agents still fill the registry. Checked before processFactory to ensure
   // no process is leaked when the cap is exceeded.
   evictStaleAgents();
-  const policyResult = evaluateSpawnPolicy(params, activeAgentCount());
+  const policyResult = evaluateSpawnPolicy(effectiveParams, activeAgentCount());
   if (!policyResult.allowed) {
     cleanupPromptFiles(promptFiles);
     throw new Error(`${policyResult.reason} Kill or wait for existing agents before spawning more.`);
   }
+
+  let worktree: InternalWorktreeState | undefined;
+  let spawnParams = effectiveParams;
+  let cwd = requestedCwd;
+  if (effectiveParams.isolation === 'worktree') {
+    if (effectiveParams.worktreeDecision !== 'create') {
+      cleanupPromptFiles(promptFiles);
+      throw new Error('isolation:"worktree" requires explicit user approval before creating a git worktree.');
+    }
+    worktree = createAgentWorktree({
+      parentCwd: requestedCwd,
+      agentId: id,
+      name,
+      includeUncommitted: effectiveParams.includeUncommitted,
+    });
+    spawnParams = withWorktreePromptContext(effectiveParams, worktree);
+    cwd = worktree.path;
+  }
+  const task = buildInitialPrompt(spawnParams);
 
   let proc;
   try {
@@ -731,6 +1053,14 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
         ...process.env,
         [SUBAGENT_ENV_VAR]: '1',
         [AWARENESS_AGENT_ENV_VAR]: awarenessAgentId,
+        // getPiInvocation() re-executes process.argv[1], which for any octocode-agent
+        // process is bin/octocode-agent.mjs. Left unset, a worker spawned from a
+        // parent running in the default SDK-embed mode would inherit that mode and
+        // re-enter launchWithSdk() — whose arg parser does not understand
+        // --tools/--exclude-tools/-e/--append-system-prompt/--skill, silently
+        // dropping the curated allowlist buildPiArgs() just built. Force the
+        // subprocess path, which forwards argv verbatim to the real Pi CLI.
+        OCTOCODE_LAUNCHER_MODE: 'subprocess',
       },
     });
   } catch (error) {
@@ -738,6 +1068,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     // (wired to the record's 'close'/'error' handlers) would never run. Clean up the temp
     // system-prompt files buildPiArgs wrote so a failing factory does not leak files in os.tmpdir.
     cleanupPromptFiles(promptFiles);
+    if (worktree) removeAgentWorktree(worktree, { force: true });
     throw error;
   }
 
@@ -757,6 +1088,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     responses: [],
     toolCalls: [],
     lastOutput: '',
+    deltaSummary: undefined,
     normalizedResult: normalizeWorkerOutput(''),
     recoveryRisk: evaluateWorkerRecoveryRisk(''),
     ledgerEvents: [],
@@ -764,8 +1096,10 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     promptFiles,
     waiters: new Set(),
     nextRequestId: 1,
+    worktree,
   };
   pushLedgerEvent(record, 'spawned', `spawned ${name}`, { awarenessAgentId });
+  if (record.worktree) pushLedgerEvent(record, 'worktree', `created worktree ${record.worktree.branch}`, record.worktree);
   for (const warning of policyResult.warnings) pushLedgerEvent(record, 'policy', warning);
   agents.set(id, record);
   // Evict droppable agents to keep registry size ≤ MAX_AGENT_RECORDS.
@@ -798,6 +1132,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     pushLedgerEvent(record, 'error', record.error);
     touch(record, 'failed');
     removePromptFiles(record);
+    cleanupRecordWorktree(record);
     notifyWaiters(record);
     refreshAgentLedgerUi(ctx);
   });
@@ -808,6 +1143,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     if (record.status !== 'killed') touch(record, code === 0 ? 'exited' : 'failed');
     pushLedgerEvent(record, record.status === 'failed' ? 'error' : 'exit', `process closed with code ${record.exitCode ?? 'unknown'}`);
     removePromptFiles(record);
+    cleanupRecordWorktree(record);
     notifyWaiters(record);
     refreshAgentLedgerUi(ctx);
   });
@@ -819,10 +1155,13 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     pushLedgerEvent(record, 'message', 'initial prompt sent');
     touch(record, 'running');
   }
+  // Make silent or slow-starting workers visible immediately. Event handlers will
+  // keep the unified panel/footer fresh once stdout/stderr/close events arrive.
+  refreshAgentLedgerUi(ctx);
   return record;
 }
 
-function summarizeAgent(record: AgentRecord) {
+function summarizeAgent(record: AgentRecord, opts: { full?: boolean } = {}) {
   refreshNormalizedResult(record);
   const normalized = record.normalizedResult;
   const summaryText = normalized?.result || normalized?.next || record.lastOutput || record.stderr || record.error || '';
@@ -846,36 +1185,41 @@ function summarizeAgent(record: AgentRecord) {
     normalizedResult: normalized,
     recoveryRisk: record.recoveryRisk,
     policyWarnings: [...record.policyWarnings],
-    ledgerEvents: record.ledgerEvents.slice(-10),
-    toolCalls: record.toolCalls.slice(-10),
+    ledgerEvents: opts.full ? [...record.ledgerEvents] : record.ledgerEvents.slice(-10),
+    toolCalls: opts.full ? [...record.toolCalls] : record.toolCalls.slice(-10),
     activeTool: [...record.toolCalls].reverse().find((call) => call.status === 'running')?.toolName,
+    worktree: worktreeSnapshot(record.worktree),
+  };
+}
+
+function toWorkerLedgerEntry(record: AgentRecord): WorkerLedgerEntry {
+  const normalized = record.normalizedResult;
+  return {
+    agentId: record.id,
+    name: record.name,
+    status: record.status,
+    startedAt: new Date(record.startedAt).toISOString(),
+    updatedAt: new Date(record.updatedAt).toISOString(),
+    model: getArgValue(record.args, '--model'),
+    provider: getArgValue(record.args, '--provider'),
+    thinking: getArgValue(record.args, '--thinking'),
+    tools: getArgCsv(record.args, '--tools'),
+    normalizedStatus: normalized?.status,
+    result: normalized?.result,
+    confidence: normalized?.confidence,
+    evidence: normalized?.evidence,
+    verification: normalized?.verification,
+    next: normalized?.next,
+    deltaSummary: record.deltaSummary,
+    worktree: worktreeSnapshot(record.worktree),
+    recentEvents: record.ledgerEvents.slice(-10),
   };
 }
 
 export function listWorkerLedgerEntries(): WorkerLedgerEntry[] {
   return [...agents.values()]
     .sort((a, b) => b.updatedAt - a.updatedAt)
-    .map((record) => {
-      const normalized = record.normalizedResult;
-      return {
-        agentId: record.id,
-        name: record.name,
-        status: record.status,
-        startedAt: new Date(record.startedAt).toISOString(),
-        updatedAt: new Date(record.updatedAt).toISOString(),
-        model: getArgValue(record.args, '--model'),
-        provider: getArgValue(record.args, '--provider'),
-        thinking: getArgValue(record.args, '--thinking'),
-        tools: getArgCsv(record.args, '--tools'),
-        normalizedStatus: normalized?.status,
-        result: normalized?.result,
-        confidence: normalized?.confidence,
-        evidence: normalized?.evidence,
-        verification: normalized?.verification,
-        next: normalized?.next,
-        recentEvents: record.ledgerEvents.slice(-10),
-      };
-    });
+    .map(toWorkerLedgerEntry);
 }
 
 function getArgValue(args: string[], flag: string): string | undefined {
@@ -916,7 +1260,7 @@ function getAgent(agentId: unknown): AgentRecord {
   return record;
 }
 
-function waitForAgent(record: AgentRecord, timeoutMs: number): Promise<void> {
+export function waitForAgent(record: AgentRecord, timeoutMs: number): Promise<void> {
   if (isTerminal(record)) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const onDone = () => {
@@ -932,19 +1276,22 @@ function waitForAgent(record: AgentRecord, timeoutMs: number): Promise<void> {
 }
 
 function agentRiskBadge(summary: ReturnType<typeof summarizeAgent>, theme?: PiTheme): string {
-  if (summary.recoveryRisk?.warnings.length) return theme?.fg('warning', '⚠ recovery') ?? '⚠ recovery';
+  if (summary.recoveryRisk?.warnings.length) return paint(theme, 'warning', '⚠ recovery');
   if (summary.normalizedResult?.status === 'done' && summary.normalizedResult.evidence.length === 0 && !summary.normalizedResult.verification) {
-    return theme?.fg('warning', '⚠ needs verify') ?? '⚠ needs verify';
+    return paint(theme, 'warning', '⚠ needs verify');
   }
   return '';
 }
 
 function renderAgentResult(records: AgentRecord[], header: string): ToolCallResult {
-  const summaries = records.map(summarizeAgent);
+  const summaries = records.map((record) => summarizeAgent(record));
   const lines: string[] = [`${header} (${records.length}):`];
   for (const s of summaries) {
     const exit = s.exitCode !== undefined ? ` (exit ${s.exitCode})` : '';
-    const elapsed = formatElapsed(new Date(s.startedAt).getTime());
+    const elapsed = formatElapsed(
+      new Date(s.startedAt).getTime(),
+      isTerminal(s) ? new Date(s.updatedAt).getTime() : undefined,
+    );
     const state = getAgentDisplayState(s);
     const meta = agentDisplayMeta(state);
     const handback = s.normalizedResult?.status && s.normalizedResult.status !== 'unknown'
@@ -952,8 +1299,9 @@ function renderAgentResult(records: AgentRecord[], header: string): ToolCallResu
       : '';
     const risk = agentRiskBadge(s);
     const riskText = risk ? ` \u00b7 ${risk}` : '';
-    const result = s.normalizedResult?.result ?? s.normalizedResult?.next ?? s.lastOutput;
-    const preview = result ? ` \u2014 ${result.slice(0, 60).replace(/\n/g, ' ')}${s.outputTruncated ? '\u2026' : ''}` : '';
+    const latestEvent = s.ledgerEvents.at(-1)?.message;
+    const result = s.normalizedResult?.result ?? s.normalizedResult?.next ?? s.lastOutput ?? latestEvent;
+    const preview = result ? ` — ${result.slice(0, 60).replace(/\n/g, ' ')}${s.outputTruncated ? '…' : ''}` : '';
     const toolInfo = typeof s.activeTool === 'string' ? ` \u00b7 active:${s.activeTool}` : '';
     const modelInfo = ` \u00b7 ${formatAgentModelLine(s)}`;
     lines.push(`  ${meta.icon} ${s.name} (${shortId(s.agentId)}) \u00b7 ${meta.label}${exit}${handback}${riskText}${modelInfo} \u00b7 ${elapsed}${toolInfo}${preview}`);
@@ -995,11 +1343,11 @@ export function formatAgentLedger(): string {
 
 function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
   const records = [...agents.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-  const title = theme?.fg('toolTitle', 'Octocode agents') ?? 'Octocode agents';
+  const title = cliToolTitle(theme, 'Octocode agents');
   if (records.length === 0) return [`${title}: none`];
 
   const counts = formatAgentStateCounts(records);
-  const lines = [`${title}: ${theme?.fg('dim', counts) ?? counts}`];
+  const lines = [`${title}: ${paint(theme, 'dim', counts)}`];
   for (const record of records.slice(0, limit)) {
     const summary = summarizeAgent(record);
     const state = getAgentDisplayState(summary);
@@ -1007,17 +1355,30 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
     const handback = summary.normalizedResult?.status && summary.normalizedResult.status !== 'unknown'
       ? ` · ${summary.normalizedResult.status}/${summary.normalizedResult.confidence}`
       : '';
-    const active = summary.activeTool ? ` · active:${summary.activeTool}` : '';
+    const active = summary.activeTool
+      ? ` · ${paint(theme, 'warning', 'running')} ${summary.activeTool}`
+      : state === 'running' ? ` · ${paint(theme, 'warning', 'running')}` : '';
+    // Show what the worker is doing: total tool calls + the distinct tools it has used.
+    const callCount = record.toolCalls.length;
+    const toolNames = [...new Set(record.toolCalls.map((call) => call.toolName).filter(Boolean))].slice(0, 4);
+    const toolsInfo = callCount > 0
+      ? ` · ${callCount} call${callCount === 1 ? '' : 's'}${toolNames.length ? ` [${toolNames.join(',')}${new Set(record.toolCalls.map((c) => c.toolName)).size > toolNames.length ? ',…' : ''}]` : ''}`
+      : '';
     const modelInfo = ` · ${formatAgentModelLine(summary)}`;
     const risk = agentRiskBadge(summary, theme);
     const riskText = risk ? ` · ${risk}` : '';
-    const result = summary.normalizedResult?.result ?? summary.normalizedResult?.next ?? summary.lastOutput;
-    const preview = result ? ` — ${result.replace(/\n/g, ' ').slice(0, 90)}${summary.outputTruncated ? '…' : ''}` : '';
-    const name = theme?.fg('accent', summary.name) ?? summary.name;
-    const id = theme?.fg('dim', shortId(summary.agentId)) ?? shortId(summary.agentId);
-    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${modelInfo}${active} · ${formatElapsed(record.startedAt)}${theme?.fg('dim', preview) ?? preview}`);
+    const worktreeInfo = formatWorktreeState(summary.worktree);
+    const latestEvent = summary.ledgerEvents.at(-1)?.message;
+    const result = summary.normalizedResult?.result ?? summary.normalizedResult?.next ?? summary.lastOutput ?? latestEvent;
+    const live = !isTerminal(record) && record.deltaSummary ? record.deltaSummary : undefined;
+    const previewText = live ?? result;
+    const preview = previewText ? ` — ${previewText.replace(/\n/g, ' ').slice(0, 90)}${!live && summary.outputTruncated ? '…' : ''}` : '';
+    const name = paint(theme, 'brand', summary.name);
+    const id = paint(theme, 'dim', shortId(summary.agentId));
+    const elapsed = formatElapsed(record.startedAt, isTerminal(record) ? record.updatedAt : undefined);
+    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${modelInfo}${active}${toolsInfo}${worktreeInfo} · ${elapsed}${paint(theme, 'dim', preview)}`);
   }
-  if (records.length > limit) lines.push(theme?.fg('muted', `… ${records.length - limit} more; use AgentMessage list for full details.`) ?? `… ${records.length - limit} more; use AgentMessage list for full details.`);
+  if (records.length > limit) lines.push(paint(theme, 'muted', `… ${records.length - limit} more; use AgentMessage list for full details.`));
   return lines;
 }
 
@@ -1026,27 +1387,43 @@ export function formatAgentLedgerDetails(limit = 10): string {
 }
 
 function hasVisibleAgentLedgerRecords(): boolean {
-  return agents.size > 0;
+  return agents.size > 0 && !ledgerHidden;
 }
 
-function agentLedgerWidget(theme?: PiTheme) {
-  return makeRenderer((width) => buildAgentLedgerLines(6, theme).map((line) => truncateToWidth(line, width)));
+/** The Agents section lines for the unified below-editor panel. Empty when there are no workers. */
+export function agentPanelLines(theme?: PiTheme, limit = 6): string[] {
+  return hasVisibleAgentLedgerRecords() ? buildAgentLedgerLines(limit, theme) : [];
 }
 
 export function refreshAgentLedgerUi(ctx?: PiContext): void {
   if (!ctx?.hasUI) return;
   const records = [...agents.values()];
-  if (records.length === 0) {
+  if (records.length === 0 || ledgerHidden) {
     ctx.ui?.setStatus?.('octocode-agents', undefined);
-    ctx.ui?.setWidget?.('octocode-agents', undefined);
+    stopLedgerTicker();
+    refreshStatusPanel(ctx);
     return;
   }
+  // Keep a compact below-input/footer signal so running workers remain visible
+  // even when the richer below-editor status panel is collapsed or off-screen.
   ctx.ui?.setStatus?.('octocode-agents', formatAgentLedger().replace(/^Octocode agents: /, 'agents: '));
-  ctx.ui?.setWidget?.(
-    'octocode-agents',
-    hasVisibleAgentLedgerRecords() ? (_tui: unknown, theme: PiTheme) => agentLedgerWidget(theme) : undefined,
-    { placement: 'belowEditor' },
-  );
+  refreshStatusPanel(ctx);
+  // Live refresh: while any worker is active, advance the spinner and re-render every second.
+  const anyActive = records.some((r) => !isTerminal(r));
+  if (anyActive && !ledgerTicker) {
+    ledgerTicker = setInterval(() => {
+      ledgerSpinnerFrame = (ledgerSpinnerFrame + 1) % LEDGER_SPINNER.length;
+      if ([...agents.values()].some((r) => !isTerminal(r))) {
+        refreshAgentLedgerUi(ctx);
+      } else {
+        stopLedgerTicker();
+      }
+    }, 1000);
+    // Never hold the process open for the ticker alone.
+    (ledgerTicker as { unref?: () => void }).unref?.();
+  } else if (!anyActive && ledgerTicker) {
+    stopLedgerTicker();
+  }
 }
 
 function formatOctocodeAgentsHelp(): string {
@@ -1056,27 +1433,36 @@ function formatOctocodeAgentsHelp(): string {
     'Commands:',
     '- help — show this command reference',
     '- list/status — show the ledger and refresh footer/widget state',
-    '- inspect <id-or-prefix> — show full worker state, handback, evidence, recent events, and stderr',
+    '- inspect <id-or-prefix> [full] — show worker state, handback, evidence, recent events, and stderr; "full" returns the complete tool-call/ledger/evidence history instead of the truncated preview',
     '- kill <id-or-prefix> — stop one live worker',
     '- kill-all — stop every live worker',
     '- prune — remove completed idle records from the in-memory ledger',
     '- hide — clear the footer/widget ledger for this session',
+    '',
+    'Spawning/use:',
+    '- typed specialists: spawnSubagent({agent:"researcher"|"planner"|"architect"|"browser-agent", task:"..."})',
+    '- generic worker: spawnAgent({task:"...", name:"..."})',
+    '- after spawning: AgentMessage({action:"wait"|"status"|"send"|"kill", agentId:"..."})',
+    '- visible UI: running/blocked/failed/done workers appear in the unified status panel and compact footer until hide/prune/remove',
     '',
     'Tip: ids can be full ids or short prefixes shown by list/status.',
   ].join('\n');
 }
 
 export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext): Promise<void> {
-  const [actionRaw, targetRaw] = args.trim().split(/\s+/, 2);
-  const action = (actionRaw || 'list').toLowerCase();
+  const parts = args.trim().split(/\s+/).filter(Boolean);
+  const action = (parts[0] || 'list').toLowerCase();
+  const targetRaw = parts[1];
+  const full = parts.slice(2).some((flag) => /^(?:-v|--verbose|--full|full)$/i.test(flag));
   if (action === 'help' || action === '--help' || action === '-h' || action === '?') {
     ctx?.ui?.notify?.(formatOctocodeAgentsHelp(), 'info');
     return;
   }
   if (action === 'hide' || action === 'clear') {
+    ledgerHidden = true;
     ctx?.ui?.setStatus?.('octocode-agents', undefined);
-    ctx?.ui?.setWidget?.('octocode-agents', undefined);
-    ctx?.ui?.notify?.('Octocode agent ledger hidden for this session.', 'info');
+    refreshStatusPanel(ctx);
+    ctx?.ui?.notify?.('Octocode agent ledger hidden for this session. Run /octocode-agents list to show it again.', 'info');
     return;
   }
   if (action === 'prune') {
@@ -1096,7 +1482,7 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
       return;
     }
     refreshAgentLedgerUi(ctx);
-    ctx?.ui?.notify?.(renderSingleAgentResult(record, 'Agent status').content[0]?.text ?? '', 'info');
+    ctx?.ui?.notify?.(renderSingleAgentResult(record, 'Agent status', { full }).content[0]?.text ?? '', 'info');
     return;
   }
   if (action === 'kill-all') {
@@ -1121,13 +1507,14 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
     ctx?.ui?.notify?.(formatOctocodeAgentsHelp(), 'warning');
     return;
   }
+  ledgerHidden = false;
   refreshAgentLedgerUi(ctx);
   ctx?.ui?.notify?.(formatAgentLedgerDetails(), 'info');
 }
 
-function renderSingleAgentResult(record: AgentRecord, header: string): ToolCallResult {
+function renderSingleAgentResult(record: AgentRecord, header: string, opts: { full?: boolean } = {}): ToolCallResult {
   const output = truncateUserVisibleToolOutput(record.lastOutput || record.stderr || record.error || '', MAX_VISIBLE_OUTPUT);
-  const summary = summarizeAgent(record);
+  const summary = summarizeAgent(record, opts);
   const elapsed = formatElapsed(record.startedAt);
   const statusParts = [
     `status: ${record.status}`,
@@ -1140,20 +1527,24 @@ function renderSingleAgentResult(record: AgentRecord, header: string): ToolCallR
     `agentId: ${record.id}`,
     statusParts,
   ];
-  const toolSummary = formatToolCalls(record.toolCalls);
+  const toolSummary = formatToolCalls(record.toolCalls, opts.full ? record.toolCalls.length : 3);
   if (toolSummary) contentParts.push(`tools: ${toolSummary}`);
   if (summary.policyWarnings?.length) contentParts.push(`policy: ${summary.policyWarnings.join(' | ')}`);
   if (summary.normalizedResult?.status && summary.normalizedResult.status !== 'unknown') {
     contentParts.push(`handback: ${summary.normalizedResult.status} · confidence: ${summary.normalizedResult.confidence}`);
     if (summary.normalizedResult.result) contentParts.push(`result: ${summary.normalizedResult.result}`);
     if (summary.normalizedResult.evidence.length > 0) {
-      contentParts.push(`evidence: ${summary.normalizedResult.evidence.slice(0, 3).join('; ')}`);
+      const evidenceLimit = opts.full ? summary.normalizedResult.evidence.length : 3;
+      contentParts.push(`evidence: ${summary.normalizedResult.evidence.slice(0, evidenceLimit).join('; ')}`);
     }
     if (summary.normalizedResult.verification) contentParts.push(`verification: ${summary.normalizedResult.verification}`);
     if (summary.normalizedResult.next) contentParts.push(`next: ${summary.normalizedResult.next}`);
   }
   if (summary.recoveryRisk?.warnings.length) {
     contentParts.push(`recovery-risk: ${summary.recoveryRisk.warnings.join(' | ')}`);
+  }
+  if (summary.worktree) {
+    contentParts.push(`worktree: ${summary.worktree.branch} @ ${summary.worktree.path} (+${summary.worktree.aheadCommits} commits, ~${summary.worktree.dirtyFiles} files, ${summary.worktree.mergeState})`);
   }
   if (output.text) contentParts.push('', output.text);
   if (output.truncated) contentParts.push(`\u2026 output truncated (${output.omittedChars} chars hidden; full content in details)`);
@@ -1193,6 +1584,57 @@ function killAgent(record: AgentRecord, opts: { forceKillDelayMs?: number } = {}
   notifyWaiters(record);
 }
 
+// ─── Programmatic worker seams ────────────────────────────────────────────────
+// Thin exported wrappers over the exact code paths the AgentMessage tool and the
+// /octocode-agents command verbs use, so other features can steer/kill/inspect
+// workers without going through the tool surface.
+
+/**
+ * Steer a live worker by id or prefix. Running workers get the steer RPC
+ * (redirects the in-flight turn, same as AgentMessage action:"steer"); idle
+ * workers have no turn to redirect, so the message is queued via the follow_up
+ * path (same as AgentMessage action:"followUp"). Returns false for unknown ids,
+ * dead processes, or empty messages.
+ */
+export function steerWorkerById(idOrPrefix: string, message: string): boolean {
+  const record = findAgentByIdOrPrefix(idOrPrefix);
+  const text = String(message ?? '').trim();
+  if (!record || !text || !isProcessAlive(record)) return false;
+  if (record.status === 'running') {
+    touch(record, 'running');
+    const sent = sendRpc(record, { type: 'steer', message: text });
+    if (sent) pushLedgerEvent(record, 'message', `steer sent: ${previewMessage(text)}`);
+    return sent;
+  }
+  touch(record, 'running');
+  const queued = sendRpc(record, { type: 'follow_up', message: text });
+  if (queued) pushLedgerEvent(record, 'message', `follow-up queued: ${previewMessage(text)}`);
+  return queued;
+}
+/** Kill a worker by id or prefix (same path as /octocode-agents kill). Returns false for unknown ids. */
+export function killWorkerById(idOrPrefix: string): boolean {
+  const record = findAgentByIdOrPrefix(idOrPrefix);
+  if (!record) return false;
+  killAgent(record);
+  return true;
+}
+
+/**
+ * Render a worker's current state + output by id or prefix — the same
+ * single-agent rendering AgentMessage status / /octocode-agents inspect use.
+ * With maxLines set, keeps the LAST maxLines lines (the freshest output).
+ * Returns undefined for unknown ids.
+ */
+export function getWorkerTranscript(idOrPrefix: string, opts: { maxLines?: number } = {}): string | undefined {
+  const record = findAgentByIdOrPrefix(idOrPrefix);
+  if (!record) return undefined;
+  const text = renderSingleAgentResult(record, 'Agent status').content[0]?.text ?? '';
+  const maxLines = opts.maxLines;
+  if (maxLines === undefined || maxLines <= 0) return text;
+  const lines = text.split('\n');
+  return lines.length <= maxLines ? text : lines.slice(-maxLines).join('\n');
+}
+
 export function registerAgentTools(
   pi: PiInstance,
   Type: TypeBoxBuilder,
@@ -1217,14 +1659,15 @@ export function registerAgentTools(
     name: 'spawnAgent',
     label: 'Agent: Spawn Parallel Worker',
     description:
-      'Spawn a separate background Pi worker process over RPC. Returns immediately with an agentId; use AgentMessage to inspect, send follow-ups, wait, or kill. Workers can run in parallel but share the selected cwd and environment-backed services.',
+      'Spawn a separate background Pi worker process over RPC. Returns immediately with an agentId; use AgentMessage to inspect, send follow-ups, wait, or kill. Workers can run in parallel in the shared cwd by default, or in an explicitly approved git worktree with isolation:"worktree".',
     promptSnippet: 'Spawn a background Pi worker process and return an agentId for AgentMessage.',
     promptGuidelines: [
       'Use spawnAgent only when delegation materially helps: independent work ownership, long-running tasks, or adversarial/coverage checks.',
       'Do not spawn agents for ordinary bug fixes/refactors that need shared context; stay in the parent or batch independent tool calls instead.',
       'Before spawning, break the request into explicit subtasks and delegate only one independent, bounded subtask per worker.',
       'For useful parallelism, spawn all independent workers first, then use AgentMessage action:"wait" or action:"status" to collect results.',
-      'Workers inherit no parent conversation but share cwd, files, and environment-backed services. Pass a bounded request packet and assign disjoint paths for any writes.',
+      'Workers inherit no parent conversation. By default they share cwd/files/environment; pass isolation:"worktree" for an opt-in git worktree after explicit user approval, or isolation:"shared" when sharing is intentional.',
+      'Structure the task as a labeled packet — lines starting with "Goal:", "Context:", "Scope:", "Ownership:", "Acceptance:", "Return:" (any of "-"/"—"/":" as separator, headings/bullets OK). A real gate checks for these labels, not just the words, and returns a [POLICY] warning on the spawn response when any are missing.',
       'spawnAgent defaults to resourceMode:"lean". Use resourceMode:"octocode" only when the worker needs Octocode extension tools.',
       'Use `pi -ne --list-models [search]` as the source of truth for the user-configured model table; do not read hardcoded config paths.',
       'Pass model for each worker: fastest capable configured model for small tasks, balanced coding/reasoning model for medium tasks, strongest configured model for large/high-risk work.',
@@ -1244,9 +1687,12 @@ export function registerAgentTools(
       systemPrompt: Type.Optional(Type.String({ description: 'Optional extra system prompt appended via a temporary file.' })),
       resourceMode: Type.Optional(resourceModeSchema),
       noSession: Type.Optional(Type.Boolean({ description: 'Pass --no-session to the worker. Default true.' })),
+      isolation: Type.Optional(stringEnumSchema(Type, ['shared', 'worktree'], 'Worker filesystem isolation. "shared" (default) uses the current cwd; "worktree" asks before creating an isolated git worktree.')),
+      includeUncommitted: Type.Optional(Type.Boolean({ description: 'With isolation:"worktree", apply a tracked-change snapshot from the parent tree using git stash create/apply. Untracked files are not included.' })),
     }),
     async execute(_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal, _onUpdate?: unknown, ctx?: PiContext) {
-      const record = spawnRpcAgent(params as SpawnAgentParams, ctx);
+      const approvedParams = await prepareSpawnAgentParams(params as SpawnAgentParams, ctx);
+      const record = spawnRpcAgent(approvedParams, ctx);
       refreshAgentLedgerUi(ctx);
       return renderSingleAgentResult(record, 'Spawned agent');
     },
@@ -1254,37 +1700,37 @@ export function registerAgentTools(
       const p = args as Partial<SpawnAgentParams>;
       const name = String(p.name ?? 'worker');
       const task = String(p.task ?? p.prompt ?? '');
-      const taskPreview = task.length > 72 ? `${task.slice(0, 72)}\u2026` : (task || '(no task)');
-      const model = p.model ? ` \u00b7 ${p.model}` : '';
+      const taskPreview = task.length > 72 ? `${task.slice(0, 72)}…` : (task || '(no task)');
+      const model = p.model ? ` · ${p.model}` : '';
       const rawLine = [
-        theme?.fg('toolTitle', theme.bold('spawnAgent')) ?? 'spawnAgent',
-        theme?.fg('accent', name) ?? name,
-        theme?.fg('dim', `\u2014 ${taskPreview}${model}`) ?? `\u2014 ${taskPreview}${model}`,
+        cliToolTitle(theme, 'spawnAgent', { bold: true }),
+        paint(theme, 'brand', name),
+        paint(theme, 'dim', `— ${taskPreview}${model}`),
       ].join(' ');
       return makeRenderer((w) => [truncateToWidth(rawLine, w)]);
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        return makeRenderer((w) => [truncateToWidth(theme?.fg('warning', '\u29D7 Spawning agent\u2026') ?? '\u29D7 Spawning agent\u2026', w)]);
+        return makeRenderer((w) => [truncateToWidth(paint(theme, 'warning', '⧗ Spawning agent…'), w)]);
       }
       const ok = !result.isError;
       const det = result.details as { agent?: { name?: string } } | null;
       const agentName = det?.agent?.name ?? 'agent';
       const displayStatus = ok ? 'spawned' : 'failed';
-      const icon = ok ? (theme?.fg('success', '\u2713') ?? '\u2713') : statusIcon('failed', theme);
-      const label = theme?.fg('toolTitle', 'spawnAgent') ?? 'spawnAgent';
-      const nameStr = theme?.fg('accent', agentName) ?? agentName;
-      const statusStr = theme?.fg('dim', displayStatus) ?? displayStatus;
-      const header = `${icon} ${label} \u00b7 ${nameStr} \u00b7 ${statusStr}`;
+      const icon = ok ? paint(theme, 'success', '✓') : statusIcon('failed', theme);
+      const label = cliToolTitle(theme, 'spawnAgent');
+      const nameStr = paint(theme, 'brand', agentName);
+      const statusStr = paint(theme, 'dim', displayStatus);
+      const header = `${icon} ${label} · ${nameStr} · ${statusStr}`;
       if (!opts.expanded) {
-        const hint = theme?.fg('dim', ' \u00b7 use AgentMessage wait/status') ?? ' \u00b7 use AgentMessage wait/status';
+        const hint = paint(theme, 'dim', ' · use AgentMessage wait/status');
         return makeRenderer((w) => [truncateToWidth(`${header}${hint}`, w)]);
       }
       const text = result.content.find((p) => p.type === 'text')?.text ?? '';
       const outputLines = text.split('\n').slice(2); // skip agent-header + status lines
       return makeRenderer((w) => [
         truncateToWidth(header, w),
-        ...outputLines.map((l) => truncateToWidth(theme?.fg('dim', l) ?? l, w)),
+        ...outputLines.map((l) => truncateToWidth(paint(theme, 'dim', l), w)),
       ]);
     },
   } satisfies ToolDefinition);
@@ -1299,6 +1745,7 @@ export function registerAgentTools(
       'Use AgentMessage action:"wait" to collect the current turn result. Idle means the turn ended, not necessarily that the delegated objective passed acceptance.',
       'AgentMessage reads the in-memory spawned-agent registry; after session shutdown or reload, spawn fresh workers instead of relying on old agentIds.',
       'Before final answers, wait/status every relevant worker, reconcile disagreements, and synthesize findings instead of dumping raw worker JSON.',
+      'When you send, followUp, or steer work that changes scope, ownership, acceptance, or ordering, update the local plan in the same turn; if Awareness tasks/work are active, update those too so queued worker work is visible outside the message stream.',
       'Use action:"send" to start the next idle turn; while running it defaults to followUp. action:"followUp" queues after the turn. action:"steer" redirects after current tool calls, before the next model step.',
     ],
     parameters: Type.Object({
@@ -1314,9 +1761,14 @@ export function registerAgentTools(
       ),
       timeoutMs: Type.Optional(Type.Integer({ description: 'wait timeout in milliseconds. Default 300000.' })),
       remove: Type.Optional(Type.Boolean({ description: 'After kill, remove the agent record from the registry.' })),
+      full: Type.Optional(Type.Boolean({
+        description:
+          'For status/wait/kill/abort: return the complete tool-call and ledger history (up to the retained cap \u2014 ~200 tool calls, 80 ledger events, 8 evidence anchors) instead of the truncated preview (last 3 tool calls, last 10 ledger entries, first 3 evidence anchors). Use before trusting a worker\'s claim, not on every call \u2014 the preview is cheaper.',
+      })),
     }),
     async execute(_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal, _onUpdate?: unknown, ctx?: PiContext) {
       const action = (params['action'] as MessageAction | undefined) ?? 'status';
+      const renderOpts = { full: params['full'] === true };
       if (action === 'list') {
         refreshAgentLedgerUi(ctx);
         return renderAgentResult([...agents.values()], 'Spawned agents');
@@ -1325,7 +1777,7 @@ export function registerAgentTools(
       const record = getAgent(params['agentId']);
       if (action === 'status') {
         refreshAgentLedgerUi(ctx);
-        return renderSingleAgentResult(record, 'Agent status');
+        return renderSingleAgentResult(record, 'Agent status', renderOpts);
       }
 
       if (action === 'wait') {
@@ -1335,15 +1787,20 @@ export function registerAgentTools(
         } finally {
           if (ctx?.hasUI) ctx.ui?.setStatus?.('agent-wait', undefined);
         }
-        const waitResult = renderSingleAgentResult(record, 'Agent turn completed');
-        if (params['remove'] === true) agents.delete(record.id);
+        const waitResult = renderSingleAgentResult(record, 'Agent turn completed', renderOpts);
+        if (params['remove'] === true) {
+          // An idle (non-terminal) worker's process is still alive; deleting the
+          // record would orphan it beyond the reach of shutdown cleanup.
+          if (!isDroppable(record)) killAgent(record, { forceKillDelayMs: 0 });
+          agents.delete(record.id);
+        }
         refreshAgentLedgerUi(ctx);
         return waitResult;
       }
 
       if (action === 'kill') {
         killAgent(record);
-        const result = renderSingleAgentResult(record, 'Agent killed');
+        const result = renderSingleAgentResult(record, 'Agent killed', renderOpts);
         if (params['remove'] === true) agents.delete(record.id);
         refreshAgentLedgerUi(ctx);
         return result;
@@ -1351,11 +1808,15 @@ export function registerAgentTools(
 
       if (action === 'abort') {
         if (!isTerminal(record)) {
+          // Graceful interrupt: the process stays alive and finishes aborting on its
+          // own, then emits agent_end which resolves any pending wait via
+          // notifyWaiters. We deliberately do NOT resolve waiters here — doing so
+          // would report the turn as done while the worker is still unwinding.
           sendRpc(record, { type: 'abort' });
           touch(record);
         }
         refreshAgentLedgerUi(ctx);
-        return renderSingleAgentResult(record, 'Agent aborted');
+        return renderSingleAgentResult(record, 'Agent aborted', renderOpts);
       }
 
       const message = String(params['message'] ?? '').trim();
@@ -1367,35 +1828,51 @@ export function registerAgentTools(
           `AgentMessage action:${action} cannot reach agent "${record.name}" — it has ${record.status} (process exited). Spawn a fresh worker.`,
         );
       }
+      // sendRpc self-handles a destroyed pipe (EPIPE): it sets status 'failed' and
+      // notifies waiters internally, and isProcessAlive above already rejected the
+      // dead-process case, so the boolean return needs no extra handling here.
       const wasRunning = record.status === 'running';
-      touch(record, 'running');
       if (action === 'steer') {
-        sendRpc(record, { type: 'steer', message });
+        // steer redirects an in-flight turn; on an idle worker there is no turn to
+        // redirect, so forward the RPC but do not fake a 'running' status.
+        if (wasRunning) touch(record, 'running');
+        if (sendRpc(record, { type: 'steer', message })) {
+          pushLedgerEvent(record, 'message', `${wasRunning ? 'steer sent' : 'steer queued'}: ${previewMessage(message)}`);
+        }
       } else if (action === 'followUp') {
-        sendRpc(record, { type: 'follow_up', message });
+        // follow_up runs after the current turn (or immediately when idle) — either
+        // way it produces a turn, so 'running' is accurate.
+        touch(record, 'running');
+        if (sendRpc(record, { type: 'follow_up', message })) {
+          pushLedgerEvent(record, 'message', `follow-up queued: ${previewMessage(message)}`);
+        }
       } else {
-        sendRpc(record, {
+        touch(record, 'running');
+        const streamingBehavior = params['streamingBehavior'] ?? (wasRunning ? 'followUp' : undefined);
+        if (sendRpc(record, {
           type: 'prompt',
           message,
-          streamingBehavior: params['streamingBehavior'] ?? (wasRunning ? 'followUp' : undefined),
-        });
+          streamingBehavior,
+        })) {
+          pushLedgerEvent(record, 'message', `${streamingBehavior === 'followUp' ? 'message queued' : 'message sent'}: ${previewMessage(message)}`);
+        }
       }
       refreshAgentLedgerUi(ctx);
-      return renderSingleAgentResult(record, 'Agent messaged');
+      return renderSingleAgentResult(record, 'Agent messaged', renderOpts);
     },
     renderCall(args: unknown, theme?: PiTheme) {
       const p = args as { action?: string; agentId?: string; message?: string };
       const action = String(p.action ?? 'status');
       const rec = p.agentId ? agents.get(p.agentId) : undefined;
       const agentLabel = rec
-        ? (theme?.fg('accent', rec.name) ?? rec.name)
-        : (theme?.fg('dim', p.agentId ? shortId(p.agentId) : 'all') ?? (p.agentId ? shortId(p.agentId) : 'all'));
+        ? paint(theme, 'brand', rec.name)
+        : paint(theme, 'dim', p.agentId ? shortId(p.agentId) : 'all');
       const msgPart = p.message
-        ? (theme?.fg('dim', ` \u2014 ${p.message.slice(0, 48)}${p.message.length > 48 ? '\u2026' : ''}`) ?? ` \u2014 ${p.message.slice(0, 48)}`)
+        ? paint(theme, 'dim', ` — ${p.message.slice(0, 48)}${p.message.length > 48 ? '…' : ''}`)
         : '';
       const rawLine = [
-        theme?.fg('toolTitle', theme.bold('AgentMessage')) ?? 'AgentMessage',
-        theme?.fg('accent', action) ?? action,
+        cliToolTitle(theme, 'AgentMessage', { bold: true }),
+        paint(theme, 'brand', action),
         agentLabel,
         msgPart,
       ].filter(Boolean).join(' ');
@@ -1403,7 +1880,7 @@ export function registerAgentTools(
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        return makeRenderer((w) => [truncateToWidth(theme?.fg('warning', '\u29D7 Agent working\u2026') ?? '\u29D7 Agent working\u2026', w)]);
+        return makeRenderer((w) => [truncateToWidth(paint(theme, 'warning', '⧗ Agent working…'), w)]);
       }
       const ok = !result.isError;
       const det = result.details as {
@@ -1412,33 +1889,33 @@ export function registerAgentTools(
         output?: string;
       } | null;
       if (det?.agents) {
-        const squareIcon = theme?.fg('toolTitle', '\u25A6') ?? '\u25A6';
+        const squareIcon = paint(theme, 'title', '▦');
         const summaryText = formatAgentStateCounts(det.agents);
-        const summary = theme?.fg('dim', summaryText) ?? summaryText;
-        const header = `${squareIcon} ${theme?.fg('toolTitle', 'AgentMessage') ?? 'AgentMessage'} list \u00b7 ${summary}`;
+        const summary = paint(theme, 'dim', summaryText);
+        const header = `${squareIcon} ${cliToolTitle(theme, 'AgentMessage')} list · ${summary}`;
         if (!opts.expanded) {
           return makeRenderer((w) => [truncateToWidth(header, w)]);
         }
         const text = result.content.find((p) => p.type === 'text')?.text ?? '';
-        return makeRenderer((w) => [truncateToWidth(header, w), ...text.split('\n').slice(1).map((l) => truncateToWidth(theme?.fg('dim', l) ?? l, w))]);
+        return makeRenderer((w) => [truncateToWidth(header, w), ...text.split('\n').slice(1).map((l) => truncateToWidth(paint(theme, 'dim', l), w))]);
       }
       // single-agent actions
       const agentName = det?.agent?.name ?? 'agent';
       const state = getAgentDisplayState(ok ? (det?.agent ?? { status: 'idle' }) : { status: 'failed' });
       const meta = agentDisplayMeta(state, theme);
-      const label = theme?.fg('toolTitle', 'AgentMessage') ?? 'AgentMessage';
-      const nameStr = theme?.fg('accent', agentName) ?? agentName;
-      const header = `${meta.icon} ${label} \u00b7 ${nameStr} \u00b7 ${meta.label}`;
+      const label = cliToolTitle(theme, 'AgentMessage');
+      const nameStr = paint(theme, 'brand', agentName);
+      const header = `${meta.icon} ${label} · ${nameStr} · ${meta.label}`;
       if (!opts.expanded) {
         const preview = det?.output ? det.output.split('\n').find((line) => line.trim())?.trim() : '';
-        const suffix = preview ? ` \u2014 ${preview}` : ' \u00b7 no output yet';
-        return makeRenderer((w) => [truncateToWidth(`${header}${theme?.fg('dim', suffix) ?? suffix}`, w)]);
+        const suffix = preview ? ` — ${preview}` : ' · no output yet';
+        return makeRenderer((w) => [truncateToWidth(`${header}${paint(theme, 'dim', suffix)}`, w)]);
       }
       const text = result.content.find((p) => p.type === 'text')?.text ?? '';
       const outputLines = text.split('\n').slice(2); // skip agent-header + status lines
       return makeRenderer((w) => [
         truncateToWidth(header, w),
-        ...outputLines.map((l) => truncateToWidth(theme?.fg('dim', l) ?? l, w)),
+        ...outputLines.map((l) => truncateToWidth(paint(theme, 'dim', l), w)),
       ]);
     },
   } satisfies ToolDefinition);

@@ -14,9 +14,10 @@
 import { connectToChrome, cleanupConnection } from '../chrome-debug.js';
 import { SCHEME_REGISTRY } from '../chrome-debug-schemes.js';
 import type { ChromeDebugParams } from '../chrome-debug-schemes.js';
-import type { ToolDefinition, ToolCallResult, PiContext } from '../types.js';
+import type { ToolDefinition, ToolCallResult, PiContext, PiTheme, RenderContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { isSubagentProcess } from './agent-tools.js';
+import { appendImageLines } from './image-render.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
@@ -519,13 +520,26 @@ export function registerBrowserAgentTool(
       return makeRenderer((w) => [truncateToWidth(raw, w)]);
     },
 
-    renderResult(result: unknown) {
+    renderResult(result: unknown, opts?: { expanded?: boolean }, theme?: PiTheme, context?: RenderContext) {
       const r = result as { content?: Array<{ text?: string }> };
       const text = r?.content?.[0]?.text ?? '';
       const findings = (text.match(/\[FINDING\]/g) ?? []).length;
       const schemesLine = text.split('\n').find((l) => l.includes('schemes run:')) ?? '';
       const raw = `browserAgent → ${findings} findings | ${schemesLine.replace('[AGENT] ', '')}`;
-      return makeRenderer((w) => [truncateToWidth(raw, w)]);
+      const base = makeRenderer((w) => [truncateToWidth(raw, w)]);
+      if (!opts?.expanded) return base;
+
+      // Expanded view: inline any screenshots captured during the initial pass.
+      // Evidence lines look like "[SCREENSHOT] /abs/path.png"; the embedded spawn
+      // system prompt repeats them, so dedupe and cap the count.
+      const shots = [...new Set(
+        [...text.matchAll(/^\[SCREENSHOT\] (.+)$/gm)].map((m) => (m[1] ?? '').trim()).filter(Boolean),
+      )].slice(0, 3);
+      let out = base;
+      for (const shot of shots) {
+        out = appendImageLines(out, context, shot, theme);
+      }
+      return out;
     },
   });
 }

@@ -6,7 +6,7 @@ export const HELP = `usage: octocode-awareness <command> [options]
 common: --db <path> --compact; hook run uses OCTOCODE_MEMORY_HOME
 agent loop: attend -> work start -> work end -> verify mark -> verify audit
 start: attend; workspace status; plan list; task ready; memory recall; signal list
-work: plan; task; work; lock; verify; signal; refinement
+work: plan; task; advisory work by default; locks only for unsafe/non-mergeable edits; verify; signal; refinement
 learn: memory record|recall; reflect; docs; query
 operate: agent; session; hooks; hook; maintenance; schema
 first: octocode-awareness attend --workspace "$PWD" --query "<task>" --compact; follow returned next
@@ -21,7 +21,7 @@ export const HELP_COMPACT = `octocode-awareness: canonical noun/verb CLI; AGENTS
 bundled-skills(${BUNDLED_SKILLS.length}): ${BUNDLED_SKILLS_DIR} — octocode-awareness is bundled; install other workflow skills separately when needed
 loop: attend -> work start -> work end -> verify mark -> verify audit; follow attend.next and <command> --help
 start: attend; workspace status; plan create|list|show|join|doc|status; task create|list|ready|show|claim|heartbeat|submit|release|depend; memory recall; signal list; docs list
-edit: work start|touch|end|list|show; lock acquire|wait|release|prune; verify audit|mark
+edit: work start|touch|end|list|show (advisory default); lock acquire|wait|release|prune only for unsafe/non-mergeable edits; verify audit|mark
 msg: signal publish|list|reply|ack|resolve|prune; agent register|list
 learn: memory record|archive|restore|forget; refinement set|get|list|delete; reflect record|mine-weakness|export-harness|developer-review; maintenance digest
 views: query files|workboard|all|developer-review --format json|table|csv|markdown|html
@@ -110,7 +110,7 @@ export const COMMAND_EXAMPLE: Record<string, string> = {
   'prune-stale-locks': 'octocode-awareness lock prune --workspace "$PWD" --expired-only --dry-run --compact',
   'release-file-lock': 'octocode-awareness lock release --agent-id agent --run-id run_123 --status PENDING --compact',
   'audit-unverified': 'octocode-awareness verify audit --agent-id agent --workspace "$PWD" --compact',
-  'verify': 'octocode-awareness verify mark --agent-id agent --all-pending --message "yarn test passed" --workspace "$PWD" --compact',
+  'verify': 'octocode-awareness verify mark --agent-id agent --all-pending --message "yarn test passed" --workspace "$PWD" --compact # use --adopt-verification only for one prior-session --run-id after verifying',
   'refine-set': 'octocode-awareness refinement set --agent-id agent --reasoning "handoff" --remember "next step" --workspace "$PWD" --compact',
   'refine-get': 'octocode-awareness refinement get --workspace "$PWD" --state open --limit 3 --compact',
   'refine-delete': 'octocode-awareness refinement delete --refinement-id ref_123 --dry-run --compact',

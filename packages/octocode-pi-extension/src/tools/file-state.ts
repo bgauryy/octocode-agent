@@ -7,12 +7,22 @@
  *   1. Read-state map — records content hashes so the edit tool can detect
  *      stale reads before writing (a lost-update guard).
  *   2. Per-file mutation queue — serialises concurrent read-modify-write cycles
- *      on the same file path so parallel tool calls cannot race.
+ *      on the same file path so parallel tool calls cannot race (within this
+ *      process only — see the cross-process note below).
  *
  * Keeping these in one place removes the coupling where write-tool and
  * octocode-tools previously imported from edit-tool.
+ *
+ * SCOPE — this guard is PROCESS-LOCAL. The read-state map and mutation queue only
+ * serialise edits issued within *this* Pi process. They do NOT protect against a
+ * second process (e.g. a parallel spawnAgent worker) editing the same file
+ * concurrently. Cross-process safety is a separate layer: declare edited paths
+ * via Awareness (`work start`) and take an exclusive lease (`lock acquire`) for
+ * non-mergeable or risky shared files — the Awareness pre-edit `tool_call` gate
+ * (wired at activation) enforces those leases across processes. See
+ * docs/AWARENESS_AGENT_FLOW.md §"Hooks during edits".
  */
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -94,11 +104,24 @@ export function withFileMutationQueue<T>(key: string, fn: () => Promise<T>): Pro
  * path; the per-file queue still controls the final write order where needed.
  */
 export async function atomicWriteUtf8(filePath: string, content: string): Promise<void> {
-  const absolutePath = resolveFilePath(filePath);
+  // Resolve symlinks: temp+rename over a symlinked path would replace the link
+  // with a regular file instead of writing through to its target.
+  let absolutePath = resolveFilePath(filePath);
+  let existingMode: number | undefined;
+  try {
+    const real = await realpath(absolutePath);
+    existingMode = (await stat(real)).mode;
+    absolutePath = real;
+  } catch {
+    // Target doesn't exist yet — plain create with umask defaults.
+  }
   await mkdir(path.dirname(absolutePath), { recursive: true });
   const tmpPath = `${absolutePath}.octocode-${process.pid}-${randomUUID()}.tmp`;
   try {
     await writeFile(tmpPath, content, 'utf8');
+    // rename resets permissions to the temp file's umask default; preserve the
+    // original mode (e.g. exec bits on scripts).
+    if (existingMode !== undefined) await chmod(tmpPath, existingMode);
     await rename(tmpPath, absolutePath);
   } catch (error) {
     await rm(tmpPath, { force: true }).catch(() => undefined);
@@ -161,6 +184,16 @@ export async function checkReadState(
     state: 'fresh',
     message: `Fresh read state recorded ${Math.max(0, Date.now() - state.readAt)}ms ago.`,
   };
+}
+
+/**
+ * Drop every recorded read state. Called on compaction and session
+ * replacement: a hash recorded against a discarded transcript would satisfy
+ * the edit tool's stale-read gate while the model's knowledge of the file
+ * content is gone — exactly the lost-update the gate exists to prevent.
+ */
+export function clearAllReadStates(): void {
+  readStates.clear();
 }
 
 /** Test helper: reset all recorded read states between tests. */

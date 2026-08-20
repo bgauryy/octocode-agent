@@ -1,0 +1,72 @@
+import assert from 'node:assert/strict';
+import { test } from 'vitest';
+import { renderAvailableSkillsAddendum, renderSkillsDashboard } from '../src/tools/skill-catalog.js';
+
+test('available skills addendum lists skill names, descriptions, and source metadata', () => {
+  const addendum = renderAvailableSkillsAddendum([
+    { name: 'octocode-roast', description: 'Critical review workflow.', source: 'user', scope: 'global' },
+    { name: 'octocode-awareness-lite', description: 'Shared repo coordination and verification.' },
+  ]);
+
+  assert.match(addendum, /<available_skills>/);
+  assert.match(addendum, /Pi-discovered skills available by name this turn/);
+  assert.match(addendum, /load the minimal matching skill before acting by reading its SKILL\.md/);
+  assert.match(addendum, /- octocode-awareness-lite: Shared repo coordination and verification\./);
+  assert.match(addendum, /- octocode-roast: Critical review workflow\. \[user\/global\]/);
+});
+
+test('available skills addendum is empty when Pi reports no skills', () => {
+  assert.equal(renderAvailableSkillsAddendum(undefined), '');
+  assert.equal(renderAvailableSkillsAddendum([]), '');
+});
+
+// Review follow-up: the every-turn prompt block is budgeted — fewer entries and
+// tighter descriptions than the on-demand /octocode-skills dashboard, with an
+// explicit pointer to the full catalog instead of a silent cut.
+
+test('available skills addendum is prompt-budgeted: caps entries and points to /octocode-skills', () => {
+  const many = Array.from({ length: 45 }, (_, i) => ({
+    name: `skill-${String(i).padStart(2, '0')}`,
+    description: 'Does a thing.',
+  }));
+  const addendum = renderAvailableSkillsAddendum(many);
+  const promptLines = addendum.split('\n').filter((line) => line.startsWith('- skill-'));
+  assert.equal(promptLines.length, 30, 'prompt block caps at 30 skills');
+  assert.match(addendum, /…and 15 more skill\(s\) — see \/octocode-skills for the full catalog/);
+
+  const dashboard = renderSkillsDashboard(many);
+  const dashboardLines = dashboard.split('\n').filter((line) => line.startsWith('- skill-'));
+  assert.equal(dashboardLines.length, 45, 'dashboard still shows the full list');
+});
+
+test('available skills addendum caps descriptions tighter than the dashboard', () => {
+  const skills = [{ name: 'wordy', description: `${'x'.repeat(400)}TAIL` }];
+  const addendumLine = renderAvailableSkillsAddendum(skills).split('\n').find((line) => line.startsWith('- wordy'))!;
+  assert.doesNotMatch(addendumLine, /TAIL/);
+  assert.ok(addendumLine.length <= 140, `prompt description cap, got ${addendumLine.length}`);
+  assert.match(addendumLine, /…/);
+
+  const dashboardLine = renderSkillsDashboard(skills).split('\n').find((line) => line.startsWith('- wordy'))!;
+  assert.ok(dashboardLine.length > addendumLine.length, 'dashboard keeps the longer description');
+});
+
+test('skills dashboard lists discovered skills and install guidance', () => {
+  const dashboard = renderSkillsDashboard([
+    { name: 'octocode-roast', description: 'Critical review workflow.', source: 'user', scope: 'global' },
+    { name: 'octocode-awareness-lite', description: 'Shared repo coordination and verification.' },
+  ]);
+
+  assert.match(dashboard, /^◆ Octocode skills/m);
+  assert.match(dashboard, /Available now/);
+  assert.match(dashboard, /- octocode-awareness-lite: Shared repo coordination and verification\./);
+  assert.match(dashboard, /- octocode-roast: Critical review workflow\. \[user\/global\]/);
+  assert.match(dashboard, /\/skill:<name>/);
+  assert.match(dashboard, /npx octocode skill --name <skill> --platform pi/);
+});
+
+test('skills dashboard explains empty discovery state', () => {
+  const dashboard = renderSkillsDashboard(undefined);
+
+  assert.match(dashboard, /none discovered/);
+  assert.match(dashboard, /run \/reload after installing skills/);
+});

@@ -113,6 +113,10 @@ export function cmdVerify(db: DatabaseSync, args: ParsedArgs, dbPath: string, op
   if (allPending && !args['workspace'] && !args['artifact']) {
     return emit({ error: '--all-pending requires --workspace or --artifact; otherwise pass explicit --run-id values' }, 1, opts);
   }
+  const adoptVerification = Boolean(args['adopt_verification']);
+  if (adoptVerification && (allPending || runIds.length !== 1 || !args['workspace'])) {
+    return emit({ error: '--adopt-verification requires exactly one --run-id and --workspace' }, 1, opts);
+  }
   if (!allPending && runIds.length > 1) {
     const results = runIds.map((runId) => markVerified(db, {
       runId,
@@ -143,6 +147,7 @@ export function cmdVerify(db: DatabaseSync, args: ParsedArgs, dbPath: string, op
     artifact: args['artifact'] ? String(args['artifact']) : null,
     message: message || undefined,
     status: statusArg as 'SUCCESS' | 'FAILED',
+    adoptVerification,
   });
   return emit({ db_path: dbPath, ...result }, result.ok ? 0 : 1, opts);
 }

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { insertMemoryWithSimilarityGate, getMemory, storeEmbedding, searchByEmbedding, bumpAccess } from '../src/memory.js';
-import { resolveEmbedCommand, runHostEmbedder } from '../src/embed-host.js';
+import { insertMemoryWithSimilarityGate } from '../src/memory.js';
+import { recallMemory, storeMemoryEmbeddingIfConfigured } from '../src/memory-semantic.js';
 import { insertRefinement, getRefinements, updateRefinement } from '../src/refinements.js';
 import { reflect } from '../src/reflect.js';
 import type { EvalFailure, MemoryRecord, RefinementQuality } from '../src/types.js';
@@ -75,20 +75,8 @@ export function cmdTellMemory(db: DatabaseSync, args: ParsedArgs, dbPath: string
       hint: 'low novelty — review the similar memories; re-record with --supersedes <id> to replace one, or forget this one if redundant',
     };
   }
-  const embedCmd = resolveEmbedCommand();
-  if (embedCmd) {
-    try {
-      const text = `${taskContext}\n${observation}`.trim();
-      const { embedding, model } = runHostEmbedder(text, { command: embedCmd });
-      storeEmbedding(db, memory.memory_id, embedding, model);
-      payload['embedding'] = { stored: true, model, dims: embedding.length };
-    } catch (err) {
-      payload['embedding'] = {
-        stored: false,
-        warning: err instanceof Error ? err.message : String(err),
-      };
-    }
-  }
+  const embeddingResult = storeMemoryEmbeddingIfConfigured(db, memory.memory_id, taskContext, observation);
+  if (embeddingResult) payload['embedding'] = embeddingResult;
   return emit(payload, 0, opts);
 }
 
@@ -135,89 +123,11 @@ export function cmdGetMemory(db: DatabaseSync, args: ParsedArgs, dbPath: string,
     fileRegex,
     files: getFiles,
     explain: Boolean(args['explain']),
-    recordAccess: !Boolean(args['semantic']),
   };
-  // The lexical query is deferred: on a successful semantic run its result set
-  // is fully replaced, so running it eagerly would be a discarded full FTS pass.
-  const payload: Record<string, unknown> = { db_path: dbPath };
-  if (args['semantic']) {
-    const embedCmd = resolveEmbedCommand();
-    const queryText = String(args['query'] ?? '').trim();
-    if (!embedCmd) {
-      payload['warnings'] = [
-        'semantic ranking is unavailable in the CLI (set OCTOCODE_EMBED_CMD or use library storeEmbedding()/searchByEmbedding()); results use lexical FTS + decay.',
-      ];
-    } else if (!queryText) {
-      payload['warnings'] = [
-        'semantic ranking skipped: --query is required when OCTOCODE_EMBED_CMD is set; results use lexical FTS + decay.',
-      ];
-    } else {
-      try {
-        const { embedding, model } = runHostEmbedder(queryText, { command: embedCmd });
-        const limit = parseInt(String(args['limit'] ?? '3'), 10);
-        const semanticStates = states ?? (args['as_of'] ? ['ACTIVE', 'SUPERSEDED'] : ['ACTIVE']);
-        // Rank the complete bounded embedding pool before final top-k. Applying
-        // workspace/provenance filters after a global top-k can otherwise hide
-        // valid in-scope results behind better out-of-scope matches.
-        const hits = searchByEmbedding(db, embedding, 2_000, 0.0, model, semanticStates);
-        if (hits.length === 0) {
-          payload['warnings'] = [
-            `OCTOCODE_EMBED_CMD ran (model=${model}) but no stored embeddings matched; results use lexical FTS + decay. Record memories while OCTOCODE_EMBED_CMD is set to populate vectors.`,
-          ];
-        } else {
-          // Re-apply every normal recall filter (scope, temporal state,
-          // provenance, file, regex, label, tags, importance) to the embedding
-          // candidates, then re-rank the survivors by cosine similarity.
-          const simById = new Map(hits.map(hit => [hit.memory_id, hit.similarity]));
-          const scopedResult = getMemory(db, {
-            ...recallParams,
-            query: '',
-            limit: hits.length,
-            candidateMemoryIds: hits.map(hit => hit.memory_id),
-            recordAccess: false,
-            explain: false,
-          });
-          const ranked = scopedResult.memories
-            .map(memory => {
-              const similarity = simById.get(memory.memory_id) ?? 0;
-              memory.score = similarity;
-              memory.lexical = similarity;
-              return memory;
-            })
-            .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-          if (ranked.length === 0) {
-            payload['warnings'] = [
-              `OCTOCODE_EMBED_CMD ran (model=${model}) and matched embeddings, but none passed the scope/label/importance filters; results use lexical FTS + decay.`,
-            ];
-          } else {
-            bumpAccess(db, ranked.map(memory => memory.memory_id));
-            Object.assign(payload, scopedResult);
-            // Semantic mode: the candidate-scoped run's judgment fields describe
-            // a lexical pass, not the semantic result set.
-            delete payload['judgment_required'];
-            delete payload['judgment_reason'];
-            payload['memories'] = ranked.slice(0, limit);
-            payload['count'] = Math.min(ranked.length, limit);
-            payload['mode'] = 'semantic';
-            payload['embedding_model'] = model;
-          }
-        }
-      } catch (err) {
-        payload['warnings'] = [
-          `semantic ranking failed (${err instanceof Error ? err.message : String(err)}); results use lexical FTS + decay.`,
-        ];
-      }
-    }
-  }
-  if (payload['mode'] !== 'semantic') {
-    // Lexical run — the direct path without --semantic, and the fallback for
-    // every non-success semantic branch above (warnings already in payload).
-    Object.assign(payload, getMemory(db, recallParams));
-  }
-  if (args['semantic'] && payload['mode'] !== 'semantic') {
-    const fallback = (payload['memories'] ?? []) as Array<{ memory_id?: string }>;
-    bumpAccess(db, fallback.flatMap(memory => memory.memory_id ? [memory.memory_id] : []));
-  }
+  const payload: Record<string, unknown> = {
+    db_path: dbPath,
+    ...recallMemory(db, recallParams, Boolean(args['semantic'])),
+  };
   if (opts.compact && payload['count'] === 0) {
     return emit({ count: 0, memories: [] }, 0, opts);
   }
@@ -238,8 +148,9 @@ export function cmdGetMemory(db: DatabaseSync, args: ParsedArgs, dbPath: string,
 export function cmdRefineSet(db: DatabaseSync, args: ParsedArgs, dbPath: string, opts: EmitOptions): number {
   const rawState = args['state'];
   const stateVal = Array.isArray(rawState) ? rawState[0] : String(rawState ?? 'open');
-  const rawFile = args['file'];
-  const files = Array.isArray(rawFile) ? rawFile : rawFile ? [String(rawFile)] : [];
+  const fileArgs = [args['file'], args['files']].filter((v) => v !== undefined);
+  const files = fileArgs.flatMap((v) => (Array.isArray(v) ? v.map(String) : [String(v)]));
+  const hasFileArgs = fileArgs.length > 0;
 
   // Update path: --refinement-id changes only the passed fields
   // (open → ongoing → done lifecycle).
@@ -252,7 +163,7 @@ export function cmdRefineSet(db: DatabaseSync, args: ParsedArgs, dbPath: string,
       ...(args['quality'] !== undefined ? { quality: String(args['quality']) as RefinementQuality } : {}),
       ...(args['reasoning'] !== undefined ? { reasoning: String(args['reasoning']) } : {}),
       ...(args['remember'] !== undefined ? { remember: String(args['remember']) } : {}),
-      ...(rawFile !== undefined ? { files } : {}),
+      ...(hasFileArgs ? { files } : {}),
       ...(args['state'] !== undefined && stateVal === 'done' ? {
         actorAgentId: resolveAgentId(args),
         checkReceipt: args['check_receipt'] ? String(args['check_receipt']) : '',
@@ -287,8 +198,11 @@ export function cmdRefineSet(db: DatabaseSync, args: ParsedArgs, dbPath: string,
 }
 
 export function cmdRefineGet(db: DatabaseSync, args: ParsedArgs, dbPath: string, opts: EmitOptions): number {
-  const rawState = args['state'];
-  const states = rawState ? (Array.isArray(rawState) ? rawState : [String(rawState)]) : undefined;
+  const rawStatesPlural = args['states'];
+  const rawStateMerged = rawStatesPlural !== undefined ? rawStatesPlural : args['state'];
+  const states = rawStateMerged ? (Array.isArray(rawStateMerged) ? rawStateMerged.map(String) : [String(rawStateMerged)]) : undefined;
+  const rawRefId = args['refinement_id'];
+  const refinementId = Array.isArray(rawRefId) ? String(rawRefId[0]) : rawRefId ? String(rawRefId) : undefined;
   const full = Boolean(args['full']);
   const requestedLimit = parseInt(String(args['limit'] ?? (opts.compact && !full ? '3' : '10')), 10);
 
@@ -299,6 +213,7 @@ export function cmdRefineGet(db: DatabaseSync, args: ParsedArgs, dbPath: string,
     ref: args['ref'] ? String(args['ref']) : null,
     quality: args['quality'] ? String(args['quality']) as RefinementQuality : undefined,
     includeHandoffs: Boolean(args['include_handoffs']),
+    refinementId,
     states,
     limit: opts.compact && !full ? requestedLimit + 1 : requestedLimit,
   });

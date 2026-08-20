@@ -133,6 +133,9 @@ export function startWork(db: DatabaseSync, params: StartWorkParams): StartWorkR
   let fileBasePath = params.workspacePath ?? process.cwd();
   let wsPath = workspaceRoot(params.workspacePath);
   let artifact = normalizeArtifact(params.artifact);
+  if (params.runId != null && params.runId.trim() === '') {
+    throw new Error('run_id must be non-empty when provided');
+  }
   let runId = params.runId ?? null;
 
   if (!runId) {

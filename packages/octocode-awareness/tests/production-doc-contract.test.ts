@@ -83,10 +83,12 @@ describe('production guidance contract', () => {
     expect(install).not.toMatch(/npm install|check-only|skip-deps|findNpm|installDependencies|REQUIRED_BUNDLED_SKILLS[^\n]*octocode-skills/);
   });
   it('makes Pi advisory-first and reserves exclusivity for sensitive files', () => {
-    const skillsPrompt = read(resolve(REPO_ROOT, 'packages/octocode-pi-extension/src/prompts/sections/skills.md'));
-    const awarenessPrompt = read(resolve(REPO_ROOT, 'packages/octocode-pi-extension/src/prompts/sections/awareness.md'));
+    // All prompt sections were consolidated into one document (src/prompts/prompt.ts);
+    // the advisory-first + exclusive-for-sensitive guidance now lives in the
+    // octocode-awareness catalog entry inside that single prompt document.
+    const promptDoc = read(resolve(REPO_ROOT, 'packages/octocode-pi-extension/src/prompts/prompt.ts'));
     const piReadme = read(resolve(REPO_ROOT, 'packages/octocode-pi-extension/README.md'));
-    const combined = `${skillsPrompt}\n${awarenessPrompt}\n${piReadme}`;
+    const combined = `${promptDoc}\n${piReadme}`;
 
     expect(combined).toMatch(/advisory (?:file )?(?:work|presence)/i);
     expect(combined).toMatch(/exclusive.{0,80}sensitive|sensitive.{0,80}exclusive/is);
@@ -132,7 +134,7 @@ describe('production guidance contract', () => {
       'db-introspection.ts',
       'db-runtime.ts',
       'db-schema.ts',
-      'db-search.ts',
+      'db-maintenance.ts',
     ];
     const databaseSource = databaseFiles
       .map((file) => read(resolve(PACKAGE_ROOT, 'src', file)))

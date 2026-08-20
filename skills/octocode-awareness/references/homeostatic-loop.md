@@ -1,6 +1,6 @@
 # Homeostatic Awareness Loop
 
-Living-system intuition behind work, learning, cleanup, and publication. A human/agent-in-the-loop software control model — not sentience, a persona, or authority.
+Human/agent-in-the-loop software control model for work, learning, cleanup, and publication — not sentience, a persona, or authority.
 
 ## Control Contract
 
@@ -32,14 +32,12 @@ Start with `attend --compact`; inspect targeted pressure; reflect only for reusa
 
 ## Drive State Fields
 
-`attend --compact` omits `drive_state`/`organ_state` to save tokens. Re-run without `--compact` or pass `--explain-organ` when those fields are needed.
-
-Operational workspace orientation, not a persona. Fields: `goal` (current outcome); `mode` (explore/exploit/mixed); `learning_gaps` (uncertainty a probe can reduce); `resource_leads` (provenance sources — verify first); `alternatives` (options before commitment); `team_norms` (evidence-first/bounded/cooperative); `transactive_map` (shared-state IDs + freshness, not expertise); `organ_state` (pressure across senses, memory, verification, bridge, projection health).
+`attend --compact` omits `drive_state`/`organ_state` to save tokens; re-run without `--compact` or pass `--explain-organ` when needed. Operational workspace orientation, not a persona. Fields: `goal` (current outcome); `mode` (explore/exploit/mixed); `learning_gaps` (uncertainty a probe can reduce); `resource_leads` (provenance sources — verify first); `alternatives` (options before commitment); `team_norms` (evidence-first/bounded/cooperative); `transactive_map` (shared-state IDs + freshness, not expertise); `organ_state` (pressure across senses, memory, verification, bridge, projection health).
 
 When drive state suggests action, route through the normal lifecycle: claim work, verify results, reflect only durable learning, close rows. Re-attend after a material task/verification/signal change. Do not store a fictional personality.
 
 ## Subagent Rubber-Duck Review
 
-Use a real second agent for a hard explanation, risky decision, recurring weakness, or important reflection; skip it when an internal role pass or a direct test is cheaper. `reflect record --duo` returns prompts but launches no subagent; if the host cannot spawn one, say so — never label a fallback as subagent review. The duck is **always read-only**: no edits, claims, or durable rows.
+Use a real second agent for a hard explanation, risky decision, recurring weakness, or important reflection; skip when an internal role pass or direct test is cheaper. `reflect record --duo` returns prompts but launches no subagent; if the host cannot spawn one, say so — never label a fallback as subagent review. The duck is **always read-only**: no edits, claims, or durable rows.
 
-Loop: `FRAME → EXPLAIN → DUCK RESTATES → CHALLENGE → REVISE → VERIFY → CAPTURE`. Frame one question with acceptance criteria and file/row IDs; explain facts+hypothesis but withhold your recommendation; dispatch one read-only subagent; it restates the problem independently first, then challenges assumptions/edge cases/falsifications; you compare models keeping dissent, run one decisive source/test check, and capture only verified synthesis (none/memory/refinement/signal) via `references/learning-loop.md`. Agreement is not the check; one pass unless new evidence changes the model. After the loop, edits need user/task authorization with a distinct agent id, disjoint locks, own verification, and handoff — locks never authorize edits.
+Loop: `FRAME → EXPLAIN → DUCK RESTATES → CHALLENGE → REVISE → VERIFY → CAPTURE`. Frame one question with acceptance criteria and file/row IDs; explain facts+hypothesis but withhold your recommendation; dispatch one read-only subagent; it restates independently, then challenges assumptions/edge cases/falsifications; compare models keeping dissent, run one decisive source/test check, and capture only verified synthesis (none/memory/refinement/signal) via `references/learning-loop.md`. Agreement is not the check; one pass unless new evidence changes the model. After the loop, edits need user/task authorization with a distinct agent id, disjoint locks, own verification, and handoff — locks never authorize edits.

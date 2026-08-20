@@ -7,19 +7,25 @@ export function wirePiAwarenessHooks(pi: PiLikeApi, options: PiAwarenessBridgeOp
   if (!pi?.on) return null;
   const bridge = createPiAwarenessBridge(options);
   const verifyReminderKeys = new Set<string>();
+  // Loop safety: cap how many times the verify gate fires within a session before it
+  // goes quiet. The reminderKey Set already suppresses re-fires for an identical run set;
+  // this bounds the case where each turn creates NEW run ids (e.g. a verification turn
+  // that itself edits a file), which would otherwise let the gate nag every turn.
+  const MAX_VERIFY_GATE_FIRES = 3;
+  let verifyReminderFireCount = 0;
 
+  // Per Pi's docs (extensions.md "Tool Events"), every tool call fires FOUR distinct
+  // events in sequence: tool_execution_start -> tool_call -> [exec] -> tool_result ->
+  // tool_execution_end. They are not aliases for one another. tool_call/tool_result
+  // are the only pair that can actually block (`{block:true}`) or modify the result;
+  // tool_execution_start/end are notification-only. Registering both pairs against
+  // the same handler (as this used to do) double-dispatches every awareness DB touch
+  // on every tool call, and made real blocking depend on an undocumented ordering
+  // invariant (the dedupe-by-toolCallId guard only worked because block-returning
+  // paths happened to return before it was set). tool_call/tool_result alone are the
+  // correct, sufficient, single source of truth.
   pi.on('tool_call', async (event, ctx) => bridge.handleToolCall(event as PiToolEvent, ctx));
   pi.on('tool_result', async (event, ctx) => bridge.handleToolResult(event as PiToolEvent, ctx));
-  pi.on('tool_execution_start', async (event, ctx) => bridge.handleToolCall({
-    toolCallId: String(event?.toolCallId ?? ''),
-    toolName: String(event?.toolName ?? ''),
-    input: event?.args,
-  }, ctx));
-  pi.on('tool_execution_end', async (event, ctx) => bridge.handleToolResult({
-    toolCallId: String(event?.toolCallId ?? ''),
-    toolName: String(event?.toolName ?? ''),
-    isError: event?.isError === true,
-  }, ctx));
   pi.on('session_start', async (event, ctx) => bridge.handleSessionStart(event, ctx));
   pi.on('input', async (event, ctx) => bridge.handleInput(event, ctx));
   pi.on('before_agent_start', async (event, ctx) => bridge.handleBeforeAgentStart(event, ctx));
@@ -40,6 +46,7 @@ export function wirePiAwarenessHooks(pi: PiLikeApi, options: PiAwarenessBridgeOp
       });
       if (result.count === 0) {
         verifyReminderKeys.clear();
+        verifyReminderFireCount = 0; // fully cleared → re-arm the gate for future work
         return undefined;
       }
       const reminderKey = JSON.stringify({
@@ -52,19 +59,33 @@ export function wirePiAwarenessHooks(pi: PiLikeApi, options: PiAwarenessBridgeOp
         ].sort(),
       });
       if (verifyReminderKeys.has(reminderKey)) return undefined;
+      // Loop guard: once the gate has fired MAX times this session without fully clearing,
+      // stop force-triggering turns. Emit one final non-blocking notice and go quiet so a
+      // stuck agent/verification-edit cycle cannot nag indefinitely.
+      if (verifyReminderFireCount >= MAX_VERIFY_GATE_FIRES) {
+        if (verifyReminderFireCount === MAX_VERIFY_GATE_FIRES) {
+          verifyReminderFireCount += 1; // emit the silence notice exactly once
+          notify(ctx, `Octocode verify gate silenced after ${MAX_VERIFY_GATE_FIRES} reminders; ${result.count} run(s) still unverified. Run "octocode-awareness verify audit" and "verify mark" to clear.`, 'warning');
+        }
+        return undefined;
+      }
       verifyReminderKeys.add(reminderKey);
-      const details = [
-        ...result.unverified.map((intent) => `${intent.status}:${intent.run_id}: ${intent.test_plan}`),
-        ...result.stale_active.map((intent) => `STALE:${intent.run_id}: ${intent.rationale}`),
-      ];
+      verifyReminderFireCount += 1;
+      const pendingLines = result.unverified.map((intent) => `PENDING ${intent.run_id}: ${intent.test_plan}`);
+      const staleLines = result.stale_active.map((intent) => `STALE ${intent.run_id}: ${intent.rationale}`);
+      const details = [...pendingLines, ...staleLines];
       const shown = details.slice(0, 3).join('; ');
       const omitted = details.length > 3 ? `; +${details.length - 3} omitted` : '';
+      const actions = [
+        pendingLines.length ? 'PENDING runs: run the stated test/typecheck, then `octocode-awareness verify mark --run-id <id> --status SUCCESS --message "<result>"` (or --all-pending).' : '',
+        staleLines.length ? 'STALE runs: their work lease expired unverified — close each with `verify mark --run-id <id> --status FAILED --message "<why>"`.' : '',
+      ].filter(Boolean);
       pi.sendMessage?.({
         customType: 'octocode-awareness-verify-gate',
         content: [
           'Octocode awareness verify gate: you have unverified edits before concluding.',
           shown ? `Pending: ${shown}${omitted}` : '',
-          'Run the stated verification, then use octocode-awareness verify mark to clear the pending runs.',
+          ...actions,
         ].filter(Boolean).join('\n'),
         display: true,
       }, { deliverAs: 'followUp', triggerTurn: true });

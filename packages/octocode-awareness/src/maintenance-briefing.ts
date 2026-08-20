@@ -10,7 +10,6 @@
  * sessionCapture:      publishes unresolved session work as an open self-addressed handoff signal.
  * waitForLock:         polls active exclusive locks until clear or timeout.
  */
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { getDeliveryFingerprint, setDeliveryFingerprint } from './db.js';
@@ -18,6 +17,7 @@ import { fillScope } from './git.js';
 import { normalizeArtifact, summarizeText } from './helpers.js';
 import { getMemory } from './memory.js';
 import { getNotifications } from './notifications.js';
+import { compactBriefItems, notificationBriefText, summarizeUtf8 } from './maintenance-brief-format.js';
 import { BriefItem, NotifyGetBriefResult, NotifyGetResult, openRefinementCount } from './maintenance-stale.js';
 
 /**
@@ -35,6 +35,7 @@ import { BriefItem, NotifyGetBriefResult, NotifyGetResult, openRefinementCount }
 export const BRIEFING_LABELS = ['GOTCHA', 'BUG', 'DECISION', 'IMPROVEMENT', 'ARCHITECTURE', 'SECURITY'] as const;
 export const INTERVENTION_CANDIDATE_LIMIT = 50;
 export const HOOK_BRIEF_ITEM_MAX_BYTES = 180;
+export const HOOK_BRIEF_MAX_ITEMS = 5;
 
 export const INTERVENTION_STOP_WORDS = new Set([
   'the', 'and', 'for', 'with', 'from', 'into', 'this', 'that', 'about',
@@ -46,22 +47,6 @@ export function interventionTokens(text: string): Set<string> {
     (text.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [])
       .filter(token => !INTERVENTION_STOP_WORDS.has(token)),
   );
-}
-
-export function summarizeUtf8(value: string, maxBytes: number): string {
-  const flat = value.replace(/\s+/g, ' ').trim();
-  if (Buffer.byteLength(flat, 'utf8') <= maxBytes) return flat;
-  const suffix = '...';
-  const suffixBytes = Buffer.byteLength(suffix, 'utf8');
-  let bytes = 0;
-  let output = '';
-  for (const character of flat) {
-    const characterBytes = Buffer.byteLength(character, 'utf8');
-    if (bytes + characterBytes + suffixBytes > maxBytes) break;
-    output += character;
-    bytes += characterBytes;
-  }
-  return output.trimEnd() + suffix;
 }
 
 export function isPromptGroundedMemory(
@@ -108,19 +93,83 @@ export function notifyGet(
       artifact,
       unreadOnly: true,
       markRead: false,
-      limit: 5,
+      // Fetch more than the brief displays so repeated handoff broadcasts can
+      // collapse before the top-5 maintenance rows are selected.
+      limit: 50,
       cwd: notifyCwd,
     });
+    type HandoffCluster = {
+      count: number;
+      from: string;
+      target: string;
+      subject: string;
+      body: string;
+      files: string[];
+      importance: number;
+    };
+    const handoffClusters = new Map<string, HandoffCluster>();
+    const normalizeHandoffSubject = (subject: string): string => {
+      const normalized = subject.replace(/Review session handoff for pi:[^\s:]+(?::[^\s]+)?/g, 'Review session handoff');
+      return /^Review session handoff(?:\b|:)/.test(normalized) ? 'Review session handoff' : normalized;
+    };
+    const normalizeHandoffBody = (body: string): string =>
+      summarizeText(body.replace(/pi:[^\s]+/g, 'pi:<session>'), 120);
     for (const n of inbox.signals) {
       const target = n.to_agent ? `to ${n.to_agent}` : 'broadcast';
-      const fileSuffix = n.files.length > 0
-        ? ` files=${n.files.length}[${summarizeText(n.files[0]!, 48)}]`
-        : '';
-      const bodySuffix = n.body ? ` — ${summarizeText(n.body, 60)}` : '';
+      if (n.kind === 'handoff') {
+        const normalizedSubject = normalizeHandoffSubject(n.subject);
+        const sessionHandoff = normalizedSubject === 'Review session handoff';
+        const normalizedBody = sessionHandoff ? '' : normalizeHandoffBody(n.body ?? '');
+        const key = JSON.stringify([
+          n.kind,
+          n.to_agent ?? '',
+          normalizedSubject,
+          sessionHandoff ? '' : normalizedBody,
+        ]);
+        const existing = handoffClusters.get(key);
+        if (existing) {
+          existing.count += 1;
+          existing.files.push(...n.files);
+          existing.importance = Math.max(existing.importance, n.importance);
+          continue;
+        }
+        handoffClusters.set(key, {
+          count: 1,
+          from: n.from_agent,
+          target,
+          subject: normalizedSubject,
+          body: normalizedBody,
+          files: [...n.files],
+          importance: n.importance,
+        });
+        continue;
+      }
+      const text = notificationBriefText({
+        kind: n.kind,
+        from: n.from_agent,
+        target,
+        files: n.files,
+        subject: n.subject,
+        body: n.body ?? undefined,
+        workspacePath: wsPath,
+      });
+      items.push({ kind: 'notification', text, importance: n.importance });
+    }
+    for (const cluster of handoffClusters.values()) {
+      const from = cluster.count > 1 ? 'multiple agents' : cluster.from;
       items.push({
         kind: 'notification',
-        text: `📨 ${n.kind} from ${n.from_agent} (${target})${fileSuffix}: ${summarizeText(n.subject, 72)}${bodySuffix}`,
-        importance: n.importance,
+        text: notificationBriefText({
+          kind: 'handoff',
+          count: cluster.count,
+          from,
+          target: cluster.target,
+          files: cluster.files,
+          subject: cluster.subject,
+          body: cluster.body,
+          workspacePath: wsPath,
+        }),
+        importance: cluster.importance,
       });
     }
   } catch { /* skip signals on error */ }
@@ -246,14 +295,23 @@ export function notifyGet(
 
   // Hook format: wrap top items as additionalContext for pi injection
   if (format === 'hook') {
-    const hookItems = items.slice(0, 5).map(item => ({
+    const compactItems = compactBriefItems(items);
+    const hookItems = compactItems.slice(0, HOOK_BRIEF_MAX_ITEMS).map(item => ({
       ...item,
       text: summarizeUtf8(item.text, HOOK_BRIEF_ITEM_MAX_BYTES),
     }));
     result.count = hookItems.length;
     result.notifications = hookItems;
+    const hiddenCount = Math.max(0, compactItems.length - hookItems.length);
+    const duplicateCount = Math.max(0, items.length - compactItems.length);
+    const suffixParts = [
+      items.length > hookItems.length ? `${items.length} total` : '',
+      duplicateCount > 0 ? `${duplicateCount} duplicate${duplicateCount === 1 ? '' : 's'} collapsed` : '',
+      hiddenCount > 0 ? `${hiddenCount} more not shown` : '',
+    ].filter(Boolean);
+    const suffix = suffixParts.length > 0 ? ` — ${suffixParts.join(' · ')}` : '';
     const lines = [
-      `🧠 Brief (${hookItems.length}${items.length > hookItems.length ? `/${items.length}` : ''}):`,
+      `🧠 Brief — showing ${hookItems.length}/${Math.max(items.length, hookItems.length)}${suffix}:`,
       ...hookItems.map(i => `  • ${i.text}`),
     ];
     const additionalContext = lines.join('\n');
@@ -284,40 +342,4 @@ export function notifyGet(
   }
 
   return result;
-}
-
-/**
- * Parse `git status --porcelain=v1` / `--short` lines into paths.
- * Do NOT trim before reading the XY columns — a leading space is significant
- * (`" M file.txt"` must become `file.txt`, not `ile.txt`).
- */
-export function parseGitStatusShortLines(stdout: string): string[] {
-  const files: string[] = [];
-  for (const rawLine of String(stdout).split('\n')) {
-    if (!rawLine || rawLine.length < 4) continue;
-    const xy = rawLine.slice(0, 2);
-    let pathPart = rawLine.slice(3);
-    // Rename/copy: keep the destination path after " -> ".
-    if (xy.includes('R') || xy.includes('C')) {
-      const arrow = pathPart.indexOf(' -> ');
-      if (arrow >= 0) pathPart = pathPart.slice(arrow + 4);
-    }
-    const filePath = pathPart.trim();
-    if (filePath) files.push(filePath);
-  }
-  return files;
-}
-
-export function gitDirtyFiles(workspacePath: string | null): string[] {
-  if (!workspacePath) return [];
-  try {
-    const result = spawnSync('git', ['-C', workspacePath, 'status', '--porcelain=v1'], {
-      encoding: 'utf8',
-      timeout: 5000,
-    });
-    if (result.status !== 0) return [];
-    return parseGitStatusShortLines(String(result.stdout));
-  } catch {
-    return [];
-  }
 }

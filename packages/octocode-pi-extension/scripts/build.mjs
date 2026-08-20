@@ -15,7 +15,7 @@ const require = createRequire(import.meta.url);
 
 // Resolve workspace/package sources via package resolution — no path hardcoding.
 const CONFIG_LOADER_SRC = require.resolve('@octocodeai/config');
-const AWARENESS_PACKAGE_ROOT = path.dirname(path.dirname(require.resolve('@octocodeai/octocode-awareness')));
+const AWARENESS_PACKAGE_ROOT = path.dirname(path.dirname(require.resolve('@octocodeai/octocode-awareness-lite')));
 const OCTOCODE_PACKAGE_ROOT = path.dirname(require.resolve('octocode/package.json'));
 
 const SOURCE_PATHS = {
@@ -26,12 +26,12 @@ const SOURCE_PATHS = {
   awarenessSourceSkills: path.join(AWARENESS_PACKAGE_ROOT, 'skills'),
   subagents: path.join(packageRoot, 'subagents'),
   skills: path.join(packageRoot, 'skills'),
-  // The system prompt is composed from per-section files (see src/prompts/compose.mjs),
-  // not copied from a single monolithic file.
-  promptSections: path.join(packageRoot, 'src', 'prompts', 'sections'),
-  // Awareness runtime + bundled skills — bundled at build time so the pi-extension is self-contained.
+  // The system prompt is one inlined document (src/prompts/prompt.ts → dist/prompts/prompt.js);
+  // there are no per-section fragment files to copy.
+  promptSource: path.join(packageRoot, 'src', 'prompts', 'prompt.ts'),
+  // Awareness Lite runtime + bundled skills — bundled at build time so the pi-extension is self-contained.
   awarenessOut: path.join(AWARENESS_PACKAGE_ROOT, 'out'),
-  awarenessSkills: path.join(AWARENESS_PACKAGE_ROOT, 'out', 'skills'),
+  awarenessSkills: path.join(AWARENESS_PACKAGE_ROOT, 'skills'),
   octocodeSkills: path.join(OCTOCODE_PACKAGE_ROOT, 'skills'),
   // octocode CLI — bundled at build time so the pi-extension is self-contained.
   // Optional in subset checkouts: if missing, the published `octocode` runtime dep is
@@ -46,7 +46,7 @@ const OUTPUT_PATHS = {
   systemPrompt: path.join(distDir, 'system', 'SYSTEM_PROMPT.md'),
   // bundled octocode CLI — agent uses: node $OCTOCODE_CLI <command>
   cli: path.join(distDir, 'cli'),
-  // bundled Awareness CLI/runtime — agent uses: node $OCTOCODE_AWARENESS_CLI <noun> <verb>
+  // bundled Awareness Lite CLI/runtime — agent uses: node $OCTOCODE_AWARENESS_CLI <command> [action]
   awareness: path.join(distDir, 'awareness'),
 };
 
@@ -104,21 +104,9 @@ function copyDirectory(sourceDir, targetDir) {
   }
 }
 
-function copyMarkdownFiles(sourceDir, targetDir) {
-  fs.mkdirSync(targetDir, { recursive: true });
-
-  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
-    copyFile(
-      path.join(sourceDir, entry.name),
-      path.join(targetDir, entry.name)
-    );
-  }
-}
-
 function assertRequiredSources() {
   const requiredSources = {
-    promptSections: SOURCE_PATHS.promptSections,
+    promptSource: SOURCE_PATHS.promptSource,
   };
 
   for (const [label, sourcePath] of Object.entries(requiredSources)) {
@@ -214,8 +202,8 @@ function copySkillDirectories(sourceRoot, targetRoot) {
 function refreshPackageSkills() {
   fs.rmSync(SOURCE_PATHS.skills, { recursive: true, force: true });
   fs.mkdirSync(SOURCE_PATHS.skills, { recursive: true });
-  // Copy package-local Awareness skill sources when present, then overlay the
-  // Awareness package's bundled skill set. This keeps subset checkouts
+  // Copy Awareness Lite skill sources when present, then fall back to Octocode
+  // bundled skills only in subset checkouts. This keeps the extension
   // self-contained and avoids repo-root skills as a source or destination.
   const sourceCopied = copySkillDirectories(SOURCE_PATHS.awarenessSourceSkills, SOURCE_PATHS.skills);
   let awarenessCopied = copySkillDirectories(SOURCE_PATHS.awarenessSkills, SOURCE_PATHS.skills);
@@ -225,7 +213,7 @@ function refreshPackageSkills() {
   awarenessCopied += fallbackCopied;
   assertNoHiddenLocalOnlyEntries(SOURCE_PATHS.skills);
   if (awarenessCopied === 0) {
-    throw new Error(`No Awareness/Octocode skills found in ${SOURCE_PATHS.awarenessSkills} or ${SOURCE_PATHS.octocodeSkills}`);
+    throw new Error(`No Awareness Lite/Octocode skills found in ${SOURCE_PATHS.awarenessSkills} or ${SOURCE_PATHS.octocodeSkills}`);
   }
   return { sourceCopied, awarenessCopied, fallbackCopied };
 }
@@ -236,7 +224,7 @@ function syncPackageSkills() {
   const skillNames = listSkillNames(SOURCE_PATHS.skills);
   console.log(`Synced ${skillNames.length} skill(s) into ${SOURCE_PATHS.skills}`);
   if (skillNames.length > 0) console.log(`Skills: ${skillNames.join(', ')}`);
-  console.log(`Sources: awareness package skills/ (${sourceCopied}), awareness out/skills/ (${awarenessCopied - fallbackCopied}), octocode fallback skills/ (${fallbackCopied})`);
+  console.log(`Sources: awareness-lite package skills/ (${sourceCopied}), awareness-lite skills/ (${awarenessCopied - fallbackCopied}), octocode fallback skills/ (${fallbackCopied})`);
   return skillNames;
 }
 
@@ -252,14 +240,14 @@ function syncPackageSkills() {
 function bundleAwarenessRuntime() {
   const src = SOURCE_PATHS.awarenessOut;
   const dest = OUTPUT_PATHS.awareness;
-  const entry = path.join(src, 'octocode-awareness.js');
+  const entry = path.join(src, 'cli.js');
   if (!fs.existsSync(entry)) {
     throw new Error(
-      `Awareness CLI output not found at ${entry}. Run \`yarn workspace @octocodeai/octocode-awareness build\` before building pi-extension.`
+      `Awareness Lite CLI output not found at ${entry}. Run \`yarn workspace @octocodeai/octocode-awareness-lite build\` before building pi-extension.`
     );
   }
   copyDirectory(src, dest);
-  console.log(`Awareness CLI bundled: ${dest}/octocode-awareness.js`);
+  console.log(`Awareness Lite CLI bundled: ${dest}/cli.js`);
   return dest;
 }
 
@@ -320,18 +308,15 @@ async function build() {
   // the published extension carries the loader itself (no runtime dep, nothing to publish).
   // src/env.ts stays a workspace re-export for repo-time (tests, IDE); dist is self-contained.
   copyFile(SOURCE_PATHS.configLoader, path.join(distDir, 'env.js'));
-  // Compose the system prompt from its per-section source files into dist/system/.
-  // compileTsc() emits dist/prompts/{compose,sections/index}.js; sections/index.js
-  // reads its sibling .md files, so copy them next to it, then import the composed prompt.
-  copyMarkdownFiles(
-    SOURCE_PATHS.promptSections,
-    path.join(distDir, 'prompts', 'sections')
-  );
+  // The system prompt is one inlined document; compileTsc() emits dist/prompts/prompt.js.
+  // Import the composed prompt and write it to dist/system/ — no per-section copy needed.
   const { SYSTEM_PROMPT } = await import(
-    pathToFileURL(path.join(distDir, 'prompts', 'compose.js')).href
+    pathToFileURL(path.join(distDir, 'prompts', 'prompt.js')).href
   );
   fs.mkdirSync(path.dirname(OUTPUT_PATHS.systemPrompt), { recursive: true });
   fs.writeFileSync(OUTPUT_PATHS.systemPrompt, SYSTEM_PROMPT, 'utf8');
+  fs.rmSync(OUTPUT_PATHS.skills, { recursive: true, force: true });
+  fs.rmSync(OUTPUT_PATHS.awareness, { recursive: true, force: true });
   copyDirectory(SOURCE_PATHS.skills, OUTPUT_PATHS.skills);
   // Copy subagents/ to dist/subagents/ (SYSTEM_PROMPT.md files loaded at runtime)
   if (fs.existsSync(SOURCE_PATHS.subagents)) {
@@ -339,6 +324,13 @@ async function build() {
   }
   // Inject @octocodeai/config source into every skill scripts/ dir — standalone, no npm needed.
   const configInjected = injectConfigIntoSkills(OUTPUT_PATHS.skills);
+
+  // Skills now live ONLY in dist/skills (config-injected; surfaced at runtime via
+  // the resources_discover hook for both plain-pi and the octocode-agent inline
+  // factory). Remove the staging <root>/skills so Pi's package scanner can't
+  // surface a SECOND copy and emit a [Skill conflicts] block. (skills/** is also
+  // dropped from package.json "files", so it never ships either.)
+  fs.rmSync(SOURCE_PATHS.skills, { recursive: true, force: true });
 
   bundleAwarenessRuntime();
   bundleOctocodeCLI();

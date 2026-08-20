@@ -147,8 +147,10 @@ export const examples = {
   digest: {
     retention_days: 90,
     refinement_handoff_retention_days: 7,
+    handoff_signal_retention_days: 1,
     refinement_done_retention_days: 30,
     operational_retention_days: 90,
+    fail_stale_active_runs: true,
     dry_run: true,
     workspace: "/repo",
     artifact: "pkg",

@@ -5,7 +5,7 @@ import { canonicalizePath, fillScope, normalizeWorkspacePath } from './git.js';
 import { normalizeArtifact, parseJsonList } from './helpers.js';
 import { insertNotification } from './notifications-core.js';
 import { boundedMs, compactText, DEFAULT_RETRY_MS, DEFAULT_WAIT_MS, listSummary, MAX_RETRY_MS, MAX_WAIT_MS, SESSION_CAPTURE_FILE_LIMIT, SESSION_CAPTURE_RUN_DETAIL_LIMIT, SESSION_CAPTURE_RUN_FILE_LIMIT, SessionCaptureResult, WaitForLockResult } from './maintenance-stale.js';
-import { gitDirtyFiles } from './maintenance-briefing.js';
+import { gitDirtyFiles } from './maintenance-git-status.js';
 
 /** REAL: Capture unresolved session state as an open, self-addressed handoff signal (one inbox; no parallel refinement row). */
 export function sessionCapture(

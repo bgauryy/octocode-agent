@@ -222,8 +222,12 @@ test('readCapped: an aborted signal short-circuits a hanging body read (no hang)
   };
   const ac = new AbortController();
   ac.abort();
-  const out = await readCapped(hangingRes as unknown as Response, 1000, { signal: ac.signal });
-  assert.equal(out.truncated, true, 'aborted read returns truncated instead of hanging');
+  // Abort is an ERROR, not a shorter answer: a partial page returned as a
+  // "truncated success" would land in the transcript as a valid read.
+  await assert.rejects(
+    () => readCapped(hangingRes as unknown as Response, 1000, { signal: ac.signal }),
+    /web fetch aborted/,
+  );
 });
 
 test('createDeadline: fires its signal on timeout and cleans up', async () => {

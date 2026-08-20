@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { getOctocodeHome } from './utils.js';
+import { getOctocodeHome, OCTOCODE_PROMPT_MODE } from './utils.js';
 import type { ParsedSdkArgs, SdkDeps, PiSdkModule, ExtensionFactory } from './types.js';
 
 // Re-export so callers that previously imported resolveOctocodeHome from this
@@ -74,6 +74,7 @@ export function migrateAuthIfNeeded(
 export function parseSdkArgs(argv: string[] = []): ParsedSdkArgs {
   const result: ParsedSdkArgs = {
     mode: 'interactive',
+    outputFormat: 'text',
     continue: false,
     noSession: false,
     name: undefined,
@@ -82,20 +83,29 @@ export function parseSdkArgs(argv: string[] = []): ParsedSdkArgs {
     rest: [],
   };
 
+  // -p/--print and --mode are resolved independently while parsing (mirroring
+  // upstream pi's own resolveAppMode/toPrintOutputMode contract), then combined
+  // once at the end. Treating them as the same field let `--mode json` silently
+  // overwrite an earlier `-p`, dropping the print request and falling through to
+  // full interactive mode — which blocks on stdin and never exits when the
+  // caller has no real terminal attached (e.g. `-p --mode json "prompt"`).
+  let printFlag = false;
+  let explicitMode: 'text' | 'json' | 'rpc' | undefined;
+
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i]!;
     switch (arg) {
       case '-p':
       case '--print':
-        result.mode = 'print';
+        printFlag = true;
         i++;
         break;
       case '--mode':
         if (i + 1 < argv.length) {
           const m = argv[i + 1]!;
-          if (m === 'rpc' || m === 'json') {
-            result.mode = m;
+          if (m === 'rpc' || m === 'json' || m === 'text') {
+            explicitMode = m;
             i += 2;
             break;
           }
@@ -122,8 +132,10 @@ export function parseSdkArgs(argv: string[] = []): ParsedSdkArgs {
         i++;
         break;
       default:
-        // First bare non-flag arg in interactive mode becomes the initial prompt
-        if (!arg.startsWith('-') && result.initialMessage == null && result.mode === 'interactive') {
+        // First bare non-flag arg becomes the initial prompt, unless something
+        // already seen forces a non-interactive mode (print-mode reconstructs
+        // the message from `rest` regardless, so this is a best-effort capture).
+        if (!arg.startsWith('-') && result.initialMessage == null && !printFlag && explicitMode === undefined) {
           result.initialMessage = arg;
         } else {
           result.rest.push(arg);
@@ -131,6 +143,17 @@ export function parseSdkArgs(argv: string[] = []): ParsedSdkArgs {
         i++;
     }
   }
+
+  // Resolve run mode + output format together, matching upstream pi's
+  // resolveAppMode: --mode rpc always wins; --mode json forces print+json
+  // even without -p; -p forces print+text; otherwise interactive.
+  if (explicitMode === 'json') result.outputFormat = 'json';
+  if (explicitMode === 'rpc') {
+    result.mode = 'rpc';
+  } else if (explicitMode === 'json' || printFlag) {
+    result.mode = 'print';
+  }
+
   return result;
 }
 
@@ -179,6 +202,15 @@ export async function importExtensionFactory(): Promise<ExtensionFactory | null>
  *   - number: process exit code (0 = success, ≥1 = error)
  *   - null: SDK unavailable — caller should fall back to subprocess
  */
+async function loadOctocodeShell(): Promise<SdkDeps['createOctocodeShell']> {
+  const subpath = await import('@octocodeai/pi-extension/shell').catch(() => null);
+  if (subpath && 'createOctocodeShell' in subpath) {
+    return (subpath as { createOctocodeShell?: SdkDeps['createOctocodeShell'] }).createOctocodeShell;
+  }
+  const root = await import('@octocodeai/pi-extension').catch(() => null);
+  return (root as { createOctocodeShell?: SdkDeps['createOctocodeShell'] } | null)?.createOctocodeShell;
+}
+
 export async function launchWithSdk(
   argv: string[] = [],
   deps: SdkDeps = {},
@@ -190,6 +222,12 @@ export async function launchWithSdk(
   // Mirror PI_CACHE_RETENTION into process.env — the in-process Pi SDK reads it directly.
   if (env.PI_CACHE_RETENTION && !process.env.PI_CACHE_RETENTION) {
     process.env.PI_CACHE_RETENTION = env.PI_CACHE_RETENTION;
+  }
+  // Same in-process mirror for the version-check kill switch: Pi's
+  // checkForNewPiVersion reads process.env directly (the built launch env is
+  // otherwise only forwarded to the subprocess path).
+  if (env.PI_SKIP_VERSION_CHECK !== undefined && process.env.PI_SKIP_VERSION_CHECK === undefined) {
+    process.env.PI_SKIP_VERSION_CHECK = env.PI_SKIP_VERSION_CHECK;
   }
 
   const sdk = await (deps.importPiSdk ?? importPiSdk)();
@@ -232,17 +270,28 @@ export async function launchWithSdk(
       ? (getAgentDir as () => string)()
       : path.join(os.homedir(), '.pi', 'agent');
 
-  // Settings: read from Pi's default dir, then apply octocode-specific defaults
+  // Settings: read from Pi's default dir, then apply octocode-specific defaults.
+  // keep in sync: re-applied after service creation (see [OVERRIDE-REAPPLY]).
+  const octocodeSessionOverrides = {
+    compaction: { enabled: true },
+    retry: { enabled: true, maxRetries: 3 },
+    // Hide Pi's own startup header for octocode-agent runs. Runtime-only
+    // (applyOverrides never persists) — plain `pi` keeps its header; ours is
+    // the branded banner printed by printLaunchBanner. Subprocess fallback
+    // can't inject this; acceptable for the fork-dev path.
+    quietStartup: true,
+  } as const;
   let settingsManager: unknown;
   try {
     const SM = SettingsManager as {
-      create: (cwd: string, agentDir: string) => { applyOverrides?: (o: unknown) => void };
+      create: (cwd: string, agentDir: string) => {
+        applyOverrides?: (o: unknown) => void;
+      };
     };
     settingsManager = SM.create(cwd, agentDir);
-    (settingsManager as { applyOverrides?: (o: unknown) => void }).applyOverrides?.({
-      compaction: { enabled: true },
-      retry: { enabled: true, maxRetries: 3 },
-    });
+    (settingsManager as { applyOverrides?: (o: unknown) => void }).applyOverrides?.(
+      octocodeSessionOverrides,
+    );
   } catch {
     settingsManager = undefined; // non-critical; DefaultResourceLoader handles it
   }
@@ -267,7 +316,7 @@ export async function launchWithSdk(
   }
 
   // Build runtime factory — loads extension in-process via Pi service resource loading.
-  const extensionFactory = createExtension({ promptMode: 'octocode-first' });
+  const extensionFactory = createExtension({ promptMode: OCTOCODE_PROMPT_MODE });
 
   const createRuntime = async ({
     cwd: rCwd,
@@ -297,6 +346,14 @@ export async function launchWithSdk(
     const services = await (
       createAgentSessionServices as (opts: Record<string, unknown>) => Promise<unknown>
     )(serviceOptions);
+    // [OVERRIDE-REAPPLY] Pi's SettingsManager.setProjectTrusted()/reload()
+    // REBUILD `settings = merge(global, project)` — wiping anything merged by
+    // applyOverrides, and service creation re-trusts the project (verified:
+    // services.settingsManager is this same instance with quietStartup reverted).
+    // Re-apply now that the last rebuild has happened.
+    (services as Record<string, { applyOverrides?: (o: unknown) => void }>)[
+      'settingsManager'
+    ]?.applyOverrides?.(octocodeSessionOverrides);
     return {
       ...((await (
         createAgentSessionFromServices as (opts: {
@@ -340,8 +397,25 @@ export async function launchWithSdk(
           r: unknown,
           opts: { mode: string; initialMessage?: string; initialImages: unknown[]; messages: unknown[] },
         ) => Promise<void>
-      )(runtime, { mode: 'text', initialMessage: msg, initialImages: [], messages: [] });
+      )(runtime, { mode: parsed.outputFormat, initialMessage: msg, initialImages: [], messages: [] });
       return 0;
+    }
+
+    // Own TUI shell (Phase C alpha): OCTOCODE_SHELL=1 swaps Pi's InteractiveMode
+    // for the Octocode shell shipped by the core. Any failure → InteractiveMode.
+    if (env.OCTOCODE_SHELL === '1' || env.OCTOCODE_SHELL === 'true') {
+      try {
+        const shellFn = deps.createOctocodeShell ?? (await loadOctocodeShell());
+        if (typeof shellFn === 'function') {
+          const shell = await shellFn(runtime, {});
+          const code = await shell.run();
+          return typeof code === 'number' ? code : 0;
+        }
+        log('octocode-agent: shell not exported by core; using InteractiveMode');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`octocode-agent: shell failed (${msg}); falling back to InteractiveMode`);
+      }
     }
 
     // Interactive mode (default)

@@ -64,6 +64,7 @@ The subagent prefixes every line:
 | `[METRIC] …` | Measurement (size, count, %, ms) |
 | `[SCREENSHOT] path` | Absolute path to screenshot |
 | `[BLOCKED] reason` | Needs input before continuing |
+| `[FAILED] reason` | Objective cannot be completed — with partial findings |
 | `[DONE] summary` | Task complete |
 
 Parse `AgentMessage(status).lastOutput` for these prefixes.
@@ -121,7 +122,7 @@ The subagent uses these schemes internally — you can also request them explici
 | `accessibility` | AX tree: unlabeled elements, missing alt, heading levels |
 | `workers` | Web workers + service workers (lifecycle + scriptURL) |
 | `performance` | Core Web Vitals, JS heap, layout counts |
-| `coverage` | CSS rule usage + JS function coverage |
+| `css-coverage` / `js-coverage` | CSS rule usage + JS function/block coverage |
 | `emulate` | Device viewport, network throttle, geolocation |
 | `intercept` | Request capture/mock (Fetch domain) |
 | `screenshot` | PNG/JPEG/PDF capture |

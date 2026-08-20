@@ -1,43 +1,41 @@
 # AGENTS.md — @octocodeai/octocode-awareness
 
 This package dogfoods shared work, verification, memory, hooks, and generated repo
-context. `AGENTS.md` routes maintainers; the Awareness skill owns operating policy;
-the CLI owns live state and contracts; hooks automate lifecycle edges; package docs
-own architecture and feature depth.
+context. `AGENTS.md` routes maintainers; the skill owns operating policy; the CLI
+owns live state/contracts; package docs own architecture and feature depth.
 
-## Enter 
+## Enter
 
-Activate `octocode-awareness`, export one stable identity, then ask live state for
-the next action:
+Activate `octocode-awareness`, export one stable identity, choose the runnable CLI,
+then ask live state. Pi: `node "$OCTOCODE_AWARENESS_CLI"`; package dev after build:
+`node packages/octocode-awareness/out/octocode-awareness.js`; installed smoke:
+`npx @octocodeai/octocode-awareness`. Missing local `out/` means build first.
 
 ```bash
 export OCTOCODE_AGENT_ID="${OCTOCODE_AGENT_ID:-codex-awareness}"
-AWARENESS="node packages/octocode-awareness/out/octocode-awareness.js"
-$AWARENESS attend --workspace "$PWD" --query "<current task>" \
+AWARENESS_CLI="packages/octocode-awareness/out/octocode-awareness.js"
+node "$AWARENESS_CLI" attend --workspace "$PWD" --query "<current task>" \
   --agent-id "$OCTOCODE_AGENT_ID" --compact
 ```
 
-Always follow `attend.next`. Use `schema command <noun> [action]` only for unclear flags;
-load one reference only when the action needs depth. Do not preload inventories.
-
-SQLite is canonical. Confirm live work with `attend`/`query` and recall
-learning with `memory recall --smart`.
-Never hand-edit `.octocode/` files; only authored `.octocode/plan/**` docs are source.
+Never put `node ...` inside a shell variable and run it; shells treat that as one
+executable. Always follow `attend.next`; use `schema command <noun> [action]` only
+for unclear flags. SQLite is canonical. Confirm live work with `attend`/`query`; recall
+with `memory recall --smart`. Never hand-edit `.octocode/` except authored plans.
 
 Manual fallback: attend; `work start`; check while present; `work end`; `verify mark`;
-`verify audit`. Overlap is advisory; use `--exclusive` only for sensitive work and
-never bypass a conflict.
+`verify audit`. Overlap is advisory; use `--exclusive` only for unsafe/non-mergeable
+or sensitive work and never bypass a conflict.
 
 ## Package Constraints
 
 - Edit runtime/CLI and Zod contracts in `src/**` and `bin/**`.
-- Edit the canonical skill only in repo-root `skills/octocode-awareness/**`; package-local `skills/` is a generated build sync (gitignored).
+- Edit the canonical skill only in repo-root `skills/octocode-awareness/**`; package-local `skills/` is generated.
 - Edit package guidance in `README.md` and `docs/**`.
-- Never hand-edit `out/**`, `.agents/skills/**`, or build-generated Awareness
-  helpers/schemas under `skills/octocode-awareness/scripts/**`.
-- `out/**` is the ignored, publishable build tree: separate CLI, import-only
-  library/schema API, declarations, per-contract JSON schemas, and bundled skills.
-  Do not restore `dist/**` or a package-local `skills/**` source tree.
+- Never hand-edit `out/**`, `.agents/skills/**`, or generated helpers/schemas under
+  `skills/octocode-awareness/scripts/**`.
+- `out/**` is the ignored publishable build tree; do not restore `dist/**` or a
+  package-local `skills/**` source tree.
 - Declare every edited file. Structured-write hooks automate presence when healthy;
   explicit CLI presence remains the fallback.
 - Before planning, recall memory only when prior learning could change the approach;
@@ -69,6 +67,6 @@ yarn workspace @octocodeai/octocode-awareness verify
 ```
 
 Skill changes also require `yarn workspace @octocodeai/octocode-awareness build`
-and focused tests for the edited skill behavior. Preserve failed-check evidence. Record only reusable learning. The executable user
-flow lives in `docs/SKILLS.md`; host automation in `docs/HOOKS.md`; architecture and
-the complete lifecycle in `docs/HOW_IT_WORKS.md`; all concept owners in `docs/README.md`.
+and focused tests. Preserve failed-check evidence. Record only reusable learning.
+Executable flow: `docs/SKILLS.md`; hooks: `docs/HOOKS.md`; lifecycle:
+`docs/HOW_IT_WORKS.md`; concept owners: `docs/README.md`.

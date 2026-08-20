@@ -112,7 +112,7 @@ describe('memory recall', () => {
     const result = ok(db, ['memory', 'recall', '--query', 'sqlite', '--semantic']);
     expect(result['mode']).toBeTruthy();
     expect(result['warnings']).toEqual(expect.arrayContaining([
-      expect.stringContaining('semantic ranking is unavailable in the CLI'),
+      expect.stringContaining('semantic ranking is unavailable'),
     ]));
   });
 

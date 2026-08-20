@@ -316,6 +316,35 @@ describe('signals table column names', () => {
   });
 });
 
+describe('lifecycle enum constraints', () => {
+  it('rejects unknown task event types', () => {
+    const db = freshDb();
+    db.prepare(`INSERT INTO plans(plan_id, name, objective, lead_agent_id, status, workspace_path, doc_dir, created_at, updated_at)
+      VALUES ('plan_lifecycle', 'Lifecycle', 'Keep lifecycle values bounded.', 'lead', 'ACTIVE', '/tmp/repo', '.octocode/plan/lifecycle', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`).run();
+    db.prepare(`INSERT INTO tasks(task_id, plan_id, title, reasoning, acceptance_criteria, status, created_by, created_at, updated_at)
+      VALUES ('task_lifecycle', 'plan_lifecycle', 'Task', 'reason', 'verify', 'OPEN', 'lead', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`).run();
+
+    expect(() => db.prepare(`INSERT INTO task_events(event_id, task_id, agent_id, event_type, message, created_at)
+      VALUES ('event_bad', 'task_lifecycle', 'lead', 'BOGUS', 'bad event', '2026-01-01T00:00:00Z')`).run())
+      .toThrow(/CHECK constraint failed/);
+
+    expect(() => db.prepare(`INSERT INTO task_events(event_id, task_id, agent_id, event_type, message, created_at)
+      VALUES ('event_good', 'task_lifecycle', 'lead', 'CREATED', 'created', '2026-01-01T00:00:00Z')`).run())
+      .not.toThrow();
+  });
+
+  it('rejects unknown signal statuses', () => {
+    const db = freshDb();
+    const insert = db.prepare(`INSERT INTO signals(
+      signal_id, workspace_path, from_agent, kind, subject, thread_id, importance, status, created_at
+    ) VALUES (?, '/tmp/repo', 'agent-a', 'fyi', 'subject', ?, 5, ?, '2026-01-01T00:00:00Z')`);
+
+    expect(() => insert.run('ntf_bad', 'ntf_bad', 'archived')).toThrow(/CHECK constraint failed/);
+    expect(() => insert.run('ntf_good_open', 'ntf_good_open', 'open')).not.toThrow();
+    expect(() => insert.run('ntf_good_resolved', 'ntf_good_resolved', 'resolved')).not.toThrow();
+  });
+});
+
 // ─── 7. sessions table ───────────────────────────────────────────────────────
 
 describe('sessions table column names', () => {

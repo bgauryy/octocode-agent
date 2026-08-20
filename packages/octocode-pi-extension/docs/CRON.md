@@ -7,7 +7,7 @@ cleared on `session_shutdown`, `/new`, reload, resume, fork, or quit.
 ## Safety model
 
 - Default jobs are report-first and non-mutating.
-- The built-in maintenance job runs Awareness with `--dry-run`.
+- The built-in status job runs Awareness Lite read-only `status`.
 - No job calls a model.
 - Jobs never run when `OCTOCODE_CRON=0`.
 - Mutating cleanup such as `memory forget` or `wiki sync` remains manual.
@@ -22,7 +22,7 @@ cleared on `session_shutdown`, `/new`, reload, resume, fork, or quit.
 ```
 
 `list` shows every session job. Bare `check` runs the default job
-(`maintenance-digest`); `check all` runs every registered job; `check <job>` runs
+(`awareness-lite-status`); `check all` runs every registered job; `check <job>` runs
 one named job. `cancel` follows the same target rules and disables timers for the
 current session only.
 
@@ -30,15 +30,15 @@ current session only.
 
 | Job | Interval | Action |
 |---|---:|---|
-| `maintenance-digest` | 30 min | `node $OCTOCODE_AWARENESS_CLI maintenance digest --workspace <cwd> --dry-run --compact` |
+| `awareness-lite-status` | 30 min | `node $OCTOCODE_AWARENESS_CLI status --workspace <cwd>` |
 
 ## Configuration
 
 | Variable | Default | Effect |
 |---|---:|---|
 | `OCTOCODE_CRON` | `1` | Set `0` to disable all session jobs. |
-| `OCTOCODE_CRON_DIGEST` | `1` | Set `0` to leave the digest job unscheduled. |
-| `OCTOCODE_CRON_DIGEST_INTERVAL_MS` | `1800000` | Override digest interval in milliseconds. |
+| `OCTOCODE_CRON_STATUS` | `1` | Set `0` to leave the status job unscheduled. |
+| `OCTOCODE_CRON_STATUS_INTERVAL_MS` | `1800000` | Override status interval in milliseconds. |
 
 The scheduler requires `$OCTOCODE_AWARENESS_CLI`. If it is absent, manual and
 scheduled runs are skipped with a visible message instead of failing the session.

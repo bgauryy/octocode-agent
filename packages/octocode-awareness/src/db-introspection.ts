@@ -78,6 +78,19 @@ export function schemaObjectsFingerprint(objects: SchemaObject[]): string {
 
 export const _canonicalSchemaFingerprints = new Map<boolean, string>();
 export const _priorHookReceiptSchemaFingerprints = new Map<boolean, string>();
+export const _priorLifecycleConstraintSchemaFingerprints = new Map<boolean, string>();
+
+function priorLifecycleConstraintSchemaDdl(): string {
+  return SCHEMA_DDL
+    .replace(
+      "      event_type TEXT NOT NULL\n                 CHECK(event_type IN ('CREATED','DEPENDENCY_ADDED','CLAIMED','SUBMITTED','BLOCKED','RELEASED','CLAIM_EXPIRED','VERIFIED','VERIFICATION_FAILED')),",
+      '      event_type TEXT NOT NULL,',
+    )
+    .replace(
+      "      status         TEXT NOT NULL DEFAULT 'open'\n                     CHECK(status IN ('open','resolved')),",
+      "      status         TEXT NOT NULL DEFAULT 'open',",
+    );
+}
 
 export function canonicalSchemaFingerprint(includeFts: boolean): string {
   const cached = _canonicalSchemaFingerprints.get(includeFts);
@@ -125,6 +138,36 @@ export function isExactPriorHookReceiptSchema(
   const objects = readSchemaObjects(db);
   const includeFts = objects.some(({ type, name }) => type === 'table' && name === 'memories_fts');
   return schemaObjectsFingerprint(objects) === priorHookReceiptSchemaFingerprint(includeFts);
+}
+
+export function priorLifecycleConstraintSchemaFingerprint(includeFts: boolean): string {
+  const cached = _priorLifecycleConstraintSchemaFingerprints.get(includeFts);
+  if (cached) return cached;
+  const prior = new DatabaseSync(':memory:');
+  try {
+    prior.exec(priorLifecycleConstraintSchemaDdl());
+    prior.exec(SCHEMA_INDEX_DDL);
+    if (includeFts) prior.exec(FTS_SCHEMA_DDL);
+    const fingerprint = schemaObjectsFingerprint(readSchemaObjects(prior));
+    _priorLifecycleConstraintSchemaFingerprints.set(includeFts, fingerprint);
+    return fingerprint;
+  } finally {
+    prior.close();
+  }
+}
+
+export function isExactPriorLifecycleConstraintSchema(
+  db: DatabaseSync,
+  relations?: SchemaIdentity['relations'],
+): boolean {
+  const actualRelations = relations ?? readSchemaIdentity(db).relations;
+  const expected = new Set(canonicalColumns().keys());
+  const actual = actualRelations.filter(({ name }) => name !== 'memories_fts');
+  if (actual.some(({ type }) => type !== 'table')) return false;
+  if (actual.length !== expected.size || actual.some(({ name }) => !expected.has(name))) return false;
+  const objects = readSchemaObjects(db);
+  const includeFts = objects.some(({ type, name }) => type === 'table' && name === 'memories_fts');
+  return schemaObjectsFingerprint(objects) === priorLifecycleConstraintSchemaFingerprint(includeFts);
 }
 
 export function assertCanonicalRelationContract(

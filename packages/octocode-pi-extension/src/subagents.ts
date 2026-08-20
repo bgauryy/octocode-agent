@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ResourceMode } from './tools/agent-tools.js';
+import { PI_CONFIG_DIR } from './constants.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -104,13 +105,14 @@ const SKILLS_DIR = resolveSkillsDir();
 export function getExternalSkillDirs(): string[] {
   const dirs: string[] = [];
   const home = process.env.HOME;
-  if (home) dirs.push(path.join(home, '.pi', 'agent', 'skills'));
+  if (home) dirs.push(path.join(home, PI_CONFIG_DIR, 'agent', 'skills'));
   const cwdAgentsSkills = path.resolve(process.cwd(), '.agents', 'skills');
   if (!dirs.includes(cwdAgentsSkills)) dirs.push(cwdAgentsSkills);
   return dirs;
 }
 
 export const OCTOCODE_SKILL_NAMES = [
+  'octocode-awareness-lite',
   'octocode-brainstorming',
   'octocode-prompt-optimizer',
   'octocode-research',

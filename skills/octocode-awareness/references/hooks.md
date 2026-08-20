@@ -1,9 +1,6 @@
 # Awareness Hooks
 
-Hooks automate loop edges after the skill is used; they do not choose tasks or replace
-`attend`/verify. Export one stable `OCTOCODE_AGENT_ID`; without it, presence and peer
-packets do not join correctly. A config file proves presence, not execution, trust, or
-model-visible delivery.
+Hooks automate loop edges after the skill is used; they do not choose tasks or replace `attend`/verify. Export one stable `OCTOCODE_AGENT_ID`; without it, presence and peer packets do not join correctly. A config file proves presence, not execution, trust, or model-visible delivery.
 
 | Host | Surface | Context / control |
 |---|---|---|
@@ -31,14 +28,13 @@ Choose one surface. With Claude frontmatter, preview/remove legacy project or gl
 
 1. Extract deduplicated paths; no paths → no-op.
 2. Evaluate harness guard before any DB presence.
-3. Resolve exactly one TASK claim, matching explicit WORK presence, or the active
-   fallback for the same agent + stable session/transcript + workspace + artifact.
+3. Resolve exactly one TASK claim, matching explicit WORK presence, or the active fallback for the same agent + stable session/transcript + workspace + artifact.
 4. Declare advisory work. Existing exclusive blocks; ordinary peers succeed.
 5. Emit peer context only when its fingerprint changes.
 6. Post-edit logs/heartbeats. TASK/WORK stays active; scoped HOOK stays active.
 7. Stop, PreCompact, or SessionEnd finalizes scoped HOOK runs once; Stop audits debt.
 
-N edits in one scoped turn produce one PENDING HOOK with N files. TASK/WORK never merge into it. Shell creation is cross-process locked; Pi coalesces synchronous in-process callbacks. Recursive Stop surfaces newly finalized continuation debt once, then permits an unchanged recursive Stop to avoid a host loop. Missing stable session correlation uses isolated fallback. Correlation loss never marks success.
+N edits in one scoped turn produce one PENDING HOOK with N files. TASK/WORK never merge into it. Shell creation is cross-process locked; Pi coalesces in-process callbacks. Recursive Stop surfaces continuation debt once, then permits an unchanged recursive Stop to avoid a host loop. Missing stable session correlation uses isolated fallback. Correlation loss never marks success.
 
 ## Host Edges
 
@@ -50,17 +46,13 @@ N edits in one scoped turn produce one PENDING HOOK with N files. TASK/WORK neve
 | Verify | Stop/SubagentStop | stop/subagentStop | bounded agent-end reminder |
 | Finalize | SessionEnd (Claude) / PreCompact (Codex) | sessionEnd/preCompact | shutdown/pre-compact |
 
-Claude/Codex context uses event-named `hookSpecificOutput`. Cursor uses `additional_context` at session start and `agent_message` around tool use; Cursor stop uses `followup_message`; Claude/Codex stop uses exit 2. Host delivery remains best-effort and must be smoked.
-
-PreCompact finalizes/captures but keeps the host session reusable. SessionEnd and Pi shutdown mark the session ended; they do not delete explicit WORK or claim success. Presence/task claim TTLs are independent. Expiry removes stale coordination, never success, and never changes a live TASK run to PENDING.
+Claude/Codex context uses event-named `hookSpecificOutput`. Cursor uses `additional_context` at session start and `agent_message` around tool use; Cursor stop uses `followup_message`; Claude/Codex stop uses exit 2. Host delivery is best-effort and must be smoked. PreCompact finalizes/captures but keeps the host session reusable. SessionEnd and Pi shutdown mark the session ended; they do not delete explicit WORK or claim success. Presence/task claim TTLs are independent. Expiry removes stale coordination, never success, and never changes a live TASK run to PENDING.
 
 Guard denial and real exclusivity use the host's native block shape: exit 2 for Claude/Codex; `permission: deny` for Cursor; `{ block: true }` for Pi. Infrastructure/input failure warns and fails open.
 
 ## Diagnostics & Prompt Delivery
 
-Bounded SQLite upserts report `unverified|observed|stale|failed`, `coverage`, and `last_seen` without payloads. Codex: inspect project trust, definition trust, and feature enablement. Cursor: smoke local/cloud; flat config lacks a guaranteed Windows command override.
-
-Smoke: session/subagent registration; ordinary peer context once; exclusive denial before presence; a failed write creates no audit/debt; N successful writes in one turn become one fallback Verify item with N files; PreCompact reuses the session; SessionEnd ends it; changed briefing and host log visibility. Treat any missing edge as a runtime failure even when config is green.
+Bounded SQLite upserts report `unverified|observed|stale|failed`, `coverage`, and `last_seen` without payloads. Codex: inspect project trust, definition trust, and feature enablement. Cursor: smoke local/cloud; flat config lacks a guaranteed Windows command override. Smoke: session/subagent registration; ordinary peer context once; exclusive denial before presence; a failed write creates no audit/debt; N successful writes in one turn become one fallback Verify item with N files; PreCompact reuses the session; SessionEnd ends it; changed briefing and host log visibility. Treat any missing edge as a runtime failure even when config is green.
 
 Prompt-time delivery is transient: shell hooks pass an event prompt when available; Pi buffers only the latest `input` through `before_agent_start`, clearing empty/consumed input. The hook emits at most one grounded memory lead (or silence), keeps signals/overrides independent, and caps the final five-item packet at 1 KiB UTF-8. Selection/trust: `references/memory-recall.md`.
 

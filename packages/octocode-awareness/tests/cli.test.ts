@@ -11,6 +11,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { initDb } from '../src/db.js';
 const SOURCE_SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '../bin/awareness.ts');
 const TSX_SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../node_modules/tsx/dist/cli.mjs');
 const NODE = process.execPath;
@@ -132,6 +133,47 @@ describe('source CLI regressions', () => {
 
       const digest = runSource(['--db', db, 'maintenance', 'digest', '--dry-run', '--export-doc', '--compact']);
       expect(digest.status, digest.stderr || digest.stdout).toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('preserves false values for digest boolean flags', () => {
+    const dir = mktemp();
+    const dbPath = join(dir, 'test.sqlite3');
+    const old = new Date(Date.now() - 30 * 86400000).toISOString();
+    try {
+      const db = new DatabaseSync(dbPath);
+      initDb(db);
+      db.prepare(`INSERT INTO task_runs (
+        run_id, origin, agent_id, rationale, test_plan, status, workspace_path, created_at, updated_at
+      ) VALUES ('run_cli_stale_active', 'WORK', 'old-agent', 'stale active session', 'maintenance digest', 'ACTIVE', ?, ?, ?)`).run(dir, old, old);
+      db.prepare(`INSERT INTO run_files (run_id, file_path, source, started_at, heartbeat_at, expires_at)
+        VALUES ('run_cli_stale_active', ?, 'EXPLICIT', ?, ?, ?)`).run(join(dir, 'stale.ts'), old, old, old);
+      db.close();
+
+      const negated = runSource([
+        '--db', dbPath,
+        'maintenance', 'digest',
+        '--workspace', dir,
+        '--no-fail-stale-active-runs',
+        '--compact',
+      ]);
+      expect(negated.status, negated.stderr || negated.stdout).toBe(0);
+      expect(negated.parsed?.['failed_stale_active_runs']).toBe(0);
+
+      const explicitFalse = runSource([
+        '--db', dbPath,
+        'maintenance', 'digest',
+        '--workspace', dir,
+        '--fail-stale-active-runs', 'false',
+        '--compact',
+      ]);
+      expect(explicitFalse.status, explicitFalse.stderr || explicitFalse.stdout).toBe(0);
+      expect(explicitFalse.parsed?.['failed_stale_active_runs']).toBe(0);
+
+      const check = new DatabaseSync(dbPath);
+      expect(check.prepare("SELECT status FROM task_runs WHERE run_id = 'run_cli_stale_active'").get())
+        .toEqual({ status: 'ACTIVE' });
+      check.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

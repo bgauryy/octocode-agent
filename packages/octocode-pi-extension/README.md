@@ -4,78 +4,101 @@
 <img src="../../../packages/assets/extension.png" width="640px" alt="Octocode + Pi">
 </div>
 
-Octocode’s research tools, Awareness coordination, system prompt, skills, web
-providers, and subagents as one Pi extension.
+Octocode’s research tools, Awareness Lite coordination, system prompt, skills,
+web providers, subagents, and launcher-consumed surface/profile specs as one Pi extension.
 
 ```bash
 pi install npm:@octocodeai/pi-extension
 /octocode
 ```
 
-The build bundles both command lines:
+The build bundles the Awareness Lite runtime CLI and uses the published Octocode CLI through `npx` for management commands:
 
-- `$OCTOCODE_CLI` → `node "$OCTOCODE_CLI" <command>`
-- `$OCTOCODE_AWARENESS_CLI` → `node "$OCTOCODE_AWARENESS_CLI" <noun> <verb> --compact`
+- `$OCTOCODE_AWARENESS_CLI` → `node "$OCTOCODE_AWARENESS_CLI" <command> [action] --workspace "$PWD"`
+- Management CLI → `npx octocode@latest skill | lsp-server | auth`
 
 ## What loads
 
 | Surface | Count |
 |---|---:|
-| Native Octocode research tools | 13 |
-| Pi support tools | 9 |
+| Octocode MCP research tools | 13 |
+| Pi support tools | 11 |
 | Replacement edit + write + bash tools | 3 |
-| Slash commands | 9 |
-| Bundled main-agent skills | 9 |
+| Slash commands | 22 |
+| Bundled main-agent skills | 1 |
 
-Awareness memory and coordination are deliberately not Pi tools. Agents use the
-bundled CLI under the `octocode-awareness` skill, while in-process hooks automate
-file presence, exclusive-conflict checks, briefings, and finish warnings. This
+Awareness Lite memory and coordination are deliberately not Pi tools. Agents use
+the bundled CLI under the `octocode-awareness-lite` skill for explicit `status`,
+`plan`, `task`, `lock`, `work`, `handoff`, `check`, and `memory` commands. This
 keeps one CLI/schema contract instead of duplicating it in Pi tool definitions.
+
+The extension also owns Octocode surface/profile helpers (`buildSurfaceSpec`,
+`resolveAwarenessCli`, `loadProfile`, `profileToPiArgs`). `octocode-agent`
+imports those helpers directly and only executes the returned specs, so core
+policy stays here instead of drifting into launcher shims.
 
 ## Quick start
 
 ```text
 /octocode                dashboard: status, agents, setup, skills, health
+/octocode-now            orientation cockpit: model, context, plan, tasks, agents, git
+/octocode-tasks          local plan + shared Awareness task/verification bridge
+/octocode-skills         discovered skills and load/install guidance
 /octocode-agents         live spawned-worker ledger and controls
 /octocode-status         health and configured surfaces
 /octocode-harness        exact live tools, commands, and skills
 /octocode-mcp            inspect/manage .pi/agent/mcp.json servers
+/octocode-cron           list/check/cancel session-scoped Octocode jobs
 /octocode-setup          manage project .pi/APPEND_SYSTEM.md
+/octocode-skills-update  refresh bundled skill installs
+/octocode-plan           manage the active task plan
+/octocode-theme          switch Octocode theme: sync, dark, or light
+/octocode-chrome         list or close reused Chrome DevTools connections
+/octocode-footer         footer density: compact, default, or full
+/octocode-inbox          worker inbox: view transcript, steer, or kill spawned agents
+/octocode-palette        command palette (default shortcut ctrl+o)
+/octocode-rewind         restore files from an automatic pre-prompt checkpoint
+/octocode-dial           effort dial: thinking level + worker parallelism in one knob
+/octocode-watch          watch mode: `// … AI!` comments in your editor become prompts
+/octocode-export         brand a pi session HTML export with Octocode styling
 ```
 
-At the start of coding work, the agent should run:
+At the start of coding work, the agent can inspect the Lite coordination store:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" attend --workspace "$PWD" --compact
+node "$OCTOCODE_AWARENESS_CLI" status --workspace "$PWD"
 ```
 
-It then chooses a ready task or opens standalone advisory Work:
+It then claims a Lite task or opens standalone advisory Work:
 
 ```bash
+node "$OCTOCODE_AWARENESS_CLI" task claim \
+  --workspace "$PWD" --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID"
 node "$OCTOCODE_AWARENESS_CLI" work start \
-  --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" --file src/a.ts \
-  --rationale "fix parser" --test-plan "parser tests" --compact
+  --workspace "$PWD" --file src/a.ts --agent-id "$OCTOCODE_AGENT_ID" \
+  --reason "fix parser"
 ```
 
-Ordinary file presence is advisory and can overlap. Add `--exclusive` only for
-sensitive/non-mergeable work. Finish the exact owned run after its stated check:
+Ordinary file presence is advisory and can overlap. Use `lock acquire` for
+sensitive/non-mergeable work. Finish the exact owned task after its stated check:
 
 ```bash
-node "$OCTOCODE_AWARENESS_CLI" work end \
-  --agent-id "$OCTOCODE_AGENT_ID" --run-id run_123 --compact
+node "$OCTOCODE_AWARENESS_CLI" task done \
+  --workspace "$PWD" --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID"
 node "$OCTOCODE_AWARENESS_CLI" verify mark \
-  --agent-id "$OCTOCODE_AGENT_ID" --run-id run_123 \
-  --message "parser tests passed" --compact
+  --workspace "$PWD" --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID" \
+  --message "parser tests passed"
 ```
 
 Do not batch-verify another agent’s work. See
 [docs/AWARENESS_AGENT_FLOW.md](docs/AWARENESS_AGENT_FLOW.md) and
 [docs/REFLECT.md](docs/REFLECT.md).
 
-## Native Octocode tools (13)
+## Octocode MCP research tools (13)
 
-These execute directly through `@octocodeai/octocode-tools-core`; no MCP process
-or duplicate interface layer is started:
+These are available through `MCPTool`'s built-in lazy `octocode` server
+(`npx -y octocode-mcp@latest`), so the extension keeps one MCP/schema surface for
+research instead of duplicating tool definitions in the harness:
 
 | Area | Tools |
 |---|---|
@@ -93,7 +116,7 @@ mutation targets.
 **Why, and how to work with overrides:** [docs/OVERRIDES.md](docs/OVERRIDES.md)
 (users + developers). UI/status details: [docs/UI.md](docs/UI.md).
 
-## Support tools (9)
+## Support tools (11)
 
 | Tool | Purpose |
 |---|---|
@@ -103,12 +126,14 @@ mutation targets.
 | `spawnSubagent` | Spawn a declared packaged subagent. |
 | `MCPTool` | Dedicated SDK-backed stdio MCP bridge using `.pi/agent/mcp.json` or `~/.pi/agent/mcp.json`. |
 | `mcp` | Compatibility alias for `MCPTool`. |
+| `askUser` | Ask the user a question via an interactive list picker or text input (falls back to inline prose on non-TUI hosts). |
+| `memory` | Recall/record/forget durable Awareness memory (first-class wrapper over the memory CLI). |
 | `manage_context` | Inspect and compact Pi context. |
 | `spawnAgent` | Start a background Pi worker. |
 | `AgentMessage` | List, message, steer, wait for, abort, or kill workers. |
 
-Awareness commands such as `attend`, `task ready`, `work start`, `signal list`,
-`memory recall`, and `reflect record` are invoked through
+Awareness Lite commands such as `status`, `plan list`, `task list`, `work start`,
+`handoff list`, `memory recall`, and `verify audit` are invoked through
 `$OCTOCODE_AWARENESS_CLI`, not registered again as tools.
 
 `MCPTool` includes one built-in lazy server named `octocode` that runs
@@ -138,11 +163,14 @@ summary; `action:describe` returns the full selected tool schema before
 }
 ```
 
-## Slash commands (9)
+## Slash commands (17)
 
 | Command | Purpose |
 |---|---|
 | `/octocode` | Dashboard: status, agents, setup, skills, health, next actions. |
+| `/octocode-now` | Orientation cockpit: model, context, current plan, shared tasks, agents, and git status. |
+| `/octocode-tasks` | Bridge local `plan` state with shared Awareness task and verification state. |
+| `/octocode-skills` | List Pi-discovered skills and how to load or install them. |
 | `/octocode-status` | Health, prompt, skills, Awareness runtime, and providers. |
 | `/octocode-harness` | Exact registered surface inventory. |
 | `/octocode-agents` | Live spawned-worker ledger with inspect, kill, prune, hide, and risk badges. |
@@ -150,43 +178,45 @@ summary; `action:describe` returns the full selected tool schema before
 | `/octocode-mcp` / `/mcp` | Inspect/manage configured stdio MCP servers. |
 | `/octocode-setup` | Install/update the managed system-prompt block; `--global` targets user scope. |
 | `/octocode-skills-update` | Refresh bundled skill installs. |
-Memory maintenance, recall, recording, signals, tasks, verification, and reflection
-all stay on the bundled Awareness CLI. Session jobs are report-first wrappers over
-that CLI; see [docs/CRON.md](docs/CRON.md). The extension does not maintain a
+| `/octocode-plan` | Show, start, complete, or clear the active local task plan. |
+| `/octocode-theme` | Switch the Octocode theme (`sync`, `dark`, or `light`). |
+| `/octocode-chrome` | List or close reused Chrome DevTools Protocol connections. |
+| `/octocode-footer` | Footer density: `compact` (context/workers/attention flags/git only), `default` (no session timer), `full` (everything). |
+| `/octocode-inbox` | Worker inbox overlay: pick a spawned agent, then view its transcript, steer it, or kill it. Completions/failures also fire desktop (OSC 9) notifications. |
+| `/octocode-palette` | Command palette over every slash command plus direct actions; default shortcut `ctrl+o` (override with `OCTOCODE_PALETTE_KEY`). |
+| `/octocode-rewind` | List and restore automatic shadow-git file checkpoints taken before each user prompt; optionally rewinds the conversation too. |
+| `/octocode-dial` | One-knob effort dial (`low`/`medium`/`high`/`ultra`): thinking level + worker parallelism, optional per-level model override via `OCTOCODE_DIAL_<LEVEL>_MODEL`. |
+| `/octocode-watch` | Aider-style watch mode: comments ending in `AI!` saved from any editor become agent prompts (`on\|off\|status`, auto-start with `OCTOCODE_WATCH=1`). |
+| `/octocode-export` | Brand a pi `/export` session HTML file with Octocode styling (idempotent). |
+Memory recall/recording, handoffs, tasks, verification, locks, and work presence
+all stay on the bundled Awareness Lite CLI. Session jobs are report-first wrappers
+over that CLI; see [docs/CRON.md](docs/CRON.md). The extension does not maintain a
 parallel memory adapter or slash-command schema.
 
-## Bundled skills (9)
+## Bundled skill (1)
 
-Pi discovers the npm-published, build-generated skill tree under `skills/`.
-The build also mirrors it to `dist/skills/` for extension runtime assets. The
-generated package-root tree is intentionally gitignored and recreated before pack.
+Pi discovers the npm-published, build-generated skill tree under `dist/skills/`.
+The extension bundles only `octocode-awareness-lite` there so Pi has one package-owned
+coordination skill and avoids duplicate package-root skill discovery conflicts.
 
-- `octocode-awareness`
-- `octocode-brainstorming`
-- `octocode-eval`
-- `octocode-prompt-optimizer`
-- `octocode-research`
-- `octocode-rfc-generator`
-- `octocode-roast`
-- `octocode-skills`
-- `octocode-subagent`
+- `octocode-awareness-lite`
 
-`octocode-awareness` is copied from the Awareness package’s canonical skill.
-The Pi build owns the generated copy; never edit it by hand.
+`octocode-awareness-lite` is copied from the Awareness Lite package’s canonical skill. Other
+workflow skills (`octocode-research`, `octocode-roast`, `octocode-subagent`, and
+friends) are installed on demand with `npx octocode@latest skill --name <skill>
+--platform pi`. The Pi build owns the generated copy; never edit it by hand.
 
-## Awareness bridge
+## Awareness Lite bridge
 
-The bridge derives one identity per Pi session unless the user explicitly sets
-`OCTOCODE_AGENT_ID`. `/new`, `/resume`, forks, and sequential sessions therefore
-cannot inherit a previously derived agent identity. Both hooks and child CLI
-commands see the current identity through the environment.
+The bridge exposes `$OCTOCODE_AWARENESS_CLI` and `$OCTOCODE_SKILL_ROOT` for the
+bundled Lite CLI and skill. Identity is explicit: pass `--agent-id` to commands
+that mutate tasks, locks, work, handoffs, or verification state.
 
-Before a write/edit tool call, hooks attach the path to the active Task/Work run
-or create visible fallback work. Another agent’s exclusive lease blocks the edit;
-ordinary advisory overlap stays visible and allowed. On conclusion, the bridge
-warns about exact owned pending work rather than silently declaring success.
-
-Pi wires this bridge in process. Do not install shell hook files for Pi.
+Awareness Lite does not wire full Pi lifecycle hooks. It wires only a pre-edit
+lock-conflict gate for write/edit tools, so an active Lite `lock` held by another
+agent blocks the edit. Agents still coordinate by running `task`, `work`, `lock`,
+`handoff`, and `verify` commands directly; ordinary advisory overlap stays
+visible and allowed through the Lite SQLite store.
 
 ## System prompt
 
@@ -201,8 +231,8 @@ The extension loads Octocode configuration through `@octocodeai/config`.
 
 | Variable | Purpose |
 |---|---|
-| `OCTOCODE_AGENT_ID` | Optional explicit stable Awareness identity. |
-| `OCTOCODE_MEMORY_HOME` | Awareness database directory. |
+| `OCTOCODE_AGENT_ID` | Optional explicit stable identity for Awareness Lite commands. |
+| `OCTOCODE_AWARENESS_CLI` | Bundled Awareness Lite CLI path set by the harness. |
 | `GITHUB_TOKEN`, `GH_TOKEN`, `OCTOCODE_TOKEN` | GitHub authentication. |
 | `ENABLE_LOCAL` | Enable local research tools (default on). |
 | `ENABLE_CLONE` | Enable `ghCloneRepo`. |
@@ -216,9 +246,9 @@ Never put secrets into prompts, logs, Awareness memory, or committed config.
 | Symptom | Action |
 |---|---|
 | Extension appears inactive | Run `/octocode-status`, then `/octocode-harness`. |
-| Awareness command missing | Check `$OCTOCODE_AWARENESS_CLI` exists and run `node "$OCTOCODE_AWARENESS_CLI" schema commands --compact`. |
-| Finish warning remains | Run the stated test, `verify audit` for your agent, then `verify mark --run-id <exact-run>`. |
-| Stale dead-session work | Audit exact ownership and explicitly abandon only after review. |
+| Awareness Lite command missing | Check `$OCTOCODE_AWARENESS_CLI` exists and run `node "$OCTOCODE_AWARENESS_CLI" schema`. |
+| Verification debt remains | Run the stated test, `verify audit --workspace "$PWD"`, then `verify mark --task-id <task-id> --agent-id <agent-id> --message <evidence>`. |
+| Stale work presence | Audit exact ownership and explicitly run `work end` or `lock release` only after review. |
 | Compaction says “Nothing to compact” | Benign: the session is too small to summarize, so the extension reports it as skipped. |
 | Internal/model/tool errors need debugging | Check repo-local `.octocode/logs/error.txt`. Entries include timestamp, uptime, cwd, mode, model/context usage when available, duration, details, stack/cause, and redacted secrets. |
 | “Model stopped because it reached the maximum output token limit” | The answer was too large for one model response. Compaction does not increase that output budget; ask for a concise/chunked continuation or write long output to a file and return a path plus summary. |
@@ -233,5 +263,5 @@ yarn workspace @octocodeai/pi-extension test
 yarn workspace @octocodeai/pi-extension check:no-workspace
 ```
 
-The last gate intentionally fails while repository dependencies use `workspace:*`;
-the release sync must pin published semver versions before packaging.
+The last gate must pass before packaging; it verifies that published dependencies
+are semver-pinned and no `workspace:`/`file:` protocol leaks into the package.

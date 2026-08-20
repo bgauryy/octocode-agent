@@ -1,7 +1,6 @@
 # Plan, Task, And Standalone WORK
 
-One durable queue exists: plan `tasks`. Never create “today's tasks” in Markdown,
-memory, or refinements. Inspect attend/Ready/Claimed/Verify; claim a matching task or open explicit Work with reason, files, and test plan.
+One durable queue exists: plan `tasks`. Never create "today's tasks" in Markdown, memory, or refinements. Inspect attend/Ready/Claimed/Verify; claim a matching task or open explicit Work with reason, files, and test plan.
 
 ## Lead: create shared work
 
@@ -17,8 +16,7 @@ memory, or refinements. Inspect attend/Ready/Claimed/Verify; claim a matching ta
 ```
 
 Tasks require reasoning, acceptance, and 1+ paths; `--depends-on task_...` orders them.
-New plans are ACTIVE. PAUSED retains work but blocks claims. Complete/cancel only after active runs resolve. SQLite owns task state; plan prose lives under
-`.octocode/plan/<timestamp-name>/` under the exact `--workspace` you pass (repo root when omitted; the plan row always scopes to the repo root for discovery) and never duplicates a mutable checklist.
+New plans are ACTIVE. PAUSED retains work but blocks claims. Complete/cancel only after active runs resolve. SQLite owns task state; plan prose lives under `.octocode/plan/<timestamp-name>/` under the exact `--workspace` you pass (repo root when omitted; the plan row always scopes to the repo root for discovery) and never duplicates a mutable checklist.
 
 ## Agent: execute plan task
 
@@ -33,9 +31,9 @@ New plans are ACTIVE. PAUSED retains work but blocks claims. Complete/cancel onl
   --message "tests pass" --compact
 ```
 
-Heartbeat long claims with `task heartbeat --task-id <task> --run-id <run>
---agent-id "$OCTOCODE_AGENT_ID" --compact`. `task release` returns unfinished work to OPEN/BLOCKED.
+Heartbeat long claims with `task heartbeat --task-id <task> --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" --compact`. `task release` returns unfinished work to OPEN/BLOCKED.
 Dependencies and ACTIVE plan status derive readiness; never set READY manually.
+
 ## Standalone WORK
 
 ```bash
@@ -46,4 +44,5 @@ Dependencies and ACTIVE plan status derive readiness; never set READY manually.
 <cli> verify mark --run-id run_123 --agent-id "$OCTOCODE_AGENT_ID" \
   --message "reviewed" --compact
 ```
+
 Add `--exclusive` only for sensitive work. A new explicit start creates a new run; only explicit `--run-id` or a host hook extends one.

@@ -21,7 +21,8 @@ complete command inventory.
 | [REFERENCES.md](REFERENCES.md) | Evidence map, prior art, hypotheses, and design limits |
 
 Agent-facing procedures live under package-local `skills/octocode-awareness/references/` and
-are listed by `octocode-awareness docs list --compact`.
+are listed by `octocode-awareness docs list --compact`. Start with `flow-matrix`
+when choosing among lifecycle paths, then open exactly one deeper reference.
 
 Canonical data lives in the global Awareness SQLite database. On request, `query`
 writes read-only `<workspace>/.octocode/` export snapshots; managed

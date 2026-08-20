@@ -97,21 +97,18 @@ npm run check && ./test.sh   # fork's CI gate
 |---|---|
 | `OCTOCODE_PI_BIN` | Absolute path to a locally-built Pi binary (takes priority) |
 | `OCTOCODE_PI_PACKAGE` | npm package name override (e.g. `@octocodeai/pi-coding-agent`) |
-| `OCTOCODE_AGENT_CONTEXT_FILES=1` | Re-enable `AGENTS.md`/`CLAUDE.md` loading (off by default) |
+| `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` | Suppress `AGENTS.md`/`CLAUDE.md` loading (on by default) |
+| `OCTOCODE_AGENT_NO_BANNER=1` | Suppress the interactive launch banner |
 | `OCTOCODE_AGENT_EXTENSION_SPEC` | Override the core extension spec (npm:/git:/path) |
 | `OCTOCODE_AGENT_CLEAN=1` | Suppress user skills (fully deterministic agent) |
 | `OCTOCODE_AGENT_FULL_TOOLS=1` | Keep grep/find/ls (opt out of lean tool set) |
 
-## What `--no-context-files` Does (default since Phase 0)
+## What `--no-context-files` Does (opt-in)
 
-`octocode-agent` now passes `--no-context-files` to Pi by default. This means:
+Project context files stay **enabled** by default so repository rules remain
+authoritative. Pass `--no-context-files` to Pi only when needed:
 
-- `AGENTS.md` and `CLAUDE.md` are **never loaded** — Pi skips discovery entirely
-- Saves tokens; avoids conflicts with the Octocode structured system prompt
-- The `@octocodeai/pi-extension` already cleared `contextFiles` in `before_agent_start`
-  as a belt-and-suspenders measure; this is now redundant but kept as defense-in-depth
+- `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` — suppress `AGENTS.md`/`CLAUDE.md` for every launch
+- `OCTOCODE_AGENT_CLEAN=1` — also adds `--no-skills` (fully deterministic branded agent)
 
-To re-enable (e.g. for a project that relies on `AGENTS.md`):
-```bash
-OCTOCODE_AGENT_CONTEXT_FILES=1 octocode-agent
-```
+(See `buildPiArgs` in `src/launcher.ts`.)

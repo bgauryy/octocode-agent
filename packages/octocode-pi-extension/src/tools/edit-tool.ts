@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { access, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
 import { makeRenderer, truncateToWidth, wrapText } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
@@ -716,8 +717,8 @@ function renderCallLine(args: unknown, theme?: PiTheme): string {
   const queries = Array.isArray(input['queries']) ? input['queries'].length : 0;
   const filePath = queries > 0 ? `${queries} file${queries === 1 ? '' : 's'}` : typeof input['path'] === 'string' ? input['path'] : '(missing path)';
   const edits = Array.isArray(input['edits']) ? input['edits'].length : queries;
-  const title = theme?.fg('toolTitle', theme.bold('edit')) ?? 'edit';
-  const suffix = theme?.fg('dim', `${filePath} · ${edits} edit${edits === 1 ? '' : 's'}`) ?? `${filePath} · ${edits} edit${edits === 1 ? '' : 's'}`;
+  const title = cliToolTitle(theme, 'edit');
+  const suffix = paint(theme, 'dim', `${filePath} · ${edits} edit${edits === 1 ? '' : 's'}`);
   return `${title} ${suffix}`;
 }
 
@@ -865,7 +866,7 @@ export function registerEditTool(
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        const prog = theme?.fg('warning', '… editing') ?? '… editing';
+        const prog = paint(theme, 'warning', CLI_STATUS_TEXT.editing);
         return makeRenderer(() => [prog]);
       }
       const ok = !result.isError;
@@ -880,8 +881,8 @@ export function registerEditTool(
       const count = typeof details?.replacements === 'number'
         ? ` · ${details.replacements} replacement${details.replacements === 1 ? '' : 's'}`
         : '';
-      const icon = theme?.fg(ok ? 'success' : 'error', ok ? '✓' : '✗') ?? (ok ? '✓' : '✗');
-      const titleStr = theme?.fg('toolTitle', 'edit') ?? 'edit';
+      const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
+      const titleStr = cliToolTitle(theme, 'edit');
       const header = `${icon} ${titleStr}${count}`;
 
       // Per file → per edit:
@@ -897,7 +898,7 @@ export function registerEditTool(
       const items: Item[] = [{ text: header, truncate: true }];
       for (const file of details?.files ?? []) {
         items.push({
-          text: theme?.fg('accent', `  ${file.path}`) ?? `  ${file.path}`,
+          text: paint(theme, 'path', `  ${file.path}`),
           truncate: true,
         });
         for (const edit of file.edits ?? []) {
@@ -906,7 +907,7 @@ export function registerEditTool(
             : `lines ${edit.startLine}–${edit.endLine}`;
           // Meta: short summary line, safe to truncate
           const metaStr = `    edit #${edit.editIndex + 1} · ${range} · ${edit.mode}`;
-          items.push({ text: theme?.fg('dim', metaStr) ?? metaStr, truncate: true });
+          items.push({ text: paint(theme, 'dim', metaStr), truncate: true });
 
           // Reasoning: word-wrapped across multiple lines so the full text is
           // always visible without any single line exceeding the terminal width
@@ -918,7 +919,7 @@ export function registerEditTool(
               fn: (w) => {
                 const availWidth = Math.max(w - indent.length, 10);
                 return wrapText(reasonText, availWidth).map((line) =>
-                  truncateToWidth(`${indent}${theme?.fg('muted', line) ?? line}`, w),
+                  truncateToWidth(`${indent}${paint(theme, 'muted', line)}`, w),
                 );
               },
             });
@@ -938,7 +939,7 @@ export function registerEditTool(
             // 4-space indent is OUTSIDE theme.fg so the coloured substring
             // `<color>- text</color>` is preserved for test assertions and renderers
             // that match on the coloured part only.
-            const colored = theme?.fg(color, `${label}${op.line}`) ?? `${label}${op.line}`;
+            const colored = paint(theme, color, `${label}${op.line}`);
             items.push({ text: `    ${colored}`, truncate: true });
           }
         }

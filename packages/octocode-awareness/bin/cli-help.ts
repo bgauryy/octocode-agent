@@ -44,7 +44,8 @@ note: expires ACTIVE memories, purges old SUPERSEDED rows, expired locks, termin
 schema: octocode-awareness schema json-schema digest --compact`,
   'pre-flight-intent': `usage: octocode-awareness lock acquire --agent-id <id> --target-file <p>... [--run-id <claimed-run>] [--workspace <p>] [--artifact <a>] [--rationale <t>] [--test-plan <t>] [--ttl-minutes <n>] [--wait-seconds <n>]
 example: octocode-awareness lock acquire --agent-id agent --target-file src/file.ts --rationale "edit file" --test-plan "yarn test" --compact
-note: lock acquire is exclusive protection for sensitive work; ordinary work uses work start
+note: lock acquire is exclusive protection for sensitive/non-mergeable work; ordinary mergeable edits use work start
+note: existing live presence blocks exclusive acquire; coordinate, wait, switch, or prune only expired protection
 note: --run-id attaches exclusive protection to a claimed task run
 note: export OCTOCODE_AGENT_ID for CLI+hooks; --strict-agent-id / OCTOCODE_STRICT_AGENT_ID=1 hard-fails when missing
 schema: octocode-awareness schema json-schema lock_acquire --compact`,
@@ -69,6 +70,13 @@ schema: octocode-awareness schema json-schema reflect --compact`,
   'developer-review': `usage: octocode-awareness reflect developer-review [--workspace <repo>] [--state open|ongoing|done]... [--format json|markdown] [--limit <n>]
 example: octocode-awareness reflect developer-review --workspace "$PWD" --format markdown --compact
 note: reads agent feedback on the instructions themselves (from reflect record --fix-instructions); use --format markdown for an explicit export`,
+  'wait-for-lock': `usage: octocode-awareness lock wait [options]
+flags: --agent-id --target-file --file --workspace --artifact --wait-seconds --retry-interval
+example: octocode-awareness lock wait --agent-id agent --target-file src/file.ts --wait-seconds 60 --compact
+note: waits for other agents' exclusive lock rows only; advisory work presence may still exist
+note: after a clear wait, run work show --workspace "$PWD" --file <path> before lock acquire or editing
+note: exit 2 means timeout/conflict; do not treat expiry or clear wait as verification
+schema: octocode-awareness schema json-schema lock_wait --compact`,
   'query': `usage: octocode-awareness query <all|repo-profile|memories|gotchas|lessons|plans|tasks|runs|locks|agents|signals|refinements|files|activity|workboard|developer-review> [--query <text>] [--limit <1..500>] [--workspace <repo>] [--artifact <a>] [--repo <r>] [--ref <r>] [--agent-id <id>] [--state <s>]... [--label <l>]... [--file <p>] [--since <iso>] [--include-bodies] [--format json|table|csv|markdown|html] [--out <path>]
 examples:
   octocode-awareness query files --workspace "$PWD" --format table --limit 50
@@ -109,6 +117,8 @@ end: --run-id <id> --agent-id <id> [--file <path>]...
 list: [--workspace <repo>] [--agent-id <id>] [--run-id <id>] [--all] [--limit <1-200>] [--full]
 show: --workspace <repo> --file <path> [--all] [--limit <1-200>] [--full]
 example: octocode-awareness work start --agent-id agent --workspace "$PWD" --file src/a.ts --rationale "edit parser" --test-plan "yarn test" --compact
+note: ordinary edits are advisory and may overlap; use --exclusive only for unsafe/non-mergeable sensitive work
+note: on overlap, inspect work show and signal if edits interact; never surprise active peers with a lock
 schema: octocode-awareness schema json-schema work --compact`,
   'hook-run': `usage: octocode-awareness hook run <pre-edit|post-edit|stop-verify|notify-deliver|session-compact|session-end> < hook-payload.json
 payload: host JSON on stdin; common fields are cwd/workspace, session_id, tool_name, and tool_input/path

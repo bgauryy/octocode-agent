@@ -525,52 +525,66 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@earendil-works/pi-agent-core@npm:^0.80.3":
-  version: 0.80.7
-  resolution: "@earendil-works/pi-agent-core@npm:0.80.7"
+"@earendil-works/pi-agent-core@npm:^0.84.2":
+  version: 0.84.2
+  resolution: "@earendil-works/pi-agent-core@npm:0.84.2"
   dependencies:
-    "@earendil-works/pi-ai": "npm:^0.80.7"
+    "@earendil-works/pi-ai": "npm:^0.84.2"
+    "@earendil-works/pi-telemetry": "npm:^0.84.2"
+    diff: "npm:8.0.4"
     ignore: "npm:7.0.5"
-    typebox: "npm:1.1.38"
+    typebox: "npm:1.3.7"
     yaml: "npm:2.9.0"
-  checksum: 10c0/93997fcad28fd26e14cc3d343aac674342f9fc0aaa7fbc317925511dfd0f5f0b8327e61cb1aa730223c31742d2192d94da4a6fd22ca98676f7fc8de4ca6443cb
+  checksum: 10c0/40157dc44588cdf956b52c82ebc769a5dafa29c7c609c71b842c0ea18c5f436e02a812f1e94aa9aa320da779093027b26c3166febaa1d3e28357cb0923875499
   languageName: node
   linkType: hard
 
-"@earendil-works/pi-ai@npm:^0.80.3, @earendil-works/pi-ai@npm:^0.80.7":
-  version: 0.80.7
-  resolution: "@earendil-works/pi-ai@npm:0.80.7"
+"@earendil-works/pi-ai@npm:^0.84.2":
+  version: 0.84.2
+  resolution: "@earendil-works/pi-ai@npm:0.84.2"
   dependencies:
     "@anthropic-ai/sdk": "npm:0.91.1"
     "@aws-sdk/client-bedrock-runtime": "npm:3.1048.0"
+    "@earendil-works/pi-telemetry": "npm:^0.84.2"
     "@google/genai": "npm:1.52.0"
-    "@mistralai/mistralai": "npm:2.2.6"
     "@opentelemetry/api": "npm:1.9.0"
     "@smithy/node-http-handler": "npm:4.7.3"
     http-proxy-agent: "npm:7.0.2"
     https-proxy-agent: "npm:7.0.6"
-    openai: "npm:6.26.0"
+    openai: "npm:6.40.0"
     partial-json: "npm:0.1.7"
-    typebox: "npm:1.1.38"
+    typebox: "npm:1.3.7"
   bin:
     pi-ai: dist/cli.js
-  checksum: 10c0/fc0c78ae8eb7bee509cb23f6cb7fad6aca462da97c4e377a1f88d9fd25f0a8a593489f5d60d6c2713dfe08b2c5f7a974924f526f40894d151a44660571016f36
+  checksum: 10c0/a61672e695c976a50ee98224bb94dea393d4dd122110202b3a1e0dad2de4b35003491acc68427e1ef54df78453022b59ba3a11b5f56e4d39a5d5f72a9f961643
   languageName: node
   linkType: hard
 
-"@earendil-works/pi-coding-agent@npm:0.80.3":
-  version: 0.80.3
-  resolution: "@earendil-works/pi-coding-agent@npm:0.80.3"
+"@earendil-works/pi-client@npm:^0.84.2":
+  version: 0.84.2
+  resolution: "@earendil-works/pi-client@npm:0.84.2"
   dependencies:
-    "@earendil-works/pi-agent-core": "npm:^0.80.3"
-    "@earendil-works/pi-ai": "npm:^0.80.3"
-    "@earendil-works/pi-tui": "npm:^0.80.3"
+    "@earendil-works/pi-protocol": "npm:^0.84.2"
+  checksum: 10c0/5ab1bc06176ed7166f12202264c341c949e83c1f21481b71056f0a5182077dee87307220c0ca595e74608135c1037add11f3f432c1e6b7892463af56d8320011
+  languageName: node
+  linkType: hard
+
+"@earendil-works/pi-coding-agent@npm:0.84.2":
+  version: 0.84.2
+  resolution: "@earendil-works/pi-coding-agent@npm:0.84.2"
+  dependencies:
+    "@earendil-works/pi-agent-core": "npm:^0.84.2"
+    "@earendil-works/pi-ai": "npm:^0.84.2"
+    "@earendil-works/pi-client": "npm:^0.84.2"
+    "@earendil-works/pi-protocol": "npm:^0.84.2"
+    "@earendil-works/pi-tui": "npm:^0.84.2"
     "@mariozechner/clipboard": "npm:0.3.9"
     "@silvia-odwyer/photon-node": "npm:0.3.4"
     chalk: "npm:5.6.2"
     cross-spawn: "npm:7.0.6"
     diff: "npm:8.0.4"
     glob: "npm:13.0.6"
+    grok-mermaid: "npm:0.2.2"
     highlight.js: "npm:10.7.3"
     hosted-git-info: "npm:9.0.3"
     ignore: "npm:7.0.5"
@@ -578,35 +592,41 @@ __metadata:
     minimatch: "npm:10.2.5"
     proper-lockfile: "npm:4.1.2"
     semver: "npm:7.8.0"
-    typebox: "npm:1.1.38"
-    undici: "npm:8.5.0"
+    typebox: "npm:1.3.7"
+    undici: "npm:8.9.0"
     yaml: "npm:2.9.0"
   dependenciesMeta:
     "@mariozechner/clipboard":
       optional: true
   bin:
     pi: dist/cli.js
-  checksum: 10c0/af289d6459250aba72b3947e8b5435af0e90a61dafcbf878ceee302115809cc7db8945f444a4fc3e5b4f70f5696df89458babe3e64e8b6d51c7e7d9cd05d2f12
+  checksum: 10c0/188ed2cca26dffe11ed15d612e8a1aebe834848c05019c0ae74aaf080fee39715675aa26603567ec213c97b537c264ea703df63d0fa1f83e5145008b04af6760
   languageName: node
   linkType: hard
 
-"@earendil-works/pi-tui@npm:^0.80.3":
-  version: 0.80.7
-  resolution: "@earendil-works/pi-tui@npm:0.80.7"
+"@earendil-works/pi-protocol@npm:^0.84.2":
+  version: 0.84.2
+  resolution: "@earendil-works/pi-protocol@npm:0.84.2"
   dependencies:
-    get-east-asian-width: "npm:1.6.0"
-    marked: "npm:18.0.5"
-  checksum: 10c0/40eb49d11edebaf10376c7ea99f8cb1cdb09d555d1bea313314c234b787752d877c693d37e851c131651b0381a93260dae58f4af8be33b39aa8421f07baed574
+    typebox: "npm:1.3.7"
+  checksum: 10c0/03ab0f018226ed6525952d085667fa9b47225ee1000c359460a81d81594c44785723112bfa67fed499b6b488e661f4b457d50c32c57855fd6fbeebe8c32fbb69
   languageName: node
   linkType: hard
 
-"@earendil-works/pi-tui@npm:^0.80.7":
-  version: 0.80.10
-  resolution: "@earendil-works/pi-tui@npm:0.80.10"
+"@earendil-works/pi-telemetry@npm:^0.84.2":
+  version: 0.84.2
+  resolution: "@earendil-works/pi-telemetry@npm:0.84.2"
+  checksum: 10c0/195b396aba9c327de50c23c41fe98d5e220b2eb67380f7ecb6f2c97c68b0b708a25f416431dc855cc1b6f26fa2e0a23e64ff499d30c7bc996c1c43a9afe6dcb9
+  languageName: node
+  linkType: hard
+
+"@earendil-works/pi-tui@npm:^0.84.2":
+  version: 0.84.2
+  resolution: "@earendil-works/pi-tui@npm:0.84.2"
   dependencies:
     get-east-asian-width: "npm:1.6.0"
     marked: "npm:18.0.5"
-  checksum: 10c0/b963478e67f50f425dd27cd5e7b1358f1efbcc0c02b30f9929b00bd99aad61cb1023fa219479ecda86a8ab9ff68f4aa62bca7003e2c6c149c702805fec8e3407
+  checksum: 10c0/d59860937633f6a1f1decf023b2bee1dcd33392cdf2121c938e17b417fb2efa03f4bc41367acfccd5ffd7e56e3f371d6cda32630f5529966e578d857d5854e70
   languageName: node
   linkType: hard
 
@@ -1365,23 +1385,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@mistralai/mistralai@npm:2.2.6":
-  version: 2.2.6
-  resolution: "@mistralai/mistralai@npm:2.2.6"
-  dependencies:
-    "@opentelemetry/semantic-conventions": "npm:^1.40.0"
-    ws: "npm:^8.18.0"
-    zod: "npm:^3.25.0 || ^4.0.0"
-    zod-to-json-schema: "npm:^3.25.0"
-  peerDependencies:
-    "@opentelemetry/api": ^1.9.0
-  peerDependenciesMeta:
-    "@opentelemetry/api":
-      optional: true
-  checksum: 10c0/056efabcbb8a6dc0d14a529fef92d021df0f6e485f2ef9786fbfd95a5c70f1359d1b4eb0aee727ad6e76195a0d158808d97d68a367431226db788f8c6863369d
-  languageName: node
-  linkType: hard
-
 "@mixmark-io/domino@npm:^2.2.0":
   version: 2.2.0
   resolution: "@mixmark-io/domino@npm:2.2.0"
@@ -1461,7 +1464,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@octocodeai/config@npm:^17.0.1":
+"@octocodeai/config@npm:17.0.1, @octocodeai/config@npm:^17.0.1":
   version: 17.0.1
   resolution: "@octocodeai/config@npm:17.0.1"
   bin:
@@ -1470,7 +1473,21 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@octocodeai/octocode-awareness@npm:^1.0.1, @octocodeai/octocode-awareness@workspace:packages/octocode-awareness":
+"@octocodeai/octocode-awareness-lite@npm:^0.1.0, @octocodeai/octocode-awareness-lite@workspace:packages/octocode-awareness-lite":
+  version: 0.0.0-use.local
+  resolution: "@octocodeai/octocode-awareness-lite@workspace:packages/octocode-awareness-lite"
+  dependencies:
+    "@types/node": "npm:^25.9.3"
+    "@vitest/coverage-v8": "npm:^4.1.9"
+    esbuild: "npm:^0.28.1"
+    typescript: "npm:^5.9.3"
+    vitest: "npm:^4.1.9"
+  bin:
+    octocode-awareness-lite: ./out/cli.js
+  languageName: unknown
+  linkType: soft
+
+"@octocodeai/octocode-awareness@workspace:packages/octocode-awareness":
   version: 0.0.0-use.local
   resolution: "@octocodeai/octocode-awareness@workspace:packages/octocode-awareness"
   dependencies:
@@ -1571,22 +1588,31 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@octocodeai/pi-extension@workspace:*, @octocodeai/pi-extension@workspace:packages/octocode-pi-extension":
+"@octocodeai/pi-extension@workspace:^, @octocodeai/pi-extension@workspace:packages/octocode-pi-extension":
   version: 0.0.0-use.local
   resolution: "@octocodeai/pi-extension@workspace:packages/octocode-pi-extension"
   dependencies:
-    "@earendil-works/pi-tui": "npm:^0.80.7"
+    "@earendil-works/pi-coding-agent": "npm:0.84.2"
+    "@earendil-works/pi-tui": "npm:^0.84.2"
     "@modelcontextprotocol/sdk": "npm:^1.29.0"
     "@octocodeai/config": "npm:^17.0.1"
-    "@octocodeai/octocode-awareness": "npm:^1.0.1"
+    "@octocodeai/octocode-awareness-lite": "npm:^0.1.0"
     "@octocodeai/octocode-engine": "npm:^16.7.0"
     "@types/node": "npm:^25.9.3"
     "@vitest/coverage-v8": "npm:^4.1.9"
     octocode: "npm:^2.3.0"
-    typebox: "npm:^1.1.38"
+    typebox: "npm:^1.3.16"
     typescript: "npm:^5.8.3"
     vitest: "npm:^4.1.9"
     zod: "npm:^4.4.3"
+  peerDependencies:
+    "@earendil-works/pi-coding-agent": 0.84.2
+    "@earendil-works/pi-tui": ^0.84.2
+  peerDependenciesMeta:
+    "@earendil-works/pi-coding-agent":
+      optional: true
+    "@earendil-works/pi-tui":
+      optional: true
   languageName: unknown
   linkType: soft
 
@@ -2031,7 +2057,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@opentelemetry/semantic-conventions@npm:^1.19.0, @opentelemetry/semantic-conventions@npm:^1.29.0, @opentelemetry/semantic-conventions@npm:^1.40.0":
+"@opentelemetry/semantic-conventions@npm:^1.19.0, @opentelemetry/semantic-conventions@npm:^1.29.0":
   version: 1.43.0
   resolution: "@opentelemetry/semantic-conventions@npm:1.43.0"
   checksum: 10c0/ea4b4b07c9414b0c5e7ce7349f608cb2572d16922d96077fb0882b59f173ec9b94aada74896bd5dd4aeb1759924503bd5a34b6dc2847a84c36f71626a0578ec4
@@ -4319,6 +4345,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"grok-mermaid@npm:0.2.2":
+  version: 0.2.2
+  resolution: "grok-mermaid@npm:0.2.2"
+  checksum: 10c0/c9d911c2d0609f9793fd96117dd790c123b233b6a92b564df359ef8966c91e62d955d8a70d74629b98bf7f007d58dd4300b37f74b933b999750c16d32eb30462
+  languageName: node
+  linkType: hard
+
 "has-flag@npm:^4.0.0":
   version: 4.0.0
   resolution: "has-flag@npm:4.0.0"
@@ -5296,15 +5329,16 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "octocode-agent@workspace:packages/octocode-agent"
   dependencies:
-    "@earendil-works/pi-coding-agent": "npm:0.80.3"
-    "@octocodeai/config": "npm:^17.0.1"
-    "@octocodeai/pi-extension": "workspace:*"
+    "@earendil-works/pi-coding-agent": "npm:0.84.2"
+    "@octocodeai/config": "npm:17.0.1"
+    "@octocodeai/pi-extension": "workspace:^"
     "@types/node": "npm:^25.9.3"
     "@vitest/coverage-v8": "npm:^4.1.9"
+    esbuild: "npm:^0.28.1"
     typescript: "npm:^5.9.3"
     vitest: "npm:^4.1.9"
   bin:
-    octocode-agent: ./bin/octocode-agent.mjs
+    octocode-agent: ./out/octocode-agent.mjs
   languageName: unknown
   linkType: soft
 
@@ -5380,9 +5414,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"openai@npm:6.26.0":
-  version: 6.26.0
-  resolution: "openai@npm:6.26.0"
+"openai@npm:6.40.0":
+  version: 6.40.0
+  resolution: "openai@npm:6.40.0"
   peerDependencies:
     ws: ^8.18.0
     zod: ^3.25 || ^4.0
@@ -5391,9 +5425,7 @@ __metadata:
       optional: true
     zod:
       optional: true
-  bin:
-    openai: bin/cli
-  checksum: 10c0/dc045e8ed317dead468ecb342040eaee1e5388f2042f926dab4d0d0ec51b3dce41167edf16003ca850d594cbdbc8cc279a0529ec7820d8c86f3b8d33b6941b40
+  checksum: 10c0/fde60f66be934e52c61f0ef864817f4f4ee0bc76ac345599c29a6bfa4ffe5a4563a9e3af5fbc5b9c4bf36a3f06a8b3c0bd9f735f94b8019d6018c6b2ec43c0cf
   languageName: node
   linkType: hard
 
@@ -6345,17 +6377,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"typebox@npm:1.1.38":
-  version: 1.1.38
-  resolution: "typebox@npm:1.1.38"
-  checksum: 10c0/b4a5996a25b9265e88335a75697630be82822fae5e7b1993d5eb52ac6b71e80fec924ffa1976269a05524a0954b3f9e6e52f380348ea6836f76920e556fa3ca1
+"typebox@npm:1.3.7":
+  version: 1.3.7
+  resolution: "typebox@npm:1.3.7"
+  checksum: 10c0/833a11574b1290e9a25bee32dc35a21788009a7aea842f43b6a37cea648016875ca2a1d997ad343f256c63122cb8aa4dd9690230b2bec5ae1ee3e7a4b9949ec1
   languageName: node
   linkType: hard
 
-"typebox@npm:^1.1.38":
-  version: 1.3.10
-  resolution: "typebox@npm:1.3.10"
-  checksum: 10c0/ee27c4ac153eecb5b7cc5913173f1cc620536c84fee45fb71c3095d8d7d6007bfd22ffdbfb80a52258221046b5322924744b60b87d5de9e05a2d0d2d2aa5b894
+"typebox@npm:^1.3.16":
+  version: 1.3.16
+  resolution: "typebox@npm:1.3.16"
+  checksum: 10c0/3ca01ea6aec7d4d438fae0073c15af76f2414b537225ed9a6331eea697b8df6ce5d1d19c246ff5dc337c34a223e4883db168ae3ba58b856cb1f751e15e97e355
   languageName: node
   linkType: hard
 
@@ -6437,10 +6469,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"undici@npm:8.5.0":
-  version: 8.5.0
-  resolution: "undici@npm:8.5.0"
-  checksum: 10c0/7c25fd96a4dcc607b905995f6feec948f74a6759cadbea4c6eb9402517aab4887987c8001c80d482297d04f975f44a383325b89577ac21e587983ed088408065
+"undici@npm:8.9.0":
+  version: 8.9.0
+  resolution: "undici@npm:8.9.0"
+  checksum: 10c0/e3d9fa35a9aa8360d9f56e66bd372f451ee053e25066a97fd9fab3816267035660f67870c6d709a58a5411551657af78c4475be5b31c113b04f70251309900d0
   languageName: node
   linkType: hard
 
@@ -7000,7 +7032,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"zod-to-json-schema@npm:^3.25.0, zod-to-json-schema@npm:^3.25.1":
+"zod-to-json-schema@npm:^3.25.1":
   version: 3.25.2
   resolution: "zod-to-json-schema@npm:3.25.2"
   peerDependencies:
@@ -7016,7 +7048,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"zod@npm:^3.25 || ^4.0, zod@npm:^3.25.0 || ^4.0.0, zod@npm:^4.4.3":
+"zod@npm:^3.25 || ^4.0, zod@npm:^4.4.3":
   version: 4.4.3
   resolution: "zod@npm:4.4.3"
   checksum: 10c0/7ea31b558e88f9faf44f31dd185e2e1cbf51fed3081787fb96cc2534749b50c0acfc6da7f0922a7353ed092dd358c7d50c28ea96c94d04af64191bd33152eca3

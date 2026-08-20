@@ -116,13 +116,13 @@ describe('advisory work presence', () => {
     try {
       const started = startWork(db, {
         agentId: 'agent-a', workspacePath: ws.path,
-        targetFiles: ['src/a.ts', 'src/b.ts'], ttlMs: 1_000, ...required,
+        targetFiles: ['src/a.ts', 'src/b.ts'], ttlMs: 60_000, ...required,
       });
       if (!started.ok) throw new Error('start failed');
       const before = started.files.find((file) => file.file_path.endsWith('a.ts'))!.expires_at;
       const touched = touchWork(db, {
         agentId: 'agent-a', runId: started.run.run_id,
-        targetFiles: ['src/a.ts'], ttlMs: 60_000,
+        targetFiles: ['src/a.ts'], ttlMs: 120_000,
       });
       expect(Date.parse(touched.files[0]!.expires_at)).toBeGreaterThan(Date.parse(before));
 

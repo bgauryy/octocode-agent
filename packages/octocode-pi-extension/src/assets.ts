@@ -11,7 +11,7 @@ export interface AssetPaths {
   docsDir: string;
   skillsDir: string;
   systemPrompt: string;
-  /** Absolute path to the bundled Awareness CLI entry point (dist/awareness/octocode-awareness.js). */
+  /** Absolute path to the bundled Awareness Lite CLI entry point (dist/awareness/cli.js). */
   awarenessCliPath: string;
 }
 
@@ -21,7 +21,7 @@ export function getAssetPaths(baseDir = extensionDir): AssetPaths {
     docsDir: path.join(baseDir, 'docs'),
     skillsDir: path.join(baseDir, 'skills'),
     systemPrompt: path.join(baseDir, 'system', 'SYSTEM_PROMPT.md'),
-    awarenessCliPath: path.join(baseDir, 'awareness', 'octocode-awareness.js'),
+    awarenessCliPath: path.join(baseDir, 'awareness', 'cli.js'),
   };
 }
 
@@ -48,18 +48,18 @@ function resolvePackageBin(packageName: string, defaultBin: string, binName = pa
 }
 
 /**
- * Returns the absolute path to the bundled Awareness CLI entry point.
- * Agents run it with: `node <awarenessCliPath> <noun> <verb> --compact`
+ * Returns the absolute path to the bundled Awareness Lite CLI entry point.
+ * Agents run it with: `node <awarenessCliPath> <command> [action]`
  * Also exposed via the OCTOCODE_AWARENESS_CLI env var (set at extension load).
  */
 export function getAwarenessCLIPath(baseDir = extensionDir): string {
-  const bundled = path.join(baseDir, 'awareness', 'octocode-awareness.js');
+  const bundled = path.join(baseDir, 'awareness', 'cli.js');
   if (fs.existsSync(bundled)) return bundled;
-  const resolved = resolvePackageBin('@octocodeai/octocode-awareness', 'out/octocode-awareness.js', '@octocodeai/octocode-awareness');
+  const resolved = resolvePackageBin('@octocodeai/octocode-awareness-lite', 'out/cli.js', '@octocodeai/octocode-awareness-lite');
   if (resolved) return resolved;
   console.warn(
-    `[octocode-pi-extension] Warning: Awareness CLI not found at ${bundled} or in node_modules. ` +
-      `node $OCTOCODE_AWARENESS_CLI calls will ENOENT. Run \`yarn workspace @octocodeai/octocode-awareness build\` and ` +
+    `[octocode-pi-extension] Warning: Awareness Lite CLI not found at ${bundled} or in node_modules. ` +
+      `node $OCTOCODE_AWARENESS_CLI calls will ENOENT. Run \`yarn workspace @octocodeai/octocode-awareness-lite build\` and ` +
       `\`yarn workspace @octocodeai/pi-extension build\` to resolve.`,
   );
   return bundled;

@@ -15,7 +15,7 @@ describe('docs-catalog', () => {
     expect(result.count).toBeGreaterThan(0);
     expect(existsSync(result.root)).toBe(true);
     const names = result.docs.map((doc) => doc.name);
-    expect(names).toEqual(expect.arrayContaining(['architecture', 'agent-cheatsheet', 'hooks']));
+    expect(names).toEqual(expect.arrayContaining(['architecture', 'agent-cheatsheet', 'flow-matrix', 'hooks']));
     for (const doc of result.docs) {
       expect(doc.kind).toBe('skill-ref');
       expect(doc.name.length).toBeGreaterThan(0);
@@ -44,6 +44,15 @@ describe('docs-catalog', () => {
     expect(result.name).toBe('architecture');
     expect(result.content).toContain('#');
     expect(result.kind).toBe('skill-ref');
+  });
+
+  it('shows the flow matrix as the one-page lifecycle router', () => {
+    const result = showSkillDoc('flow-matrix');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.title).toBe('Awareness Flow Matrix');
+    expect(result.content).toContain('Trigger | Do | Verify / close');
+    expect(result.content).toContain('schema command attend');
   });
 
   it('returns suggestions for unknown names', () => {

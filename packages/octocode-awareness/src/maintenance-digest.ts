@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -5,53 +6,14 @@ import { checkpointWal, hasFts, rebuildFts } from './db.js';
 import { normalizeWorkspacePath } from './git.js';
 import { normalizeArtifact } from './helpers.js';
 import { pruneStale } from './maintenance-stale.js';
-import type { SimpleFileLock } from './types.js';
+import type { DigestResult, MaintenancePressure } from './maintenance-digest-types.js';
+import { auditUnverified } from './verify-audit.js';
+import { closeRunFiles, failStaleLinkedTask } from './verify-shared.js';
+import { RUN_LOG_INSERT_VERIFIED, RUNS_UPDATE_ACTIVE_TO_FAILED } from './sql/runs.js';
 
 // ─── Explicit maintenance digest ─────────────────────────────────────────
 
-export interface DigestResult {
-  ok: true;
-  archived_memories: number;   // valid_to expired (or would_archive in dry_run)
-  pruned_old: number;          // SUPERSEDED older than retention_days
-  pruned_locks: number;        // expired file locks
-  pruned_refinements: number;  // legacy handoffs (any state) and done refinements
-  resolved_handoff_signals: number; // open handoff signals auto-resolved past TTL
-  pruned_runs: number;         // old terminal standalone WORK/HOOK rows
-  fts_rebuilt: boolean;
-  dry_run?: true;
-  would_archive?: number;
-  would_prune_old?: number;
-  would_prune_locks?: number;
-  would_prune_refinements?: number;
-  would_resolve_handoff_signals?: number;
-  would_prune_runs?: number;
-  pressure_age_days?: number;
-  stale_pending_runs?: number;
-  stale_open_signals?: number;
-  stale_missing_refs?: number;
-  pressure_samples?: MaintenancePressure['samples'];
-  candidate_limit?: number;
-  candidate_ids?: {
-    expire_memory_ids: string[];
-    purge_memory_ids: string[];
-    locks: SimpleFileLock[];
-    refinement_ids: string[];
-    run_ids: string[];
-  };
-}
-
-export interface MaintenancePressure {
-  pressure_age_days: number;
-  cutoff: string;
-  stale_pending_runs: number;
-  stale_open_signals: number;
-  stale_missing_refs: number;
-  samples: {
-    run_ids: string[];
-    signal_ids: string[];
-    memory_ids: string[];
-  };
-}
+export type { DigestResult, MaintenancePressure } from './maintenance-digest-types.js';
 
 export const MIN_RETENTION_DAYS = 1;
 export const MAX_RETENTION_DAYS = 3650;
@@ -103,6 +65,11 @@ export function inspectMaintenancePressure(
       WHERE status = 'PENDING' AND updated_at < ?${scopeSql}
       ORDER BY datetime(updated_at), run_id LIMIT 3`
   ).all(cutoff, ...scopeBinds) as unknown as Array<{ run_id: string }>;
+  const staleActive = auditUnverified(db, {
+    workspacePath,
+    artifact,
+    olderThanDays: pressureAgeDays,
+  }).stale_active;
   const signalCount = (db.prepare(
     `SELECT COUNT(*) AS count FROM signals
       WHERE status = 'open' AND created_at < ?${scopeSql}`
@@ -110,6 +77,15 @@ export function inspectMaintenancePressure(
   const signalRows = db.prepare(
     `SELECT signal_id FROM signals
       WHERE status = 'open' AND created_at < ?${scopeSql}
+      ORDER BY datetime(created_at), signal_id LIMIT 3`
+  ).all(cutoff, ...scopeBinds) as unknown as Array<{ signal_id: string }>;
+  const handoffSignalCount = (db.prepare(
+    `SELECT COUNT(*) AS count FROM signals
+      WHERE kind = 'handoff' AND status = 'open' AND created_at < ?${scopeSql}`
+  ).get(cutoff, ...scopeBinds) as { count: number }).count;
+  const handoffSignalRows = db.prepare(
+    `SELECT signal_id FROM signals
+      WHERE kind = 'handoff' AND status = 'open' AND created_at < ?${scopeSql}
       ORDER BY datetime(created_at), signal_id LIMIT 3`
   ).all(cutoff, ...scopeBinds) as unknown as Array<{ signal_id: string }>;
   const referenceRows = db.prepare(
@@ -134,11 +110,15 @@ export function inspectMaintenancePressure(
     pressure_age_days: pressureAgeDays,
     cutoff,
     stale_pending_runs: pendingCount,
+    stale_active_runs: staleActive.length,
     stale_open_signals: signalCount,
+    stale_handoff_signals: handoffSignalCount,
     stale_missing_refs: staleMemoryIds.size,
     samples: {
       run_ids: pendingRows.map(row => row.run_id),
+      active_run_ids: staleActive.slice(0, 3).map(row => row.run_id),
       signal_ids: signalRows.map(row => row.signal_id),
+      handoff_signal_ids: handoffSignalRows.map(row => row.signal_id),
       memory_ids: [...staleMemoryIds].slice(0, 3),
     },
   };
@@ -159,9 +139,15 @@ export function digest(
 ): DigestResult {
   const retentionDays = retentionWindow(params, 'retention_days', 'retentionDays', 90);
   const handoffRetentionDays = retentionWindow(params, 'refinement_handoff_retention_days', 'refinementHandoffRetentionDays', 7);
+  const handoffSignalRetentionDays = retentionWindow(params, 'handoff_signal_retention_days', 'handoffSignalRetentionDays', 1);
   const doneRetentionDays = retentionWindow(params, 'refinement_done_retention_days', 'refinementDoneRetentionDays', 30);
   const operationalRetentionDays = retentionWindow(params, 'operational_retention_days', 'operationalRetentionDays', 90);
   retentionWindow(params, 'pressure_age_days', 'pressureAgeDays', 1);
+  const rawFailStaleActiveRuns = params.fail_stale_active_runs ?? params.failStaleActiveRuns;
+  if (rawFailStaleActiveRuns != null && typeof rawFailStaleActiveRuns !== 'boolean') {
+    throw new Error('fail_stale_active_runs must be boolean');
+  }
+  const failStaleActiveRuns = rawFailStaleActiveRuns !== false;
   const rawWorkspacePath = typeof params.workspace === 'string' ? params.workspace :
     typeof params.workspace_path === 'string' ? params.workspace_path :
       typeof params.workspacePath === 'string' ? params.workspacePath : null;
@@ -170,13 +156,16 @@ export function digest(
   const now = new Date().toISOString();
   const cutoff = new Date(Date.now() - retentionDays * 86400000).toISOString();
   const handoffCutoff = new Date(Date.now() - handoffRetentionDays * 86400000).toISOString();
+  const handoffSignalCutoff = new Date(Date.now() - handoffSignalRetentionDays * 86400000).toISOString();
   const doneCutoff = new Date(Date.now() - doneRetentionDays * 86400000).toISOString();
   const operationalCutoff = new Date(Date.now() - operationalRetentionDays * 86400000).toISOString();
   const pressure = inspectMaintenancePressure(db, params);
   const pressureFields = {
     pressure_age_days: pressure.pressure_age_days,
     stale_pending_runs: pressure.stale_pending_runs,
+    stale_active_runs: pressure.stale_active_runs,
     stale_open_signals: pressure.stale_open_signals,
+    stale_handoff_signals: pressure.stale_handoff_signals,
     stale_missing_refs: pressure.stale_missing_refs,
     pressure_samples: pressure.samples,
   };
@@ -214,8 +203,14 @@ export function digest(
           OR (quality IN ('good','bad') AND state = 'done' AND updated_at < ?))${refinementScopeSql}`)
       .get(handoffCutoff, doneCutoff, ...refinementScopeBinds) as { c: number }).c;
     const wouldResolveHandoffSignals = (db.prepare(
-      `SELECT COUNT(*) AS c FROM signals WHERE kind = 'handoff' AND status = 'open' AND created_at < ?${workspacePath ? ' AND workspace_path = ?' : ''}`
-    ).get(handoffCutoff, ...(workspacePath ? [workspacePath] : [])) as { c: number }).c;
+      `SELECT COUNT(*) AS c FROM signals WHERE kind = 'handoff' AND status = 'open' AND created_at < ?${memoryScopeSql}`
+    ).get(handoffSignalCutoff, ...memoryScopeBinds) as { c: number }).c;
+    const staleActiveRunIds = auditUnverified(db, {
+      workspacePath,
+      artifact,
+      olderThanDays: pressure.pressure_age_days,
+    }).stale_active.map(row => row.run_id);
+    const wouldFailStaleActiveRuns = failStaleActiveRuns ? staleActiveRunIds.length : 0;
     const wouldPruneRuns = (db.prepare(`SELECT COUNT(*) AS c FROM task_runs
       WHERE task_id IS NULL AND origin IN ('WORK','HOOK')
         AND status IN ('SUCCESS','FAILED') AND updated_at < ?${memoryScopeSql}`)
@@ -249,6 +244,7 @@ export function digest(
       pruned_locks: 0,
       pruned_refinements: 0,
       resolved_handoff_signals: 0,
+      failed_stale_active_runs: 0,
       pruned_runs: 0,
       fts_rebuilt: false,
       dry_run: true,
@@ -257,6 +253,7 @@ export function digest(
       would_prune_locks: wouldPruneLocks,
       would_prune_refinements: wouldPruneRefinements,
       would_resolve_handoff_signals: wouldResolveHandoffSignals,
+      would_fail_stale_active_runs: wouldFailStaleActiveRuns,
       would_prune_runs: wouldPruneRuns,
       candidate_limit: candidateLimit,
       candidate_ids: {
@@ -265,6 +262,7 @@ export function digest(
         locks: lockDryRun.locks ?? [],
         refinement_ids: refinementIds,
         run_ids: runIds,
+        stale_active_run_ids: staleActiveRunIds.slice(0, candidateLimit),
       },
       ...pressureFields,
     };
@@ -275,6 +273,7 @@ export function digest(
   let prunedLocks = 0;
   let pruneRefinementsRes: { changes: number } = { changes: 0 };
   let resolvedHandoffSignals = 0;
+  let failedStaleActiveRuns = 0;
   let pruneRunsRes: { changes: number } = { changes: 0 };
   let ftsRebuilt = false;
   const ownsDigestTransaction = !db.isTransaction;
@@ -312,8 +311,31 @@ export function digest(
     // inbox cannot accumulate unbounded stale handoffs.
     resolvedHandoffSignals = (db.prepare(
       `UPDATE signals SET status = 'resolved', resolved_at = ?
-       WHERE kind = 'handoff' AND status = 'open' AND created_at < ?${workspacePath ? ' AND workspace_path = ?' : ''}`
-    ).run(now, handoffCutoff, ...(workspacePath ? [workspacePath] : [])) as { changes: number }).changes;
+       WHERE kind = 'handoff' AND status = 'open' AND created_at < ?${memoryScopeSql}`
+    ).run(now, handoffSignalCutoff, ...memoryScopeBinds) as { changes: number }).changes;
+
+    // 4c. Stale ACTIVE runs with expired presence are not live work. Mark them
+    // FAILED with an audit receipt so verify audit stops replaying old sessions.
+    if (failStaleActiveRuns) {
+      const staleActive = auditUnverified(db, {
+        workspacePath,
+        artifact,
+        olderThanDays: pressure.pressure_age_days,
+      }).stale_active;
+      for (const run of staleActive) {
+        const failed = db.prepare(RUNS_UPDATE_ACTIVE_TO_FAILED).run(now, run.run_id) as { changes: number };
+        if (failed.changes !== 1) continue;
+        closeRunFiles(db, run.run_id, now);
+        const message = `maintenance digest: stale ACTIVE run had no live file presence after ${pressure.pressure_age_days}d`;
+        failStaleLinkedTask(db, run.run_id, run.agent_id, now, message);
+        try {
+          db.prepare(RUN_LOG_INSERT_VERIFIED).run(
+            'evt_' + randomUUID().replace(/-/g, ''), run.run_id, run.agent_id, message, now,
+          );
+        } catch { /* non-critical audit log */ }
+        failedStaleActiveRuns += 1;
+      }
+    }
 
     // 5. Compact terminal standalone execution rows. Run-file presence cascades;
     // verification receipts remain in run_log with run_id set null by the FK.
@@ -339,6 +361,17 @@ export function digest(
   // 7. Absorb WAL pages after bulk maintenance writes (non-fatal on :memory:).
   if (ownsDigestTransaction) checkpointWal(db);
 
+  const finalPressure = inspectMaintenancePressure(db, params);
+  const finalPressureFields = {
+    pressure_age_days: finalPressure.pressure_age_days,
+    stale_pending_runs: finalPressure.stale_pending_runs,
+    stale_active_runs: finalPressure.stale_active_runs,
+    stale_open_signals: finalPressure.stale_open_signals,
+    stale_handoff_signals: finalPressure.stale_handoff_signals,
+    stale_missing_refs: finalPressure.stale_missing_refs,
+    pressure_samples: finalPressure.samples,
+  };
+
   return {
     ok: true,
     archived_memories: archiveRes.changes,
@@ -346,8 +379,9 @@ export function digest(
     pruned_locks: prunedLocks,
     pruned_refinements: pruneRefinementsRes.changes,
     resolved_handoff_signals: resolvedHandoffSignals,
+    failed_stale_active_runs: failedStaleActiveRuns,
     pruned_runs: pruneRunsRes.changes,
     fts_rebuilt: ftsRebuilt,
-    ...pressureFields,
+    ...finalPressureFields,
   };
 }

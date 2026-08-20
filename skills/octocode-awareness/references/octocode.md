@@ -1,8 +1,6 @@
 # Octocode Operations
 
-Use this when Awareness needs code, GitHub, package, history, artifact, graph, or skill evidence. Awareness owns coordination/memory; `npx octocode` or Octocode MCP owns research and skill management.
-
-No Octocode binary is bundled in this skill. Prefer connected Octocode MCP tools; otherwise run the published CLI so the correct native engine resolves for the host:
+Use this when Awareness needs code, GitHub, package, history, artifact, graph, or skill evidence. Awareness owns coordination/memory; `npx octocode` or Octocode MCP owns research and skill management. No Octocode binary is bundled in this skill. Prefer connected Octocode MCP tools; otherwise run the published CLI so the correct native engine resolves for the host:
 
 ```bash
 npx octocode <command> ... --no-color
@@ -28,10 +26,8 @@ npx octocode search owner/repo/path --target commits --no-color
 npx octocode search --scheme --compact --no-color
 ```
 
-Treat hits as leads. Cite paths/lines/IDs in locks, signals, memories, and refinements. Zero matches require one scope/mode/spelling adjustment before an absence claim. Install a dedicated research workflow skill separately when deeper evidence workflows are needed.
+Treat hits as leads. Cite paths/lines/IDs in locks, signals, memories, and refinements. Zero matches require one scope/mode/spelling adjustment before an absence claim. Install a dedicated research workflow skill separately for deeper evidence workflows.
 
 ## Skill Management
 
-For copy-pasteable install and refresh commands, load `references/agent-cheatsheet.md`; it owns package-path and host-platform setup. Gate skill installation as a write.
-
-Return research evidence to Awareness only when it informs a claim, decision, memory, signal, refinement, or verified reflection.
+For copy-pasteable install and refresh commands, load `references/agent-cheatsheet.md`; it owns package-path and host-platform setup. Gate skill installation as a write. Return research evidence to Awareness only when it informs a claim, decision, memory, signal, refinement, or verified reflection.

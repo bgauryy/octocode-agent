@@ -3,6 +3,45 @@ import type { DatabaseSync } from 'node:sqlite';
 import { getMemory } from './memory.js';
 import { queryAwareness } from './repo-context.js';
 import { AttendEvidence, AttendParams, AttendResult, chooseMode, compactRow, compactWorkboard, evidenceTrust, groupWorkboard, limitOf, ORGAN_REFERENCE, profileMap, resourceLeads, shellQuote, stringList, summarize, TEAM_NORMS, uniqueStrings } from './attend-model.js';
+import type { AwarenessQueryRow } from './repo-model.js';
+
+function clusterCompactHandoffs(rows: AwarenessQueryRow[]): AwarenessQueryRow[] {
+  const clusters = new Map<string, { row: AwarenessQueryRow; count: number; ids: string[] }>();
+  const output: AwarenessQueryRow[] = [];
+  for (const row of rows) {
+    const isHandoff = row['item_type'] === 'signal' && String(row['title'] ?? '').startsWith('handoff:');
+    if (!isHandoff) {
+      output.push(row);
+      continue;
+    }
+    const files = Array.isArray(row['files']) ? row['files'].map(String).sort() : [];
+    const key = JSON.stringify({
+      agent: String(row['agent_id'] ?? ''),
+      title: String(row['title'] ?? ''),
+      detail: String(row['detail'] ?? '').slice(0, 120),
+      files,
+    });
+    const ids = Array.isArray(row['raw_ids']) ? row['raw_ids'].map(String) : [String(row['id'] ?? '')].filter(Boolean);
+    const existing = clusters.get(key);
+    if (existing) {
+      existing.count += 1;
+      existing.ids.push(...ids);
+      existing.row['title'] = `handoff cluster (${existing.count}): ${summarize(String(row['title'] ?? 'handoff'), 80)}`;
+      existing.row['id'] = String(row['id'] ?? existing.row['id']);
+      continue;
+    }
+    const clustered: AwarenessQueryRow = {
+      ...row,
+      title: `handoff cluster (1): ${summarize(String(row['title'] ?? 'handoff'), 80)}`,
+    };
+    clusters.set(key, { row: clustered, count: 1, ids: [...ids] });
+    output.push(clustered);
+  }
+  for (const cluster of clusters.values()) {
+    cluster.row['raw_ids'] = uniqueStrings(cluster.ids);
+  }
+  return output;
+}
 
 export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): AttendResult {
   const cwd = params.cwd ? resolve(params.cwd) : process.cwd();
@@ -38,11 +77,14 @@ export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): At
     rawWorkboard['Verify'] = [...rawWorkboard['Verify']!].sort((left, right) =>
       Number(String(right['agent_id'] ?? '') === agentId) - Number(String(left['agent_id'] ?? '') === agentId));
   }
-  const handoffRows = (rawWorkboard['Inbox'] ?? [])
-    .filter(row => row['item_type'] === 'signal' && String(row['title'] ?? '').startsWith('handoff:'))
+  const compactSourceWorkboard = compact
+    ? { ...rawWorkboard, Inbox: clusterCompactHandoffs(rawWorkboard['Inbox'] ?? []) }
+    : rawWorkboard;
+  const handoffRows = (compactSourceWorkboard['Inbox'] ?? [])
+    .filter(row => row['item_type'] === 'signal' && String(row['title'] ?? '').startsWith('handoff'))
     .slice(0, packetLimit)
     .map(row => compact ? compactRow(row) : row);
-  const workboard = compact ? compactWorkboard(rawWorkboard, packetLimit) : rawWorkboard;
+  const workboard = compact ? compactWorkboard(compactSourceWorkboard, packetLimit) : rawWorkboard;
   const verificationTargets = (rawWorkboard['Verify'] ?? [])
     .filter(row => agentId !== '' && String(row['agent_id'] ?? '') === agentId)
     .slice(0, packetLimit);

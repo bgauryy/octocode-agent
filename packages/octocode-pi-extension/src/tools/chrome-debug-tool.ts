@@ -14,9 +14,12 @@
 
 import path from 'node:path';
 import { connectToChrome, cleanupConnection, redactObject } from '../chrome-debug.js';
+import { connectionKey, getLiveConnection, cacheConnection, evictConnection } from '../chrome-connection-cache.js';
 import { SCHEME_REGISTRY, SCHEMES, ACTIONS, STEALTH_SCRIPT } from '../chrome-debug-schemes.js';
 import type { ChromeDebugParams, Scheme } from '../chrome-debug-schemes.js';
-import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
+import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
+import type { ToolDefinition, ToolCallResult, PiTheme, PiContext, RenderContext } from '../types.js';
+import { appendImageLines } from './image-render.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 
@@ -253,23 +256,36 @@ export function registerChromeDebugTool(
 
       setStatus(ctx, `⧗ chromeDebug · ${scheme}/${action} · connecting on :${port}`);
 
+      // Reuse a live CDP connection across calls (keyed by port+target) so stateful
+      // flows and injected state survive; a fresh tab (newTab) always connects anew.
+      const cacheKey = connectionKey(port, params.targetId ?? params.targetUrl ?? params.targetType);
+      const reusable = params.newTab ? undefined : getLiveConnection(cacheKey);
       let connection;
-      try {
-        connection = await connectToChrome({
-          port,
-          targetId: params.targetId,
-          targetUrl: params.targetUrl,
-          targetType: params.targetType,
-          newTab: params.newTab,
-          launch: params.launch,
-          headless: params.headless,
-          timeoutMs: params.timeoutMs,
-          signal,
-          workspaceCwd,
-        });
-      } catch (err) {
-        setStatus(ctx, undefined);
-        throw new Error(`[CHROME_DEBUG_ERROR] ${(err as Error).message ?? String(err)}`);
+      let reused = false;
+      if (reusable) {
+        connection = reusable;
+        reused = true;
+      } else {
+        try {
+          connection = await connectToChrome({
+            port,
+            targetId: params.targetId,
+            targetUrl: params.targetUrl,
+            targetType: params.targetType,
+            newTab: params.newTab,
+            launch: params.launch,
+            headless: params.headless,
+            timeoutMs: params.timeoutMs,
+            signal,
+            workspaceCwd,
+          });
+        } catch (err) {
+          setStatus(ctx, undefined);
+          throw new Error(`[CHROME_DEBUG_ERROR] ${(err as Error).message ?? String(err)}`);
+        }
+        // Cache non-ephemeral connections for reuse and so shutdown can close them
+        // (includes newTab: it stays open under keepTab, so it must be tracked).
+        if (keepTab && !params.cleanup) cacheConnection(cacheKey, port, connection);
       }
 
       const { session, version, metadata, screenshotDir } = connection;
@@ -277,7 +293,7 @@ export function registerChromeDebugTool(
       // Emit SESSION line
       const identity = metadata.identity;
       const sessionLine =
-        `[SESSION] mode=${metadata.mode} browser=${version.Browser ?? 'unknown'} ` +
+        `[SESSION] mode=${reused ? 'reused' : metadata.mode} browser=${version.Browser ?? 'unknown'} ` +
         `tab=${identity?.tabHost ?? '?'}${identity?.tabPath ?? ''} ` +
         `cookies=${(identity?.cookieNames ?? []).length} names`;
 
@@ -312,9 +328,9 @@ export function registerChromeDebugTool(
 
         if (!keepTab || params.cleanup) {
           await cleanupConnection(session, keepTab, params.cleanup === true).catch(() => undefined);
-        } else {
-          session.close();
+          evictConnection(cacheKey);
         }
+        // keepTab: leave the connection cached/open so a retry can reuse it.
 
         throw new Error(`[CHROME_DEBUG_ERROR] ${e.message} | target: ${JSON.stringify(metadata.activeTarget)}`);
       }
@@ -323,11 +339,15 @@ export function registerChromeDebugTool(
       if (params.cleanup) {
         // Full cleanup: close tab/WS AND terminate a Chrome this tool launched.
         await cleanupConnection(session, false, true).catch(() => undefined);
+        evictConnection(cacheKey);
       } else if (!keepTab) {
         await cleanupConnection(session, false).catch(() => undefined);
+        evictConnection(cacheKey);
       } else {
-        // keepTab: just close the WS, leave the tab open
-        session.close();
+        // keepTab (default): keep the CDP connection OPEN and cached so the next
+        // call reuses the same session (stateful flows + no reconnect latency).
+        // Leak safety: closeAllChromeConnections() runs on session_shutdown and
+        // the cache is LRU-capped + prunes closed sessions.
       }
 
       setStatus(ctx, undefined);
@@ -372,31 +392,32 @@ export function registerChromeDebugTool(
       const port = typeof a['port'] === 'number' ? a['port'] : 9222;
       const url = typeof a['url'] === 'string' ? a['url'] : typeof a['targetUrl'] === 'string' ? a['targetUrl'] : '';
 
-      const nameStr = theme?.fg('toolTitle', theme.bold('chromeDebug')) ?? 'chromeDebug';
-      const schemeStr = theme?.fg('accent', scheme) ?? scheme;
-      const actionStr = action ? (theme?.fg('dim', `/${action}`) ?? `/${action}`) : '';
-      const portStr = theme?.fg('dim', ` :${port}`) ?? ` :${port}`;
+      const nameStr = cliToolTitle(theme, 'chromeDebug', { bold: true });
+      const schemeStr = paint(theme, 'link', scheme);
+      const actionStr = action ? paint(theme, 'dim', `/${action}`) : '';
+      const portStr = paint(theme, 'dim', ` :${port}`);
+      const displayUrl = url.length > 50 ? `${url.slice(0, 47)}…` : url;
       const urlStr = url
-        ? (theme?.fg('dim', ` · ${url.length > 50 ? url.slice(0, 47) + '…' : url}`) ?? ` · ${url}`)
+        ? paint(theme, 'dim', ` · ${displayUrl}`)
         : '';
 
       const rawLine = `${nameStr} ${schemeStr}${actionStr}${portStr}${urlStr}`;
       return makeRenderer((w) => [truncateToWidth(rawLine, w)]);
     },
 
-    renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
+    renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme, context?: RenderContext) {
       if (opts.isPartial) {
-        const msg = theme?.fg('warning', '⧗ Connecting to Chrome…') ?? '⧗ Connecting…';
+        const msg = paint(theme, 'warning', CLI_STATUS_TEXT.connectingChrome);
         return makeRenderer((w) => [truncateToWidth(msg, w)]);
       }
 
       const ok = !result.isError;
-      const icon = theme?.fg(ok ? 'success' : 'error', ok ? '✓' : '✗') ?? (ok ? '✓' : '✗');
-      const nameStr = theme?.fg('toolTitle', 'chromeDebug') ?? 'chromeDebug';
+      const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
+      const nameStr = cliToolTitle(theme, 'chromeDebug');
 
       const det = result.details as Record<string, unknown> | null;
       const scheme = typeof det?.['scheme'] === 'string' ? det['scheme'] : '';
-      const schemeStr = scheme ? (theme?.fg('dim', ` · ${scheme}`) ?? ` · ${scheme}`) : '';
+      const schemeStr = scheme ? paint(theme, 'dim', ` · ${scheme}`) : '';
 
       // Count [FINDING] lines
       const text = (result.content as Array<{ type: string; text: string }>)
@@ -406,16 +427,16 @@ export function registerChromeDebugTool(
 
       let stat = '';
       if (findingCount > 0) {
-        stat = theme?.fg('warning', ` · ${findingCount} finding${findingCount === 1 ? '' : 's'}`) ?? ` · ${findingCount} finding(s)`;
+        stat = paint(theme, 'warning', ` · ${findingCount} finding${findingCount === 1 ? '' : 's'}`);
       } else if (screenshotPath) {
         const fname = path.basename(screenshotPath);
-        stat = theme?.fg('dim', ` · ${fname}`) ?? ` · ${fname}`;
+        stat = paint(theme, 'dim', ` · ${fname}`);
       }
 
       const header = `${icon} ${nameStr}${schemeStr}${stat}`;
 
       if (!opts.expanded) {
-        const hint = theme?.fg('dim', ' · expand for evidence') ?? ' · expand for evidence';
+        const hint = paint(theme, 'dim', ' · expand for evidence');
         return makeRenderer((w) => [truncateToWidth(`${header}${hint}`, w)]);
       }
 
@@ -423,24 +444,30 @@ export function registerChromeDebugTool(
       const lines = allLines.slice(0, 30);
       const omitted = allLines.length - lines.length;
 
-      return makeRenderer((w) => [
+      const base = makeRenderer((w) => [
         truncateToWidth(header, w),
         ...lines.map((l) =>
           truncateToWidth(
             l.startsWith('[FINDING]')
-              ? (theme?.fg('warning', l) ?? l)
+              ? paint(theme, 'warning', l)
               : l.startsWith('[ACTION]')
-              ? (theme?.fg('accent', l) ?? l)
+              ? paint(theme, 'link', l)
               : l.startsWith('[SESSION]')
-              ? (theme?.fg('dim', l) ?? l)
-              : (theme?.fg('dim', l) ?? l),
+              ? paint(theme, 'dim', l)
+              : paint(theme, 'dim', l),
             w,
           ),
         ),
         ...(omitted > 0
-          ? [truncateToWidth(theme?.fg('muted', `… ${omitted} more lines`) ?? `… ${omitted} more lines`, w)]
+          ? [truncateToWidth(paint(theme, 'muted', `… ${omitted} more lines`), w)]
           : []),
       ]);
+
+      // Inline screenshot in the expanded view. appendImageLines keeps the image
+      // escape lines outside makeRenderer's width truncation (see image-render.ts).
+      return screenshotPath
+        ? appendImageLines(base, context, screenshotPath, theme)
+        : base;
     },
   } satisfies ToolDefinition);
 }

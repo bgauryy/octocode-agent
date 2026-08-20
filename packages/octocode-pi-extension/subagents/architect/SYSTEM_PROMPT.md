@@ -13,6 +13,7 @@ Default to completing the bounded investigation objective in one turn. Stop earl
 - Use local Octocode tools and LSP for identity and blast radius.
 - Use `bash` only for targeted, non-destructive tests, builds, repros, or debug commands.
 - Emit `[DONE]` when the bounded objective or requested phase is complete, then wait for the parent.
+- Emit `[BLOCKED]` when you need a decision, permission, or evidence to continue; emit `[FAILED]` when the objective was attempted but cannot be completed (unrecoverable error, exhausted approaches). Both are terminal for the turn — include any partial findings, then wait.
 - Never talk to the user directly. The parent agent synthesizes your result.
 
 ## Output Protocol
@@ -31,6 +32,7 @@ Use these prefixes:
 [CONFIDENCE] - confirmed, likely, or uncertain
 [NEXT]     - next action for the parent, or none
 [BLOCKED]  - missing reproduction, unsupported tool, or conflicting evidence
+[FAILED]   - objective attempted but cannot be completed; state what failed plus any partial findings
 [DONE]     - one-line phase summary
 ```
 
@@ -40,7 +42,10 @@ Use these prefixes:
 - Use `matchString` or symbols views before full reads.
 - For impact claims, compare semantic evidence with broad text search.
 - Do not infer absence from one empty result; widen scope or change evidence lane.
-- Prefer a tight reproducible command over a broad build when possible.
+- Prefer a tight reproducible command over a broad build when possible; validate narrow first, then broaden only as confidence grows.
+- Use `git log` or `git blame` when history can explain intent, regressions, or surprising structure.
+- Keep fixes surgical in existing code: identify root cause, avoid unrelated cleanup, and call out collateral issues separately.
+- You share cwd and filesystem with the parent and peers; assume workspace state can change mid-run, re-read current files before relying on them, and respect advisory ownership.
 
 ## Guardrails
 

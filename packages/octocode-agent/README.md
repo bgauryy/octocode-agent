@@ -27,7 +27,7 @@ octocode-agent
 - **Automatically** — a platform release pins a newer core; `octocode-agent update` self-updates the platform and pulls it in.
 - **By the user** — `octocode-agent update core` runs npm with this launcher install as `--prefix`, refreshing only `@octocodeai/pi-extension` in place. This works for global installs, local dev installs, and npm/npx cache installs.
 
-Because the harness — prompt, skills, tools, memory — all lives in the core package, none of it is duplicated here. This launcher stays thin on purpose.
+Because the harness — prompt, skills, tools, memory, surface command specs, and launch-profile policy — all lives in the core package, none of it is duplicated here. This launcher stays thin on purpose: it imports core helpers directly from `@octocodeai/pi-extension` and only launches/updates/executes the returned specs.
 
 ## Usage
 
@@ -36,10 +36,24 @@ octocode-agent [agent args...] # Launch the agent; supported Pi-compatible args 
 octocode-agent update         # Self-update the platform (pulls the newest core)
 octocode-agent update core    # Update @octocodeai/pi-extension inside this install
 octocode-agent --version      # Print launcher, core, and Pi host versions
-octocode-agent --agent-help   # Launcher help (reserved subcommands only)
+
+octocode-agent auth [login]   # Credential status; `auth login` is a guided pick-provider wizard (writes ~/.octocode/.env, 0600)
+octocode-agent models         # How to pick models; `models --set [id]` persists your default (interactive picker on a TTY)
+octocode-agent resume         # Resume a session — picker over ALL projects' sessions; fuzzy `<id>` handled by Pi; `session` is an alias
+octocode-agent doctor         # Health checks (core, Pi host, auth, awareness)
+octocode-agent setup [--fix]  # First-run setup summary; --fix walks failing checks interactively
+octocode-agent config         # Runtime/package/key view; add --json for scripting
+                              #   `config get|set|list` reads/writes Pi's settings.json (writable keys: defaultProvider, defaultModel)
+octocode-agent --smoke-test   # Install/CI self-check: launcher + core + Pi host must resolve
 ```
 
-Any argument that isn't a reserved subcommand (`update`, `--version`, `--agent-help`) is handled by the SDK launcher when supported (`--print`, `--mode rpc`, `--continue`, `--session`, `--no-session`, `--name`, initial message) or passed to the subprocess fallback.
+**Per-terminal `-c`:** in multiplexer terminals (tmux/zellij/kitty/wezterm/iTerm/WT) the launcher drops a breadcrumb per pane; a bare `-c`/`--continue` resumes THIS terminal's last session instead of the cwd-global newest (`~/.octocode/terminal-sessions/`).
+
+**Environment:** `OCTOCODE_PI_*` vars mirror to `PI_*` for the launched session (e.g. `OCTOCODE_PI_CODING_AGENT_DIR` → `PI_CODING_AGENT_DIR`); an explicitly set `PI_*` always wins.
+
+Any argument that isn't a reserved subcommand is handled by the SDK launcher when supported (`--print`, `--mode rpc`, `--continue`, `--session`, `--no-session`, `--name`, initial message) or passed to the subprocess fallback. A single bare token within edit distance of a real command gets `did you mean …` and exit 2 instead of a nonsense session.
+
+**Exit codes:** `0` success · `1` runtime failure · `2` usage/unknown input (with suggestion) · `3` needs an interactive terminal.
 
 ## How it works
 
@@ -56,6 +70,7 @@ The core's default export stays append-mode and single-arg-callable, so the same
 - `OCTOCODE_AGENT_EXTENSION_SPEC` — override the core spec Pi loads (`npm:…`, `git:…`, or a path). Default: the bundled package.
 - `OCTOCODE_AGENT_CLEAN=1` — also pass `--no-skills --no-context-files`, so only the Octocode harness package loads (deterministic branded agent).
 - `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` — suppress `AGENTS.md` / `CLAUDE.md`; by default project context files stay enabled so repository rules remain authoritative.
+- `OCTOCODE_AGENT_NO_BANNER=1` — suppress the interactive launch banner (never shown for `run`/`serve`/print/json modes or non-TTY runs anyway).
 
 See [`docs/PI_INTEGRATION.md`](docs/PI_INTEGRATION.md) for how Pi works, the launch/UX/commands/instructions model, and the SDK-embed evolution path.
 

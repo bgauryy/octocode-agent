@@ -5,8 +5,8 @@
 // re-validation in safeFetch) resolves every hostname and rejects any resolved IP in a
 // private / loopback / link-local / ULA / CGNAT / IPv4-mapped range, blocking
 // cloud-metadata (169.254.169.254) and localhost reach. Redirects are followed manually
-// and each hop is re-validated. Residual: a pure DNS-rebinding race (public at check,
-// private at connect) is not closed without connection pinning — documented follow-up.
+// and each hop is re-validated. DNS rebinding is closed for the global-fetch path by
+// the pinned undici dispatcher (connect-time lookup pins the validated IP).
 
 import dns from 'node:dns/promises';
 import net from 'node:net';
@@ -357,11 +357,12 @@ export async function readCapped(
       ? await Promise.race([reader.read(), abortPromise])
       : await reader.read();
     if ((chunk as AbortFlag).__aborted) {
-      truncated = true;
+      // Abort is an error, not a shorter answer — a partial page returned as a
+      // "truncated success" would land in the transcript as a valid read.
       try {
         await reader.cancel();
       } catch { /* ignore */ }
-      break;
+      throw new Error('web fetch aborted');
     }
     const { done, value } = chunk as ReadableStreamReadResult<Uint8Array>;
     if (done) break;
