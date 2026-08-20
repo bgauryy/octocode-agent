@@ -57,7 +57,7 @@ Warnings appear when the context is high, assets are missing, or search falls ba
 Always-on orientation and health commands: `/octocode`, `/octocode-now`, `/octocode-status`, `/octocode-harness`.
 Work-state commands: `/octocode-plan`, `/octocode-tasks`, `/octocode-agents`, `/octocode-inbox`, `/octocode-cron`, `/cron`.
 Configuration and integration commands: `/octocode-mcp`, `/mcp`, `/octocode-setup`, `/octocode-skills`, `/octocode-skills-update`, `/octocode-theme`, `/octocode-chrome`.
-Modern TUI commands: `/octocode-palette`, `/octocode-dial`, `/octocode-rewind`, `/octocode-watch`, `/octocode-export`.
+Modern TUI commands: `/octocode-palette`, `/octocode-dial`, `/octocode-footer`, `/octocode-rewind`, `/octocode-watch`, `/octocode-export`.
 
 ## Agent ledger
 

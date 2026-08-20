@@ -779,7 +779,7 @@ export class AwarenessLite {
         plan: ['create --title [--goal]', 'list', 'done --plan-id [--force]'],
         task: ['add --plan-id --title [--file] [--check]', 'list [--plan-id] [--status]', 'claim --task-id --agent-id', 'done --task-id --agent-id', 'reopen --task-id --agent-id [--reason]'],
         lock: ['acquire --file --agent-id [--reason] [--ttl]', 'release --file --agent-id', 'list'],
-        work: ['start --file --agent-id [--reason] [--ttl]', 'list', 'end --file --agent-id'],
+        work: ['start --file --agent-id [--reason] [--ttl]', 'touch --file --agent-id [--reason] [--ttl]', 'list', 'end --file --agent-id'],
         handoff: ['add --agent-id --summary [--file]', 'list [--include-cleared]', 'clear --handoff-id'],
         check: ['audit', 'mark --task-id --agent-id --message'],
         memory: ['store --label --text [--tags]', 'recall [--query] [--label] [--limit]', 'list [--limit]', 'forget --memory-id', 'delete --memory-id', 'prune --older-than [--label] [--confirm]'],

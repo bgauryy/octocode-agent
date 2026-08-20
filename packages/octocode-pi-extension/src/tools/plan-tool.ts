@@ -73,12 +73,9 @@ export function planPanelLines(steps: PlanStep[], theme?: PiTheme): string[] {
   return [paint(theme, 'success', header), ...rows];
 }
 
-/** Mirror the active plan into the live below-editor checklist panel only. */
+/** Mirror the active plan into the unified below-editor status panel only. */
 export function refreshPlanUi(ctx?: PiContext): void {
   if (!ctx?.hasUI) return;
-  // Clear the legacy compact status line so plan state has exactly one visual home:
-  // the unified below-editor status panel.
-  ctx.ui?.setStatus?.('octocode-plan', undefined);
   refreshStatusPanel(ctx);
 }
 

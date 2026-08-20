@@ -54,6 +54,7 @@ policy stays here instead of drifting into launcher shims.
 /octocode-plan           manage the active task plan
 /octocode-theme          switch Octocode theme: sync, dark, or light
 /octocode-chrome         list or close reused Chrome DevTools connections
+/octocode-footer         footer density: compact, default, or full
 /octocode-inbox          worker inbox: view transcript, steer, or kill spawned agents
 /octocode-palette        command palette (default shortcut ctrl+o)
 /octocode-rewind         restore files from an automatic pre-prompt checkpoint
@@ -180,6 +181,7 @@ summary; `action:describe` returns the full selected tool schema before
 | `/octocode-plan` | Show, start, complete, or clear the active local task plan. |
 | `/octocode-theme` | Switch the Octocode theme (`sync`, `dark`, or `light`). |
 | `/octocode-chrome` | List or close reused Chrome DevTools Protocol connections. |
+| `/octocode-footer` | Footer density: `compact` (context/workers/attention flags/git only), `default` (no session timer), `full` (everything). |
 | `/octocode-inbox` | Worker inbox overlay: pick a spawned agent, then view its transcript, steer it, or kill it. Completions/failures also fire desktop (OSC 9) notifications. |
 | `/octocode-palette` | Command palette over every slash command plus direct actions; default shortcut `ctrl+o` (override with `OCTOCODE_PALETTE_KEY`). |
 | `/octocode-rewind` | List and restore automatic shadow-git file checkpoints taken before each user prompt; optionally rewinds the conversation too. |

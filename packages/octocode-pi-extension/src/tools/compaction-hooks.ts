@@ -129,7 +129,7 @@ function buildDeterministicCompaction(preparation: Record<string, unknown>, reas
       : undefined,
     formatFileList('Read files', readFiles),
     formatFileList('Modified files', modifiedFiles),
-    '## Resume instructions\nRe-orient from retained recent messages. Continue with the next small step only. If output would be long, write it to a file and reply with a concise summary and path.',
+    '## Resume instructions\nRe-orient from retained recent messages. If active work remains, continue with the next small step only; otherwise stop and wait for the user. If output would be long, write it to a file and reply with a concise summary and path.',
   ].filter(Boolean).join('\n\n');
 
   return {
@@ -244,7 +244,7 @@ export function registerCompactionHooks(pi: PiInstance, notify: Notifier): void 
       return;
     }
     const continuation =
-      'Compaction is complete. Re-orient from the compacted context, then continue with the next small step only. If the answer would be long, write it to a file and reply with a concise summary and path.';
+      'Compaction is complete. Re-orient from the compacted context. If an active task remains, continue with its next small step only; if the prior work was already complete, do not start new work — reply briefly and stop. If the answer would be long, write it to a file and reply with a concise summary and path.';
     scheduleCompactionContinuation(pi, ctx, notify, continuation, 'Compaction complete. Resuming…');
   });
 }

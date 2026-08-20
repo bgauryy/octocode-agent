@@ -7,6 +7,7 @@ import {
   OCTOCODE_MCP_ENV_DEFAULTS,
   __test__ as mcpTestHooks,
   getCachedMcpCatalogAddendum,
+  markMcpToolUsed,
   patchGlobalMcpOctocodeEnv,
   resolveMcpCallText,
 } from '../src/tools/mcp-tool.js';
@@ -15,6 +16,7 @@ const mcpCtx = { cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-cache-')) 
 
 afterEach(() => {
   mcpTestHooks.clearCachedMcpCatalog();
+  mcpTestHooks.resetRecentMcpToolUse();
 });
 
 function tmpMcpJson(content: unknown): string {
@@ -121,24 +123,45 @@ test('call text: non-record / malformed payloads stringify without throwing', ()
 });
 
 // ─── cached catalog prompt addendum (compaction-surviving turn layer) ─────────
+//
+// Budget contract: the every-turn addendum is COMPACT by default (names, brief
+// descriptions, schema field summaries). Full inputSchema JSON is injected only
+// for tools recently exercised via MCPTool call/describe, and each server entry
+// is char-capped with an explicit truncation marker — "compaction is budget".
 
-test('cached catalog addendum includes MCP server instructions, tool descriptions, and full input schema', () => {
+const CATALOG_TOOLS = [
+  {
+    name: 'localSearchCode',
+    description: 'Search local source files.',
+    inputSchema: {
+      type: 'object',
+      required: ['queries'],
+      properties: { queries: { type: 'array' }, timeout: { type: 'number' } },
+    },
+  },
+  {
+    name: 'localGetFileContent',
+    description: 'Read a local file.',
+    inputSchema: {
+      type: 'object',
+      required: ['paths'],
+      properties: { paths: { type: 'array' } },
+    },
+  },
+];
+
+function seedCatalog(): void {
   mcpTestHooks.setCachedMcpCatalog(mcpCtx, [{
     name: 'octocode',
     instructions: 'Use batched queries and follow continuation cursors.',
-    text: 'octocode: 1 tool(s)',
+    text: 'octocode: 2 tool(s)',
     cachedAt: Date.now(),
-    tools: [{
-      name: 'localSearchCode',
-      description: 'Search local source files.',
-      inputSchema: {
-        type: 'object',
-        required: ['queries'],
-        properties: { queries: { type: 'array' }, timeout: { type: 'number' } },
-      },
-    }],
+    tools: CATALOG_TOOLS,
   }]);
+}
 
+test('cached catalog addendum is compact by default: descriptions + schema summaries, no full schema JSON', () => {
+  seedCatalog();
   const addendum = getCachedMcpCatalogAddendum(mcpCtx);
   assert.match(addendum, /<mcp_cached_catalog>/);
   assert.match(addendum, /survives compaction/i);
@@ -147,8 +170,61 @@ test('cached catalog addendum includes MCP server instructions, tool description
   assert.match(addendum, /instructions: Use batched queries/);
   assert.match(addendum, /tool: localSearchCode/);
   assert.match(addendum, /description: Search local source files/);
-  assert.match(addendum, /"inputSchema"/);
-  assert.match(addendum, /"queries"/);
+  assert.match(addendum, /schema: queries/, 'compact schema summary lists required fields');
+  assert.doesNotMatch(addendum, /"inputSchema"/, 'full schema JSON is not injected by default');
+  assert.match(addendum, /MCPTool list\/describe/i, 'points at list/describe for exact schemas');
+});
+
+test('cached catalog addendum inlines the full schema ONLY for recently used tools', () => {
+  seedCatalog();
+  markMcpToolUsed(mcpCtx, 'octocode', 'localSearchCode');
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+  const searchBlock = addendum.slice(addendum.indexOf('tool: localSearchCode'), addendum.indexOf('tool: localGetFileContent'));
+  const readBlock = addendum.slice(addendum.indexOf('tool: localGetFileContent'));
+  assert.match(searchBlock, /"inputSchema"/, 'recently used tool carries its exact schema');
+  assert.match(searchBlock, /"queries"/);
+  assert.doesNotMatch(readBlock, /"inputSchema"/, 'unused sibling tool stays compact');
+});
+
+test('recently-used schema set is bounded: oldest entries are evicted beyond the cap', () => {
+  seedCatalog();
+  markMcpToolUsed(mcpCtx, 'octocode', 'localSearchCode');
+  for (let i = 0; i < 24; i += 1) markMcpToolUsed(mcpCtx, 'octocode', `filler-tool-${i}`);
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+  assert.doesNotMatch(
+    addendum,
+    /"inputSchema"/,
+    'localSearchCode schema evicted after 24 newer tool uses (cap keeps the set bounded)'
+  );
+});
+
+test('cached catalog addendum caps oversized server entries with a truncation marker', () => {
+  mcpTestHooks.setCachedMcpCatalog(mcpCtx, [{
+    name: 'bigserver',
+    text: 'bigserver: 200 tool(s)',
+    cachedAt: Date.now(),
+    tools: Array.from({ length: 200 }, (_, i) => ({
+      name: `tool-${i}`,
+      description: 'x'.repeat(160),
+      inputSchema: { type: 'object', properties: { input: { type: 'string' } } },
+    })),
+  }]);
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+  const entry = addendum.slice(addendum.indexOf('server: bigserver'));
+  assert.ok(entry.length <= 5_000, `server entry must be char-capped, got ${entry.length}`);
+  assert.match(entry, /truncated .*MCPTool list/i, 'truncation is explicit and actionable, never silent');
+});
+
+test('cached catalog addendum caps long tool descriptions', () => {
+  mcpTestHooks.setCachedMcpCatalog(mcpCtx, [{
+    name: 'verbose',
+    text: 'verbose: 1 tool(s)',
+    cachedAt: Date.now(),
+    tools: [{ name: 'wordy', description: `${'a'.repeat(400)}TAIL`, inputSchema: { type: 'object' } }],
+  }]);
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+  assert.doesNotMatch(addendum, /TAIL/, 'description is capped in the every-turn block');
+  assert.match(addendum, /description: a+…/, 'capped description carries an ellipsis');
 });
 
 test('cached catalog addendum keeps stale entries visible but labels them as stale', () => {

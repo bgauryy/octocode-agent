@@ -5,18 +5,14 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { PiCommandContext, PiContext, PiInstance, PiTheme, RenderCallReturn, RenderContext, ToolCallResult, ToolDefinition, TSchema } from '../types.js';
+import { PI_CONFIG_DIR } from '../constants.js';
 import { assertPathAllowed } from './path-guard.js';
+import { stringEnumSchema } from './schema-helpers.js';
 import { runSelectOverlay } from './ui-overlays.js';
 import { recordFileReadState } from './file-state.js';
 import { makeRenderer } from './render-helpers.js';
 
-interface TypeBoxBuilder {
-  Object(properties: Record<string, unknown>, options?: Record<string, unknown>): TSchema;
-  String(options?: Record<string, unknown>): TSchema;
-  Optional(schema: TSchema): TSchema;
-  Literal(value: string): TSchema;
-  Union(items: TSchema[], options?: Record<string, unknown>): TSchema;
-}
+type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 
 type NotifyFn = (ctx: PiContext | undefined, message: string, level?: string) => void;
 type McpAction = 'list' | 'describe' | 'call' | 'status' | 'restart' | 'stop' | 'config' | 'add' | 'remove';
@@ -119,16 +115,16 @@ function cacheKey(ctx?: PiContext): string {
 }
 
 function projectMcpPath(cwd: string): string {
-  return path.join(cwd, '.pi', 'agent', 'mcp.json');
+  return path.join(cwd, PI_CONFIG_DIR, 'agent', 'mcp.json');
 }
 
 function legacyTypoProjectMcpPath(cwd: string): string {
   // Compatibility for the common "agnet" typo; canonical docs/writes stay .pi/agent/mcp.json.
-  return path.join(cwd, '.pi', 'agnet', 'mcp.json');
+  return path.join(cwd, PI_CONFIG_DIR, 'agnet', 'mcp.json');
 }
 
 function globalMcpPath(): string {
-  return path.join(os.homedir(), '.pi', 'agent', 'mcp.json');
+  return path.join(os.homedir(), PI_CONFIG_DIR, 'agent', 'mcp.json');
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -602,21 +598,72 @@ function invalidateServerCache(name: string): void {
   }
 }
 
-function formatCachedCatalogEntry(entry: ListedMcpServer, now = Date.now()): string {
+// ─── Prompt-budget caps for the every-turn <mcp_cached_catalog> block ─────────
+//
+// The addendum is re-injected every turn, so every byte here is paid on every
+// request for the rest of the session. Compact by default: names, brief
+// descriptions, and schema field summaries. Exact inputSchema JSON is inlined
+// only for tools the agent recently exercised via MCPTool call/describe — the
+// set where exact arguments are actually load-bearing.
+const CATALOG_INSTRUCTIONS_CAP = 600;
+const CATALOG_DESCRIPTION_CAP = 300;
+const CATALOG_SERVER_ENTRY_CAP = 4_000;
+/** How many recently used tools keep their exact schema inlined (LRU per cwd). */
+const RECENT_TOOL_SCHEMA_CAP = 16;
+
+const recentToolUse = new Map<string, Map<string, number>>();
+
+/**
+ * Record that a tool was exercised via MCPTool call/describe so its exact
+ * inputSchema is worth inlining in the every-turn catalog block. LRU-bounded:
+ * only the most recent RECENT_TOOL_SCHEMA_CAP tools per cwd keep full schemas.
+ */
+export function markMcpToolUsed(ctx: PiContext | undefined, server: string, tool: string): void {
+  const key = cacheKey(ctx);
+  const used = recentToolUse.get(key) ?? new Map<string, number>();
+  const toolKey = `${server}/${tool}`;
+  used.delete(toolKey);
+  used.set(toolKey, Date.now());
+  while (used.size > RECENT_TOOL_SCHEMA_CAP) {
+    const oldest = used.keys().next().value as string;
+    used.delete(oldest);
+  }
+  recentToolUse.set(key, used);
+}
+
+function wasMcpToolRecentlyUsed(ctx: PiContext | undefined, server: string, tool: string): boolean {
+  return recentToolUse.get(cacheKey(ctx))?.has(`${server}/${tool}`) ?? false;
+}
+
+function capCatalogText(text: string, cap: number): string {
+  return text.length <= cap ? text : `${text.slice(0, cap)}…`;
+}
+
+function formatCachedCatalogEntry(entry: ListedMcpServer, ctx: PiContext | undefined, now = Date.now()): string {
   const lines = [`server: ${entry.name}`];
   const freshness = isFresh(entry, now) ? 'fresh' : 'stale — re-run MCPTool list/describe before relying on exact current schemas';
   lines.push(`cache: ${freshness}`);
   // No cachedAt timestamp here: any byte change in the system prompt invalidates
   // the provider conversation cache, and the fresh/stale label already carries
   // the model-facing signal.
-  if (entry.instructions) lines.push(`instructions: ${entry.instructions}`);
+  if (entry.instructions) lines.push(`instructions: ${capCatalogText(entry.instructions, CATALOG_INSTRUCTIONS_CAP)}`);
   for (const rawTool of entry.tools) {
     if (!isPlainRecord(rawTool)) continue;
-    lines.push(`tool: ${String(rawTool['name'] ?? '')}`);
-    if (typeof rawTool['description'] === 'string') lines.push(`description: ${rawTool['description']}`);
-    if (rawTool['inputSchema'] !== undefined) lines.push(stringify({ inputSchema: rawTool['inputSchema'] }));
+    const toolName = String(rawTool['name'] ?? '');
+    lines.push(`tool: ${toolName}`);
+    if (typeof rawTool['description'] === 'string') lines.push(`description: ${capCatalogText(rawTool['description'], CATALOG_DESCRIPTION_CAP)}`);
+    if (rawTool['inputSchema'] !== undefined) {
+      if (wasMcpToolRecentlyUsed(ctx, entry.name, toolName)) {
+        lines.push(stringify({ inputSchema: rawTool['inputSchema'] }));
+      } else {
+        const summary = summarizeSchema(rawTool).trim();
+        if (summary) lines.push(summary);
+      }
+    }
   }
-  return lines.join('\n');
+  const text = lines.join('\n');
+  if (text.length <= CATALOG_SERVER_ENTRY_CAP) return text;
+  return `${text.slice(0, CATALOG_SERVER_ENTRY_CAP)}\n…[truncated ${text.length - CATALOG_SERVER_ENTRY_CAP} chars — run MCPTool list server:${entry.name} for the full catalog]`;
 }
 
 /**
@@ -692,8 +739,8 @@ export function getCachedMcpCatalogAddendum(ctx?: PiContext): string {
   const now = Date.now();
   return [
     '<mcp_cached_catalog>',
-    'Cached MCP server instructions, tool descriptions, and input schemas from session warmup or prior MCPTool list/describe calls in this Pi process. This block is re-injected every turn so it survives compaction. Treat stale entries as hints; re-run MCPTool list/describe when exact current schema matters.',
-    ...cached.map((entry) => formatCachedCatalogEntry(entry, now)),
+    'Compact cached MCP catalog: server instructions plus tool names, brief descriptions, and schema field summaries from session warmup or prior MCPTool calls in this Pi process. This block is re-injected every turn so it survives compaction. Exact inputSchema JSON is inlined only for recently used/described tools; treat stale entries as hints and run MCPTool list/describe when the exact current schema matters.',
+    ...cached.map((entry) => formatCachedCatalogEntry(entry, ctx, now)),
     '</mcp_cached_catalog>',
   ].join('\n');
 }
@@ -704,6 +751,9 @@ export const __test__ = {
   },
   clearCachedMcpCatalog(): void {
     cachedCatalogs.clear();
+  },
+  resetRecentMcpToolUse(): void {
+    recentToolUse.clear();
   },
 };
 
@@ -864,6 +914,9 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
       const server = listed[0]!;
       const tool = server.tools.find((candidate) => isPlainRecord(candidate) && candidate['name'] === toolName);
       if (!tool) return result(`Unknown MCP tool: ${serverName}/${toolName}`, { server, warnings: loaded.warnings }, true);
+      // An explicit describe means exact arguments matter for this tool — keep
+      // its full schema inlined in the every-turn catalog block from now on.
+      markMcpToolUsed(ctx, serverName, toolName);
       cacheListedCatalog(ctx, listed);
       return result(stringify({ server: server.name, instructions: server.instructions, tool }), { server: server.name, instructions: server.instructions, tool, warnings: loaded.warnings });
     }
@@ -879,6 +932,9 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
     const connection = await ensureConnection(serverName, config, ctx, signal);
     const argumentsPayload = isPlainRecord(params['arguments']) ? params['arguments'] : {};
     const payload = await connection.client.callTool({ name: tool, arguments: argumentsPayload }, undefined, requestOptions(config, signal));
+    // A successful call makes this tool "hot": inline its exact schema in the
+    // every-turn catalog block so follow-up calls need no re-describe.
+    markMcpToolUsed(ctx, serverName, tool);
     // Stale-check: when the agent reads files through the octocode MCP server,
     // record the same read-state that the native localGetFileContent tool would.
     // This keeps the edit tool's stale-guard working when research routes through MCPTool.
@@ -940,22 +996,20 @@ export function registerMcpTool(
   registerFn: (pi: PiInstance, registeredToolNames: Set<string>, toolDefinition: ToolDefinition) => void,
 ): void {
   const parameters = Type.Object({
-    action: Type.Optional(Type.Union([
-      Type.Literal('list'),
-      Type.Literal('describe'),
-      Type.Literal('call'),
-      Type.Literal('status'),
-      Type.Literal('restart'),
-      Type.Literal('stop'),
-      Type.Literal('config'),
-      Type.Literal('add'),
-      Type.Literal('remove'),
-    ], { description: 'MCP action. list/describe/call to use servers; add/remove/restart/stop to manage them (applied without an agent restart).' })),
+    action: Type.Optional(stringEnumSchema(
+      Type,
+      ['list', 'describe', 'call', 'status', 'restart', 'stop', 'config', 'add', 'remove'],
+      'MCP action. list/describe/call to use servers; add/remove/restart/stop to manage them (applied without an agent restart).',
+    ) as TSchema),
     server: Type.Optional(Type.String({ description: 'MCP server name. For add/remove this is the key written to mcp.json.' })),
     tool: Type.Optional(Type.String({ description: 'MCP tool name for action:call.' })),
     arguments: Type.Optional(Type.Object({}, { description: 'Arguments object passed to the MCP tool (action:call).', additionalProperties: true })),
     config: Type.Optional(Type.Object({}, { description: 'Server config for action:add: {command, args?, env?, cwd?, timeoutMs?, description?}.', additionalProperties: true })),
-    scope: Type.Optional(Type.Union([Type.Literal('project'), Type.Literal('global')], { description: 'add/remove target: "project" (.pi/agent/mcp.json, trusted only; default) or "global" (~/.pi/agent/mcp.json).' })),
+    scope: Type.Optional(stringEnumSchema(
+      Type,
+      ['project', 'global'],
+      'add/remove target: "project" (.pi/agent/mcp.json, trusted only; default) or "global" (~/.pi/agent/mcp.json).',
+    ) as TSchema),
   }, { additionalProperties: false }) as TSchema;
 
   const execute = async (_toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal, _onUpdate?: unknown, ctx?: PiContext): Promise<ToolCallResult> => {

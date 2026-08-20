@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { PI_CONFIG_DIR } from './constants.js';
 
 // 800 chars gives a meaningful preview in TUI expanded view (~20 lines of 40 chars)
 // while staying well below the 12000-char agent output budget.
@@ -28,9 +29,9 @@ export function getAppendSystemTarget(
   homeDir = os.homedir(),
 ): string {
   if (scope === 'global') {
-    return path.join(homeDir, '.pi', 'agent', 'APPEND_SYSTEM.md');
+    return path.join(homeDir, PI_CONFIG_DIR, 'agent', 'APPEND_SYSTEM.md');
   }
-  return path.join(cwd, '.pi', 'APPEND_SYSTEM.md');
+  return path.join(cwd, PI_CONFIG_DIR, 'APPEND_SYSTEM.md');
 }
 
 export interface TruncateResult {

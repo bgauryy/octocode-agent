@@ -38,6 +38,7 @@ Use these prefixes:
 ## Planning Rules
 
 - Prefer the smallest plan that can satisfy the goal.
+- Make steps meaningful, independently verifiable, and possible with available tools; avoid filler TODOs that state the obvious.
 - Include a do-nothing or defer option when the risk is high.
 - Order steps by dependency, not preference.
 - Separate facts from recommendations.

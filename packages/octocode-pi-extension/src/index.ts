@@ -42,6 +42,7 @@ import {
   OCTOCODE_AGENTS_COMMAND_USAGE,
   refreshAgentLedgerUi,
   registerAgentTools,
+  isSubagentProcess,
 } from './tools/agent-tools.js';
 import { registerWebTool } from './tools/web-tool.js';
 import { registerChromeDebugTool } from './tools/chrome-debug-tool.js';
@@ -58,10 +59,10 @@ import { renderAvailableSkillsAddendum, renderSkillsDashboard } from './tools/sk
 import { registerPlanTool } from './tools/plan-tool.js';
 import { registerAskUserTool } from './tools/ask-user-tool.js';
 import { registerMemoryTool } from './tools/memory-tool.js';
-import { activePlanScope, renderActivePlanAddendum, getPlan, bumpPlanTurn } from './tools/active-plan.js';
+import { activePlanScope, adoptPlanFromBranch, renderActivePlanAddendum, getPlan, bumpPlanTurn, setPlanEntryAppender, PLAN_ENTRY_TYPE } from './tools/active-plan.js';
 import { getCachedAwarenessStatus, refreshAwarenessPanel, suppressAwarenessPanel, resumeAwarenessPanel } from './tools/awareness-status.js';
 import { refreshStatusPanel, suppressStatusPanel, resumeStatusPanel } from './tools/status-panel.js';
-import { buildFooterSegments, buildWorkingIndicator, buildWorkingMessage, resolveSystemThemeName, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName } from './ui-extras.js';
+import { buildFooterSegments, buildWorkingIndicator, buildWorkingMessage, getFooterDensity, parseFooterDensity, resolveSystemThemeName, setFooterDensity, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName } from './ui-extras.js';
 import { contextGauge, paint } from './tui/palette.js';
 import { listCDPSessions, closeAllChromeConnections } from './chrome-connection-cache.js';
 import { handleOctocodePlanCommand, OCTOCODE_PLAN_COMMAND_USAGE, OCTOCODE_PLAN_COMMAND_COMPLETIONS } from './tools/plan-tool.js';
@@ -92,7 +93,6 @@ import type {
   CommandDefinition,
   PiInstance,
   PiContext,
-  PiUi,
   OctocodePiExtensionOptions,
   PromptMode,
   SessionShutdownEvent,
@@ -419,25 +419,11 @@ async function buildRepoStateHint(pi: PiInstance, event: { text: string; source?
   ].filter(Boolean).join('\n');
 }
 
-const BELOW_EDITOR_WIDGET_DEFAULT = Symbol.for('octocode.pi-extension.belowEditorWidgetDefault');
-
-type PiUiWithWidgetDefault = PiUi & { [BELOW_EDITOR_WIDGET_DEFAULT]?: true };
-
-function preferBelowEditorWidgets(ui: PiUi | undefined): void {
-  const target = ui as PiUiWithWidgetDefault | undefined;
-  if (!target?.setWidget || target[BELOW_EDITOR_WIDGET_DEFAULT]) return;
-  const originalSetWidget = target.setWidget.bind(target);
-  target.setWidget = (name, content, opts) =>
-    originalSetWidget(name, content, { placement: 'belowEditor', ...opts });
-  target[BELOW_EDITOR_WIDGET_DEFAULT] = true;
-}
-
 export function applyOctocodeUi(ctx: PiContext | undefined, level?: string, contextTitle?: string): void {
   // setStatus / setHiddenThinkingLabel are TUI-only; guard with hasUI.
   if (!ctx?.hasUI) return;
   const ui = ctx?.ui;
   if (!ui) return;
-  preferBelowEditorWidgets(ui);
   const title = deriveSessionName(contextTitle ?? '');
   const windowTitle = title ? `Octocode · ${title}` : 'Octocode';
   const headerTitle = title ? `◆ ${title}` : '◆ Octocode';
@@ -627,6 +613,25 @@ export function formatStatus(baseDir?: string): string {
   ].join('\n');
 }
 
+/**
+ * Approximate per-turn prompt cost of each Octocode system-prompt addition.
+ * Compaction is budget: this makes the "helpful default prompt inventory"
+ * (static prompt, MCP catalog, skills, dynamic capabilities, active plan)
+ * visible so oversized blocks can be spotted. ~4 chars/token heuristic.
+ */
+export function formatPromptBudget(parts: Array<{ label: string; text: string }>): string {
+  const est = (chars: number): string => `${chars} chars (~${Math.ceil(chars / 4)} tokens)`;
+  const lines = parts.map((part) =>
+    `- ${part.label}: ${part.text.trim().length === 0 ? '(empty)' : est(part.text.length)}`,
+  );
+  const total = parts.reduce((sum, part) => sum + part.text.length, 0);
+  return [
+    'Prompt budget (per-turn Octocode system-prompt additions; ~4 chars/token):',
+    ...lines,
+    `- total: ${est(total)}`,
+  ].join('\n');
+}
+
 export interface ExtensionHarness {
   tools: string[];
   supportTools: string[];
@@ -663,6 +668,7 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
       '/octocode-plan',
       '/octocode-theme',
       '/octocode-chrome',
+      '/octocode-footer',
       '/octocode-inbox',
       '/octocode-palette',
       '/octocode-rewind',
@@ -690,7 +696,7 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessi
   ].filter(Boolean);
 
   return [
-    '◆ Octocode dashboard',
+    '◆ Octocode dashboard — extension health & setup (live work: /octocode-now)',
     '',
     'Status',
     `${promptOk ? '✓' : '⚠'} system prompt: ${promptOk ? 'found' : 'missing'}`,
@@ -712,6 +718,7 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessi
     'Setup',
     `project APPEND_SYSTEM: ${getAppendSystemTarget('project', ctx?.cwd ?? process.cwd())}`,
     `global APPEND_SYSTEM: ${getAppendSystemTarget('global', ctx?.cwd ?? process.cwd())}`,
+    'APPEND_SYSTEM is for plain-Pi sessions — not needed when this extension is loaded (prompt injected at runtime).',
     '',
     'Skills',
     `${skills.length} bundled: ${skills.join(', ') || '(none)'}`,
@@ -781,7 +788,7 @@ export async function formatOctocodeNow(ctx: PiContext | undefined, pi: PiInstan
   refreshAwarenessPanel(ctx);
   const repoStatus = await execGitSummary(pi, ['status', '--short', '--branch'], 800);
   return [
-    '◆ Octocode now',
+    '◆ Octocode now — live work cockpit (extension health: /octocode)',
     '',
     'Orientation',
     formatModelLine(ctx),
@@ -874,7 +881,8 @@ async function installAppendSystem(args: string, ctx: PiContext | undefined): Pr
   const ok = await confirm(
     ctx,
     'Install Octocode APPEND_SYSTEM.md?',
-    `Write the managed Octocode harness block to ${targetPath}?`,
+    `Write the managed Octocode harness block to ${targetPath}? ` +
+      'Note: sessions running this extension already inject the prompt at runtime (marker-guarded, no double append) — install only for plain-Pi sessions without the extension.',
   );
   if (!ok) {
     notify(ctx, 'Octocode setup cancelled.', 'info');
@@ -1010,6 +1018,18 @@ async function wireOctocodePiExtension(
     const awarenessSkillRoot = existingDirectory(path.join(getAssetPaths().skillsDir, 'octocode-awareness-lite'));
     if (awarenessSkillRoot) process.env.OCTOCODE_SKILL_ROOT = awarenessSkillRoot;
 
+    // Snapshot every plan mutation into a session CustomEntry (state channel —
+    // never rendered, never in LLM context) so /fork and /tree roll plan state
+    // back with the conversation instead of leaking the forked-from plan.
+    setPlanEntryAppender((steps) => pi.appendEntry?.(PLAN_ENTRY_TYPE, { version: 1, steps }));
+
+    hooks.on('session_tree', 'octocode-plan-tree-sync', async (_event: unknown, ctx: PiContext | undefined) => {
+      // /tree navigation moved the leaf — re-adopt the plan snapshot that was
+      // current on the new branch, and re-render the panel with it.
+      adoptPlanFromBranch(activePlanScope(ctx), ctx?.sessionManager?.getBranch?.() ?? []);
+      refreshStatusPanel(ctx);
+    });
+
     hooks.on('session_start', 'octocode-session-start', async (_event: unknown, ctx: PiContext | undefined) => {
       // Undo the shutdown-time suppression from a previous session in this process.
       resumeStatusPanel();
@@ -1025,6 +1045,11 @@ async function wireOctocodePiExtension(
       metricsState.completedTurns = 0;
       stopMetricsTicker();
       latestSessionCwd = ctx?.cwd;
+      // Branch-correct plan state: adopt the newest octocode-plan snapshot on
+      // this session's branch (pi copies entries up to the fork point, so a
+      // fork restores exactly the plan that existed there; branches without a
+      // snapshot leave disk state alone for back-compat).
+      adoptPlanFromBranch(activePlanScope(ctx), ctx?.sessionManager?.getBranch?.() ?? []);
       // Re-apply the persisted effort dial (thinking level + worker cap) before
       // the footer renders so `◉ <level>` is correct from the first frame.
       await restoreDialOnStartup(pi, ctx);
@@ -1147,13 +1172,9 @@ async function wireOctocodePiExtension(
         ctx.ui?.setStatus?.('octocode', undefined);
         ctx.ui?.setStatus?.('octocode-thinking', undefined);
         ctx.ui?.setStatus?.('octocode-metrics', undefined);
-        ctx.ui?.setStatus?.('octocode-agents', undefined);
         ctx.ui?.setStatus?.('agent-wait', undefined);
         ctx.ui?.setStatus?.('chrome-debug', undefined);
         ctx.ui?.setStatus?.('octocode-mcp', undefined);
-        ctx.ui?.setStatus?.('octocode-plan', undefined);
-        ctx.ui?.setWidget?.('octocode-plan', undefined);
-        ctx.ui?.setWidget?.('octocode-agents', undefined);
         // The unified below-editor panel is now persistent (it always shows the main
         // agent model), so it no longer self-clears via refreshStatusPanel emptiness —
         // clear it explicitly on shutdown.
@@ -1264,6 +1285,13 @@ async function wireOctocodePiExtension(
       // pi, which prevents the block at the source for that path.)
       const noContext = Boolean(pi.getFlag?.('no-context'));
       const piPrompt = noContext ? stripProjectContext(event.systemPrompt) : event.systemPrompt;
+      const stripped = piPrompt !== event.systemPrompt;
+
+      // Workers that load this extension need Octocode tools, not the full main-agent
+      // prompt layered over their typed or caller-provided --append-system-prompt file.
+      if (isSubagentProcess()) {
+        return stripped ? { systemPrompt: piPrompt } : undefined;
+      }
 
       if (cachedSystemPromptText === null) {
         cachedSystemPromptText = readTextIfExists(getAssetPaths().systemPrompt);
@@ -1291,7 +1319,6 @@ async function wireOctocodePiExtension(
       const prompt = [cachedSystemPromptText, mcpCatalog, dynamicCatalog, availableSkills, activePlan].filter((part) => part.trim().length > 0).join('\n\n');
       // Even with no Octocode addendum to append, a stripped prompt must still
       // be returned or --no-context silently becomes a no-op.
-      const stripped = piPrompt !== event.systemPrompt;
       if (prompt.trim().length === 0 || !shouldAppendSystemPrompt(piPrompt, prompt)) {
         return stripped ? { systemPrompt: piPrompt } : undefined;
       }
@@ -1376,14 +1403,14 @@ async function wireOctocodePiExtension(
   if (!pi.registerCommand) return;
 
   pi.registerCommand('octocode', {
-    description: 'Show the Octocode dashboard: status, agents, setup, skills, health, and next actions.',
+    description: 'Extension health & setup dashboard: status, tools, setup, skills, health. For live work state use /octocode-now.',
     handler: async (_args, ctx) => {
       notify(ctx, formatOctocodeDashboard(ctx, undefined, formatOctocodeCronSummary(cronScheduler.list())), 'info');
     },
   });
 
   pi.registerCommand('octocode-now', {
-    description: 'Show the Octocode orientation cockpit: model, context, current plan, shared tasks, agents, and git status.',
+    description: 'Live work cockpit: model, context, current plan, shared tasks, agents, and git status. For extension health use /octocode.',
     handler: async (_args, ctx) => {
       notify(ctx, await formatOctocodeNow(ctx, pi), 'info');
     },
@@ -1462,10 +1489,37 @@ async function wireOctocodePiExtension(
     },
   });
 
+  pi.registerCommand('octocode-footer', {
+    description: 'Set footer density: compact (ctx/workers/flags/git only), default (no session timer), or full (everything).',
+    getArgumentCompletions: (prefix: string) => (['compact', 'default', 'full'] as const)
+      .filter((mode) => mode.startsWith(prefix))
+      .map((mode) => ({ value: mode, label: mode, description: `/octocode-footer ${mode}` })),
+    handler: async (args, ctx) => {
+      const requested = args.trim();
+      if (requested.length > 0) {
+        const density = parseFooterDensity(requested);
+        if (!density) {
+          notify(ctx, `Unknown footer density "${requested}". Usage: /octocode-footer [compact|default|full]`, 'warning');
+          return;
+        }
+        setFooterDensity(density);
+        updateOctocodeMetricsUi(ctx, metricsState);
+      }
+      notify(ctx, `Footer density: ${getFooterDensity()}`, 'info');
+    },
+  });
+
   pi.registerCommand('octocode-status', {
-    description: 'Show Octocode Pi extension assets, tools, CLI, and bundled skills.',
+    description: 'Show Octocode Pi extension assets, tools, CLI, bundled skills, and per-turn prompt budget.',
     handler: async (_args, ctx) => {
-      notify(ctx, formatStatus(), 'info');
+      const budget = formatPromptBudget([
+        { label: 'static system prompt', text: readTextIfExists(getAssetPaths().systemPrompt) },
+        { label: 'mcp cached catalog', text: getCachedMcpCatalogAddendum(ctx) },
+        { label: 'dynamic capabilities', text: getDynamicCapabilitiesAddendum() },
+        { label: 'available skills', text: renderAvailableSkillsAddendum(latestAvailableSkills) },
+        { label: 'active plan', text: renderActivePlanAddendum(activePlanScope(ctx)) },
+      ]);
+      notify(ctx, `${formatStatus()}\n\n${budget}`, 'info');
     },
   });
 
@@ -1531,7 +1585,9 @@ async function wireOctocodePiExtension(
   });
 
   pi.registerCommand('octocode-setup', {
-    description: 'Install the Octocode APPEND_SYSTEM.md block into .pi or ~/.pi/agent.',
+    description:
+      'Install the Octocode APPEND_SYSTEM.md block into .pi or ~/.pi/agent. ' +
+      'Only needed for plain-Pi sessions that do not load this extension — when the extension is active, the system prompt is injected at runtime (marker-guarded) and setup is optional.',
     getArgumentCompletions: (prefix: string) => {
       return ['project', 'global']
         .filter((s) => s.startsWith(prefix))

@@ -1,4 +1,13 @@
 export const PACKAGE_NAME = '@octocodeai/pi-extension';
+
+/**
+ * Pi's config directory name. Mirrors the host's exported CONFIG_DIR_NAME /
+ * package.json `piConfig.configDir`; kept as a local constant so the extension
+ * never hard-imports the host barrel at runtime. A contract test pins this
+ * against the installed pi package, so a host rename fails loudly here instead
+ * of silently writing to the wrong directory.
+ */
+export const PI_CONFIG_DIR = '.pi';
 export const SYSTEM_PROMPT_MARKER = '<!-- octocode-pi-extension:system-prompt -->';
 export const MANAGED_BLOCK_START = '<!-- OCTOCODE_PI_EXTENSION_APPEND_SYSTEM_START -->';
 export const MANAGED_BLOCK_END = '<!-- OCTOCODE_PI_EXTENSION_APPEND_SYSTEM_END -->';

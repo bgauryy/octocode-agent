@@ -12,6 +12,7 @@ import {
   OCTOCODE_SUPPORT_TOOL_NAMES,
   disableBuiltinReadTool,
   formatStatus,
+  formatPromptBudget,
   applyOctocodeUi,
   formatOctocodeDashboard,
   getThinkingStatus,
@@ -45,6 +46,9 @@ import { assertPathAllowed } from '../src/tools/path-guard.js';
 import { patchGlobalMcpOctocodeEnv } from '../src/tools/mcp-tool.js';
 import { resetCompactionResumeStateForTests } from '../src/tools/compaction-resume.js';
 import { markCompactionResumeRequested } from '../src/tools/compaction-state.js';
+import { activePlanScope, clearPlan, getPlan, setPlan } from '../src/tools/active-plan.js';
+import { getFooterDensity, setFooterDensity } from '../src/ui-extras.js';
+import { PI_CONFIG_DIR } from '../src/constants.js';
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
 const distDir = path.join(packageRoot, 'dist');
@@ -173,6 +177,7 @@ interface CaptureResult {
     execResults: Map<string, { stdout: string; stderr?: string; code: number | null }>;
   };
   activeTools: string[];
+  appendedEntries: Array<{ customType: string; data?: unknown }>;
 }
 async function captureExtensions(): Promise<CaptureResult> {
   resetCompactionResumeStateForTests();
@@ -187,6 +192,7 @@ async function captureExtensions(): Promise<CaptureResult> {
     msg: string;
     opts?: Record<string, unknown>;
   }> = [];
+  const appendedEntries: Array<{ customType: string; data?: unknown }> = [];
   const activeTools = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
   const execCalls: Array<{ command: string; args: string[] }> = [];
   const execResults = new Map<string, { stdout: string; stderr?: string; code: number | null }>();
@@ -211,6 +217,9 @@ async function captureExtensions(): Promise<CaptureResult> {
     getFlag: (name: string) => flagValues.get(name),
     sendUserMessage: (msg: string, opts?: Record<string, unknown>) => {
       sentUserMessages.push({ msg, opts });
+    },
+    appendEntry: (customType: string, data?: unknown) => {
+      appendedEntries.push({ customType, data });
     },
     getActiveTools: () => [...activeTools],
     setActiveTools: (names: string[]) => {
@@ -246,6 +255,7 @@ async function captureExtensions(): Promise<CaptureResult> {
     handlers,
     pi,
     activeTools,
+    appendedEntries,
   };
 }
 
@@ -263,6 +273,12 @@ function argValues(args: string[], flag: string): string[] {
     if (args[i] === flag && args[i + 1]) values.push(args[i + 1]!);
   }
   return values;
+}
+
+function promptFileContent(args: string[]): string {
+  const promptPath = args[args.indexOf('--append-system-prompt') + 1];
+  assert.ok(promptPath, 'missing --append-system-prompt value');
+  return fs.readFileSync(promptPath, 'utf8');
 }
 
 function assertHasAllOctocodeSkills(skillArgs: string[]): void {
@@ -528,6 +544,29 @@ test('system prompt append guard detects existing prompt', () => {
   assert.equal(shouldAppendSystemPrompt(withMarker, octocodePrompt), false);
 });
 
+test('worker processes do not receive the main Octocode prompt addendum', async () => {
+  const previous = process.env['OCTOCODE_PI_SUBAGENT'];
+  process.env['OCTOCODE_PI_SUBAGENT'] = '1';
+  try {
+    const { handlers } = await captureExtensions();
+    const result = (await handlers.get('before_agent_start')!.at(-1)!({
+      systemPrompt: 'typed specialist prompt from --append-system-prompt',
+      systemPromptOptions: {
+        skills: [{ name: 'octocode-research', description: 'Evidence-first research.', source: 'bundled' }],
+      },
+    }, { cwd: packageRoot })) as { systemPrompt?: string } | undefined;
+
+    assert.equal(
+      result,
+      undefined,
+      'worker extension load must not layer the parent Octocode system prompt over a typed subagent prompt',
+    );
+  } finally {
+    if (previous === undefined) delete process.env['OCTOCODE_PI_SUBAGENT'];
+    else process.env['OCTOCODE_PI_SUBAGENT'] = previous;
+  }
+});
+
 test('getInstallSource returns npm source for node_modules installs, local path otherwise', () => {
   const localSource = getInstallSource();
   assert.ok(
@@ -567,6 +606,167 @@ test(
     assert.doesNotMatch(status, /passthrough: bash/);
   })
 );
+
+test('plan state is branch-correct: mutations append session entries; session_start and session_tree adopt the branch snapshot', withTempMemoryHome(async () => {
+  const { tools, handlers, appendedEntries } = await captureExtensions();
+  const planTool = tools.get('plan')!;
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-plan-branch-'));
+  const ctx = { cwd, hasUI: false };
+  try {
+    // Every plan mutation snapshots into an octocode-plan CustomEntry (the pi
+    // state channel that /fork copies up to the fork point).
+    await invokeExecute(planTool, { action: 'set', steps: ['step A', 'step B'] }, ctx);
+    const snapshots = appendedEntries.filter((entry) => entry.customType === 'octocode-plan');
+    assert.equal(snapshots.length, 1, 'plan set appends one snapshot entry');
+    const stepsData = (snapshots[0]!.data as { version: number; steps: Array<{ text: string; status: string }> });
+    assert.equal(stepsData.version, 1);
+    assert.deepEqual(stepsData.steps.map((s) => s.text), ['step A', 'step B']);
+
+    // Fork simulation: a fresh scope whose session branch carries a snapshot —
+    // session_start adopts it even though this scope's disk state is empty.
+    const forkCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-plan-fork-'));
+    const forkCtx = {
+      cwd: forkCwd,
+      hasUI: false,
+      sessionManager: {
+        getSessionFile: () => undefined,
+        getBranch: () => [
+          { type: 'message' },
+          { type: 'custom', customType: 'octocode-plan', data: { version: 1, steps: [{ text: 'forked step', status: 'doing' }] } },
+        ],
+      },
+    };
+    for (const handler of handlers.get('session_start')!) await handler({ reason: 'fork' }, forkCtx);
+    assert.deepEqual(
+      getPlan(activePlanScope(forkCtx)).map((s) => s.text),
+      ['forked step'],
+      'session_start adopts the plan snapshot from the forked branch'
+    );
+
+    // /tree rewind to a point where the plan had been cleared → plan clears.
+    const treeHandler = handlers.get('session_tree')![0]!;
+    await treeHandler({}, {
+      cwd: forkCwd,
+      hasUI: false,
+      sessionManager: {
+        getBranch: () => [{ type: 'custom', customType: 'octocode-plan', data: { version: 1, steps: [] } }],
+      },
+    });
+    assert.deepEqual(getPlan(activePlanScope(forkCtx)), [], 'session_tree re-adopts the branch snapshot (cleared)');
+    clearPlan(activePlanScope(forkCtx));
+  } finally {
+    clearPlan(activePlanScope(ctx));
+  }
+}));
+
+test('PI_CONFIG_DIR matches the host pi package configDir (single source, no hardcoded drift)', () => {
+  // Pi exports CONFIG_DIR_NAME / publishes piConfig.configDir so extensions do
+  // not hardcode ".pi" into path building. We keep one local constant and pin
+  // it against the installed host package here.
+  const piPkg = JSON.parse(fs.readFileSync(
+    path.join(packageRoot, '..', '..', 'node_modules', '@earendil-works', 'pi-coding-agent', 'package.json'),
+    'utf8',
+  )) as { piConfig?: { configDir?: string } };
+  assert.equal(PI_CONFIG_DIR, piPkg.piConfig?.configDir ?? '.pi');
+
+  // Path-building must go through the constant — no raw '.pi' path segments.
+  const pathBuildingFiles = ['src/utils.ts', 'src/subagents.ts', 'src/tools/mcp-tool.ts', 'src/tools/dynamic-skills.ts'];
+  for (const file of pathBuildingFiles) {
+    const source = fs.readFileSync(path.join(packageRoot, file), 'utf8');
+    assert.doesNotMatch(
+      source,
+      /path\.join\([^)]*'\.pi'/,
+      `${file} must build config paths from PI_CONFIG_DIR, not a hardcoded '.pi'`
+    );
+  }
+});
+
+test('enum tool params use string-enum schemas (Google API compat), never literal unions', async () => {
+  // Pi docs: Type.Union(Type.Literal(...)) compiles to anyOf/const, which
+  // Google's API rejects. Every string-enum tool param must be a plain
+  // {type:"string", enum:[...]} schema (see stringEnumSchema / pi-ai StringEnum).
+  const { tools } = await captureExtensions();
+  const prop = (tool: string, name: string): Record<string, unknown> => {
+    const params = tools.get(tool)!.parameters as { properties: Record<string, Record<string, unknown>> };
+    return params.properties[name]!;
+  };
+
+  const mcpAction = prop('MCPTool', 'action');
+  assert.equal(mcpAction['type'], 'string');
+  assert.deepEqual(mcpAction['enum'], ['list', 'describe', 'call', 'status', 'restart', 'stop', 'config', 'add', 'remove']);
+  const mcpScope = prop('MCPTool', 'scope');
+  assert.equal(mcpScope['type'], 'string');
+  assert.deepEqual(mcpScope['enum'], ['project', 'global']);
+  const contextType = prop('manage_context', 'type');
+  assert.equal(contextType['type'], 'string');
+  assert.deepEqual(contextType['enum'], ['compact', 'new']);
+
+  for (const [name, schema] of [['MCPTool.action', mcpAction], ['MCPTool.scope', mcpScope], ['manage_context.type', contextType]] as const) {
+    const json = JSON.stringify(schema);
+    assert.doesNotMatch(json, /anyOf|"const"/, `${name} must not compile to anyOf/const`);
+  }
+});
+
+test('/octocode-footer switches footer density and rejects unknown modes', async () => {
+  const { commands } = await captureExtensions();
+  const footerCmd = commands.get('octocode-footer')!;
+  assert.ok(footerCmd, 'octocode-footer command registered');
+  const completions = (footerCmd.getArgumentCompletions!('') ?? []).map((c: { value: string }) => c.value);
+  assert.deepEqual(completions.sort(), ['compact', 'default', 'full']);
+
+  const notifications: Array<{ message: string; level?: string }> = [];
+  const ctx = { hasUI: true, ui: { notify: (message: string, level?: string) => notifications.push({ message, level }), setFooter: () => undefined } };
+  try {
+    await footerCmd.handler('compact', ctx);
+    assert.equal(getFooterDensity(), 'compact');
+    assert.match(notifications.at(-1)!.message, /footer density: compact/i);
+
+    await footerCmd.handler('bogus', ctx);
+    assert.equal(getFooterDensity(), 'compact', 'unknown mode leaves density unchanged');
+    assert.match(notifications.at(-1)!.message, /compact\|default\|full/, 'usage shown for unknown mode');
+
+    await footerCmd.handler('', ctx);
+    assert.match(notifications.at(-1)!.message, /footer density: compact/i, 'no-arg reports the current mode');
+  } finally {
+    setFooterDensity('default');
+  }
+});
+
+test('/octocode-setup messaging: setup is only for sessions that do not load the extension', async () => {
+  // Review follow-up: runtime injection via before_agent_start already covers
+  // extension sessions (marker-guarded), so setup must present itself as the
+  // fallback for plain-Pi environments — not as a required step.
+  const { commands } = await captureExtensions();
+  assert.match(
+    commands.get('octocode-setup')!.description ?? '',
+    /only needed for .*sessions that do not load this extension/i,
+    'command description states when setup is actually needed'
+  );
+  assert.match(
+    commands.get('octocode-setup')!.description ?? '',
+    /injected at runtime/i,
+    'command description explains the extension already injects the prompt'
+  );
+  const dashboard = formatOctocodeDashboard(undefined, distDir);
+  assert.match(
+    dashboard,
+    /not needed when this extension is loaded/i,
+    'dashboard Setup section carries the same optionality note'
+  );
+});
+
+test('formatPromptBudget reports per-part and total char/token estimates, flagging empty parts', () => {
+  const budget = formatPromptBudget([
+    { label: 'static system prompt', text: 'a'.repeat(400) },
+    { label: 'mcp cached catalog', text: '' },
+    { label: 'active plan', text: '   ' },
+  ]);
+  assert.match(budget, /^Prompt budget \(per-turn Octocode system-prompt additions; ~4 chars\/token\):/);
+  assert.match(budget, /- static system prompt: 400 chars \(~100 tokens\)/);
+  assert.match(budget, /- mcp cached catalog: \(empty\)/);
+  assert.match(budget, /- active plan: \(empty\)/);
+  assert.match(budget, /- total: 403 chars \(~101 tokens\)/);
+});
 
 test('disable built-in read in favor of localGetFileContent (records read state for edit stale-check)', async () => {
   const { activeTools, tools } = await captureExtensions();
@@ -1677,8 +1877,10 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
     assert.match(cachedPrompt, /instructions: Use echo only for MCP bridge smoke tests\./);
     assert.match(cachedPrompt, /tool: echo/);
     assert.match(cachedPrompt, /description: Echo text/);
-    assert.match(cachedPrompt, /"inputSchema"/);
-    assert.match(cachedPrompt, /"text"/);
+    // Budget contract: plain action:list keeps the every-turn catalog compact —
+    // schema field summary only, no full inputSchema JSON until call/describe.
+    assert.match(cachedPrompt, /schema: text/);
+    assert.doesNotMatch(cachedPrompt, /"inputSchema"/);
     assert.match(cachedPrompt, /<available_skills>/);
     assert.match(cachedPrompt, /octocode-awareness-lite: Shared workspace coordination and verification\./);
     assert.match(cachedPrompt, /octocode-roast: Critical review and adversarial critique\. \[user\/global\]/);
@@ -1691,6 +1893,15 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
     assert.match(described.content[0]!.text, /Use echo only for MCP bridge smoke tests/);
     assert.match(described.content[0]!.text, /"name": "echo"/);
     assert.match(described.content[0]!.text, /"inputSchema"/);
+
+    // call/describe made echo "hot" — the every-turn catalog block now inlines
+    // its exact schema so follow-up calls need no re-describe.
+    const afterUse = await captureExtensions().then(({ handlers }) =>
+      handlers.get('before_agent_start')!.at(-1)!({ systemPrompt: 'Pi base prompt' }, trustedCtx)
+    );
+    const hotPrompt = (afterUse as { systemPrompt?: string }).systemPrompt ?? '';
+    assert.match(hotPrompt, /tool: echo/);
+    assert.match(hotPrompt, /"inputSchema"/, 'recently used tool schema is inlined in the catalog block');
 
     const aliasStatus = await invokeExecute(mcpAlias, { action: 'status' }, trustedCtx);
     assert.match(aliasStatus.content[0]!.text, /Octocode MCP status/);
@@ -1859,20 +2070,6 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
     ['indicator', '<✦><✧><✶><✺><✹><✷><✶><✧>', '120'],
     ['working', '<Thinking><…>'],
   ]);
-  const ui = ({} as { setWidget: (key: string, content: string[], opts?: { placement?: 'aboveEditor' | 'belowEditor' }) => void });
-  const widgetCalls: Array<{ key: string; opts?: { placement?: 'aboveEditor' | 'belowEditor' } }> = [];
-  ui.setWidget = (key, _content, opts) => widgetCalls.push({ key, opts });
-  applyOctocodeUi({ hasUI: true, ui });
-  ui.setWidget('implicit', ['x']);
-  ui.setWidget('explicit', ['x'], { placement: 'aboveEditor' });
-  applyOctocodeUi({ hasUI: true, ui });
-  ui.setWidget('after-reapply', ['x']);
-  assert.deepEqual(widgetCalls, [
-    { key: 'implicit', opts: { placement: 'belowEditor' } },
-    { key: 'explicit', opts: { placement: 'aboveEditor' } },
-    { key: 'after-reapply', opts: { placement: 'belowEditor' } },
-  ]);
-
   assert.equal(
     getThinkingStatus({ model: { id: 'gpt-5.5', reasoning: false } }, 'high'),
     'thinking: off (gpt-5.5 has reasoning:false)'
@@ -1943,7 +2140,9 @@ test('Octocode metrics footer updates on session and turn lifecycle (single surf
   const latest = renderFooter();
   assert.match(latest, /turns 1/);
   assert.match(latest, /last \d+(ms|s)/);
-  assert.match(latest, /session \d/);
+  // Default density drops the session timer (lowest-signal segment); it is
+  // still available via /octocode-footer full.
+  assert.doesNotMatch(latest, /session \d/);
 });
 
 test('Octocode dashboard command summarizes status, agents, setup, skills, and help', async () => {
@@ -1981,6 +2180,22 @@ test('Octocode dashboard command summarizes status, agents, setup, skills, and h
   assert.match(dashboard, /\/octocode-cron/);
 });
 
+test('/octocode (dashboard) vs /octocode-now (cockpit): distinction is explicit and cross-referenced', async () => {
+  // Review follow-up: keep both commands only if the dashboard-vs-cockpit split
+  // is obvious — /octocode owns extension health/setup, /octocode-now owns live
+  // work state, and each points at the other.
+  const { commands } = await captureExtensions();
+  const dashDesc = commands.get('octocode')!.description ?? '';
+  const nowDesc = commands.get('octocode-now')!.description ?? '';
+  assert.match(dashDesc, /extension health/i);
+  assert.match(dashDesc, /\/octocode-now/, 'dashboard description points at the cockpit');
+  assert.match(nowDesc, /live work/i);
+  assert.match(nowDesc, /\/octocode\b/, 'cockpit description points at the dashboard');
+
+  const dashboard = formatOctocodeDashboard(undefined, distDir);
+  assert.match(dashboard, /◆ Octocode dashboard — extension health & setup \(live work: \/octocode-now\)/);
+});
+
 test('Octocode now, tasks, and skills commands provide orientation surfaces', async () => {
   const { commands, handlers, pi } = await captureExtensions();
   const notices: Array<{ message: string; level?: string }> = [];
@@ -2010,6 +2225,7 @@ test('Octocode now, tasks, and skills commands provide orientation surfaces', as
   await commands.get('octocode-skills')!.handler('', ctx);
 
   const now = notices.find((n) => n.message.startsWith('◆ Octocode now'))?.message ?? '';
+  assert.match(now, /◆ Octocode now — live work cockpit \(extension health: \/octocode\)/);
   assert.match(now, /model: test-provider\/test-model · reasoning/);
   assert.match(now, /ctx ▓▓▓▓░░░░░░ 42%/);
   assert.match(now, /Current work/);
@@ -2084,7 +2300,7 @@ test('CLI slash commands removed — extension commands are lean', async () => {
   );
   assert.deepEqual(
     listExtensionHarness().extensionCommands,
-    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-now', '/octocode-tasks', '/octocode-skills', '/octocode-agents', '/octocode-cron', '/cron', '/octocode-mcp', '/mcp', '/octocode-setup', '/octocode-skills-update', '/octocode-plan', '/octocode-theme', '/octocode-chrome', '/octocode-inbox', '/octocode-palette', '/octocode-rewind', '/octocode-dial', '/octocode-watch', '/octocode-export'],
+    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-now', '/octocode-tasks', '/octocode-skills', '/octocode-agents', '/octocode-cron', '/cron', '/octocode-mcp', '/mcp', '/octocode-setup', '/octocode-skills-update', '/octocode-plan', '/octocode-theme', '/octocode-chrome', '/octocode-footer', '/octocode-inbox', '/octocode-palette', '/octocode-rewind', '/octocode-dial', '/octocode-watch', '/octocode-export'],
     'harness inventory lists every public Octocode slash command'
   );
   for (const eventName of ['tool_execution_start', 'tool_execution_end', 'session_start', 'before_agent_start', 'agent_end', 'session_before_compact', 'session_compact', 'session_shutdown']) {
@@ -2214,6 +2430,11 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
 
     await commands.get('octocode-status')!.handler('', ctx);
     assert.match(notifications.at(-1)!.message, /Octocode Pi extension/);
+    // "Compaction is budget": /octocode-status surfaces the per-turn prompt cost
+    // of each Octocode addendum so oversized blocks are visible.
+    assert.match(notifications.at(-1)!.message, /Prompt budget \(per-turn Octocode system-prompt additions/);
+    assert.match(notifications.at(-1)!.message, /- static system prompt: (\d+ chars \(~\d+ tokens\)|\(empty\))/);
+    assert.match(notifications.at(-1)!.message, /- total: \d+ chars \(~\d+ tokens\)/);
 
     await commands.get('octocode-harness')!.handler('', ctx);
     assert.match(notifications.at(-1)!.message, /native tools/);
@@ -2796,7 +3017,7 @@ test('session_compact resumes ONLY extension-triggered compaction; manual /compa
   assert.equal(sentUserMessages.length, 1, 'no extra resume when Pi will retry overflow recovery itself');
 });
 
-test('turn_end auto-compact triggers ctx.compact; continuation comes from the session_compact hook', async () => {
+test('turn_end auto-compact resumes via session_compact ONLY when unfinished plan work remains', withTempMemoryHome(async () => {
   resetCompactionResumeStateForTests();
   const { handlers, sentUserMessages } = await captureExtensions();
   const turnEndHandlers = handlers.get('turn_end');
@@ -2836,64 +3057,68 @@ test('turn_end auto-compact triggers ctx.compact; continuation comes from the se
     'no compaction below 80% threshold'
   );
 
-  // Rising edge across 80%: triggers ctx.compact(); capture options, fire onComplete.
+  // Rising edge across 80% with NO unfinished plan work: do not compact at all.
+  // This is an ended-session state, so even summarizing would spend budget with
+  // no concrete next step to protect.
   await handler(undefined, ctx({ tokens: 810, contextWindow: 1000 }));
-  // Read into a fresh local with an explicit union type so prior assert.ok(...) === undefined
-  // narrowing of the property cannot collapse it to `never` on a non-null call.
-  const onComplete = compactOptions.onComplete as
-    ((opts?: unknown) => void) | undefined;
-  assert.ok(
-    typeof onComplete === 'function',
-    'compaction triggered at 81% rising edge'
+  assert.equal(
+    compactOptions.onComplete,
+    undefined,
+    'no compaction at 81% when no unfinished plan work remains'
   );
-  assert.deepEqual(notifications[0], {
-    message: 'Auto-compacting: context at 81% of context window.',
-    level: 'info',
-  });
-  assert.match(
-    compactOptions.customInstructions ?? '',
-    /Preserve continuation state, not transcript/
+  assert.equal(notifications.length, 0, 'no auto-compact notification without plan work');
+  assert.equal(sentUserMessages.length, 0);
+
+  const sessionCompactCtx = {
+    hasUI: true,
+    ui: {
+      notify: (message: string, level?: string) => notifications.push({ message, level }),
+      setWorkingMessage: () => undefined,
+      setWorkingVisible: () => undefined,
+    },
+  };
+  await handlers.get('session_compact')!.at(-1)!(
+    { compactionEntry: {}, fromExtension: true, reason: 'manual', willRetry: false },
+    sessionCompactCtx
   );
-  assert.match(
-    compactOptions.customInstructions ?? '',
-    /exact next pickup/
-  );
+  await waitForNextMacrotask();
   assert.equal(
     sentUserMessages.length,
     0,
-    'no continuation queued before onComplete fires'
+    'no continuation when no unfinished plan work remains — compaction at end of task must not spawn a turn'
   );
 
-  // onComplete only clears working UI; the session_compact hook (fromExtension
-  // path) is the single continuation scheduler — see the single-scheduler test.
-  onComplete!();
-  await waitForNextMacrotask();
-  assert.equal(sentUserMessages.length, 0, 'onComplete does not schedule the continuation');
-  assert.deepEqual(working, [
-    { kind: 'message', value: undefined },
-    { kind: 'visible', value: false },
-  ]);
-
-  await handlers.get('session_compact')!.at(-1)!(
-    { compactionEntry: {}, fromExtension: true, reason: 'manual', willRetry: false },
-    {
-      hasUI: true,
-      ui: {
-        notify: (message: string, level?: string) => notifications.push({ message, level }),
-        setWorkingMessage: () => undefined,
-        setWorkingVisible: () => undefined,
-      },
-    }
-  );
-  await waitForNextMacrotask();
-  assert.equal(sentUserMessages.length, 1, 'followUp queued via session_compact (prevents stuck agent)');
-  assert.match(sentUserMessages[0]!.msg, /Compaction is complete.*next small step only/i);
-  assert.equal(sentUserMessages[0]!.opts?.['deliverAs'], 'followUp');
-  assert.deepEqual(notifications.at(-1), {
-    message: 'Compaction complete. Resuming…',
-    level: 'info',
-  });
-});
+  // Same high-water mark WITH unfinished plan work: the prior no-work skip did
+  // not consume the threshold edge, so the in-progress plan can still compact
+  // and continue when work actually exists.
+  const scope = activePlanScope();
+  setPlan(scope, ['finish the refactor']);
+  try {
+    compactOptions = {};
+    await handler(undefined, ctx({ tokens: 810, contextWindow: 1000 }));
+    const onCompleteWithPlan = compactOptions.onComplete as
+      ((opts?: unknown) => void) | undefined;
+    assert.ok(
+      typeof onCompleteWithPlan === 'function',
+      'compaction re-triggered on a fresh rising edge'
+    );
+    onCompleteWithPlan!();
+    await handlers.get('session_compact')!.at(-1)!(
+      { compactionEntry: {}, fromExtension: true, reason: 'manual', willRetry: false },
+      sessionCompactCtx
+    );
+    await waitForNextMacrotask();
+    assert.equal(sentUserMessages.length, 1, 'followUp queued via session_compact when plan work remains');
+    assert.match(sentUserMessages[0]!.msg, /Compaction is complete.*next small step only/i);
+    assert.equal(sentUserMessages[0]!.opts?.['deliverAs'], 'followUp');
+    assert.deepEqual(notifications.at(-1), {
+      message: 'Compaction complete. Resuming…',
+      level: 'info',
+    });
+  } finally {
+    clearPlan(scope);
+  }
+}));
 
 test('turn_end auto-compact skips output length stops because compaction cannot fix response budget', async () => {
   const { handlers, sentUserMessages } = await captureExtensions();
@@ -2927,6 +3152,8 @@ test('turn_end auto-compact skips output length stops because compaction cannot 
 test('turn_end auto-compact still allows zero-output length stops to flow to context checks', async () => {
   const { handlers, sentUserMessages } = await captureExtensions();
   const handler = handlers.get('turn_end')![0]!;
+  const scope = activePlanScope();
+  setPlan(scope, ['continue after compaction']);
   let compactOptions: { onComplete?: (opts?: unknown) => void } = {};
 
   await handler(
@@ -2941,13 +3168,19 @@ test('turn_end auto-compact still allows zero-output length stops to flow to con
     }
   );
 
-  assert.equal(typeof compactOptions.onComplete, 'function');
-  assert.equal(sentUserMessages.length, 0);
+  try {
+    assert.equal(typeof compactOptions.onComplete, 'function');
+    assert.equal(sentUserMessages.length, 0);
+  } finally {
+    clearPlan(scope);
+  }
 });
 
 test('turn_end auto-compact reports errors without queueing a continuation', async () => {
   const { handlers, sentUserMessages } = await captureExtensions();
   const handler = handlers.get('turn_end')![0]!;
+  const scope = activePlanScope();
+  setPlan(scope, ['continue after compaction']);
   let compactOptions: {
     onComplete?: (opts?: unknown) => void;
     onError?: (err: Error) => void;
@@ -2988,17 +3221,23 @@ test('turn_end auto-compact reports errors without queueing a continuation', asy
     message: 'Auto-compaction failed: summary request failed',
     level: 'error',
   });
-  assert.deepEqual(working, [
-    { kind: 'message', value: undefined },
-    { kind: 'visible', value: false },
-    { kind: 'message', value: undefined },
-    { kind: 'visible', value: false },
-  ]);
+  try {
+    assert.deepEqual(working, [
+      { kind: 'message', value: undefined },
+      { kind: 'visible', value: false },
+      { kind: 'message', value: undefined },
+      { kind: 'visible', value: false },
+    ]);
+  } finally {
+    clearPlan(scope);
+  }
 });
 
 test('turn_end auto-compact warns instead of silently no-oping when compact is unavailable', async () => {
   const { handlers, sentUserMessages } = await captureExtensions();
   const handler = handlers.get('turn_end')![0]!;
+  const scope = activePlanScope();
+  setPlan(scope, ['continue after compaction']);
   const notifications: Array<{ message: string; level?: string }> = [];
 
   await handler(undefined, {
@@ -3010,11 +3249,15 @@ test('turn_end auto-compact warns instead of silently no-oping when compact is u
     },
   });
 
-  assert.deepEqual(notifications.at(-1), {
-    message: 'Auto-compaction skipped: ctx.compact is not available in this runtime.',
-    level: 'warning',
-  });
-  assert.equal(sentUserMessages.length, 0);
+  try {
+    assert.deepEqual(notifications.at(-1), {
+      message: 'Auto-compaction skipped: ctx.compact is not available in this runtime.',
+      level: 'warning',
+    });
+    assert.equal(sentUserMessages.length, 0);
+  } finally {
+    clearPlan(scope);
+  }
 });
 
 test('lists every extension harness surface', () => {
@@ -3677,6 +3920,9 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     });
     await agentsCommand.handler('help', agentCommandCtx());
     assert.match(notifications.at(-1)?.message ?? '', /inspect <id-or-prefix>/);
+    assert.match(notifications.at(-1)?.message ?? '', /spawnSubagent\(\{agent:"researcher"\|"planner"\|"architect"\|"browser-agent"/);
+    assert.match(notifications.at(-1)?.message ?? '', /AgentMessage\(\{action:"wait"\|"status"\|"send"\|"kill"/);
+    assert.match(notifications.at(-1)?.message ?? '', /unified status panel and compact footer/);
     assert.match(notifications.at(-1)?.message ?? '', /ids can be full ids or short prefixes/);
 
     await agentsCommand.handler('', agentCommandCtx());
@@ -3746,15 +3992,15 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
     const spawnTool = tools.get('spawnAgent')!;
     const messageTool = tools.get('AgentMessage')!;
     const statusCalls: Array<[string, string | undefined]> = [];
-    const widgetCalls: Array<{ key: string; value: unknown }> = [];
+    const widgetCalls: Array<{ key: string; value: unknown; opts?: { placement?: string } }> = [];
     const ctx = {
       cwd: '/repo',
       hasUI: true,
       ui: {
         setStatus: (key: string, value: string | undefined) =>
           statusCalls.push([key, value]),
-        setWidget: (key: string, value: unknown) =>
-          widgetCalls.push({ key, value }),
+        setWidget: (key: string, value: unknown, opts?: { placement?: string }) =>
+          widgetCalls.push({ key, value, opts }),
       },
     };
 
@@ -3765,12 +4011,27 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
     );
     const agentId = (result.details as { agent: { agentId: string } }).agent
       .agentId;
-    assert.ok(
-      statusCalls.some(
-        ([key, value]) => key === 'octocode-agents' && /1 total.*1 running/.test(value ?? '')
-      ),
-      'spawn refresh shows the worker as running in the footer status'
+    const panelText = () => {
+      const call = widgetCalls.filter((entry) => entry.key === 'octocode-status-panel').at(-1);
+      assert.ok(call && typeof call.value === 'function', 'unified status panel rendered');
+      const component = (call.value as (tui: unknown, theme: unknown) => { render: (w: number) => string[] })(undefined, {
+        fg: (_color: string, text: string) => text,
+        bold: (text: string) => text,
+      });
+      return component.render(140).join('\n');
+    };
+    assert.match(panelText(), /Octocode agents: 1 total.*1 running/, 'spawn refresh shows the worker as running in the unified panel');
+    assert.equal(
+      widgetCalls.filter((entry) => entry.key === 'octocode-status-panel').at(-1)?.opts?.placement,
+      'belowEditor',
+      'unified agent panel is explicitly rendered below the editor/input area'
     );
+    const assertAgentFooterStatus = (state: string, when: string) =>
+      assert.ok(
+        statusCalls.some(([key, value]) => key === 'octocode-agents' && new RegExp(`1 total.*1 ${state}`).test(value ?? '')),
+        `octocode-agents compact footer shows ${state} (${when})`
+      );
+    assertAgentFooterStatus('running', 'after spawn refresh');
 
     spawned[0]!.emitStdout({
       type: 'message_end',
@@ -3780,24 +4041,24 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
       },
     });
     spawned[0]!.emitStdout({ type: 'agent_end', messages: [] });
-    assert.ok(
-      statusCalls.some(
-        ([key, value]) => key === 'octocode-agents' && /1 total.*1 blocked/.test(value ?? '')
-      ),
-      'async worker handback refreshes the ledger to blocked without an AgentMessage call'
+    assert.match(
+      panelText(),
+      /Octocode agents: 1 total.*1 blocked/,
+      'async worker handback refreshes the unified ledger to blocked without an AgentMessage call',
     );
+    assertAgentFooterStatus('blocked', 'after blocked handback');
 
     await invokeExecute(
       messageTool,
       { action: 'send', agentId, message: 'answer: proceed' },
       ctx
     );
-    assert.ok(
-      statusCalls.some(
-        ([key, value]) => key === 'octocode-agents' && /1 total.*1 running/.test(value ?? '')
-      ),
-      'new worker turn overrides stale blocked handback in the UI'
+    assert.match(
+      panelText(),
+      /Octocode agents: 1 total.*1 running/,
+      'new worker turn overrides stale blocked handback in the unified panel',
     );
+    assertAgentFooterStatus('running', 'after new worker turn');
 
     spawned[0]!.emitStdout({
       type: 'message_end',
@@ -3808,12 +4069,12 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
     });
     spawned[0]!.emitStdout({ type: 'agent_end', messages: [] });
     spawned[0]!.close(0);
-    assert.ok(
-      statusCalls.some(
-        ([key, value]) => key === 'octocode-agents' && /1 total.*1 done/.test(value ?? '')
-      ),
-      'completed/exited workers stay visible as done until explicit prune/hide/remove'
+    assert.match(
+      panelText(),
+      /Octocode agents: 1 total.*1 done/,
+      'completed/exited workers stay visible as done until explicit prune/hide/remove',
     );
+    assertAgentFooterStatus('done', 'after completion');
     assert.ok(
       widgetCalls.some(
         (call) => call.key === 'octocode-status-panel' && typeof call.value === 'function'
@@ -4082,6 +4343,8 @@ test('spawnSubagent starts the browser-agent with the typed prompt, tools, all O
     const spawnSubagent = tools.get('spawnSubagent')!;
     assert.ok(spawnSubagent, 'spawnSubagent registered');
 
+    const widgetCalls: Array<{ key: string; value: unknown; opts?: { placement?: string } }> = [];
+    const statusCalls: Array<[string, string | undefined]> = [];
     const result = await invokeExecute(
       spawnSubagent,
       {
@@ -4093,10 +4356,29 @@ test('spawnSubagent starts the browser-agent with the typed prompt, tools, all O
         headless: false,
         cwd: '/repo',
       },
-      { cwd: '/fallback' }
+      {
+        cwd: '/fallback',
+        hasUI: true,
+        ui: {
+          setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]),
+          setWidget: (key: string, value: unknown, opts?: { placement?: string }) => widgetCalls.push({ key, value, opts }),
+        },
+      }
     );
 
     assert.equal(spawned.length, 1);
+    const panelCall = widgetCalls.filter((entry) => entry.key === 'octocode-status-panel').at(-1);
+    assert.ok(panelCall && typeof panelCall.value === 'function', 'spawnSubagent immediately renders the unified agent panel');
+    const panel = (panelCall.value as (tui: unknown, theme: { fg(color: string, text: string): string; bold(text: string): string }) => { render(width: number): string[] })(undefined, {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    });
+    assert.match(panel.render(140).join('\n'), /Octocode agents: 1 total.*1 running/);
+    assert.equal(panelCall.opts?.placement, 'belowEditor', 'spawnSubagent renders the unified panel below the editor/input area');
+    assert.ok(
+      statusCalls.some(([key, value]) => key === 'octocode-agents' && /1 total.*1 running/.test(value ?? '')),
+      'spawnSubagent immediately renders compact below-input footer progress'
+    );
     const args = spawned[0]!.args;
     assert.equal(spawned[0]!.options.cwd, '/repo');
     assert.ok(args.includes('--no-extensions'));
@@ -4128,6 +4410,10 @@ test('spawnSubagent starts the browser-agent with the typed prompt, tools, all O
       args.includes('--append-system-prompt'),
       'typed subagent loads its SYSTEM_PROMPT.md'
     );
+    const browserSystemPrompt = promptFileContent(args);
+    assert.match(browserSystemPrompt, /^# Browser Agent/m);
+    assert.match(browserSystemPrompt, /multi-turn session/i);
+    assert.doesNotMatch(browserSystemPrompt, /# Researcher|# Planner|# Architect/);
 
     const initialPrompt = spawned[0]!.proc.stdinWrites[0]!;
     assert.match(initialPrompt, /Browser Session/);
@@ -4142,8 +4428,10 @@ test('spawnSubagent starts the browser-agent with the typed prompt, tools, all O
     assert.match(result.content[0]!.text, /resourceMode: octocode/);
     const collapsed = spawnSubagent.renderResult!(result, {
       expanded: false,
-    }).render(120)[0]!;
+    }).render(160)[0]!;
     assert.match(collapsed, /Browser Agent/);
+    assert.match(collapsed, /use AgentMessage wait\/status/);
+    assert.match(collapsed, /\/octocode-agents/);
   } finally {
     setAgentProcessFactoryForTests(null);
   }
@@ -4253,6 +4541,21 @@ test('spawnSubagent starts researcher, planner, and architect with all Octocode 
       );
       assert.ok(args.includes('--tools'));
     }
+
+    const researcherSystemPrompt = promptFileContent(researcherArgs!);
+    assert.match(researcherSystemPrompt, /^# Researcher/m);
+    assert.match(researcherSystemPrompt, /claim ledger/);
+    assert.doesNotMatch(researcherSystemPrompt, /^# Planner|^# Architect|^# Browser Agent/m);
+
+    const plannerSystemPrompt = promptFileContent(plannerArgs!);
+    assert.match(plannerSystemPrompt, /^# Planner/m);
+    assert.match(plannerSystemPrompt, /dependency-ordered implementation plan/);
+    assert.doesNotMatch(plannerSystemPrompt, /^# Researcher|^# Architect|^# Browser Agent/m);
+
+    const architectSystemPrompt = promptFileContent(architectArgs!);
+    assert.match(architectSystemPrompt, /^# Architect/m);
+    assert.match(architectSystemPrompt, /root-cause specialist/);
+    assert.doesNotMatch(architectSystemPrompt, /^# Researcher|^# Planner|^# Browser Agent/m);
 
     const researcherTools =
       researcherArgs![researcherArgs!.indexOf('--tools') + 1]!;

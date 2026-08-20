@@ -315,8 +315,12 @@ export function registerSpawnSubagentTool(
     renderResult(result: unknown, _opts: unknown, theme?: PiTheme) {
       const r = result as { content?: Array<{ text?: string }> };
       const text = r?.content?.[0]?.text ?? '';
-      const agentLine = text.split('\n').find((l) => l.startsWith('[SPAWNED]')) ?? '';
-      const raw = agentLine ? paint(theme, 'success', agentLine) : 'spawnSubagent: spawned';
+      const lines = text.split('\n');
+      const agentLine = lines.find((l) => l.startsWith('[SPAWNED]')) ?? '';
+      const hasUsage = lines.some((l) => l.startsWith('AgentMessage({action:"wait"'));
+      const raw = agentLine
+        ? `${paint(theme, 'success', agentLine)}${hasUsage ? paint(theme, 'dim', ' · use AgentMessage wait/status; see /octocode-agents') : ''}`
+        : 'spawnSubagent: spawned';
       return makeRenderer((w) => [truncateToWidth(raw, w)]);
     },
   });

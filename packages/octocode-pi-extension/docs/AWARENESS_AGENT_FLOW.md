@@ -51,9 +51,9 @@ for sensitive/non-mergeable changes.
 
 ## Hooks during edits
 
-Awareness Lite does not wire Pi lifecycle hooks. Agents coordinate explicitly by
-running `task`, `work`, `lock`, `handoff`, and `verify` commands through the
-bundled CLI.
+Awareness Lite does not wire full Pi lifecycle automation. Pi only runs the Lite
+pre-edit lock gate for write tools; agents still coordinate explicitly by running
+`task`, `work`, `lock`, `handoff`, and `verify` commands through the bundled CLI.
 
 ## Finish exactly owned work
 

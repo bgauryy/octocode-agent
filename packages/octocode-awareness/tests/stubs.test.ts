@@ -16,11 +16,7 @@ function freshDb(): DatabaseSync {
     initDb(db);
     return db;
 }
-function tempFile(): {
-    dir: string;
-    path: string;
-    cleanup: () => void;
-} {
+function tempFile(): { dir: string; path: string; cleanup: () => void } {
     const dir = mkdtempSync(join(tmpdir(), 'oc-stubs-test-'));
     const path = join(dir, 'f.txt');
     writeFileSync(path, 'seed');
@@ -45,8 +41,7 @@ describe('pruneStale', () => {
       if (!result.ok) throw new Error('claim failed');
       // Age the lock to the past
       const past = new Date(Date.now() - 5000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?')
-        .run(past, result.run.run_id);
+      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(past, result.run.run_id);
 
       const pruned = pruneStale(db, {});
       expect(pruned.pruned_locks).toBeGreaterThanOrEqual(1);
@@ -62,12 +57,10 @@ describe('pruneStale', () => {
       });
       if (!claim.ok) throw new Error('claim failed');
       const past = new Date(Date.now() - 5000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?')
-        .run(past, claim.run.run_id);
+      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(past, claim.run.run_id);
 
       pruneStale(db, {});
-      const intent = db.prepare('SELECT status FROM task_runs WHERE run_id = ?')
-        .get(claim.run.run_id) as { status: string };
+      const intent = db.prepare('SELECT status FROM task_runs WHERE run_id = ?').get(claim.run.run_id) as { status: string };
       expect(intent.status).toBe('ACTIVE');
     } finally { cleanup(); }
   });
@@ -399,7 +392,6 @@ describe('exportMemoryDoc', () => {
     const doc = exportMemoryDoc(db, {});
     expect(doc).toContain('**References:** file:/tmp/provenance.ts, pr:owner/repo#456');
   });
-
   it('returns empty report when no memories exist', () => {
     const db = freshDb();
     const doc = exportMemoryDoc(db, {});

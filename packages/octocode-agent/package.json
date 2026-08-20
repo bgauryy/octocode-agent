@@ -31,7 +31,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.3",
+    "@earendil-works/pi-coding-agent": "0.84.2",
     "@octocodeai/config": "17.0.1",
     "@octocodeai/pi-extension": "workspace:^"
   },

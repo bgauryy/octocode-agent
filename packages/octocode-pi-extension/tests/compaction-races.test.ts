@@ -22,6 +22,7 @@ import {
   resetCompactionArbiterForTests,
 } from '../src/tools/compaction-state.js';
 import { resetCompactionResumeStateForTests } from '../src/tools/compaction-resume.js';
+import { activePlanScope, clearPlan, setPlan } from '../src/tools/active-plan.js';
 
 type Handler = (event: unknown, ctx: unknown) => unknown | Promise<unknown>;
 
@@ -93,6 +94,7 @@ beforeEach(() => {
   resetAutoCompactState();
   resetCompactionArbiterForTests();
   resetCompactionResumeStateForTests();
+  clearPlan(activePlanScope());
 });
 
 // ─── The in-flight arbiter primitive ─────────────────────────────────────────
@@ -111,8 +113,16 @@ test('arbiter: mark/clear/expiry semantics', () => {
 
 // ─── turn_end auto-compaction watcher ────────────────────────────────────────
 
-test('auto-compaction fires on a fresh threshold crossing (baseline)', async () => {
+test('auto-compaction skips a threshold crossing when no unfinished plan work remains', async () => {
   const { fire } = makeHarness();
+  const { ctx, compactCalls } = makeCtx({ tokens: 90 });
+  await fire('turn_end', TURN_STOP, ctx);
+  assert.equal(compactCalls.length, 0, 'ended sessions do not compact just because they crossed 80%');
+});
+
+test('auto-compaction fires on a fresh threshold crossing with unfinished plan work', async () => {
+  const { fire } = makeHarness();
+  setPlan(activePlanScope(), ['continue after compaction']);
   const { ctx, compactCalls } = makeCtx({ tokens: 90 });
   await fire('turn_end', TURN_STOP, ctx);
   assert.equal(compactCalls.length, 1);
@@ -127,6 +137,7 @@ test('auto-compaction skips aborted turns — their usage is stale (often the ve
 
 test('auto-compaction stands down while another compaction is in flight (session_before_compact fired)', async () => {
   const { fire } = makeHarness();
+  setPlan(activePlanScope(), ['continue after compaction']);
   const { ctx, compactCalls } = makeCtx({ tokens: 90 });
   await fire(
     'session_before_compact',
@@ -148,15 +159,17 @@ test('session_compact clears the in-flight mark so a later crossing compacts aga
     { compactionEntry: {}, fromExtension: false, reason: 'threshold', willRetry: false },
     ctx,
   );
-  // Edge trigger: dip below the threshold, then cross it again.
+  // Edge trigger: dip below the threshold, then cross it again with unfinished work.
   const low = makeCtx({ tokens: 10 });
   await fire('turn_end', TURN_STOP, { ...low.ctx, compact: low.ctx.compact });
+  setPlan(activePlanScope(), ['continue after compaction']);
   await fire('turn_end', TURN_STOP, ctx);
   assert.equal(compactCalls.length, 1, 'compacts again once the previous compaction finished');
 });
 
 test('auto-compaction skips when the branch tip is already a compaction entry (pi would throw "Already compacted")', async () => {
   const { fire } = makeHarness();
+  setPlan(activePlanScope(), ['continue after compaction']);
   const { ctx, compactCalls } = makeCtx({
     tokens: 90,
     branch: [{ type: 'message' }, { type: 'compaction' }],
@@ -167,6 +180,7 @@ test('auto-compaction skips when the branch tip is already a compaction entry (p
 
 test('auto-compaction treats a losing "Already compacted" race as a benign info-level skip', async () => {
   const { fire, notes } = makeHarness();
+  setPlan(activePlanScope(), ['continue after compaction']);
   const { ctx, compactCalls } = makeCtx({ tokens: 90 });
   await fire('turn_end', TURN_STOP, ctx);
   assert.equal(compactCalls.length, 1);
@@ -175,6 +189,21 @@ test('auto-compaction treats a losing "Already compacted" race as a benign info-
   assert.ok(
     notes.some((n) => n.level === 'info' && /already compacted/i.test(n.msg)),
     'an info-level skip is surfaced instead',
+  );
+});
+
+test('auto-compaction treats Pi undefined-signal crash after saved compaction as a benign skip', async () => {
+  const { fire, notes } = makeHarness();
+  setPlan(activePlanScope(), ['continue after compaction']);
+  const { ctx, compactCalls } = makeCtx({ tokens: 90 });
+  await fire('turn_end', TURN_STOP, ctx);
+  assert.equal(compactCalls.length, 1);
+  Object.assign(ctx, { sessionManager: { getBranch: () => [{ type: 'message' }, { type: 'compaction' }] } });
+  compactCalls[0]!.onError?.(new Error("Cannot read properties of undefined (reading 'signal')"));
+  assert.ok(!notes.some((n) => n.level === 'error'), 'no repeated red error line after compaction already landed');
+  assert.ok(
+    notes.some((n) => n.level === 'info' && /already compacted/i.test(n.msg)),
+    'post-success Pi crash is surfaced as an info-level skip',
   );
 });
 

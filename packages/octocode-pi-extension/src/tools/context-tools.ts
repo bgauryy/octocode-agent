@@ -10,6 +10,8 @@ import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } 
 import type { PiContext, PiCommandContext, PiInstance, ToolDefinition, PiTheme, TurnEndEvent } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { stringEnumSchema } from './schema-helpers.js';
+import { activePlanScope, hasIncompletePlanSteps } from './active-plan.js';
 import { isSubagentProcess } from './agent-tools.js';
 import { clearCompactionWorkingState, type Notifier } from './compaction-resume.js';
 import { branchTipIsCompaction, clearCompactionInFlight, clearCompactionResumeRequest, isCompactionInFlight, markCompactionInFlight, markCompactionResumeRequested, resetCompactionArbiterForTests } from './compaction-state.js';
@@ -36,6 +38,11 @@ function isNothingToCompact(error: Error): boolean {
 // trigger won the race and the context IS compacted — success, not failure.
 function isAlreadyCompacted(error: Error): boolean {
   return /already compacted/i.test(error.message);
+}
+
+function isPiSignalCrashAfterCompaction(error: Error, ctx: PiContext | undefined): boolean {
+  return /Cannot read properties of undefined \(reading 'signal'\)/i.test(error.message)
+    && branchTipIsCompaction(ctx);
 }
 
 function simpleRenderer(line: string) {
@@ -101,9 +108,18 @@ export function registerContextTools(
       const prevFill = lastAutoCompactTokens !== null
         ? lastAutoCompactTokens / usage.contextWindow
         : null;
-      lastAutoCompactTokens = usage.tokens;
-      if (fill < AUTO_COMPACT_THRESHOLD) return;
+      if (fill < AUTO_COMPACT_THRESHOLD) {
+        lastAutoCompactTokens = usage.tokens;
+        return;
+      }
       if (prevFill !== null && prevFill >= AUTO_COMPACT_THRESHOLD) return;
+      // turn_end compaction runs BETWEEN turns — no in-flight run is aborted, so
+      // compacting with no unfinished work just spends budget after the session
+      // has effectively ended. Do not record this as a threshold crossing: if a
+      // later user turn creates plan work while still above 80%, it should still
+      // be eligible to compact.
+      if (!hasIncompletePlanSteps(activePlanScope(ctx))) return;
+      lastAutoCompactTokens = usage.tokens;
 
       // Stand down for any compaction that is already running (pi's internal
       // auto, user /compact, manage_context) and for a branch tip that is
@@ -118,6 +134,9 @@ export function registerContextTools(
       const pctStr = `${Math.round(fill * 100)}%`;
       notify(ctx, `Auto-compacting: context at ${pctStr} of context window.`, 'info');
       markCompactionInFlight();
+      // turn_end compaction runs BETWEEN turns, so reaching this point means
+      // unfinished plan work exists and the post-compaction continuation is
+      // intentional rather than a wasted extra turn after task completion.
       markCompactionResumeRequested();
       ctx.compact({
         customInstructions: COMPACTION_CONTINUATION_INSTRUCTIONS,
@@ -138,7 +157,7 @@ export function registerContextTools(
             notify(ctx, 'Auto-compaction skipped: session is too small to compact.', 'info');
             return;
           }
-          if (isAlreadyCompacted(error)) {
+          if (isAlreadyCompacted(error) || isPiSignalCrashAfterCompaction(error, ctx)) {
             notify(ctx, 'Auto-compaction skipped: context was already compacted by another trigger.', 'info');
             return;
           }
@@ -174,9 +193,10 @@ export function registerContextTools(
       'type:"new" — start a fresh session with no prior context; call only when the next task is fully unrelated to the current conversation.',
     promptSnippet: 'Compact or reset conversation context',
     parameters: Type.Object({
-      type: Type.Union(
-        [Type.Literal('compact'), Type.Literal('new')],
-        { description: '"compact" summarizes history to free space. "new" starts a completely fresh session.' },
+      type: stringEnumSchema(
+        Type,
+        ['compact', 'new'],
+        '"compact" summarizes history to free space. "new" starts a completely fresh session.',
       ),
       instructions: Type.Optional(
         Type.String({
@@ -244,6 +264,9 @@ export function registerContextTools(
       }
 
       markCompactionInFlight();
+      // Unlike the turn_end path, this tool call happens MID-turn: ctx.compact()
+      // aborts the in-flight agent run, so a continuation is always required to
+      // recover — active work exists by definition (the model was mid-task).
       markCompactionResumeRequested();
       ctx.compact({
         customInstructions: buildCompactionInstructions(params['instructions']),
@@ -261,7 +284,7 @@ export function registerContextTools(
             notify(ctx, 'Compaction skipped: session is too small to compact.', 'info');
             return;
           }
-          if (isAlreadyCompacted(error)) {
+          if (isAlreadyCompacted(error) || isPiSignalCrashAfterCompaction(error, ctx)) {
             notify(ctx, 'Compaction skipped: context was already compacted by another trigger.', 'info');
             return;
           }

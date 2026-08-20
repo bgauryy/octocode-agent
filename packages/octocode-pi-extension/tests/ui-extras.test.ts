@@ -7,6 +7,9 @@ import {
   buildWorkingIndicator,
   buildWorkingMessage,
   buildFooterSegments,
+  getFooterDensity,
+  setFooterDensity,
+  parseFooterDensity,
   resolveSystemTheme,
   resolveSystemThemeName,
   deriveSessionName,
@@ -180,6 +183,61 @@ test('buildFooterSegments omits optional segments cleanly', () => {
   assert.doesNotMatch(joined, /agents/);
   assert.doesNotMatch(joined, /plan \d/);
   assert.match(joined, /last 1s/);
+});
+
+// ─── footer density modes (review follow-up: reduce duplicate state / noise) ──
+
+const DENSITY_INPUT = {
+  tokens: 16_000, contextWindow: 200_000,
+  completedTurns: 3, activeTurnMs: 9000, lastTurnMs: undefined,
+  sessionMs: 120_000, activeWorkers: 2, agentDoing: 'Editing agent-tools.ts',
+  awarenessAgents: 4, blockedWorkers: 1, failedWorkers: 1,
+  dial: 'deep', branch: 'main', dirty: true,
+};
+
+test('footer density: compact keeps only high-signal segments (ctx, workers, attention flags, git)', () => {
+  const joined = buildFooterSegments(DENSITY_INPUT, 'compact').map((s) => s.text).join(' | ');
+  assert.match(joined, /ctx /);
+  assert.match(joined, /agents 2/);
+  assert.doesNotMatch(joined, /‣/, 'no per-worker doing label in compact');
+  assert.match(joined, /⚠1/);
+  assert.match(joined, /✗1/);
+  assert.match(joined, /main\*/);
+  assert.doesNotMatch(joined, /turns/);
+  assert.doesNotMatch(joined, /active |last /);
+  assert.doesNotMatch(joined, /session/);
+  assert.doesNotMatch(joined, /aware-agents/);
+  assert.doesNotMatch(joined, /◉/);
+});
+
+test('footer density: default drops only the session-duration segment; full keeps everything', () => {
+  const def = buildFooterSegments(DENSITY_INPUT, 'default').map((s) => s.text).join(' | ');
+  assert.match(def, /turns 3/);
+  assert.match(def, /active 9s/);
+  assert.match(def, /aware-agents 4/);
+  assert.match(def, /◉ deep/);
+  assert.doesNotMatch(def, /session /);
+
+  const full = buildFooterSegments(DENSITY_INPUT, 'full').map((s) => s.text).join(' | ');
+  assert.match(full, /session /);
+  assert.match(full, /turns 3/);
+  assert.match(full, /◉ deep/);
+});
+
+test('footer density: module-level mode drives the default parameter; parse rejects junk', () => {
+  try {
+    assert.equal(getFooterDensity(), 'default');
+    setFooterDensity('compact');
+    assert.equal(getFooterDensity(), 'compact');
+    const joined = buildFooterSegments(DENSITY_INPUT).map((s) => s.text).join(' | ');
+    assert.doesNotMatch(joined, /turns/, 'implicit density follows the module mode');
+  } finally {
+    setFooterDensity('default');
+  }
+  assert.equal(parseFooterDensity('full'), 'full');
+  assert.equal(parseFooterDensity(' Compact '), 'compact');
+  assert.equal(parseFooterDensity('bogus'), undefined);
+  assert.equal(parseFooterDensity(''), undefined);
 });
 
 test('theme name constants are the shipped theme ids', () => {

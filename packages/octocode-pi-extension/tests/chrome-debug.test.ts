@@ -703,8 +703,6 @@ describe('CDP HTTP sandbox', () => {
         res.end(JSON.stringify({ Browser: 'Chrome/150.0.0.0', 'Protocol-Version': '1.3', 'User-Agent': 'Chrome' }));
       } else if (req.url === '/json') {
         res.end(JSON.stringify([makeTarget(), target]));
-      } else if (req.url === '/json/activate/target-2') {
-        res.end(JSON.stringify({ ok: true }));
       } else {
         res.statusCode = 404;
         res.end(JSON.stringify({ error: 'not found' }));
@@ -721,7 +719,11 @@ describe('CDP HTTP sandbox', () => {
       assert.equal(selected.targetInfo.id, 'target-2');
       assert.ok(seen.includes('GET /json/version'));
       assert.ok(seen.includes('GET /json'));
-      assert.ok(seen.includes('GET /json/activate/target-2'));
+      assert.equal(
+        seen.some(request => request.includes('/json/activate/')),
+        false,
+        'selectTarget must not focus or activate browser tabs just to attach via CDP',
+      );
     });
   });
 });

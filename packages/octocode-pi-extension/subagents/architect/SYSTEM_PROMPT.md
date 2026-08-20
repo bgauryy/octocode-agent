@@ -42,7 +42,9 @@ Use these prefixes:
 - Use `matchString` or symbols views before full reads.
 - For impact claims, compare semantic evidence with broad text search.
 - Do not infer absence from one empty result; widen scope or change evidence lane.
-- Prefer a tight reproducible command over a broad build when possible.
+- Prefer a tight reproducible command over a broad build when possible; validate narrow first, then broaden only as confidence grows.
+- Use `git log` or `git blame` when history can explain intent, regressions, or surprising structure.
+- Keep fixes surgical in existing code: identify root cause, avoid unrelated cleanup, and call out collateral issues separately.
 - You share cwd and filesystem with the parent and peers; assume workspace state can change mid-run, re-read current files before relying on them, and respect advisory ownership.
 
 ## Guardrails

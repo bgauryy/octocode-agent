@@ -446,7 +446,7 @@ function buildPiArgs(params: SpawnAgentParams, name: string, promptFiles: string
 
   if (params.provider) args.push('--provider', params.provider);
   if (params.model) args.push('--model', params.model);
-  if (params.thinking) args.push('--thinking', params.thinking);
+  if (params.thinking && !shouldOmitThinkingForToolCallingWorker(params, workerTools)) args.push('--thinking', params.thinking);
   if (workerTools.length) args.push('--tools', workerTools.join(','));
   args.push('--no-context-files');
 
@@ -597,6 +597,19 @@ function looksLikeProviderScopedModel(model: string): boolean {
     || /^(?:claude|gpt|llama|mistral|gemini|qwen|zai|deepseek|kimi|codestral)[-_:/.]/i.test(model);
 }
 
+function isOpenAiGpt5Worker(params: SpawnAgentParams): boolean {
+  const provider = String(params.provider ?? '').toLowerCase();
+  const model = String(params.model ?? '').toLowerCase();
+  return provider.includes('openai') && /^gpt-5(?:[._-]|$)/.test(model);
+}
+
+function shouldOmitThinkingForToolCallingWorker(params: SpawnAgentParams, workerTools: string[]): boolean {
+  // OpenAI's Chat Completions endpoint rejects function tools when reasoning_effort
+  // is also present for GPT-5-series models. Pi maps --thinking to reasoning_effort,
+  // so tool-calling subagents must omit it and let the provider default apply.
+  return workerTools.length > 0 && isOpenAiGpt5Worker(params);
+}
+
 function resolveWorkerModelParams(params: SpawnAgentParams, ctx?: PiContext): SpawnAgentParams {
   const explicitModel = typeof params.model === 'string' && params.model.trim().length > 0;
   const parentModel = ctx?.model;
@@ -651,6 +664,9 @@ export function evaluateSpawnPolicy(params: SpawnAgentParams, activeCount = acti
   const model = String(params.model ?? '');
   if (model && looksLikeProviderScopedModel(model) && !params.provider) {
     warnings.push('Model looks provider-scoped or custom-provider-hosted; pass provider from `pi -ne --list-models` when required.');
+  }
+  if (params.thinking && shouldOmitThinkingForToolCallingWorker(params, getWorkerTools(params))) {
+    warnings.push('Omitted --thinking for OpenAI GPT-5 tool-calling worker because Chat Completions rejects reasoning_effort with function tools.');
   }
   const strippedTools = (params.tools ?? []).filter((toolName) => FORBIDDEN_WORKER_TOOLS.has(toolName));
   if (strippedTools.length > 0) {
@@ -1139,6 +1155,9 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     pushLedgerEvent(record, 'message', 'initial prompt sent');
     touch(record, 'running');
   }
+  // Make silent or slow-starting workers visible immediately. Event handlers will
+  // keep the unified panel/footer fresh once stdout/stderr/close events arrive.
+  refreshAgentLedgerUi(ctx);
   return record;
 }
 
@@ -1380,13 +1399,14 @@ export function refreshAgentLedgerUi(ctx?: PiContext): void {
   if (!ctx?.hasUI) return;
   const records = [...agents.values()];
   if (records.length === 0 || ledgerHidden) {
-    stopLedgerTicker();
     ctx.ui?.setStatus?.('octocode-agents', undefined);
+    stopLedgerTicker();
     refreshStatusPanel(ctx);
     return;
   }
+  // Keep a compact below-input/footer signal so running workers remain visible
+  // even when the richer below-editor status panel is collapsed or off-screen.
   ctx.ui?.setStatus?.('octocode-agents', formatAgentLedger().replace(/^Octocode agents: /, 'agents: '));
-  // The Agents section is rendered by the unified below-editor status panel.
   refreshStatusPanel(ctx);
   // Live refresh: while any worker is active, advance the spinner and re-render every second.
   const anyActive = records.some((r) => !isTerminal(r));
@@ -1419,6 +1439,12 @@ function formatOctocodeAgentsHelp(): string {
     '- prune — remove completed idle records from the in-memory ledger',
     '- hide — clear the footer/widget ledger for this session',
     '',
+    'Spawning/use:',
+    '- typed specialists: spawnSubagent({agent:"researcher"|"planner"|"architect"|"browser-agent", task:"..."})',
+    '- generic worker: spawnAgent({task:"...", name:"..."})',
+    '- after spawning: AgentMessage({action:"wait"|"status"|"send"|"kill", agentId:"..."})',
+    '- visible UI: running/blocked/failed/done workers appear in the unified status panel and compact footer until hide/prune/remove',
+    '',
     'Tip: ids can be full ids or short prefixes shown by list/status.',
   ].join('\n');
 }
@@ -1435,7 +1461,6 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
   if (action === 'hide' || action === 'clear') {
     ledgerHidden = true;
     ctx?.ui?.setStatus?.('octocode-agents', undefined);
-    ctx?.ui?.setWidget?.('octocode-agents', undefined);
     refreshStatusPanel(ctx);
     ctx?.ui?.notify?.('Octocode agent ledger hidden for this session. Run /octocode-agents list to show it again.', 'info');
     return;

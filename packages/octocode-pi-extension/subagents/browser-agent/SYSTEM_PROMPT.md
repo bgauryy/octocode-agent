@@ -121,6 +121,8 @@ Every scheme that navigates automatically installs:
 6. Emit [DONE] when complete, [BLOCKED] if you need input, or [FAILED] if the objective cannot be completed
 ```
 
+For UX/frontend checks, inspect what a real user sees and can do. Cover the compact quality checklist when relevant: viewport fit and mobile breakpoints; keyboard flow, labels, focus order, contrast, and touch/click targets; loading/error/empty/success states; form validation and recovery copy; spacing, affordance, motion, visual hierarchy, and copy clarity. Prefer screenshots plus concrete selectors/metrics over aesthetic opinions.
+
 ## Key CDP facts
 
 - **Workers**: use `scheme:"workers"` or `scheme:"raw" method:"Target.setAutoAttach" params:{"autoAttach":true,"waitForDebuggerOnStart":false,"flatten":true}` BEFORE navigation

@@ -16,7 +16,9 @@
  * THIS MODULE HAS NO SIDE EFFECTS AT IMPORT TIME (safe to unit-test).
  */
 
-import { Container, Editor, ProcessTerminal, Text, TUI } from '@earendil-works/pi-tui';
+// pi-tui 0.84 split the old concrete `TUI` class into `TuiMainScreen` (regular
+// scrollback rendering) and `TuiAltScreen`; `TUI` is now the interface only.
+import { Container, Editor, ProcessTerminal, Text, TuiMainScreen } from '@earendil-works/pi-tui';
 import type { EditorTheme, SelectListTheme } from '@earendil-works/pi-tui';
 
 import { renderBannerWithTagline } from '../branding/banner.js';
@@ -293,7 +295,7 @@ const IDENTITY_SELECT_LIST_THEME: SelectListTheme = {
  */
 function createPiTuiUi(): ShellUi {
   const terminal = new ProcessTerminal();
-  const tui = new TUI(terminal, true);
+  const tui = new TuiMainScreen(terminal, true);
   const transcript = new Container();
   const editorTheme: EditorTheme = {
     borderColor: (s) => s,

@@ -459,6 +459,27 @@ test('SEV-1: an explicit model without provider does not inherit an unrelated pa
   );
 });
 
+test('SEV-1: OpenAI GPT-5 tool-calling workers omit --thinking to avoid reasoning_effort 400s', () => {
+  if (isSubagentProcess()) return;
+  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  const record = spawnRpcAgent({
+    task: 'Goal: test\nContext: test\nScope: test\nOwnership: test\nAcceptance: test\nReturn: test',
+    resourceMode: 'octocode',
+    model: 'gpt-5.4-mini',
+    provider: 'guy-provider-openai',
+    thinking: 'low',
+    tools: ['web', 'MCPTool'],
+  }, { hasUI: false, ui: { setStatus: () => {}, setWidget: () => {} } } as never);
+
+  assert.equal(record.args.includes('--thinking'), false, 'tool-calling OpenAI GPT-5 worker must not pass --thinking');
+  assert.ok(record.args.includes('--tools'), 'worker still receives its tool allowlist');
+  assert.ok(
+    record.policyWarnings.some((warning) => /Omitted --thinking for OpenAI GPT-5 tool-calling worker/.test(warning)),
+    'spawn policy explains the compatibility omission',
+  );
+});
+
 test('SEV-1: modelRegistry rejects mismatched model/provider pairs before spawning', () => {
   if (isSubagentProcess()) return;
   const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });

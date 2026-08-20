@@ -105,16 +105,25 @@ export interface ExportCommandDeps {
 /** Pi names its own exports `pi-session-<basename>.html`; skip our outputs. */
 const PI_EXPORT_PATTERN = /^pi-session-.+\.html$/i;
 
-async function defaultImportExporter(): Promise<
+export async function defaultImportExporter(): Promise<
   { exportFromFile?: (inputPath: string, options?: unknown) => Promise<string> } | undefined
 > {
-  // The deep specifier is not in pi's exports map — this normally throws at
-  // runtime. Variable specifier keeps bundlers/type-checkers from resolving it.
+  type ExporterModule = { exportFromFile?: (inputPath: string, options?: unknown) => Promise<string> };
+  // pi's exports map exposes only "."/"./rpc-entry"/"./client", so the deep
+  // subpath below throws ERR_PACKAGE_PATH_NOT_EXPORTED under standard Node
+  // resolution. Try it first anyway (jiti-style hosts may allow it), then fall
+  // back to resolving the package's exported main entry and importing the
+  // module by file URL — file-URL imports are not subject to the exports map.
   const specifier = '@earendil-works/pi-coding-agent/dist/core/export-html/index.js';
   try {
-    return (await import(specifier)) as {
-      exportFromFile?: (inputPath: string, options?: unknown) => Promise<string>;
-    };
+    return (await import(specifier)) as ExporterModule;
+  } catch {
+    // Fall through to file-URL resolution.
+  }
+  try {
+    const mainEntry = import.meta.resolve('@earendil-works/pi-coding-agent');
+    const target = new URL('./core/export-html/index.js', mainEntry).href;
+    return (await import(target)) as ExporterModule;
   } catch {
     return undefined;
   }

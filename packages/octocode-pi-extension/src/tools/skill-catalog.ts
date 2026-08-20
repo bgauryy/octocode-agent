@@ -1,7 +1,13 @@
 import type { SkillInfo } from '../types.js';
 
+// Dashboard caps: on-demand output, so it can afford the full picture.
 const MAX_SKILLS = 80;
 const MAX_DESCRIPTION_CHARS = 180;
+// Prompt-block caps: the addendum is re-injected EVERY turn, so it is budgeted
+// harder — fewer entries, tighter descriptions, and an explicit pointer to the
+// /octocode-skills dashboard instead of a silent cut ("compaction is budget").
+const MAX_PROMPT_SKILLS = 30;
+const MAX_PROMPT_DESCRIPTION_CHARS = 120;
 
 function clean(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
@@ -32,8 +38,8 @@ function validSkills(skills: SkillInfo[] | undefined): SkillInfo[] {
     .sort((a, b) => skillSortKey(a).localeCompare(skillSortKey(b)));
 }
 
-function formatSkillLine(skill: SkillInfo): string {
-  const description = skill.description ? truncate(skill.description) : '(no description)';
+function formatSkillLine(skill: SkillInfo, descriptionLimit = MAX_DESCRIPTION_CHARS): string {
+  const description = skill.description ? truncate(skill.description, descriptionLimit) : '(no description)';
   const source = [skill.source, skill.scope].filter(Boolean).join('/');
   return `- ${skill.name}: ${description}${source ? ` [${source}]` : ''}`;
 }
@@ -45,7 +51,7 @@ export function renderSkillsDashboard(skills: SkillInfo[] | undefined): string {
     '◆ Octocode skills',
     '',
     'Available now',
-    ...(shown.length > 0 ? shown.map(formatSkillLine) : ['(none discovered — run /reload after installing skills)']),
+    ...(shown.length > 0 ? shown.map((skill) => formatSkillLine(skill)) : ['(none discovered — run /reload after installing skills)']),
     ...(valid.length > shown.length ? [`- …and ${valid.length - shown.length} more skill(s)`] : []),
     '',
     'How to use',
@@ -59,9 +65,9 @@ export function renderAvailableSkillsAddendum(skills: SkillInfo[] | undefined): 
   const valid = validSkills(skills);
   if (valid.length === 0) return '';
 
-  const shown = valid.slice(0, MAX_SKILLS);
-  const lines = shown.map(formatSkillLine);
-  if (valid.length > shown.length) lines.push(`- …and ${valid.length - shown.length} more skill(s)`);
+  const shown = valid.slice(0, MAX_PROMPT_SKILLS);
+  const lines = shown.map((skill) => formatSkillLine(skill, MAX_PROMPT_DESCRIPTION_CHARS));
+  if (valid.length > shown.length) lines.push(`- …and ${valid.length - shown.length} more skill(s) — see /octocode-skills for the full catalog`);
 
   return [
     '<available_skills>',

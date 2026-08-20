@@ -67,7 +67,11 @@ function print(value: unknown): void {
 }
 
 function usage(): string {
-  return `octocode-awareness-lite <command> [action]\n\nCommands:\n  status [--stale-after]\n  schema                entities and command shapes\n  plan create|list|done\n  task add|list|claim|done|reopen\n  lock acquire|release|list\n  work start|list|end   manual advisory file presence\n  handoff add|list|clear manual notes for later agents\n  agent join|touch|leave|list [--stale-after]\n  message send|inbox|list|read|prune\n  check audit|mark      verify-gate receipt flow\n  verify audit|mark     alias for check\n  memory store|recall|list|forget|delete|prune\n  hooks pre-edit        block edits that conflict with Lite locks\n  hooks install         install only the Lite pre-edit hook for claude|codex|cursor\n\nGlobal flags:\n  --workspace <path>  Workspace root, default cwd\n  --db <path>         SQLite database path`;
+  return `octocode-awareness-lite <command> [action]\n\nCommands:\n  status [--stale-after]\n  schema                entities and command shapes\n  plan create|list|done\n  task add|list|claim|done|reopen\n  lock acquire|release|list\n  work start|touch|list|end manual advisory file presence\n  handoff add|list|clear manual notes for later agents\n  agent join|touch|leave|list [--stale-after]\n  message send|inbox|list|read|prune\n  check audit|mark      verify-gate receipt flow\n  verify audit|mark     alias for check\n  memory store|recall|list|forget|delete|prune\n  hooks pre-edit        JSON lock-conflict gate; exits 2 when another agent owns a lock\n  hooks install         writes the optional pre-edit hook for claude|codex|cursor; use --dry-run first\n\nHook install:\n  hooks install --host claude|cursor|codex --project-dir <repo> [--cli <path>] [--dry-run]\n  writes .claude/settings.json, .cursor/hooks.json, or .codex/hooks.json\n\nGlobal flags:\n  --workspace <path>  Workspace root, default cwd\n  --db <path>         SQLite database path`;
+}
+
+function hasHelpFlag(parsed: ParsedArgs): boolean {
+  return parsed.command === 'help' || parsed.command === '--help' || parsed.action === 'help' || parsed.action === '--help' || parsed.flags.has('help');
 }
 
 function readJsonInput(flags: Map<string, string | true>): unknown {
@@ -114,7 +118,7 @@ function installHostHooks(params: { host: InstallHost; projectDir: string; cliPa
 
 export function runCli(argv: string[]): number {
   const parsed = parseArgs(argv);
-  if (!parsed.command || parsed.command === 'help' || parsed.command === '--help') {
+  if (!parsed.command || hasHelpFlag(parsed)) {
     process.stdout.write(`${usage()}\n`);
     return 0;
   }

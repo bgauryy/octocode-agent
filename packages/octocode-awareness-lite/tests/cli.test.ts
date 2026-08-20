@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { openAwarenessLite } from '../src/index.js';
 import { extractHookTargetPaths, runPreEditLockGate } from '../src/hooks.js';
@@ -41,7 +42,7 @@ describe('runCli', () => {
   it('prints help', () => {
     expect(runCli(['help'])).toBe(0);
     expect(stdout).toContain('plan create|list|done');
-    expect(stdout).toContain('work start|list|end');
+    expect(stdout).toContain('work start|touch|list|end');
     expect(stdout).toContain('handoff add|list|clear');
     expect(stdout).toContain('agent join|touch|leave|list');
     expect(stdout).toContain('message send|inbox|list|read');
@@ -84,6 +85,10 @@ describe('runCli', () => {
     expect(jsonOut<{ memories: number }>().memories).toBe(1);
 
     stdout = '';
+    expect(runCli(['memory', 'list', '--workspace', workspace, '--limit', '5'])).toBe(0);
+    expect(jsonOut<Array<{ text: string }>>()).toMatchObject([{ text: 'Keep lite local' }]);
+
+    stdout = '';
     expect(runCli(['memory', 'forget', '--workspace', workspace, '--memory-id', memory.memoryId])).toBe(0);
     expect(jsonOut<{ forgotten: boolean }>().forgotten).toBe(true);
   });
@@ -92,6 +97,28 @@ describe('runCli', () => {
     expect(extractHookTargetPaths({ toolName: 'Write', input: { path: 'src/a.ts' } })).toEqual(['src/a.ts']);
     expect(extractHookTargetPaths({ tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Update File: src/b.ts\n*** Move to: src/c.ts\n*** End Patch' } })).toEqual(['src/b.ts', 'src/c.ts']);
     expect(extractHookTargetPaths({ toolName: 'localSearchCode', input: { path: 'src/not-write.ts' } })).toEqual([]);
+  });
+
+  it('extracts hook write targets from arrays, query payloads, and nested tool names', () => {
+    expect(extractHookTargetPaths({
+      tool_input: { toolName: 'Edit', paths: ['src/a.ts', ['src/b.ts', '  ']], filePaths: ['src/c.ts'] },
+    })).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+
+    expect(extractHookTargetPaths({
+      input: {
+        queries: [
+          { path: 'src/query-path.ts', filePath: 'src/query-file-path.ts' },
+          { file_path: 'src/query-file-path-snake.ts', paths: ['src/query-paths.ts'], filePaths: ['src/query-filePaths.ts'], file_paths: ['src/query-file_paths.ts'] },
+        ],
+      },
+    })).toEqual([
+      'src/query-path.ts',
+      'src/query-file-path.ts',
+      'src/query-file-path-snake.ts',
+      'src/query-paths.ts',
+      'src/query-filePaths.ts',
+      'src/query-file_paths.ts',
+    ]);
   });
 
   it('blocks pre-edit hooks only when another agent owns a matching Lite lock', () => {
@@ -124,11 +151,20 @@ describe('runCli', () => {
     for (const host of ['claude', 'cursor', 'codex']) {
       stdout = '';
       expect(runCli(['hooks', 'install', '--workspace', workspace, '--host', host, '--project-dir', workspace, '--cli', '/tmp/octocode-awareness-lite.js', '--dry-run'])).toBe(0);
-      const result = jsonOut<{ host: string; settingsPath: string; resultingSettings: { hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> } } }>();
+      const result = jsonOut<{ host: string; settingsPath: string; dryRun: boolean; resultingSettings: { hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> } } }>();
       expect(result.host).toBe(host);
+      expect(result.dryRun).toBe(true);
       expect(result.settingsPath).toContain(host === 'claude' ? '.claude/settings.json' : `.${host}/hooks.json`);
       expect(result.resultingSettings.hooks.PreToolUse[0]?.hooks[0]?.command).toContain(' hooks pre-edit ');
     }
+  });
+
+  it('prints help for subcommands without running hook installation', () => {
+    stdout = '';
+    expect(runCli(['hooks', 'install', '--help', '--workspace', workspace])).toBe(0);
+    expect(stdout).toContain('Hook install:');
+    expect(stdout).toContain('--dry-run first');
+    expect(existsSync(join(workspace, '.claude', 'settings.json'))).toBe(false);
   });
 
   it('runs hooks pre-edit as a JSON CLI gate', () => {
@@ -215,6 +251,37 @@ describe('runCli', () => {
     stdout = '';
     expect(runCli(['agent', 'leave', '--workspace', workspace, '--agent-id', 'agent-b'])).toBe(0);
     expect(jsonOut<{ status: string }>().status).toBe('LEFT');
+  });
+
+  it('reports command errors through the CLI dispatcher', () => {
+    expect(() => runCli(['plan', 'nope', '--workspace', workspace])).toThrow('plan action must be create, list, or done');
+    expect(() => runCli(['task', 'nope', '--workspace', workspace])).toThrow('task action must be add, list, claim, done, or reopen');
+    expect(() => runCli(['lock', 'nope', '--workspace', workspace])).toThrow('lock action must be acquire, release, or list');
+    expect(() => runCli(['work', 'nope', '--workspace', workspace])).toThrow('work action must be start, touch, list, or end');
+    expect(() => runCli(['handoff', 'nope', '--workspace', workspace])).toThrow('handoff action must be add, list, or clear');
+    expect(() => runCli(['agent', 'nope', '--workspace', workspace])).toThrow('agent action must be join, touch, leave, or list');
+    expect(() => runCli(['message', 'nope', '--workspace', workspace])).toThrow('message action must be send, inbox, list, read, or prune');
+    expect(() => runCli(['check', 'nope', '--workspace', workspace])).toThrow('check action must be audit or mark');
+    expect(() => runCli(['hooks', 'install', '--workspace', workspace, '--host', 'pi', '--dry-run'])).toThrow('hooks install --host must be claude, codex, or cursor');
+    expect(() => runCli(['hooks', 'nope', '--workspace', workspace])).toThrow('hooks action must be install or pre-edit');
+    expect(() => runCli(['memory', 'nope', '--workspace', workspace])).toThrow('memory action must be store, recall, list, forget, delete, or prune');
+    expect(() => runCli(['unknown', '--workspace', workspace])).toThrow('unknown command: unknown');
+  });
+
+  it('runs remaining list and touch aliases', () => {
+    expect(runCli(['agent', 'touch', '--workspace', workspace, '--agent-id', 'agent-a', '--status', 'IDLE'])).toBe(0);
+    expect(jsonOut<{ status: string }>().status).toBe('IDLE');
+
+    stdout = '';
+    expect(runCli(['message', 'send', '--workspace', workspace, '--from', 'agent-a', '--text', 'broadcast'])).toBe(0);
+
+    stdout = '';
+    expect(runCli(['message', 'list', '--workspace', workspace, '--agent-id', 'agent-b', '--include-read', '--limit', '5'])).toBe(0);
+    expect(jsonOut<Array<{ text: string }>>()).toMatchObject([{ text: 'broadcast' }]);
+
+    stdout = '';
+    expect(runCli(['work', 'touch', '--workspace', workspace, '--file', 'README.md', '--agent-id', 'agent-a'])).toBe(0);
+    expect(jsonOut<{ filePath: string }>().filePath).toContain('README.md');
   });
 
   it('runs the plan/task/lock JSON flow', () => {

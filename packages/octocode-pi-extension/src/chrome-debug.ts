@@ -151,10 +151,6 @@ async function openTab(port: number, url: string): Promise<CdpTargetInfo> {
   return cdpHttp<CdpTargetInfo>(port, `/json/new?${encodeURIComponent(url)}`, 'PUT');
 }
 
-async function activateTarget(port: number, id: string): Promise<void> {
-  await cdpHttp(port, `/json/activate/${id}`).catch(() => undefined);
-}
-
 async function closeTab(port: number, id: string): Promise<boolean> {
   try {
     const res = await _origFetch(`http://127.0.0.1:${port}/json/close/${id}`, {
@@ -348,7 +344,6 @@ export async function selectTarget(
     const t = targets.find((x) => x.id === targetId);
     if (!t) throw new Error(`Target ${targetId} not found`);
     if (!t.webSocketDebuggerUrl) throw new Error(`No WebSocket URL for target ${targetId}`);
-    await activateTarget(port, targetId);
     return { wsUrl: t.webSocketDebuggerUrl, targetInfo: t, via: 'target-id' };
   }
 

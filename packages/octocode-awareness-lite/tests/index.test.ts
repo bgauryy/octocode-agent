@@ -47,6 +47,7 @@ describe('AwarenessLite', () => {
 
     expect(aw.listPlans()).toHaveLength(1);
     expect(aw.listTasks({ planId: plan.planId })).toHaveLength(1);
+    expect(aw.listTasks({ status: 'OPEN' })).toHaveLength(1);
     expect(task).toMatchObject({ status: 'OPEN', agentId: null, filePath: 'src/index.ts', checkCommand: 'yarn test' });
     expect(aw.status()).toMatchObject({ activePlans: 1, tasks: 1, readyTasks: 1, inProgressTasks: 0, pendingChecks: 0, verifyTasks: 0 });
 
@@ -104,6 +105,7 @@ describe('AwarenessLite', () => {
     expect(aw.schema().commands.memory).toContain('forget --memory-id');
     expect(aw.schema().commands.memory).toContain('prune --older-than [--label] [--confirm]');
     expect(aw.schema().commands.work).toContain('start --file --agent-id [--reason] [--ttl]');
+    expect(aw.schema().commands.work).toContain('touch --file --agent-id [--reason] [--ttl]');
     expect(aw.schema().commands.handoff).toContain('add --agent-id --summary [--file]');
     expect(aw.schema().commands.agent).toContain('join --agent-id [--name] [--role] [--meta]');
     expect(aw.schema().commands.agent).toContain('list [--include-left] [--stale-after]');
@@ -207,6 +209,39 @@ describe('AwarenessLite', () => {
 
     expect(aw.listLocks()).toHaveLength(0);
     expect(aw.listWork()).toHaveLength(0);
+  });
+
+  it('migrates older task tables by adding verification columns', async () => {
+    aw.close();
+
+    const legacyDb = new DatabaseSync(join(workspace, '.octocode-lite', 'awareness-lite.sqlite3'));
+    try {
+      legacyDb.exec(`
+        DROP TABLE tasks;
+        CREATE TABLE tasks (
+          task_id TEXT PRIMARY KEY,
+          plan_id TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
+          title TEXT NOT NULL,
+          file_path TEXT,
+          status TEXT NOT NULL CHECK(status IN ('OPEN', 'CLAIMED', 'DONE')),
+          agent_id TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          done_at TEXT
+        );
+      `);
+    } finally {
+      legacyDb.close();
+    }
+
+    aw = openAwarenessLite({ workspace });
+    const columns = new DatabaseSync(aw.dbPath);
+    try {
+      const names = columns.prepare('PRAGMA table_info(tasks)').all().map((row) => (row as { name: string }).name);
+      expect(names).toEqual(expect.arrayContaining(['check_command', 'verified_at', 'verified_by', 'verification_message']));
+    } finally {
+      columns.close();
+    }
   });
 
   it('reports stale active agents without a daemon heartbeat', () => {

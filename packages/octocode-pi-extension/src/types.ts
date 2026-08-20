@@ -473,6 +473,8 @@ export interface PiInstance {
   on(event: 'session_before_fork', handler: (event: { entryId: string; position: string }, ctx: PiContext) => Promise<{ cancel?: boolean } | void>): void;
   on(event: 'session_before_compact', handler: (event: SessionBeforeCompactEvent, ctx: PiContext) => Promise<{ cancel?: boolean; compaction?: unknown } | void>): void;
   on(event: 'session_compact', handler: (event: SessionCompactEvent, ctx: PiContext) => Promise<void>): void;
+  /** After /tree navigation lands on a new leaf (mirrors Pi's session_tree). */
+  on(event: 'session_tree', handler: (event: { newLeafId?: string; oldLeafId?: string }, ctx: PiContext) => Promise<void>): void;
   on(event: 'model_select', handler: (event: { model: PiModel; previousModel?: PiModel; source: string }, ctx: PiContext) => Promise<void>): void;
   on(event: 'thinking_level_select', handler: (event: ThinkingLevelEvent, ctx: PiContext) => Promise<void>): void;
   on(event: 'before_agent_start', handler: (event: BeforeAgentStartEvent, ctx?: PiContext) => Promise<BeforeAgentStartResult | void>): void;

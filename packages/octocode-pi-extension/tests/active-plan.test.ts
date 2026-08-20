@@ -5,7 +5,7 @@ import type { ToolDefinition } from '../src/types.js';
 import {
   setPlan, addStep, startStep, completeStep, clearPlan, getPlan, renderActivePlanAddendum,
   bumpPlanTurn, STALE_PLAN_TURNS, readPersistedPlanForTests, depsMet, displayStatus,
-  activePlanScope,
+  activePlanScope, adoptPlanFromBranch, setPlanEntryAppender, PLAN_ENTRY_TYPE,
 } from '../src/tools/active-plan.js';
 import { registerPlanTool, refreshPlanUi, handleOctocodePlanCommand } from '../src/tools/plan-tool.js';
 import type { PiContext } from '../src/types.js';
@@ -221,11 +221,9 @@ test('refreshPlanUi renders a live below-editor checklist without compact footer
   assert.ok(rendered && !rendered.cleared, 'below-editor plan widget is rendered while a plan is active');
   assert.equal(rendered!.isFn, true, 'widget content is a renderer fn (not a static string[])');
   assert.equal(rendered!.opts?.placement, 'belowEditor', 'plan checklist sits below the input field');
-  assert.ok(calls.status.some((s) => (s as { text: unknown }).text === undefined), 'legacy compact plan status is cleared instead of duplicated');
-  assert.equal(calls.status.some((s) => String((s as { text: unknown }).text).includes('plan 0/2 · a')), false, 'compact status does not duplicate progress/current step');
+  assert.equal(calls.status.length, 0, 'plan UI does not write a duplicate compact status line');
   clearPlan('/tmp/plan-ui-ws');
   refreshPlanUi(ctx);
-  assert.ok(calls.status.some((s) => (s as { text: unknown }).text === undefined), 'status cleared when empty');
   assert.ok(calls.widget.some((w) => (w as { cleared: boolean }).cleared === true), 'widget cleared when the plan is empty');
 });
 
@@ -431,4 +429,73 @@ test('plan tool state is scoped by Pi session file, not only workspace cwd', asy
 
   clearPlan(activePlanScope(ctx1));
   clearPlan(activePlanScope(ctx2));
+});
+
+// ─── Branch/fork-correct plan state (pi appendEntry pattern) ──────────────────
+//
+// Pi docs: extension state belongs in session entries so /fork and /tree roll
+// it back with the conversation. Every plan mutation appends an
+// `octocode-plan` CustomEntry; on session_start / session_tree the plan is
+// re-adopted from the branch, so a fork from before the plan existed starts
+// clean and a fork mid-plan restores exactly that snapshot.
+
+const BRANCH_CWD = '/tmp/plan-branch-test-ws';
+
+function planEntry(steps: Array<Record<string, unknown>>): Record<string, unknown> {
+  return { type: 'custom', customType: PLAN_ENTRY_TYPE, data: { version: 1, steps } };
+}
+
+test('plan mutations notify the entry appender with the current steps; clear appends empty', () => {
+  const appended: Array<{ steps: Array<{ text: string; status: string }> }> = [];
+  setPlanEntryAppender((steps) => appended.push({ steps: steps.map((s) => ({ text: s.text, status: s.status })) }));
+  try {
+    setPlan(BRANCH_CWD, ['one', 'two']);
+    completeStep(BRANCH_CWD, 1);
+    clearPlan(BRANCH_CWD);
+  } finally {
+    setPlanEntryAppender(null);
+  }
+  assert.equal(appended.length, 3, 'set + complete + clear each append a snapshot entry');
+  assert.deepEqual(appended[0]!.steps.map((s) => s.status), ['doing', 'todo']);
+  assert.equal(appended[1]!.steps[0]!.status, 'done');
+  assert.deepEqual(appended[2]!.steps, [], 'clear appends an empty snapshot so forks after clear start clean');
+});
+
+test('adoptPlanFromBranch restores the LAST plan snapshot in the branch and does not re-append', () => {
+  const appended: unknown[] = [];
+  setPlanEntryAppender(() => appended.push(1));
+  try {
+    setPlan(BRANCH_CWD, ['stale disk step']);
+    appended.length = 0;
+    const adopted = adoptPlanFromBranch(BRANCH_CWD, [
+      { type: 'message' },
+      planEntry([{ text: 'old', status: 'done' }]),
+      { type: 'compaction' },
+      planEntry([{ text: 'fork point step', status: 'doing' }, { text: 'later', status: 'todo' }]),
+      { type: 'message' },
+    ]);
+    assert.equal(adopted, true);
+    assert.deepEqual(getPlan(BRANCH_CWD).map((s) => s.text), ['fork point step', 'later']);
+    assert.equal(appended.length, 0, 'adoption is reconciliation, not a new mutation');
+  } finally {
+    setPlanEntryAppender(null);
+    clearPlan(BRANCH_CWD);
+  }
+});
+
+test('adoptPlanFromBranch with an empty snapshot clears the scope; without any snapshot leaves state alone', () => {
+  try {
+    setPlan(BRANCH_CWD, ['pre-existing']);
+    assert.equal(
+      adoptPlanFromBranch(BRANCH_CWD, [{ type: 'message' }, { type: 'compaction' }]),
+      false,
+      'branches predating the feature leave disk state untouched (back-compat)'
+    );
+    assert.deepEqual(getPlan(BRANCH_CWD).map((s) => s.text), ['pre-existing']);
+
+    assert.equal(adoptPlanFromBranch(BRANCH_CWD, [planEntry([])]), true);
+    assert.deepEqual(getPlan(BRANCH_CWD), [], 'empty snapshot in branch clears the plan');
+  } finally {
+    clearPlan(BRANCH_CWD);
+  }
 });

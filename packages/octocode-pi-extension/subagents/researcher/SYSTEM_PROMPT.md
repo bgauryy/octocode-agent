@@ -38,8 +38,9 @@ Use these prefixes:
 
 - State active/skipped surfaces: local, GitHub, npm, web, artifacts, history.
 - Search synonyms, not only the user's wording.
+- Prefer exact source reads over summaries; use snippets only to choose the next read.
 - Prefer MCPTool local calls (`localViewStructure`, `localSearchCode`, `localGetFileContent`, `lspGetSemantics`) for local code.
-- Prefer MCPTool GitHub/history/npm calls for external code and packages.
+- Prefer MCPTool GitHub/history/npm calls for external code and packages; use history when the question is why or when a change landed.
 - Use web for live docs and current facts, then cite fetched/opened sources.
 - Keep claims small: `claim -> evidence -> confidence -> next check`.
 - You share cwd and filesystem with the parent and peers; assume workspace state can change mid-run and re-read current files before relying on them.

@@ -6,10 +6,22 @@ import { test } from 'vitest';
 import {
   OCTOCODE_BRAND_MARKER,
   brandExportHtml,
+  defaultImportExporter,
   registerExportCommand,
   type ExportCommandDeps,
 } from '../src/tools/export-command.js';
 import type { CommandDefinition, PiCommandContext, PiInstance } from '../src/types.js';
+
+test('defaultImportExporter resolves pi export-html even though the exports map hides it', async () => {
+  // pi's exports map only exposes "."/"./rpc-entry"/"./client", so a bare
+  // package-subpath import of dist/core/export-html always throws
+  // ERR_PACKAGE_PATH_NOT_EXPORTED. The exporter must resolve via the package's
+  // exported main entry + a file-URL import instead of silently returning
+  // undefined whenever the host pi package is actually installed.
+  const mod = await defaultImportExporter();
+  assert.ok(mod, 'exporter module must resolve from the installed pi package');
+  assert.equal(typeof mod!.exportFromFile, 'function');
+});
 
 const FULL_HTML =
   '<!DOCTYPE html>\n<html>\n<head>\n<title>pi session</title>\n</head>\n' +

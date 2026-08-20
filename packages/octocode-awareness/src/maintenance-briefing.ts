@@ -10,7 +10,6 @@
  * sessionCapture:      publishes unresolved session work as an open self-addressed handoff signal.
  * waitForLock:         polls active exclusive locks until clear or timeout.
  */
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { getDeliveryFingerprint, setDeliveryFingerprint } from './db.js';
@@ -18,6 +17,7 @@ import { fillScope } from './git.js';
 import { normalizeArtifact, summarizeText } from './helpers.js';
 import { getMemory } from './memory.js';
 import { getNotifications } from './notifications.js';
+import { compactBriefItems, notificationBriefText, summarizeUtf8 } from './maintenance-brief-format.js';
 import { BriefItem, NotifyGetBriefResult, NotifyGetResult, openRefinementCount } from './maintenance-stale.js';
 
 /**
@@ -49,22 +49,6 @@ export function interventionTokens(text: string): Set<string> {
   );
 }
 
-export function summarizeUtf8(value: string, maxBytes: number): string {
-  const flat = value.replace(/\s+/g, ' ').trim();
-  if (Buffer.byteLength(flat, 'utf8') <= maxBytes) return flat;
-  const suffix = '...';
-  const suffixBytes = Buffer.byteLength(suffix, 'utf8');
-  let bytes = 0;
-  let output = '';
-  for (const character of flat) {
-    const characterBytes = Buffer.byteLength(character, 'utf8');
-    if (bytes + characterBytes + suffixBytes > maxBytes) break;
-    output += character;
-    bytes += characterBytes;
-  }
-  return output.trimEnd() + suffix;
-}
-
 export function isPromptGroundedMemory(
   query: string,
   memory: { task_context: string; observation: string; label: string; failure_signature?: string | null },
@@ -82,63 +66,6 @@ export function isPromptGroundedMemory(
     if (memoryTokens.has(token) && ++overlap >= 2) return true;
   }
   return false;
-}
-
-function briefPath(file: string, workspacePath: string | null): string {
-  const value = file.trim();
-  if (!workspacePath) return value;
-  const prefix = workspacePath.endsWith('/') ? workspacePath : `${workspacePath}/`;
-  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
-}
-
-function briefFiles(files: string[], workspacePath: string | null): string {
-  const unique = [...new Set(files.map(file => briefPath(file, workspacePath)).filter(Boolean))];
-  if (unique.length === 0) return '';
-  const first = summarizeUtf8(unique[0]!, 56);
-  const more = unique.length > 1 ? ` (+${unique.length - 1})` : '';
-  return `files ${unique.length}: ${first}${more}`;
-}
-
-function briefRoute(from: string, target: string): string[] {
-  return [`from ${from}`, target];
-}
-
-function notificationBriefText(params: {
-  kind: string;
-  from: string;
-  target: string;
-  files: string[];
-  subject: string;
-  body?: string;
-  workspacePath: string | null;
-  count?: number;
-}): string {
-  const kind = params.count && params.count > 1 ? `${params.kind} ×${params.count}` : params.kind;
-  const parts = [
-    `📨 ${kind}`,
-    ...briefRoute(params.from, params.target),
-    summarizeUtf8(params.subject, 72),
-    briefFiles(params.files, params.workspacePath),
-  ].filter(Boolean);
-  const bodySuffix = params.body ? ` — ${summarizeUtf8(params.body, 60)}` : '';
-  return `${parts.join(' · ')}${bodySuffix}`;
-}
-
-function compactBriefItems(items: BriefItem[]): BriefItem[] {
-  const grouped = new Map<string, BriefItem & { duplicateCount: number }>();
-  for (const item of items) {
-    const key = `${item.kind}\0${item.text}`;
-    const existing = grouped.get(key);
-    if (existing) {
-      existing.duplicateCount += 1;
-      existing.importance = Math.max(existing.importance ?? 0, item.importance ?? 0) || undefined;
-      continue;
-    }
-    grouped.set(key, { ...item, duplicateCount: 1 });
-  }
-  return [...grouped.values()].map(({ duplicateCount, ...item }) => duplicateCount > 1
-    ? { ...item, text: `${item.text} (duplicate ×${duplicateCount})` }
-    : item);
 }
 
 export function notifyGet(
@@ -415,40 +342,4 @@ export function notifyGet(
   }
 
   return result;
-}
-
-/**
- * Parse `git status --porcelain=v1` / `--short` lines into paths.
- * Do NOT trim before reading the XY columns — a leading space is significant
- * (`" M file.txt"` must become `file.txt`, not `ile.txt`).
- */
-export function parseGitStatusShortLines(stdout: string): string[] {
-  const files: string[] = [];
-  for (const rawLine of String(stdout).split('\n')) {
-    if (!rawLine || rawLine.length < 4) continue;
-    const xy = rawLine.slice(0, 2);
-    let pathPart = rawLine.slice(3);
-    // Rename/copy: keep the destination path after " -> ".
-    if (xy.includes('R') || xy.includes('C')) {
-      const arrow = pathPart.indexOf(' -> ');
-      if (arrow >= 0) pathPart = pathPart.slice(arrow + 4);
-    }
-    const filePath = pathPart.trim();
-    if (filePath) files.push(filePath);
-  }
-  return files;
-}
-
-export function gitDirtyFiles(workspacePath: string | null): string[] {
-  if (!workspacePath) return [];
-  try {
-    const result = spawnSync('git', ['-C', workspacePath, 'status', '--porcelain=v1'], {
-      encoding: 'utf8',
-      timeout: 5000,
-    });
-    if (result.status !== 0) return [];
-    return parseGitStatusShortLines(String(result.stdout));
-  } catch {
-    return [];
-  }
 }

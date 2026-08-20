@@ -131,13 +131,41 @@ function ellipsize(text: string, max: number): string {
 }
 
 /**
+ * Footer density modes (review follow-up: the toolbar should be tunable noise).
+ * - compact: high-signal only — context gauge, worker count, blocked/failed
+ *   attention flags, git branch.
+ * - default: everything except the session-duration segment (rarely actionable).
+ * - full: every segment, including session duration.
+ */
+export type FooterDensity = 'compact' | 'default' | 'full';
+
+let footerDensity: FooterDensity = 'default';
+
+export function getFooterDensity(): FooterDensity {
+  return footerDensity;
+}
+
+export function setFooterDensity(density: FooterDensity): void {
+  footerDensity = density;
+}
+
+/** Parse a user-supplied density name; undefined for anything unrecognized. */
+export function parseFooterDensity(value: string | undefined): FooterDensity | undefined {
+  const normalized = (value ?? '').trim().toLowerCase();
+  return normalized === 'compact' || normalized === 'default' || normalized === 'full' ? normalized : undefined;
+}
+
+/**
  * Ordered footer segments with per-segment colour. Optional segments (agents,
  * attention flags, git) are dropped when empty. Attention flags
  * (blocked/failed workers) get warning/error colour so a stuck worker is
- * visible in the toolbar without opening /octocode-agents.
+ * visible in the toolbar without opening /octocode-agents. `density` trims
+ * lower-signal segments; it defaults to the session-wide mode set by
+ * /octocode-footer.
  */
-export function buildFooterSegments(input: FooterInput): FooterSegment[] {
+export function buildFooterSegments(input: FooterInput, density: FooterDensity = footerDensity): FooterSegment[] {
   const segs: FooterSegment[] = [];
+  const compact = density === 'compact';
 
   if (input.contextWindow > 0) {
     const gauge = contextGauge((input.tokens / input.contextWindow) * 100);
@@ -147,21 +175,23 @@ export function buildFooterSegments(input: FooterInput): FooterSegment[] {
     });
   }
 
-  segs.push({ text: `turns ${input.completedTurns}` });
+  if (!compact) {
+    segs.push({ text: `turns ${input.completedTurns}` });
 
-  segs.push({
-    text: input.activeTurnMs !== undefined
-      ? `active ${formatDurationShort(input.activeTurnMs)}`
-      : `last ${formatDurationShort(input.lastTurnMs)}`,
-  });
+    segs.push({
+      text: input.activeTurnMs !== undefined
+        ? `active ${formatDurationShort(input.activeTurnMs)}`
+        : `last ${formatDurationShort(input.lastTurnMs)}`,
+    });
 
-  segs.push({ text: `session ${formatDurationShort(input.sessionMs)}` });
+    if (density === 'full') segs.push({ text: `session ${formatDurationShort(input.sessionMs)}` });
+  }
 
   if (input.activeWorkers > 0) {
-    const label = input.agentDoing ? ` ‣ ${ellipsize(input.agentDoing, INLINE_STATUS_MAX)}` : '';
+    const label = !compact && input.agentDoing ? ` ‣ ${ellipsize(input.agentDoing, INLINE_STATUS_MAX)}` : '';
     segs.push({ text: `agents ${input.activeWorkers}${label}` });
   }
-  if (input.awarenessAgents && input.awarenessAgents > 0) {
+  if (!compact && input.awarenessAgents && input.awarenessAgents > 0) {
     segs.push({ text: `aware-agents ${input.awarenessAgents}`, token: 'brand' });
   }
   if (input.blockedWorkers && input.blockedWorkers > 0) {
@@ -171,7 +201,7 @@ export function buildFooterSegments(input: FooterInput): FooterSegment[] {
     segs.push({ text: `✗${input.failedWorkers}`, token: 'error' });
   }
 
-  if (input.dial) {
+  if (!compact && input.dial) {
     segs.push({ text: `◉ ${input.dial}`, token: 'brand' });
   }
 

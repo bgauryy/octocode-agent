@@ -17,9 +17,11 @@ to fake in chat:
 - Check receipts for done tasks;
 - Local memory store/recall.
 
-That is it. No signal threads, reflection, docs catalog, maintenance loop,
-embeddings, or projections. The only optional hook is a small pre-edit
-lock-conflict gate for Pi/Claude/Cursor/Codex write tools.
+That is it. Lite stores repo-local coordination history, not git history, diffs,
+or a semantic repo index. Agents should pair it with normal source-of-truth checks
+such as `git status`, diffs, logs, and tests. No signal threads, reflection, docs
+catalog, maintenance loop, embeddings, or projections. The only optional hook is
+a small pre-edit lock-conflict gate for Pi/Claude/Cursor/Codex write tools.
 
 ## Install / run
 
@@ -28,6 +30,18 @@ Requires Node 22.13+ for `node:sqlite`.
 ```bash
 npx @octocodeai/octocode-awareness-lite status --workspace "$PWD"
 ```
+
+There is no required init step. The first command creates the local DB. Install
+or expose `skills/octocode-awareness-lite/` to the agent host once, then the
+repo-level prompt can be as small as:
+
+> Use skill `octocode-awareness-lite`. Use the local `octocode-awareness-lite`
+> CLI in this repo before edits, during long work, and before final response.
+> Join with a stable agent id, inspect status/tasks/work/locks/messages/memory,
+> claim or create scoped tasks, declare touched files with `work`, lock only risky
+> files, run checks before marking done, and record only verified reusable memory.
+> Install the optional Lite pre-edit hook only when hook-based lock protection is
+> desired.
 
 By default the database is created at:
 
@@ -84,12 +98,21 @@ octocode-awareness-lite memory prune --older-than 90d --label GOTCHA       # dry
 octocode-awareness-lite memory prune --older-than 90d --label GOTCHA --confirm
 
 # Optional: install only the Lite pre-edit lock gate for another host.
+# Dry-run first: it prints the settings path, merged hook JSON, and command.
+octocode-awareness-lite hooks install --host claude --project-dir "$PWD" --dry-run
+octocode-awareness-lite hooks install --host cursor --project-dir "$PWD" --dry-run
+octocode-awareness-lite hooks install --host codex --project-dir "$PWD" --dry-run
+
+# After reviewing the JSON, repeat without --dry-run to write one file:
+#   claude -> .claude/settings.json
+#   cursor -> .cursor/hooks.json
+#   codex  -> .codex/hooks.json
 octocode-awareness-lite hooks install --host claude --project-dir "$PWD"
-octocode-awareness-lite hooks install --host cursor --project-dir "$PWD"
-octocode-awareness-lite hooks install --host codex --project-dir "$PWD"
 ```
 
-All commands print compact JSON.
+All commands print compact JSON. `hooks pre-edit` reads a write-tool event as JSON
+from stdin or `--event-json`, checks target files against active Lite locks, prints
+`ok/blocked/conflicts`, and exits `2` when another agent owns a conflicting lock.
 
 ## Library
 
@@ -109,6 +132,11 @@ aw.close();
 
 A tiny skill is published under `skills/octocode-awareness-lite/`. Load it when an
 agent should coordinate through lite instead of the full Awareness system.
+
+The skill teaches agents the approach: use the local DB as a shared coordination
+ledger, not as proof of code truth; inspect peers before editing; keep task claims
+small; declare manual work presence; use locks only for non-mergeable risk; verify
+with real checks; and preserve only useful repo memory.
 
 1. `schema` when unsure about commands/entities.
 2. `status --stale-after 30m` to find the DB, pending checks, and stale active agents.

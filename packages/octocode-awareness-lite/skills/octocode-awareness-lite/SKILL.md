@@ -12,6 +12,24 @@ The goal is **repo situational awareness**: before editing, during long work, an
 before finishing, inspect the shared local SQLite ledger so you know what other
 agents planned, claimed, touched, locked, verified, handed off, or remembered.
 
+## Agent bootstrap prompt
+
+If a repo wants Lite coordination, the only prompt an agent should need is:
+
+> Use the `octocode-awareness-lite` skill. Coordinate through the local
+> `octocode-awareness-lite` CLI in this repository before editing, during long
+> work, and before finishing. Join with one stable agent id, inspect status,
+> plans, tasks, work, locks, handoffs, checks, messages, and memory; claim or
+> create scoped tasks; declare touched files with `work`; lock only risky files;
+> run checks before marking tasks done; record reusable repo memory only when it
+> is verified. Install the optional Lite pre-edit hook only when the user or repo
+> asks for hook-based lock conflict protection.
+
+There is no required `init` command. The first CLI command creates the local DB at
+`<workspace>/.octocode-lite/awareness-lite.sqlite3` unless `--db` is provided.
+Install the published skill once in the host if the host does not already discover
+it; then trigger it by saying “use skill `octocode-awareness-lite`”.
+
 ## Use the lite CLI
 
 Use `octocode-awareness-lite` for this workflow.
@@ -36,23 +54,32 @@ All commands print JSON. Run `schema` instead of guessing command shapes.
 
 ## What lite tracks
 
-- **Plans** — shared work areas; `OPEN` means work may still be active, `DONE` means completed.
-- **Tasks** — claimable work units; `agentId`, `status`, `filePath`, and `checkCommand` show ownership and proof expectations.
+All Lite state is local to the repository DB unless `--db` points elsewhere.
+
+- **Plans** — shared work areas with `planId`, title, goal, `OPEN`/`DONE`, and timestamps.
+- **Tasks** — claimable work units with `taskId`, `planId`, title, `filePath`, `checkCommand`, owner `agentId`, status, done time, and verification receipt fields.
 - **Work** — manual advisory file presence; tells peers what files you are touching without blocking them.
-- **Locks** — advisory exclusive file claims for sensitive/non-mergeable edits.
+- **Locks** — advisory exclusive file claims for sensitive/non-mergeable edits; the optional hook checks these before writes.
 - **Checks** — verification debt; done tasks are not trustworthy until their check receipt is marked.
-- **Handoffs** — manual continuation notes; not a signal thread or task queue.
+- **Handoffs** — manual continuation notes with related files; not a signal thread or task queue.
 - **Agents** — lightweight identity records (`ACTIVE`, `IDLE`, `LEFT`) for peers sharing one repo DB; `--stale-after` interprets `lastSeenAt` without a daemon.
 - **Messages** — tiny per-agent inbox/broadcast notes for active coordination; old messages can be pruned explicitly, dry-run first.
-- **Memory** — short local gotchas/decisions that future agents can recall; stale memory can be pruned explicitly by age and optional label.
+- **Memory** — short repo-local gotchas/decisions that future agents can recall by text, tag, or label; stale memory can be pruned explicitly by age and optional label.
 - **Schema** — machine-readable entity and command shapes.
 
+Lite does **not** store git history, diffs, or a semantic repo index. Treat memory,
+handoffs, plans, and checks as repo-local coordination history; use `git status`,
+diffs, logs, and tests for source-of-truth code history and proof.
+
 Lite has only one optional hook: `hooks pre-edit`, a small lock-conflict gate for
-Pi/Claude/Cursor/Codex write tools. It does not auto-record work, create handoffs,
-or enforce verification. There is no signal thread, reflection, embeddings,
-remote sync, generated docs, or live heartbeat daemon. Lite only knows touched files you
-manually declare with `work`, and stale agents are only reported from `lastSeenAt`, so always combine it with normal repo inspection:
-`git status`, diffs, and tests.
+Pi/Claude/Cursor/Codex write tools. It reads the host's write-tool event JSON,
+extracts target paths, checks active Lite locks, prints `ok/blocked/conflicts`,
+and exits `2` when another agent owns a conflicting lock. It does not auto-record
+work, create handoffs, or enforce verification. There is no signal thread,
+reflection, embeddings, remote sync, generated docs, or live heartbeat daemon.
+Lite only knows touched files you manually declare with `work`, and stale agents
+are only reported from `lastSeenAt`, so always combine it with normal repo
+inspection: `git status`, diffs, and tests.
 
 ## Continuous awareness loop
 
@@ -72,8 +99,9 @@ octocode-awareness-lite lock list --workspace "$PWD"
 octocode-awareness-lite handoff list --workspace "$PWD"
 octocode-awareness-lite check audit --workspace "$PWD"
 octocode-awareness-lite memory recall --workspace "$PWD" --query "<task topic>"
-# Optional host hook installer: only a pre-edit Lite lock-conflict gate.
-octocode-awareness-lite hooks install --workspace "$PWD" --host claude --project-dir "$PWD"
+# Optional host hook installer: dry-run first; it writes .claude/settings.json,
+# .cursor/hooks.json, or .codex/hooks.json only when repeated without --dry-run.
+octocode-awareness-lite hooks install --workspace "$PWD" --host claude --project-dir "$PWD" --dry-run
 ```
 
 How to read it:
@@ -133,10 +161,19 @@ octocode-awareness-lite work touch --workspace "$PWD" --file path/to/file --agen
 ### 5. Lock risky files only when needed
 
 Use `lock` for sensitive paths where simultaneous edits would be hard to merge or
-would invalidate each other.
+would invalidate each other. If the optional pre-edit hook is installed, it only
+blocks writes that conflict with active locks owned by another agent; it does not
+replace task claims, `work` presence, or real verification.
 
 ```bash
 octocode-awareness-lite lock acquire --workspace "$PWD" --file path/to/file --agent-id "$AGENT_ID" --reason "editing" --ttl 1800
+```
+
+Optional hook install, when the user or repo asks for hook-based protection:
+
+```bash
+octocode-awareness-lite hooks install --workspace "$PWD" --host claude --project-dir "$PWD" --dry-run
+# Review the returned JSON/settings path, then repeat without --dry-run to write it.
 ```
 
 ### 6. Refresh awareness during long work

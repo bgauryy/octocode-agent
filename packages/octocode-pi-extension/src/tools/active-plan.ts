@@ -135,9 +135,61 @@ function ensureLoaded(cwd: string): void {
   if (disk.length > 0) plans.set(cwd, disk);
 }
 
+// ─── Branch/fork-correct persistence (pi appendEntry pattern) ─────────────────
+//
+// Pi's guidance: extension state belongs in session entries so /fork and /tree
+// roll it back with the conversation. Disk persistence alone is branch-blind —
+// a fork keeps the forked-from plan forever. So every mutation ALSO appends an
+// `octocode-plan` CustomEntry snapshot (state channel, never in LLM context)
+// via the appender wired in index.ts, and session_start / session_tree re-adopt
+// the last snapshot found on the current branch.
+
+/** customType of the plan-snapshot session entries. */
+export const PLAN_ENTRY_TYPE = 'octocode-plan';
+
+let planEntryAppender: ((steps: PlanStep[]) => void) | null = null;
+
+/** Wire (or clear) the host-side appender that snapshots plans into session entries. */
+export function setPlanEntryAppender(appender: ((steps: PlanStep[]) => void) | null): void {
+  planEntryAppender = appender;
+}
+
+function appendPlanEntry(steps: PlanStep[]): void {
+  try {
+    planEntryAppender?.(steps);
+  } catch {
+    // Session-entry snapshots are best-effort; disk persistence still holds.
+  }
+}
+
+/**
+ * Adopt the newest plan snapshot found in the session branch (root→leaf).
+ * Returns false — leaving current state untouched — when the branch carries no
+ * snapshot at all (sessions predating this feature). Adoption is
+ * reconciliation, not a mutation: it never re-appends a session entry.
+ */
+export function adoptPlanFromBranch(cwd: string, branchEntries: unknown[]): boolean {
+  for (let i = branchEntries.length - 1; i >= 0; i -= 1) {
+    const entry = branchEntries[i];
+    if (!entry || typeof entry !== 'object') continue;
+    const rec = entry as Record<string, unknown>;
+    if (rec.type !== 'custom' || rec.customType !== PLAN_ENTRY_TYPE) continue;
+    const steps = sanitizeStored(rec.data);
+    if (steps.length === 0) plans.delete(cwd);
+    else plans.set(cwd, steps);
+    loaded.add(cwd);
+    turnsSinceUpdate.set(cwd, 0);
+    writeToDisk(cwd, steps);
+    return true;
+  }
+  return false;
+}
+
 /** Persist the current in-memory plan for a workspace. */
 function persist(cwd: string): void {
-  writeToDisk(cwd, plans.get(cwd) ?? []);
+  const steps = plans.get(cwd) ?? [];
+  writeToDisk(cwd, steps);
+  appendPlanEntry(steps);
 }
 
 /** Test hook: read the persisted plan straight from disk, bypassing the in-memory cache. */
@@ -172,6 +224,14 @@ function clean(text: string): string {
 export function getPlan(cwd: string): PlanStep[] {
   ensureLoaded(cwd);
   return plans.get(cwd) ?? [];
+}
+
+/**
+ * Whether the scope still has unfinished plan steps — the "active work remains"
+ * signal used to decide if a post-compaction continuation turn is warranted.
+ */
+export function hasIncompletePlanSteps(cwd: string): boolean {
+  return getPlan(cwd).some((step) => step.status !== 'done');
 }
 
 function normalizeInput(step: StepInput): { text: string; activeForm?: string; dependsOn?: number[] } {
@@ -274,6 +334,8 @@ export function clearPlan(cwd: string): void {
   turnsSinceUpdate.delete(cwd);
   loaded.add(cwd);
   writeToDisk(cwd, []);
+  // Snapshot the cleared state too: a fork taken after clear must start clean.
+  appendPlanEntry([]);
 }
 
 export const MARK: Record<StepStatus, string> = { todo: '[ ]', doing: '[~]', done: '[x]' };
