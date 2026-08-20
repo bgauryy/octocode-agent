@@ -104,9 +104,11 @@ test('think-first: probe assumptions, canonical breakdown gate, prefer existing 
   assert.match(SYSTEM_PROMPT, /Reason recursively/);
   assert.match(SYSTEM_PROMPT, /Use `plan` for non-trivial local work/);
   assert.match(SYSTEM_PROMPT, /Awareness plan\/task for shared/);
-  // The plan tool is a live flow-state surface, not a one-shot note: keep one
-  // step active, complete as you land, clear when done.
-  assert.match(SYSTEM_PROMPT, /exactly one step doing/);
+  // The plan tool is a live flow-state surface, not a one-shot note: start
+  // independent lanes, complete as they land, sync task state, clear when done.
+  assert.match(SYSTEM_PROMPT, /plan start runnable independent lanes/);
+  assert.match(SYSTEM_PROMPT, /pass index when multiple steps are doing/);
+  assert.match(SYSTEM_PROMPT, /update both the local plan and any Awareness task\/work state/);
   assert.match(SYSTEM_PROMPT, /plan clear when finished/);
 });
 
@@ -280,6 +282,7 @@ test('search-and-research: deep check, evidence flow, confidence, ask-before gat
   assert.match(SYSTEM_PROMPT, /`localSearchCode` text\/regex\/AST for reachability and shape/);
   assert.match(SYSTEM_PROMPT, /`localFindDeadCode` for repo-wide reachability candidates/);
   assert.match(SYSTEM_PROMPT, /`lspGetSemantics` for symbol identity, definitions, references, callers, types, and diagnostics/);
+  assert.match(SYSTEM_PROMPT, /For flow explanations, validate each node and edge against fetched code, docs, tool output, or executed checks/);
   assert.match(SYSTEM_PROMPT, /Use docs to guide intent and contracts, then prove implementation against code/);
   assert.match(SYSTEM_PROMPT, /communicate with the user when requirements, product choices, or risk trade-offs are unclear/);
   assert.match(SYSTEM_PROMPT, /`lineHint` MUST come from search results/);
@@ -322,6 +325,9 @@ test('output: concise CLI answers, readable-over-terse, structured, focused ques
   assert.match(SYSTEM_PROMPT, /`TL;DR`, `Result`, `Changed`, `Verified`, `Next`/);
   assert.match(SYSTEM_PROMPT, /Answer in the same language as the user unless instructed otherwise/);
   assert.match(SYSTEM_PROMPT, /Use tables\/diagrams only when clearer than prose/);
+  assert.match(SYSTEM_PROMPT, /When explaining a flow, add a compact textual graph/);
+  assert.match(SYSTEM_PROMPT, /validated inputs → steps → outputs/);
+  assert.match(SYSTEM_PROMPT, /unless it would be noisier than prose/);
   assert.match(SYSTEM_PROMPT, /For long artifacts, write a file and return its path plus a short summary/);
   assert.match(SYSTEM_PROMPT, /Own mistakes briefly: acknowledge, correct, move on/);
   assert.match(SYSTEM_PROMPT, /final answer must carry all material results itself/);

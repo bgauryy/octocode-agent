@@ -1,58 +1,30 @@
-/**
- * Octocode "surface" verbs — thin, honest wrappers over the bundled Awareness CLI
- * and the external `octocode` CLI. The launcher owns no research/coordination logic;
- * these verbs just build the right command line and forward args + exit code.
- *
- *   memory / awareness → bundled  node <pi-extension>/dist/awareness/octocode-awareness.js
- *   research / tools / skills → external  npx octocode <search|tools|skill>
- *
- * No side effects at import (safe to unit-test).
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
-
-const _require = createRequire(import.meta.url);
-
-const CORE_PACKAGE = '@octocodeai/pi-extension';
+import { getAwarenessCLIPath } from './assets.js';
 
 /** A command to spawn, or an actionable error explaining why it could not be built. */
 export type SurfaceSpec = { cmd: string; args: string[] } | { error: string };
 
-/** Resolve the installed pi-extension package root (or null). Mirrors launcher.resolvePackageJson. */
-function resolveCoreRoot(): string | null {
-  try {
-    return path.dirname(_require.resolve(`${CORE_PACKAGE}/package.json`));
-  } catch {
-    /* exports-gated — scan the resolve chain */
-  }
-  const segments = CORE_PACKAGE.split('/');
-  for (const base of _require.resolve.paths(CORE_PACKAGE) ?? []) {
-    const pj = path.join(base, ...segments, 'package.json');
-    if (fs.existsSync(pj)) return path.dirname(pj);
-  }
-  return null;
-}
+/** Octocode launcher surface verbs owned by the core extension. */
+export type SurfaceVerb = 'research' | 'memory' | 'awareness' | 'tools' | 'skills';
 
 /**
- * Resolve the bundled Awareness CLI path.
- * Precedence: OCTOCODE_AWARENESS_CLI env → installed pi-extension dist → null.
+ * Resolve the bundled Awareness Lite CLI path.
+ *
+ * Precedence: OCTOCODE_AWARENESS_CLI env -> bundled/resolved pi-extension asset.
+ * Returns null only when neither path exists; unlike getAwarenessCLIPath(), this
+ * does not return a best-effort missing path because launch surfaces need a real
+ * executable target before spawning node.
  */
 export function resolveAwarenessCli(env: NodeJS.ProcessEnv = process.env): string | null {
   const fromEnv = env.OCTOCODE_AWARENESS_CLI;
   if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
-  const root = resolveCoreRoot();
-  if (!root) return null;
-  const bundled = path.join(root, 'dist', 'awareness', 'octocode-awareness.js');
+  const bundled = getAwarenessCLIPath();
   return fs.existsSync(bundled) ? bundled : null;
 }
 
-/** The launcher surface verbs. */
-export type SurfaceVerb = 'research' | 'memory' | 'awareness' | 'tools' | 'skills';
-
 /**
- * Build the spawn spec for a surface verb.
+ * Build the spawn spec for an Octocode surface verb.
  * `rest` is the user's trailing args (already stripped of the verb token).
  */
 export function buildSurfaceSpec(
@@ -70,7 +42,6 @@ export function buildSurfaceSpec(
             'Awareness CLI not found. Install/refresh the core: octocode-agent update core',
         };
       }
-      // `memory` is a noun of the awareness CLI; `awareness` passes through raw.
       const prefix = verb === 'memory' ? ['memory'] : [];
       return { cmd: 'node', args: [cli, ...prefix, ...rest] };
     }
@@ -87,14 +58,12 @@ export function buildSurfaceSpec(
   }
 }
 
-// ── Profiles ────────────────────────────────────────────────────────────────────
-
 /** A named preset: model + permission + tool scoping, applied as Pi flags at launch. */
 export interface Profile {
   model?: string;
   tools?: string;
   excludeTools?: string;
-  /** 'always' → non-interactive trust (-a); 'never' → -na; 'ask' → no flag. */
+  /** 'always' -> non-interactive trust (-a); 'never' -> -na; 'ask' -> no flag. */
   approve?: 'always' | 'never' | 'ask';
 }
 

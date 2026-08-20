@@ -15,7 +15,7 @@ import type { PiCommandContext, PiContext, PiInstance } from '../src/types.js';
 // ─── Fakes ───────────────────────────────────────────────────────────────────
 
 interface FakePi {
-  sent: Array<{ text: string; opts?: { deliverAs?: string } }>;
+  sent: Array<{ text: string; opts?: { deliverAs?: string; expandPromptTemplates?: boolean } }>;
   commands: Map<string, { description: string; handler(args: string, ctx: PiCommandContext): Promise<void> }>;
   shortcuts: Map<string, { description: string; handler(ctx: PiContext): Promise<void> }>;
   shortcutThrows?: boolean;
@@ -31,7 +31,7 @@ function makeFakePi(opts: { shortcutThrows?: boolean; getCommands?: () => Array<
     pi: undefined as unknown as PiInstance,
   };
   state.pi = {
-    sendUserMessage: (text: string, o?: { deliverAs?: string }) => {
+    sendUserMessage: (text: string, o?: { deliverAs?: string; expandPromptTemplates?: boolean }) => {
       state.sent.push({ text, opts: o });
     },
     registerCommand: (name: string, def: unknown) => {
@@ -103,7 +103,7 @@ test('buildPaletteItems returns an empty list for empty deps', () => {
 
 // ─── dispatchPaletteSelection ────────────────────────────────────────────────
 
-test('dispatch: no-arg command is sent via sendUserMessage with deliverAs followUp', async () => {
+test('dispatch: no-arg command is sent via sendUserMessage with deliverAs followUp and command expansion', async () => {
   const fake = makeFakePi();
   const handled = await dispatchPaletteSelection(
     'cmd:octocode-status',
@@ -112,7 +112,7 @@ test('dispatch: no-arg command is sent via sendUserMessage with deliverAs follow
     { commands: [{ name: 'octocode-status' }] },
   );
   assert.equal(handled, true);
-  assert.deepEqual(fake.sent, [{ text: '/octocode-status', opts: { deliverAs: 'followUp' } }]);
+  assert.deepEqual(fake.sent, [{ text: '/octocode-status', opts: { deliverAs: 'followUp', expandPromptTemplates: true } }]);
 });
 
 test('dispatch: arg-taking command prefills the editor instead of sending', async () => {
@@ -131,11 +131,11 @@ test('dispatch: arg-taking command prefills the editor instead of sending', asyn
   assert.deepEqual(fake.sent, []);
 });
 
-test('dispatch: unknown command name still sends as followUp (safe default)', async () => {
+test('dispatch: unknown command name still sends as followUp with command expansion (safe default)', async () => {
   const fake = makeFakePi();
   const handled = await dispatchPaletteSelection('cmd:mystery', fake.pi, makeCtx(), {});
   assert.equal(handled, true);
-  assert.deepEqual(fake.sent, [{ text: '/mystery', opts: { deliverAs: 'followUp' } }]);
+  assert.deepEqual(fake.sent, [{ text: '/mystery', opts: { deliverAs: 'followUp', expandPromptTemplates: true } }]);
 });
 
 test('dispatch: action invokes the injected handler with the ctx', async () => {
@@ -211,7 +211,7 @@ test('palette command handler opens the overlay and dispatches the picked comman
     },
   });
   await fake.commands.get('octocode-palette')!.handler('', ctx);
-  assert.deepEqual(fake.sent, [{ text: '/octocode-status', opts: { deliverAs: 'followUp' } }]);
+  assert.deepEqual(fake.sent, [{ text: '/octocode-status', opts: { deliverAs: 'followUp', expandPromptTemplates: true } }]);
 });
 
 test('openCommandPalette merges injected commands over pi.getCommands and honors takesArgs', async () => {

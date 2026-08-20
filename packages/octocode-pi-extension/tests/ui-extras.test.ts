@@ -86,18 +86,18 @@ test('buildWorkingMessage paints the stable word and animated suffix separately'
 test('buildFooterSegments shows the active worker progress note next to the agents count', () => {
   const segs = buildFooterSegments({
     tokens: 0, contextWindow: 0, completedTurns: 0, activeTurnMs: 0,
-    sessionMs: 0, activeWorkers: 2, agentDoing: 'Editing agent-tools.ts', planDone: 0, planTotal: 0, dirty: false,
+    sessionMs: 0, activeWorkers: 2, agentDoing: 'Editing agent-tools.ts', dirty: false,
   });
   const seg = segs.find((s) => s.text.startsWith('agents '))!;
   assert.match(seg.text, /^agents 2 ‣ /);
   assert.match(seg.text, /Editing/);
 });
 
-test('buildFooterSegments composes context %, tokens, turns, timing, workers, plan', () => {
+test('buildFooterSegments composes context %, tokens, turns, timing, workers, awareness agents, and git without plan duplication', () => {
   const segs = buildFooterSegments({
     tokens: 16_000, contextWindow: 200_000,
     completedTurns: 3, activeTurnMs: 9000, lastTurnMs: undefined,
-    sessionMs: 120_000, activeWorkers: 2, planDone: 1, planTotal: 4,
+    sessionMs: 120_000, activeWorkers: 2, awarenessAgents: 4,
     branch: 'main', dirty: true,
   });
   const joined = segs.map((s) => s.text).join(' | ');
@@ -109,7 +109,8 @@ test('buildFooterSegments composes context %, tokens, turns, timing, workers, pl
   assert.match(joined, /turns 3/);
   assert.match(joined, /active 9s/);
   assert.match(joined, /agents 2/);
-  assert.match(joined, /plan 1\/4/);
+  assert.match(joined, /aware-agents 4/);
+  assert.doesNotMatch(joined, /plan \d/);
   assert.match(joined, /main\*/);      // dirty marker
 });
 
@@ -119,8 +120,6 @@ test('buildFooterSegments colors the context gauge by fill severity', () => {
     activeTurnMs: 0,
     sessionMs: 0,
     activeWorkers: 0,
-    planDone: 0,
-    planTotal: 0,
     dirty: false,
   };
 
@@ -134,7 +133,7 @@ test('buildFooterSegments flags blocked/failed workers with warning/error colour
     tokens: 0, contextWindow: 0, completedTurns: 1,
     activeTurnMs: 1000, sessionMs: 5000,
     activeWorkers: 3, blockedWorkers: 1, failedWorkers: 2,
-    planDone: 0, planTotal: 0, dirty: false,
+    dirty: false,
   });
   const blocked = segs.find((s) => s.text.includes('⚠'));
   const failed = segs.find((s) => s.text.includes('✗'));
@@ -144,43 +143,29 @@ test('buildFooterSegments flags blocked/failed workers with warning/error colour
   assert.equal(failed?.token, 'error');
 });
 
-test('buildFooterSegments appends the current plan doing step, ellipsized', () => {
-  const long = buildFooterSegments({
-    tokens: 0, contextWindow: 0, completedTurns: 0,
-    activeTurnMs: 0, sessionMs: 0, activeWorkers: 0,
-    planDone: 2, planTotal: 5,
-    planDoing: 'migrate renderers onto the shared palette module now',
-    dirty: false,
-  }).find((s) => s.text.startsWith('plan '))!;
-  assert.match(long.text, /^plan 2\/5 ‣ /);
-  assert.match(long.text, /…$/); // long label is truncated
-
-  const short = buildFooterSegments({
-    tokens: 0, contextWindow: 0, completedTurns: 0,
-    activeTurnMs: 0, sessionMs: 0, activeWorkers: 0,
-    planDone: 1, planTotal: 2, planDoing: 'edit footer',
-    dirty: false,
-  }).find((s) => s.text.startsWith('plan '))!;
-  assert.equal(short.text, 'plan 1/2 ‣ edit footer');
-});
-
-test('buildFooterSegments shows a branded dial segment before the plan segment when set', () => {
+test('buildFooterSegments never renders plan state in the bottom toolbar', () => {
   const segs = buildFooterSegments({
     tokens: 0, contextWindow: 0, completedTurns: 0,
     activeTurnMs: 0, sessionMs: 0, activeWorkers: 0,
-    dial: 'deep', planDone: 1, planTotal: 3, dirty: false,
+    dirty: false,
+  });
+  assert.equal(segs.find((s) => s.text.startsWith('plan ')), undefined);
+});
+
+test('buildFooterSegments shows a branded dial segment without depending on plan placement', () => {
+  const segs = buildFooterSegments({
+    tokens: 0, contextWindow: 0, completedTurns: 0,
+    activeTurnMs: 0, sessionMs: 0, activeWorkers: 0,
+    dial: 'deep', dirty: false,
   });
   const dial = segs.find((s) => s.text.includes('◉'))!;
   assert.equal(dial.text, '◉ deep');
   assert.equal(dial.token, 'brand');
-  const dialIndex = segs.indexOf(dial);
-  const planIndex = segs.findIndex((s) => s.text.startsWith('plan '));
-  assert.ok(dialIndex < planIndex, 'dial segment precedes the plan segment');
 
   const without = buildFooterSegments({
     tokens: 0, contextWindow: 0, completedTurns: 0,
     activeTurnMs: 0, sessionMs: 0, activeWorkers: 0,
-    planDone: 0, planTotal: 0, dirty: false,
+    dirty: false,
   });
   assert.equal(without.find((s) => s.text.includes('◉')), undefined);
 });
@@ -189,7 +174,7 @@ test('buildFooterSegments omits optional segments cleanly', () => {
   const segs = buildFooterSegments({
     tokens: 0, contextWindow: 0, completedTurns: 0,
     activeTurnMs: undefined, lastTurnMs: 1200, sessionMs: 5000,
-    activeWorkers: 0, planDone: 0, planTotal: 0, branch: undefined, dirty: false,
+    activeWorkers: 0, branch: undefined, dirty: false,
   });
   const joined = segs.map((s) => s.text).join(' | ');
   assert.doesNotMatch(joined, /agents/);

@@ -44,6 +44,7 @@ import {
 import { assertPathAllowed } from '../src/tools/path-guard.js';
 import { patchGlobalMcpOctocodeEnv } from '../src/tools/mcp-tool.js';
 import { resetCompactionResumeStateForTests } from '../src/tools/compaction-resume.js';
+import { markCompactionResumeRequested } from '../src/tools/compaction-state.js';
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
 const distDir = path.join(packageRoot, 'dist');
@@ -1842,6 +1843,8 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
       },
       setStatus: (key: string, value: string) =>
         calls.push(['status', key, value]),
+      setWidget: (_key: string, _content: unknown, opts?: { placement?: string }) =>
+        calls.push(['widget', opts?.placement ?? 'default']),
       setWorkingIndicator: (indicator: { frames: string[]; intervalMs?: number }) =>
         calls.push(['indicator', indicator.frames.join(''), String(indicator.intervalMs)]),
       setWorkingMessage: (message?: string) => calls.push(['working', message ?? '']),
@@ -1856,6 +1859,20 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
     ['indicator', '<✦><✧><✶><✺><✹><✷><✶><✧>', '120'],
     ['working', '<Thinking><…>'],
   ]);
+  const ui = ({} as { setWidget: (key: string, content: string[], opts?: { placement?: 'aboveEditor' | 'belowEditor' }) => void });
+  const widgetCalls: Array<{ key: string; opts?: { placement?: 'aboveEditor' | 'belowEditor' } }> = [];
+  ui.setWidget = (key, _content, opts) => widgetCalls.push({ key, opts });
+  applyOctocodeUi({ hasUI: true, ui });
+  ui.setWidget('implicit', ['x']);
+  ui.setWidget('explicit', ['x'], { placement: 'aboveEditor' });
+  applyOctocodeUi({ hasUI: true, ui });
+  ui.setWidget('after-reapply', ['x']);
+  assert.deepEqual(widgetCalls, [
+    { key: 'implicit', opts: { placement: 'belowEditor' } },
+    { key: 'explicit', opts: { placement: 'aboveEditor' } },
+    { key: 'after-reapply', opts: { placement: 'belowEditor' } },
+  ]);
+
   assert.equal(
     getThinkingStatus({ model: { id: 'gpt-5.5', reasoning: false } }, 'high'),
     'thinking: off (gpt-5.5 has reasoning:false)'
@@ -2022,7 +2039,9 @@ test('formatOctocodeDashboard is scan-friendly and includes health warnings', ()
   assert.match(dashboard, /⚠ context above 90%/);
   assert.match(dashboard, /Management: npx octocode/);
   assert.match(dashboard, /Awareness Lite: node \$OCTOCODE_AWARENESS_CLI/);
-  assert.match(dashboard, /\/octocode-status/);
+  for (const command of ['/octocode-palette', '/octocode-inbox', '/octocode-dial', '/octocode-watch', '/octocode-status']) {
+    assert.match(dashboard, new RegExp(command.replace('/', '\\/')));
+  }
 });
 
 test('CLI slash commands removed — extension commands are lean', async () => {
@@ -2065,7 +2084,7 @@ test('CLI slash commands removed — extension commands are lean', async () => {
   );
   assert.deepEqual(
     listExtensionHarness().extensionCommands,
-    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-now', '/octocode-tasks', '/octocode-skills', '/octocode-agents', '/octocode-cron', '/cron', '/octocode-mcp', '/mcp', '/octocode-setup', '/octocode-skills-update', '/octocode-inbox', '/octocode-palette', '/octocode-rewind', '/octocode-dial', '/octocode-watch', '/octocode-export'],
+    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-now', '/octocode-tasks', '/octocode-skills', '/octocode-agents', '/octocode-cron', '/cron', '/octocode-mcp', '/mcp', '/octocode-setup', '/octocode-skills-update', '/octocode-plan', '/octocode-theme', '/octocode-chrome', '/octocode-inbox', '/octocode-palette', '/octocode-rewind', '/octocode-dial', '/octocode-watch', '/octocode-export'],
     'harness inventory lists every public Octocode slash command'
   );
   for (const eventName of ['tool_execution_start', 'tool_execution_end', 'session_start', 'before_agent_start', 'agent_end', 'session_before_compact', 'session_compact', 'session_shutdown']) {
@@ -2488,9 +2507,11 @@ test('manage_context type:compact defers the continuation to the session_compact
     { kind: 'visible', value: false },
   ]);
 
-  // The session_compact hook (fromExtension:true for ctx.compact) is the single scheduler.
+  // The session_compact hook is the single scheduler. Pi's fromExtension means
+  // "summary supplied by extension", so a default ctx.compact summary reports
+  // false even when Octocode triggered it; Octocode tracks resume intent itself.
   await handlers.get('session_compact')!.at(-1)!(
-    { compactionEntry: {}, fromExtension: true, reason: 'manual', willRetry: false },
+    { compactionEntry: {}, fromExtension: false, reason: 'manual', willRetry: false },
     {
       hasUI: true,
       ui: {
@@ -2556,7 +2577,7 @@ test('manage_context type:new, missing compact support, and render states are ex
   assert.match(newResult.content[0]!.text, /New session queued/);
   assert.deepEqual(sentUserMessages.at(-1), {
     msg: '/_octocode-clear-context-impl',
-    opts: { deliverAs: 'followUp' },
+    opts: { deliverAs: 'followUp', expandPromptTemplates: true },
   });
 
   await assert.rejects(
@@ -2746,10 +2767,13 @@ test('session_compact resumes ONLY extension-triggered compaction; manual /compa
     { kind: 'visible', value: false },
   ], 'working UI still cleared');
 
-  // Extension-triggered ctx.compact aborts the in-flight run → resume needed.
+  // Octocode-triggered ctx.compact aborts the in-flight run → resume needed.
+  // Pi's fromExtension remains false for the default summary; Octocode owns a
+  // separate resume-intent marker for this case.
   resetCompactionResumeStateForTests();
+  markCompactionResumeRequested();
   await handler(
-    { compactionEntry: {}, fromExtension: true, reason: 'manual', willRetry: false },
+    { compactionEntry: {}, fromExtension: false, reason: 'manual', willRetry: false },
     testCtx
   );
   assert.equal(sentUserMessages.length, 0, 'resume prompt waits until next macrotask');
@@ -2763,8 +2787,9 @@ test('session_compact resumes ONLY extension-triggered compaction; manual /compa
   });
 
   resetCompactionResumeStateForTests();
+  markCompactionResumeRequested();
   await handler(
-    { compactionEntry: {}, fromExtension: true, reason: 'overflow', willRetry: true },
+    { compactionEntry: {}, fromExtension: false, reason: 'overflow', willRetry: true },
     { hasUI: true, ui: { setWorkingMessage: () => undefined, setWorkingVisible: () => undefined } }
   );
   await waitForNextMacrotask();
@@ -3013,8 +3038,9 @@ test('lists every extension harness surface', () => {
   assert.ok(!('cliCommands' in harness), 'cliCommands removed from harness');
 });
 
-test('README lists every harness surface exposed by the extension', () => {
+test('README and UI docs list every harness surface exposed by the extension', () => {
   const readme = fs.readFileSync(path.join(packageRoot, 'README.md'), 'utf8');
+  const uiDoc = fs.readFileSync(path.join(packageRoot, 'docs', 'UI.md'), 'utf8');
   const harness = listExtensionHarness(distDir);
   const missing: string[] = [];
 
@@ -3028,7 +3054,9 @@ test('README lists every harness surface exposed by the extension', () => {
   }
   for (const command of harness.extensionCommands) {
     if (!readme.includes(`\`${command}`))
-      missing.push(`extension command ${command}`);
+      missing.push(`README extension command ${command}`);
+    if (!uiDoc.includes(command))
+      missing.push(`UI doc extension command ${command}`);
   }
   for (const skill of harness.skills) {
     if (!readme.includes(`\`${skill}\``)) missing.push(`skill ${skill}`);
@@ -3298,12 +3326,14 @@ test('Awareness Lite pre-edit gate blocks lock conflicts through the bundled CLI
     stdout: JSON.stringify({ message: 'Awareness Lite lock conflict: /repo/README.md held by agent-b' }),
   });
 
-  const result = await handlers.get('tool_call')![0]!(event, ctx);
-  assert.deepEqual(result, {
-    block: true,
-    reason: 'Awareness Lite lock conflict: /repo/README.md held by agent-b',
+  await withAgentId('pi:session-a', async () => {
+    const result = await handlers.get('tool_call')![0]!(event, ctx);
+    assert.deepEqual(result, {
+      block: true,
+      reason: 'Awareness Lite lock conflict: /repo/README.md held by agent-b',
+    });
+    assert.deepEqual(pi.execCalls[0], { command: process.execPath, args });
   });
-  assert.deepEqual(pi.execCalls[0], { command: process.execPath, args });
 });
 test('AgentMessage routes steer/follow_up RPCs and does not fake running on idle steer', async () => {
   const spawned: Array<{ proc: MockAgentProcess }> = [];

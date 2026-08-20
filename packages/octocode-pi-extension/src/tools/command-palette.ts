@@ -110,8 +110,8 @@ export function buildPaletteItems(deps: Pick<CommandPaletteDeps, 'commands' | 'a
 
 /**
  * Route a selected palette value.
- * - `cmd:<name>` without args → pi.sendUserMessage('/name', { deliverAs: 'followUp' })
- *   (injected input re-enters the input hook with source 'extension').
+ * - `cmd:<name>` without args → pi.sendUserMessage('/name', { deliverAs: 'followUp', expandPromptTemplates: true })
+ *   (Pi dispatches extension slash commands from extension-originated input only when expansion is enabled).
  * - `cmd:<name>` with takesArgs → ctx.ui.setEditorText('/name ') prefill.
  * - `action:<id>` → the injected handler.
  * Returns true when the value was recognized and handled.
@@ -131,7 +131,7 @@ export async function dispatchPaletteSelection(
       ctx?.ui?.setEditorText?.(`/${name} `);
       return true;
     }
-    pi.sendUserMessage?.(`/${name}`, { deliverAs: 'followUp' });
+    pi.sendUserMessage?.(`/${name}`, { deliverAs: 'followUp', expandPromptTemplates: true });
     return true;
   }
   if (value.startsWith(ACTION_VALUE_PREFIX)) {

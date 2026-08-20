@@ -65,7 +65,7 @@ import {
   loadProfile,
   profileToPiArgs,
   type SurfaceVerb,
-} from './surfaces.js';
+} from '@octocodeai/pi-extension';
 import {
   checkLines,
   cmdRows,

@@ -108,10 +108,8 @@ export interface FooterInput {
   failedWorkers?: number;
   /** Live progress note for the most-recent running worker (name or its deltaSummary). */
   agentDoing?: string;
-  planDone: number;
-  planTotal: number;
-  /** Text of the plan step currently in progress (status "doing"), if any. */
-  planDoing?: string;
+  /** Awareness Lite agents present in this workspace, shown in the lower toolbar. */
+  awarenessAgents?: number;
   /** Active model-dial label (e.g. the dial preset name), shown as a branded segment. */
   dial?: string;
   branch?: string;
@@ -124,8 +122,8 @@ export interface FooterSegment {
   token?: SemanticToken;
 }
 
-/** Max width of the inline plan-step label before it is ellipsized. */
-const PLAN_DOING_MAX = 24;
+/** Max width of inline footer progress labels before they are ellipsized. */
+const INLINE_STATUS_MAX = 24;
 
 function ellipsize(text: string, max: number): string {
   const clean = text.replace(/\s+/g, ' ').trim();
@@ -134,7 +132,7 @@ function ellipsize(text: string, max: number): string {
 
 /**
  * Ordered footer segments with per-segment colour. Optional segments (agents,
- * attention flags, plan, git) are dropped when empty. Attention flags
+ * attention flags, git) are dropped when empty. Attention flags
  * (blocked/failed workers) get warning/error colour so a stuck worker is
  * visible in the toolbar without opening /octocode-agents.
  */
@@ -160,8 +158,11 @@ export function buildFooterSegments(input: FooterInput): FooterSegment[] {
   segs.push({ text: `session ${formatDurationShort(input.sessionMs)}` });
 
   if (input.activeWorkers > 0) {
-    const label = input.agentDoing ? ` ‣ ${ellipsize(input.agentDoing, PLAN_DOING_MAX)}` : '';
+    const label = input.agentDoing ? ` ‣ ${ellipsize(input.agentDoing, INLINE_STATUS_MAX)}` : '';
     segs.push({ text: `agents ${input.activeWorkers}${label}` });
+  }
+  if (input.awarenessAgents && input.awarenessAgents > 0) {
+    segs.push({ text: `aware-agents ${input.awarenessAgents}`, token: 'brand' });
   }
   if (input.blockedWorkers && input.blockedWorkers > 0) {
     segs.push({ text: `⚠${input.blockedWorkers}`, token: 'warning' });
@@ -172,11 +173,6 @@ export function buildFooterSegments(input: FooterInput): FooterSegment[] {
 
   if (input.dial) {
     segs.push({ text: `◉ ${input.dial}`, token: 'brand' });
-  }
-
-  if (input.planTotal > 0) {
-    const label = input.planDoing ? ` ‣ ${ellipsize(input.planDoing, PLAN_DOING_MAX)}` : '';
-    segs.push({ text: `plan ${input.planDone}/${input.planTotal}${label}` });
   }
 
   if (input.branch) segs.push({ text: `${input.branch}${input.dirty ? '*' : ''}` });

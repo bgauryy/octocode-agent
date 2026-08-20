@@ -22,8 +22,8 @@ harness (prompt + skills + tools + memory) is a Pi *package*, and octocode-agent
 launcher that boots Pi with that package as the authoritative core.
 
 **Layers:**
-- `octocode-agent` — platform/launcher (this package). Depends on Pi + the core; owns the branded launch and the update path.
-- `@octocodeai/pi-extension` — **the core**. A Pi package: `pi.extensions` (the harness wiring) + bundled research skills + the bundled system prompt.
+- `octocode-agent` — platform/launcher (this package). Depends on Pi + the core; owns the branded launch, update path, setup/auth/doctor/session UX, and process execution.
+- `@octocodeai/pi-extension` — **the core**. A Pi package: `pi.extensions` (the harness wiring) + bundled research skills + bundled system prompt + Octocode surface/profile specs. Launcher code imports these helpers directly; it does not duplicate or shim core policy.
 - `@earendil-works/pi-coding-agent` — the Pi host runtime. An internal detail of the platform.
 
 ---

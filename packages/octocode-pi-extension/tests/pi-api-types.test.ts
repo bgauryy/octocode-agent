@@ -7,6 +7,7 @@ import type {
   PiImageContent,
   PiInstance,
   PiMessageContent,
+  PiSendUserMessageOptions,
   PiSessionManager,
   PiTextContent,
   PiUi,
@@ -54,6 +55,7 @@ test('Pi command context includes session navigation and injected rich user mess
     sendUserMessage: (content, opts) => {
       assert.deepEqual(content, [{ type: 'text', text: 'next' }]);
       assert.equal(opts?.deliverAs, 'followUp');
+      assert.equal(opts?.expandPromptTemplates, true);
     },
     switchSession: async (sessionPath, opts) => {
       assert.equal(sessionPath, '/tmp/session.jsonl');
@@ -63,7 +65,7 @@ test('Pi command context includes session navigation and injected rich user mess
     waitForIdle: async () => undefined,
   };
 
-  ctx.sendUserMessage?.([{ type: 'text', text: 'next' }], { deliverAs: 'followUp' });
+  ctx.sendUserMessage?.([{ type: 'text', text: 'next' }], { deliverAs: 'followUp', expandPromptTemplates: true });
   assert.deepEqual(await ctx.switchSession?.('/tmp/session.jsonl', { withSession: async () => undefined }), { cancelled: false });
   await ctx.waitForIdle?.();
 });
@@ -81,21 +83,23 @@ test('Pi command completions may be asynchronous', async () => {
 });
 
 test('Pi instance custom messages accept rich content and delivery options', () => {
-  const sent: Array<{ content: PiMessageContent; deliverAs?: string }> = [];
+  const sent: Array<{ content: PiMessageContent; deliverAs?: string; expandPromptTemplates?: boolean }> = [];
   const pi: Pick<PiInstance, 'sendUserMessage' | 'sendMessage'> = {
     sendUserMessage: (content, opts) => {
-      sent.push({ content, deliverAs: opts?.deliverAs });
+      sent.push({ content, deliverAs: opts?.deliverAs, expandPromptTemplates: opts?.expandPromptTemplates });
     },
     sendMessage: (message, opts) => {
       sent.push({ content: message.content, deliverAs: opts?.deliverAs });
     },
   };
 
-  pi.sendUserMessage([{ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' }], { deliverAs: 'steer' });
+  const dispatchOptions: PiSendUserMessageOptions = { deliverAs: 'steer', expandPromptTemplates: true };
+  pi.sendUserMessage([{ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' }], dispatchOptions);
   pi.sendMessage?.(
     { customType: 'octocode.test', content: [{ type: 'text', text: 'card' }], display: true },
     { triggerTurn: true, deliverAs: 'nextTurn' }
   );
 
   assert.deepEqual(sent.map((entry) => entry.deliverAs), ['steer', 'nextTurn']);
+  assert.equal(sent[0]?.expandPromptTemplates, true);
 });

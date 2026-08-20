@@ -1,6 +1,6 @@
 import type { PiContext, PiInstance, SessionBeforeCompactEvent, SessionCompactEvent } from '../types.js';
 import { clearCompactionWorkingState, scheduleCompactionContinuation, type Notifier } from './compaction-resume.js';
-import { clearCompactionInFlight, markCompactionInFlight } from './compaction-state.js';
+import { clearCompactionInFlight, clearCompactionResumeRequest, consumeCompactionResumeRequest, markCompactionInFlight } from './compaction-state.js';
 import { emitCompactionCheckpoint, type CompactionCheckpointDetails } from './custom-messages.js';
 import { clearAllReadStates } from './file-state.js';
 
@@ -221,7 +221,9 @@ export function registerCompactionHooks(pi: PiInstance, notify: Notifier): void 
     // tool's stale-read gate must demand a fresh read, not trust pre-compaction
     // knowledge the model no longer has.
     clearAllReadStates();
+    const shouldResume = consumeCompactionResumeRequest();
     if (event.willRetry) {
+      clearCompactionResumeRequest();
       clearCompactionWorkingState(ctx);
       return;
     }
@@ -232,12 +234,12 @@ export function registerCompactionHooks(pi: PiInstance, notify: Notifier): void 
     if (shouldEmitCheckpointCard(event)) {
       emitCompactionCheckpoint(pi, buildCheckpointDetails(event));
     }
-    // Auto-resume ONLY extension-triggered compaction: our ctx.compact aborts
-    // the in-flight agent run, so a queued follow-up is needed to recover. A
-    // user's manual /compact (and Pi's own pre-prompt compaction) stops by
-    // design — Pi 0.80.3 deliberately fixed it to NOT continue; resuming there
-    // would burn an unrequested agent turn.
-    if (!event.fromExtension) {
+    // Auto-resume ONLY compactions Octocode requested via ctx.compact: that
+    // aborts the in-flight agent run, so a queued follow-up is needed to
+    // recover. Pi's event.fromExtension means "summary supplied by extension"
+    // (e.g. our overflow fallback), not "ctx.compact was called by extension";
+    // manual /compact and Pi's own pre-prompt compaction still stop by design.
+    if (!shouldResume) {
       clearCompactionWorkingState(ctx);
       return;
     }

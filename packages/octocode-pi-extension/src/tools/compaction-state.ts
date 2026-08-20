@@ -18,8 +18,10 @@
  */
 
 const COMPACTION_IN_FLIGHT_TTL_MS = 120_000;
+const COMPACTION_RESUME_REQUEST_TTL_MS = COMPACTION_IN_FLIGHT_TTL_MS;
 
 let inFlightSince: number | null = null;
+let resumeRequestedSince: number | null = null;
 
 export function markCompactionInFlight(now = Date.now()): void {
   inFlightSince = now;
@@ -36,6 +38,27 @@ export function isCompactionInFlight(now = Date.now()): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * Mark that Octocode itself requested ctx.compact() and therefore owns the
+ * post-compaction continuation. Pi's session_compact.fromExtension means the
+ * summary was supplied by an extension, not that ctx.compact() was called by
+ * one, so resume intent must be tracked separately.
+ */
+export function markCompactionResumeRequested(now = Date.now()): void {
+  resumeRequestedSince = now;
+}
+
+export function clearCompactionResumeRequest(): void {
+  resumeRequestedSince = null;
+}
+
+export function consumeCompactionResumeRequest(now = Date.now()): boolean {
+  if (resumeRequestedSince === null) return false;
+  const requestedAt = resumeRequestedSince;
+  resumeRequestedSince = null;
+  return now - requestedAt <= COMPACTION_RESUME_REQUEST_TTL_MS;
 }
 
 /**
@@ -57,4 +80,5 @@ export function branchTipIsCompaction(ctx?: {
 
 export function resetCompactionArbiterForTests(): void {
   inFlightSince = null;
+  resumeRequestedSince = null;
 }

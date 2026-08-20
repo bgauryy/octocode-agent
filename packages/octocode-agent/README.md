@@ -27,7 +27,7 @@ octocode-agent
 - **Automatically** — a platform release pins a newer core; `octocode-agent update` self-updates the platform and pulls it in.
 - **By the user** — `octocode-agent update core` runs npm with this launcher install as `--prefix`, refreshing only `@octocodeai/pi-extension` in place. This works for global installs, local dev installs, and npm/npx cache installs.
 
-Because the harness — prompt, skills, tools, memory — all lives in the core package, none of it is duplicated here. This launcher stays thin on purpose.
+Because the harness — prompt, skills, tools, memory, surface command specs, and launch-profile policy — all lives in the core package, none of it is duplicated here. This launcher stays thin on purpose: it imports core helpers directly from `@octocodeai/pi-extension` and only launches/updates/executes the returned specs.
 
 ## Usage
 

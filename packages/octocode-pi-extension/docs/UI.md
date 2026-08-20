@@ -7,13 +7,13 @@ This extension keeps the TUI compact by default and puts detail behind slash com
 | Surface | Where | Purpose |
 |---|---|---|
 | Header | session start | Brand, loaded capability hint, common commands |
-| Status footer | always-on | Octocode label, context/turn metrics, agent counts, plan/git/blocked/failed segments (thinking level is a separate `octocode-thinking` status entry) |
+| Status footer | always-on | Octocode label, context/turn metrics, agent counts, git/blocked/failed segments, and the effort dial `◉ <level>`; detailed thinking mode also appears as the separate `octocode-thinking` status entry |
 | Working indicator | during turns | `✦ ✧ ✶ ✧` spinner frames with a `Thinking…` message (the word "Octocode" is kept out of the frames to avoid "Octocode Octocode…" doubling) |
-| Unified status panel | below-editor widget (`octocode-status-panel`) | One block: Model → Plan → Awareness → Agents sections; persistent while a model is known, cleared on shutdown |
+| Unified status panel | below-editor widget (`octocode-status-panel`) | One block: Model → Plan → Awareness → Agents sections; the Plan header can show multiple active parallel lanes, and the Agents section shows live running rows; persistent while a model is known, cleared on shutdown |
 | Thinking blocks | `OCTOCODE_SHELL=1` runtime stream | Shows `🧠 thinking` start/end rows and streams reasoning deltas instead of dropping them |
 | Tool rows | tool streams/renderers | Shared renderers show a `◇` call row, animated braille running state, compact stats/paths, and colored success/error; the Octocode shell also prints call/update/result blocks |
-| Live agent progress | while workers run | Agent ledger animates: braille spinner + live elapsed, refreshed every 1s until no worker is active (ticker is `unref`-ed and self-stops) |
-| Dashboard | `/octocode` | Status, agents, setup paths, skills, health, next actions |
+| Live agent progress | while workers run | Agent ledger animates: Octocode sparkle spinner + live `running` label + elapsed, refreshed every 1s until no worker is active (ticker is `unref`-ed and self-stops) |
+| Dashboard | `/octocode` | Status, agents, tools, setup paths, skills, health, and modern next actions |
 | Agent ledger | `/octocode-agents` + below editor | Spawned-worker state and controls |
 | Decision picker | `askUser` tool | Focused overlay list for real user choices — single pick, multi-select (space toggles, min/max), per-option previews, and short sequential forms; falls back to inline questions when no interactive UI is available |
 | Inline images | expanded tool renderers | chrome-debug / browser-agent screenshots render inline (Kitty/iTerm2) with a `🖼` placeholder on terminals without image support |
@@ -47,10 +47,17 @@ Octocode agents: none
 Health
 ✓ no dashboard warnings
 Next actions
-/octocode-now · /octocode-tasks · /octocode-skills · /octocode-agents · /octocode-cron · /octocode-status
+/octocode-palette · /octocode-now · /octocode-tasks · /octocode-skills · /octocode-agents · /octocode-inbox · /octocode-cron · /octocode-dial · /octocode-watch · /octocode-status
 ```
 
 Warnings appear when the context is high, assets are missing, or search falls back to a weaker provider.
+
+## Command inventory
+
+Always-on orientation and health commands: `/octocode`, `/octocode-now`, `/octocode-status`, `/octocode-harness`.
+Work-state commands: `/octocode-plan`, `/octocode-tasks`, `/octocode-agents`, `/octocode-inbox`, `/octocode-cron`, `/cron`.
+Configuration and integration commands: `/octocode-mcp`, `/mcp`, `/octocode-setup`, `/octocode-skills`, `/octocode-skills-update`, `/octocode-theme`, `/octocode-chrome`.
+Modern TUI commands: `/octocode-palette`, `/octocode-dial`, `/octocode-rewind`, `/octocode-watch`, `/octocode-export`.
 
 ## Agent ledger
 

@@ -92,6 +92,7 @@ import type {
   CommandDefinition,
   PiInstance,
   PiContext,
+  PiUi,
   OctocodePiExtensionOptions,
   PromptMode,
   SessionShutdownEvent,
@@ -129,6 +130,13 @@ export {
   MANAGED_BLOCK_END,
 } from './constants.js';
 export { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getAwarenessCLIPath } from './assets.js';
+export {
+  buildSurfaceSpec,
+  loadProfile,
+  profileToPiArgs,
+  resolveAwarenessCli,
+} from './surfaces.js';
+export type { Profile, SurfaceSpec, SurfaceVerb } from './surfaces.js';
 export {
   shouldAppendSystemPrompt,
   renderSystemPromptAddendum,
@@ -259,12 +267,12 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
   if (!ctx?.hasUI) return;
 
   // The consolidated branded footer is the SINGLE metrics surface — context /
-  // tokens / turns / timing / agents / plan / git. (Previously the same numbers
+  // tokens / turns / timing / agents / git. Plan stays in the below-editor panel.
   // were also pushed to a top `octocode-metrics` status line — removed as
   // on-screen redundancy.)
   const usage = ctx.getContextUsage?.() ?? { tokens: 0, contextWindow: 0 };
-  const plan = getPlan(activePlanScope(ctx));
   const workers = workerFooterCounts();
+  const awarenessAgents = getCachedAwarenessStatus(ctx.cwd ?? process.cwd())?.agentCount ?? 0;
   const activeEntry = listWorkerLedgerEntries().find(
     (e) => e.status === 'running' || e.status === 'starting' || e.status === 'idle',
   );
@@ -278,11 +286,9 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
     sessionMs: now - state.sessionStartedAt,
     activeWorkers: workers.active,
     agentDoing,
+    awarenessAgents,
     blockedWorkers: workers.blocked,
     failedWorkers: workers.failed,
-    planDone: plan.filter((s) => s.status === 'done').length,
-    planTotal: plan.length,
-    planDoing: plan.find((s) => s.status === 'doing')?.text,
     dial: getActiveDialLevel(),
     branch: undefined,
     dirty: state.gitDirty ?? false,
@@ -413,11 +419,25 @@ async function buildRepoStateHint(pi: PiInstance, event: { text: string; source?
   ].filter(Boolean).join('\n');
 }
 
+const BELOW_EDITOR_WIDGET_DEFAULT = Symbol.for('octocode.pi-extension.belowEditorWidgetDefault');
+
+type PiUiWithWidgetDefault = PiUi & { [BELOW_EDITOR_WIDGET_DEFAULT]?: true };
+
+function preferBelowEditorWidgets(ui: PiUi | undefined): void {
+  const target = ui as PiUiWithWidgetDefault | undefined;
+  if (!target?.setWidget || target[BELOW_EDITOR_WIDGET_DEFAULT]) return;
+  const originalSetWidget = target.setWidget.bind(target);
+  target.setWidget = (name, content, opts) =>
+    originalSetWidget(name, content, { placement: 'belowEditor', ...opts });
+  target[BELOW_EDITOR_WIDGET_DEFAULT] = true;
+}
+
 export function applyOctocodeUi(ctx: PiContext | undefined, level?: string, contextTitle?: string): void {
   // setStatus / setHiddenThinkingLabel are TUI-only; guard with hasUI.
   if (!ctx?.hasUI) return;
   const ui = ctx?.ui;
   if (!ui) return;
+  preferBelowEditorWidgets(ui);
   const title = deriveSessionName(contextTitle ?? '');
   const windowTitle = title ? `Octocode · ${title}` : 'Octocode';
   const headerTitle = title ? `◆ ${title}` : '◆ Octocode';
@@ -640,6 +660,9 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
       '/mcp',
       '/octocode-setup',
       '/octocode-skills-update',
+      '/octocode-plan',
+      '/octocode-theme',
+      '/octocode-chrome',
       '/octocode-inbox',
       '/octocode-palette',
       '/octocode-rewind',
@@ -697,7 +720,7 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessi
     ...(warnings.length > 0 ? warnings : ['✓ no dashboard warnings']),
     '',
     'Next actions',
-    '/octocode-now · /octocode-tasks · /octocode-skills · /octocode-agents · /octocode-cron · /octocode-status',
+    '/octocode-palette · /octocode-now · /octocode-tasks · /octocode-skills · /octocode-agents · /octocode-inbox · /octocode-cron · /octocode-dial · /octocode-watch · /octocode-status',
   ].join('\n');
 }
 

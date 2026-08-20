@@ -202,6 +202,7 @@ export interface PiUi {
   input?(title: string, placeholder?: string, opts?: PiDialogOptions): Promise<string | undefined>;
   editor?(title: string, prefill?: string): Promise<string | undefined>;
   custom?<T>(factory: (tui: unknown, theme: PiTheme, keybindings: unknown, done: (value: T) => void) => unknown, opts?: { overlay?: boolean; overlayOptions?: unknown; onHandle?: (handle: unknown) => void }): Promise<T | undefined>;
+  onTerminalInput?(handler: (data: string) => { consume?: boolean; data?: string } | undefined): () => void;
   // Status / widgets
   setHiddenThinkingLabel?(label: string): void;
   setStatus?(name: string, text: string | undefined): void;
@@ -297,10 +298,16 @@ export interface PiContext {
  * Adds session-control methods that MUST NOT be called from tool execute()
  * or event handlers — they can deadlock in those contexts.
  */
+export interface PiSendUserMessageOptions {
+  deliverAs?: 'steer' | 'followUp' | string;
+  /** Dispatch extension slash commands and expand skill/prompt templates when true. */
+  expandPromptTemplates?: boolean;
+}
+
 export interface PiCommandContext extends PiContext {
   newSession?(opts?: NewSessionOptions): Promise<{ cancelled?: boolean } | undefined>;
   /** Fire-and-forget user message (available in commands and in withSession callbacks). */
-  sendUserMessage?(content: PiMessageContent, opts?: { deliverAs?: 'steer' | 'followUp' | string }): void | Promise<void>;
+  sendUserMessage?(content: PiMessageContent, opts?: PiSendUserMessageOptions): void | Promise<void>;
   reload?(): Promise<void>;
   /** Fork the session at an entry into a new session file (mirrors Pi's ExtensionCommandContext.fork). */
   fork?(entryId: string, opts?: { position?: 'before' | 'at'; withSession?: (ctx: PiCommandContext) => Promise<void> }): Promise<{ cancelled?: boolean }>;
@@ -498,7 +505,7 @@ export interface PiInstance {
   registerFlag?(name: string, opts: { description: string; type: 'boolean' | 'string'; default?: unknown }): void;
   getFlag?(name: string): unknown;
   // ─── Messages / events bus ──────────────────────────────────────────────────
-  sendUserMessage(content: PiMessageContent, opts?: { deliverAs?: 'steer' | 'followUp' | string }): void;
+  sendUserMessage(content: PiMessageContent, opts?: PiSendUserMessageOptions): void;
   sendMessage?(msg: { customType: string; content: PiMessageContent; display?: boolean; details?: unknown }, opts?: { triggerTurn?: boolean; deliverAs?: 'steer' | 'followUp' | 'nextTurn' | string }): void;
   registerMessageRenderer?(customType: string, renderer: (message: unknown, options: { expanded: boolean }, theme: PiTheme) => unknown): void;
   events?: { on(event: string, cb: (data: unknown) => void): void; emit(event: string, data: unknown): void };

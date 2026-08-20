@@ -72,7 +72,7 @@ test('formatAwarenessPanel renders counts and surfaces verify-debt', () => {
   assert.doesNotMatch(lines[0]!, /tasks 7/); // total task count is not mislabeled as actionable ready work
   assert.match(lines[0]!, /locks 2/);
   assert.match(lines[0]!, /work 1/);
-  assert.match(lines[0]!, /agents 2/);
+  assert.doesNotMatch(lines[0]!, /agents 2/); // shown in the lower toolbar, not the below-editor panel
   assert.match(lines[0]!, /msgs 5/);
   assert.match(lines[0]!, /verify-debt 4/);
 });

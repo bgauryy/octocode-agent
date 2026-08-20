@@ -59,8 +59,11 @@ export function planPanelLines(steps: PlanStep[], theme?: PiTheme): string[] {
     if (status === 'blocked') return paint(theme, 'muted', text);
     return paint(theme, 'brand', text);
   };
-  const current = steps.find((s) => s.status === 'doing') ?? steps.find((s) => s.status === 'todo');
-  const currentLabel = current ? ` · now: ${stepLabel(current)}` : '';
+  const doing = steps.filter((s) => s.status === 'doing');
+  const current = doing[0] ?? steps.find((s) => s.status === 'todo');
+  const currentLabel = doing.length > 1
+    ? ` · now: ${doing.map(stepLabel).join(' | ')}`
+    : current ? ` · now: ${stepLabel(current)}` : '';
   const header = `Plan  ${progressBar(done, steps.length)}  ${done}/${steps.length}${currentLabel}`;
   const rows = steps.map((s, i) => {
     const ds = displayStatus(s, steps);
@@ -70,20 +73,12 @@ export function planPanelLines(steps: PlanStep[], theme?: PiTheme): string[] {
   return [paint(theme, 'success', header), ...rows];
 }
 
-/** Mirror the active plan into the compact footer status AND a live below-editor checklist panel. */
+/** Mirror the active plan into the live below-editor checklist panel only. */
 export function refreshPlanUi(ctx?: PiContext): void {
   if (!ctx?.hasUI) return;
-  const scope = activePlanScope(ctx);
-  const steps = getPlan(scope);
-  if (steps.length === 0) {
-    ctx.ui?.setStatus?.('octocode-plan', undefined);
-    refreshStatusPanel(ctx);
-    return;
-  }
-  const done = steps.filter((s) => s.status === 'done').length;
-  const current = steps.find((s) => s.status === 'doing') ?? steps.find((s) => s.status === 'todo');
-  ctx.ui?.setStatus?.('octocode-plan', `plan ${done}/${steps.length}${current ? ` · ${stepLabel(current)}` : ''}`);
-  // The Plan section is rendered by the unified below-editor status panel.
+  // Clear the legacy compact status line so plan state has exactly one visual home:
+  // the unified below-editor status panel.
+  ctx.ui?.setStatus?.('octocode-plan', undefined);
   refreshStatusPanel(ctx);
 }
 
@@ -134,14 +129,15 @@ export function registerPlanTool(
     description: [
       'Record and track the task breakdown from the think-first gate as a visible, compaction-durable checklist.',
       'The plan is re-injected into your context every turn (<active_plan>), so it survives compaction — set it once, then start/complete steps as you go.',
-      'Use for non-trivial multi-step work (multiple files/phases/risky edits). Skip for obvious single-step tasks. For shared/persistent multi-agent plans use the awareness plan/task CLI instead.',
-      'Actions: set (replace with an ordered step list; dependsOn expresses ordering) · add (append a step) · start (mark a step doing) · complete (mark a step done, auto-advances) · remove (delete a step, dependencies renumber) · show · clear (when the task is finished/abandoned).',
-      'index is optional for start/complete/remove: complete/remove default to the current doing step; start defaults to the next runnable todo.',
+      'Use for non-trivial multi-step work (multiple files/phases/risky edits). Skip for obvious single-step tasks. For shared/persistent multi-agent plans use the awareness plan/task CLI instead, and mirror scope changes there when a local plan changes task ownership or acceptance.',
+      'Actions: set (replace with an ordered step list; dependsOn expresses ordering) · add (append a step) · start (mark a step doing; multiple independent steps may be doing in parallel) · complete (mark a step done, auto-advances) · remove (delete a step, dependencies renumber) · show · clear (when the task is finished/abandoned).',
+      'index is optional for start/complete/remove: complete/remove default to the single current doing step; when multiple steps are doing, pass index. start defaults to the next runnable todo.',
     ].join('\n'),
     promptSnippet: 'Track a compaction-durable task-breakdown checklist (set/add/start/complete/remove/show/clear)',
     promptGuidelines: [
-      'When the think-first gate says decompose, record the steps with plan(set:[...]); then work the active step and plan(complete) it — with no index it completes the current step, so the loop is: work, plan(complete), repeat.',
-      'Keep the checklist truthful as scope shifts: plan(add) newly discovered steps, plan(remove) obsolete ones, and clear the plan (plan clear) once the task is done or abandoned so a stale checklist does not linger.',
+      'When the think-first gate says decompose, record the steps with plan(set:[...]); then work the active step and plan(complete) it — with no index it completes the single current step, so the serial loop is: work, plan(complete), repeat.',
+      'Keep the checklist truthful as scope shifts: plan(add) newly discovered steps, plan(remove) obsolete ones, and clear the plan (plan clear) once the task is done or abandoned so a stale checklist does not linger. If Awareness task/work state exists, update it in the same turn so local plan and shared tasks do not diverge.',
+      'For independent lanes, encode ordering with dependsOn, start runnable lanes with plan(start:N) before batching/spawning, and pass explicit indices when completing parallel steps.',
       'Optionally give each step an activeForm (present-continuous label, e.g. "Editing file") — it is shown in the live plan panel while that step runs.',
     ],
     parameters: Type.Object({
@@ -190,11 +186,18 @@ export function registerPlanTool(
           }
           let idx: number;
           if (p.index === undefined || p.index === null) {
-            // Default targets: complete/remove act on the current doing step;
-            // start advances to the next runnable todo.
-            idx = p.action === 'start'
-              ? current.findIndex((s) => s.status === 'todo' && depsMet(s, current)) + 1
-              : current.findIndex((s) => s.status === 'doing') + 1;
+            // Default targets: complete/remove act on the single current doing step;
+            // start advances to the next runnable todo. Parallel doing lanes require
+            // an explicit index so the wrong lane is not completed/removed silently.
+            if (p.action === 'start') {
+              idx = current.findIndex((s) => s.status === 'todo' && depsMet(s, current)) + 1;
+            } else {
+              const doing = current.map((s, i) => ({ step: s, index: i + 1 })).filter(({ step }) => step.status === 'doing');
+              if (doing.length > 1) {
+                return planError(`[PLAN] ${doing.length} steps are in progress — pass index to ${p.action} a specific lane. Run plan show for indices.`, 'ambiguous-target');
+              }
+              idx = doing[0]?.index ?? 0;
+            }
             if (idx < 1) {
               const why = p.action === 'start'
                 ? '[PLAN] no runnable todo step (all done or blocked)'
@@ -205,6 +208,9 @@ export function registerPlanTool(
             idx = Number(p.index);
             if (!Number.isInteger(idx) || idx < 1 || idx > current.length) {
               return planError(`[PLAN] no such step ${p.index} — plan has ${current.length} step(s). Run plan show for indices.`, 'invalid-index');
+            }
+            if (p.action === 'start' && !depsMet(current[idx - 1]!, current)) {
+              return planError(`[PLAN] step ${idx} is blocked by dependencies — complete its prerequisites before starting it.`, 'blocked-step');
             }
           }
           steps = p.action === 'start' ? startStep(scope, idx) : p.action === 'complete' ? completeStep(scope, idx) : removeStep(scope, idx);

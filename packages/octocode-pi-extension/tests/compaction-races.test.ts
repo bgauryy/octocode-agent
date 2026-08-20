@@ -28,6 +28,7 @@ type Handler = (event: unknown, ctx: unknown) => unknown | Promise<unknown>;
 interface Harness {
   tools: Map<string, ToolDefinition>;
   notes: Array<{ msg: string; level?: string }>;
+  sentUserMessages: Array<{ content: unknown; opts?: Record<string, unknown> }>;
   fire(event: string, evt: unknown, ctx: unknown): Promise<unknown[]>;
 }
 
@@ -35,10 +36,13 @@ function makeHarness(): Harness {
   const tools = new Map<string, ToolDefinition>();
   const handlers = new Map<string, Handler[]>();
   const notes: Array<{ msg: string; level?: string }> = [];
+  const sentUserMessages: Array<{ content: unknown; opts?: Record<string, unknown> }> = [];
   const pi = {
     registerTool: (def: ToolDefinition) => tools.set(def.name, def),
     registerCommand: () => undefined,
-    sendUserMessage: () => undefined,
+    sendUserMessage: (content: unknown, opts?: Record<string, unknown>) => {
+      sentUserMessages.push({ content, opts });
+    },
     on: (event: string, handler: Handler) => {
       const arr = handlers.get(event) ?? [];
       arr.push(handler);
@@ -58,7 +62,7 @@ function makeHarness(): Harness {
   registerContextTools(pi, Type, new Set<string>(), registerFn as never, notify as never);
   const fire = (event: string, evt: unknown, ctx: unknown) =>
     Promise.all((handlers.get(event) ?? []).map((h) => h(evt, ctx)));
-  return { tools, notes, fire };
+  return { tools, notes, sentUserMessages, fire };
 }
 
 interface CtxOptions {
@@ -174,6 +178,18 @@ test('auto-compaction treats a losing "Already compacted" race as a benign info-
   );
 });
 
+test('session_compact does not auto-resume user or Pi compactions without Octocode resume intent', async () => {
+  const harness = makeHarness();
+  const { ctx } = makeCtx({ tokens: 90 });
+  await harness.fire(
+    'session_compact',
+    { compactionEntry: {}, fromExtension: false, reason: 'manual', willRetry: false },
+    ctx,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(harness.sentUserMessages, []);
+});
+
 // ─── manage_context tool ─────────────────────────────────────────────────────
 
 async function executeManageContext(harness: Harness, ctx: unknown) {
@@ -191,6 +207,23 @@ test('manage_context treats "Already compacted" onError as a benign info-level s
   assert.ok(
     harness.notes.some((n) => n.level === 'info' && /already compacted/i.test(n.msg)),
   );
+});
+
+test('manage_context auto-resumes even when Pi session_compact.fromExtension is false', async () => {
+  const harness = makeHarness();
+  const { ctx, compactCalls } = makeCtx({ tokens: 90 });
+  await executeManageContext(harness, ctx);
+  assert.equal(compactCalls.length, 1);
+  compactCalls[0]!.onComplete?.();
+  await harness.fire(
+    'session_compact',
+    { compactionEntry: {}, fromExtension: false, reason: 'manual', willRetry: false },
+    ctx,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(harness.sentUserMessages.length, 1);
+  assert.match(String(harness.sentUserMessages[0]!.content), /Compaction is complete\. Re-orient/);
+  assert.equal(harness.sentUserMessages[0]!.opts?.deliverAs, 'followUp');
 });
 
 test('manage_context pre-flight: skips when the branch tip is already a compaction entry', async () => {

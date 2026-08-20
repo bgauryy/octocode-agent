@@ -5,10 +5,10 @@
  * the editor, this composes them into ONE widget with blank-line-separated
  * sections, so the live status reads as a cohesive block. Each source module
  * exposes a pure `*PanelLines(theme)` builder and delegates its widget rendering
- * here; this module owns the sole `octocode-status` widget.
+ * here; this module owns the sole `octocode-status-panel` widget.
  *
- * Sections (in order): Plan → Awareness → Agents. Empty sections are omitted;
- * when all are empty the widget is cleared entirely.
+ * Sections (in order): Model → Plan → Awareness → Agents. Empty sections are
+ * omitted; when all are empty the widget is cleared entirely.
  *
  * Uses runtime-only imports of the section builders (called inside the renderer,
  * never at module load) so the mutual module references stay cycle-safe.

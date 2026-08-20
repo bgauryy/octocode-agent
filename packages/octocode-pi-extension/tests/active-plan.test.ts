@@ -160,12 +160,24 @@ test('complete advances the next todo to doing and counts done', () => {
   assert.match(renderActivePlanAddendum(CWD), /1\/3 done/);
 });
 
-test('addStep appends a todo; start moves the active marker', () => {
+test('addStep appends a todo; start can open a parallel active lane', () => {
   setPlan(CWD, ['a']);
   addStep(CWD, 'b');
   startStep(CWD, 2);
-  assert.deepEqual(getPlan(CWD).map((s) => s.status), ['todo', 'doing']);
-  assert.equal(getPlan(CWD).filter((s) => s.status === 'doing').length, 1);
+  assert.deepEqual(getPlan(CWD).map((s) => s.status), ['doing', 'doing']);
+  assert.equal(getPlan(CWD).filter((s) => s.status === 'doing').length, 2);
+});
+
+test('addendum shows runnable parallel lanes and all active work', () => {
+  const cwd = '/tmp/plan-parallel-addendum-ws';
+  setPlan(cwd, [{ text: 'Edit', activeForm: 'Editing' }, { text: 'Review', activeForm: 'Reviewing' }, { text: 'Verify', dependsOn: [1, 2] }]);
+  let out = renderActivePlanAddendum(cwd);
+  assert.match(out, /parallel-ready: 2\. Review/);
+  startStep(cwd, 2);
+  out = renderActivePlanAddendum(cwd);
+  assert.match(out, /now: Editing \| Reviewing/);
+  assert.doesNotMatch(out, /parallel-ready: 3\. Verify/, 'blocked dependent work is not advertised as parallel-ready');
+  clearPlan(cwd);
 });
 
 test('addendum shows markers and a next-step line', () => {
@@ -199,7 +211,7 @@ function loadTool(): ToolDefinition {
   return tools.get('plan')!;
 }
 
-test('refreshPlanUi renders a live below-editor checklist and a compact footer status', () => {
+test('refreshPlanUi renders a live below-editor checklist without compact footer duplication', () => {
   const { ctx, calls } = uiCtx('/tmp/plan-ui-ws');
   setPlan('/tmp/plan-ui-ws', ['a', 'b']);
   refreshPlanUi(ctx);
@@ -209,7 +221,8 @@ test('refreshPlanUi renders a live below-editor checklist and a compact footer s
   assert.ok(rendered && !rendered.cleared, 'below-editor plan widget is rendered while a plan is active');
   assert.equal(rendered!.isFn, true, 'widget content is a renderer fn (not a static string[])');
   assert.equal(rendered!.opts?.placement, 'belowEditor', 'plan checklist sits below the input field');
-  assert.ok(calls.status.some((s) => String((s as { text: unknown }).text).includes('plan 0/2 · a')), 'compact status includes progress and current step');
+  assert.ok(calls.status.some((s) => (s as { text: unknown }).text === undefined), 'legacy compact plan status is cleared instead of duplicated');
+  assert.equal(calls.status.some((s) => String((s as { text: unknown }).text).includes('plan 0/2 · a')), false, 'compact status does not duplicate progress/current step');
   clearPlan('/tmp/plan-ui-ws');
   refreshPlanUi(ctx);
   assert.ok(calls.status.some((s) => (s as { text: unknown }).text === undefined), 'status cleared when empty');
@@ -265,7 +278,7 @@ test('plan tool complete without index completes the current doing step (common 
   clearPlan('/tmp/plan-defidx-ws');
 });
 
-test('plan tool start without index starts the next runnable todo step', async () => {
+test('plan tool start without index starts the next runnable todo as a parallel lane', async () => {
   const tool = loadTool();
   const ctx = { cwd: '/tmp/plan-defstart-ws' } as unknown as import('../src/types.js').PiContext;
   await tool.execute('id', { action: 'set', steps: ['one', 'two'] }, undefined, undefined, ctx);
@@ -273,7 +286,7 @@ test('plan tool start without index starts the next runnable todo step', async (
     content: Array<{ text: string }>; isError?: boolean; details: { steps: Array<{ status: string }> };
   };
   assert.notEqual(res.isError, true);
-  assert.deepEqual(res.details.steps.map((s) => s.status), ['todo', 'doing'], 'next todo becomes the active step');
+  assert.deepEqual(res.details.steps.map((s) => s.status), ['doing', 'doing'], 'next todo becomes an additional active lane');
   clearPlan('/tmp/plan-defstart-ws');
 });
 
@@ -291,7 +304,7 @@ test('plan tool complete without index errors clearly when no step is in progres
   clearPlan(cwd);
 });
 
-test('plan tool remove deletes a step, remaps dependsOn indices, and keeps one step doing', async () => {
+test('plan tool remove deletes a step, remaps dependsOn indices, and keeps active work', async () => {
   const tool = loadTool();
   const cwd = '/tmp/plan-remove-ws';
   const ctx = { cwd } as unknown as import('../src/types.js').PiContext;
@@ -309,7 +322,7 @@ test('plan tool remove deletes a step, remaps dependsOn indices, and keeps one s
   assert.notEqual(res.isError, true);
   assert.deepEqual(res.details.steps.map((s) => s.text), ['A', 'C']);
   assert.deepEqual(res.details.steps[1]!.dependsOn, [1], 'dep on removed step dropped, later dep renumbered');
-  assert.equal(res.details.steps.filter((s) => s.status === 'doing').length, 1, 'still exactly one active step');
+  assert.equal(res.details.steps.filter((s) => s.status === 'doing').length, 1, 'still has active work');
   clearPlan(cwd);
 });
 
@@ -329,12 +342,46 @@ test('plan tool add supports dependsOn ordering', async () => {
   clearPlan(cwd);
 });
 
-test('plan tool teaches the default-index flow and remove action in its contract', () => {
+test('plan tool teaches the default-index flow, task sync, and parallel lanes in its contract', () => {
   const tool = loadTool();
   assert.match(tool.description, /remove/);
+  assert.match(tool.description, /multiple independent steps may be doing in parallel/);
   const guidelines = tool.promptGuidelines?.join('\n') ?? '';
   assert.match(guidelines, /plan\(complete\)/);
-  assert.match(guidelines, /no index/i);
+  assert.match(guidelines, /single current step/i);
+  assert.match(guidelines, /Awareness task\/work state/);
+  assert.match(guidelines, /plan\(start:N\)/);
+});
+
+test('plan tool requires explicit complete index when multiple lanes are doing', async () => {
+  const tool = loadTool();
+  const cwd = '/tmp/plan-parallel-complete-ws';
+  const ctx = { cwd } as unknown as import('../src/types.js').PiContext;
+  await tool.execute('id', { action: 'set', steps: ['A', 'B'] }, undefined, undefined, ctx);
+  await tool.execute('id', { action: 'start', index: 2 }, undefined, undefined, ctx);
+  const res = (await tool.execute('id', { action: 'complete' }, undefined, undefined, ctx)) as {
+    content: Array<{ text: string }>; isError?: boolean;
+    details: { error: string };
+  };
+  assert.equal(res.isError, true);
+  assert.equal(res.details.error, 'ambiguous-target');
+  assert.match(res.content[0]!.text, /2 steps are in progress/);
+  clearPlan(cwd);
+});
+
+test('plan tool refuses to start blocked dependency lanes', async () => {
+  const tool = loadTool();
+  const cwd = '/tmp/plan-blocked-start-ws';
+  const ctx = { cwd } as unknown as import('../src/types.js').PiContext;
+  await tool.execute('id', { action: 'set', steps: ['A', { text: 'B', dependsOn: [3] }, 'C'] }, undefined, undefined, ctx);
+  const res = (await tool.execute('id', { action: 'start', index: 2 }, undefined, undefined, ctx)) as {
+    content: Array<{ text: string }>; isError?: boolean;
+    details: { error: string };
+  };
+  assert.equal(res.isError, true);
+  assert.equal(res.details.error, 'blocked-step');
+  assert.match(res.content[0]!.text, /blocked by dependencies/);
+  clearPlan(cwd);
 });
 
 test('plan tool start/complete on an empty plan reports no active plan', async () => {

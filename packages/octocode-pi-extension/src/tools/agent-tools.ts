@@ -315,7 +315,7 @@ function getAgentDisplayState(agent: AgentDisplaySource): AgentDisplayState {
 }
 
 // Live-progress spinner: advanced once per ledger tick while a worker runs.
-const LEDGER_SPINNER = ['\u280b', '\u2819', '\u2839', '\u2838', '\u283c', '\u2834', '\u2826', '\u2827', '\u2807', '\u280f'];
+const LEDGER_SPINNER = ['✦', '✧', '✶', '✺', '✹', '✷', '✶', '✧'];
 let ledgerSpinnerFrame = 0;
 /** Single shared 1s ticker; live only while ≥1 worker is non-terminal and the UI is present. */
 let ledgerTicker: ReturnType<typeof setInterval> | undefined;
@@ -504,6 +504,7 @@ function previewMessage(message: string): string {
   const oneLine = message.replace(/\s+/g, ' ').trim();
   return oneLine.length > 72 ? `${oneLine.slice(0, 71)}…` : oneLine;
 }
+
 function notifyWaiters(record: AgentRecord): void {
   for (const waiter of record.waiters) waiter();
   record.waiters.clear();
@@ -1335,7 +1336,9 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
     const handback = summary.normalizedResult?.status && summary.normalizedResult.status !== 'unknown'
       ? ` · ${summary.normalizedResult.status}/${summary.normalizedResult.confidence}`
       : '';
-    const active = summary.activeTool ? ` · active:${summary.activeTool}` : '';
+    const active = summary.activeTool
+      ? ` · ${paint(theme, 'warning', 'running')} ${summary.activeTool}`
+      : state === 'running' ? ` · ${paint(theme, 'warning', 'running')}` : '';
     // Show what the worker is doing: total tool calls + the distinct tools it has used.
     const callCount = record.toolCalls.length;
     const toolNames = [...new Set(record.toolCalls.map((call) => call.toolName).filter(Boolean))].slice(0, 4);
@@ -1717,6 +1720,7 @@ export function registerAgentTools(
       'Use AgentMessage action:"wait" to collect the current turn result. Idle means the turn ended, not necessarily that the delegated objective passed acceptance.',
       'AgentMessage reads the in-memory spawned-agent registry; after session shutdown or reload, spawn fresh workers instead of relying on old agentIds.',
       'Before final answers, wait/status every relevant worker, reconcile disagreements, and synthesize findings instead of dumping raw worker JSON.',
+      'When you send, followUp, or steer work that changes scope, ownership, acceptance, or ordering, update the local plan in the same turn; if Awareness tasks/work are active, update those too so queued worker work is visible outside the message stream.',
       'Use action:"send" to start the next idle turn; while running it defaults to followUp. action:"followUp" queues after the turn. action:"steer" redirects after current tool calls, before the next model step.',
     ],
     parameters: Type.Object({

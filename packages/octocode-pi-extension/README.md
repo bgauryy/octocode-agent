@@ -5,7 +5,7 @@
 </div>
 
 Octocode’s research tools, Awareness Lite coordination, system prompt, skills,
-web providers, and subagents as one Pi extension.
+web providers, subagents, and launcher-consumed surface/profile specs as one Pi extension.
 
 ```bash
 pi install npm:@octocodeai/pi-extension
@@ -24,13 +24,18 @@ The build bundles the Awareness Lite runtime CLI and uses the published Octocode
 | Octocode MCP research tools | 13 |
 | Pi support tools | 11 |
 | Replacement edit + write + bash tools | 3 |
-| Slash commands | 11 |
+| Slash commands | 22 |
 | Bundled main-agent skills | 1 |
 
 Awareness Lite memory and coordination are deliberately not Pi tools. Agents use
 the bundled CLI under the `octocode-awareness-lite` skill for explicit `status`,
 `plan`, `task`, `lock`, `work`, `handoff`, `check`, and `memory` commands. This
 keeps one CLI/schema contract instead of duplicating it in Pi tool definitions.
+
+The extension also owns Octocode surface/profile helpers (`buildSurfaceSpec`,
+`resolveAwarenessCli`, `loadProfile`, `profileToPiArgs`). `octocode-agent`
+imports those helpers directly and only executes the returned specs, so core
+policy stays here instead of drifting into launcher shims.
 
 ## Quick start
 
@@ -46,6 +51,9 @@ keeps one CLI/schema contract instead of duplicating it in Pi tool definitions.
 /octocode-cron           list/check/cancel session-scoped Octocode jobs
 /octocode-setup          manage project .pi/APPEND_SYSTEM.md
 /octocode-skills-update  refresh bundled skill installs
+/octocode-plan           manage the active task plan
+/octocode-theme          switch Octocode theme: sync, dark, or light
+/octocode-chrome         list or close reused Chrome DevTools connections
 /octocode-inbox          worker inbox: view transcript, steer, or kill spawned agents
 /octocode-palette        command palette (default shortcut ctrl+o)
 /octocode-rewind         restore files from an automatic pre-prompt checkpoint
@@ -169,6 +177,9 @@ summary; `action:describe` returns the full selected tool schema before
 | `/octocode-mcp` / `/mcp` | Inspect/manage configured stdio MCP servers. |
 | `/octocode-setup` | Install/update the managed system-prompt block; `--global` targets user scope. |
 | `/octocode-skills-update` | Refresh bundled skill installs. |
+| `/octocode-plan` | Show, start, complete, or clear the active local task plan. |
+| `/octocode-theme` | Switch the Octocode theme (`sync`, `dark`, or `light`). |
+| `/octocode-chrome` | List or close reused Chrome DevTools Protocol connections. |
 | `/octocode-inbox` | Worker inbox overlay: pick a spawned agent, then view its transcript, steer it, or kill it. Completions/failures also fire desktop (OSC 9) notifications. |
 | `/octocode-palette` | Command palette over every slash command plus direct actions; default shortcut `ctrl+o` (override with `OCTOCODE_PALETTE_KEY`). |
 | `/octocode-rewind` | List and restore automatic shadow-git file checkpoints taken before each user prompt; optionally rewinds the conversation too. |

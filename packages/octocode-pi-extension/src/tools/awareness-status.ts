@@ -1,6 +1,6 @@
 /**
  * awareness-status — a live below-editor panel for the shared Awareness Lite state
- * (plans, tasks, verify debt, locks, manual work presence, agents, and messages).
+ * (plans, tasks, verify debt, locks, manual work presence, and messages).
  *
  * Awareness is canonical SQLite behind the `$OCTOCODE_AWARENESS_CLI` binary. Its
  * state previously only surfaced in chat when the agent ran a CLI command; this
@@ -81,7 +81,6 @@ export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme): strin
   const tail: string[] = [];
   if (s.lockCount > 0) tail.push(`locks ${s.lockCount}`);
   if (s.workCount > 0) tail.push(`work ${s.workCount}`);
-  if (s.agentCount > 0) tail.push(`agents ${s.agentCount}`);
   if (s.messageCount > 0) tail.push(`msgs ${s.messageCount}`);
 
   const chunks: string[] = [];

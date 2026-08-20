@@ -207,9 +207,16 @@ export function addStep(cwd: string, text: string, activeForm?: string, dependsO
   return list;
 }
 
-/** Mark a step (1-based) doing. */
+/**
+ * Mark a step (1-based) doing.
+ *
+ * Starting a second runnable step intentionally does NOT demote an existing
+ * doing step: independent plan lanes can run in parallel (for example, a
+ * parent edit plus a read-only subagent verification lane). Callers that need
+ * serial execution should complete the active step before starting the next one.
+ */
 export function startStep(cwd: string, index: number): PlanStep[] {
-  const list = getPlan(cwd).map((step) => (step.status === 'doing' ? { ...step, status: 'todo' as const } : step));
+  const list = getPlan(cwd).slice();
   const i = index - 1;
   if (i >= 0 && i < list.length) list[i] = { ...list[i]!, status: 'doing' };
   plans.set(cwd, list);
@@ -238,8 +245,8 @@ export function completeStep(cwd: string, index: number): PlanStep[] {
 /**
  * Remove a step (1-based). Dependencies are kept consistent: deps on the
  * removed step are dropped, deps pointing past it are renumbered. If the
- * removed step was the active one, the next satisfiable todo auto-advances so
- * the one-step-doing invariant holds.
+ * removed step was the only active one, the next satisfiable todo auto-advances so
+ * the plan always has active work while unfinished steps remain.
  */
 export function removeStep(cwd: string, index: number): PlanStep[] {
   const list = getPlan(cwd).slice();
@@ -285,22 +292,32 @@ export function renderActivePlanAddendum(cwd: string): string {
   const list = getPlan(cwd);
   if (list.length === 0) return '';
   const done = list.filter((s) => s.status === 'done').length;
-  const current = list.find((s) => s.status === 'doing') ?? list.find((s) => s.status === 'todo');
+  const doing = list.filter((s) => s.status === 'doing');
+  const current = doing[0] ?? list.find((s) => s.status === 'todo');
+  const runnableTodos = list
+    .map((s, i) => ({ step: s, index: i + 1 }))
+    .filter(({ step }) => step.status === 'todo' && depsMet(step, list));
   const unfinished = list.some((s) => s.status !== 'done');
-  const noneDoing = unfinished && !list.some((s) => s.status === 'doing');
+  const noneDoing = unfinished && doing.length === 0;
   const stale = unfinished && (turnsSinceUpdate.get(cwd) ?? 0) >= STALE_PLAN_TURNS;
   const nudges: string[] = [];
   if (noneDoing) {
-    nudges.push('note: no step is in progress — mark the next one with plan(start:N) so at least one step is always active.');
+    nudges.push('note: no step is in progress — mark the next runnable step with plan(start:N) so unfinished work has an active owner.');
+  }
+  if (runnableTodos.length > 0 && doing.length > 0) {
+    nudges.push(`parallel-ready: ${runnableTodos.map(({ step, index }) => `${index}. ${stepLabel(step)}`).join(' | ')} — start independent lanes with plan(start:N) before spawning/batching, or leave them todo if they depend on the current decision.`);
   }
   if (stale) {
-    nudges.push(`note: this plan has not been updated in ${STALE_PLAN_TURNS}+ turns — advance it (plan start/complete) or clear it if the work is done or abandoned.`);
+    nudges.push(`note: this plan has not been updated in ${STALE_PLAN_TURNS}+ turns — advance it (plan start/complete), add/remove changed scope, or clear it if the work is done or abandoned.`);
   }
+  const nextLine = doing.length > 1
+    ? `now: ${doing.map(stepLabel).join(' | ')}`
+    : current ? `next: ${stepLabel(current)}` : 'next: (all steps done — verify, then plan clear)';
   return [
     '<active_plan>',
-    `Your current task breakdown (${done}/${list.length} done). Execute the next step, then update it via the plan tool (start/complete). Keep it proportional; clear it when the task is finished.`,
+    `Your current task breakdown (${done}/${list.length} done). Execute active steps, start any independent parallel lanes with plan(start:N), then update it via the plan tool (start/complete/add/remove). Keep it proportional; clear it when the task is finished.`,
     ...list.map((s, i) => `${DISPLAY_MARK[displayStatus(s, list)]} ${i + 1}. ${s.text}${s.dependsOn?.length ? ` (needs ${s.dependsOn.join(',')})` : ''}`),
-    current ? `next: ${stepLabel(current)}` : 'next: (all steps done — verify, then plan clear)',
+    nextLine,
     ...nudges,
     '</active_plan>',
   ].join('\n');

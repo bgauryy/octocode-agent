@@ -12,7 +12,7 @@ import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { isSubagentProcess } from './agent-tools.js';
 import { clearCompactionWorkingState, type Notifier } from './compaction-resume.js';
-import { branchTipIsCompaction, clearCompactionInFlight, isCompactionInFlight, markCompactionInFlight, resetCompactionArbiterForTests } from './compaction-state.js';
+import { branchTipIsCompaction, clearCompactionInFlight, clearCompactionResumeRequest, isCompactionInFlight, markCompactionInFlight, markCompactionResumeRequested, resetCompactionArbiterForTests } from './compaction-state.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -118,10 +118,12 @@ export function registerContextTools(
       const pctStr = `${Math.round(fill * 100)}%`;
       notify(ctx, `Auto-compacting: context at ${pctStr} of context window.`, 'info');
       markCompactionInFlight();
+      markCompactionResumeRequested();
       ctx.compact({
         customInstructions: COMPACTION_CONTINUATION_INSTRUCTIONS,
-        // No continuation scheduled here: the session_compact hook (which fires
-        // with fromExtension:true for this ctx.compact) is the single scheduler.
+        // No continuation scheduled here: the session_compact hook is the single
+        // scheduler. Pi's session_compact.fromExtension means "summary supplied
+        // by extension", so the resume intent is tracked by compaction-state.
         // Scheduling from BOTH paths raced on a 1.5s wall-clock dedupe window —
         // any ordering delay over it sent the continuation twice.
         onComplete: once(() => {
@@ -130,6 +132,7 @@ export function registerContextTools(
         }),
         onError: (error: Error) => {
           clearCompactionInFlight();
+          clearCompactionResumeRequest();
           clearCompactionWorkingState(ctx);
           if (isNothingToCompact(error)) {
             notify(ctx, 'Auto-compaction skipped: session is too small to compact.', 'info');
@@ -202,7 +205,7 @@ export function registerContextTools(
             isError: true,
           };
         }
-        pi.sendUserMessage('/_octocode-clear-context-impl', { deliverAs: 'followUp' });
+        pi.sendUserMessage('/_octocode-clear-context-impl', { deliverAs: 'followUp', expandPromptTemplates: true });
         return {
           content: [
             {
@@ -241,16 +244,18 @@ export function registerContextTools(
       }
 
       markCompactionInFlight();
+      markCompactionResumeRequested();
       ctx.compact({
         customInstructions: buildCompactionInstructions(params['instructions']),
-        // Continuation is scheduled by the session_compact hook (fromExtension
-        // path) — the single scheduler; see the auto-compaction comment above.
+        // Continuation is scheduled by the session_compact hook — the single
+        // scheduler; see the auto-compaction comment above.
         onComplete: once(() => {
           clearCompactionInFlight();
           clearCompactionWorkingState(ctx);
         }),
         onError: (error: Error) => {
           clearCompactionInFlight();
+          clearCompactionResumeRequest();
           clearCompactionWorkingState(ctx);
           if (isNothingToCompact(error)) {
             notify(ctx, 'Compaction skipped: session is too small to compact.', 'info');
