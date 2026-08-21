@@ -31,6 +31,32 @@ export interface AwarenessStatus {
   messageCount: number;
   /** Compact summary of the most recent peer message (from→to: preview), when any. */
   lastMessage?: { from: string; to: string; preview: string };
+  /** Unread messages addressed to THIS session's agent id (message inbox). */
+  unreadInbox?: number;
+  /** Preview of the newest unread inbound message, when any. */
+  lastInbound?: { from: string; preview: string };
+}
+
+/** Parse the Lite `message inbox` JSON for this agent: unread count + newest preview. */
+export function parseInbox(json: string): { unread: number; lastInbound?: AwarenessStatus['lastInbound'] } {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    return { unread: 0 };
+  }
+  const list = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
+  const unread = list.filter((m) => m && m['readAt'] == null);
+  if (unread.length === 0) return { unread: 0 };
+  const newest = [...unread].sort(
+    (a, b) => (Date.parse(String(a['createdAt'] ?? '')) || 0) - (Date.parse(String(b['createdAt'] ?? '')) || 0),
+  ).at(-1)!;
+  const from = typeof newest['fromAgentId'] === 'string' ? (newest['fromAgentId'] as string) : '?';
+  const body = String(newest['text'] ?? newest['topic'] ?? '').replace(/\s+/g, ' ').trim();
+  return {
+    unread: unread.length,
+    lastInbound: { from, preview: body.length > 48 ? `${body.slice(0, 47)}…` : body },
+  };
 }
 
 /** Parse the Lite `message list` JSON, returning a compact summary of the newest message. */
@@ -45,8 +71,11 @@ export function parseLastMessage(json: string): AwarenessStatus['lastMessage'] |
   if (!list || list.length === 0) return undefined;
   // message list is newest-last or newest-first depending on the CLI; pick the one
   // with the greatest createdAt so the summary is deterministic.
+  // createdAt is an ISO-8601 string — Date.parse it (Number() would be NaN and
+  // silently turn this into a no-op sort).
   const newest = [...list].sort(
-    (a, b) => Number((a as { createdAt?: number }).createdAt ?? 0) - Number((b as { createdAt?: number }).createdAt ?? 0),
+    (a, b) => (Date.parse(String((a as { createdAt?: string }).createdAt ?? '')) || 0)
+      - (Date.parse(String((b as { createdAt?: string }).createdAt ?? '')) || 0),
   ).at(-1) as Record<string, unknown> | undefined;
   if (!newest) return undefined;
   const str = (k: string): string => (typeof newest[k] === 'string' ? (newest[k] as string) : '');
@@ -97,7 +126,7 @@ export function hasAwarenessSignal(s: AwarenessStatus): boolean {
 
 /** Build the below-editor Awareness panel lines. Empty array when there is nothing to show. */
 export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme): string[] {
-  if (!hasAwarenessSignal(s)) return [];
+  if (!hasAwarenessSignal(s) && !(s.unreadInbox && s.unreadInbox > 0)) return [];
   const debt = s.verifyTasks;
   const segs: string[] = [];
   if (s.activePlans > 0) segs.push(`plans ${s.activePlans}`);
@@ -114,6 +143,12 @@ export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme): strin
   }
 
   const chunks: string[] = [];
+  // Unread inbound messages lead the panel — they are the one awareness event
+  // that demands the operator's/agent's attention (a peer is talking to YOU).
+  if (s.unreadInbox && s.unreadInbox > 0) {
+    const preview = s.lastInbound ? ` (from ${s.lastInbound.from}: ${s.lastInbound.preview})` : '';
+    chunks.push(paint(theme, 'warning', `✉ ${s.unreadInbox} unread${preview}`));
+  }
   if (segs.length) chunks.push(paint(theme, 'brand', segs.join('  ·  ')));
   if (tail.length) chunks.push(paint(theme, 'muted', tail.join('  ·  ')));
   if (debt > 0) chunks.push(paint(theme, 'warning', `verify-debt ${debt}`));
@@ -179,6 +214,20 @@ const defaultMessageRunner: MessageRunner = (cwd) =>
   });
 let messageRunner: MessageRunner = defaultMessageRunner;
 
+/** Runs `message inbox` for THIS agent's unread messages; injectable for tests. */
+export type InboxRunner = (cwd: string, agentId: string) => Promise<string | null>;
+const defaultInboxRunner: InboxRunner = (cwd, agentId) =>
+  new Promise((resolve) => {
+    const spec = buildAwarenessLiteCommand(['message', 'inbox', '--agent-id', agentId, '--workspace', cwd]);
+    execFile(
+      spec.cmd,
+      spec.args,
+      { timeout: 4000, maxBuffer: 1_000_000 },
+      (err, stdout) => resolve(err ? null : String(stdout)),
+    );
+  });
+let inboxRunner: InboxRunner = defaultInboxRunner;
+
 /** Test hook: override the CLI runner. */
 export function setAwarenessStatusRunnerForTests(fn: StatusRunner): void {
   runner = fn;
@@ -187,9 +236,14 @@ export function setAwarenessStatusRunnerForTests(fn: StatusRunner): void {
 export function setAwarenessMessageRunnerForTests(fn: MessageRunner): void {
   messageRunner = fn;
 }
+/** Test hook: override the inbox runner. */
+export function setAwarenessInboxRunnerForTests(fn: InboxRunner): void {
+  inboxRunner = fn;
+}
 export function resetAwarenessStatusStateForTests(): void {
   runner = defaultRunner;
   messageRunner = defaultMessageRunner;
+  inboxRunner = defaultInboxRunner;
   cache.clear();
 }
 
@@ -250,19 +304,31 @@ export function refreshAwarenessPanel(ctx?: PiContext): void {
       const parsed = parseAwarenessStatus(stdout);
       entry.status = parsed;
       renderWidget(ctx, parsed);
-      // Only spend a second CLI call for the last-message preview when there are
-      // peer messages to summarize.
+      // Only spend extra CLI calls when there are peer messages to summarize:
+      // one for the newest-message preview, one for THIS agent's unread inbox
+      // (the actionable "a peer messaged YOU" indication).
       if (parsed && parsed.messageCount > 0) {
         void messageRunner(cwd)
           .then((msgOut) => {
-            if (msgOut === null || entry.status !== parsed) return;
+            if (msgOut === null || !entry.status) return;
             const last = parseLastMessage(msgOut);
             if (last) {
-              entry.status = { ...parsed, lastMessage: last };
+              entry.status = { ...entry.status, lastMessage: last };
               renderWidget(ctx, entry.status);
             }
           })
           .catch(() => { /* best-effort preview; count already shown */ });
+        const agentId = process.env.OCTOCODE_AGENT_ID;
+        if (agentId) {
+          void inboxRunner(cwd, agentId)
+            .then((inboxOut) => {
+              if (inboxOut === null || !entry.status) return;
+              const { unread, lastInbound } = parseInbox(inboxOut);
+              entry.status = { ...entry.status, unreadInbox: unread, lastInbound };
+              renderWidget(ctx, entry.status);
+            })
+            .catch(() => { /* best-effort; the total count is already shown */ });
+        }
       }
     })
     .catch(() => {

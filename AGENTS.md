@@ -99,16 +99,16 @@ After editing a local package, rebuild it (`yarn workspace <pkg> build`) before 
 
 ## Awareness
 
-For non-trivial repo work, activate `octocode-awareness` and run
-`node "$OCTOCODE_AWARENESS_CLI" attend --query "<task>" --compact`. This file routes;
-the skill owns judgment, the CLI owns live state, and hooks automate lifecycle edges.
+For non-trivial repo work, activate the bundled `octocode-awareness-lite` skill and run
+`node "$OCTOCODE_AWARENESS_CLI" status` ($OCTOCODE_AWARENESS_CLI = Lite CLI path; commands
+`plan · task · lock · work · handoff · agent · message · check · memory`, see `… schema`).
+The full `octocode-awareness` package (attend / reflect / hooks) applies only when installed.
+This file routes; the skill owns judgment, the CLI owns live state, hooks automate lifecycle.
 Package work also reads [`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md).
 
-Loop: claim a ready task or open WORK; declare edited paths; use `--exclusive` only for sensitive work; check while present; submit/end → `verify mark` → `verify audit`. Use `memory recall --smart` only when prior learning may change the approach; record only verified reusable outcomes.
+Loop: claim a ready task or open WORK; declare edited paths; `--exclusive` only for sensitive work; check while present; submit/end → `verify mark` → `verify audit`. Use `memory recall --smart` only when prior learning may change the approach; record only verified reusable outcomes.
 
-SQLite is canonical. `.octocode/` holds authored plan docs and optional query exports; never hand-edit generated files. Exact flags: `schema command <noun> [action]`. Full lifecycle: [`docs/HOW_IT_WORKS.md`](packages/octocode-awareness/docs/HOW_IT_WORKS.md).
-
-Skill source: repo-root `skills/octocode-awareness` (build syncs it into `packages/octocode-awareness/skills/` for publishing); use local build `packages/octocode-awareness/out/octocode-awareness.js` or installed `npx @octocodeai/octocode-awareness`. Rebuild after changes; never edit `.agents/skills/` or `out/skills/`. Generated `scripts/awareness.mjs` comes from `bin/awareness.ts`, uses built-in `node:sqlite`, and stays zero npm runtime deps.
+SQLite is canonical; never hand-edit generated files under `.octocode/` or `out/skills/`. Full lifecycle: [`docs/HOW_IT_WORKS.md`](packages/octocode-awareness/docs/HOW_IT_WORKS.md).
 
 ## Docs and references
 

@@ -104,21 +104,59 @@ function tokenizeShellSegment(seg: string): string[] {
   return tokens;
 }
 
+function stripOuterQuotes(t: string): string {
+  return t.replace(/^['"]/, '').replace(/['"]$/, '');
+}
+
 /**
  * Extract file targets written by `sed -i` / `perl -i` in a single command
  * segment. Returns [] when no in-place editor is present.
+ *
+ * Correctly separates the SCRIPT from the FILE operands across dialects, so a
+ * script token (e.g. the BSD/macOS `sed -i '' '/^re/d' file` address, which
+ * starts with `/`) is never mistaken for an absolute output path:
+ *  - GNU `sed -i 's/a/b/' f` / attached suffix `sed -i.bak 's/a/b/' f`
+ *  - BSD `sed -i '' 's/a/b/' f` (separate empty backup-suffix arg)
+ *  - explicit script via `-e <script>` / script file via `-f <file>` (skipped)
+ *  - `perl -i -pe 's/a/b/' f` (script is the token after the flag bundle)
  */
 function extractInPlaceEditTargets(seg: string): string[] {
   const tokens = tokenizeShellSegment(seg);
   const cmdIdx = tokens.findIndex((t) => t === 'sed' || t === 'perl');
   if (cmdIdx === -1) return [];
   const rest = tokens.slice(cmdIdx + 1);
-  const hasInPlace = rest.some((t) => /^-i/.test(t) || /^--in-place/.test(t));
-  if (!hasInPlace) return [];
-  // Drop flags; the first remaining non-flag token is the script/expression,
-  // everything after it is a file argument.
-  const nonFlags = rest.filter((t) => !t.startsWith('-'));
-  return nonFlags.slice(1);
+  if (!rest.some((t) => /^-i/.test(t) || /^--in-place/.test(t))) return [];
+
+  // An explicit `-e`/`-f` script means every positional token is a FILE (no
+  // inline positional script to skip).
+  const hasExplicitScript = rest.some((t) => t === '-e' || t === '--expression' || t === '-f' || t === '--file');
+
+  const files: string[] = [];
+  let inlineScriptSeen = false;
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i]!;
+    if (t.startsWith('-')) {
+      if (t === '-e' || t === '--expression' || t === '-f' || t === '--file') {
+        i++; // the next token is a script / script-file, not an output file
+        continue;
+      }
+      if (t === '-i' || t === '--in-place') {
+        // BSD sed takes a SEPARATE backup-suffix arg (often ''); GNU -i takes
+        // none. Consume the next token only when it is unambiguously a suffix
+        // (empty or dotted), never a script or a real filename.
+        const next = rest[i + 1] !== undefined ? stripOuterQuotes(rest[i + 1]!) : undefined;
+        if (next !== undefined && (next === '' || /^\.[\w.-]*$/.test(next))) i++;
+        continue;
+      }
+      continue; // other flags (-n, -E, -pe, …)
+    }
+    if (!hasExplicitScript && !inlineScriptSeen) {
+      inlineScriptSeen = true; // first positional is the inline script, not a file
+      continue;
+    }
+    files.push(t);
+  }
+  return files;
 }
 
 export function assertBashCommandAllowed(command: string, cwd: string): void {
@@ -331,9 +369,12 @@ export function registerBashTool(
         return makeRenderer(() => ['']);
       }
       const text = result.content.find((c) => c.type === 'text')?.text ?? '';
-      const colored = result.isError ? paint(theme, 'error', text) : text;
+      // Paint per line, not the whole block: a single fg-wrap only colours the
+      // first row once the block is split for the renderer.
       return makeRenderer((width) =>
-        colored.split('\n').map((line) => truncateToWidth(line, width)),
+        text
+          .split('\n')
+          .map((line) => truncateToWidth(result.isError ? paint(theme, 'error', line) : line, width)),
       );
     },
   });

@@ -258,7 +258,7 @@ test('plan tool start/complete with a bad index reports an error and does not mu
   };
   assert.equal(oob.isError, true);
   assert.equal(oob.details.error, 'invalid-index');
-  assert.match(oob.content[0]!.text, /no such step 9/);
+  assert.match((oob.content[0] as { text: string }).text, /no such step 9/);
   assert.equal(oob.details.steps.filter((s) => s.status === 'done').length, 0, 'nothing marked done');
 
   clearPlan('/tmp/plan-badidx-ws');
@@ -298,7 +298,7 @@ test('plan tool complete without index errors clearly when no step is in progres
     content: Array<{ text: string }>; isError?: boolean;
   };
   assert.equal(res.isError, true);
-  assert.match(res.content[0]!.text, /no step is in progress/i);
+  assert.match((res.content[0] as { text: string }).text, /no step is in progress/i);
   clearPlan(cwd);
 });
 
@@ -363,7 +363,7 @@ test('plan tool requires explicit complete index when multiple lanes are doing',
   };
   assert.equal(res.isError, true);
   assert.equal(res.details.error, 'ambiguous-target');
-  assert.match(res.content[0]!.text, /2 steps are in progress/);
+  assert.match((res.content[0] as { text: string }).text, /2 steps are in progress/);
   clearPlan(cwd);
 });
 
@@ -378,7 +378,7 @@ test('plan tool refuses to start blocked dependency lanes', async () => {
   };
   assert.equal(res.isError, true);
   assert.equal(res.details.error, 'blocked-step');
-  assert.match(res.content[0]!.text, /blocked by dependencies/);
+  assert.match((res.content[0] as { text: string }).text, /blocked by dependencies/);
   clearPlan(cwd);
 });
 
@@ -389,7 +389,7 @@ test('plan tool start/complete on an empty plan reports no active plan', async (
     content: Array<{ text: string }>; isError?: boolean;
   };
   assert.equal(res.isError, true);
-  assert.match(res.content[0]!.text, /no active plan/);
+  assert.match((res.content[0] as { text: string }).text, /no active plan/);
 });
 
 test('plan tool set→complete→show drives the checklist and returns the addendum', async () => {
@@ -399,7 +399,7 @@ test('plan tool set→complete→show drives the checklist and returns the adden
   const res = (await tool.execute('id', { action: 'complete', index: 1 }, undefined, undefined, ctx)) as {
     content: Array<{ text: string }>; details: { steps: Array<{ status: string }>; addendum: string };
   };
-  assert.match(res.content[0]!.text, /1\/2 done/);
+  assert.match((res.content[0] as { text: string }).text, /1\/2 done/);
   assert.equal(res.details.steps[0]!.status, 'done');
   assert.match(res.details.addendum, /<active_plan>/);
   clearPlan('/tmp/plan-tool-ws');
@@ -424,7 +424,7 @@ test('plan tool state is scoped by Pi session file, not only workspace cwd', asy
   };
 
   assert.deepEqual(fresh.details.steps, [], 'fresh session has no active plan');
-  assert.match(fresh.content[0]!.text, /\(no active plan\)/);
+  assert.match((fresh.content[0] as { text: string }).text, /\(no active plan\)/);
   assert.equal(fresh.details.addendum, '', 'fresh session gets no stale active_plan addendum');
 
   clearPlan(activePlanScope(ctx1));

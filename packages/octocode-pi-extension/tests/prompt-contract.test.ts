@@ -196,7 +196,7 @@ test('agents: classify shape, cheapest form, spawn gate, parent-owned mutation',
   assert.match(SYSTEM_PROMPT, /independent known-input tool calls; launch together, synthesize after/);
   assert.match(SYSTEM_PROMPT, /Route typed specialists by their strengths/);
   assert.match(SYSTEM_PROMPT, /`researcher` for evidence, `planner` for ordered plans, `architect` for root-cause\/local architecture/);
-  assert.match(SYSTEM_PROMPT, /`browser-agent` for multi-turn Chrome work/);
+  assert.match(SYSTEM_PROMPT, /for multi-turn Chrome work use the `browserAgent` tool/);
   assert.match(SYSTEM_PROMPT, /one bounded isolated objective/);
   assert.match(SYSTEM_PROMPT, /use a fresh `spawnAgent` when the job needs a clean bounded worker/);
   assert.match(SYSTEM_PROMPT, /Before spawning, pass the spawn gate/);
@@ -266,10 +266,9 @@ test('tools: octocode-first, batching, SDK-substitution ban, MCPTool routing and
   assert.match(SYSTEM_PROMPT, /do not present it as a successful tool run/);
   assert.match(SYSTEM_PROMPT, /\*\*MCPTool\*\* — primary research surface[^\n]*MCP client/);
   assert.match(SYSTEM_PROMPT, /tool bridge, not a worker \(no planning\/memory\/synthesis\)/);
-  assert.match(SYSTEM_PROMPT, /lazy `octocode` MCP server \(`npx -y octocode-mcp@latest`\)/);
+  assert.match(SYSTEM_PROMPT, /lazy `octocode` MCP server \(pinned local `octocode-mcp` binary, `npx -y octocode-mcp@latest` fallback\)/);
   assert.match(SYSTEM_PROMPT, /`<workspace>\/\.pi\/agent\/mcp\.json` or `~\/\.pi\/agent\/mcp\.json`/);
   assert.match(SYSTEM_PROMPT, /project config loads only when trusted/);
-  assert.match(SYSTEM_PROMPT, /`mcp` is an alias/);
   assert.match(SYSTEM_PROMPT, /Treat MCP servers as arbitrary code/);
   assert.match(SYSTEM_PROMPT, /compact tool catalog .*`<mcp_cached_catalog>`/i);
   assert.match(SYSTEM_PROMPT, /exact schemas inline there after you call or describe a tool/i);
@@ -345,7 +344,7 @@ test('search-and-research: deep check, evidence flow, confidence, ask-before gat
 
 test('browser-agent: one-shot vs multi-turn routing, marker parsing, kill discipline', () => {
   assert.match(SYSTEM_PROMPT, /Use `chromeDebug` directly for one-shot browser tasks/);
-  assert.match(SYSTEM_PROMPT, /spawnSubagent\(\{agent:"browser-agent"\}\)/);
+  assert.match(SYSTEM_PROMPT, /use the `browserAgent` tool: call `browserAgent\(\{task, url\}\)`/);
   assert.match(SYSTEM_PROMPT, /\[STATUS\]`, `\[FINDING\]`, `\[ACTION\]`, `\[METRIC\]`, `\[SCREENSHOT\]`/);
   assert.match(SYSTEM_PROMPT, /Kill after the last `\[DONE\]`/);
   assert.match(SYSTEM_PROMPT, /distinct ports \(9222, 9223…\)/);
@@ -549,7 +548,13 @@ test('typed subagent prompts define terminal markers plus Awareness Lite coordin
     assert.match(prompt, /bundled \*and\* user-installed Octocode skills/, `${name} SYSTEM_PROMPT must mention the skill surface`);
     assert.match(prompt, /octocode-awareness-lite/, `${name} SYSTEM_PROMPT must mention bundled Awareness Lite`);
     assert.match(prompt, /parent-only: the parent uses `AgentMessage`/, `${name} SYSTEM_PROMPT must keep live control parent-owned`);
-    assert.match(prompt, /Awareness Lite `message`\/`handoff`/, `${name} SYSTEM_PROMPT must name durable async peer channels`);
+    // Durable async peer channels: the coordination block teaches the real CLI
+    // shapes for messaging, handoff notes, presence, and shared-registry reads.
+    assert.match(prompt, /message send --from/, `${name} SYSTEM_PROMPT must teach message send`);
+    assert.match(prompt, /message inbox --agent-id/, `${name} SYSTEM_PROMPT must teach inbox checks`);
+    assert.match(prompt, /handoff add --agent-id/, `${name} SYSTEM_PROMPT must teach handoff notes`);
+    assert.match(prompt, /agent list/, `${name} SYSTEM_PROMPT must teach the shared agent registry`);
+    assert.match(prompt, /OCTOCODE_AWARENESS_CLI/, `${name} SYSTEM_PROMPT must name the Lite CLI entry`);
     assert.match(prompt, /Treat Awareness state as shared workspace data, not as proof/, `${name} SYSTEM_PROMPT must not treat coordination notes as proof`);
   }
 });

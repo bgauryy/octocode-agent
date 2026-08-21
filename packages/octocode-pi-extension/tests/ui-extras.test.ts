@@ -92,7 +92,7 @@ test('buildFooterSegments shows the active worker progress note next to the agen
     sessionMs: 0, activeWorkers: 2, workerTotal: 3, agentDoing: 'Editing agent-tools.ts', dirty: false,
   });
   const seg = segs.find((s) => s.text.startsWith('agents '))!;
-  assert.match(seg.text, /^agents 3\/2 live ‣ /);
+  assert.match(seg.text, /^agents 3 \(2 live\) ‣ /);
   assert.match(seg.text, /Editing/);
 });
 
@@ -109,7 +109,7 @@ test('buildFooterSegments composes context %, tokens, turns, timing, workers, aw
   const segs = buildFooterSegments({
     tokens: 16_000, contextWindow: 200_000,
     completedTurns: 3, activeTurnMs: 9000, lastTurnMs: undefined,
-    sessionMs: 120_000, activeWorkers: 2, workerTotal: 2, awarenessAgents: 4,
+    sessionMs: 120_000, activeWorkers: 2, workerTotal: 2, awarenessAgents: 4, peerDirty: 3,
     branch: 'main', dirty: true,
   });
   const joined = segs.map((s) => s.text).join(' | ');
@@ -122,26 +122,28 @@ test('buildFooterSegments composes context %, tokens, turns, timing, workers, aw
   assert.match(joined, /active 9s/);
   assert.match(joined, /agents 2/);
   assert.match(joined, /aware-agents 4/);
+  assert.match(joined, /peer-wip 3/);
   assert.doesNotMatch(joined, /plan \d/);
   assert.match(joined, /main\*/);      // dirty marker
 });
 
-test('buildFooterSegments renders harness overhead: total by default, breakdown at full density', () => {
+test('buildFooterSegments always renders labeled harness context total; breakdown only at full density', () => {
   const overhead = { totalChars: 48_000, sysChars: 32_000, mcpServers: 2, mcpTools: 38, skills: 3 };
   const base = {
     tokens: 0, contextWindow: 0, completedTurns: 0, sessionMs: 0,
     activeWorkers: 0, dirty: false, overhead,
   };
-  // default: total estimate only (~48000/4 = 12000 → 12.0k)
+  // default: labeled total estimate only (~48000/4 = 12000 → 12.0k)
   const def = buildFooterSegments(base, 'default').map((s) => s.text).join(' | ');
-  assert.match(def, /Σ~12\.0k/);
+  assert.match(def, /prompt Σ~12\.0k/);
   assert.doesNotMatch(def, /sys /);
   // full: adds the sys/mcp/skills breakdown
   const full = buildFooterSegments(base, 'full').map((s) => s.text).join(' | ');
-  assert.match(full, /Σ~12\.0k \(sys 8\.0k · mcp 2\/38 · skills 3\)/);
-  // compact: dropped entirely
+  assert.match(full, /prompt Σ~12\.0k \(sys 8\.0k · mcp 2\/38 · skills 3\)/);
+  // compact: still shown (labeled total, no breakdown)
   const compact = buildFooterSegments(base, 'compact').map((s) => s.text).join(' | ');
-  assert.doesNotMatch(compact, /Σ~/);
+  assert.match(compact, /prompt Σ~12\.0k/);
+  assert.doesNotMatch(compact, /sys /);
 });
 
 test('buildFooterSegments colors the context gauge by fill severity', () => {

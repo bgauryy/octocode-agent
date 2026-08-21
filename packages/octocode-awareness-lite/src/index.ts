@@ -200,6 +200,13 @@ function cutoffIso(ageMs: number): string {
   return new Date(Date.now() - ageMs).toISOString();
 }
 
+/**
+ * Default presence window for counting "present" agents in status() when the
+ * caller does not pass staleAfterMs. 30 min matches the lock/work default TTL,
+ * so a crashed agent that never called leave ages out of the presence count.
+ */
+const DEFAULT_AGENT_PRESENCE_MS = 30 * 60_000;
+
 function id(prefix: string): string {
   return `${prefix}_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
 }
@@ -328,6 +335,77 @@ function splitFiles(files: string | string[] | undefined | null): string[] {
   return (files ?? '').split(',').map((file) => file.trim()).filter(Boolean);
 }
 
+// ─── Agent naming ─────────────────────────────────────────────────────────────
+
+/** Compact funny codename pool (sea creature × scientist, mirrors the harness pool). */
+const AGENT_NAME_POOL = [
+  'squidJobs', 'inkstein', 'octoDarwin', 'jellyTorvalds', 'calamariCurie',
+  'crabBohr', 'seahorseHopper', 'lobsterLovelace', 'morayTuring', 'shellKnuth',
+  'stingraySagan', 'blobfishBabbage', 'cuttlefishCook', 'narwhalKnuth', 'pinchyPauli',
+  'eelCerf', 'snappyCopernicus', 'mantaGates', 'zappyTesla', 'starfishStallman',
+] as const;
+
+export type AgentHost =
+  | 'claude'
+  | 'cursor'
+  | 'codex'
+  | 'opencode'
+  | 'vscode'
+  | 'zed'
+  | 'jetbrains'
+  | 'octo'
+  | 'agent';
+
+/** Name tag per host — recognizable runner, sea pun where it writes itself. */
+const HOST_NAME_TAG: Record<AgentHost, string> = {
+  claude: 'clawde',
+  cursor: 'cursea',
+  codex: 'codex',
+  opencode: 'opencode',
+  vscode: 'vscode',
+  zed: 'zed',
+  jetbrains: 'jetbrains',
+  octo: 'octo',
+  agent: 'agent',
+};
+
+/**
+ * Detect the running host from the environment so generated agent names tell
+ * you WHICH runner joined the shared registry. `OCTOCODE_AGENT_HOST` wins (the
+ * Octocode harness sets it, so its sessions tag 'octo' even when launched from
+ * a Claude Code or Cursor terminal whose env vars are inherited). Recognition
+ * is best-effort: only tag a host on a reliable signal; anything unrecognized
+ * falls back to the generic 'agent' (never a wrong guess). Kept in sync by eye
+ * with the harness copy in @octocodeai/pi-extension `agentNames.ts`.
+ */
+export function detectAgentHost(env: NodeJS.ProcessEnv = process.env): AgentHost {
+  const override = String(env['OCTOCODE_AGENT_HOST'] ?? '').toLowerCase();
+  if (override === 'octocode' || override === 'octocode-agent') return 'octo';
+  if (Object.prototype.hasOwnProperty.call(HOST_NAME_TAG, override)) return override as AgentHost;
+
+  // Agent CLIs (checked before terminal/IDE signals, which forks also set).
+  if (env['CLAUDECODE'] || env['CLAUDE_CODE_ENTRYPOINT']) return 'claude';
+  if (env['CURSOR_TRACE_ID'] || env['CURSOR_AGENT']) return 'cursor';
+  if (env['CODEX_THREAD_ID'] || env['CODEX_SANDBOX']) return 'codex';
+  if (env['OPENCODE'] || env['OPENCODE_CONFIG'] || env['OPENCODE_BIN_PATH']) return 'opencode';
+  // IDEs with a distinguishable terminal signal.
+  if (env['ZED_TERM']) return 'zed';
+  if (String(env['TERMINAL_EMULATOR'] ?? '').includes('JetBrains')) return 'jetbrains';
+  if (env['TERM_PROGRAM'] === 'vscode') return 'vscode';
+  return 'agent';
+}
+
+/**
+ * A funny, host-tagged agent name, e.g. `clawde-squidJobs` (Claude Code),
+ * `cursea-crabBohr` (Cursor), `octo-inkstein` (Octocode harness). Used as the
+ * default when `agent join` is called without --name so a registry shared by
+ * several runners stays legible at a glance.
+ */
+export function generateAgentName(env: NodeJS.ProcessEnv = process.env): string {
+  const funny = AGENT_NAME_POOL[Math.floor(Math.random() * AGENT_NAME_POOL.length)];
+  return `${HOST_NAME_TAG[detectAgentHost(env)]}-${funny}`;
+}
+
 export class AwarenessLite {
   readonly workspace: string;
   readonly dbPath: string;
@@ -338,7 +416,11 @@ export class AwarenessLite {
     this.dbPath = resolve(options.dbPath ?? defaultDbPath(this.workspace));
     mkdirSync(dirname(this.dbPath), { recursive: true });
     this.db = new DatabaseSync(this.dbPath);
-    this.db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
+    // busy_timeout FIRST: this package exists for parallel agents sharing one
+    // DB, and without it concurrent writers hit SQLITE_BUSY immediately and
+    // silently lose records (verified: 40 parallel `task add` → 9 failures).
+    // 5s matches the hardened open in the full octocode-awareness package.
+    this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
     this.migrate();
   }
 
@@ -381,7 +463,7 @@ export class AwarenessLite {
       work: this.count('work_presence'),
       memories: this.count('memories'),
       handoffs: this.countOpenHandoffs(),
-      agents: this.count('agents'),
+      agents: this.countPresentAgents(params.staleAfterMs ?? DEFAULT_AGENT_PRESENCE_MS),
       staleAgents: params.staleAfterMs ? this.countStaleAgents(params.staleAfterMs) : 0,
       messages: this.count('messages'),
     };
@@ -647,15 +729,20 @@ export class AwarenessLite {
   joinAgent(params: { agentId: string; name?: string | null; role?: string | null; metadata?: string | Record<string, unknown> | null }): AgentRecord {
     const stamp = now();
     const agentId = required(params.agentId, 'agent-id');
-    const existing = this.db.prepare('SELECT metadata_json FROM agents WHERE agent_id = ?').get(agentId) as { metadata_json: string } | undefined;
+    const existing = this.db.prepare('SELECT name, metadata_json FROM agents WHERE agent_id = ?').get(agentId) as { name: string | null; metadata_json: string } | undefined;
     const metadataJson = params.metadata === undefined && existing ? existing.metadata_json : JSON.stringify(parseMetadata(params.metadata));
+    // No explicit name and no remembered one → default to a funny host-tagged
+    // codename (clawde-squidJobs / cursea-crabBohr / octo-inkstein) so a shared
+    // registry shows WHO is running WHERE. Re-joins keep their existing name
+    // (null routes through the COALESCE below).
+    const name = params.name?.trim() || (existing?.name ? null : generateAgentName());
     this.db.prepare(`INSERT INTO agents(agent_id, name, role, status, metadata_json, created_at, last_seen_at)
       VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?)
       ON CONFLICT(agent_id) DO UPDATE SET name = COALESCE(excluded.name, agents.name),
         role = COALESCE(excluded.role, agents.role), status = 'ACTIVE', metadata_json = excluded.metadata_json,
         last_seen_at = excluded.last_seen_at`).run(
           agentId,
-          params.name?.trim() || null,
+          name,
           params.role?.trim() || null,
           metadataJson,
           stamp,
@@ -866,6 +953,17 @@ export class AwarenessLite {
 
   private countStaleAgents(staleAfterMs: number): number {
     const row = this.db.prepare("SELECT COUNT(*) AS count FROM agents WHERE status != 'LEFT' AND last_seen_at < ?").get(cutoffIso(staleAfterMs)) as { count: number };
+    return row.count;
+  }
+
+  /**
+   * Count present agents: joined, not LEFT, and seen within the presence window.
+   * Agents have no TTL auto-prune (unlike locks/work), so a crashed agent that
+   * never called leave would otherwise linger in a raw COUNT(*) forever. This is
+   * the complement of countStaleAgents among non-LEFT agents.
+   */
+  private countPresentAgents(staleAfterMs: number): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS count FROM agents WHERE status != 'LEFT' AND last_seen_at >= ?").get(cutoffIso(staleAfterMs)) as { count: number };
     return row.count;
   }
 

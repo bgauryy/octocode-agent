@@ -7,3 +7,6 @@ coverage
 .octocode
 .octocode-lite
 .agents
+# Stray tsc emit into source/test trees (typecheck must stay --noEmit)
+packages/*/src/**/*.js
+packages/*/tests/**/*.js

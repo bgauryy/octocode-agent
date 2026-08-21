@@ -77,6 +77,9 @@ import {
   hint,
   kv,
   launchBanner,
+  octopusArt,
+  octopusFrame,
+  octopusShimmerSpan,
   link,
   makePainter,
   section,
@@ -333,7 +336,7 @@ export function versionReport(env: NodeJS.ProcessEnv = process.env): string {
     '',
     kv(p, 'launcher', launcherVersion() ?? '?'),
     kv(p, 'core', `${coreStatus} ${p.dim(`(${CORE_PACKAGE})`)}`),
-    kv(p, 'pi host', `${piVersion} ${p.dim(`(${effectivePkg})`)}`),
+    kv(p, 'runtime', `${piVersion} ${p.dim(`(${effectivePkg})`)}`),
     kv(p, 'launch mode', launchMode),
   ].join('\n');
 }
@@ -365,7 +368,7 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
   return [
     header(p, ''),
     '',
-    ...wrapText('The self-working coding agent: the Pi runtime driven by the Octocode harness.', terminalWidth()).map((l) => p.dim(l)),
+    ...wrapText('The self-working coding agent: the Octocode harness runtime.', terminalWidth()).map((l) => p.dim(l)),
     '',
     section(p, 'Get started'),
     ...cmdRows(p, [
@@ -373,7 +376,7 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
       ['octocode-agent "<prompt>"', 'launch with an initial message'],
       ['run "<task>" [--json]', 'headless: run once, print result, exit'],
       ['serve [--stdio]', 'Octocode thin-client envelope over stdin/stdout for IDE/web embeds'],
-      ['serve --raw-rpc', 'compat: raw Pi RPC stdin/stdout'],
+      ['serve --raw-rpc', 'compat: raw runtime RPC stdin/stdout'],
       ['resume|session [<id>]', 'resume: pick, or fuzzy id; -c resumes THIS terminal'],
     ]),
     '',
@@ -387,7 +390,7 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
     '',
     section(p, 'Setup & health'),
     ...cmdRows(p, [
-      ['doctor', 'one health pane: Pi host, core, auth, awareness'],
+      ['doctor', 'one health pane: runtime, core, auth, awareness'],
       ['setup', 'first-run setup checks'],
       ['auth [login|logout|status]', 'credentials (env keys or /login)'],
       ['models [--set id]', 'pick or pin the default model'],
@@ -401,7 +404,7 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
       ['update', 'self-update the platform'],
       ['update core', 'refresh the bundled core in this install'],
       ['completion <bash|zsh|fish>', 'print a shell completion script'],
-      ['--version [--json]', 'launcher, core, and Pi host versions'],
+      ['--version [--json]', 'launcher, core, and runtime versions'],
     ]),
     '',
     section(p, 'Options'),
@@ -411,8 +414,8 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
     ]),
     '',
     section(p, 'Launch modes'),
-    ...wrapText('SDK embed (default)   — in-process Pi session with direct API access', terminalWidth() - 2).map((l) => `  ${p.dim(l)}`),
-    ...wrapText('Subprocess fallback   — spawns the Pi binary via the -e flag.', terminalWidth() - 2).map((l) => `  ${p.dim(l)}`),
+    ...wrapText('SDK embed (default)   — in-process runtime session with direct API access', terminalWidth() - 2).map((l) => `  ${p.dim(l)}`),
+    ...wrapText('Subprocess fallback   — spawns the runtime binary via the -e flag.', terminalWidth() - 2).map((l) => `  ${p.dim(l)}`),
     ...wrapText('Force with OCTOCODE_LAUNCHER_MODE=subprocess.', terminalWidth()).map((l) => `  ${p.dim(l)}`),
     '',
     section(p, 'Fork dev'),
@@ -467,7 +470,7 @@ export function configReport(env: NodeJS.ProcessEnv = process.env): string {
     section(p, 'Runtime'),
     kv(p, 'launch mode', launchMode),
     kv(p, 'octocode home', `${tildePath(home)}${authInHome ? p.dim(' (auth.json ✓)') : ''}`),
-    kv(p, 'pi agent dir', `${tildePath(piAgentDir)}${authInPi ? p.dim(' (auth.json ✓)') : ''}`),
+    kv(p, 'agent dir', `${tildePath(piAgentDir)}${authInPi ? p.dim(' (auth.json ✓)') : ''}`),
     '',
     section(p, 'Packages'),
     kv(
@@ -477,12 +480,12 @@ export function configReport(env: NodeJS.ProcessEnv = process.env): string {
     ),
     kv(
       p,
-      'pi host',
+      'runtime',
       piInfo
         ? `${tildePath(piInfo.bin)} ${p.dim(`(${piInfo.source})`)}`
         : p.red('not found — run: octocode-agent update'),
     ),
-    kv(p, 'pi version', readPackageVersion(getEffectivePiPackage(env)) ?? 'unknown'),
+    kv(p, 'runtime version', readPackageVersion(getEffectivePiPackage(env)) ?? 'unknown'),
     kv(p, 'launcher version', launcherVersion() ?? '?'),
     '',
     section(p, 'Keys'),
@@ -563,7 +566,7 @@ export function setupReport(env: NodeJS.ProcessEnv = process.env): string {
     ...checkLines(
       p,
       piOk ? 'ok' : 'fail',
-      'Pi host',
+      'runtime',
       piVersion ? `installed (${piVersion})` : 'not found',
       piOk ? undefined : 'octocode-agent update',
     ),
@@ -974,7 +977,7 @@ function zshCompletionScript(): string {
     "    'auth:Show API key configuration instructions'",
     "    'models:Show model configuration instructions'",
     "    'sessions:Show session storage location and tips'",
-    "    'doctor:One health pane: Pi host, core, auth, awareness'",
+    "    'doctor:One health pane: runtime, core, auth, awareness'",
     "    'completion:Print a shell completion script'",
     '  )',
     '  if (( CURRENT == 3 )); then',
@@ -994,7 +997,7 @@ function zshCompletionScript(): string {
 function fishCompletionScript(): string {
   const lines = [
     'complete -c octocode-agent -f',
-    'complete -c octocode-agent -n "__fish_use_subcommand" -l version -d "Print launcher, core, and Pi host versions"',
+    'complete -c octocode-agent -n "__fish_use_subcommand" -l version -d "Print launcher, core, and runtime versions"',
     'complete -c octocode-agent -n "__fish_use_subcommand" -l help -d "Show help"',
   ];
   const descriptions: Record<(typeof SUBCOMMANDS)[number], string> = {
@@ -1012,7 +1015,7 @@ function fishCompletionScript(): string {
     auth: 'Show API key configuration instructions',
     models: 'Show model configuration instructions',
     sessions: 'Show session storage location and tips',
-    doctor: 'One health pane: Pi host, core, auth, awareness',
+    doctor: 'One health pane: runtime, core, auth, awareness',
     completion: 'Print a shell completion script',
   };
   for (const name of SUBCOMMANDS) {
@@ -1108,7 +1111,7 @@ export async function launchAgent(
     const effectivePkg = getEffectivePiPackage(env);
     const message = env.OCTOCODE_PI_BIN
       ? `OCTOCODE_PI_BIN path not found: ${env.OCTOCODE_PI_BIN}`
-      : `Pi host (${effectivePkg}) is not installed. Run: octocode-agent update`;
+      : `Runtime (${effectivePkg}) is not installed. Run: octocode-agent update`;
     log(`octocode-agent: ${message}`);
     log(`octocode-agent: diagnose with: octocode-agent doctor`);
     return 1;
@@ -1171,6 +1174,51 @@ export function resolveLaunchModel(
 }
 
 /**
+ * Play the launch shimmer: print the purple octopus, then sweep a diagonal
+ * gloss band across it (~350ms) by rewriting its lines in place, ending on the
+ * resting gradient frame. Writes straight to `stream` (default stderr) so the
+ * escape-code rewrites bypass any log decoration. Returns true when it ran —
+ * callers then pass `skipArt` to printLaunchBanner so the art is not doubled.
+ * Skipped (false) on non-TTY, CI, NO_BANNER, non-interactive flags, or when
+ * color is disabled (a colorless shimmer is just flicker).
+ */
+export async function playOctopusShimmer(
+  argv: string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
+  stream: NodeJS.WriteStream = process.stderr,
+  frameMs = 32,
+): Promise<boolean> {
+  if (!stream.isTTY) return false;
+  if (env.OCTOCODE_AGENT_NO_BANNER === '1') return false;
+  if (env.CI) return false;
+  if (argv.some((a) => NON_INTERACTIVE_FLAGS.has(a))) return false;
+  const p = makePainter(colorEnabled(env, true));
+  if (!p.enabled) return false;
+  const height = octopusArt(p).length;
+  const up = `\x1b[${height}A`;
+  const writeFrame = (lines: string[], first = false): void => {
+    stream.write((first ? '' : up) + lines.map((l) => `\x1b[2K${l}`).join('\n') + '\n');
+  };
+  stream.write('\x1b[?25l');
+  try {
+    writeFrame(octopusFrame(p, 0, 0), true);
+    const span = octopusShimmerSpan();
+    let frame = 0;
+    for (let phase = 2; phase <= span; phase += 2) {
+      await new Promise((resolve) => setTimeout(resolve, frameMs));
+      frame += 1;
+      // The gloss band advances every frame; the body pose every 4th (~130ms),
+      // so the tentacles visibly sway while the shine sweeps across.
+      writeFrame(octopusFrame(p, phase, frame >> 2));
+    }
+    writeFrame(octopusArt(p));
+  } finally {
+    stream.write('\x1b[?25h');
+  }
+  return true;
+}
+
+/**
  * Print the one-line brand banner before an interactive launch.
  * TTY-stderr only; honors OCTOCODE_AGENT_NO_BANNER=1 and skips print/rpc runs.
  */
@@ -1179,16 +1227,17 @@ export function printLaunchBanner(
   env: NodeJS.ProcessEnv = process.env,
   log: (msg: string) => void = (m) => console.error(m),
   isTTY: boolean = Boolean((process.stderr as { isTTY?: boolean }).isTTY),
+  opts: { skipArt?: boolean } = {},
 ): boolean {
   if (!isTTY) return false;
   if (env.OCTOCODE_AGENT_NO_BANNER === '1') return false;
   if (argv.some((a) => NON_INTERACTIVE_FLAGS.has(a))) return false;
   const p = makePainter(colorEnabled(env, true));
+  if (!opts.skipArt) for (const line of octopusArt(p)) log(line);
   log(
     launchBanner(p, {
       launcher: launcherVersion(),
       core: readPackageVersion(CORE_PACKAGE),
-      pi: env.OCTOCODE_PI_BIN ? null : readPackageVersion(getEffectivePiPackage(env)),
       model: resolveLaunchModel(argv),
     }),
   );
@@ -1382,7 +1431,7 @@ export function runConfigSet(
   }
   if (!isAllowedConfigKey(key)) {
     out(`${p.red('✗')} cannot write "${key}"`);
-    out(hint(p, `writable keys: defaultProvider, defaultModel (Pi's own contract)`));
+    out(hint(p, `writable keys: defaultProvider, defaultModel (runtime settings contract)`));
     return 2;
   }
   const file = setSetting(piDir, key, value);
@@ -1429,7 +1478,7 @@ export function runSmokeTest(deps: LaunchDeps = {}): number {
   const ok = Boolean(launcher && core && pi);
   out(
     ok
-      ? `smoke-test: ok ${p.dim(`(launcher ${launcher} · core ${core} · pi ${pi})`)}`
+      ? `smoke-test: ok ${p.dim(`(launcher ${launcher} · core ${core} · runtime ${pi})`)}`
       : `smoke-test: FAIL ${p.dim('run: octocode-agent doctor')}`,
   );
   return ok ? 0 : 1;
@@ -1612,7 +1661,8 @@ export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<
             });
           return launchAgent(['--session', picked.file], deps);
         }
-        printLaunchBanner(r, env, deps.log);
+        const shimmered = await playOctopusShimmer(r, env);
+        printLaunchBanner(r, env, deps.log, undefined, { skipArt: shimmered });
       }
       // Fuzzy/global/re-root resolution of `id` is Pi's (main.js resolveSessionPath).
       const rc = await launchAgent(id ? ['--session', id, ...r.slice(1)] : ['-r', ...r], deps);
@@ -1628,7 +1678,8 @@ export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<
         out(hint(p, `did you mean: octocode-agent ${suggestion}`));
         return 2;
       }
-      printLaunchBanner(rest ?? [], env, deps.log);
+      const shimmered = await playOctopusShimmer(rest ?? [], env);
+      printLaunchBanner(rest ?? [], env, deps.log, undefined, { skipArt: shimmered });
       const rc = await launchAgent(
         applyProfile(rewriteContinueFlag(rest ?? [], env), profile, env),
         deps,

@@ -140,10 +140,17 @@ function basename(p: string): string {
   return p.replace(/^.*[\\/]/, '');
 }
 function shortPath(p: string, maxLen = 50): string {
-  if (p.length <= maxLen) return p;
-  // keep last portion
-  const short = '…' + p.slice(-(maxLen - 1));
-  return short;
+  if (visibleWidth(p) <= maxLen) return p;
+  // Keep the tail (the most specific path segments), cell-width aware so CJK
+  // segments count double and surrogate pairs are never split.
+  const chars = Array.from(p);
+  let width = 1; // leading ellipsis
+  let start = chars.length;
+  while (start > 0 && width + visibleWidth(chars[start - 1]!) <= maxLen) {
+    width += visibleWidth(chars[start - 1]!);
+    start -= 1;
+  }
+  return '…' + chars.slice(start).join('');
 }
 
 /**
@@ -185,7 +192,7 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       const matchStr = str(q.matchString);
       const start = q.startLine != null ? `:${q.startLine}` : '';
       const end = q.endLine != null ? `-${q.endLine}` : '';
-      const anchor = matchStr ? ` /${matchStr.slice(0, 20)}/` : start + end;
+      const anchor = matchStr ? ` /${truncatePlainToWidth(matchStr, 20, '')}/` : start + end;
       return (`${repo}${p ? `:${p}` : ''}${anchor}` + more).trim();
     }
 
@@ -223,7 +230,7 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       const start = q.startLine != null ? `:${q.startLine}` : '';
       const end = q.endLine != null ? `-${q.endLine}` : '';
       const matchStr = str(q.matchString);
-      const anchor = matchStr ? ` /${matchStr.slice(0, 20)}/` : start + end;
+      const anchor = matchStr ? ` /${truncatePlainToWidth(matchStr, 20, '')}/` : start + end;
       return (shortPath(p) + anchor + more).trim();
     }
 
@@ -267,13 +274,10 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
   }
 
   // ── fallback: pick the 3 most informative string values ──────────────────
-  const SKIP_KEYS = new Set(['id', 'reasoning', 'researchGoal', 'mainResearchGoal', 'resolveedPath']);
+  const SKIP_KEYS = new Set(['id', 'reasoning', 'researchGoal', 'mainResearchGoal', 'resolvedPath']);
   const parts = Object.entries(q)
     .filter(([k]) => !SKIP_KEYS.has(k))
-    .map(([, v]) => {
-      const s = String(v ?? '');
-      return s.length > 40 ? s.slice(0, 40) + '…' : s;
-    })
+    .map(([, v]) => truncatePlainToWidth(String(v ?? ''), 40))
     .filter(Boolean)
     .slice(0, 3);
   return (parts.join(' ') + more).trim();
@@ -301,7 +305,7 @@ export interface ResultStats {
  */
 function previewText(value: unknown, max = 72): string {
   const clean = String(value ?? '').replace(/\s+/g, ' ').trim();
-  return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
+  return truncatePlainToWidth(clean, max);
 }
 
 export function buildResultStats(toolName: string, details: unknown): ResultStats {

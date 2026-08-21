@@ -265,7 +265,7 @@ test('manage_context pre-flight: skips when the branch tip is already a compacti
   const result = await executeManageContext(harness, ctx);
   assert.equal(compactCalls.length, 0, 'must not call compact into a guaranteed throw');
   assert.notEqual(result.isError, true);
-  assert.match(result.content[0]!.text, /just compacted|already compacted/i);
+  assert.match((result.content[0] as { text: string }).text, /just compacted|already compacted/i);
 });
 
 test('manage_context pre-flight: skips when context usage is unknown (right after a compaction)', async () => {
@@ -274,7 +274,7 @@ test('manage_context pre-flight: skips when context usage is unknown (right afte
   const result = await executeManageContext(harness, ctx);
   assert.equal(compactCalls.length, 0);
   assert.notEqual(result.isError, true);
-  assert.match(result.content[0]!.text, /just compacted|unknown/i);
+  assert.match((result.content[0] as { text: string }).text, /just compacted|unknown/i);
 });
 
 test('manage_context reports an in-flight compaction instead of racing it', async () => {
@@ -288,7 +288,7 @@ test('manage_context reports an in-flight compaction instead of racing it', asyn
   const result = await executeManageContext(harness, ctx);
   assert.equal(compactCalls.length, 0);
   assert.notEqual(result.isError, true);
-  assert.match(result.content[0]!.text, /already in progress/i);
+  assert.match((result.content[0] as { text: string }).text, /already in progress/i);
 });
 
 test('manage_context marks the arbiter while its own compaction runs and clears it on completion', async () => {

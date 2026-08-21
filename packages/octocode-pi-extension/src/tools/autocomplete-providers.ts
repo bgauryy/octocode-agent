@@ -148,7 +148,9 @@ export function createOctocodeAutocompleteProvider(
     applyCompletion(lines, line, col, item, prefix) {
       const token = extractTokenPrefix(lines, line, col);
       const ours = token && typeof item?.value === 'string' && item.value.startsWith(token.trigger);
-      if (!token || !ours) return current.applyCompletion(lines, line, col, item, prefix);
+      // Guarded like every other delegation here: a base provider without
+      // applyCompletion must degrade (no-op), not throw mid-keystroke.
+      if (!token || !ours) return current?.applyCompletion?.(lines, line, col, item, prefix) ?? undefined;
       const source = lines[line] ?? '';
       const col2 = Math.min(Math.max(col, 0), source.length);
       const next = [...lines];

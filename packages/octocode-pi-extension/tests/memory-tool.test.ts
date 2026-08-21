@@ -33,7 +33,7 @@ test('memory recall builds the CLI args and returns the recalled count', async (
   assert.equal(args.includes('--smart'), false, 'Lite CLI does not support smart recall');
   assert.ok(args.includes('--workspace') && args[args.indexOf('--workspace') + 1] === '/tmp/mem-ws');
   assert.equal(args.includes('--compact'), false);
-  assert.match(res.content[0]!.text, /2/);
+  assert.match((res.content[0] as { text: string }).text, /2/);
 });
 
 test('memory record maps to Lite store text and returns the new id', async () => {
@@ -51,7 +51,7 @@ test('memory record maps to Lite store text and returns the new id', async () =>
   assert.equal(args[args.indexOf('--tags') + 1], 'importance:6');
   assert.equal(args.includes('--task-context'), false);
   assert.equal(args.includes('--agent-id'), false);
-  assert.match(res.content[0]!.text, /mem_new/);
+  assert.match((res.content[0] as { text: string }).text, /mem_new/);
 });
 
 test('memory forget forwards the memory id', async () => {
@@ -85,7 +85,7 @@ test('memory surfaces a CLI failure as an error result', async () => {
   const tool = loadTool();
   const res = await tool.execute('id', { action: 'forget', memoryId: 'mem_x' }, undefined, undefined, ctx);
   assert.equal(res.isError, true);
-  assert.match(res.content[0]!.text, /boom/);
+  assert.match((res.content[0] as { text: string }).text, /boom/);
 });
 
 test('renderCall and renderResult produce concise themed lines', async () => {
@@ -97,4 +97,35 @@ test('renderCall and renderResult produce concise themed lines', async () => {
   const res = await tool.execute('id', { action: 'recall', query: 'abc' }, undefined, undefined, ctx);
   const resultLine = tool.renderResult!(res, { expanded: false }, theme).render(80)[0]!;
   assert.match(resultLine, /3/);
+});
+
+test('memory recall parses the CLI\'s PRETTY-PRINTED (multi-line) JSON output', async () => {
+  // The real CLI emits JSON.stringify(value, null, 2); a per-line scanner sees
+  // no parseable line and silently reported "0 memories" for every call.
+  const pretty = JSON.stringify([{ memoryId: 'mem_a', text: 'lock gate gotcha' }, { memoryId: 'mem_b', text: 'other' }], null, 2);
+  stubRunner({ code: 0, stdout: pretty, stderr: '' });
+  const tool = loadTool();
+  const res = await tool.execute('id', { action: 'recall', query: 'lock' }, undefined, undefined, ctx);
+  assert.match((res.content[0] as { text: string }).text, /Recalled 2 memories/);
+  assert.match((res.content[0] as { text: string }).text, /lock gate gotcha/, 'memory content reaches the model');
+  assert.equal((res.details as { count?: number }).count, 2);
+});
+
+test('memory record and forget parse pretty-printed CLI output (real id, real delete count)', async () => {
+  stubRunner({ code: 0, stdout: JSON.stringify({ memoryId: 'mem_xyz', label: 'GOTCHA' }, null, 2), stderr: '' });
+  const tool = loadTool();
+  const rec = await tool.execute('id', { action: 'record', label: 'GOTCHA', observation: 'x', importance: 5 }, undefined, undefined, ctx);
+  assert.equal((rec.details as { memoryId?: string }).memoryId, 'mem_xyz');
+
+  stubRunner({ code: 0, stdout: JSON.stringify({ forgotten: true }, null, 2), stderr: '' });
+  const del = await tool.execute('id', { action: 'forget', memoryId: 'mem_xyz' }, undefined, undefined, ctx);
+  assert.match((del.content[0] as { text: string }).text, /Forgot 1 memory/);
+});
+
+test('memory recall parses pretty JSON preceded by a stray log line', async () => {
+  const pretty = 'warming db…\n' + JSON.stringify([{ memoryId: 'mem_a' }], null, 2);
+  stubRunner({ code: 0, stdout: pretty, stderr: '' });
+  const tool = loadTool();
+  const res = await tool.execute('id', { action: 'recall', query: 'x' }, undefined, undefined, ctx);
+  assert.equal((res.details as { count?: number }).count, 1);
 });

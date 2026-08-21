@@ -18,7 +18,7 @@ Use at repo task start and finish. AGENTS routes; skill decides; CLI/SQLite acts
 Choose the runnable CLI before acting:
 | Context | Use |
 |---|---|
-| Pi / Octocode harness | `node "$OCTOCODE_AWARENESS_CLI"` |
+| Pi / Octocode harness | `npx @octocodeai/octocode-awareness` (⚠ `$OCTOCODE_AWARENESS_CLI` points at the bundled **Lite** CLI — different command set; do not use it for `attend`/`signal`/`reflect`) |
 | Package development after build | `node packages/octocode-awareness/out/octocode-awareness.js` |
 | Installed/global smoke | `npx @octocodeai/octocode-awareness` |
 | Missing local `out/` | run `yarn workspace @octocodeai/octocode-awareness build` first |
@@ -29,7 +29,7 @@ Core loop: `attend -> work start -> edit/check -> work end -> verify mark -> ver
 1. BEFORE: `attend --query "<task>" --compact`; follow `next`; state goal, acceptance, scope, evidence. Recall memory only if it can change the plan.
 2. DURING: open WORK (default) or claim a plan task (shared backlogs); declare paths by hooks or `work start`; read peers. Ordinary overlap is allowed; reserve exclusivity for unsafe/non-mergeable edits and never bypass conflict.
 3. AFTER: check while present; `task submit`/`work end`; `verify mark`; `verify audit`. Expiry never means success.
-4. OPTIONAL: `reflect record --lesson` only for verified reusable outcomes; run `maintenance digest` cleanup only under real pressure.
+4. OPTIONAL: `reflect record --task "<task>" --outcome <success|failure> --lesson "<text>"` only for verified reusable outcomes; run `maintenance digest` cleanup only under real pressure.
 
 Hooks automate deterministic edges, not judgment: pre-edit declares file presence + peer awareness and blocks only on a real exclusive-lock conflict; post-edit logs the edit and advances the run lifecycle; Stop/SubagentStop gate on unverified work; SessionEnd/PreCompact capture a handoff signal. Hooks never choose plans, locks, success, learning, or cleanup. Use `work start --exclusive` only for sensitive/non-mergeable files; `lock wait/prune` are recovery, and wait-clear still needs a `work show` presence check before acquire.
 

@@ -131,3 +131,22 @@ test('multiSelectKeyAction maps the overlay keymap and ignores everything else',
   assert.equal(multiSelectKeyAction('x'), undefined);
   assert.equal(multiSelectKeyAction('\x1b[C'), undefined);
 });
+
+test('render windows long lists around the cursor with more-markers', () => {
+  const list = new MultiSelectList(
+    Array.from({ length: 25 }, (_, i) => ({ value: `v${i + 1}`, label: `item-${String(i + 1).padStart(2, '0')}` })),
+  );
+  const first = list.render(80, undefined, 10).join('\n');
+  assert.match(first, /item-01/);
+  assert.match(first, /↓ 15 more/, 'hidden tail advertised');
+  assert.doesNotMatch(first, /item-25/, 'rows beyond the window are not painted');
+
+  for (let i = 0; i < 20; i++) list.moveCursor(1);
+  const scrolled = list.render(80, undefined, 10).join('\n');
+  assert.match(scrolled, /↑ \d+ more/, 'hidden head advertised after scrolling');
+  assert.match(scrolled, /item-21/);
+
+  // Small lists render fully with no markers.
+  const small = new MultiSelectList([{ value: 'a' }, { value: 'b' }]);
+  assert.doesNotMatch(small.render(80).join('\n'), /more/);
+});

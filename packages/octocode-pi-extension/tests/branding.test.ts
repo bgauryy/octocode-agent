@@ -3,7 +3,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 
-import { renderBannerLines, renderTagline, renderBannerWithTagline } from '../src/branding/banner.js';
+import { renderBannerLines, renderOctopusLines, renderTagline, renderBannerWithTagline } from '../src/branding/banner.js';
 import { DEFAULT_OCTOCODE_THEME, LIGHT_OCTOCODE_THEME, resolvePreferredTheme } from '../src/branding/theme.js';
 
 // ─── Stub theme ───────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ describe('renderBannerLines', () => {
     const joined = lines.join('');
     expect(joined).toContain('accent');
     expect(joined).toContain('muted');
-    expect(joined).toContain('text');
+    expect(joined).toContain('mdLink');
     expect(joined).toContain('**');
     expect(joined).toContain('O');
     expect(joined).toContain('e');
@@ -128,6 +128,35 @@ describe('renderBannerLines', () => {
 
   it('handles zero width without throwing', () => {
     expect(() => renderBannerLines(stubTheme, 0)).not.toThrow();
+  });
+});
+
+describe('renderOctopusLines', () => {
+  it('paints the mascot purple with gold sparkles', () => {
+    // nowMs = 0 puts the gloss band left of the art, so the base coat shows.
+    const lines = renderOctopusLines(stubTheme, 80, 0);
+    const joined = lines.join('\n');
+    expect(lines.length).toBeGreaterThanOrEqual(5);
+    expect(joined).toContain('mdLink');
+    expect(joined).toContain('[warning:✦]');
+    expect(joined).toContain('[warning:✧]');
+  });
+
+  it('sweeps a bold gloss band across the art as time advances', () => {
+    // Mid-sweep: some glyphs must paint bold default-fg instead of purple.
+    const mid = renderOctopusLines(stubTheme, 80, 1200).join('\n');
+    expect(mid).toContain('**[text:');
+    // Deterministic: the same timestamp renders the same frame.
+    expect(renderOctopusLines(stubTheme, 80, 1200).join('\n')).toBe(mid);
+    // A different timestamp moves the band.
+    expect(renderOctopusLines(stubTheme, 80, 1600).join('\n')).not.toBe(mid);
+  });
+
+  it('clips to narrow widths without leaking painted glyphs', () => {
+    for (const line of renderOctopusLines(stubTheme, 5, 0)) {
+      const plain = line.replace(/\[[\w]+:/g, '').replace(/\]/g, '').replace(/\*\*/g, '');
+      expect(plain.length).toBeLessThanOrEqual(6);
+    }
   });
 });
 

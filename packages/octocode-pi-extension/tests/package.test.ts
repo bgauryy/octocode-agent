@@ -851,7 +851,7 @@ test('replaces built-in write by custom tool override with path guard', async ()
       path: target,
       content: 'hello from octocode write\n',
     }, { cwd: tmp });
-    assert.match(result.content[0]!.text!, /Successfully wrote/);
+    assert.match((result.content[0] as { text: string }).text!, /Successfully wrote/);
     assert.equal(fs.readFileSync(target, 'utf8'), 'hello from octocode write\n');
 
     // Outside allowed roots must fail (/usr is not cwd/home/tmp).
@@ -903,7 +903,7 @@ test('write records read-state so a follow-up edit is not stale', async () => {
       },
       { cwd: tmp },
     );
-    assert.match(edited.content[0]!.text!, /Successfully replaced/);
+    assert.match((edited.content[0] as { text: string }).text!, /Successfully replaced/);
     assert.equal(fs.readFileSync(target, 'utf8'), 'const x = 2;\n');
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -1000,15 +1000,15 @@ test('custom edit requires reasoning and shows it in output', async () => {
       ],
     });
     assert.match(
-      withReasoning.content[0]!.text,
+      (withReasoning.content[0] as { text: string }).text,
       /Reasoning:\n- .*reasoning\.txt edits\[0\]: uppercase the remaining direction/
     );
     assert.match(
-      withReasoning.content[0]!.text,
+      (withReasoning.content[0] as { text: string }).text,
       /Changes:\n# .*reasoning\.txt/
     );
-    assert.match(withReasoning.content[0]!.text, /\x1b\[31m- right\x1b\[0m/);
-    assert.match(withReasoning.content[0]!.text, /\x1b\[32m\+ RIGHT\x1b\[0m/);
+    assert.match((withReasoning.content[0] as { text: string }).text, /\x1b\[31m- right\x1b\[0m/);
+    assert.match((withReasoning.content[0] as { text: string }).text, /\x1b\[32m\+ RIGHT\x1b\[0m/);
     // 'left' was not changed (the rejected call did not write); only 'right' was replaced.
     assert.equal(fs.readFileSync(target, 'utf8'), 'left\nRIGHT\n');
   } finally {
@@ -1038,9 +1038,9 @@ test('custom edit returns diff and patch details', async () => {
         reasoning: Array<{ editIndex: number; reasoning: string }>;
       }>;
     };
-    assert.match(result.content[0]!.text, /Changes:\n# .*diff\.txt/);
-    assert.match(result.content[0]!.text, /\x1b\[31m- two\x1b\[0m/);
-    assert.match(result.content[0]!.text, /\x1b\[32m\+ TWO\x1b\[0m/);
+    assert.match((result.content[0] as { text: string }).text, /Changes:\n# .*diff\.txt/);
+    assert.match((result.content[0] as { text: string }).text, /\x1b\[31m- two\x1b\[0m/);
+    assert.match((result.content[0] as { text: string }).text, /\x1b\[32m\+ TWO\x1b\[0m/);
     assert.match(details.diff, /- two/);
     assert.match(details.diff, /\+ TWO/);
     assert.match(details.files[0]!.coloredDiff, /\x1b\[31m- two\x1b\[0m/);
@@ -1651,7 +1651,7 @@ test('custom edit supports all-or-nothing multi-file queries', async () => {
         },
       ],
     });
-    assert.match(result.content[0]!.text, /2 file\(s\)/);
+    assert.match((result.content[0] as { text: string }).text, /2 file\(s\)/);
     assert.equal(fs.readFileSync(first, 'utf8'), 'ALPHA\n');
     assert.equal(fs.readFileSync(second, 'utf8'), 'BETA\n');
   } finally {
@@ -1668,17 +1668,24 @@ test('custom edit rejects stale files when read state was recorded', async () =>
   try {
     await recordFileReadState(target);
     fs.writeFileSync(target, 'changed elsewhere\n', 'utf8');
+    // Content-anchored (exact oldText) edits are self-verifying: the stale
+    // recorded hash downgrades to an advisory and the edit applies against the
+    // CURRENT bytes.
+    const ok = await invokeExecute(tools.get('edit')!, {
+      path: target,
+      edits: [{ oldText: 'changed elsewhere', newText: 'ours', reasoning: 'test' }],
+    });
+    assert.match((ok.content[0] as { text: string }).text, /Read state: stale/);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'ours\n');
+    // Position-anchored (lineRange) edits still hard-fail on a stale read —
+    // line numbers can silently shift under a concurrent writer.
+    await recordFileReadState(target);
+    fs.writeFileSync(target, 'shifted\nlines\n', 'utf8');
     await assert.rejects(
       () =>
         invokeExecute(tools.get('edit')!, {
           path: target,
-          edits: [
-            {
-              oldText: 'changed elsewhere',
-              newText: 'ours',
-              reasoning: 'test',
-            },
-          ],
+          edits: [{ matchMode: 'lineRange', startLine: 1, endLine: 1, newText: 'x', reasoning: 'test' }],
         }),
       /File changed since last recorded read/
     );
@@ -1738,7 +1745,7 @@ test('custom edit stale check is content-hash authoritative, not mtime', async (
       ],
       requireRecentRead: true,
     });
-    assert.match(result.content[0]!.text, /Read state: fresh/);
+    assert.match((result.content[0] as { text: string }).text, /Read state: fresh/);
     assert.equal(fs.readFileSync(target, 'utf8'), 'SAME\n');
   } finally {
     clearEditReadStateForTests();
@@ -1820,9 +1827,8 @@ test('research tools served via MCPTool — not registered as native Pi tools', 
 test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors trust', async () => {
   const { tools } = await captureExtensions();
   const mcpTool = tools.get('MCPTool')!;
-  const mcpAlias = tools.get('mcp')!;
   assert.ok(mcpTool, 'MCPTool registered');
-  assert.ok(mcpAlias, 'mcp alias registered');
+  assert.equal(tools.has('mcp'), false, 'mcp alias was removed to slim the tool surface');
   assert.match(mcpTool.promptSnippet!, /MCPTool is the dedicated MCP gateway/);
   assert.match(mcpTool.promptSnippet!, /action:list\/describe/);
 
@@ -1854,14 +1860,17 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
 
     const trustedCtx = { cwd: tmp, isProjectTrusted: async () => true, ui: { setStatus: () => undefined } };
     const config = await invokeExecute(mcpTool, { action: 'config' }, trustedCtx);
-    assert.match(config.content[0]!.text, /servers: .*octocode/);
-    assert.match(config.content[0]!.text, /npx -y octocode-mcp@latest/);
+    assert.match((config.content[0] as { text: string }).text, /servers: .*octocode/);
+    // Built-in octocode server resolves to the pinned local binary
+    // (node .../octocode-mcp/dist/index.js) when installed, else the npx
+    // fallback (npx -y octocode-mcp@latest); both contain "octocode-mcp".
+    assert.match((config.content[0] as { text: string }).text, /octocode-mcp/);
 
     const listed = await invokeExecute(mcpTool, { action: 'list', server: 'fake' }, trustedCtx);
-    assert.match(listed.content[0]!.text, /fake: 1 tool/);
-    assert.match(listed.content[0]!.text, /instructions: Use echo only for MCP bridge smoke tests/);
-    assert.match(listed.content[0]!.text, /echo: Echo text/);
-    assert.match(listed.content[0]!.text, /schema: text/);
+    assert.match((listed.content[0] as { text: string }).text, /fake: 1 tool/);
+    assert.match((listed.content[0] as { text: string }).text, /instructions: Use echo only for MCP bridge smoke tests/);
+    assert.match((listed.content[0] as { text: string }).text, /echo: Echo text/);
+    assert.match((listed.content[0] as { text: string }).text, /schema: text/);
     assert.equal((listed.details as { servers: Array<{ tools: unknown[]; instructions?: string }> }).servers[0]!.instructions, 'Use echo only for MCP bridge smoke tests.');
     assert.deepEqual(Object.keys(((listed.details as { servers: Array<{ tools: Array<{ inputSchema: { properties: Record<string, unknown> } }> }> }).servers[0]!.tools[0]!.inputSchema.properties)), ['text']);
 
@@ -1892,12 +1901,12 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
     assert.match(cachedPrompt, /load the minimal matching skill before acting by reading its SKILL\.md/);
 
     const called = await invokeExecute(mcpTool, { action: 'call', server: 'fake', tool: 'echo', arguments: { text: 'ok' } }, trustedCtx);
-    assert.match(called.content[0]!.text, /echo:ok/);
+    assert.match((called.content[0] as { text: string }).text, /echo:ok/);
 
     const described = await invokeExecute(mcpTool, { action: 'describe', server: 'fake', tool: 'echo' }, trustedCtx);
-    assert.match(described.content[0]!.text, /Use echo only for MCP bridge smoke tests/);
-    assert.match(described.content[0]!.text, /"name": "echo"/);
-    assert.match(described.content[0]!.text, /"inputSchema"/);
+    assert.match((described.content[0] as { text: string }).text, /Use echo only for MCP bridge smoke tests/);
+    assert.match((described.content[0] as { text: string }).text, /"name": "echo"/);
+    assert.match((described.content[0] as { text: string }).text, /"inputSchema"/);
 
     // call/describe made echo "hot" — the every-turn catalog block now inlines
     // its exact schema so follow-up calls need no re-describe.
@@ -1908,8 +1917,8 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
     assert.match(hotPrompt, /tool: echo/);
     assert.match(hotPrompt, /"inputSchema"/, 'recently used tool schema is inlined in the catalog block');
 
-    const aliasStatus = await invokeExecute(mcpAlias, { action: 'status' }, trustedCtx);
-    assert.match(aliasStatus.content[0]!.text, /Octocode MCP status/);
+    const statusResult = await invokeExecute(mcpTool, { action: 'status' }, trustedCtx);
+    assert.match((statusResult.content[0] as { text: string }).text, /Octocode MCP status/);
 
     const renderedCall = mcpTool.renderCall!({ action: 'list', server: 'fake' }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }).render(80).join('\n');
     assert.match(renderedCall, /mcp list · fake/);
@@ -1930,10 +1939,10 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
     assert.match(renderedOctocodeResult, /const answer = 42;/);
 
     const stopped = await invokeExecute(mcpTool, { action: 'stop', server: 'fake' }, trustedCtx);
-    assert.match(stopped.content[0]!.text, /fake: stopped/);
+    assert.match((stopped.content[0] as { text: string }).text, /fake: stopped/);
 
     const untrusted = await invokeExecute(mcpTool, { action: 'config' }, { cwd: tmp, isProjectTrusted: async () => false });
-    assert.match(untrusted.content[0]!.text, /skipped because the project is not trusted/);
+    assert.match((untrusted.content[0] as { text: string }).text, /skipped because the project is not trusted/);
   } finally {
     try { await invokeExecute(mcpTool, { action: 'stop' }, { cwd: tmp }); } catch {}
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -2034,7 +2043,7 @@ test('browserAgent can build a typed browser subagent config without launching C
     runNow: false,
   });
 
-  const text = result.content[0]!.text;
+  const text = (result.content[0] as { text: string }).text;
   assert.match(text, /schemes run: \(none\)/);
   assert.match(text, /cdp domains: Network, Runtime, DOM, DOMDebugger/);
   assert.match(text, /tools: chromeDebug/);
@@ -2099,7 +2108,7 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
 });
 
 test('Octocode metrics footer updates on session and turn lifecycle (single surface, no status dup)', async () => {
-  const { handlers } = await captureExtensions();
+  const { handlers, pi } = await captureExtensions();
   const statusCalls: Array<[string, string | undefined]> = [];
   const footerCalls: Array<(tui: unknown, theme: unknown, footerData?: unknown) => { render: (w?: number) => string[]; dispose?: () => void }> = [];
   const theme = { fg: (_c: string, text: string) => text, bold: (text: string) => text };
@@ -2136,6 +2145,12 @@ test('Octocode metrics footer updates on session and turn lifecycle (single surf
   // Redundancy fix: the metrics are ONLY on the footer now, never a status line.
   assert.equal(statusCalls.some(([key]) => key === 'octocode-metrics'), false);
   assert.ok(footerCalls.length > 0, 'footer set on session_start');
+  // Session announces itself in the shared Awareness Lite registry
+  // (fire-and-forget `agent join` with the session-stable agent id).
+  const joinCall = pi.execCalls.find((c: { args: string[] }) => c.args.includes('join'));
+  assert.ok(joinCall, 'session_start fires an Awareness Lite agent join');
+  assert.ok(joinCall!.args.includes('agent'), 'join goes through the agent command');
+  assert.ok(joinCall!.args.includes('--agent-id'), 'join carries the session agent id');
   const initial = renderFooter();
   assert.match(initial, /◆ Octocode/);
   assert.match(initial, /ctx [▓░]{8} 50% 50\.0k\/100k/);
@@ -2718,7 +2733,7 @@ test('manage_context type:compact defers the continuation to the session_compact
   );
 
   assert.match(
-    result.content[0]!.text,
+    (result.content[0] as { text: string }).text,
     /will continue after the summary is saved/
   );
   assert.match(
@@ -2816,7 +2831,7 @@ test('manage_context type:new, missing compact support, and render states are ex
   const compactTool = tools.get('manage_context')!;
 
   const newResult = await invokeExecute(compactTool, { type: 'new' });
-  assert.match(newResult.content[0]!.text, /New session queued/);
+  assert.match((newResult.content[0] as { text: string }).text, /New session queued/);
   assert.deepEqual(sentUserMessages.at(-1), {
     msg: '/_octocode-clear-context-impl',
     opts: { deliverAs: 'followUp', expandPromptTemplates: true },
@@ -2888,7 +2903,7 @@ test('manage_context type:new returns isError when called inside a spawned worke
     const result = await invokeExecute(compactTool, { type: 'new' });
     assert.equal(result.isError, true, 'must be flagged as an error in worker context');
     assert.match(
-      result.content[0]!.text,
+      (result.content[0] as { text: string }).text,
       /not supported inside a spawned worker/
     );
   } finally {
@@ -3539,11 +3554,11 @@ test('AgentMessage status surfaces recovery-risk warnings for looping workers', 
     });
 
     const list = await invokeExecute(messageTool, { action: 'list' });
-    const listText = list.content[0]!.text;
+    const listText = (list.content[0] as { text: string }).text;
     assert.doesNotMatch(listText, /⚠ recovery/, 'recovery badge is removed from the ledger UI');
 
     const status = await invokeExecute(messageTool, { action: 'status', agentId });
-    const text = status.content[0]!.text;
+    const text = (status.content[0] as { text: string }).text;
     const summary = (status.details as { agent: { recoveryRisk?: { warnings: string[] } } }).agent;
     assert.match(text, /recovery-risk:/);
     assert.ok(summary.recoveryRisk?.warnings.some((warning) => /recovery loop/i.test(warning)));
@@ -3688,10 +3703,12 @@ test('AgentMessage routes steer/follow_up RPCs and does not fake running on idle
     // Drive to idle so there is no in-flight turn to redirect.
     spawned[0]!.proc.emitStdout({ type: 'agent_end', messages: [] });
 
-    // steer on an idle worker: RPC is still forwarded, but status must NOT flip to running.
+    // steer on an idle worker: no in-flight turn to redirect, so the message is
+    // routed as follow_up (a bare steer RPC would be dropped by Pi) and status
+    // must NOT flip to running.
     const idleSteer = await invokeExecute(messageTool, { action: 'steer', agentId, message: 'redirect' });
     const steerWrite = JSON.parse(spawned[0]!.proc.stdinWrites.at(-1)!);
-    assert.equal(steerWrite.type, 'steer');
+    assert.equal(steerWrite.type, 'follow_up');
     assert.equal(steerWrite.message, 'redirect');
     assert.equal(
       (idleSteer.details as { agent: { status: string } }).agent.status,
@@ -3857,10 +3874,8 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
       spawnTool.promptGuidelines?.join('\n') ?? '',
       /pi -ne --list-models/
     );
-    assert.match(
-      spawnTool.promptGuidelines?.join('\n') ?? '',
-      /hardcoded config paths/
-    );
+    // Detailed model-routing (incl. "hardcoded config paths") now lives once in the
+    // always-on <agents> section (prompt-contract model-routing test); the guideline points there.
     assert.match(
       String(
         (
@@ -3939,7 +3954,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
       .agentId;
     const list = await invokeExecute(messageTool, { action: 'list' });
     // list content shows shortId (first 8 chars) for readability; full agentId is in details
-    assert.match(list.content[0]!.text, new RegExp(agentId.slice(0, 8)));
+    assert.match((list.content[0] as { text: string }).text, new RegExp(agentId.slice(0, 8)));
     spawned[0]!.proc.emitStdout({
       type: 'message_end',
       message: {
@@ -3967,7 +3982,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
         },
       }
     );
-    const waitText = waitResult.content[0]!.text;
+    const waitText = (waitResult.content[0] as { text: string }).text;
     const waitAgent = (waitResult.details as { agent: { normalizedResult?: { status: string; result?: string; evidence: string[]; verification?: string; confidence: string; next?: string }; ledgerEvents?: Array<{ type: string; message?: string }>; policyWarnings?: string[] } }).agent;
     assert.equal(waitAgent.normalizedResult?.status, 'done');
     assert.equal(waitAgent.normalizedResult?.result, 'docs are current');
@@ -4018,7 +4033,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     });
     await agentsCommand.handler('help', agentCommandCtx());
     assert.match(notifications.at(-1)?.message ?? '', /inspect <id-or-prefix>/);
-    assert.match(notifications.at(-1)?.message ?? '', /spawnSubagent\(\{agent:"researcher"\|"planner"\|"architect"\|"browser-agent"/);
+    assert.match(notifications.at(-1)?.message ?? '', /spawnSubagent\(\{agent:"researcher"\|"planner"\|"architect"/);
     assert.match(notifications.at(-1)?.message ?? '', /AgentMessage\(\{action:"wait"\|"status"\|"send"\|"kill"/);
     assert.match(notifications.at(-1)?.message ?? '', /unified status panel and compact footer/);
     assert.match(notifications.at(-1)?.message ?? '', /ids can be full ids or short prefixes/);
@@ -4142,7 +4157,7 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
         `octocode-agents compact footer shows ${state} (${when})`
       );
     assertAgentFooterStatus('running', 'after spawn refresh');
-    assert.match(footerText(), /agents 1\/1 live/, 'custom footer shows the running worker immediately after spawn');
+    assert.match(footerText(), /agents 1 \(1 live\)/, 'custom footer shows the running worker immediately after spawn');
 
     spawned[0]!.emitStdout({
       type: 'message_end',
@@ -4158,7 +4173,10 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
       'async worker handback refreshes the unified ledger to blocked without an AgentMessage call',
     );
     assertAgentFooterStatus('blocked', 'after blocked handback');
-    assert.match(footerText(), /agents 1\/1 live/, 'custom footer keeps the blocked worker visible');
+    // Footer buckets are mutually exclusive: a blocked worker shows in the ⚠
+    // attention count, NOT double-counted in the "live" segment.
+    assert.match(footerText(), /agents 1\b/, 'custom footer keeps the blocked worker visible in the total');
+    assert.doesNotMatch(footerText(), /1 live/, 'blocked worker is not double-counted as live');
     assert.match(footerText(), /⚠1/, 'custom footer surfaces blocked worker attention count');
 
     await invokeExecute(
@@ -4449,117 +4467,6 @@ test('spawnAgent covers octocode resource options, prompt file cleanup, list ren
   }
 });
 
-test('spawnSubagent starts the browser-agent with the typed prompt, tools, all Octocode skills, and octocode resource mode', async () => {
-  const spawned: Array<{
-    command: string;
-    args: string[];
-    options: { cwd?: string };
-    proc: MockAgentProcess;
-  }> = [];
-  setAgentProcessFactoryForTests((command, args, options) => {
-    const proc = createMockAgentProcess();
-    spawned.push({ command, args, options, proc });
-    return proc;
-  });
-  try {
-    const { tools } = await captureExtensions();
-    const spawnSubagent = tools.get('spawnSubagent')!;
-    assert.ok(spawnSubagent, 'spawnSubagent registered');
-
-    const widgetCalls: Array<{ key: string; value: unknown; opts?: { placement?: string } }> = [];
-    const statusCalls: Array<[string, string | undefined]> = [];
-    const result = await invokeExecute(
-      spawnSubagent,
-      {
-        agent: 'browser-agent',
-        task: 'audit cookie flags and service workers',
-        url: 'https://example.com/app',
-        port: 19333,
-        launch: true,
-        headless: false,
-        cwd: '/repo',
-      },
-      {
-        cwd: '/fallback',
-        hasUI: true,
-        ui: {
-          setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]),
-          setWidget: (key: string, value: unknown, opts?: { placement?: string }) => widgetCalls.push({ key, value, opts }),
-        },
-      }
-    );
-
-    assert.equal(spawned.length, 1);
-    const panelCall = widgetCalls.filter((entry) => entry.key === 'octocode-status-panel').at(-1);
-    assert.ok(panelCall && typeof panelCall.value === 'function', 'spawnSubagent immediately renders the unified agent panel');
-    const panel = (panelCall.value as (tui: unknown, theme: { fg(color: string, text: string): string; bold(text: string): string }) => { render(width: number): string[] })(undefined, {
-      fg: (_color: string, text: string) => text,
-      bold: (text: string) => text,
-    });
-    assert.match(panel.render(140).join('\n'), /Octocode agents: 1 total.*1 running/);
-    assert.equal(panelCall.opts?.placement, 'belowEditor', 'spawnSubagent renders the unified panel below the editor/input area');
-    assert.ok(
-      statusCalls.some(([key, value]) => key === 'octocode-agents' && /1 total.*1 running/.test(value ?? '')),
-      'spawnSubagent immediately renders compact below-input footer progress'
-    );
-    const args = spawned[0]!.args;
-    assert.equal(spawned[0]!.options.cwd, '/repo');
-    assert.ok(args.includes('--no-extensions'));
-    assert.ok(
-      args.includes('-e'),
-      'browser subagent should load this extension explicitly'
-    );
-    assert.ok(
-      args.includes('--skill'),
-      'browser subagent should load its browser-agent skill'
-    );
-    const skillArgs = argValues(args, '--skill');
-    assertHasAllOctocodeSkills(skillArgs);
-    assert.ok(
-      skillArgs.some(skillPath =>
-        skillPath.endsWith(
-          path.join('subagents', 'browser-agent', 'skills', 'browser-agent')
-        )
-      ),
-      'browser subagent should load its browser-agent skill'
-    );
-    assert.ok(args.includes('--tools'));
-    assert.ok(
-      args.includes('chromeDebug,web,MCPTool')
-    );
-    assert.ok(args.includes('--thinking'));
-    assert.ok(args.includes('low'));
-    assert.ok(
-      args.includes('--append-system-prompt'),
-      'typed subagent loads its SYSTEM_PROMPT.md'
-    );
-    const browserSystemPrompt = promptFileContent(args);
-    assert.match(browserSystemPrompt, /^# Browser Agent/m);
-    assert.match(browserSystemPrompt, /multi-turn session/i);
-    assert.doesNotMatch(browserSystemPrompt, /# Researcher|# Planner|# Architect/);
-
-    const initialPrompt = spawned[0]!.proc.stdinWrites[0]!;
-    assert.match(initialPrompt, /Browser Session/);
-    assert.match(initialPrompt, /Target URL: https:\/\/example\.com\/app/);
-    assert.match(initialPrompt, /Chrome port: 19333/);
-    assert.match(initialPrompt, /Launch Chrome: true/);
-    assert.match(initialPrompt, /Headless: false/);
-    assert.match(initialPrompt, /audit cookie flags and service workers/);
-
-    assert.match(result.content[0]!.text, /\[SPAWNED\] Browser Agent/);
-    assert.match(result.content[0]!.text, /skills: [^\n]*browser-agent/);
-    assert.match(result.content[0]!.text, /resourceMode: octocode/);
-    const collapsed = spawnSubagent.renderResult!(result, {
-      expanded: false,
-    }).render(160)[0]!;
-    assert.match(collapsed, /Browser Agent/);
-    assert.match(collapsed, /use AgentMessage wait\/status/);
-    assert.match(collapsed, /\/octocode-agents/);
-  } finally {
-    setAgentProcessFactoryForTests(null);
-  }
-});
-
 test('spawnSubagent starts researcher, planner, and architect with all Octocode skills', async () => {
   const spawned: Array<{
     args: string[];
@@ -4578,7 +4485,6 @@ test('spawnSubagent starts researcher, planner, and architect with all Octocode 
       properties?: { agent?: { enum?: string[] } };
     };
     assert.deepEqual(schema.properties?.agent?.enum, [
-      'browser-agent',
       'researcher',
       'planner',
       'architect',
@@ -4587,10 +4493,7 @@ test('spawnSubagent starts researcher, planner, and architect with all Octocode 
       spawnSubagent.promptGuidelines!.join('\n'),
       /pi -ne --list-models/
     );
-    assert.match(
-      spawnSubagent.promptGuidelines!.join('\n'),
-      /hardcoded config paths/
-    );
+    // Detailed model-routing (incl. "hardcoded config paths") is deduped into the canonical <agents> section.
     assert.match(
       spawnSubagent.promptGuidelines!.join('\n'),
       /Before spawning, break the request into explicit subtasks/
@@ -4627,7 +4530,7 @@ test('spawnSubagent starts researcher, planner, and architect with all Octocode 
         { cwd: '/fallback' }
       );
       assert.match(
-        result.content[0]!.text,
+        (result.content[0] as { text: string }).text,
         new RegExp(
           `\\[SPAWNED\\] .*${agent === 'researcher' ? 'Researcher' : agent === 'planner' ? 'Planner' : 'Architect'}`
         )
@@ -4715,11 +4618,11 @@ test('spawnSubagent surfaces packet policy warnings immediately, not just on a l
       { cwd: '/fallback' },
     );
     assert.match(
-      bare.content[0]!.text,
+      (bare.content[0] as { text: string }).text,
       /\[POLICY\]/,
       'an under-specified packet must surface a [POLICY] warning in the immediate spawn response, not only on a later AgentMessage(wait)',
     );
-    assert.match(bare.content[0]!.text, /missing recommended section/i);
+    assert.match((bare.content[0] as { text: string }).text, /missing recommended section/i);
 
     const structured = await invokeExecute(
       spawnSubagent,
@@ -4738,7 +4641,7 @@ test('spawnSubagent surfaces packet policy warnings immediately, not just on a l
       { cwd: '/fallback' },
     );
     assert.doesNotMatch(
-      structured.content[0]!.text,
+      (structured.content[0] as { text: string }).text,
       /missing recommended section/i,
       'a fully labeled packet must not warn about missing sections',
     );
@@ -4747,7 +4650,7 @@ test('spawnSubagent surfaces packet policy warnings immediately, not just on a l
   }
 });
 
-test('spawnSubagent covers context injection, invalid URL name fallback, unknown agent, and render fallback', async () => {
+test('spawnSubagent covers context injection, unknown agent, and render fallback', async () => {
   const spawned: Array<{ args: string[]; proc: MockAgentProcess }> = [];
   setAgentProcessFactoryForTests((_command, args, _options) => {
     const proc = createMockAgentProcess();
@@ -4761,10 +4664,9 @@ test('spawnSubagent covers context injection, invalid URL name fallback, unknown
     const result = await invokeExecute(
       spawnSubagent,
       {
-        agent: 'browser-agent',
-        task: 'inspect current page',
+        agent: 'researcher',
+        task: 'inspect current findings',
         context: 'Prior finding: auth cookie missing Secure',
-        url: 'not a valid url',
       },
       { cwd: '/repo' }
     );
@@ -4773,10 +4675,9 @@ test('spawnSubagent covers context injection, invalid URL name fallback, unknown
     };
     assert.match(initialPrompt.message, /## Context\nPrior finding/);
     assert.match(
-      result.content[0]!.text,
-      /\[SPAWNED\] Browser Agent · agentId:/
+      (result.content[0] as { text: string }).text,
+      /\[SPAWNED\] .*Researcher · agentId:/
     );
-    assert.match(result.content[0]!.text, /\[SPAWNED\] name: Browser Agent · /);
 
     await assert.rejects(
       () =>
@@ -4830,7 +4731,7 @@ test('spawnSubagent remains available for non-browser specialists when Chrome de
     );
     assert.match(
       spawnSubagent.promptGuidelines!.join('\n'),
-      /browser-agent is unavailable/
+      /browserAgent/
     );
     await assert.rejects(
       () =>
@@ -4838,7 +4739,7 @@ test('spawnSubagent remains available for non-browser specialists when Chrome de
           agent: 'browser-agent',
           task: 'try browser work',
         }),
-      /browser-agent is unavailable because OCTOCODE_CHROME_DEBUG=0 disables chromeDebug/
+      /Unknown subagent/
     );
   } finally {
     if (previous === undefined) delete process.env['OCTOCODE_CHROME_DEBUG'];
@@ -4893,7 +4794,7 @@ test('AgentMessage wait collects worker output and kill terminates stale workers
       agentId: firstId,
     });
     assert.match(
-      runningStatus.content[0]!.text,
+      (runningStatus.content[0] as { text: string }).text,
       /tools: localSearchCode:running/
     );
     assert.equal(
@@ -4924,10 +4825,10 @@ test('AgentMessage wait collects worker output and kill terminates stale workers
       (waited.details as { agent: { status: string } }).agent.status,
       'idle'
     );
-    assert.match(waited.content[0]!.text, /Agent turn completed/);
-    assert.doesNotMatch(waited.content[0]!.text, /Agent completed/);
-    assert.match(waited.content[0]!.text, /tools: localSearchCode:done/);
-    assert.match(waited.content[0]!.text, /worker result/);
+    assert.match((waited.content[0] as { text: string }).text, /Agent turn completed/);
+    assert.doesNotMatch((waited.content[0] as { text: string }).text, /Agent completed/);
+    assert.match((waited.content[0] as { text: string }).text, /tools: localSearchCode:done/);
+    assert.match((waited.content[0] as { text: string }).text, /worker result/);
     assert.ok(spawned[0]!.stdinWrites[0]!.includes('produce output'));
     assert.equal(spawned[0]!.stdinWrites[0]!.includes('spawnAgent'), false);
 
@@ -4943,7 +4844,7 @@ test('AgentMessage wait collects worker output and kill terminates stale workers
       agentId: secondId,
       remove: true,
     });
-    assert.match(killed.content[0]!.text, /killed/);
+    assert.match((killed.content[0] as { text: string }).text, /killed/);
     assert.equal(spawned[1]!.killed, true);
   } finally {
     setAgentProcessFactoryForTests(null);
@@ -4994,7 +4895,7 @@ test('AgentMessage full:true returns the complete tool-call/ledger/evidence hist
     // capping assertions below target the harness-generated summary lines
     // ("tools:"/"evidence:") specifically, not text presence anywhere in the blob.
     const preview = await invokeExecute(messageTool, { action: 'status', agentId });
-    const previewText = preview.content[0]!.text;
+    const previewText = (preview.content[0] as { text: string }).text;
     const previewLines = previewText.split('\n');
     assert.equal((previewLines.find((l) => l.startsWith('tools:')) ?? '').match(/search\d{1,2}:done/g)?.length, 3, 'default preview "tools:" summary shows only the last 3 tool calls');
     assert.equal(previewLines.find((l) => l.startsWith('evidence:')), 'evidence: a:1; b:2; c:3', 'default preview "evidence:" summary caps at 3 anchors');
@@ -5002,7 +4903,7 @@ test('AgentMessage full:true returns the complete tool-call/ledger/evidence hist
     assert.equal(previewDetails.toolCalls.length, 10, 'default details cap tool calls at the last 10');
 
     const full = await invokeExecute(messageTool, { action: 'status', agentId, full: true });
-    const fullText = full.content[0]!.text;
+    const fullText = (full.content[0] as { text: string }).text;
     const fullLines = fullText.split('\n');
     assert.equal((fullLines.find((l) => l.startsWith('tools:')) ?? '').match(/search\d{1,2}:done/g)?.length, 12, 'full:true "tools:" summary returns every retained tool call');
     assert.equal(fullLines.find((l) => l.startsWith('evidence:')), 'evidence: a:1; b:2; c:3; d:4; e:5', 'full:true "evidence:" summary returns every retained anchor');
@@ -5080,7 +4981,7 @@ test('AgentMessage abort sends Pi RPC abort command without killing the process'
       action: 'abort',
       agentId,
     });
-    assert.match(aborted.content[0]!.text, /aborted/i);
+    assert.match((aborted.content[0] as { text: string }).text, /aborted/i);
     assert.equal(
       spawned[0]!.killed,
       undefined,
@@ -5148,7 +5049,7 @@ test('evictStaleAgents removes oldest terminal agents when registry reaches MAX_
     // List should not include the evicted agent
     const list = await invokeExecute(messageTool, { action: 'list' });
     // overflow-agent must appear in list
-    assert.match(list.content[0]!.text, /overflow-agent/);
+    assert.match((list.content[0] as { text: string }).text, /overflow-agent/);
     // Total agent count in the registry must be ≤ MAX_AGENT_RECORDS (50)
     const agentCount = (list.details as { agents: unknown[] }).agents.length;
     assert.ok(
@@ -5286,7 +5187,7 @@ test('AgentMessage wait with remove:true cleans up agent from registry after com
       timeoutMs: 1000,
       remove: true,
     });
-    assert.match(waited.content[0]!.text, /completed/i);
+    assert.match((waited.content[0] as { text: string }).text, /completed/i);
 
     // Agent must be gone from registry
     await assert.rejects(
@@ -5333,7 +5234,7 @@ test('RPC response with success:false surfaces error in agent result', async () 
       agentId,
     });
     assert.match(
-      status.content[0]!.text,
+      (status.content[0] as { text: string }).text,
       /already streaming|streamingBehavior|RPC command failed/,
       'RPC error must appear in agent status output'
     );
@@ -5413,12 +5314,12 @@ test('cleanupSpawnedAgentsForShutdown kills only non-terminal spawned workers', 
       action: 'status',
       agentId: finishedId,
     });
-    assert.match(finishedStatus.content[0]!.text, /status: exited/);
+    assert.match((finishedStatus.content[0] as { text: string }).text, /status: exited/);
     const runningStatus = await invokeExecute(messageTool, {
       action: 'status',
       agentId: runningId,
     });
-    assert.match(runningStatus.content[0]!.text, /status: killed/);
+    assert.match((runningStatus.content[0] as { text: string }).text, /status: killed/);
   } finally {
     setAgentProcessFactoryForTests(null);
   }
@@ -5468,7 +5369,7 @@ test('AgentMessage send with broken stdin (EPIPE) sets isError:true on result', 
       'result must be isError:true when sendRpc catches EPIPE'
     );
     assert.match(
-      sendResult.content[0]!.text,
+      (sendResult.content[0] as { text: string }).text,
       /EPIPE|write/,
       'error text must surface the EPIPE message'
     );

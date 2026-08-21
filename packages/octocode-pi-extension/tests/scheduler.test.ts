@@ -7,7 +7,7 @@ import {
 } from '../src/scheduler.js';
 import type { PiExecResult } from '../src/types.js';
 
-test('cron scheduler lists the non-mutating Awareness Lite status job', () => {
+test('cron scheduler lists the report-first Awareness Lite status job', () => {
   const scheduler = createOctocodeCronScheduler({
     env: {
       OCTOCODE_CRON: '0',
@@ -22,7 +22,8 @@ test('cron scheduler lists the non-mutating Awareness Lite status job', () => {
   assert.equal(jobs[0]!.enabled, false);
   assert.equal(jobs[0]!.status, 'cancelled');
   assert.match(formatOctocodeCronStatus(jobs), /awareness-lite-status/);
-  assert.match(formatOctocodeCronStatus(jobs), /never mutates/);
+  // status is report-first but DOES prune expired locks/work rows as a side effect.
+  assert.match(formatOctocodeCronStatus(jobs), /prunes expired locks\/work rows/);
 });
 
 test('cron scheduler can run the default Awareness Lite status job on demand', async () => {

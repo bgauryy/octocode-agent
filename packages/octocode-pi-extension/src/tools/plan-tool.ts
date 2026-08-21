@@ -89,19 +89,33 @@ export async function handleOctocodePlanCommand(args: string, ctx: PiContext | u
   const scope = activePlanScope(ctx);
   const [action = 'show', arg] = args.trim().split(/\s+/).filter(Boolean);
   const n = Number(arg);
+  // Bad indices must say WHY nothing changed — the plan reprint alone reads as
+  // a silent success (the tool path returns [PLAN] errors; parity for the command).
+  const validStep = (verb: string): boolean => {
+    const count = getPlan(scope).length;
+    if (count === 0) {
+      notify(ctx, `No active plan — nothing to ${verb}.`, 'warning');
+      return false;
+    }
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > count) {
+      notify(ctx, `Usage: /octocode-plan ${verb} <n> with n between 1 and ${count} (got "${arg ?? ''}").`, 'warning');
+      return false;
+    }
+    return true;
+  };
   switch (action) {
     case 'clear':
       clearPlan(scope);
       notify(ctx, 'Plan cleared.', 'info');
       break;
     case 'complete':
-      if (Number.isFinite(n)) completeStep(scope, n);
+      if (validStep('complete')) completeStep(scope, n);
       break;
     case 'start':
-      if (Number.isFinite(n)) startStep(scope, n);
+      if (validStep('start')) startStep(scope, n);
       break;
     case 'remove':
-      if (Number.isFinite(n)) removeStep(scope, n);
+      if (validStep('remove')) removeStep(scope, n);
       break;
     case 'show':
     default:

@@ -167,3 +167,38 @@ test('refreshAwarenessPanel still runs without the CLI env var', async () => {
   await new Promise((r) => setTimeout(r, 5));
   assert.equal(calls, 1, 'local package runner is invoked without OCTOCODE_AWARENESS_CLI');
 });
+
+test('parseInbox counts unread messages and previews the newest inbound', async () => {
+  const { parseInbox } = await import('../src/tools/awareness-status.js');
+  const json = JSON.stringify([
+    { messageId: 'm1', fromAgentId: 'clawde-squidJobs', toAgentId: 'pi:1', text: 'older ping', createdAt: '2026-08-21T10:00:00Z', readAt: null },
+    { messageId: 'm2', fromAgentId: 'cursea-crabBohr', toAgentId: 'pi:1', text: 'please hold off on banner.ts', createdAt: '2026-08-21T11:00:00Z', readAt: null },
+    { messageId: 'm3', fromAgentId: 'octo-inkstein', toAgentId: 'pi:1', text: 'already read', createdAt: '2026-08-21T12:00:00Z', readAt: '2026-08-21T12:01:00Z' },
+  ], null, 2);
+  const { unread, lastInbound } = parseInbox(json);
+  assert.equal(unread, 2, 'read messages are excluded');
+  assert.equal(lastInbound!.from, 'cursea-crabBohr', 'newest UNREAD wins');
+  assert.match(lastInbound!.preview, /hold off on banner/);
+  assert.deepEqual(parseInbox('[]'), { unread: 0 });
+  assert.deepEqual(parseInbox('not json'), { unread: 0 });
+});
+
+test('formatAwarenessPanel leads with the unread-inbox indication', async () => {
+  const { formatAwarenessPanel } = await import('../src/tools/awareness-status.js');
+  const lines = formatAwarenessPanel({
+    activePlans: 1, readyTasks: 0, inProgressTasks: 0, verifyTasks: 0,
+    lockCount: 0, workCount: 0, agentCount: 2, messageCount: 3,
+    unreadInbox: 2, lastInbound: { from: 'clawde-squidJobs', preview: 'need the lock on yarn.lock' },
+  });
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, /✉ 2 unread \(from clawde-squidJobs: need the lock on yarn\.lock\)/);
+  // Unread comes BEFORE the plan counts (it is the actionable event).
+  assert.ok(lines[0]!.indexOf('✉') < lines[0]!.indexOf('plans'), 'unread leads the panel');
+  // Unread alone (no other signal) still shows a panel.
+  const only = formatAwarenessPanel({
+    activePlans: 0, readyTasks: 0, inProgressTasks: 0, verifyTasks: 0,
+    lockCount: 0, workCount: 0, agentCount: 0, messageCount: 0, unreadInbox: 1,
+  });
+  assert.equal(only.length, 1);
+  assert.match(only[0]!, /✉ 1 unread/);
+});

@@ -1,6 +1,6 @@
 {
   "name": "@octocodeai/octocode-awareness-lite",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Tiny local SQLite coordination for coding agents: plans, tasks, locks, checks, and memory.",
   "keywords": [
     "octocode",
@@ -50,11 +50,11 @@
     "verify": "yarn typecheck && yarn test && yarn build"
   },
   "devDependencies": {
-    "@types/node": "^25.9.3",
-    "@vitest/coverage-v8": "^4.1.9",
-    "esbuild": "^0.28.1",
+    "@types/node": "^26.2.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.11"
   },
   "publishConfig": {
     "access": "public"

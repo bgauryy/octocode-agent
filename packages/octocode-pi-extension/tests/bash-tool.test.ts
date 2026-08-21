@@ -67,7 +67,7 @@ test('bash abort terminates the shell process and resolves without hanging', asy
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('bash abort timed out')), 2_000)),
     ]);
     assert.equal(result.isError, true);
-    assert.match(result.content[0]!.text, /err/);
+    assert.match((result.content[0] as { text: string }).text, /err/);
   } finally {
     controller.abort();
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -124,9 +124,34 @@ test('bash override blocks writes outside allowed roots', async () => {
       undefined,
       { cwd: tmp },
     );
-    assert.match(ok.content[0]!.text, /hello/);
+    assert.match((ok.content[0] as { text: string }).text, /hello/);
     assert.equal(fs.readFileSync(path.join(tmp, 'ok.txt'), 'utf8').trim(), 'hello');
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('extractBashWriteTargets: sed/perl in-place targets the FILE, never the script', () => {
+  const cwd = '/repo';
+  // BSD/macOS: `sed -i '' <script> file` — the address script starts with '/'
+  // and must NOT be treated as an absolute output path (the original bug).
+  assert.deepEqual(
+    extractBashWriteTargets(`sed -i '' '/^    "x": 1,$/d' package.json`, cwd),
+    [path.join(cwd, 'package.json')],
+  );
+  // GNU: `sed -i <script> file` (no separate suffix).
+  assert.deepEqual(extractBashWriteTargets(`sed -i 's/a/b/' f.txt`, cwd), [path.join(cwd, 'f.txt')]);
+  // GNU attached suffix.
+  assert.deepEqual(extractBashWriteTargets(`sed -i.bak 's/a/b/' f.txt`, cwd), [path.join(cwd, 'f.txt')]);
+  // Multiple files.
+  assert.deepEqual(
+    extractBashWriteTargets(`sed -i '' 's/a/b/' a.txt b.txt`, cwd).sort(),
+    [path.join(cwd, 'a.txt'), path.join(cwd, 'b.txt')].sort(),
+  );
+  // Explicit -e script: every positional is a file.
+  assert.deepEqual(extractBashWriteTargets(`sed -i '' -e 's/a/b/' f.txt`, cwd), [path.join(cwd, 'f.txt')]);
+  // perl -i -pe.
+  assert.deepEqual(extractBashWriteTargets(`perl -i -pe 's/a/b/' f.txt`, cwd), [path.join(cwd, 'f.txt')]);
+  // Not in-place → no write target from sed.
+  assert.deepEqual(extractBashWriteTargets(`sed 's/a/b/' f.txt`, cwd), []);
 });

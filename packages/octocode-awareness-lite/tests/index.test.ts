@@ -260,6 +260,12 @@ describe('AwarenessLite', () => {
 
     expect(aw.listAgents({ staleAfterMs: 30_000 }).map((agent) => agent.agentId)).toEqual(['stale-agent']);
     expect(aw.status({ staleAfterMs: 30_000 }).staleAgents).toBe(1);
+    // status().agents counts PRESENT agents (non-LEFT, seen within the window),
+    // not a raw table count: with a 30s window only fresh-agent is present.
+    expect(aw.status({ staleAfterMs: 30_000 }).agents).toBe(1);
+    // With the default (30 min) window, the 60s-old stale-agent still counts as
+    // present, but the LEFT agent never does.
+    expect(aw.status().agents).toBe(2);
   });
 
   it('dry-runs and confirms manual memory and message pruning', () => {
@@ -313,5 +319,30 @@ describe('AwarenessLite', () => {
       aw.reopenTask({ taskId: task.taskId, agentId: 'agent-a', reason: `loop ${index}` });
     }
     expect(aw.listTasks({ planId: plan.planId })[0]).toMatchObject({ status: 'CLAIMED', verificationMessage: 'loop 4' });
+  });
+});
+
+describe('agent naming', () => {
+  it('generates funny host-tagged names and detects hosts from env', async () => {
+    const { detectAgentHost, generateAgentName } = await import('../src/index.js');
+    expect(detectAgentHost({ CLAUDECODE: '1' })).toBe('claude');
+    expect(detectAgentHost({ CURSOR_TRACE_ID: 'x', TERM_PROGRAM: 'vscode' })).toBe('cursor');
+    expect(detectAgentHost({ CODEX_THREAD_ID: 'x' })).toBe('codex');
+    expect(detectAgentHost({ TERM_PROGRAM: 'vscode' })).toBe('vscode');
+    expect(detectAgentHost({ OCTOCODE_AGENT_HOST: 'octo', CLAUDECODE: '1' })).toBe('octo');
+    expect(detectAgentHost({})).toBe('agent');
+    expect(generateAgentName({ CLAUDECODE: '1' })).toMatch(/^clawde-\w+$/);
+    expect(generateAgentName({ OCTOCODE_AGENT_HOST: 'octo' })).toMatch(/^octo-\w+$/);
+    expect(generateAgentName({ CURSOR_AGENT: '1' })).toMatch(/^cursea-\w+$/);
+  });
+
+  it('joinAgent defaults to a generated host-tagged name and keeps it on rejoin', () => {
+    const joined = aw.joinAgent({ agentId: 'anon-1' });
+    expect(joined.name).toMatch(/^[a-z]+-\w+$/);
+    const rejoined = aw.joinAgent({ agentId: 'anon-1' });
+    expect(rejoined.name).toBe(joined.name);
+    // Explicit names always win, including over a previously generated one.
+    expect(aw.joinAgent({ agentId: 'anon-1', name: 'my-bot' }).name).toBe('my-bot');
+    expect(aw.joinAgent({ agentId: 'named', name: 'Alice' }).name).toBe('Alice');
   });
 });

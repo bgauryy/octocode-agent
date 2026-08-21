@@ -401,9 +401,11 @@ export async function launchWithSdk(
       return 0;
     }
 
-    // Own TUI shell (Phase C alpha): OCTOCODE_SHELL=1 swaps Pi's InteractiveMode
-    // for the Octocode shell shipped by the core. Any failure → InteractiveMode.
-    if (env.OCTOCODE_SHELL === '1' || env.OCTOCODE_SHELL === 'true') {
+    // Own TUI shell: the Octocode shell shipped by the core is now the DEFAULT
+    // interactive surface (fully branded, no Pi indications). Opt out with
+    // OCTOCODE_SHELL=0/false. Any failure → Pi's InteractiveMode (safe fallback).
+    const shellOptOut = env.OCTOCODE_SHELL === '0' || env.OCTOCODE_SHELL === 'false';
+    if (!shellOptOut) {
       try {
         const shellFn = deps.createOctocodeShell ?? (await loadOctocodeShell());
         if (typeof shellFn === 'function') {

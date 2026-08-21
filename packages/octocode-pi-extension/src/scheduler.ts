@@ -93,7 +93,7 @@ function defaultJobs(env: NodeJS.ProcessEnv): OctocodeCronJobDefinition[] {
     {
       name: 'awareness-lite-status',
       label: 'Awareness Lite status',
-      description: 'Report-first Awareness Lite status summary; never mutates data.',
+      description: 'Report-first Awareness Lite status summary (status prunes expired locks/work rows as a side effect).',
       intervalMs: parsePositiveInt(
         env['OCTOCODE_CRON_STATUS_INTERVAL_MS'],
         DEFAULT_AWARENESS_LITE_STATUS_INTERVAL_MS,

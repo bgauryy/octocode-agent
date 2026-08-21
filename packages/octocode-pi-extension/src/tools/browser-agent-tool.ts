@@ -19,6 +19,7 @@ import type { registerUniqueTool } from './octocode-tools.js';
 import { isSubagentProcess } from './agent-tools.js';
 import { appendImageLines } from './image-render.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { CLI_GLYPH, CLI_STATUS_TEXT, paint } from '../tui/cli-design.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -324,22 +325,7 @@ export function registerBrowserAgentTool(
       '  4. The octocode-chrome-devtools skill is embedded in the system prompt',
       '  5. Choose config.model from `pi -ne --list-models [search]`; use the live user-configured table, not hardcoded config paths.',
       '',
-      'Task routing (keyword → schemes):',
-      '  security/cookie/auth    → security + network',
-      '  performance/metrics     → performance',
-      '  coverage/dead-code      → css-coverage + js-coverage',
-      '  memory/heap/leak        → memory',
-      '  accessibility/a11y      → accessibility',
-      '  worker/service-worker   → workers + service-worker',
-      '  storage/indexeddb       → storage',
-      '  websocket               → websocket',
-      '  network/request/api     → network',
-      '  intercept/mock          → intercept',
-      '  dom/selector/query      → dom',
-      '  emulate/mobile/device   → emulate',
-      '  inject/hook/patch       → inject',
-      '  full-audit/everything   → debug + security + performance + accessibility',
-      '  (default)               → debug + network + console',
+      'The task keyword is auto-routed to the right CDP scheme(s) internally (security/network, performance, coverage, memory, accessibility, workers, storage, websocket, intercept, dom, emulate, inject, or a full-audit); just describe the goal.',
     ].join('\n'),
 
     parameters: Type.Object({
@@ -520,12 +506,25 @@ export function registerBrowserAgentTool(
       return makeRenderer((w) => [truncateToWidth(raw, w)]);
     },
 
-    renderResult(result: unknown, opts?: { expanded?: boolean }, theme?: PiTheme, context?: RenderContext) {
-      const r = result as { content?: Array<{ text?: string }> };
+    renderResult(result: unknown, opts?: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme, context?: RenderContext) {
+      const r = result as { content?: Array<{ text?: string }>; isError?: boolean };
       const text = r?.content?.[0]?.text ?? '';
+      // In-flight: the connect+navigate+scheme run takes many seconds; a
+      // premature "0 findings" row reads as a finished empty result.
+      if (opts?.isPartial || (!text && !r?.isError)) {
+        const prog = paint(theme, 'warning', `${CLI_STATUS_TEXT.running} browserAgent`);
+        return makeRenderer((w) => [truncateToWidth(prog, w)]);
+      }
+      if (r?.isError) {
+        const firstLine = text.split('\n').find(Boolean) ?? 'failed';
+        const raw = paint(theme, 'error', `${CLI_GLYPH.error} browserAgent: ${firstLine}`);
+        return makeRenderer((w) => [truncateToWidth(raw, w)]);
+      }
       const findings = (text.match(/\[FINDING\]/g) ?? []).length;
       const schemesLine = text.split('\n').find((l) => l.includes('schemes run:')) ?? '';
-      const raw = `browserAgent → ${findings} findings | ${schemesLine.replace('[AGENT] ', '')}`;
+      const schemesSuffix = schemesLine ? ` | ${schemesLine.replace('[AGENT] ', '')}` : '';
+      const glyph = paint(theme, 'success', CLI_GLYPH.success);
+      const raw = `${glyph} browserAgent → ${findings} finding${findings === 1 ? '' : 's'}${schemesSuffix}`;
       const base = makeRenderer((w) => [truncateToWidth(raw, w)]);
       if (!opts?.expanded) return base;
 

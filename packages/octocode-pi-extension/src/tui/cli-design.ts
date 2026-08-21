@@ -101,31 +101,37 @@ export function summarizeInlineValue(value: unknown, max = 90): string {
 
 export type CliToolRowState = 'queued' | 'running' | 'update' | 'done' | 'failed';
 
-/** One-line, text-labeled tool row for the alpha OctocodeShell transcript. */
+/**
+ * One-line, text-labeled tool row for the alpha OctocodeShell transcript.
+ * Truncated to `width` (default: the live terminal width) so a long payload
+ * never wraps to a second physical line and breaks the ╭─ … ╰─ frame alignment.
+ */
 export function formatCliToolRow(
   state: CliToolRowState,
   toolName: string | undefined,
   payload?: unknown,
   theme?: PaintTheme,
+  width: number = Number(process.stdout?.columns) || 80,
 ): string {
   const name = toolName ?? 'tool';
   const detail = summarizeInlineValue(payload);
   const detailText = detail ? cliPaint(theme, 'dim', ` · ${detail}`) : '';
   const title = cliPaint(theme, 'title', name);
+  const fit = (row: string): string => truncateToWidth(row, Math.max(20, width));
 
   if (state === 'queued') {
-    return `${cliPaint(theme, 'warning', `╭─ ${CLI_GLYPH.tool} tool call`)} ${title}${detailText}`;
+    return fit(`${cliPaint(theme, 'warning', `╭─ ${CLI_GLYPH.tool} tool call`)} ${title}${detailText}`);
   }
   if (state === 'running') {
-    return `${cliPaint(theme, 'title', `╭─ ${CLI_GLYPH.running}`)} ${title} ${cliPaint(theme, 'dim', CLI_STATUS_TEXT.running)}${detailText}`;
+    return fit(`${cliPaint(theme, 'title', `╭─ ${CLI_GLYPH.running}`)} ${title} ${cliPaint(theme, 'dim', CLI_STATUS_TEXT.running)}${detailText}`);
   }
   if (state === 'update') {
-    return `${cliPaint(theme, 'dim', `│  ${CLI_GLYPH.update}`)} ${cliPaint(theme, 'dim', detail || 'streaming update…')}`;
+    return fit(`${cliPaint(theme, 'dim', `│  ${CLI_GLYPH.update}`)} ${cliPaint(theme, 'dim', detail || 'streaming update…')}`);
   }
   if (state === 'failed') {
-    return `${cliPaint(theme, 'error', `╰─ ${CLI_GLYPH.error}`)} ${cliPaint(theme, 'error', name)}${detailText}`;
+    return fit(`${cliPaint(theme, 'error', `╰─ ${CLI_GLYPH.error}`)} ${cliPaint(theme, 'error', name)}${detailText}`);
   }
-  return `${cliPaint(theme, 'success', `╰─ ${CLI_GLYPH.success}`)} ${cliPaint(theme, 'success', name)}${detailText}`;
+  return fit(`${cliPaint(theme, 'success', `╰─ ${CLI_GLYPH.success}`)} ${cliPaint(theme, 'success', name)}${detailText}`);
 }
 
 /** Text-labeled thinking boundary row for accessible streamed reasoning blocks. */

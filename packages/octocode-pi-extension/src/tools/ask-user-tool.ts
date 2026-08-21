@@ -3,16 +3,17 @@
  *
  * Lets the agent ask the human a question and get a real answer through the TUI
  * instead of dumping a numbered list in prose and hoping the user types the
- * matching token. Modes are chosen from the arguments and rendered as a
- * focused overlay modal (ctx.ui.custom, { overlay:true }) shown over the
- * conversation area — the same surface the command palette and effort dial use
- * — so the prompt appears in the message flow rather than pinned by the input:
+ * matching token. Modes are chosen from the arguments and rendered INLINE via
+ * ctx.ui.custom(builder) (no overlay options), so the prompt appears in the
+ * conversation/message flow at the bottom — reading as part of the message list
+ * — rather than as a floating modal box pinned over the conversation:
  *
- *   • options[]  → a keyboard-navigable list (↑↓ / enter / esc) with an
- *     always-available custom free-text answer.
- *   • options[] + multiSelect → a checkbox list (space toggles, enter confirms
- *     once min/max are satisfied, esc cancels); options may carry a preview block
- *     shown while focused.
+ *   • options[]  → a keyboard-navigable numbered list (↑↓ / 1-9 quick-select /
+ *     enter / esc) with an always-available custom free-text answer; long lists
+ *     scroll in a window around the cursor.
+ *   • options[] + multiSelect → a checkbox list (space or 1-9 toggles, enter
+ *     confirms once min/max are satisfied, esc cancels) with a live selection
+ *     count in the footer; options may carry a preview block shown while focused.
  *   • fields[]   → a simple sequential form; required fields warn once before
  *     rejecting.
  *   • no options → a single-line text prompt.
@@ -134,6 +135,9 @@ function askFooterLine(theme: PiTheme | undefined, help: string, width: number, 
     : ruleLine(theme, `╰─ ${help} `, width, 'dim');
 }
 
+/** Max option rows painted at once; longer lists scroll in a window around the cursor. */
+const ASK_LIST_MAX_VISIBLE = 8;
+
 function renderAskChoiceLines(
   theme: PiTheme | undefined,
   question: string,
@@ -145,18 +149,35 @@ function renderAskChoiceLines(
   warning?: string,
 ): string[] {
   const bar = paint(theme, 'brand', '│');
-  const rows = items.flatMap((item, index) => {
+  // Scroll window: long lists would overflow the terminal height (pi clips the
+  // component), so paint at most ASK_LIST_MAX_VISIBLE rows centered on the
+  // cursor with dim "N more" markers for the hidden remainder.
+  let start = 0;
+  let end = items.length;
+  if (items.length > ASK_LIST_MAX_VISIBLE) {
+    start = Math.min(
+      Math.max(0, cursor - Math.floor(ASK_LIST_MAX_VISIBLE / 2)),
+      items.length - ASK_LIST_MAX_VISIBLE,
+    );
+    end = start + ASK_LIST_MAX_VISIBLE;
+  }
+  const rows = items.slice(start, end).flatMap((item, offset) => {
+    const index = start + offset;
     const active = index === cursor;
     const marker = active ? paint(theme, 'brand', '›') : ' ';
     const checked = selected ? (selected.has(index) ? paint(theme, 'success', '☑') : paint(theme, 'dim', '☐')) : '';
+    // Numbered rows advertise the 1-9 quick-select keys; the free-text row is unnumbered.
+    const ordinal = !item.freeText && index < 9 ? paint(theme, active ? 'brand' : 'dim', `${index + 1}.`) + ' ' : '';
     const rawLabel = item.freeText ? paint(theme, 'brand', item.label) : (active ? paint(theme, 'brand', item.label) : item.label);
     const desc = item.description ? paint(theme, 'dim', ` — ${item.description}`) : '';
-    const line = `${bar} ${marker} ${checked ? `${checked} ` : ''}${rawLabel}${desc}`;
+    const line = `${bar} ${marker} ${checked ? `${checked} ` : ''}${ordinal}${rawLabel}${desc}`;
     const preview = active && item.preview
       ? item.preview.split('\n').slice(0, 3).map((l) => `${bar}     ${paint(theme, 'dim', l)}`)
       : [];
     return [line, ...preview];
   });
+  if (start > 0) rows.unshift(`${bar} ${paint(theme, 'dim', `↑ ${start} more`)}`);
+  if (end < items.length) rows.push(`${bar} ${paint(theme, 'dim', `↓ ${items.length - end} more`)}`);
   return [
     ...askHeaderLines(theme, question, width),
     ...rows,
@@ -199,11 +220,13 @@ async function runAskOverlay(
   const options = params.options.map((o) => ({ ...o, label: o.label ?? o.value }));
   const fields = params.fields ?? [];
 
-  // Render as a focused overlay modal (ctx.ui.custom, { overlay:true }) that sits
-  // over the conversation area — the same surface the command palette / effort
-  // dial use — rather than a strip pinned above the editor. The free-text "type
-  // my own answer" row is always appended AFTER the listed options so the user can
-  // redirect instead of being boxed into the choices.
+  // Render INLINE (non-overlay ctx.ui.custom) so the prompt appears in the
+  // conversation/message flow at the bottom — reading as part of the message
+  // list — instead of a floating modal box pinned over the conversation. When
+  // the prompt resolves it disappears and the tool result (renderResult) is what
+  // remains in the scrollback. The free-text "type my own answer" row is always
+  // appended AFTER the listed options so the user can redirect instead of being
+  // boxed into the choices.
   return ctx.ui!.custom!<AskOutcome>(
     (tuiRaw: unknown, theme: PiTheme, _kb: unknown, done: (o: AskOutcome) => void) => {
       const tui = tuiRaw as { requestRender?: () => void };
@@ -244,13 +267,18 @@ async function runAskOverlay(
         const rows: Array<{ label: string; description?: string; preview?: string; freeText?: boolean }> =
           options.map((o) => ({ label: o.label!, description: o.description, preview: o.preview }));
         rows.push({ label: '✎ Type my own answer…', description: 'custom free-text reply', freeText: true });
+        const multiCount = mode === 'multi'
+          ? `${selected.size} selected${params.min ? ` · min ${params.min}` : ''}${params.max ? ` · max ${params.max}` : ''} • `
+          : '';
         return renderAskChoiceLines(
           theme,
           params.question,
           rows,
           cursor,
           mode === 'multi' ? selected : undefined,
-          mode === 'multi' ? '↑↓ navigate • space toggle • enter confirm • custom answer row • esc cancel' : '↑↓ navigate • enter select • custom answer row • esc cancel',
+          mode === 'multi'
+            ? `${multiCount}↑↓ navigate • space toggle • 1-9 toggle • enter confirm • esc cancel`
+            : '↑↓ navigate • 1-9 select • enter select • esc cancel',
           w,
           warning,
         );
@@ -271,6 +299,25 @@ async function runAskOverlay(
         if (mode === 'single' || mode === 'multi') {
           if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl('p'))) { move(-1); return; }
           if (matchesKey(data, Key.down) || matchesKey(data, Key.ctrl('n'))) { move(1); return; }
+          // Digit quick keys mirror the numbered rows: single-select picks the
+          // option outright; multi-select toggles it (enter still confirms).
+          if (/^[1-9]$/.test(data)) {
+            const index = Number(data) - 1;
+            if (index < options.length) {
+              cursor = index;
+              warning = undefined;
+              if (mode === 'single') {
+                const picked = options[index]!;
+                finish({ status: 'selected', value: picked.value, label: picked.label ?? picked.value });
+                return;
+              }
+              if (selected.has(index)) selected.delete(index);
+              else if (params.max === undefined || selected.size < params.max) selected.add(index);
+              else warning = `Choose at most ${params.max} option${params.max === 1 ? '' : 's'}.`;
+              rerender();
+            }
+            return;
+          }
           if (mode === 'multi' && data === ' ') {
             if (cursor === options.length) { mode = 'text'; text = ''; warning = undefined; rerender(); return; }
             if (selected.has(cursor)) selected.delete(cursor);
@@ -350,18 +397,11 @@ async function runAskOverlay(
       };
       return comp;
     },
-    // Anchor the modal in the message area (top-center) rather than letting it
-    // default toward the editor line, so the prompt reads as part of the
-    // conversation flow. pi's API cannot embed a live keyboard widget inside the
-    // immutable scrollback, so a top-anchored focused overlay is the closest
-    // “in the messages” surface available.
-    {
-      overlay: true,
-      overlayOptions: { anchor: 'top-center', width: '80%', maxHeight: '70%', margin: { top: 2 } },
-      // Grab input focus immediately so keystrokes reach the prompt and the TUI
-      // sets `focused = true` (required for the IME cursor marker to render).
-      onHandle: (handle: unknown) => (handle as { focus?: () => void })?.focus?.(),
-    },
+    // No overlay options: a non-overlay component renders inline in the message
+    // flow (at the bottom of the conversation, where input normally lives) and
+    // automatically owns input focus while active, so the prompt appears in the
+    // message list rather than as a floating modal. pi sets `comp.focused` for
+    // the active inline component, which drives the IME cursor marker.
   );
 }
 

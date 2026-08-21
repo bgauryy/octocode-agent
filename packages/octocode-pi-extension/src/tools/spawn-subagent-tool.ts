@@ -6,20 +6,22 @@
  *   - Pre-loads the subagent's SYSTEM_PROMPT.md from dist/subagents/<name>/
  *   - Enforces the correct tool allowlist and resource mode per subagent
  *   - Loads every bundled Octocode skill for Octocode specialist subagents
- *   - Passes subagent-specific params (url, port) as structured context in the task
  *   - Returns agentId for AgentMessage (same agents Map as spawnAgent)
  *
+ * Browser work uses the dedicated `browserAgent` tool (→ spawnAgent), not this
+ * tool — so `browser-agent` is intentionally NOT a spawnSubagent type.
+ *
  * Main agent workflow:
- *   1. spawnSubagent({agent:"browser-agent", task:"audit cookies on example.com", url:"https://example.com"})
+ *   1. spawnSubagent({agent:"researcher", task:"gather evidence on X"})
  *      → { agentId: "abc123", usage: "AgentMessage({action:\"wait\", agentId:\"abc123\"})" }
  *   2. AgentMessage({action:"wait", agentId:"abc123", timeoutMs:60000})
- *   3. AgentMessage({action:"send", agentId:"abc123", message:"now check service workers"})
+ *   3. AgentMessage({action:"send", agentId:"abc123", message:"now check the callers"})
  *   4. AgentMessage({action:"kill", agentId:"abc123", remove:true})
  */
 
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { paint } from '../tui/cli-design.js';
+import { CLI_GLYPH, CLI_STATUS_TEXT, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import {
   spawnRpcAgent,
@@ -39,7 +41,11 @@ import { getRandomAgentName } from '../agentNames.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
-const CHROME_DISABLED_ENV = 'OCTOCODE_CHROME_DEBUG';
+
+// Browser work has a dedicated entry point (the `browserAgent` tool → spawnAgent),
+// so `browser-agent` is excluded from the spawnSubagent type list to keep a single
+// browser surface. The registry still defines it for the browserAgent tool + build.
+const SPAWNABLE_SUBAGENT_NAMES = SUBAGENT_NAMES.filter((name) => name !== 'browser-agent');
 
 // ─── Params per subagent type ─────────────────────────────────────────────────
 
@@ -58,26 +64,10 @@ interface SpawnSubagentParams {
   thinking?: string;
   isolation?: SpawnAgentParams['isolation'];
   includeUncommitted?: boolean;
-  // browser-agent extras (injected into task context block)
-  url?: string;
-  port?: number;
-  launch?: boolean;
-  headless?: boolean;
 }
 
 function buildTaskWithContext(params: SpawnSubagentParams): string {
-  const agent = params.agent;
   const lines: string[] = [];
-
-  // Browser-agent: inject session params at top so the subagent has them from turn 1
-  if (agent === 'browser-agent') {
-    lines.push('## Browser Session');
-    if (params.url) lines.push(`Target URL: ${params.url}`);
-    lines.push(`Chrome port: ${params.port ?? 9222}`);
-    if (params.launch) lines.push(`Launch Chrome: true (start Chrome if not running)`);
-    if (params.headless === false) lines.push(`Headless: false (visible Chrome)`);
-    lines.push('');
-  }
 
   if (params.context) {
     lines.push('## Context');
@@ -95,30 +85,10 @@ function buildAgentName(params: SpawnSubagentParams): string {
   if (params.name) return params.name;
   const config = SUBAGENT_REGISTRY[params.agent];
   const codename = getRandomAgentName();
-  let slug = '';
-  if (params.url) {
-    try {
-      slug = ` · ${new URL(params.url).hostname.replace(/^www\./, '')}`;
-    } catch {
-      // ignore
-    }
-  }
-  return `${config.label} · ${codename}${slug}`;
-}
-
-function isChromeDebugEnabled(): boolean {
-  return process.env[CHROME_DISABLED_ENV] !== '0';
-}
-
-function getAvailableSubagentNames(): SubagentName[] {
-  if (isChromeDebugEnabled()) return [...SUBAGENT_NAMES];
-  return SUBAGENT_NAMES.filter((name) => name !== 'browser-agent');
+  return `${config.label} · ${codename}`;
 }
 
 function unavailableSubagentMessage(agent: string, availableNames: SubagentName[]): string {
-  if (agent === 'browser-agent' && !isChromeDebugEnabled()) {
-    return `browser-agent is unavailable because ${CHROME_DISABLED_ENV}=0 disables chromeDebug. Available: ${availableNames.join(', ')}`;
-  }
   return `Unknown subagent: "${agent}". Available: ${availableNames.join(', ')}`;
 }
 
@@ -133,15 +103,13 @@ export function registerSpawnSubagentTool(
 ): void {
   // Workers cannot spawn workers — never register this tool inside a spawned worker process.
   if (isSubagentProcess()) return;
-  const availableSubagentNames = getAvailableSubagentNames();
+  const availableSubagentNames = SPAWNABLE_SUBAGENT_NAMES;
   const availableSubagentSet = new Set<string>(availableSubagentNames);
   const availableSubagents = availableSubagentNames.map((name) => {
     const config = SUBAGENT_REGISTRY[name];
     return `  ${name} — ${config.description} Tools: ${config.tools.join(', ')}.`;
   }).join('\n');
-  const skillGuideline = isChromeDebugEnabled()
-    ? 'Every typed subagent loads any Octocode skills already installed; browser-agent also loads its browser-agent skill.'
-    : 'Every available typed subagent loads any Octocode skills already installed; browser-agent is unavailable while Chrome debug is disabled.';
+  const skillGuideline = 'Every typed subagent loads any Octocode skills already installed. For browser/Chrome DevTools work use the dedicated `browserAgent` tool instead of spawnSubagent.';
 
   registerFn(pi, registeredToolNames, {
     name: 'spawnSubagent',
@@ -169,8 +137,7 @@ export function registerSpawnSubagentTool(
       'Use spawnAgent for clean arbitrary workers. spawnAgent defaults to lean/no-skills and only uses tools/skills you pass.',
       'Before spawning, break the request into explicit subtasks and delegate only one independent, bounded subtask per typed specialist.',
       'Structure the task as a labeled packet — lines starting with "Goal:", "Context:", "Scope:", "Ownership:", "Acceptance:", "Return:" (any of "-"/"—"/":" as separator, headings/bullets OK). Missing labels surface as a [POLICY] warning on the spawn response, not silently.',
-      'Use `pi -ne --list-models [search]` as the source of truth for the user-configured model table; do not read hardcoded config paths.',
-      'Pass model for each typed subagent: fastest capable configured model for small tasks, balanced coding/reasoning model for medium tasks, strongest configured model for large/high-risk work.',
+      'Model routing (which configured model to pass, `pi -ne --list-models`) is defined once in the agents policy — follow it there rather than re-deriving it here.',
       'Use AgentMessage(wait) to collect the current turn; treat [DONE] as phase completion and check /octocode-agents or the below-editor ledger plus the delegated acceptance criteria before declaring the objective complete.',
       'Use AgentMessage(abort) to gracefully interrupt the active turn without killing the process — the subagent stays alive for follow-up send/steer turns.',
       'Typed subagents emit structured prefixed lines such as [FINDING], [EVIDENCE], [ACTION], [PLAN], [BLOCKED], and [DONE] — parse these for synthesis.',
@@ -208,19 +175,6 @@ export function registerSpawnSubagentTool(
       ),
       isolation: Type.Optional(Type.Unsafe({ type: 'string', enum: ['shared', 'worktree'], description: 'Worker filesystem isolation. "shared" (default) uses the current cwd; "worktree" asks before creating an isolated git worktree.' })),
       includeUncommitted: Type.Optional(Type.Boolean({ description: 'With isolation:"worktree", apply a tracked-change snapshot from the parent tree. Untracked files are not included.' })),
-      // browser-agent specific params (ignored by other subagents)
-      url: Type.Optional(
-        Type.String({ description: '(browser-agent) Target URL. Injected into task context.' }),
-      ),
-      port: Type.Optional(
-        Type.Integer({ description: '(browser-agent) Chrome remote debug port. Default 9222.' }),
-      ),
-      launch: Type.Optional(
-        Type.Boolean({ description: '(browser-agent) Launch Chrome if not running. Default false.' }),
-      ),
-      headless: Type.Optional(
-        Type.Boolean({ description: '(browser-agent) Headless Chrome. Default true.' }),
-      ),
     }),
 
     async execute(
@@ -306,15 +260,28 @@ export function registerSpawnSubagentTool(
       const p = (rawParams ?? {}) as Partial<SpawnSubagentParams>;
       const config = p.agent ? SUBAGENT_REGISTRY[p.agent as SubagentName] : undefined;
       const label = config?.label ?? p.agent ?? '…';
-      const url = p.url ? ` → ${p.url}` : '';
       const task = typeof p.task === 'string' ? p.task : '';
-      const raw = `spawnSubagent(${label}${url}) "${task.slice(0, 45)}${task.length > 45 ? '…' : ''}"`;
+      const raw = `spawnSubagent(${label}) "${task.slice(0, 45)}${task.length > 45 ? '…' : ''}"`;
       return makeRenderer((w) => [truncateToWidth(raw, w)]);
     },
 
-    renderResult(result: unknown, _opts: unknown, theme?: PiTheme) {
-      const r = result as { content?: Array<{ text?: string }> };
+    renderResult(result: unknown, opts: { isPartial?: boolean } | undefined, theme?: PiTheme) {
+      const r = result as { content?: Array<{ text?: string }>; isError?: boolean };
       const text = r?.content?.[0]?.text ?? '';
+      // In-flight (streaming/approval pending): show a running row, not a fake
+      // "spawned" claim.
+      if (opts?.isPartial) {
+        const prog = paint(theme, 'warning', `${CLI_STATUS_TEXT.running} spawnSubagent`);
+        return makeRenderer((w) => [truncateToWidth(prog, w)]);
+      }
+      // Failed spawn (unknown agent, declined worktree approval, RPC error):
+      // surface the error line with the shared failure glyph instead of
+      // pretending the agent spawned.
+      if (r?.isError) {
+        const firstLine = text.split('\n').find(Boolean) ?? 'spawn failed';
+        const raw = paint(theme, 'error', `${CLI_GLYPH.error} spawnSubagent: ${firstLine}`);
+        return makeRenderer((w) => [truncateToWidth(raw, w)]);
+      }
       const lines = text.split('\n');
       const agentLine = lines.find((l) => l.startsWith('[SPAWNED]')) ?? '';
       const hasUsage = lines.some((l) => l.startsWith('AgentMessage({action:"wait"'));

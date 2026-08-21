@@ -341,8 +341,11 @@ function getAgentDisplayState(agent: AgentDisplaySource): AgentDisplayState {
   // A queued-but-unstarted turn takes precedence over an idle/done snapshot so the
   // ledger never shows 'running' before agent_start, nor 'done' with work pending.
   if ((agent.pendingMessages ?? 0) > 0) return 'queued';
+  // Exited beats blocked: a dead process that last said [BLOCKED] cannot be
+  // steered/unblocked, so showing "blocked" would advertise a dead-end action.
+  if (agent.status === 'exited') return 'done';
   if (workerStatus === 'blocked') return 'blocked';
-  if (workerStatus === 'done' || agent.status === 'exited') return 'done';
+  if (workerStatus === 'done') return 'done';
   if (agent.status === 'idle') return 'idle';
   return 'starting';
 }
@@ -761,6 +764,9 @@ export function normalizeWorkerOutput(output: string): NormalizedWorkerResult {
   const blocked = last('BLOCKED');
   const done = last('DONE');
   const failed = last('FAILED') ?? last('ERROR');
+  // Cover every salient prefix the subagent SYSTEM_PROMPTs solicit — a worker
+  // whose best output is [RISK]/[IMPACT]/[GAP] must still surface it in the
+  // normalized handback instead of silently dropping to result:undefined.
   const result =
     last('RESULT')
     ?? last('FINDING')
@@ -768,6 +774,12 @@ export function normalizeWorkerOutput(output: string): NormalizedWorkerResult {
     ?? last('FIX')
     ?? last('PLAN')
     ?? last('ACTION')
+    ?? last('IMPACT')
+    ?? last('RISK')
+    ?? last('GAP')
+    ?? last('ASSUMPTION')
+    ?? last('QUERY')
+    ?? last('METRIC')
     ?? undefined;
   const verification = last('VERIFICATION') ?? last('VERIFY') ?? undefined;
   const fallback = output.trim();
@@ -959,9 +971,11 @@ function processRpcLine(record: AgentRecord, line: string): void {
       touch(record);
     }
   } else if (eventType === 'agent_start') {
-    // The queued turn has actually started: clear the pending marker so the record
-    // moves from 'queued' to 'running' and no longer blocks wait via pendingMessages.
-    record.pendingMessages = 0;
+    // ONE queued turn has started: decrement (never hard-reset) the pending
+    // counter, so when two follow-ups are queued the ledger keeps showing
+    // 'queued' work and agent_end after turn 1 does not resolve `wait` while
+    // turn 2 has yet to run.
+    record.pendingMessages = Math.max(0, (record.pendingMessages ?? 0) - 1);
     touch(record, 'running');
   } else if (eventType === 'message_end' && (event as { message?: unknown }).message) {
     const message = (event as { message: unknown }).message;
@@ -1526,7 +1540,7 @@ function formatOctocodeAgentsHelp(): string {
     '- hide — clear the footer/widget ledger for this session',
     '',
     'Spawning/use:',
-    '- typed specialists: spawnSubagent({agent:"researcher"|"planner"|"architect"|"browser-agent", task:"..."})',
+    '- typed specialists: spawnSubagent({agent:"researcher"|"planner"|"architect", task:"..."}) · browser work: browserAgent tool',
     '- generic worker: spawnAgent({task:"...", name:"..."})',
     '- after spawning: AgentMessage({action:"wait"|"status"|"send"|"kill", agentId:"..."})',
     '- visible UI: running/blocked/failed/done workers appear in the unified status panel and compact footer until hide/prune/remove',
@@ -1568,7 +1582,7 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
       return;
     }
     refreshAgentLedgerUi(ctx);
-    ctx?.ui?.notify?.(renderSingleAgentResult(record, 'Agent status', { full }).content[0]?.text ?? '', 'info');
+    ctx?.ui?.notify?.((renderSingleAgentResult(record, 'Agent status', { full }).content[0] as { text?: string } | undefined)?.text ?? '', 'info');
     return;
   }
   if (action === 'kill-all') {
@@ -1714,7 +1728,7 @@ export function killWorkerById(idOrPrefix: string): boolean {
 export function getWorkerTranscript(idOrPrefix: string, opts: { maxLines?: number } = {}): string | undefined {
   const record = findAgentByIdOrPrefix(idOrPrefix);
   if (!record) return undefined;
-  const text = renderSingleAgentResult(record, 'Agent status').content[0]?.text ?? '';
+  const text = (renderSingleAgentResult(record, 'Agent status').content[0] as { text?: string } | undefined)?.text ?? '';
   const maxLines = opts.maxLines;
   if (maxLines === undefined || maxLines <= 0) return text;
   const lines = text.split('\n');
@@ -1755,8 +1769,7 @@ export function registerAgentTools(
       'Workers inherit no parent conversation. By default they share cwd/files/environment; pass isolation:"worktree" for an opt-in git worktree after explicit user approval, or isolation:"shared" when sharing is intentional.',
       'Structure the task as a labeled packet — lines starting with "Goal:", "Context:", "Scope:", "Ownership:", "Acceptance:", "Return:" (any of "-"/"—"/":" as separator, headings/bullets OK). A real gate checks for these labels, not just the words, and returns a [POLICY] warning on the spawn response when any are missing.',
       'spawnAgent defaults to resourceMode:"lean". Use resourceMode:"octocode" only when the worker needs Octocode extension tools.',
-      'Use `pi -ne --list-models [search]` as the source of truth for the user-configured model table; do not read hardcoded config paths.',
-      'Pass model for each worker: fastest capable configured model for small tasks, balanced coding/reasoning model for medium tasks, strongest configured model for large/high-risk work.',
+      'Model routing (which configured model to pass, `pi -ne --list-models`) is defined once in the agents policy — follow it there rather than re-deriving it here.',
       'Spawned-agent registry and output previews live in the current Pi process and are visible in /octocode-agents plus the below-editor ledger; collect needed results before session shutdown or reload.',
       'spawnAgent prevents recursive subagents: workers never receive spawnAgent or AgentMessage, even in resourceMode:"octocode" or resourceMode:"default".',
     ],
@@ -1927,7 +1940,10 @@ export function registerAgentTools(
           if (sendRpc(record, { type: 'steer', message })) {
             pushLedgerEvent(record, 'message', `steer sent: ${previewMessage(message)}`);
           }
-        } else if (sendRpc(record, { type: 'steer', message })) {
+        } else if (sendRpc(record, { type: 'follow_up', message })) {
+          // Idle workers have no in-flight turn to redirect — a bare `steer`
+          // RPC would be dropped by Pi. Route through follow_up like
+          // steerWorkerById so the message actually starts the next turn.
           enqueueWorkerTurn(record);
           pushLedgerEvent(record, 'message', `steer queued: ${previewMessage(message)}`);
         }

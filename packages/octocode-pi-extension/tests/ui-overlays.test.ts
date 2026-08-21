@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import type { PiTheme } from '../src/types.js';
-import { octocodeSelectListTheme, applyFilterKey } from '../src/tools/ui-overlays.js';
+import { octocodeSelectListTheme, applyFilterKey, selectItemMatchesFilter } from '../src/tools/ui-overlays.js';
 
 const theme = {
   fg: (color: string, t: string) => `<${color}>${t}</${color}>`,
@@ -46,4 +46,18 @@ test('applyFilterKey ignores navigation/control keys (arrows, enter, esc)', () =
   for (const key of ['\r', '\n', '\x1b', '\x1b[A', '\x1b[B', '\x03', '\t']) {
     assert.deepEqual(applyFilterKey('oct', key), { buffer: 'oct', changed: false }, `key ${JSON.stringify(key)} must not change buffer`);
   }
+});
+
+test('selectItemMatchesFilter matches the visible label/description, not just internal values', () => {
+  const item = { value: 'cmd:/octocode-status', label: '/octocode-status', description: 'Show the Octocode dashboard' };
+  // What the user SEES must match…
+  assert.ok(selectItemMatchesFilter(item, 'status'));
+  assert.ok(selectItemMatchesFilter(item, 'DASHBOARD'));
+  // …value still matches for power users, and empty filter passes everything.
+  assert.ok(selectItemMatchesFilter(item, 'cmd:'));
+  assert.ok(selectItemMatchesFilter(item, '  '));
+  assert.ok(!selectItemMatchesFilter(item, 'zzz'));
+  // SHA-valued checkpoint items match by their visible date label.
+  const checkpoint = { value: 'a1b2c3d', label: '2026-08-21 14:02 — fix banner' };
+  assert.ok(selectItemMatchesFilter(checkpoint, 'fix banner'));
 });

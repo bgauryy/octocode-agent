@@ -27,7 +27,7 @@ entry is removed during install/repair to guarantee guard ordering.
 | Claude Code | Skill frontmatter while active, or `.claude/settings.json` | Success/failure writes, subagent start/stop, PreCompact, SessionEnd, prompt briefing. Choose one surface. |
 | Codex | `.codex/hooks.json` | SessionStart, success writes, subagent start/stop, PreCompact, prompt/stop. No SessionEnd or distinct failure event; PostToolUse failure metadata is handled when present. |
 | Cursor | `.cursor/hooks.json` | Success/failure writes plus session/subagent/compact/end edges. Native output varies by local/cloud/version; child-context injection is not assumed. |
-| Pi | `wirePiAwarenessHooks(pi)` / Pi extension | Native `session_start`, tool start/end with `isError`, before-agent, compact, agent-end, shutdown; never shell install. |
+| Pi | `wirePiAwarenessHooks(pi)` (custom embeddings) | Native `session_start`, tool start/end with `isError`, before-agent, compact, agent-end, shutdown; never shell install. Note: the shipped `@octocodeai/pi-extension` does not call this — it wires its own Awareness **Lite** lock gate. |
 | Custom | Library API or `hook run` payload | Must provide stable identity/path events. |
 
 ## Install And Verify

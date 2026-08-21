@@ -27,6 +27,7 @@
 import type { PiContext, PiInstance, WorkerLedgerEntry, WorkerLedgerEventType, NotifyFn } from '../types.js';
 import type { SelectOverlayItem, SelectOverlayOptions } from './ui-overlays.js';
 import { runSelectOverlay } from './ui-overlays.js';
+import { truncatePlainToWidth } from './render-helpers.js';
 import {
   formatElapsed,
   getWorkerTranscript,
@@ -69,8 +70,11 @@ export function inboxDisplayState(entry: Pick<WorkerLedgerEntry, 'status' | 'nor
   if (entry.status === 'killed') return 'killed';
   if (entry.status === 'failed' || entry.normalizedStatus === 'failed') return 'failed';
   if (entry.status === 'running') return 'running';
+  // Exited beats blocked (mirrors agent-tools): a dead [BLOCKED] worker is not
+  // actionable, so the inbox must not offer it as steerable.
+  if (entry.status === 'exited') return 'done';
   if (entry.normalizedStatus === 'blocked') return 'blocked';
-  if (entry.normalizedStatus === 'done' || entry.status === 'exited') return 'done';
+  if (entry.normalizedStatus === 'done') return 'done';
   if (entry.status === 'idle') return 'idle';
   return 'starting';
 }
@@ -86,7 +90,8 @@ function isLiveEntry(entry: Pick<WorkerLedgerEntry, 'status'>): boolean {
 
 function oneLine(text: string, maxChars = SUMMARY_MAX_CHARS): string {
   const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > maxChars ? `${flat.slice(0, maxChars - 1)}…` : flat;
+  // Cell-width aware: emoji/CJK summaries must not be sliced mid-surrogate.
+  return truncatePlainToWidth(flat, maxChars);
 }
 
 /** Last-result summary line: live delta note, else handback result/next, else the latest ledger message. */
@@ -240,6 +245,11 @@ export function shouldNotifyWorkerEvent(
 ): boolean {
   if (opts.suppressed) return false;
   if (opts.alreadyNotified) return false;
+  // Enforce the documented "'killed' never notifies" rule by STATUS, not just
+  // event type: killAgent sets status 'killed' but the process close handler
+  // still emits a type:'exit' ledger event, which would otherwise flash a
+  // misleading "finished" notification for a worker the operator just killed.
+  if (entry.status === 'killed') return false;
   const failedError = type === 'error' && entry.status === 'failed';
   if (type !== 'exit' && !failedError) return false;
   if (!opts.turnActive) return true;

@@ -14,6 +14,7 @@ import {
   resolveFilePath,
   type ReadStateCheck,
 } from './file-state.js';
+import { peerWipNotice, markOwnWrite } from './peer-wip.js';
 
 // ─── Backward-compat re-exports ───────────────────────────────────────────────
 // Tests (package.test.ts) and historical callers import these from edit-tool.
@@ -627,7 +628,19 @@ export function generateDiffString(oldContent: string, newContent: string): stri
     .join('\n');
 }
 
+/**
+ * NO_COLOR (https://no-color.org) opt-out for the raw diff SGR codes. Only the
+ * explicit env flag disables them — not TTY detection — because `coloredDiff`
+ * and the Changes: block are deliberately colored even when the session is
+ * piped (details.diff carries the plain twin for uncolored consumers).
+ */
+function diffColorsDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const flag = env['NO_COLOR'];
+  return flag !== undefined && flag !== '' && flag !== '0' && flag.toLowerCase() !== 'false';
+}
+
 function colorDiffLine(line: string): string {
+  if (diffColorsDisabled()) return line;
   if (line.startsWith('+ ')) return `${ANSI_GREEN}${line}${ANSI_RESET}`;
   if (line.startsWith('- ')) return `${ANSI_RED}${line}${ANSI_RESET}`;
   return line;
@@ -740,7 +753,14 @@ async function prepareEdit(query: EditQuery, cwd: string, inheritedRequireRecent
   // Bound writes to home + ALLOWED_PATHS + cwd/tmp (same model as the native tools).
   assertPathAllowed(absolutePath, cwd, 'edit');
   await access(absolutePath, constants.R_OK | constants.W_OK);
-  const readState = await checkReadState(absolutePath, inheritedRequireRecentRead || query.requireRecentRead === true);
+  // Content-anchored when every edit matches by exact/normalized oldText (self-
+  // verifying); a lineRange edit is position-anchored and needs strict freshness.
+  const contentAnchored = query.edits.every((e) => (e.matchMode ?? 'exact') !== 'lineRange');
+  const readState = await checkReadState(
+    absolutePath,
+    inheritedRequireRecentRead || query.requireRecentRead === true,
+    { contentAnchored },
+  );
   const rawContent = await readFile(absolutePath, 'utf8');
   const { bom, text } = stripBom(rawContent);
   const lineEnding = detectLineEnding(text);
@@ -804,6 +824,9 @@ export function registerEditTool(
       // If any prepare fails (bad oldText, missing file, etc.) no writes happen → all-or-nothing.
       const prepared = await Promise.all(queries.map((query) => prepareEdit(query, cwd, request.requireRecentRead === true)));
       if (signal?.aborted) throw new Error('Operation aborted');
+      // Peer-WIP advisory: warn (once) before co-mingling edits into a file that
+      // was already dirty in the working tree before this session started.
+      const peerNotice = prepared.map((item) => peerWipNotice(item.absolutePath, item.requestPath)).filter(Boolean).join('');
       // Phase 2: write each file through its per-file mutex queue.
       // Serializes concurrent writes from parallel tool calls on the same file.
       await Promise.all(
@@ -823,6 +846,7 @@ export function registerEditTool(
             }
             await atomicWriteUtf8(item.absolutePath, item.finalContent);
             await recordFileReadState(item.absolutePath);
+            markOwnWrite(item.absolutePath);
           }),
         ),
       );
@@ -837,7 +861,7 @@ export function registerEditTool(
       return {
         content: [{
           type: 'text',
-          text: `Successfully replaced ${replacements} occurrence(s) across ${editCount} edit(s) in ${prepared.length} file(s).${lineSuffix} Read state: ${readStates}.${reasoning}${changes}`,
+          text: `Successfully replaced ${replacements} occurrence(s) across ${editCount} edit(s) in ${prepared.length} file(s).${lineSuffix} Read state: ${readStates}.${peerNotice}${reasoning}${changes}`,
         }],
         details: {
           replacements,
@@ -882,6 +906,17 @@ export function registerEditTool(
       const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
       const titleStr = cliToolTitle(theme, 'edit');
       const header = `${icon} ${titleStr}${count}`;
+
+      // Collapsed: one summary row (like every other tool renderer) — the full
+      // per-edit diff below is expanded-only, otherwise a large replaceAll
+      // floods the transcript with hundreds of rows.
+      if (!opts.expanded) {
+        const fileCount = details?.files?.length ?? 0;
+        const filesNote = fileCount > 0
+          ? paint(theme, 'dim', ` · ${fileCount} file${fileCount === 1 ? '' : 's'} · expand for diff`)
+          : '';
+        return makeRenderer((width) => [truncateToWidth(`${header}${filesNote}`, width)]);
+      }
 
       // Per file → per edit:
       //   meta line  (truncatable — always short)

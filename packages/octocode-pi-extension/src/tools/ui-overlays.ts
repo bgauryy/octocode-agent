@@ -9,7 +9,7 @@
  * against the pi-tui primitives so the overlay works on any Pi that ships pi-tui.
  */
 
-import { Box, Container, SelectList, Text } from "@earendil-works/pi-tui";
+import { SelectList } from "@earendil-works/pi-tui";
 import type { PiTheme, PiContext } from "../types.js";
 import { MultiSelectList, multiSelectKeyAction, type MultiSelectTheme } from "./multi-select-list.js";
 import { truncateToWidth } from "./render-helpers.js";
@@ -92,6 +92,17 @@ export interface SelectOverlayOptions {
  * (or null on cancel). Type-to-filter is wired through the pure `applyFilterKey` buffer.
  * Returns undefined when the host has no interactive UI.
  */
+/** Case-insensitive substring match on everything the user can SEE (label,
+ * description) plus the value — not a value-prefix match, because values are
+ * often internal (`cmd:…`, commit SHAs) and never what the user types. */
+export function selectItemMatchesFilter(item: SelectOverlayItem, filter: string): boolean {
+  const f = filter.trim().toLowerCase();
+  if (!f) return true;
+  return [item.label, item.value, item.description ?? ""].some((s) =>
+    s.toLowerCase().includes(f),
+  );
+}
+
 export async function runSelectOverlay(
   ctx: PiContext | undefined,
   opts: SelectOverlayOptions,
@@ -106,52 +117,65 @@ export async function runSelectOverlay(
       _kb: unknown,
       done: (v: string | null) => void,
     ) => {
-      const container = new Container();
-      container.addChild(new Text(overlayHeading(theme, opts.title), 1, 0));
-
+      const heading = overlayHeading(theme, opts.title);
       let filter = "";
-      const filterLine = enableFilter
-        ? new Text(theme?.fg?.("dim", "filter: ") ?? "filter: ", 1, 0)
-        : undefined;
-      if (filterLine) container.addChild(filterLine);
 
-      const list = new SelectList(
-        opts.items.map((o) => ({
-          value: o.value,
-          label: o.label,
-          description: o.description,
-        })) as any,
-        Math.min(opts.maxVisible ?? 10, Math.max(1, opts.items.length)),
-        octocodeSelectListTheme(theme) as any,
-      );
-      (list as any).onSelect = (item: { value: string }) => done(item.value);
-      (list as any).onCancel = () => done(null);
-
-      // Frame the list body with a padded Box for a native, distinct look.
-      const body = new Box(1, 0);
-      body.addChild(list);
-      container.addChild(body);
+      // The list is rebuilt when the filter changes: pi-tui's own setFilter
+      // prefix-matches on item.value (internal ids like `cmd:…` / SHAs), which
+      // made typing what you see filter everything out. We filter on the
+      // visible label/description ourselves instead.
+      const makeList = (): { list: any; empty: boolean } => {
+        const visible = opts.items.filter((o) => selectItemMatchesFilter(o, filter));
+        if (visible.length === 0) return { list: undefined, empty: true };
+        const list = new SelectList(
+          visible.map((o) => ({
+            value: o.value,
+            label: o.label,
+            description: o.description,
+          })) as any,
+          Math.min(opts.maxVisible ?? 10, Math.max(1, visible.length)),
+          octocodeSelectListTheme(theme) as any,
+        );
+        (list as any).onSelect = (item: { value: string }) => done(item.value);
+        (list as any).onCancel = () => done(null);
+        return { list, empty: false };
+      };
+      let { list, empty } = makeList();
 
       const help = enableFilter
         ? "↑↓ navigate • type to filter • enter select • esc cancel"
         : "↑↓ navigate • enter select • esc cancel";
-      container.addChild(new Text(theme?.fg?.("dim", help) ?? help, 1, 0));
+      const helpLine = theme?.fg?.("dim", help) ?? help;
 
       return {
-        render: (w: number) => container.render(w),
-        invalidate: () => container.invalidate(),
+        render: (w: number) => {
+          const lines: string[] = [heading];
+          if (enableFilter) {
+            lines.push(theme?.fg?.("dim", `filter: ${filter}`) ?? `filter: ${filter}`);
+          }
+          if (empty) {
+            lines.push(theme?.fg?.("warning", "  no matches — backspace to clear") ?? "  no matches — backspace to clear");
+          } else {
+            lines.push(...(list.render(w) as string[]).map((l: string) => ` ${l}`));
+          }
+          lines.push(helpLine);
+          return lines.map((line) => truncateToWidth(line, w));
+        },
+        invalidate: () => list?.invalidate?.(),
         handleInput: (data: string) => {
           if (enableFilter) {
             const next = applyFilterKey(filter, data);
             if (next.changed) {
               filter = next.buffer;
-              (list as any).setFilter?.(filter);
-              filterLine?.setText?.(
-                theme?.fg?.("dim", `filter: ${filter}`) ?? `filter: ${filter}`,
-              );
+              ({ list, empty } = makeList());
               tui?.requestRender?.();
               return;
             }
+          }
+          if (empty) {
+            // Only esc/ctrl-c can act while nothing matches.
+            if (data === "\x1b" || data === "\x03") done(null);
+            return;
           }
           (list as any).handleInput(data);
           tui?.requestRender?.();

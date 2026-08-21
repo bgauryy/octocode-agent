@@ -337,7 +337,7 @@ test('TTL: a cache entry is fresh within the window and stale past it', () => {
 test('the built-in octocode server cannot be removed (default MCP, no spawn)', async () => {
   const res = await handleMcpAction({ action: 'remove', server: 'octocode' }, undefined, trustedCtx());
   assert.equal(res.isError, true);
-  assert.match(res.content[0]!.text, /cannot be removed/i);
+  assert.match((res.content[0] as { text: string }).text, /cannot be removed/i);
 });
 
 test('add: overriding octocode notes the shadow of the built-in default', async () => {
@@ -348,7 +348,7 @@ test('add: overriding octocode notes the shadow of the built-in default', async 
     ctx,
   );
   assert.equal(res.isError ?? false, false);
-  assert.match(res.content[0]!.text, /overrides the built-in octocode default/i);
+  assert.match((res.content[0] as { text: string }).text, /overrides the built-in octocode default/i);
   const written = JSON.parse(fs.readFileSync(path.join((ctx as unknown as { cwd: string }).cwd, '.pi', 'agent', 'mcp.json'), 'utf8'));
   assert.equal(written.mcpServers.octocode.command, 'npx');
 });
@@ -356,9 +356,9 @@ test('add: overriding octocode notes the shadow of the built-in default', async 
 test('add then remove a custom server via handleMcpAction (no agent restart)', async () => {
   const ctx = trustedCtx();
   const add = await handleMcpAction({ action: 'add', server: 'weather', config: { command: 'node', args: ['w.js'] } }, undefined, ctx);
-  assert.match(add.content[0]!.text, /added to project mcp.json/i);
+  assert.match((add.content[0] as { text: string }).text, /added to project mcp.json/i);
   const rm = await handleMcpAction({ action: 'remove', server: 'weather' }, undefined, ctx);
-  assert.match(rm.content[0]!.text, /removed from project mcp.json/i);
+  assert.match((rm.content[0] as { text: string }).text, /removed from project mcp.json/i);
 });
 
 // Live integration — gated (spawns the real octocode MCP server via npx). Run with RUN_MCP_LIVE=1.

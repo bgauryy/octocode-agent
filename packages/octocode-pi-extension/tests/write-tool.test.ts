@@ -64,8 +64,8 @@ test('creates a new file and returns byte count', async () => {
   const content = 'hello world';
   const result = await run({ path: 'new-file.txt', content });
   assert.equal(result.isError, undefined);
-  assert.match(result.content[0]!.text, /Successfully wrote/);
-  assert.match(result.content[0]!.text, new RegExp(`${content.length} bytes`));
+  assert.match((result.content[0] as { text: string }).text, /Successfully wrote/);
+  assert.match((result.content[0] as { text: string }).text, new RegExp(`${content.length} bytes`));
   assert.equal(fs.readFileSync(path.join(tmpDir, 'new-file.txt'), 'utf8'), content);
 });
 
@@ -87,7 +87,7 @@ test('overwrites an existing file', async () => {
 
 test('accepts file_path as a compatibility alias for path', async () => {
   const result = await run({ file_path: 'compat.txt', content: 'from file_path' });
-  assert.match(result.content[0]!.text, /Successfully wrote/);
+  assert.match((result.content[0] as { text: string }).text, /Successfully wrote/);
   assert.equal(fs.readFileSync(path.join(tmpDir, 'compat.txt'), 'utf8'), 'from file_path');
 });
 

@@ -14,8 +14,9 @@ function loadTool(): ToolDefinition {
   return tools.get('askUser')!;
 }
 
-// Overlay harness: askUser now renders via ctx.ui.custom({ overlay:true }). The
-// mock invokes the factory synchronously, captures the component + overlay opts,
+// Inline harness: askUser renders via ctx.ui.custom(builder) with NO overlay
+// options, so it appears inline in the message flow. The mock invokes the
+// factory synchronously, captures the component + any opts (expected undefined),
 // and resolves the custom() promise when the factory calls done().
 function overlayCtx() {
   let component: { render(w: number): string[]; handleInput(d: string): void } | undefined;
@@ -74,7 +75,7 @@ test('askUser falls back to inline in RPC mode even though hasUI is true and cus
   const result = await tool.execute('id', { question: 'Ship it?', options: ['yes', 'no'] }, undefined, undefined, ctx);
 
   assert.equal(customCalled, false, 'custom() must not be called outside tui mode');
-  assert.match(result.content[0]!.text, /No interactive UI available \(mode=rpc\)/);
+  assert.match((result.content[0] as { text: string }).text, /No interactive UI available \(mode=rpc\)/);
   assert.deepEqual(result.details, { status: 'unavailable', mode: 'rpc' });
 });
 
@@ -99,7 +100,7 @@ test('askUser validates that a non-empty question is required', async () => {
   const result = await tool.execute('id', { question: '   ' });
 
   assert.equal(result.isError, true);
-  assert.match(result.content[0]!.text, /question is required/);
+  assert.match((result.content[0] as { text: string }).text, /question is required/);
 });
 
 test('askUser returns an inline-question instruction when no interactive UI is available', async () => {
@@ -119,9 +120,9 @@ test('askUser returns an inline-question instruction when no interactive UI is a
   );
 
   assert.equal(result.isError, undefined);
-  assert.match(result.content[0]!.text, /No interactive UI available \(mode=rpc\)/);
-  assert.match(result.content[0]!.text, /Ask the user this question directly/);
-  assert.match(result.content[0]!.text, /Safe, Fast/);
+  assert.match((result.content[0] as { text: string }).text, /No interactive UI available \(mode=rpc\)/);
+  assert.match((result.content[0] as { text: string }).text, /Ask the user this question directly/);
+  assert.match((result.content[0] as { text: string }).text, /Safe, Fast/);
   assert.deepEqual(result.details, { status: 'unavailable', mode: 'rpc' });
 });
 
@@ -147,12 +148,12 @@ test('askUser uses the custom overlay and never Pi native select', async () => {
   send('\r');
   const result = await pending;
 
-  assert.deepEqual(selectCalls, [], 'askUser must not call Pi native select (it uses the overlay)');
-  assert.equal(overlayOpts()?.overlay, true);
+  assert.deepEqual(selectCalls, [], 'askUser must not call Pi native select (it uses the inline prompt)');
+  assert.notEqual(overlayOpts()?.overlay, true, 'askUser renders inline in the message flow, not as an overlay');
   assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'safe' });
 });
 
-test('askUser renders choices as an overlay modal over the conversation', async () => {
+test('askUser renders choices inline in the message flow, not as a floating overlay', async () => {
   const tool = loadTool();
   const { ctx, render, send, overlayOpts } = overlayCtx();
 
@@ -167,9 +168,9 @@ test('askUser renders choices as an overlay modal over the conversation', async 
     ctx,
   );
 
-  const opts = overlayOpts() as { overlay?: boolean; overlayOptions?: { anchor?: string } };
-  assert.equal(opts?.overlay, true, 'askUser must render as a focused overlay modal');
-  assert.equal(opts?.overlayOptions?.anchor, 'top-center', 'modal is anchored in the message area, not by the editor');
+  const opts = overlayOpts() as { overlay?: boolean; overlayOptions?: { anchor?: string } } | undefined;
+  assert.notEqual(opts?.overlay, true, 'askUser must render inline (non-overlay) in the message flow');
+  assert.equal(opts?.overlayOptions, undefined, 'inline prompt passes no overlay positioning options');
   const lines = render(100);
   assert.match(lines.join('\n'), /USER INPUT REQUIRED/);
   assert.match(lines.join('\n'), /Choose a strategy\?/);
@@ -182,7 +183,7 @@ test('askUser renders choices as an overlay modal over the conversation', async 
   send('\r');
   const result = await pending;
 
-  assert.match(result.content[0]!.text, /User selected: safe/);
+  assert.match((result.content[0] as { text: string }).text, /User selected: safe/);
   assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'safe' });
 });
 
@@ -208,7 +209,7 @@ test('askUser option picker always allows a custom free-text answer without allo
   send('\r');
   const result = await pending;
 
-  assert.match(result.content[0]!.text, /User answered: custom plan/);
+  assert.match((result.content[0] as { text: string }).text, /User answered: custom plan/);
   assert.deepEqual(result.details, { status: 'text', value: 'custom plan' });
 });
 
@@ -230,7 +231,7 @@ test('askUser routes described choices through the custom overlay', async () => 
     ctx,
   );
 
-  assert.equal(overlayOpts()?.overlay, true, 'described choices render in the focused overlay');
+  assert.notEqual(overlayOpts()?.overlay, true, 'described choices render inline in the message flow');
   send('\r');
   const result = await pending;
   assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'Safe' });
@@ -251,7 +252,7 @@ test('askUser never calls Pi ui.input (it uses the overlay)', async () => {
   const result = await pending;
 
   assert.deepEqual(prompts, [], 'askUser must not call Pi input (it uses the overlay)');
-  assert.match(result.content[0]!.text, /User answered: ship it/);
+  assert.match((result.content[0] as { text: string }).text, /User answered: ship it/);
   assert.deepEqual(result.details, { status: 'text', value: 'ship it' });
 });
 
@@ -267,8 +268,8 @@ test('askUser echoes the question in the selected result (durable context after 
   );
   send('\r');
   const result = await pending;
-  assert.match(result.content[0]!.text, /Choose a strategy\?/);
-  assert.match(result.content[0]!.text, /User selected: Safe/);
+  assert.match((result.content[0] as { text: string }).text, /Choose a strategy\?/);
+  assert.match((result.content[0] as { text: string }).text, /User selected: Safe/);
 });
 
 test('askUser echoes the question in free-text and cancelled results', async () => {
@@ -284,8 +285,8 @@ test('askUser echoes the question in free-text and cancelled results', async () 
   answeredHarness.send('ship it');
   answeredHarness.send('\r');
   const answered = await answeredPending;
-  assert.match(answered.content[0]!.text, /What should we do\?/);
-  assert.match(answered.content[0]!.text, /User answered: ship it/);
+  assert.match((answered.content[0] as { text: string }).text, /What should we do\?/);
+  assert.match((answered.content[0] as { text: string }).text, /User answered: ship it/);
 
   const cancelledHarness = overlayCtx();
   const cancelledPending = tool.execute(
@@ -297,8 +298,8 @@ test('askUser echoes the question in free-text and cancelled results', async () 
   );
   cancelledHarness.send('\x1b');
   const cancelled = await cancelledPending;
-  assert.match(cancelled.content[0]!.text, /Pick one\?/);
-  assert.match(cancelled.content[0]!.text, /cancelled/i);
+  assert.match((cancelled.content[0] as { text: string }).text, /Pick one\?/);
+  assert.match((cancelled.content[0] as { text: string }).text, /cancelled/i);
 });
 
 test('askUser schema gains preview, multiSelect, min/max, and fields additively', () => {
@@ -342,8 +343,8 @@ test('askUser multiSelect returns multiSelected values through the overlay', asy
   send('\r');
   const result = await pending;
 
-  assert.match(result.content[0]!.text, /Pick strategies\?/);
-  assert.match(result.content[0]!.text, /User selected 2 options: Safe, Fast/);
+  assert.match((result.content[0] as { text: string }).text, /Pick strategies\?/);
+  assert.match((result.content[0] as { text: string }).text, /User selected 2 options: Safe, Fast/);
   assert.deepEqual(result.details, { status: 'multiSelected', values: ['safe', 'fast'] });
 });
 
@@ -364,7 +365,7 @@ test('askUser multiSelect custom answer row bypasses min/max option validation',
   send('\r');
   const result = await pending;
 
-  assert.match(result.content[0]!.text, /User answered: something else/);
+  assert.match((result.content[0] as { text: string }).text, /User answered: something else/);
   assert.deepEqual(result.details, { status: 'text', value: 'something else' });
 });
 
@@ -382,8 +383,8 @@ test('askUser multiSelect reports cancellation when the overlay is dismissed', a
   send('\x1b');
   const result = await pending;
 
-  assert.match(result.content[0]!.text, /Pick some\?/);
-  assert.match(result.content[0]!.text, /cancelled/i);
+  assert.match((result.content[0] as { text: string }).text, /Pick some\?/);
+  assert.match((result.content[0] as { text: string }).text, /cancelled/i);
   assert.deepEqual(result.details, { status: 'cancelled' });
 });
 
@@ -427,10 +428,10 @@ test('askUser form collects fields in order via the overlay modal', async () => 
   send('\r');
   const result = await pending;
 
-  assert.equal(overlayOpts()?.overlay, true);
-  assert.match(result.content[0]!.text, /New profile/);
-  assert.match(result.content[0]!.text, /name: Guy/);
-  assert.match(result.content[0]!.text, /email: guy@example.com/);
+  assert.notEqual(overlayOpts()?.overlay, true, 'form renders inline in the message flow');
+  assert.match((result.content[0] as { text: string }).text, /New profile/);
+  assert.match((result.content[0] as { text: string }).text, /name: Guy/);
+  assert.match((result.content[0] as { text: string }).text, /email: guy@example.com/);
   assert.deepEqual(result.details, { status: 'form', values: { name: 'Guy', email: 'guy@example.com' } });
 });
 
@@ -465,7 +466,7 @@ test('askUser form re-prompts required fields once, then rejects when still empt
   rejectedHarness.send('   ');
   rejectedHarness.send('\r');
   const rejected = await rejectedPending;
-  assert.match(rejected.content[0]!.text, /Required field "Name" was left empty/);
+  assert.match((rejected.content[0] as { text: string }).text, /Required field "Name" was left empty/);
   assert.deepEqual(rejected.details, { status: 'cancelled', label: 'Name' });
 });
 
@@ -481,7 +482,68 @@ test('askUser form cancels when the user escapes any prompt', async () => {
   );
   send('\x1b');
   const result = await pending;
-  assert.match(result.content[0]!.text, /cancelled/i);
+  assert.match((result.content[0] as { text: string }).text, /cancelled/i);
+  assert.deepEqual(result.details, { status: 'cancelled' });
+});
+
+test('askUser single-select digit keys pick the numbered option outright', async () => {
+  const tool = loadTool();
+  const { ctx, send, render } = overlayCtx();
+
+  const pending = tool.execute(
+    'id',
+    { question: 'Choose?', options: ['alpha', 'beta', 'gamma'] },
+    undefined,
+    undefined,
+    ctx,
+  );
+  const plain = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /1\. alpha/, 'options are numbered for quick-select');
+  assert.match(plain, /2\. beta/);
+  send('2');
+  const result = await pending;
+  assert.deepEqual(result.details, { status: 'selected', value: 'beta', label: 'beta' });
+});
+
+test('askUser multiSelect digit keys toggle and footer shows a live count', async () => {
+  const tool = loadTool();
+  const { ctx, send, render } = overlayCtx();
+
+  const pending = tool.execute(
+    'id',
+    { question: 'Pick?', multiSelect: true, min: 1, options: ['a', 'b', 'c'] },
+    undefined,
+    undefined,
+    ctx,
+  );
+  assert.match(render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, ''), /0 selected · min 1/);
+  send('1');
+  send('3');
+  assert.match(render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, ''), /2 selected · min 1/);
+  send('\r');
+  const result = await pending;
+  assert.deepEqual(result.details, { status: 'multiSelected', values: ['a', 'c'] });
+});
+
+test('askUser windows long option lists around the cursor with more-markers', async () => {
+  const tool = loadTool();
+  const { ctx, send, render } = overlayCtx();
+
+  const options = Array.from({ length: 20 }, (_, i) => `opt-${String(i + 1).padStart(2, '0')}`);
+  const pending = tool.execute('id', { question: 'Long?', options }, undefined, undefined, ctx);
+
+  const first = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(first, /opt-01/);
+  assert.match(first, /↓ \d+ more/, 'hidden tail advertised');
+  assert.doesNotMatch(first, /opt-20/, 'rows beyond the window are not painted');
+
+  for (let i = 0; i < 15; i++) send('\x1b[B');
+  const scrolled = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(scrolled, /↑ \d+ more/, 'hidden head advertised after scrolling');
+  assert.match(scrolled, /opt-16/);
+
+  send('\x1b');
+  const result = await pending;
   assert.deepEqual(result.details, { status: 'cancelled' });
 });
 
@@ -499,9 +561,9 @@ test('askUser multiSelect and form degrade to inline hints without an interactiv
     undefined,
     { mode: 'print', hasUI: false } as PiContext,
   );
-  assert.match(multi.content[0]!.text, /No interactive UI available \(mode=print\)/);
-  assert.match(multi.content[0]!.text, /Safe, Fast/);
-  assert.match(multi.content[0]!.text, /may choose more than one/);
+  assert.match((multi.content[0] as { text: string }).text, /No interactive UI available \(mode=print\)/);
+  assert.match((multi.content[0] as { text: string }).text, /Safe, Fast/);
+  assert.match((multi.content[0] as { text: string }).text, /may choose more than one/);
   assert.deepEqual(multi.details, { status: 'unavailable', mode: 'print' });
 
   const form = await tool.execute(
@@ -511,6 +573,6 @@ test('askUser multiSelect and form degrade to inline hints without an interactiv
     undefined,
     { mode: 'rpc', hasUI: false } as PiContext,
   );
-  assert.match(form.content[0]!.text, /Collect these fields inline: Full name, email/);
+  assert.match((form.content[0] as { text: string }).text, /Collect these fields inline: Full name, email/);
   assert.deepEqual(form.details, { status: 'unavailable', mode: 'rpc' });
 });

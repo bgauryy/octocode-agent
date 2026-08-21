@@ -137,11 +137,24 @@ export class MultiSelectList {
    *   `› [x] Label — description` rows (cursor marker + checkbox glyphs),
    *   an indented preview block under the focused item, and a footer line
    *   (dim when confirmable, warning while below `min`).
+   *
+   * Long lists render a scroll window of `maxVisible` rows centered on the
+   * cursor, with dim `↑/↓ N more` markers for the hidden remainder, so the
+   * overlay never overflows the terminal height.
    */
-  render(width: number, theme?: MultiSelectTheme): string[] {
+  render(width: number, theme?: MultiSelectTheme, maxVisible = 10): string[] {
     const fg = (color: string, text: string) => theme?.fg?.(color, text) ?? text;
     const lines: string[] = [];
-    this.items.forEach((item, i) => {
+    const cap = Math.max(1, Math.floor(maxVisible));
+    let start = 0;
+    let end = this.items.length;
+    if (this.items.length > cap) {
+      start = Math.min(Math.max(0, this.cursor - Math.floor(cap / 2)), this.items.length - cap);
+      end = start + cap;
+    }
+    if (start > 0) lines.push(fg('dim', clip(`  ↑ ${start} more`, width)));
+    this.items.slice(start, end).forEach((item, offset) => {
+      const i = start + offset;
       const focused = i === this.cursor;
       const head = `${focused ? '›' : ' '} ${this.toggled.has(i) ? '[x]' : '[ ]'} ${item.label ?? item.value}`;
       const clippedHead = clip(head, width);
@@ -156,6 +169,7 @@ export class MultiSelectList {
         }
       }
     });
+    if (end < this.items.length) lines.push(fg('dim', clip(`  ↓ ${this.items.length - end} more`, width)));
     lines.push(fg(this.canConfirm() ? 'dim' : 'warning', clip(this.footerText(), width)));
     return lines;
   }

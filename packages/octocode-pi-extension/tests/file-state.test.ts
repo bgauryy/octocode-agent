@@ -226,3 +226,35 @@ test('checkReadState returns "fresh" even when mtime changes but content is iden
   const result = await checkReadState(file, false);
   assert.equal(result.state, 'fresh');
 });
+
+test('checkReadState: content-anchored edit proceeds (advisory) when file changed since read', async () => {
+  const f = path.join(tmpDir, 'a.txt');
+  fs.writeFileSync(f, 'one\n', 'utf8');
+  await recordFileReadState(f, tmpDir);
+  // Simulate an external change since the recorded read.
+  fs.writeFileSync(f, 'two\n', 'utf8');
+
+  // content-anchored (oldText edits) → advisory 'stale', no throw.
+  const soft = await checkReadState(f, false, { contentAnchored: true });
+  assert.equal(soft.state, 'stale');
+
+  // position-anchored (lineRange) → still hard-fails.
+  await assert.rejects(
+    () => checkReadState(f, false, { contentAnchored: false }),
+    /File changed since last recorded read/,
+  );
+
+  // explicit requireRecentRead → hard-fails even when content-anchored.
+  await assert.rejects(
+    () => checkReadState(f, true, { contentAnchored: true }),
+    /File changed since last recorded read/,
+  );
+});
+
+test('checkReadState: unchanged file is fresh regardless of anchoring', async () => {
+  const f = path.join(tmpDir, 'b.txt');
+  fs.writeFileSync(f, 'same\n', 'utf8');
+  await recordFileReadState(f, tmpDir);
+  const r = await checkReadState(f, false, { contentAnchored: true });
+  assert.equal(r.state, 'fresh');
+});

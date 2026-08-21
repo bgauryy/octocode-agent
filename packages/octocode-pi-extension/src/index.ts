@@ -14,11 +14,25 @@ import {
   getInstallSource,
   getAwarenessCLIPath,
   buildAwarenessLiteCommand,
+  resolveAwarenessLiteCliPath,
 } from './assets.js';
 
-// Expose the Awareness Lite command for prompt/status compatibility. Runtime
-// calls use the installed scoped package CLI directly, not an unscoped npx lookup.
-process.env.OCTOCODE_AWARENESS_CLI = getAwarenessCLIPath();
+// Expose the Awareness Lite CLI for agents. The env var holds the SCRIPT PATH
+// ONLY so the documented `node "$OCTOCODE_AWARENESS_CLI" <command>` invocation
+// works in every shell (a "node /path" two-token string breaks under quoting
+// and under zsh's no-word-split default). Guarded: a broken/missing install
+// must not throw at import time and kill the whole extension load.
+try {
+  process.env.OCTOCODE_AWARENESS_CLI = resolveAwarenessLiteCliPath();
+} catch {
+  // Awareness Lite unresolved — leave the env var unset; prompt/status
+  // surfaces fall back to the npx form.
+}
+// Mark this process tree as the Octocode harness so generated agent names
+// (workers here, `agent join` rows in Awareness Lite) tag as octo-* even when
+// the session was launched from a Claude Code / Cursor terminal whose host
+// env vars are inherited. Respect an explicit override.
+process.env.OCTOCODE_AGENT_HOST ||= 'octo';
 import {
   shouldAppendSystemPrompt,
   mergeManagedAppendSystem,
@@ -58,8 +72,11 @@ import { registerCallTool } from './tools/call-tool.js';
 import { registerCallSkill } from './tools/call-skill.js';
 import { registerEditTool } from './tools/edit-tool.js';
 import { registerWriteTool } from './tools/write-tool.js';
+import { registerReadImageTool } from './tools/read-image-tool.js';
+import { setPeerWipBaseline, peerWipCount } from './tools/peer-wip.js';
 import { registerBashTool } from './tools/bash-tool.js';
 import { resetApprovalStore } from './tools/approval.js';
+import { recordSessionTitle } from './tools/desktop-notify.js';
 import { getCachedMcpCatalogAddendum, getCachedMcpCounts, handleOctocodeMcpCommand, patchGlobalMcpOctocodeEnv, registerMcpTool, startMcpConfigWatcher, stopAllMcpServers, stopMcpConfigWatchers, warmMcpCatalog } from './tools/mcp-tool.js';
 import { getDynamicCapabilitiesAddendum } from './tools/dynamic-catalog.js';
 import { renderAvailableSkillsAddendum, renderSkillsDashboard } from './tools/skill-catalog.js';
@@ -262,9 +279,15 @@ function workerFooterCounts(): WorkerFooterCounts {
   try {
     for (const e of listWorkerLedgerEntries()) {
       counts.total += 1;
+      // Buckets are mutually exclusive: a blocked-or-done idle worker must not
+      // ALSO count as "live" — the footer would overstate active work and
+      // disagree with the ledger's own status display.
+      const live = e.status === 'running' || e.status === 'idle' || e.status === 'starting';
       if (e.status === 'failed' || e.normalizedStatus === 'failed') counts.failed += 1;
-      else if (e.normalizedStatus === 'blocked') counts.blocked += 1;
-      if (e.status === 'running' || e.status === 'idle' || e.status === 'starting') counts.active += 1;
+      // "Blocked" is an attention flag for a worker the lead can still unblock;
+      // an exited process that last said [BLOCKED] is not actionable.
+      else if (e.normalizedStatus === 'blocked' && live) counts.blocked += 1;
+      else if (live && e.normalizedStatus !== 'done') counts.active += 1;
     }
   } catch {
     return { total: 0, active: 0, blocked: 0, failed: 0 };
@@ -292,7 +315,9 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
   // on-screen redundancy.)
   const usage = ctx.getContextUsage?.() ?? { tokens: 0, contextWindow: 0 };
   const workers = workerFooterCounts();
-  const awarenessAgents = getCachedAwarenessStatus(ctx.cwd ?? process.cwd())?.agentCount ?? 0;
+  const cachedAwareness = getCachedAwarenessStatus(ctx.cwd ?? process.cwd());
+  const awarenessAgents = cachedAwareness?.agentCount ?? 0;
+  const awarenessUnread = cachedAwareness?.unreadInbox ?? 0;
   const activeEntry = listWorkerLedgerEntries().find(
     (e) => e.status === 'running' || e.status === 'starting' || e.status === 'idle',
   );
@@ -308,6 +333,8 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
     workerTotal: workers.total,
     agentDoing,
     awarenessAgents,
+    awarenessUnread,
+    peerDirty: peerWipCount(),
     blockedWorkers: workers.blocked,
     failedWorkers: workers.failed,
     dial: getActiveDialLevel(),
@@ -375,6 +402,25 @@ function getAwarenessLiteAgentId(ctx?: PiContext): string {
   return agentId;
 }
 
+/**
+ * Fire-and-forget Awareness Lite registry presence. Join at session_start with
+ * the session-stable agent id — Lite generates a funny host-tagged name
+ * (octo-* here, since the harness sets OCTOCODE_AGENT_HOST) so peers in other
+ * runners (clawde-*, cursea-*) see WHO is active in the shared workspace.
+ * Leave at shutdown so the registry doesn't accumulate stale ACTIVE rows.
+ * Best-effort: never blocks the session and never throws.
+ */
+function updateAwarenessLiteRegistry(action: 'join' | 'leave', pi: PiInstance, ctx?: PiContext): void {
+  if (!pi.exec) return;
+  const cwd = ctx?.cwd ?? process.cwd();
+  try {
+    const args = ['agent', action, '--agent-id', getAwarenessLiteAgentId(ctx), '--workspace', cwd];
+    if (action === 'join') args.push('--role', 'lead');
+    const spec = buildAwarenessLiteCommand(args);
+    void pi.exec(spec.cmd, spec.args, { timeout: 5000 }).catch(() => { /* presence is advisory */ });
+  } catch { /* Awareness Lite unresolved — skip */ }
+}
+
 async function runAwarenessLitePreEditLockGate(pi: PiInstance, event: { toolName?: string; input?: Record<string, unknown> }, ctx?: PiContext): Promise<{ block?: boolean; reason?: string } | void> {
   const toolName = String(event.toolName ?? '').toLowerCase();
   if (!LITE_LOCK_GATE_WRITE_TOOLS.has(toolName)) return undefined;
@@ -392,7 +438,17 @@ async function runAwarenessLitePreEditLockGate(pi: PiInstance, event: { toolName
     '--event-json',
     JSON.stringify(event),
   ]);
-  const result = await pi.exec(spec.cmd, spec.args, { timeout: 5000 });
+  // Fail-OPEN on infra errors: if pi.exec rejects (spawn failure), a bare
+  // throw would surface as { block: true } via runHookMiddleware and block the
+  // user's edit with an internal hook message. Only a deliberate exit code 2
+  // may block.
+  let result: { code?: number | null; stdout: string; stderr: string };
+  try {
+    result = await pi.exec(spec.cmd, spec.args, { timeout: 5000 });
+  } catch (err) {
+    notify(ctx, `Awareness Lite lock gate skipped: ${err instanceof Error ? err.message : String(err)}`, 'warning');
+    return undefined;
+  }
   if (result.code === 2) {
     let reason = result.stdout.trim() || 'Awareness Lite lock conflict.';
     try {
@@ -451,6 +507,8 @@ export function applyOctocodeUi(ctx: PiContext | undefined, level?: string, cont
   const shortcutsLine = 'Ask → inspect → edit → verify · /octocode dashboard · /octocode-plan tasks · /octocode-agents workers';
   ui.setHiddenThinkingLabel?.('Octocode thinking');
   ui.setTitle?.(windowTitle);
+  // Title flashes (desktop-notify) restore to the live harness title, not a constant.
+  recordSessionTitle(windowTitle);
   ui.setHeader?.((_tui: unknown, theme) => makeRenderer((width) => {
     // Named sessions lead with the title; fresh sessions lead with the wordmark banner.
     const head = title
@@ -1067,6 +1125,12 @@ async function wireOctocodePiExtension(
       // trigger must not carry the old session's threshold crossing.
       clearAllReadStates();
       resetAutoCompactState();
+      // Snapshot the working tree's pre-session dirty set so edit/write can warn
+      // before co-mingling changes into peer/user uncommitted work.
+      if (ctx?.cwd) {
+        const baselineCwd = ctx.cwd;
+        void execGitSummary(pi, ['status', '--porcelain'], 800).then((porc) => setPeerWipBaseline(baselineCwd, porc));
+      }
       // A new session inherits no compaction state from a previous one in this
       // process: clear the in-flight/resume singletons (TTL is only a backstop),
       // the cross-session checkpoint-card dedupe key, and re-init the checkpoint
@@ -1114,6 +1178,10 @@ async function wireOctocodePiExtension(
       // Surface any disk-restored plan / live agents in the below-editor panel right at launch.
       refreshStatusPanel(ctx);
       cronScheduler.start(ctx);
+      // Announce this session in the shared Awareness Lite agent registry with
+      // its generated host-tagged name (fire-and-forget; peers see it via
+      // `agent list` and can `message send` to it).
+      updateAwarenessLiteRegistry('join', pi, ctx);
       // Ensure ~/.pi/agent/mcp.json has the correct npm_config_cache env vars so
       // Pi's own MCP client can start octocode-mcp with the darwin native addon.
       patchGlobalMcpOctocodeEnv();
@@ -1194,6 +1262,8 @@ async function wireOctocodePiExtension(
     // Clean up status labels and spawned workers when the session tears down
     // so they don't leak across /new, /resume, /fork, reload, or quit.
     hooks.on('session_shutdown', 'octocode-session-shutdown', async (_event: SessionShutdownEvent, ctx: PiContext | undefined) => {
+      // Best-effort registry departure so peers stop seeing a stale ACTIVE row.
+      updateAwarenessLiteRegistry('leave', pi, ctx);
       cronScheduler.stop();
       stopMcpConfigWatchers();
       // Stop the per-second metrics interval (it would otherwise keep firing
@@ -1220,6 +1290,9 @@ async function wireOctocodePiExtension(
         ctx.ui?.setStatus?.('agent-wait', undefined);
         ctx.ui?.setStatus?.('chrome-debug', undefined);
         ctx.ui?.setStatus?.('octocode-mcp', undefined);
+        // Clear the agents ledger status synchronously too; cleanupSpawnedAgentsForShutdown
+        // hides the ledger but only defers this clear to later worker-close callbacks.
+        ctx.ui?.setStatus?.('octocode-agents', undefined);
         // The unified below-editor panel is now persistent (it always shows the main
         // agent model), so it no longer self-clears via refreshStatusPanel emptiness —
         // clear it explicitly on shutdown.
@@ -1394,6 +1467,7 @@ async function wireOctocodePiExtension(
     registerEditTool(pi, Type);
     registerWriteTool(pi, Type);
     registerBashTool(pi, Type);
+    registerReadImageTool(pi, Type, registeredToolNames, registerUniqueTool);
 
     registerWebTool(pi, Type, registeredToolNames, registerUniqueTool);
 

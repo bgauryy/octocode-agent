@@ -15,7 +15,7 @@ This extension keeps the TUI compact by default and puts detail behind slash com
 | Live agent progress | while workers run | Agent ledger animates: Octocode sparkle spinner + live `running` label + elapsed, refreshed every 1s until no worker is active (ticker is `unref`-ed and self-stops) |
 | Dashboard | `/octocode` | Status, agents, tools, setup paths, skills, health, and modern next actions |
 | Agent ledger | `/octocode-agents` + below editor | Spawned-worker state and controls |
-| Decision picker | `askUser` tool | Focused overlay list for real user choices — single pick, multi-select (space toggles, min/max), per-option previews, and short sequential forms; falls back to inline questions when no interactive UI is available |
+| Decision picker | `askUser` tool | Inline in-flow list for real user choices — rendered in the message flow (not a floating overlay): single pick, multi-select (space toggles, min/max), per-option previews, and short sequential forms; falls back to inline questions when no interactive UI is available |
 | Inline images | expanded tool renderers | chrome-debug / browser-agent screenshots render inline (Kitty/iTerm2) with a `🖼` placeholder on terminals without image support |
 | Worker inbox | `/octocode-inbox` | Two-stage overlay: pick a worker, then view transcript / steer / kill; completions and failures fire OSC 9 desktop notifications + a terminal-title flash |
 | Command palette | `/octocode-palette` or `ctrl+o` | Prefix-filter picker over every slash command and direct actions (`OCTOCODE_PALETTE_KEY` overrides the shortcut) |
@@ -88,7 +88,7 @@ Ledger badges:
 
 - Rendered lines are built through shared width-safe renderers.
 - Use theme colors from callback contexts when Pi provides a theme; raw shell rows use the visual contract's `NO_COLOR`-aware fallback.
-- Interactive pickers use Pi `ctx.ui.custom(..., { overlay: true })` so choices appear as focused overlays instead of replacing the conversation view.
+- The `askUser` decision picker uses Pi `ctx.ui.custom(builder)` inline (no overlay options) so the prompt appears in the message flow at the bottom, reading as part of the conversation rather than a floating overlay box.
 - Footer/status success is quiet; warnings and errors notify.
 - Keep widgets compact; use commands for detailed output.
 

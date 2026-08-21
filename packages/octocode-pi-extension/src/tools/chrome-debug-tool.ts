@@ -436,7 +436,11 @@ export function registerChromeDebugTool(
       const header = `${icon} ${nameStr}${schemeStr}${stat}`;
 
       if (!opts.expanded) {
-        const hint = paint(theme, 'dim', ' · expand for evidence');
+        // Errors have no evidence to expand into — show the first error line
+        // inline instead of a misleading "expand for evidence" hint.
+        const hint = !ok
+          ? paint(theme, 'error', ` · ${text.split('\n').find(Boolean) ?? 'failed'}`)
+          : paint(theme, 'dim', ' · expand for evidence');
         return makeRenderer((w) => [truncateToWidth(`${header}${hint}`, w)]);
       }
 
@@ -448,12 +452,12 @@ export function registerChromeDebugTool(
         truncateToWidth(header, w),
         ...lines.map((l) =>
           truncateToWidth(
-            l.startsWith('[FINDING]')
+            !ok
+              ? paint(theme, 'error', l)
+              : l.startsWith('[FINDING]')
               ? paint(theme, 'warning', l)
               : l.startsWith('[ACTION]')
               ? paint(theme, 'link', l)
-              : l.startsWith('[SESSION]')
-              ? paint(theme, 'dim', l)
               : paint(theme, 'dim', l),
             w,
           ),

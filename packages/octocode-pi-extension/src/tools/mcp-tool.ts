@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -72,16 +73,43 @@ export const OCTOCODE_MCP_ENV_DEFAULTS: Record<string, string> = {
   npm_config_include: 'optional',
   npm_config_cache: DEFAULT_OCTOCODE_MCP_NPX_CACHE,
 };
-const DEFAULT_OCTOCODE_MCP_SERVER: McpServerConfig = {
-  command: 'npx',
-  // No --prefer-online: use the local npm cache (~/.cache/octocode/mcp-npx) for
-  // sub-100ms cold start. Users can add --prefer-online to their mcp.json overrides
-  // when they need the latest registry version.
-  args: ['-y', 'octocode-mcp@latest'],
-  env: { ...OCTOCODE_MCP_ENV_DEFAULTS },
-  description: 'Built-in Octocode MCP server (lazy stdio bridge, cache-first).',
-  timeoutMs: DEFAULT_TIMEOUT_MS,
-};
+/**
+ * Resolve the pinned, locally-installed `octocode-mcp` entry (its bin === main
+ * === dist/index.js) relative to this extension's own module. Returns null when
+ * the dependency is not resolvable, so the caller can fall back to npx.
+ *
+ * octocode-mcp's package.json `exports` only defines the "import" condition, so
+ * require.resolve fails — use import.meta.resolve (ESM), which honours it.
+ */
+function resolveLocalOctocodeMcpBin(): string | null {
+  try {
+    const url = import.meta.resolve('octocode-mcp');
+    const binPath = fileURLToPath(url);
+    return fs.existsSync(binPath) ? binPath : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the built-in Octocode MCP server spawn config. Prefer the pinned local
+ * binary (fast, offline, reproducible against the version we ship); fall back to
+ * `npx -y octocode-mcp@latest` (cache-first) when the dependency is unresolvable.
+ */
+function buildDefaultOctocodeMcpServer(): McpServerConfig {
+  const localBin = resolveLocalOctocodeMcpBin();
+  const spawn = localBin
+    ? { command: process.execPath, args: [localBin] }
+    : // No --prefer-online: use the local npm cache (~/.cache/octocode/mcp-npx)
+      // for sub-100ms cold start when the pinned dep is unavailable.
+      { command: 'npx', args: ['-y', 'octocode-mcp@latest'] };
+  return {
+    ...spawn,
+    env: { ...OCTOCODE_MCP_ENV_DEFAULTS },
+    description: 'Built-in Octocode MCP server (lazy stdio bridge, pinned-local first).',
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+  };
+}
 const connections = new Map<string, McpConnection>();
 const pendingConnections = new Map<string, Promise<McpConnection>>();
 const cachedCatalogs = new Map<string, ListedMcpServer[]>();
@@ -260,8 +288,10 @@ export function removeServerFromFile(filePath: string, name: string): boolean {
 async function loadMcpConfig(ctx?: PiContext): Promise<McpLoadedConfig> {
   const cwd = ctx?.cwd ?? process.cwd();
   const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : true;
-  const servers = new Map<string, McpServerConfig>([[DEFAULT_OCTOCODE_MCP_SERVER_NAME, DEFAULT_OCTOCODE_MCP_SERVER]]);
-  const sources: McpConfigSource[] = [{ scope: 'built-in', path: 'npx -y octocode-mcp@latest', trusted: true }];
+  const defaultServer = buildDefaultOctocodeMcpServer();
+  const servers = new Map<string, McpServerConfig>([[DEFAULT_OCTOCODE_MCP_SERVER_NAME, defaultServer]]);
+  const sourcePath = defaultServer.command === 'npx' ? 'npx -y octocode-mcp@latest' : `node ${defaultServer.args?.[0] ?? 'octocode-mcp'}`;
+  const sources: McpConfigSource[] = [{ scope: 'built-in', path: sourcePath, trusted: true }];
   const warnings: string[] = [];
 
   const globalPath = globalMcpPath();
@@ -1007,7 +1037,15 @@ function renderResult(resultValue: ToolCallResult, opts: { expanded?: boolean; i
   }
 
   const { action, target } = formatMcpTarget(context?.args);
-  const lines = resultValue.content[0]?.text?.split('\n').filter(Boolean) ?? ['MCP result'];
+  // In-flight (streaming, or the stdio server still spawning): show a running
+  // row instead of fabricating a completed "MCP result" line.
+  if (opts.isPartial) {
+    return makeRenderer((width) => {
+      const line = `mcp ${action} · ${target} · running…`;
+      return [theme?.fg ? theme.fg('warning', clip(line, width)) : clip(line, width)];
+    });
+  }
+  const lines = (resultValue.content[0] as { text?: string } | undefined)?.text?.split('\n').filter(Boolean) ?? ['MCP result'];
   const head = lines[0] ?? 'MCP result';
   const second = lines.find((line) => /^[-•]\s+|\w+:\s/.test(line));
   const prefix = resultValue.isError ? 'mcp error' : `mcp ${action}`;
@@ -1058,7 +1096,7 @@ export function registerMcpTool(
     description: 'Dedicated MCP client: list, describe, call, and manage stdio MCP servers (add, remove, restart, stop, status, config). Config is read fresh per call and connections auto-reconnect on config drift, so add/remove/edit of mcp.json apply WITHOUT restarting the agent. Discovery is cached and auto-invalidated on changes.',
     promptSnippet: 'MCPTool is the dedicated MCP gateway. Main agent has built-in octocode MCP plus configured MCPs; spawned agents may use the Octocode CLI instead. Use MCPTool action:list/describe to read server instructions, tool descriptions, and input schemas before action:call. Never guess server/tool/arguments.',
     promptGuidelines: [
-      'MCPTool default server: octocode = npx -y octocode-mcp@latest, lazy-started only when listed/called.',
+      'MCPTool default server: octocode = pinned local octocode-mcp binary (npx -y octocode-mcp@latest fallback), lazy-started only when listed/called.',
       'MCPTool config is JSON at <workspace>/.pi/agent/mcp.json or ~/.pi/agent/mcp.json. Project config loads only in trusted projects.',
       'MCPTool action:list returns server instructions plus every tool name, description, and schema summary; details.servers[].tools contains full MCP inputSchema objects.',
       'Use MCPTool action:describe for one tool when exact schema matters before action:call.',
@@ -1073,18 +1111,11 @@ export function registerMcpTool(
   } satisfies Omit<ToolDefinition, 'name'>;
 
   registerFn(pi, registeredToolNames, { name: 'MCPTool', ...common });
-  registerFn(pi, registeredToolNames, {
-    name: 'mcp',
-    ...common,
-    label: 'mcp (alias for MCPTool)',
-    description: 'Compatibility alias for MCPTool. Prefer MCPTool in new prompts and tool calls.',
-    promptSnippet: 'Compatibility alias for MCPTool; prefer MCPTool. Same schema and behavior.',
-  });
 }
 
 export async function handleOctocodeMcpCommand(args: string, ctx: PiCommandContext | undefined, notify: NotifyFn): Promise<void> {
   const [actionRaw, server] = args.trim().split(/\s+/).filter(Boolean);
   const action = (actionRaw || 'status') as McpAction;
   const res = await handleMcpAction({ action, server }, undefined, ctx);
-  notify(ctx, res.content[0]?.text ?? 'MCP command completed', res.isError ? 'error' : 'info');
+  notify(ctx, (res.content[0] as { text?: string } | undefined)?.text ?? 'MCP command completed', res.isError ? 'error' : 'info');
 }

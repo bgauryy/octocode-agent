@@ -150,11 +150,15 @@ test('flashTerminalTitle is a no-op without ctx.ui.setTitle and after suppress',
   assert.equal(isTitleFlashPendingForTests(), false);
 });
 
-test('suppressDesktopNotifications cancels an already-pending title restore', () => {
+test('suppressDesktopNotifications restores a mid-flash title immediately, then goes quiet', async () => {
   const { ctx, titles } = makeTitleCtx();
   flashTerminalTitle(ctx, 'flash', 'Octocode', 10_000);
   assert.equal(isTitleFlashPendingForTests(), true);
   suppressDesktopNotifications();
   assert.equal(isTitleFlashPendingForTests(), false);
-  assert.equal(titles.length, 1, 'no restore into the next session');
+  // The "⚠" marker must not be left stuck in the terminal tab: suppress runs
+  // the restore synchronously, and the cancelled timer never fires again.
+  assert.deepEqual(titles, ['⚠ flash', 'Octocode']);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(titles.length, 2, 'no late restore into the next session');
 });

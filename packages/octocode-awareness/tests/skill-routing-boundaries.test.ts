@@ -91,7 +91,9 @@ describe('skill routing boundaries', () => {
     expect(text).toContain('verify mark');
     expect(text).toContain('verify audit');
     expect(text).toContain('Recall memory only if it can change the plan');
-    expect(text).toContain('reflect record --lesson');
+    // The SKILL now shows the full required flags (--task/--outcome), not the
+    // bare --lesson form that dead-ends with "--task is required".
+    expect(text).toContain('reflect record --task "<task>" --outcome <success|failure> --lesson');
     expect(text).toContain('query');
     expect(text).toContain('Query views & docs output');
     expect(text).toMatch(/Hooks automate deterministic edges, not judgment[\s\S]*never choose plans, locks, success, learning, or cleanup/i);

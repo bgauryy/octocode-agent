@@ -33,7 +33,10 @@ let suppressed = false;
 /** Suppress all desktop-notification emitters (session_shutdown ordering race guard). */
 export function suppressDesktopNotifications(): void {
   suppressed = true;
-  // A pending title restore must not fire into the next session either.
+  // A pending title restore must not fire into the next session — but if a
+  // flash is mid-display, restore the title NOW instead of leaving the "⚠ …"
+  // marker stuck in the terminal tab forever.
+  restorePendingTitleFlash();
   clearTitleFlashTimer();
 }
 
@@ -91,30 +94,56 @@ export function emitOsc9(
 
 /** Single module-level restore timer — a newer flash supersedes any pending restore. */
 let titleFlashTimer: ReturnType<typeof setTimeout> | undefined;
+/** Restore action for the currently-displayed flash (run early on suppress). */
+let pendingTitleRestore: (() => void) | undefined;
+
+/**
+ * Last title the harness set via ctx.ui.setTitle (recorded by applyOctocodeUi).
+ * Flashes restore to THIS by default so a flash never clobbers the live
+ * "Octocode · <session>" title with the bare brand constant.
+ */
+let lastSessionTitle = DEFAULT_RESTORE_TITLE;
+
+/** Record the harness-owned terminal title so title flashes restore to it. */
+export function recordSessionTitle(title: string): void {
+  if (title) lastSessionTitle = title;
+}
 
 /**
  * Flash the terminal title with a warning marker, then restore it after
  * `timerMs`. Uses `ctx.ui.setTitle` (never raw writes), a single unref'd
  * timeout (never keeps the process alive), and is a no-op without a UI or
- * after {@link suppressDesktopNotifications}.
+ * after {@link suppressDesktopNotifications}. Restores to `restoreTitle` when
+ * given, else to the last {@link recordSessionTitle} value.
  */
 export function flashTerminalTitle(
   ctx: PiContext | undefined,
   text: string,
-  restoreTitle: string = DEFAULT_RESTORE_TITLE,
+  restoreTitle?: string,
   timerMs: number = TITLE_FLASH_MS,
 ): void {
   if (suppressed) return;
   if (typeof ctx?.ui?.setTitle !== 'function') return;
   clearTitleFlashTimer();
+  const restore = restoreTitle ?? lastSessionTitle;
   ctx.ui?.setTitle?.(`⚠ ${text}`);
+  pendingTitleRestore = (): void => { ctx.ui?.setTitle?.(restore); };
   const timer = setTimeout(() => {
     titleFlashTimer = undefined;
-    ctx.ui?.setTitle?.(restoreTitle);
+    pendingTitleRestore = undefined;
+    ctx.ui?.setTitle?.(restore);
   }, timerMs);
   // Node timers expose unref(); test fake timers may not — optional-call it.
   (timer as { unref?: () => void }).unref?.();
   titleFlashTimer = timer;
+}
+
+/** Run the pending flash's restore immediately (shutdown path). */
+function restorePendingTitleFlash(): void {
+  if (titleFlashTimer !== undefined) {
+    pendingTitleRestore?.();
+  }
+  pendingTitleRestore = undefined;
 }
 
 /** Cancel a pending title restore (called from session_shutdown so no timer outlives the session). */

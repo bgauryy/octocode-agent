@@ -238,8 +238,8 @@ Coordinate spawned workers. Always set explicit `timeoutMs` on `wait`.
 | `list` | Show all registered agents + status |
 | `status` | Poll one agent without blocking |
 | `wait` | Block until agent reaches `idle`/`exited`/`failed` |
-| `send` | Queue a message; worker finishes current turn first |
-| `steer` | Interrupt mid-turn immediately |
+| `send` | Start the next turn on an idle worker; queues behind an in-flight turn |
+| `steer` | Redirect a running turn after its current tool calls, before the next model step (idle workers: queued like `followUp`) |
 | `followUp` | Queue after current completion |
 | `abort` | Graceful stop; process stays alive |
 | `kill` | Hard terminate + optional `remove:true` |

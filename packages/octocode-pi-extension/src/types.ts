@@ -39,10 +39,23 @@ export type TSchema = Record<string, unknown>;
 
 // ─── Tool result ─────────────────────────────────────────────────────────────
 
-export interface ContentPart {
+export interface TextContentPart {
   type: 'text';
   text: string;
 }
+
+/**
+ * Image block for tool results. Pi forwards these to a vision-capable model
+ * (shape matches pi-ai's ImageContent: { type:"image", data:<base64>, mimeType }).
+ * Pi normalizes/auto-resizes oversized images as they enter history.
+ */
+export interface ImageContentPart {
+  type: 'image';
+  data: string;
+  mimeType: string;
+}
+
+export type ContentPart = TextContentPart | ImageContentPart;
 
 export interface ToolCallResult {
   content: ContentPart[];

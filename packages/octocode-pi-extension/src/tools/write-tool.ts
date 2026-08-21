@@ -9,6 +9,7 @@ import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import { atomicWriteUtf8, recordFileReadState, withFileMutationQueue } from './file-state.js';
+import { peerWipNotice, markOwnWrite } from './peer-wip.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 
@@ -76,19 +77,22 @@ export function registerWriteTool(
       const absolutePath = resolveWritePath(requestPath, cwd);
       assertPathAllowed(absolutePath, cwd, 'write');
       if (signal?.aborted) throw new Error('Operation aborted');
+      // Peer-WIP advisory computed before we take ownership of the file.
+      const peerNotice = peerWipNotice(absolutePath, requestPath);
 
       await withFileMutationQueue(absolutePath, async () => {
         if (signal?.aborted) throw new Error('Operation aborted');
         await atomicWriteUtf8(absolutePath, content);
         if (signal?.aborted) throw new Error('Operation aborted');
         await recordFileReadState(absolutePath, cwd);
+        markOwnWrite(absolutePath);
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `Successfully wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${requestPath}`,
+            text: `Successfully wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${requestPath}${peerNotice}`,
           },
         ],
         details: {

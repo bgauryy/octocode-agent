@@ -116,6 +116,10 @@ export interface FooterInput {
   agentDoing?: string;
   /** Awareness Lite agents present in this workspace, shown in the lower toolbar. */
   awarenessAgents?: number;
+  /** Pre-session working-tree files not yet touched this session (likely peer/user WIP). */
+  peerDirty?: number;
+  /** Unread Awareness Lite messages addressed to this session's agent. */
+  awarenessUnread?: number;
   /** Active model-dial label (e.g. the dial preset name), shown as a branded segment. */
   dial?: string;
   /**
@@ -203,12 +207,20 @@ export function buildFooterSegments(input: FooterInput, density: FooterDensity =
 
   const workerTotal = input.workerTotal ?? input.activeWorkers;
   if (workerTotal > 0) {
-    const active = input.activeWorkers > 0 ? `/${input.activeWorkers} live` : '';
+    const active = input.activeWorkers > 0 ? ` (${input.activeWorkers} live)` : '';
     const label = !compact && input.agentDoing ? ` ‣ ${ellipsize(input.agentDoing, INLINE_STATUS_MAX)}` : '';
     segs.push({ text: `agents ${workerTotal}${active}${label}` });
   }
   if (!compact && input.awarenessAgents && input.awarenessAgents > 0) {
     segs.push({ text: `aware-agents ${input.awarenessAgents}`, token: 'brand' });
+  }
+  if (!compact && input.peerDirty && input.peerDirty > 0) {
+    segs.push({ text: `peer-wip ${input.peerDirty}`, token: 'warning' });
+  }
+  // Unread peer messages are an attention flag (shown even in compact): a
+  // co-working agent is waiting on a reply.
+  if (input.awarenessUnread && input.awarenessUnread > 0) {
+    segs.push({ text: `✉${input.awarenessUnread}`, token: 'warning' });
   }
   if (input.blockedWorkers && input.blockedWorkers > 0) {
     segs.push({ text: `⚠${input.blockedWorkers}`, token: 'warning' });
@@ -221,15 +233,16 @@ export function buildFooterSegments(input: FooterInput, density: FooterDensity =
     segs.push({ text: `◉ ${input.dial}`, token: 'brand' });
   }
 
-  // Harness prompt overhead: total est. tokens with a system/mcp/skills breakdown.
-  // Full density adds the breakdown; default shows just the total; compact drops it.
-  if (!compact && input.overhead && input.overhead.totalChars > 0) {
+  // Harness prompt overhead: total est. tokens injected as context, always shown
+  // (even in compact) and labeled 'context'. Full density adds the
+  // system/mcp/skills breakdown; other densities show just the labeled total.
+  if (input.overhead && input.overhead.totalChars > 0) {
     const o = input.overhead;
     const tok = (chars: number): string => formatCompact(estimateTokens(chars));
     const breakdown = density === 'full'
       ? ` (sys ${tok(o.sysChars)} · mcp ${o.mcpServers}/${o.mcpTools} · skills ${o.skills})`
       : '';
-    segs.push({ text: `Σ~${tok(o.totalChars)}${breakdown}`, token: 'dim' });
+    segs.push({ text: `prompt Σ~${tok(o.totalChars)}${breakdown}`, token: 'dim' });
   }
 
   if (input.branch) segs.push({ text: `${input.branch}${input.dirty ? '*' : ''}` });

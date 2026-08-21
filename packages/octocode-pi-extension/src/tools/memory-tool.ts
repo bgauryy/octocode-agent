@@ -60,7 +60,6 @@ type MemoryAction = 'recall' | 'record' | 'forget';
 interface MemoryParams {
   action: MemoryAction;
   query?: string;
-  smart?: boolean;
   label?: string;
   observation?: string;
   importance?: number;
@@ -73,7 +72,18 @@ type ParsedJson = Record<string, unknown> | unknown[];
 function parseJson(stdout: string): ParsedJson | null {
   const trimmed = stdout.trim();
   if (!trimmed) return null;
-  // The CLI may emit log lines before the JSON; take the last JSON-looking line.
+  // The CLI pretty-prints its JSON (multi-line), so parse the whole payload
+  // first — a per-line scan can never match an indented object and silently
+  // reported "0 memories" for every successful call.
+  try { return JSON.parse(trimmed) as ParsedJson; } catch { /* fall through */ }
+  // Log lines may precede the JSON: parse from the first brace/bracket to EOF.
+  const start = Math.min(
+    ...['{', '['].map((ch) => { const i = trimmed.indexOf(ch); return i === -1 ? Number.POSITIVE_INFINITY : i; }),
+  );
+  if (Number.isFinite(start) && start > 0) {
+    try { return JSON.parse(trimmed.slice(start)) as ParsedJson; } catch { /* fall through */ }
+  }
+  // Last resort: a single JSON line among log output.
   const lines = trimmed.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]!.trim();
@@ -99,7 +109,7 @@ export function registerMemoryTool(
     label: 'Memory',
     description: [
       'Recall, record, or forget durable Awareness memory (cross-run SQLite) as a first-class tool.',
-      'recall — retrieve prior verified learnings relevant to a query (use smart:true for scored/expanded recall). Treat results as leads; re-verify against current source/tests.',
+      'recall — retrieve prior verified learnings matching a query (substring search over label/text/tags). Treat results as leads; re-verify against current source/tests.',
       'record — persist a reusable, verified learning/gotcha/decision with a label and importance (1-10). Never store secrets, raw logs, routine status, or facts git/docs already own.',
       'forget — delete a specific memory by id (destructive; only when clearly obsolete).',
       'Awareness Lite/SQLite is canonical; this tool shells the same CLI the octocode-awareness-lite skill documents.',
@@ -112,7 +122,6 @@ export function registerMemoryTool(
     parameters: Type.Object({
       action: Type.Unsafe({ type: 'string', enum: ['recall', 'record', 'forget'], description: 'recall|record|forget' }),
       query: Type.Optional(Type.String({ description: 'recall: what to search for.' })),
-      smart: Type.Optional(Type.Boolean({ description: 'recall: use scored/expanded smart recall.' })),
       label: Type.Optional(Type.String({ description: 'record: e.g. GOTCHA, BUG, DECISION, ARCHITECTURE, EXPERIENCE.' })),
       observation: Type.Optional(Type.String({ description: 'record: the reusable learning text.' })),
       importance: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: 'record: importance 1-10.' })),
@@ -203,7 +212,7 @@ export function registerMemoryTool(
 
     renderResult(result: ToolCallResult, _opts: unknown, theme?: PiTheme) {
       const ok = !result.isError;
-      const first = (result.content?.[0]?.text ?? '').split('\n')[0] || 'memory';
+      const first = ((result.content?.[0] as { text?: string } | undefined)?.text ?? '').split('\n')[0] || 'memory';
       const line = ok
         ? paint(theme, 'success', `${CLI_GLYPH.success} ${first}`)
         : paint(theme, 'error', `${CLI_GLYPH.error} ${first}`);

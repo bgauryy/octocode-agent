@@ -41,6 +41,7 @@ const CODES = {
   gray: '\x1b[90m',
   brand: '\x1b[38;5;86m',
   accent: '\x1b[38;5;214m',
+  purple: '\x1b[38;5;147m',
 } as const;
 
 export type ColorName = keyof Omit<typeof CODES, 'reset'>;
@@ -77,6 +78,7 @@ export interface Painter {
   gray: (s: string) => string;
   brand: (s: string) => string;
   accent: (s: string) => string;
+  purple: (s: string) => string;
 }
 
 export function makePainter(enabled: boolean): Painter {
@@ -94,6 +96,7 @@ export function makePainter(enabled: boolean): Painter {
     gray: (s) => wrap('gray', s),
     brand: (s) => wrap('brand', s),
     accent: (s) => wrap('accent', s),
+    purple: (s) => wrap('purple', s),
   };
 }
 
@@ -260,20 +263,123 @@ export function hint(p: Painter, text: string): string {
   return p.gray(`→ ${text}`);
 }
 
-/** Version trail for the launch banner: `v1.0.2 · core 1.4.0 · pi 0.80.3 · model X` (skips unknowns). */
+/**
+ * Purple octopus mascot for the launcher startup banner, animated like a tiny
+ * shader: the glyph frame is a pure function of a time tick (tentacles sway,
+ * the skirt ripples, eyes blink, sparkles twinkle) and the paint pass applies a
+ * diagonal light→deep purple gradient plus a sweeping bold gloss band.
+ * Deliberately kept in sync by eye with the in-session mascot in
+ * @octocodeai/pi-extension `branding/banner.ts` (same shape, different
+ * painting substrate — raw 256-color here, theme tokens there).
+ */
+export const OCTOPUS_ART: readonly string[] = [
+  '       .-~~~-.',
+  '   ✦  ( o   o )',
+  '       )  ~  (   ✧',
+  "    .-'~~~~~~~'-.",
+  '   ( ( ( | | ) ) )',
+  '    \\_/ / | \\ \\_/',
+  '       (_/ \\_)',
+];
+
+/** Alternate tentacle pose (rows 4-6): outer arms swing, feet curl the other way. */
+const OCTOPUS_SWAY: readonly string[] = [
+  '   ) ( ( | | ) ) (',
+  '    \\_\\ \\ | / /_/',
+  '       (_) (_)',
+];
+
+/** First row of OCTOPUS_ART replaced by OCTOPUS_SWAY on odd ticks. */
+const SWAY_ROW = 4;
+/** Rows whose `~` glyphs carry the travelling ripple (head crown + skirt hem). */
+const RIPPLE_ROWS: ReadonlySet<number> = new Set([0, 3]);
+/** Eyes blink for one tick out of every BLINK_EVERY. */
+const BLINK_EVERY = 8;
+
+/** 256-color purple ramp shading the body light (head) → deep (tentacles). */
+const OCTOPUS_SHADES: readonly number[] = [189, 183, 177, 141, 135, 99, 93];
+/** Bright gloss + gold sparkle codes for the shimmer highlights. */
+const OCTOPUS_GLOSS_COLOR = 231;
+const OCTOPUS_SPARKLE_COLOR = 220;
+/** Diagonal thickness of the gloss band, in columns. */
+const OCTOPUS_SHIMMER_BAND = 3;
+
+/** Number of distinct phases in one full gloss sweep (for animation drivers). */
+export function octopusShimmerSpan(): number {
+  return Math.max(...OCTOPUS_ART.map((l) => l.length)) + OCTOPUS_ART.length + OCTOPUS_SHIMMER_BAND;
+}
+
+function paint256(p: Painter, code: number, s: string): string {
+  return p.enabled ? `\x1b[38;5;${code}m${s}\x1b[0m` : s;
+}
+
+/**
+ * The plain (unpainted) glyph frame for an animation tick: tentacles alternate
+ * between two poses, a ripple travels through the `~` rows, the eyes blink
+ * every BLINK_EVERY ticks, and the sparkles trade shapes. Pure — same tick,
+ * same frame.
+ */
+export function octopusGlyphFrame(tick: number): string[] {
+  const t = Math.max(0, Math.floor(tick));
+  const rows = [...OCTOPUS_ART];
+  if (t % 2 === 1) OCTOPUS_SWAY.forEach((line, i) => { rows[SWAY_ROW + i] = line; });
+  return rows.map((line, row) => {
+    let out = line;
+    if (RIPPLE_ROWS.has(row)) {
+      out = [...out].map((ch, col) => (ch === '~' && (col + t) % 3 === 0 ? '-' : ch)).join('');
+    }
+    if (row === 1 && t % BLINK_EVERY === BLINK_EVERY - 1) out = out.replace(/o/g, '-');
+    if (t % 2 === 1) out = out.replace(/[✦✧]/g, (m) => (m === '✦' ? '✧' : '✦'));
+    return out;
+  });
+}
+
+/**
+ * One animation frame: the shaded octopus at `tick` with a diagonal gloss band
+ * at `phase` (band column = row + phase). Pass Number.NEGATIVE_INFINITY (or
+ * any phase outside the sweep) for a frame with no gloss band. The body shade
+ * deepens down-and-right (diagonal gradient), which reads as directional light.
+ */
+export function octopusFrame(p: Painter, phase: number, tick = 0): string[] {
+  return octopusGlyphFrame(tick).map((line, row) => {
+    let out = '';
+    for (let col = 0; col < line.length; col++) {
+      const ch = line[col]!;
+      if (ch === ' ') {
+        out += ch;
+      } else if (ch === '✦' || ch === '✧') {
+        out += paint256(p, OCTOPUS_SPARKLE_COLOR, ch);
+      } else {
+        const d = col - row - phase;
+        const shade =
+          OCTOPUS_SHADES[Math.min(OCTOPUS_SHADES.length - 1, row + (col >> 3))] ?? 141;
+        out +=
+          d >= 0 && d < OCTOPUS_SHIMMER_BAND
+            ? p.bold(paint256(p, OCTOPUS_GLOSS_COLOR, ch))
+            : paint256(p, shade, ch);
+      }
+    }
+    return out;
+  });
+}
+
+/** The octopus mascot painted with the purple gradient (resting frame), one entry per line. */
+export function octopusArt(p: Painter): string[] {
+  return octopusFrame(p, Number.NEGATIVE_INFINITY);
+}
+
+/** Version trail for the launch banner: `v1.0.2 · core 1.4.0 · model X` (skips unknowns). */
 export function launchBanner(
   p: Painter,
   versions: {
     launcher: string | null;
     core: string | null;
-    pi: string | null;
     model?: string | null;
   },
 ): string {
   const parts = [
     versions.launcher ? `v${versions.launcher}` : null,
     versions.core ? `core ${versions.core}` : null,
-    versions.pi ? `pi ${versions.pi}` : null,
     versions.model ? `model ${versions.model}` : null,
   ].filter(Boolean) as string[];
   return `${p.brand(BRAND_MARK)} ${p.bold(BRAND_NAME)}${parts.length ? p.dim('  ' + parts.join(' · ')) : ''}`;

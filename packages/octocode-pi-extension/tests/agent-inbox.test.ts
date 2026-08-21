@@ -86,6 +86,9 @@ test('inboxDisplayState: normalizedStatus refines the raw process status', () =>
   assert.equal(inboxDisplayState({ status: 'idle', normalizedStatus: 'failed' }), 'failed');
   assert.equal(inboxDisplayState({ status: 'killed', normalizedStatus: 'done' }), 'killed');
   assert.equal(inboxDisplayState({ status: 'starting' }), 'starting');
+  // Exited beats blocked: a dead process that last said [BLOCKED] cannot be
+  // steered, so it must not present as an actionable blocked worker.
+  assert.equal(inboxDisplayState({ status: 'exited', normalizedStatus: 'blocked' }), 'done');
 });
 
 test('inboxSummaryLine: flattens newlines, caps length, and falls back to the last ledger event', () => {
@@ -242,6 +245,11 @@ test('shouldNotifyWorkerEvent: killed events never notify', () => {
   const entry = makeEntry({ status: 'killed' });
   assert.equal(shouldNotifyWorkerEvent(entry, 'killed', base), false);
   assert.equal(shouldNotifyWorkerEvent(entry, 'killed', { ...base, turnActive: true }), false);
+  // The process close handler emits a type:'exit' ledger event even for a
+  // killed worker — the STATUS must suppress it, or a manual kill flashes a
+  // misleading "worker finished" desktop notification.
+  assert.equal(shouldNotifyWorkerEvent(entry, 'exit', base), false);
+  assert.equal(shouldNotifyWorkerEvent(entry, 'error', base), false);
 });
 
 test('shouldNotifyWorkerEvent: error only counts once the worker is failed', () => {

@@ -42,12 +42,18 @@ export function getAssetPaths(baseDir = extensionDir): AssetPaths {
 }
 
 /**
- * Returns the agent-facing Awareness Lite command. Kept under the historical
- * name because launcher/status code imports it, but runtime calls use the
- * installed scoped package directly instead of an unscoped npx lookup.
+ * Returns the agent-facing Awareness Lite command DISPLAY string ("node
+ * /path/cli.js"). Kept under the historical name because launcher/status code
+ * imports it. Display-only — the executable-facing `$OCTOCODE_AWARENESS_CLI`
+ * env var carries the bare script path (see index.ts). Falls back to the npx
+ * form when the package cannot be resolved so status surfaces never crash.
  */
 export function getAwarenessCLIPath(_baseDir = extensionDir): string {
-  return `${process.execPath} ${resolveAwarenessLiteCliPath()}`;
+  try {
+    return `${process.execPath} ${resolveAwarenessLiteCliPath()}`;
+  } catch {
+    return `npx ${AWARENESS_LITE_PACKAGE}`;
+  }
 }
 
 export function readTextIfExists(filePath: string): string {

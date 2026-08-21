@@ -1328,8 +1328,8 @@ test('chromeDebug tool execute path connects, runs a recipe, cleans up, redacts 
       { ui: { setStatus: (name: string, value: string | undefined) => statuses.push([name, value]) } },
     );
 
-    assert.match(result.content[0]!.text, /^\[SESSION\]/);
-    assert.match(result.content[0]!.text, /\[FINDING\]/);
+    assert.match((result.content[0] as { text: string }).text, /^\[SESSION\]/);
+    assert.match((result.content[0] as { text: string }).text, /\[FINDING\]/);
     assert.deepEqual(cleanupCalls, [{ keepTab: false, killLaunched: undefined }]);
     assert.equal((result.details as Record<string, unknown>)['cookie_value'], '<redacted>');
     assert.equal(statuses.at(-1)?.[1], undefined, 'status should be cleared after success');
@@ -1341,7 +1341,7 @@ test('chromeDebug tool execute path connects, runs a recipe, cleans up, redacts 
       undefined,
       { ui: { setStatus: (name: string, value: string | undefined) => statuses.push([name, value]) } },
     );
-    assert.match(stealthResult.content[0]!.text, /\[SESSION\]/);
+    assert.match((stealthResult.content[0] as { text: string }).text, /\[SESSION\]/);
     assert.ok(mockSession.calls.some((call) => call.method === 'Page.addScriptToEvaluateOnNewDocument'));
     assert.deepEqual(cleanupCalls.at(-1), { keepTab: false, killLaunched: true });
 
@@ -1361,7 +1361,7 @@ test('chromeDebug tool execute path connects, runs a recipe, cleans up, redacts 
     assert.match(registeredTool.renderCall({ scheme: 'debug', port: 19333 }).render(120)[0]!, /chromeDebug debug/);
     assert.match(
       registeredTool.renderResult(
-        { content: [{ type: 'text', text: result.content[0]!.text }], details: result.details },
+        { content: [{ type: 'text', text: (result.content[0] as { text: string }).text }], details: result.details },
         { expanded: false },
       ).render(120)[0]!,
       /chromeDebug/,

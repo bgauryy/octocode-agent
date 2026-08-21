@@ -35,10 +35,15 @@ test('CLI design contract centralizes glyphs, spinners, and transcript rows', ()
   assert.equal(cliSpinnerFrame(120), '⠙');
   assert.equal(summarizeInlineValue({ command: 'echo ok' }), '{"command":"echo ok"}');
 
+  // Wide explicit width: the stub theme's <token> markers count as visible
+  // cells, so the row must not be truncated for the exact-equality assertion.
   assert.equal(
-    formatCliToolRow('running', 'bash', { command: 'echo ok' }, theme),
+    formatCliToolRow('running', 'bash', { command: 'echo ok' }, theme, 500),
     '<toolTitle>╭─ ⚙</toolTitle> <toolTitle>bash</toolTitle> <dim>running…</dim><dim> · {"command":"echo ok"}</dim>',
   );
+  // Narrow terminals clip the row to width so the ╭─ frame never wraps.
+  const clipped = formatCliToolRow('running', 'bash', { command: 'echo ok'.repeat(30) }, undefined, 40);
+  assert.ok(visibleWidth(clipped) <= 40, `row must clip to width, got ${visibleWidth(clipped)} cells`);
   assert.equal(
     formatThinkingRow('start', theme),
     '<warning>╭─ 🧠 thinking</warning> <dim>model reasoning</dim>',

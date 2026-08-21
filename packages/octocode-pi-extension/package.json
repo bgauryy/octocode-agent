@@ -47,19 +47,20 @@
   },
   "dependencies": {
     "@earendil-works/pi-tui": "^0.84.2",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@octocodeai/octocode-awareness-lite": "^0.1.0",
-    "@octocodeai/octocode-engine": "^16.7.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@octocodeai/octocode-awareness-lite": "^0.2.0",
+    "@octocodeai/octocode-engine": "^18.1.2",
+    "octocode": "^18.3.0",
+    "octocode-mcp": "^18.2.2",
     "typebox": "^1.3.16"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.84.2",
-    "@octocodeai/config": "^17.0.1",
-    "@types/node": "^25.9.3",
-    "@vitest/coverage-v8": "^4.1.9",
-    "octocode": "^2.3.0",
-    "typescript": "^5.8.3",
-    "vitest": "^4.1.9",
+    "@octocodeai/config": "^18.0.1",
+    "@types/node": "^26.2.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
     "zod": "^4.4.3"
   },
   "scripts": {

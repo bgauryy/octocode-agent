@@ -104,7 +104,7 @@ test('registerWebTool registers schema and executes through runWebTool', async (
     url: 'https://example.com',
     truncated: false,
   });
-  assert.match(result.content?.[0]?.text ?? '', /Title: Example/);
+  assert.match((result.content?.[0] as { text?: string } | undefined)?.text ?? '', /Title: Example/);
 });
 
 test('registerWebTool execute throws provider errors so Pi marks the call failed', async () => {

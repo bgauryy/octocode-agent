@@ -157,6 +157,7 @@ export async function recordFileReadState(filePath: string, cwd = process.cwd())
 export async function checkReadState(
   absolutePath: string,
   requireRecentRead: boolean,
+  opts: { contentAnchored?: boolean } = {},
 ): Promise<ReadStateCheck> {
   const state = readStates.get(absolutePath);
   if (!state) {
@@ -178,6 +179,17 @@ export async function checkReadState(
     stale = contentHash(current) !== state.contentHash;
   }
   if (stale) {
+    // Content-anchored edits (exact/normalized oldText) are self-verifying: the
+    // replacement only applies if oldText still matches the CURRENT bytes, so a
+    // stale recorded hash is not a lost-update risk — surface it as advisory
+    // rather than blocking. Position-anchored edits (lineRange) and explicit
+    // requireRecentRead still hard-fail, since line numbers can silently shift.
+    if (opts.contentAnchored && !requireRecentRead) {
+      return {
+        state: 'stale',
+        message: 'File changed since last recorded read; proceeding because the edit is anchored to exact oldText.',
+      };
+    }
     throw new Error('File changed since last recorded read. Re-read the target range before editing.');
   }
   return {
