@@ -142,6 +142,10 @@ export function registerMemoryTool(
         args = [
           'memory', 'store', '--label', label,
           '--text', text,
+          // Awareness Lite `memory store` has no importance column; persist the
+          // validated 1-10 value as a tag so it is durably recorded and
+          // recall-searchable instead of being silently dropped.
+          '--tags', `importance:${importance}`,
           '--workspace', cwd,
         ];
       } else if (p.action === 'forget') {

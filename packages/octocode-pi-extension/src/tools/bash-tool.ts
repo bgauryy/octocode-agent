@@ -11,6 +11,8 @@ import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.
 import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
+import { classifySensitiveCommand, requestApproval } from './approval.js';
+import type { PiContext } from '../types.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 
@@ -79,7 +81,44 @@ export function extractBashWriteTargets(command: string, cwd: string): string[] 
     if (dest) push(dest);
   }
 
+  // In-place editors (sed -i, perl -i) write their file arguments directly,
+  // bypassing shell redirects. Extract those files so the guard sees them.
+  // Opaque interpreters (node -e, python -c) can still write arbitrary paths and
+  // are not statically parseable — the tool description documents that gap.
+  for (const seg of command.split(/[;|&\n]+/)) {
+    for (const file of extractInPlaceEditTargets(seg)) push(file);
+  }
+
   return [...new Set(targets)];
+}
+
+/**
+ * Split a shell segment into tokens, keeping single/double-quoted runs intact.
+ * Best-effort — enough to isolate the file arguments of an in-place editor.
+ */
+function tokenizeShellSegment(seg: string): string[] {
+  const tokens: string[] = [];
+  const re = /"(?:[^"\\]|\\.)*"|'[^']*'|[^\s]+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(seg)) !== null) tokens.push(m[0]);
+  return tokens;
+}
+
+/**
+ * Extract file targets written by `sed -i` / `perl -i` in a single command
+ * segment. Returns [] when no in-place editor is present.
+ */
+function extractInPlaceEditTargets(seg: string): string[] {
+  const tokens = tokenizeShellSegment(seg);
+  const cmdIdx = tokens.findIndex((t) => t === 'sed' || t === 'perl');
+  if (cmdIdx === -1) return [];
+  const rest = tokens.slice(cmdIdx + 1);
+  const hasInPlace = rest.some((t) => /^-i/.test(t) || /^--in-place/.test(t));
+  if (!hasInPlace) return [];
+  // Drop flags; the first remaining non-flag token is the script/expression,
+  // everything after it is a file argument.
+  const nonFlags = rest.filter((t) => !t.startsWith('-'));
+  return nonFlags.slice(1);
 }
 
 export function assertBashCommandAllowed(command: string, cwd: string): void {
@@ -218,7 +257,7 @@ export function registerBashTool(
     name: 'bash',
     label: 'bash (Octocode)',
     description:
-      'Octocode custom bash tool. Replaces Pi built-in bash with the same shell execution plus Octocode path-guard on redirect/tee/cp/mv write targets (cwd / home / OS temp / ALLOWED_PATHS) and a small blocklist of catastrophic commands. Prefer edit/write for ordinary file mutations; use bash for git, builds, tests, and bulk mechanical edits.',
+      'Octocode custom bash tool. Replaces Pi built-in bash with the same shell execution plus Octocode path-guard on redirect/tee/cp/mv and sed -i / perl -i in-place write targets (cwd / home / OS temp / ALLOWED_PATHS) and a small blocklist of catastrophic commands. Note: opaque interpreters (node -e, python -c) can still write arbitrary paths and are not guarded — prefer edit/write for file mutations; use bash for git, builds, tests, and bulk mechanical edits.',
     promptSnippet: 'Run shell commands with Octocode path-guard on write targets.',
     promptGuidelines: [
       'Octocode custom bash replaces Pi built-in bash; prefer edit/write for ordinary file creates and surgical edits.',
@@ -232,7 +271,7 @@ export function registerBashTool(
       params: Record<string, unknown>,
       signal?: AbortSignal,
       _onUpdate?: unknown,
-      ctx?: { cwd?: string },
+      ctx?: PiContext,
     ): Promise<ToolCallResult> {
       if (typeof params['command'] !== 'string' || params['command'].trim().length === 0) {
         throw new Error('Bash tool input is invalid. command must be a non-empty string.');
@@ -244,6 +283,22 @@ export function registerBashTool(
           : undefined;
       const cwd = ctx?.cwd ?? process.cwd();
       assertBashCommandAllowed(command, cwd);
+
+      // Context-aware consent: installs, mutating git, file deletes, and sudo are
+      // protected. Ask before running (Yes / No / Always allow this session).
+      const sensitive = classifySensitiveCommand(command);
+      if (sensitive) {
+        const outcome = await requestApproval(ctx, sensitive);
+        if (!outcome.approved) {
+          const why = outcome.interactive
+            ? 'The user declined this action.'
+            : 'This host is non-interactive, so consent could not be collected. Ask the user inline to confirm before retrying.';
+          throw new Error(
+            `bash blocked: "${sensitive.title}" requires user approval. ${why}`,
+          );
+        }
+      }
+
       if (signal?.aborted) throw new Error('Operation aborted');
 
       const { stdout, stderr, code } = await runBash(command, cwd, timeout, signal);

@@ -29,6 +29,31 @@ export interface AwarenessStatus {
   workCount: number;
   agentCount: number;
   messageCount: number;
+  /** Compact summary of the most recent peer message (from→to: preview), when any. */
+  lastMessage?: { from: string; to: string; preview: string };
+}
+
+/** Parse the Lite `message list` JSON, returning a compact summary of the newest message. */
+export function parseLastMessage(json: string): AwarenessStatus['lastMessage'] | undefined {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    return undefined;
+  }
+  const list = Array.isArray(raw) ? raw : undefined;
+  if (!list || list.length === 0) return undefined;
+  // message list is newest-last or newest-first depending on the CLI; pick the one
+  // with the greatest createdAt so the summary is deterministic.
+  const newest = [...list].sort(
+    (a, b) => Number((a as { createdAt?: number }).createdAt ?? 0) - Number((b as { createdAt?: number }).createdAt ?? 0),
+  ).at(-1) as Record<string, unknown> | undefined;
+  if (!newest) return undefined;
+  const str = (k: string): string => (typeof newest[k] === 'string' ? (newest[k] as string) : '');
+  const from = str('fromAgentId') || '?';
+  const to = str('toAgentId') || 'all';
+  const body = (str('text') || str('topic')).replace(/\s+/g, ' ').trim();
+  return { from, to, preview: body.length > 48 ? `${body.slice(0, 47)}\u2026` : body };
 }
 
 /** Parse the Lite `status` JSON into the fields the panel needs. Null on bad input. */
@@ -82,7 +107,11 @@ export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme): strin
   const tail: string[] = [];
   if (s.lockCount > 0) tail.push(`locks ${s.lockCount}`);
   if (s.workCount > 0) tail.push(`work ${s.workCount}`);
-  if (s.messageCount > 0) tail.push(`peer-msgs ${s.messageCount}`);
+  if (s.messageCount > 0) {
+    tail.push(s.lastMessage
+      ? `peer-msgs ${s.messageCount} (last ${s.lastMessage.from}→${s.lastMessage.to}: ${s.lastMessage.preview})`
+      : `peer-msgs ${s.messageCount}`);
+  }
 
   const chunks: string[] = [];
   if (segs.length) chunks.push(paint(theme, 'brand', segs.join('  ·  ')));
@@ -135,13 +164,42 @@ const defaultRunner: StatusRunner = (cwd) =>
   });
 
 let runner: StatusRunner = defaultRunner;
+
+/** Runs `message list` for the newest peer message; injectable for tests. */
+export type MessageRunner = (cwd: string) => Promise<string | null>;
+const defaultMessageRunner: MessageRunner = (cwd) =>
+  new Promise((resolve) => {
+    const spec = buildAwarenessLiteCommand(['message', 'list', '--workspace', cwd, '--limit', '1']);
+    execFile(
+      spec.cmd,
+      spec.args,
+      { timeout: 4000, maxBuffer: 1_000_000 },
+      (err, stdout) => resolve(err ? null : String(stdout)),
+    );
+  });
+let messageRunner: MessageRunner = defaultMessageRunner;
+
 /** Test hook: override the CLI runner. */
 export function setAwarenessStatusRunnerForTests(fn: StatusRunner): void {
   runner = fn;
 }
+/** Test hook: override the message-list runner. */
+export function setAwarenessMessageRunnerForTests(fn: MessageRunner): void {
+  messageRunner = fn;
+}
 export function resetAwarenessStatusStateForTests(): void {
   runner = defaultRunner;
+  messageRunner = defaultMessageRunner;
   cache.clear();
+}
+
+/**
+ * Drop a workspace's cached status so the next refresh re-polls from scratch. Called on
+ * session_start so a new session in a cwd visited earlier this process does not paint the
+ * previous session's stale task/lock counts on its first frame.
+ */
+export function clearAwarenessCacheEntry(cwd: string): void {
+  cache.delete(cwd);
 }
 export function forceAwarenessStatusRefreshForTests(cwd: string): void {
   const entry = cache.get(cwd);
@@ -192,6 +250,20 @@ export function refreshAwarenessPanel(ctx?: PiContext): void {
       const parsed = parseAwarenessStatus(stdout);
       entry.status = parsed;
       renderWidget(ctx, parsed);
+      // Only spend a second CLI call for the last-message preview when there are
+      // peer messages to summarize.
+      if (parsed && parsed.messageCount > 0) {
+        void messageRunner(cwd)
+          .then((msgOut) => {
+            if (msgOut === null || entry.status !== parsed) return;
+            const last = parseLastMessage(msgOut);
+            if (last) {
+              entry.status = { ...parsed, lastMessage: last };
+              renderWidget(ctx, entry.status);
+            }
+          })
+          .catch(() => { /* best-effort preview; count already shown */ });
+      }
     })
     .catch(() => {
       entry.running = false;

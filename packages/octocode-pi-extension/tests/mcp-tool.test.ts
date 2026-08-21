@@ -7,9 +7,11 @@ import {
   OCTOCODE_MCP_ENV_DEFAULTS,
   __test__ as mcpTestHooks,
   getCachedMcpCatalogAddendum,
+  getCachedMcpCounts,
   markMcpToolUsed,
   patchGlobalMcpOctocodeEnv,
   resolveMcpCallText,
+  stopAllMcpServers,
 } from '../src/tools/mcp-tool.js';
 
 const mcpCtx = { cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-cache-')) } as unknown as import('../src/types.js').PiContext;
@@ -159,6 +161,15 @@ function seedCatalog(): void {
     tools: CATALOG_TOOLS,
   }]);
 }
+
+test('stopAllMcpServers clears the cached catalog + recent-schema caches (no stale tools across sessions)', () => {
+  seedCatalog();
+  assert.match(getCachedMcpCatalogAddendum(mcpCtx), /server: octocode/);
+  assert.ok(getCachedMcpCounts(mcpCtx).servers > 0);
+  stopAllMcpServers();
+  assert.equal(getCachedMcpCatalogAddendum(mcpCtx), '', 'catalog addendum is empty after shutdown');
+  assert.equal(getCachedMcpCounts(mcpCtx).servers, 0, 'server count reset after shutdown');
+});
 
 test('cached catalog addendum is compact by default: descriptions + schema summaries, no full schema JSON', () => {
   seedCatalog();

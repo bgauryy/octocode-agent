@@ -7,7 +7,7 @@
  * this tool is the solo, per-turn working checklist.
  */
 
-import type { ToolDefinition, ToolCallResult, PiContext, PiTheme } from '../types.js';
+import type { ToolDefinition, ToolCallResult, PiContext, PiTheme, NotifyFn } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
@@ -84,7 +84,6 @@ export function refreshPlanUi(ctx?: PiContext): void {
 export const OCTOCODE_PLAN_COMMAND_USAGE = '/octocode-plan [show|complete <n>|start <n>|remove <n>|clear]';
 export const OCTOCODE_PLAN_COMMAND_COMPLETIONS = ['show', 'complete ', 'start ', 'remove ', 'clear'] as const;
 
-type NotifyFn = (ctx: PiContext | undefined, message: string, level?: string) => void;
 
 export async function handleOctocodePlanCommand(args: string, ctx: PiContext | undefined, notify: NotifyFn): Promise<void> {
   const scope = activePlanScope(ctx);

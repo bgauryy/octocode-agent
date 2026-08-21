@@ -29,23 +29,10 @@ import type { PiTheme, RenderCallReturn, ToolCallResult } from '../types.js';
 // `@earendil-works/pi-tui` import to the host's bundled copy — so delegating
 // guarantees we can never disagree with the arbiter of that check.
 
-/** C0/C1 control chars except tab (expanded below) and ESC (0x1B, ANSI). */
-const CONTROL_CHAR_RE = /[\x00-\x08\x0A-\x1A\x1C-\x1F\x7F-\x9F]/g;
-
-/**
- * Replace tabs with 3 spaces and other control characters with a space so the
- * string renders exactly as measured: pi-tui *counts* a tab as 3 columns but
- * emits it raw (terminals advance to their own tab stops), and counts other
- * control chars as 0 columns even though e.g. `\r` moves the cursor.
- */
-export function sanitizeLine(str: string): string {
-  if (!str.includes('\t') && !CONTROL_CHAR_RE.test(str)) {
-    CONTROL_CHAR_RE.lastIndex = 0;
-    return str;
-  }
-  CONTROL_CHAR_RE.lastIndex = 0;
-  return str.replace(/\t/g, '   ').replace(CONTROL_CHAR_RE, ' ');
-}
+// sanitizeLine lives in palette.ts so cli-design (which render-helpers imports) can
+// reuse it without a cycle. Imported for internal use and re-exported for existing importers.
+import { sanitizeLine } from '../tui/palette.js';
+export { sanitizeLine };
 
 export function visibleWidth(str: string): number {
   return piVisibleWidth(sanitizeLine(str));
@@ -65,6 +52,30 @@ export function truncateToWidth(
 }
 
 /**
+ * Truncate PLAIN text (no ANSI codes) to at most `maxWidth` visible cells,
+ * counting CJK/emoji as their true width. Unlike pi-tui's truncateToWidth this
+ * injects no SGR reset sequences (the input has no colour to bleed), so it is
+ * safe for values that are theme-wrapped afterwards. `ellipsis` is appended
+ * within the budget when truncation occurs (pass '' for a hard cut).
+ */
+export function truncatePlainToWidth(text: string, maxWidth: number, ellipsis = '\u2026'): string {
+  if (maxWidth <= 0) return '';
+  if (visibleWidth(text) <= maxWidth) return text;
+  const ellW = visibleWidth(ellipsis);
+  if (maxWidth <= ellW) return ellipsis.slice(0, maxWidth) || ellipsis;
+  const budget = maxWidth - ellW;
+  let out = '';
+  let used = 0;
+  for (const ch of Array.from(text)) {
+    const w = visibleWidth(ch);
+    if (used + w > budget) break;
+    out += ch;
+    used += w;
+  }
+  return out + ellipsis;
+}
+
+/**
  * Word-wrap plain text (no ANSI codes) into lines of at most `maxWidth` visible
  * characters each. Words longer than `maxWidth` are hard-truncated on that boundary.
  */
@@ -74,12 +85,15 @@ export function wrapText(text: string, maxWidth: number): string[] {
   const lines: string[] = [];
   let current = '';
   for (const word of words) {
-    const safeWord = word.length > maxWidth ? word.slice(0, maxWidth) : word;
+    // Budget by visible cell width, not byte/code-unit length — CJK/emoji are
+    // 2 cells, so a .length check under-counts and lets a visually-too-wide line
+    // through, which pi's TUI hard-clips (or crashes on).
+    const safeWord = visibleWidth(word) > maxWidth ? truncatePlainToWidth(word, maxWidth, '') : word;
     if (!current) {
       current = safeWord;
     } else {
       const candidate = `${current} ${safeWord}`;
-      if (candidate.length <= maxWidth) {
+      if (visibleWidth(candidate) <= maxWidth) {
         current = candidate;
       } else {
         lines.push(current);
@@ -489,10 +503,14 @@ export function buildOctocodeRenderResult(
   theme?: PiTheme,
 ): RenderCallReturn {
   if (opts.isPartial) {
-    const spinner = paint(theme, 'warning', cliSpinnerFrame());
     const nameStr = cliToolTitle(theme, toolName);
-    const running = `${spinner} ${nameStr} ${paint(theme, 'dim', CLI_STATUS_TEXT.running)}`;
-    return singleLineRenderer(running);
+    // Evaluate the spinner frame at render time, not construction time — pi
+    // re-invokes render() on each tick, so baking cliSpinnerFrame() into a
+    // captured string would freeze the spinner for the whole partial phase.
+    return makeRenderer((_w) => {
+      const spinner = paint(theme, 'warning', cliSpinnerFrame());
+      return [`${spinner} ${nameStr} ${paint(theme, 'dim', CLI_STATUS_TEXT.running)}`];
+    });
   }
 
   const ok = !result.isError;

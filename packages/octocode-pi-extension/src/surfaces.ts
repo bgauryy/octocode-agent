@@ -1,21 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildAwarenessLiteCommand, getAwarenessCLIPath } from './assets.js';
+import { buildAwarenessLiteCommand } from './assets.js';
 
 /** A command to spawn, or an actionable error explaining why it could not be built. */
 export type SurfaceSpec = { cmd: string; args: string[] } | { error: string };
 
 /** Octocode launcher surface verbs owned by the core extension. */
 export type SurfaceVerb = 'research' | 'memory' | 'awareness' | 'tools' | 'skills';
-
-/**
- * Resolve the Awareness Lite command surface.
- * Historical name retained for launcher imports; it now returns
- * `npx @octocodeai/octocode-awareness-lite`, not a local JavaScript file path.
- */
-export function resolveAwarenessCli(_env: NodeJS.ProcessEnv = process.env): string {
-  return getAwarenessCLIPath();
-}
 
 /**
  * Build the spawn spec for an Octocode surface verb.

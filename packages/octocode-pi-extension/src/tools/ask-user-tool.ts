@@ -3,8 +3,10 @@
  *
  * Lets the agent ask the human a question and get a real answer through the TUI
  * instead of dumping a numbered list in prose and hoping the user types the
- * matching token. Modes are chosen from the arguments and rendered in a
- * below-editor widget so the input stays visible:
+ * matching token. Modes are chosen from the arguments and rendered as a
+ * focused overlay modal (ctx.ui.custom, { overlay:true }) shown over the
+ * conversation area — the same surface the command palette and effort dial use
+ * — so the prompt appears in the message flow rather than pinned by the input:
  *
  *   • options[]  → a keyboard-navigable list (↑↓ / enter / esc) with an
  *     always-available custom free-text answer.
@@ -15,16 +17,17 @@
  *     rejecting.
  *   • no options → a single-line text prompt.
  *
- * Non-interactive hosts (rpc / json / print, or any host without below-editor
- * widget input support) return a clear instruction telling the agent to ask the
- * question inline in its next message. The tool never uses Pi's editor-replacing
- * select/input/custom surfaces, and it never blocks or fakes an answer.
+ * Non-interactive hosts (rpc / json / print, or any host without overlay
+ * support) return a clear instruction telling the agent to ask the question
+ * inline in its next message. The tool never uses Pi's built-in select/input
+ * surfaces, and it never blocks or fakes an answer.
  */
 
 import { CLI_GLYPH, CLI_STATUS_TEXT, cliToolTitle, paint } from '../tui/cli-design.js';
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { makeRenderer, truncateToWidth, visibleWidth } from './render-helpers.js';
+import { CURSOR_MARKER, Key, matchesKey } from '@earendil-works/pi-tui';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -47,7 +50,6 @@ interface AskField {
 interface AskParams {
   question: string;
   options?: Array<AskOption | string>;
-  allowFreeText?: boolean;
   placeholder?: string;
   multiSelect?: boolean;
   min?: number;
@@ -75,14 +77,16 @@ function normalizeFields(raw: AskParams['fields']): AskField[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((f): f is AskField => Boolean(f && typeof f.name === 'string' && f.name.length > 0));
 }
-const ASK_USER_WIDGET_NAME = 'octocode-ask-user';
-
-function supportsBelowEditorAsk(ctx?: PiContext): boolean {
-  return Boolean(ctx?.hasUI && typeof ctx.ui?.setWidget === 'function' && typeof ctx.ui?.onTerminalInput === 'function');
+function supportsAskOverlay(ctx?: PiContext): boolean {
+  // Guard on mode === 'tui': in RPC mode hasUI is true and custom() exists but
+  // RETURNS undefined (per pi docs), which would make askUser silently resolve
+  // as cancelled instead of falling back to an inline question. custom() is a
+  // TUI-only feature.
+  return Boolean(ctx?.mode === 'tui' && ctx?.hasUI && typeof ctx.ui?.custom === 'function');
 }
 
 function hasInteractiveUi(ctx?: PiContext): boolean {
-  return supportsBelowEditorAsk(ctx);
+  return supportsAskOverlay(ctx);
 }
 
 function isCancelKey(data: string): boolean {
@@ -105,6 +109,31 @@ function isPrintableInput(data: string): boolean {
   });
 }
 
+/**
+ * A width-aware “smart separator”: paint `prefixPlain` then fill the rest of the
+ * row with the box rule char up to the terminal width, so every widget frame
+ * spans the panel cleanly at any size instead of a fixed stub.
+ */
+function ruleLine(theme: PiTheme | undefined, prefixPlain: string, width: number, token: 'brand' | 'dim' | 'warning'): string {
+  const fill = Math.max(0, (width || 0) - visibleWidth(prefixPlain));
+  return paint(theme, token, prefixPlain + '─'.repeat(fill));
+}
+
+function askHeaderLines(theme: PiTheme | undefined, question: string, width: number): string[] {
+  const bar = paint(theme, 'brand', '│');
+  return [
+    ruleLine(theme, '╭─ ◆ USER INPUT REQUIRED ', width, 'brand'),
+    `${bar} ${question}`,
+    bar,
+  ];
+}
+
+function askFooterLine(theme: PiTheme | undefined, help: string, width: number, warning?: string): string {
+  return warning
+    ? ruleLine(theme, `╰─ ⚠ ${warning} `, width, 'warning')
+    : ruleLine(theme, `╰─ ${help} `, width, 'dim');
+}
+
 function renderAskChoiceLines(
   theme: PiTheme | undefined,
   question: string,
@@ -112,25 +141,26 @@ function renderAskChoiceLines(
   cursor: number,
   selected: Set<number> | undefined,
   help: string,
+  width: number,
   warning?: string,
 ): string[] {
-  const heading = paint(theme, 'brand', '◆ USER INPUT REQUIRED');
-  const questionLine = `${paint(theme, 'brand', 'Question:')} ${question}`;
+  const bar = paint(theme, 'brand', '│');
   const rows = items.flatMap((item, index) => {
     const active = index === cursor;
     const marker = active ? paint(theme, 'brand', '›') : ' ';
-    const checked = selected ? (selected.has(index) ? paint(theme, 'success', '☑') : '☐') : '';
-    const label = item.freeText ? paint(theme, 'brand', item.label) : item.label;
+    const checked = selected ? (selected.has(index) ? paint(theme, 'success', '☑') : paint(theme, 'dim', '☐')) : '';
+    const rawLabel = item.freeText ? paint(theme, 'brand', item.label) : (active ? paint(theme, 'brand', item.label) : item.label);
     const desc = item.description ? paint(theme, 'dim', ` — ${item.description}`) : '';
-    const line = `${marker} ${checked ? `${checked} ` : ''}${label}${desc}`;
-    const preview = active && item.preview ? item.preview.split('\n').slice(0, 3).map((l) => paint(theme, 'dim', `    ${l}`)) : [];
+    const line = `${bar} ${marker} ${checked ? `${checked} ` : ''}${rawLabel}${desc}`;
+    const preview = active && item.preview
+      ? item.preview.split('\n').slice(0, 3).map((l) => `${bar}     ${paint(theme, 'dim', l)}`)
+      : [];
     return [line, ...preview];
   });
   return [
-    heading,
-    questionLine,
+    ...askHeaderLines(theme, question, width),
     ...rows,
-    paint(theme, warning ? 'warning' : 'dim', warning ?? help),
+    askFooterLine(theme, help, width, warning),
   ];
 }
 
@@ -140,23 +170,23 @@ function renderAskTextLines(
   value: string,
   placeholder: string | undefined,
   help: string,
+  width: number,
   warning?: string,
 ): string[] {
+  const bar = paint(theme, 'brand', '│');
   const shown = value.length > 0 ? value : paint(theme, 'dim', placeholder ?? 'type answer…');
   return [
-    paint(theme, 'brand', '◆ USER INPUT REQUIRED'),
-    `${paint(theme, 'brand', 'Question:')} ${question}`,
-    `> ${shown}`,
-    paint(theme, warning ? 'warning' : 'dim', warning ?? help),
+    ...askHeaderLines(theme, question, width),
+    `${bar} ${paint(theme, 'brand', '›')} ${shown}`,
+    askFooterLine(theme, help, width, warning),
   ];
 }
 
-async function runBelowEditorAsk(
+async function runAskOverlay(
   ctx: PiContext,
   params: {
     question: string;
     options: AskOption[];
-    allowFreeText?: boolean;
     placeholder?: string;
     multiSelect?: boolean;
     min?: number;
@@ -164,173 +194,175 @@ async function runBelowEditorAsk(
     fields?: AskField[];
   },
 ): Promise<AskOutcome | undefined> {
-  if (!supportsBelowEditorAsk(ctx)) return undefined;
+  if (!supportsAskOverlay(ctx)) return undefined;
 
-  return new Promise<AskOutcome>((resolve) => {
-    let done = false;
-    let unsubscribe: (() => void) | undefined;
-    const finish = (outcome: AskOutcome) => {
-      if (done) return;
-      done = true;
-      unsubscribe?.();
-      ctx.ui?.setWidget?.(ASK_USER_WIDGET_NAME, undefined);
-      resolve(outcome);
-    };
+  const options = params.options.map((o) => ({ ...o, label: o.label ?? o.value }));
+  const fields = params.fields ?? [];
 
-    const options = params.options.map((o) => ({ ...o, label: o.label ?? o.value }));
-    const fields = params.fields ?? [];
-    let cursor = 0;
-    let text = '';
-    let fieldIndex = 0;
-    let requiredRetry = false;
-    let warning: string | undefined;
-    const selected = new Set<number>();
-    const formValues: Record<string, string> = {};
-    let mode: 'single' | 'multi' | 'text' | 'form' = fields.length
-      ? 'form'
-      : options.length
-        ? params.multiSelect
-          ? 'multi'
-          : 'single'
-        : 'text';
+  // Render as a focused overlay modal (ctx.ui.custom, { overlay:true }) that sits
+  // over the conversation area — the same surface the command palette / effort
+  // dial use — rather than a strip pinned above the editor. The free-text "type
+  // my own answer" row is always appended AFTER the listed options so the user can
+  // redirect instead of being boxed into the choices.
+  return ctx.ui!.custom!<AskOutcome>(
+    (tuiRaw: unknown, theme: PiTheme, _kb: unknown, done: (o: AskOutcome) => void) => {
+      const tui = tuiRaw as { requestRender?: () => void };
+      let finished = false;
+      let cursor = 0;
+      let text = '';
+      let fieldIndex = 0;
+      let requiredRetry = false;
+      let warning: string | undefined;
+      const selected = new Set<number>();
+      const formValues: Record<string, string> = {};
+      let mode: 'single' | 'multi' | 'text' | 'form' = fields.length
+        ? 'form'
+        : options.length
+          ? params.multiSelect
+            ? 'multi'
+            : 'single'
+          : 'text';
 
-    const render = (theme?: PiTheme): string[] => {
-      if (mode === 'text') {
-        return renderAskTextLines(theme, params.question, text, params.placeholder, 'enter submit • esc cancel', warning);
-      }
-      if (mode === 'form') {
-        const field = fields[fieldIndex]!;
-        const label = field.label || field.name;
-        return renderAskTextLines(theme, `${params.question} — ${label}`, text, field.placeholder, 'enter next • esc cancel', warning);
-      }
-      const rows: Array<{ label: string; description?: string; preview?: string; freeText?: boolean }> =
-        options.map((o) => ({ label: o.label!, description: o.description, preview: o.preview }));
-      rows.push({ label: '✎ Type my own answer…', description: 'custom free-text reply', freeText: true });
-      return renderAskChoiceLines(
-        theme,
-        params.question,
-        rows,
-        cursor,
-        mode === 'multi' ? selected : undefined,
-        mode === 'multi' ? '↑↓ navigate • space toggle • enter confirm • custom answer row • esc cancel' : '↑↓ navigate • enter select • custom answer row • esc cancel',
-        warning,
-      );
-    };
+      const finish = (outcome: AskOutcome): void => {
+        if (finished) return;
+        finished = true;
+        done(outcome);
+      };
+      const rerender = (): void => tui?.requestRender?.();
 
-    const update = () => {
-      ctx.ui?.setWidget?.(
-        ASK_USER_WIDGET_NAME,
-        (_tui: unknown, theme: PiTheme) => makeRenderer((width) => render(theme).map((line) => truncateToWidth(line, width))),
-        { placement: 'belowEditor' },
-      );
-    };
-
-    const move = (delta: number) => {
-      const extra = mode === 'single' || mode === 'multi' ? 1 : 0;
-      const count = Math.max(1, options.length + extra);
-      cursor = (cursor + delta + count) % count;
-      warning = undefined;
-      update();
-    };
-
-    unsubscribe = ctx.ui!.onTerminalInput!((data) => {
-      if (done) return undefined;
-      if (isCancelKey(data)) {
-        finish({ status: 'cancelled' });
-        return { consume: true };
-      }
-
-      if (mode === 'single' || mode === 'multi') {
-        if (data === '\x1b[A') {
-          move(-1);
-          return { consume: true };
+      const render = (width: number): string[] => {
+        const w = width > 0 ? width : 80;
+        if (mode === 'text') {
+          return renderAskTextLines(theme, params.question, text, params.placeholder, 'enter submit • esc cancel', w, warning);
         }
-        if (data === '\x1b[B') {
-          move(1);
-          return { consume: true };
-        }
-        if (mode === 'multi' && data === ' ') {
-          if (cursor === options.length) {
-            mode = 'text';
-            text = '';
-            warning = undefined;
-            update();
-            return { consume: true };
-          }
-          if (selected.has(cursor)) selected.delete(cursor);
-          else if (params.max === undefined || selected.size < params.max) selected.add(cursor);
-          else warning = `Choose at most ${params.max} option${params.max === 1 ? '' : 's'}.`;
-          update();
-          return { consume: true };
-        }
-        if (isEnterKey(data)) {
-          if (cursor === options.length) {
-            mode = 'text';
-            text = '';
-            warning = undefined;
-            update();
-            return { consume: true };
-          }
-          if (mode === 'multi') {
-            const min = params.min ?? 0;
-            if (selected.size < min) {
-              warning = `Choose at least ${min} option${min === 1 ? '' : 's'}.`;
-              update();
-              return { consume: true };
-            }
-            finish({ status: 'multiSelected', values: [...selected].sort((a, b) => a - b).map((i) => options[i]!.value) });
-            return { consume: true };
-          }
-          const picked = options[cursor];
-          finish({ status: 'selected', value: picked?.value, label: picked?.label ?? picked?.value });
-          return { consume: true };
-        }
-        return { consume: true };
-      }
-
-      if (isEnterKey(data)) {
         if (mode === 'form') {
           const field = fields[fieldIndex]!;
           const label = field.label || field.name;
-          if (field.required && !text.trim()) {
-            if (requiredRetry) {
-              finish({ status: 'cancelled', label });
-              return { consume: true };
-            }
-            requiredRetry = true;
-            warning = `${label} is required.`;
-            update();
-            return { consume: true };
-          }
-          formValues[field.name] = text;
-          fieldIndex += 1;
-          text = '';
-          requiredRetry = false;
-          warning = undefined;
-          if (fieldIndex >= fields.length) finish({ status: 'form', values: formValues });
-          else update();
-          return { consume: true };
+          const step = `${fieldIndex + 1}/${fields.length}`;
+          return renderAskTextLines(theme, `${params.question} — ${label} (${step})`, text, field.placeholder, 'enter next • esc cancel', w, warning);
         }
-        finish({ status: 'text', value: text });
-        return { consume: true };
-      }
-      if (isBackspaceKey(data)) {
-        text = text.slice(0, -1);
-        warning = undefined;
-        update();
-        return { consume: true };
-      }
-      if (isPrintableInput(data)) {
-        text += data;
-        warning = undefined;
-        update();
-        return { consume: true };
-      }
-      return { consume: true };
-    });
+        const rows: Array<{ label: string; description?: string; preview?: string; freeText?: boolean }> =
+          options.map((o) => ({ label: o.label!, description: o.description, preview: o.preview }));
+        rows.push({ label: '✎ Type my own answer…', description: 'custom free-text reply', freeText: true });
+        return renderAskChoiceLines(
+          theme,
+          params.question,
+          rows,
+          cursor,
+          mode === 'multi' ? selected : undefined,
+          mode === 'multi' ? '↑↓ navigate • space toggle • enter confirm • custom answer row • esc cancel' : '↑↓ navigate • enter select • custom answer row • esc cancel',
+          w,
+          warning,
+        );
+      };
 
-    update();
-  });
+      const move = (delta: number): void => {
+        const extra = mode === 'single' || mode === 'multi' ? 1 : 0;
+        const count = Math.max(1, options.length + extra);
+        cursor = (cursor + delta + count) % count;
+        warning = undefined;
+        rerender();
+      };
+
+      const handle = (data: string): void => {
+        if (finished) return;
+        if (isCancelKey(data)) { finish({ status: 'cancelled' }); return; }
+
+        if (mode === 'single' || mode === 'multi') {
+          if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl('p'))) { move(-1); return; }
+          if (matchesKey(data, Key.down) || matchesKey(data, Key.ctrl('n'))) { move(1); return; }
+          if (mode === 'multi' && data === ' ') {
+            if (cursor === options.length) { mode = 'text'; text = ''; warning = undefined; rerender(); return; }
+            if (selected.has(cursor)) selected.delete(cursor);
+            else if (params.max === undefined || selected.size < params.max) selected.add(cursor);
+            else warning = `Choose at most ${params.max} option${params.max === 1 ? '' : 's'}.`;
+            rerender();
+            return;
+          }
+          if (isEnterKey(data)) {
+            if (cursor === options.length) { mode = 'text'; text = ''; warning = undefined; rerender(); return; }
+            if (mode === 'multi') {
+              const min = params.min ?? 0;
+              if (selected.size < min) {
+                warning = `Choose at least ${min} option${min === 1 ? '' : 's'}.`;
+                rerender();
+                return;
+              }
+              finish({ status: 'multiSelected', values: [...selected].sort((a, b) => a - b).map((i) => options[i]!.value) });
+              return;
+            }
+            const picked = options[cursor];
+            finish({ status: 'selected', value: picked?.value, label: picked?.label ?? picked?.value });
+            return;
+          }
+          return;
+        }
+
+        if (isEnterKey(data)) {
+          if (mode === 'form') {
+            const field = fields[fieldIndex]!;
+            const label = field.label || field.name;
+            if (field.required && !text.trim()) {
+              if (requiredRetry) { finish({ status: 'cancelled', label }); return; }
+              requiredRetry = true;
+              warning = `${label} is required.`;
+              rerender();
+              return;
+            }
+            formValues[field.name] = text;
+            fieldIndex += 1;
+            text = '';
+            requiredRetry = false;
+            warning = undefined;
+            if (fieldIndex >= fields.length) finish({ status: 'form', values: formValues });
+            else rerender();
+            return;
+          }
+          finish({ status: 'text', value: text });
+          return;
+        }
+        if (isBackspaceKey(data)) { text = text.slice(0, -1); warning = undefined; rerender(); return; }
+        if (isPrintableInput(data)) { text += data; warning = undefined; rerender(); return; }
+      };
+
+      // Focusable component: when the overlay has focus in a text/form mode we
+      // emit CURSOR_MARKER at the input caret so pi positions the hardware cursor
+      // there (IME candidate windows for CJK etc.). The marker MUST be appended
+      // AFTER truncateToWidth — our sanitizer strips the marker's trailing BEL,
+      // and pi strips the marker itself before display.
+      const comp: {
+        focused: boolean;
+        render: (w: number) => string[];
+        invalidate: () => void;
+        handleInput: (data: string) => void;
+      } = {
+        focused: false,
+        render: (w: number) => {
+          const lines = render(w).map((line) => truncateToWidth(line, w));
+          if (comp.focused && (mode === 'text' || mode === 'form')) {
+            const caret = lines.findIndex((l) => l.includes('\u203a'));
+            if (caret >= 0) lines[caret] = lines[caret] + CURSOR_MARKER;
+          }
+          return lines;
+        },
+        invalidate: () => { /* stateless: re-render pulls current state */ },
+        handleInput: (data: string) => handle(data),
+      };
+      return comp;
+    },
+    // Anchor the modal in the message area (top-center) rather than letting it
+    // default toward the editor line, so the prompt reads as part of the
+    // conversation flow. pi's API cannot embed a live keyboard widget inside the
+    // immutable scrollback, so a top-anchored focused overlay is the closest
+    // “in the messages” surface available.
+    {
+      overlay: true,
+      overlayOptions: { anchor: 'top-center', width: '80%', maxHeight: '70%', margin: { top: 2 } },
+      // Grab input focus immediately so keystrokes reach the prompt and the TUI
+      // sets `focused = true` (required for the IME cursor marker to render).
+      onHandle: (handle: unknown) => (handle as { focus?: () => void })?.focus?.(),
+    },
+  );
 }
 
 export function registerAskUserTool(
@@ -371,9 +403,6 @@ export function registerAskUserTool(
           }),
           { description: 'Options for a list picker. Omit for a free-text prompt.' },
         ),
-      ),
-      allowFreeText: Type.Optional(
-        Type.Boolean({ description: 'Deprecated compatibility flag: options[] always include a "Type my own answer" entry.' }),
       ),
       placeholder: Type.Optional(Type.String({ description: 'Placeholder for the free-text input.' })),
       multiSelect: Type.Optional(
@@ -423,10 +452,9 @@ export function registerAskUserTool(
 
       let outcome: AskOutcome;
       try {
-        outcome = (await runBelowEditorAsk(ctx!, {
+        outcome = (await runAskOverlay(ctx!, {
           question,
           options,
-          allowFreeText: true,
           placeholder: p.placeholder,
           multiSelect: p.multiSelect,
           min: p.min,

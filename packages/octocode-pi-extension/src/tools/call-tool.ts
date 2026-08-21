@@ -86,13 +86,30 @@ const TRIVIAL_PATTERNS: Array<{ words: string[]; suggestion: string }> = [
   { words: ['echo', 'print', 'constant'], suggestion: 'echo' },
 ];
 
+/**
+ * Tokenize a capability name + intent into whole words. Splits camelCase
+ * (`updateData` → `update`, `data`) and separators, but keeps letter/digit runs
+ * together (`base64` stays one token). Whole-word matching avoids substring
+ * false positives like `updateData` hitting `date` or `getNow` hitting `now`
+ * via a naive `includes`.
+ */
+function tokenizeTriviality(text: string): Set<string> {
+  const spaced = text.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+  return new Set(
+    spaced
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean),
+  );
+}
+
 export function assessTriviality(
   toolType: string,
   intent: string,
 ): { trivial: boolean; suggestion?: string } {
-  const hay = `${toolType} ${intent}`.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const tokens = tokenizeTriviality(`${toolType} ${intent}`);
   for (const p of TRIVIAL_PATTERNS) {
-    if (p.words.some((w) => hay.includes(w))) return { trivial: true, suggestion: p.suggestion };
+    if (p.words.some((w) => tokens.has(w))) return { trivial: true, suggestion: p.suggestion };
   }
   return { trivial: false };
 }

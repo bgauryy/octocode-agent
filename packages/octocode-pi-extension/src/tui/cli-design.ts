@@ -6,7 +6,8 @@
  * drift into separate visual languages.
  */
 
-import { TOKEN, colorEnabled, paint, type PaintTheme, type SemanticToken } from './palette.js';
+import { truncateToWidth } from '@earendil-works/pi-tui';
+import { TOKEN, colorEnabled, paint, sanitizeLine, type PaintTheme, type SemanticToken } from './palette.js';
 
 export const CLI_GLYPH = {
   brand: '◆',
@@ -92,8 +93,10 @@ export function summarizeInlineValue(value: unknown, max = 90): string {
           return String(value);
         }
       })();
-  const compact = raw.replace(/\s+/g, ' ').trim();
-  return compact.length > max ? `${compact.slice(0, max - 1)}…` : compact;
+  const compact = sanitizeLine(raw.replace(/\s+/g, ' ').trim());
+  // Cell-width aware so CJK/emoji payloads truncate to `max` visible cells and
+  // never overflow the row (byte-length .slice under-counts wide glyphs).
+  return truncateToWidth(compact, max);
 }
 
 export type CliToolRowState = 'queued' | 'running' | 'update' | 'done' | 'failed';

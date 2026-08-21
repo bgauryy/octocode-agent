@@ -78,13 +78,16 @@ test('long descriptions are truncated to bound token cost', () => {
   assert.match(line, /…$/);
 });
 
+// Registers 60 real tools; each runs a sandboxed (--permission) verification
+// spawn, so this legitimately exceeds vitest's 5s default. Production registers
+// one tool at a time — the loop is a stress fixture, hence the raised timeout.
 test('entry count is capped so a huge registry cannot bloat the prompt', () => {
   for (let i = 0; i < 60; i++) addTool(`tool-${i}`);
   const out = getDynamicCapabilitiesAddendum();
   const toolLines = out.split('\n').filter((l) => l.startsWith('- tool-'));
   assert.ok(toolLines.length <= 30, `capped, got ${toolLines.length}`);
   assert.match(out, /more \(call action:"list"\)/);
-});
+}, 30_000);
 
 test('reflects changes on the next read (no cache, no watcher needed)', () => {
   assert.equal(getDynamicCapabilitiesAddendum(), '');

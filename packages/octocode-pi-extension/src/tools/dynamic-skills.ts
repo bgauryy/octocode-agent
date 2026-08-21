@@ -21,6 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PI_CONFIG_DIR } from '../constants.js';
+import { KEYWORD_MATCH_THRESHOLD, tokenize, withRegistryLock, writeJsonAtomic, readJsonSafe } from './registry-store.js';
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
@@ -63,7 +64,6 @@ export type SkillRegisterResult =
   | { ok: true; entry: SkillManifestEntry }
   | { ok: false; reason: 'invalid-name' | 'no-reason' | 'invalid-frontmatter' | 'invalid-structure'; detail?: string };
 
-const KEYWORD_MATCH_THRESHOLD = 2;
 // Agent Skills spec: 1-64 chars, lowercase a-z/0-9/hyphen, no leading/trailing/double hyphen.
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_NAME = 64;
@@ -100,61 +100,20 @@ function ensureRegistry(dir: string): void {
 
 export function readIndex(dir = getSkillsDir()): SkillIndex {
   ensureRegistry(dir);
-  try {
-    const raw = JSON.parse(fs.readFileSync(indexPath(dir), 'utf8')) as SkillIndex;
-    if (!raw || typeof raw !== 'object' || !raw.skills) return { version: 1, skills: {} };
-    return raw;
-  } catch {
-    return { version: 1, skills: {} };
-  }
+  return readJsonSafe<SkillIndex>(
+    indexPath(dir),
+    { version: 1, skills: {} },
+    (raw) => Boolean((raw as SkillIndex).skills),
+  );
 }
 
 function writeIndex(dir: string, idx: SkillIndex): void {
-  const tmp = `${indexPath(dir)}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(idx, null, 2));
-  fs.renameSync(tmp, indexPath(dir));
+  writeJsonAtomic(indexPath(dir), idx);
 }
 
-/**
- * Cross-process mutex around read-modify-write of the shared skills index (see the
- * dynamic-tools equivalent). Atomic `mkdirSync`; stale locks (crashed holder) are
- * reclaimed. Not reentrant — callers must not nest.
- */
-const LOCK_TIMEOUT_MS = 5_000;
-const LOCK_STALE_MS = 30_000;
+/** Cross-process mutex around a read-modify-write of the shared skills registry. */
 function withIndexLock<T>(dir: string, fn: () => T): T {
-  fs.mkdirSync(dir, { recursive: true });
-  const lock = path.join(dir, '.skills-index.lock');
-  const start = Date.now();
-  for (;;) {
-    try {
-      fs.mkdirSync(lock);
-      break;
-    } catch {
-      try {
-        if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) {
-          fs.rmdirSync(lock);
-          continue;
-        }
-      } catch {
-        // lock vanished → retry
-      }
-      if (Date.now() - start > LOCK_TIMEOUT_MS) throw new Error('dynamic-skills registry lock timeout');
-      const until = Date.now() + 15;
-      while (Date.now() < until) {
-        /* brief spin */
-      }
-    }
-  }
-  try {
-    return fn();
-  } finally {
-    try {
-      fs.rmdirSync(lock);
-    } catch {
-      // already released
-    }
-  }
+  return withRegistryLock(dir, '.skills-index.lock', 'dynamic-skills', fn);
 }
 
 // ─── validation (the skill verification gate) ─────────────────────────────────
@@ -232,9 +191,7 @@ export function resolveSkill(
   return { hit: 'miss' };
 }
 
-function tokenize(s: string): Set<string> {
-  return new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
-}
+
 
 // ─── registration (validation-gated) ──────────────────────────────────────────
 

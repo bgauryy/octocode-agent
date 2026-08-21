@@ -15,6 +15,8 @@ import {
   killWorkerById,
   getWorkerTranscript,
   agentPanelLines,
+  pruneDroppableAgentsForSession,
+  listWorkerLedgerEntries,
 } from '../src/tools/agent-tools.js';
 import type { WorkerLedgerEntry, WorkerLedgerEventType } from '../src/types.js';
 
@@ -83,6 +85,24 @@ beforeEach(() => {
 
 afterEach(() => {
   setAgentProcessFactoryForTests(null);
+});
+
+// ─── pruneDroppableAgentsForSession ───────────────────────────────────────────
+
+test('session prune drops killed workers but keeps live ones', () => {
+  if (isSubagentProcess()) return;
+  const mock = makeMockProcess();
+  setAgentProcessFactoryForTests(() => mock as never);
+  const record = spawnRpcAgent({ task: 'to be killed', resourceMode: 'lean' });
+  killWorkerById(record.id);
+  // Killed → droppable; prune must remove it from the ledger.
+  const removed = pruneDroppableAgentsForSession();
+  assert.ok(removed >= 1, 'killed worker should be pruned');
+  assert.equal(
+    listWorkerLedgerEntries().some((e) => e.agentId === record.id),
+    false,
+    'pruned worker must not remain in the ledger',
+  );
 });
 
 // ─── registerWorkerLedgerListener ─────────────────────────────────────────────

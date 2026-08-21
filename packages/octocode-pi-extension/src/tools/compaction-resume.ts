@@ -1,6 +1,4 @@
-import type { PiContext, PiInstance } from '../types.js';
-
-export type Notifier = (ctx: PiContext | undefined, msg: string, level?: string) => void;
+import type { PiContext, PiInstance, NotifyFn } from '../types.js';
 
 const RESUME_DEDUPE_WINDOW_MS = 1500;
 const DEFAULT_RESUME_RETRY_DELAY_MS = 400;
@@ -25,7 +23,7 @@ export function clearCompactionWorkingState(ctx: PiContext | undefined): void {
 export function scheduleCompactionContinuation(
   pi: PiInstance,
   ctx: PiContext | undefined,
-  notify: Notifier,
+  notify: NotifyFn,
   continuation: string,
   successMessage: string,
 ): void {
@@ -74,5 +72,14 @@ export function scheduleCompactionContinuation(
 }
 
 export function resetCompactionResumeStateForTests(): void {
+  lastResumeScheduledAt = 0;
+}
+
+/**
+ * Reset the cross-turn resume dedupe clock. Called on session_start so a continuation
+ * scheduled just before a session boundary cannot suppress a legitimate continuation in
+ * the next session within the 1.5s dedupe window.
+ */
+export function resetCompactionResumeSchedule(): void {
   lastResumeScheduledAt = 0;
 }

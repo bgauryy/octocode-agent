@@ -46,7 +46,8 @@ function renderSection(label: string, entries: CatalogEntry[]): string[] {
 
 /**
  * Build the `<dynamic_capabilities>` block, or `''` when there are no dynamic tools or
- * skills. Reads both registries live; safe to call every turn.
+ * skills. Reads both registries live so any change is reflected on the next call — this
+ * correctness-first "no cache" contract is deliberate (the reads are small local JSON).
  */
 export function getDynamicCapabilitiesAddendum(): string {
   let toolEntries: CatalogEntry[] = [];

@@ -23,13 +23,10 @@ test('resolvePromptMode: explicit option wins, then env, then append default', (
     delete process.env['OCTOCODE_PROMPT_MODE'];
     assert.equal(resolvePromptMode(), 'append');
     assert.equal(resolvePromptMode('octocode-first'), 'octocode-first');
-    assert.equal(resolvePromptMode('replace'), 'octocode-first', 'replace is a compatibility alias');
     assert.equal(resolvePromptMode('append'), 'append');
 
     process.env['OCTOCODE_PROMPT_MODE'] = 'octocode-first';
     assert.equal(resolvePromptMode(), 'octocode-first', 'env selects octocode-first when no option given');
-    process.env['OCTOCODE_PROMPT_MODE'] = 'replace';
-    assert.equal(resolvePromptMode(), 'octocode-first', 'legacy env replace aliases to octocode-first');
     assert.equal(resolvePromptMode('append'), 'append', 'explicit option overrides env');
 
     process.env['OCTOCODE_PROMPT_MODE'] = 'garbage';
@@ -59,11 +56,4 @@ test('composeSystemPrompt: append keeps Pi prompt first, octocode-first leads wi
     'octocode-first: harness leads',
   );
   assert.ok(octocodeFirst.includes('PI_BASE'), 'octocode-first: Pi prompt preserved, never dropped');
-
-  const legacyReplace = composeSystemPrompt({
-    piSystemPrompt: 'PI_BASE',
-    octocodePrompt: 'OCTO_HARNESS',
-    promptMode: 'replace',
-  });
-  assert.equal(legacyReplace, octocodeFirst, 'replace remains a compatibility alias');
 });

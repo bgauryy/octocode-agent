@@ -59,6 +59,9 @@ function makeCtx(opts?: {
   const notifications: Array<{ message: string; level?: string }> = [];
   const ctx = {
     hasUI: opts?.custom !== undefined,
+    // Real TUI contexts always carry mode:'tui'; the overlay helper now requires
+    // it (custom() is TUI-only), so the mock must set it when providing custom.
+    ...(opts?.custom ? { mode: 'tui' as const } : {}),
     ui: {
       notify: (message: string, level?: string) => { notifications.push({ message, level }); },
       ...(opts?.custom ? { custom: opts.custom } : {}),

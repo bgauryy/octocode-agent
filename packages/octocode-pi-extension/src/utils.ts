@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { PI_CONFIG_DIR } from './constants.js';
+import { PI_CONFIG_DIR, CHARS_PER_TOKEN } from './constants.js';
 
 // 800 chars gives a meaningful preview in TUI expanded view (~20 lines of 40 chars)
 // while staying well below the 12000-char agent output budget.
@@ -53,4 +53,9 @@ export function truncateUserVisibleToolOutput(
     truncated: true,
     omittedChars: value.length - maxChars,
   };
+}
+
+/** Approximate token count for a string length, using the shared CHARS_PER_TOKEN heuristic. */
+export function estimateTokens(chars: number): number {
+  return Math.ceil(chars / CHARS_PER_TOKEN);
 }

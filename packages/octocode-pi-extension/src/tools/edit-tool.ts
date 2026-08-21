@@ -123,9 +123,6 @@ function stripBom(text: string): { bom: string; text: string } {
   return text.startsWith('\uFEFF') ? { bom: '\uFEFF', text: text.slice(1) } : { bom: '', text };
 }
 
-// resolveEditPath is an alias for resolveFilePath from file-state.ts; all call sites below
-// use this local name to keep the diff surface minimal.
-const resolveEditPath = resolveFilePath;
 
 function findOccurrences(content: string, needle: string): number[] {
   if (needle.length === 0) return [];
@@ -697,15 +694,16 @@ function buildParameters(Type: TypeBoxBuilder): TSchema {
   );
   return Type.Object(
     {
-      path: Type.Optional(Type.String({ description: 'Path to the file to edit (relative or absolute)' })),
+      path: Type.Optional(Type.String({ minLength: 1, description: 'Path to the file to edit (relative or absolute). Provide with `edits`; mutually exclusive with `queries`.' })),
       edits: Type.Optional(Type.Array(editOperation, {
-        description: 'One or more targeted replacements. Edits are matched against the original file content, not after earlier replacements.',
+        minItems: 1,
+        description: 'One or more targeted replacements. Edits are matched against the original file content, not after earlier replacements. Use with `path`.',
       })),
       queries: Type.Optional(Type.Array(Type.Object({
-        path: Type.String({ description: 'Path to the file to edit (relative or absolute)' }),
-        edits: Type.Array(editOperation),
+        path: Type.String({ minLength: 1, description: 'Path to the file to edit (relative or absolute)' }),
+        edits: Type.Array(editOperation, { minItems: 1 }),
         requireRecentRead: Type.Optional(Type.Boolean({ description: 'Require a fresh recorded localGetFileContent read before editing this file.' })),
-      }, { additionalProperties: false }), { description: 'Multi-file edit requests. All replacements are computed before any file is written.' })),
+      }, { additionalProperties: false }), { minItems: 1, description: 'Multi-file edit requests. All replacements are computed before any file is written. Mutually exclusive with `path`+`edits`.' })),
       requireRecentRead: Type.Optional(Type.Boolean({ description: 'Require a fresh recorded localGetFileContent read before editing.' })),
     },
     { additionalProperties: false },
@@ -738,7 +736,7 @@ function changesSuffix(prepared: PreparedEdit[]): string {
 }
 
 async function prepareEdit(query: EditQuery, cwd: string, inheritedRequireRecentRead: boolean): Promise<PreparedEdit> {
-  const absolutePath = resolveEditPath(query.path, cwd);
+  const absolutePath = resolveFilePath(query.path, cwd);
   // Bound writes to home + ALLOWED_PATHS + cwd/tmp (same model as the native tools).
   assertPathAllowed(absolutePath, cwd, 'edit');
   await access(absolutePath, constants.R_OK | constants.W_OK);
@@ -798,7 +796,7 @@ export function registerEditTool(
       const cwd = ctx?.cwd ?? process.cwd();
       if (signal?.aborted) throw new Error('Operation aborted');
       const queries = queriesFromRequest(request);
-      const absolutePaths = queries.map((query) => resolveEditPath(query.path, cwd));
+      const absolutePaths = queries.map((query) => resolveFilePath(query.path, cwd));
       if (new Set(absolutePaths).size !== absolutePaths.length) {
         throw new Error('Edit tool input is invalid. queries must not contain duplicate target paths.');
       }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'vitest';
 import {
   parseAwarenessStatus,
+  parseLastMessage,
   hasAwarenessSignal,
   formatAwarenessPanel,
   refreshAwarenessPanel,
@@ -75,6 +76,28 @@ test('formatAwarenessPanel renders counts and surfaces verify-debt', () => {
   assert.doesNotMatch(lines[0]!, /agents 2/); // shown in the lower toolbar, not the below-editor panel
   assert.match(lines[0]!, /peer-msgs 5/);
   assert.match(lines[0]!, /verify-debt 4/);
+});
+
+test('parseLastMessage summarizes the newest peer message', () => {
+  const json = JSON.stringify([
+    { fromAgentId: 'a1', toAgentId: 'b2', text: 'older note', createdAt: 100 },
+    { fromAgentId: 'planner', toAgentId: 'worker', text: 'take the parser lane', createdAt: 200 },
+  ]);
+  const last = parseLastMessage(json)!;
+  assert.equal(last.from, 'planner');
+  assert.equal(last.to, 'worker');
+  assert.match(last.preview, /take the parser lane/);
+});
+
+test('parseLastMessage returns undefined for empty or bad input', () => {
+  assert.equal(parseLastMessage('[]'), undefined);
+  assert.equal(parseLastMessage('not json'), undefined);
+});
+
+test('formatAwarenessPanel renders the last peer message when present', () => {
+  const s = { ...parseAwarenessStatus(FULL)!, lastMessage: { from: 'planner', to: 'worker', preview: 'take lane' } };
+  const line = formatAwarenessPanel(s)[0]!;
+  assert.match(line, /peer-msgs 5 \(last planner→worker: take lane\)/);
 });
 
 test('formatAwarenessPanel is empty when there is no signal', () => {

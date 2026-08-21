@@ -6,6 +6,10 @@
  */
 
 import { contextGauge, paint, type PaintTheme, type SemanticToken } from './tui/palette.js';
+// Route width helpers through render-helpers (which sanitizes tabs/control chars) rather
+// than raw pi-tui, so footer/session strings are measured and cut at the true cell width.
+import { truncateToWidth, truncatePlainToWidth } from './tools/render-helpers.js';
+import { estimateTokens } from './utils.js';
 
 export const OCTOCODE_SPINNER_FRAMES = ['✦', '✧', '✶', '✺', '✹', '✷', '✶', '✧'] as const;
 export const OCTOCODE_SPINNER_INTERVAL_MS = 120;
@@ -114,6 +118,12 @@ export interface FooterInput {
   awarenessAgents?: number;
   /** Active model-dial label (e.g. the dial preset name), shown as a branded segment. */
   dial?: string;
+  /**
+   * Per-turn Octocode harness prompt overhead, for the context-breakdown segment.
+   * Estimated tokens use the ~4 chars/token heuristic. Distinct from the live `ctx`
+   * running-total gauge (which comes from Pi's getContextUsage).
+   */
+  overhead?: { totalChars: number; sysChars: number; mcpServers: number; mcpTools: number; skills: number };
   branch?: string;
   dirty: boolean;
 }
@@ -129,7 +139,9 @@ const INLINE_STATUS_MAX = 24;
 
 function ellipsize(text: string, max: number): string {
   const clean = text.replace(/\s+/g, ' ').trim();
-  return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
+  // Cell-width aware: CJK/emoji agent labels are 2 cells each, so a byte-length
+  // cap would let the footer segment overflow its budget.
+  return truncateToWidth(clean, max);
 }
 
 /**
@@ -209,6 +221,17 @@ export function buildFooterSegments(input: FooterInput, density: FooterDensity =
     segs.push({ text: `◉ ${input.dial}`, token: 'brand' });
   }
 
+  // Harness prompt overhead: total est. tokens with a system/mcp/skills breakdown.
+  // Full density adds the breakdown; default shows just the total; compact drops it.
+  if (!compact && input.overhead && input.overhead.totalChars > 0) {
+    const o = input.overhead;
+    const tok = (chars: number): string => formatCompact(estimateTokens(chars));
+    const breakdown = density === 'full'
+      ? ` (sys ${tok(o.sysChars)} · mcp ${o.mcpServers}/${o.mcpTools} · skills ${o.skills})`
+      : '';
+    segs.push({ text: `Σ~${tok(o.totalChars)}${breakdown}`, token: 'dim' });
+  }
+
   if (input.branch) segs.push({ text: `${input.branch}${input.dirty ? '*' : ''}` });
 
   return segs;
@@ -253,6 +276,7 @@ const SESSION_NAME_MAX = 48;
 export function deriveSessionName(text: string): string {
   const firstLine = String(text ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
   const clean = firstLine.replace(/\s+/g, ' ').trim();
-  if (clean.length <= SESSION_NAME_MAX) return clean;
-  return `${clean.slice(0, SESSION_NAME_MAX - 1)}…`;
+  // Cell-width aware: CJK/emoji names are 2 cells each and must not overflow or be
+  // sliced mid-surrogate the way a code-unit .slice would.
+  return truncatePlainToWidth(clean, SESSION_NAME_MAX);
 }

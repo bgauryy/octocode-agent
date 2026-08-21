@@ -5,10 +5,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildSurfaceSpec,
-  resolveAwarenessCli,
   loadProfile,
   profileToPiArgs,
 } from '../src/surfaces.js';
+import { getAwarenessCLIPath } from '../src/assets.js';
 
 const selfPath = fileURLToPath(import.meta.url);
 
@@ -57,10 +57,18 @@ describe('buildSurfaceSpec — installed awareness-lite CLI', () => {
   });
 });
 
-describe('resolveAwarenessCli', () => {
-  it('returns the installed Awareness Lite command and ignores stale env file paths', () => {
-    expect(resolveAwarenessCli({ OCTOCODE_AWARENESS_CLI: selfPath })).toMatch(/octocode-awareness-lite.*cli\.js/);
-    expect(resolveAwarenessCli({ OCTOCODE_AWARENESS_CLI: '/no/such/file.js' })).toMatch(/octocode-awareness-lite.*cli\.js/);
+describe('getAwarenessCLIPath', () => {
+  it('returns the installed Awareness Lite command regardless of stale env file paths', () => {
+    const prev = process.env.OCTOCODE_AWARENESS_CLI;
+    try {
+      process.env.OCTOCODE_AWARENESS_CLI = selfPath;
+      expect(getAwarenessCLIPath()).toMatch(/octocode-awareness-lite.*cli\.js/);
+      process.env.OCTOCODE_AWARENESS_CLI = '/no/such/file.js';
+      expect(getAwarenessCLIPath()).toMatch(/octocode-awareness-lite.*cli\.js/);
+    } finally {
+      if (prev === undefined) delete process.env.OCTOCODE_AWARENESS_CLI;
+      else process.env.OCTOCODE_AWARENESS_CLI = prev;
+    }
   });
 });
 
