@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
-import type { PiCommandContext, PiContext, PiInstance, PiTheme, RenderCallReturn, RenderContext, ToolCallResult, ToolDefinition, TSchema } from '../types.js';
+import type { NotifyFn, PiCommandContext, PiContext, PiInstance, PiTheme, RenderCallReturn, RenderContext, ToolCallResult, ToolDefinition, TSchema } from '../types.js';
 import { PI_CONFIG_DIR } from '../constants.js';
 import { assertPathAllowed } from './path-guard.js';
 import { stringEnumSchema } from './schema-helpers.js';
@@ -14,7 +14,6 @@ import { buildOctocodeRenderCall, buildOctocodeRenderResult, makeRenderer } from
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 
-type NotifyFn = (ctx: PiContext | undefined, message: string, level?: string) => void;
 type McpAction = 'list' | 'describe' | 'call' | 'status' | 'restart' | 'stop' | 'config' | 'add' | 'remove';
 
 interface McpServerConfig {
@@ -116,11 +115,6 @@ function cacheKey(ctx?: PiContext): string {
 
 function projectMcpPath(cwd: string): string {
   return path.join(cwd, PI_CONFIG_DIR, 'agent', 'mcp.json');
-}
-
-function legacyTypoProjectMcpPath(cwd: string): string {
-  // Compatibility for the common "agnet" typo; canonical docs/writes stay .pi/agent/mcp.json.
-  return path.join(cwd, PI_CONFIG_DIR, 'agnet', 'mcp.json');
 }
 
 function globalMcpPath(): string {
@@ -281,7 +275,7 @@ async function loadMcpConfig(ctx?: PiContext): Promise<McpLoadedConfig> {
     warnings.push(`${globalPath}: ${(error as Error).message}`);
   }
 
-  for (const candidate of [projectMcpPath(cwd), legacyTypoProjectMcpPath(cwd)]) {
+  for (const candidate of [projectMcpPath(cwd)]) {
     if (!fs.existsSync(candidate)) continue;
     if (!trusted) {
       sources.push({ scope: 'project', path: candidate, trusted: false });
@@ -422,6 +416,11 @@ export function stopAllMcpServers(): number {
     connections.delete(name);
     void connection?.client.close().catch(() => undefined);
   }
+  // Drop the injected-catalog and recent-schema caches so a following session in the
+  // same process (/new, /resume) cannot serve tools from now-stopped servers or keep
+  // stale tool schemas inlined in the system prompt. The next warmMcpCatalog repopulates.
+  cachedCatalogs.clear();
+  recentToolUse.clear();
   return names.length;
 }
 
@@ -486,14 +485,13 @@ export function startMcpConfigWatcher(ctx: PiContext | undefined, notify: Notify
   const dirs = new Set([
     path.dirname(globalMcpPath()),
     path.dirname(projectMcpPath(cwd)),
-    path.dirname(legacyTypoProjectMcpPath(cwd)),
   ]);
   const globalDir = path.dirname(globalMcpPath());
   for (const dir of dirs) {
     try {
       // Only the global dir (under $HOME) may be created; project dirs are
-      // watched only if they already exist — creating them (especially the
-      // legacy "agnet" typo path) pollutes user repos as a watch side effect.
+      // watched only if they already exist — creating them pollutes user repos
+      // as a watch side effect.
       if (dir === globalDir) fs.mkdirSync(dir, { recursive: true });
       else if (!fs.existsSync(dir)) continue;
       const watcher = fs.watch(dir, { persistent: false }, (_event, filename) => {
@@ -678,6 +676,15 @@ function formatCachedCatalogEntry(entry: ListedMcpServer, ctx: PiContext | undef
  *
  * Idempotent: only writes when the env vars are missing. Silent on errors.
  */
+/**
+ * Concise stderr warning for best-effort MCP paths. Never throws and never
+ * touches the TUI (stderr only) — it makes an otherwise-silent config failure
+ * observable in logs/debug output without blocking session start.
+ */
+function warnMcp(message: string): void {
+  try { process.stderr.write(`[octocode-mcp] ${message}\n`); } catch { /* stderr unavailable */ }
+}
+
 export function patchGlobalMcpOctocodeEnv(configPath = globalMcpPath()): void {
   try {
     if (!fs.existsSync(configPath)) return; // No global mcp.json — nothing to patch.
@@ -685,7 +692,7 @@ export function patchGlobalMcpOctocodeEnv(configPath = globalMcpPath()): void {
     // Re-parse as raw JSON so we can write it back with minimal diff.
     let raw: Record<string, unknown>;
     try { raw = JSON.parse(fs.readFileSync(configPath, 'utf8')); }
-    catch { return; }
+    catch { warnMcp(`global mcp.json is not valid JSON (${configPath}); skipping env patch`); return; }
 
     const servers = raw['mcpServers'];
     if (!isPlainRecord(servers)) return;
@@ -704,8 +711,9 @@ export function patchGlobalMcpOctocodeEnv(configPath = globalMcpPath()): void {
     servers[DEFAULT_OCTOCODE_MCP_SERVER_NAME] = entry;
     raw['mcpServers'] = servers;
     fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n', 'utf8');
-  } catch {
-    // Silently swallow — a missing or unwritable config must not block session start.
+  } catch (err) {
+    // Must not block session start, but make the failure observable.
+    warnMcp(`failed to patch global mcp.json env: ${(err as Error)?.message ?? String(err)}`);
   }
 }
 
@@ -728,9 +736,19 @@ export async function warmMcpCatalog(ctx?: PiContext, signal?: AbortSignal): Pro
       }
     }
     cacheListedCatalog(ctx, listed);
-  } catch {
-    // Best-effort: a missing/unreadable MCP config must not block session start.
+  } catch (err) {
+    // Best-effort: a missing/unreadable MCP config must not block session start,
+    // but a genuine load error (e.g. malformed mcp.json) is worth surfacing.
+    warnMcp(`catalog warm failed: ${(err as Error)?.message ?? String(err)}`);
   }
+}
+
+/** Cheap counts (servers + total tools) from the in-memory MCP catalog cache. */
+export function getCachedMcpCounts(ctx?: PiContext): { servers: number; tools: number } {
+  const cached = cachedCatalogs.get(cacheKey(ctx));
+  if (!cached?.length) return { servers: 0, tools: 0 };
+  const tools = cached.reduce((sum, entry) => sum + (Array.isArray(entry.tools) ? entry.tools.length : 0), 0);
+  return { servers: cached.length, tools };
 }
 
 export function getCachedMcpCatalogAddendum(ctx?: PiContext): string {
@@ -766,7 +784,7 @@ function formatConfig(config: McpLoadedConfig, cwd = process.cwd()): string {
   return lines.join('\n');
 }
 
-function formatStatus(config: McpLoadedConfig): string {
+function formatMcpServerStatus(config: McpLoadedConfig): string {
   const running = [...connections.keys()];
   return [
     'Octocode MCP status',
@@ -814,7 +832,7 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
   const serverName = typeof params['server'] === 'string' ? params['server'] : undefined;
 
   if (action === 'config') return result(formatConfig(loaded, ctx?.cwd ?? process.cwd()), { sources: loaded.sources, warnings: loaded.warnings });
-  if (action === 'status') return result(formatStatus(loaded), { running: [...connections.keys()], warnings: loaded.warnings });
+  if (action === 'status') return result(formatMcpServerStatus(loaded), { running: [...connections.keys()], warnings: loaded.warnings });
   if (action === 'stop') {
     const stopped = serverName ? await stopConnection(serverName) : stopAllMcpServers() > 0;
     if (serverName) invalidateServerCache(serverName);

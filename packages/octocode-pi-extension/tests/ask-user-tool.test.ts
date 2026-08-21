@@ -14,28 +14,34 @@ function loadTool(): ToolDefinition {
   return tools.get('askUser')!;
 }
 
-function belowEditorCtx() {
-  let inputHandler: ((data: string) => { consume?: boolean } | undefined) | undefined;
-  const widgets: Array<{ name: string; content: unknown; opts?: { placement?: string } }> = [];
+// Overlay harness: askUser now renders via ctx.ui.custom({ overlay:true }). The
+// mock invokes the factory synchronously, captures the component + overlay opts,
+// and resolves the custom() promise when the factory calls done().
+function overlayCtx() {
+  let component: { render(w: number): string[]; handleInput(d: string): void } | undefined;
+  let overlayOpts: { overlay?: boolean } | undefined;
+  const tui = { requestRender: () => {} };
   const ctx = {
     hasUI: true,
     mode: 'tui',
     ui: {
-      setWidget: (name: string, content: unknown, opts?: { placement?: string }) => {
-        widgets.push({ name, content, opts });
-      },
-      onTerminalInput: (handler: (data: string) => { consume?: boolean } | undefined) => {
-        inputHandler = handler;
-        return () => {
-          inputHandler = undefined;
-        };
-      },
+      custom: (
+        factory: (tui: unknown, theme: unknown, kb: unknown, done: (v: unknown) => void) => { render(w: number): string[]; handleInput(d: string): void },
+        opts?: { overlay?: boolean },
+      ) =>
+        new Promise((resolve) => {
+          overlayOpts = opts;
+          component = factory(tui, undefined, undefined, (v) => resolve(v));
+        }),
     },
   } as unknown as PiContext;
   return {
     ctx,
-    widgets,
-    send: (data: string) => inputHandler?.(data),
+    send: (data: string) => component?.handleInput(data),
+    render: (w = 100) => component?.render(w) ?? [],
+    overlayOpts: () => overlayOpts,
+    // Simulate the TUI granting focus (Focusable.focused = true).
+    focus: () => { if (component) (component as { focused?: boolean }).focused = true; },
   };
 }
 
@@ -50,6 +56,42 @@ test('askUser registration teaches option lists, concise labels, and inline fall
   assert.match(tool.promptGuidelines?.join('\n') ?? '', /safe default first/);
   assert.match(tool.promptGuidelines?.join('\n') ?? '', /custom free-text answer row/);
   assert.match(tool.promptGuidelines?.join('\n') ?? '', /fall back to asking the question directly/);
+});
+
+test('askUser falls back to inline in RPC mode even though hasUI is true and custom exists', async () => {
+  const tool = loadTool();
+  let customCalled = false;
+  const ctx = {
+    hasUI: true,
+    mode: 'rpc',
+    ui: {
+      // In RPC pi exposes custom() but it returns undefined; askUser must NOT
+      // treat this as interactive (would resolve as a bogus cancellation).
+      custom: async () => { customCalled = true; return undefined; },
+    },
+  } as unknown as PiContext;
+
+  const result = await tool.execute('id', { question: 'Ship it?', options: ['yes', 'no'] }, undefined, undefined, ctx);
+
+  assert.equal(customCalled, false, 'custom() must not be called outside tui mode');
+  assert.match(result.content[0]!.text, /No interactive UI available \(mode=rpc\)/);
+  assert.deepEqual(result.details, { status: 'unavailable', mode: 'rpc' });
+});
+
+test('askUser emits CURSOR_MARKER at the caret in text mode when focused (IME positioning)', async () => {
+  const tool = loadTool();
+  const { ctx, send, render, focus } = overlayCtx();
+  const pending = tool.execute('id', { question: 'Name?' }, undefined, undefined, ctx);
+  focus(); // TUI grants focus → Focusable.focused = true
+  send('Gu');
+  const lines = render(80);
+  const caretLine = lines.find((l) => l.includes('\u203a'))!;
+  // CURSOR_MARKER (APC escape) is appended after the typed text for the hardware cursor.
+  assert.ok(caretLine.includes('\u001b_pi:c\u0007'), 'focused text input must emit CURSOR_MARKER');
+  assert.ok(caretLine.trimEnd().endsWith('\u0007') || caretLine.includes('Gu'), 'marker sits at the caret after typed text');
+  send('\r');
+  const result = await pending;
+  assert.deepEqual(result.details, { status: 'text', value: 'Gu' });
 });
 
 test('askUser validates that a non-empty question is required', async () => {
@@ -83,24 +125,16 @@ test('askUser returns an inline-question instruction when no interactive UI is a
   assert.deepEqual(result.details, { status: 'unavailable', mode: 'rpc' });
 });
 
-test('askUser refuses editor-replacing native selector when below-editor input is unavailable', async () => {
+test('askUser uses the custom overlay and never Pi native select', async () => {
   const tool = loadTool();
   const selectCalls: Array<{ title: string; items: string[] }> = [];
-  const ctx = {
-    hasUI: true,
-    mode: 'tui',
-    ui: {
-      select: async (title: string, items: string[]) => {
-        selectCalls.push({ title, items });
-        return 'safe';
-      },
-      custom: async () => {
-        throw new Error('custom overlay should not be used for askUser fallback');
-      },
-    },
-  } as unknown as PiContext;
+  const { ctx, send, overlayOpts } = overlayCtx();
+  (ctx as unknown as { ui: Record<string, unknown> }).ui.select = async (title: string, items: string[]) => {
+    selectCalls.push({ title, items });
+    return 'safe';
+  };
 
-  const result = await tool.execute(
+  const pending = tool.execute(
     'id',
     {
       question: 'Choose a strategy?',
@@ -110,16 +144,17 @@ test('askUser refuses editor-replacing native selector when below-editor input i
     undefined,
     ctx,
   );
+  send('\r');
+  const result = await pending;
 
-  assert.deepEqual(selectCalls, [], 'askUser must not call Pi native select because it replaces the input area');
-  assert.match(result.content[0]!.text, /No interactive UI available \(mode=tui\)/);
-  assert.match(result.content[0]!.text, /safe, fast/);
-  assert.deepEqual(result.details, { status: 'unavailable', mode: 'tui' });
+  assert.deepEqual(selectCalls, [], 'askUser must not call Pi native select (it uses the overlay)');
+  assert.equal(overlayOpts()?.overlay, true);
+  assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'safe' });
 });
 
-test('askUser renders choices as a below-editor widget when terminal input capture is available', async () => {
+test('askUser renders choices as an overlay modal over the conversation', async () => {
   const tool = loadTool();
-  const { ctx, widgets, send } = belowEditorCtx();
+  const { ctx, render, send, overlayOpts } = overlayCtx();
 
   const pending = tool.execute(
     'id',
@@ -132,24 +167,28 @@ test('askUser renders choices as a below-editor widget when terminal input captu
     ctx,
   );
 
-  assert.equal(widgets.at(-1)?.name, 'octocode-ask-user');
-  assert.equal(widgets.at(-1)?.opts?.placement, 'belowEditor');
-  const rendererFactory = widgets.at(-1)?.content as (_tui: unknown, theme: undefined) => { render(width?: number): string[] };
-  const lines = rendererFactory(undefined, undefined).render(100);
+  const opts = overlayOpts() as { overlay?: boolean; overlayOptions?: { anchor?: string } };
+  assert.equal(opts?.overlay, true, 'askUser must render as a focused overlay modal');
+  assert.equal(opts?.overlayOptions?.anchor, 'top-center', 'modal is anchored in the message area, not by the editor');
+  const lines = render(100);
   assert.match(lines.join('\n'), /USER INPUT REQUIRED/);
-  assert.match(lines.join('\n'), /Question: Choose a strategy\?/);
+  assert.match(lines.join('\n'), /Choose a strategy\?/);
+  // Free-text row appears AFTER the listed options.
   assert.match(lines.join('\n'), /Type my own answer/);
-  assert.equal(send('\r')?.consume, true);
+  // Smart separator: the header rule fills the full width with box chars.
+  const headerPlain = lines[0]!.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.ok(headerPlain.includes('USER INPUT REQUIRED'));
+  assert.ok(headerPlain.endsWith('─'), 'header rule should fill to width');
+  send('\r');
   const result = await pending;
 
-  assert.equal(widgets.at(-1)?.content, undefined, 'askUser widget is cleared after selection');
   assert.match(result.content[0]!.text, /User selected: safe/);
   assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'safe' });
 });
 
 test('askUser option picker always allows a custom free-text answer without allowFreeText', async () => {
   const tool = loadTool();
-  const { ctx, send } = belowEditorCtx();
+  const { ctx, send } = overlayCtx();
 
   const pending = tool.execute(
     'id',
@@ -173,24 +212,11 @@ test('askUser option picker always allows a custom free-text answer without allo
   assert.deepEqual(result.details, { status: 'text', value: 'custom plan' });
 });
 
-test('askUser refuses custom overlay picker when below-editor input is unavailable', async () => {
+test('askUser routes described choices through the custom overlay', async () => {
   const tool = loadTool();
-  let customCalled = false;
-  const ctx = {
-    hasUI: true,
-    mode: 'tui',
-    ui: {
-      select: async () => {
-        throw new Error('native selector should not be used for described choices');
-      },
-      custom: async () => {
-        customCalled = true;
-        return 'safe';
-      },
-    },
-  } as unknown as PiContext;
+  const { ctx, send, overlayOpts } = overlayCtx();
 
-  const result = await tool.execute(
+  const pending = tool.execute(
     'id',
     {
       question: 'Choose a strategy?',
@@ -204,36 +230,34 @@ test('askUser refuses custom overlay picker when below-editor input is unavailab
     ctx,
   );
 
-  assert.equal(customCalled, false, 'askUser must not call Pi custom overlays because they can render above the input');
-  assert.match(result.content[0]!.text, /No interactive UI available \(mode=tui\)/);
-  assert.deepEqual(result.details, { status: 'unavailable', mode: 'tui' });
+  assert.equal(overlayOpts()?.overlay, true, 'described choices render in the focused overlay');
+  send('\r');
+  const result = await pending;
+  assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'Safe' });
 });
 
-test('askUser refuses editor-replacing input hook when below-editor input is unavailable', async () => {
+test('askUser never calls Pi ui.input (it uses the overlay)', async () => {
   const tool = loadTool();
   const prompts: string[] = [];
-  const ctx = {
-    hasUI: true,
-    mode: 'tui',
-    ui: {
-      custom: () => undefined,
-      input: async (question: string) => {
-        prompts.push(question);
-        return 'typed answer';
-      },
-    },
-  } as unknown as PiContext;
+  const { ctx, send } = overlayCtx();
+  (ctx as unknown as { ui: Record<string, unknown> }).ui.input = async (question: string) => {
+    prompts.push(question);
+    return 'typed answer';
+  };
 
-  const result = await tool.execute('id', { question: 'What should we do?' }, undefined, undefined, ctx);
+  const pending = tool.execute('id', { question: 'What should we do?' }, undefined, undefined, ctx);
+  send('ship it');
+  send('\r');
+  const result = await pending;
 
-  assert.deepEqual(prompts, [], 'askUser must not call Pi input because it replaces the input area');
-  assert.match(result.content[0]!.text, /No interactive UI available \(mode=tui\)/);
-  assert.deepEqual(result.details, { status: 'unavailable', mode: 'tui' });
+  assert.deepEqual(prompts, [], 'askUser must not call Pi input (it uses the overlay)');
+  assert.match(result.content[0]!.text, /User answered: ship it/);
+  assert.deepEqual(result.details, { status: 'text', value: 'ship it' });
 });
 
 test('askUser echoes the question in the selected result (durable context after compaction)', async () => {
   const tool = loadTool();
-  const { ctx, send } = belowEditorCtx();
+  const { ctx, send } = overlayCtx();
   const pending = tool.execute(
     'id',
     { question: 'Choose a strategy?', options: [{ value: 'safe', label: 'Safe' }] },
@@ -249,7 +273,7 @@ test('askUser echoes the question in the selected result (durable context after 
 
 test('askUser echoes the question in free-text and cancelled results', async () => {
   const tool = loadTool();
-  const answeredHarness = belowEditorCtx();
+  const answeredHarness = overlayCtx();
   const answeredPending = tool.execute(
     'id',
     { question: 'What should we do?' },
@@ -263,7 +287,7 @@ test('askUser echoes the question in free-text and cancelled results', async () 
   assert.match(answered.content[0]!.text, /What should we do\?/);
   assert.match(answered.content[0]!.text, /User answered: ship it/);
 
-  const cancelledHarness = belowEditorCtx();
+  const cancelledHarness = overlayCtx();
   const cancelledPending = tool.execute(
     'id',
     { question: 'Pick one?', options: [{ value: 'a' }] },
@@ -291,9 +315,9 @@ test('askUser schema gains preview, multiSelect, min/max, and fields additively'
   assert.deepEqual(Object.keys(fieldProps).sort(), ['label', 'name', 'placeholder', 'required']);
 });
 
-test('askUser multiSelect returns multiSelected values through the below-editor widget', async () => {
+test('askUser multiSelect returns multiSelected values through the overlay', async () => {
   const tool = loadTool();
-  const { ctx, send } = belowEditorCtx();
+  const { ctx, send } = overlayCtx();
 
   const pending = tool.execute(
     'id',
@@ -325,7 +349,7 @@ test('askUser multiSelect returns multiSelected values through the below-editor 
 
 test('askUser multiSelect custom answer row bypasses min/max option validation', async () => {
   const tool = loadTool();
-  const { ctx, send } = belowEditorCtx();
+  const { ctx, send } = overlayCtx();
 
   const pending = tool.execute(
     'id',
@@ -344,9 +368,9 @@ test('askUser multiSelect custom answer row bypasses min/max option validation',
   assert.deepEqual(result.details, { status: 'text', value: 'something else' });
 });
 
-test('askUser multiSelect reports cancellation when the below-editor widget is dismissed', async () => {
+test('askUser multiSelect reports cancellation when the overlay is dismissed', async () => {
   const tool = loadTool();
-  const { ctx, send } = belowEditorCtx();
+  const { ctx, send } = overlayCtx();
 
   const pending = tool.execute(
     'id',
@@ -363,9 +387,9 @@ test('askUser multiSelect reports cancellation when the below-editor widget is d
   assert.deepEqual(result.details, { status: 'cancelled' });
 });
 
-test('askUser previewed options route through the below-editor widget, not the native selector', async () => {
+test('askUser previewed options route through the overlay, not the native selector', async () => {
   const tool = loadTool();
-  const { ctx, send } = belowEditorCtx();
+  const { ctx, send } = overlayCtx();
 
   const pending = tool.execute(
     'id',
@@ -380,9 +404,9 @@ test('askUser previewed options route through the below-editor widget, not the n
   assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'safe' });
 });
 
-test('askUser form collects fields in order via the below-editor widget', async () => {
+test('askUser form collects fields in order via the overlay modal', async () => {
   const tool = loadTool();
-  const { ctx, widgets, send } = belowEditorCtx();
+  const { ctx, send, overlayOpts } = overlayCtx();
 
   const pending = tool.execute(
     'id',
@@ -403,7 +427,7 @@ test('askUser form collects fields in order via the below-editor widget', async 
   send('\r');
   const result = await pending;
 
-  assert.equal(widgets.at(0)?.opts?.placement, 'belowEditor');
+  assert.equal(overlayOpts()?.overlay, true);
   assert.match(result.content[0]!.text, /New profile/);
   assert.match(result.content[0]!.text, /name: Guy/);
   assert.match(result.content[0]!.text, /email: guy@example.com/);
@@ -414,7 +438,7 @@ test('askUser form re-prompts required fields once, then rejects when still empt
   const tool = loadTool();
 
   // Re-prompt succeeds on the second try.
-  const okHarness = belowEditorCtx();
+  const okHarness = overlayCtx();
   const okPending = loadTool().execute(
     'id',
     { question: 'Profile', fields: [{ name: 'name', label: 'Name', required: true }] },
@@ -429,7 +453,7 @@ test('askUser form re-prompts required fields once, then rejects when still empt
   assert.deepEqual(okResult.details, { status: 'form', values: { name: 'Guy' } });
 
   // Still empty after the re-prompt → rejected as cancelled with the field named.
-  const rejectedHarness = belowEditorCtx();
+  const rejectedHarness = overlayCtx();
   const rejectedPending = tool.execute(
     'id',
     { question: 'Profile', fields: [{ name: 'name', label: 'Name', required: true }] },
@@ -447,7 +471,7 @@ test('askUser form re-prompts required fields once, then rejects when still empt
 
 test('askUser form cancels when the user escapes any prompt', async () => {
   const tool = loadTool();
-  const { ctx, send } = belowEditorCtx();
+  const { ctx, send } = overlayCtx();
   const pending = tool.execute(
     'id',
     { question: 'Profile', fields: [{ name: 'name' }, { name: 'email' }] },

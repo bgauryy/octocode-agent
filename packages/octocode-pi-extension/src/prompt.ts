@@ -41,13 +41,11 @@ export function mergeManagedAppendSystem(
 /**
  * Resolve the harness prompt mode.
  * Precedence: explicit option > OCTOCODE_PROMPT_MODE env > 'append'.
- * `replace` is kept as a compatibility alias for the accurate `octocode-first` mode.
  */
 export function resolvePromptMode(option?: string): PromptMode {
   if (option === 'append' || option === 'octocode-first') return option;
-  if (option === 'replace') return 'octocode-first';
   const envMode = process.env['OCTOCODE_PROMPT_MODE'];
-  if (envMode === 'octocode-first' || envMode === 'replace') return 'octocode-first';
+  if (envMode === 'octocode-first') return 'octocode-first';
   return 'append';
 }
 
@@ -73,10 +71,7 @@ export function composeSystemPrompt(opts: {
   promptMode: PromptMode;
 }): string {
   const addendum = renderSystemPromptAddendum(opts.octocodePrompt);
-  // 'replace' is a public-API compat alias for 'octocode-first' (harness leads). The
-  // extension's own wiring normalizes it via resolvePromptMode, but composeSystemPrompt
-  // is exported and callers may still pass 'replace' directly.
-  if (opts.promptMode === 'octocode-first' || opts.promptMode === 'replace') {
+  if (opts.promptMode === 'octocode-first') {
     return `${addendum}\n\n${opts.piSystemPrompt}`;
   }
   return `${opts.piSystemPrompt}\n\n${addendum}`;

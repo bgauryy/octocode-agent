@@ -1,6 +1,6 @@
-import type { PiContext, PiInstance, SessionBeforeCompactEvent, SessionCompactEvent } from '../types.js';
-import { clearCompactionWorkingState, scheduleCompactionContinuation, type Notifier } from './compaction-resume.js';
-import { clearCompactionInFlight, clearCompactionResumeRequest, consumeCompactionResumeRequest, markCompactionInFlight } from './compaction-state.js';
+import type { PiContext, PiInstance, SessionBeforeCompactEvent, SessionCompactEvent, NotifyFn } from '../types.js';
+import { clearCompactionWorkingState, scheduleCompactionContinuation } from './compaction-resume.js';
+import { clearCompactionInFlight, consumeCompactionResumeRequest, markCompactionInFlight } from './compaction-state.js';
 import { emitCompactionCheckpoint, type CompactionCheckpointDetails } from './custom-messages.js';
 import { clearAllReadStates } from './file-state.js';
 
@@ -178,11 +178,11 @@ function buildCheckpointDetails(event: SessionCompactEvent): CompactionCheckpoin
   return details;
 }
 
-export function resetCompactionCheckpointDedupeForTests(): void {
+export function resetCompactionCheckpointDedupe(): void {
   lastCheckpointFallbackKey = null;
 }
 
-export function registerCompactionHooks(pi: PiInstance, notify: Notifier): void {
+export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void {
   if (!pi.on) return;
 
   pi.on('session_before_compact', async (event: SessionBeforeCompactEvent, ctx: PiContext) => {
@@ -221,12 +221,16 @@ export function registerCompactionHooks(pi: PiInstance, notify: Notifier): void 
     // tool's stale-read gate must demand a fresh read, not trust pre-compaction
     // knowledge the model no longer has.
     clearAllReadStates();
-    const shouldResume = consumeCompactionResumeRequest();
     if (event.willRetry) {
-      clearCompactionResumeRequest();
+      // Pi will retry this compaction and fire session_compact again on success.
+      // Leave the resume request intact (do NOT consume or clear it) so the
+      // successful retry pass schedules the continuation. Consuming it here —
+      // as the code originally did before this guard — permanently swallowed
+      // the request and the retried compaction never auto-resumed.
       clearCompactionWorkingState(ctx);
       return;
     }
+    const shouldResume = consumeCompactionResumeRequest();
     // Completed compaction → branded checkpoint card in the transcript. The
     // dedupe guard makes this idempotent even if the hook observes the same
     // compaction event twice. Content is one terse line (it enters the LLM

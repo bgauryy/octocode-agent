@@ -126,6 +126,24 @@ test('buildFooterSegments composes context %, tokens, turns, timing, workers, aw
   assert.match(joined, /main\*/);      // dirty marker
 });
 
+test('buildFooterSegments renders harness overhead: total by default, breakdown at full density', () => {
+  const overhead = { totalChars: 48_000, sysChars: 32_000, mcpServers: 2, mcpTools: 38, skills: 3 };
+  const base = {
+    tokens: 0, contextWindow: 0, completedTurns: 0, sessionMs: 0,
+    activeWorkers: 0, dirty: false, overhead,
+  };
+  // default: total estimate only (~48000/4 = 12000 → 12.0k)
+  const def = buildFooterSegments(base, 'default').map((s) => s.text).join(' | ');
+  assert.match(def, /Σ~12\.0k/);
+  assert.doesNotMatch(def, /sys /);
+  // full: adds the sys/mcp/skills breakdown
+  const full = buildFooterSegments(base, 'full').map((s) => s.text).join(' | ');
+  assert.match(full, /Σ~12\.0k \(sys 8\.0k · mcp 2\/38 · skills 3\)/);
+  // compact: dropped entirely
+  const compact = buildFooterSegments(base, 'compact').map((s) => s.text).join(' | ');
+  assert.doesNotMatch(compact, /Σ~/);
+});
+
 test('buildFooterSegments colors the context gauge by fill severity', () => {
   const base = {
     completedTurns: 0,

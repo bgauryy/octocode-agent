@@ -21,7 +21,8 @@ import {
   isCompactionInFlight,
   resetCompactionArbiterForTests,
 } from '../src/tools/compaction-state.js';
-import { resetCompactionResumeStateForTests } from '../src/tools/compaction-resume.js';
+import { resetCompactionResumeStateForTests, setCompactionResumeRetryDelayForTests } from '../src/tools/compaction-resume.js';
+import { markCompactionResumeRequested } from '../src/tools/compaction-state.js';
 import { activePlanScope, clearPlan, setPlan } from '../src/tools/active-plan.js';
 
 type Handler = (event: unknown, ctx: unknown) => unknown | Promise<unknown>;
@@ -305,4 +306,19 @@ test('manage_context description no longer tells the model to compact at 60% (ra
   assert.doesNotMatch(tool.description ?? '', /60%/);
   assert.match(tool.description ?? '', /research→execution boundary/);
   assert.match(tool.description ?? '', /[Aa]utomatic compaction/);
+});
+
+test('session_compact resume survives a willRetry pass and fires exactly once on success', async () => {
+  const { fire, sentUserMessages } = makeHarness();
+  const { ctx } = makeCtx();
+  setCompactionResumeRetryDelayForTests(0);
+  // Octocode requested this compaction (ctx.compact aborts the in-flight run).
+  markCompactionResumeRequested();
+  // Pi retries the compaction first: the resume intent must NOT be consumed here.
+  await fire('session_compact', { reason: 'auto', fromExtension: true, willRetry: true }, ctx);
+  assert.equal(sentUserMessages.length, 0, 'no continuation on the retry pass');
+  // The successful retry must still schedule the continuation.
+  await fire('session_compact', { reason: 'auto', fromExtension: true, willRetry: false }, ctx);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(sentUserMessages.length, 1, 'continuation fires exactly once after the successful compaction');
 });

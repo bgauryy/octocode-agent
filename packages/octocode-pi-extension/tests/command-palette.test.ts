@@ -49,6 +49,8 @@ function makeFakePi(opts: { shortcutThrows?: boolean; getCommands?: () => Array<
 function makeCtx(overrides: Record<string, unknown> = {}): PiCommandContext {
   return {
     hasUI: true,
+    // Real TUI contexts carry mode:'tui'; the overlay helper requires it.
+    mode: 'tui',
     ui: {},
     ...overrides,
   } as unknown as PiCommandContext;

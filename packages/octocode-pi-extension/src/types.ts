@@ -493,6 +493,16 @@ export interface PiInstance {
   on(event: 'tool_execution_end', handler: (event: { toolCallId: string; toolName: string; result: unknown; isError: boolean }, ctx: PiContext) => Promise<void>): void;
   on(event: 'before_provider_request', handler: (event: { payload: unknown }, ctx: PiContext) => unknown): void;
   on(event: 'after_provider_response', handler: (event: { status: number; headers: Record<string, string> }, ctx: PiContext) => void): void;
+  // Additional Pi-published events. Not currently subscribed by the extension,
+  // but declared so their names autocomplete and typos don't fall through to the
+  // untyped catch-all below. Payloads are left as unknown pending a concrete need.
+  on(event: 'agent_settled', handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
+  on(event: 'before_provider_headers', handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
+  on(event: 'message_update', handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
+  on(event: 'session_before_tree', handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
+  on(event: 'tool_execution_update', handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
+  on(event: 'tool_result', handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
+  on(event: 'user_bash', handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
   on(event: string, handler: (...args: unknown[]) => unknown): void;
   // ─── Tools ──────────────────────────────────────────────────────────────────
   registerTool?(definition: ToolDefinition): void;
@@ -534,10 +544,16 @@ export interface PiInstance {
  * How the Octocode system prompt is merged with Pi's own system prompt.
  * - `append` (default): Pi's prompt first, Octocode addendum appended.
  * - `octocode-first`: Octocode prompt leads; Pi's prompt follows.
- * - `replace`: @deprecated — alias for `octocode-first`. Use `octocode-first` directly.
  */
-export type PromptMode = 'append' | 'octocode-first' | 'replace';
+export type PromptMode = 'append' | 'octocode-first';
 
 export interface OctocodePiExtensionOptions {
   promptMode?: PromptMode;
 }
+
+/**
+ * Canonical notify-callback signature used by tool modules that surface messages
+ * through the host UI. Single source of truth so the contract can't drift across
+ * modules (previously redefined independently in mcp-tool, plan-tool, compaction-resume).
+ */
+export type NotifyFn = (ctx: PiContext | undefined, message: string, level?: string) => void;

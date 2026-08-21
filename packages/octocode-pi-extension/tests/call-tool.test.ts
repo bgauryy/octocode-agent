@@ -148,6 +148,10 @@ test('assessTriviality flags trivial capabilities and passes non-trivial ones', 
   assert.equal(assessTriviality('getCurrentTime', 'current time').trivial, true);
   assert.equal(assessTriviality('toBase64', 'encode base64').trivial, true);
   assert.equal(assessTriviality('parseCronExpression', 'parse a cron schedule').trivial, false);
+  // Regression: whole-word tokens must not substring-match legitimate names.
+  assert.equal(assessTriviality('updateData', 'update a database record').trivial, false);
+  assert.equal(assessTriviality('getHostnameParts', 'split a URL into labels').trivial, true); // 'hostname' token
+  assert.equal(assessTriviality('toBase64', 'encode base64').trivial, true); // digit run kept intact
 });
 
 test('run mode errors on a miss instead of creating', async () => {

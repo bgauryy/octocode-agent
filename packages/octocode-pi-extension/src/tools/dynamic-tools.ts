@@ -26,6 +26,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { getOctocodeHome } from '../env.js';
+import { KEYWORD_MATCH_THRESHOLD, tokenize, withRegistryLock, writeJsonAtomic, readJsonSafe } from './registry-store.js';
 
 /** A capability a dynamic tool may declare. Escalation beyond `[]` needs approval. */
 export type Capability = 'net' | 'fs' | 'exec';
@@ -117,7 +118,6 @@ function storeInCache(key: string, value: unknown): void {
   resultCache.set(key, value);
 }
 
-const KEYWORD_MATCH_THRESHOLD = 2;
 const DEFAULT_RUN_TIMEOUT_MS = 5_000;
 const DEFAULT_TEST_TIMEOUT_MS = 15_000;
 const NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
@@ -148,65 +148,20 @@ function ensureRegistry(dir: string): void {
 
 export function readIndex(dir = getRegistryDir()): RegistryIndex {
   ensureRegistry(dir);
-  try {
-    const raw = JSON.parse(fs.readFileSync(indexPath(dir), 'utf8')) as RegistryIndex;
-    if (!raw || typeof raw !== 'object' || !raw.tools) return { version: 1, tools: {} };
-    return raw;
-  } catch {
-    // Corrupt index → treat as empty rather than crash the agent.
-    return { version: 1, tools: {} };
-  }
+  return readJsonSafe<RegistryIndex>(
+    indexPath(dir),
+    { version: 1, tools: {} },
+    (raw) => Boolean((raw as RegistryIndex).tools),
+  );
 }
 
 function writeIndex(dir: string, idx: RegistryIndex): void {
-  // Atomic on the same filesystem → a reader never observes a partial/torn index.
-  const tmp = `${indexPath(dir)}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(idx, null, 2));
-  fs.renameSync(tmp, indexPath(dir));
+  writeJsonAtomic(indexPath(dir), idx);
 }
 
-/**
- * Cross-process mutex around a read-modify-write of the shared registry (which lives under
- * getOctocodeHome() and is used by many parallel agents). `fs.mkdirSync` is atomic — it
- * fails if the lock dir already exists — so it is a correct inter-process lock. Not
- * reentrant: callers must not nest withIndexLock. A lock older than STALE_MS is treated as
- * abandoned (crashed holder) and reclaimed so a dead process can never wedge the registry.
- */
-const LOCK_TIMEOUT_MS = 5_000;
-const LOCK_STALE_MS = 30_000;
+/** Cross-process mutex around a read-modify-write of the shared tools registry. */
 function withIndexLock<T>(dir: string, fn: () => T): T {
-  fs.mkdirSync(dir, { recursive: true });
-  const lock = path.join(dir, '.index.lock');
-  const start = Date.now();
-  for (;;) {
-    try {
-      fs.mkdirSync(lock);
-      break;
-    } catch {
-      try {
-        if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) {
-          fs.rmdirSync(lock);
-          continue;
-        }
-      } catch {
-        // lock vanished between mkdir and stat → retry immediately
-      }
-      if (Date.now() - start > LOCK_TIMEOUT_MS) throw new Error('dynamic-tools registry lock timeout');
-      const until = Date.now() + 15;
-      while (Date.now() < until) {
-        /* brief spin; index ops are sub-ms */
-      }
-    }
-  }
-  try {
-    return fn();
-  } finally {
-    try {
-      fs.rmdirSync(lock);
-    } catch {
-      // already released
-    }
-  }
+  return withRegistryLock(dir, '.index.lock', 'dynamic-tools', fn);
 }
 
 const sha256 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
@@ -219,6 +174,12 @@ const sha256 = (s: string): string => crypto.createHash('sha256').update(s).dige
  * a candidate needs at least KEYWORD_MATCH_THRESHOLD overlapping tokens to count,
  * which keeps false reuse low. Anything below threshold is a genuine miss.
  */
+/** Parse a tool's lastUsedAt into epoch ms (0 when never used / unparseable). */
+function lastUsedMs(entry: ToolManifestEntry): number {
+  const t = entry.stats?.lastUsedAt ? Date.parse(entry.stats.lastUsedAt) : NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
 export function resolveTool(
   toolType: string,
   intent = '',
@@ -234,22 +195,29 @@ export function resolveTool(
     const kw = new Set(entry.keywords.map((k) => k.toLowerCase()));
     let score = 0;
     for (const t of tokens) if (kw.has(t)) score++;
-    if (!best || score > best.score) best = { entry, score };
+    // A candidate must clear its OWN threshold: normally KEYWORD_MATCH_THRESHOLD
+    // overlapping tokens, but a tool that declares fewer keywords can never reach
+    // that — cap the requirement at its keyword count so single-keyword tools are
+    // still resolvable (otherwise they are permanently invisible → registry bloat).
+    const need = Math.min(KEYWORD_MATCH_THRESHOLD, Math.max(1, entry.keywords.length));
+    if (score < need) continue;
+    // Deterministic tie-break: prefer the higher score, then the more recently
+    // used tool (Object.values order is otherwise insertion/JSON dependent).
+    if (
+      !best ||
+      score > best.score ||
+      (score === best.score && lastUsedMs(entry) > lastUsedMs(best.entry))
+    ) {
+      best = { entry, score };
+    }
   }
-  if (best && best.score >= KEYWORD_MATCH_THRESHOLD) {
+  if (best) {
     return { hit: 'keyword', entry: best.entry, score: best.score };
   }
   return { hit: 'miss' };
 }
 
-function tokenize(s: string): Set<string> {
-  return new Set(
-    s
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter(Boolean),
-  );
-}
+
 
 // ─── verification-gated registration ──────────────────────────────────────────
 
@@ -284,9 +252,21 @@ export function registerGeneratedTool(
   fs.writeFileSync(entryFile, input.source);
   fs.writeFileSync(testFile, input.test);
 
-  const res = spawnSync(process.execPath, [testFile], {
+  // Sandbox the verification test with the SAME isolation the tool gets at runtime.
+  // The test is LLM-authored code; running it with full process.env + unrestricted
+  // fs/net/exec would let a benign-looking-but-malicious test exfiltrate secrets or
+  // write anywhere while still "passing" the gate. Grant only the tool's declared
+  // capabilities plus read/write access to its own tool dir (to import tool.mjs).
+  const testRealPath = safeRealpath(testFile);
+  const { args: testArgs, env: testEnv } = buildTestInvocation(testRealPath, {
+    name: input.name,
+    capabilities: input.capabilities,
+    sandboxed: input.sandboxed !== false,
+  });
+  const res = spawnSync(process.execPath, testArgs, {
     encoding: 'utf8',
     timeout: testTimeoutMs,
+    env: testEnv,
   });
 
   if (res.error && (res.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
@@ -392,9 +372,14 @@ export function runDynamicTool(
     return { ok: true, result: resultCache.get(cacheKey), cached: true };
   }
 
+  // Isolate the runner in its own mkdtemp dir so the sandbox fs-read grant
+  // (readSubtree → <dir>/*) scopes to exactly this runner, not the whole OS
+  // temp dir (which would expose sibling temp files: other runners, editor swap
+  // files, downloaded tarballs, etc.).
+  const runnerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-calltool-'));
   const runner = path.join(
-    os.tmpdir(),
-    `octocode-calltool-runner-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`,
+    runnerDir,
+    `runner-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`,
   );
   // Import via the tool's realpath so the sandboxed permission check (which resolves
   // realpaths) matches the granted realpath subtree.
@@ -438,7 +423,7 @@ export function runDynamicTool(
       return { ok: false, reason: 'bad-output', detail: res.stdout.slice(0, 300) };
     }
   } finally {
-    fs.rmSync(runner, { force: true });
+    fs.rmSync(runnerDir, { recursive: true, force: true });
   }
 }
 
@@ -454,6 +439,35 @@ function safeRealpath(file: string): string {
 /** A realpath'd file into a Node permission subtree glob (`/real/dir/*`). */
 function readSubtree(realFile: string): string {
   return `${path.dirname(realFile)}${path.sep}*`;
+}
+
+/**
+ * Build the sandboxed Node invocation for a generated tool's verification TEST.
+ * Mirrors buildRunInvocation but scopes fs access to the tool's own directory
+ * (where tool.mjs + tool.test.mjs live) so the test can import the module, and
+ * grants exactly the capabilities the tool declares. Env is scrubbed to PATH.
+ */
+function buildTestInvocation(
+  testRealPath: string,
+  entry: { name: string; capabilities: Capability[]; sandboxed: boolean },
+): { args: string[]; env: NodeJS.ProcessEnv } {
+  if (!entry.sandboxed) {
+    return { args: [testRealPath], env: process.env };
+  }
+  const caps = new Set(entry.capabilities);
+  const flags = ['--permission', '--disallow-code-generation-from-strings'];
+  const dirGlob = readSubtree(testRealPath);
+  if (caps.has('fs')) {
+    flags.push('--allow-fs-read=*', '--allow-fs-write=*');
+  } else {
+    // Scope reads/writes to the tool's own directory: enough to import tool.mjs
+    // and let the test use scratch files beside it, nothing else.
+    flags.push(`--allow-fs-read=${dirGlob}`, `--allow-fs-write=${dirGlob}`);
+  }
+  if (caps.has('net')) flags.push('--allow-net');
+  if (caps.has('exec')) flags.push('--allow-child-process');
+  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? '' };
+  return { args: [...flags, testRealPath], env };
 }
 
 /**

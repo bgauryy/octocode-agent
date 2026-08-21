@@ -114,3 +114,29 @@ test('H2: variable-expansion redirect is recorded as a relative path (documented
     'variable-expanded target must be recorded, not silently dropped',
   );
 });
+
+// ─── H3: In-place editor write targets ───────────────────────────────────────
+
+test('H3: sed -i file is detected as a write target', () => {
+  const targets = extractBashWriteTargets("sed -i 's/x/y/' /etc/hosts", CWD);
+  assert.ok(targets.includes('/etc/hosts'), `sed -i target not detected; got ${JSON.stringify(targets)}`);
+});
+
+test('H3: sed -i.bak with multiple files detects all files', () => {
+  const targets = extractBashWriteTargets("sed -i.bak 's/a/b/' /tmp/a.txt /tmp/b.txt", CWD);
+  assert.ok(targets.includes('/tmp/a.txt') && targets.includes('/tmp/b.txt'));
+});
+
+test('H3: perl -i -pe file is detected', () => {
+  const targets = extractBashWriteTargets("perl -i -pe 's/x/y/' /etc/passwd", CWD);
+  assert.ok(targets.includes('/etc/passwd'));
+});
+
+test('H3: sed WITHOUT -i (read-only) records no write target', () => {
+  const targets = extractBashWriteTargets("sed 's/x/y/' /etc/hosts", CWD);
+  assert.equal(targets.includes('/etc/hosts'), false, 'read-only sed must not be flagged as a write');
+});
+
+test('H3: assertBashCommandAllowed blocks sed -i outside allowed roots', () => {
+  assert.throws(() => assertBashCommandAllowed("sed -i 's/x/y/' /etc/hosts", CWD));
+});

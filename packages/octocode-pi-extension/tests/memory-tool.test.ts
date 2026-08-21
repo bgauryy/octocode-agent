@@ -46,7 +46,9 @@ test('memory record maps to Lite store text and returns the new id', async () =>
   assert.deepEqual([args[0], args[1]], ['memory', 'store']);
   assert.equal(args[args.indexOf('--label') + 1], 'GOTCHA');
   assert.equal(args[args.indexOf('--text') + 1], 'build: x self-heals');
+  // Lite has no importance column; the validated value is persisted as a tag.
   assert.equal(args.includes('--importance'), false);
+  assert.equal(args[args.indexOf('--tags') + 1], 'importance:6');
   assert.equal(args.includes('--task-context'), false);
   assert.equal(args.includes('--agent-id'), false);
   assert.match(res.content[0]!.text, /mem_new/);

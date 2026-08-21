@@ -46,6 +46,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
+    "@earendil-works/pi-tui": "^0.84.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@octocodeai/octocode-awareness-lite": "^0.1.0",
     "@octocodeai/octocode-engine": "^16.7.0",
@@ -53,7 +54,6 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.84.2",
-    "@earendil-works/pi-tui": "^0.84.2",
     "@octocodeai/config": "^17.0.1",
     "@types/node": "^25.9.3",
     "@vitest/coverage-v8": "^4.1.9",
@@ -92,14 +92,10 @@
     "readmeSync": false
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.2",
-    "@earendil-works/pi-tui": "^0.84.2"
+    "@earendil-works/pi-coding-agent": "^0.84.2"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-coding-agent": {
-      "optional": true
-    },
-    "@earendil-works/pi-tui": {
       "optional": true
     }
   }

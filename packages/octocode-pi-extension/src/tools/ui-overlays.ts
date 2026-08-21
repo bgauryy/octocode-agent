@@ -13,6 +13,13 @@ import { Box, Container, SelectList, Text } from "@earendil-works/pi-tui";
 import type { PiTheme, PiContext } from "../types.js";
 import { MultiSelectList, multiSelectKeyAction, type MultiSelectTheme } from "./multi-select-list.js";
 import { truncateToWidth } from "./render-helpers.js";
+import { CLI_GLYPH } from "../tui/cli-design.js";
+
+/** Branded overlay title line, consistent across select / multi-select overlays. */
+function overlayHeading(theme: PiTheme | undefined, title: string): string {
+  const text = `${CLI_GLYPH.brand} ${title}`;
+  return theme?.fg?.("accent", theme?.bold?.(text) ?? text) ?? text;
+}
 
 /** pi-tui SelectList theme shape (5 colorizer fns). */
 export interface SelectListThemeFns {
@@ -89,7 +96,7 @@ export async function runSelectOverlay(
   ctx: PiContext | undefined,
   opts: SelectOverlayOptions,
 ): Promise<string | null | undefined> {
-  if (!ctx?.hasUI || typeof ctx.ui?.custom !== "function") return undefined;
+  if (ctx?.mode !== "tui" || !ctx?.hasUI || typeof ctx.ui?.custom !== "function") return undefined;
   const enableFilter = opts.filter ?? opts.items.length > 8;
 
   return ctx.ui.custom<string | null>(
@@ -100,12 +107,7 @@ export async function runSelectOverlay(
       done: (v: string | null) => void,
     ) => {
       const container = new Container();
-      const heading =
-        theme?.fg?.(
-          "accent",
-          theme?.bold?.("◆ " + opts.title) ?? "◆ " + opts.title,
-        ) ?? "◆ " + opts.title;
-      container.addChild(new Text(heading, 1, 0));
+      container.addChild(new Text(overlayHeading(theme, opts.title), 1, 0));
 
       let filter = "";
       const filterLine = enableFilter
@@ -184,7 +186,7 @@ export async function runMultiSelectOverlay(
   ctx: PiContext | undefined,
   opts: MultiSelectOverlayOptions,
 ): Promise<string[] | undefined> {
-  if (!ctx?.hasUI || typeof ctx.ui?.custom !== "function") return undefined;
+  if (ctx?.mode !== "tui" || !ctx?.hasUI || typeof ctx.ui?.custom !== "function") return undefined;
 
   const result = await ctx.ui.custom<string[] | null>(
     (
@@ -193,11 +195,7 @@ export async function runMultiSelectOverlay(
       _kb: unknown,
       done: (v: string[] | null) => void,
     ) => {
-      const heading =
-        theme?.fg?.(
-          "accent",
-          theme?.bold?.("◆ " + opts.title) ?? "◆ " + opts.title,
-        ) ?? "◆ " + opts.title;
+      const heading = overlayHeading(theme, opts.title);
       const help = "↑↓ navigate • space toggle • enter confirm • esc cancel";
       const helpLine = theme?.fg?.("dim", help) ?? help;
 

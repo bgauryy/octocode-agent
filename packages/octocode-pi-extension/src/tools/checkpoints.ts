@@ -209,14 +209,19 @@ export async function initCheckpointStore(
       if (entryMatch) info.entryId = entryMatch[1];
       out.push(info);
     }
-    for (const info of out) {
-      try {
-        const names = await git(['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', info.id]);
-        info.filesChanged = countLines(names);
-      } catch {
-        // keep 0 — metadata still useful
-      }
-    }
+    // Populate filesChanged concurrently: one diff-tree per checkpoint (up to
+    // DEFAULT_PRUNE_KEEP=30) would otherwise be 30 sequential child processes,
+    // a latency cliff on large/slow filesystems.
+    await Promise.all(
+      out.map(async (info) => {
+        try {
+          const names = await git(['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', info.id]);
+          info.filesChanged = countLines(names);
+        } catch {
+          // keep 0 — metadata still useful
+        }
+      }),
+    );
     return out;
   };
 

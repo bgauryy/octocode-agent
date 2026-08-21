@@ -25,9 +25,8 @@
  *   provides it and DEGRADES to files-only (with a message) when it does not.
  */
 
-import type { PiCommandContext, PiContext, PiInstance } from '../types.js';
+import type { PiCommandContext, PiContext, PiInstance, NotifyFn } from '../types.js';
 import type { CheckpointInfo, DiffStatEntry, SnapshotResult } from './checkpoints.js';
-import type { Notifier } from './compaction-resume.js';
 import { runSelectOverlay, type SelectOverlayItem, type SelectOverlayOptions } from './ui-overlays.js';
 
 // ─── Deps ────────────────────────────────────────────────────────────────────
@@ -53,12 +52,12 @@ export type OverlayRunner = (
 export interface RewindCommandDeps {
   getEngine: EngineProvider;
   /** Notification sink (default ctx.ui.notify). Injectable for tests. */
-  notify?: Notifier;
+  notify?: NotifyFn;
   /** Overlay runner (default runSelectOverlay). Injectable for tests. */
   runOverlay?: OverlayRunner;
 }
 
-const defaultNotify: Notifier = (ctx, msg, level) => {
+const defaultNotify: NotifyFn = (ctx, msg, level) => {
   if (ctx?.hasUI) ctx.ui?.notify?.(msg, level);
 };
 
@@ -179,7 +178,7 @@ async function restoreWithOptionalRewind(
   cp: CheckpointInfo | undefined,
   id: string,
   wantRewind: boolean,
-  notify: Notifier,
+  notify: NotifyFn,
 ): Promise<void> {
   try {
     await engine.restoreFiles(id);

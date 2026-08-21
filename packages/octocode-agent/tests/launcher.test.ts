@@ -908,7 +908,10 @@ describe('main', () => {
       spawn,
     });
     expect(code).toBe(0);
-    expect(cmd).toBe('node');
+    // buildAwarenessLiteCommand spawns the CLI under the SAME Node that runs the
+    // launcher (process.execPath), not a bare 'node' from PATH — this guarantees a
+    // consistent runtime even when node isn't on PATH.
+    expect(cmd).toBe(process.execPath);
   });
 
   it('applyProfile via run prepends preset flags and strips --profile tokens', async () => {

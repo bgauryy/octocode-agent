@@ -8,6 +8,7 @@
  */
 
 import { Key, matchesKey } from '@earendil-works/pi-tui';
+import { truncatePlainToWidth, visibleWidth } from './render-helpers.js';
 
 export interface MultiSelectItem {
   value: string;
@@ -51,9 +52,10 @@ export function multiSelectKeyAction(data: string): MultiSelectKeyAction {
 /** Plain-text clip to `width` cells with a trailing ellipsis (no ANSI awareness needed — callers paint after clipping). */
 function clip(text: string, width: number): string {
   if (width <= 0) return '';
-  if (text.length <= width) return text;
-  if (width === 1) return '…';
-  return text.slice(0, width - 1) + '…';
+  if (width === 1) return '\u2026';
+  // Cell-width aware: CJK/emoji are 2 cells, so a .length/.slice clip lets a
+  // visually-too-wide label through and overflows the overlay.
+  return truncatePlainToWidth(text, width);
 }
 
 export class MultiSelectList {
@@ -144,8 +146,8 @@ export class MultiSelectList {
       const head = `${focused ? '›' : ' '} ${this.toggled.has(i) ? '[x]' : '[ ]'} ${item.label ?? item.value}`;
       const clippedHead = clip(head, width);
       let line = focused ? fg('accent', clippedHead) : clippedHead;
-      if (item.description && clippedHead.length < width) {
-        line += fg('muted', clip(` — ${item.description}`, width - clippedHead.length));
+      if (item.description && visibleWidth(clippedHead) < width) {
+        line += fg('muted', clip(` — ${item.description}`, width - visibleWidth(clippedHead)));
       }
       lines.push(line);
       if (focused && item.preview) {

@@ -29,10 +29,13 @@ import {
 import {
   parseSetupScope,
   getAppendSystemTarget,
+  estimateTokens,
 } from './utils.js';
 import { registerUniqueTool } from './tools/octocode-tools.js';
 import { registerContextTools, resetAutoCompactState } from './tools/context-tools.js';
-import { registerCompactionHooks } from './tools/compaction-hooks.js';
+import { registerCompactionHooks, resetCompactionCheckpointDedupe } from './tools/compaction-hooks.js';
+import { clearCompactionInFlight, clearCompactionResumeRequest } from './tools/compaction-state.js';
+import { resetCompactionResumeSchedule } from './tools/compaction-resume.js';
 import {
   cleanupSpawnedAgentsForShutdown,
   formatAgentLedger,
@@ -45,6 +48,7 @@ import {
   registerAgentTools,
   setAgentLedgerMetricsRefreshForUi,
   isSubagentProcess,
+  pruneDroppableAgentsForSession,
 } from './tools/agent-tools.js';
 import { registerWebTool } from './tools/web-tool.js';
 import { registerChromeDebugTool } from './tools/chrome-debug-tool.js';
@@ -55,14 +59,15 @@ import { registerCallSkill } from './tools/call-skill.js';
 import { registerEditTool } from './tools/edit-tool.js';
 import { registerWriteTool } from './tools/write-tool.js';
 import { registerBashTool } from './tools/bash-tool.js';
-import { getCachedMcpCatalogAddendum, handleOctocodeMcpCommand, patchGlobalMcpOctocodeEnv, registerMcpTool, startMcpConfigWatcher, stopAllMcpServers, stopMcpConfigWatchers, warmMcpCatalog } from './tools/mcp-tool.js';
+import { resetApprovalStore } from './tools/approval.js';
+import { getCachedMcpCatalogAddendum, getCachedMcpCounts, handleOctocodeMcpCommand, patchGlobalMcpOctocodeEnv, registerMcpTool, startMcpConfigWatcher, stopAllMcpServers, stopMcpConfigWatchers, warmMcpCatalog } from './tools/mcp-tool.js';
 import { getDynamicCapabilitiesAddendum } from './tools/dynamic-catalog.js';
 import { renderAvailableSkillsAddendum, renderSkillsDashboard } from './tools/skill-catalog.js';
 import { registerPlanTool } from './tools/plan-tool.js';
 import { registerAskUserTool } from './tools/ask-user-tool.js';
 import { registerMemoryTool } from './tools/memory-tool.js';
 import { activePlanScope, adoptPlanFromBranch, renderActivePlanAddendum, getPlan, bumpPlanTurn, setPlanEntryAppender, PLAN_ENTRY_TYPE } from './tools/active-plan.js';
-import { getCachedAwarenessStatus, refreshAwarenessPanel, suppressAwarenessPanel, resumeAwarenessPanel } from './tools/awareness-status.js';
+import { getCachedAwarenessStatus, refreshAwarenessPanel, suppressAwarenessPanel, resumeAwarenessPanel, clearAwarenessCacheEntry } from './tools/awareness-status.js';
 import { refreshStatusPanel, suppressStatusPanel, resumeStatusPanel } from './tools/status-panel.js';
 import { buildFooterSegments, buildWorkingIndicator, buildWorkingMessage, getFooterDensity, parseFooterDensity, resolveSystemThemeName, setFooterDensity, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName } from './ui-extras.js';
 import { contextGauge, paint } from './tui/palette.js';
@@ -136,7 +141,6 @@ export {
   buildSurfaceSpec,
   loadProfile,
   profileToPiArgs,
-  resolveAwarenessCli,
 } from './surfaces.js';
 export type { Profile, SurfaceSpec, SurfaceVerb } from './surfaces.js';
 export {
@@ -268,6 +272,17 @@ function workerFooterCounts(): WorkerFooterCounts {
   return counts;
 }
 
+/**
+ * Per-turn Octocode harness prompt overhead snapshot, set from before_agent_start
+ * (where the prompt parts are already assembled) and read by the module-scoped
+ * footer refresher. Zero extra work — reuses strings already built each turn.
+ */
+interface HarnessOverheadSnapshot { totalChars: number; sysChars: number; mcpServers: number; mcpTools: number; skills: number }
+let harnessOverhead: HarnessOverheadSnapshot | undefined;
+export function setHarnessOverhead(snapshot: HarnessOverheadSnapshot | undefined): void {
+  harnessOverhead = snapshot;
+}
+
 function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetricsState, now = Date.now()): void {
   if (!ctx?.hasUI) return;
 
@@ -296,6 +311,7 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
     blockedWorkers: workers.blocked,
     failedWorkers: workers.failed,
     dial: getActiveDialLevel(),
+    overhead: harnessOverhead,
     branch: undefined,
     dirty: state.gitDirty ?? false,
   });
@@ -634,7 +650,7 @@ export function formatStatus(baseDir?: string): string {
  * visible so oversized blocks can be spotted. ~4 chars/token heuristic.
  */
 export function formatPromptBudget(parts: Array<{ label: string; text: string }>): string {
-  const est = (chars: number): string => `${chars} chars (~${Math.ceil(chars / 4)} tokens)`;
+  const est = (chars: number): string => `${chars} chars (~${estimateTokens(chars)} tokens)`;
   const lines = parts.map((part) =>
     `- ${part.label}: ${part.text.trim().length === 0 ? '(empty)' : est(part.text.length)}`,
   );
@@ -874,9 +890,6 @@ export function disableBuiltinTools(pi: PiInstance): boolean {
   }
 }
 
-/** @deprecated Use {@link disableBuiltinTools}. Kept for public API stability. */
-export const disableBuiltinReadTool = disableBuiltinTools;
-
 // ─── APPEND_SYSTEM installer ──────────────────────────────────────────────────
 
 async function installAppendSystem(args: string, ctx: PiContext | undefined): Promise<void> {
@@ -1054,6 +1067,22 @@ async function wireOctocodePiExtension(
       // trigger must not carry the old session's threshold crossing.
       clearAllReadStates();
       resetAutoCompactState();
+      // A new session inherits no compaction state from a previous one in this
+      // process: clear the in-flight/resume singletons (TTL is only a backstop),
+      // the cross-session checkpoint-card dedupe key, and re-init the checkpoint
+      // engine for this session's cwd (it may differ after /new or /resume).
+      clearCompactionInFlight();
+      clearCompactionResumeRequest();
+      resetCompactionResumeSchedule();
+      resetCompactionCheckpointDedupe();
+      // Sensitive-action "always allow" consent is session-scoped: a new session
+      // must re-earn it, never inherit a prior session's approvals.
+      resetApprovalStore();
+      // Force a fresh Awareness poll: never paint a prior session's cached status for this cwd.
+      if (ctx?.cwd) clearAwarenessCacheEntry(ctx.cwd);
+      checkpointEnginePromise = undefined;
+      // Drop dead worker records so the agent ledger reflects only this session.
+      pruneDroppableAgentsForSession();
       metricsState.sessionStartedAt = Date.now();
       metricsState.activeTurnStartedAt = undefined;
       metricsState.lastTurnMs = undefined;
@@ -1333,6 +1362,16 @@ async function wireOctocodePiExtension(
       // persisted plan (or active agents) is always visible under the input if it exists.
       refreshStatusPanel(ctx);
       const prompt = [cachedSystemPromptText, mcpCatalog, dynamicCatalog, availableSkills, activePlan].filter((part) => part.trim().length > 0).join('\n\n');
+      // Snapshot the per-turn harness overhead for the toolbar segment. Reuses the
+      // strings already built above plus the cached MCP counts — no extra work.
+      const mcpCounts = getCachedMcpCounts(ctx);
+      setHarnessOverhead({
+        totalChars: (cachedSystemPromptText?.length ?? 0) + mcpCatalog.length + dynamicCatalog.length + availableSkills.length + activePlan.length,
+        sysChars: cachedSystemPromptText?.length ?? 0,
+        mcpServers: mcpCounts.servers,
+        mcpTools: mcpCounts.tools,
+        skills: latestAvailableSkills?.length ?? 0,
+      });
       // Even with no Octocode addendum to append, a stripped prompt must still
       // be returned or --no-context silently becomes a no-op.
       if (prompt.trim().length === 0 || !shouldAppendSystemPrompt(piPrompt, prompt)) {
@@ -1668,7 +1707,7 @@ async function wireOctocodePiExtension(
  * Factory: returns the `(pi) => {...}` wiring function Pi invokes as `default(pi)`.
  * `export default createOctocodePiExtension()` preserves the historical single-arg
  * default-export contract exactly; the octocode-agent launcher opts into octocode-first
- * mode (the 'replace' option value is accepted as a back-compat alias for it).
+ * mode.
  */
 export function createOctocodePiExtension(
   options: OctocodePiExtensionOptions = {},

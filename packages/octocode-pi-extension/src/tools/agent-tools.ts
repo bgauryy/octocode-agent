@@ -149,6 +149,15 @@ interface AgentRecord {
   lastOutput: string;
   /** Rolling 1-line progress note (latest structured/progress line) shown live while the worker runs. */
   deltaSummary?: string;
+  /** Rolling 1-line summary of the worker's latest reasoning/thinking, distinct from output deltaSummary. */
+  thinkingSummary?: string;
+  /**
+   * Count of messages queued to the worker (followUp / streaming send / idle steer)
+   * that the worker has not yet begun a turn for. Cleared when the worker emits
+   * agent_start. Keeps `wait` blocking and drives the 'queued' display state so the
+   * ledger never shows 'running' before the turn actually starts.
+   */
+  pendingMessages: number;
   normalizedResult?: NormalizedWorkerResult;
   recoveryRisk: WorkerRecoveryRisk;
   ledgerEvents: WorkerLedgerEvent[];
@@ -226,7 +235,10 @@ export function setAgentWorktreeGitRunnerForTests(runner: WorktreeGitRunner | nu
 }
 
 /** wait() resolves at end-of-turn: idle counts as "done for now", plus true terminals. */
-function isTerminal(record: { status: AgentStatus }): boolean {
+function isTerminal(record: { status: AgentStatus; pendingMessages?: number }): boolean {
+  // A worker with a queued-but-unstarted turn is not terminal: wait must keep
+  // blocking and the display must not render it as idle/done.
+  if ((record.pendingMessages ?? 0) > 0) return false;
   return ['idle', 'exited', 'failed', 'killed'].includes(record.status);
 }
 
@@ -263,6 +275,23 @@ function evictStaleAgents(): void {
   }
 }
 
+/**
+ * Drop every droppable (exited/failed/killed) agent record. Called on
+ * session_start so a new session does not inherit dead worker rows from a
+ * previous session in the same long-lived process. Alive/idle workers are
+ * preserved — their process is still up.
+ */
+export function pruneDroppableAgentsForSession(): number {
+  let removed = 0;
+  for (const [id, record] of [...agents.entries()]) {
+    if (!isDroppable(record)) continue;
+    removePromptFiles(record);
+    agents.delete(id);
+    removed += 1;
+  }
+  return removed;
+}
+
 export function cleanupSpawnedAgentsForShutdown(): number {
   // Kill every worker whose process is still alive — including idle ones, whose
   // process stays up between turns and would otherwise survive as an orphan.
@@ -296,10 +325,11 @@ function installProcessCleanupHandlers(): void {
 // ─── TUI rendering helpers ────────────────────────────────────────────────────
 // truncateToWidth + makeRenderer imported from render-helpers.ts (single source)
 
-type AgentDisplayState = 'starting' | 'running' | 'idle' | 'done' | 'blocked' | 'failed' | 'killed';
+type AgentDisplayState = 'starting' | 'queued' | 'running' | 'idle' | 'done' | 'blocked' | 'failed' | 'killed';
 
 type AgentDisplaySource = {
   status?: string;
+  pendingMessages?: number;
   normalizedResult?: { status?: string; result?: string; next?: string; confidence?: string; verification?: string };
 };
 
@@ -308,6 +338,9 @@ function getAgentDisplayState(agent: AgentDisplaySource): AgentDisplayState {
   if (agent.status === 'killed') return 'killed';
   if (agent.status === 'failed' || workerStatus === 'failed') return 'failed';
   if (agent.status === 'running') return 'running';
+  // A queued-but-unstarted turn takes precedence over an idle/done snapshot so the
+  // ledger never shows 'running' before agent_start, nor 'done' with work pending.
+  if ((agent.pendingMessages ?? 0) > 0) return 'queued';
   if (workerStatus === 'blocked') return 'blocked';
   if (workerStatus === 'done' || agent.status === 'exited') return 'done';
   if (agent.status === 'idle') return 'idle';
@@ -345,6 +378,7 @@ function agentDisplayMeta(state: AgentDisplayState, theme?: PiTheme): { icon: st
       case 'blocked': return { icon: '!', label: 'blocked', color: 'warning' };
       case 'running': return { icon: LEDGER_SPINNER[ledgerSpinnerFrame % LEDGER_SPINNER.length], label: 'running', color: 'warning' };
       case 'idle': return { icon: '\u25CE', label: 'idle', color: 'success' };
+      case 'queued': return { icon: '\u21e5', label: 'queued', color: 'link' };
       case 'starting': return { icon: '\u25CB', label: 'starting', color: 'dim' };
     }
   })();
@@ -470,6 +504,16 @@ function buildPiArgs(params: SpawnAgentParams, name: string, promptFiles: string
 function touch(record: AgentRecord, status?: AgentStatus): void {
   record.updatedAt = Date.now();
   if (status) record.status = status;
+}
+
+/**
+ * Mark that a turn has been queued to the worker but has not started yet. Bumps
+ * pendingMessages (drives the 'queued' display state and keeps `wait` blocking)
+ * and refreshes the timestamp without faking a 'running' status.
+ */
+function enqueueWorkerTurn(record: AgentRecord): void {
+  record.pendingMessages += 1;
+  touch(record);
 }
 
 // Ledger listeners: notified on every ledger event (spawned/status/tool/handback/…).
@@ -685,6 +729,16 @@ function extractTextFromMessage(message: unknown): string {
     .join('\n');
 }
 
+/** Concatenated `thinking` content parts of an assistant message (session-format ThinkingContent). */
+function extractThinkingFromMessage(message: unknown): string {
+  const content = (message as { content?: unknown })?.content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) => ((part as { type?: string; thinking?: string }).type === 'thinking' ? (part as { thinking?: string }).thinking ?? '' : ''))
+    .filter(Boolean)
+    .join('\n');
+}
+
 function normalizeConfidence(value: string | undefined): NormalizedWorkerConfidence {
   const lower = String(value ?? '').toLowerCase();
   if (lower.includes('confirmed')) return 'confirmed';
@@ -819,6 +873,12 @@ function updateLastOutput(record: AgentRecord, message: unknown): void {
     if (delta) record.deltaSummary = delta;
     refreshNormalizedResult(record);
   }
+  const thinking = extractThinkingFromMessage(message);
+  if (thinking) {
+    // Keep only the last non-empty reasoning line as a rolling one-line summary.
+    const lastLine = thinking.split('\n').map((l) => l.trim()).filter(Boolean).at(-1);
+    if (lastLine) record.thinkingSummary = lastLine;
+  }
 }
 
 function getEventToolName(event: Record<string, unknown>): string {
@@ -899,6 +959,9 @@ function processRpcLine(record: AgentRecord, line: string): void {
       touch(record);
     }
   } else if (eventType === 'agent_start') {
+    // The queued turn has actually started: clear the pending marker so the record
+    // moves from 'queued' to 'running' and no longer blocks wait via pendingMessages.
+    record.pendingMessages = 0;
     touch(record, 'running');
   } else if (eventType === 'message_end' && (event as { message?: unknown }).message) {
     const message = (event as { message: unknown }).message;
@@ -917,7 +980,9 @@ function processRpcLine(record: AgentRecord, line: string): void {
     // agent_end {willRetry:true} means the worker aborted on context overflow
     // and Pi is compacting + retrying the turn — it is still working, so a
     // pending wait must not resolve with the incomplete lastOutput.
-    if ((event as { willRetry?: boolean }).willRetry === true) {
+    // willRetry (context-overflow retry) or a still-pending queued turn both mean the
+    // worker is not actually done — keep it non-terminal and do not resolve waiters.
+    if ((event as { willRetry?: boolean }).willRetry === true || record.pendingMessages > 0) {
       touch(record);
     } else {
       touch(record, 'idle');
@@ -1090,6 +1155,8 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     toolCalls: [],
     lastOutput: '',
     deltaSummary: undefined,
+    thinkingSummary: undefined,
+    pendingMessages: 0,
     normalizedResult: normalizeWorkerOutput(''),
     recoveryRisk: evaluateWorkerRecoveryRisk(''),
     ledgerEvents: [],
@@ -1185,6 +1252,8 @@ function summarizeAgent(record: AgentRecord, opts: { full?: boolean } = {}) {
     outputTruncated: preview.truncated,
     normalizedResult: normalized,
     recoveryRisk: record.recoveryRisk,
+    pendingMessages: record.pendingMessages,
+    thinkingSummary: record.thinkingSummary,
     policyWarnings: [...record.policyWarnings],
     ledgerEvents: opts.full ? [...record.ledgerEvents] : record.ledgerEvents.slice(-10),
     toolCalls: opts.full ? [...record.toolCalls] : record.toolCalls.slice(-10),
@@ -1276,14 +1345,6 @@ export function waitForAgent(record: AgentRecord, timeoutMs: number): Promise<vo
   });
 }
 
-function agentRiskBadge(summary: ReturnType<typeof summarizeAgent>, theme?: PiTheme): string {
-  if (summary.recoveryRisk?.warnings.length) return paint(theme, 'warning', '⚠ recovery');
-  if (summary.normalizedResult?.status === 'done' && summary.normalizedResult.evidence.length === 0 && !summary.normalizedResult.verification) {
-    return paint(theme, 'warning', '⚠ needs verify');
-  }
-  return '';
-}
-
 function renderAgentResult(records: AgentRecord[], header: string): ToolCallResult {
   const summaries = records.map((record) => summarizeAgent(record));
   const lines: string[] = [`${header} (${records.length}):`];
@@ -1298,14 +1359,12 @@ function renderAgentResult(records: AgentRecord[], header: string): ToolCallResu
     const handback = s.normalizedResult?.status && s.normalizedResult.status !== 'unknown'
       ? ` \u00b7 ${s.normalizedResult.status}/${s.normalizedResult.confidence}`
       : '';
-    const risk = agentRiskBadge(s);
-    const riskText = risk ? ` \u00b7 ${risk}` : '';
     const latestEvent = s.ledgerEvents.at(-1)?.message;
     const result = s.normalizedResult?.result ?? s.normalizedResult?.next ?? s.lastOutput ?? latestEvent;
     const preview = result ? ` — ${result.slice(0, 60).replace(/\n/g, ' ')}${s.outputTruncated ? '…' : ''}` : '';
     const toolInfo = typeof s.activeTool === 'string' ? ` \u00b7 active:${s.activeTool}` : '';
     const modelInfo = ` \u00b7 ${formatAgentModelLine(s)}`;
-    lines.push(`  ${meta.icon} ${s.name} (${shortId(s.agentId)}) \u00b7 ${meta.label}${exit}${handback}${riskText}${modelInfo} \u00b7 ${elapsed}${toolInfo}${preview}`);
+    lines.push(`  ${meta.icon} ${s.name} (${shortId(s.agentId)}) \u00b7 ${meta.label}${exit}${handback}${modelInfo} \u00b7 ${elapsed}${toolInfo}${preview}`);
   }
   return {
     content: [{ type: 'text', text: lines.join('\n') }],
@@ -1316,6 +1375,7 @@ function renderAgentResult(records: AgentRecord[], header: string): ToolCallResu
 function countAgentStates(records: AgentDisplaySource[]): Record<AgentDisplayState, number> {
   const counts: Record<AgentDisplayState, number> = {
     starting: 0,
+    queued: 0,
     running: 0,
     idle: 0,
     done: 0,
@@ -1329,7 +1389,7 @@ function countAgentStates(records: AgentDisplaySource[]): Record<AgentDisplaySta
 
 function formatAgentStateCounts(records: AgentDisplaySource[]): string {
   const counts = countAgentStates(records);
-  const order: AgentDisplayState[] = ['starting', 'running', 'idle', 'blocked', 'done', 'failed', 'killed'];
+  const order: AgentDisplayState[] = ['starting', 'queued', 'running', 'idle', 'blocked', 'done', 'failed', 'killed'];
   const parts = order
     .filter((state) => counts[state] > 0)
     .map((state) => `${counts[state]} ${state}`);
@@ -1366,8 +1426,13 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
       ? ` · ${callCount} call${callCount === 1 ? '' : 's'}${toolNames.length ? ` [${toolNames.join(',')}${new Set(record.toolCalls.map((c) => c.toolName)).size > toolNames.length ? ',…' : ''}]` : ''}`
       : '';
     const modelInfo = ` · ${formatAgentModelLine(summary)}`;
-    const risk = agentRiskBadge(summary, theme);
-    const riskText = risk ? ` · ${risk}` : '';
+    // Stable queued indicator: reveal turns queued behind a running worker, or a
+    // multi-deep queue. A single queued turn on a non-running worker already shows
+    // via the 'queued' state label, so it is not duplicated here.
+    const pending = summary.pendingMessages ?? 0;
+    const queuedInfo = pending > 0 && (state !== 'queued' || pending > 1)
+      ? ` · ${paint(theme, 'link', `⇥ queued:${pending}`)}`
+      : '';
     const worktreeInfo = formatWorktreeState(summary.worktree);
     const latestEvent = summary.ledgerEvents.at(-1)?.message;
     const result = summary.normalizedResult?.result ?? summary.normalizedResult?.next ?? summary.lastOutput ?? latestEvent;
@@ -1377,7 +1442,12 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme): string[] {
     const name = paint(theme, 'brand', summary.name);
     const id = paint(theme, 'dim', shortId(summary.agentId));
     const elapsed = formatElapsed(record.startedAt, isTerminal(record) ? record.updatedAt : undefined);
-    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${riskText}${modelInfo}${active}${toolsInfo}${worktreeInfo} · ${elapsed}${paint(theme, 'dim', preview)}`);
+    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${queuedInfo}${modelInfo}${active}${toolsInfo}${worktreeInfo} · ${elapsed}${paint(theme, 'dim', preview)}`);
+    // Phase 3: a dim reasoning sub-line for live workers, gated to a small ledger so
+    // it never crowds the panel. Distinct from the output preview (deltaSummary).
+    if (record.thinkingSummary && !isTerminal(record) && records.length <= 3) {
+      lines.push(paint(theme, 'dim', `    ⋮ thinking: ${record.thinkingSummary.replace(/\n/g, ' ').slice(0, 80)}`));
+    }
   }
   if (records.length > limit) lines.push(paint(theme, 'muted', `… ${records.length - limit} more; use AgentMessage list for full details.`));
   return lines;
@@ -1850,26 +1920,39 @@ export function registerAgentTools(
       const wasRunning = record.status === 'running';
       if (action === 'steer') {
         // steer redirects an in-flight turn; on an idle worker there is no turn to
-        // redirect, so forward the RPC but do not fake a 'running' status.
-        if (wasRunning) touch(record, 'running');
-        if (sendRpc(record, { type: 'steer', message })) {
-          pushLedgerEvent(record, 'message', `${wasRunning ? 'steer sent' : 'steer queued'}: ${previewMessage(message)}`);
+        // redirect yet, so it enqueues a turn instead — track it as pending rather
+        // than faking 'running'.
+        if (wasRunning) {
+          touch(record, 'running');
+          if (sendRpc(record, { type: 'steer', message })) {
+            pushLedgerEvent(record, 'message', `steer sent: ${previewMessage(message)}`);
+          }
+        } else if (sendRpc(record, { type: 'steer', message })) {
+          enqueueWorkerTurn(record);
+          pushLedgerEvent(record, 'message', `steer queued: ${previewMessage(message)}`);
         }
       } else if (action === 'followUp') {
-        // follow_up runs after the current turn (or immediately when idle) — either
-        // way it produces a turn, so 'running' is accurate.
-        touch(record, 'running');
+        // follow_up produces a turn that has not started yet (runs after the current
+        // turn, or next when idle). Track it as pending so `wait` blocks and the
+        // ledger shows 'queued' until the worker actually emits agent_start.
         if (sendRpc(record, { type: 'follow_up', message })) {
+          enqueueWorkerTurn(record);
           pushLedgerEvent(record, 'message', `follow-up queued: ${previewMessage(message)}`);
         }
       } else {
-        touch(record, 'running');
-        const streamingBehavior = params['streamingBehavior'] ?? (wasRunning ? 'followUp' : undefined);
+        // Default to followUp when the worker already has an in-flight or queued turn,
+        // so back-to-back sends serialize behind it rather than racing.
+        const busy = wasRunning || record.pendingMessages > 0;
+        const streamingBehavior = params['streamingBehavior'] ?? (busy ? 'followUp' : undefined);
         if (sendRpc(record, {
           type: 'prompt',
           message,
           streamingBehavior,
         })) {
+          // Either a queued follow-up or a fresh prompt to an idle worker: in both
+          // cases the turn has not started, so mark it pending and let agent_start
+          // flip the record to 'running'.
+          enqueueWorkerTurn(record);
           pushLedgerEvent(record, 'message', `${streamingBehavior === 'followUp' ? 'message queued' : 'message sent'}: ${previewMessage(message)}`);
         }
       }

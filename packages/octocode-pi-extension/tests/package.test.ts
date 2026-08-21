@@ -10,7 +10,7 @@ import {
   MANAGED_BLOCK_START,
   SYSTEM_PROMPT_MARKER,
   OCTOCODE_SUPPORT_TOOL_NAMES,
-  disableBuiltinReadTool,
+  disableBuiltinTools,
   formatStatus,
   formatPromptBudget,
   applyOctocodeUi,
@@ -32,6 +32,7 @@ import {
   truncateUserVisibleToolOutput,
   cleanupSpawnedAgentsForShutdown,
   evaluateSpawnPolicy,
+  formatAgentLedgerDetails,
   listWorkerLedgerEntries,
   runHookMiddleware,
   setAgentProcessFactoryForTests,
@@ -2360,11 +2361,11 @@ test('CLI slash commands removed — extension commands are lean', async () => {
   );
 });
 
-test('disableBuiltinReadTool is defensive and only removes disabled built-ins', () => {
-  type DisablePi = Parameters<typeof disableBuiltinReadTool>[0];
-  assert.equal(disableBuiltinReadTool({} as DisablePi), false);
+test('disableBuiltinTools is defensive and only removes disabled built-ins', () => {
+  type DisablePi = Parameters<typeof disableBuiltinTools>[0];
+  assert.equal(disableBuiltinTools({} as DisablePi), false);
   assert.equal(
-    disableBuiltinReadTool({
+    disableBuiltinTools({
       getActiveTools: () => ['bash', 'edit'],
       setActiveTools: () => {
         throw new Error('should not be called');
@@ -2375,7 +2376,7 @@ test('disableBuiltinReadTool is defensive and only removes disabled built-ins', 
 
   const active = ['read', 'bash', 'edit', 'grep', 'find', 'ls', 'write'];
   assert.equal(
-    disableBuiltinReadTool({
+    disableBuiltinTools({
       getActiveTools: () => [...active],
       setActiveTools: (names: string[]) => {
         active.splice(0, active.length, ...names);
@@ -2386,7 +2387,7 @@ test('disableBuiltinReadTool is defensive and only removes disabled built-ins', 
   assert.deepEqual(active, ['bash', 'edit', 'write']);
 
   assert.equal(
-    disableBuiltinReadTool({
+    disableBuiltinTools({
       getActiveTools: () => {
         throw new Error('Extension runtime not initialized');
       },
@@ -2397,7 +2398,7 @@ test('disableBuiltinReadTool is defensive and only removes disabled built-ins', 
   // L7: All errors from the Pi active-tool API are now swallowed (logged + return false)
   // so a renamed/changed error message cannot crash the extension load.
   assert.equal(
-    disableBuiltinReadTool({
+    disableBuiltinTools({
       getActiveTools: () => {
         throw new Error('unexpected runtime failure');
       },
@@ -3539,13 +3540,85 @@ test('AgentMessage status surfaces recovery-risk warnings for looping workers', 
 
     const list = await invokeExecute(messageTool, { action: 'list' });
     const listText = list.content[0]!.text;
-    assert.match(listText, /⚠ recovery/);
+    assert.doesNotMatch(listText, /⚠ recovery/, 'recovery badge is removed from the ledger UI');
 
     const status = await invokeExecute(messageTool, { action: 'status', agentId });
     const text = status.content[0]!.text;
     const summary = (status.details as { agent: { recoveryRisk?: { warnings: string[] } } }).agent;
     assert.match(text, /recovery-risk:/);
     assert.ok(summary.recoveryRisk?.warnings.some((warning) => /recovery loop/i.test(warning)));
+  } finally {
+    cleanupSpawnedAgentsForShutdown();
+    setAgentProcessFactoryForTests(null);
+  }
+});
+
+test('AgentMessage followUp shows queued (not running) until the worker starts the turn', async () => {
+  const spawned: Array<{ proc: MockAgentProcess }> = [];
+  setAgentProcessFactoryForTests(() => {
+    const proc = createMockAgentProcess();
+    spawned.push({ proc });
+    return proc;
+  });
+  try {
+    const { tools } = await captureExtensions();
+    const spawnTool = tools.get('spawnAgent')!;
+    const messageTool = tools.get('AgentMessage')!;
+    const result = await invokeExecute(spawnTool, { task: 'analyze', name: 'queue-worker' });
+    const agentId = (result.details as { agent: { agentId: string } }).agent.agentId;
+
+    // Worker finishes its initial turn → idle.
+    spawned[0]!.proc.emitStdout({ type: 'agent_end', messages: [] });
+
+    // Queue a follow-up: the record must read as queued, not running, and expose pendingMessages.
+    await invokeExecute(messageTool, { action: 'followUp', agentId, message: 'next task' });
+    const queued = await invokeExecute(messageTool, { action: 'status', agentId });
+    const queuedSummary = (queued.details as { agent: { status: string; pendingMessages?: number } }).agent;
+    assert.equal(queuedSummary.pendingMessages, 1);
+    assert.equal(queuedSummary.status, 'idle', 'raw status stays idle — not faked to running');
+    assert.match(formatAgentLedgerDetails(), /queued/);
+
+    // The worker actually begins the queued turn → running, pending cleared.
+    spawned[0]!.proc.emitStdout({ type: 'agent_start' });
+    const running = await invokeExecute(messageTool, { action: 'status', agentId });
+    const runningSummary = (running.details as { agent: { status: string; pendingMessages?: number } }).agent;
+    assert.equal(runningSummary.status, 'running');
+    assert.equal(runningSummary.pendingMessages, 0);
+  } finally {
+    cleanupSpawnedAgentsForShutdown();
+    setAgentProcessFactoryForTests(null);
+  }
+});
+
+test('AgentMessage wait keeps blocking while a queued turn has not started', async () => {
+  const spawned: Array<{ proc: MockAgentProcess }> = [];
+  setAgentProcessFactoryForTests(() => {
+    const proc = createMockAgentProcess();
+    spawned.push({ proc });
+    return proc;
+  });
+  try {
+    const { tools } = await captureExtensions();
+    const spawnTool = tools.get('spawnAgent')!;
+    const messageTool = tools.get('AgentMessage')!;
+    const result = await invokeExecute(spawnTool, { task: 'analyze', name: 'wait-worker' });
+    const agentId = (result.details as { agent: { agentId: string } }).agent.agentId;
+
+    spawned[0]!.proc.emitStdout({ type: 'agent_end', messages: [] });
+    await invokeExecute(messageTool, { action: 'followUp', agentId, message: 'more' });
+
+    // wait must not resolve at the interim idle: a queued turn is still owed.
+    let resolved = false;
+    const waitPromise = invokeExecute(messageTool, { action: 'wait', agentId, timeoutMs: 1000 })
+      .then((r) => { resolved = true; return r; });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(resolved, false, 'wait resolved before the queued turn started');
+
+    // Start then finish the queued turn → wait resolves.
+    spawned[0]!.proc.emitStdout({ type: 'agent_start' });
+    spawned[0]!.proc.emitStdout({ type: 'agent_end', messages: [] });
+    await waitPromise;
+    assert.equal(resolved, true);
   } finally {
     cleanupSpawnedAgentsForShutdown();
     setAgentProcessFactoryForTests(null);
@@ -3626,11 +3699,16 @@ test('AgentMessage routes steer/follow_up RPCs and does not fake running on idle
       'steering an idle worker must not fake a running status',
     );
 
-    // followUp produces a turn → status running, RPC type follow_up.
+    // followUp queues a not-yet-started turn → raw status stays idle (display 'queued'),
+    // pendingMessages tracks it, RPC type follow_up.
     const fu = await invokeExecute(messageTool, { action: 'followUp', agentId, message: 'next' });
     const fuWrite = JSON.parse(spawned[0]!.proc.stdinWrites.at(-1)!);
     assert.equal(fuWrite.type, 'follow_up');
-    assert.equal((fu.details as { agent: { status: string } }).agent.status, 'running');
+    assert.equal((fu.details as { agent: { status: string } }).agent.status, 'idle');
+    assert.ok(((fu.details as { agent: { pendingMessages?: number } }).agent.pendingMessages ?? 0) > 0);
+
+    // The queued turn actually begins → running, pending cleared.
+    spawned[0]!.proc.emitStdout({ type: 'agent_start' });
 
     // steer while running → status running, RPC type steer.
     const runSteer = await invokeExecute(messageTool, { action: 'steer', agentId, message: 'again' });
@@ -4088,10 +4166,19 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
       { action: 'send', agentId, message: 'answer: proceed' },
       ctx
     );
+    // Before the worker starts the turn it reads as queued (not a faked 'running'),
+    // which already overrides the stale blocked handback.
+    assert.match(
+      panelText(),
+      /Octocode agents: 1 total.*1 queued/,
+      'a queued turn overrides the stale blocked handback in the unified panel',
+    );
+    // The worker actually begins the queued turn → running.
+    spawned[0]!.emitStdout({ type: 'agent_start' });
     assert.match(
       panelText(),
       /Octocode agents: 1 total.*1 running/,
-      'new worker turn overrides stale blocked handback in the unified panel',
+      'the worker reads as running once the queued turn starts',
     );
     assertAgentFooterStatus('running', 'after new worker turn');
 

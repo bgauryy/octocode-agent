@@ -16,7 +16,7 @@
 
 import type { PiContext, PiTheme } from '../types.js';
 import { paint } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { makeRenderer } from './render-helpers.js';
 import { activePlanScope, getPlan } from './active-plan.js';
 import { planPanelLines } from './plan-tool.js';
 import { agentPanelLines } from './agent-tools.js';
@@ -98,14 +98,15 @@ export function refreshStatusPanel(ctx?: PiContext): void {
   ctx.ui?.setWidget?.(
     WIDGET_NAME,
     (_tui: unknown, theme: PiTheme) =>
-      makeRenderer((width) => {
+      makeRenderer(() => {
         const lines = composeSections([
           modelPanelLines(ctx, theme),
           collapseSection(planPanelLines(getPlan(planScope), theme), PLAN_MAX_ROWS, 'steps'),
           awarenessPanelLines(cwd, theme),
           agentPanelLines(theme),
         ]);
-        return (lines.length > 0 ? lines : ['']).map((l) => truncateToWidth(l, width));
+        // makeRenderer already truncates every emitted line to width, so no inner pass.
+        return lines.length > 0 ? lines : [''];
       }),
     { placement: 'belowEditor' },
   );

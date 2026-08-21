@@ -46,6 +46,22 @@ test('registerGeneratedTool registers a tool whose test passes', () => {
   assert.ok(readIndex(dir).tools.getCurrentTime);
 });
 
+test('SANDBOX: the verification TEST run cannot see process.env secrets', () => {
+  process.env.CALLTOOL_TEST_ENV_PROBE = 'leak-me';
+  try {
+    // The test fails (exit 1) if it can see the secret; passes only when the
+    // test-run env is scrubbed. Registration ok proves scrubbing works.
+    const res = register({
+      name: 'envScrubProbe',
+      capabilities: [],
+      test: `if (process.env.CALLTOOL_TEST_ENV_PROBE) { console.error('leaked'); process.exit(1); }\nprocess.exit(0);`,
+    });
+    assert.equal(res.ok, true, 'secret must be scrubbed from the sandboxed test env');
+  } finally {
+    delete process.env.CALLTOOL_TEST_ENV_PROBE;
+  }
+});
+
 test('getRegistryDir resolves under OCTOCODE_HOME', () => {
   const prev = process.env.OCTOCODE_HOME;
   process.env.OCTOCODE_HOME = dir;
@@ -74,6 +90,15 @@ test('resolveTool is a miss for unrelated requests', () => {
   register();
   const r = resolveTool('encodeBase64', 'encode bytes to base64', dir);
   assert.equal(r.hit, 'miss');
+});
+
+test('resolveTool matches a single-keyword tool on one overlapping token', () => {
+  // Regression: with a fixed threshold of 2 a tool that declares one keyword
+  // could never be resolved by keyword and was permanently invisible.
+  register({ name: 'toSlug', keywords: ['slug'] });
+  const r = resolveTool('makeSlug', 'turn a title into a slug', dir);
+  assert.equal(r.hit, 'keyword');
+  if (r.hit === 'keyword') assert.equal(r.entry.name, 'toSlug');
 });
 
 test('runDynamicTool executes in isolation and returns a structured result', () => {

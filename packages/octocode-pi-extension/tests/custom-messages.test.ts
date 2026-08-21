@@ -24,7 +24,7 @@ import {
 } from '../src/tools/custom-messages.js';
 import {
   registerCompactionHooks,
-  resetCompactionCheckpointDedupeForTests,
+  resetCompactionCheckpointDedupe,
 } from '../src/tools/compaction-hooks.js';
 import { resetCompactionArbiterForTests } from '../src/tools/compaction-state.js';
 import { resetCompactionResumeStateForTests } from '../src/tools/compaction-resume.js';
@@ -81,7 +81,7 @@ const handoffDetails: AwarenessHandoffDetails = {
 };
 
 beforeEach(() => {
-  resetCompactionCheckpointDedupeForTests();
+  resetCompactionCheckpointDedupe();
   resetCompactionArbiterForTests();
   resetCompactionResumeStateForTests();
 });

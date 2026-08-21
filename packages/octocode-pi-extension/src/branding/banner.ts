@@ -6,7 +6,7 @@
  * sees a line whose visible width exceeds the terminal width.
  */
 
-import { truncateToWidth, visibleWidth } from '../tools/render-helpers.js';
+import { truncateToWidth } from '../tools/render-helpers.js';
 
 // ─── Minimal theme interface ──────────────────────────────────────────────────
 
@@ -86,5 +86,3 @@ export function renderBannerWithTagline(
 ): string[] {
   return [...renderBannerLines(theme, width, version), renderTagline(theme, width)];
 }
-
-export { visibleWidth, truncateToWidth };

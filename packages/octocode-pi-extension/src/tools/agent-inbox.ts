@@ -24,8 +24,7 @@
  *    active, or when a worker that ran > 30s completes (even mid-turn).
  */
 
-import type { PiContext, PiInstance, WorkerLedgerEntry, WorkerLedgerEventType } from '../types.js';
-import type { Notifier } from './compaction-resume.js';
+import type { PiContext, PiInstance, WorkerLedgerEntry, WorkerLedgerEventType, NotifyFn } from '../types.js';
 import type { SelectOverlayItem, SelectOverlayOptions } from './ui-overlays.js';
 import { runSelectOverlay } from './ui-overlays.js';
 import {
@@ -142,7 +141,7 @@ export interface AgentInboxDeps {
   steer(idOrPrefix: string, message: string): boolean;
   kill(idOrPrefix: string): boolean;
   transcript(idOrPrefix: string, opts?: { maxLines?: number }): string | undefined;
-  notify: Notifier;
+  notify: NotifyFn;
   now?(): number;
 }
 
@@ -276,10 +275,10 @@ export interface AgentInboxRegistration {
  */
 export function registerAgentInbox(
   pi: PiInstance,
-  notify?: Notifier,
+  notify?: NotifyFn,
   seams: AgentInboxSeams = {},
 ): AgentInboxRegistration {
-  const notifier: Notifier = notify ?? ((ctx, message, level) => { ctx?.ui?.notify?.(message, level); });
+  const notifier: NotifyFn = notify ?? ((ctx, message, level) => { ctx?.ui?.notify?.(message, level); });
   const registerListener = seams.registerListener ?? registerWorkerLedgerListener;
   const listEntries = seams.listEntries ?? listWorkerLedgerEntries;
   const runOverlay = seams.runOverlay ?? runSelectOverlay;

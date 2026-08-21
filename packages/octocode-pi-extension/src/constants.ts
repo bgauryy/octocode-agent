@@ -35,3 +35,10 @@ export const OCTOCODE_SUPPORT_TOOL_NAMES = [
   'spawnAgent',
   'AgentMessage',
 ] as const;
+
+/**
+ * Heuristic characters-per-token divisor for the prompt-budget / footer overhead
+ * estimates. Single source so the `/octocode-status` budget and the toolbar Σ
+ * segment always agree. ~4 is the common English-text approximation.
+ */
+export const CHARS_PER_TOKEN = 4 as const;

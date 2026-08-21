@@ -7,13 +7,13 @@
  * NOT exposed to tool execute() contexts and will always be undefined there.
  */
 import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
-import type { PiContext, PiCommandContext, PiInstance, ToolDefinition, PiTheme, TurnEndEvent } from '../types.js';
+import type { PiContext, PiCommandContext, PiInstance, ToolDefinition, PiTheme, TurnEndEvent, NotifyFn } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { stringEnumSchema } from './schema-helpers.js';
 import { activePlanScope, hasIncompletePlanSteps } from './active-plan.js';
 import { isSubagentProcess } from './agent-tools.js';
-import { clearCompactionWorkingState, type Notifier } from './compaction-resume.js';
+import { clearCompactionWorkingState } from './compaction-resume.js';
 import { branchTipIsCompaction, clearCompactionInFlight, clearCompactionResumeRequest, isCompactionInFlight, markCompactionInFlight, markCompactionResumeRequested, resetCompactionArbiterForTests } from './compaction-state.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
@@ -80,7 +80,7 @@ export function registerContextTools(
   Type: TypeBoxBuilder,
   registeredToolNames: Set<string>,
   registerFn: RegisterFn,
-  notify: Notifier,
+  notify: NotifyFn,
 ): void {
   // Fresh wiring = fresh edge-trigger state (mirrors the pre-module-level
   // closure semantics; index.ts also resets on session_start).
