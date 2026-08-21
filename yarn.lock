@@ -1819,7 +1819,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@octocodeai/pi-extension@workspace:^, @octocodeai/pi-extension@workspace:packages/octocode-pi-extension":
+"@octocodeai/pi-extension@npm:^1.5.0, @octocodeai/pi-extension@workspace:packages/octocode-pi-extension":
   version: 0.0.0-use.local
   resolution: "@octocodeai/pi-extension@workspace:packages/octocode-pi-extension"
   dependencies:
@@ -5564,7 +5564,7 @@ __metadata:
   dependencies:
     "@earendil-works/pi-coding-agent": "npm:0.84.2"
     "@octocodeai/config": "npm:18.0.1"
-    "@octocodeai/pi-extension": "workspace:^"
+    "@octocodeai/pi-extension": "npm:^1.5.0"
     "@types/node": "npm:^26.2.0"
     "@vitest/coverage-v8": "npm:^4.1.11"
     esbuild: "npm:^0.28.2"
