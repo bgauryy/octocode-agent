@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { shortId } from './ids.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,7 +32,7 @@ export type WorktreeGitRunner = (cwd: string, args: string[]) => GitResult;
 const DEFAULT_GIT_TIMEOUT_MS = 15_000;
 const META_SUFFIX = '.json';
 
-let gitRunner: WorktreeGitRunner = (cwd, args) => {
+const defaultGitRunner: WorktreeGitRunner = (cwd, args) => {
   const result = spawnSync('git', args, {
     cwd,
     encoding: 'utf8',
@@ -47,22 +48,10 @@ let gitRunner: WorktreeGitRunner = (cwd, args) => {
   return { stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
 };
 
+let gitRunner: WorktreeGitRunner = defaultGitRunner;
+
 export function setWorktreeGitRunnerForTests(runner: WorktreeGitRunner | null): void {
-  gitRunner = runner ?? ((cwd, args) => {
-    const result = spawnSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      timeout: DEFAULT_GIT_TIMEOUT_MS,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      const stderr = String(result.stderr ?? '').trim();
-      const stdout = String(result.stdout ?? '').trim();
-      throw new Error(`git ${args.join(' ')} failed${stderr || stdout ? `: ${stderr || stdout}` : ''}`);
-    }
-    return { stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
-  });
+  gitRunner = runner ?? defaultGitRunner;
 }
 
 function git(cwd: string, args: string[]): string {
@@ -119,7 +108,7 @@ export function createAgentWorktree(opts: CreateWorktreeOptions): InternalWorktr
   const baseCommit = git(parentCwd, ['rev-parse', 'HEAD']);
   const commonDir = git(parentCwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
   const repoKey = hashRepoKey(commonDir);
-  const id8 = opts.agentId.slice(0, 8);
+  const id8 = shortId(opts.agentId);
   const branch = `octocode/agents/${safeBranchName(opts.name)}-${id8}`;
   const worktreeRoot = path.join(opts.home ?? getOctocodeHome(), 'worktrees', repoKey);
   const worktreePath = path.join(worktreeRoot, id8);

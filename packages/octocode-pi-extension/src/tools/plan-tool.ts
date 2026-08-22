@@ -7,9 +7,17 @@
  * this tool is the solo, per-turn working checklist.
  */
 
+import path from 'node:path';
 import type { ToolDefinition, ToolCallResult, PiContext, PiTheme, NotifyFn } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { paint } from '../tui/cli-design.js';
+import { SEP } from '../tui/palette.js';
+import { buildPlanPrompt } from '../prompts/plan-prompt.js';
+import { enterPlanMode, exitPlanMode, isPlanMode } from './plan-mode.js';
+import { runAskPrompt } from './ask-user-tool.js';
+import { enablePlanHtmlSync, resetPlanHtmlSync, openPlanHtml, syncPlanHtmlIfEnabled, writePlanArtifacts, planArtifactsDir } from './plan-html.js';
+import { serveDirectory, unmount } from './local-server.js';
+import { PLAN_APPROVE_DESC, PLAN_APPROVE_LABEL, PLAN_PROPOSE_HINT, PLAN_REJECT_DESC, PLAN_REJECT_LABEL } from '../tui/content.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel } from './status-panel.js';
 import { activePlanScope, setPlan, addStep, startStep, completeStep, removeStep, clearPlan, getPlan, renderActivePlanAddendum, MARK, stepLabel, displayStatus, depsMet, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
@@ -17,7 +25,7 @@ import { activePlanScope, setPlan, addStep, startStep, completeStep, removeStep,
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
 
-type PlanAction = 'set' | 'add' | 'start' | 'complete' | 'remove' | 'clear' | 'show';
+type PlanAction = 'set' | 'propose' | 'add' | 'start' | 'complete' | 'remove' | 'clear' | 'show';
 
 interface PlanParams {
   action: PlanAction;
@@ -49,45 +57,135 @@ function progressBar(done: number, total: number): string {
   return `${'█'.repeat(filled)}${'░'.repeat(BAR_WIDTH - filled)}`;
 }
 
-/** The Plan section lines for the below-editor panel (header + colored checklist). Empty when no plan. */
-export function planPanelLines(steps: PlanStep[], theme?: PiTheme): string[] {
+/**
+ * The Plan section lines for the below-editor panel (header + colored
+ * checklist). Empty when no plan. When `width` is given, every line is clipped
+ * at the source — pi errors on over-wide component lines, so builders enforce
+ * the contract themselves instead of relying on the caller's safety net.
+ */
+export function planPanelLines(steps: PlanStep[], theme?: PiTheme, width?: number): string[] {
   if (steps.length === 0) return [];
   const done = steps.filter((s) => s.status === 'done').length;
   const paintStep = (status: DisplayStatus, text: string): string => {
-    if (status === 'done') return paint(theme, 'muted', text);
-    if (status === 'doing') return paint(theme, 'warning', text);
-    if (status === 'blocked') return paint(theme, 'muted', text);
-    return paint(theme, 'brand', text);
+    // Same state→colour contract as the agent ledger: in-flight is brand (and
+    // bold — it is the one row the eye should land on), blocked is the one
+    // act-on-me state (warning), finished work fades, pending rows stay in the
+    // default foreground so the list reads as text.
+    if (status === 'done') return paint(theme, 'dim', text);
+    if (status === 'doing') return paint(theme, 'brand', typeof theme?.bold === 'function' ? theme.bold(text) : text);
+    if (status === 'blocked') return paint(theme, 'warning', text);
+    return paint(theme, 'bright', text);
   };
   const doing = steps.filter((s) => s.status === 'doing');
   const current = doing[0] ?? steps.find((s) => s.status === 'todo');
   const currentLabel = doing.length > 1
-    ? ` · now: ${doing.map(stepLabel).join(' | ')}`
-    : current ? ` · now: ${stepLabel(current)}` : '';
-  const header = `Plan  ${progressBar(done, steps.length)}  ${done}/${steps.length}${currentLabel}`;
+    ? `${SEP}now: ${doing.map(stepLabel).join(SEP)}`
+    : current ? `${SEP}now: ${stepLabel(current)}` : '';
+  const header = `Plan  ${progressBar(done, steps.length)}  ${done}/${steps.length} done${currentLabel}`;
   const rows = steps.map((s, i) => {
     const ds = displayStatus(s, steps);
-    const needs = ds === 'blocked' && s.dependsOn?.length ? ` (needs ${s.dependsOn.join(',')})` : '';
-    return paintStep(ds, `${GLYPH[ds]} ${i + 1}. ${stepLabel(s)}${needs}`);
+    // Words, not just glyphs: the glyph is a quick scan aid, the suffix says
+    // what the state means (`in progress`, `blocked, needs 1,2`).
+    const suffix = ds === 'doing'
+      ? `${SEP}in progress`
+      : ds === 'blocked'
+        ? `${SEP}blocked${s.dependsOn?.length ? `, needs ${s.dependsOn.join(',')}` : ''}`
+        : '';
+    return paintStep(ds, `${GLYPH[ds]} ${i + 1}. ${stepLabel(s)}${suffix}`);
   });
-  return [paint(theme, 'success', header), ...rows];
+  // Brand-colored header: a plan with 0/5 done is not a success signal.
+  const lines = [paint(theme, 'brand', header), ...rows];
+  return width ? lines.map((l) => truncateToWidth(l, width)) : lines;
+}
+
+/**
+ * Write the plan doc, start a localhost server hosting it, arm live sync, and
+ * open the served URL in a browser (interactive TUI only). Returns the served
+ * URL, or undefined if the doc write or the server failed. Used when the user
+ * has already asked to see the plan (the /octocode-plan html command, or a yes
+ * to the propose "show in browser?" prompt) — it does NOT ask on its own.
+ */
+/**
+ * Per-scope mount name so parallel plan scopes in one process get distinct URLs
+ * instead of silently clobbering a shared `/plan/` mount. The artifact dir's
+ * basename is already the scope hash, so reuse it.
+ */
+function planMountName(scope: string): string {
+  return `plan-${path.basename(planArtifactsDir(scope))}`;
+}
+
+function planWorkspace(scope: string): string {
+  return scope.split('\0')[0] || scope;
+}
+
+function writeCurrentPlanArtifacts(scope: string, steps: PlanStep[], status: 'draft' | 'approved' | 'active' = 'active') {
+  return writePlanArtifacts(scope, steps, { status, workspace: planWorkspace(scope) });
+}
+
+/** Tear down a scope's plan surface: stop live sync and drop its server mount. */
+function tearDownPlanHtml(scope: string): void {
+  resetPlanHtmlSync();
+  unmount(planMountName(scope));
+}
+
+async function servePlanPage(ctx: PiContext | undefined, scope: string): Promise<string | undefined> {
+  // servePlanPage is the sole writer for the browser path (callers must not
+  // pre-write) so the doc and the served bytes never diverge.
+  const artifacts = writeCurrentPlanArtifacts(scope, getPlan(scope), 'active');
+  if (!artifacts) return undefined;
+  // Host the plan's artifact dir under /plan-<hash>/ on the shared CLI server.
+  const served = await serveDirectory(planMountName(scope), planArtifactsDir(scope), { indexFile: 'plan.html' });
+  if (!served) return undefined;
+  // Arm live sync so later plan mutations rewrite the files the server reads and
+  // the page's meta-refresh picks them up.
+  enablePlanHtmlSync(scope);
+  if (ctx?.hasUI && ctx.mode === 'tui') {
+    const opened = openPlanHtml(served.url);
+    if (!opened.ok && opened.message) ctx.ui?.notify?.(opened.message, 'warn');
+  }
+  return served.url;
 }
 
 /** Mirror the active plan into the unified below-editor status panel only. */
 export function refreshPlanUi(ctx?: PiContext): void {
+  // Live HTML sync is independent of the TUI: headless mutations still keep
+  // an opened plan page fresh.
+  syncPlanHtmlIfEnabled(getPlan(activePlanScope(ctx)));
   if (!ctx?.hasUI) return;
   refreshStatusPanel(ctx);
 }
 
 // ─── /octocode-plan command (user can view / complete / delete tasks) ────────
 
-export const OCTOCODE_PLAN_COMMAND_USAGE = '/octocode-plan [show|complete <n>|start <n>|remove <n>|clear]';
-export const OCTOCODE_PLAN_COMMAND_COMPLETIONS = ['show', 'complete ', 'start ', 'remove ', 'clear'] as const;
+export const OCTOCODE_PLAN_COMMAND_USAGE = '/octocode-plan [new <goal>|off|show|html|complete <n>|start <n>|remove <n>|clear]';
+export const OCTOCODE_PLAN_COMMAND_COMPLETIONS = ['new ', 'off', 'show', 'html', 'complete ', 'start ', 'remove ', 'clear'] as const;
+
+/** Host hook for `/octocode-plan new`: sends the plan-mode prompt to the agent as the next user turn. */
+export type SendPlanPrompt = (text: string) => void | Promise<void>;
 
 
-export async function handleOctocodePlanCommand(args: string, ctx: PiContext | undefined, notify: NotifyFn): Promise<void> {
+export async function handleOctocodePlanCommand(args: string, ctx: PiContext | undefined, notify: NotifyFn, sendPrompt?: SendPlanPrompt): Promise<void> {
   const scope = activePlanScope(ctx);
   const [action = 'show', arg] = args.trim().split(/\s+/).filter(Boolean);
+  if (action === 'off') {
+    const was = isPlanMode();
+    exitPlanMode(ctx);
+    notify(ctx, was ? 'Plan mode off — write tools restored.' : 'Plan mode was not on.', 'info');
+    return;
+  }
+  if (action === 'new') {
+    // Plan mode: hand the agent an explicit research → propose → gate prompt.
+    // The goal is everything after `new`; the agent asks for one when absent.
+    const goal = args.trim().replace(/^new\b/, '').trim();
+    if (!sendPrompt) {
+      notify(ctx, 'This host cannot send prompts — describe the goal and ask the agent to `plan(propose)` it.', 'warning');
+      return;
+    }
+    enterPlanMode(ctx);
+    await sendPrompt(buildPlanPrompt(goal));
+    notify(ctx, goal ? `Plan mode on (write tools blocked until approval): planning “${goal.slice(0, 80)}”.` : 'Plan mode on (write tools blocked until approval): the agent will ask for the goal.', 'info');
+    return;
+  }
   const n = Number(arg);
   // Bad indices must say WHY nothing changed — the plan reprint alone reads as
   // a silent success (the tool path returns [PLAN] errors; parity for the command).
@@ -104,8 +202,21 @@ export async function handleOctocodePlanCommand(args: string, ctx: PiContext | u
     return true;
   };
   switch (action) {
+    case 'html': {
+      // Explicit user intent — serve + open the live local page; from now on
+      // every plan mutation rewrites it (the page meta-refreshes) so the browser
+      // tab tracks the plan while you keep working in the terminal.
+      const url = await servePlanPage(ctx, scope);
+      if (!url) {
+        notify(ctx, 'Could not start the local plan server (is ~/.octocode/ writable?).', 'warning');
+        return;
+      }
+      notify(ctx, `Plan page: ${url} (local server, live — updates on every plan change)`, 'info');
+      return;
+    }
     case 'clear':
       clearPlan(scope);
+      tearDownPlanHtml(scope);
       notify(ctx, 'Plan cleared.', 'info');
       break;
     case 'complete':
@@ -140,18 +251,18 @@ export function registerPlanTool(
       'Record and track the task breakdown from the think-first gate as a visible, compaction-durable checklist.',
       'The plan is re-injected into your context every turn (<active_plan>), so it survives compaction — set it once, then start/complete steps as you go.',
       'Use for non-trivial multi-step work (multiple files/phases/risky edits). Skip for obvious single-step tasks. For shared/persistent multi-agent plans use the awareness plan/task CLI instead, and mirror scope changes there when a local plan changes task ownership or acceptance.',
-      'Actions: set (replace with an ordered step list; dependsOn expresses ordering) · add (append a step) · start (mark a step doing; multiple independent steps may be doing in parallel) · complete (mark a step done, auto-advances) · remove (delete a step, dependencies renumber) · show · clear (when the task is finished/abandoned).',
+      'Actions: set (replace with an ordered step list for already-approved/obvious work; dependsOn expresses ordering) · propose (set + render the plan panel + ask the user to approve/reject through the UI — free-text reply = change request; use for user-visible, multi-phase, risky, or preference-dependent plans, and never execute a rejected plan) · add (append a step) · start (mark a step doing; multiple independent steps may be doing in parallel) · complete (mark a step done, auto-advances) · remove (delete a step, dependencies renumber) · show · clear (when the task is finished/abandoned).',
       'index is optional for start/complete/remove: complete/remove default to the single current doing step; when multiple steps are doing, pass index. start defaults to the next runnable todo.',
     ].join('\n'),
     promptSnippet: 'Track a compaction-durable task-breakdown checklist (set/add/start/complete/remove/show/clear)',
     promptGuidelines: [
-      'When the think-first gate says decompose, record the steps with plan(set:[...]); then work the active step and plan(complete) it — with no index it completes the single current step, so the serial loop is: work, plan(complete), repeat.',
+      'When the think-first gate says decompose and execution is already approved/obvious, record the steps with plan(set:[...]); for user-visible, multi-phase, risky, or preference-dependent plans use plan(propose:[...]) first and wait for approval. Then work the active step and plan(complete) it — with no index it completes the single current step, so the serial loop is: work, plan(complete), repeat.',
       'Keep the checklist truthful as scope shifts: plan(add) newly discovered steps, plan(remove) obsolete ones, and clear the plan (plan clear) once the task is done or abandoned so a stale checklist does not linger. If Awareness task/work state exists, update it in the same turn so local plan and shared tasks do not diverge.',
       'For independent lanes, encode ordering with dependsOn, start runnable lanes with plan(start:N) before batching/spawning, and pass explicit indices when completing parallel steps.',
-      'Optionally give each step an activeForm (present-continuous label, e.g. "Editing file") — it is shown in the live plan panel while that step runs.',
+      'Optionally give each step an activeForm (present-continuous label, e.g. "Editing file") — it is shown in the live plan panel while that step runs; propose also shows the full checklist below the editor before the approval prompt.',
     ],
     parameters: Type.Object({
-      action: Type.Unsafe({ type: 'string', enum: ['set', 'add', 'start', 'complete', 'remove', 'clear', 'show'], description: 'set|add|start|complete|remove|clear|show' }),
+      action: Type.Unsafe({ type: 'string', enum: ['set', 'propose', 'add', 'start', 'complete', 'remove', 'clear', 'show'], description: 'set|propose|add|start|complete|remove|clear|show' }),
       steps: Type.Optional(
         Type.Array(
           Type.Union([
@@ -178,9 +289,76 @@ export function registerPlanTool(
       switch (p.action) {
         case 'set':
           steps = setPlan(scope, Array.isArray(p.steps) ? p.steps : []);
+          writeCurrentPlanArtifacts(scope, steps, 'active');
           break;
+        case 'propose': {
+          // Plan WITH the user first: set the plan (panel renders the checklist
+          // below the editor) and ask for sign-off. No browser here — the
+          // free-text row is the adjust channel.
+          steps = setPlan(scope, Array.isArray(p.steps) ? p.steps : []);
+          const artifacts = writeCurrentPlanArtifacts(scope, steps, 'draft');
+          refreshPlanUi(ctx);
+          const outcome = ctx
+            ? await runAskPrompt(ctx, {
+                question: `Approve this plan? (${steps.length} steps in the panel below — ${PLAN_PROPOSE_HINT})`,
+                options: [
+                  { value: 'approve', label: PLAN_APPROVE_LABEL, description: PLAN_APPROVE_DESC, recommended: true },
+                  { value: 'reject', label: PLAN_REJECT_LABEL, description: PLAN_REJECT_DESC },
+                ],
+              })
+            : undefined;
+          const approved = outcome?.status === 'selected' && outcome.value === 'approve';
+          const verdict = (() => {
+            if (!outcome || outcome.status === 'unavailable') {
+              return '[PLAN] proposed, but this host cannot prompt — present the plan inline and get approval in your reply before executing.';
+            }
+            if (approved) {
+              // The approval IS the exit from plan mode: write tools come back.
+              exitPlanMode(ctx);
+              return '[PLAN] approved — begin executing; keep steps updated via start/complete.';
+            }
+            if (outcome.status === 'text' && outcome.value) {
+              return `[PLAN] adjust requested: ${outcome.value}\nRevise the plan and re-propose.`;
+            }
+            return '[PLAN] rejected — do not execute. Ask the user how to proceed.';
+          })();
+
+          // The draft doc is written before approval so the user can review it
+          // from disk. Once approved, rewrite it with approved metadata, then ask
+          // separately whether to view it. We serve over local http (not file://)
+          // so the page live-reloads as the plan changes.
+          let pageNote = artifacts
+            ? `\nPlan doc: ${artifacts.mdPath}`
+            : '\nPlan doc could not be written — continuing with the in-terminal plan.';
+          if (approved) {
+            const approvedArtifacts = writeCurrentPlanArtifacts(scope, steps, 'approved');
+            if (approvedArtifacts) pageNote = `\nPlan doc: ${approvedArtifacts.mdPath}`;
+            const wantsBrowser = ctx?.hasUI && ctx.mode === 'tui'
+              ? await runAskPrompt(ctx, {
+                  question: 'Show the approved plan in your browser? (hosted locally, live-updates as the plan changes)',
+                  options: [
+                    { value: 'yes', label: 'Open in browser', description: 'serve the plan page on localhost and open it', recommended: true },
+                    { value: 'no', label: 'Not now', description: 'keep it to the terminal — /octocode-plan html opens it later' },
+                  ],
+                })
+              : undefined;
+            if (wantsBrowser?.status === 'selected' && wantsBrowser.value === 'yes') {
+              const url = await servePlanPage(ctx, scope);
+              pageNote = url
+                ? `\nLive plan page: ${url} (local server, updates as the plan changes)`
+                : '\nCould not start the local plan server — /octocode-plan html retries.';
+            } else {
+              pageNote += '\nTip for the user: /octocode-plan html serves it in the browser.';
+            }
+          }
+          return {
+            content: [{ type: 'text', text: `${verdict}\n${renderList(steps)}${pageNote}` }],
+            details: { action: p.action, steps, addendum: renderActivePlanAddendum(scope), verdict },
+          } as unknown as ToolCallResult;
+        }
         case 'add':
           steps = addStep(scope, String(p.text ?? ''), p.activeForm, p.dependsOn);
+          writeCurrentPlanArtifacts(scope, steps, 'active');
           break;
         case 'start':
         case 'complete':
@@ -224,10 +402,12 @@ export function registerPlanTool(
             }
           }
           steps = p.action === 'start' ? startStep(scope, idx) : p.action === 'complete' ? completeStep(scope, idx) : removeStep(scope, idx);
+          writeCurrentPlanArtifacts(scope, steps, 'active');
           break;
         }
         case 'clear':
           clearPlan(scope);
+          tearDownPlanHtml(scope);
           steps = [];
           break;
         case 'show':
@@ -238,15 +418,22 @@ export function registerPlanTool(
       refreshPlanUi(ctx);
       const done = steps.filter((s) => s.status === 'done').length;
       const header = p.action === 'clear' ? '[PLAN] cleared' : `[PLAN] ${done}/${steps.length} done`;
+      // Bigger plans read better as a diagram — surface the page once per set.
+      const artifactHint = (p.action === 'set' || p.action === 'add' || p.action === 'start' || p.action === 'complete' || p.action === 'remove') && steps.length > 0
+        ? `\nPlan doc: ${path.join(planArtifactsDir(scope), 'plan.md')}`
+        : '';
+      const htmlHint = p.action === 'set' && steps.length >= 4
+        ? '\nTip for the user: /octocode-plan html opens a live visual plan page.'
+        : '';
       return {
-        content: [{ type: 'text', text: `${header}\n${renderList(steps)}` }],
+        content: [{ type: 'text', text: `${header}\n${renderList(steps)}${artifactHint}${htmlHint}` }],
         details: { action: p.action, steps, addendum: renderActivePlanAddendum(scope) },
       } as unknown as ToolCallResult;
     },
 
     renderCall(raw: unknown) {
       const p = raw as PlanParams;
-      const extra = p.action === 'set' ? ` (${(p.steps ?? []).length} steps)` : p.index ? ` #${p.index}` : '';
+      const extra = p.action === 'set' || p.action === 'propose' ? ` (${(p.steps ?? []).length} steps)` : p.index ? ` #${p.index}` : '';
       return makeRenderer((w) => [truncateToWidth(`plan(${p.action}${extra})`, w)]);
     },
 

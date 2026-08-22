@@ -29,6 +29,7 @@
   - [1. octocode-agent — the launcher](#1-octocode-agent--the-launcher)
   - [2. Pi Extension — the harness](#2-pi-extension--the-harness)
   - [3. Awareness — CLI + Skill](#3-awareness--cli--skill)
+- [Terminal Experience](#terminal-experience)
 - [Extending with MCP Servers and Skills](#extending-with-mcp-servers-and-skills)
 - [Architecture](#architecture)
 - [Repository Layout](#repository-layout)
@@ -101,7 +102,10 @@ duplicated here — updating the core updates what the agent launches.
 | Bundled skill | 1 | `octocode-awareness-lite`; the rest install on demand via `npx octocode skill --add` |
 
 On load it sets `$OCTOCODE_CLI` and `$OCTOCODE_AWARENESS_CLI`, injects the operating-model
-system prompt, registers edit-safety hooks, and wires Awareness lifecycle automation.
+system prompt, registers edit-safety hooks, arms the session-scoped approval gate, and wires
+Awareness lifecycle automation. The full TUI layer it adds — banner, footer cockpit,
+permission levels, plan approval + live HTML plan page — is summarized in
+[Terminal Experience](#terminal-experience).
 
 ```text
 $OCTOCODE_CLI            → node "$OCTOCODE_CLI" <command>
@@ -154,6 +158,26 @@ The optional full **[`@octocodeai/octocode-awareness`](packages/octocode-awarene
 adds `attend`, `reflect`, wiki, and richer hooks; install it explicitly when you need them.
 
 ➡️ [`packages/octocode-awareness-lite`](packages/octocode-awareness-lite) · [full Awareness](packages/octocode-awareness) · [HOW_IT_WORKS](packages/octocode-awareness/docs/HOW_IT_WORKS.md)
+
+---
+
+## Terminal Experience
+
+The harness ships a deliberate TUI design system — one palette, one copy source, and motion
+that always *means* something:
+
+| Surface | What you get |
+|---|---|
+| **Startup banner** | Branded OCTOCODE card (lens + octopus emblem, white→purple gradient with an animated gloss sweep) rendered once per fresh session as a transcript entry — zero prompt-token cost, re-renders on `/resume`. |
+| **Footer cockpit** | Context gauge · merged turn timing (`turn 8 · 14s` live, `turns 7 · last 12s` idle) · session uptime · workers/awareness/peer state · effort dial · **always-visible permission mode** · prompt overhead · `branch* ΔN` changed files. `/octocode-footer legend` explains every segment; `compact`/`default`/`full` tune density. |
+| **Motion language** | *Wave* (footer wordmark ripples) = working · *glow* (breathing ⚠ ✗ ✉ and a ≥90% context gauge) = act on me · *gloss sweep* = brand splash. Deterministic, timer-free, test-pinned so status colors can never become decoration. |
+| **Approval gate** | Sensitive bash (installs, git mutation, deletes, sudo, publish, system/infra, shell-rc persistence, backtick/`$()` evasion) prompts Yes / No / Always-allow. Session-scoped levels — `strict` / `default` / `relaxed` — via `/octocode-permissions`, a cycle shortcut (default `ctrl+shift+a`), or `OCTOCODE_PERMISSION_LEVEL`. Everything resets on a new session; headless hosts always deny rather than assume consent. |
+| **Plan workflow** | `plan action:propose` sets the checklist *and* asks for sign-off inline (Approve / Reject; free-text reply = change request, echoed to the agent verbatim). `/octocode-plan html` opens a **live local page** — status checklist, mermaid dependency diagram, shareable `plan.md` — that rewrites on every plan change while you keep talking in the terminal. |
+| **Widgets** | Unified below-editor status panel (model → plan → awareness → agents), card-styled `askUser` prompts (72-col frame, quiet chrome), filter-preserving select overlays, worker inbox, command palette (default `ctrl+shift+k`). |
+
+All copy lives in one content module and all design constants (palette tokens, separators,
+brand marks, wave/glow painters) in one design module — wording and colors cannot drift
+between surfaces, and the test suite pins the rules (e.g. only warning/error states may glow).
 
 ---
 
@@ -340,7 +364,7 @@ Every surface below is exercised end-to-end (live smoke runs + the package test 
 
 | Package | Suite |
 |---|---|
-| `@octocodeai/pi-extension` | Vitest suites across 65 test files — tools, prompts, CDP schemes, subagents, security guards, footer/UI |
+| `@octocodeai/pi-extension` | Vitest suites across 68 test files (1,070+ tests) — tools, prompts, CDP schemes, subagents, approval gate + permission levels, footer/widgets/animation, plan HTML surface |
 | `@octocodeai/octocode-awareness-lite` | SQLite coordination engine + CLI contract tests (zero runtime deps) |
 | `@octocodeai/octocode-awareness` | Vitest suites across 90 test files + zero-dependency pack verification |
 

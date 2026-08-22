@@ -2,6 +2,7 @@ import type { PiContext, PiInstance, SessionBeforeCompactEvent, SessionCompactEv
 import { clearCompactionWorkingState, scheduleCompactionContinuation } from './compaction-resume.js';
 import { clearCompactionInFlight, consumeCompactionResumeRequest, markCompactionInFlight } from './compaction-state.js';
 import { emitCompactionCheckpoint, type CompactionCheckpointDetails } from './custom-messages.js';
+import { writeCompactionArtifact } from './compaction-artifacts.js';
 import { clearAllReadStates } from './file-state.js';
 
 const SPLIT_TURN_COMPACTION_HEADER = '**Turn Context (split turn):**';
@@ -22,6 +23,51 @@ function asString(value: unknown): string | undefined {
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function asStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  return strings.length > 0 ? strings : undefined;
+}
+
+function hasCustomInstructions(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function messageFromEntry(entry: unknown): unknown {
+  if (!isRecord(entry)) return undefined;
+  return entry.type === 'message' ? entry.message : entry;
+}
+
+export function latestAssistantText(branchEntries: unknown[] | undefined): string {
+  if (!Array.isArray(branchEntries)) return '';
+  for (let i = branchEntries.length - 1; i >= 0; i -= 1) {
+    const message = messageFromEntry(branchEntries[i]);
+    if (!isRecord(message) || message.role !== 'assistant') continue;
+    return extractTextContent(message.content);
+  }
+  return '';
+}
+
+export function isCompletedSessionAssistantText(text: string): boolean {
+  const normalized = text.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized.includes('no active task remains')
+    || normalized.includes('prior work was already complete')
+    || normalized.includes('already complete, verified, and closed')
+    || normalized.includes('won’t start any new work unless you ask')
+    || normalized.includes("won't start any new work unless you ask");
+}
+
+function shouldCancelCompletedManualCompaction(event: SessionBeforeCompactEvent): boolean {
+  if (event.reason !== 'manual') return false;
+  if (event.willRetry) return false;
+  // `/compact some focus` is an explicit user request; respect it. The waste case
+  // is Pi/manual compaction firing after a terminal assistant answer with no new
+  // task to preserve.
+  if (hasCustomInstructions(event.customInstructions)) return false;
+  return isCompletedSessionAssistantText(latestAssistantText(event.branchEntries));
 }
 
 function truncateText(text: string, limit = CUSTOM_COMPACTION_SECTION_LIMIT): string {
@@ -166,6 +212,7 @@ function shouldEmitCheckpointCard(event: SessionCompactEvent): boolean {
 
 function buildCheckpointDetails(event: SessionCompactEvent): CompactionCheckpointDetails {
   const entry = isRecord(event.compactionEntry) ? event.compactionEntry : {};
+  const entryDetails = isRecord(entry.details) ? entry.details : {};
   const tokensBefore = asNumber(entry.tokensBefore);
   const summary = asString(entry.summary);
   const details: CompactionCheckpointDetails = {
@@ -174,6 +221,10 @@ function buildCheckpointDetails(event: SessionCompactEvent): CompactionCheckpoin
     fromExtension: event.fromExtension,
   };
   if (tokensBefore !== undefined) details.tokensBefore = tokensBefore;
+  const readFiles = asStringArray(entryDetails.readFiles);
+  const modifiedFiles = asStringArray(entryDetails.modifiedFiles);
+  if (readFiles) details.readFiles = readFiles;
+  if (modifiedFiles) details.modifiedFiles = modifiedFiles;
   if (summary) details.summary = summary;
   return details;
 }
@@ -191,6 +242,11 @@ export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void 
     // before any early return, so the other triggers stand down instead of
     // racing into pi's "Already compacted" throw.
     markCompactionInFlight();
+    if (shouldCancelCompletedManualCompaction(event)) {
+      clearCompactionInFlight();
+      notify(ctx, 'Compaction skipped: the last assistant turn already completed with no active task to preserve.', 'info');
+      return { cancel: true };
+    }
     const preparation = isRecord(event.preparation) ? event.preparation : undefined;
     if (!preparation) return;
     const turnPrefixMessages = asArray(preparation.turnPrefixMessages);
@@ -231,12 +287,20 @@ export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void 
       return;
     }
     const shouldResume = consumeCompactionResumeRequest();
+    let artifactLatestPath: string | undefined;
     // Completed compaction → branded checkpoint card in the transcript. The
     // dedupe guard makes this idempotent even if the hook observes the same
     // compaction event twice. Content is one terse line (it enters the LLM
     // context); rich data rides in details for the renderer only.
     if (shouldEmitCheckpointCard(event)) {
-      emitCompactionCheckpoint(pi, buildCheckpointDetails(event));
+      const details = buildCheckpointDetails(event);
+      const artifact = writeCompactionArtifact(details, ctx.sessionManager);
+      if (artifact) {
+        details.artifactPath = artifact.path;
+        details.latestArtifactPath = artifact.latestPath;
+        artifactLatestPath = artifact.latestPath;
+      }
+      emitCompactionCheckpoint(pi, details);
     }
     // Auto-resume ONLY compactions Octocode requested via ctx.compact: that
     // aborts the in-flight agent run, so a queued follow-up is needed to
@@ -247,8 +311,9 @@ export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void 
       clearCompactionWorkingState(ctx);
       return;
     }
+    const docHint = artifactLatestPath ? ` Compaction doc: ${artifactLatestPath}.` : '';
     const continuation =
-      'Compaction is complete. Re-orient from the compacted context. If an active task remains, continue with its next small step only; if the prior work was already complete, do not start new work — reply briefly and stop. If the answer would be long, write it to a file and reply with a concise summary and path.';
+      `Compaction is complete.${docHint} Re-orient from the compacted context. If an active task remains, continue with its next small step only; if the prior work was already complete, do not start new work — reply briefly and stop. If the answer would be long, write it to a file and reply with a concise summary and path.`;
     scheduleCompactionContinuation(pi, ctx, notify, continuation, 'Compaction complete. Resuming…');
   });
 }

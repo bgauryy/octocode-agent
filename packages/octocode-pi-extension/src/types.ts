@@ -97,8 +97,20 @@ export interface WorkerLedgerEntry {
   evidence?: string[];
   verification?: string;
   next?: string;
+  /** Artifact path explicitly reported by the worker in structured output. */
+  artifact?: string;
+  /** Parent-assigned durable markdown handback file under .octocode/tmp/agents/<agentId>/. */
+  handback?: { path: string; exists: boolean; bytes?: number; modifiedAt?: string };
   /** Rolling 1-line progress note for a running worker (what it is doing now). */
   deltaSummary?: string;
+  /** Number of follow-up/steer/send messages queued for the worker but not yet started. */
+  pendingMessages?: number;
+  /** Current running tool, when the worker is inside a tool call. */
+  activeTool?: string;
+  /** Total tool calls observed for this worker. */
+  toolCallCount?: number;
+  /** Distinct recent tool names observed for this worker. */
+  toolNames?: string[];
   worktree?: WorkerWorktreeState;
   recentEvents: WorkerLedgerEvent[];
 }
@@ -541,8 +553,14 @@ export interface PiInstance {
   // ─── Session / labels ───────────────────────────────────────────────────────
   setSessionName?(name: string): void;
   getSessionName?(): string | undefined;
-  /** Persist a CustomEntry for state only — never rendered, never in LLM context (mirrors Pi's appendEntry). */
+  /**
+   * Persist a CustomEntry — never in LLM context. Renders in the transcript
+   * when paired with registerEntryRenderer (pi docs §appendEntry); otherwise
+   * state-only.
+   */
   appendEntry?(customType: string, data?: unknown): void;
+  /** Render a CustomEntry type in the transcript (durable, TUI-only, zero prompt cost). */
+  registerEntryRenderer?(customType: string, renderer: (entry: { data?: unknown }, options: { expanded: boolean }, theme: PiTheme) => unknown): void;
   setLabel?(entryId: string, label: string | undefined): void;
   // ─── Providers ──────────────────────────────────────────────────────────────
   registerProvider?(name: string, config: Record<string, unknown>): void;

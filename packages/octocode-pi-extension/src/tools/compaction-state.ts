@@ -19,9 +19,11 @@
 
 const COMPACTION_IN_FLIGHT_TTL_MS = 120_000;
 const COMPACTION_RESUME_REQUEST_TTL_MS = COMPACTION_IN_FLIGHT_TTL_MS;
+const COMPACTION_ABORT_SUPPRESSION_TTL_MS = 30_000;
 
 let inFlightSince: number | null = null;
 let resumeRequestedSince: number | null = null;
+let abortSuppressionRequestedSince: number | null = null;
 
 export function markCompactionInFlight(now = Date.now()): void {
   inFlightSince = now;
@@ -62,6 +64,26 @@ export function consumeCompactionResumeRequest(now = Date.now()): boolean {
 }
 
 /**
+ * Mark the single assistant message abort that Pi produces when Octocode calls
+ * ctx.compact() mid-turn. That abort is control flow, not a user-visible model
+ * failure, so the message_end hook can downgrade it once and then forget it.
+ */
+export function markCompactionAbortSuppressionRequested(now = Date.now()): void {
+  abortSuppressionRequestedSince = now;
+}
+
+export function clearCompactionAbortSuppressionRequest(): void {
+  abortSuppressionRequestedSince = null;
+}
+
+export function consumeCompactionAbortSuppressionRequest(now = Date.now()): boolean {
+  if (abortSuppressionRequestedSince === null) return false;
+  const requestedAt = abortSuppressionRequestedSince;
+  abortSuppressionRequestedSince = null;
+  return now - requestedAt <= COMPACTION_ABORT_SUPPRESSION_TTL_MS;
+}
+
+/**
  * Whether the session branch tip is already a compaction entry — the exact
  * condition under which pi's compact() throws "Already compacted". Checking it
  * up front turns a guaranteed error into a clean skip. Fail-open when the host
@@ -81,4 +103,5 @@ export function branchTipIsCompaction(ctx?: {
 export function resetCompactionArbiterForTests(): void {
   inFlightSince = null;
   resumeRequestedSince = null;
+  abortSuppressionRequestedSince = null;
 }

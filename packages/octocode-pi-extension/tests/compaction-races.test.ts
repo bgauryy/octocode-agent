@@ -11,7 +11,10 @@
  * the losing calls.
  */
 import assert from 'node:assert/strict';
-import { beforeEach, test } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, test } from 'vitest';
 import { Type } from 'typebox';
 import type { CompactOptions, PiInstance, ToolDefinition } from '../src/types.js';
 import { registerContextTools, resetAutoCompactState } from '../src/tools/context-tools.js';
@@ -84,18 +87,33 @@ function makeCtx(opts: CtxOptions = {}) {
       tokens: opts.tokens === undefined ? 90 : opts.tokens,
       contextWindow: opts.contextWindow ?? 100,
     }),
-    ...(opts.branch ? { sessionManager: { getBranch: () => opts.branch } } : {}),
+    sessionManager: {
+      getBranch: () => opts.branch ?? [],
+      getSessionId: () => 'test-session',
+    },
   };
   return { ctx, compactCalls };
 }
 
 const TURN_STOP = { message: { stopReason: 'stop' } };
 
+let previousHome: string | undefined;
+let testHome: string;
+
 beforeEach(() => {
+  previousHome = process.env['OCTOCODE_HOME'];
+  testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-compaction-races-home-'));
+  process.env['OCTOCODE_HOME'] = testHome;
   resetAutoCompactState();
   resetCompactionArbiterForTests();
   resetCompactionResumeStateForTests();
   clearPlan(activePlanScope());
+});
+
+afterEach(() => {
+  if (previousHome === undefined) delete process.env['OCTOCODE_HOME'];
+  else process.env['OCTOCODE_HOME'] = previousHome;
+  fs.rmSync(testHome, { recursive: true, force: true });
 });
 
 // ─── The in-flight arbiter primitive ─────────────────────────────────────────
@@ -119,6 +137,30 @@ test('auto-compaction skips a threshold crossing when no unfinished plan work re
   const { ctx, compactCalls } = makeCtx({ tokens: 90 });
   await fire('turn_end', TURN_STOP, ctx);
   assert.equal(compactCalls.length, 0, 'ended sessions do not compact just because they crossed 80%');
+});
+
+test('auto-compaction skips terminal completion answers even if stale plan work remains', async () => {
+  const { fire } = makeHarness();
+  setPlan(activePlanScope(), ['stale unfinished step']);
+  const { ctx, compactCalls } = makeCtx({
+    tokens: 90,
+    branch: [
+      { type: 'message' },
+      {
+        type: 'message',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'TL;DR: Prior work was already complete, verified, and closed.' }],
+        },
+      } as never,
+    ],
+  });
+  await fire('turn_end', TURN_STOP, ctx);
+  assert.equal(compactCalls.length, 0, 'terminal completion answers should not show a surprise compaction spinner');
+
+  const later = makeCtx({ tokens: 90, branch: [{ type: 'message' }] });
+  await fire('turn_end', TURN_STOP, later.ctx);
+  assert.equal(later.compactCalls.length, 1, 'skipping terminal completion must not consume the threshold edge for later real work');
 });
 
 test('auto-compaction fires on a fresh threshold crossing with unfinished plan work', async () => {
@@ -252,8 +294,45 @@ test('manage_context auto-resumes even when Pi session_compact.fromExtension is 
   );
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(harness.sentUserMessages.length, 1);
-  assert.match(String(harness.sentUserMessages[0]!.content), /Compaction is complete\. Re-orient/);
+  assert.match(String(harness.sentUserMessages[0]!.content), /Compaction is complete\./);
+  assert.match(String(harness.sentUserMessages[0]!.content), /Compaction doc: .*sessions\/test-session\/latest\.md/);
+  assert.equal(fs.existsSync(path.join(testHome, 'tmp', 'compaction', 'sessions', 'test-session', 'latest.md')), true);
+  assert.match(String(harness.sentUserMessages[0]!.content), /Re-orient from the compacted context/);
   assert.equal(harness.sentUserMessages[0]!.opts?.deliverAs, 'followUp');
+});
+
+test('manage_context downgrades the expected mid-turn aborted assistant message', async () => {
+  const harness = makeHarness();
+  const { ctx } = makeCtx({ tokens: 90 });
+  await executeManageContext(harness, ctx);
+
+  const [replacement] = await harness.fire(
+    'message_end',
+    { message: { role: 'assistant', stopReason: 'aborted', errorMessage: 'Operation aborted', content: [] } },
+    ctx,
+  ) as Array<{ message?: { stopReason?: string; errorMessage?: string; content?: Array<{ text?: string }> } } | undefined>;
+
+  assert.equal(replacement?.message?.stopReason, 'stop');
+  assert.equal(replacement?.message?.errorMessage, undefined);
+  assert.match(replacement?.message?.content?.[0]?.text ?? '', /Compaction interrupted this turn/);
+
+  const [second] = await harness.fire(
+    'message_end',
+    { message: { role: 'assistant', stopReason: 'aborted', errorMessage: 'Operation aborted', content: [] } },
+    ctx,
+  );
+  assert.equal(second, undefined, 'suppression is one-shot and must not hide later aborts');
+});
+
+test('message_end leaves ordinary aborted assistant messages untouched', async () => {
+  const harness = makeHarness();
+  const { ctx } = makeCtx({ tokens: 90 });
+  const [replacement] = await harness.fire(
+    'message_end',
+    { message: { role: 'assistant', stopReason: 'aborted', errorMessage: 'Operation aborted', content: [] } },
+    ctx,
+  );
+  assert.equal(replacement, undefined);
 });
 
 test('manage_context pre-flight: skips when the branch tip is already a compaction entry', async () => {

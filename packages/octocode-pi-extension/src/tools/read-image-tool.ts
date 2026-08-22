@@ -19,7 +19,7 @@ import { cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import { resolveFilePath } from './file-state.js';
-import { loadImageForRender } from './image-render.js';
+import { formatBytes, isTerminalImageCapable, loadImageForRender } from './image-render.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -57,12 +57,6 @@ export function readImageFile(filePath: string, cwd: string): ReadImageResult {
   };
 }
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function buildParameters(Type: TypeBoxBuilder): TSchema {
   return Type.Object(
     {
@@ -90,6 +84,7 @@ export function registerReadImageTool(
       'Use readImage to let the model actually see a local image/screenshot; localGetFileContent is text-only and cannot.',
       'Recognition/OCR is the model\'s job — readImage only delivers the image. Needs a vision-capable model (input includes "image").',
       'Only png/jpeg/gif/webp up to 4MB are supported; larger or non-image files are rejected with a reason.',
+      'On terminals without inline-image support (VS Code/tmux), the image won\'t render — OFFER to open the file in a browser and ALWAYS ask the user first (askUser); never open a browser automatically.',
     ],
     parameters: buildParameters(Type),
     async execute(_id: string, params: Record<string, unknown>, signal?: AbortSignal, _onUpdate?: unknown, ctx?: { cwd?: string }): Promise<ToolCallResult> {
@@ -101,12 +96,19 @@ export function registerReadImageTool(
       if (!res.ok) {
         return { content: [{ type: 'text', text: res.message }], isError: true, details: { ok: false } };
       }
+      // On terminals without inline-image support the picture won't render; the
+      // file is already on disk, so tell the agent to offer opening it in a
+      // browser — asking the user first, never auto-opening.
+      const capable = isTerminalImageCapable();
+      const note = capable
+        ? res.message
+        : `${res.message} — this terminal has no inline-image support (e.g. VS Code / tmux), so it won't render here. Offer to open ${resolveFilePath(filePath, cwd)} in a browser; ask the user first, never open automatically.`;
       return {
         content: [
           { type: 'image', data: res.base64!, mimeType: res.mimeType! },
-          { type: 'text', text: res.message },
+          { type: 'text', text: note },
         ],
-        details: { ok: true, mimeType: res.mimeType, bytes: res.bytes },
+        details: { ok: true, mimeType: res.mimeType, bytes: res.bytes, terminalSupportsImages: capable },
       };
     },
 
@@ -118,10 +120,13 @@ export function registerReadImageTool(
     },
 
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
-      if (opts.isPartial) return makeRenderer(() => [paint(theme, 'warning', '… reading image')]);
+      if (opts.isPartial) return makeRenderer(() => [paint(theme, 'brand', '… reading image')]);
       const ok = !result.isError;
       const note = (result.content.find((c) => c.type === 'text') as { text?: string } | undefined)?.text ?? (ok ? 'image loaded' : 'read failed');
       const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
+      // The image itself is rendered by pi's tool-execution component from the
+      // returned {type:'image'} content block (Kitty/iTerm2) — we only render the
+      // status line here, otherwise the image would appear twice.
       return makeRenderer((width) => [truncateToWidth(`${icon} ${cliToolTitle(theme, 'readImage')} · ${note}`, width)]);
     },
   });

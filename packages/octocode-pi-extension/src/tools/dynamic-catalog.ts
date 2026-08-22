@@ -15,6 +15,7 @@
 
 import { listTools } from './dynamic-tools.js';
 import { listSkills } from './dynamic-skills.js';
+import { truncatePlainToWidth } from './render-helpers.js';
 
 const MAX_ENTRIES_PER_KIND = 30;
 const MAX_DESCRIPTION_CHARS = 100;
@@ -28,7 +29,8 @@ interface CatalogEntry {
 
 function truncate(text: string): string {
   const oneLine = (text || '').replace(/\s+/g, ' ').trim();
-  return oneLine.length > MAX_DESCRIPTION_CHARS ? `${oneLine.slice(0, MAX_DESCRIPTION_CHARS - 1)}…` : oneLine;
+  // Cell-width aware (CJK/emoji count 2) — a code-unit slice under-counts them.
+  return truncatePlainToWidth(oneLine, MAX_DESCRIPTION_CHARS);
 }
 
 function renderSection(label: string, entries: CatalogEntry[]): string[] {

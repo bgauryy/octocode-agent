@@ -7,6 +7,8 @@
  */
 
 import { truncatePlainToWidth, truncateToWidth } from '../tools/render-helpers.js';
+import { BETA_ISSUES_PREFIX, BETA_ISSUES_URL, BETA_LABEL, TAGLINE } from '../tui/content.js';
+import { paint, type SemanticToken } from '../tui/palette.js';
 
 // ─── Minimal theme interface ──────────────────────────────────────────────────
 
@@ -18,135 +20,95 @@ export interface BannerTheme {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const GLYPH = '◆';
-const TAGLINE_TEXT = 'Your AI coding agent';
-
-/** Theme token that resolves to the lavender/purple brand var (#A5B4FC). */
-const OCTOPUS_COLOR = 'mdLink';
 
 /**
- * Purple octopus mascot shown above the wordmark in the header, animated like a
- * tiny shader: the glyph frame is a pure function of a time tick (tentacles
- * sway, the skirt ripples, eyes blink, sparkles twinkle) and the paint pass
- * sweeps a bold diagonal gloss band across the body. Sparkles (✦ ✧) paint
- * gold; the body paints the lavender brand var. Width-safe: every line is
- * clipped to the terminal width before painting.
+ * Octocode banner art: the lens + octopus emblem on top, the block-style
+ * OCTOCODE wordmark (figlet "ANSI Shadow" face) below. Painted by
+ * renderWordmarkLines with a STATIC purple gradient. Duplicated by design in
+ * octocode-agent `src/ui.ts` (raw 256-color substrate) — keep the two copies
+ * in sync by eye.
  */
-const OCTOPUS_BASE: readonly string[] = [
-  '       .-~~~-.',
-  '   ✦  ( o   o )',
-  '       )  ~  (   ✧',
-  "    .-'~~~~~~~'-.",
-  '   ( ( ( | | ) ) )',
-  '    \\_/ / | \\ \\_/',
-  '       (_/ \\_)',
-];
-
-/** Alternate tentacle pose (rows 4-6): outer arms swing, feet curl the other way. */
-const OCTOPUS_SWAY: readonly string[] = [
-  '   ) ( ( | | ) ) (',
-  '    \\_\\ \\ | / /_/',
-  '       (_) (_)',
-];
-
-/** First row of OCTOPUS_BASE replaced by OCTOPUS_SWAY on odd ticks. */
-const SWAY_ROW = 4;
-/** Rows whose `~` glyphs carry the travelling ripple (head crown + skirt hem). */
-const RIPPLE_ROWS: ReadonlySet<number> = new Set([0, 3]);
-/** Eyes blink for one tick out of every BLINK_EVERY. */
-const BLINK_EVERY = 8;
-
-/** One animation tick (frame advance) every this many ms. */
-export const OCTOPUS_TICK_MS = 240;
-/** One full gloss sweep across the mascot takes this many ticks. */
-const SHIMMER_BAND = 3;
-const OCTOPUS_SPAN =
-  Math.max(...OCTOPUS_BASE.map((l) => l.length)) + OCTOPUS_BASE.length + SHIMMER_BAND;
-
-/**
- * The plain (unpainted) glyph frame for an animation tick: tentacles alternate
- * between two poses, a ripple travels through the `~` rows, the eyes blink
- * every BLINK_EVERY ticks, and the sparkles trade shapes. Pure — same tick,
- * same frame.
- */
-export function octopusGlyphFrame(tick: number): string[] {
-  const t = Math.max(0, Math.floor(tick));
-  const rows = [...OCTOPUS_BASE];
-  if (t % 2 === 1) OCTOPUS_SWAY.forEach((line, i) => { rows[SWAY_ROW + i] = line; });
-  return rows.map((line, row) => {
-    let out = line;
-    if (RIPPLE_ROWS.has(row)) {
-      out = [...out].map((ch, col) => (ch === '~' && (col + t) % 3 === 0 ? '-' : ch)).join('');
-    }
-    if (row === 1 && t % BLINK_EVERY === BLINK_EVERY - 1) out = out.replace(/o/g, '-');
-    if (t % 2 === 1) out = out.replace(/[✦✧]/g, (m) => (m === '✦' ? '✧' : '✦'));
-    return out;
-  });
-}
-
-/**
- * Paint the animated octopus. The frame and the diagonal gloss-band position
- * both derive from `nowMs`, so the mascot moves and shines whenever the host
- * re-renders (pi redraws the header on every working tick); between renders it
- * is simply a static, valid frame. Pass a fixed `nowMs` for deterministic
- * output in tests.
- */
-export function renderOctopusLines(
-  theme: BannerTheme,
-  width: number,
-  nowMs: number = Date.now(),
-): string[] {
-  const tick = Math.floor(nowMs / OCTOPUS_TICK_MS);
-  const phase = (tick % OCTOPUS_SPAN) - SHIMMER_BAND;
-  return octopusGlyphFrame(tick).map((line, row) => {
-    // Clip the PLAIN art to width first (truncatePlainToWidth injects no SGR
-    // resets, unlike truncateToWidth), then paint the surviving glyphs — the
-    // per-character paint calls would otherwise distort the width measurement.
-    const clipped = truncatePlainToWidth(line, width);
-    let painted = '';
-    for (let col = 0; col < clipped.length; col++) {
-      const ch = clipped[col]!;
-      if (ch === ' ') {
-        painted += ch;
-      } else if (ch === '✦' || ch === '✧') {
-        painted += theme.fg('warning', ch);
-      } else {
-        const d = col - row - phase;
-        painted +=
-          d >= 0 && d < SHIMMER_BAND
-            ? theme.bold(theme.fg('text', ch))
-            : theme.fg(OCTOPUS_COLOR, ch);
-      }
-    }
-    return painted;
-  });
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-// 'text' maps to the default foreground in the shipped themes (no band at all),
-// so the middle band uses the lavender brand var instead — gray → purple → teal
-// actually reads as three metallic bands.
-const METALLIC_WORDMARK_PARTS: Array<readonly [color: string, text: string]> = [
-  ['muted', 'Oct'],
-  [OCTOPUS_COLOR, 'oco'],
-  ['accent', 'de'],
+const WORDMARK_ART: readonly string[] = [
+  '          ░░▒▒▓▓▓▓▒▒░░                     ░▒▓██████████▓▒░',
+  '        ░▒▓███▀▀▀▀███▓▒░                  ▒▓███▀▀▀██▀▀▀███▓▒',
+  '        ▒▓██        ██▓▒                  ▓████ ▀ ██ ▀ ████▓',
+  '        ░▒▓███▄▄▄▄███▓▒░                  ▒▓██████████████▓▒',
+  '          ░░▒▒▓▓▓▓▒▒░░ ▀█▄                ▄▄  ██  ██  ██  ▄▄',
+  '                         ▀█▄              ▀████▀  ██  ▀████▀',
+  '',
+  ' ██████╗  ██████╗████████╗ ██████╗  ██████╗ ██████╗ ██████╗ ███████╗',
+  '██╔═══██╗██╔════╝╚══██╔══╝██╔═══██╗██╔════╝██╔═══██╗██╔══██╗██╔════╝',
+  '██║   ██║██║        ██║   ██║   ██║██║     ██║   ██║██║  ██║█████╗',
+  '██║   ██║██║        ██║   ██║   ██║██║     ██║   ██║██║  ██║██╔══╝',
+  '╚██████╔╝╚██████╗   ██║   ╚██████╔╝╚██████╗╚██████╔╝██████╔╝███████╗',
+  ' ╚═════╝  ╚═════╝   ╚═╝    ╚═════╝  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝',
 ];
 
 /**
- * Static shimmer-style wordmark: use a few semantic color bands so it reads as
- * metallic without a terminal animation loop, noisy ANSI output, or width drift.
+ * Static purple ramp keyed by a small math equation instead of fixed columns.
+ * `gradient = 0.68·diagonal + 0.24·sinusoidalGlow - 0.20·lensGlint` keeps
+ * the mark mostly purple/lavender, adds a glossy highlight where the lens
+ * should catch light, and leaves a muted violet shadow at the far edge.
+ * No teal/cyan detours: the banner should read as purple first.
+ *
+ * Deliberately NOT animated: the banner is a transcript entry at the top of
+ * the scrollback, and any time-varying bytes there invalidate pi-tui's line
+ * diff for everything below it on every repaint — which surfaced as scroll
+ * jumps while the model streamed.
  */
-function renderMetallicWordmark(theme: BannerTheme): string {
-  return theme.bold(
-    METALLIC_WORDMARK_PARTS.map(([color, text]) => theme.fg(color, text)).join('')
-  );
+const PURPLE_RAMP: readonly SemanticToken[] = [
+  'bright', // white/lavender glint
+  'link',   // lavender
+  'brand',  // purple accent
+  'title',  // saturated purple title token
+  'brand',
+  'link',
+  'muted',  // violet-gray shadow
+];
+
+function purpleGradientToken(row: number, col: number, lineWidth: number): SemanticToken {
+  const maxRow = Math.max(1, WORDMARK_ART.length - 1);
+  const maxCol = Math.max(1, lineWidth - 1);
+  const x = col / maxCol;
+  const y = row / maxRow;
+  const diagonal = (x + y) / 2;
+  const sinusoidalGlow = 0.5 + 0.5 * Math.sin(Math.PI * (1.2 * x - 0.65 * y + 0.18));
+  const lensGlint = Math.max(0, 1 - Math.hypot(x - 0.16, y - 0.08) * 7);
+  const gradient = Math.max(0, Math.min(1, 0.68 * diagonal + 0.24 * sinusoidalGlow - 0.2 * lensGlint));
+  return PURPLE_RAMP[Math.min(PURPLE_RAMP.length - 1, Math.floor(gradient * PURPLE_RAMP.length))] ?? 'brand';
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Build the main Octocode banner block.
+ * The banner art painted with the static brand gradient. Pure in (theme,
+ * width): identical input → byte-identical output, so repaints are free.
+ * Width-safe: the PLAIN art is clipped first (truncatePlainToWidth injects no
+ * SGR resets), then the surviving glyphs are painted.
+ */
+export function renderWordmarkLines(theme: BannerTheme, width: number): string[] {
+  return WORDMARK_ART.map((line, row) => {
+    const clipped = truncatePlainToWidth(line, width);
+    let painted = '';
+    let col = 0;
+    // Code-point iteration keeps any future astral-plane glyph in the art
+    // from being split into lone surrogates by a code-unit index.
+    for (const ch of clipped) {
+      if (ch === ' ') {
+        painted += ch;
+      } else {
+        painted += paint(theme, purpleGradientToken(row, col, clipped.length), ch);
+      }
+      col++;
+    }
+    return painted;
+  });
+}
+
+/**
+ * Build the main Octocode banner block: the colored OCTOCODE wordmark topped
+ * off with the official `🔍🐙 Octocode` brand line (same mark as the published
+ * `octocode` CLI), which also carries the optional version.
  *
  * Returns an array of width-safe strings (ANSI codes included) ready to be
  * passed to a pi TUI renderer. Each string is individually truncated to
@@ -156,17 +118,11 @@ function renderMetallicWordmark(theme: BannerTheme): string {
  * @param width  Available terminal width in columns.
  * @param version  Optional semver string shown after the wordmark, e.g. `"1.2.3"`.
  */
-export function renderBannerLines(
-  theme: BannerTheme,
-  width: number,
-  version?: string,
-): string[] {
-  const glyph = theme.fg('accent', GLYPH);
-  const wordmark = renderMetallicWordmark(theme);
-  const versionStr = version ? theme.fg('muted', ` v${version}`) : '';
-  const mainLine = `${glyph} ${wordmark}${versionStr}`;
+export function renderBannerLines(theme: BannerTheme, width: number, version?: string): string[] {
+  const versionStr = version ? paint(theme, 'muted', `v${version}`) : '';
+  const wordmark = renderWordmarkLines(theme, width);
 
-  return [...renderOctopusLines(theme, width), truncateToWidth(mainLine, width)];
+  return versionStr ? [...wordmark, truncateToWidth(versionStr, width)] : wordmark;
 }
 
 /**
@@ -176,17 +132,24 @@ export function renderBannerLines(
  * @param width  Available terminal width in columns.
  */
 export function renderTagline(theme: BannerTheme, width: number): string {
-  const line = theme.fg('muted', TAGLINE_TEXT);
+  const line = paint(theme, 'muted', TAGLINE);
   return truncateToWidth(line, width);
 }
 
 /**
- * Convenience: return banner lines followed by the tagline.
+ * Beta notice: gold label (this IS an act-on-me state — expect rough edges)
+ * followed by a visible issue-tracker URL. Keep the URL literal instead of OSC 8
+ * here: startup lines are width-sanitized/truncated, and raw URLs are more
+ * reliable across terminals while still auto-linking in most emulators.
  */
-export function renderBannerWithTagline(
-  theme: BannerTheme,
-  width: number,
-  version?: string,
-): string[] {
-  return [...renderBannerLines(theme, width, version), renderTagline(theme, width)];
+export function renderBetaNotice(theme: BannerTheme, width: number): string {
+  const line = `${paint(theme, 'warning', BETA_LABEL)} ${paint(theme, 'muted', `· ${BETA_ISSUES_PREFIX}`)} ${paint(theme, 'link', BETA_ISSUES_URL)}`;
+  return truncateToWidth(line, width);
+}
+
+/**
+ * Convenience: banner lines, then the tagline, then the beta notice.
+ */
+export function renderBannerWithTagline(theme: BannerTheme, width: number, version?: string): string[] {
+  return [...renderBannerLines(theme, width, version), renderTagline(theme, width), renderBetaNotice(theme, width)];
 }

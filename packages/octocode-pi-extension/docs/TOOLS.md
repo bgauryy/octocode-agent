@@ -19,12 +19,14 @@ why, the user-facing rules, and the developer code map.
 | **Package** | `npmSearch` |
 | **Browser** | `chromeDebug` · `browserAgent` · `spawnSubagent` |
 | **Agents** | `spawnAgent` · `AgentMessage` |
+| **Media** | `readImage` · `createImage` |
 | **Web** | `web` |
-| **MCP** | `MCPTool` (alias `mcp`) |
+| **MCP** | `MCPTool` (`/mcp` is a slash-command alias, not a tool alias) |
 | **Meta** | `callTool` — self-extending dynamic-tool factory (CRUD modes: `list` · `create` · `run` · `enhance`/`fix` update · `delete` · auto-maintain) |
 | **Meta** | `callSkill` — self-extending dynamic-**skill** factory for reusable multi-step workflows (modes: `list` · `create` · `use` · `enhance`/`fix` · `delete` · auto-maintain) |
 | **Context** | `manage_context` |
-| **Memory + coordination** | *No tools.* Use `npx @octocodeai/octocode-awareness-lite <noun> <verb>` (see Memory / Awareness below) |
+| **Memory** | `memory` — lightweight wrapper over Awareness Lite memory recall/record/forget |
+| **Coordination** | *No tools.* Use `npx @octocodeai/octocode-awareness-lite <noun> <verb>` for status/plan/task/work/lock/handoff/check/message (see Memory / Awareness below) |
 
 Session-scoped maintenance jobs are controlled by `/octocode-cron`; see [CRON.md](./CRON.md).
 Source of truth for names: `OCTOCODE_DIRECT_TOOL_NAMES` + `OCTOCODE_SUPPORT_TOOL_NAMES` in `src/constants.ts`.
@@ -51,9 +53,11 @@ Source of truth for names: `OCTOCODE_DIRECT_TOOL_NAMES` + `OCTOCODE_SUPPORT_TOOL
 | Inspect archives / binaries | `localBinaryInspect` |
 | Symbol identity, refs, callers, types | `lspGetSemantics` |
 | Resolve npm package to source | `npmSearch` |
+| See a local image / screenshot (vision) | `readImage` |
+| Show an authored graphic inline (svg / html) | `createImage` |
 | Single-shot Chrome DevTools call | `chromeDebug` |
-| Multi-turn browser session | `spawnSubagent` (agent: "browser-agent") |
 | Browser analysis routing | `browserAgent` |
+| Multi-turn browser session | `browserAgent(...)` → `spawnAgent(...)` → `AgentMessage(...)` |
 | Spawn background Pi worker | `spawnAgent` |
 | Coordinate spawned workers | `AgentMessage` |
 | Fetch a URL / web search | `web` |
@@ -64,8 +68,8 @@ Source of truth for names: `OCTOCODE_DIRECT_TOOL_NAMES` + `OCTOCODE_SUPPORT_TOOL
 | Reuse/create/maintain a verified dynamic capability | `callTool` |
 | Reuse/create/maintain a reusable multi-step workflow | `callSkill` |
 | Compact / reset context | `manage_context` |
-| Recall prior lessons | `npx @octocodeai/octocode-awareness-lite memory recall` (CLI) |
-| Record a root cause / decision | `npx @octocodeai/octocode-awareness-lite memory store` (CLI) |
+| Recall prior lessons | `memory` tool or `npx @octocodeai/octocode-awareness-lite memory recall` (CLI) |
+| Record a root cause / decision | `memory` tool or `npx @octocodeai/octocode-awareness-lite memory store` (CLI) |
 | Leave a continuation note | `npx @octocodeai/octocode-awareness-lite handoff add` (CLI) |
 | Check locks + active agents | `npx @octocodeai/octocode-awareness-lite status` (CLI) |
 | Send / read tiny messages | `npx @octocodeai/octocode-awareness-lite message …` (CLI) |
@@ -76,13 +80,13 @@ Source of truth for names: `OCTOCODE_DIRECT_TOOL_NAMES` + `OCTOCODE_SUPPORT_TOOL
 ## Core Tools
 
 ### `bash`
-Execute shell commands in the current working directory. Octocode override of Pi’s built-in bash: same shell execution, plus path-guard on redirect/`tee`/`cp`/`mv` write targets and a small blocklist of catastrophic commands. Returns stdout + stderr (truncated to last 2 000 lines / 50 KB). Prefer `edit`/`write` for ordinary file mutations; use bash for git, builds, `sed`/bulk edits, and anything local tools cannot cover. Details: [OVERRIDES.md](./OVERRIDES.md).
+Execute shell commands in the current working directory. Octocode override of Pi’s built-in bash: same shell execution, plus path-guard on redirect/`tee`/`cp`/`mv` write targets and a small blocklist of catastrophic commands. Every call requires a non-empty `reasoning` field explaining why the command is necessary. Returns stdout + stderr (truncated to last 2 000 lines / 50 KB). Prefer `edit`/`write` for ordinary file mutations; use bash for git, builds, `sed`/bulk edits, and anything local tools cannot cover. Details: [OVERRIDES.md](./OVERRIDES.md).
 
 ### `edit`
 Targeted file replacement using exact current-file text. Detects stale reads before writing. Every edit requires a non-empty `reasoning`. Use `matchMode:"normalized"` for whitespace drift; `matchMode:"lineRange"` with freshly read line numbers as a last resort. **Not** for new files — use `write`. Diff previews use Myers line diff (see [OVERRIDES.md](./OVERRIDES.md)).
 
 ### `write`
-Create or overwrite a file. Octocode override of Pi’s built-in write: same create/overwrite + parent-mkdir semantics, plus path-guard (cwd / home / OS temp / `ALLOWED_PATHS`) and post-write read-state recording for the edit stale-check. No match guard — overwrites without confirmation. Use only for new files or intentional full rewrites; prefer `edit` for surgical changes. Details: [OVERRIDES.md](./OVERRIDES.md).
+Create or overwrite a file. Octocode override of Pi’s built-in write: same create/overwrite + parent-mkdir semantics, plus path-guard (cwd / home / OS temp / `ALLOWED_PATHS`) and post-write read-state recording for the edit stale-check. Every call requires a non-empty `reasoning` field explaining why the create/overwrite is necessary. No match guard — overwrites without confirmation. Use only for new files or intentional full rewrites; prefer `edit` for surgical changes. Details: [OVERRIDES.md](./OVERRIDES.md).
 
 ---
 
@@ -248,6 +252,37 @@ Agent lifecycle: `starting` → `running` → `idle` → `exited` / `failed` / `
 
 ---
 
+## Media Tools
+
+Inline images require a terminal that speaks the Kitty graphics or iTerm2 protocol
+(Kitty, Ghostty, WezTerm, Warp, iTerm2). On VS Code / tmux / plain xterm the tools
+fall back to a saved PNG plus a text placeholder and an offer to open it in a
+browser — the agent must ask the user first and never auto-opens.
+
+### `readImage`
+Load a local image (`png`/`jpeg`/`gif`/`webp`, ≤ 4MB) and return it as an image
+content block so a vision-capable model can see it; pi renders it inline in
+image-capable terminals. Does no OCR itself — the model reads the pixels.
+
+```
+readImage path:"./.octocode/screenshots/login.png"
+```
+
+### `createImage`
+Render agent-authored markup to a PNG shown inline. Two modes (provide exactly one):
+- `svg` — rasterized with `@resvg/resvg-js` (Rust, no browser; system fonts loaded).
+- `html` — rendered by headless Chrome (full CSS/flex/grid/gradients/webfonts/emoji); requires Chrome installed.
+
+Optional: `width`, `height` (html only), `background`, `name`, `saveTo`,
+`showToModel` (default false — keeps the image out of model context). Max 4MB output.
+
+```
+createImage svg:"<svg xmlns='http://www.w3.org/2000/svg' width='120' height='40'>…</svg>"
+createImage html:"<div style='display:flex;gap:8px'>…</div>" width:800 background:"#0d1117"
+```
+
+---
+
 ## Web Tool
 
 ### `web`
@@ -292,12 +327,17 @@ Pi-core/runtime banners that do not pass through extension hooks, such as a mode
 
 ---
 
-## Memory / Awareness (CLI + skill, not agent tools)
+## Memory / Awareness (memory tool + CLI + skill)
 
-Awareness memory/coordination has **no agent tools**. Drive it through
-`npx @octocodeai/octocode-awareness-lite <noun> <verb>` (pass workspace/agent flags where a
-command needs them), following the **octocode-awareness-lite skill**. Pi only
-automates the pre-edit lock gate; agents run task/work/check commands explicitly.
+Awareness coordination has **no agent tools**. Drive status/plan/task/work/lock/
+handoff/check/message through `npx @octocodeai/octocode-awareness-lite <noun> <verb>`
+(pass workspace/agent flags where a command needs them), following the
+**octocode-awareness-lite skill**. Pi only automates the pre-edit lock gate;
+agents run task/work/check commands explicitly.
+
+Memory is the deliberate exception: the `memory` tool is a small wrapper over the
+same Lite memory CLI for recall/record/forget. Use either surface, but keep
+coordination on the CLI so there is one task/work/check schema.
 
 See [`AWARENESS_AGENT_FLOW.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) for live coordination, [`REFLECT.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-pi-extension/docs/REFLECT.md) for Lite memory guidance, and [`CRON.md`](./CRON.md) for session job controls.
 
@@ -327,13 +367,28 @@ See [`AWARENESS_AGENT_FLOW.md`](https://github.com/bgauryy/octocode-mcp/blob/mai
 
 ## MCP Servers
 
-`MCPTool` (alias `mcp`) is a dedicated stdio MCP client built into the extension. It
-lets the agent list, describe, and call tools exposed by any Model Context Protocol
-server — without those tools being registered individually in Pi.
+`MCPTool` is a dedicated stdio MCP client built into the extension. It lets the
+agent list, describe, and call tools exposed by any Model Context Protocol server
+— without those tools being registered individually in Pi. `/mcp` is a slash-command
+alias for the MCP status/management UI; it is not a model-callable tool alias.
 
-The built-in `octocode` research server is always available (`npx -y octocode-mcp@latest`,
-lazy-started on first `list`/`call`). Add your own servers by dropping an `mcp.json` file
+The built-in `octocode` research server is always available (pinned local `octocode-mcp`,
+`npx -y octocode-mcp@latest` fallback). Add your own servers by dropping an `mcp.json` file
 in one of the config locations below — **no code change or rebuild is needed.**
+
+Once init discovery lands, a machine-readable inventory is written to
+`.octocode/discovery.json`: every discovered skill (scanned across the common ecosystem
+roots — `.agents`, `.claude`, `.cursor`, `.codex`, `.octocode`, `.pi` in project and user
+scope, deduped by name), the active MCP servers + tools, and every MCP config file found
+in the common locations (`.mcp.json`, `.cursor/mcp.json`, `.codex/config.toml`, …).
+Foreign configs are inventory only — never auto-spawned; opt in via `MCPTool action:add`.
+
+At session init every configured server is fully discovered — its instructions, tools,
+and exact input schemas — and injected into the system prompt as a `<mcp_catalog>` block.
+The block is byte-stable across turns (provider prompt caching pays for it once) and
+refreshes only when the config actually changes (mcp.json edit, `add`/`remove`/`restart`,
+`tools/list_changed`). The model calls tools straight from the catalog; `list`/`describe`
+are only needed for truncated entries or failed schema validation.
 
 ### 1. Where config is read from
 
@@ -408,8 +463,9 @@ MCPTool({ action: "call", server: "my-server", tool: "searchDocs",
           arguments: { query: "retry policy" } })
 ```
 
-Servers are spawned lazily on first `list`/`call` and reused for the session; `stop`/
-`restart` recycle them. Treat any MCP server as arbitrary code — only add config you trust.
+Servers are spawned at session init for catalog discovery (best-effort, never blocks
+startup) and reused for the session; `stop`/`restart` recycle them and a later `list`/
+`call` respawns on demand. Treat any MCP server as arbitrary code — only add config you trust.
 
 ---
 

@@ -15,13 +15,13 @@ test('octocodeSelectListTheme returns all five SelectList theme functions', () =
   }
 });
 
-test('octocodeSelectListTheme maps to accent/muted/dim/warning colors', () => {
+test('octocodeSelectListTheme maps to accent/muted/dim colors', () => {
   const t = octocodeSelectListTheme(theme);
   assert.match(t.selectedPrefix('x'), /<accent>/);
   assert.match(t.selectedText('x'), /<accent>/);
   assert.match(t.description('x'), /<muted>/);
   assert.match(t.scrollInfo('x'), /<dim>/);
-  assert.match(t.noMatch('x'), /<warning>/);
+  assert.match(t.noMatch('x'), /<muted>/);
 });
 
 test('octocodeSelectListTheme is identity-safe without a theme', () => {
@@ -60,4 +60,35 @@ test('selectItemMatchesFilter matches the visible label/description, not just in
   // SHA-valued checkpoint items match by their visible date label.
   const checkpoint = { value: 'a1b2c3d', label: '2026-08-21 14:02 — fix banner' };
   assert.ok(selectItemMatchesFilter(checkpoint, 'fix banner'));
+});
+
+test('type-to-filter preserves the highlighted item across list rebuilds', async () => {
+  const { runSelectOverlay } = await import('../src/tools/ui-overlays.js');
+  const items = [
+    { value: 'apple', label: 'apple' },
+    { value: 'apricot', label: 'apricot' },
+    { value: 'banana', label: 'banana' },
+  ];
+  let component: { handleInput: (data: string) => void } | undefined;
+  const ctx = {
+    mode: 'tui',
+    hasUI: true,
+    ui: {
+      custom: (factory: (tui: unknown, theme: unknown, kb: unknown, done: (v: unknown) => void) => unknown) =>
+        new Promise((resolve) => {
+          component = factory(
+            { requestRender() {} },
+            { fg: (_c: string, t: string) => t, bold: (t: string) => t },
+            undefined,
+            resolve,
+          ) as { handleInput: (data: string) => void };
+        }),
+    },
+  } as never;
+  const resultP = runSelectOverlay(ctx, { title: 'T', items, filter: true });
+  component!.handleInput('\x1b[B'); // highlight 'apricot'
+  component!.handleInput('a');      // filter rebuild — old behavior snapped back to 'apple'
+  component!.handleInput('p');      // rebuild again ('apple' + 'apricot' both survive)
+  component!.handleInput('\r');     // confirm
+  assert.equal(await resultP, 'apricot');
 });

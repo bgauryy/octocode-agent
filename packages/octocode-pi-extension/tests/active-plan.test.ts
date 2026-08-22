@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, test } from 'vitest';
 import { Type } from 'typebox';
 import type { ToolDefinition } from '../src/types.js';
@@ -8,6 +11,8 @@ import {
   activePlanScope, adoptPlanFromBranch, setPlanEntryAppender, PLAN_ENTRY_TYPE,
 } from '../src/tools/active-plan.js';
 import { registerPlanTool, refreshPlanUi, handleOctocodePlanCommand } from '../src/tools/plan-tool.js';
+import { planArtifactsDir } from '../src/tools/plan-html.js';
+import { isPlanMode, exitPlanMode, planModeToolGate, PLAN_MODE_BLOCK_REASON } from '../src/tools/plan-mode.js';
 import type { PiContext } from '../src/types.js';
 
 // Minimal UI spy for widget/status/notify assertions.
@@ -145,9 +150,9 @@ test('plan panel renders a progress bar, glyphs, and the running step activeForm
   const comp = w!.content(null, theme) as { render: (w: number) => string[] };
   const lines = comp.render(80);
   const joined = lines.join('\n');
-  assert.match(joined, /Plan\s+[\u2588\u2591]{8}\s+1\/2 · now: Run tests/, 'header has progress and the current running step');
+  assert.match(joined, /Plan\s+[\u2588\u2591]{8}\s+1\/2 done · now: Run tests/, 'header has progress and the current running step');
   assert.match(joined, /\u2713 1\. Edit file/, 'done step uses the check glyph');
-  assert.match(joined, /\u25b8 2\. Run tests/, 'doing step uses the pointer glyph');
+  assert.match(joined, /\u25b8 2\. Run tests · in progress/, 'doing step uses the pointer glyph plus a status word');
   clearPlan(cwd);
 });
 
@@ -246,6 +251,30 @@ test('/octocode-plan command text marks blocked steps and their dependencies', a
   await handleOctocodePlanCommand('show', ctx, (_c, m) => calls.notify.push(m));
   assert.ok(calls.notify.some((m) => /\[!\] 2\. B \(needs 3\)/.test(m)), 'blocked dependency is visible in text output');
   clearPlan(cwd);
+});
+
+test('plan tool set writes a reviewable local plan artifact immediately', async () => {
+  const originalHome = process.env['OCTOCODE_HOME'];
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-plan-tool-home-'));
+  process.env['OCTOCODE_HOME'] = home;
+  const tool = loadTool();
+  const cwd = '/tmp/plan-artifact-ws';
+  const ctx = { cwd } as unknown as import('../src/types.js').PiContext;
+  try {
+    const res = await tool.execute('id', { action: 'set', steps: ['Research', 'Patch'] }, undefined, undefined, ctx) as { content: Array<{ text: string }> };
+    const mdPath = path.join(planArtifactsDir(cwd), 'plan.md');
+    assert.equal(fs.existsSync(mdPath), true, 'plan.md is written during set');
+    const md = fs.readFileSync(mdPath, 'utf8');
+    assert.match(md, /Status: active/);
+    assert.match(md, /Workspace: \/tmp\/plan-artifact-ws/);
+    assert.match(md, /OCTOCODE_PLAN_CHECKLIST_START/);
+    assert.match((res.content[0] as { text: string }).text, new RegExp(mdPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  } finally {
+    clearPlan(cwd);
+    fs.rmSync(home, { recursive: true, force: true });
+    if (originalHome === undefined) delete process.env['OCTOCODE_HOME'];
+    else process.env['OCTOCODE_HOME'] = originalHome;
+  }
 });
 
 test('plan tool start/complete with a bad index reports an error and does not mutate', async () => {
@@ -498,4 +527,64 @@ test('adoptPlanFromBranch with an empty snapshot clears the scope; without any s
   } finally {
     clearPlan(BRANCH_CWD);
   }
+});
+
+test('/octocode-plan new <goal> sends the plan-mode prompt and never touches the plan', async () => {
+  const cwd = '/tmp/plan-new-ws';
+  clearPlan(cwd);
+  const { ctx, calls } = uiCtx(cwd);
+  const sent: string[] = [];
+  await handleOctocodePlanCommand('new   add   dark mode toggle', ctx, (_c, m) => calls.notify.push(m), (t) => { sent.push(t); });
+  assert.equal(sent.length, 1);
+  assert.match(sent[0]!, /^\[PLAN MODE\]/);
+  assert.match(sent[0]!, /Goal: add dark mode toggle/);
+  assert.match(sent[0]!, /plan\(propose\)/);
+  assert.match(sent[0]!, /never execute a rejected plan/);
+  assert.equal(getPlan(cwd).length, 0, 'planning is the agent\'s job — the command sets nothing');
+  assert.ok(calls.notify.some((m) => /Plan mode/.test(m)));
+  // No goal → the prompt asks the agent to ask.
+  await handleOctocodePlanCommand('new', ctx, (_c, m) => calls.notify.push(m), (t) => { sent.push(t); });
+  assert.match(sent[1]!, /ask the user for the goal/);
+  // Hosts without sendUserMessage get a clear warning instead of a silent no-op.
+  const before = calls.notify.length;
+  await handleOctocodePlanCommand('new x', ctx, (_c, m) => calls.notify.push(m));
+  assert.match(calls.notify[before]!, /cannot send prompts/);
+});
+
+test('plan mode: /octocode-plan new blocks write tools until /octocode-plan off or an approved propose', async () => {
+  const cwd = '/tmp/plan-mode-ws';
+  const { ctx, calls } = uiCtx(cwd);
+  exitPlanMode();
+  assert.equal(planModeToolGate('edit'), undefined, 'gate is inert outside plan mode');
+  await handleOctocodePlanCommand('new ship it', ctx, (_c, m) => calls.notify.push(m), () => {});
+  assert.equal(isPlanMode(), true);
+  assert.deepEqual(planModeToolGate('edit'), { block: true, reason: PLAN_MODE_BLOCK_REASON });
+  assert.deepEqual(planModeToolGate('Write'), { block: true, reason: PLAN_MODE_BLOCK_REASON });
+  assert.equal(planModeToolGate('localSearchCode'), undefined, 'read tools stay available');
+  assert.ok(calls.status.some((s) => (s as { name: string }).name === 'octocode-plan-mode'), 'status chip shown');
+  await handleOctocodePlanCommand('off', ctx, (_c, m) => calls.notify.push(m));
+  assert.equal(isPlanMode(), false);
+  assert.equal(planModeToolGate('edit'), undefined);
+  assert.ok(calls.notify.some((m) => /write tools restored/.test(m)));
+});
+
+test('status panel registers its widget ONCE per session and repaints via tui.requestRender afterwards', () => {
+  const cwd = '/tmp/plan-panel-once-ws';
+  const { ctx, calls } = uiCtx(cwd);
+  setPlan(cwd, ['a', 'b']);
+  refreshPlanUi(ctx);
+  const registrations = calls.widget.filter((w) => (w as { isFn: boolean }).isFn);
+  assert.equal(registrations.length, 1, 'first refresh registers the widget factory');
+  // Bind the factory the way pi does, so the panel learns its tui.requestRender.
+  let renders = 0;
+  const factory = (registrations[0] as { content: (tui: unknown, theme: unknown) => unknown }).content;
+  factory({ requestRender: () => { renders++; } }, { fg: (_c: string, t: string) => t, bold: (t: string) => t });
+  startStep(cwd, 1);
+  refreshPlanUi(ctx);
+  refreshPlanUi(ctx);
+  assert.equal(calls.widget.filter((w) => (w as { isFn: boolean }).isFn).length, 1, 'no re-registration on later refreshes');
+  assert.equal(renders, 2, 'later refreshes only ask pi to repaint');
+  clearPlan(cwd);
+  refreshPlanUi(ctx);
+  assert.ok(calls.widget.some((w) => (w as { cleared: boolean }).cleared), 'empty panel clears the widget');
 });

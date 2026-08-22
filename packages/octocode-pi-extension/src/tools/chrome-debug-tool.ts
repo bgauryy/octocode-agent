@@ -407,7 +407,7 @@ export function registerChromeDebugTool(
 
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme, context?: RenderContext) {
       if (opts.isPartial) {
-        const msg = paint(theme, 'warning', CLI_STATUS_TEXT.connectingChrome);
+        const msg = paint(theme, 'brand', CLI_STATUS_TEXT.connectingChrome);
         return makeRenderer((w) => [truncateToWidth(msg, w)]);
       }
 
@@ -427,7 +427,7 @@ export function registerChromeDebugTool(
 
       let stat = '';
       if (findingCount > 0) {
-        stat = paint(theme, 'warning', ` · ${findingCount} finding${findingCount === 1 ? '' : 's'}`);
+        stat = paint(theme, 'count', ` · ${findingCount} finding${findingCount === 1 ? '' : 's'}`);
       } else if (screenshotPath) {
         const fname = path.basename(screenshotPath);
         stat = paint(theme, 'dim', ` · ${fname}`);

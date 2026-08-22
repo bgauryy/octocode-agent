@@ -5,11 +5,16 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { Type } from 'typebox';
 import { withOctocodeRender } from '../src/branding/renderers.js';
 import {
   buildOctocodeRenderCall,
   buildToolCallSummary,
 } from '../src/tools/render-helpers.js';
+import { registerUniqueTool } from '../src/tools/octocode-tools.js';
+import { registerEditTool } from '../src/tools/edit-tool.js';
+import { registerWriteTool } from '../src/tools/write-tool.js';
+import { registerBashTool } from '../src/tools/bash-tool.js';
 import type { ToolDefinition, PiTheme, ToolCallResult, RenderResultOptions } from '../src/types.js';
 // ─── Stub theme ───────────────────────────────────────────────────────────────
 
@@ -46,6 +51,27 @@ function makeResult(overrides: Partial<ToolCallResult> = {}): ToolCallResult {
   };
 }
 
+// ─── Shared registration helper ───────────────────────────────────────────────
+
+describe('registerUniqueTool with builtin overrides', () => {
+  it('wraps edit/write/bash renderers and rejects duplicate names through the shared helper', () => {
+    const tools = new Map<string, ToolDefinition>();
+    const pi = { registerTool: (def: ToolDefinition) => tools.set(def.name, def) };
+    const names = new Set<string>();
+
+    registerEditTool(pi, Type, names, registerUniqueTool);
+    registerWriteTool(pi, Type, names, registerUniqueTool);
+    registerBashTool(pi, Type, names, registerUniqueTool);
+
+    expect([...tools.keys()]).toEqual(['edit', 'write', 'bash']);
+    for (const name of ['edit', 'write', 'bash']) {
+      expect(tools.get(name)?.renderCall).toBeTypeOf('function');
+      expect(tools.get(name)?.renderResult).toBeTypeOf('function');
+    }
+    expect(() => registerWriteTool(pi, Type, names, registerUniqueTool)).toThrow(/tool name collision: write/);
+  });
+});
+
 // ─── withOctocodeRender — basic decoration ────────────────────────────────────
 
 describe('withOctocodeRender', () => {
@@ -70,11 +96,33 @@ describe('withOctocodeRender', () => {
     expect(def.renderCall).toBe(customRenderCall);
   });
 
-  it('preserves existing renderResult', () => {
+  it('delegates to an existing renderResult for normal results', () => {
     const customRenderResult = vi.fn().mockReturnValue({ render: () => ['custom'], invalidate: () => {} });
     const def = makeDef({ renderResult: customRenderResult });
     withOctocodeRender(def);
-    expect(def.renderResult).toBe(customRenderResult);
+    // The tool's own renderer is wrapped (not replaced): a normal result still
+    // flows through it unchanged.
+    const out = def.renderResult!(makeResult(), {} as RenderResultOptions, stubTheme);
+    expect(customRenderResult).toHaveBeenCalledOnce();
+    expect(out.render(80)).toEqual(['custom']);
+  });
+
+  it('overrides an existing renderResult on a system error (context.isError)', () => {
+    const customRenderResult = vi.fn().mockReturnValue({ render: () => ['custom'], invalidate: () => {} });
+    const def = makeDef({ name: 'boomTool', renderResult: customRenderResult });
+    withOctocodeRender(def);
+    // Pi sets context.isError when execute() threw / the call was rejected; the
+    // tool's own renderer (keyed off result.isError) must NOT paint a success row.
+    const out = def.renderResult!(
+      makeResult({ isError: false, content: [{ type: 'text', text: 'arguments: must be object' }] }),
+      { isPartial: false } as RenderResultOptions,
+      stubTheme,
+      { isError: true, invalidate() {} } as never,
+    );
+    expect(customRenderResult).not.toHaveBeenCalled();
+    const line = out.render(200).join('');
+    expect(line).toContain('boomTool');
+    expect(line).toContain('arguments: must be object');
   });
 
   it('preserves execute and parameters', async () => {

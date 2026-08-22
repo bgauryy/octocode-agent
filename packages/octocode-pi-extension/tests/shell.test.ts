@@ -98,10 +98,14 @@ test('emits the branded banner on startup', async () => {
   const done = shell.run();
   // Banner is printed synchronously during run() before it awaits quit.
   assert.ok(ui.started, 'ui.start() must be called');
+  // The banner's brand identity is the OCTOCODE block art (the redundant
+  // text wordmark line was removed) — assert the art, version, and tagline.
   assert.ok(
-    ui.lines.some((l) => l.includes('Octocode')),
-    `banner should mention Octocode, got: ${JSON.stringify(ui.lines)}`,
+    ui.lines.some((l) => l.includes('██████╗')),
+    `banner should render the OCTOCODE block art, got: ${JSON.stringify(ui.lines)}`,
   );
+  assert.ok(ui.lines.some((l) => l.includes('v1.4.0')), 'banner shows the version');
+  assert.ok(ui.lines.some((l) => l.includes('Your AI coding agent')), 'banner shows the tagline');
 
   await ui.submit('/quit');
   assert.equal(await done, 0);

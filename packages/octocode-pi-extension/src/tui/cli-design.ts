@@ -38,7 +38,7 @@ const ANSI_BY_TOKEN: Partial<Record<SemanticToken, string>> = {
   brand: '\u001b[36m',
   path: '\u001b[36m',
   link: '\u001b[35m',
-  linkUrl: '\u001b[35m',
+  linkUrl: '\u001b[2m', // theme resolves mdLinkUrl → dim
   count: '\u001b[33m',
   symbol: '\u001b[36m',
   title: '\u001b[36m',
@@ -47,10 +47,17 @@ const ANSI_BY_TOKEN: Partial<Record<SemanticToken, string>> = {
   warning: '\u001b[33m', // yellow — tracks the themes' gold warning, not magenta
   muted: '\u001b[2m',
   dim: '\u001b[2m',
+  bright: '\u001b[1m',
   diffAdd: '\u001b[32m',
   diffRemove: '\u001b[31m',
   diffContext: '\u001b[2m',
 };
+
+/** Raw SGR open sequence for a semantic token (undefined when the token has no fallback). */
+export function ansiForToken(token: SemanticToken): string | undefined {
+  return ANSI_BY_TOKEN[token];
+}
+export const ANSI_RESET_SEQ = ANSI_RESET;
 
 /** Theme paint with a raw ANSI fallback for shell transcript rows. */
 export function cliPaint(
@@ -120,7 +127,7 @@ export function formatCliToolRow(
   const fit = (row: string): string => truncateToWidth(row, Math.max(20, width));
 
   if (state === 'queued') {
-    return fit(`${cliPaint(theme, 'warning', `╭─ ${CLI_GLYPH.tool} tool call`)} ${title}${detailText}`);
+    return fit(`${cliPaint(theme, 'brand', `╭─ ${CLI_GLYPH.tool} tool call`)} ${title}${detailText}`);
   }
   if (state === 'running') {
     return fit(`${cliPaint(theme, 'title', `╭─ ${CLI_GLYPH.running}`)} ${title} ${cliPaint(theme, 'dim', CLI_STATUS_TEXT.running)}${detailText}`);
@@ -137,9 +144,9 @@ export function formatCliToolRow(
 /** Text-labeled thinking boundary row for accessible streamed reasoning blocks. */
 export function formatThinkingRow(boundary: 'start' | 'end', theme?: PaintTheme): string {
   if (boundary === 'start') {
-    return `${cliPaint(theme, 'warning', `╭─ ${CLI_GLYPH.thinking} thinking`)} ${cliPaint(theme, 'dim', 'model reasoning')}`;
+    return `${cliPaint(theme, 'link', `╭─ ${CLI_GLYPH.thinking} thinking`)} ${cliPaint(theme, 'dim', 'model reasoning')}`;
   }
-  return cliPaint(theme, 'warning', '╰─ thinking ready');
+  return cliPaint(theme, 'link', '╰─ thinking ready');
 }
 
 /** Use the existing semantic theme painter for non-raw TUI component renderers. */

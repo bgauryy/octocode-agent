@@ -1,34 +1,21 @@
 import { constants } from 'node:fs';
 import { access, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
-import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
+import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint, ansiForToken, ANSI_RESET_SEQ } from '../tui/cli-design.js';
+import type { TSchema, ToolCallResult, ToolDefinition, PiTheme, RenderCallReturn } from '../types.js';
 import { makeRenderer, truncateToWidth, wrapText } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
-import {
-  atomicWriteUtf8,
-  withFileMutationQueue,
-  recordFileReadState,
-  checkReadState,
-  clearReadStatesForTests,
-  resolveFilePath,
-  type ReadStateCheck,
-} from './file-state.js';
+import { atomicWriteUtf8, withFileMutationQueue, recordFileReadState, checkReadState, resolveFilePath, type ReadStateCheck } from './file-state.js';
 import { peerWipNotice, markOwnWrite } from './peer-wip.js';
+import type { registerUniqueTool } from './octocode-tools.js';
 
-// ─── Backward-compat re-exports ───────────────────────────────────────────────
-// Tests (package.test.ts) and historical callers import these from edit-tool.
-// write-tool.ts and octocode-tools.ts now import directly from file-state.ts.
-export { withFileMutationQueue, recordFileReadState } from './file-state.js';
-export function clearEditReadStateForTests(): void {
-  clearReadStatesForTests();
-}
 
 const require = createRequire(import.meta.url);
 
 // ─── TypeBox (dynamic import — Pi runtime dep) ────────────────────────────────
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
+type RegisterFn = typeof registerUniqueTool;
 
 type MatchMode = 'exact' | 'normalized' | 'lineRange';
 
@@ -103,10 +90,12 @@ interface EditReasoningEntry {
   reasoning: string;
 }
 
+interface RenderableEditFile {
+  path: string;
+  edits?: Array<AppliedEditEvidence>;
+}
+
 // ReadStateCheck is imported from file-state.ts above (type re-used in PreparedEdit).
-const ANSI_GREEN = '\x1b[32m';
-const ANSI_RED = '\x1b[31m';
-const ANSI_RESET = '\x1b[0m';
 
 function normalizeToLF(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -618,16 +607,6 @@ export function diffOpsJs(oldContent: string, newContent: string): DiffOp[] {
   return opsRev;
 }
 
-export function generateDiffString(oldContent: string, newContent: string): string {
-  if (diffTooLarge(oldContent, newContent)) {
-    return '(diff omitted: file too large — see the per-edit changes in details)';
-  }
-  return diffOps(oldContent, newContent)
-    .filter((op) => op.type !== 'same')
-    .map((op) => `${op.type === 'add' ? '+' : '-'} ${op.line}`)
-    .join('\n');
-}
-
 /**
  * NO_COLOR (https://no-color.org) opt-out for the raw diff SGR codes. Only the
  * explicit env flag disables them — not TTY detection — because `coloredDiff`
@@ -641,8 +620,9 @@ function diffColorsDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
 
 function colorDiffLine(line: string): string {
   if (diffColorsDisabled()) return line;
-  if (line.startsWith('+ ')) return `${ANSI_GREEN}${line}${ANSI_RESET}`;
-  if (line.startsWith('- ')) return `${ANSI_RED}${line}${ANSI_RESET}`;
+  // Raw SGR twin of TOKEN.diffAdd / diffRemove (cli-design owns the fallback map).
+  if (line.startsWith('+ ')) return `${ansiForToken('diffAdd')}${line}${ANSI_RESET_SEQ}`;
+  if (line.startsWith('- ')) return `${ansiForToken('diffRemove')}${line}${ANSI_RESET_SEQ}`;
   return line;
 }
 
@@ -723,12 +703,14 @@ function buildParameters(Type: TypeBoxBuilder): TSchema {
   );
 }
 
+const EDIT_TOOL_DISPLAY_NAME = 'edit (Octocode)';
+
 function renderCallLine(args: unknown, theme?: PiTheme): string {
   const input = args && typeof args === 'object' ? args as Record<string, unknown> : {};
   const queries = Array.isArray(input['queries']) ? input['queries'].length : 0;
   const filePath = queries > 0 ? `${queries} file${queries === 1 ? '' : 's'}` : typeof input['path'] === 'string' ? input['path'] : '(missing path)';
   const edits = Array.isArray(input['edits']) ? input['edits'].length : queries;
-  const title = cliToolTitle(theme, 'edit');
+  const title = cliToolTitle(theme, EDIT_TOOL_DISPLAY_NAME);
   const suffix = paint(theme, 'dim', `${filePath} · ${edits} edit${edits === 1 ? '' : 's'}`);
   return `${title} ${suffix}`;
 }
@@ -739,13 +721,62 @@ function editReasoningEntries(edits: EditOperation[]): EditReasoningEntry[] {
 
 function reasoningSuffix(editsByFile: Array<{ path: string; edits: EditOperation[] }>): string {
   const lines = editsByFile.flatMap((file) => editReasoningEntries(file.edits)
-    .map((entry) => `${file.path} edits[${entry.editIndex}]: ${entry.reasoning}`));
+    .map((entry) => entry.reasoning));
   return lines.length > 0 ? `\nReasoning:\n${lines.map((line) => `- ${line}`).join('\n')}` : '';
 }
 
 function changesSuffix(prepared: PreparedEdit[]): string {
   const blocks = prepared.map((item) => `# ${item.requestPath}\n${colorDiffString(item.diff)}`);
   return `\nChanges:\n${blocks.join('\n')}`;
+}
+
+function renderEditReasoningItems(files: RenderableEditFile[], theme?: PiTheme): Array<{ text: string; truncate: boolean }> {
+  const items: Array<{ text: string; truncate: boolean }> = [];
+  for (const file of files) {
+    for (const edit of file.edits ?? []) {
+      const reasonText = edit.reasoning.trim();
+      if (!reasonText) continue;
+      items.push({
+        text: paint(theme, 'muted', `  Reasoning: ${reasonText}`),
+        truncate: true,
+      });
+    }
+  }
+  return items;
+}
+
+function renderEditDiffItems(files: RenderableEditFile[], theme?: PiTheme): Array<{ text: string; truncate: boolean }> {
+  const items: Array<{ text: string; truncate: boolean }> = [];
+  for (const file of files) {
+    items.push({ text: paint(theme, 'path', `  ${file.path}`), truncate: true });
+    for (const edit of file.edits ?? []) {
+      const ops = diffOps(edit.removedLines.join('\n'), edit.addedLines.join('\n'));
+      for (const op of ops) {
+        if (op.type === 'same') continue;
+        const label = op.type === 'remove' ? '- ' : '+ ';
+        const color = op.type === 'remove' ? 'diffRemove' : 'diffAdd';
+        // 4-space indent is OUTSIDE theme.fg so the coloured substring
+        // `<color>- text</color>` is preserved for test assertions and renderers
+        // that match on the coloured part only.
+        items.push({ text: `    ${paint(theme, color, `${label}${op.line}`)}`, truncate: true });
+      }
+    }
+  }
+  return items;
+}
+
+function renderCollapsedEditDiffLines(header: string, files: RenderableEditFile[], theme?: PiTheme): RenderCallReturn {
+  const reasoningItems = renderEditReasoningItems(files, theme);
+  const diffItems = renderEditDiffItems(files, theme);
+  const maxPreviewLines = 10;
+  const previewItems = [...reasoningItems, ...diffItems];
+  const shown = previewItems.slice(0, maxPreviewLines);
+  const omitted = previewItems.length - shown.length;
+  return makeRenderer((width) => [
+    truncateToWidth(header, width),
+    ...shown.map((item) => truncateToWidth(item.text, width)),
+    ...(omitted > 0 ? [truncateToWidth(paint(theme, 'muted', `  … ${omitted} more reasoning/diff line${omitted === 1 ? '' : 's'} hidden; expand for full details`), width)] : []),
+  ]);
 }
 
 async function prepareEdit(query: EditQuery, cwd: string, inheritedRequireRecentRead: boolean): Promise<PreparedEdit> {
@@ -790,8 +821,10 @@ function queriesFromRequest(request: EditRequest): EditQuery[] {
 export function registerEditTool(
   pi: { registerTool?(def: ToolDefinition): void },
   Type: TypeBoxBuilder,
+  registeredToolNames: Set<string>,
+  registerFn: RegisterFn,
 ): void {
-  pi.registerTool?.({
+  registerFn(pi, registeredToolNames, {
     name: 'edit',
     label: 'edit (Octocode)',
     description:
@@ -888,34 +921,34 @@ export function registerEditTool(
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        const prog = paint(theme, 'warning', CLI_STATUS_TEXT.editing);
-        return makeRenderer(() => [prog]);
+        const prog = paint(theme, 'brand', `${CLI_STATUS_TEXT.editing} ${EDIT_TOOL_DISPLAY_NAME}`);
+        return makeRenderer((width) => [truncateToWidth(prog, width)]);
       }
       const ok = !result.isError;
       const details = result.details as {
         replacements?: number;
         firstChangedLine?: number;
-        files?: Array<{
-          path: string;
-          edits?: Array<AppliedEditEvidence>;
-        }>;
+        files?: RenderableEditFile[];
       } | undefined;
       const count = typeof details?.replacements === 'number'
         ? ` · ${details.replacements} replacement${details.replacements === 1 ? '' : 's'}`
         : '';
       const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
-      const titleStr = cliToolTitle(theme, 'edit');
+      const titleStr = cliToolTitle(theme, EDIT_TOOL_DISPLAY_NAME);
       const header = `${icon} ${titleStr}${count}`;
 
-      // Collapsed: one summary row (like every other tool renderer) — the full
-      // per-edit diff below is expanded-only, otherwise a large replaceAll
-      // floods the transcript with hundreds of rows.
+      // Collapsed still shows a bounded diff preview. Edit responses must make
+      // the actual file changes visible immediately; expanded mode adds the full
+      // per-edit reasoning/line metadata below.
       if (!opts.expanded) {
-        const fileCount = details?.files?.length ?? 0;
+        const files = details?.files ?? [];
+        const fileCount = files.length;
         const filesNote = fileCount > 0
-          ? paint(theme, 'dim', ` · ${fileCount} file${fileCount === 1 ? '' : 's'} · expand for diff`)
+          ? paint(theme, 'dim', ` · ${fileCount} file${fileCount === 1 ? '' : 's'}`)
           : '';
-        return makeRenderer((width) => [truncateToWidth(`${header}${filesNote}`, width)]);
+        return fileCount > 0
+          ? renderCollapsedEditDiffLines(`${header}${filesNote}`, files, theme)
+          : makeRenderer((width) => [truncateToWidth(`${header}${filesNote}`, width)]);
       }
 
       // Per file → per edit:
@@ -961,20 +994,7 @@ export function registerEditTool(
           // Diff: Myers line diff between old and new so unchanged lines are skipped.
           // Verbatim removedLines/addedLines showed identical -/+ pairs when new
           // content was appended after an unchanged anchor block (confusing UX).
-          const ops = diffOps(
-            edit.removedLines.join('\n'),
-            edit.addedLines.join('\n'),
-          );
-          for (const op of ops) {
-            if (op.type === 'same') continue;
-            const label = op.type === 'remove' ? '- ' : '+ ';
-            const color = op.type === 'remove' ? 'error' : 'success';
-            // 4-space indent is OUTSIDE theme.fg so the coloured substring
-            // `<color>- text</color>` is preserved for test assertions and renderers
-            // that match on the coloured part only.
-            const colored = paint(theme, color, `${label}${op.line}`);
-            items.push({ text: `    ${colored}`, truncate: true });
-          }
+          items.push(...renderEditDiffItems([{ path: file.path, edits: [edit] }], theme).slice(1));
         }
       }
       return makeRenderer((width) => items.flatMap((item) =>

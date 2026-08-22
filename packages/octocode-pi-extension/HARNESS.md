@@ -8,7 +8,7 @@ Everything the extension registers with Pi on load: tools, system-prompt section
 
 Authored as XML-tagged sections in `src/prompts/prompt.ts` (single file; one const per section), built into `dist/system/SYSTEM_PROMPT.md`, and injected via the `before_agent_start` hook. 14 sections, in order: `<authority>` · `<work_mode>` · `<think_first>` · `<octocode_cli>` · `<skills>` · `<agents>` · `<tools>` · `<ui_ux>` · `<browser_agent>` · `<search_and_research>` · `<code>` · `<testing>` · `<output>` · `<ultimate_reminders>`. The concept-level contract lives in `tests/prompt-contract.test.ts`.
 
-Every turn the hook also appends live addenda: the `<mcp_cached_catalog>` block (MCP server instructions/tools/schemas), `<dynamic_capabilities>` (callTool/callSkill registries), available-skills projection, and the `<active_plan>` block — all rebuilt per turn so they survive compaction. With `--no-context` set, the hook strips Pi's `<project_context>` block (AGENTS.md/CLAUDE.md) from the assembled prompt text.
+Every turn the hook also appends live addenda: the `<mcp_catalog>` block (MCP server instructions/tools/schemas), `<dynamic_capabilities>` (callTool/callSkill registries), available-skills projection, and the `<active_plan>` block — all rebuilt per turn so they survive compaction. With `--no-context` set, the hook suppresses project context in the assembled prompt text.
 
 ---
 
@@ -31,9 +31,9 @@ The catalog is **pre-warmed at `session_start`** via `warmMcpCatalog()` — the 
 
 **Edit stale-check**: `MCPTool` intercepts `server:"octocode" tool:"localGetFileContent"` calls and runs `recordFileReadState()` so the `edit` tool’s stale guard works identically to the old native path.
 
-### Support Tools — 11 (+3 dynamic-capability tools)
+### Support Tools — 12 (+3 dynamic-capability tools)
 
-Registered from extension sources. Named in `OCTOCODE_SUPPORT_TOOL_NAMES`: `web`, `chromeDebug`, `browserAgent`, `spawnSubagent`, `MCPTool` (+ `mcp` alias), `askUser`, `memory`, `manage_context`, `spawnAgent`, `AgentMessage`. The extension additionally registers `plan`, `callTool`, and `callSkill`.
+Registered from extension sources. Named in `OCTOCODE_SUPPORT_TOOL_NAMES`: `web`, `chromeDebug`, `browserAgent`, `spawnSubagent`, `MCPTool`, `askUser`, `memory`, `manage_context`, `spawnAgent`, `AgentMessage`, `readImage`, `createImage`. The extension additionally registers `plan`, `callTool`, and `callSkill`. `/mcp` is a slash-command alias for the MCP management UI, not a model-callable support-tool alias.
 
 | Tool | Label | Description |
 |---|---|---|
@@ -42,10 +42,13 @@ Registered from extension sources. Named in `OCTOCODE_SUPPORT_TOOL_NAMES`: `web`
 | `browserAgent` | Browser Agent | Returns a ready-to-use `spawnAgent` config for a browser-agent subagent; use instead of raw `spawnAgent` for browser work |
 | `spawnSubagent` | Spawn Subagent | Typed subagent spawning: `researcher`, `architect`, `planner`, `browser-agent` — each has a dedicated system prompt and curated toolset |
 | `MCPTool` | MCPTool | MCP stdio bridge: `list`, `describe`, `call` any tool across configured MCP servers |
-| `mcp` | mcp (alias) | Alias for `MCPTool` — same implementation, alternate name |
+| `askUser` | Ask User | Ask the user via interactive picker/text input, with non-TUI fallback prose |
+| `memory` | Memory | Recall/record/forget durable Awareness Lite memory through the scoped CLI |
 | `manage_context` | Manage Context | `compact` (summarize history to free space) or `new` (fresh session) |
 | `spawnAgent` | Agent: Spawn Parallel Worker | Low-level raw Pi worker spawn; returns `agentId`; anti-recursion guard prevents workers from using `spawnAgent`/`AgentMessage` |
 | `AgentMessage` | — | Inter-agent messaging: `status`, `wait`, `send`, `kill`, `abort`, `list` |
+| `readImage` | Read Image | Load a local image for vision-capable models and render it inline when supported |
+| `createImage` | Create Image | Render agent-authored SVG/HTML to PNG and show/open the result |
 
 ### Guarded Built-in Overrides — 3
 
@@ -157,7 +160,7 @@ Registered via `pi.registerFlag`.
 
 | Flag | Type | Default | Effect |
 |---|---|---|---|
-| `--no-context` | boolean | `false` | Suppress `AGENTS.md` / `CLAUDE.md` context files from the system prompt for this run |
+| `--no-context` | boolean | `false` | Suppress project context files from the system prompt for this run |
 
 ---
 

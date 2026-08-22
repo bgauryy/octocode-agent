@@ -9,8 +9,8 @@ test('available skills addendum lists skill names, descriptions, and source meta
   ]);
 
   assert.match(addendum, /<available_skills>/);
-  assert.match(addendum, /Pi-discovered skills available by name this turn/);
-  assert.match(addendum, /load the minimal matching skill before acting by reading its SKILL\.md/);
+  assert.match(addendum, /Skills available by name this turn/);
+  assert.match(addendum, /load the minimal matching skill BEFORE acting via skill\(\{action:"load", name:"…"\}\)/);
   assert.match(addendum, /- octocode-awareness-lite: Shared repo coordination and verification\./);
   assert.match(addendum, /- octocode-roast: Critical review workflow\. \[user\/global\]/);
 });
@@ -60,8 +60,22 @@ test('skills dashboard lists discovered skills and install guidance', () => {
   assert.match(dashboard, /Available now/);
   assert.match(dashboard, /- octocode-awareness-lite: Shared repo coordination and verification\./);
   assert.match(dashboard, /- octocode-roast: Critical review workflow\. \[user\/global\]/);
+  assert.match(dashboard, /skill\(\{action:"load", name:"…"\}\)/, 'dashboard teaches the skill tool');
   assert.match(dashboard, /\/skill:<name>/);
   assert.match(dashboard, /npx octocode skill --name <skill> --platform pi/);
+});
+
+test('skills dashboard surfaces session usage and the discovery inventory path', () => {
+  const dashboard = renderSkillsDashboard(
+    [{ name: 'octocode-research', description: 'Evidence-first research.' }],
+    { usageLines: ['- octocode-research: loaded 2×'], discoveryPath: '/repo/.octocode/discovery.json' },
+  );
+  assert.match(dashboard, /Loaded this session/);
+  assert.match(dashboard, /- octocode-research: loaded 2×/);
+  assert.match(dashboard, /Machine-readable inventory .*: \/repo\/\.octocode\/discovery\.json/);
+
+  const empty = renderSkillsDashboard([{ name: 'a', description: 'b' }]);
+  assert.match(empty, /none yet — the agent loads them via the skill tool/);
 });
 
 test('skills dashboard explains empty discovery state', () => {

@@ -266,7 +266,7 @@ const noopExtensionFactory: SdkDeps['importExtensionFactory'] = async () =>
   (_opts?: Record<string, unknown>) => ({});
 
 describe('launchWithSdk', () => {
-  it('forces quietStartup so only the octocode banner shows (never the pi header)', async () => {
+  it('keeps Pi startup help and loaded resources visible before the octocode banner', async () => {
     const overrides: unknown[] = [];
     await launchWithSdk([], {
       importPiSdk: buildMockSdk({ onApplyOverrides: (o) => overrides.push(o) }),
@@ -276,9 +276,10 @@ describe('launchWithSdk', () => {
     // Pi's setProjectTrusted()/reload() inside service creation REBUILDS
     // settings and wipes applyOverrides — the launcher must apply overrides
     // once before services and RE-APPLY after: expect exactly two identical
-    // applications, both carrying quietStartup.
+    // applications, both carrying quietStartup:false so the Pi intro/resources
+    // stay visible while the extension appends Octocode's banner afterwards.
     expect(overrides).toHaveLength(2);
-    for (const o of overrides) expect(o).toMatchObject({ quietStartup: true });
+    for (const o of overrides) expect(o).toMatchObject({ quietStartup: false });
   });
 
   it('returns null when Pi SDK is unavailable', async () => {

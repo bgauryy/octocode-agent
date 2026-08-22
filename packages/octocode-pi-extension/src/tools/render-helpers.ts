@@ -19,7 +19,7 @@ import {
   cliToolTitle,
   paint,
 } from '../tui/cli-design.js';
-import type { PiTheme, RenderCallReturn, ToolCallResult } from '../types.js';
+import type { PiTheme, RenderCallReturn, RenderContext, ToolCallResult } from '../types.js';
 
 // ─── ANSI-safe width helpers ──────────────────────────────────────────────────
 //
@@ -124,6 +124,32 @@ export function makeRenderer(lines: (width: number) => string[]): RenderCallRetu
 
 export function singleLineRenderer(rawLine: string): RenderCallReturn {
   return makeRenderer((w) => [truncateToWidth(rawLine, w)]);
+}
+
+/**
+ * Like makeRenderer but memoizes rendered lines per width (docs/tui.md
+ * "Performance"). Use ONLY when the line data is fixed at construction time — the
+ * closure must capture no live mutable state. Safe for the tool-row builders
+ * below (a fresh renderResult/renderCall call rebuilds them when data changes).
+ * Do NOT use for the footer / status-panel / spinner renderers, whose closures
+ * read live state at render time and must recompute every frame. invalidate()
+ * drops the cache (Pi calls it on theme change).
+ */
+export function makeCachedRenderer(lines: (width: number) => string[]): RenderCallReturn {
+  let cachedWidth: number | undefined;
+  let cachedLines: string[] | undefined;
+  return {
+    render(width = 80) {
+      if (cachedLines && cachedWidth === width) return cachedLines;
+      cachedLines = lines(width).map((line) => truncateToWidth(line, width));
+      cachedWidth = width;
+      return cachedLines;
+    },
+    invalidate() {
+      cachedWidth = undefined;
+      cachedLines = undefined;
+    },
+  };
 }
 
 // ─── Tool-call summary (replaces raw JSON dump in renderCall) ─────────────────
@@ -357,7 +383,8 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
     return { queryCount, paths: paths.slice(0, 4), previews: previews.slice(0, 2) };
   }
 
-  if (toolName === 'ghViewRepoStructure') {
+  // Same shape for the GitHub and local structure browsers.
+  if (toolName === 'ghViewRepoStructure' || toolName === 'localViewStructure') {
     let entryCount = 0;
     for (const r of results) {
       const data = (r.data ?? {}) as Record<string, unknown>;
@@ -411,16 +438,6 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
       summary: lines > 0 ? `${lines} lines` : undefined,
       previews: previews.slice(0, 2),
     };
-  }
-
-  if (toolName === 'localViewStructure') {
-    let entryCount = 0;
-    for (const r of results) {
-      const data = (r.data ?? {}) as Record<string, unknown>;
-      if (typeof data.totalEntries === 'number') entryCount += data.totalEntries;
-      else if (Array.isArray(data.files)) entryCount += data.files.length;
-    }
-    return { queryCount, summary: entryCount > 0 ? `${entryCount} entries` : undefined };
   }
 
   if (toolName === 'localFindFiles') {
@@ -483,6 +500,33 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
 
 // ─── renderCall / renderResult builders ──────────────────────────────────────
 
+function stringifyToolPayload(payload: unknown): string {
+  if (payload === undefined) return '';
+  if (typeof payload === 'string') return payload;
+  try {
+    return JSON.stringify(payload, null, 2);
+  } catch {
+    return String(payload);
+  }
+}
+
+function renderLabeledPayloadLines(label: string, payload: string, theme?: PiTheme): RenderCallReturn {
+  const maxLines = 25;
+  const allLines = payload.split('\n');
+  const shownLines = allLines.slice(0, maxLines);
+  const omitted = allLines.length - shownLines.length;
+  return makeCachedRenderer((width) => {
+    const out = [truncateToWidth(paint(theme, 'muted', `${label}:`), width)];
+    for (const line of shownLines) {
+      out.push(truncateToWidth(paint(theme, 'dim', `  ${line}`), width));
+    }
+    if (omitted > 0) {
+      out.push(truncateToWidth(paint(theme, 'muted', `  … ${omitted} more line${omitted === 1 ? '' : 's'} hidden`), width));
+    }
+    return out;
+  });
+}
+
 /** Build the renderCall component for any octocode tool. */
 export function buildOctocodeRenderCall(
   toolName: string,
@@ -496,7 +540,38 @@ export function buildOctocodeRenderCall(
     ? `${paint(theme, 'dim', ' · ')}${paint(theme, 'dim', summary)}`
     : '';
   const rawLine = `${icon} ${nameStr}${summaryStr}`;
-  return singleLineRenderer(rawLine);
+  const requestPayload = stringifyToolPayload(args);
+  // Data is fixed here (args/theme captured); cache by width to skip per-frame
+  // recompute while streaming.
+  if (!requestPayload || requestPayload === '{}') {
+    return makeCachedRenderer((width) => [truncateToWidth(rawLine, width)]);
+  }
+  const requestRenderer = renderLabeledPayloadLines('request', requestPayload, theme);
+  return makeCachedRenderer((width) => [
+    truncateToWidth(rawLine, width),
+    ...requestRenderer.render(width),
+  ]);
+}
+
+/** First non-empty, trimmed line of a result's text content (its error message or summary). */
+/** Max visible cells of the inline `→ result` preview on a collapsed row. */
+const RESULT_PREVIEW_MAX = 100;
+
+function firstResultTextLine(result: ToolCallResult): string {
+  const text = (result.content as Array<{ type: string; text: string }> | undefined)
+    ?.find?.((p) => p?.type === 'text')?.text ?? '';
+  return text.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
+}
+
+/** Expanded body: header + labeled response text + a truncation notice. */
+function buildExpandedResultBody(header: string, result: ToolCallResult, theme?: PiTheme): RenderCallReturn {
+  const text = (result.content as Array<{ type: string; text: string }>)
+    ?.find?.((p) => p.type === 'text')?.text ?? '';
+  const responseRenderer = renderLabeledPayloadLines('response', text, theme);
+  return makeCachedRenderer((width) => [
+    truncateToWidth(header, width),
+    ...responseRenderer.render(width),
+  ]);
 }
 
 /** Build the renderResult component for any octocode tool. */
@@ -505,6 +580,7 @@ export function buildOctocodeRenderResult(
   result: ToolCallResult,
   opts: { expanded?: boolean; isPartial?: boolean },
   theme?: PiTheme,
+  context?: RenderContext,
 ): RenderCallReturn {
   if (opts.isPartial) {
     const nameStr = cliToolTitle(theme, toolName);
@@ -512,17 +588,33 @@ export function buildOctocodeRenderResult(
     // re-invokes render() on each tick, so baking cliSpinnerFrame() into a
     // captured string would freeze the spinner for the whole partial phase.
     return makeRenderer((_w) => {
-      const spinner = paint(theme, 'warning', cliSpinnerFrame());
+      const spinner = paint(theme, 'brand', cliSpinnerFrame());
       return [`${spinner} ${nameStr} ${paint(theme, 'dim', CLI_STATUS_TEXT.running)}`];
     });
   }
 
-  const ok = !result.isError;
-  const stats = buildResultStats(toolName, result.details);
-
-  // Build header: status glyph + toolName · stat-summary
+  // Pi ignores isError in the returned ToolCallResult value and instead sets a
+  // system-level context.isError when execute() throws or the call is rejected
+  // (e.g. schema validation). Honor both so an error row never renders as a
+  // misleading success/empty row.
+  const isError = Boolean(result.isError) || Boolean(context?.isError);
+  const ok = !isError;
   const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
   const nameStr = cliToolTitle(theme, toolName);
+
+  // On error, surface the actual failure text — execute() error results carry
+  // the message in the first text content line — so the row explains WHY it
+  // failed instead of showing a bare error glyph with no data.
+  if (isError) {
+    const errText = firstResultTextLine(result);
+    const errSeg = errText
+      ? `${paint(theme, 'dim', ' · ')}${paint(theme, 'error', truncatePlainToWidth(errText, 200))}`
+      : '';
+    const header = `${icon} ${nameStr}${errSeg}`;
+    return opts.expanded ? buildExpandedResultBody(header, result, theme) : makeCachedRenderer((width) => [truncateToWidth(header, width)]);
+  }
+
+  const stats = buildResultStats(toolName, result.details);
 
   // Summary (counts) stays muted; paths get the dedicated `path` colour so a
   // glance separates "what happened" from "which files". Painted as separate SGR
@@ -540,37 +632,18 @@ export function buildOctocodeRenderResult(
   if (summarySeg) painted.push(paint(theme, 'dim', summarySeg));
   if (pathSeg) painted.push(paint(theme, 'path', pathSeg));
   if (previewSeg) painted.push(paint(theme, 'dim', `“${previewSeg}”`));
+  // Every result row carries the result: when the tool reported no structured
+  // preview, show the first line of its response (`→ …`) so the operator reads
+  // the outcome inline instead of expanding the row (ctrl+o still shows all).
+  if (!previewSeg) {
+    const firstLine = firstResultTextLine(result);
+    if (firstLine) painted.push(paint(theme, 'dim', `→ ${truncatePlainToWidth(firstLine, RESULT_PREVIEW_MAX)}`));
+  }
   const statStr = painted.length > 0
     ? `${paint(theme, 'dim', ' · ')}${painted.join(paint(theme, 'dim', ' · '))}`
     : '';
 
   const header = `${icon} ${nameStr}${statStr}`;
 
-  if (!opts.expanded) {
-    return singleLineRenderer(header);
-  }
-
-  // Expanded: show up to 25 lines of text content + truncation notice
-  const text = (result.content as Array<{ type: string; text: string }>)
-    ?.find?.((p) => p.type === 'text')?.text ?? '';
-  const MAX_LINES = 25;
-  const allLines = text.split('\n');
-  const shownLines = allLines.slice(0, MAX_LINES);
-  const omitted = allLines.length - shownLines.length;
-
-  return makeRenderer((width) => {
-    const out: string[] = [truncateToWidth(header, width)];
-    for (const line of shownLines) {
-      out.push(truncateToWidth(paint(theme, 'dim', line), width));
-    }
-    if (omitted > 0) {
-      out.push(
-        truncateToWidth(
-          paint(theme, 'muted', `… ${omitted} more line${omitted === 1 ? '' : 's'} hidden (full output available to agent)`),
-          width,
-        ),
-      );
-    }
-    return out;
-  });
+  return opts.expanded ? buildExpandedResultBody(header, result, theme) : makeCachedRenderer((width) => [truncateToWidth(header, width)]);
 }

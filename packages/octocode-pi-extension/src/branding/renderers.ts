@@ -56,9 +56,30 @@ export function withOctocodeRender<T extends ToolDefinition>(
       result: ToolCallResult,
       opts: RenderResultOptions,
       theme?: PiTheme,
-      _context?: RenderContext,
+      context?: RenderContext,
     ) {
-      return buildOctocodeRenderResult(displayName, result, opts, theme);
+      return buildOctocodeRenderResult(displayName, result, opts, theme, context);
+    };
+  } else {
+    // A tool with its OWN renderResult still keys its error styling off the
+    // returned result.isError. But Pi IGNORES that flag and instead sets a
+    // system-level context.isError when execute() threw or the call was rejected
+    // (e.g. arg-schema validation) — cases where the tool's own renderer would
+    // paint a misleading success/empty row (see the empty red MCP rows bug).
+    // Wrap it: on a system error with no tool-produced error result, show the
+    // uniform branded error row (which surfaces the failure text); otherwise
+    // delegate unchanged so each tool keeps its bespoke success/error rendering.
+    const own = def.renderResult;
+    def.renderResult = function guardedRenderResult(
+      result: ToolCallResult,
+      opts: RenderResultOptions,
+      theme?: PiTheme,
+      context?: RenderContext,
+    ) {
+      if (!opts?.isPartial && context?.isError && !result?.isError) {
+        return buildOctocodeRenderResult(displayName, result, opts, theme, context);
+      }
+      return own(result, opts, theme, context);
     };
   }
 

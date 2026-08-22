@@ -36,12 +36,11 @@ describe('skill routing boundaries', () => {
   it('makes awareness the primary workflow skill', () => {
     const text = skill('octocode-awareness');
     const desc = description(text);
-    expect(desc).toMatch(/^Use before starting and before finishing any repo task/);
-    expect(desc).toContain('planning, edits, reviews, tests, handoffs');
-    expect(desc).toContain('multi-agent/file overlap');
+    expect(desc).toMatch(/^Coordinate shared-repo work and memory\. Use before starting and before finishing any repo task/);
+    expect(desc).toContain('planning, edits, reviews, tests, and handoffs');
+    expect(desc).toContain('multi-agent or file overlap');
     expect(desc).toContain('verification debt');
-    expect(desc).toContain('memory, locks, signals');
-    expect(desc).toContain('hooks');
+    expect(desc).toContain('locks, signals, hooks, memory');
     expect(desc).toContain('even solo');
     expect(desc.length).toBeLessThanOrEqual(1024);
     expect(desc).not.toContain('dogfood');

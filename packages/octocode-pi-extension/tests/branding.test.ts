@@ -3,8 +3,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 
-import { renderBannerLines, renderOctopusLines, renderTagline, renderBannerWithTagline } from '../src/branding/banner.js';
-import { DEFAULT_OCTOCODE_THEME, LIGHT_OCTOCODE_THEME, resolvePreferredTheme } from '../src/branding/theme.js';
+import { renderBannerLines, renderTagline, renderBannerWithTagline } from '../src/branding/banner.js';
 
 // ─── Stub theme ───────────────────────────────────────────────────────────────
 
@@ -86,15 +85,15 @@ describe('renderBannerLines', () => {
     expect(lines.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('applies a bold metallic shimmer to the wordmark', () => {
+  it('paints the static math-driven purple gradient on the wordmark', () => {
     const lines = renderBannerLines(stubTheme, 80);
     const joined = lines.join('');
-    expect(joined).toContain('accent');
-    expect(joined).toContain('muted');
-    expect(joined).toContain('mdLink');
-    expect(joined).toContain('**');
-    expect(joined).toContain('O');
-    expect(joined).toContain('e');
+    expect(joined).toContain('[text:');      // bright/lavender highlight
+    expect(joined).toContain('[mdLink:');    // lavender stop
+    expect(joined).toContain('[accent:');    // purple brand body
+    expect(joined).toContain('[toolTitle:'); // saturated purple title stop
+    expect(joined).toContain('[muted:');     // violet-gray shadow tail
+    expect(joined).not.toContain('[syntaxOperator:'); // no teal/cyan detour
   });
 
   it('includes version when provided', () => {
@@ -131,32 +130,13 @@ describe('renderBannerLines', () => {
   });
 });
 
-describe('renderOctopusLines', () => {
-  it('paints the mascot purple with gold sparkles', () => {
-    // nowMs = 0 puts the gloss band left of the art, so the base coat shows.
-    const lines = renderOctopusLines(stubTheme, 80, 0);
-    const joined = lines.join('\n');
-    expect(lines.length).toBeGreaterThanOrEqual(5);
-    expect(joined).toContain('mdLink');
-    expect(joined).toContain('[warning:✦]');
-    expect(joined).toContain('[warning:✧]');
-  });
-
-  it('sweeps a bold gloss band across the art as time advances', () => {
-    // Mid-sweep: some glyphs must paint bold default-fg instead of purple.
-    const mid = renderOctopusLines(stubTheme, 80, 1200).join('\n');
-    expect(mid).toContain('**[text:');
-    // Deterministic: the same timestamp renders the same frame.
-    expect(renderOctopusLines(stubTheme, 80, 1200).join('\n')).toBe(mid);
-    // A different timestamp moves the band.
-    expect(renderOctopusLines(stubTheme, 80, 1600).join('\n')).not.toBe(mid);
-  });
-
-  it('clips to narrow widths without leaking painted glyphs', () => {
-    for (const line of renderOctopusLines(stubTheme, 5, 0)) {
-      const plain = line.replace(/\[[\w]+:/g, '').replace(/\]/g, '').replace(/\*\*/g, '');
-      expect(plain.length).toBeLessThanOrEqual(6);
-    }
+describe('renderBannerLines is static', () => {
+  it('is pure in (theme, width) — byte-identical across repaints, never bold', () => {
+    // The banner is a transcript entry; time-varying bytes there would
+    // invalidate pi-tui's line diff for the whole scrollback on each repaint.
+    const first = renderBannerLines(stubTheme, 100).join('\n');
+    expect(renderBannerLines(stubTheme, 100).join('\n')).toBe(first);
+    expect(first).not.toContain('**');
   });
 });
 
@@ -179,30 +159,26 @@ describe('renderTagline', () => {
   });
 });
 
+describe('renderBetaNotice', () => {
+  it('shows the beta label and issue-tracker URL under the banner', () => {
+    const lines = renderBannerWithTagline(stubTheme, 120, '1.0.0');
+    const last = lines.at(-1) ?? '';
+    expect(last).toContain('BETA VERSION');
+    expect(last).toContain('for issues:');
+    expect(last).toContain('https://github.com/bgauryy/octocode-agent/issues');
+    expect(last).toContain('[warning:');
+    expect(last).toContain('[mdLink:');
+    expect(last).not.toContain('\x1b]8;;');
+  });
+});
+
 describe('renderBannerWithTagline', () => {
   it('returns banner lines followed by tagline', () => {
     const lines = renderBannerWithTagline(stubTheme, 80, '2.0.0');
     expect(lines.length).toBeGreaterThanOrEqual(2);
     const joined = lines.join('\n');
-    expect(joined).toContain('O');
-    expect(joined).toContain('e');
+    expect(joined).toContain('2.0.0');
     expect(joined).toContain('muted');
   });
 });
 
-// ─── Theme constants ──────────────────────────────────────────────────────────
-
-describe('branding/theme exports', () => {
-  it('DEFAULT_OCTOCODE_THEME is octocode-dark', () => {
-    expect(DEFAULT_OCTOCODE_THEME).toBe('octocode-dark');
-  });
-
-  it('LIGHT_OCTOCODE_THEME is octocode-light', () => {
-    expect(LIGHT_OCTOCODE_THEME).toBe('octocode-light');
-  });
-
-  it('resolvePreferredTheme returns a valid theme name', () => {
-    const result = resolvePreferredTheme();
-    expect(['octocode-dark', 'octocode-light']).toContain(result);
-  });
-});

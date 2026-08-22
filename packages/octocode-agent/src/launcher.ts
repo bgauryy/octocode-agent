@@ -53,9 +53,7 @@ import {
 } from './settings.js';
 import { listSessions, newestProjectSession, type SessionFile } from './sessions.js';
 import {
-  AGENT_STATE_VERSION,
   markSetupDone,
-  readAgentState,
   readBreadcrumb,
   terminalId,
   writeBreadcrumb,
@@ -76,10 +74,6 @@ import {
   header,
   hint,
   kv,
-  launchBanner,
-  octopusArt,
-  octopusFrame,
-  octopusShimmerSpan,
   link,
   makePainter,
   section,
@@ -334,7 +328,7 @@ export function versionReport(env: NodeJS.ProcessEnv = process.env): string {
   return [
     header(p, ''),
     '',
-    kv(p, 'launcher', launcherVersion() ?? '?'),
+    kv(p, 'launcher', launcherVersion() ?? 'unknown'),
     kv(p, 'core', `${coreStatus} ${p.dim(`(${CORE_PACKAGE})`)}`),
     kv(p, 'runtime', `${piVersion} ${p.dim(`(${effectivePkg})`)}`),
     kv(p, 'launch mode', launchMode),
@@ -368,7 +362,7 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
   return [
     header(p, ''),
     '',
-    ...wrapText('The self-working coding agent: the Octocode harness runtime.', terminalWidth()).map((l) => p.dim(l)),
+    ...wrapText('Your AI coding agent.', terminalWidth()).map((l) => p.dim(l)),
     '',
     section(p, 'Get started'),
     ...cmdRows(p, [
@@ -486,7 +480,7 @@ export function configReport(env: NodeJS.ProcessEnv = process.env): string {
         : p.red('not found — run: octocode-agent update'),
     ),
     kv(p, 'runtime version', readPackageVersion(getEffectivePiPackage(env)) ?? 'unknown'),
-    kv(p, 'launcher version', launcherVersion() ?? '?'),
+    kv(p, 'launcher version', launcherVersion() ?? 'unknown'),
     '',
     section(p, 'Keys'),
     kv(
@@ -575,7 +569,7 @@ export function setupReport(env: NodeJS.ProcessEnv = process.env): string {
     ...checkLines(
       p,
       coreOk ? 'ok' : 'fail',
-      'Core',
+      'core',
       coreVersion ? `installed (${coreVersion})` : 'not found',
       coreOk ? undefined : 'octocode-agent update core',
     ),
@@ -834,7 +828,8 @@ export function doctorData(env: NodeJS.ProcessEnv = process.env): DoctorData {
       fix: coreVersion ? undefined : 'octocode-agent update core',
     },
     {
-      name: 'pi-host',
+      // Same label as the config report — one name per subsystem across surfaces.
+      name: 'runtime',
       ok: Boolean(piVersion),
       detail: piVersion ?? 'not found',
       fix: piVersion ? undefined : 'octocode-agent update',
@@ -1149,114 +1144,6 @@ export async function runUpdate(
   return status;
 }
 
-/** Flags that make a launch non-interactive — they suppress the brand banner. */
-const NON_INTERACTIVE_FLAGS = new Set(['-p', '--print', '--mode', '--json']);
-
-/**
- * Resolve the model to show in the launch banner: explicit --model flag/env wins,
- * else the persisted defaultModel from ~/.pi/agent/settings.json.
- */
-export function resolveLaunchModel(
-  argv: string[] = [],
-  piAgentDir: string = path.join(os.homedir(), '.pi', 'agent'),
-): string | null {
-  const eqArg = argv.find((a) => a.startsWith('--model='));
-  if (eqArg) return eqArg.slice('--model='.length) || null;
-  const flagIdx = argv.indexOf('--model');
-  if (flagIdx !== -1 && argv[flagIdx + 1]) return argv[flagIdx + 1];
-  try {
-    const settings = JSON.parse(fs.readFileSync(path.join(piAgentDir, 'settings.json'), 'utf8'));
-    const model = settings?.defaultModel;
-    return typeof model === 'string' && model ? model : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Play the launch shimmer: print the purple octopus, then sweep a diagonal
- * gloss band across it (~350ms) by rewriting its lines in place, ending on the
- * resting gradient frame. Writes straight to `stream` (default stderr) so the
- * escape-code rewrites bypass any log decoration. Returns true when it ran —
- * callers then pass `skipArt` to printLaunchBanner so the art is not doubled.
- * Skipped (false) on non-TTY, CI, NO_BANNER, non-interactive flags, or when
- * color is disabled (a colorless shimmer is just flicker).
- */
-export async function playOctopusShimmer(
-  argv: string[] = [],
-  env: NodeJS.ProcessEnv = process.env,
-  stream: NodeJS.WriteStream = process.stderr,
-  frameMs = 32,
-): Promise<boolean> {
-  if (!stream.isTTY) return false;
-  if (env.OCTOCODE_AGENT_NO_BANNER === '1') return false;
-  if (env.CI) return false;
-  if (argv.some((a) => NON_INTERACTIVE_FLAGS.has(a))) return false;
-  const p = makePainter(colorEnabled(env, true));
-  if (!p.enabled) return false;
-  const height = octopusArt(p).length;
-  const up = `\x1b[${height}A`;
-  const writeFrame = (lines: string[], first = false): void => {
-    stream.write((first ? '' : up) + lines.map((l) => `\x1b[2K${l}`).join('\n') + '\n');
-  };
-  stream.write('\x1b[?25l');
-  try {
-    writeFrame(octopusFrame(p, 0, 0), true);
-    const span = octopusShimmerSpan();
-    let frame = 0;
-    for (let phase = 2; phase <= span; phase += 2) {
-      await new Promise((resolve) => setTimeout(resolve, frameMs));
-      frame += 1;
-      // The gloss band advances every frame; the body pose every 4th (~130ms),
-      // so the tentacles visibly sway while the shine sweeps across.
-      writeFrame(octopusFrame(p, phase, frame >> 2));
-    }
-    writeFrame(octopusArt(p));
-  } finally {
-    stream.write('\x1b[?25h');
-  }
-  return true;
-}
-
-/**
- * Print the one-line brand banner before an interactive launch.
- * TTY-stderr only; honors OCTOCODE_AGENT_NO_BANNER=1 and skips print/rpc runs.
- */
-export function printLaunchBanner(
-  argv: string[] = [],
-  env: NodeJS.ProcessEnv = process.env,
-  log: (msg: string) => void = (m) => console.error(m),
-  isTTY: boolean = Boolean((process.stderr as { isTTY?: boolean }).isTTY),
-  opts: { skipArt?: boolean } = {},
-): boolean {
-  if (!isTTY) return false;
-  if (env.OCTOCODE_AGENT_NO_BANNER === '1') return false;
-  if (argv.some((a) => NON_INTERACTIVE_FLAGS.has(a))) return false;
-  const p = makePainter(colorEnabled(env, true));
-  if (!opts.skipArt) for (const line of octopusArt(p)) log(line);
-  log(
-    launchBanner(p, {
-      launcher: launcherVersion(),
-      core: readPackageVersion(CORE_PACKAGE),
-      model: resolveLaunchModel(argv),
-    }),
-  );
-  if (presentApiKeys(env).length === 0) {
-    log(p.gray('no API keys detected — run `octocode-agent auth login` to set up'));
-  }
-  // Versioned onboarding nudge: the setup flow changed since the user last
-  // completed it — one muted refresh line, never blocking (OMP's setup-version idea).
-  const state = readAgentState(getOctocodeHome(env));
-  if (state.setupVersion !== undefined && state.setupVersion < AGENT_STATE_VERSION) {
-    log(
-      p.gray(
-        `setup flow updated (v${state.setupVersion} → v${AGENT_STATE_VERSION}) — run \`octocode-agent setup --fix\` to refresh`,
-      ),
-    );
-  }
-  return true;
-}
-
 /**
  * Guided setup repair (interactive only): re-checks, then walks each failing
  * check through its fix path (wizard for keys, update for missing core).
@@ -1347,7 +1234,7 @@ export async function runResumePicker(
     title: 'resume session',
     rows: sessions.map((s) => ({
       id: s.file,
-      label: `${s.uuid.slice(0, 8)}…  ${p.dim(tildePath(s.cwd ?? '?'))}`,
+      label: `${s.uuid.slice(0, 8)}…  ${p.dim(tildePath(s.cwd ?? 'unknown'))}`,
       meta: formatAge(Date.now() - s.mtimeMs),
     })),
   });
@@ -1661,8 +1548,6 @@ export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<
             });
           return launchAgent(['--session', picked.file], deps);
         }
-        const shimmered = await playOctopusShimmer(r, env);
-        printLaunchBanner(r, env, deps.log, undefined, { skipArt: shimmered });
       }
       // Fuzzy/global/re-root resolution of `id` is Pi's (main.js resolveSessionPath).
       const rc = await launchAgent(id ? ['--session', id, ...r.slice(1)] : ['-r', ...r], deps);
@@ -1678,8 +1563,6 @@ export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<
         out(hint(p, `did you mean: octocode-agent ${suggestion}`));
         return 2;
       }
-      const shimmered = await playOctopusShimmer(rest ?? [], env);
-      printLaunchBanner(rest ?? [], env, deps.log, undefined, { skipArt: shimmered });
       const rc = await launchAgent(
         applyProfile(rewriteContinueFlag(rest ?? [], env), profile, env),
         deps,

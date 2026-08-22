@@ -17,7 +17,7 @@ lean context, or sandboxed trust.
 ### A. Runtime behavior
 
 **1. Acts before understanding** — starts coding on an ambiguous/underspecified task; ~82% of failures start here.
-- **Prevent:** Orient first (git state, real build/test commands, `AGENTS.md`, blast radius). Restate the task in your own words; **ask one clarifying question when two readings diverge materially** — don't guess. No code until the goal is unambiguous.
+- **Prevent:** Orient first (git state, real build/test commands, relevant project instructions, blast radius). Restate the task in your own words; **ask one clarifying question when two readings diverge materially** — don't guess. No code until the goal is unambiguous.
 
 **2. Confident-but-wrong ("plausible") fixes** — well-formatted output that's functionally wrong; passes a shallow glance, regresses on real retest.
 - **Prevent:** **Proof = exact read, runtime output, or passing test** — never "looks right." Run the real gate before claiming done. Track a hypothesis map (claim · source · confidence); never act on `uncertain`.
@@ -36,7 +36,7 @@ lean context, or sandboxed trust.
 
 ### B. Design / discipline
 
-**7. Context rot & instruction bloat** — over-stuffed prompts/skill files dilute attention; big `AGENTS.md` files get "ignored wholesale."
+**7. Context rot & instruction bloat** — over-stuffed prompts, skill files, or project-instruction files dilute attention; large instruction files get "ignored wholesale."
 - **Prevent:** Keep instructions lean and audited — periodically ask "would removing this rule cause a mistake?" Put deep guidance in on-demand references, not the always-on prompt. Lean, active tool surface only.
 
 **8. Sycophancy / no discipline** — tells you what you want to hear; won't challenge a wrong premise; verbose.

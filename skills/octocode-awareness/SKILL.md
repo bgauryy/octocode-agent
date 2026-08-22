@@ -1,6 +1,6 @@
 ---
 name: octocode-awareness
-description: "Use before starting and before finishing any repo task; also for planning, edits, reviews, tests, handoffs, multi-agent/file overlap, verification debt, memory, locks, signals, hooks, or repo learning — even solo."
+description: "Coordinate shared-repo work and memory. Use before starting and before finishing any repo task; also for planning, edits, reviews, tests, and handoffs. Triggers: multi-agent or file overlap, verification debt, locks, signals, hooks, memory, or repo learning — even solo."
 hooks:
   PreToolUse: [{ matcher: "^(?:Write|Edit|MultiEdit|NotebookEdit)$", hooks: [{ type: command, command: "${CLAUDE_SKILL_DIR}/scripts/hooks/pre-edit.sh", timeout: 20 }] }]
   PostToolUse: [{ matcher: "^(?:Write|Edit|MultiEdit|NotebookEdit)$", hooks: [{ type: command, command: "${CLAUDE_SKILL_DIR}/scripts/hooks/post-edit.sh", timeout: 20 }] }]

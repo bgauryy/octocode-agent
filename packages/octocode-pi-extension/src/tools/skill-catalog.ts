@@ -1,4 +1,5 @@
 import type { SkillInfo } from '../types.js';
+import { truncatePlainToWidth } from './render-helpers.js';
 
 // Dashboard caps: on-demand output, so it can afford the full picture.
 const MAX_SKILLS = 80;
@@ -14,8 +15,8 @@ function clean(text: string): string {
 }
 
 function truncate(text: string, limit = MAX_DESCRIPTION_CHARS): string {
-  const oneLine = clean(text);
-  return oneLine.length > limit ? `${oneLine.slice(0, limit - 1)}…` : oneLine;
+  // Cell-width aware (CJK/emoji count 2) — a code-unit slice under-counts them.
+  return truncatePlainToWidth(clean(text), limit);
 }
 
 function skillSortKey(skill: SkillInfo): string {
@@ -44,9 +45,17 @@ function formatSkillLine(skill: SkillInfo, descriptionLimit = MAX_DESCRIPTION_CH
   return `- ${skill.name}: ${description}${source ? ` [${source}]` : ''}`;
 }
 
-export function renderSkillsDashboard(skills: SkillInfo[] | undefined): string {
+export interface SkillsDashboardExtras {
+  /** Session load-observability lines (e.g. "- octocode-research: loaded 2×"). */
+  usageLines?: string[];
+  /** Path of the machine-readable discovery inventory, when written. */
+  discoveryPath?: string;
+}
+
+export function renderSkillsDashboard(skills: SkillInfo[] | undefined, extras: SkillsDashboardExtras = {}): string {
   const valid = validSkills(skills);
   const shown = valid.slice(0, MAX_SKILLS);
+  const usageLines = extras.usageLines ?? [];
   return [
     '◆ Octocode skills',
     '',
@@ -54,10 +63,14 @@ export function renderSkillsDashboard(skills: SkillInfo[] | undefined): string {
     ...(shown.length > 0 ? shown.map((skill) => formatSkillLine(skill)) : ['(none discovered — run /reload after installing skills)']),
     ...(valid.length > shown.length ? [`- …and ${valid.length - shown.length} more skill(s)`] : []),
     '',
+    'Loaded this session',
+    ...(usageLines.length > 0 ? usageLines : ['(none yet — the agent loads them via the skill tool when a task matches)']),
+    '',
     'How to use',
-    'Load one explicitly with /skill:<name>, or ask normally and the agent should read SKILL.md when the task matches.',
+    'The agent loads skills with skill({action:"load", name:"…"}); force one with /skill:<name>.',
     'Install bundled skills with: npx octocode skill --name <skill> --platform pi',
     'Refresh discovery with /reload after installs/removals.',
+    ...(extras.discoveryPath ? [`Machine-readable inventory (skills + MCP config + tools): ${extras.discoveryPath}`] : []),
   ].join('\n');
 }
 
@@ -71,7 +84,7 @@ export function renderAvailableSkillsAddendum(skills: SkillInfo[] | undefined): 
 
   return [
     '<available_skills>',
-    'Pi-discovered skills available by name this turn. Use this catalog with the <skills> policy: when the user names a skill or the task context matches a description, load the minimal matching skill before acting by reading its SKILL.md (or using /skill:<name> when appropriate). Do not load skills as ceremony.',
+    'Skills available by name this turn. Names/descriptions are enough to decide whether a skill matches; do not preload every skill body. Use this catalog with the <skills> policy: when the user names a skill or the task context matches a description, load the minimal matching skill BEFORE acting via skill({action:"load", name:"…"}) — it returns the full SKILL.md plus the skill directory and files. skill({action:"list"}) refreshes the catalog with usage. Do not load skills as ceremony.',
     ...lines,
     '</available_skills>',
   ].join('\n');

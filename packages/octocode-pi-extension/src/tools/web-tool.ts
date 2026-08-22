@@ -160,7 +160,7 @@ export function registerWebTool(
 
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        const msg = paint(theme, 'warning', CLI_STATUS_TEXT.fetching);
+        const msg = paint(theme, 'brand', CLI_STATUS_TEXT.fetching);
         return makeRenderer((w) => [truncateToWidth(msg, w)]);
       }
       const ok = !result.isError;

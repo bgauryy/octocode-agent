@@ -6,6 +6,7 @@ import {
   buildOctocodeRenderResult,
   buildResultStats,
   buildToolCallSummary,
+  makeCachedRenderer,
   makeRenderer,
   sanitizeLine,
   singleLineRenderer,
@@ -46,7 +47,7 @@ test('CLI design contract centralizes glyphs, spinners, and transcript rows', ()
   assert.ok(visibleWidth(clipped) <= 40, `row must clip to width, got ${visibleWidth(clipped)} cells`);
   assert.equal(
     formatThinkingRow('start', theme),
-    '<warning>╭─ 🧠 thinking</warning> <dim>model reasoning</dim>',
+    '<mdLink>╭─ 🧠 thinking</mdLink> <dim>model reasoning</dim>',
   );
 });
 
@@ -197,9 +198,12 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   assert.match(call, /<accent>◇<\/accent>/);
   assert.match(call, /<toolTitle><b>ghSearchCode<\/b><\/toolTitle>/);
   assert.match(call, /<dim> · <\/dim><dim>"x" in o\/r<\/dim>/);
+  const callLines = buildOctocodeRenderCall('ghSearchCode', { queries: [{ owner: 'o', repo: 'r', keywords: ['x'] }] }, theme).render(120);
+  assert.match(callLines.join('\n'), /request:/);
+  assert.match(callLines.join('\n'), /"queries"/);
 
   const running = buildOctocodeRenderResult('localSearchCode', textResult('still running'), { isPartial: true }, theme).render(120)[0]!;
-  assert.match(running, /<warning>⠋|<warning>⠙|<warning>⠹|<warning>⠸|<warning>⠼|<warning>⠴|<warning>⠦|<warning>⠧|<warning>⠇|<warning>⠏/);
+  assert.match(running, /<accent>⠋|<accent>⠙|<accent>⠹|<accent>⠸|<accent>⠼|<accent>⠴|<accent>⠦|<accent>⠧|<accent>⠇|<accent>⠏/);
   assert.match(running, /<toolTitle>localSearchCode<\/toolTitle>/);
   assert.match(running, /<dim>running…<\/dim>/);
 
@@ -211,6 +215,11 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   ).render(180)[0]!;
   assert.match(collapsed, /<success>✓<\/success>/);
   assert.match(collapsed, /4 matches, 2 files/);
+  assert.match(collapsed, /→ ok/, 'collapsed rows carry the first line of the result');
+
+  const bare = buildOctocodeRenderResult('npmSearch', textResult('found 3 packages\nsecond line'), { expanded: false }, theme).render(180)[0]!;
+  assert.match(bare, /<dim>→ found 3 packages<\/dim>/, 'no stats → the response text is the result');
+  assert.doesNotMatch(bare, /second line/);
 
   const withPreview = buildOctocodeRenderResult(
     'localGetFileContent',
@@ -220,6 +229,7 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   ).render(180)[0]!;
   assert.match(withPreview, /a\.ts/);
   assert.match(withPreview, /“const answer = 42;”/);
+  assert.doesNotMatch(withPreview, /→ ok/, 'a structured preview replaces the raw-text fallback');
 
   const expanded = buildOctocodeRenderResult(
     'ghGetFileContent',
@@ -227,9 +237,60 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
     { expanded: true },
     theme,
   ).render(80);
-  assert.equal(expanded.length, 27);
+  assert.equal(expanded.length, 28);
+  assert.match(expanded.join('\n'), /response:/);
   assert.match(expanded.at(-1)!, /5 more lines hidden/);
 
   const error = buildOctocodeRenderResult('npmSearch', textResult('bad', {}, true), { expanded: false }, theme).render(120)[0]!;
   assert.match(error, /<error>✗<\/error>/);
+});
+
+test('error result rows surface the failure text and honor system-level context.isError', () => {
+  // result.isError path now shows the message text, not just the glyph.
+  const r1 = buildOctocodeRenderResult('npmSearch', textResult('boom: it failed', {}, true), { expanded: false }, theme).render(200)[0]!;
+  assert.match(r1, /<error>✗<\/error>/);
+  assert.match(r1, /<error>boom: it failed<\/error>/);
+
+  // context.isError (system-level) marks the row as an error even when the
+  // returned result.isError is false — Pi ignores the returned flag.
+  const r2 = buildOctocodeRenderResult(
+    'localGetFileContent',
+    textResult('arguments: must be object', {}, false),
+    { expanded: false },
+    theme,
+    { isError: true, invalidate() {} },
+  ).render(200)[0]!;
+  assert.match(r2, /<error>✗<\/error>/);
+  assert.match(r2, /arguments: must be object/);
+
+  // A success result with no error stays a success row (no regression).
+  const okRow = buildOctocodeRenderResult(
+    'localGetFileContent',
+    textResult('ok', { results: [{ data: { path: 'a.ts', totalLines: 1 } }] }, false),
+    { expanded: false },
+    theme,
+    { isError: false, invalidate() {} },
+  ).render(200)[0]!;
+  assert.match(okRow, /<success>✓<\/success>/);
+
+  // Expanded error dumps the message body under the header.
+  const r3 = buildOctocodeRenderResult('MCPTool', textResult('line A\nline B', {}, true), { expanded: true }, theme).render(200);
+  assert.match(r3[0]!, /<error>✗<\/error>/);
+  assert.ok(r3.some((l) => /line B/.test(l)));
+});
+
+test('makeCachedRenderer memoizes lines per width and clears on invalidate', () => {
+  let calls = 0;
+  const r = makeCachedRenderer((w) => {
+    calls += 1;
+    return [`w=${w}`];
+  });
+  assert.deepEqual(r.render(80), ['w=80']);
+  assert.deepEqual(r.render(80), ['w=80']);
+  assert.equal(calls, 1, 'same width is served from cache');
+  assert.deepEqual(r.render(40), ['w=40']);
+  assert.equal(calls, 2, 'a new width recomputes');
+  r.invalidate();
+  assert.deepEqual(r.render(80), ['w=80']);
+  assert.equal(calls, 3, 'invalidate() clears the cache');
 });

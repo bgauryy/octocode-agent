@@ -57,7 +57,7 @@ describe('runCli', () => {
     expect(stdout).toContain('handoff add|list|clear');
     expect(stdout).toContain('agent join|touch|leave|list');
     expect(stdout).toContain('message send|inbox|list|read');
-    expect(stdout).toContain('memory store|recall|list|forget|delete');
+    expect(stdout).toContain('memory store|recall|list|reindex|forget|delete');
     expect(stdout).toContain('hooks pre-edit');
     expect(stderr).toBe('');
   });
@@ -275,7 +275,7 @@ describe('runCli', () => {
     expect(() => runCli(['check', 'nope', '--workspace', workspace])).toThrow('check action must be audit or mark');
     expect(() => runCli(['hooks', 'install', '--workspace', workspace, '--host', 'pi', '--dry-run'])).toThrow('hooks install --host must be claude, codex, or cursor');
     expect(() => runCli(['hooks', 'nope', '--workspace', workspace])).toThrow('hooks action must be install or pre-edit');
-    expect(() => runCli(['memory', 'nope', '--workspace', workspace])).toThrow('memory action must be store, recall, list, forget, delete, or prune');
+    expect(() => runCli(['memory', 'nope', '--workspace', workspace])).toThrow('memory action must be store, recall, list, reindex, forget, delete, or prune');
     expect(() => runCli(['unknown', '--workspace', workspace])).toThrow('unknown command: unknown');
   });
 

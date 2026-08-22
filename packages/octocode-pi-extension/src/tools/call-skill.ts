@@ -13,6 +13,7 @@
  */
 
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
+import { sliceBetween } from '../utils.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
@@ -110,14 +111,6 @@ function buildSkillSmithPrompt(a: SkillGenerateArgs): string {
     SENTINELS.end,
   ];
   return lines.join('\n');
-}
-
-function sliceBetween(text: string, start: string, end: string): string {
-  const i = text.indexOf(start);
-  if (i < 0) return '';
-  const from = i + start.length;
-  const j = text.indexOf(end, from);
-  return (j < 0 ? text.slice(from) : text.slice(from, j)).trim();
 }
 
 export function parseGeneratedSkill(output: string, fallbackName: string): GeneratedSkill {

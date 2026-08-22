@@ -138,7 +138,7 @@ test('web renderResult covers partial, search stats, page stats, expanded text, 
 
   assert.equal(
     tool.renderResult!(textResult('pending'), { isPartial: true }, theme).render(80)[0],
-    '<warning>Fetching…</warning>',
+    '<accent>Fetching…</accent>',
   );
 
   const search = tool.renderResult!(

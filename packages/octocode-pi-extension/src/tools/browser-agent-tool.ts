@@ -512,7 +512,7 @@ export function registerBrowserAgentTool(
       // In-flight: the connect+navigate+scheme run takes many seconds; a
       // premature "0 findings" row reads as a finished empty result.
       if (opts?.isPartial || (!text && !r?.isError)) {
-        const prog = paint(theme, 'warning', `${CLI_STATUS_TEXT.running} browserAgent`);
+        const prog = paint(theme, 'brand', `${CLI_STATUS_TEXT.running} browserAgent`);
         return makeRenderer((w) => [truncateToWidth(prog, w)]);
       }
       if (r?.isError) {

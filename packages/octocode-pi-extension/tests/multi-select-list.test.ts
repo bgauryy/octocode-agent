@@ -97,7 +97,7 @@ test('render shows cursor marker, checkboxes, focused preview, descriptions and 
 test('render footer warns while below min and shows max constraint', () => {
   const list = new MultiSelectList([{ value: 'a' }, { value: 'b' }, { value: 'c' }], { min: 2, max: 3 });
   const lines = list.render(60, theme);
-  assert.equal(lines.at(-1), '<warning>0 selected · min 2 · max 3 · select 2 more</warning>');
+  assert.equal(lines.at(-1), '<dim>0 selected · min 2 · max 3 · select 2 more</dim>');
 
   list.toggle(0);
   list.toggle(1);

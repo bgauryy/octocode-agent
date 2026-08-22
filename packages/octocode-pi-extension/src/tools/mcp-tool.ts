@@ -1,43 +1,45 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { NotifyFn, PiCommandContext, PiContext, PiInstance, PiTheme, RenderCallReturn, RenderContext, ToolCallResult, ToolDefinition, TSchema } from '../types.js';
-import { PI_CONFIG_DIR } from '../constants.js';
+import { capMapSize } from '../utils.js';
+import {
+  DEFAULT_OCTOCODE_MCP_SERVER_NAME,
+  buildServerEnv,
+  configSignature,
+  globalMcpPath,
+  isPlainRecord,
+  loadMcpConfig,
+  projectMcpPath,
+  normalizeServerConfig,
+  removeServerFromFile,
+  requestOptions,
+  resolveServerCwd,
+  scopeTargetPath,
+  upsertServerInFile,
+  type McpConfigSource,
+  type McpLoadedConfig,
+  type McpScope,
+  type McpServerConfig,
+} from './mcp-config.js';
+export {
+  OCTOCODE_MCP_ENV_DEFAULTS,
+  configSignature,
+  patchGlobalMcpOctocodeEnv,
+  removeServerFromFile,
+  upsertServerInFile,
+} from './mcp-config.js';
 import { assertPathAllowed } from './path-guard.js';
 import { stringEnumSchema } from './schema-helpers.js';
 import { runSelectOverlay } from './ui-overlays.js';
 import { recordFileReadState } from './file-state.js';
-import { buildOctocodeRenderCall, buildOctocodeRenderResult, makeRenderer } from './render-helpers.js';
+import { buildOctocodeRenderCall, buildOctocodeRenderResult, makeRenderer, truncateToWidth } from './render-helpers.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 
 type McpAction = 'list' | 'describe' | 'call' | 'status' | 'restart' | 'stop' | 'config' | 'add' | 'remove';
-
-interface McpServerConfig {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-  cwd?: string;
-  disabled?: boolean;
-  description?: string;
-  timeoutMs?: number;
-}
-
-interface McpConfigSource {
-  scope: 'built-in' | 'project' | 'global';
-  path: string;
-  trusted: boolean;
-}
-
-interface McpLoadedConfig {
-  servers: Map<string, McpServerConfig>;
-  sources: McpConfigSource[];
-  warnings: string[];
-}
 
 interface McpConnection {
   name: string;
@@ -51,310 +53,15 @@ interface McpConnection {
 }
 
 const MCP_STATUS_NAME = 'octocode-mcp';
-const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TEXT_CHARS = 24_000;
-const DEFAULT_OCTOCODE_MCP_SERVER_NAME = 'octocode';
-const DEFAULT_OCTOCODE_MCP_NPX_CACHE = path.join(os.homedir(), '.cache', 'octocode', 'mcp-npx');
-/**
- * Env defaults every octocode MCP server spawn must carry:
- * - OCTOCODE_MCP_FULL_TEXT: octocode-mcp compacts text content to a
- *   "structuredContent available …" stub for structured-content-aware clients;
- *   Pi's MCP surfaces only read text blocks, so full text must stay on or the
- *   model sees counts instead of data.
- * - ENABLE_LOCAL: turns on the local* tool family (localSearchCode etc). Force
- *   it rather than trusting octocode-mcp's own internal default — if that
- *   upstream default ever flips, local tools must not silently disappear here.
- * - npm_config_*: ensure npx resolves the local cache with the native addon.
- * User-supplied env values always take precedence over these defaults.
- */
-export const OCTOCODE_MCP_ENV_DEFAULTS: Record<string, string> = {
-  OCTOCODE_MCP_FULL_TEXT: 'true',
-  ENABLE_LOCAL: 'true',
-  npm_config_include: 'optional',
-  npm_config_cache: DEFAULT_OCTOCODE_MCP_NPX_CACHE,
-};
-/**
- * Resolve the pinned, locally-installed `octocode-mcp` entry (its bin === main
- * === dist/index.js) relative to this extension's own module. Returns null when
- * the dependency is not resolvable, so the caller can fall back to npx.
- *
- * octocode-mcp's package.json `exports` only defines the "import" condition, so
- * require.resolve fails — use import.meta.resolve (ESM), which honours it.
- */
-function resolveLocalOctocodeMcpBin(): string | null {
-  try {
-    const url = import.meta.resolve('octocode-mcp');
-    const binPath = fileURLToPath(url);
-    return fs.existsSync(binPath) ? binPath : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Build the built-in Octocode MCP server spawn config. Prefer the pinned local
- * binary (fast, offline, reproducible against the version we ship); fall back to
- * `npx -y octocode-mcp@latest` (cache-first) when the dependency is unresolvable.
- */
-function buildDefaultOctocodeMcpServer(): McpServerConfig {
-  const localBin = resolveLocalOctocodeMcpBin();
-  const spawn = localBin
-    ? { command: process.execPath, args: [localBin] }
-    : // No --prefer-online: use the local npm cache (~/.cache/octocode/mcp-npx)
-      // for sub-100ms cold start when the pinned dep is unavailable.
-      { command: 'npx', args: ['-y', 'octocode-mcp@latest'] };
-  return {
-    ...spawn,
-    env: { ...OCTOCODE_MCP_ENV_DEFAULTS },
-    description: 'Built-in Octocode MCP server (lazy stdio bridge, pinned-local first).',
-    timeoutMs: DEFAULT_TIMEOUT_MS,
-  };
-}
 const connections = new Map<string, McpConnection>();
 const pendingConnections = new Map<string, Promise<McpConnection>>();
 const cachedCatalogs = new Map<string, ListedMcpServer[]>();
-
-/**
- * Ambient env forwarded to every MCP server: the SDK's minimal safe default
- * (PATH, HOME, …) plus proxy/CA settings. Process secrets are NOT inherited —
- * a server that needs a token must receive it explicitly via its mcp.json
- * `env`. The built-in octocode server additionally gets its own OCTOCODE_* and
- * GitHub auth vars, since its research tools authenticate from the ambient env.
- */
-const AMBIENT_ENV_PASSTHROUGH = ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS'];
-function buildServerEnv(name: string, config: McpServerConfig): Record<string, string> {
-  const base = getDefaultEnvironment();
-  for (const key of AMBIENT_ENV_PASSTHROUGH) {
-    const value = process.env[key];
-    if (value) base[key] = value;
-  }
-  if (name === DEFAULT_OCTOCODE_MCP_SERVER_NAME) {
-    for (const [key, value] of Object.entries(process.env)) {
-      if (!value) continue;
-      if (key.startsWith('OCTOCODE_') || key === 'GITHUB_TOKEN' || key === 'GH_TOKEN') base[key] = value;
-    }
-  }
-  return { ...base, ...(config.env ?? {}) };
-}
+/** Bound the cwd-keyed caches so a long-lived process visiting many cwds cannot grow them without limit. */
+const MAX_CACHED_CWDS = 32;
 
 function cacheKey(ctx?: PiContext): string {
   return path.resolve(ctx?.cwd ?? process.cwd());
-}
-
-function projectMcpPath(cwd: string): string {
-  return path.join(cwd, PI_CONFIG_DIR, 'agent', 'mcp.json');
-}
-
-function globalMcpPath(): string {
-  return path.join(os.homedir(), PI_CONFIG_DIR, 'agent', 'mcp.json');
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function parseStringArray(value: unknown): string[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value)) throw new Error('args must be an array of strings');
-  return value.map((item) => {
-    if (typeof item !== 'string') throw new Error('args must be an array of strings');
-    return item;
-  });
-}
-
-function parseStringRecord(value: unknown): Record<string, string> | undefined {
-  if (value === undefined) return undefined;
-  if (!isPlainRecord(value)) throw new Error('env must be an object');
-  const out: Record<string, string> = {};
-  for (const [key, raw] of Object.entries(value)) {
-    if (typeof raw !== 'string') throw new Error(`env.${key} must be a string`);
-    out[key] = raw;
-  }
-  return out;
-}
-
-function parseServerConfig(name: string, value: unknown): McpServerConfig {
-  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(name)) {
-    throw new Error(`invalid server name ${JSON.stringify(name)}; use letters, numbers, _, -, or .`);
-  }
-  if (!isPlainRecord(value)) throw new Error(`server ${name} must be an object`);
-  const command = value['command'];
-  if (typeof command !== 'string' || command.trim().length === 0) {
-    throw new Error(`server ${name}.command must be a non-empty string`);
-  }
-  const timeoutMs = value['timeoutMs'];
-  return {
-    command,
-    args: parseStringArray(value['args']),
-    env: parseStringRecord(value['env']),
-    cwd: value['cwd'] === undefined ? undefined : String(value['cwd']),
-    disabled: value['disabled'] === true,
-    description: value['description'] === undefined ? undefined : String(value['description']),
-    timeoutMs: timeoutMs === undefined ? undefined : Math.max(1_000, Math.min(120_000, Number(timeoutMs))),
-  };
-}
-
-function parseConfigText(text: string): Map<string, McpServerConfig> {
-  const json = JSON.parse(text) as unknown;
-  if (!isPlainRecord(json)) throw new Error('mcp.json must contain an object');
-  const rawServers = isPlainRecord(json['mcpServers'])
-    ? json['mcpServers']
-    : isPlainRecord(json['servers'])
-      ? json['servers']
-      : json;
-  const servers = new Map<string, McpServerConfig>();
-  for (const [name, raw] of Object.entries(rawServers)) {
-    const server = parseServerConfig(name, raw);
-    if (!server.disabled) servers.set(name, server);
-  }
-  return servers;
-}
-
-function readConfigFile(filePath: string): Map<string, McpServerConfig> | null {
-  if (!fs.existsSync(filePath)) return null;
-  return parseConfigText(fs.readFileSync(filePath, 'utf8'));
-}
-
-type McpScope = 'project' | 'global';
-
-function scopeTargetPath(scope: McpScope, ctx?: PiContext): string {
-  return scope === 'global' ? globalMcpPath() : projectMcpPath(ctx?.cwd ?? process.cwd());
-}
-
-/**
- * Return the container object inside a parsed mcp.json that holds the server map,
- * preserving the file's existing shape (`mcpServers` > `servers` > root object).
- */
-function serverContainer(raw: Record<string, unknown>): Record<string, unknown> {
-  if (isPlainRecord(raw['mcpServers'])) return raw['mcpServers'] as Record<string, unknown>;
-  if (isPlainRecord(raw['servers'])) return raw['servers'] as Record<string, unknown>;
-  // New/empty file: standardize on the canonical `mcpServers` wrapper.
-  const container: Record<string, unknown> = {};
-  raw['mcpServers'] = container;
-  return container;
-}
-
-function writeMcpJsonAtomic(filePath: string, raw: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf8');
-  fs.renameSync(tmp, filePath);
-}
-
-/** Insert or update a server in an mcp.json file. Validates via parseServerConfig. */
-export function upsertServerInFile(filePath: string, name: string, serverJson: Record<string, unknown>): McpServerConfig {
-  const parsed = parseServerConfig(name, serverJson); // throws on invalid name/command
-  let raw: Record<string, unknown> = {};
-  if (fs.existsSync(filePath)) {
-    const text = fs.readFileSync(filePath, 'utf8').trim();
-    if (text) {
-      const json = JSON.parse(text) as unknown;
-      if (!isPlainRecord(json)) throw new Error('mcp.json must contain an object');
-      raw = json;
-    }
-  }
-  const container = serverContainer(raw);
-  // Persist only defined fields, in a stable shape.
-  const entry: Record<string, unknown> = { command: parsed.command };
-  if (parsed.args && parsed.args.length) entry['args'] = parsed.args;
-  if (parsed.env && Object.keys(parsed.env).length) entry['env'] = parsed.env;
-  if (parsed.cwd) entry['cwd'] = parsed.cwd;
-  if (parsed.timeoutMs) entry['timeoutMs'] = parsed.timeoutMs;
-  if (parsed.description) entry['description'] = parsed.description;
-  if (parsed.disabled) entry['disabled'] = true;
-  container[name] = entry;
-  writeMcpJsonAtomic(filePath, raw);
-  return parsed;
-}
-
-/** Remove a server from an mcp.json file. Returns false if it wasn't present. */
-export function removeServerFromFile(filePath: string, name: string): boolean {
-  if (!fs.existsSync(filePath)) return false;
-  const text = fs.readFileSync(filePath, 'utf8').trim();
-  if (!text) return false;
-  const json = JSON.parse(text) as unknown;
-  if (!isPlainRecord(json)) return false;
-  const container = isPlainRecord(json['mcpServers'])
-    ? (json['mcpServers'] as Record<string, unknown>)
-    : isPlainRecord(json['servers'])
-      ? (json['servers'] as Record<string, unknown>)
-      : json;
-  if (!(name in container)) return false;
-  delete container[name];
-  writeMcpJsonAtomic(filePath, json);
-  return true;
-}
-
-async function loadMcpConfig(ctx?: PiContext): Promise<McpLoadedConfig> {
-  const cwd = ctx?.cwd ?? process.cwd();
-  const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : true;
-  const defaultServer = buildDefaultOctocodeMcpServer();
-  const servers = new Map<string, McpServerConfig>([[DEFAULT_OCTOCODE_MCP_SERVER_NAME, defaultServer]]);
-  const sourcePath = defaultServer.command === 'npx' ? 'npx -y octocode-mcp@latest' : `node ${defaultServer.args?.[0] ?? 'octocode-mcp'}`;
-  const sources: McpConfigSource[] = [{ scope: 'built-in', path: sourcePath, trusted: true }];
-  const warnings: string[] = [];
-
-  const globalPath = globalMcpPath();
-  try {
-    const globalServers = readConfigFile(globalPath);
-    if (globalServers) {
-      sources.push({ scope: 'global', path: globalPath, trusted: true });
-      for (const [name, config] of globalServers) servers.set(name, config);
-    }
-  } catch (error) {
-    warnings.push(`${globalPath}: ${(error as Error).message}`);
-  }
-
-  for (const candidate of [projectMcpPath(cwd)]) {
-    if (!fs.existsSync(candidate)) continue;
-    if (!trusted) {
-      sources.push({ scope: 'project', path: candidate, trusted: false });
-      warnings.push(`${candidate}: skipped because the project is not trusted`);
-      continue;
-    }
-    try {
-      const projectServers = readConfigFile(candidate);
-      if (projectServers) {
-        sources.push({ scope: 'project', path: candidate, trusted: true });
-        for (const [name, config] of projectServers) servers.set(name, config);
-      }
-    } catch (error) {
-      warnings.push(`${candidate}: ${(error as Error).message}`);
-    }
-  }
-
-  return { servers, sources, warnings };
-}
-
-function resolveServerCwd(config: McpServerConfig, ctx?: PiContext): string {
-  const base = ctx?.cwd ?? process.cwd();
-  if (!config.cwd) return base;
-  return path.isAbsolute(config.cwd) ? config.cwd : path.resolve(base, config.cwd);
-}
-
-function requestOptions(config: McpServerConfig, signal?: AbortSignal): { timeout: number; signal?: AbortSignal } {
-  const timeout = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return signal ? { timeout, signal } : { timeout };
-}
-
-function normalizeServerConfig(name: string, config: McpServerConfig): McpServerConfig {
-  if (name !== DEFAULT_OCTOCODE_MCP_SERVER_NAME) return config;
-  // Always ensure full-text responses + the npm cache path; user env wins.
-  return {
-    ...config,
-    env: { ...OCTOCODE_MCP_ENV_DEFAULTS, ...(config.env ?? {}) },
-  };
-}
-
-/** Stable signature of the fields that determine the spawned process, for drift detection. */
-export function configSignature(config: McpServerConfig): string {
-  return JSON.stringify({
-    command: config.command,
-    args: config.args ?? [],
-    env: config.env ?? {},
-    cwd: config.cwd ?? null,
-    timeoutMs: config.timeoutMs ?? null,
-  });
 }
 
 async function ensureConnection(name: string, config: McpServerConfig, ctx?: PiContext, signal?: AbortSignal): Promise<McpConnection> {
@@ -446,11 +153,10 @@ export function stopAllMcpServers(): number {
     connections.delete(name);
     void connection?.client.close().catch(() => undefined);
   }
-  // Drop the injected-catalog and recent-schema caches so a following session in the
-  // same process (/new, /resume) cannot serve tools from now-stopped servers or keep
-  // stale tool schemas inlined in the system prompt. The next warmMcpCatalog repopulates.
+  // Drop the injected-catalog cache so a following session in the same process
+  // (/new, /resume) cannot serve tools from now-stopped servers in the system
+  // prompt. The next warmMcpCatalog repopulates.
   cachedCatalogs.clear();
-  recentToolUse.clear();
   return names.length;
 }
 
@@ -458,7 +164,7 @@ export function stopAllMcpServers(): number {
 // The config is already re-read per MCPTool call and connections auto-reconnect on
 // drift; the watcher makes that PROACTIVE — it detects external mcp.json edits, drops
 // stale connections + cache immediately, and tells the user, so a long-idle connection
-// never lingers on old config and the model's <mcp_cached_catalog> hint stays honest.
+// never lingers on old config and the model's <mcp_catalog> block stays honest.
 
 const configWatchers: import('node:fs').FSWatcher[] = [];
 let watchDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -524,7 +230,7 @@ export function startMcpConfigWatcher(ctx: PiContext | undefined, notify: Notify
       // as a watch side effect.
       if (dir === globalDir) fs.mkdirSync(dir, { recursive: true });
       else if (!fs.existsSync(dir)) continue;
-      const watcher = fs.watch(dir, { persistent: false }, (_event, filename) => {
+      const watcher = fs.watch(dir, { persistent: false }, (_event: string, filename: string | Buffer | null) => {
         // Match mcp.json and our atomic temp writes (mcp.json.<pid>.<ts>.tmp).
         if (filename && !String(filename).startsWith('mcp.json')) return;
         if (watchDebounce) clearTimeout(watchDebounce);
@@ -586,25 +292,22 @@ function result(text: string, details?: unknown, isError = false): ToolCallResul
   return { content: [{ type: 'text', text }], details, isError };
 }
 
-/**
- * Discovery-cache TTL. The cache is invalidated on stop/restart/add/remove and on
- * `tools/list_changed`, but a server may change its tool set WITHOUT emitting that
- * notification; the TTL bounds how long a stale entry is served before a forced re-list.
- */
-const CACHE_TTL_MS = 10 * 60_000;
-
 function cacheListedCatalog(ctx: PiContext | undefined, listed: ListedMcpServer[]): void {
   if (listed.length === 0) return;
   const key = cacheKey(ctx);
   const now = Date.now();
   const existing = new Map((cachedCatalogs.get(key) ?? []).map((entry) => [entry.name, entry]));
   for (const entry of listed) existing.set(entry.name, { ...entry, cachedAt: now });
-  cachedCatalogs.set(key, [...existing.values()].sort((a, b) => a.name.localeCompare(b.name)));
-}
-
-/** True when a cached entry is still within the TTL window. */
-export function isFresh(entry: ListedMcpServer, now = Date.now()): boolean {
-  return entry.cachedAt === undefined || now - entry.cachedAt <= CACHE_TTL_MS;
+  // delete-then-set makes the cwd the most-recently-used key, so capMapSize evicts the coldest cwd.
+  cachedCatalogs.delete(key);
+  // Deterministic order (octocode default first, then alphabetical): the rendered
+  // <mcp_catalog> block must be byte-identical for identical content.
+  cachedCatalogs.set(key, [...existing.values()].sort((a, b) => {
+    if (a.name === DEFAULT_OCTOCODE_MCP_SERVER_NAME) return -1;
+    if (b.name === DEFAULT_OCTOCODE_MCP_SERVER_NAME) return 1;
+    return a.name.localeCompare(b.name);
+  }));
+  capMapSize(cachedCatalogs, MAX_CACHED_CWDS);
 }
 
 /** Drop the entire cached catalog for a cwd (used when servers are added/removed/stopped). */
@@ -626,54 +329,27 @@ function invalidateServerCache(name: string): void {
   }
 }
 
-// ─── Prompt-budget caps for the every-turn <mcp_cached_catalog> block ─────────
+// ─── Full <mcp_catalog> block: complete, byte-stable, cache-friendly ──────────
 //
-// The addendum is re-injected every turn, so every byte here is paid on every
-// request for the rest of the session. Compact by default: names, brief
-// descriptions, and schema field summaries. Exact inputSchema JSON is inlined
-// only for tools the agent recently exercised via MCPTool call/describe — the
-// set where exact arguments are actually load-bearing.
-const CATALOG_INSTRUCTIONS_CAP = 600;
-const CATALOG_DESCRIPTION_CAP = 300;
-const CATALOG_SERVER_ENTRY_CAP = 4_000;
-/** How many recently used tools keep their exact schema inlined (LRU per cwd). */
-const RECENT_TOOL_SCHEMA_CAP = 16;
-
-const recentToolUse = new Map<string, Map<string, number>>();
-
-/**
- * Record that a tool was exercised via MCPTool call/describe so its exact
- * inputSchema is worth inlining in the every-turn catalog block. LRU-bounded:
- * only the most recent RECENT_TOOL_SCHEMA_CAP tools per cwd keep full schemas.
- */
-export function markMcpToolUsed(ctx: PiContext | undefined, server: string, tool: string): void {
-  const key = cacheKey(ctx);
-  const used = recentToolUse.get(key) ?? new Map<string, number>();
-  const toolKey = `${server}/${tool}`;
-  used.delete(toolKey);
-  used.set(toolKey, Date.now());
-  while (used.size > RECENT_TOOL_SCHEMA_CAP) {
-    const oldest = used.keys().next().value as string;
-    used.delete(oldest);
-  }
-  recentToolUse.set(key, used);
-}
-
-function wasMcpToolRecentlyUsed(ctx: PiContext | undefined, server: string, tool: string): boolean {
-  return recentToolUse.get(cacheKey(ctx))?.has(`${server}/${tool}`) ?? false;
-}
+// The catalog is injected into the system prompt every turn, so its BYTES must
+// stay identical across turns — any churn (timestamps, fresh/stale flips,
+// usage-dependent schema inlining) invalidates the provider prompt cache from
+// that point on. Full discovery at init (instructions, tools, exact input
+// schemas) is paid once per cache window; the block only changes when the MCP
+// config genuinely changes (mcp.json edit, add/remove/restart, list_changed).
+// Caps are a safety net against a rogue server, not a compaction strategy —
+// the built-in octocode server (~60k chars total) must fit untruncated.
+const CATALOG_INSTRUCTIONS_CAP = 4_000;
+const CATALOG_DESCRIPTION_CAP = 2_000;
+const CATALOG_SCHEMA_CAP = 8_000;
+const CATALOG_SERVER_ENTRY_CAP = 80_000;
 
 function capCatalogText(text: string, cap: number): string {
   return text.length <= cap ? text : `${text.slice(0, cap)}…`;
 }
 
-function formatCachedCatalogEntry(entry: ListedMcpServer, ctx: PiContext | undefined, now = Date.now()): string {
+function formatCachedCatalogEntry(entry: ListedMcpServer): string {
   const lines = [`server: ${entry.name}`];
-  const freshness = isFresh(entry, now) ? 'fresh' : 'stale — re-run MCPTool list/describe before relying on exact current schemas';
-  lines.push(`cache: ${freshness}`);
-  // No cachedAt timestamp here: any byte change in the system prompt invalidates
-  // the provider conversation cache, and the fresh/stale label already carries
-  // the model-facing signal.
   if (entry.instructions) lines.push(`instructions: ${capCatalogText(entry.instructions, CATALOG_INSTRUCTIONS_CAP)}`);
   for (const rawTool of entry.tools) {
     if (!isPlainRecord(rawTool)) continue;
@@ -681,12 +357,11 @@ function formatCachedCatalogEntry(entry: ListedMcpServer, ctx: PiContext | undef
     lines.push(`tool: ${toolName}`);
     if (typeof rawTool['description'] === 'string') lines.push(`description: ${capCatalogText(rawTool['description'], CATALOG_DESCRIPTION_CAP)}`);
     if (rawTool['inputSchema'] !== undefined) {
-      if (wasMcpToolRecentlyUsed(ctx, entry.name, toolName)) {
-        lines.push(stringify({ inputSchema: rawTool['inputSchema'] }));
-      } else {
-        const summary = summarizeSchema(rawTool).trim();
-        if (summary) lines.push(summary);
-      }
+      // Compact JSON, not pretty-printed: ~30% fewer prompt bytes, same schema.
+      const schema = JSON.stringify(rawTool['inputSchema']);
+      lines.push(schema.length <= CATALOG_SCHEMA_CAP
+        ? `inputSchema: ${schema}`
+        : `inputSchema: ${schema.slice(0, CATALOG_SCHEMA_CAP)}…[schema truncated — run MCPTool describe server:${entry.name} tool:${toolName} for the full schema]`);
     }
   }
   const text = lines.join('\n');
@@ -694,83 +369,73 @@ function formatCachedCatalogEntry(entry: ListedMcpServer, ctx: PiContext | undef
   return `${text.slice(0, CATALOG_SERVER_ENTRY_CAP)}\n…[truncated ${text.length - CATALOG_SERVER_ENTRY_CAP} chars — run MCPTool list server:${entry.name} for the full catalog]`;
 }
 
-/**
- * Patch ~/.pi/agent/mcp.json so that Pi's own MCP client starts the octocode
- * server with the correct npm cache env vars. Without these, Pi uses the default
- * npm cache (~/.npm/_npx/) which may not have the optional darwin-arm64 native
- * addon, causing the server to crash on startup.
- *
- * Also ensures OCTOCODE_MCP_FULL_TEXT=true so tool results carry full text —
- * without it octocode-mcp emits a compact "structuredContent available" stub
- * that Pi's MCP client never expands, leaving the model with counts, not data.
- *
- * Idempotent: only writes when the env vars are missing. Silent on errors.
- */
-/**
- * Concise stderr warning for best-effort MCP paths. Never throws and never
- * touches the TUI (stderr only) — it makes an otherwise-silent config failure
- * observable in logs/debug output without blocking session start.
- */
-function warnMcp(message: string): void {
+
+/** In-flight init discoveries keyed by cwd, so turn 1 can await the warm started at session_start. */
+const warmsInFlight = new Map<string, Promise<void>>();
+
+function warnMcpWarmFailure(message: string): void {
   try { process.stderr.write(`[octocode-mcp] ${message}\n`); } catch { /* stderr unavailable */ }
 }
 
-export function patchGlobalMcpOctocodeEnv(configPath = globalMcpPath()): void {
-  try {
-    if (!fs.existsSync(configPath)) return; // No global mcp.json — nothing to patch.
-
-    // Re-parse as raw JSON so we can write it back with minimal diff.
-    let raw: Record<string, unknown>;
-    try { raw = JSON.parse(fs.readFileSync(configPath, 'utf8')); }
-    catch { warnMcp(`global mcp.json is not valid JSON (${configPath}); skipping env patch`); return; }
-
-    const servers = raw['mcpServers'];
-    if (!isPlainRecord(servers)) return;
-    const entry = servers[DEFAULT_OCTOCODE_MCP_SERVER_NAME];
-    if (!isPlainRecord(entry)) return;
-
-    // Check whether every required env var is already present.
-    const env = isPlainRecord(entry['env']) ? entry['env'] : {};
-    const missing = Object.keys(OCTOCODE_MCP_ENV_DEFAULTS).filter(
-      (key) => !(typeof env[key] === 'string' && (env[key] as string).length > 0),
-    );
-    if (missing.length === 0) return; // Already patched.
-
-    // Merge — user-supplied values take precedence.
-    entry['env'] = { ...OCTOCODE_MCP_ENV_DEFAULTS, ...env };
-    servers[DEFAULT_OCTOCODE_MCP_SERVER_NAME] = entry;
-    raw['mcpServers'] = servers;
-    fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n', 'utf8');
-  } catch (err) {
-    // Must not block session start, but make the failure observable.
-    warnMcp(`failed to patch global mcp.json env: ${(err as Error)?.message ?? String(err)}`);
-  }
+/**
+ * Full MCP discovery at session init: connect every configured server and cache
+ * its instructions, tools, and exact input schemas so the <mcp_catalog> block is
+ * populated for turn 1. Deduped per cwd (concurrent calls share one discovery);
+ * errors are swallowed so a slow/missing MCP server never prevents the session
+ * from starting.
+ */
+export function warmMcpCatalog(ctx?: PiContext, signal?: AbortSignal): Promise<void> {
+  const key = cacheKey(ctx);
+  const existing = warmsInFlight.get(key);
+  if (existing) return existing;
+  const warm = (async (): Promise<void> => {
+    const listed: ListedMcpServer[] = [];
+    try {
+      const loaded = await loadMcpConfig(ctx);
+      for (const [name, config] of loaded.servers) {
+        try {
+          listed.push(await listServerTools(name, config, ctx, signal));
+        } catch {
+          // Best-effort per server: a slow/broken MCP must not prevent the rest of
+          // the catalog from being cached or block session start.
+        }
+      }
+      cacheListedCatalog(ctx, listed);
+    } catch (err) {
+      // Best-effort: a missing/unreadable MCP config must not block session start,
+      // but a genuine load error (e.g. malformed mcp.json) is worth surfacing.
+      warnMcpWarmFailure(`catalog warm failed: ${(err as Error)?.message ?? String(err)}`);
+    }
+  })().finally(() => {
+    if (warmsInFlight.get(key) === warm) warmsInFlight.delete(key);
+  });
+  warmsInFlight.set(key, warm);
+  return warm;
 }
 
 /**
- * Pre-warm every configured MCP server catalog at session start so that the
- * <mcp_cached_catalog> block is already populated when before_agent_start fires
- * for turn 1. Non-blocking — errors are swallowed so a slow/missing MCP server
- * never prevents the session from starting.
+ * Bounded wait for the init-time MCP discovery so turn 1's system prompt
+ * already carries <mcp_catalog> — a catalog that first appears on a later turn
+ * changes the prompt prefix and busts the provider prompt cache for the whole
+ * session. Only awaits an ALREADY-RUNNING warm (session_start starts one); it
+ * never spawns servers itself, so a failed warm degrades to an empty block
+ * instead of a per-turn reconnect storm. No-op once the catalog is cached.
  */
-export async function warmMcpCatalog(ctx?: PiContext, signal?: AbortSignal): Promise<void> {
-  const listed: ListedMcpServer[] = [];
+export async function mcpCatalogReady(ctx?: PiContext, timeoutMs = 10_000): Promise<boolean> {
+  const key = cacheKey(ctx);
+  if (cachedCatalogs.get(key)?.length) return true;
+  const pending = warmsInFlight.get(key);
+  if (!pending) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const loaded = await loadMcpConfig(ctx);
-    for (const [name, config] of loaded.servers) {
-      try {
-        listed.push(await listServerTools(name, config, ctx, signal));
-      } catch {
-        // Best-effort per server: a slow/broken MCP must not prevent the rest of
-        // the catalog from being cached or block session start.
-      }
-    }
-    cacheListedCatalog(ctx, listed);
-  } catch (err) {
-    // Best-effort: a missing/unreadable MCP config must not block session start,
-    // but a genuine load error (e.g. malformed mcp.json) is worth surfacing.
-    warnMcp(`catalog warm failed: ${(err as Error)?.message ?? String(err)}`);
+    await Promise.race([
+      pending,
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
+  return Boolean(cachedCatalogs.get(key)?.length);
 }
 
 /** Cheap counts (servers + total tools) from the in-memory MCP catalog cache. */
@@ -784,13 +449,55 @@ export function getCachedMcpCounts(ctx?: PiContext): { servers: number; tools: n
 export function getCachedMcpCatalogAddendum(ctx?: PiContext): string {
   const cached = cachedCatalogs.get(cacheKey(ctx));
   if (!cached?.length) return '';
-  const now = Date.now();
   return [
-    '<mcp_cached_catalog>',
-    'Compact cached MCP catalog: server instructions plus tool names, brief descriptions, and schema field summaries from session warmup or prior MCPTool calls in this Pi process. This block is re-injected every turn so it survives compaction. Exact inputSchema JSON is inlined only for recently used/described tools; treat stale entries as hints and run MCPTool list/describe when the exact current schema matters.',
-    ...cached.map((entry) => formatCachedCatalogEntry(entry, ctx, now)),
-    '</mcp_cached_catalog>',
+    '<mcp_catalog>',
+    'Full MCP catalog discovered at session init: every configured server with its instructions, tools, and exact inputSchema JSON. Re-injected every turn so it survives compaction, and kept byte-stable for prompt caching — it changes only when the MCP config actually changes (mcp.json edit, add/remove/restart, tools/list_changed). Call tools directly with MCPTool({action:"call", server, tool, arguments}) using these schemas — no list/describe round-trip needed; use list/describe only when an entry below is marked truncated or a call fails schema validation. The `octocode` server is the built-in default: prefer its tools for ALL code/file/structure/history/package research.',
+    ...cached.map((entry) => formatCachedCatalogEntry(entry)),
+    '</mcp_catalog>',
   ].join('\n');
+}
+
+export interface McpDiscoveryServer {
+  name: string;
+  command: string;
+  args: string[];
+  description?: string;
+  /** Present only for servers whose catalog was discovered (warmed/listed). */
+  toolCount?: number;
+  tools?: Array<{ name: string; description: string }>;
+}
+
+export interface McpDiscoverySnapshot {
+  sources: McpConfigSource[];
+  servers: McpDiscoveryServer[];
+  warnings: string[];
+}
+
+/**
+ * Machine-readable snapshot of the full MCP configuration + discovered catalogs,
+ * for the .octocode/discovery.json inventory. Reads config fresh (cheap file
+ * reads) but never spawns servers — tool lists come from the discovery cache.
+ */
+export async function getMcpDiscoverySnapshot(ctx?: PiContext): Promise<McpDiscoverySnapshot> {
+  const loaded = await loadMcpConfig(ctx);
+  const cached = new Map((cachedCatalogs.get(cacheKey(ctx)) ?? []).map((entry) => [entry.name, entry]));
+  const servers: McpDiscoveryServer[] = [...loaded.servers.entries()].map(([name, config]) => {
+    const entry = cached.get(name);
+    const tools = entry?.tools
+      ?.filter(isPlainRecord)
+      .map((tool) => ({
+        name: String(tool['name'] ?? ''),
+        description: typeof tool['description'] === 'string' ? capCatalogText(tool['description'], 300) : '',
+      }));
+    return {
+      name,
+      command: config.command,
+      args: config.args ?? [],
+      ...(config.description ? { description: config.description } : {}),
+      ...(tools ? { toolCount: tools.length, tools } : {}),
+    };
+  });
+  return { sources: loaded.sources, servers, warnings: loaded.warnings };
 }
 
 export const __test__ = {
@@ -799,9 +506,6 @@ export const __test__ = {
   },
   clearCachedMcpCatalog(): void {
     cachedCatalogs.clear();
-  },
-  resetRecentMcpToolUse(): void {
-    recentToolUse.clear();
   },
 };
 
@@ -829,7 +533,7 @@ export interface ListedMcpServer {
   instructions?: string;
   tools: unknown[];
   text: string;
-  /** When this catalog entry was fetched; drives the cache TTL. */
+  /** When this catalog entry was fetched. Diagnostic only — it must never leak into the rendered <mcp_catalog> bytes. */
   cachedAt?: number;
 }
 
@@ -847,11 +551,11 @@ async function listServerTools(name: string, config: McpServerConfig, ctx: PiCon
   const payload = await connection.client.listTools(undefined, requestOptions(config, signal));
   const instructions = connection.client.getInstructions();
   const lines = [`${name}: ${payload.tools.length} tool(s)`];
-  if (instructions) lines.push(`instructions: ${instructions.slice(0, 300)}`);
+  if (instructions) lines.push(`instructions: ${capCatalogText(instructions, 300)}`);
   for (const rawTool of payload.tools) {
     const tool = rawTool as Record<string, unknown>;
     const description = typeof tool['description'] === 'string' ? tool['description'] : '';
-    lines.push(`- ${String(tool['name'])}: ${description.slice(0, 180)}${summarizeSchema(tool)}`);
+    lines.push(`- ${String(tool['name'])}: ${capCatalogText(description, 180)}${summarizeSchema(tool)}`);
   }
   return { name, instructions, tools: payload.tools, text: lines.join('\n') };
 }
@@ -874,8 +578,8 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
     if (!serverName) return result('MCPTool add requires server', undefined, true);
     const scope: McpScope = params['scope'] === 'global' ? 'global' : 'project';
     if (scope === 'project') {
-      const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : true;
-      if (!trusted) return result('Refusing to write project mcp.json: project is not trusted. Use scope:"global" or trust the project.', undefined, true);
+      const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : false;
+      if (!trusted) return result('Refusing to write project mcp.json: project trust could not be verified. Use scope:"global" or trust the project.', undefined, true);
     }
     const cfg = isPlainRecord(params['config']) ? params['config'] : undefined;
     if (!cfg) return result('MCPTool add requires a config object, e.g. {command, args, env, cwd}.', undefined, true);
@@ -921,8 +625,8 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
     }
     const scope: McpScope = params['scope'] === 'global' ? 'global' : 'project';
     if (scope === 'project') {
-      const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : true;
-      if (!trusted) return result('Refusing to write project mcp.json: project is not trusted.', undefined, true);
+      const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : false;
+      if (!trusted) return result('Refusing to write project mcp.json: project trust could not be verified.', undefined, true);
     }
     const target = scopeTargetPath(scope, ctx);
     let removed: boolean;
@@ -962,9 +666,6 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
       const server = listed[0]!;
       const tool = server.tools.find((candidate) => isPlainRecord(candidate) && candidate['name'] === toolName);
       if (!tool) return result(`Unknown MCP tool: ${serverName}/${toolName}`, { server, warnings: loaded.warnings }, true);
-      // An explicit describe means exact arguments matter for this tool — keep
-      // its full schema inlined in the every-turn catalog block from now on.
-      markMcpToolUsed(ctx, serverName, toolName);
       cacheListedCatalog(ctx, listed);
       return result(stringify({ server: server.name, instructions: server.instructions, tool }), { server: server.name, instructions: server.instructions, tool, warnings: loaded.warnings });
     }
@@ -980,9 +681,6 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
     const connection = await ensureConnection(serverName, config, ctx, signal);
     const argumentsPayload = isPlainRecord(params['arguments']) ? params['arguments'] : {};
     const payload = await connection.client.callTool({ name: tool, arguments: argumentsPayload }, undefined, requestOptions(config, signal));
-    // A successful call makes this tool "hot": inline its exact schema in the
-    // every-turn catalog block so follow-up calls need no re-describe.
-    markMcpToolUsed(ctx, serverName, tool);
     // Stale-check: when the agent reads files through the octocode MCP server,
     // record the same read-state that the native localGetFileContent tool would.
     // This keeps the edit tool's stale-guard working when research routes through MCPTool.
@@ -1011,8 +709,9 @@ function formatMcpTarget(args: unknown): { action: string; target: string } {
 
 function clip(text: string, width: number): string {
   const clean = text.replace(/\s+/g, ' ').trim();
-  if (clean.length <= width) return clean;
-  return `${clean.slice(0, Math.max(1, width - 1))}…`;
+  // Cell-width aware: a code-unit slice miscounts CJK/emoji and can hand pi a
+  // line wider than the terminal.
+  return truncateToWidth(clean, width);
 }
 
 function renderCall(args: unknown, theme?: PiTheme): RenderCallReturn {
@@ -1033,7 +732,7 @@ function renderResult(resultValue: ToolCallResult, opts: { expanded?: boolean; i
   const args = isPlainRecord(context?.args) ? context.args : {};
   const server = typeof args['server'] === 'string' ? args['server'] : DEFAULT_OCTOCODE_MCP_SERVER_NAME;
   if (args['action'] === 'call' && server === DEFAULT_OCTOCODE_MCP_SERVER_NAME && typeof args['tool'] === 'string') {
-    return buildOctocodeRenderResult(args['tool'], resultValue, opts, theme);
+    return buildOctocodeRenderResult(args['tool'], resultValue, opts, theme, context);
   }
 
   const { action, target } = formatMcpTarget(context?.args);
@@ -1048,9 +747,11 @@ function renderResult(resultValue: ToolCallResult, opts: { expanded?: boolean; i
   const lines = (resultValue.content[0] as { text?: string } | undefined)?.text?.split('\n').filter(Boolean) ?? ['MCP result'];
   const head = lines[0] ?? 'MCP result';
   const second = lines.find((line) => /^[-•]\s+|\w+:\s/.test(line));
-  const prefix = resultValue.isError ? 'mcp error' : `mcp ${action}`;
+  // Pi ignores the returned isError; context.isError is the reliable flag.
+  const isError = Boolean(resultValue.isError) || Boolean(context?.isError);
+  const prefix = isError ? 'mcp error' : `mcp ${action}`;
   return makeRenderer((width) => {
-    const color = resultValue.isError ? 'error' : 'dim';
+    const color = isError ? 'error' : 'dim';
     const rendered = [`${prefix} · ${target} · ${head}`];
     if (second && second !== head) rendered.push(`  ${second}`);
     return rendered.map((line) => theme?.fg ? theme.fg(color, clip(line, width)) : clip(line, width));
@@ -1094,12 +795,12 @@ export function registerMcpTool(
   const common = {
     label: 'MCPTool',
     description: 'Dedicated MCP client: list, describe, call, and manage stdio MCP servers (add, remove, restart, stop, status, config). Config is read fresh per call and connections auto-reconnect on config drift, so add/remove/edit of mcp.json apply WITHOUT restarting the agent. Discovery is cached and auto-invalidated on changes.',
-    promptSnippet: 'MCPTool is the dedicated MCP gateway. Main agent has built-in octocode MCP plus configured MCPs; spawned agents may use the Octocode CLI instead. Use MCPTool action:list/describe to read server instructions, tool descriptions, and input schemas before action:call. Never guess server/tool/arguments.',
+    promptSnippet: 'MCPTool is the dedicated MCP gateway. Main agent has built-in octocode MCP plus configured MCPs; spawned agents may use the Octocode CLI instead. All servers are discovered at init and their instructions, tools, and exact input schemas are injected in <mcp_catalog> — call directly from it; use action:list/describe only when the catalog marks an entry truncated or a call fails schema validation. Never guess server/tool/arguments.',
     promptGuidelines: [
-      'MCPTool default server: octocode = pinned local octocode-mcp binary (npx -y octocode-mcp@latest fallback), lazy-started only when listed/called.',
+      'MCPTool default server: octocode = pinned local octocode-mcp binary (npx -y octocode-mcp@latest fallback) — the default research surface for code/file/structure/history/package lookups.',
       'MCPTool config is JSON at <workspace>/.pi/agent/mcp.json or ~/.pi/agent/mcp.json. Project config loads only in trusted projects.',
-      'MCPTool action:list returns server instructions plus every tool name, description, and schema summary; details.servers[].tools contains full MCP inputSchema objects.',
-      'Use MCPTool action:describe for one tool when exact schema matters before action:call.',
+      'The full catalog (server instructions + tools + exact inputSchema JSON) lives in <mcp_catalog>, discovered at init and refreshed on config change; action:list re-fetches live when needed.',
+      'Use MCPTool action:describe for one tool only when its <mcp_catalog> entry is truncated or a call failed schema validation.',
       'Manage servers at runtime without restarting the agent: action:add ({server, config:{command,...}, scope}) writes mcp.json and applies on the next call; action:remove deletes it; restart/stop reconnect. Live connections auto-reconnect when mcp.json changes.',
       'mcp.json (global + project) is watched: external edits hot-reload automatically \u2014 stale connections/cache are dropped and the user is notified; no agent restart needed. The built-in `octocode` server (npx octocode-mcp) is the default and cannot be removed.',
       'Treat MCP servers as arbitrary code. Do not add or run untrusted MCP config without user approval; project-scope writes require a trusted project.',

@@ -50,12 +50,12 @@ Faced with a persistent error, agents thrash for many turns, recognize the error
 ## Family B — Design / harness anti-patterns (why they're *built* to fail)
 
 ### B1. Context rot & instruction bloat **[medium]**
-The counter-intuitive one: *more* guidance often means *worse* following. Bloated `AGENTS.md`/skill files "get ignored wholesale"; instructions compete with surrounding noise (attention dilution); scope creep drags the agent into reasoning over a sprawling codebase it only partially grasps. Guidance: budget by context *fill %* (compact past ~60%), and periodically audit every rule — "would removing it cause a mistake?"
+The counter-intuitive one: *more* guidance often means *worse* following. Bloated project-instruction or skill files "get ignored wholesale"; instructions compete with surrounding noise (attention dilution); scope creep drags the agent into reasoning over a sprawling codebase it only partially grasps. Guidance: budget by context *fill %* (compact past ~60%), and periodically audit every rule — "would removing it cause a mistake?"
 - *Sources:* [MindStudio: Context rot in coding agents](https://www.mindstudio.ai/blog/context-rot-ai-coding-agents-explained) · [Context engineering fixes](https://www.fundesk.io/context-engineering-techniques-ai-coding-agents-2026)
 
 ### B2. Sycophancy & lack of discipline **[weak]**
 "Sycophantic, verbose, and unreliable — not because they lack capability, but because they lack discipline." Agents tell you what you want to hear instead of what's true, and won't disagree with a wrong premise. Mitigated by explicit anti-sycophancy operating instructions.
-- *Sources:* [PyShine: anti-sycophancy AGENTS.md](https://pyshine.com/agents-md-Anti-Sycophancy-Operating-Instructions-Coding-Agents/) · [Anatomy of AI coding agents](https://blog.apiad.net/p/the-anatomy-of-ai-coding-agents)
+- *Sources:* [PyShine: anti-sycophancy operating instructions](https://pyshine.com/agents-md-Anti-Sycophancy-Operating-Instructions-Coding-Agents/) · [Anatomy of AI coding agents](https://blog.apiad.net/p/the-anatomy-of-ai-coding-agents)
 
 ### B3. No verification loop (verification gaps) **[strong]**
 The root enabler of A2 and A5: agents don't rigorously re-test their own work, so plausible-but-wrong ships. "Verification gaps" is one of MAST's three root categories; test-driven agentic approaches measurably cut regressions.

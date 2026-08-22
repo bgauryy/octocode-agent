@@ -18,7 +18,10 @@ import { execFile } from 'node:child_process';
 import { buildAwarenessLiteCommand } from '../assets.js';
 import type { PiContext, PiTheme } from '../types.js';
 import { paint } from '../tui/cli-design.js';
+import { SEP_WIDE } from '../tui/palette.js';
+import { truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel } from './status-panel.js';
+import { capMapSize } from '../utils.js';
 
 export interface AwarenessStatus {
   activePlans: number;
@@ -124,8 +127,11 @@ export function hasAwarenessSignal(s: AwarenessStatus): boolean {
   );
 }
 
-/** Build the below-editor Awareness panel lines. Empty array when there is nothing to show. */
-export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme): string[] {
+/**
+ * Build the below-editor Awareness panel lines. Empty array when there is
+ * nothing to show; lines clipped at the source when `width` is given.
+ */
+export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme, width?: number): string[] {
   if (!hasAwarenessSignal(s) && !(s.unreadInbox && s.unreadInbox > 0)) return [];
   const debt = s.verifyTasks;
   const segs: string[] = [];
@@ -149,21 +155,24 @@ export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme): strin
     const preview = s.lastInbound ? ` (from ${s.lastInbound.from}: ${s.lastInbound.preview})` : '';
     chunks.push(paint(theme, 'warning', `✉ ${s.unreadInbox} unread${preview}`));
   }
-  if (segs.length) chunks.push(paint(theme, 'brand', segs.join('  ·  ')));
-  if (tail.length) chunks.push(paint(theme, 'muted', tail.join('  ·  ')));
+  if (segs.length) chunks.push(paint(theme, 'brand', segs.join(SEP_WIDE)));
+  if (tail.length) chunks.push(paint(theme, 'muted', tail.join(SEP_WIDE)));
   if (debt > 0) chunks.push(paint(theme, 'warning', `verify-debt ${debt}`));
   if (chunks.length === 0) return [];
-  return [`${paint(theme, 'title', 'Awareness')}  ${chunks.join('  ·  ')}`];
+  const line = `${paint(theme, 'title', 'Awareness')}  ${chunks.join(SEP_WIDE)}`;
+  return [width ? truncateToWidth(line, width) : line];
 }
 
 // ─── Async, throttled refresh ────────────────────────────────────────────────
 
 const MIN_REFRESH_MS = 8000;
+/** Max distinct workspaces retained in the status cache before LRU eviction. */
+const MAX_CACHED_CWDS = 32;
 
 /** The Awareness section lines for the unified panel, from the cached status (empty when none). */
-export function awarenessPanelLines(cwd: string, theme?: PiTheme): string[] {
+export function awarenessPanelLines(cwd: string, theme?: PiTheme, width?: number): string[] {
   const status = cache.get(cwd)?.status;
-  return status ? formatAwarenessPanel(status, theme) : [];
+  return status ? formatAwarenessPanel(status, theme, width) : [];
 }
 
 /** Whether the cached Awareness status has anything worth showing for this workspace. */
@@ -187,9 +196,10 @@ const cache = new Map<string, CacheEntry>();
 /** Runs the awareness CLI; injectable for tests. Resolves stdout or null on any failure. */
 export type StatusRunner = (cwd: string) => Promise<string | null>;
 
-const defaultRunner: StatusRunner = (cwd) =>
-  new Promise((resolve) => {
-    const spec = buildAwarenessLiteCommand(['status', '--workspace', cwd]);
+/** One shared CLI invoker: run an awareness-lite command, resolve stdout or null. */
+function runLiteCli(args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    const spec = buildAwarenessLiteCommand(args);
     execFile(
       spec.cmd,
       spec.args,
@@ -197,35 +207,22 @@ const defaultRunner: StatusRunner = (cwd) =>
       (err, stdout) => resolve(err ? null : String(stdout)),
     );
   });
+}
+
+const defaultRunner: StatusRunner = (cwd) => runLiteCli(['status', '--workspace', cwd]);
 
 let runner: StatusRunner = defaultRunner;
 
 /** Runs `message list` for the newest peer message; injectable for tests. */
 export type MessageRunner = (cwd: string) => Promise<string | null>;
 const defaultMessageRunner: MessageRunner = (cwd) =>
-  new Promise((resolve) => {
-    const spec = buildAwarenessLiteCommand(['message', 'list', '--workspace', cwd, '--limit', '1']);
-    execFile(
-      spec.cmd,
-      spec.args,
-      { timeout: 4000, maxBuffer: 1_000_000 },
-      (err, stdout) => resolve(err ? null : String(stdout)),
-    );
-  });
+  runLiteCli(['message', 'list', '--workspace', cwd, '--limit', '1']);
 let messageRunner: MessageRunner = defaultMessageRunner;
 
 /** Runs `message inbox` for THIS agent's unread messages; injectable for tests. */
 export type InboxRunner = (cwd: string, agentId: string) => Promise<string | null>;
 const defaultInboxRunner: InboxRunner = (cwd, agentId) =>
-  new Promise((resolve) => {
-    const spec = buildAwarenessLiteCommand(['message', 'inbox', '--agent-id', agentId, '--workspace', cwd]);
-    execFile(
-      spec.cmd,
-      spec.args,
-      { timeout: 4000, maxBuffer: 1_000_000 },
-      (err, stdout) => resolve(err ? null : String(stdout)),
-    );
-  });
+  runLiteCli(['message', 'inbox', '--agent-id', agentId, '--workspace', cwd]);
 let inboxRunner: InboxRunner = defaultInboxRunner;
 
 /** Test hook: override the CLI runner. */
@@ -284,7 +281,11 @@ export function refreshAwarenessPanel(ctx?: PiContext): void {
   if (!ctx?.hasUI || panelSuppressed) return;
   const cwd = ctx.cwd ?? process.cwd();
   const entry = cache.get(cwd) ?? { status: null, lastRunAt: 0, running: false };
+  // delete-then-set keeps this cwd most-recently-used; cap so a long-lived process
+  // visiting many workspaces cannot grow the cache without bound.
+  cache.delete(cwd);
   cache.set(cwd, entry);
+  capMapSize(cache, MAX_CACHED_CWDS);
 
   // Paint whatever we last knew so the panel is stable between refreshes.
   renderWidget(ctx, entry.status);

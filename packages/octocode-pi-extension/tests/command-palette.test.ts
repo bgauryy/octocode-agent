@@ -162,12 +162,12 @@ test('dispatch: unknown action id and unknown scheme are not handled', async () 
 
 // ─── registerCommandPalette ──────────────────────────────────────────────────
 
-test('registerCommandPalette registers /octocode-palette and the default ctrl+o shortcut', () => {
+test('registerCommandPalette registers /octocode-palette and the default ctrl+shift+k shortcut', () => {
   const fake = makeFakePi();
   const reg = registerCommandPalette(fake.pi, { env: {} as NodeJS.ProcessEnv });
-  assert.equal(reg.shortcut, 'ctrl+o');
+  assert.equal(reg.shortcut, 'ctrl+shift+k');
   assert.ok(fake.commands.has('octocode-palette'));
-  assert.ok(fake.shortcuts.has('ctrl+o'));
+  assert.ok(fake.shortcuts.has('ctrl+shift+k'));
   assert.match(fake.commands.get('octocode-palette')!.description, /palette/i);
 });
 
@@ -178,7 +178,7 @@ test('registerCommandPalette honors the OCTOCODE_PALETTE_KEY env override', () =
   });
   assert.equal(reg.shortcut, 'ctrl+p');
   assert.ok(fake.shortcuts.has('ctrl+p'));
-  assert.equal(fake.shortcuts.has('ctrl+o'), false);
+  assert.equal(fake.shortcuts.has('ctrl+shift+k'), false);
 });
 
 test('registerCommandPalette degrades to command-only when registerShortcut throws', () => {

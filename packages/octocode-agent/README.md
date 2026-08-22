@@ -8,17 +8,19 @@
 
 ## What this is
 
-`octocode-agent` is the **platform**. It bundles two things and wires them together:
+`octocode-agent` is the **user-facing Octocode agent platform**. It bundles two things and wires them together:
 
 - **[Pi](https://github.com/earendil-works/pi)** — the coding-agent runtime (the shell, tool loop, providers). An internal detail.
-- **[`@octocodeai/pi-extension`](../octocode-pi-extension)** — **the core**. The Octocode harness: the authored system prompt, the research engine, persistent memory, the awareness file-lock bridge, and the research skills.
+- **[`@octocodeai/pi-extension`](../octocode-pi-extension)** — **the core harness**. The Octocode system prompt, research engine, tools, memory, Awareness Lite wiring, skills, themes, and launch-profile policy.
 
-The agent is the core. `octocode-agent` just launches Pi with that core loaded in **octocode-first mode** so the Octocode harness leads while Pi's runtime invariants remain underneath.
+Install **`octocode-agent`** when you want the Octocode agent. It launches Pi with the core loaded in **octocode-first mode**, owns the branded command/update/auth/doctor/session UX, and keeps Pi runtime details underneath.
 
 ```bash
 npm install -g octocode-agent
 octocode-agent
 ```
+
+Install `@octocodeai/pi-extension` directly only when you are already a Pi user and want to add the Octocode harness to your own Pi install (`pi install npm:@octocodeai/pi-extension`). That is an advanced/integration path, not the primary Octocode-agent install path.
 
 ## The core is the agent — one update path
 
@@ -27,7 +29,7 @@ octocode-agent
 - **Automatically** — a platform release pins a newer core; `octocode-agent update` self-updates the platform and pulls it in.
 - **By the user** — `octocode-agent update core` runs npm with this launcher install as `--prefix`, refreshing only `@octocodeai/pi-extension` in place. This works for global installs, local dev installs, and npm/npx cache installs.
 
-Because the harness — prompt, skills, tools, memory, surface command specs, and launch-profile policy — all lives in the core package, none of it is duplicated here. This launcher stays thin on purpose: it imports core helpers directly from `@octocodeai/pi-extension` and only launches/updates/executes the returned specs.
+Because the harness — prompt, skills, tools, memory, surface command specs, and launch-profile policy — all lives in the core package, none of it is duplicated here. This launcher stays thin on purpose: it imports core helpers directly from `@octocodeai/pi-extension` and only launches/updates/executes the returned specs. Users normally update through `octocode-agent`; direct Pi installs are managed by Pi's own extension/package commands and do not get the launcher UX.
 
 ## Usage
 
@@ -69,8 +71,7 @@ The core's default export stays append-mode and single-arg-callable, so the same
 **Tunables (env):**
 - `OCTOCODE_AGENT_EXTENSION_SPEC` — override the core spec Pi loads (`npm:…`, `git:…`, or a path). Default: the bundled package.
 - `OCTOCODE_AGENT_CLEAN=1` — also pass `--no-skills --no-context-files`, so only the Octocode harness package loads (deterministic branded agent).
-- `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` — suppress `AGENTS.md` / `CLAUDE.md`; by default project context files stay enabled so repository rules remain authoritative.
-- `OCTOCODE_AGENT_NO_BANNER=1` — suppress the interactive launch banner (never shown for `run`/`serve`/print/json modes or non-TTY runs anyway).
+- `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` — suppress project context files; by default they stay enabled so repository rules remain authoritative.
 
 See [`docs/PI_INTEGRATION.md`](docs/PI_INTEGRATION.md) for how Pi works, the launch/UX/commands/instructions model, and the SDK-embed evolution path.
 

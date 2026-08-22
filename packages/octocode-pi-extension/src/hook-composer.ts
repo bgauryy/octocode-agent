@@ -1,4 +1,4 @@
-import type { PiContext, PiInstance } from './types.js';
+import type { PiInstance } from './types.js';
 
 export type HookMiddleware = (...args: unknown[]) => unknown | Promise<unknown>;
 
@@ -81,9 +81,4 @@ export class OctocodeHookComposer {
 
 export function createHookComposer(pi: PiInstance, options: HookComposerOptions = {}): OctocodeHookComposer {
   return new OctocodeHookComposer(pi, options);
-}
-
-export function hookContext(args: unknown[]): PiContext | undefined {
-  const maybeCtx = args[1];
-  return isRecord(maybeCtx) ? maybeCtx as PiContext : undefined;
 }

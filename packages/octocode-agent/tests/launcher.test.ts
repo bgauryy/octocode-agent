@@ -34,10 +34,8 @@ import {
   sessionsData,
   completionScript,
   COMPLETION_SHELLS,
-  printLaunchBanner,
   doctorReport,
 } from '../src/launcher.js';
-import { stripAnsi } from '../src/ui.js';
 import type { LaunchDeps, PiBinInfo } from '../src/types.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -571,7 +569,7 @@ describe('buildPiArgs', () => {
     expect(args).toContain('npm:@octocodeai/pi-extension');
   });
 
-  it('OCTOCODE_AGENT_NO_CONTEXT_FILES=1 suppresses AGENTS.md loading', () => {
+  it('OCTOCODE_AGENT_NO_CONTEXT_FILES=1 suppresses context file loading', () => {
     const args = buildPiArgs('spec', [], { OCTOCODE_AGENT_NO_CONTEXT_FILES: '1' });
     expect(args).toContain('--no-context-files');
   });
@@ -1015,70 +1013,3 @@ describe('styled surfaces', () => {
   });
 });
 
-// ── printLaunchBanner ─────────────────────────────────────────────────────────
-
-describe('printLaunchBanner', () => {
-  it('prints the one-line brand banner on a TTY', () => {
-    const lines: string[] = [];
-    const printed = printLaunchBanner([
-      '--model',
-      'x',
-    ], { ANTHROPIC_API_KEY: 'sk-x' }, (m) => lines.push(m), true);
-    expect(printed).toBe(true);
-    const brand = lines.find((l) => l.includes('octocode-agent'));
-    expect(brand).toBeDefined();
-    expect(brand).toContain('◆');
-  });
-
-  it('points keyless first-runners at the wizard right under the banner', () => {
-    const lines: string[] = [];
-    printLaunchBanner([], {}, (m) => lines.push(m), true);
-    expect(lines.some((l) => stripAnsi(l).includes('octocode-agent auth login'))).toBe(true);
-  });
-
-  it('stays silent without a TTY', () => {
-    const lines: string[] = [];
-    expect(printLaunchBanner([], {}, (m) => lines.push(m), false)).toBe(false);
-    expect(lines).toHaveLength(0);
-  });
-
-  it('shows the resolved model when launch flags define one', () => {
-    const lines: string[] = [];
-    printLaunchBanner(['--model', 'claude-opus-5'], {}, (m) => lines.push(m), true);
-    expect(lines.some((l) => stripAnsi(l).includes('model claude-opus-5'))).toBe(true);
-  });
-
-  it('honors OCTOCODE_AGENT_NO_BANNER and non-interactive flags', () => {
-    const lines: string[] = [];
-    const log = (m: string): void => {
-      lines.push(m);
-    };
-    expect(printLaunchBanner([], { OCTOCODE_AGENT_NO_BANNER: '1' }, log, true)).toBe(false);
-    expect(printLaunchBanner(['-p', 'hi'], {}, log, true)).toBe(false);
-    expect(printLaunchBanner(['--mode', 'rpc'], {}, log, true)).toBe(false);
-    expect(lines).toHaveLength(0);
-  });
-});
-
-describe('playOctopusShimmer', () => {
-  it('skips without a TTY, in CI, and with NO_BANNER; animates on a color TTY', async () => {
-    const { playOctopusShimmer } = await import('../src/launcher.js');
-    const writes: string[] = [];
-    const fakeStream = (tty: boolean) =>
-      ({ isTTY: tty, write: (s: string) => { writes.push(s); return true; } }) as unknown as NodeJS.WriteStream;
-
-    expect(await playOctopusShimmer([], {}, fakeStream(false))).toBe(false);
-    expect(await playOctopusShimmer([], { CI: '1' }, fakeStream(true))).toBe(false);
-    expect(await playOctopusShimmer([], { OCTOCODE_AGENT_NO_BANNER: '1' }, fakeStream(true))).toBe(false);
-    expect(await playOctopusShimmer(['-p', 'hi'], {}, fakeStream(true))).toBe(false);
-    expect(writes).toHaveLength(0);
-
-    const ran = await playOctopusShimmer([], { FORCE_COLOR: '1' }, fakeStream(true), 0);
-    expect(ran).toBe(true);
-    const all = writes.join('');
-    expect(all).toContain('\x1b[?25l'); // hides cursor…
-    expect(all).toContain('\x1b[?25h'); // …and always restores it
-    expect(all).toContain('\x1b[7A'); // rewrites the 7 art lines in place
-    expect(all).toContain('\x1b[38;5;231m'); // gloss band swept through
-  });
-});

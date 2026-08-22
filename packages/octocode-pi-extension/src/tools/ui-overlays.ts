@@ -14,11 +14,31 @@ import type { PiTheme, PiContext } from "../types.js";
 import { MultiSelectList, multiSelectKeyAction, type MultiSelectTheme } from "./multi-select-list.js";
 import { truncateToWidth } from "./render-helpers.js";
 import { CLI_GLYPH } from "../tui/cli-design.js";
+import { TOKEN, type SemanticToken } from "../tui/palette.js";
+import { OVERLAY_HELP_MULTI, OVERLAY_HELP_SELECT, OVERLAY_HELP_SELECT_FILTER } from "../tui/content.js";
+
+/**
+ * Semantic paint with defensive chaining (overlay themes may lack fg in tests).
+ * Routes every overlay color through the TOKEN map so a palette remap reaches
+ * the overlays too.
+ */
+function fgTok(theme: PiTheme | undefined, token: SemanticToken, text: string): string {
+  return theme?.fg?.(TOKEN[token], text) ?? text;
+}
+
+/**
+ * Shared responsive geometry for Octocode overlays: cap the height and let pi
+ * hide the overlay entirely on terminals too narrow to render it legibly.
+ */
+const OCTOCODE_OVERLAY_OPTIONS = {
+  maxHeight: "80%",
+  visible: (termWidth: number) => termWidth >= 40,
+} as const;
 
 /** Branded overlay title line, consistent across select / multi-select overlays. */
 function overlayHeading(theme: PiTheme | undefined, title: string): string {
   const text = `${CLI_GLYPH.brand} ${title}`;
-  return theme?.fg?.("accent", theme?.bold?.(text) ?? text) ?? text;
+  return fgTok(theme, "brand", theme?.bold?.(text) ?? text);
 }
 
 /** pi-tui SelectList theme shape (5 colorizer fns). */
@@ -32,15 +52,15 @@ export interface SelectListThemeFns {
 
 const id = (t: string) => t;
 
-/** Map the Octocode/Pi theme to a pi-tui SelectList theme (accent/muted/dim/warning). */
+/** Map the Octocode/Pi theme to a pi-tui SelectList theme via the semantic TOKEN map. */
 export function octocodeSelectListTheme(theme?: PiTheme): SelectListThemeFns {
-  const fg = (color: Parameters<PiTheme['fg']>[0]) => (t: string) => theme?.fg?.(color, t) ?? id(t);
+  const fg = (token: SemanticToken) => (t: string) => fgTok(theme, token, t) || id(t);
   return {
-    selectedPrefix: fg("accent"),
-    selectedText: fg("accent"),
+    selectedPrefix: fg("brand"),
+    selectedText: fg("brand"),
     description: fg("muted"),
     scrollInfo: fg("dim"),
-    noMatch: fg("warning"),
+    noMatch: fg("muted"),
   };
 }
 
@@ -124,7 +144,7 @@ export async function runSelectOverlay(
       // prefix-matches on item.value (internal ids like `cmd:…` / SHAs), which
       // made typing what you see filter everything out. We filter on the
       // visible label/description ourselves instead.
-      const makeList = (): { list: any; empty: boolean } => {
+      const makeList = (keepValue?: string): { list: any; empty: boolean } => {
         const visible = opts.items.filter((o) => selectItemMatchesFilter(o, filter));
         if (visible.length === 0) return { list: undefined, empty: true };
         const list = new SelectList(
@@ -138,23 +158,28 @@ export async function runSelectOverlay(
         );
         (list as any).onSelect = (item: { value: string }) => done(item.value);
         (list as any).onCancel = () => done(null);
+        // Rebuilds must not lose the user's place: re-select the previously
+        // highlighted item when it survives the filter (SelectList exposes
+        // setSelectedIndex/getSelectedItem for exactly this).
+        if (keepValue) {
+          const keepIndex = visible.findIndex((o) => o.value === keepValue);
+          if (keepIndex > 0) (list as any).setSelectedIndex?.(keepIndex);
+        }
         return { list, empty: false };
       };
       let { list, empty } = makeList();
 
-      const help = enableFilter
-        ? "↑↓ navigate • type to filter • enter select • esc cancel"
-        : "↑↓ navigate • enter select • esc cancel";
-      const helpLine = theme?.fg?.("dim", help) ?? help;
+      const help = enableFilter ? OVERLAY_HELP_SELECT_FILTER : OVERLAY_HELP_SELECT;
+      const helpLine = fgTok(theme, "dim", help);
 
       return {
         render: (w: number) => {
           const lines: string[] = [heading];
           if (enableFilter) {
-            lines.push(theme?.fg?.("dim", `filter: ${filter}`) ?? `filter: ${filter}`);
+            lines.push(fgTok(theme, "dim", `filter: ${filter}`));
           }
           if (empty) {
-            lines.push(theme?.fg?.("warning", "  no matches — backspace to clear") ?? "  no matches — backspace to clear");
+            lines.push(fgTok(theme, "warning", "  no matches — backspace to clear"));
           } else {
             lines.push(...(list.render(w) as string[]).map((l: string) => ` ${l}`));
           }
@@ -167,7 +192,8 @@ export async function runSelectOverlay(
             const next = applyFilterKey(filter, data);
             if (next.changed) {
               filter = next.buffer;
-              ({ list, empty } = makeList());
+              const keepValue = (list as any)?.getSelectedItem?.()?.value as string | undefined;
+              ({ list, empty } = makeList(keepValue));
               tui?.requestRender?.();
               return;
             }
@@ -182,7 +208,7 @@ export async function runSelectOverlay(
         },
       };
     },
-    { overlay: true },
+    { overlay: true, overlayOptions: OCTOCODE_OVERLAY_OPTIONS },
   );
 }
 
@@ -220,8 +246,8 @@ export async function runMultiSelectOverlay(
       done: (v: string[] | null) => void,
     ) => {
       const heading = overlayHeading(theme, opts.title);
-      const help = "↑↓ navigate • space toggle • enter confirm • esc cancel";
-      const helpLine = theme?.fg?.("dim", help) ?? help;
+      const help = OVERLAY_HELP_MULTI;
+      const helpLine = fgTok(theme, "dim", help);
 
       const list = new MultiSelectList(
         opts.items.map((o) => ({
@@ -258,10 +284,8 @@ export async function runMultiSelectOverlay(
         },
       };
     },
-    { overlay: true },
+    { overlay: true, overlayOptions: OCTOCODE_OVERLAY_OPTIONS },
   );
   return result ?? undefined;
 }
 
-// Re-export for callers that only need width-safe truncation alongside overlays.
-export { truncateToWidth };

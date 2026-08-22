@@ -21,19 +21,27 @@ export const DISABLED_BUILTIN_TOOL_NAMES = ['read', 'grep', 'find', 'ls'] as con
 // Same-name registerTool overrides (Pi keeps the name; Octocode owns the implementation).
 export const OVERRIDDEN_BUILTIN_TOOL_NAMES = ['edit', 'write', 'bash'] as const;
 
-// Support tools: typed subagent orchestration, web, and browser surfaces.
+// Model-callable support tools: typed subagent orchestration, web, MCP bridge,
+// memory wrapper, browser, and media surfaces. Slash command aliases (for example
+// `/mcp`) are tracked with commands, not here.
 export const OCTOCODE_SUPPORT_TOOL_NAMES = [
   'web',
   'chromeDebug',
   'browserAgent',
   'spawnSubagent',
+  'callTool',
+  'callSkill',
+  'skill',
+  'plan',
+  'localServer',
   'MCPTool',
-  'mcp',
   'askUser',
   'memory',
   'manage_context',
   'spawnAgent',
   'AgentMessage',
+  'readImage',
+  'createImage',
 ] as const;
 
 /**

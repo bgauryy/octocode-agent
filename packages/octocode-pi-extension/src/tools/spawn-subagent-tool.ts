@@ -139,9 +139,10 @@ export function registerSpawnSubagentTool(
       'Structure the task as a labeled packet — lines starting with "Goal:", "Context:", "Scope:", "Ownership:", "Acceptance:", "Return:" (any of "-"/"—"/":" as separator, headings/bullets OK). Missing labels surface as a [POLICY] warning on the spawn response, not silently.',
       'Model routing (which configured model to pass, `pi -ne --list-models`) is defined once in the agents policy — follow it there rather than re-deriving it here.',
       'Use AgentMessage(wait) to collect the current turn; treat [DONE] as phase completion and check /octocode-agents or the below-editor ledger plus the delegated acceptance criteria before declaring the objective complete.',
-      'Use AgentMessage(abort) to gracefully interrupt the active turn without killing the process — the subagent stays alive for follow-up send/steer turns.',
-      'Typed subagents emit structured prefixed lines such as [FINDING], [EVIDENCE], [ACTION], [PLAN], [BLOCKED], and [DONE] — parse these for synthesis.',
-      'Kill the agent with AgentMessage(kill, remove:true) when done to free resources.',
+      'Typed subagent packets include a durable handback file under .octocode/tmp/agents/<agentId>/handback.md and typed subagents have the write tool; require long or important findings to be written there and reported with [ARTIFACT] before terminal output.',
+      'Use AgentMessage(abort) to gracefully interrupt the active turn — the subagent stays alive for follow-up send/steer turns.',
+      'Typed subagents emit structured prefixed lines such as [FINDING], [EVIDENCE], [ACTION], [PLAN], [BLOCKED], [ARTIFACT], and [DONE] — parse these for synthesis.',
+      'Before killing/removing an important worker, inspect AgentMessage(status/wait, full:true) and any handback file it reports; then kill the agent with AgentMessage(kill, remove:true) to free resources.',
     ],
 
     parameters: Type.Object({
@@ -271,7 +272,7 @@ export function registerSpawnSubagentTool(
       // In-flight (streaming/approval pending): show a running row, not a fake
       // "spawned" claim.
       if (opts?.isPartial) {
-        const prog = paint(theme, 'warning', `${CLI_STATUS_TEXT.running} spawnSubagent`);
+        const prog = paint(theme, 'brand', `${CLI_STATUS_TEXT.running} spawnSubagent`);
         return makeRenderer((w) => [truncateToWidth(prog, w)]);
       }
       // Failed spawn (unknown agent, declined worktree approval, RPC error):

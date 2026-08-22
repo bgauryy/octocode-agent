@@ -51,11 +51,13 @@ test('askUser registration teaches option lists, concise labels, and inline fall
 
   assert.equal(tool.name, 'askUser');
   assert.match(tool.description, /keyboard-navigable list/);
-  assert.match(tool.description, /custom free-text answer row is always included/);
+  assert.match(tool.description, /Discuss or type your own answer/);
+  assert.match(tool.description, /pros\[\] and cons\[\]/);
+  assert.match(tool.description, /recommended:true/);
   assert.match(tool.description, /non-interactive hosts/);
   assert.match(tool.promptGuidelines?.join('\n') ?? '', /reply 1\/2\/3/);
-  assert.match(tool.promptGuidelines?.join('\n') ?? '', /safe default first/);
-  assert.match(tool.promptGuidelines?.join('\n') ?? '', /custom free-text answer row/);
+  assert.match(tool.promptGuidelines?.join('\n') ?? '', /recommended:true/);
+  assert.match(tool.promptGuidelines?.join('\n') ?? '', /Discuss or type your own answer/);
   assert.match(tool.promptGuidelines?.join('\n') ?? '', /fall back to asking the question directly/);
 });
 
@@ -172,13 +174,13 @@ test('askUser renders choices inline in the message flow, not as a floating over
   assert.notEqual(opts?.overlay, true, 'askUser must render inline (non-overlay) in the message flow');
   assert.equal(opts?.overlayOptions, undefined, 'inline prompt passes no overlay positioning options');
   const lines = render(100);
-  assert.match(lines.join('\n'), /USER INPUT REQUIRED/);
+  assert.match(lines.join('\n'), /Input needed/);
   assert.match(lines.join('\n'), /Choose a strategy\?/);
-  // Free-text row appears AFTER the listed options.
-  assert.match(lines.join('\n'), /Type my own answer/);
+  // Discuss / free-text row appears AFTER the listed options.
+  assert.match(lines.join('\n'), /Discuss or type your own answer/);
   // Smart separator: the header rule fills the full width with box chars.
   const headerPlain = lines[0]!.replace(/\x1b\[[0-9;]*m/g, '');
-  assert.ok(headerPlain.includes('USER INPUT REQUIRED'));
+  assert.ok(headerPlain.includes('Input needed'));
   assert.ok(headerPlain.endsWith('─'), 'header rule should fill to width');
   send('\r');
   const result = await pending;
@@ -314,6 +316,51 @@ test('askUser schema gains preview, multiSelect, min/max, and fields additively'
   assert.ok(params.properties['options']!.items?.properties?.['preview'], 'options gain preview');
   const fieldProps = params.properties['fields']!.items?.properties ?? {};
   assert.deepEqual(Object.keys(fieldProps).sort(), ['label', 'name', 'placeholder', 'required']);
+});
+
+test('askUser renders recommended badge, pros/cons under the focused row, and lands the cursor on the recommended option', async () => {
+  const tool = loadTool();
+  const { ctx, send, render } = overlayCtx();
+
+  const pending = tool.execute(
+    'id',
+    {
+      question: 'Which approach?',
+      options: [
+        { value: 'risky', label: 'Aggressive cut', cons: ['thins the safety net'] },
+        { value: 'safe', label: 'Leave it', recommended: true, pros: ['no risk', 'load-bearing'], cons: ['no line-count win'] },
+      ],
+    },
+    undefined,
+    undefined,
+    ctx,
+  );
+
+  const plain = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  // Recommended badge shows on its row even when collapsed.
+  assert.match(plain, /Leave it ★ recommended/);
+  // Cursor defaults to the recommended option, so its pros/cons are expanded.
+  assert.match(plain, /✓ no risk/);
+  assert.match(plain, /✓ load-bearing/);
+  assert.match(plain, /✗ no line-count win/);
+  // The non-focused option's cons stay collapsed.
+  assert.doesNotMatch(plain, /✗ thins the safety net/);
+
+  // One Enter accepts the preselected recommended option.
+  send('\r');
+  const result = await pending;
+  assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'Leave it' });
+});
+
+test('askUser schema exposes pros, cons, and recommended on options', () => {
+  const tool = loadTool();
+  const params = tool.parameters as {
+    properties: Record<string, { items?: { properties?: Record<string, unknown> } }>;
+  };
+  const optProps = params.properties['options']!.items?.properties ?? {};
+  assert.ok(optProps['pros'], 'options gain pros');
+  assert.ok(optProps['cons'], 'options gain cons');
+  assert.ok(optProps['recommended'], 'options gain recommended');
 });
 
 test('askUser multiSelect returns multiSelected values through the overlay', async () => {

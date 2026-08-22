@@ -5,7 +5,7 @@
  * working indicator, theme sync, and session-naming wiring in index.ts.
  */
 
-import { contextGauge, paint, type PaintTheme, type SemanticToken } from './tui/palette.js';
+import { contextGauge, paint, SEP, type PaintTheme, type SemanticToken } from './tui/palette.js';
 // Route width helpers through render-helpers (which sanitizes tabs/control chars) rather
 // than raw pi-tui, so footer/session strings are measured and cut at the true cell width.
 import { truncateToWidth, truncatePlainToWidth } from './tools/render-helpers.js';
@@ -13,15 +13,18 @@ import { estimateTokens } from './utils.js';
 
 export const OCTOCODE_SPINNER_FRAMES = ['✦', '✧', '✶', '✺', '✹', '✷', '✶', '✧'] as const;
 export const OCTOCODE_SPINNER_INTERVAL_MS = 120;
+// Brand-metallic pulse: a teal brand tick, then a lavender→white shimmer.
+// Deliberately avoids warning/success — status colors in a spinner read as
+// state changes that never happened.
 const OCTOCODE_SPINNER_TOKENS: readonly SemanticToken[] = [
   'brand',
-  'dim',
-  'warning',
-  'success',
-  'brand',
   'link',
-  'warning',
+  'bright',
+  'link',
   'dim',
+  'link',
+  'bright',
+  'link',
 ];
 
 export interface WorkingIndicatorConfig {
@@ -66,36 +69,17 @@ export function formatDurationShort(ms: number | undefined): string {
   return `${hr}h ${min % 60}m`;
 }
 
-export interface WorkingLabelInput {
-  startedAt: number;
-  now: number;
-}
-
-/** Word shown in the live working line while a turn is active. */
-export const WORKING_WORD = 'Thinking';
+import { WORKING_WORD } from './tui/content.js';
 
 /**
- * Animated working-line label: `Thinking` with a cycling 1–3 dot tail driven by
- * elapsed time (advances once per second alongside the footer ticker).
- *
- * Deliberately carries NO elapsed time or token count — those already live in
- * the footer's `active`/`ctx` segments, so repeating them here was on-screen
- * redundancy. The smooth glyph animation comes from the working *indicator*
- * frames; this text supplies the "…" pulse.
+ * Themed working message: the brand verb plus a static lavender ellipsis.
+ * ONE motion source on the working row — the 120ms indicator glyph animates,
+ * the text holds still. (The old 1s dot cycle pulsed at a different cadence
+ * than the glyph, which reads as jitter, not liveliness.) Carries NO elapsed
+ * time or token count — those live in the footer's `active`/`ctx` segments.
  */
-export function buildWorkingLabel(input: WorkingLabelInput): string {
-  const elapsedMs = Math.max(0, input.now - input.startedAt);
-  const dots = '.'.repeat((Math.floor(elapsedMs / 1000) % 3) + 1);
-  return `${WORKING_WORD}${dots}`;
-}
-
-/**
- * Themed working message. Keeps the accessible word stable while the suffix
- * pulses in a brighter attention color; without a theme it is plain text.
- */
-export function buildWorkingMessage(input?: WorkingLabelInput, theme?: PaintTheme): string {
-  const suffix = input ? buildWorkingLabel(input).slice(WORKING_WORD.length) : '…';
-  return `${paint(theme, 'brand', WORKING_WORD)}${paint(theme, 'warning', suffix)}`;
+export function buildWorkingMessage(theme?: PaintTheme): string {
+  return `${paint(theme, 'brand', WORKING_WORD)}${paint(theme, 'link', '…')}`;
 }
 
 export interface FooterInput {
@@ -123,6 +107,13 @@ export interface FooterInput {
   /** Active model-dial label (e.g. the dial preset name), shown as a branded segment. */
   dial?: string;
   /**
+   * Session permission level from the approval gate. ALWAYS rendered when
+   * provided — the gate's mode is safety context for every command.
+   */
+  permissionLevel?: string;
+  /** Count of action classes the user "always allowed" this session. */
+  approvedClassCount?: number;
+  /**
    * Per-turn Octocode harness prompt overhead, for the context-breakdown segment.
    * Estimated tokens use the ~4 chars/token heuristic. Distinct from the live `ctx`
    * running-total gauge (which comes from Pi's getContextUsage).
@@ -130,16 +121,21 @@ export interface FooterInput {
   overhead?: { totalChars: number; sysChars: number; mcpServers: number; mcpTools: number; skills: number };
   branch?: string;
   dirty: boolean;
+  /** Changed-file count from the same porcelain probe that sets `dirty`. */
+  dirtyFiles?: number;
 }
 
 /** A footer segment plus the semantic colour it should paint with (default: dim). */
 export interface FooterSegment {
   text: string;
   token?: SemanticToken;
+  /**
+   * Static bold emphasis — reserved for act-on-me states (blocked/failed
+   * workers, unread peer mail, near-full context). Never animated: emphasis
+   * must MEAN "act on me", and a moving footer is noise.
+   */
+  attention?: boolean;
 }
-
-/** Max width of inline footer progress labels before they are ellipsized. */
-const INLINE_STATUS_MAX = 24;
 
 function ellipsize(text: string, max: number): string {
   const clean = text.replace(/\s+/g, ' ').trim();
@@ -188,67 +184,226 @@ export function buildFooterSegments(input: FooterInput, density: FooterDensity =
   if (input.contextWindow > 0) {
     const gauge = contextGauge((input.tokens / input.contextWindow) * 100);
     segs.push({
-      text: `ctx ${gauge.bar} ${gauge.pct}% ${formatCompact(input.tokens)}/${formatCompact(input.contextWindow)}`,
+      text: `context ${gauge.bar} ${gauge.pct}%${SEP}${formatCompact(input.tokens)}/${formatCompact(input.contextWindow)}`,
       token: gauge.token,
+      // Near-full context is emphasized — the one gauge state that demands action.
+      attention: gauge.token === 'error',
     });
   }
 
   if (!compact) {
-    segs.push({ text: `turns ${input.completedTurns}` });
+    // ONE merged timing segment — a bare `active 14s` read as ambiguous
+    // (turn time? session time?). Live: `turn 8 · 14s` (current turn number +
+    // its elapsed). Idle: `turns 7 · last 12s`. Placeholders never render:
+    // before the first turn there is nothing to count or time.
+    if (input.activeTurnMs !== undefined) {
+      segs.push({ text: `turn ${input.completedTurns + 1}${SEP}${formatDurationShort(input.activeTurnMs)}` });
+    } else {
+      const idleParts = [
+        ...(input.completedTurns > 0 ? [`turns ${input.completedTurns}`] : []),
+        ...(input.lastTurnMs !== undefined ? [`last ${formatDurationShort(input.lastTurnMs)}`] : []),
+      ];
+      if (idleParts.length > 0) segs.push({ text: idleParts.join(SEP) });
+    }
 
-    segs.push({
-      text: input.activeTurnMs !== undefined
-        ? `active ${formatDurationShort(input.activeTurnMs)}`
-        : `last ${formatDurationShort(input.lastTurnMs)}`,
-    });
-
-    if (density === 'full') segs.push({ text: `session ${formatDurationShort(input.sessionMs)}` });
+    // Session uptime at default density — the one clock users actually look
+    // for (previously buried in `full`).
+    segs.push({ text: `session ${formatDurationShort(input.sessionMs)}` });
   }
 
   const workerTotal = input.workerTotal ?? input.activeWorkers;
   if (workerTotal > 0) {
     const active = input.activeWorkers > 0 ? ` (${input.activeWorkers} live)` : '';
-    const label = !compact && input.agentDoing ? ` ‣ ${ellipsize(input.agentDoing, INLINE_STATUS_MAX)}` : '';
-    segs.push({ text: `agents ${workerTotal}${active}${label}` });
-  }
-  if (!compact && input.awarenessAgents && input.awarenessAgents > 0) {
-    segs.push({ text: `aware-agents ${input.awarenessAgents}`, token: 'brand' });
-  }
-  if (!compact && input.peerDirty && input.peerDirty > 0) {
-    segs.push({ text: `peer-wip ${input.peerDirty}`, token: 'warning' });
+    segs.push({ text: `agents ${workerTotal}${active}` });
   }
   // Unread peer messages are an attention flag (shown even in compact): a
   // co-working agent is waiting on a reply.
   if (input.awarenessUnread && input.awarenessUnread > 0) {
-    segs.push({ text: `✉${input.awarenessUnread}`, token: 'warning' });
+    segs.push({ text: `mail ${input.awarenessUnread}`, token: 'link', attention: true });
   }
   if (input.blockedWorkers && input.blockedWorkers > 0) {
-    segs.push({ text: `⚠${input.blockedWorkers}`, token: 'warning' });
+    segs.push({ text: `blocked ${input.blockedWorkers}`, token: 'warning', attention: true });
   }
   if (input.failedWorkers && input.failedWorkers > 0) {
-    segs.push({ text: `✗${input.failedWorkers}`, token: 'error' });
+    segs.push({ text: `failed ${input.failedWorkers}`, token: 'error', attention: true });
   }
 
   if (!compact && input.dial) {
-    segs.push({ text: `◉ ${input.dial}`, token: 'brand' });
+    segs.push({ text: `dial ${input.dial}`, token: 'brand' });
+  }
+
+  // Consent state is ALWAYS visible (every density): the gate's mode governs
+  // every command the agent runs, so the operator should never have to wonder
+  // which mode is live. `+N` = session-wide "always allow" grants. Plain-text
+  // label (no shield glyph — ⛨ is ambiguous-width and would drift the row).
+  // Color = risk: relaxed is the one warning; strict/default stay calm dim.
+  if (input.permissionLevel) {
+    const grants = input.approvedClassCount && input.approvedClassCount > 0 ? ` +${input.approvedClassCount}` : '';
+    segs.push({
+      text: `perm ${input.permissionLevel}${grants}`,
+      token: input.permissionLevel === 'relaxed' ? 'warning' : 'dim',
+    });
   }
 
   // Harness prompt overhead: total est. tokens injected as context, always shown
-  // (even in compact) and labeled 'context'. Full density adds the
-  // system/mcp/skills breakdown; other densities show just the labeled total.
+  // (even in compact) and labeled 'prompt'. Default/full densities also expose
+  // the live capability counts separately so users can see MCP connectivity and
+  // skill discovery without decoding the prompt budget segment.
   if (input.overhead && input.overhead.totalChars > 0) {
     const o = input.overhead;
     const tok = (chars: number): string => formatCompact(estimateTokens(chars));
     const breakdown = density === 'full'
       ? ` (sys ${tok(o.sysChars)} · mcp ${o.mcpServers}/${o.mcpTools} · skills ${o.skills})`
       : '';
-    segs.push({ text: `prompt Σ~${tok(o.totalChars)}${breakdown}`, token: 'dim' });
+    segs.push({ text: `prompt ~${tok(o.totalChars)}${breakdown}`, token: 'dim' });
+    if (!compact) {
+      segs.push({ text: `mcp ${o.mcpServers}`, token: 'dim' });
+      segs.push({ text: `skills ${o.skills}`, token: 'dim' });
+    }
   }
 
-  if (input.branch) segs.push({ text: `${input.branch}${input.dirty ? '*' : ''}` });
+  if (input.branch) {
+    segs.push({ text: formatBranchSegment(input.branch, input.dirty, input.dirtyFiles) });
+  }
 
   return segs;
 }
+
+/** `main` · `main (dirty)` · `main (5 changed)` — words instead of `*` / `Δ`. */
+export function formatBranchSegment(branch: string, dirty: boolean, dirtyFiles?: number): string {
+  if (!dirty) return branch;
+  return dirtyFiles ? `${branch} (${dirtyFiles} changed)` : `${branch} (dirty)`;
+}
+
+// ─── Per-subagent footer rows ──────────────────────────────────────────────────
+
+/** The minimal ledger shape the footer needs (subset of WorkerLedgerEntry). */
+export interface AgentFooterEntry {
+  agentId: string;
+  name: string;
+  status: string;
+  startedAt: string;
+  updatedAt: string;
+  deltaSummary?: string;
+  pendingMessages?: number;
+  activeTool?: string;
+  toolCallCount?: number;
+  toolNames?: string[];
+}
+
+export interface AgentFooterRow {
+  /** Leading label, e.g. `agent researcher (a1b2)`. */
+  label: string;
+  /** State word (`running`, `blocked`, …). */
+  state: string;
+  /** Colour for the state word. */
+  token: SemanticToken;
+  /** Bold state word — only for act-on-me states. */
+  attention: boolean;
+  /** `14s` / `1m 3s` — live elapsed for active workers, total for finished ones. */
+  elapsed: string;
+  /** What the worker is doing right now (ellipsized), if known. */
+  doing?: string;
+}
+
+const AGENT_TERMINAL = new Set(['done', 'failed', 'killed', 'completed', 'exited', 'error']);
+/** Max per-agent rows under the footer before collapsing into `… N more`. */
+export const AGENT_FOOTER_MAX_ROWS = 4;
+const AGENT_DOING_MAX = 40;
+
+function agentStateToken(status: string): { token: SemanticToken; attention: boolean } {
+  switch (status) {
+    case 'failed':
+    case 'error': return { token: 'error', attention: true };
+    case 'blocked': return { token: 'warning', attention: true };
+    case 'killed': return { token: 'warning', attention: false };
+    case 'done':
+    case 'completed':
+    case 'exited': return { token: 'success', attention: false };
+    case 'running': return { token: 'brand', attention: false };
+    case 'queued': return { token: 'link', attention: false };
+    default: return { token: 'dim', attention: false };
+  }
+}
+
+/**
+ * One footer row per subagent — live workers first (most recently updated
+ * first), then finished ones — so the operator sees every worker's name,
+ * state, and current activity without opening /octocode-agents. Pure: pass
+ * `nowMs` for deterministic elapsed times. Returns at most
+ * AGENT_FOOTER_MAX_ROWS rows plus an `overflow` count.
+ */
+export function buildAgentFooterRows(
+  entries: readonly AgentFooterEntry[],
+  nowMs: number = Date.now(),
+): { rows: AgentFooterRow[]; overflow: number } {
+  const isLive = (e: AgentFooterEntry): boolean => !AGENT_TERMINAL.has(e.status);
+  const ordered = [...entries].sort((a, b) => {
+    const liveDelta = Number(isLive(b)) - Number(isLive(a));
+    return liveDelta !== 0 ? liveDelta : Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+  });
+  const shown = ordered.slice(0, AGENT_FOOTER_MAX_ROWS);
+  const rows = shown.map((e): AgentFooterRow => {
+    const { token, attention } = agentStateToken(e.status);
+    const started = Date.parse(e.startedAt);
+    const ended = isLive(e) ? nowMs : Date.parse(e.updatedAt);
+    const elapsedMs = Number.isFinite(started) && Number.isFinite(ended) ? Math.max(0, ended - started) : undefined;
+    const live = isLive(e);
+    const activityParts = [
+      ...(live && e.pendingMessages && e.pendingMessages > 0 ? [`queued ${e.pendingMessages}`] : []),
+      ...(live && e.activeTool ? [`tool ${e.activeTool}`] : []),
+      ...(live && e.deltaSummary ? [e.deltaSummary] : []),
+      ...(!e.activeTool && e.toolCallCount && e.toolCallCount > 0
+        ? [`${e.toolCallCount} call${e.toolCallCount === 1 ? '' : 's'}${e.toolNames?.length ? ` [${e.toolNames.join(',')}]` : ''}`]
+        : []),
+    ];
+    const doing = activityParts.length > 0 ? ellipsize(activityParts.join(' · '), AGENT_DOING_MAX) : undefined;
+    return {
+      label: `agent ${e.name} (${e.agentId.slice(0, 6)})`,
+      state: e.status,
+      token,
+      attention,
+      elapsed: formatDurationShort(elapsedMs),
+      doing,
+    };
+  });
+  return { rows, overflow: Math.max(0, ordered.length - shown.length) };
+}
+
+export interface ShortcutHint {
+  /** Resolved key text, e.g. "shift+tab". Blank keys are dropped (host bound nothing). */
+  key: string;
+  /** Short action label, e.g. "think". */
+  label: string;
+  /** Semantic colour for the action label. */
+  token?: SemanticToken;
+  /** Optional semantic colour for this specific keycap. */
+  keyToken?: SemanticToken;
+}
+
+/**
+ * Build the compact keyboard-shortcut hint row rendered under the footer
+ * metrics, so the highest-value shortcuts (cycle thinking, cycle permission
+ * level, model select, expand tools, command palette, stop) are discoverable
+ * without opening the docs. Entries whose key is blank are dropped (the host
+ * didn't bind that action); the row is empty when nothing resolves. Rendered as
+ * individually-coloured keycaps plus semantically-coloured action labels when a
+ * theme is available, falling back to plain `key label · key label` in
+ * tests/plain mode.
+ */
+export function buildShortcutHintsRow(hints: readonly ShortcutHint[], theme?: PaintTheme): string {
+  const fallbackKeyTokens: readonly SemanticToken[] = ['brand', 'link', 'brandAlt', 'path', 'symbol', 'error'];
+  return hints
+    .filter((h) => h.key.trim().length > 0 && h.label.trim().length > 0)
+    .map((h, index) => {
+      const keyToken = h.keyToken ?? fallbackKeyTokens[index % fallbackKeyTokens.length] ?? 'bright';
+      const key = theme ? theme.bold(paint(theme, keyToken, h.key.trim())) : h.key.trim();
+      const label = paint(theme, h.token ?? 'muted', h.label.trim());
+      return `${key} ${label}`;
+    })
+    .join(SEP);
+}
+
 
 /** Map macOS `AppleInterfaceStyle` ("Dark" when dark; unset otherwise) to our theme names. */
 export function resolveSystemTheme(appleInterfaceStyle: string | null | undefined): OctocodeThemeName {

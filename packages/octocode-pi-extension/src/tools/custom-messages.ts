@@ -15,13 +15,13 @@
  */
 
 import { paint } from '../tui/cli-design.js';
+import { BRAND_DIAMOND, SEP } from '../tui/palette.js';
 import type { PiInstance, PiTheme } from '../types.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 
 export const COMPACTION_CHECKPOINT_TYPE = 'octocode-compaction-checkpoint';
 export const AWARENESS_HANDOFF_TYPE = 'octocode-awareness-handoff';
 
-const BRAND_GLYPH = '◆';
 const MAX_SUMMARY_LINES = 8;
 const MAX_LIST_ITEMS = 6;
 
@@ -36,6 +36,10 @@ export interface CompactionCheckpointDetails {
   fromExtension?: boolean;
   readFiles?: string[];
   modifiedFiles?: string[];
+  /** Markdown artifact written under Octocode home for reopening after compaction. */
+  artifactPath?: string;
+  /** Stable pointer to the most recent compaction artifact. */
+  latestArtifactPath?: string;
   /** Compaction summary text (shown truncated when expanded). */
   summary?: string;
 }
@@ -58,7 +62,7 @@ function fit(line: string, width: number): string {
 }
 
 function cardHeader(title: string, label: string, theme: PiTheme | undefined): string {
-  return `${paint(theme, 'brand', BRAND_GLYPH)} ${paint(theme, 'title', title)}${paint(theme, 'dim', ' · ')}${paint(theme, 'brand', label)}`;
+  return `${paint(theme, 'brand', BRAND_DIAMOND)} ${paint(theme, 'title', title)}${paint(theme, 'dim', SEP)}${paint(theme, 'brand', label)}`;
 }
 
 function boxTop(title: string, label: string, theme: PiTheme | undefined): string {
@@ -87,7 +91,7 @@ function compactionStatLine(details: CompactionCheckpointDetails, theme: PiTheme
     details.fromExtension === undefined ? '' : `source: ${details.fromExtension ? 'octocode' : 'pi'}`,
   ].filter(Boolean);
   if (parts.length === 0) return undefined;
-  return paint(theme, 'dim', parts.join(' · '));
+  return paint(theme, 'dim', parts.join(SEP));
 }
 
 /**
@@ -115,6 +119,9 @@ export function buildCompactionCard(
   if (read) lines.push(boxBody(read, theme));
   const modified = listLine('modified files', details.modifiedFiles ?? [], theme);
   if (modified) lines.push(boxBody(modified, theme));
+  if (details.artifactPath) {
+    lines.push(boxBody(`${paint(theme, 'muted', 'doc:')} ${paint(theme, 'path', details.artifactPath)}`, theme));
+  }
   if (details.summary) {
     const summaryLines = details.summary.split('\n');
     for (const line of summaryLines.slice(0, MAX_SUMMARY_LINES)) {
@@ -144,7 +151,7 @@ export function buildHandoffCard(
     details.from || details.to ? `${details.from ?? '?'} → ${details.to ?? '?'}` : '',
     details.status ? `status: ${details.status}` : '',
   ].filter(Boolean);
-  const route = routeParts.length > 0 ? paint(theme, 'dim', routeParts.join(' · ')) : undefined;
+  const route = routeParts.length > 0 ? paint(theme, 'dim', routeParts.join(SEP)) : undefined;
 
   if (!expanded) {
     const lines = [cardHeader('Awareness handoff', label, theme)];

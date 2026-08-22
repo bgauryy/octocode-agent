@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openAwarenessLite, type AgentStatus, type TaskStatus } from './index.js';
+import { openAwarenessLite, isEmbeddingEnabled, type AgentStatus, type TaskStatus } from './index.js';
 import { runPreEditLockGate, type HookHost } from './hooks.js';
 
 type InstallHost = 'claude' | 'codex' | 'cursor';
@@ -68,7 +68,7 @@ function print(value: unknown): void {
 }
 
 function usage(): string {
-  return `octocode-awareness-lite <command> [action]\n\nCommands:\n  status [--stale-after]\n  schema                entities and command shapes\n  plan create|list|done\n  task add|list|claim|done|reopen\n  lock acquire|release|list\n  work start|touch|list|end manual advisory file presence\n  handoff add|list|clear manual notes for later agents\n  agent join|touch|leave|list [--stale-after]\n  message send|inbox|list|read|prune\n  check audit|mark      verify-gate receipt flow\n  verify audit|mark     alias for check\n  memory store|recall|list|forget|delete|prune\n  hooks pre-edit        JSON lock-conflict gate; exits 2 when another agent owns a lock\n  hooks install         writes the optional pre-edit hook for claude|codex|cursor; use --dry-run first\n\nHook install:\n  hooks install --host claude|cursor|codex --project-dir <repo> [--cli <path>] [--dry-run]\n  writes .claude/settings.json, .cursor/hooks.json, or .codex/hooks.json\n\nGlobal flags:\n  --workspace <path>  Workspace root, default cwd\n  --db <path>         SQLite database path`;
+  return `octocode-awareness-lite <command> [action]\n\nCommands:\n  status [--stale-after]\n  schema                entities and command shapes\n  plan create|list|done\n  task add|list|claim|done|reopen\n  lock acquire|release|list\n  work start|touch|list|end manual advisory file presence\n  handoff add|list|clear manual notes for later agents\n  agent join|touch|leave|list [--stale-after]\n  message send|inbox|list|read|prune\n  check audit|mark      verify-gate receipt flow\n  verify audit|mark     alias for check\n  memory store|recall|list|reindex|forget|delete|prune\n  memory recall --semantic  cosine recall via OCTOCODE_EMBED_CMD (falls back to lexical)\n  hooks pre-edit        JSON lock-conflict gate; exits 2 when another agent owns a lock\n  hooks install         writes the optional pre-edit hook for claude|codex|cursor; use --dry-run first\n\nHook install:\n  hooks install --host claude|cursor|codex --project-dir <repo> [--cli <path>] [--dry-run]\n  writes .claude/settings.json, .cursor/hooks.json, or .codex/hooks.json\n\nGlobal flags:\n  --workspace <path>  Workspace root, default cwd\n  --db <path>         SQLite database path`;
 }
 
 function hasHelpFlag(parsed: ParsedArgs): boolean {
@@ -368,11 +368,23 @@ export function runCli(argv: string[]): number {
               tags: getFlag(parsed.flags, 'tags'),
             }));
             return 0;
-          case 'recall':
+          case 'recall': {
+            const semantic = parsed.flags.has('semantic') || parsed.flags.has('smart');
+            if (semantic && !isEmbeddingEnabled()) {
+              process.stderr.write('warning: --semantic requested but OCTOCODE_EMBED_CMD is unset; using lexical recall\n');
+            }
             print(aw.recallMemory({
               query: getFlag(parsed.flags, 'query'),
               label: getFlag(parsed.flags, 'label'),
               limit: Number(getFlag(parsed.flags, 'limit') ?? 10),
+              semantic,
+            }));
+            return 0;
+          }
+          case 'reindex':
+            print(aw.reindexMemories({
+              force: parsed.flags.has('force'),
+              limit: getFlag(parsed.flags, 'limit') ? Number(getFlag(parsed.flags, 'limit')) : undefined,
             }));
             return 0;
           case 'list':
@@ -390,7 +402,7 @@ export function runCli(argv: string[]): number {
             }));
             return 0;
           default:
-            throw new Error('memory action must be store, recall, list, forget, delete, or prune');
+            throw new Error('memory action must be store, recall, list, reindex, forget, delete, or prune');
         }
       }
       default:

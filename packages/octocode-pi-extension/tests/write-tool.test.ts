@@ -12,6 +12,7 @@ import { test, beforeEach, afterEach } from 'vitest';
 import { Type } from 'typebox';
 import type { ToolDefinition } from '../src/types.js';
 import { registerWriteTool } from '../src/tools/write-tool.js';
+import { registerUniqueTool } from '../src/tools/octocode-tools.js';
 import {
   checkReadState,
   clearReadStatesForTests,
@@ -25,7 +26,7 @@ beforeEach(() => {
   clearReadStatesForTests();
 
   const tools = new Map<string, ToolDefinition>();
-  registerWriteTool({ registerTool: (def) => tools.set(def.name, def) }, Type);
+  registerWriteTool({ registerTool: (def) => tools.set(def.name, def) }, Type, new Set<string>(), registerUniqueTool);
   writeTool = tools.get('write')!;
   assert.ok(writeTool, 'write tool must be registered');
 });
@@ -40,7 +41,10 @@ function run(
   cwd = tmpDir,
   signal?: AbortSignal,
 ): ReturnType<ToolDefinition['execute']> {
-  return writeTool.execute('call-1', params, signal, undefined, { cwd });
+  const withReasoning = Object.hasOwn(params, 'reasoning')
+    ? params
+    : { ...params, reasoning: 'test write operation' };
+  return writeTool.execute('call-1', withReasoning, signal, undefined, { cwd });
 }
 
 // ─── Registration ─────────────────────────────────────────────────────────────
@@ -55,6 +59,10 @@ test('registerWriteTool registers the "write" tool with correct metadata', () =>
   assert.ok(
     (writeTool.parameters as { properties?: Record<string, unknown> }).properties?.['content'],
     'schema must have a content property',
+  );
+  assert.ok(
+    (writeTool.parameters as { properties?: Record<string, unknown> }).properties?.['reasoning'],
+    'schema must have a reasoning property',
   );
 });
 
@@ -146,6 +154,13 @@ test('rejects when content is not a string', async () => {
   );
 });
 
+test('rejects when reasoning is missing', async () => {
+  await assert.rejects(
+    () => writeTool.execute('call-missing-reasoning', { path: 'file.txt', content: 'hi' }, undefined, undefined, { cwd: tmpDir }),
+    /reasoning is required/,
+  );
+});
+
 // ─── Path guard ───────────────────────────────────────────────────────────────
 
 test('blocks writes to a path outside all allowed roots', async () => {
@@ -184,13 +199,15 @@ const theme = {
   fg: (_color: string, t: string) => t,
 };
 
-test('renderCall returns a renderer that produces a path + line count label', () => {
+test('renderCall returns a renderer that produces the override label, path, and line count', () => {
   assert.ok(writeTool.renderCall, 'renderCall must be defined');
-  const renderer = writeTool.renderCall!({ path: 'src/foo.ts', content: 'line1\nline2\nline3' }, theme);
+  const renderer = writeTool.renderCall!({ path: 'src/foo.ts', content: 'line1\nline2\nline3', reasoning: 'create fixture file' }, theme);
   assert.ok(renderer, 'renderCall must return a renderer');
   const lines = (renderer as { render(width: number): string[] }).render(80);
+  assert.ok(lines.join('\n').includes('write (Octocode)'), 'label must identify the Octocode override');
   assert.ok(lines.join('\n').includes('src/foo.ts'), 'label must contain file path');
   assert.ok(lines.join('\n').includes('3 lines'), 'label must show line count');
+  assert.ok(lines.join('\n').includes('why: create fixture file'), 'label must show reasoning');
 });
 
 test('renderCall handles missing path gracefully', () => {
@@ -220,13 +237,20 @@ test('renderResult for isPartial=true renders a progress indicator', () => {
   const renderer = writeTool.renderResult!(result, { isPartial: true }, theme);
   const lines = (renderer as { render(width: number): string[] }).render(80);
   assert.ok(lines.join('\n').includes('writing'), 'partial result must mention writing');
+  assert.ok(lines.join('\n').includes('write (Octocode)'), 'partial result must identify the Octocode override');
 });
 
-test('renderResult for successful write renders nothing (empty content)', () => {
-  const result: import('../src/types.js').ToolCallResult = { content: [{ type: 'text' as const, text: 'ok' }], isError: undefined };
-  const renderer = writeTool.renderResult!(result, {});
+test('renderResult for successful write renders the path and size', () => {
+  const result: import('../src/types.js').ToolCallResult = {
+    content: [{ type: 'text' as const, text: 'ok' }], isError: undefined, details: { path: 'src/a.ts', bytes: 42 },
+  };
+  const renderer = writeTool.renderResult!(result, {}, theme);
   const lines = (renderer as { render(width: number): string[] }).render(80);
-  assert.deepEqual(lines, ['']);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, /✓/);
+  assert.match(lines[0]!, /write \(Octocode\)/);
+  assert.match(lines[0]!, /src\/a\.ts/);
+  assert.match(lines[0]!, /42 bytes/);
 });
 
 test('renderResult for error renders the error text', () => {

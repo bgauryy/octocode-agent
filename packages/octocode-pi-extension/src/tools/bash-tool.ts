@@ -3,21 +3,30 @@
  * Keeps full shell power for git/builds/sed, but blocks redirects / tee /
  * cp|mv destinations that escape Octocode path-guard roots.
  */
+/** Output lines shown under a collapsed bash result row. */
+const BASH_COLLAPSED_LINES = 3;
+
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
-import { cliToolTitle, paint } from '../tui/cli-design.js';
+import { cliToolTitle, paint, cliStatusGlyph, cliStatusToken } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
-import { classifySensitiveCommand, requestApproval } from './approval.js';
+import { classifySensitiveCommand, requestApproval, type ApprovalRequest } from './approval.js';
+import { isPlanMode, PLAN_MODE_BLOCK_REASON } from './plan-mode.js';
 import type { PiContext } from '../types.js';
+import type { registerUniqueTool } from './octocode-tools.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
+type RegisterFn = typeof registerUniqueTool;
 
 const DEFAULT_MAX_LINES = 2000;
 const DEFAULT_MAX_BYTES = 50 * 1024;
+const BASH_TOOL_DISPLAY_NAME = 'bash (Octocode)';
+
+const PLAN_MODE_MUTATING_BASH_RE = /(^|[;|&(`\n])\s*(?:sudo\s+)?(?:touch|mkdir|rm|rmdir|mv|cp|install|ln|chmod|chown|truncate|dd|sed\s+[^;|&\n]*\s-i\b|perl\s+[^;|&\n]*\s-i\b|node\s+(?:--[^\s]+\s+)*-[ep]\b|python3?\s+-c\b|ruby\s+-e\b)\b|>>?|\btee\b/i;
 
 /** Catastrophic patterns we refuse even when paths look local. */
 const BLOCKED_COMMAND_PATTERNS: RegExp[] = [
@@ -40,6 +49,10 @@ const BLOCKED_COMMAND_PATTERNS: RegExp[] = [
  * Best-effort — not a full shell parser. Misses are fail-open for non-redirect
  * commands; hits outside roots are blocked.
  */
+export function bashLooksMutatingForPlanMode(command: string, cwd: string = process.cwd()): boolean {
+  return extractBashWriteTargets(command, cwd).length > 0 || classifySensitiveCommand(command) !== null || PLAN_MODE_MUTATING_BASH_RE.test(command);
+}
+
 export function extractBashWriteTargets(command: string, cwd: string): string[] {
   const targets: string[] = [];
   const push = (raw: string) => {
@@ -159,6 +172,20 @@ function extractInPlaceEditTargets(seg: string): string[] {
   return files;
 }
 
+export function classifyEnvExfilCommand(command: string): ApprovalRequest | null {
+  const cmd = command.trim();
+  const obviousEnvironmentDump = /(^|[;|&(`\n])\s*(?:env|printenv)(?:\s|$)/i.test(cmd) ||
+    /(^|[;|&(`\n])\s*(?:set|declare)(?:\s|$)/i.test(cmd) ||
+    /\/proc\/(?:self|\d+)\/environ\b/.test(cmd);
+  const obviousSecretEcho = /\b(?:echo|printf)\b[^;|&\n]*(?:\$\{?[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASS|KEY|CREDENTIAL|AUTH)[A-Z0-9_]*\}?)/i.test(cmd);
+  if (!obviousEnvironmentDump && !obviousSecretEcho) return null;
+  return {
+    actionClass: 'system',
+    title: 'Expose inherited environment variables',
+    detail: cmd,
+  };
+}
+
 export function assertBashCommandAllowed(command: string, cwd: string): void {
   for (const pattern of BLOCKED_COMMAND_PATTERNS) {
     if (pattern.test(command)) {
@@ -196,7 +223,7 @@ async function runBash(
   cwd: string,
   timeoutSec: number | undefined,
   signal?: AbortSignal,
-): Promise<{ stdout: string; stderr: string; code: number | null }> {
+): Promise<{ stdout: string; stderr: string; code: number | null; signal: NodeJS.Signals | null; aborted: boolean }> {
   await access(cwd, constants.F_OK).catch(() => {
     throw new Error(`Working directory does not exist: ${cwd}\nCannot execute bash commands.`);
   });
@@ -247,7 +274,9 @@ async function runBash(
           }, timeoutSec * 1000)
         : null;
 
+    let aborted = false;
     const onAbort = () => {
+      aborted = true;
       terminateChild();
     };
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -266,12 +295,12 @@ async function runBash(
         reject(err);
       }
     });
-    child.on('close', (code) => {
+    child.on('close', (code, sig) => {
       if (timer) clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
       if (!settled) {
         settled = true;
-        resolve({ stdout, stderr, code });
+        resolve({ stdout, stderr, code, signal: sig, aborted });
       }
     });
   });
@@ -280,10 +309,13 @@ async function runBash(
 export function registerBashTool(
   pi: { registerTool?(def: ToolDefinition): void },
   Type: TypeBoxBuilder,
+  registeredToolNames: Set<string>,
+  registerFn: RegisterFn,
 ): void {
   const parameters = Type.Object(
     {
       command: Type.String({ description: 'Bash command to execute' }),
+      reasoning: Type.String({ description: 'REQUIRED. Why this shell command is necessary; shown to users so they understand the intent before/while it runs.' }),
       timeout: Type.Optional(
         Type.Integer({ description: 'Timeout in seconds (optional, no default timeout)' }),
       ),
@@ -291,15 +323,16 @@ export function registerBashTool(
     { additionalProperties: false },
   ) as TSchema;
 
-  pi.registerTool?.({
+  registerFn(pi, registeredToolNames, {
     name: 'bash',
     label: 'bash (Octocode)',
     description:
-      'Octocode custom bash tool. Replaces Pi built-in bash with the same shell execution plus Octocode path-guard on redirect/tee/cp/mv and sed -i / perl -i in-place write targets (cwd / home / OS temp / ALLOWED_PATHS) and a small blocklist of catastrophic commands. Note: opaque interpreters (node -e, python -c) can still write arbitrary paths and are not guarded — prefer edit/write for file mutations; use bash for git, builds, tests, and bulk mechanical edits.',
+      'Octocode custom bash tool. Replaces Pi built-in bash with the same shell execution plus Octocode path-guard on redirect/tee/cp/mv and sed -i / perl -i in-place write targets (cwd / home / OS temp / ALLOWED_PATHS), a small blocklist of catastrophic commands, and approval for obvious environment-variable exfiltration commands. Requires a non-empty reasoning field explaining why the command is necessary. Note: opaque interpreters (node -e, python -c) can still write arbitrary paths and are not guarded — prefer edit/write for file mutations; use bash for git, builds, tests, and bulk mechanical edits.',
     promptSnippet: 'Run shell commands with Octocode path-guard on write targets.',
     promptGuidelines: [
       'Octocode custom bash replaces Pi built-in bash; prefer edit/write for ordinary file creates and surgical edits.',
       'Use bash for git, builds, tests, package managers, and bulk mechanical edits (e.g. sed).',
+      'Commands that obviously print inherited environment variables or secret-like env vars require approval; bash otherwise keeps the inherited environment for compatibility.',
       'Redirects (>, >>, tee) and cp/mv destinations must stay inside the working directory, home, OS temp, or ALLOWED_PATHS.',
       'Do not use bash to bypass the edit/write path-guard.',
     ],
@@ -314,6 +347,9 @@ export function registerBashTool(
       if (typeof params['command'] !== 'string' || params['command'].trim().length === 0) {
         throw new Error('Bash tool input is invalid. command must be a non-empty string.');
       }
+      if (typeof params['reasoning'] !== 'string' || params['reasoning'].trim().length === 0) {
+        throw new Error('Bash tool input is invalid. reasoning is required — provide a non-empty string explaining why this command is necessary.');
+      }
       const command = params['command'];
       const timeout =
         typeof params['timeout'] === 'number' && Number.isFinite(params['timeout'])
@@ -321,10 +357,13 @@ export function registerBashTool(
           : undefined;
       const cwd = ctx?.cwd ?? process.cwd();
       assertBashCommandAllowed(command, cwd);
+      if (isPlanMode() && bashLooksMutatingForPlanMode(command, cwd)) {
+        throw new Error(`bash blocked: ${PLAN_MODE_BLOCK_REASON}`);
+      }
 
       // Context-aware consent: installs, mutating git, file deletes, and sudo are
       // protected. Ask before running (Yes / No / Always allow this session).
-      const sensitive = classifySensitiveCommand(command);
+      const sensitive = classifySensitiveCommand(command) ?? classifyEnvExfilCommand(command);
       if (sensitive) {
         const outcome = await requestApproval(ctx, sensitive);
         if (!outcome.approved) {
@@ -339,14 +378,17 @@ export function registerBashTool(
 
       if (signal?.aborted) throw new Error('Operation aborted');
 
-      const { stdout, stderr, code } = await runBash(command, cwd, timeout, signal);
+      const { stdout, stderr, code, signal: killedBy, aborted } = await runBash(command, cwd, timeout, signal);
       const combined = [stdout, stderr].filter(Boolean).join('\n');
-      const isError = code !== 0 && code !== null;
-      // Always surface a non-zero exit code: Pi records non-throwing results as
-      // success, so the exit line is the model's only failure signal when the
-      // command printed normal-looking output.
-      const body = isError && combined ? `${combined}\n(exit ${code})` : combined;
-      const text = truncateOutput(body || `(exit ${code ?? 'null'})`);
+      // A process killed by a signal (code === null) is a failure, not a quiet
+      // success — including our own abort; the old `code !== null` guard let a
+      // SIGTERM-ed child report ok. Always surface the reason: Pi records
+      // non-throwing results as success, so this line is the model's only
+      // failure signal when the command printed normal-looking output.
+      const isError = aborted || code !== 0;
+      const exitNote = aborted ? '(aborted)' : killedBy ? `(killed by ${killedBy})` : `(exit ${code ?? 'null'})`;
+      const body = isError && combined ? `${combined}\n${exitNote}` : combined;
+      const text = truncateOutput(body || exitNote);
       return {
         content: [{ type: 'text', text }],
         isError,
@@ -356,26 +398,36 @@ export function registerBashTool(
     renderCall(args: unknown, theme?: PiTheme) {
       const input = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
       const command = typeof input['command'] === 'string' ? input['command'] : '(missing command)';
-      const title = cliToolTitle(theme, 'bash');
+      const reasoning = typeof input['reasoning'] === 'string' ? input['reasoning'].trim() : '';
+      const title = cliToolTitle(theme, BASH_TOOL_DISPLAY_NAME);
       const suffix = paint(theme, 'dim', command);
-      return makeRenderer((width) => [truncateToWidth(`${title} ${suffix}`, width)]);
+      return makeRenderer((width) => [
+        truncateToWidth(`${title} ${suffix}`, width),
+        ...(reasoning ? [truncateToWidth(`  why: ${paint(theme, 'dim', reasoning)}`, width)] : []),
+      ]);
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        const prog = paint(theme, 'warning', '… running');
-        return makeRenderer(() => [prog]);
-      }
-      if (!opts.expanded && !result.isError) {
-        return makeRenderer(() => ['']);
+        const prog = paint(theme, 'brand', `… running ${BASH_TOOL_DISPLAY_NAME}`);
+        return makeRenderer((width) => [truncateToWidth(prog, width)]);
       }
       const text = result.content.find((c) => c.type === 'text')?.text ?? '';
-      // Paint per line, not the whole block: a single fg-wrap only colours the
-      // first row once the block is split for the renderer.
-      return makeRenderer((width) =>
-        text
-          .split('\n')
-          .map((line) => truncateToWidth(result.isError ? paint(theme, 'error', line) : line, width)),
-      );
+      const allLines = text.split('\n').filter((l) => l.length > 0);
+      const ok = !result.isError;
+      const code = (result.details as { code?: number | null } | undefined)?.code;
+      // Every result row carries the result: status glyph, exit code, line
+      // count, then the output itself — a short head when collapsed, everything
+      // when expanded (ctrl+o). Paint per line, not the whole block: a single
+      // fg-wrap only colours the first row once the block is split.
+      const head = `${paint(theme, cliStatusToken(ok), cliStatusGlyph(ok))} ${cliToolTitle(theme, BASH_TOOL_DISPLAY_NAME)}${
+        paint(theme, 'dim', ` · exit ${code ?? 'null'} · ${allLines.length} line${allLines.length === 1 ? '' : 's'}`)}`;
+      const shown = opts.expanded ? allLines : allLines.slice(0, BASH_COLLAPSED_LINES);
+      const hidden = allLines.length - shown.length;
+      return makeRenderer((width) => [
+        truncateToWidth(head, width),
+        ...shown.map((line) => truncateToWidth(ok ? paint(theme, 'dim', `  ${line}`) : paint(theme, 'error', `  ${line}`), width)),
+        ...(hidden > 0 ? [truncateToWidth(paint(theme, 'muted', `  … ${hidden} more line${hidden === 1 ? '' : 's'} — ctrl+o expands`), width)] : []),
+      ]);
     },
   });
 }

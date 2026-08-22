@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ResourceMode } from './tools/agent-tools.js';
-import { PI_CONFIG_DIR } from './constants.js';
+import { getPiUserSkillsDir } from './utils.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -105,7 +105,7 @@ const SKILLS_DIR = resolveSkillsDir();
 export function getExternalSkillDirs(): string[] {
   const dirs: string[] = [];
   const home = process.env.HOME;
-  if (home) dirs.push(path.join(home, PI_CONFIG_DIR, 'agent', 'skills'));
+  if (home) dirs.push(getPiUserSkillsDir(home));
   const cwdAgentsSkills = path.resolve(process.cwd(), '.agents', 'skills');
   if (!dirs.includes(cwdAgentsSkills)) dirs.push(cwdAgentsSkills);
   return dirs;
@@ -205,6 +205,7 @@ export const SUBAGENT_REGISTRY = {
       'chromeDebug', // CDP execution — primary tool
       'web',         // CDP docs + web research
       'MCPTool',     // octocode MCP server: localGetFileContent, localSearchCode, localViewStructure, etc.
+      'write',       // durable handback artifacts assigned by the parent
     ],
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'low',
@@ -220,6 +221,7 @@ export const SUBAGENT_REGISTRY = {
     tools: [
       'web',
       'MCPTool', // octocode MCP server: all GitHub, local, LSP, npm research tools
+      'write',   // durable handback artifacts assigned by the parent
     ],
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'low',
@@ -234,6 +236,7 @@ export const SUBAGENT_REGISTRY = {
     tools: [
       'web',
       'MCPTool', // octocode MCP server: all GitHub, local, LSP, npm research tools
+      'write',   // durable handback artifacts assigned by the parent
     ],
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'low',
@@ -249,6 +252,7 @@ export const SUBAGENT_REGISTRY = {
       'bash',
       'web',
       'MCPTool', // octocode MCP server: all GitHub, local, LSP, npm research tools
+      'write',   // durable handback artifacts assigned by the parent
     ],
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'medium',

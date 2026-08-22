@@ -99,4 +99,16 @@ describe('readImage tool', () => {
     expect(line).toContain('readImage');
     expect(line).toMatch(/image\/png/);
   });
+
+  it('renderResult renders only the status line (pi renders the content image block natively)', async () => {
+    const f = path.join(dir, 'shot.png');
+    await writeFile(f, PNG_1x1);
+    const tool = getTool();
+    const result = await tool.execute!('t5', { path: f }, undefined, undefined, { cwd: dir });
+    // The image content block is present for pi/the vision model, but renderResult
+    // must NOT re-render it (pi's tool-execution component does) — single line only.
+    expect(result.content.some((c) => c.type === 'image')).toBe(true);
+    const lines = tool.renderResult!(result, { expanded: true }).render(120);
+    expect(lines.length).toBe(1);
+  });
 });

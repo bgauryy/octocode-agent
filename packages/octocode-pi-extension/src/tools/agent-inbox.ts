@@ -28,6 +28,7 @@ import type { PiContext, PiInstance, WorkerLedgerEntry, WorkerLedgerEventType, N
 import type { SelectOverlayItem, SelectOverlayOptions } from './ui-overlays.js';
 import { runSelectOverlay } from './ui-overlays.js';
 import { truncatePlainToWidth } from './render-helpers.js';
+import { shortId } from './ids.js';
 import {
   formatElapsed,
   getWorkerTranscript,
@@ -116,7 +117,7 @@ export function buildInboxItems(entries: WorkerLedgerEntry[], now: number = Date
     const summary = inboxSummaryLine(entry);
     return {
       value: entry.agentId,
-      label: `${STATE_GLYPHS[state]} ${entry.name} (${entry.agentId.slice(0, 8)}) · ${state} · ${age}`,
+      label: `${STATE_GLYPHS[state]} ${entry.name} (${shortId(entry.agentId)}) · ${state} · ${age}`,
       description: summary || undefined,
     };
   });
@@ -172,7 +173,7 @@ export async function runAgentInboxOverlay(deps: AgentInboxDeps): Promise<void> 
   if (!entry) return;
 
   const action = await deps.runOverlay(ctx, {
-    title: `${entry.name} (${entry.agentId.slice(0, 8)})`,
+    title: `${entry.name} (${shortId(entry.agentId)})`,
     items: buildInboxActionItems(entry),
     filter: false,
   });
@@ -199,7 +200,7 @@ export async function runAgentInboxOverlay(deps: AgentInboxDeps): Promise<void> 
     notify(
       ctx,
       ok
-        ? `Steer sent to ${entry.name} (${entry.agentId.slice(0, 8)}).`
+        ? `Steer sent to ${entry.name} (${shortId(entry.agentId)}).`
         : `Could not steer ${entry.name} — the worker process is no longer accepting messages.`,
       ok ? 'info' : 'warning',
     );
@@ -210,7 +211,7 @@ export async function runAgentInboxOverlay(deps: AgentInboxDeps): Promise<void> 
     const ok = deps.kill(entry.agentId);
     notify(
       ctx,
-      ok ? `Killed worker ${entry.name} (${entry.agentId.slice(0, 8)}).` : `No worker found for ${entry.agentId.slice(0, 8)}.`,
+      ok ? `Killed worker ${entry.name} (${shortId(entry.agentId)}).` : `No worker found for ${shortId(entry.agentId)}.`,
       ok ? 'warning' : 'error',
     );
   }

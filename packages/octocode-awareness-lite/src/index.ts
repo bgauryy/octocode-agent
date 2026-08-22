@@ -2,6 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import {
+  bytesToEmbedding,
+  cosineSimilarity,
+  embeddingToBytes,
+  isEmbeddingEnabled,
+  runHostEmbedder,
+} from './embed.js';
+
+/** Re-export so hosts can detect embedding support without importing embed.js directly. */
+export { isEmbeddingEnabled } from './embed.js';
 
 export type PlanStatus = 'OPEN' | 'DONE';
 export type TaskStatus = 'OPEN' | 'CLAIMED' | 'DONE';
@@ -81,6 +91,8 @@ export interface MemoryItem {
   text: string;
   tags: string[];
   createdAt: string;
+  /** Cosine similarity 0-1, present only on semantic recall results. */
+  similarity?: number;
 }
 
 export type AgentStatus = 'ACTIVE' | 'IDLE' | 'LEFT';
@@ -168,6 +180,8 @@ interface MemoryRow {
   text: string;
   tags_json: string;
   created_at: string;
+  embedding?: Uint8Array | null;
+  embedding_model?: string | null;
 }
 
 interface AgentRow {
@@ -680,9 +694,41 @@ export class AwarenessLite {
   storeMemory(params: { label: string; text: string; tags?: string | string[] | null }): MemoryItem {
     const stamp = now();
     const memoryId = id('mem');
+    const label = required(params.label, 'label');
+    const text = required(params.text, 'text');
     this.db.prepare('INSERT INTO memories(memory_id, label, text, tags_json, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(memoryId, required(params.label, 'label'), required(params.text, 'text'), JSON.stringify(splitTags(params.tags)), stamp);
+      .run(memoryId, label, text, JSON.stringify(splitTags(params.tags)), stamp);
+    // Best-effort: embed on write when a host embedder is configured. Never blocks the store.
+    this.embedMemory(memoryId, `${label}\n${text}`);
     return this.getMemory(memoryId);
+  }
+
+  /** Compute + persist an embedding for one memory; silently no-ops when disabled or on failure. */
+  private embedMemory(memoryId: string, text: string): boolean {
+    if (!isEmbeddingEnabled()) return false;
+    try {
+      const { embedding, model } = runHostEmbedder(text);
+      this.db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE memory_id = ?')
+        .run(embeddingToBytes(embedding), model, memoryId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Backfill embeddings for memories missing them (or all when force). Returns
+   * how many were (re)embedded. No-op with embedded:0 when no host embedder.
+   */
+  reindexMemories(params: { force?: boolean; limit?: number } = {}): { enabled: boolean; scanned: number; embedded: number } {
+    if (!isEmbeddingEnabled()) return { enabled: false, scanned: 0, embedded: 0 };
+    const limit = Math.min(Math.max(params.limit ?? 500, 1), 5000);
+    const where = params.force ? '' : ' WHERE embedding IS NULL';
+    const rows = this.db.prepare(`SELECT memory_id, label, text FROM memories${where} ORDER BY created_at DESC LIMIT ?`)
+      .all(limit) as Array<{ memory_id: string; label: string; text: string }>;
+    let embedded = 0;
+    for (const row of rows) if (this.embedMemory(row.memory_id, `${row.label}\n${row.text}`)) embedded++;
+    return { enabled: true, scanned: rows.length, embedded };
   }
 
   forgetMemory(params: { memoryId: string }): { forgotten: boolean } {
@@ -690,10 +736,16 @@ export class AwarenessLite {
     return { forgotten: result.changes > 0 };
   }
 
-  recallMemory(params: { query?: string | null; label?: string | null; limit?: number } = {}): MemoryItem[] {
+  recallMemory(params: { query?: string | null; label?: string | null; limit?: number; semantic?: boolean } = {}): MemoryItem[] {
     const limit = Math.min(Math.max(params.limit ?? 10, 1), 50);
     const query = params.query?.trim();
     const label = params.label?.trim();
+    // Semantic path: only when explicitly requested, a query exists, and a host
+    // embedder is configured. Any miss falls through to the lexical LIKE search.
+    if (params.semantic && query && isEmbeddingEnabled()) {
+      const semantic = this.recallSemantic(query, label, limit);
+      if (semantic.length > 0) return semantic;
+    }
     const clauses: string[] = [];
     const values: string[] = [];
     if (query) {
@@ -708,6 +760,35 @@ export class AwarenessLite {
     const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
     const rows = this.db.prepare(`SELECT * FROM memories${where} ORDER BY created_at DESC LIMIT ?`).all(...values, limit);
     return (rows as unknown as MemoryRow[]).map(memoryFromRow);
+  }
+
+  /**
+   * Cosine-rank embedded memories against the query embedding. Loads at most the
+   * 2000 most-recent embedded rows to bound heap; returns [] on any failure so
+   * the caller falls back to lexical recall.
+   */
+  private recallSemantic(query: string, label: string | undefined, limit: number): MemoryItem[] {
+    let queryVec: Float32Array;
+    try {
+      queryVec = runHostEmbedder(query).embedding;
+    } catch {
+      return [];
+    }
+    const clauses = ['embedding IS NOT NULL'];
+    const values: string[] = [];
+    if (label) { clauses.push('label = ?'); values.push(label); }
+    const rows = this.db.prepare(
+      `SELECT * FROM memories WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT 2000`,
+    ).all(...values) as unknown as MemoryRow[];
+    const scored: MemoryItem[] = [];
+    for (const row of rows) {
+      if (!row.embedding) continue;
+      try {
+        const sim = cosineSimilarity(queryVec, bytesToEmbedding(row.embedding));
+        if (sim > 0) scored.push({ ...memoryFromRow(row), similarity: sim });
+      } catch { /* corrupted BLOB — skip */ }
+    }
+    return scored.sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0)).slice(0, limit);
   }
 
   pruneMemories(params: { olderThanMs: number; label?: string | null; dryRun?: boolean }): PruneResult {
@@ -869,7 +950,7 @@ export class AwarenessLite {
         work: ['start --file --agent-id [--reason] [--ttl]', 'touch --file --agent-id [--reason] [--ttl]', 'list', 'end --file --agent-id'],
         handoff: ['add --agent-id --summary [--file]', 'list [--include-cleared]', 'clear --handoff-id'],
         check: ['audit', 'mark --task-id --agent-id --message'],
-        memory: ['store --label --text [--tags]', 'recall [--query] [--label] [--limit]', 'list [--limit]', 'forget --memory-id', 'delete --memory-id', 'prune --older-than [--label] [--confirm]'],
+        memory: ['store --label --text [--tags]', 'recall [--query] [--label] [--limit] [--semantic]', 'list [--limit]', 'reindex [--force] [--limit]', 'forget --memory-id', 'delete --memory-id', 'prune --older-than [--label] [--confirm]'],
         agent: ['join --agent-id [--name] [--role] [--meta]', 'touch --agent-id', 'leave --agent-id', 'list [--include-left] [--stale-after]'],
         message: ['send --from --text [--to] [--topic] [--file]', 'inbox --agent-id [--topic] [--include-read] [--limit]', 'list [--agent-id] [--topic] [--include-read] [--limit]', 'read --message-id --agent-id', 'prune --older-than [--read-only] [--confirm]'],
         hooks: ['pre-edit [--agent-id] [--host] < event.json', 'install --host claude|codex|cursor [--project-dir] [--dry-run]'],
@@ -1077,6 +1158,9 @@ export class AwarenessLite {
     this.addColumnIfMissing('tasks', 'verified_by', 'TEXT');
     this.addColumnIfMissing('tasks', 'verification_message', 'TEXT');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_unverified ON tasks(status, verified_at)');
+    // Optional semantic-memory columns (host-owned embedder via OCTOCODE_EMBED_CMD).
+    this.addColumnIfMissing('memories', 'embedding', 'BLOB');
+    this.addColumnIfMissing('memories', 'embedding_model', 'TEXT');
   }
 
   private addColumnIfMissing(table: string, column: string, definition: string): void {

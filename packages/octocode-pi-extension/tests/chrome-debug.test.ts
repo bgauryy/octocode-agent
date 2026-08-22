@@ -1207,7 +1207,7 @@ test('chromeDebug tool rejects unknown schemes and renders call/result states', 
 
   assert.equal(
     tool.renderResult!(textToolResult('pending'), { isPartial: true }, themed).render(120)[0],
-    '<warning>⧗ Connecting to Chrome…</warning>',
+    '<accent>⧗ Connecting to Chrome…</accent>',
   );
 
   const findingResult = textToolResult(

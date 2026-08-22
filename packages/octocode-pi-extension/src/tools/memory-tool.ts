@@ -55,15 +55,21 @@ export function setMemoryCliRunnerForTests(fn: MemoryCliRunner | null): void {
   runner = fn ?? defaultRunner;
 }
 
-type MemoryAction = 'recall' | 'record' | 'forget';
+type MemoryAction = 'recall' | 'record' | 'forget' | 'review' | 'suggest';
+type MemoryRecallMode = 'lexical' | 'semantic' | 'recent' | 'tagged';
 
 interface MemoryParams {
   action: MemoryAction;
   query?: string;
+  mode?: MemoryRecallMode;
   label?: string;
   observation?: string;
   importance?: number;
   taskContext?: string;
+  source?: string;
+  tags?: string[];
+  changedFiles?: string[];
+  limit?: number;
   memoryId?: string;
 }
 
@@ -98,6 +104,91 @@ function errorResult(text: string): ToolCallResult {
   return { content: [{ type: 'text', text }], isError: true } as unknown as ToolCallResult;
 }
 
+function validateRecordObservation(observation: string): string | null {
+  if (observation.length < 8) return 'record observation is too short to be reusable; include the durable learning and evidence.';
+  if (/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b/.test(observation)) {
+    return 'record observation looks like it contains a secret/token; do not store secrets in memory.';
+  }
+  const lines = observation.split(/\r?\n/);
+  if (lines.length > 8 || observation.length > 1200) return 'record observation looks like a raw log/dump; store a short reusable learning with evidence instead.';
+  if (/\b(?:tests?|build|typecheck|lint)\s+(?:passed|green|ok)\b/i.test(observation)) {
+    return 'record observation looks like routine status; store only reusable learnings, gotchas, decisions, or command quirks.';
+  }
+  if (/\b(?:AGENTS\.md|CLAUDE\.md)\b/i.test(observation)) {
+    return 'record observation references agent instruction files; fetch those from the repo instead of storing them in memory.';
+  }
+  return null;
+}
+
+function normalizeRecordTags(tags: unknown, importance: number): string {
+  const tagValues = Array.isArray(tags) ? tags : [];
+  const normalized = tagValues
+    .map((tag) => String(tag).trim())
+    .filter(Boolean)
+    .filter((tag) => !/[\r\n,]/.test(tag));
+  return [`importance:${importance}`, ...Array.from(new Set(normalized))].join(',');
+}
+
+function normalizeLimit(value: unknown, fallback = 20): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) return fallback;
+  return Math.min(n, 100);
+}
+
+interface MemoryItem {
+  memoryId?: string;
+  memory_id?: string;
+  label?: string;
+  text?: string;
+  tags?: string[] | string;
+  createdAt?: string;
+  created_at?: string;
+}
+
+function asMemoryItems(json: ParsedJson | null): MemoryItem[] {
+  if (Array.isArray(json)) return json.filter((item): item is MemoryItem => typeof item === 'object' && item !== null) as MemoryItem[];
+  if (!json || Array.isArray(json)) return [];
+  const maybeMemories = json['memories'] ?? json['items'] ?? json['results'];
+  if (Array.isArray(maybeMemories)) return maybeMemories.filter((item): item is MemoryItem => typeof item === 'object' && item !== null) as MemoryItem[];
+  const maybeMemory = json['memory'];
+  if (maybeMemory && typeof maybeMemory === 'object' && !Array.isArray(maybeMemory)) return [maybeMemory as MemoryItem];
+  return [];
+}
+
+function reviewMemoryItems(items: MemoryItem[]): Array<{ memoryId: string; label: string; issues: string[]; preview: string }> {
+  const now = Date.now();
+  return items.map((item) => {
+    const text = String(item.text ?? '');
+    const tags = Array.isArray(item.tags) ? item.tags : String(item.tags ?? '').split(',').map((tag) => tag.trim()).filter(Boolean);
+    const issues: string[] = [];
+    if (!/\bSource:/i.test(text)) issues.push('missing-source');
+    if (text.length > 1200 || text.split(/\r?\n/).length > 8) issues.push('too-long');
+    if (/\b(?:tests?|build|typecheck|lint)\s+(?:passed|green|ok)\b/i.test(text)) issues.push('routine-status');
+    if (/\b(?:AGENTS\.md|CLAUDE\.md)\b/i.test(text)) issues.push('instruction-file-reference');
+    if (tags.length === 0) issues.push('missing-tags');
+    const created = Date.parse(String(item.createdAt ?? item.created_at ?? ''));
+    if (Number.isFinite(created) && now - created > 90 * 24 * 60 * 60 * 1000) issues.push('older-than-90d');
+    return {
+      memoryId: String(item.memoryId ?? item.memory_id ?? 'unknown'),
+      label: String(item.label ?? 'MEMORY'),
+      issues,
+      preview: text.slice(0, 160),
+    };
+  }).filter((item) => item.issues.length > 0);
+}
+
+function tagsFromChangedFiles(files: unknown): string[] {
+  if (!Array.isArray(files)) return [];
+  const tags = new Set<string>();
+  for (const file of files) {
+    const parts = String(file).split('/').filter(Boolean);
+    if (parts[0] === 'packages' && parts[1]) tags.add(parts[1]);
+    const filename = parts.at(-1);
+    if (filename) tags.add(filename.replace(/\.[^.]+$/, ''));
+  }
+  return Array.from(tags);
+}
+
 export function registerMemoryTool(
   pi: { registerTool?(def: ToolDefinition): void },
   Type: TypeBoxBuilder,
@@ -108,24 +199,30 @@ export function registerMemoryTool(
     name: 'memory',
     label: 'Memory',
     description: [
-      'Recall, record, or forget durable Awareness memory (cross-run SQLite) as a first-class tool.',
-      'recall — retrieve prior verified learnings matching a query (substring search over label/text/tags). Treat results as leads; re-verify against current source/tests.',
-      'record — persist a reusable, verified learning/gotcha/decision with a label and importance (1-10). Never store secrets, raw logs, routine status, or facts git/docs already own.',
+      'Recall, record, review, suggest, or forget durable Awareness memory (cross-run SQLite) as a first-class tool.',
+      'recall — retrieve prior verified learnings by query; modes: lexical/tagged (substring), semantic (--semantic), recent (list latest). Treat results as leads; re-verify against current source/tests.',
+      'record — persist a reusable, verified learning/gotcha/decision with a label, importance (1-10), optional tags, and optional source/evidence. Never store secrets, raw logs, routine status, or facts git/docs already own.',
+      'review — read memories and flag stale/low-quality candidates; never mutates. suggest — validate and shape a candidate record; never stores automatically.',
       'forget — delete a specific memory by id (destructive; only when clearly obsolete).',
       'Awareness Lite/SQLite is canonical; this tool shells the same CLI the octocode-awareness-lite skill documents.',
     ].join('\n'),
-    promptSnippet: 'Recall/record/forget durable Awareness memory (first-class wrapper over the memory CLI)',
+    promptSnippet: 'Recall/record/review/suggest/forget durable Awareness memory (first-class wrapper over the memory CLI)',
     promptGuidelines: [
-      'Recall only when prior learning could change the approach; record only verified, reusable outcomes with a reference.',
+      'Recall only when prior learning could change the approach; use review/suggest before cleanup or recording uncertain learnings; record only verified, reusable outcomes with source/evidence and useful tags.',
       'Re-verify recalled facts before relying on them; never store secrets, logs, or routine status.',
     ],
     parameters: Type.Object({
-      action: Type.Unsafe({ type: 'string', enum: ['recall', 'record', 'forget'], description: 'recall|record|forget' }),
-      query: Type.Optional(Type.String({ description: 'recall: what to search for.' })),
-      label: Type.Optional(Type.String({ description: 'record: e.g. GOTCHA, BUG, DECISION, ARCHITECTURE, EXPERIENCE.' })),
+      action: Type.Unsafe({ type: 'string', enum: ['recall', 'record', 'forget', 'review', 'suggest'], description: 'recall|record|forget|review|suggest' }),
+      query: Type.Optional(Type.String({ description: 'recall/review: what to search for.' })),
+      mode: Type.Optional(Type.Unsafe({ type: 'string', enum: ['lexical', 'semantic', 'recent', 'tagged'], description: 'recall: lexical|semantic|recent|tagged.' })),
+      label: Type.Optional(Type.String({ description: 'record label or recall/review label filter, e.g. GOTCHA, BUG, DECISION, ARCHITECTURE, EXPERIENCE.' })),
       observation: Type.Optional(Type.String({ description: 'record: the reusable learning text.' })),
       importance: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: 'record: importance 1-10.' })),
       taskContext: Type.Optional(Type.String({ description: 'record: short context for when this matters.' })),
+      source: Type.Optional(Type.String({ description: 'record: source/evidence reference, e.g. file:line and/or check command.' })),
+      tags: Type.Optional(Type.Array(Type.String(), { description: 'record/recall tagged/suggest: searchable tags such as package, area, tool, or bug class.' })),
+      changedFiles: Type.Optional(Type.Array(Type.String(), { description: 'suggest: changed files used to derive candidate tags.' })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: 'recall/review: max memories to return or inspect.' })),
       memoryId: Type.Optional(Type.String({ description: 'forget: the memory id to delete.' })),
     }),
 
@@ -134,27 +231,74 @@ export function registerMemoryTool(
       const cwd = ctx?.cwd ?? process.cwd();
       let args: string[];
 
+      if (p.action === 'suggest') {
+        const observation = String(p.observation ?? '').trim();
+        if (!observation) return errorResult('[memory] suggest requires an observation to validate.');
+        const validationError = validateRecordObservation(observation);
+        if (validationError) return errorResult(`[memory] suggestion rejected: ${validationError}`);
+        const importance = Number.isInteger(Number(p.importance)) ? Math.min(Math.max(Number(p.importance), 1), 10) : 5;
+        const suggestedTags = Array.from(new Set([...(Array.isArray(p.tags) ? p.tags.map(String) : []), ...tagsFromChangedFiles(p.changedFiles)])).filter(Boolean);
+        const candidate = {
+          action: 'record',
+          label: String(p.label ?? 'EXPERIENCE').trim() || 'EXPERIENCE',
+          observation,
+          importance,
+          taskContext: String(p.taskContext ?? '').trim() || undefined,
+          source: String(p.source ?? '').trim() || undefined,
+          tags: suggestedTags,
+        };
+        return {
+          content: [{ type: 'text', text: `Suggested memory candidate (not recorded).\n${JSON.stringify(candidate)}` }],
+          details: { action: 'suggest', candidate },
+        } as unknown as ToolCallResult;
+      }
+
       if (p.action === 'recall') {
+        const mode = p.mode ?? 'lexical';
+        const limit = normalizeLimit(p.limit, 20);
+        if (mode === 'recent') {
+          args = ['memory', 'list', '--limit', String(limit), '--workspace', cwd];
+        } else {
+          const tags = Array.isArray(p.tags) ? p.tags.map((tag) => String(tag).trim()).filter(Boolean) : [];
+          const query = String(p.query ?? (mode === 'tagged' ? tags[0] ?? '' : '')).trim();
+          if (!query) return errorResult(`[memory] recall mode ${mode} requires a query${mode === 'tagged' ? ' or at least one tag' : ''}.`);
+          args = ['memory', 'recall', '--query', query, '--limit', String(limit), '--workspace', cwd];
+          if (p.label) args.splice(args.length - 2, 0, '--label', String(p.label).trim());
+          if (mode === 'semantic') args.splice(args.length - 2, 0, '--semantic');
+        }
+      } else if (p.action === 'review') {
+        const limit = normalizeLimit(p.limit, 20);
         const query = String(p.query ?? '').trim();
-        if (!query) return errorResult('[memory] recall requires a query.');
-        args = ['memory', 'recall', '--query', query, '--workspace', cwd];
+        const label = String(p.label ?? '').trim();
+        if (query || label) {
+          args = ['memory', 'recall', '--limit', String(limit), '--workspace', cwd];
+          if (query) args.splice(args.length - 2, 0, '--query', query);
+          if (label) args.splice(args.length - 2, 0, '--label', label);
+        } else {
+          args = ['memory', 'list', '--limit', String(limit), '--workspace', cwd];
+        }
       } else if (p.action === 'record') {
         const label = String(p.label ?? '').trim();
         const observation = String(p.observation ?? '').trim();
         const importance = Number(p.importance);
         if (!label) return errorResult('[memory] record requires a label (e.g. GOTCHA).');
         if (!observation) return errorResult('[memory] record requires an observation.');
+        const validationError = validateRecordObservation(observation);
+        if (validationError) return errorResult(`[memory] ${validationError}`);
         if (!Number.isInteger(importance) || importance < 1 || importance > 10) {
           return errorResult('[memory] record requires importance 1-10.');
         }
-        const text = p.taskContext ? `${String(p.taskContext).trim()}: ${observation}` : observation;
+        const taskContext = String(p.taskContext ?? '').trim();
+        const source = String(p.source ?? '').trim();
+        const textParts = [taskContext ? `${taskContext}: ${observation}` : observation];
+        if (source) textParts.push(`Source: ${source}`);
         args = [
           'memory', 'store', '--label', label,
-          '--text', text,
+          '--text', textParts.join('\n'),
           // Awareness Lite `memory store` has no importance column; persist the
           // validated 1-10 value as a tag so it is durably recorded and
           // recall-searchable instead of being silently dropped.
-          '--tags', `importance:${importance}`,
+          '--tags', normalizeRecordTags(p.tags, importance),
           '--workspace', cwd,
         ];
       } else if (p.action === 'forget') {
@@ -183,9 +327,17 @@ export function registerMemoryTool(
       let summary: string;
       const details: Record<string, unknown> = { action: p.action, result: json };
       if (p.action === 'recall') {
-        const count = Array.isArray(json) ? json.length : (jsonObject && typeof jsonObject['count'] === 'number' ? (jsonObject['count'] as number) : 0);
-        summary = `Recalled ${count} memor${count === 1 ? 'y' : 'ies'} for "${p.query}".`;
+        const count = asMemoryItems(json).length || (jsonObject && typeof jsonObject['count'] === 'number' ? (jsonObject['count'] as number) : 0);
+        summary = p.mode === 'recent'
+          ? `Recalled ${count} recent memor${count === 1 ? 'y' : 'ies'}.`
+          : `Recalled ${count} memor${count === 1 ? 'y' : 'ies'} for "${p.query ?? (Array.isArray(p.tags) ? p.tags[0] : '')}".`;
         details['count'] = count;
+      } else if (p.action === 'review') {
+        const items = asMemoryItems(json);
+        const candidates = reviewMemoryItems(items);
+        summary = `Reviewed ${items.length} memor${items.length === 1 ? 'y' : 'ies'}; found ${candidates.length} candidate${candidates.length === 1 ? '' : 's'} for cleanup or rewrite.`;
+        details['count'] = items.length;
+        details['candidates'] = candidates;
       } else if (p.action === 'record') {
         const mem = (jsonObject?.['memory'] ?? jsonObject ?? {}) as Record<string, unknown>;
         const id = String(mem['memoryId'] ?? mem['memory_id'] ?? jsonObject?.['memoryId'] ?? jsonObject?.['memory_id'] ?? 'recorded');
@@ -197,7 +349,8 @@ export function registerMemoryTool(
         details['deleted'] = deleted;
       }
 
-      const text = json ? `${summary}\n${JSON.stringify(json)}` : summary;
+      const payload = p.action === 'review' ? { result: json, candidates: details['candidates'] } : json;
+      const text = payload ? `${summary}\n${JSON.stringify(payload)}` : summary;
       return { content: [{ type: 'text', text }], details } as unknown as ToolCallResult;
     },
 

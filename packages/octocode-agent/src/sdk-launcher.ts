@@ -275,11 +275,10 @@ export async function launchWithSdk(
   const octocodeSessionOverrides = {
     compaction: { enabled: true },
     retry: { enabled: true, maxRetries: 3 },
-    // Hide Pi's own startup header for octocode-agent runs. Runtime-only
-    // (applyOverrides never persists) — plain `pi` keeps its header; ours is
-    // the branded banner printed by printLaunchBanner. Subprocess fallback
-    // can't inject this; acceptable for the fork-dev path.
-    quietStartup: true,
+    // Keep Pi's startup help and loaded-resource summary visible for
+    // octocode-agent runs. Runtime-only (applyOverrides never persists) — the
+    // Octocode extension still appends its own branded banner after Pi's intro.
+    quietStartup: false,
   } as const;
   let settingsManager: unknown;
   try {

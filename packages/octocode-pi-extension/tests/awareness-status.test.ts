@@ -202,3 +202,17 @@ test('formatAwarenessPanel leads with the unread-inbox indication', async () => 
   assert.equal(only.length, 1);
   assert.match(only[0]!, /✉ 1 unread/);
 });
+
+test('formatAwarenessPanel clips at the source when a width is provided', () => {
+  const long = formatAwarenessPanel({
+    activePlans: 3, readyTasks: 9, inProgressTasks: 4, verifyTasks: 2,
+    lockCount: 5, workCount: 7, agentCount: 2, messageCount: 6,
+    lastMessage: { from: 'clawde-longNameAgent', to: 'octo-anotherLongName', preview: 'x'.repeat(120) },
+    unreadInbox: 0,
+  }, undefined, 40);
+  assert.equal(long.length, 1);
+  // Measure VISIBLE length — pi-tui's truncateToWidth injects SGR resets
+  // around the ellipsis, so raw string length overcounts.
+  const visible = long[0]!.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.ok(visible.length <= 41, `line stays within width, got ${visible.length}`);
+});

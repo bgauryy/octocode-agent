@@ -91,6 +91,21 @@ describe('SUBAGENT_REGISTRY', () => {
     expect(ba).toHaveProperty('extraSkillPaths');
     expect(Array.isArray(ba.extraSkillPaths)).toBe(true);
   });
+
+  it('typed subagents include write for parent-assigned durable handback artifacts', () => {
+    expect(SUBAGENT_REGISTRY['browser-agent'].tools).toContain('write');
+    expect(SUBAGENT_REGISTRY.researcher.tools).toContain('write');
+    expect(SUBAGENT_REGISTRY.planner.tools).toContain('write');
+    expect(SUBAGENT_REGISTRY.architect.tools).toContain('write');
+  });
+
+  it('researcher/planner prompts do not instruct unavailable bash tool use', () => {
+    for (const name of ['researcher', 'planner'] as const) {
+      expect(SUBAGENT_REGISTRY[name].tools).not.toContain('bash');
+      const prompt = fs.readFileSync(SUBAGENT_REGISTRY[name].systemPromptPath!, 'utf8');
+      expect(prompt).not.toMatch(/bash:\s*npx octocode skill/);
+    }
+  });
 });
 
 // ─── resolveSubagentSkills — lazy per-call resolution ─────────────────────────

@@ -15,10 +15,12 @@
  */
 
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
+import { sliceBetween } from '../utils.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { spawnRpcAgent, waitForAgent, isSubagentProcess } from './agent-tools.js';
+import { requestApproval } from './approval.js';
 import {
   resolveTool,
   registerGeneratedTool,
@@ -200,14 +202,6 @@ function buildToolSmithPrompt(a: GenerateArgs): string {
   return lines.join('\n');
 }
 
-function sliceBetween(text: string, start: string, end: string): string {
-  const i = text.indexOf(start);
-  if (i < 0) return '';
-  const from = i + start.length;
-  const j = text.indexOf(end, from);
-  return (j < 0 ? text.slice(from) : text.slice(from, j)).trim();
-}
-
 /** Parse a tool-smith worker's output into a GeneratedTool. Throws on malformed output. */
 export function parseGeneratedTool(output: string, fallbackName: string): GeneratedTool {
   const manifestRaw = sliceBetween(output, SENTINELS.manifest, SENTINELS.source);
@@ -286,6 +280,14 @@ function stripReservedKeys(metadata: Record<string, unknown>): Record<string, un
   void intent;
   void reason;
   return rest;
+}
+
+async function approveSandboxOptOut(ctx: PiContext | undefined, toolType: string, intent: string) {
+  return await requestApproval(ctx, {
+    actionClass: 'system',
+    title: 'Create non-sandboxed dynamic tool',
+    detail: [`toolType: ${toolType}`, intent ? `intent: ${intent}` : undefined].filter(Boolean).join('\n'),
+  });
 }
 
 interface OrchestrateOutcome {
@@ -412,9 +414,23 @@ async function orchestrate(params: CallToolParams, ctx?: PiContext): Promise<Orc
     } catch (err) {
       return { status: 'error', pruned, message: `Tool generation failed: ${(err as Error).message}` };
     }
-    // A tool may only opt OUT of the sandbox when the caller explicitly approves it via
-    // metadata._sandboxed:false; otherwise isolation is enforced regardless of the manifest.
+    // A tool may only opt OUT of the sandbox after the shared approval gate says yes.
+    // Non-interactive hosts fail closed through requestApproval().
     const sandboxed = metadata['_sandboxed'] !== false;
+    if (!sandboxed) {
+      const approval = await approveSandboxOptOut(ctx, params.toolType, intent);
+      if (!approval.approved) {
+        const why = approval.interactive
+          ? 'The user declined this action.'
+          : 'This host is non-interactive, so approval could not be collected.';
+        return {
+          status: 'blocked',
+          toolName: params.toolType,
+          pruned,
+          message: `Non-sandboxed dynamic tool creation requires explicit user approval. ${why}`,
+        };
+      }
+    }
     const reg = registerGeneratedTool({ ...generated, reason: generated.reason || reason, sandboxed, deterministic: generated.deterministic });
     if (!reg.ok) {
       return {
@@ -503,7 +519,7 @@ export function registerCallTool(
       '',
       'Use ONLY for small, reusable, deterministic capabilities. A tool must optimize the agent, not bloat it: if a one-line shell command already does the job, callTool declines and points you to it — do not create a tool for trivial one-offs.',
       '',
-      'metadata carries runtime args AND reserved keys: `intent` (what a new tool should do), `reason` (REQUIRED to create), `_allow` (approve net/fs/exec), `_force` (override the triviality decline), `_approveCreate` (approve creation in auto mode), `_sandboxed:false` (approve creating a NON-sandboxed trusted tool — rare).',
+      'metadata carries runtime args AND reserved keys: `intent` (what a new tool should do), `reason` (REQUIRED to create), `_allow` (approve net/fs/exec), `_force` (override the triviality decline), `_approveCreate` (approve creation in auto mode), `_sandboxed:false` (request explicit approval for creating a NON-sandboxed trusted tool — rare).',
       'Generated code runs OS-sandboxed by default (Node permission model: denied-by-default fs/net/child_process, scrubbed env), plus hard timeout and checksum tamper-check. Declared capabilities are ENFORCED, not just advisory.',
     ].join('\n'),
     promptSnippet: 'Reuse, propose, or maintain a verified dynamic tool for a requested capability',
@@ -522,7 +538,7 @@ export function registerCallTool(
           type: 'object',
           additionalProperties: true,
           description:
-            'Runtime input args for the tool. Reserved keys: `intent` (natural-language description used to generate a missing tool) and `_allow` (array approving capabilities like ["net"]).',
+            'Runtime input args for the tool. Reserved keys: `intent` (natural-language description used to generate a missing tool), `_allow` (array approving capabilities like ["net"]), and `_sandboxed:false` (request explicit approval for a rare non-sandboxed trusted tool).',
         }),
       ),
       mode: Type.Optional(

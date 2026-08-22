@@ -3,10 +3,10 @@ import { test } from 'vitest';
 import {
   formatCompact,
   formatDurationShort,
-  buildWorkingLabel,
   buildWorkingIndicator,
   buildWorkingMessage,
   buildFooterSegments,
+  buildShortcutHintsRow,
   getFooterDensity,
   setFooterDensity,
   parseFooterDensity,
@@ -16,7 +16,52 @@ import {
   OCTOCODE_SPINNER_FRAMES,
   OCTOCODE_THEME_DARK,
   OCTOCODE_THEME_LIGHT,
+  buildAgentFooterRows,
 } from '../src/ui-extras.js';
+
+test('buildShortcutHintsRow formats bound shortcuts and drops blank/unbound keys', () => {
+  const row = buildShortcutHintsRow([
+    { key: 'shift+tab', label: 'think' },
+    { key: 'ctrl+shift+a', label: 'permissions' },
+    { key: '', label: 'palette' },
+    { key: 'ctrl+l', label: '' },
+  ]);
+  assert.equal(row, 'shift+tab think · ctrl+shift+a permissions');
+});
+
+test('buildShortcutHintsRow color-codes keycaps and action labels', () => {
+  const calls: Array<[string, string]> = [];
+  const theme = {
+    fg: (color: string, text: string) => {
+      calls.push([color, text]);
+      return `<${color}:${text}>`;
+    },
+    bold: (text: string) => `**${text}**`,
+  };
+
+  const row = buildShortcutHintsRow([
+    { key: 'shift+tab', label: 'think', token: 'link', keyToken: 'brand' },
+    { key: 'ctrl+shift+a', label: 'perm', token: 'warning', keyToken: 'warning' },
+    { key: 'ctrl+l', label: 'model', token: 'brand', keyToken: 'brandAlt' },
+    { key: 'esc', label: 'stop', token: 'error', keyToken: 'error' },
+  ], theme);
+
+  assert.equal(row, '**<accent:shift+tab>** <mdLink:think> · **<warning:ctrl+shift+a>** <warning:perm> · **<syntaxOperator:ctrl+l>** <accent:model> · **<error:esc>** <error:stop>');
+  assert.deepEqual(calls, [
+    ['accent', 'shift+tab'],
+    ['mdLink', 'think'],
+    ['warning', 'ctrl+shift+a'],
+    ['warning', 'perm'],
+    ['syntaxOperator', 'ctrl+l'],
+    ['accent', 'model'],
+    ['error', 'esc'],
+    ['error', 'stop'],
+  ]);
+});
+
+test('buildShortcutHintsRow returns empty string when nothing is bound', () => {
+  assert.equal(buildShortcutHintsRow([{ key: '', label: 'think' }, { key: '  ', label: 'perm' }]), '');
+});
 
 test('formatCompact abbreviates thousands and millions', () => {
   assert.equal(formatCompact(950), '950');
@@ -30,21 +75,6 @@ test('formatDurationShort renders s / m s / h m', () => {
   assert.equal(formatDurationShort(63_000), '1m 3s');
   assert.equal(formatDurationShort(3_600_000 + 120_000), '1h 2m');
   assert.equal(formatDurationShort(undefined), '—');
-});
-
-test('buildWorkingLabel is an animated Thinking label with no redundant time/tokens', () => {
-  const label = buildWorkingLabel({ startedAt: 1000, now: 13_000 });
-  assert.match(label, /^Thinking\.+$/);
-  assert.doesNotMatch(label, /Octocode/);
-  assert.doesNotMatch(label, /tokens/);
-  assert.doesNotMatch(label, /\d+s/); // no elapsed time (lives in the footer)
-});
-
-test('buildWorkingLabel dot tail cycles 1→3 by the second', () => {
-  assert.equal(buildWorkingLabel({ startedAt: 0, now: 0 }), 'Thinking.');
-  assert.equal(buildWorkingLabel({ startedAt: 0, now: 1000 }), 'Thinking..');
-  assert.equal(buildWorkingLabel({ startedAt: 0, now: 2000 }), 'Thinking...');
-  assert.equal(buildWorkingLabel({ startedAt: 0, now: 3000 }), 'Thinking.'); // wraps
 });
 
 test('spinner frames are non-empty and richer than a static pulse', () => {
@@ -64,36 +94,36 @@ test('buildWorkingIndicator paints spinner frames with a fast semantic color pul
 
   assert.equal(indicator.intervalMs, 120);
   assert.equal(indicator.frames.length, OCTOCODE_SPINNER_FRAMES.length);
+  // Brand-metallic pulse: teal tick then lavender→white shimmer — never
+  // warning/success, which would read as status changes.
   assert.equal(indicator.frames[0], '<accent:✦>');
-  assert.equal(indicator.frames[2], '<warning:✶>');
-  assert.equal(indicator.frames[3], '<success:✺>');
+  assert.equal(indicator.frames[2], '<text:✶>');
+  assert.equal(indicator.frames[3], '<mdLink:✺>');
   assert.deepEqual(calls.slice(0, 4), [
     ['accent', '✦'],
-    ['dim', '✧'],
-    ['warning', '✶'],
-    ['success', '✺'],
+    ['mdLink', '✧'],
+    ['text', '✶'],
+    ['mdLink', '✺'],
   ]);
 });
 
-test('buildWorkingMessage paints the stable word and animated suffix separately', () => {
+test('buildWorkingMessage is a static branded verb — one motion source (the indicator glyph)', () => {
   const theme = {
     fg: (color: string, text: string) => `<${color}:${text}>`,
     bold: (text: string) => text,
   };
-
-  assert.equal(buildWorkingMessage(undefined, theme), '<accent:Thinking><warning:…>');
-  assert.equal(buildWorkingMessage({ startedAt: 0, now: 2000 }, theme), '<accent:Thinking><warning:...>');
-  assert.equal(buildWorkingMessage({ startedAt: 0, now: 2000 }), 'Thinking...');
+  assert.equal(buildWorkingMessage(theme), '<accent:Thinking><mdLink:…>');
+  assert.equal(buildWorkingMessage(), 'Thinking…');
 });
 
-test('buildFooterSegments shows the active worker progress note next to the agents count', () => {
+test('buildFooterSegments keeps agent counts separate from per-agent activity rows', () => {
   const segs = buildFooterSegments({
     tokens: 0, contextWindow: 0, completedTurns: 0, activeTurnMs: 0,
     sessionMs: 0, activeWorkers: 2, workerTotal: 3, agentDoing: 'Editing agent-tools.ts', dirty: false,
   });
   const seg = segs.find((s) => s.text.startsWith('agents '))!;
-  assert.match(seg.text, /^agents 3 \(2 live\) ‣ /);
-  assert.match(seg.text, /Editing/);
+  assert.equal(seg.text, 'agents 3 (2 live)');
+  assert.doesNotMatch(seg.text, /now:|Editing/);
 });
 
 test('buildFooterSegments keeps tracked idle agents visible in the toolbar', () => {
@@ -105,7 +135,7 @@ test('buildFooterSegments keeps tracked idle agents visible in the toolbar', () 
   assert.equal(seg.text, 'agents 2');
 });
 
-test('buildFooterSegments composes context %, tokens, turns, timing, workers, awareness agents, and git without plan duplication', () => {
+test('buildFooterSegments composes context %, tokens, turns, timing, workers, and git without plan duplication', () => {
   const segs = buildFooterSegments({
     tokens: 16_000, contextWindow: 200_000,
     completedTurns: 3, activeTurnMs: 9000, lastTurnMs: undefined,
@@ -113,18 +143,17 @@ test('buildFooterSegments composes context %, tokens, turns, timing, workers, aw
     branch: 'main', dirty: true,
   });
   const joined = segs.map((s) => s.text).join(' | ');
-  const ctx = segs.find((s) => s.text.startsWith('ctx '))!;
+  const ctx = segs.find((s) => s.text.startsWith('context '))!;
   assert.match(joined, /8%/);          // 16000/200000
   assert.match(joined, /16\.0k\/200k/);
-  assert.match(joined, /ctx [▓░]{8} 8%/); // visual gauge precedes the percentage
+  assert.match(joined, /context [▓░]{8} 8%/); // visual gauge precedes the percentage
   assert.equal(ctx.token, 'success');
-  assert.match(joined, /turns 3/);
-  assert.match(joined, /active 9s/);
+  assert.match(joined, /turn 4 · 9s/); // live: current (4th) turn + elapsed, one segment
   assert.match(joined, /agents 2/);
-  assert.match(joined, /aware-agents 4/);
-  assert.match(joined, /peer-wip 3/);
+  assert.doesNotMatch(joined, /peers 4/);
+  assert.doesNotMatch(joined, /peer-edits 3/);
   assert.doesNotMatch(joined, /plan \d/);
-  assert.match(joined, /main\*/);      // dirty marker
+  assert.match(joined, /main \(dirty\)/);      // dirty marker
 });
 
 test('buildFooterSegments always renders labeled harness context total; breakdown only at full density', () => {
@@ -135,14 +164,14 @@ test('buildFooterSegments always renders labeled harness context total; breakdow
   };
   // default: labeled total estimate only (~48000/4 = 12000 → 12.0k)
   const def = buildFooterSegments(base, 'default').map((s) => s.text).join(' | ');
-  assert.match(def, /prompt Σ~12\.0k/);
+  assert.match(def, /prompt ~12\.0k/);
   assert.doesNotMatch(def, /sys /);
   // full: adds the sys/mcp/skills breakdown
   const full = buildFooterSegments(base, 'full').map((s) => s.text).join(' | ');
-  assert.match(full, /prompt Σ~12\.0k \(sys 8\.0k · mcp 2\/38 · skills 3\)/);
+  assert.match(full, /prompt ~12\.0k \(sys 8\.0k · mcp 2\/38 · skills 3\)/);
   // compact: still shown (labeled total, no breakdown)
   const compact = buildFooterSegments(base, 'compact').map((s) => s.text).join(' | ');
-  assert.match(compact, /prompt Σ~12\.0k/);
+  assert.match(compact, /prompt ~12\.0k/);
   assert.doesNotMatch(compact, /sys /);
 });
 
@@ -167,11 +196,11 @@ test('buildFooterSegments flags blocked/failed workers with warning/error colour
     activeWorkers: 3, blockedWorkers: 1, failedWorkers: 2,
     dirty: false,
   });
-  const blocked = segs.find((s) => s.text.includes('⚠'));
-  const failed = segs.find((s) => s.text.includes('✗'));
-  assert.equal(blocked?.text, '⚠1');
+  const blocked = segs.find((s) => s.text.startsWith('blocked '));
+  const failed = segs.find((s) => s.text.startsWith('failed '));
+  assert.equal(blocked?.text, 'blocked 1');
   assert.equal(blocked?.token, 'warning');
-  assert.equal(failed?.text, '✗2');
+  assert.equal(failed?.text, 'failed 2');
   assert.equal(failed?.token, 'error');
 });
 
@@ -190,8 +219,8 @@ test('buildFooterSegments shows a branded dial segment without depending on plan
     activeTurnMs: 0, sessionMs: 0, activeWorkers: 0,
     dial: 'deep', dirty: false,
   });
-  const dial = segs.find((s) => s.text.includes('◉'))!;
-  assert.equal(dial.text, '◉ deep');
+  const dial = segs.find((s) => s.text.startsWith('dial '))!;
+  assert.equal(dial.text, 'dial deep');
   assert.equal(dial.token, 'brand');
 
   const without = buildFooterSegments({
@@ -199,7 +228,7 @@ test('buildFooterSegments shows a branded dial segment without depending on plan
     activeTurnMs: 0, sessionMs: 0, activeWorkers: 0,
     dirty: false,
   });
-  assert.equal(without.find((s) => s.text.includes('◉')), undefined);
+  assert.equal(without.find((s) => s.text.startsWith('dial ')), undefined);
 });
 
 test('buildFooterSegments omits optional segments cleanly', () => {
@@ -212,6 +241,20 @@ test('buildFooterSegments omits optional segments cleanly', () => {
   assert.doesNotMatch(joined, /agents/);
   assert.doesNotMatch(joined, /plan \d/);
   assert.match(joined, /last 1s/);
+  assert.match(joined, /session 5s/); // session uptime now rides default density
+});
+
+test('buildFooterSegments hides turns/timing placeholders before the first turn', () => {
+  const segs = buildFooterSegments({
+    tokens: 1000, contextWindow: 200_000, completedTurns: 0,
+    activeTurnMs: undefined, lastTurnMs: undefined, sessionMs: 0,
+    activeWorkers: 0, dirty: false,
+  }, 'default');
+  const joined = segs.map((s) => s.text).join(' | ');
+  assert.match(joined, /context /);
+  assert.doesNotMatch(joined, /turns /, 'no `turns 0` placeholder');
+  assert.doesNotMatch(joined, /last —/, 'no dataless `last —` placeholder');
+  assert.match(joined, /session 0s/, 'uptime always has real data');
 });
 
 // ─── footer density modes (review follow-up: reduce duplicate state / noise) ──
@@ -226,31 +269,33 @@ const DENSITY_INPUT = {
 
 test('footer density: compact keeps only high-signal segments (ctx, workers, attention flags, git)', () => {
   const joined = buildFooterSegments(DENSITY_INPUT, 'compact').map((s) => s.text).join(' | ');
-  assert.match(joined, /ctx /);
+  assert.match(joined, /context /);
   assert.match(joined, /agents 2/);
-  assert.doesNotMatch(joined, /‣/, 'no per-worker doing label in compact');
-  assert.match(joined, /⚠1/);
-  assert.match(joined, /✗1/);
-  assert.match(joined, /main\*/);
-  assert.doesNotMatch(joined, /turns/);
-  assert.doesNotMatch(joined, /active |last /);
-  assert.doesNotMatch(joined, /session/);
-  assert.doesNotMatch(joined, /aware-agents/);
+  assert.doesNotMatch(joined, /now: /, 'per-worker activity belongs to the dedicated agent rows');
+  assert.match(joined, /blocked 1/);
+  assert.match(joined, /failed 1/);
+  assert.match(joined, /main \(dirty\)/);
+  assert.doesNotMatch(joined, /turn/);
+  assert.doesNotMatch(joined, /last /);
+  assert.doesNotMatch(joined, /session /);
+  assert.doesNotMatch(joined, /peers /);
   assert.doesNotMatch(joined, /◉/);
 });
 
-test('footer density: default drops only the session-duration segment; full keeps everything', () => {
+test('footer density: default and full omit redundant peer counts', () => {
   const def = buildFooterSegments(DENSITY_INPUT, 'default').map((s) => s.text).join(' | ');
-  assert.match(def, /turns 3/);
-  assert.match(def, /active 9s/);
-  assert.match(def, /aware-agents 4/);
-  assert.match(def, /◉ deep/);
-  assert.doesNotMatch(def, /session /);
+  assert.match(def, /turn 4 · 9s/);
+  assert.doesNotMatch(def, /now: /);
+  assert.doesNotMatch(def, /peers 4/);
+  assert.match(def, /dial deep/);
+  assert.match(def, /session 2m 0s/, 'session uptime shows at default density');
 
   const full = buildFooterSegments(DENSITY_INPUT, 'full').map((s) => s.text).join(' | ');
-  assert.match(full, /session /);
-  assert.match(full, /turns 3/);
-  assert.match(full, /◉ deep/);
+  assert.match(full, /session 2m 0s/);
+  assert.match(full, /turn 4 · 9s/);
+  assert.doesNotMatch(full, /now: /);
+  assert.doesNotMatch(full, /peers 4/);
+  assert.match(full, /dial deep/);
 });
 
 test('footer density: module-level mode drives the default parameter; parse rejects junk', () => {
@@ -305,4 +350,98 @@ test('deriveSessionName cleans and truncates the first line', () => {
   const long = deriveSessionName('x'.repeat(80));
   assert.ok(long.length <= 48);
   assert.match(deriveSessionName('add feature'.repeat(20)), /…$/);
+});
+
+test('buildFooterSegments always shows the permission mode, color-coded by risk', () => {
+  const base = { tokens: 0, contextWindow: 0, completedTurns: 0, sessionMs: 0, activeWorkers: 0, dirty: false };
+  const def = buildFooterSegments({ ...base, permissionLevel: 'default' })
+    .find((s) => s.text === 'perm default')!;
+  assert.equal(def.token, 'dim', 'default mode is always visible, calmly dim');
+  const relaxed = buildFooterSegments({ ...base, permissionLevel: 'relaxed' }, 'compact')
+    .find((s) => s.text === 'perm relaxed')!;
+  assert.equal(relaxed.token, 'warning', 'loosened gate paints warning, even in compact');
+  const strict = buildFooterSegments({ ...base, permissionLevel: 'strict' })
+    .find((s) => s.text === 'perm strict')!;
+  assert.equal(strict.token, 'dim');
+});
+
+test('buildFooterSegments shows always-allow grant count with and without a level', () => {
+  const base = { tokens: 0, contextWindow: 0, completedTurns: 0, sessionMs: 0, activeWorkers: 0, dirty: false };
+  const grants = buildFooterSegments({ ...base, permissionLevel: 'default', approvedClassCount: 2 })
+    .find((s) => s.text.startsWith('perm'))!;
+  assert.equal(grants.text, 'perm default +2');
+  assert.equal(grants.token, 'dim');
+  const both = buildFooterSegments({ ...base, permissionLevel: 'relaxed', approvedClassCount: 1 })
+    .find((s) => s.text.startsWith('perm'))!;
+  assert.equal(both.text, 'perm relaxed +1');
+  assert.equal(both.token, 'warning');
+});
+
+test('buildFooterSegments marks only act-on-me segments for attention', () => {
+  const segs = buildFooterSegments({
+    tokens: 95, contextWindow: 100, completedTurns: 2, activeTurnMs: 500, sessionMs: 5000,
+    activeWorkers: 2, workerTotal: 2, blockedWorkers: 1, failedWorkers: 1, awarenessUnread: 3,
+    dial: 'deep', permissionLevel: 'relaxed', branch: 'main', dirty: false,
+  });
+  const emphasized = segs.filter((s) => s.attention).map((s) => s.text.replace(/\d+.*$/, '').trim());
+  assert.deepEqual(emphasized.sort(), ['context ▓▓▓▓▓▓▓▓', 'mail', 'blocked', 'failed'].map((s) => s.replace(/\d+.*$/, '').trim()).sort());
+  // Steady states are never emphasized — bold must always mean "act on me".
+  for (const s of segs) {
+    if (!s.attention) continue;
+    assert.ok(['warning', 'error', 'link'].includes(s.token ?? ''), `${s.text} emphasis rides an attention token`);
+  }
+  const calm = buildFooterSegments({
+    tokens: 10, contextWindow: 100, completedTurns: 2, activeTurnMs: 500, sessionMs: 5000,
+    activeWorkers: 1, workerTotal: 1, dial: 'deep', permissionLevel: 'relaxed', branch: 'main', dirty: false,
+  });
+  assert.equal(calm.some((s) => s.attention), false, 'no attention state → nothing is emphasized');
+});
+
+
+test('buildFooterSegments appends the changed-file delta to a dirty branch', () => {
+  const base = { tokens: 0, contextWindow: 0, completedTurns: 1, lastTurnMs: 800, sessionMs: 1000, activeWorkers: 0 };
+  const dirty = buildFooterSegments({ ...base, branch: 'main', dirty: true, dirtyFiles: 5 });
+  assert.equal(dirty.at(-1)!.text, 'main (5 changed)');
+  const clean = buildFooterSegments({ ...base, branch: 'main', dirty: false, dirtyFiles: 0 });
+  assert.equal(clean.at(-1)!.text, 'main');
+});
+
+test('buildAgentFooterRows: one row per subagent, live first, state colour + elapsed + activity', () => {
+  const t0 = Date.parse('2026-08-22T10:00:00Z');
+  const { rows, overflow } = buildAgentFooterRows([
+    { agentId: 'abcdef123', name: 'researcher', status: 'done', startedAt: new Date(t0).toISOString(), updatedAt: new Date(t0 + 5000).toISOString() },
+    { agentId: '123456789', name: 'builder', status: 'running', startedAt: new Date(t0).toISOString(), updatedAt: new Date(t0 + 1000).toISOString(), deltaSummary: 'editing src/index.ts' },
+    { agentId: 'fffff0000', name: 'tester', status: 'blocked', startedAt: new Date(t0).toISOString(), updatedAt: new Date(t0 + 2000).toISOString() },
+  ], t0 + 14_000);
+  assert.equal(overflow, 0);
+  assert.deepEqual(rows.map((r) => r.label), ['agent tester (fffff0)', 'agent builder (123456)', 'agent researcher (abcdef)']);
+  assert.deepEqual(rows.map((r) => r.state), ['blocked', 'running', 'done']);
+  assert.deepEqual(rows.map((r) => r.token), ['warning', 'brand', 'success']);
+  assert.deepEqual(rows.map((r) => r.attention), [true, false, false]);
+  assert.equal(rows[1]!.elapsed, '14s', 'live worker elapsed runs against now');
+  assert.equal(rows[2]!.elapsed, '5s', 'finished worker elapsed is frozen at its last update');
+  assert.equal(rows[1]!.doing, 'editing src/index.ts');
+  assert.equal(rows[2]!.doing, undefined, 'finished workers carry no live activity');
+  const communicating = buildAgentFooterRows([
+    {
+      agentId: 'feedface1',
+      name: 'worker',
+      status: 'running',
+      startedAt: new Date(t0).toISOString(),
+      updatedAt: new Date(t0 + 3000).toISOString(),
+      pendingMessages: 2,
+      activeTool: 'MCPTool',
+      toolCallCount: 3,
+      toolNames: ['MCPTool', 'bash'],
+      deltaSummary: 'checking references',
+    },
+  ], t0 + 6000);
+  assert.match(communicating.rows[0]!.doing ?? '', /queued 2/);
+  assert.match(communicating.rows[0]!.doing ?? '', /tool MCPTool/);
+  assert.match(communicating.rows[0]!.doing ?? '', /checking refe/);
+  const many = buildAgentFooterRows(Array.from({ length: 6 }, (_, i) => ({
+    agentId: `id${i}`, name: `w${i}`, status: 'running', startedAt: new Date(t0).toISOString(), updatedAt: new Date(t0 + i).toISOString(),
+  })), t0);
+  assert.equal(many.rows.length, 4);
+  assert.equal(many.overflow, 2);
 });

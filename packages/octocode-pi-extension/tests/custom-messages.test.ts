@@ -10,7 +10,10 @@
  * compaction event.
  */
 import assert from 'node:assert/strict';
-import { beforeEach, test } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, test } from 'vitest';
 import {
   AWARENESS_HANDOFF_TYPE,
   COMPACTION_CHECKPOINT_TYPE,
@@ -34,6 +37,9 @@ import type { PiInstance, PiTheme } from '../src/types.js';
 const theme = { fg: (c: string, t: string) => '<' + c + '>' + t + '</' + c + '>' } as unknown as PiTheme;
 
 const WIDTH = 200;
+
+let previousHome: string | undefined;
+let testHome: string;
 
 type SentMessage = { customType: string; content: string; display?: boolean; details?: unknown };
 type Renderer = (message: unknown, options: { expanded?: boolean }, theme: PiTheme) => unknown;
@@ -67,6 +73,7 @@ const compactionDetails: CompactionCheckpointDetails = {
   fromExtension: true,
   readFiles: ['src/a.ts', 'src/b.ts'],
   modifiedFiles: ['src/c.ts'],
+  artifactPath: '/tmp/octocode/compaction/entry-42.md',
   summary: 'line one\nline two',
 };
 
@@ -81,9 +88,18 @@ const handoffDetails: AwarenessHandoffDetails = {
 };
 
 beforeEach(() => {
+  previousHome = process.env['OCTOCODE_HOME'];
+  testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-compaction-test-home-'));
+  process.env['OCTOCODE_HOME'] = testHome;
   resetCompactionCheckpointDedupe();
   resetCompactionArbiterForTests();
   resetCompactionResumeStateForTests();
+});
+
+afterEach(() => {
+  if (previousHome === undefined) delete process.env['OCTOCODE_HOME'];
+  else process.env['OCTOCODE_HOME'] = previousHome;
+  fs.rmSync(testHome, { recursive: true, force: true });
 });
 
 // ─── Card builders ────────────────────────────────────────────────────────────
@@ -111,6 +127,7 @@ test('buildCompactionCard expanded: full box with files, source, and summary exc
   assert.match(body, /source: octocode/);
   assert.match(body, /read files \(2\).*src\/a\.ts, src\/b\.ts/);
   assert.match(body, /modified files \(1\).*src\/c\.ts/);
+  assert.match(body, /entry-42\.md/);
   assert.match(body, /line one/);
   assert.match(body, /line two/);
 });
@@ -251,10 +268,20 @@ function checkpointCards(sent: { msg: SentMessage }[]): SentMessage[] {
   return sent.map((s) => s.msg).filter((m) => m.customType === COMPACTION_CHECKPOINT_TYPE);
 }
 
-test('session_compact completion emits exactly one checkpoint card per compaction event', async () => {
+test('session_compact completion emits exactly one checkpoint card per compaction event and writes markdown artifacts', async () => {
   const { pi, sent, fire } = makePi();
   registerCompactionHooks(pi, (() => undefined) as never);
-  const event = { compactionEntry: { id: 'c-1', tokensBefore: 90000, summary: 'sum' }, fromExtension: false, reason: 'threshold', willRetry: false };
+  const event = {
+    compactionEntry: {
+      id: 'c-1',
+      tokensBefore: 90000,
+      summary: 'sum',
+      details: { readFiles: ['src/a.ts'], modifiedFiles: ['src/b.ts'] },
+    },
+    fromExtension: false,
+    reason: 'threshold',
+    willRetry: false,
+  };
   await fire('session_compact', event, { hasUI: false });
   await fire('session_compact', event, { hasUI: false });
   const cards = checkpointCards(sent);
@@ -266,8 +293,19 @@ test('session_compact completion emits exactly one checkpoint card per compactio
   assert.equal(details.tokensBefore, 90000);
   assert.equal(details.summary, 'sum');
   assert.equal(details.fromExtension, false);
-});
+  assert.deepEqual(details.readFiles, ['src/a.ts']);
+  assert.deepEqual(details.modifiedFiles, ['src/b.ts']);
+  assert.equal(details.artifactPath, path.join(testHome, 'tmp', 'compaction', 'c-1.md'));
+  assert.equal(details.latestArtifactPath, path.join(testHome, 'tmp', 'compaction', 'latest.md'));
 
+  const markdown = fs.readFileSync(details.artifactPath!, 'utf8');
+  assert.match(markdown, /# Compaction checkpoint c-1/);
+  assert.match(markdown, /Tokens before: 90000/);
+  assert.match(markdown, /## Summary\n\nsum/);
+  assert.match(markdown, /- src\/a\.ts/);
+  assert.match(markdown, /- src\/b\.ts/);
+  assert.equal(fs.readFileSync(details.latestArtifactPath!, 'utf8'), markdown);
+});
 test('a distinct compaction event emits its own card', async () => {
   const { pi, sent, fire } = makePi();
   registerCompactionHooks(pi, (() => undefined) as never);

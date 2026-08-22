@@ -28,15 +28,22 @@ import { CLI_GLYPH, CLI_STATUS_TEXT, cliToolTitle, paint } from '../tui/cli-desi
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth, visibleWidth } from './render-helpers.js';
-import { CURSOR_MARKER, Key, matchesKey } from '@earendil-works/pi-tui';
+import { ASK_HEADER_LABEL } from '../tui/content.js';
+import { CURSOR_MARKER, Key, matchesKey, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
 
-interface AskOption {
+export interface AskOption {
   value: string;
   label?: string;
   description?: string;
+  /** Upsides of this option — rendered as ✓ lines under the focused row. */
+  pros?: string[];
+  /** Downsides / risks of this option — rendered as ✗ lines under the focused row. */
+  cons?: string[];
+  /** Marks the recommended default: badges the row and lands the cursor here first. */
+  recommended?: boolean;
   /** Optional multi-line preview shown under the option while it is focused (multi-select overlay). */
   preview?: string;
 }
@@ -58,7 +65,7 @@ interface AskParams {
   fields?: AskField[];
 }
 
-interface AskOutcome {
+export interface AskOutcome {
   status: 'selected' | 'text' | 'cancelled' | 'unavailable' | 'multiSelected' | 'form';
   value?: string;
   label?: string;
@@ -71,7 +78,22 @@ function normalizeOptions(raw: AskParams['options']): AskOption[] {
   return raw
     .map((o) => (typeof o === 'string' ? { value: o } : o))
     .filter((o): o is AskOption => Boolean(o && typeof o.value === 'string' && o.value.length > 0))
-    .map((o) => ({ value: o.value, label: o.label || o.value, description: o.description, preview: o.preview }));
+    .map((o) => ({
+      value: o.value,
+      label: o.label || o.value,
+      description: o.description,
+      pros: cleanBullets(o.pros),
+      cons: cleanBullets(o.cons),
+      recommended: o.recommended === true,
+      preview: o.preview,
+    }));
+}
+
+/** Trim and drop empty entries from a pros/cons bullet list; undefined when nothing remains. */
+function cleanBullets(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const items = raw.map((s) => String(s ?? '').trim()).filter((s) => s.length > 0);
+  return items.length > 0 ? items : undefined;
 }
 
 function normalizeFields(raw: AskParams['fields']): AskField[] {
@@ -111,22 +133,37 @@ function isPrintableInput(data: string): boolean {
 }
 
 /**
+ * The ask panel renders as a CARD, not a wall: frame rules are capped at this
+ * width so a wide terminal doesn't get a 200-column teal line, and the frame
+ * itself paints dim — brand color is reserved for the ◆ mark, the cursor, and
+ * the selected row, so the eye lands on the choice, not the chrome.
+ */
+const ASK_FRAME_MAX_WIDTH = 72;
+
+/** Card width for a terminal width: capped, never below the minimum sane frame. */
+function askFrameWidth(width: number): number {
+  return Math.max(24, Math.min(width || 0, ASK_FRAME_MAX_WIDTH));
+}
+
+/**
  * A width-aware “smart separator”: paint `prefixPlain` then fill the rest of the
- * row with the box rule char up to the terminal width, so every widget frame
- * spans the panel cleanly at any size instead of a fixed stub.
+ * row with the box rule char up to the CARD width (see ASK_FRAME_MAX_WIDTH).
  */
 function ruleLine(theme: PiTheme | undefined, prefixPlain: string, width: number, token: 'brand' | 'dim' | 'warning'): string {
-  const fill = Math.max(0, (width || 0) - visibleWidth(prefixPlain));
+  const fill = Math.max(0, askFrameWidth(width) - visibleWidth(prefixPlain));
   return paint(theme, token, prefixPlain + '─'.repeat(fill));
 }
 
 function askHeaderLines(theme: PiTheme | undefined, question: string, width: number): string[] {
-  const bar = paint(theme, 'brand', '│');
-  return [
-    ruleLine(theme, '╭─ ◆ USER INPUT REQUIRED ', width, 'brand'),
-    `${bar} ${question}`,
-    bar,
-  ];
+  const bar = paint(theme, 'dim', '│');
+  // Wrap rather than truncate: the question is the one string the user must
+  // read in full. wrapTextWithAnsi keeps any styling intact across lines.
+  const wrapped = wrapTextWithAnsi(question, Math.max(8, askFrameWidth(width) - 2));
+  // Dim frame, brand mark: `╭─ ` dim + `◆ Input needed` brand + dim fill.
+  const prefix = `╭─ ◆ ${ASK_HEADER_LABEL} `;
+  const fill = Math.max(0, askFrameWidth(width) - visibleWidth(prefix));
+  const header = `${paint(theme, 'dim', '╭─ ')}${paint(theme, 'brand', `◆ ${ASK_HEADER_LABEL}`)}${paint(theme, 'dim', ` ${'─'.repeat(fill)}`)}`;
+  return [header, ...wrapped.map((line) => `${bar} ${line}`), bar];
 }
 
 function askFooterLine(theme: PiTheme | undefined, help: string, width: number, warning?: string): string {
@@ -141,14 +178,14 @@ const ASK_LIST_MAX_VISIBLE = 8;
 function renderAskChoiceLines(
   theme: PiTheme | undefined,
   question: string,
-  items: Array<{ label: string; description?: string; preview?: string; freeText?: boolean }>,
+  items: Array<{ label: string; description?: string; preview?: string; pros?: string[]; cons?: string[]; recommended?: boolean; freeText?: boolean }>,
   cursor: number,
   selected: Set<number> | undefined,
   help: string,
   width: number,
   warning?: string,
 ): string[] {
-  const bar = paint(theme, 'brand', '│');
+  const bar = paint(theme, 'dim', '│');
   // Scroll window: long lists would overflow the terminal height (pi clips the
   // component), so paint at most ASK_LIST_MAX_VISIBLE rows centered on the
   // cursor with dim "N more" markers for the hidden remainder.
@@ -165,22 +202,37 @@ function renderAskChoiceLines(
     const index = start + offset;
     const active = index === cursor;
     const marker = active ? paint(theme, 'brand', '›') : ' ';
-    const checked = selected ? (selected.has(index) ? paint(theme, 'success', '☑') : paint(theme, 'dim', '☐')) : '';
+    // ASCII checkboxes match multi-select-list and keep the columns aligned —
+    // ☑/☐ are East-Asian-ambiguous and render 2 cells on some terminals.
+    // Brand (not success) color: a checked box is selection state, not an outcome.
+    const checked = selected ? (selected.has(index) ? paint(theme, 'brand', '[x]') : paint(theme, 'dim', '[ ]')) : '';
     // Numbered rows advertise the 1-9 quick-select keys; the free-text row is unnumbered.
     const ordinal = !item.freeText && index < 9 ? paint(theme, active ? 'brand' : 'dim', `${index + 1}.`) + ' ' : '';
     const rawLabel = item.freeText ? paint(theme, 'brand', item.label) : (active ? paint(theme, 'brand', item.label) : item.label);
+    // Recommended badge sits right after the label so the default choice is
+    // scannable even when the row isn't focused.
+    const badge = item.recommended ? ` ${paint(theme, 'brand', '★ recommended')}` : '';
     const desc = item.description ? paint(theme, 'dim', ` — ${item.description}`) : '';
-    const line = `${bar} ${marker} ${checked ? `${checked} ` : ''}${ordinal}${rawLabel}${desc}`;
-    const preview = active && item.preview
-      ? item.preview.split('\n').slice(0, 3).map((l) => `${bar}     ${paint(theme, 'dim', l)}`)
-      : [];
-    return [line, ...preview];
+    const line = `${bar} ${marker} ${checked ? `${checked} ` : ''}${ordinal}${rawLabel}${badge}${desc}`;
+    // Expand the FOCUSED row with its trade-offs (pros ✓ / cons ✗) and any
+    // preview — collapsed rows stay one line so the list stays scannable.
+    const detail: string[] = [];
+    if (active) {
+      for (const pro of item.pros ?? []) detail.push(`${bar}     ${paint(theme, 'success', `✓ ${pro}`)}`);
+      for (const con of item.cons ?? []) detail.push(`${bar}     ${paint(theme, 'muted', `✗ ${con}`)}`);
+      if (item.preview) {
+        for (const l of item.preview.split('\n').slice(0, 3)) detail.push(`${bar}     ${paint(theme, 'dim', l)}`);
+      }
+    }
+    return [line, ...detail];
   });
   if (start > 0) rows.unshift(`${bar} ${paint(theme, 'dim', `↑ ${start} more`)}`);
   if (end < items.length) rows.push(`${bar} ${paint(theme, 'dim', `↓ ${items.length - end} more`)}`);
   return [
     ...askHeaderLines(theme, question, width),
     ...rows,
+    // Breathing room between the last row and the footer rule.
+    paint(theme, 'dim', '│'),
     askFooterLine(theme, help, width, warning),
   ];
 }
@@ -194,13 +246,25 @@ function renderAskTextLines(
   width: number,
   warning?: string,
 ): string[] {
-  const bar = paint(theme, 'brand', '│');
+  const bar = paint(theme, 'dim', '│');
   const shown = value.length > 0 ? value : paint(theme, 'dim', placeholder ?? 'type answer…');
   return [
     ...askHeaderLines(theme, question, width),
     `${bar} ${paint(theme, 'brand', '›')} ${shown}`,
     askFooterLine(theme, help, width, warning),
   ];
+}
+
+/**
+ * Programmatic entry to the inline ask flow, for other harness features
+ * (e.g. the plan tool's propose/approve card). Same renderer, same keys,
+ * same free-text escape hatch as the askUser tool itself.
+ */
+export async function runAskPrompt(
+  ctx: PiContext,
+  params: { question: string; options: AskOption[]; placeholder?: string },
+): Promise<AskOutcome | undefined> {
+  return runAskOverlay(ctx, params);
 }
 
 async function runAskOverlay(
@@ -231,7 +295,9 @@ async function runAskOverlay(
     (tuiRaw: unknown, theme: PiTheme, _kb: unknown, done: (o: AskOutcome) => void) => {
       const tui = tuiRaw as { requestRender?: () => void };
       let finished = false;
-      let cursor = 0;
+      // Land the cursor on the recommended option (if any) so the safe default
+      // is preselected and one Enter accepts it.
+      let cursor = Math.max(0, options.findIndex((o) => o.recommended));
       let text = '';
       let fieldIndex = 0;
       let requiredRetry = false;
@@ -264,9 +330,11 @@ async function runAskOverlay(
           const step = `${fieldIndex + 1}/${fields.length}`;
           return renderAskTextLines(theme, `${params.question} — ${label} (${step})`, text, field.placeholder, 'enter next • esc cancel', w, warning);
         }
-        const rows: Array<{ label: string; description?: string; preview?: string; freeText?: boolean }> =
-          options.map((o) => ({ label: o.label!, description: o.description, preview: o.preview }));
-        rows.push({ label: '✎ Type my own answer…', description: 'custom free-text reply', freeText: true });
+        const rows: Array<{ label: string; description?: string; preview?: string; pros?: string[]; cons?: string[]; recommended?: boolean; freeText?: boolean }> =
+          options.map((o) => ({ label: o.label!, description: o.description, preview: o.preview, pros: o.pros, cons: o.cons, recommended: o.recommended }));
+        // Discussion channel: not just "other" — the user can push back, ask a
+        // question, or refine the options instead of being boxed into them.
+        rows.push({ label: '✎ Discuss or type your own answer…', description: 'ask a question or reply in your own words', freeText: true });
         const multiCount = mode === 'multi'
           ? `${selected.size} selected${params.min ? ` · min ${params.min}` : ''}${params.max ? ` · max ${params.max}` : ''} • `
           : '';
@@ -417,7 +485,8 @@ export function registerAskUserTool(
     description: [
       'Ask the human a question and get a real, structured answer through the terminal UI.',
       'Provide options[] to show a keyboard-navigable list the user arrows through and selects — never make the user type a token that matches a prose list.',
-      'Omit options to collect a free-text reply; when options[] is present, a custom free-text answer row is always included.',
+      'Give each option pros[] and cons[] (short trade-off bullets, shown under the focused row) and set recommended:true on the safe default — the widget badges it and lands the cursor there so one Enter accepts it.',
+      'Omit options to collect a free-text reply; when options[] is present, a "Discuss or type your own answer" row is always included so the user can push back or ask a question instead of being boxed into the choices.',
       'Returns the selected value/label or the typed text. On cancel (esc) it reports the cancellation; on non-interactive hosts (rpc/json/print) it tells you to ask inline instead.',
       'Use for genuine decision points (pick a branch, choose an approach, confirm a target). Do not use it to replace normal conversation or to ask trivial yes/no — for yes/no prefer a two-option list.',
       'Set multiSelect (with optional min/max) to let the user toggle several options with space and confirm with enter — returns the chosen values[]. Options may carry a preview block shown while focused.',
@@ -426,7 +495,8 @@ export function registerAskUserTool(
     promptSnippet: 'Ask the user a question via an interactive list picker or text input (real UI, not prose)',
     promptGuidelines: [
       'When you would otherwise print "reply 1/2/3", call askUser with options[] so the user selects from a real list.',
-      'Keep option labels short and add a description for nuance; order options by recommendation with the safe default first; the UI always includes a custom free-text answer row.',
+      'Keep option labels short; add pros[]/cons[] so the user can weigh each choice, and mark the safe default recommended:true (do not also reorder — the badge + preselected cursor already signal it).',
+      'The UI always includes a "Discuss or type your own answer" row; when the user replies there, treat it as discussion — answer or adjust the options, do not force a listed choice.',
       'If askUser reports the host is non-interactive or the user cancelled, fall back to asking the question directly in your reply.',
       'Use multiSelect when several answers can be true at once (pick files, pick checks to run); set min/max only when the task genuinely constrains the count.',
       'Use fields[] to gather a few related short answers in one call instead of a chain of separate free-text questions.',
@@ -438,7 +508,10 @@ export function registerAskUserTool(
           Type.Object({
             value: Type.String({ description: 'Value returned to you when this option is chosen.' }),
             label: Type.Optional(Type.String({ description: 'Short display label (defaults to value).' })),
-            description: Type.Optional(Type.String({ description: 'Optional one-line nuance shown under the label.' })),
+            description: Type.Optional(Type.String({ description: 'Optional one-line nuance shown inline after the label.' })),
+            pros: Type.Optional(Type.Array(Type.String(), { description: 'Upsides of this option — short bullets shown as ✓ lines under the focused row.' })),
+            cons: Type.Optional(Type.Array(Type.String(), { description: 'Downsides/risks of this option — short bullets shown as ✗ lines under the focused row.' })),
+            recommended: Type.Optional(Type.Boolean({ description: 'Mark the safe/recommended default: badges the row and lands the cursor here first.' })),
             preview: Type.Optional(Type.String({ description: 'Optional multi-line preview shown under the option while it is focused (multi-select overlay).' })),
           }),
           { description: 'Options for a list picker. Omit for a free-text prompt.' },
@@ -585,7 +658,7 @@ export function registerAskUserTool(
         const n = d.values && !Array.isArray(d.values) ? Object.keys(d.values).length : 0;
         line = paint(theme, 'success', `${CLI_GLYPH.success} form submitted (${n} field${n === 1 ? '' : 's'})`);
       }
-      else if (d.status === 'cancelled') line = paint(theme, 'warning', `⨯ ${CLI_STATUS_TEXT.cancelled}`);
+      else if (d.status === 'cancelled') line = paint(theme, 'muted', `⨯ ${CLI_STATUS_TEXT.cancelled}`);
       else line = paint(theme, 'dim', CLI_STATUS_TEXT.unavailable);
       return makeRenderer((w) => [truncateToWidth(line, w)]);
     },

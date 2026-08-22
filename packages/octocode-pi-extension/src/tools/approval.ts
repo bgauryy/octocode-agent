@@ -1,25 +1,71 @@
 /**
  * Approval gate — context-aware, per-session consent for sensitive actions.
  *
- * Some actions are protected: installing anything, mutating git, deleting user
- * files, or running `sudo`. Instead of assuming consent, we ask the user through
- * an interactive prompt with three choices:
+ * Protected action classes: installs, mutating git, file deletion, sudo,
+ * publishing (packages/releases/images), local system-state changes
+ * (processes/services/schedulers), and cloud/infra mutation. Instead of
+ * assuming consent, we ask the user through an interactive prompt:
  *
  *   • Yes (once)              → approve this one action.
  *   • No                      → decline; the caller must not proceed.
  *   • Always allow (session)  → approve and remember this *class* of action for
  *                               the rest of the session, so we never re-prompt it.
  *
- * The "always allow" decisions live in a module-level session store that is
- * cleared on `session_start` (see resetApprovalStore). Non-interactive hosts
+ * A session-scoped permission LEVEL tunes the gate (`/octocode-permissions`):
+ * strict re-prompts everything (no memory), default is the flow above, relaxed
+ * auto-approves install/git while still prompting for deletes / sudo / publish /
+ * system / infra. OCTOCODE_PERMISSION_LEVEL pins the starting level.
+ *
+ * All decisions live in module-level session state cleared on `session_start`
+ * (see resetApprovalStore) — nothing persists to disk. Non-interactive hosts
  * (rpc / json / print) cannot prompt, so the gate denies and tells the agent to
  * confirm inline before retrying — it never silently proceeds.
  */
 
 import type { PiContext } from '../types.js';
+import {
+  APPROVAL_CHOICE_ALWAYS,
+  APPROVAL_CHOICE_NO,
+  APPROVAL_CHOICE_YES,
+  APPROVAL_TITLE_SHELL_PERSISTENCE,
+  APPROVAL_TITLES,
+} from '../tui/content.js';
+
 
 /** Stable identifiers for the classes of action we gate. */
-export type ApprovalClass = 'install' | 'git-write' | 'fs-delete' | 'sudo';
+export type ApprovalClass =
+  | 'install'
+  | 'git-write'
+  | 'fs-delete'
+  | 'sudo'
+  | 'publish'
+  | 'system'
+  | 'infra';
+
+export const APPROVAL_CLASSES: readonly ApprovalClass[] = [
+  'install', 'git-write', 'fs-delete', 'sudo', 'publish', 'system', 'infra',
+];
+
+/**
+ * Session permission levels — how eagerly the gate prompts:
+ * - strict:  prompt for EVERY sensitive action; "Always allow" is not offered
+ *            and previously remembered classes are ignored.
+ * - default: prompt once per class; "Always allow" remembers the class for the
+ *            session.
+ * - relaxed: auto-approve the routine local-dev classes (install, git-write);
+ *            still prompt for deletes, sudo, publish, system, and infra.
+ */
+export type PermissionLevel = 'strict' | 'default' | 'relaxed';
+
+export const PERMISSION_LEVELS: readonly PermissionLevel[] = ['strict', 'default', 'relaxed'];
+
+/**
+ * Classes auto-approved under `relaxed` — routine local-dev actions only.
+ * Deliberately EXCLUDES fs-delete: path-guard bounds writes, not deletions, so
+ * an unprompted delete under relaxed would be the one unguarded destructive
+ * path (e.g. `rm -rf ~/anything` inside the allowed roots). Deletes always ask.
+ */
+const RELAXED_AUTO_CLASSES: ReadonlySet<ApprovalClass> = new Set(['install', 'git-write']);
 
 export interface ApprovalRequest {
   /** Which class of action this is — the key remembered by "always allow". */
@@ -43,9 +89,13 @@ export interface ApprovalOutcome {
 /** Per-session set of action classes the user chose to "always allow". */
 const alwaysAllowed = new Set<ApprovalClass>();
 
-/** Clear all remembered approvals. Called on session_start. */
+/** The session's permission level. In-memory only, reset on session_start. */
+let permissionLevel: PermissionLevel = 'default';
+
+/** Clear all remembered approvals AND reset the level. Called on session_start. */
 export function resetApprovalStore(): void {
   alwaysAllowed.clear();
+  permissionLevel = 'default';
 }
 
 /** Whether a class has a remembered "always allow" for this session. */
@@ -58,10 +108,53 @@ export function allowAlways(cls: ApprovalClass): void {
   alwaysAllowed.add(cls);
 }
 
+/** Drop one remembered class (it will prompt again). */
+export function revokeAlways(cls: ApprovalClass): void {
+  alwaysAllowed.delete(cls);
+}
+
 /** Snapshot of remembered classes — for status/session-state display. */
 export function approvedClasses(): ApprovalClass[] {
   return [...alwaysAllowed];
 }
+
+export function getPermissionLevel(): PermissionLevel {
+  return permissionLevel;
+}
+
+export function setPermissionLevel(level: PermissionLevel): void {
+  permissionLevel = level;
+}
+
+/** Parse a user-supplied level name; undefined for anything unrecognized. */
+export function parsePermissionLevel(value: string | undefined): PermissionLevel | undefined {
+  const normalized = (value ?? '').trim().toLowerCase();
+  return (PERMISSION_LEVELS as readonly string[]).includes(normalized)
+    ? (normalized as PermissionLevel)
+    : undefined;
+}
+
+/**
+ * Apply a startup permission level from the environment (OCTOCODE_PERMISSION_LEVEL).
+ * Called on session_start AFTER resetApprovalStore, so an operator/CI can pin a
+ * session's starting level without touching the in-session controls.
+ */
+export function applyStartupPermissionLevel(env: NodeJS.ProcessEnv = process.env): void {
+  const level = parsePermissionLevel(env['OCTOCODE_PERMISSION_LEVEL']);
+  if (level) permissionLevel = level;
+}
+
+/**
+ * Cycle default → relaxed → strict → default (the shift+tab order: the most
+ * common mid-session wish from default is "stop prompting me", so relaxed
+ * comes first — mirroring Claude Code's default → acceptEdits direction).
+ */
+export function cyclePermissionLevel(): PermissionLevel {
+  const order: readonly PermissionLevel[] = ['default', 'relaxed', 'strict'];
+  permissionLevel = order[(order.indexOf(permissionLevel) + 1) % order.length]!;
+  return permissionLevel;
+}
+
 
 /** Git subcommands that mutate history, refs, the worktree, or remotes. */
 const MUTATING_GIT_SUBCOMMANDS = new Set([
@@ -92,13 +185,48 @@ export function classifySensitiveCommand(command: string): ApprovalRequest | nul
   const cmd = command.trim();
 
   // sudo — highest priority; privilege escalation of any kind.
-  if (/(^|[;|&(\n])\s*sudo\b/.test(cmd)) {
-    return { actionClass: 'sudo', title: 'Run command with sudo (elevated privileges)', detail: cmd };
+  if (/(^|[;|&(`\n])\s*sudo\b/.test(cmd)) {
+    return { actionClass: 'sudo', title: APPROVAL_TITLES.sudo!, detail: cmd };
   }
 
   // Installs (skip Octocode dogfood CLIs to avoid prompt fatigue).
   if ((INSTALL_RE.test(cmd) || PIPE_TO_SHELL_RE.test(cmd)) && !isOctocodeDogfoodInstall(cmd)) {
-    return { actionClass: 'install', title: 'Install packages / tools', detail: cmd };
+    return { actionClass: 'install', title: APPROVAL_TITLES.install!, detail: cmd };
+  }
+
+  // Outward publication — packages, releases, images. Irreversible-ish and
+  // world-visible, so it gets its own class rather than riding on `install`.
+  if (
+    /\b(?:npm|pnpm|yarn)\s+publish\b|\bcargo\s+publish\b|\bgem\s+push\b|\btwine\s+upload\b|\bdocker\s+push\b|\bgh\s+release\s+(?:create|upload|edit|delete)\b/.test(cmd)
+  ) {
+    return { actionClass: 'publish', title: APPROVAL_TITLES.publish!, detail: cmd };
+  }
+
+  // Cloud / infra mutation and remote-resource destruction.
+  if (
+    /\bterraform\s+(?:apply|destroy)\b|\bkubectl\s+(?:delete|drain)\b|\bdocker\s+(?:system\s+prune|volume\s+(?:rm|prune))\b|\bgh\s+repo\s+(?:delete|archive)\b|\baws\s+s3\s+(?:rm|rb)\b|\bgcloud\s+\S+.*\bdelete\b/.test(cmd)
+  ) {
+    return { actionClass: 'infra', title: APPROVAL_TITLES.infra!, detail: cmd };
+  }
+
+  // Local system state — processes, services, schedulers, recursive ownership.
+  if (
+    /(^|[;|&(`\n])\s*(?:kill|pkill|killall)\b/.test(cmd) ||
+    /\b(?:systemctl|launchctl|service)\s+(?:stop|start|restart|disable|enable|unload|load|kickstart)\b/.test(cmd) ||
+    /\bcrontab\b/.test(cmd) ||
+    /\b(?:chmod|chown)\s+(?:-[^\s]*R[^\s]*|--recursive)\b/.test(cmd) ||
+    /\bdefaults\s+write\b|\bdiskutil\b/.test(cmd)
+  ) {
+    return { actionClass: 'system', title: APPROVAL_TITLES.system!, detail: cmd };
+  }
+
+  // Shell-startup persistence: redirecting/appending into rc/profile files
+  // survives the session and runs on every future shell — a classic
+  // persistence vector (Claude Code guards these paths as dangerous files).
+  if (
+    /(?:>>?|\btee\s+(?:-a\s+)?)[^;|&\n]*(?:\.(?:bashrc|zshrc|bash_profile|profile|zshenv|zprofile|zlogin)\b|\/etc\/(?:profile|bashrc|zshenv|zprofile))/.test(cmd)
+  ) {
+    return { actionClass: 'system', title: APPROVAL_TITLE_SHELL_PERSISTENCE, detail: cmd };
   }
 
   // Mutating git — scan each command segment for `git <subcommand>`.
@@ -109,9 +237,14 @@ export function classifySensitiveCommand(command: string): ApprovalRequest | nul
     }
   }
 
-  // File removal.
-  if (/(^|[;|&(\n])\s*(?:rm|rmdir)\s+/.test(cmd)) {
-    return { actionClass: 'fs-delete', title: 'Delete files / directories', detail: cmd };
+  // File removal — direct commands, find -delete/-exec rm, xargs rm, and
+  // secure-delete/unlink variants (gemini-cli marks the same find flags unsafe).
+  if (
+    /(^|[;|&(`\n])\s*(?:rm|rmdir|shred|unlink|trash)\s+/.test(cmd) ||
+    /\bfind\b[^;|&\n]*\s-(?:delete|exec(?:dir)?\s[^;|&\n]*\brm\b)/.test(cmd) ||
+    /\bxargs\b[^;|&\n]*\brm\b/.test(cmd)
+  ) {
+    return { actionClass: 'fs-delete', title: APPROVAL_TITLES['fs-delete']!, detail: cmd };
   }
 
   return null;
@@ -121,19 +254,26 @@ function canPrompt(ctx?: PiContext): boolean {
   return Boolean(ctx?.hasUI && typeof ctx.ui?.select === 'function');
 }
 
-const YES = 'Yes (run once)';
-const NO = 'No, do not run';
-const ALWAYS = 'Always allow this session';
+const YES = APPROVAL_CHOICE_YES;
+const NO = APPROVAL_CHOICE_NO;
+const ALWAYS = APPROVAL_CHOICE_ALWAYS;
 
 /**
- * Request approval for a sensitive action. Returns immediately when the class
- * is already remembered; otherwise prompts the user with Yes / No / Always.
+ * Request approval for a sensitive action, honoring the session permission
+ * level:
+ * - relaxed: routine local-dev classes auto-approve without a prompt.
+ * - default: remembered classes auto-approve; otherwise Yes / No / Always.
+ * - strict: always prompts (memory ignored, Always not offered).
  */
 export async function requestApproval(
   ctx: PiContext | undefined,
   request: ApprovalRequest,
 ): Promise<ApprovalOutcome> {
-  if (isAlwaysAllowed(request.actionClass)) {
+  const level = getPermissionLevel();
+  if (level === 'relaxed' && RELAXED_AUTO_CLASSES.has(request.actionClass)) {
+    return { approved: true, remembered: true, always: false, interactive: true };
+  }
+  if (level !== 'strict' && isAlwaysAllowed(request.actionClass)) {
     return { approved: true, remembered: true, always: false, interactive: true };
   }
   if (!canPrompt(ctx)) {
@@ -141,10 +281,17 @@ export async function requestApproval(
   }
 
   const prompt = request.detail ? `${request.title}\n${request.detail}` : request.title;
-  const choice = await ctx!.ui!.select!(prompt, [YES, NO, ALWAYS]);
+  const choices = level === 'strict' ? [YES, NO] : [YES, NO, ALWAYS];
+  const choice = await ctx!.ui!.select!(prompt, choices);
 
   if (choice === ALWAYS) {
     allowAlways(request.actionClass);
+    // Immediate feedback: what was remembered and how to undo it — a silent
+    // session-wide grant is the one consent state the user must not lose track of.
+    ctx?.ui?.notify?.(
+      `Always-allow remembered for "${request.actionClass}" this session — /octocode-permissions revoke ${request.actionClass} to undo.`,
+      'info',
+    );
     return { approved: true, remembered: false, always: true, interactive: true };
   }
   if (choice === YES) {

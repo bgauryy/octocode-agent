@@ -15,39 +15,7 @@ import {
 } from '../src/tools/agent-tools.js';
 import { createAgentWorktree, sweepAgentWorktrees } from '../src/tools/worktree.js';
 import type { PiContext } from '../src/types.js';
-
-interface MockProcess {
-  stdin: { write(d: string): void; end(): void };
-  stdout: { on(e: string, cb: (b: Buffer) => void): void };
-  stderr: { on(e: string, cb: (b: Buffer) => void): void };
-  on(e: string, cb: (...a: unknown[]) => void): void;
-  kill(signal?: NodeJS.Signals): boolean;
-  exitCode: null | number;
-  signalCode: null | NodeJS.Signals;
-  writes: Array<Record<string, unknown>>;
-  _emit(event: string, ...args: unknown[]): void;
-}
-
-type MockHandlers = Record<string, Array<(...args: unknown[]) => void>>;
-
-function makeMockProcess(): MockProcess {
-  const handlers: MockHandlers = {};
-  const proc: MockProcess = {
-    writes: [],
-    stdin: {
-      write(d) { proc.writes.push(JSON.parse(d) as Record<string, unknown>); },
-      end() {},
-    },
-    stdout: { on(e, cb) { (handlers[`stdout:${e}`] ??= []).push(cb as never); } },
-    stderr: { on(e, cb) { (handlers[`stderr:${e}`] ??= []).push(cb as never); } },
-    on(e, cb) { (handlers[e] ??= []).push(cb); },
-    kill() { return true; },
-    exitCode: null,
-    signalCode: null,
-    _emit(event, ...args) { for (const cb of handlers[event] ?? []) cb(...args); },
-  };
-  return proc;
-}
+import { makeMockAgentProcess } from './helpers/mock-process.js';
 
 function git(cwd: string, args: string[]): string {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -132,7 +100,7 @@ test('createAgentWorktree creates an isolated branch under Octocode home', () =>
 test('spawnRpcAgent runs approved worktree workers in the worktree cwd and cleans no-work exits', () => {
   const repo = initRepo();
   cleanupDirs.push(repo);
-  const mock = makeMockProcess();
+  const mock = makeMockAgentProcess();
   let spawnedCwd = '';
   setAgentProcessFactoryForTests((_command, _args, options) => {
     spawnedCwd = options.cwd ?? '';
@@ -154,7 +122,7 @@ test('spawnRpcAgent runs approved worktree workers in the worktree cwd and clean
 test('spawnRpcAgent keeps unmerged worktrees and makes records non-prunable', () => {
   const repo = initRepo();
   cleanupDirs.push(repo);
-  const mock = makeMockProcess();
+  const mock = makeMockAgentProcess();
   setAgentProcessFactoryForTests(() => mock as never);
 
   const record = spawnRpcAgent({ task: 'Goal: g\nContext: c\nScope: s\nOwnership: o\nAcceptance: a\nReturn: r', cwd: repo, isolation: 'worktree', worktreeDecision: 'create' });

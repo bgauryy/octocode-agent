@@ -9,6 +9,8 @@
 
 import { Key, matchesKey } from '@earendil-works/pi-tui';
 import { truncatePlainToWidth, visibleWidth } from './render-helpers.js';
+import { TOKEN, type SemanticToken } from '../tui/palette.js';
+import { SEP } from '../tui/palette.js';
 
 export interface MultiSelectItem {
   value: string;
@@ -129,7 +131,7 @@ export class MultiSelectList {
     if (this.min > 0) parts.push(`min ${this.min}`);
     if (Number.isFinite(this.max)) parts.push(`max ${this.max}`);
     parts.push(n < this.min ? `select ${this.min - n} more` : 'enter to confirm');
-    return parts.join(' · ');
+    return parts.join(SEP);
   }
 
   /**
@@ -143,7 +145,9 @@ export class MultiSelectList {
    * overlay never overflows the terminal height.
    */
   render(width: number, theme?: MultiSelectTheme, maxVisible = 10): string[] {
-    const fg = (color: string, text: string) => theme?.fg?.(color, text) ?? text;
+    // Semantic tokens via the TOKEN map (with defensive chaining — the minimal
+    // MultiSelectTheme may lack fg in tests), so a palette remap reaches this list.
+    const fg = (token: SemanticToken, text: string) => theme?.fg?.(TOKEN[token], text) ?? text;
     const lines: string[] = [];
     const cap = Math.max(1, Math.floor(maxVisible));
     let start = 0;
@@ -158,7 +162,7 @@ export class MultiSelectList {
       const focused = i === this.cursor;
       const head = `${focused ? '›' : ' '} ${this.toggled.has(i) ? '[x]' : '[ ]'} ${item.label ?? item.value}`;
       const clippedHead = clip(head, width);
-      let line = focused ? fg('accent', clippedHead) : clippedHead;
+      let line = focused ? fg('brand', clippedHead) : clippedHead;
       if (item.description && visibleWidth(clippedHead) < width) {
         line += fg('muted', clip(` — ${item.description}`, width - visibleWidth(clippedHead)));
       }
@@ -170,7 +174,7 @@ export class MultiSelectList {
       }
     });
     if (end < this.items.length) lines.push(fg('dim', clip(`  ↓ ${this.items.length - end} more`, width)));
-    lines.push(fg(this.canConfirm() ? 'dim' : 'warning', clip(this.footerText(), width)));
+    lines.push(fg('dim', clip(this.footerText(), width)));
     return lines;
   }
 }

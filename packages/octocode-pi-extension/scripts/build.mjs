@@ -23,7 +23,6 @@ const SOURCE_PATHS = {
   // are managed here. @octocodeai/config source injected as octocode-config.mjs into every skill that
   // has a scripts/ directory — zero npm publish dependency for standalone skills.
   configLoader: CONFIG_LOADER_SRC,
-  awarenessSourceSkills: path.join(AWARENESS_PACKAGE_ROOT, 'skills'),
   subagents: path.join(packageRoot, 'subagents'),
   skills: path.join(packageRoot, 'skills'),
   // The system prompt is one inlined document (src/prompts/prompt.ts → dist/prompts/prompt.js);
@@ -63,6 +62,11 @@ const SKIPPED_FILES = new Set([
   'Thumbs.db',
   'npm-debug.log',
   'yarn-error.log',
+]);
+
+const EXCLUDED_BUNDLED_SKILLS = new Set([
+  // 3D mannequin/animation workflow is intentionally not part of the coding-agent bundle.
+  'octocode-mannequin',
 ]);
 
 function isHiddenLocalOnlyEntry(name) {
@@ -187,6 +191,7 @@ function copySkillDirectories(sourceRoot, targetRoot) {
   let copied = 0;
   for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
+    if (EXCLUDED_BUNDLED_SKILLS.has(entry.name)) continue;
     const src = path.join(sourceRoot, entry.name);
     if (!fs.existsSync(path.join(src, 'SKILL.md'))) continue;
     fs.rmSync(path.join(targetRoot, entry.name), { recursive: true, force: true });
@@ -199,29 +204,29 @@ function copySkillDirectories(sourceRoot, targetRoot) {
 function refreshPackageSkills() {
   fs.rmSync(SOURCE_PATHS.skills, { recursive: true, force: true });
   fs.mkdirSync(SOURCE_PATHS.skills, { recursive: true });
-  // Copy Awareness Lite skill sources when present, then fall back to Octocode
-  // bundled skills only in subset checkouts. This keeps the extension
-  // self-contained and avoids repo-root skills as a source or destination.
-  const sourceCopied = copySkillDirectories(SOURCE_PATHS.awarenessSourceSkills, SOURCE_PATHS.skills);
-  let awarenessCopied = copySkillDirectories(SOURCE_PATHS.awarenessSkills, SOURCE_PATHS.skills);
-  const fallbackCopied = awarenessCopied === 0
-    ? copySkillDirectories(SOURCE_PATHS.octocodeSkills, SOURCE_PATHS.skills)
-    : 0;
-  awarenessCopied += fallbackCopied;
+  // Bundle EVERY workflow skill from the octocode dependency first, then layer
+  // the Awareness Lite package's canonical skill on top so the package-owned
+  // coordination skill always wins if a name ever collides. All of them become
+  // discoverable on init via the resources_discover hook — no on-demand install
+  // step needed for a fresh checkout. (If a user also installs the same skill
+  // globally with `octocode skill --add`, Pi surfaces a [Skill conflicts]
+  // notice — expected with a self-contained bundle.)
+  const octocodeCopied = copySkillDirectories(SOURCE_PATHS.octocodeSkills, SOURCE_PATHS.skills);
+  const awarenessCopied = copySkillDirectories(SOURCE_PATHS.awarenessSkills, SOURCE_PATHS.skills);
   assertNoHiddenLocalOnlyEntries(SOURCE_PATHS.skills);
-  if (awarenessCopied === 0) {
+  if (octocodeCopied + awarenessCopied === 0) {
     throw new Error(`No Awareness Lite/Octocode skills found in ${SOURCE_PATHS.awarenessSkills} or ${SOURCE_PATHS.octocodeSkills}`);
   }
-  return { sourceCopied, awarenessCopied, fallbackCopied };
+  return { octocodeCopied, awarenessCopied };
 }
 
 function syncPackageSkills() {
   assertRequiredSources();
-  const { sourceCopied, awarenessCopied, fallbackCopied } = refreshPackageSkills();
+  const { octocodeCopied, awarenessCopied } = refreshPackageSkills();
   const skillNames = listSkillNames(SOURCE_PATHS.skills);
   console.log(`Synced ${skillNames.length} skill(s) into ${SOURCE_PATHS.skills}`);
   if (skillNames.length > 0) console.log(`Skills: ${skillNames.join(', ')}`);
-  console.log(`Sources: awareness-lite package skills/ (${sourceCopied}), awareness-lite skills/ (${awarenessCopied - fallbackCopied}), octocode fallback skills/ (${fallbackCopied})`);
+  console.log(`Sources: octocode skills/ (${octocodeCopied}), awareness-lite skills/ (${awarenessCopied})`);
   return skillNames;
 }
 
@@ -287,6 +292,17 @@ async function build() {
   // 1. Compile TypeScript -> dist/ (generates .js + .d.ts for all src/ modules).
   compileTsc();
 
+  // Branded pi entry shim: pi's startup summary labels an extension by the
+  // shortest unique path tail after stripping index.js — a bare dist/index.js
+  // entry displays as "dist". dist/octocode/index.js re-exports the real entry
+  // so the [Extensions] list reads "octocode".
+  fs.mkdirSync(path.join(distDir, 'octocode'), { recursive: true });
+  fs.writeFileSync(
+    path.join(distDir, 'octocode', 'index.js'),
+    "export * from '../index.js';\nexport { default } from '../index.js';\n",
+    'utf8',
+  );
+
   // Inline the @octocodeai/config source AS dist/env.js — index.js imports './env.js', so
   // the published extension carries the loader itself (no runtime dep, nothing to publish).
   // src/env.ts stays a workspace re-export for repo-time (tests, IDE); dist is self-contained.
@@ -300,9 +316,23 @@ async function build() {
   fs.writeFileSync(OUTPUT_PATHS.systemPrompt, SYSTEM_PROMPT, 'utf8');
   fs.rmSync(OUTPUT_PATHS.skills, { recursive: true, force: true });
   copyDirectory(SOURCE_PATHS.skills, OUTPUT_PATHS.skills);
-  // Copy subagents/ to dist/subagents/ (SYSTEM_PROMPT.md files loaded at runtime)
+  // Copy subagents/ to dist/subagents/ (SYSTEM_PROMPT.md files loaded at runtime),
+  // then expand the shared {{OCTOCODE_COORDINATION}} placeholder so every typed
+  // subagent inherits one canonical Awareness coordination block (no drift).
   if (fs.existsSync(SOURCE_PATHS.subagents)) {
     copyDirectory(SOURCE_PATHS.subagents, OUTPUT_PATHS.subagents);
+    const { expandSubagentPrompt, SUBAGENT_PLACEHOLDERS } = await import(
+      pathToFileURL(path.join(distDir, 'prompts', 'subagent-shared.js')).href
+    );
+    for (const entry of fs.readdirSync(OUTPUT_PATHS.subagents, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const promptPath = path.join(OUTPUT_PATHS.subagents, entry.name, 'SYSTEM_PROMPT.md');
+      if (!fs.existsSync(promptPath)) continue;
+      const expanded = expandSubagentPrompt(fs.readFileSync(promptPath, 'utf8'));
+      const leftover = SUBAGENT_PLACEHOLDERS.find((p) => expanded.includes(p));
+      if (leftover) throw new Error(`subagent ${entry.name}: unexpanded ${leftover}`);
+      fs.writeFileSync(promptPath, expanded, 'utf8');
+    }
   }
   // Inject @octocodeai/config source into every skill scripts/ dir — standalone, no npm needed.
   const configInjected = injectConfigIntoSkills(OUTPUT_PATHS.skills);

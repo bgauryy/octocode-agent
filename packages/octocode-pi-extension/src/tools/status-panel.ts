@@ -28,6 +28,11 @@ const WIDGET_NAME = 'octocode-status-panel';
 const PLAN_MAX_ROWS = 12; // step rows shown before collapsing (header excluded)
 const PANEL_MAX_LINES = 24; // hard cap on total panel lines
 
+interface BuiltPanel {
+  lines: string[];
+  hasVolatileSections: boolean;
+}
+
 /**
  * Collapse a header+rows section to at most maxRows rows, appending a muted
  * "… N more" line when trimmed. `section[0]` is treated as the header.
@@ -44,12 +49,13 @@ export function collapseSection(section: string[], maxRows: number, noun: string
  * which model/provider is driving this session. Empty when the model is unknown.
  */
 export function modelPanelLines(ctx: PiContext | undefined, theme?: PiTheme): string[] {
+  // Only what pi does NOT already show: pi's own status row renders
+  // `model: <id>` and our octocode-thinking status carries the thinking flag,
+  // so this line exists solely to surface the PROVIDER when one is known.
   const id = ctx?.model?.id;
-  if (!id) return [];
   const provider = ctx?.model?.provider;
-  const label = provider ? `${provider}/${id}` : id;
-  const think = ctx?.model?.reasoning ? '  ·  thinking' : '';
-  return [paint(theme, 'muted', `model: ${label}${think}`)];
+  if (!id || !provider) return [];
+  return [paint(theme, 'muted', `model: ${provider}/${id}`)];
 }
 
 /** Join non-empty sections with a single blank-line separator, within the total budget. */
@@ -62,6 +68,25 @@ function composeSections(sections: string[][]): string[] {
   }
   if (lines.length <= PANEL_MAX_LINES) return lines;
   return [...lines.slice(0, PANEL_MAX_LINES - 1), `… ${lines.length - (PANEL_MAX_LINES - 1)} more`];
+}
+
+export function composeStatusPanelLines(ctx: PiContext, theme: PiTheme | undefined, width?: number): BuiltPanel {
+  const cwd = ctx.cwd ?? process.cwd();
+  // Resolve the plan scope at render time, not registration time: /tree, /fork,
+  // resume, and compaction can move the active branch while the widget remains
+  // registered exactly once.
+  const planSection = collapseSection(planPanelLines(getPlan(activePlanScope(ctx)), theme, width), PLAN_MAX_ROWS, 'steps');
+  const awarenessSection = awarenessPanelLines(cwd, theme, width);
+  const agentSection = agentPanelLines(theme, 6, width);
+  return {
+    lines: composeSections([
+      modelPanelLines(ctx, theme),
+      planSection,
+      awarenessSection,
+      agentSection,
+    ]),
+    hasVolatileSections: planSection.length > 0 || awarenessSection.length > 0 || agentSection.length > 0,
+  };
 }
 
 /**
@@ -79,35 +104,79 @@ export function resumeStatusPanel(): void {
   panelSuppressed = false;
 }
 
+// Register-once per session ctx (pi docs: set a widget/footer ONCE and repaint
+// via tui.requestRender). Re-calling setWidget with a fresh factory on every
+// refresh — every 1s ledger tick, every plan mutation — rebuilt the component
+// each time, which showed up as below-editor flicker and scroll jumps mid-turn.
+// Keyed by ctx so a new session re-registers; cleared when the panel empties.
+const panelRegisteredCtxs = new WeakSet<object>();
+const panelRequestRenderByCtx = new WeakMap<object, () => void>();
+const panelMinHeightByCtx = new WeakMap<object, Map<number, number>>();
+
+function stabilizePanelHeight(ctx: PiContext, width: number, built: BuiltPanel): string[] {
+  const lines = built.lines;
+  // Model-only is the stable baseline. Do not keep blank rows from a finished
+  // plan/agent/awareness burst forever; once volatile sections are gone, reset
+  // the remembered height to the actual model-only height.
+  if (!built.hasVolatileSections) {
+    panelMinHeightByCtx.set(ctx, new Map([[width, lines.length]]));
+    return lines;
+  }
+  let heights = panelMinHeightByCtx.get(ctx);
+  if (!heights) {
+    heights = new Map<number, number>();
+    panelMinHeightByCtx.set(ctx, heights);
+  }
+  const previous = heights.get(width) ?? 0;
+  const next = Math.min(PANEL_MAX_LINES, Math.max(previous, lines.length));
+  heights.set(width, next);
+  return lines.length >= next ? lines : [...lines, ...Array.from({ length: next - lines.length }, () => '')];
+}
+
+export function resetStatusPanelStateForTests(): void {
+  panelSuppressed = false;
+}
+
+function clearPanel(ctx: PiContext): void {
+  ctx.ui?.setWidget?.(WIDGET_NAME, undefined);
+  panelRegisteredCtxs.delete(ctx);
+  panelRequestRenderByCtx.delete(ctx);
+  panelMinHeightByCtx.delete(ctx);
+}
+
 export function refreshStatusPanel(ctx?: PiContext): void {
   if (!ctx?.hasUI) return;
   if (panelSuppressed) {
-    ctx.ui?.setWidget?.(WIDGET_NAME, undefined);
+    clearPanel(ctx);
     return;
   }
   const cwd = ctx.cwd ?? process.cwd();
-  const planScope = activePlanScope(ctx);
-  const hasPlan = getPlan(planScope).length > 0;
+  const hasPlan = getPlan(activePlanScope(ctx)).length > 0;
   const hasAgents = agentPanelLines().length > 0;
   const hasAwareness = hasCachedAwarenessSignal(cwd);
-  const hasModel = !!ctx.model?.id;
+  const hasModel = modelPanelLines(ctx).length > 0;
   if (!hasPlan && !hasAgents && !hasAwareness && !hasModel) {
-    ctx.ui?.setWidget?.(WIDGET_NAME, undefined);
+    clearPanel(ctx);
     return;
   }
+  if (panelRegisteredCtxs.has(ctx)) {
+    // Live update: the registered renderer reads state at render time — just repaint.
+    panelRequestRenderByCtx.get(ctx)?.();
+    return;
+  }
+  panelRegisteredCtxs.add(ctx);
   ctx.ui?.setWidget?.(
     WIDGET_NAME,
-    (_tui: unknown, theme: PiTheme) =>
-      makeRenderer(() => {
-        const lines = composeSections([
-          modelPanelLines(ctx, theme),
-          collapseSection(planPanelLines(getPlan(planScope), theme), PLAN_MAX_ROWS, 'steps'),
-          awarenessPanelLines(cwd, theme),
-          agentPanelLines(theme),
-        ]);
-        // makeRenderer already truncates every emitted line to width, so no inner pass.
+    (tui: unknown, theme: PiTheme) => {
+      panelRequestRenderByCtx.set(ctx, () => (tui as { requestRender?: () => void } | undefined)?.requestRender?.());
+      return makeRenderer((width) => {
+        // Width flows into every section builder so lines are clipped at the
+        // source (pi errors on over-wide lines); makeRenderer stays the net.
+        const built = composeStatusPanelLines(ctx, theme, width);
+        const lines = stabilizePanelHeight(ctx, width, built);
         return lines.length > 0 ? lines : [''];
-      }),
+      });
+    },
     { placement: 'belowEditor' },
   );
 }

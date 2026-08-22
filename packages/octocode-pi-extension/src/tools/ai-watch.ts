@@ -406,10 +406,6 @@ export function stopWatch(): void {
   debounceTimers.clear();
 }
 
-export function isWatching(): boolean {
-  return watchMode !== undefined;
-}
-
 // ─── Registration ─────────────────────────────────────────────────────────────
 
 const WATCH_ARGS: AutocompleteItem[] = [

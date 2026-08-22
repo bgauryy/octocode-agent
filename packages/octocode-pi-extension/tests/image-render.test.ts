@@ -8,6 +8,7 @@ import {
   sniffImageMime,
   loadImageForRender,
   buildImageLines,
+  buildImageLinesFromData,
   appendImageLines,
   setCapabilityCheckForTests,
 } from '../src/tools/image-render.js';
@@ -175,6 +176,39 @@ test('buildImageLines works without ctx.state (no cache, no throw)', () => {
   } finally {
     setCapabilityCheckForTests(undefined);
   }
+});
+
+// ─── buildImageLinesFromData: base64 in, no disk read ──────────────────────
+
+test('buildImageLinesFromData renders raw image lines from in-memory base64', () => {
+  setCapabilityCheckForTests(() => true);
+  try {
+    const base64 = Buffer.concat([PNG_MAGIC, Buffer.alloc(64)]).toString('base64');
+    const state: Record<string, unknown> = {};
+    const ctx = { state, invalidate() {} } as unknown as RenderContext;
+    const lines = buildImageLinesFromData(ctx, 'shot.png', base64, 'image/png', 80, { theme, name: 'shot.png' });
+    assert.ok(lines.length >= 1);
+    assert.ok(state['octocode-image:shot.png'], 'cached under octocode-image:<cacheKey>');
+  } finally {
+    setCapabilityCheckForTests(undefined);
+  }
+});
+
+test('buildImageLinesFromData emits a placeholder with name + bytes when unsupported', () => {
+  setCapabilityCheckForTests(() => false);
+  try {
+    const base64 = Buffer.concat([PNG_MAGIC, Buffer.alloc(64)]).toString('base64');
+    const lines = buildImageLinesFromData(undefined, 'k', base64, 'image/png', 80, { theme, name: 'diagram.png', bytes: 2048 });
+    assert.equal(lines.length, 1);
+    assert.ok(lines[0].includes('\ud83d\uddbc image: diagram.png'));
+    assert.match(lines[0], /2\.0 KB/);
+  } finally {
+    setCapabilityCheckForTests(undefined);
+  }
+});
+
+test('buildImageLinesFromData returns [] for empty base64', () => {
+  assert.deepEqual(buildImageLinesFromData(undefined, 'k', '', 'image/png', 80), []);
 });
 
 // ─── appendImageLines: image lines bypass width truncation ───────────────────

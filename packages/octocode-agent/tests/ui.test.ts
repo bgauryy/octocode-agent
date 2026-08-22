@@ -1,6 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
-  banner,
   BRAND_MARK,
   BRAND_NAME,
   checkLines,
@@ -13,7 +12,6 @@ import {
   header,
   hint,
   kv,
-  launchBanner,
   link,
   makePainter,
   padEndVisible,
@@ -60,12 +58,6 @@ describe('makePainter', () => {
   it('paints brand and accent with distinct codes', () => {
     const p = makePainter(true);
     expect(p.brand('x')).not.toBe(p.accent('x'));
-  });
-});
-
-describe('banner', () => {
-  it('mentions the brand', () => {
-    expect(stripAnsi(banner(makePainter(false), 'doctor'))).toContain('octocode-agent');
   });
 });
 
@@ -167,22 +159,6 @@ describe('wrapText', () => {
   });
 });
 
-describe('launchBanner', () => {
-  it('shows the brand and the known version parts (no pi version)', () => {
-    const text = stripAnsi(
-      launchBanner(makePainter(false), { launcher: '1.0.2', core: '1.3.0', model: 'sonnet' }),
-    );
-    expect(text).toBe(`${BRAND_MARK} ${BRAND_NAME}  v1.0.2 · core 1.3.0 · model sonnet`);
-    expect(text).not.toContain('pi ');
-  });
-  it('skips unknown parts without dangling separators', () => {
-    const text = stripAnsi(
-      launchBanner(makePainter(false), { launcher: null, core: '1.3.0' }),
-    );
-    expect(text).toBe(`${BRAND_MARK} ${BRAND_NAME}  core 1.3.0`);
-  });
-});
-
 describe('width-aware layer', () => {
   afterEach(() => {
     delete process.env.COLUMNS;
@@ -252,34 +228,5 @@ describe('diagLine', () => {
       'octocode-agent: boom',
     );
     expect(stripAnsi(diagLine(makePainter(true), 'boom'))).toBe('octocode-agent: boom');
-  });
-});
-
-describe('octopus mascot', () => {
-  it('octopusGlyphFrame is pure and animates pose, ripple, blink, and sparkles', async () => {
-    const { octopusGlyphFrame } = await import('../src/ui.js');
-    const t0 = octopusGlyphFrame(0);
-    const t1 = octopusGlyphFrame(1);
-    expect(octopusGlyphFrame(0)).toEqual(t0); // deterministic
-    expect(t1).not.toEqual(t0); // tentacles sway / ripple travels
-    expect(t0.join('\n')).toContain('( o   o )');
-    // Blink tick: eyes close.
-    expect(octopusGlyphFrame(7).join('\n')).toContain('( -   - )');
-    // Sparkles present in every frame.
-    expect(t0.join('\n')).toMatch(/[✦✧]/);
-  });
-
-  it('octopusArt paints the purple gradient and stays plain when color is off', async () => {
-    const { octopusArt, octopusFrame, makePainter } = await import('../src/ui.js');
-    const colored = octopusArt(makePainter(true)).join('\n');
-    expect(colored).toContain('\x1b[38;5;189m'); // light head shade
-    expect(colored).toContain('\x1b[38;5;93m'); // deep tentacle shade
-    expect(colored).toContain('\x1b[38;5;220m✦'); // gold sparkle
-    const plain = octopusArt(makePainter(false)).join('\n');
-    expect(plain).not.toContain('\x1b[');
-    // Gloss band appears only mid-sweep.
-    const glossy = octopusFrame(makePainter(true), 6).join('\n');
-    expect(glossy).toContain('\x1b[38;5;231m');
-    expect(colored).not.toContain('\x1b[38;5;231m');
   });
 });

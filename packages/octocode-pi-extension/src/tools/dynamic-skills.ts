@@ -20,7 +20,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { PI_CONFIG_DIR } from '../constants.js';
+import { getPiUserSkillsDir } from '../utils.js';
 import { KEYWORD_MATCH_THRESHOLD, tokenize, withRegistryLock, writeJsonAtomic, readJsonSafe } from './registry-store.js';
 
 // ─── types ────────────────────────────────────────────────────────────────────
@@ -78,8 +78,7 @@ const MAX_DESCRIPTION = 1024;
 export function getSkillsDir(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.OCTOCODE_DYNAMIC_SKILLS_DIR;
   if (override) return override;
-  const home = env.HOME || env.USERPROFILE || process.cwd();
-  return path.join(home, PI_CONFIG_DIR, 'agent', 'skills');
+  return getPiUserSkillsDir(env.HOME || env.USERPROFILE || process.cwd());
 }
 
 /** The registry index lives beside the skill dirs but is ignored by Pi's SKILL.md scan. */

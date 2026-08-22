@@ -36,19 +36,92 @@ test('memory recall builds the CLI args and returns the recalled count', async (
   assert.match((res.content[0] as { text: string }).text, /2/);
 });
 
-test('memory record maps to Lite store text and returns the new id', async () => {
+test('memory recall supports semantic, recent, tagged, label, and limit modes', async () => {
+  const calls = stubRunner({ code: 0, stdout: JSON.stringify([{ memoryId: 'mem_a', text: 'parser gotcha' }]), stderr: '' });
+  const tool = loadTool();
+
+  await tool.execute('id', { action: 'recall', query: 'parser', mode: 'semantic', label: 'GOTCHA', limit: 3 }, undefined, undefined, ctx);
+  assert.deepEqual(calls[0], ['memory', 'recall', '--query', 'parser', '--limit', '3', '--label', 'GOTCHA', '--semantic', '--workspace', '/tmp/mem-ws']);
+
+  await tool.execute('id', { action: 'recall', mode: 'recent', limit: 2 }, undefined, undefined, ctx);
+  assert.deepEqual(calls[1], ['memory', 'list', '--limit', '2', '--workspace', '/tmp/mem-ws']);
+
+  await tool.execute('id', { action: 'recall', mode: 'tagged', tags: ['pi-extension'] }, undefined, undefined, ctx);
+  assert.deepEqual(calls[2], ['memory', 'recall', '--query', 'pi-extension', '--limit', '20', '--workspace', '/tmp/mem-ws']);
+});
+
+test('memory review lists memories and returns cleanup candidates without mutating', async () => {
+  const old = new Date(Date.now() - 91 * 24 * 60 * 60 * 1000).toISOString();
+  const calls = stubRunner({
+    code: 0,
+    stdout: JSON.stringify([
+      { memoryId: 'mem_bad', label: 'GOTCHA', text: 'tests passed', tags: '', createdAt: old },
+      { memoryId: 'mem_ok', label: 'DECISION', text: 'Use source-backed memory.\nSource: src/x.ts:1', tags: 'memory', createdAt: new Date().toISOString() },
+    ]),
+    stderr: '',
+  });
+  const tool = loadTool();
+  const res = await tool.execute('id', { action: 'review', limit: 5 }, undefined, undefined, ctx);
+  assert.deepEqual(calls[0], ['memory', 'list', '--limit', '5', '--workspace', '/tmp/mem-ws']);
+  const text = (res.content[0] as { text: string }).text;
+  assert.match(text, /Reviewed 2 memories; found 1 candidate/);
+  assert.match(text, /mem_bad/);
+  assert.match(text, /missing-source/);
+  assert.match(text, /routine-status/);
+  assert.match(text, /older-than-90d/);
+});
+
+test('memory suggest returns a candidate and does not invoke the CLI', async () => {
+  const calls = stubRunner({ code: 0, stdout: '{}', stderr: '' });
+  const tool = loadTool();
+  const res = await tool.execute('id', {
+    action: 'suggest',
+    label: 'DECISION',
+    observation: 'Memory records should include source evidence and package tags.',
+    importance: 12,
+    taskContext: 'memory tooling',
+    source: 'src/tools/memory-tool.ts:229; yarn test:unit passed',
+    tags: ['memory'],
+    changedFiles: ['packages/octocode-pi-extension/src/tools/memory-tool.ts'],
+  }, undefined, undefined, ctx);
+  assert.equal(calls.length, 0);
+  assert.match((res.content[0] as { text: string }).text, /Suggested memory candidate \(not recorded\)/);
+  const candidate = (res.details as { candidate: { importance: number; tags: string[] } }).candidate;
+  assert.equal(candidate.importance, 10);
+  assert.deepEqual(candidate.tags, ['memory', 'octocode-pi-extension', 'memory-tool']);
+});
+
+test('memory suggest rejects bad observations before returning a candidate', async () => {
+  const calls = stubRunner({ code: 0, stdout: '{}', stderr: '' });
+  const tool = loadTool();
+  const res = await tool.execute('id', { action: 'suggest', observation: 'tests passed', importance: 5 }, undefined, undefined, ctx);
+  assert.equal(res.isError, true);
+  assert.match((res.content[0] as { text: string }).text, /suggestion rejected/);
+  assert.equal(calls.length, 0);
+});
+
+test('memory record maps to Lite store text/tags/source and returns the new id', async () => {
   const calls = stubRunner({ code: 0, stdout: JSON.stringify({ memoryId: 'mem_new' }), stderr: '' });
   const tool = loadTool();
   const res = await tool.execute('id', {
-    action: 'record', label: 'GOTCHA', observation: 'x self-heals', importance: 6, taskContext: 'build',
+    action: 'record',
+    label: 'GOTCHA',
+    observation: 'Tool runner self-heals after the first failed launch.',
+    importance: 6,
+    taskContext: 'build',
+    source: 'tests/memory-tool.test.ts:39; yarn test:unit passed',
+    tags: ['pi-extension', 'memory', 'memory', 'bad,tag', ''],
   }, undefined, undefined, ctx);
   const args = calls[0]!;
   assert.deepEqual([args[0], args[1]], ['memory', 'store']);
   assert.equal(args[args.indexOf('--label') + 1], 'GOTCHA');
-  assert.equal(args[args.indexOf('--text') + 1], 'build: x self-heals');
+  assert.equal(
+    args[args.indexOf('--text') + 1],
+    'build: Tool runner self-heals after the first failed launch.\nSource: tests/memory-tool.test.ts:39; yarn test:unit passed',
+  );
   // Lite has no importance column; the validated value is persisted as a tag.
   assert.equal(args.includes('--importance'), false);
-  assert.equal(args[args.indexOf('--tags') + 1], 'importance:6');
+  assert.equal(args[args.indexOf('--tags') + 1], 'importance:6,pi-extension,memory');
   assert.equal(args.includes('--task-context'), false);
   assert.equal(args.includes('--agent-id'), false);
   assert.match((res.content[0] as { text: string }).text, /mem_new/);
@@ -75,9 +148,27 @@ test('memory recall without a query errors before invoking the CLI', async () =>
 test('memory record with out-of-range importance errors before invoking the CLI', async () => {
   const calls = stubRunner({ code: 0, stdout: '{}', stderr: '' });
   const tool = loadTool();
-  const res = await tool.execute('id', { action: 'record', label: 'BUG', observation: 'y', importance: 99 }, undefined, undefined, ctx);
+  const res = await tool.execute('id', { action: 'record', label: 'BUG', observation: 'Durable parser gotcha.', importance: 99 }, undefined, undefined, ctx);
   assert.equal(res.isError, true);
   assert.equal(calls.length, 0);
+});
+
+test('memory record rejects low-quality or sensitive observations before invoking the CLI', async () => {
+  const cases = [
+    { observation: 'short', expected: /too short/ },
+    { observation: 'API key was sk-abcdefghijklmnopqrstuvwxyz123456', expected: /secret\/token/ },
+    { observation: 'tests passed after the change', expected: /routine status/ },
+    { observation: 'AGENTS.md says to run this command', expected: /instruction files/ },
+    { observation: Array.from({ length: 9 }, (_, i) => `log line ${i}`).join('\n'), expected: /raw log\/dump/ },
+  ];
+  for (const c of cases) {
+    const calls = stubRunner({ code: 0, stdout: '{}', stderr: '' });
+    const tool = loadTool();
+    const res = await tool.execute('id', { action: 'record', label: 'GOTCHA', observation: c.observation, importance: 5 }, undefined, undefined, ctx);
+    assert.equal(res.isError, true);
+    assert.match((res.content[0] as { text: string }).text, c.expected);
+    assert.equal(calls.length, 0, `CLI must not run for ${c.observation}`);
+  }
 });
 
 test('memory surfaces a CLI failure as an error result', async () => {
@@ -114,7 +205,7 @@ test('memory recall parses the CLI\'s PRETTY-PRINTED (multi-line) JSON output', 
 test('memory record and forget parse pretty-printed CLI output (real id, real delete count)', async () => {
   stubRunner({ code: 0, stdout: JSON.stringify({ memoryId: 'mem_xyz', label: 'GOTCHA' }, null, 2), stderr: '' });
   const tool = loadTool();
-  const rec = await tool.execute('id', { action: 'record', label: 'GOTCHA', observation: 'x', importance: 5 }, undefined, undefined, ctx);
+  const rec = await tool.execute('id', { action: 'record', label: 'GOTCHA', observation: 'Parser accepts pretty JSON output.', importance: 5 }, undefined, undefined, ctx);
   assert.equal((rec.details as { memoryId?: string }).memoryId, 'mem_xyz');
 
   stubRunner({ code: 0, stdout: JSON.stringify({ forgotten: true }, null, 2), stderr: '' });
