@@ -10,6 +10,7 @@ import { contextGauge, paint, SEP, type PaintTheme, type SemanticToken } from '.
 // than raw pi-tui, so footer/session strings are measured and cut at the true cell width.
 import { truncateToWidth, truncatePlainToWidth } from './tools/render-helpers.js';
 import { estimateTokens } from './utils.js';
+import type { WorkerMessageActivity } from './types.js';
 
 export const OCTOCODE_SPINNER_FRAMES = ['✦', '✧', '✶', '✺', '✹', '✷', '✶', '✧'] as const;
 export const OCTOCODE_SPINNER_INTERVAL_MS = 120;
@@ -287,6 +288,7 @@ export interface AgentFooterEntry {
   updatedAt: string;
   deltaSummary?: string;
   pendingMessages?: number;
+  lastMessage?: WorkerMessageActivity;
   activeTool?: string;
   toolCallCount?: number;
   toolNames?: string[];
@@ -310,7 +312,7 @@ export interface AgentFooterRow {
 const AGENT_TERMINAL = new Set(['done', 'failed', 'killed', 'completed', 'exited', 'error']);
 /** Max per-agent rows under the footer before collapsing into `… N more`. */
 export const AGENT_FOOTER_MAX_ROWS = 4;
-const AGENT_DOING_MAX = 40;
+const AGENT_DOING_MAX = 96;
 
 function agentStateToken(status: string): { token: SemanticToken; attention: boolean } {
   switch (status) {
@@ -350,8 +352,14 @@ export function buildAgentFooterRows(
     const ended = isLive(e) ? nowMs : Date.parse(e.updatedAt);
     const elapsedMs = Number.isFinite(started) && Number.isFinite(ended) ? Math.max(0, ended - started) : undefined;
     const live = isLive(e);
+    const pending = e.pendingMessages ?? 0;
+    const messageActivity = e.lastMessage
+      ? `msg${e.lastMessage.direction === 'to-agent' ? '→' : '←'} ${e.lastMessage.action}${pending > 0 ? ` (${pending} queued)` : ''}: ${e.lastMessage.preview}`
+      : pending > 0
+        ? `msg→ ${pending} queued`
+        : undefined;
     const activityParts = [
-      ...(live && e.pendingMessages && e.pendingMessages > 0 ? [`queued ${e.pendingMessages}`] : []),
+      ...(messageActivity ? [messageActivity] : []),
       ...(live && e.activeTool ? [`tool ${e.activeTool}`] : []),
       ...(live && e.deltaSummary ? [e.deltaSummary] : []),
       ...(!e.activeTool && e.toolCallCount && e.toolCallCount > 0

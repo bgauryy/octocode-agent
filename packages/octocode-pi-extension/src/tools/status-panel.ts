@@ -1,13 +1,14 @@
 /**
  * status-panel — the single unified below-editor "Octocode" panel.
  *
- * Rather than three separate widgets (plan / awareness / agents) stacking under
- * the editor, this composes them into ONE widget with blank-line-separated
- * sections, so the live status reads as a cohesive block. Each source module
+ * Rather than separate plan and Awareness widgets stacking under the editor,
+ * this composes them into ONE widget with blank-line-separated sections. Spawned
+ * agents deliberately live only in the custom footer, so they are not duplicated
+ * above the input. Each source module
  * exposes a pure `*PanelLines(theme)` builder and delegates its widget rendering
  * here; this module owns the sole `octocode-status-panel` widget.
  *
- * Sections (in order): Model → Plan → Awareness → Agents. Empty sections are
+ * Sections (in order): Model → Plan → Awareness. Empty sections are
  * omitted; when all are empty the widget is cleared entirely.
  *
  * Uses runtime-only imports of the section builders (called inside the renderer,
@@ -19,7 +20,6 @@ import { paint } from '../tui/cli-design.js';
 import { makeRenderer } from './render-helpers.js';
 import { activePlanScope, getPlan } from './active-plan.js';
 import { planPanelLines } from './plan-tool.js';
-import { agentPanelLines } from './agent-tools.js';
 import { awarenessPanelLines, hasCachedAwarenessSignal } from './awareness-status.js';
 
 const WIDGET_NAME = 'octocode-status-panel';
@@ -79,21 +79,19 @@ export function composeStatusPanelLines(ctx: PiContext, theme: PiTheme | undefin
   // registered exactly once.
   const planSection = collapseSection(planPanelLines(getPlan(activePlanScope(ctx)), theme, width), PLAN_MAX_ROWS, 'steps', theme);
   const awarenessSection = awarenessPanelLines(cwd, theme, width);
-  const agentSection = agentPanelLines(theme, 6, width);
   return {
     lines: composeSections([
       modelPanelLines(ctx, theme),
       planSection,
       awarenessSection,
-      agentSection,
     ], theme),
-    hasVolatileSections: planSection.length > 0 || awarenessSection.length > 0 || agentSection.length > 0,
+    hasVolatileSections: planSection.length > 0 || awarenessSection.length > 0,
   };
 }
 
 /**
- * Re-render the unified below-editor status panel from live state (plan +
- * awareness + agents). Clears the widget when every section is empty. Safe to
+ * Re-render the unified below-editor status panel from live plan and Awareness
+ * state. Clears the widget when every section is empty. Safe to
  * call from any refresh trigger; never throws.
  */
 // Set during session_shutdown so late async callbacks (worker close events,
@@ -154,10 +152,9 @@ export function refreshStatusPanel(ctx?: PiContext): void {
   }
   const cwd = ctx.cwd ?? process.cwd();
   const hasPlan = getPlan(activePlanScope(ctx)).length > 0;
-  const hasAgents = agentPanelLines().length > 0;
   const hasAwareness = hasCachedAwarenessSignal(cwd);
   const hasModel = modelPanelLines(ctx).length > 0;
-  if (!hasPlan && !hasAgents && !hasAwareness && !hasModel) {
+  if (!hasPlan && !hasAwareness && !hasModel) {
     clearPanel(ctx);
     return;
   }

@@ -45,9 +45,19 @@ export function desktopNotificationsSuppressed(): boolean {
   return suppressed;
 }
 
+/**
+ * Lift the shutdown suppress flag so the next session's workers can notify
+ * again. The suppress half runs on session_shutdown; this resume half must run
+ * on session_start, mirroring resumeStatusPanel/resumeAwarenessPanel — otherwise
+ * a single /new or /resume kills desktop notifications for the rest of the process.
+ */
+export function resumeDesktopNotifications(): void {
+  suppressed = false;
+}
+
 /** Test hook: clear the shutdown suppress flag (mirrors setAgentProcessFactoryForTests resets). */
 export function resumeDesktopNotificationsForTests(): void {
-  suppressed = false;
+  resumeDesktopNotifications();
 }
 
 /**

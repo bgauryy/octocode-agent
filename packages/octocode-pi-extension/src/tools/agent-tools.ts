@@ -21,12 +21,13 @@ import type {
   WorkerLedgerEntry,
   WorkerLedgerEvent,
   WorkerLedgerEventType,
+  WorkerMessageActivity,
   WorkerWorktreeState,
 } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
-import { refreshStatusPanel, resumeStatusPanel } from './status-panel.js';
+import { resumeStatusPanel } from './status-panel.js';
 import { stringEnumSchema } from './schema-helpers.js';
 import { getRandomAgentName } from '../agentNames.js';
 import {
@@ -166,6 +167,8 @@ interface AgentRecord {
    * ledger never shows 'running' before the turn actually starts.
    */
   pendingMessages: number;
+  /** Latest directional parent↔worker communication for the footer ledger. */
+  lastMessage?: WorkerMessageActivity;
   normalizedResult?: NormalizedWorkerResult;
   recoveryRisk: WorkerRecoveryRisk;
   ledgerEvents: WorkerLedgerEvent[];
@@ -607,7 +610,8 @@ function buildPiArgs(params: SpawnAgentParams, name: string, promptFiles: string
 
   if (params.provider) args.push('--provider', params.provider);
   if (params.model) args.push('--model', params.model);
-  if (params.thinking && !shouldOmitThinkingForToolCallingWorker(params, workerTools)) args.push('--thinking', params.thinking);
+  if (shouldForceThinkingOffForToolCallingWorker(params, workerTools)) args.push('--thinking', 'off');
+  else if (params.thinking) args.push('--thinking', params.thinking);
   if (workerTools.length) args.push('--tools', workerTools.join(','));
   args.push('--no-context-files');
 
@@ -683,6 +687,29 @@ function pushLedgerEvent(record: AgentRecord, type: WorkerLedgerEventType, messa
 function previewMessage(message: string): string {
   const oneLine = message.replace(/\s+/g, ' ').trim();
   return oneLine.length > 72 ? `${oneLine.slice(0, 71)}…` : oneLine;
+}
+
+function recordMessageActivity(
+  record: AgentRecord,
+  direction: WorkerMessageActivity['direction'],
+  action: WorkerMessageActivity['action'],
+  message: string,
+  ledgerMessage: string,
+): void {
+  record.lastMessage = {
+    direction,
+    action,
+    preview: previewMessage(message),
+    timestamp: Date.now(),
+  };
+  pushLedgerEvent(record, 'message', ledgerMessage, record.lastMessage);
+}
+
+function recordInboundMessage(record: AgentRecord, message: unknown): void {
+  if (!isAssistantOutputMessage(message)) return;
+  const text = extractTextFromMessage(message);
+  if (!text) return;
+  recordMessageActivity(record, 'from-agent', 'reply', text, `reply received: ${previewMessage(text)}`);
 }
 
 function notifyWaiters(record: AgentRecord): void {
@@ -783,10 +810,10 @@ function isOpenAiGpt5Worker(params: SpawnAgentParams): boolean {
   return provider.includes('openai') && /^gpt-5(?:[._-]|$)/.test(model);
 }
 
-function shouldOmitThinkingForToolCallingWorker(params: SpawnAgentParams, workerTools: string[]): boolean {
+function shouldForceThinkingOffForToolCallingWorker(params: SpawnAgentParams, workerTools: string[]): boolean {
   // OpenAI's Chat Completions endpoint rejects function tools when reasoning_effort
-  // is also present for GPT-5-series models. Pi maps --thinking to reasoning_effort,
-  // so tool-calling subagents must omit it and let the provider default apply.
+  // is present for GPT-5-series models. Omitting --thinking can inherit a parent or
+  // configured default, so tool-calling subagents must explicitly disable it.
   return workerTools.length > 0 && isOpenAiGpt5Worker(params);
 }
 
@@ -845,8 +872,8 @@ export function evaluateSpawnPolicy(params: SpawnAgentParams, activeCount = acti
   if (model && looksLikeProviderScopedModel(model) && !params.provider) {
     warnings.push('Model looks provider-scoped or custom-provider-hosted; pass provider from `pi -ne --list-models` when required.');
   }
-  if (params.thinking && shouldOmitThinkingForToolCallingWorker(params, getWorkerTools(params))) {
-    warnings.push('Omitted --thinking for OpenAI GPT-5 tool-calling worker because Chat Completions rejects reasoning_effort with function tools.');
+  if (shouldForceThinkingOffForToolCallingWorker(params, getWorkerTools(params))) {
+    warnings.push('Forced --thinking off for OpenAI GPT-5 tool-calling worker because Chat Completions rejects reasoning_effort with function tools.');
   }
   const strippedTools = (params.tools ?? []).filter((toolName) => FORBIDDEN_WORKER_TOOLS.has(toolName));
   if (strippedTools.length > 0) {
@@ -1126,6 +1153,7 @@ function processRpcLine(record: AgentRecord, line: string): void {
     pushCapped(record.messages, message);
     captureMessageError(record, message);
     updateLastOutput(record, message);
+    recordInboundMessage(record, message);
     touch(record);
   } else if (eventType === 'agent_end') {
     const messages = (event as { messages?: unknown[] }).messages;
@@ -1133,6 +1161,7 @@ function processRpcLine(record: AgentRecord, line: string): void {
       for (const message of messages) {
         captureMessageError(record, message);
         updateLastOutput(record, message);
+        recordInboundMessage(record, message);
       }
     }
     // agent_end {willRetry:true} means the worker aborted on context overflow
@@ -1182,15 +1211,27 @@ function cleanupPromptFiles(promptFiles: string[]): void {
   }
 }
 
+function getActiveAgentUi(ctx?: PiContext): NonNullable<PiContext['ui']> | undefined {
+  try {
+    if (!ctx?.hasUI) return undefined;
+    return ctx.ui;
+  } catch {
+    // Pi invalidates every ctx getter after session replacement/reload. Long-lived
+    // worker callbacks may still drain afterward, so best-effort UI work must stop.
+    return undefined;
+  }
+}
+
 async function approveWorktreeIsolation(params: SpawnAgentParams, ctx?: PiContext): Promise<SpawnAgentParams> {
   if (params.isolation !== 'worktree') return params;
-  if (!ctx?.hasUI || typeof ctx.ui?.select !== 'function') {
+  const ui = getActiveAgentUi(ctx);
+  if (typeof ui?.select !== 'function') {
     throw new Error('isolation:"worktree" requires an interactive UI approval; non-interactive hosts fail closed. Re-run with isolation:"shared" to use the current cwd intentionally.');
   }
   const create = 'Create isolated worktree';
   const shared = 'Use current repo / shared cwd';
   const cancel = 'Cancel spawn';
-  const picked = await ctx.ui.select('Spawn this worker in an isolated git worktree?', [create, shared, cancel]);
+  const picked = await ui.select('Spawn this worker in an isolated git worktree?', [create, shared, cancel]);
   if (picked === create) return { ...params, worktreeDecision: 'create' };
   if (picked === shared) return { ...params, isolation: 'shared', worktreeDecision: 'shared' };
   throw new Error('Spawn cancelled before creating a worktree.');
@@ -1442,6 +1483,7 @@ function summarizeAgent(record: AgentRecord, opts: { full?: boolean } = {}) {
     handback: statHandbackArtifact(record.handbackPath),
     recoveryRisk: record.recoveryRisk,
     pendingMessages: record.pendingMessages,
+    lastMessage: record.lastMessage,
     thinkingSummary: record.thinkingSummary,
     policyWarnings: [...record.policyWarnings],
     ledgerEvents: opts.full ? [...record.ledgerEvents] : record.ledgerEvents.slice(-10),
@@ -1475,6 +1517,7 @@ function toWorkerLedgerEntry(record: AgentRecord): WorkerLedgerEntry {
     deltaSummary: record.deltaSummary,
     handback: statHandbackArtifact(record.handbackPath),
     pendingMessages: record.pendingMessages,
+    lastMessage: record.lastMessage,
     activeTool,
     toolCallCount: record.toolCalls.length,
     toolNames,
@@ -1830,26 +1873,18 @@ function refreshAgentFooterMetrics(ctx?: PiContext): void {
 }
 
 /**
- * The single orchestrator for every agent-driven surface: the compact
- * `octocode-agents` status line, the unified below-editor status panel, AND
- * the footer metrics (via the wired refresher). Event sources (ledger events,
- * ticker, commands, spawn/exit) call ONLY this — never the individual
- * refreshes — so agent state changes repaint all surfaces exactly once.
+ * The single orchestrator for agent visibility. The custom footer is the sole
+ * live ledger surface; event sources (ledger events, ticker, commands,
+ * spawn/exit) call ONLY this so every state change repaints it exactly once.
  */
 export function refreshAgentLedgerUi(ctx?: PiContext): void {
-  if (!ctx?.hasUI) return;
   const records = [...agents.values()];
   if (records.length === 0 || ledgerHidden) {
-    ctx.ui?.setStatus?.('octocode-agents', undefined);
     stopLedgerTicker();
-    refreshStatusPanel(ctx);
     refreshAgentFooterMetrics(ctx);
     return;
   }
-  // Keep a compact below-input/footer signal so running workers remain visible
-  // even when the richer below-editor status panel is collapsed or off-screen.
-  ctx.ui?.setStatus?.('octocode-agents', formatAgentLedger().replace(/^Octocode agents: /, 'agents: '));
-  refreshStatusPanel(ctx);
+  if (!getActiveAgentUi(ctx)) return;
   refreshAgentFooterMetrics(ctx);
   // Live refresh: while any worker is active, advance the spinner and re-render
   // every second on the shared ui-ticker clock (one timer process-wide).
@@ -1885,7 +1920,7 @@ function formatOctocodeAgentsHelp(): string {
     '- typed specialists: spawnSubagent({agent:"researcher"|"planner"|"architect", task:"..."}) · browser work: browserAgent tool',
     '- generic worker: spawnAgent({task:"...", name:"..."})',
     '- after spawning: AgentMessage({action:"wait"|"status"|"send"|"kill", agentId:"..."})',
-    '- visible UI: running/blocked/failed/done workers appear in the unified status panel and compact footer until hide/prune/remove',
+    '- visible UI: running/blocked/failed/done workers appear in the custom footer until hide/prune/remove',
     '',
     'Tip: ids can be full ids or short prefixes shown by list/status.',
   ].join('\n');
@@ -1902,8 +1937,7 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
   }
   if (action === 'hide' || action === 'clear') {
     ledgerHidden = true;
-    ctx?.ui?.setStatus?.('octocode-agents', undefined);
-    refreshStatusPanel(ctx);
+    refreshAgentFooterMetrics(ctx);
     ctx?.ui?.notify?.('Octocode agent ledger hidden for this session. Run /octocode-agents list to show it again.', 'info');
     return;
   }
@@ -2054,13 +2088,13 @@ export function steerWorkerById(idOrPrefix: string, message: string): boolean {
   if (record.status === 'running') {
     touch(record, 'running');
     const sent = sendRpc(record, { type: 'steer', message: text });
-    if (sent) pushLedgerEvent(record, 'message', `steer sent: ${previewMessage(text)}`);
+    if (sent) recordMessageActivity(record, 'to-agent', 'steer', text, `steer sent: ${previewMessage(text)}`);
     return sent;
   }
   const queued = sendRpc(record, { type: 'follow_up', message: text });
   if (queued) {
     enqueueWorkerTurn(record);
-    pushLedgerEvent(record, 'message', `follow-up queued: ${previewMessage(text)}`);
+    recordMessageActivity(record, 'to-agent', 'follow-up', text, `follow-up queued: ${previewMessage(text)}`);
   }
   return queued;
 }
@@ -2123,7 +2157,7 @@ export function registerAgentTools(
       'Structure the task as a labeled packet — lines starting with "Goal:", "Context:", "Scope:", "Ownership:", "Acceptance:", "Return:" (any of "-"/"—"/":" as separator, headings/bullets OK). A real gate checks for these labels, not just the words, and returns a [POLICY] warning on the spawn response when any are missing.',
       'spawnAgent defaults to resourceMode:"lean". Use resourceMode:"octocode" only when the worker needs Octocode extension tools.',
       'Model routing (which configured model to pass, `pi -ne --list-models`) is defined once in the agents policy — follow it there rather than re-deriving it here.',
-      'Spawned-agent registry and output previews live in the current Pi process and are visible in /octocode-agents plus the below-editor ledger; collect needed results before session shutdown or reload.',
+      'Spawned-agent registry and output previews live in the current Pi process and are visible in /octocode-agents plus the custom footer ledger; collect needed results before session shutdown or reload.',
       'Each worker packet includes an assigned durable handback file under .octocode/tmp/agents/<agentId>/handback.md; if the worker has write/bash capability, require important or long findings to be written there before terminal [DONE]/[BLOCKED]/[FAILED].',
       'spawnAgent prevents recursive subagents: workers never receive spawnAgent or AgentMessage, even in resourceMode:"octocode" or resourceMode:"default".',
     ],
@@ -2192,7 +2226,7 @@ export function registerAgentTools(
       'Manage spawned agents. Actions: list, status, send, steer, followUp, wait, kill, abort. Use this after spawnAgent to coordinate parallel workers.',
     promptSnippet: 'Message, wait for, list, status, or kill spawned background agents.',
     promptGuidelines: [
-      'Use AgentMessage action:"list" or action:"status" before claiming a spawned worker is done; in the UI, also check /octocode-agents or the below-editor spawned-agent ledger for running/blocked/failed workers.',
+      'Use AgentMessage action:"list" or action:"status" before claiming a spawned worker is done; in the UI, also check /octocode-agents or the custom footer ledger for running/blocked/failed workers.',
       'Use AgentMessage action:"wait" to collect the current turn result. Idle means the turn ended, not necessarily that the delegated objective passed acceptance.',
       'AgentMessage reads the in-memory spawned-agent registry; after session shutdown or reload, spawn fresh workers instead of relying on old agentIds.',
       'Before final answers, wait/status every relevant worker, reconcile disagreements, inspect any handback file shown by status/wait when it carries important or long findings, and synthesize findings instead of dumping raw worker JSON.',
@@ -2233,7 +2267,7 @@ export function registerAgentTools(
       }
 
       if (action === 'wait') {
-        if (ctx?.hasUI) ctx.ui?.setStatus?.('agent-wait', `\u29D7 Waiting for \u201C${record.name}\u201D\u2026`);
+        getActiveAgentUi(ctx)?.setStatus?.('agent-wait', `\u29D7 Waiting for \u201C${record.name}\u201D\u2026`);
         // timeoutMs is the silence budget, not a rigid deadline: an actively
         // streaming worker keeps the wait alive indefinitely. On a genuine quiet
         // gap we probe liveness and return a truthful snapshot instead of erroring.
@@ -2241,7 +2275,7 @@ export function registerAgentTools(
         try {
           outcome = await waitForAgent(record, { maxSilenceMs: Number(params['timeoutMs'] ?? 300000) });
         } finally {
-          if (ctx?.hasUI) ctx.ui?.setStatus?.('agent-wait', undefined);
+          getActiveAgentUi(ctx)?.setStatus?.('agent-wait', undefined);
         }
         const header = outcome.reason === 'terminal'
           ? 'Agent turn completed'
@@ -2300,14 +2334,14 @@ export function registerAgentTools(
         if (wasRunning) {
           touch(record, 'running');
           if (sendRpc(record, { type: 'steer', message })) {
-            pushLedgerEvent(record, 'message', `steer sent: ${previewMessage(message)}`);
+            recordMessageActivity(record, 'to-agent', 'steer', message, `steer sent: ${previewMessage(message)}`);
           }
         } else if (sendRpc(record, { type: 'follow_up', message })) {
           // Idle workers have no in-flight turn to redirect — a bare `steer`
           // RPC would be dropped by Pi. Route through follow_up like
           // steerWorkerById so the message actually starts the next turn.
           enqueueWorkerTurn(record);
-          pushLedgerEvent(record, 'message', `steer queued: ${previewMessage(message)}`);
+          recordMessageActivity(record, 'to-agent', 'steer', message, `steer queued: ${previewMessage(message)}`);
         }
       } else if (action === 'followUp') {
         // follow_up produces a turn that has not started yet (runs after the current
@@ -2315,7 +2349,7 @@ export function registerAgentTools(
         // ledger shows 'queued' until the worker actually emits agent_start.
         if (sendRpc(record, { type: 'follow_up', message })) {
           enqueueWorkerTurn(record);
-          pushLedgerEvent(record, 'message', `follow-up queued: ${previewMessage(message)}`);
+          recordMessageActivity(record, 'to-agent', 'follow-up', message, `follow-up queued: ${previewMessage(message)}`);
         }
       } else {
         // Default to followUp when the worker already has an in-flight or queued turn,
@@ -2331,7 +2365,13 @@ export function registerAgentTools(
           // cases the turn has not started, so mark it pending and let agent_start
           // flip the record to 'running'.
           enqueueWorkerTurn(record);
-          pushLedgerEvent(record, 'message', `${streamingBehavior === 'followUp' ? 'message queued' : 'message sent'}: ${previewMessage(message)}`);
+          recordMessageActivity(
+            record,
+            'to-agent',
+            streamingBehavior === 'followUp' ? 'follow-up' : 'send',
+            message,
+            `${streamingBehavior === 'followUp' ? 'message queued' : 'message sent'}: ${previewMessage(message)}`,
+          );
         }
       }
       refreshAgentLedgerUi(ctx);

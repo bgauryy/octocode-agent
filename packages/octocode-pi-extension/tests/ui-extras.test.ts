@@ -476,15 +476,37 @@ test('buildAgentFooterRows: one row per subagent, live first, state colour + ela
       startedAt: new Date(t0).toISOString(),
       updatedAt: new Date(t0 + 3000).toISOString(),
       pendingMessages: 2,
+      lastMessage: {
+        direction: 'to-agent',
+        action: 'follow-up',
+        preview: 'check the remaining callers',
+        timestamp: t0 + 2500,
+      },
       activeTool: 'MCPTool',
       toolCallCount: 3,
       toolNames: ['MCPTool', 'bash'],
       deltaSummary: 'checking references',
     },
   ], t0 + 6000);
-  assert.match(communicating.rows[0]!.doing ?? '', /queued 2/);
+  assert.match(communicating.rows[0]!.doing ?? '', /msg→ follow-up \(2 queued\): check/);
   assert.match(communicating.rows[0]!.doing ?? '', /tool MCPTool/);
   assert.match(communicating.rows[0]!.doing ?? '', /checking refe/);
+  const replied = buildAgentFooterRows([
+    {
+      agentId: 'c0ffee123',
+      name: 'reviewer',
+      status: 'idle',
+      startedAt: new Date(t0).toISOString(),
+      updatedAt: new Date(t0 + 5000).toISOString(),
+      lastMessage: {
+        direction: 'from-agent',
+        action: 'reply',
+        preview: '[DONE] review complete',
+        timestamp: t0 + 5000,
+      },
+    },
+  ], t0 + 6000);
+  assert.match(replied.rows[0]!.doing ?? '', /msg← reply: \[DONE\] review complete/);
   const many = buildAgentFooterRows(Array.from({ length: 6 }, (_, i) => ({
     agentId: `id${i}`, name: `w${i}`, status: 'running', startedAt: new Date(t0).toISOString(), updatedAt: new Date(t0 + i).toISOString(),
   })), t0);

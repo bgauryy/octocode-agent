@@ -2014,10 +2014,12 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
     // inputSchema JSON for every discovered tool — no describe round-trip needed.
     assert.match(cachedPrompt, /inputSchema: \{"type":"object"/);
     assert.match(cachedPrompt, /"text"/);
+    assert.match(cachedPrompt, /<runtime_capabilities>/);
+    assert.match(cachedPrompt, /effective_inline_images: false/);
     assert.match(cachedPrompt, /<available_skills>/);
     assert.match(cachedPrompt, /octocode-awareness-lite: Shared workspace coordination and verification\./);
     assert.match(cachedPrompt, /octocode-roast: Critical review and adversarial critique\. \[user\/global\]/);
-    assert.match(cachedPrompt, /load the minimal matching skill BEFORE acting via skill\(\{action:"load", name:"…"\}\)/);
+    assert.match(cachedPrompt, /load the minimal matching skill BEFORE acting via skill\(\{action:"load", name:"…", reason:"why it matches"\}\)/);
 
     const called = await invokeExecute(mcpTool, { action: 'call', server: 'fake', tool: 'echo', arguments: { text: 'ok' } }, trustedCtx);
     assert.match((called.content[0] as { text: string }).text, /echo:ok/);
@@ -4084,7 +4086,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     );
     assert.match(
       spawnTool.promptGuidelines?.join('\n') ?? '',
-      /visible in \/octocode-agents plus the below-editor ledger/
+      /visible in \/octocode-agents plus the custom footer ledger/
     );
     assert.match(
       spawnTool.promptGuidelines?.join('\n') ?? '',
@@ -4110,7 +4112,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     assert.match(messageTool.promptGuidelines?.join('\n') ?? '', /in-memory/);
     assert.match(
       messageTool.promptGuidelines?.join('\n') ?? '',
-      /check \/octocode-agents or the below-editor spawned-agent ledger/
+      /check \/octocode-agents or the custom footer ledger/
     );
     assert.equal(
       tools.has('handoff_context'),
@@ -4309,7 +4311,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
   }
 });
 
-test('agent ledger UI refreshes live worker transitions and renders every display state', async () => {
+test('agent ledger UI refreshes live worker transitions only in the custom footer', async () => {
   const spawned: MockAgentProcess[] = [];
   setAgentProcessFactoryForTests((_command, _args, _options) => {
     const proc = createMockAgentProcess();
@@ -4324,7 +4326,7 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
     const widgetCalls: Array<{ key: string; value: unknown; opts?: { placement?: string } }> = [];
     const footerCalls: unknown[] = [];
     const ctx = {
-      cwd: '/repo',
+      cwd: process.cwd(),
       hasUI: true,
       getContextUsage: () => ({ tokens: 0, contextWindow: 0 }),
       ui: {
@@ -4343,15 +4345,6 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
     );
     const agentId = (result.details as { agent: { agentId: string } }).agent
       .agentId;
-    const panelText = () => {
-      const call = widgetCalls.filter((entry) => entry.key === 'octocode-status-panel').at(-1);
-      assert.ok(call && typeof call.value === 'function', 'unified status panel rendered');
-      const component = (call.value as (tui: unknown, theme: unknown) => { render: (w: number) => string[] })(undefined, {
-        fg: (_color: string, text: string) => text,
-        bold: (text: string) => text,
-      });
-      return component.render(140).join('\n');
-    };
     const footerText = () => {
       const factory = footerCalls.at(-1);
       assert.equal(typeof factory, 'function', 'branded footer factory refreshed');
@@ -4361,19 +4354,18 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
       });
       return component.render(240).join('\n');
     };
-    assert.match(panelText(), /Octocode agents: 1 total.*1 running/, 'spawn refresh shows the worker as running in the unified panel');
     assert.equal(
-      widgetCalls.filter((entry) => entry.key === 'octocode-status-panel').at(-1)?.opts?.placement,
-      'belowEditor',
-      'unified agent panel is explicitly rendered below the editor/input area'
+      statusCalls.some(([key]) => key === 'octocode-agents'),
+      false,
+      'agent refresh does not create a duplicate compact status chip'
     );
-    const assertAgentFooterStatus = (state: string, when: string) =>
-      assert.ok(
-        statusCalls.some(([key, value]) => key === 'octocode-agents' && new RegExp(`1 total.*1 ${state}`).test(value ?? '')),
-        `octocode-agents compact footer shows ${state} (${when})`
-      );
-    assertAgentFooterStatus('running', 'after spawn refresh');
+    assert.equal(
+      widgetCalls.some((entry) => entry.key === 'octocode-status-panel'),
+      false,
+      'agent refresh does not create a duplicate below-editor widget'
+    );
     assert.match(footerText(), /agents 1 \(1 live\)/, 'custom footer shows the running worker immediately after spawn');
+    assert.match(footerText(), /agent ui-worker .*running/, 'custom footer owns the per-worker running row');
 
     spawned[0]!.emitStdout({
       type: 'message_end',
@@ -4384,11 +4376,10 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
     });
     spawned[0]!.emitStdout({ type: 'agent_end', messages: [] });
     assert.match(
-      panelText(),
-      /Octocode agents: 1 total.*1 blocked/,
-      'async worker handback refreshes the unified ledger to blocked without an AgentMessage call',
+      footerText(),
+      /msg← reply: \[BLOCKED\] need parent input/,
+      'async worker handback shows the inbound reply direction in the footer',
     );
-    assertAgentFooterStatus('blocked', 'after blocked handback');
     // Footer buckets are mutually exclusive: a blocked worker shows in the ⚠
     // attention count, NOT double-counted in the "live" segment.
     assert.match(footerText(), /agents 1\b/, 'custom footer keeps the blocked worker visible in the total');
@@ -4400,21 +4391,20 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
       { action: 'send', agentId, message: 'answer: proceed' },
       ctx
     );
-    // Before the worker starts the turn it reads as queued (not a faked 'running'),
-    // which already overrides the stale blocked handback.
+    // Before the worker starts the turn, the footer shows the outbound message
+    // and truthful queue depth instead of faking a running worker.
     assert.match(
-      panelText(),
-      /Octocode agents: 1 total.*1 queued/,
-      'a queued turn overrides the stale blocked handback in the unified panel',
+      footerText(),
+      /msg→ send \(1 queued\): answer: proceed/,
+      'a queued turn exposes outbound AgentMessage flow in the footer',
     );
     // The worker actually begins the queued turn → running.
     spawned[0]!.emitStdout({ type: 'agent_start' });
     assert.match(
-      panelText(),
-      /Octocode agents: 1 total.*1 running/,
-      'the worker reads as running once the queued turn starts',
+      footerText(),
+      /agent ui-worker .*running.*msg→ send: answer: proceed/,
+      'the footer keeps message direction visible once the queued turn starts',
     );
-    assertAgentFooterStatus('running', 'after new worker turn');
 
     spawned[0]!.emitStdout({
       type: 'message_end',
@@ -4426,17 +4416,15 @@ test('agent ledger UI refreshes live worker transitions and renders every displa
     spawned[0]!.emitStdout({ type: 'agent_end', messages: [] });
     spawned[0]!.close(0);
     assert.match(
-      panelText(),
-      /Octocode agents: 1 total.*1 done/,
-      'completed/exited workers stay visible as done until explicit prune/hide/remove',
+      footerText(),
+      /msg← reply: \[RESULT\] ok \[DONE\] complete/,
+      'completed workers keep their latest inbound reply visible in the footer',
     );
-    assertAgentFooterStatus('done', 'after completion');
     assert.match(footerText(), /agents 1(?!\/)/, 'custom footer keeps completed worker records visible until prune/hide/remove');
-    assert.ok(
-      widgetCalls.some(
-        (call) => call.key === 'octocode-status-panel' && typeof call.value === 'function'
-      ),
-      'completed records still render the below-editor ledger widget'
+    assert.equal(
+      widgetCalls.some((call) => call.key === 'octocode-status-panel'),
+      false,
+      'completed records remain footer-only and never resurrect the below-editor widget'
     );
 
     const stateSummary = messageTool.renderResult!(

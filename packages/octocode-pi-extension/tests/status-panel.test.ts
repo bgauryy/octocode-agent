@@ -64,7 +64,7 @@ function uiCtx(cwd = STATUS_CWD): { ctx: PiContext; calls: Array<{ name: string;
   return { ctx, calls };
 }
 
-test('status panel renderer pads shrinking volatile sections to avoid scrollbar jumps', () => {
+test('status panel renderer shrinks with volatile sections instead of retaining blank rows', () => {
   const { ctx, calls } = uiCtx();
   setPlan(STATUS_CWD, Array.from({ length: 6 }, (_, i) => `step ${i + 1}`));
   refreshPlanUi(ctx);
@@ -77,7 +77,8 @@ test('status panel renderer pads shrinking volatile sections to avoid scrollbar 
 
   setPlan(STATUS_CWD, ['one remaining step']);
   const shorterVolatile = renderer.render(100);
-  assert.equal(shorterVolatile.length, tall.length, 'volatile panel shrink is padded to the previous height');
+  assert.ok(shorterVolatile.length < tall.length, 'volatile panel contracts to its current content height');
+  assert.equal(shorterVolatile.some((line) => line === ''), false, 'the panel does not synthesize blank padding rows');
 
   clearPlan(STATUS_CWD);
   const modelOnly = renderer.render(100);

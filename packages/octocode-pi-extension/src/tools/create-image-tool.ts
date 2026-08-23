@@ -19,17 +19,18 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { Resvg } from '@resvg/resvg-js';
 
-import type { TSchema, ToolCallResult, ToolDefinition, PiTheme, RenderContext } from '../types.js';
+import type { TSchema, ToolCallResult, ToolDefinition, PiContext, PiTheme, RenderContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import { resolveFilePath } from './file-state.js';
-import { buildImageLinesFromData, formatBytes, isTerminalImageCapable, terminalImageProtocol } from './image-render.js';
+import { buildImageLinesFromData, effectiveInlineImages, formatBytes, isTerminalImageCapable } from './image-render.js';
 import { connectToChrome, cleanupConnection, findChromePath } from '../chrome-debug.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
@@ -52,6 +53,10 @@ const MAX_RENDER_HEIGHT = 8192;
 const HTML_RENDER_PORT_BASE = 9445;
 const HTML_RENDER_PORT_RANGE = 100; // ports 9445–9544
 let htmlRenderPortCounter = 0;
+let fallbackFileCounter = 0;
+const implicitArtifactFiles = new Set<string>();
+const implicitArtifactDirs = new Set<string>();
+const FALLBACK_ROOT = path.join(os.tmpdir(), 'octocode-images');
 
 /** Next distinct headless render port, rotating within the safe range. */
 function nextHtmlRenderPort(): number {
@@ -261,17 +266,43 @@ export async function createImageFromHtml(
  * terminal can't display it inline. Returns the absolute path, or undefined on
  * failure (never throws — this is a best-effort fallback).
  */
-function persistFallbackPng(base64: string, cwd: string, name?: string): string | undefined {
+function persistFallbackPng(base64: string, ctx?: PiContext, name?: string): string | undefined {
   try {
-    const dir = path.join(cwd, '.octocode', 'images');
-    fs.mkdirSync(dir, { recursive: true });
+    const sessionId = ctx?.sessionManager?.getSessionId?.() ?? `pid-${process.pid}`;
+    const safeSession = sessionId.replace(/[^\w.-]+/g, '_').slice(0, 96) || `pid-${process.pid}`;
+    const dir = path.join(FALLBACK_ROOT, safeSession);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(dir, 0o700);
     const safeBase = (name ?? 'image.png').replace(/[^\w.-]+/g, '_').replace(/\.png$/i, '') || 'image';
-    const file = path.join(dir, `${safeBase}-${Date.now()}.png`);
-    fs.writeFileSync(file, Buffer.from(base64, 'base64'));
+    fallbackFileCounter = (fallbackFileCounter + 1) % Number.MAX_SAFE_INTEGER;
+    const file = path.join(dir, `${safeBase}-${Date.now()}-${fallbackFileCounter}.png`);
+    fs.writeFileSync(file, Buffer.from(base64, 'base64'), { mode: 0o600 });
+    implicitArtifactFiles.add(file);
+    implicitArtifactDirs.add(dir);
     return file;
   } catch {
     return undefined;
   }
+}
+
+/** Remove only harness-created fallback images; explicit saveTo output is never tracked. */
+export function cleanupImplicitImageArtifacts(): number {
+  let removed = 0;
+  for (const file of implicitArtifactFiles) {
+    try {
+      fs.rmSync(file, { force: true });
+      removed += 1;
+    } catch {
+      // Best-effort session cleanup.
+    }
+  }
+  implicitArtifactFiles.clear();
+  for (const dir of implicitArtifactDirs) {
+    try { fs.rmdirSync(dir); } catch { /* non-empty or already removed */ }
+  }
+  implicitArtifactDirs.clear();
+  try { fs.rmdirSync(FALLBACK_ROOT); } catch { /* another session may still own it */ }
+  return removed;
 }
 
 function buildParameters(Type: TypeBoxBuilder): TSchema {
@@ -311,7 +342,7 @@ export function registerCreateImageTool(
       'If the terminal can\'t show inline images (VS Code/tmux/plain xterm), the tool saves the PNG and says so — OFFER to open it in a browser and ALWAYS ask the user first (askUser); never open a browser automatically.',
     ],
     parameters: buildParameters(Type),
-    async execute(_id: string, params: Record<string, unknown>, signal?: AbortSignal, _onUpdate?: unknown, ctx?: { cwd?: string }): Promise<ToolCallResult> {
+    async execute(_id: string, params: Record<string, unknown>, signal?: AbortSignal, _onUpdate?: unknown, ctx?: PiContext): Promise<ToolCallResult> {
       if (signal?.aborted) throw new Error('Operation aborted');
       const svg = typeof params['svg'] === 'string' ? (params['svg'] as string) : undefined;
       const html = typeof params['html'] === 'string' ? (params['html'] as string) : undefined;
@@ -341,16 +372,21 @@ export function registerCreateImageTool(
       // On terminals that can't display inline images (VS Code, tmux, plain
       // xterm, …) the picture won't show. Persist it so the user can open it,
       // and tell the agent to OFFER opening it in a browser — never auto-open.
-      const capable = isTerminalImageCapable();
+      const protocolCapable = isTerminalImageCapable();
+      const inlineEffective = effectiveInlineImages(ctx);
       let savedPath = res.savedPath;
+      let temporaryArtifact = false;
       let message = res.message;
-      if (!capable) {
+      if (!inlineEffective) {
         if (!savedPath && res.base64) {
-          savedPath = persistFallbackPng(res.base64, cwd, res.name);
+          savedPath = persistFallbackPng(res.base64, ctx, res.name);
+          temporaryArtifact = Boolean(savedPath);
         }
-        const proto = terminalImageProtocol();
+        const reason = protocolCapable
+          ? 'inline image display is disabled or unavailable in the current UI mode'
+          : 'this terminal has no inline-image support (e.g. VS Code / tmux)';
         const where = savedPath ? ` Saved to ${savedPath}.` : '';
-        message = `${res.message} — this terminal has no inline-image support${proto ? '' : ' (e.g. VS Code / tmux)'}, so it won't render here.${where} Offer to open it in a browser; ask the user first, never open automatically.`;
+        message = `${res.message} — ${reason}, so it won't render inline here.${where} Offer to open it in a browser; ask the user first, never open automatically.`;
       }
 
       const showToModel = params['showToModel'] === true;
@@ -361,7 +397,7 @@ export function registerCreateImageTool(
         content,
         // base64 lives in details so renderResult can inline it without re-encoding
         // and without pushing pixels into model context unless showToModel is set.
-        details: { ok: true, base64: res.base64, mimeType: 'image/png', bytes: res.bytes, name: res.name, savedPath, terminalSupportsImages: capable },
+        details: { ok: true, base64: res.base64, mimeType: 'image/png', bytes: res.bytes, name: res.name, savedPath, terminalSupportsImages: protocolCapable, effectiveInlineImages: inlineEffective, temporaryArtifact },
       };
     },
 

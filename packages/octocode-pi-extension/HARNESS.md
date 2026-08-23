@@ -31,16 +31,21 @@ The catalog is **pre-warmed at `session_start`** via `warmMcpCatalog()` — the 
 
 **Edit stale-check**: `MCPTool` intercepts `server:"octocode" tool:"localGetFileContent"` calls and runs `recordFileReadState()` so the `edit` tool’s stale guard works identically to the old native path.
 
-### Support Tools — 12 (+3 dynamic-capability tools)
+### Support Tools — 17
 
-Registered from extension sources. Named in `OCTOCODE_SUPPORT_TOOL_NAMES`: `web`, `chromeDebug`, `browserAgent`, `spawnSubagent`, `MCPTool`, `askUser`, `memory`, `manage_context`, `spawnAgent`, `AgentMessage`, `readImage`, `createImage`. The extension additionally registers `plan`, `callTool`, and `callSkill`. `/mcp` is a slash-command alias for the MCP management UI, not a model-callable support-tool alias.
+Registered from extension sources. Named in `OCTOCODE_SUPPORT_TOOL_NAMES`: `web`, `chromeDebug`, `browserAgent`, `spawnSubagent`, `callTool`, `callSkill`, `skill`, `plan`, `localServer`, `MCPTool`, `askUser`, `memory`, `manage_context`, `spawnAgent`, `AgentMessage`, `readImage`, `createImage`. `/mcp` is a slash-command alias for the MCP management UI, not a model-callable support-tool alias.
 
 | Tool | Label | Description |
 |---|---|---|
 | `web` | Web | Fetch an absolute URL or run a web search; returns text |
 | `chromeDebug` | Chrome DevTools | CDP-backed browser debug: DOM, network, console, eval, navigate, screenshot |
 | `browserAgent` | Browser Agent | Returns a ready-to-use `spawnAgent` config for a browser-agent subagent; use instead of raw `spawnAgent` for browser work |
-| `spawnSubagent` | Spawn Subagent | Typed subagent spawning: `researcher`, `architect`, `planner`, `browser-agent` — each has a dedicated system prompt and curated toolset |
+| `spawnSubagent` | Spawn Subagent | Typed subagent spawning: `researcher`, `architect`, `planner` — each has a dedicated system prompt and curated toolset; browser work uses the `browserAgent` tool |
+| `callTool` | Call Tool | Invoke a registered dynamic-capability tool from the live `<dynamic_capabilities>` registry |
+| `callSkill` | Call Skill | Invoke a registered dynamic-capability skill workflow from the live `<dynamic_capabilities>` registry |
+| `skill` | skill | Load and follow a bundled or installed Octocode skill (its `SKILL.md` multi-step workflow) |
+| `plan` | Plan | Session-scoped, compaction-durable task-breakdown checklist + reviewable plan doc (`plan.md`/`plan.html`) |
+| `localServer` | Local Server | Serve an inspected local static directory over localhost for user review |
 | `MCPTool` | MCPTool | MCP stdio bridge: `list`, `describe`, `call` any tool across configured MCP servers |
 | `askUser` | Ask User | Ask the user via interactive picker/text input, with non-TUI fallback prose |
 | `memory` | Memory | Recall/record/forget durable Awareness Lite memory through the scoped CLI |
@@ -106,11 +111,11 @@ Alias: `/mcp`
 
 ## Bundled Skills
 
-Served via the `resources_discover` hook. Installed at `dist/skills/` inside the extension.
+Served via the `resources_discover` hook. Installed at `dist/skills/` inside the extension. The `octocode-awareness-lite` package skill is intentionally **excluded** (`EXCLUDED_BUNDLED_SKILLS` in `scripts/build.mjs`) — it is not a loadable skill and bundling its `SKILL.md` causes duplicate skill-load UI noise.
 
 | Skill | Source |
 |---|---|
-| `octocode-awareness-lite` | `@octocodeai/octocode-awareness-lite` package skill → synced into `dist/skills/` at build time |
+| `octocode-brainstorming` · `octocode-chrome-devtools` · `octocode-documentation` · `octocode-graph-eval` · `octocode-prompt-optimizer` · `octocode-research` · `octocode-rfc-generator` · `octocode-roast` · `octocode-scraping` · `octocode-skills` · `octocode-subagent` | `@octocodeai/octocode` package `skills/` → synced into `dist/skills/` at build time |
 
 Env var `OCTOCODE_SKILL_ROOT` is set to the skill root so bundled skills can locate their assets.
 
@@ -195,7 +200,7 @@ Registered via `createHookComposer(pi, …)` (middleware composer that catches a
 
 ### Awareness Lite
 
-The harness depends on `@octocodeai/octocode-awareness-lite`, bundles its skill assets, and invokes the installed package CLI directly with the current Node runtime. Manual users can run `npx @octocodeai/octocode-awareness-lite`. Lite provides explicit SQLite-backed `status`, `plan`, `task`, `lock`, `work`, `handoff`, `check`, and `memory` commands, but it does not wire the full Awareness lifecycle hooks into Pi session/tool events.
+The harness depends on `@octocodeai/octocode-awareness-lite` and invokes the installed package CLI directly with the current Node runtime (its `SKILL.md` is deliberately not bundled — see Bundled Skills). Manual users can run `npx @octocodeai/octocode-awareness-lite`. Lite provides explicit SQLite-backed `status`, `plan`, `task`, `lock`, `work`, `handoff`, `check`, and `memory` commands, but it does not wire the full Awareness lifecycle hooks into Pi session/tool events.
 
 ---
 
@@ -258,15 +263,15 @@ Resolved by `getAssetPaths()` in `src/assets.ts`.
 
 ```
  0  native research tools    (removed — served via MCPTool → octocode MCP server)
-11  support tools            (+ plan, callTool, callSkill dynamic-capability tools)
+17  support tools            (see Support Tools table)
  3  guarded built-in overrides (edit, write, bash)
  4  disabled built-ins       (read, grep, find, ls → replaced)
-14  slash commands           (+ 2 aliases + 1 internal)
+25  slash commands           (includes /cron, /mcp aliases)
  1  flag                     (--no-context)
 12  lifecycle hooks          (hookComposer; session_start pre-warms MCP catalog)
  5  direct pi.on handlers    (turn_start, 2× turn_end, session_before_compact, session_compact)
- 1  bundled skill            (octocode-awareness)
- 4  named subagents          (researcher, architect, planner, browser-agent — all use MCPTool)
+11  bundled skills           (octocode CLI skill set; awareness-lite excluded)
+ 3  named subagents          (researcher, architect, planner)
  1  built-in MCP server      (octocode — cache-first npx, pre-warmed at session start)
 14  system-prompt sections
 ```

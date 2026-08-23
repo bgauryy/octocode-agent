@@ -81,6 +81,13 @@ export interface WorkerLedgerEvent {
   details?: unknown;
 }
 
+export interface WorkerMessageActivity {
+  direction: 'to-agent' | 'from-agent';
+  action: 'send' | 'steer' | 'follow-up' | 'reply';
+  preview: string;
+  timestamp: number;
+}
+
 export interface WorkerLedgerEntry {
   agentId: string;
   name: string;
@@ -105,6 +112,8 @@ export interface WorkerLedgerEntry {
   deltaSummary?: string;
   /** Number of follow-up/steer/send messages queued for the worker but not yet started. */
   pendingMessages?: number;
+  /** Latest parent↔worker message, used for a directional footer indicator. */
+  lastMessage?: WorkerMessageActivity;
   /** Current running tool, when the worker is inside a tool call. */
   activeTool?: string;
   /** Total tool calls observed for this worker. */

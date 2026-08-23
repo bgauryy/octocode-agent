@@ -67,7 +67,7 @@ export function renderSkillsDashboard(skills: SkillInfo[] | undefined, extras: S
     ...(usageLines.length > 0 ? usageLines : ['(none yet — the agent loads them via the skill tool when a task matches)']),
     '',
     'How to use',
-    'The agent loads skills with skill({action:"load", name:"…"}); force one with /skill:<name>.',
+    'The agent loads skills with skill({action:"load", name:"…", reason:"why it matches"}); force one with /skill:<name>.',
     'Install bundled skills with: npx octocode skill --name <skill> --platform pi',
     'Refresh discovery with /reload after installs/removals.',
     ...(extras.discoveryPath ? [`Machine-readable inventory (skills + MCP config + tools): ${extras.discoveryPath}`] : []),
@@ -84,7 +84,7 @@ export function renderAvailableSkillsAddendum(skills: SkillInfo[] | undefined): 
 
   return [
     '<available_skills>',
-    'Skills available by name this turn. Names/descriptions are enough to decide whether a skill matches; do not preload every skill body. Use this catalog with the <skills> policy: when the user names a skill or the task context matches a description, load the minimal matching skill BEFORE acting via skill({action:"load", name:"…"}) — it returns the full SKILL.md plus the skill directory and files. skill({action:"list"}) refreshes the catalog with usage. Do not load skills as ceremony.',
+    'Skills available by name this turn. Names/descriptions are enough to decide whether a skill matches; do not preload every skill body. Use this catalog with the <skills> policy: when the user names a skill or the task context matches a description, load the minimal matching skill BEFORE acting via skill({action:"load", name:"…", reason:"why it matches"}) — it returns the full SKILL.md plus the skill directory and files. skill({action:"list"}) refreshes the catalog with usage. Do not load skills as ceremony.',
     ...lines,
     '</available_skills>',
   ].join('\n');

@@ -20,7 +20,7 @@ You are a browser debugging specialist operating one parent-directed phase at a 
 
 Use only fields that add information:
 - [RESULT] compact phase conclusion
-- [EVIDENCE] URL, target, request, console line, selector, or source anchor
+- [EVIDENCE] full URL, target, request, console line, selector, or source anchor
 - [FINDING] evidence-backed issue or fact
 - [METRIC] measured count, duration, size, or percentage
 - [SCREENSHOT] absolute evidence path

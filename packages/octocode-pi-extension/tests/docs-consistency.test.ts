@@ -57,3 +57,22 @@ test('TOOLS browser-agent guidance uses the current browserAgent spawn flow', ()
   assert.match(tools, /browserAgent\(\.\.\.\).*spawnAgent\(\.\.\.\).*AgentMessage\(\.\.\.\)/s);
   assert.doesNotMatch(tools, /spawnSubagent` \(agent: "browser-agent"\)/);
 });
+
+
+test('HARNESS and UI inventories derive from the current extension harness', () => {
+  const harnessDoc = readPackageFile('HARNESS.md');
+  const uiDoc = readPackageFile('docs/UI.md');
+  const harness = listExtensionHarness(packageRoot);
+
+  assert.match(harnessDoc, new RegExp(`### Support Tools — ${OCTOCODE_SUPPORT_TOOL_NAMES.length}\\b`));
+  for (const tool of harness.supportTools) {
+    assert.ok(harnessDoc.includes(`\`${tool}\``), `${tool} missing from HARNESS support inventory`);
+  }
+  assert.match(harnessDoc, new RegExp(`\n${harness.extensionCommands.length}  slash commands`));
+  assert.match(harnessDoc, /3  named subagents\s+\(researcher, architect, planner/);
+  assert.doesNotMatch(harnessDoc, /spawnSubagent[^\n]*browser-agent/);
+  assert.doesNotMatch(harnessDoc, /bundles its skill assets|bundled skill\s+\(octocode-awareness/);
+
+  assert.match(uiDoc, new RegExp(`✓ tools: 0 native Pi tools \\+ ${OCTOCODE_SUPPORT_TOOL_NAMES.length} support tools`));
+  assert.doesNotMatch(uiDoc, /13 native Pi tools \+ 7 support tools/);
+});

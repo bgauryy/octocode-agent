@@ -7,14 +7,14 @@ This extension keeps the TUI compact by default and puts detail behind slash com
 | Surface | Where | Purpose |
 |---|---|---|
 | Header | session start | Brand, loaded capability hint, common commands |
-| Status footer | always-on | Octocode label, context/turn metrics, agent counts, git/blocked/failed segments, and the effort dial `◉ <level>`; detailed thinking mode also appears as the separate `octocode-thinking` status entry |
+| Status footer | always-on | The sole spawned-agent surface: Octocode label, context/turn metrics, agent counts, one row per worker, directional `msg→` / `msg←` communication activity, git/blocked/failed segments, and the effort dial `◉ <level>`; detailed thinking mode also appears as the separate `octocode-thinking` status entry |
 | Working indicator | during turns | `✦ ✧ ✶ ✧` spinner frames with a `Thinking…` message (the word "Octocode" is kept out of the frames to avoid "Octocode Octocode…" doubling) |
-| Unified status panel | below-editor widget (`octocode-status-panel`) | One block: Model → Plan → Awareness → Agents sections; the Plan header can show multiple active parallel lanes, and the Agents section shows live running rows; persistent while a model is known, cleared on shutdown |
+| Unified status panel | below-editor widget (`octocode-status-panel`) | One block: Model → Plan → Awareness; the Plan header can show multiple active parallel lanes. Spawned agents are intentionally excluded so the footer is their single stable location; persistent while a model is known, cleared on shutdown |
 | Thinking blocks | `OCTOCODE_SHELL=1` runtime stream | Shows `🧠 thinking` start/end rows and streams reasoning deltas instead of dropping them |
 | Tool rows | tool streams/renderers | Shared renderers show a `◇` call row, animated braille running state, then a result row that always carries the outcome: structured stats/paths/preview when the tool reports them, otherwise `→ first line of the response` (ctrl+o expands the full text); the Octocode shell also prints call/update/result blocks |
-| Live agent progress | while workers run | Agent ledger animates: Octocode sparkle spinner + live `running` label + elapsed, refreshed every 1s until no worker is active (ticker is `unref`-ed and self-stops) |
+| Live agent progress | while workers run | Footer rows show name, state, elapsed time, current tool/progress, and latest message direction; refreshed every 1s until no worker is active (ticker is `unref`-ed and self-stops) |
 | Dashboard | `/octocode` | Status, agents, tools, setup paths, skills, health, and modern next actions |
-| Agent ledger | `/octocode-agents` + below editor | Spawned-worker state and controls |
+| Agent ledger | custom footer + `/octocode-agents` details | Spawned-worker state, message flow, and controls without duplicate status/widget rows |
 | Decision picker | `askUser` tool | Inline in-flow list for real user choices — rendered in the message flow (not a floating overlay): single pick, multi-select (space toggles, min/max), per-option previews, and short sequential forms; falls back to inline questions when no interactive UI is available |
 | Inline images | expanded tool renderers | chrome-debug / browser-agent screenshots render inline (Kitty/iTerm2) with a `🖼` placeholder on terminals without image support |
 | Worker inbox | `/octocode-inbox` | Two-stage overlay: pick a worker, then view transcript / steer / kill; completions and failures fire OSC 9 desktop notifications + a terminal-title flash |
@@ -40,7 +40,7 @@ The dashboard is scan-first:
 ◆ Octocode dashboard
 Status
 ✓ system prompt: found
-✓ tools: 13 native Pi tools + 7 support tools
+✓ tools: 0 native Pi tools + 17 support tools
 ✓ metrics: ctx ▓▓▓▓▓░░░░░ 50% (50k/100k)
 Agents
 Octocode agents: none
@@ -61,7 +61,7 @@ Modern TUI commands: `/octocode-palette`, `/octocode-dial`, `/octocode-footer` (
 
 Scrollback rule (pi-tui `tui-main-screen.js`): a change to any line **above the visible viewport** — or a width/height change — forces a full redraw that clears the screen *and scrollback*. Octocode therefore renders **nothing above the transcript** (no `setHeader`; the session name lives only in the terminal title), keeps every transcript entry/message/tool row a pure function of its data, and confines live state to the footer, status chips, and the below-editor panel — all registered once and repainted via `tui.requestRender`. Per-frame render closures never do O(session) work: context usage is sampled on events + the 1 s tick (`pi.getContextUsage()` rebuilds the session branch per call), and the banner's version read is memoized. Diagnose any remaining full redraw with `PI_DEBUG_REDRAW=1` (pi logs each `fullRender:` reason to `pi-debug.log`).
 
-Motion language: the transcript and footer are **static** — the only moving element is pi's working spinner (and the agent-ledger spinner in the below-editor panel). Attention flags (`⚠ ✗ ✉`, ≥90% context) are painted warning/error **and bold**; brightness always means state, never decoration. The banner card is a fixed purple gradient — an animated banner at the top of the scrollback invalidated pi-tui's line diff on every repaint and caused scroll jumps.
+Motion language: the transcript and footer use no animated decoration — pi's working spinner is the only moving glyph; live agent rows only update factual elapsed/state/message text. Attention flags (`⚠ ✗ ✉`, ≥90% context) are painted warning/error **and bold**; brightness always means state, never decoration. The banner card is a fixed purple gradient — an animated banner at the top of the scrollback invalidated pi-tui's line diff on every repaint and caused scroll jumps.
 
 ## Agent ledger
 
@@ -83,6 +83,8 @@ Ledger badges:
 | `⚠ needs verify` | Done handback lacks evidence/verification | Run acceptance checks before final answer |
 | `blocked` | Worker asked parent for input | Send an answer with `AgentMessage` |
 | `failed` | Process/tool failed | Inspect stderr/output, then retry or kill |
+| `msg→ <action>` | Parent sent, steered, or queued a message to this worker | Watch the queued count or wait for the turn |
+| `msg← reply` | Worker replied to the parent | Read the preview or inspect with `AgentMessage status` |
 
 ## Visual contract
 

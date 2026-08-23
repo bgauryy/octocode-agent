@@ -13,13 +13,13 @@
  */
 
 import path from 'node:path';
-import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
+import type { TSchema, ToolCallResult, ToolDefinition, PiContext, PiTheme } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import { resolveFilePath } from './file-state.js';
-import { formatBytes, isTerminalImageCapable, loadImageForRender } from './image-render.js';
+import { effectiveInlineImages, formatBytes, isTerminalImageCapable, loadImageForRender } from './image-render.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -87,7 +87,7 @@ export function registerReadImageTool(
       'On terminals without inline-image support (VS Code/tmux), the image won\'t render — OFFER to open the file in a browser and ALWAYS ask the user first (askUser); never open a browser automatically.',
     ],
     parameters: buildParameters(Type),
-    async execute(_id: string, params: Record<string, unknown>, signal?: AbortSignal, _onUpdate?: unknown, ctx?: { cwd?: string }): Promise<ToolCallResult> {
+    async execute(_id: string, params: Record<string, unknown>, signal?: AbortSignal, _onUpdate?: unknown, ctx?: PiContext): Promise<ToolCallResult> {
       if (signal?.aborted) throw new Error('Operation aborted');
       const filePath = params['path'];
       if (typeof filePath !== 'string' || filePath.length === 0) throw new Error('readImage: `path` is required.');
@@ -96,19 +96,29 @@ export function registerReadImageTool(
       if (!res.ok) {
         return { content: [{ type: 'text', text: res.message }], isError: true, details: { ok: false } };
       }
-      // On terminals without inline-image support the picture won't render; the
-      // file is already on disk, so tell the agent to offer opening it in a
-      // browser — asking the user first, never auto-opening.
-      const capable = isTerminalImageCapable();
-      const note = capable
+      // Protocol support alone is insufficient: Pi can run without a TUI or
+      // with terminal.showImages disabled. Keep the protocol field for callers
+      // that already consume it, and add the effective behavioral field.
+      const protocolCapable = isTerminalImageCapable();
+      const inlineEffective = effectiveInlineImages(ctx);
+      const reason = protocolCapable
+        ? 'inline image display is disabled or unavailable in the current UI mode'
+        : 'this terminal has no inline-image support (e.g. VS Code / tmux)';
+      const note = inlineEffective
         ? res.message
-        : `${res.message} — this terminal has no inline-image support (e.g. VS Code / tmux), so it won't render here. Offer to open ${resolveFilePath(filePath, cwd)} in a browser; ask the user first, never open automatically.`;
+        : `${res.message} — ${reason}, so it won't render inline here. Offer to open ${resolveFilePath(filePath, cwd)} in a browser; ask the user first, never open automatically.`;
       return {
         content: [
           { type: 'image', data: res.base64!, mimeType: res.mimeType! },
           { type: 'text', text: note },
         ],
-        details: { ok: true, mimeType: res.mimeType, bytes: res.bytes, terminalSupportsImages: capable },
+        details: {
+          ok: true,
+          mimeType: res.mimeType,
+          bytes: res.bytes,
+          terminalSupportsImages: protocolCapable,
+          effectiveInlineImages: inlineEffective,
+        },
       };
     },
 

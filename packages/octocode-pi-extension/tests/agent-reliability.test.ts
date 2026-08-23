@@ -15,6 +15,7 @@ import { test, beforeEach, afterEach } from 'vitest';
 import { Type } from 'typebox';
 import {
   spawnRpcAgent,
+  registerAgentTools,
   setAgentProcessFactoryForTests,
   isSubagentProcess,
   MAX_AGENT_LAST_OUTPUT_CHARS,
@@ -341,6 +342,77 @@ test('M7: spawning beyond MAX_AGENT_RECORDS non-droppable agents throws', functi
 
 // ─── L2/L3: live ledger ticker (Wave 3 live-progress) ─────────────────────────
 
+test('SEV-1: late worker process events ignore a stale session context', () => {
+  if (isSubagentProcess()) return;
+
+  let stale = false;
+  const ui = { setStatus: () => {}, setWidget: () => {} };
+  const ctx = {
+    get hasUI() {
+      if (stale) throw new Error('stale context sentinel');
+      return true;
+    },
+    get ui() {
+      if (stale) throw new Error('stale context sentinel');
+      return ui;
+    },
+  } as never;
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  spawnRpcAgent({ task: 'outlives its session', resourceMode: 'lean' }, ctx);
+
+  stale = true;
+  assert.doesNotThrow(() => mock._emit('stdout:data', Buffer.from(`${JSON.stringify({ type: 'agent_end', messages: [] })}\n`)));
+  assert.doesNotThrow(() => mock._emit('stderr:data', Buffer.from('late stderr')));
+  assert.doesNotThrow(() => mock._emit('error', new Error('late process error')));
+  assert.doesNotThrow(() => mock._emit('close', 0, null));
+  assert.doesNotThrow(() => refreshAgentLedgerUi(ctx), 'queued ledger ticks must also ignore the stale context');
+});
+
+test('SEV-1: AgentMessage wait cleanup ignores a context invalidated while waiting', async () => {
+  if (isSubagentProcess()) return;
+
+  let stale = false;
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const ui = { setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]) };
+  const ctx = {
+    get hasUI() {
+      if (stale) throw new Error('stale context sentinel');
+      return true;
+    },
+    get ui() {
+      if (stale) throw new Error('stale context sentinel');
+      return ui;
+    },
+  } as never;
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  const record = spawnRpcAgent({ task: 'wait across replacement', resourceMode: 'lean' }, ctx);
+  const tools = new Map<string, ToolDefinition>();
+  registerAgentTools(
+    { registerTool: (definition: ToolDefinition) => tools.set(definition.name, definition) } as never,
+    Type,
+    new Set<string>(),
+    (pi, names, definition) => {
+      names.add(definition.name);
+      pi.registerTool?.(definition);
+    },
+  );
+
+  const waiting = tools.get('AgentMessage')!.execute(
+    'wait-stale-context',
+    { action: 'wait', agentId: record.id, timeoutMs: 1_000 },
+    undefined,
+    undefined,
+    ctx,
+  );
+  stale = true;
+  mock._emit('stdout:data', Buffer.from(`${JSON.stringify({ type: 'agent_end', messages: [] })}\n`));
+
+  await assert.doesNotReject(waiting);
+  assert.deepEqual(statusCalls, [['agent-wait', `\u29D7 Waiting for \u201C${record.name}\u201D\u2026`]]);
+});
+
 test('L2: live ledger ticker runs while a worker is active and stops when it finishes', () => {
   if (isSubagentProcess()) return;
   const ctx = {
@@ -363,29 +435,35 @@ test('L2: live ledger ticker runs while a worker is active and stops when it fin
   stopLedgerTickerForTests();
 });
 
-test('L3: refreshAgentLedgerUi with no agents clears the widget and stops the ticker', () => {
+test('L3: refreshAgentLedgerUi with no agents stops the ticker without creating duplicate status/widget surfaces', () => {
   if (isSubagentProcess()) return;
-  const widgetVals: unknown[] = [];
+  const statusCalls: unknown[] = [];
+  const widgetCalls: unknown[] = [];
   const ctx = {
     hasUI: true,
-    ui: { setStatus: () => {}, setWidget: (_k: string, v: unknown) => widgetVals.push(v) },
+    ui: {
+      setStatus: (...args: unknown[]) => statusCalls.push(args),
+      setWidget: (...args: unknown[]) => widgetCalls.push(args),
+    },
   } as never;
 
   refreshAgentLedgerUi(ctx); // registry cleared by beforeEach
   assert.equal(isLedgerTickerActiveForTests(), false, 'no ticker without active workers');
-  assert.ok(widgetVals.includes(undefined), 'widget cleared to undefined when no agents');
+  assert.deepEqual(statusCalls, [], 'agent state no longer duplicates into a compact status chip');
+  assert.deepEqual(widgetCalls, [], 'agent state no longer duplicates into the below-editor widget');
 
   stopLedgerTickerForTests();
 });
 
-test('/octocode-agents hide removes the agent section from the unified status panel until list/status shows it again', async () => {
+test('/octocode-agents hide suppresses footer ledger rows until list/status shows them again', async () => {
   if (isSubagentProcess()) return;
-  const widgetCalls: Array<{ name: string; cleared: boolean }> = [];
+  const statusCalls: unknown[] = [];
+  const widgetCalls: unknown[] = [];
   const ctx = {
     hasUI: true,
     ui: {
-      setStatus: () => {},
-      setWidget: (name: string, content: unknown) => widgetCalls.push({ name, cleared: content === undefined }),
+      setStatus: (...args: unknown[]) => statusCalls.push(args),
+      setWidget: (...args: unknown[]) => widgetCalls.push(args),
       notify: () => {},
     },
   } as never;
@@ -395,11 +473,12 @@ test('/octocode-agents hide removes the agent section from the unified status pa
   assert.ok(agentPanelLines().length > 0, 'agent panel starts visible');
 
   await handleOctocodeAgentsCommand('hide', ctx);
-  assert.equal(agentPanelLines().length, 0, 'hide suppresses unified agent panel lines');
-  assert.ok(widgetCalls.some((call) => call.name === 'octocode-status-panel' && call.cleared), 'unified panel is refreshed/cleared');
+  assert.equal(agentPanelLines().length, 0, 'hide suppresses the shared visible-ledger row builder');
+  assert.deepEqual(statusCalls, [], 'hide does not create a duplicate status surface');
+  assert.deepEqual(widgetCalls, [], 'hide does not mutate the below-editor Plan/Awareness panel');
 
   await handleOctocodeAgentsCommand('list', ctx);
-  assert.ok(agentPanelLines().length > 0, 'list shows the ledger again');
+  assert.ok(agentPanelLines().length > 0, 'list shows the footer ledger rows again');
 
   stopLedgerTickerForTests();
 });
@@ -456,7 +535,7 @@ test('SEV-1: an explicit model without provider does not inherit an unrelated pa
   );
 });
 
-test('SEV-1: OpenAI GPT-5 tool-calling workers omit --thinking to avoid reasoning_effort 400s', () => {
+test('SEV-1: OpenAI GPT-5 tool-calling workers force --thinking off to override inherited defaults', () => {
   if (isSubagentProcess()) return;
   const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => mock as never);
@@ -469,11 +548,13 @@ test('SEV-1: OpenAI GPT-5 tool-calling workers omit --thinking to avoid reasonin
     tools: ['web', 'MCPTool'],
   }, { hasUI: false, ui: { setStatus: () => {}, setWidget: () => {} } } as never);
 
-  assert.equal(record.args.includes('--thinking'), false, 'tool-calling OpenAI GPT-5 worker must not pass --thinking');
+  const thinkingIdx = record.args.indexOf('--thinking');
+  assert.ok(thinkingIdx >= 0, 'tool-calling OpenAI GPT-5 worker must override inherited thinking');
+  assert.equal(record.args[thinkingIdx + 1], 'off', 'the explicit override prevents reasoning_effort from reaching Chat Completions');
   assert.ok(record.args.includes('--tools'), 'worker still receives its tool allowlist');
   assert.ok(
-    record.policyWarnings.some((warning) => /Omitted --thinking for OpenAI GPT-5 tool-calling worker/.test(warning)),
-    'spawn policy explains the compatibility omission',
+    record.policyWarnings.some((warning) => /Forced --thinking off for OpenAI GPT-5 tool-calling worker/.test(warning)),
+    'spawn policy explains the compatibility override',
   );
 });
 

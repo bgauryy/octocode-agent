@@ -22,10 +22,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { SettingsManager } from '@earendil-works/pi-coding-agent';
 import { Image, detectCapabilities } from '@earendil-works/pi-tui';
 
 import { paint } from '../tui/palette.js';
-import type { PiTheme, RenderCallReturn, RenderContext } from '../types.js';
+import type { PiContext, PiTheme, RenderCallReturn, RenderContext } from '../types.js';
 import { truncateToWidth } from './render-helpers.js';
 
 // ─── Limits / constants ───────────────────────────────────────────────────────
@@ -89,6 +90,7 @@ export function loadImageForRender(filePath: string): { base64: string; mimeType
 // ─── Capability gate (injectable for tests) ───────────────────────────────────
 
 type CapabilityCheck = () => boolean;
+type ImageVisibilityCheck = (cwd: string) => boolean;
 
 const defaultCapabilityCheck: CapabilityCheck = () => {
   try {
@@ -99,11 +101,54 @@ const defaultCapabilityCheck: CapabilityCheck = () => {
   }
 };
 
+const defaultImageVisibilityCheck: ImageVisibilityCheck = (cwd) => {
+  try {
+    return SettingsManager.create(cwd).getShowImages();
+  } catch {
+    // Pi defaults terminal.showImages to true. A settings read failure should not
+    // silently disable a capability that renderContext will still enforce.
+    return true;
+  }
+};
+
 let capabilityCheck: CapabilityCheck = defaultCapabilityCheck;
+let imageVisibilityCheck: ImageVisibilityCheck = defaultImageVisibilityCheck;
 
 /** Test seam: override (or pass undefined to restore) the terminal-image capability check. */
 export function setCapabilityCheckForTests(check?: CapabilityCheck): void {
   capabilityCheck = check ?? defaultCapabilityCheck;
+}
+
+/** Test seam for Pi's persisted terminal.showImages setting. */
+export function setImageVisibilityCheckForTests(check?: ImageVisibilityCheck): void {
+  imageVisibilityCheck = check ?? defaultImageVisibilityCheck;
+}
+
+/**
+ * Behavioral inline-image capability used by prompt composition and image tools.
+ * Pi exposes showImages only to renderers, so non-render phases read the same
+ * persisted setting through its public SettingsManager API.
+ */
+export function effectiveInlineImages(ctx?: Pick<PiContext, 'cwd' | 'hasUI' | 'mode'>): boolean {
+  if (ctx?.hasUI !== true || ctx.mode !== 'tui') return false;
+  const cwd = ctx.cwd ?? process.cwd();
+  return capabilityCheck() && imageVisibilityCheck(cwd);
+}
+
+/** Bounded per-turn capability projection for model routing decisions. */
+export function renderRuntimeCapabilitiesAddendum(ctx?: Pick<PiContext, 'cwd' | 'hasUI' | 'mode'>): string {
+  const protocolSupported = capabilityCheck();
+  const effective = ctx?.hasUI === true
+    && ctx.mode === 'tui'
+    && protocolSupported
+    && imageVisibilityCheck(ctx.cwd ?? process.cwd());
+  return [
+    '<runtime_capabilities>',
+    `effective_inline_images: ${effective}`,
+    `terminal_image_protocol_supported: ${protocolSupported}`,
+    'image_browser_fallback_requires_consent: true',
+    '</runtime_capabilities>',
+  ].join('\n');
 }
 
 /**

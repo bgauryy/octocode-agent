@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Type } from 'typebox';
 import { readImageFile, registerReadImageTool } from '../src/tools/read-image-tool.js';
+import { setCapabilityCheckForTests, setImageVisibilityCheckForTests } from '../src/tools/image-render.js';
 import type { ToolDefinition, ImageContentPart } from '../src/types.js';
 
 let dir: string;
@@ -18,6 +19,8 @@ beforeEach(async () => {
   dir = await mkdtemp(path.join(os.tmpdir(), 'read-image-'));
 });
 afterEach(async () => {
+  setCapabilityCheckForTests(undefined);
+  setImageVisibilityCheckForTests(undefined);
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -71,6 +74,24 @@ describe('readImage tool', () => {
     expect(img!.data).toBe(PNG_1x1.toString('base64'));
     // plus a short text note
     expect(result.content.some((c) => c.type === 'text')).toBe(true);
+  });
+
+  it('reports effective inline capability from TUI mode, protocol, and image settings', async () => {
+    const f = path.join(dir, 'shot.png');
+    await writeFile(f, PNG_1x1);
+    const tool = getTool();
+    setCapabilityCheckForTests(() => true);
+    setImageVisibilityCheckForTests(() => false);
+    const hidden = await tool.execute!('tsettings', { path: f }, undefined, undefined, { cwd: dir, hasUI: true, mode: 'tui' });
+    const hiddenDetails = hidden.details as { terminalSupportsImages?: boolean; effectiveInlineImages?: boolean };
+    expect(hiddenDetails.terminalSupportsImages).toBe(true);
+    expect(hiddenDetails.effectiveInlineImages).toBe(false);
+    expect((hidden.content.find((c) => c.type === 'text') as { text: string }).text).toMatch(/ask the user first/i);
+
+    setImageVisibilityCheckForTests(() => true);
+    const visible = await tool.execute!('tvisible', { path: f }, undefined, undefined, { cwd: dir, hasUI: true, mode: 'tui' });
+    expect((visible.details as { effectiveInlineImages?: boolean }).effectiveInlineImages).toBe(true);
+    expect((visible.content.find((c) => c.type === 'text') as { text: string }).text).not.toMatch(/browser/i);
   });
 
   it('returns an error result (no image block) for a non-image', async () => {

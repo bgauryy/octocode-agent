@@ -276,7 +276,11 @@ export async function initCheckpointStore(
         // this leaves them alone) to complete a true restore.
         try {
           const added = await git(['diff', '--name-only', '-z', '--diff-filter=A', id, '--', ...targets]);
-          const rels = added.split('\0').map((s) => s.trim()).filter(Boolean);
+          // -z output is raw/unquoted precisely so paths with spaces survive; do
+          // NOT .trim() — a filename with a legal leading/trailing space would be
+          // mangled and the wrong path (or none) removed. filter(Boolean) only
+          // drops the empty element after the final NUL.
+          const rels = added.split('\0').filter(Boolean);
           for (const rel of rels) {
             try {
               fs.rmSync(path.join(resolvedCwd, rel), { force: true });

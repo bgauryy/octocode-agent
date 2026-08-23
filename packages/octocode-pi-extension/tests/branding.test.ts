@@ -75,6 +75,26 @@ describe('theme JSON completeness', () => {
     const light = loadTheme('octocode-light.json');
     expect(dark['name']).not.toBe(light['name']);
   });
+
+  for (const filename of ['octocode-dark.json', 'octocode-light.json']) {
+    it(`${filename} keeps every tool state on the terminal background`, () => {
+      const theme = loadTheme(filename);
+      const colors = theme['colors'] as Record<string, unknown>;
+      expect(colors['toolPendingBg']).toBe('');
+      expect(colors['toolSuccessBg']).toBe('');
+      expect(colors['toolErrorBg']).toBe('');
+    });
+
+    it(`${filename} uses an explicit high-contrast output color distinct from metadata`, () => {
+      const theme = loadTheme(filename);
+      const vars = theme['vars'] as Record<string, unknown>;
+      const colors = theme['colors'] as Record<string, unknown>;
+      expect(colors['toolOutput']).toBe('ink');
+      expect(typeof vars['ink']).toBe('string');
+      expect(vars['ink']).not.toBe(vars['dim']);
+      expect(colors['toolTitle']).not.toBe(colors['toolOutput']);
+    });
+  }
 });
 
 // ─── Banner rendering ─────────────────────────────────────────────────────────

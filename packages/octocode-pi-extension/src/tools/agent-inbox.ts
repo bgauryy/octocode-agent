@@ -44,6 +44,7 @@ import {
   flashTerminalTitle,
   notificationsEnabled,
   suppressDesktopNotifications,
+  resumeDesktopNotifications,
 } from './desktop-notify.js';
 
 export const OCTOCODE_INBOX_COMMAND = 'octocode-inbox';
@@ -282,6 +283,13 @@ export interface AgentInboxRegistration {
   unsubscribe(): void;
   /** Full shutdown: set the suppress flag FIRST, then detach. Call before killing workers. */
   shutdown(): void;
+  /**
+   * Undo shutdown()'s suppression + detach so a following session can notify
+   * again (idempotent). Must be called on session_start — the registration is
+   * once-per-process, so without this a single shutdown kills notifications
+   * permanently. Mirrors resumeStatusPanel/resumeAwarenessPanel.
+   */
+  resume(): void;
 }
 
 /**
@@ -337,7 +345,7 @@ export function registerAgentInbox(
     notifier(lastCtx, summary ? `${message} — ${summary}` : message, failed ? 'warning' : 'info');
   };
 
-  const unsubscribeLedger = registerListener(onLedgerEvent);
+  let unsubscribeLedger = registerListener(onLedgerEvent);
   let detached = false;
   const unsubscribe = (): void => {
     if (detached) return;
@@ -351,6 +359,19 @@ export function registerAgentInbox(
     suppressDesktopNotifications();
     clearTitleFlashTimer();
     unsubscribe();
+  };
+  const resume = (): void => {
+    // session_start counterpart to shutdown(): clear both suppress flags and
+    // re-attach the ledger listener that shutdown() detached. Without this a
+    // single /new or /resume leaves the once-per-process registration muted +
+    // detached forever, so no later worker ever notifies. Idempotent: on the
+    // first session (never shut down) this is a harmless re-arm.
+    localSuppressed = false;
+    resumeDesktopNotifications();
+    if (detached) {
+      unsubscribeLedger = registerListener(onLedgerEvent);
+      detached = false;
+    }
   };
 
   // Track whether a turn is active + capture the freshest ctx for notifications.
@@ -383,5 +404,5 @@ export function registerAgentInbox(
     },
   });
 
-  return { unsubscribe, shutdown };
+  return { unsubscribe, shutdown, resume };
 }

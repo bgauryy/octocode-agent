@@ -126,12 +126,14 @@ tool-set timing. The user-facing `/skill:<name>` command is untouched.
 
 | Call | Returns |
 |---|---|
-| `skill({action:"load", name:"…"})` | Full `SKILL.md` (cap 48k, explicit truncation pointer) + skill directory + shipped files, with "resolve relative paths against this directory". Default action. Case-insensitive name fallback. |
+| `skill({action:"load", name:"…", reason:"why it matches"})` | Full `SKILL.md` (cap 48k, explicit truncation pointer) + skill directory + shipped files, with "resolve relative paths against this directory". The default action requires a concise, user-facing `reason`. Names have a case-insensitive fallback. |
 | `skill({action:"list"})` | Every discovered skill with source tag and session usage (`loaded 2× this session`). |
 
-Loads are recorded in a per-session **usage ledger** — shown in `skill list`, the
-`/octocode-skills` dashboard ("Loaded this session"), and rendered as branded TUI
-rows (`◆ skill · octocode-research` → `✓ skill · skill: octocode-research [user]`).
+Loads are recorded in a per-session **usage ledger** — shown in `skill list` and the
+`/octocode-skills` dashboard ("Loaded this session"). The TUI renders one branded call
+row that explains the trigger
+(`◆ skill · octocode-research why: the task needs repository evidence`). Successful
+result rows stay hidden; errors remain visible.
 
 ### Skill discovery — common roots, deduped by name
 

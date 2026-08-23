@@ -243,7 +243,7 @@ function formatSkillList(skills: DiscoveredSkill[]): string {
     const usedNote = used ? ` (loaded ${used.count}× this session)` : '';
     return `- ${skill.name} [${skill.source}]${usedNote}: ${skill.description || '(no description)'}`;
   });
-  return [`${skills.length} skill(s) available — load one with skill({action:"load", name:"…"}) when the task matches:`, ...lines].join('\n');
+  return [`${skills.length} skill(s) available — load one with skill({action:"load", name:"…", reason:"why it matches"}) when the task matches:`, ...lines].join('\n');
 }
 
 // ─── Registration ─────────────────────────────────────────────────────────────
@@ -262,6 +262,10 @@ export function registerSkillTool(
       'load (default): return one skill\'s full SKILL.md + directory + files. list: catalog of every discovered skill.',
     ) as TSchema),
     name: Type.Optional(Type.String({ description: 'Skill name for action:load (exact name from <available_skills> or action:list).' })),
+    reason: Type.Optional(Type.String({
+      minLength: 1,
+      description: 'Required for action:load. One concise, user-facing clause explaining why this skill matches the current task.',
+    })),
   }, { additionalProperties: false }) as TSchema;
 
   const execute = async (_id: string, params: Record<string, unknown>, _signal?: AbortSignal, _onUpdate?: unknown, ctx?: PiContext): Promise<ToolCallResult> => {
@@ -270,6 +274,8 @@ export function registerSkillTool(
     if (action === 'list') return result(formatSkillList(skills), { skills });
     const name = typeof params['name'] === 'string' ? params['name'].trim() : '';
     if (!name) return result('skill load requires name. Use skill({action:"list"}) for the catalog.', undefined, true);
+    const reason = typeof params['reason'] === 'string' ? params['reason'].trim() : '';
+    if (!reason) return result('skill load requires reason explaining why it matches the current task.', undefined, true);
     const skill = skills.find((candidate) => candidate.name === name)
       ?? skills.find((candidate) => candidate.name.toLowerCase() === name.toLowerCase());
     if (!skill) {
@@ -281,18 +287,26 @@ export function registerSkillTool(
 
   const renderCall = (args: unknown, theme?: PiTheme) => {
     const p = (args ?? {}) as Record<string, unknown>;
-    const target = p['action'] === 'list' ? 'list' : String(p['name'] ?? '?');
+    const isList = p['action'] === 'list';
+    const target = isList ? 'list' : String(p['name'] ?? '?');
+    const reason = typeof p['reason'] === 'string' ? p['reason'].trim() : '';
+    const why = !isList && reason
+      ? ` ${paint(theme, 'warning', 'why:')} ${paint(theme, 'bright', reason)}`
+      : '';
     return makeRenderer((width) => [truncateToWidth(
-      `${paint(theme, 'brand', '◆ skill')} ${paint(theme, 'dim', `· ${target}`)}`, width)]);
+      `${paint(theme, 'brand', '◆ skill')} ${paint(theme, 'dim', '·')} ${paint(theme, 'title', target)}${why}`, width)]);
   };
 
   const renderResult = (resultValue: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) => {
+    // The call row already explains which skill was selected and why. Keep the
+    // successful SKILL.md payload model-only; only actionable failures belong in
+    // the terminal transcript.
+    if (!resultValue.isError) return makeRenderer(() => []);
+
     const text = (resultValue.content[0] as { text?: string } | undefined)?.text ?? '';
     const head = text.split('\n')[0] ?? 'skill';
     return makeRenderer((width) => {
-      const color = resultValue.isError ? 'error' : 'success';
-      const glyph = resultValue.isError ? '✗' : '✓';
-      const lines = [truncateToWidth(`${paint(theme, color, glyph)} ${paint(theme, 'title', 'skill')} ${paint(theme, 'dim', `· ${head}`)}`, width)];
+      const lines = [truncateToWidth(`${paint(theme, 'error', '✗')} ${paint(theme, 'title', 'skill')} ${paint(theme, 'dim', `· ${head}`)}`, width)];
       if (opts.expanded) {
         for (const line of text.split('\n').slice(1, 12)) lines.push(truncateToWidth(paint(theme, 'dim', line), width));
       }
@@ -303,8 +317,11 @@ export function registerSkillTool(
   registerFn(pi, registeredToolNames, {
     name: 'skill',
     label: 'skill',
-    description: 'Load an Agent Skill by name (returns its full SKILL.md, directory, and shipped files) or list every discovered skill. This is THE way to load a skill — do not hunt for SKILL.md paths manually.',
-    promptSnippet: 'skill loads Agent Skills: skill({action:"load", name:"…"}) returns the full SKILL.md + skill directory; skill({action:"list"}) shows the catalog with session usage. Load the minimal matching skill BEFORE acting.',
+    description: 'Load an Agent Skill by name and explain why it matches the current task (returns its full SKILL.md, directory, and shipped files), or list every discovered skill. This is THE way to load a skill — do not hunt for SKILL.md paths manually.',
+    promptSnippet: 'skill loads Agent Skills: skill({action:"load", name:"…", reason:"…"}) returns the full SKILL.md + skill directory; skill({action:"list"}) shows the catalog with session usage. Load the minimal matching skill BEFORE acting and state why it matches.',
+    promptGuidelines: [
+      'When loading a skill, pass reason as one concise, user-facing clause that explains why the skill matches the current task.',
+    ],
     parameters,
     execute,
     renderCall,

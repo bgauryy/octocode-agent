@@ -11,6 +11,7 @@ import {
   activePlanScope, adoptPlanFromBranch, setPlanEntryAppender, PLAN_ENTRY_TYPE,
   getPlanRfc, setPlanRfc, resolveRfcPath, readPersistedRfcForTests,
   getPlanDecisions, addPlanDecision, setPlanDecisions, readPersistedDecisionsForTests,
+  getPlanLifecycle, activatePlan, readPersistedLifecycleForTests,
   type PlanDecision, type PlanStep,
 } from '../src/tools/active-plan.js';
 import { registerPlanTool, refreshPlanUi, handleOctocodePlanCommand, inferConsequential, phaseStepperLine, planPanelLines } from '../src/tools/plan-tool.js';
@@ -44,6 +45,26 @@ test('empty plan renders no addendum (zero token cost)', () => {
 test('setPlan marks the first step doing, rest todo', () => {
   const steps = setPlan(CWD, ['a', 'b', 'c']);
   assert.deepEqual(steps.map((s) => s.status), ['doing', 'todo', 'todo']);
+});
+
+test('draft plans persist without active work and inject an explicit approval gate', () => {
+  const steps = setPlan(CWD, ['Review this', 'Then build'], 'draft');
+  assert.deepEqual(steps.map((s) => s.status), ['todo', 'todo']);
+  assert.equal(getPlanLifecycle(CWD), 'draft');
+  assert.equal(readPersistedLifecycleForTests(CWD), 'draft');
+  const addendum = renderActivePlanAddendum(CWD);
+  assert.match(addendum, /awaiting user approval/i);
+  assert.match(addendum, /do not execute or start/i);
+  assert.doesNotMatch(addendum, /Execute active steps|mark the next runnable step/i);
+});
+
+test('activatePlan is the only transition that starts a draft plan', () => {
+  setPlan(CWD, ['First', { text: 'Second', dependsOn: [1] }], 'draft');
+  const active = activatePlan(CWD);
+  assert.equal(getPlanLifecycle(CWD), 'active');
+  assert.equal(readPersistedLifecycleForTests(CWD), 'active');
+  assert.deepEqual(active.map((s) => s.status), ['doing', 'todo']);
+  assert.match(renderActivePlanAddendum(CWD), /Execute active steps/);
 });
 
 test('setPlan accepts {text, activeForm} objects and bare strings interchangeably', () => {
@@ -138,7 +159,7 @@ test('normal flow always keeps one step in progress (no invariant nudge)', () =>
   clearPlan(cwd);
 });
 
-test('plan panel renders a progress bar, glyphs, and the running step activeForm', () => {
+test('plan panel renders compact progress and the running step activeForm', () => {
   const cwd = '/tmp/plan-widget-ws';
   const { ctx, calls } = uiCtx(cwd);
   setPlan(cwd, [{ text: 'Edit file', activeForm: 'Editing file' }, 'Run tests']);
@@ -154,10 +175,7 @@ test('plan panel renders a progress bar, glyphs, and the running step activeForm
   const lines = comp.render(80);
   const joined = lines.join('\n');
   assert.match(joined, /Plan\s+[\u2588\u2591]{8}\s+1\/2 done · now: Run tests/, 'header has progress and the current running step');
-  assert.match(joined, /▸ Build/, 'the phase stepper marks the current phase (a step is in flight → Build)');
-  assert.match(joined, /✓ Research → ✓ RFC/, 'earlier phases read as done');
-  assert.match(joined, /\u2713 1\. Edit file/, 'done step uses the check glyph');
-  assert.match(joined, /\u25b8 2\. Run tests · in progress/, 'doing step uses the pointer glyph plus a status word');
+  assert.doesNotMatch(joined, /Edit file|Research|RFC|Build/, 'persistent panel leaves completed rows and phase detail to on-demand surfaces');
   clearPlan(cwd);
 });
 
@@ -816,14 +834,21 @@ test('phaseStepperLine marks the current phase from step state', () => {
   assert.match(phaseStepperLine([{ text: 'a', status: 'done' }]), /▸ Verify/);
 });
 
-test('planPanelLines includes the stepper and renders at a narrow width without throwing', () => {
-  const steps: PlanStep[] = [{ text: 'A long-ish step description here', status: 'doing' }, { text: 'Second', status: 'todo' }];
-  // Narrow width goes through truncateToWidth (pi errors on over-wide lines); just
-  // confirm it produces lines and does not throw. Clipping itself is truncateToWidth's job.
+test('planPanelLines is a compact progress and active-lane projection', () => {
+  const steps: PlanStep[] = [
+    { text: 'Completed setup', status: 'done' },
+    { text: 'A long-ish step description here', activeForm: 'Implementing the focused change', status: 'doing' },
+    { text: 'Blocked follow-up', status: 'todo', dependsOn: [2] },
+    { text: 'Later verification', status: 'todo' },
+  ];
   const clipped = planPanelLines(steps, undefined, 24);
-  assert.ok(clipped.length >= 3, 'header + stepper + rows still render when clipped');
+  assert.ok(clipped.length <= 3, 'default panel stays within progress + active + blocked summary');
   const full = planPanelLines(steps).join('\n');
-  assert.match(full, /▸ Build/, 'the stepper renders in the panel');
+  assert.match(full, /1\/4/, 'progress remains visible');
+  assert.match(full, /Implementing the focused change/, 'activeForm is the active lane label');
+  assert.match(full, /1 blocked/, 'blocked work is summarized');
+  assert.doesNotMatch(full, /Research|RFC|Approve|Build|Verify/, 'phase stepper is reserved for on-demand detail');
+  assert.doesNotMatch(full, /Completed setup|Later verification/, 'default panel does not render the full checklist');
 });
 
 // ─── Gate hardening: inferConsequential ───────────────────────────────────────

@@ -20,7 +20,7 @@ import { serveDirectory, unmount } from './local-server.js';
 import { PLAN_APPROVE_DESC, PLAN_APPROVE_LABEL, PLAN_PROPOSE_HINT, PLAN_REJECT_DESC, PLAN_REJECT_LABEL } from '../tui/content.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel } from './status-panel.js';
-import { activePlanScope, setPlan, addStep, startStep, completeStep, removeStep, clearPlan, getPlan, renderActivePlanAddendum, MARK, stepLabel, displayStatus, depsMet, resolveRfcPath, setPlanRfc, getPlanRfc, addPlanDecision, getPlanDecisions, planPhaseIndex, PLAN_PHASES, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
+import { activePlanScope, setPlan, activatePlan, addStep, startStep, completeStep, removeStep, clearPlan, getPlan, renderActivePlanAddendum, MARK, stepLabel, displayStatus, depsMet, resolveRfcPath, setPlanRfc, getPlanRfc, addPlanDecision, getPlanDecisions, planPhaseIndex, PLAN_PHASES, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -87,7 +87,6 @@ function renderList(steps: PlanStep[]): string {
   }).join('\n');
 }
 
-const GLYPH: Record<DisplayStatus, string> = { todo: '○', doing: '▸', done: '✓', blocked: '⊘' };
 const BAR_WIDTH = 8;
 
 /**
@@ -114,44 +113,29 @@ function progressBar(done: number, total: number): string {
 }
 
 /**
- * The Plan section lines for the below-editor panel (header + colored
- * checklist). Empty when no plan. When `width` is given, every line is clipped
- * at the source — pi errors on over-wide component lines, so builders enforce
- * the contract themselves instead of relying on the caller's safety net.
+ * Compact plan projection for the persistent below-editor panel. The durable
+ * checklist and phase detail remain available through the plan document/show
+ * surfaces; the always-visible panel keeps only progress, active lanes, and
+ * actionable counts. Every line is clipped at the source when width is given.
  */
 export function planPanelLines(steps: PlanStep[], theme?: PiTheme, width?: number): string[] {
   if (steps.length === 0) return [];
-  const done = steps.filter((s) => s.status === 'done').length;
-  const paintStep = (status: DisplayStatus, text: string): string => {
-    // Same state→colour contract as the agent ledger: in-flight is brand (and
-    // bold — it is the one row the eye should land on), blocked is the one
-    // act-on-me state (warning), finished work fades, pending rows stay in the
-    // default foreground so the list reads as text.
-    if (status === 'done') return paint(theme, 'dim', text);
-    if (status === 'doing') return paint(theme, 'brand', typeof theme?.bold === 'function' ? theme.bold(text) : text);
-    if (status === 'blocked') return paint(theme, 'warning', text);
-    return paint(theme, 'bright', text);
-  };
-  const doing = steps.filter((s) => s.status === 'doing');
-  const current = doing[0] ?? steps.find((s) => s.status === 'todo');
+  const done = steps.filter((step) => step.status === 'done').length;
+  const doing = steps.filter((step) => step.status === 'doing');
+  const current = doing[0] ?? steps.find((step) => step.status === 'todo');
   const currentLabel = doing.length > 1
     ? `${SEP}now: ${doing.map(stepLabel).join(SEP)}`
     : current ? `${SEP}now: ${stepLabel(current)}` : '';
-  const header = `Plan  ${progressBar(done, steps.length)}  ${done}/${steps.length} done${currentLabel}`;
-  const rows = steps.map((s, i) => {
-    const ds = displayStatus(s, steps);
-    // Words, not just glyphs: the glyph is a quick scan aid, the suffix says
-    // what the state means (`in progress`, `blocked, needs 1,2`).
-    const suffix = ds === 'doing'
-      ? `${SEP}in progress`
-      : ds === 'blocked'
-        ? `${SEP}blocked${s.dependsOn?.length ? `, needs ${s.dependsOn.join(',')}` : ''}`
-        : '';
-    return paintStep(ds, `${GLYPH[ds]} ${i + 1}. ${stepLabel(s)}${suffix}`);
-  });
-  // Brand-colored header: a plan with 0/5 done is not a success signal.
-  const lines = [paint(theme, 'brand', header), phaseStepperLine(steps, theme), ...rows];
-  return width ? lines.map((l) => truncateToWidth(l, width)) : lines;
+  const header = paint(theme, 'brand', `Plan  ${progressBar(done, steps.length)}  ${done}/${steps.length} done${currentLabel}`);
+  const blocked = steps.filter((step) => displayStatus(step, steps) === 'blocked').length;
+  const ready = steps.filter((step) => step.status === 'todo' && depsMet(step, steps)).length;
+  const counts = [
+    blocked > 0 ? `${blocked} blocked` : '',
+    ready > 0 ? `${ready} ready` : '',
+    doing.length > 1 ? `${doing.length} active lanes` : '',
+  ].filter(Boolean).join(SEP);
+  const lines = counts ? [header, paint(theme, blocked > 0 ? 'warning' : 'muted', counts)] : [header];
+  return width ? lines.map((line) => truncateToWidth(line, width)) : lines;
 }
 
 /**
@@ -462,7 +446,7 @@ export function registerPlanTool(
           // free-text row is the adjust channel.
           const gate = resolveGate();
           if (gate.error) return gate.error;
-          steps = setPlan(scope, Array.isArray(p.steps) ? p.steps : []);
+          steps = setPlan(scope, Array.isArray(p.steps) ? p.steps : [], 'draft');
           if (gate.hasNewRfc) setPlanRfc(scope, gate.rfc);
           const artifacts = writeCurrentPlanArtifacts(scope, steps, 'draft');
           refreshPlanUi(ctx);
@@ -476,6 +460,10 @@ export function registerPlanTool(
               })
             : undefined;
           const approved = outcome?.status === 'selected' && outcome.value === 'approve';
+          if (approved) {
+            steps = activatePlan(scope);
+            refreshPlanUi(ctx);
+          }
           const verdict = (() => {
             if (!outcome || outcome.status === 'unavailable') {
               return '[PLAN] proposed, but this host cannot prompt — present the plan inline and get approval in your reply before executing.';

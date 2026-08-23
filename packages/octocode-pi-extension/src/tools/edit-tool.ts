@@ -279,29 +279,45 @@ function validateOperation(edit: unknown, index: number): EditOperation {
 }
 
 function validateRequest(input: Record<string, unknown>): EditRequest {
-  const hasQueries = input['queries'] !== undefined;
-  const hasSingle = input['path'] !== undefined || input['edits'] !== undefined;
-  if (hasQueries && hasSingle) {
-    throw new Error('Edit tool input is invalid. Use either path+edits or queries, not both.');
-  }
+  const hasQueries = Array.isArray(input['queries']) && input['queries'].length > 0;
+  const singlePath = typeof input['path'] === 'string' && input['path'].trim().length > 0 ? input['path'] : undefined;
+  const singleEdits = Array.isArray(input['edits']) && input['edits'].length > 0 ? input['edits'] : undefined;
+  const hasSingle = singlePath !== undefined || singleEdits !== undefined;
   if (hasQueries) {
     if (!Array.isArray(input['queries']) || input['queries'].length === 0) {
       throw new Error('Edit tool input is invalid. queries must be a non-empty array.');
     }
+    const queries = input['queries'].map((query, queryIndex) => {
+      if (!query || typeof query !== 'object') throw new Error(`Edit tool input is invalid. queries[${queryIndex}] must be an object.`);
+      const item = query as Record<string, unknown>;
+      if (typeof item['path'] !== 'string' || item['path'].trim().length === 0) throw new Error(`Edit tool input is invalid. queries[${queryIndex}].path must be a non-empty string.`);
+      if (!Array.isArray(item['edits']) || item['edits'].length === 0) throw new Error(`Edit tool input is invalid. queries[${queryIndex}].edits must contain at least one replacement.`);
+      return {
+        path: item['path'],
+        requireRecentRead: item['requireRecentRead'] === true,
+        edits: item['edits'].map(validateOperation),
+      };
+    });
+    // Tolerant merge: the model's schema→interface generation sometimes fills BOTH
+    // the single-file (path+edits) and multi-file (queries) shapes for one logical
+    // edit. Rather than dead-ending the call (which the model retries verbatim,
+    // looping forever), fold a distinct single-file shape into queries. A single
+    // shape that just duplicates a path already in queries is dropped as redundant;
+    // the returned diff still shows exactly what was written, so nothing is lost silently.
+    if (singlePath !== undefined && singleEdits !== undefined && !queries.some((query) => query.path === singlePath)) {
+      queries.push({
+        path: singlePath,
+        requireRecentRead: input['requireRecentRead'] === true,
+        edits: singleEdits.map(validateOperation),
+      });
+    }
     return {
       requireRecentRead: input['requireRecentRead'] === true,
-      queries: input['queries'].map((query, queryIndex) => {
-        if (!query || typeof query !== 'object') throw new Error(`Edit tool input is invalid. queries[${queryIndex}] must be an object.`);
-        const item = query as Record<string, unknown>;
-        if (typeof item['path'] !== 'string' || item['path'].trim().length === 0) throw new Error(`Edit tool input is invalid. queries[${queryIndex}].path must be a non-empty string.`);
-        if (!Array.isArray(item['edits']) || item['edits'].length === 0) throw new Error(`Edit tool input is invalid. queries[${queryIndex}].edits must contain at least one replacement.`);
-        return {
-          path: item['path'],
-          requireRecentRead: item['requireRecentRead'] === true,
-          edits: item['edits'].map(validateOperation),
-        };
-      }),
+      queries,
     };
+  }
+  if (!hasSingle) {
+    throw new Error('Edit tool input is invalid. Provide path+edits for a single file, or queries[] for multiple files.');
   }
   if (typeof input['path'] !== 'string' || input['path'].trim().length === 0) {
     throw new Error('Edit tool input is invalid. path must be a non-empty string.');
@@ -693,19 +709,28 @@ function buildParameters(Type: TypeBoxBuilder): TSchema {
   );
   return Type.Object(
     {
-      path: Type.Optional(Type.String({ minLength: 1, description: 'Path to the file to edit (relative or absolute). Provide with `edits`; mutually exclusive with `queries`.' })),
+      path: Type.Optional(Type.String({ minLength: 1, description: 'SINGLE-FILE MODE. Path to the file to edit (relative or absolute). Provide with `edits`. Do NOT also send `queries` — pick one mode.' })),
       edits: Type.Optional(Type.Array(editOperation, {
         minItems: 1,
-        description: 'One or more targeted replacements. Edits are matched against the original file content, not after earlier replacements. Use with `path`.',
+        description: 'SINGLE-FILE MODE. One or more targeted replacements for `path`. Edits are matched against the original file content, not after earlier replacements. Do NOT also send `queries`.',
       })),
       queries: Type.Optional(Type.Array(Type.Object({
         path: Type.String({ minLength: 1, description: 'Path to the file to edit (relative or absolute)' }),
         edits: Type.Array(editOperation, { minItems: 1 }),
         requireRecentRead: Type.Optional(Type.Boolean({ description: 'Require a fresh recorded localGetFileContent read before editing this file.' })),
-      }, { additionalProperties: false }), { minItems: 1, description: 'Multi-file edit requests. All replacements are computed before any file is written. Mutually exclusive with `path`+`edits`.' })),
+      }, { additionalProperties: false }), { minItems: 1, description: 'MULTI-FILE MODE. Edit several files in one logical change; all replacements are computed before any file is written. When you use `queries`, do NOT also send top-level `path`/`edits`.' })),
       requireRecentRead: Type.Optional(Type.Boolean({ description: 'Require a fresh recorded localGetFileContent read before editing.' })),
     },
-    { additionalProperties: false },
+    {
+      additionalProperties: false,
+      // Structurally express the two mutually-exclusive shapes so schema→interface
+      // clients render them as alternatives instead of filling every optional field.
+      // Backstopped by validateRequest(), which tolerates a both-shapes call.
+      oneOf: [
+        { title: 'single-file', required: ['path', 'edits'], not: { required: ['queries'] } },
+        { title: 'multi-file', required: ['queries'], not: { anyOf: [{ required: ['path'] }, { required: ['edits'] }] } },
+      ],
+    },
   );
 }
 

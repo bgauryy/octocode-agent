@@ -140,7 +140,7 @@ test('skill load returns SKILL.md content, directory, and shipped files; records
   const cwd = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Demo.', { 'scripts/run.sh': '#!/bin/sh\n' });
   const def = await makeTool();
-  const res = await run(def, { action: 'load', name: 'demo-flow' }, cwd);
+  const res = await run(def, { action: 'load', name: 'demo-flow', reason: 'The current task needs the demo workflow.' }, cwd);
   const text = (res.content[0] as { text: string }).text;
   assert.equal(res.isError ?? false, false);
   assert.match(text, /skill: demo-flow \[project\]/);
@@ -155,16 +155,25 @@ test('skill load is the default action and matches names case-insensitively', as
   const cwd = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'Demo-Flow', 'Demo.');
   const def = await makeTool();
-  const res = await run(def, { name: 'demo-flow' }, cwd);
+  const res = await run(def, { name: 'demo-flow', reason: 'The current task needs the demo workflow.' }, cwd);
   assert.equal(res.isError ?? false, false);
   assert.match((res.content[0] as { text: string }).text, /skill: Demo-Flow/);
+});
+
+test('skill load requires a user-visible trigger reason', async () => {
+  const cwd = tmpWorkspace();
+  makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Demo.');
+  const def = await makeTool();
+  const res = await run(def, { action: 'load', name: 'demo-flow' }, cwd);
+  assert.equal(res.isError, true);
+  assert.match((res.content[0] as { text: string }).text, /requires reason explaining why it matches the current task/);
 });
 
 test('skill load on an unknown name errors with the available catalog', async () => {
   const cwd = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Demo.');
   const def = await makeTool();
-  const res = await run(def, { action: 'load', name: 'nope' }, cwd);
+  const res = await run(def, { action: 'load', name: 'nope', reason: 'The task needs a workflow.' }, cwd);
   assert.equal(res.isError, true);
   assert.match((res.content[0] as { text: string }).text, /Unknown skill: nope/);
   assert.match((res.content[0] as { text: string }).text, /demo-flow/);
@@ -174,24 +183,26 @@ test('skill list shows every discovered skill with source and session usage', as
   const cwd = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Demo workflow.');
   const def = await makeTool();
-  await run(def, { action: 'load', name: 'demo-flow' }, cwd);
+  await run(def, { action: 'load', name: 'demo-flow', reason: 'The current task needs the demo workflow.' }, cwd);
   const res = await run(def, { action: 'list' }, cwd);
   const text = (res.content[0] as { text: string }).text;
-  assert.match(text, /skill\(\{action:"load", name:"…"\}\)/);
+  assert.match(text, /skill\(\{action:"load", name:"…", reason:"why it matches"\}\)/);
   assert.match(text, /- demo-flow \[project\] \(loaded 1× this session\): Demo workflow\./);
 });
 
-test('skill render rows: branded request row and success/error response rows', async () => {
+test('skill render rows explain the trigger, suppress successful results, and keep errors visible', async () => {
   const cwd = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Demo.');
   const def = await makeTool();
   const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
-  const callRow = def.renderCall!({ action: 'load', name: 'demo-flow' }, theme).render(80).join('\n');
+  const reason = 'The task needs a repeatable demo workflow.';
+  const callRow = def.renderCall!({ action: 'load', name: 'demo-flow', reason }, theme).render(100).join('\n');
   assert.match(callRow, /◆ skill · demo-flow/);
-  const ok = await run(def, { name: 'demo-flow' }, cwd);
-  const okRow = (def.renderResult as (r: ToolCallResult, o: object, t: object) => { render(w: number): string[] })(ok, {}, theme).render(100).join('\n');
-  assert.match(okRow, /✓ skill · skill: demo-flow/);
-  const bad = await run(def, { name: 'nope' }, cwd);
+  assert.match(callRow, /why: The task needs a repeatable demo workflow\./);
+  const ok = await run(def, { name: 'demo-flow', reason }, cwd);
+  const okLines = (def.renderResult as (r: ToolCallResult, o: object, t: object) => { render(w: number): string[] })(ok, {}, theme).render(100);
+  assert.deepEqual(okLines, []);
+  const bad = await run(def, { name: 'nope', reason }, cwd);
   const badRow = (def.renderResult as (r: ToolCallResult, o: object, t: object) => { render(w: number): string[] })(bad, {}, theme).render(100).join('\n');
   assert.match(badRow, /✗ skill · Unknown skill: nope/);
 });

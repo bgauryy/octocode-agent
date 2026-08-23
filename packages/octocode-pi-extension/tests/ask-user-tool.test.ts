@@ -225,10 +225,10 @@ test('askUser renders choices inline in the message flow, not as a floating over
   assert.match(lines.join('\n'), /Choose a strategy\?/);
   // Discuss / free-text row appears AFTER the listed options.
   assert.match(lines.join('\n'), /Discuss or type your own answer/);
-  // Smart separator: the header rule fills the full width with box chars.
-  const headerPlain = lines[0]!.replace(/\x1b\[[0-9;]*m/g, '');
-  assert.ok(headerPlain.includes('Input needed'));
-  assert.ok(headerPlain.endsWith('─'), 'header rule should fill to width');
+  // The decision hierarchy is carried by the heading and whitespace, not a heavy perimeter frame.
+  const plain = lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /Decision needed/);
+  assert.doesNotMatch(plain, /^[╭╰]/m, 'inline decisions do not draw a full top\/bottom box frame');
   send('\r');
   const result = await pending;
 
@@ -366,7 +366,7 @@ test('askUser schema gains preview, disabled options, multiSelect, min/max, and 
   assert.deepEqual(Object.keys(fieldProps).sort(), ['label', 'maxLength', 'minLength', 'name', 'pattern', 'placeholder', 'required']);
 });
 
-test('askUser renders recommended badge, pros/cons under the focused row, and lands the cursor on the recommended option', async () => {
+test('askUser renders stable pros and trade-offs under every visible option and lands on the recommendation', async () => {
   const tool = loadTool();
   const { ctx, send, render } = overlayCtx();
 
@@ -375,7 +375,7 @@ test('askUser renders recommended badge, pros/cons under the focused row, and la
     {
       question: 'Which approach?',
       options: [
-        { value: 'risky', label: 'Aggressive cut', cons: ['thins the safety net'] },
+        { value: 'risky', label: 'Aggressive cut', pros: ['small diff'], cons: ['thins the safety net'] },
         { value: 'safe', label: 'Leave it', recommended: true, pros: ['no risk', 'load-bearing'], cons: ['no line-count win'] },
       ],
     },
@@ -384,17 +384,22 @@ test('askUser renders recommended badge, pros/cons under the focused row, and la
     ctx,
   );
 
-  const plain = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
-  // Recommended badge shows on its row even when collapsed.
-  assert.match(plain, /Leave it ★ recommended/);
-  // Cursor defaults to the recommended option, so its pros/cons are expanded.
-  assert.match(plain, /✓ no risk/);
-  assert.match(plain, /✓ load-bearing/);
-  assert.match(plain, /✗ no line-count win/);
-  // The non-focused option's cons stay collapsed.
-  assert.doesNotMatch(plain, /✗ thins the safety net/);
+  const before = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(before, /Leave it ★ Recommended/);
+  assert.match(before, /Pros\n\s+\+ small diff/);
+  assert.match(before, /Trade-offs\n\s+- thins the safety net/);
+  assert.match(before, /\+ no risk/);
+  assert.match(before, /\+ load-bearing/);
+  assert.match(before, /- no line-count win/);
+  assert.match(before, /Choice 2 of 3/, 'position includes the free-text escape row');
 
-  // One Enter accepts the preselected recommended option.
+  send('\x1b[A');
+  const after = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.equal(after.split('\n').length, before.split('\n').length, 'moving focus does not expand or collapse comparison data');
+  assert.match(after, /\+ no risk/);
+  assert.match(after, /- thins the safety net/);
+
+  send('\x1b[B');
   send('\r');
   const result = await pending;
   assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'Leave it' });
@@ -610,22 +615,31 @@ test('askUser multiSelect digit keys toggle and footer shows a live count', asyn
   assert.deepEqual(result.details, { status: 'multiSelected', values: ['a', 'c'] });
 });
 
-test('askUser windows long option lists around the cursor with more-markers', async () => {
+test('askUser windows long rich lists by complete option blocks with position and more-markers', async () => {
   const tool = loadTool();
   const { ctx, send, render } = overlayCtx();
 
-  const options = Array.from({ length: 20 }, (_, i) => `opt-${String(i + 1).padStart(2, '0')}`);
+  const options = Array.from({ length: 20 }, (_, i) => ({
+    value: `opt-${String(i + 1).padStart(2, '0')}`,
+    pros: [`pro-${String(i + 1).padStart(2, '0')}`],
+    cons: [`con-${String(i + 1).padStart(2, '0')}`],
+  }));
   const pending = tool.execute('id', { question: 'Long?', options }, undefined, undefined, ctx);
 
   const first = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
   assert.match(first, /opt-01/);
+  assert.match(first, /pro-01/);
+  assert.match(first, /con-01/);
+  assert.match(first, /opt-02[\s\S]*pro-02[\s\S]*con-02/, 'every painted option is a complete comparison block');
+  assert.match(first, /Choice 1 of 21/, 'position includes the free-text escape row');
   assert.match(first, /↓ \d+ more/, 'hidden tail advertised');
-  assert.doesNotMatch(first, /opt-20/, 'rows beyond the window are not painted');
+  assert.doesNotMatch(first, /opt-20/, 'blocks beyond the viewport are not painted');
 
   for (let i = 0; i < 15; i++) send('\x1b[B');
   const scrolled = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
   assert.match(scrolled, /↑ \d+ more/, 'hidden head advertised after scrolling');
-  assert.match(scrolled, /opt-16/);
+  assert.match(scrolled, /opt-16[\s\S]*pro-16[\s\S]*con-16/);
+  assert.match(scrolled, /Choice 16 of 21/);
 
   send('\x1b');
   const result = await pending;

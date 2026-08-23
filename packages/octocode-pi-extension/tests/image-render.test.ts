@@ -10,7 +10,10 @@ import {
   buildImageLines,
   buildImageLinesFromData,
   appendImageLines,
+  effectiveInlineImages,
+  renderRuntimeCapabilitiesAddendum,
   setCapabilityCheckForTests,
+  setImageVisibilityCheckForTests,
 } from '../src/tools/image-render.js';
 import { makeRenderer } from '../src/tools/render-helpers.js';
 import type { PiTheme, RenderContext } from '../src/types.js';
@@ -140,6 +143,39 @@ test('buildImageLines shows placeholder when ctx.showImages is false even if ter
     assert.ok(lines[0].includes('🖼 image:'));
   } finally {
     setCapabilityCheckForTests(undefined);
+  }
+});
+
+test('effectiveInlineImages requires TUI UI, protocol support, and enabled image settings', () => {
+  setCapabilityCheckForTests(() => true);
+  setImageVisibilityCheckForTests(() => true);
+  try {
+    assert.equal(effectiveInlineImages({ cwd: '/tmp', hasUI: true, mode: 'tui' }), true);
+    assert.equal(effectiveInlineImages({ cwd: '/tmp', hasUI: true, mode: 'rpc' }), false);
+    assert.equal(effectiveInlineImages({ cwd: '/tmp', hasUI: false, mode: 'tui' }), false);
+    setImageVisibilityCheckForTests(() => false);
+    assert.equal(effectiveInlineImages({ cwd: '/tmp', hasUI: true, mode: 'tui' }), false);
+    setImageVisibilityCheckForTests(() => true);
+    setCapabilityCheckForTests(() => false);
+    assert.equal(effectiveInlineImages({ cwd: '/tmp', hasUI: true, mode: 'tui' }), false);
+  } finally {
+    setCapabilityCheckForTests(undefined);
+    setImageVisibilityCheckForTests(undefined);
+  }
+});
+
+test('runtime capability addendum exposes the same effective boolean used by tools', () => {
+  setCapabilityCheckForTests(() => true);
+  setImageVisibilityCheckForTests(() => false);
+  try {
+    const addendum = renderRuntimeCapabilitiesAddendum({ cwd: '/tmp', hasUI: true, mode: 'tui' });
+    assert.match(addendum, /^<runtime_capabilities>/);
+    assert.match(addendum, /effective_inline_images: false/);
+    assert.match(addendum, /terminal_image_protocol_supported: true/);
+    assert.match(addendum, /<\/runtime_capabilities>$/);
+  } finally {
+    setCapabilityCheckForTests(undefined);
+    setImageVisibilityCheckForTests(undefined);
   }
 });
 

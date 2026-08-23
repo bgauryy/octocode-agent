@@ -171,6 +171,27 @@ test('steerWorkerById sends a steer RPC to a running worker', () => {
   assert.ok(steer, 'a steer RPC must be written to worker stdin');
   assert.equal(steer!['message'], 'change course');
   assert.equal(record.ledgerEvents.at(-1)?.message, 'steer sent: change course');
+  const outbound = listWorkerLedgerEntries().find((entry) => entry.agentId === record.id)?.lastMessage;
+  assert.equal(outbound?.direction, 'to-agent');
+  assert.equal(outbound?.action, 'steer');
+  assert.equal(outbound?.preview, 'change course');
+});
+
+test('worker assistant output records an inbound reply for footer visibility', () => {
+  if (isSubagentProcess()) return;
+
+  const mock = makeMockAgentProcess();
+  setAgentProcessFactoryForTests(() => mock as never);
+  const record = spawnRpcAgent({ task: 'report back', resourceMode: 'lean' });
+  mock._emit('stdout:data', Buffer.from(`${JSON.stringify({
+    type: 'message_end',
+    message: { role: 'assistant', content: [{ type: 'text', text: '[DONE] review complete' }] },
+  })}\n`));
+
+  const inbound = listWorkerLedgerEntries().find((entry) => entry.agentId === record.id)?.lastMessage;
+  assert.equal(inbound?.direction, 'from-agent');
+  assert.equal(inbound?.action, 'reply');
+  assert.equal(inbound?.preview, '[DONE] review complete');
 });
 
 test('steerWorkerById queues via follow_up when the worker is idle', () => {

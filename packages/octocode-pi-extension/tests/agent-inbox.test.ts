@@ -397,6 +397,32 @@ test('registerAgentInbox shutdown race: post-suppress killed/exit ledger events 
   assert.equal(h.unsubCalls.length, 1);
 });
 
+test('registerAgentInbox resume: re-arms notifications and re-subscribes after shutdown (session_start counterpart)', () => {
+  const h = makeHarness();
+  h.registration.shutdown();
+  assert.equal(h.unsubCalls.length, 1, 'shutdown detached the ledger listener');
+
+  // A following session (/new, /resume, /fork) fires session_start → resume():
+  // it must lift both suppress flags AND re-attach the ledger listener so a
+  // worker completing in this new session notifies again. Without the fix the
+  // once-per-process registration stayed muted+detached forever.
+  h.registration.resume();
+  h.emit(makeEntry({ agentId: 'a'.repeat(36), status: 'exited', normalizedStatus: 'done' }), 'exit');
+  assert.equal(h.notifications.length, 1, 'worker completion notifies again after resume');
+  assert.equal(h.oscMessages.length, 1, 'OSC re-armed');
+  assert.equal(h.flashes.length, 1, 'title flash re-armed');
+
+  // resume() is idempotent: a second call while already attached must not
+  // re-subscribe (a duplicate listener would be torn down separately, so the
+  // final shutdown would report more than one unsubscribe).
+  h.registration.resume();
+  h.emit(makeEntry({ agentId: 'b'.repeat(36), status: 'exited' }), 'exit');
+  assert.equal(h.notifications.length, 2, 'exactly one notify per event — no duplicate listener');
+
+  h.registration.shutdown();
+  assert.equal(h.unsubCalls.length, 2, 'resume re-subscribed exactly one live listener');
+});
+
 test('registerAgentInbox: pi session_shutdown event also triggers the suppress path', async () => {
   const h = makeHarness();
   await h.fakePi.handlers['session_shutdown']?.({ reason: 'quit' }, undefined);

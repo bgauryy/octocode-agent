@@ -18,6 +18,7 @@ import path from 'node:path';
 import { getOctocodeHome } from '../env.js';
 
 export type StepStatus = 'todo' | 'doing' | 'done';
+export type PlanLifecycle = 'draft' | 'active';
 
 export interface PlanStep {
   text: string;
@@ -88,6 +89,9 @@ const MAX_DECISION_CHARS = 300;
 // in-memory cache; backed by disk so the plan survives compaction and process
 // restart of the same session without leaking into a fresh session in the same cwd.
 const plans = new Map<string, PlanStep[]>();
+// Draft plans are reviewable but deliberately have no doing step until the user
+// approves them. Legacy persisted plans without this field are treated as active.
+const planLifecycle = new Map<string, PlanLifecycle>();
 // Plan-level RFC association (scope → absolute RFC.md path). Set once the plan
 // is derived from an accepted RFC; the plan surface renders that document and
 // the enforcement gate requires it for consequential work. Kept beside `plans`
@@ -159,6 +163,11 @@ function readDecisionsFromStored(raw: unknown): PlanDecision[] | undefined {
   return out.length ? out : undefined;
 }
 
+function readLifecycleFromStored(raw: unknown): PlanLifecycle {
+  if (!raw || typeof raw !== 'object') return 'active';
+  return (raw as Record<string, unknown>).lifecycle === 'draft' ? 'draft' : 'active';
+}
+
 /** Read the persisted plan for a workspace. Returns [] on any error or missing file. */
 function readFromDisk(cwd: string): PlanStep[] {
   try {
@@ -192,6 +201,16 @@ function readDecisionsFromDisk(cwd: string): PlanDecision[] | undefined {
   }
 }
 
+function readLifecycleFromDisk(cwd: string): PlanLifecycle | undefined {
+  try {
+    const file = planFile(cwd);
+    if (!fs.existsSync(file)) return undefined;
+    return readLifecycleFromStored(JSON.parse(fs.readFileSync(file, 'utf8')));
+  } catch {
+    return undefined;
+  }
+}
+
 /** Atomically persist (or delete when empty) the plan for a workspace. Never throws. */
 function writeToDisk(cwd: string, steps: PlanStep[]): void {
   try {
@@ -203,10 +222,11 @@ function writeToDisk(cwd: string, steps: PlanStep[]): void {
       return;
     }
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    const lifecycle = planLifecycle.get(cwd) ?? 'active';
     const rfcPath = planRfc.get(cwd);
     const decisions = planDecisions.get(cwd);
     const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ version: 1, scope: cwd, steps, ...(rfcPath ? { rfcPath } : {}), ...(decisions && decisions.length ? { decisions } : {}), updatedAt: new Date().toISOString() }));
+    fs.writeFileSync(tmp, JSON.stringify({ version: 1, scope: cwd, steps, lifecycle, ...(rfcPath ? { rfcPath } : {}), ...(decisions && decisions.length ? { decisions } : {}), updatedAt: new Date().toISOString() }));
     fs.renameSync(tmp, file);
   } catch {
     // Persistence is best-effort; degrade to in-memory.
@@ -221,6 +241,7 @@ function ensureLoaded(cwd: string): void {
   const disk = readFromDisk(cwd);
   if (disk.length > 0) {
     plans.set(cwd, disk);
+    planLifecycle.set(cwd, readLifecycleFromDisk(cwd) ?? 'active');
     const rfcPath = readRfcFromDisk(cwd);
     if (rfcPath) planRfc.set(cwd, rfcPath);
     const decisions = readDecisionsFromDisk(cwd);
@@ -240,16 +261,16 @@ function ensureLoaded(cwd: string): void {
 /** customType of the plan-snapshot session entries. */
 export const PLAN_ENTRY_TYPE = 'octocode-plan';
 
-let planEntryAppender: ((steps: PlanStep[], rfcPath?: string, decisions?: PlanDecision[]) => void) | null = null;
+let planEntryAppender: ((steps: PlanStep[], rfcPath?: string, decisions?: PlanDecision[], lifecycle?: PlanLifecycle) => void) | null = null;
 
 /** Wire (or clear) the host-side appender that snapshots plans into session entries. */
-export function setPlanEntryAppender(appender: ((steps: PlanStep[], rfcPath?: string, decisions?: PlanDecision[]) => void) | null): void {
+export function setPlanEntryAppender(appender: ((steps: PlanStep[], rfcPath?: string, decisions?: PlanDecision[], lifecycle?: PlanLifecycle) => void) | null): void {
   planEntryAppender = appender;
 }
 
-function appendPlanEntry(steps: PlanStep[], rfcPath?: string, decisions?: PlanDecision[]): void {
+function appendPlanEntry(steps: PlanStep[], rfcPath?: string, decisions?: PlanDecision[], lifecycle?: PlanLifecycle): void {
   try {
-    planEntryAppender?.(steps, rfcPath, decisions);
+    planEntryAppender?.(steps, rfcPath, decisions, lifecycle);
   } catch {
     // Session-entry snapshots are best-effort; disk persistence still holds.
   }
@@ -268,14 +289,17 @@ export function adoptPlanFromBranch(cwd: string, branchEntries: unknown[]): bool
     const rec = entry as Record<string, unknown>;
     if (rec.type !== 'custom' || rec.customType !== PLAN_ENTRY_TYPE) continue;
     const steps = sanitizeStored(rec.data);
+    const lifecycle = readLifecycleFromStored(rec.data);
     const rfcPath = readRfcFromStored(rec.data);
     const decisions = readDecisionsFromStored(rec.data);
     if (steps.length === 0) {
       plans.delete(cwd);
+      planLifecycle.delete(cwd);
       planRfc.delete(cwd);
       planDecisions.delete(cwd);
     } else {
       plans.set(cwd, steps);
+      planLifecycle.set(cwd, lifecycle);
       // The RFC link and decision log are part of the plan snapshot, so a
       // fork/tree jump restores (or clears) them in lockstep with the steps
       // rather than leaking a stale RFC or decisions from another branch.
@@ -296,7 +320,7 @@ export function adoptPlanFromBranch(cwd: string, branchEntries: unknown[]): bool
 function persist(cwd: string): void {
   const steps = plans.get(cwd) ?? [];
   writeToDisk(cwd, steps);
-  appendPlanEntry(steps, planRfc.get(cwd), planDecisions.get(cwd));
+  appendPlanEntry(steps, planRfc.get(cwd), planDecisions.get(cwd), planLifecycle.get(cwd) ?? 'active');
 }
 
 /** Test hook: read the persisted plan straight from disk, bypassing the in-memory cache. */
@@ -312,6 +336,11 @@ export function readPersistedRfcForTests(cwd: string): string | undefined {
 /** Test hook: read the persisted decision log straight from disk, bypassing the in-memory cache. */
 export function readPersistedDecisionsForTests(cwd: string): PlanDecision[] | undefined {
   return readDecisionsFromDisk(cwd);
+}
+
+/** Test hook: read the persisted lifecycle straight from disk. */
+export function readPersistedLifecycleForTests(cwd: string): PlanLifecycle | undefined {
+  return readLifecycleFromDisk(cwd);
 }
 
 // ─── Plan ↔ RFC association ───────────────────────────────────────────────────
@@ -455,6 +484,25 @@ export function getPlan(cwd: string): PlanStep[] {
   return plans.get(cwd) ?? [];
 }
 
+export function getPlanLifecycle(cwd: string): PlanLifecycle {
+  ensureLoaded(cwd);
+  return planLifecycle.get(cwd) ?? 'active';
+}
+
+/** Promote an approved draft and start its first runnable step. */
+export function activatePlan(cwd: string): PlanStep[] {
+  const list = getPlan(cwd).slice();
+  if (list.length > 0 && !list.some((step) => step.status === 'doing')) {
+    const next = list.findIndex((step) => step.status === 'todo' && depsMet(step, list));
+    if (next >= 0) list[next] = { ...list[next]!, status: 'doing' };
+  }
+  plans.set(cwd, list);
+  planLifecycle.set(cwd, 'active');
+  markUpdated(cwd);
+  persist(cwd);
+  return list;
+}
+
 /**
  * Whether the scope has an actively owned in-progress step. Auto-compaction uses
  * this stricter signal so stale todo/blocked plan state after a finished turn
@@ -472,11 +520,12 @@ function normalizeInput(step: StepInput): { text: string; activeForm?: string; d
   return { text, ...(activeForm ? { activeForm } : {}), ...(dependsOn ? { dependsOn } : {}) };
 }
 
-/** Replace the whole plan with a fresh ordered step list (first step marked doing). */
-export function setPlan(cwd: string, steps: StepInput[]): PlanStep[] {
+/** Replace the whole plan; drafts remain entirely todo until activatePlan records approval. */
+export function setPlan(cwd: string, steps: StepInput[], lifecycle: PlanLifecycle = 'active'): PlanStep[] {
   const cleaned = steps.map(normalizeInput).filter((s) => s.text).slice(0, MAX_STEPS);
-  const next: PlanStep[] = cleaned.map((s, i) => ({ ...s, status: i === 0 ? 'doing' : 'todo' }));
+  const next: PlanStep[] = cleaned.map((s, i) => ({ ...s, status: lifecycle === 'active' && i === 0 ? 'doing' : 'todo' }));
   plans.set(cwd, next);
+  planLifecycle.set(cwd, lifecycle);
   loaded.add(cwd);
   markUpdated(cwd);
   persist(cwd);
@@ -507,6 +556,7 @@ export function addStep(cwd: string, text: string, activeForm?: string, dependsO
  */
 export function startStep(cwd: string, index: number): PlanStep[] {
   const list = getPlan(cwd).slice();
+  if (getPlanLifecycle(cwd) === 'draft') return list;
   const i = index - 1;
   if (i >= 0 && i < list.length) list[i] = { ...list[i]!, status: 'doing' };
   plans.set(cwd, list);
@@ -518,6 +568,7 @@ export function startStep(cwd: string, index: number): PlanStep[] {
 /** Mark a step (1-based) done and auto-advance the next todo to doing. */
 export function completeStep(cwd: string, index: number): PlanStep[] {
   const list = getPlan(cwd).slice();
+  if (getPlanLifecycle(cwd) === 'draft') return list;
   const i = index - 1;
   if (i >= 0 && i < list.length) {
     list[i] = { ...list[i]!, status: 'done' };
@@ -549,7 +600,7 @@ export function removeStep(cwd: string, index: number): PlanStep[] {
     const { dependsOn: _dropped, ...rest } = step;
     return deps.length ? { ...rest, dependsOn: deps } : rest;
   });
-  if (next.length > 0 && !next.some((s) => s.status === 'doing')) {
+  if (getPlanLifecycle(cwd) === 'active' && next.length > 0 && !next.some((s) => s.status === 'doing')) {
     const nextTodo = next.findIndex((s) => s.status === 'todo' && depsMet(s, next));
     if (nextTodo >= 0) next[nextTodo] = { ...next[nextTodo]!, status: 'doing' };
   }
@@ -561,6 +612,7 @@ export function removeStep(cwd: string, index: number): PlanStep[] {
 
 export function clearPlan(cwd: string): void {
   plans.delete(cwd);
+  planLifecycle.delete(cwd);
   planRfc.delete(cwd);
   planDecisions.delete(cwd);
   turnsSinceUpdate.delete(cwd);
@@ -585,6 +637,15 @@ export function stepLabel(s: PlanStep): string {
 export function renderActivePlanAddendum(cwd: string): string {
   const list = getPlan(cwd);
   if (list.length === 0) return '';
+  if (getPlanLifecycle(cwd) === 'draft') {
+    return [
+      '<active_plan>',
+      `This proposed task breakdown is awaiting user approval (0/${list.length} done). Do not execute or start any step until activatePlan records approval.`,
+      ...list.map((s, i) => `${DISPLAY_MARK[displayStatus(s, list)]} ${i + 1}. ${s.text}${s.dependsOn?.length ? ` (needs ${s.dependsOn.join(',')})` : ''}`),
+      'next: awaiting user approval',
+      '</active_plan>',
+    ].join('\n');
+  }
   const done = list.filter((s) => s.status === 'done').length;
   const doing = list.filter((s) => s.status === 'doing');
   const current = doing[0] ?? list.find((s) => s.status === 'todo');

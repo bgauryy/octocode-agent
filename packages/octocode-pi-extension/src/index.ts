@@ -52,7 +52,7 @@ import {
 import { registerUniqueTool } from './tools/octocode-tools.js';
 import { registerContextTools, resetAutoCompactState } from './tools/context-tools.js';
 import { registerCompactionHooks, resetCompactionCheckpointDedupe } from './tools/compaction-hooks.js';
-import { clearCompactionInFlight, clearCompactionResumeRequest } from './tools/compaction-state.js';
+import { clearCompactionInFlight, clearCompactionResumeRequest, clearAutoCompactResumeRequest, clearCompactionAbortSuppressionRequest } from './tools/compaction-state.js';
 import { resetCompactionResumeSchedule } from './tools/compaction-resume.js';
 import {
   cleanupSpawnedAgentsForShutdown,
@@ -1462,7 +1462,7 @@ async function wireOctocodePiExtension(
     // Snapshot every plan mutation into a session CustomEntry (state channel —
     // never rendered, never in LLM context) so /fork and /tree roll plan state
     // back with the conversation instead of leaking the forked-from plan.
-    setPlanEntryAppender((steps, rfcPath, decisions) => pi.appendEntry?.(PLAN_ENTRY_TYPE, { version: 1, steps, ...(rfcPath ? { rfcPath } : {}), ...(decisions && decisions.length ? { decisions } : {}) }));
+    setPlanEntryAppender((steps, rfcPath, decisions, lifecycle) => pi.appendEntry?.(PLAN_ENTRY_TYPE, { version: 1, steps, ...(lifecycle ? { lifecycle } : {}), ...(rfcPath ? { rfcPath } : {}), ...(decisions && decisions.length ? { decisions } : {}) }));
 
     hooks.on('session_tree', 'octocode-plan-tree-sync', async (_event: unknown, ctx: PiContext | undefined) => {
       // /tree navigation moved the leaf — re-adopt the plan snapshot that was
@@ -1476,6 +1476,17 @@ async function wireOctocodePiExtension(
       // Undo the shutdown-time suppression from a previous session in this process.
       resumeStatusPanel();
       resumeAwarenessPanel();
+      // Re-arm worker desktop notifications: the inbox is registered once per
+      // process and session_shutdown suppresses + detaches its ledger listener,
+      // so without this resume a single /new or /resume kills notifications for
+      // the rest of the process (mirrors the two panel resumes above).
+      agentInbox?.resume();
+      // Auto-naming is a per-session, once-per-session action. Seed the flag from
+      // whether this session already has a name: a fresh /new session has none →
+      // its first prompt names it; a resumed/forked already-named session keeps
+      // its name and skips renaming. Without this reset the flag stayed true from
+      // session 1 and no later session was ever auto-named.
+      sessionAutoNamed = Boolean(pi.getSessionName?.());
       // Re-register the footer for THIS session's ctx/tui/theme (idempotent
       // registration is keyed by ctx; deleting here forces exactly one
       // re-registration per session, e.g. after /new or a theme change).
@@ -1510,6 +1521,12 @@ async function wireOctocodePiExtension(
       // engine for this session's cwd (it may differ after /new or /resume).
       clearCompactionInFlight();
       clearCompactionResumeRequest();
+      // The auto-compact-resume and abort-suppression intents are module-global
+      // singletons too — clear them so a resume/suppression requested in a prior
+      // session (never consumed before the session swap) cannot be picked up by
+      // an unrelated compaction/abort in this one within their TTL windows.
+      clearAutoCompactResumeRequest();
+      clearCompactionAbortSuppressionRequest();
       resetCompactionResumeSchedule();
       resetCompactionCheckpointDedupe();
       // Sensitive-action "always allow" consent is session-scoped: a new session
@@ -2054,7 +2071,7 @@ async function wireOctocodePiExtension(
       }
 
       // Skills
-      lines.push('', `Skills  (${skills.length})   ←  load: skill({action:"load", name:"…"})`);
+      lines.push('', `Skills  (${skills.length})   ←  load: skill({action:"load", name:"…", reason:"why"})`);
       for (const skill of skills) {
         const descTrunc = skill.description
           ? `  ${skill.description.length > 64 ? `${skill.description.slice(0, 63)}…` : skill.description}`

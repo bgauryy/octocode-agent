@@ -4,8 +4,8 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Type } from 'typebox';
-import { createImageFromSvg, createImageFromHtml, registerCreateImageTool } from '../src/tools/create-image-tool.js';
-import { setCapabilityCheckForTests } from '../src/tools/image-render.js';
+import { cleanupImplicitImageArtifacts, createImageFromSvg, createImageFromHtml, registerCreateImageTool } from '../src/tools/create-image-tool.js';
+import { setCapabilityCheckForTests, setImageVisibilityCheckForTests } from '../src/tools/image-render.js';
 import { findChromePath } from '../src/chrome-debug.js';
 import type { ToolDefinition, ImageContentPart, RenderContext } from '../src/types.js';
 
@@ -25,6 +25,9 @@ beforeEach(async () => {
   dir = await mkdtemp(path.join(os.tmpdir(), 'create-image-'));
 });
 afterEach(async () => {
+  cleanupImplicitImageArtifacts();
+  setCapabilityCheckForTests(undefined);
+  setImageVisibilityCheckForTests(undefined);
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -148,7 +151,7 @@ describe('createImage tool', () => {
     setCapabilityCheckForTests(() => true);
     try {
       const tool = getTool();
-      const result = await tool.execute!('cok', { svg: SVG }, undefined, undefined, { cwd: dir });
+      const result = await tool.execute!('cok', { svg: SVG }, undefined, undefined, { cwd: dir, hasUI: true, mode: 'tui' });
       const text = (result.content.find((c) => c.type === 'text') as { text: string }).text;
       expect(text).not.toMatch(/browser/i);
       const details = result.details as { savedPath?: string; terminalSupportsImages?: boolean };
@@ -157,6 +160,36 @@ describe('createImage tool', () => {
     } finally {
       setCapabilityCheckForTests(undefined);
     }
+  });
+
+  it('uses effective capability when image display is disabled despite protocol support', async () => {
+    setCapabilityCheckForTests(() => true);
+    setImageVisibilityCheckForTests(() => false);
+    const tool = getTool();
+    const result = await tool.execute!('csettings', { svg: SVG, name: 'hidden.png' }, undefined, undefined, { cwd: dir, hasUI: true, mode: 'tui' });
+    const text = (result.content.find((c) => c.type === 'text') as { text: string }).text;
+    const details = result.details as { savedPath?: string; terminalSupportsImages?: boolean; effectiveInlineImages?: boolean; temporaryArtifact?: boolean };
+    expect(details.terminalSupportsImages).toBe(true);
+    expect(details.effectiveInlineImages).toBe(false);
+    expect(details.temporaryArtifact).toBe(true);
+    expect(details.savedPath).toBeTruthy();
+    expect(text).toMatch(/ask the user first/i);
+  });
+
+  it('cleans implicit fallback artifacts but preserves explicit saveTo output', async () => {
+    setCapabilityCheckForTests(() => false);
+    setImageVisibilityCheckForTests(() => true);
+    const tool = getTool();
+    const explicitPath = path.join(dir, 'durable.png');
+    const implicit = await tool.execute!('ctmp', { svg: SVG, name: 'temporary.png' }, undefined, undefined, { cwd: dir, hasUI: true, mode: 'tui' });
+    const explicit = await tool.execute!('cdurable', { svg: SVG, saveTo: explicitPath }, undefined, undefined, { cwd: dir, hasUI: true, mode: 'tui' });
+    const implicitPath = (implicit.details as { savedPath?: string }).savedPath!;
+    expect(existsSync(implicitPath)).toBe(true);
+    expect((implicit.details as { temporaryArtifact?: boolean }).temporaryArtifact).toBe(true);
+    expect((explicit.details as { temporaryArtifact?: boolean }).temporaryArtifact).toBe(false);
+    cleanupImplicitImageArtifacts();
+    expect(existsSync(implicitPath)).toBe(false);
+    expect(existsSync(explicitPath)).toBe(true);
   });
 
   it('rejects empty html markup', async () => {
