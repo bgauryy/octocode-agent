@@ -78,10 +78,19 @@ describe('AwarenessLite', () => {
     expect(aw.auditChecks()).toMatchObject({ ok: true, pendingCount: 0 });
 
     aw.doneTask({ taskId: task.taskId, agentId: 'agent-a' });
-    const verified = aw.markCheck({ taskId: task.taskId, agentId: 'agent-a', message: 'yarn test passed' });
+    expect(aw.auditChecks({ agentId: 'agent-a', planId: plan.planId, minAgeMs: 0 })).toMatchObject({ ok: false, pendingCount: 1 });
+    const verified = aw.markCheck({ taskId: task.taskId, agentId: 'agent-a', message: 'yarn test passed', status: 'SUCCESS' });
     expect(verified.verifiedBy).toBe('agent-a');
     expect(verified.verificationMessage).toBe('yarn test passed');
     expect(aw.auditChecks()).toMatchObject({ ok: true, pendingCount: 0 });
+
+    const failedTask = aw.addTask({ planId: plan.planId, title: 'fails later' });
+    aw.doneTask({ taskId: failedTask.taskId, agentId: 'agent-a' });
+    const failed = aw.markCheck({ taskId: failedTask.taskId, agentId: 'agent-a', message: 'integration failed', status: 'FAILED' });
+    expect(failed).toMatchObject({ status: 'CLAIMED', verifiedAt: null, verificationMessage: 'integration failed' });
+    aw.doneTask({ taskId: failedTask.taskId, agentId: 'agent-a' });
+    aw.markCheck({ taskId: failedTask.taskId, agentId: 'agent-a', message: 'integration passed' });
+
     expect(aw.donePlan({ planId: plan.planId }).status).toBe('DONE');
   });
 
@@ -112,7 +121,13 @@ describe('AwarenessLite', () => {
     expect(aw.schema().commands.message).toContain('send --from --text [--to] [--topic] [--file]');
     expect(aw.schema().commands.message).toContain('prune --older-than [--read-only] [--confirm]');
     expect(aw.schema().commands.plan).toContain('done --plan-id [--force]');
-    expect(aw.schema().commands.task).toContain('reopen --task-id --agent-id [--reason]');
+    expect(aw.schema().commands.task).toContain('ready [--plan-id] [--limit]');
+    expect(aw.schema().commands.task).toContain('heartbeat --task-id --agent-id [--lease]');
+    expect(aw.schema().commands.lock).toContain('wait --file [--agent-id] [--wait] [--retry-interval]');
+    expect(aw.schema().commands.work).toContain('show --file');
+    expect(aw.schema().commands.check).toContain('mark --task-id --agent-id --message [--status SUCCESS|FAILED]');
+    expect(aw.schemaCommand('task')).toMatchObject({ command: 'task' });
+    expect(aw.schemaCommand('list')).toContain('task');
   });
 
   it('prevents another agent from stealing claimed tasks', () => {
@@ -123,6 +138,61 @@ describe('AwarenessLite', () => {
     expect(() => aw.claimTask({ taskId: task.taskId, agentId: 'agent-b' })).toThrow('belongs to agent-a');
   });
 
+  it('tracks task metadata, dependency readiness, leases, heartbeat, and release', () => {
+    const plan = aw.createPlan({ title: 'dependency plan' });
+    const dependency = aw.addTask({ planId: plan.planId, title: 'first', priority: 1 });
+    const blocked = aw.addTask({
+      planId: plan.planId,
+      title: 'second',
+      paths: 'src/index.ts,README.md',
+      reasoning: 'needs first task',
+      acceptance: 'second task is safe to claim',
+      dependsOn: dependency.taskId,
+      priority: 5,
+    });
+
+    expect(blocked).toMatchObject({
+      filePath: 'src/index.ts',
+      paths: ['src/index.ts', 'README.md'],
+      reasoning: 'needs first task',
+      acceptance: 'second task is safe to claim',
+      priority: 5,
+      dependencies: [dependency.taskId],
+    });
+    expect(aw.listReadyTasks({ planId: plan.planId }).map((task) => task.taskId)).toEqual([dependency.taskId]);
+    expect(() => aw.claimTask({ taskId: blocked.taskId, agentId: 'agent-a' })).toThrow(`blocked by ${dependency.taskId}`);
+
+    aw.doneTask({ taskId: dependency.taskId, agentId: 'agent-a' });
+    aw.markCheck({ taskId: dependency.taskId, agentId: 'agent-a', message: 'unit passed' });
+    expect(aw.listReadyTasks({ planId: plan.planId }).map((task) => task.taskId)).toEqual([blocked.taskId]);
+
+    const claimed = aw.claimTask({ taskId: blocked.taskId, agentId: 'agent-b', leaseSeconds: 60 });
+    expect(claimed).toMatchObject({ status: 'CLAIMED', agentId: 'agent-b' });
+    expect(claimed.claimedAt).toBeTruthy();
+    expect(claimed.leaseExpiresAt).toBeTruthy();
+    const heartbeat = aw.heartbeatTask({ taskId: blocked.taskId, agentId: 'agent-b', leaseSeconds: 120 });
+    expect(Date.parse(heartbeat.leaseExpiresAt!)).toBeGreaterThanOrEqual(Date.parse(claimed.leaseExpiresAt!));
+
+    const released = aw.releaseTask({ taskId: blocked.taskId, agentId: 'agent-b', blockedReason: 'waiting on reviewer' });
+    expect(released).toMatchObject({ status: 'OPEN', agentId: null, claimedAt: null, leaseExpiresAt: null, verificationMessage: 'waiting on reviewer' });
+  });
+
+  it('evicts expired task claim leases when listing tasks', () => {
+    const plan = aw.createPlan({ title: 'lease plan' });
+    const task = aw.addTask({ planId: plan.planId, title: 'lease task' });
+    aw.claimTask({ taskId: task.taskId, agentId: 'agent-a', leaseSeconds: 60 });
+
+    const db = new DatabaseSync(aw.dbPath);
+    try {
+      const expired = new Date(Date.now() - 1000).toISOString();
+      db.prepare('UPDATE tasks SET lease_expires_at = ? WHERE task_id = ?').run(expired, task.taskId);
+    } finally {
+      db.close();
+    }
+
+    expect(aw.listTasks({ planId: plan.planId })[0]).toMatchObject({ status: 'OPEN', agentId: null, leaseExpiresAt: null, verificationMessage: 'claim lease expired' });
+  });
+
   it('acquires, refreshes, conflicts, and releases locks', async () => {
     await mkdir(join(workspace, 'src'));
     const lock = aw.acquireLock({ filePath: 'src/index.ts', agentId: 'agent-a', reason: 'edit', ttlSeconds: 60 });
@@ -130,8 +200,11 @@ describe('AwarenessLite', () => {
     expect(lock.filePath).toBe(join(workspace, 'src/index.ts'));
     expect(aw.listLocks()).toHaveLength(1);
     expect(aw.acquireLock({ filePath: 'src/index.ts', agentId: 'agent-a', reason: 'refresh' }).reason).toBe('refresh');
+    expect(aw.waitForLock({ filePath: 'src/index.ts', agentId: 'agent-a' })).toMatchObject({ ok: true, lockFree: true });
+    expect(aw.waitForLock({ filePath: 'src/index.ts', agentId: 'agent-b', waitMs: 1, retryIntervalMs: 1 })).toMatchObject({ ok: false, lockFree: false, conflict: { agentId: 'agent-a' } });
     expect(() => aw.acquireLock({ filePath: 'src/index.ts', agentId: 'agent-b' })).toThrow('lock conflict');
     expect(aw.releaseLock({ filePath: 'src/index.ts', agentId: 'agent-a' })).toEqual({ released: true });
+    expect(aw.waitForLock({ filePath: 'src/index.ts', agentId: 'agent-b' })).toMatchObject({ ok: true, lockFree: true });
     expect(aw.listLocks()).toHaveLength(0);
   });
 
@@ -141,6 +214,8 @@ describe('AwarenessLite', () => {
     expect(work).toMatchObject({ filePath: join(workspace, 'src/index.ts'), agentId: 'agent-a', reason: 'editing lite' });
     expect(aw.status().work).toBe(1);
     expect(aw.listWork()).toHaveLength(1);
+    expect(aw.listWork({ agentId: 'agent-a' })).toHaveLength(1);
+    expect(aw.showWork({ filePath: 'src/index.ts' })).toHaveLength(1);
     expect(aw.startWork({ filePath: 'src/index.ts', agentId: 'agent-a', reason: 'refresh' }).reason).toBe('refresh');
     expect(aw.endWork({ filePath: 'src/index.ts', agentId: 'agent-a' })).toEqual({ ended: true });
     expect(aw.endWork({ filePath: 'src/index.ts', agentId: 'agent-a' })).toEqual({ ended: false });
@@ -207,6 +282,8 @@ describe('AwarenessLite', () => {
       db.close();
     }
 
+    expect(aw.pruneLocks({ dryRun: true })).toMatchObject({ dryRun: true, matched: 1, deleted: 0 });
+    expect(aw.pruneLocks({ dryRun: false })).toMatchObject({ dryRun: false, matched: 1, deleted: 1 });
     expect(aw.listLocks()).toHaveLength(0);
     expect(aw.listWork()).toHaveLength(0);
   });
@@ -238,7 +315,7 @@ describe('AwarenessLite', () => {
     const columns = new DatabaseSync(aw.dbPath);
     try {
       const names = columns.prepare('PRAGMA table_info(tasks)').all().map((row) => (row as { name: string }).name);
-      expect(names).toEqual(expect.arrayContaining(['check_command', 'verified_at', 'verified_by', 'verification_message']));
+      expect(names).toEqual(expect.arrayContaining(['paths_json', 'reasoning', 'acceptance', 'check_command', 'priority', 'dependencies_json', 'claimed_at', 'lease_expires_at', 'verified_at', 'verified_by', 'verification_message']));
     } finally {
       columns.close();
     }

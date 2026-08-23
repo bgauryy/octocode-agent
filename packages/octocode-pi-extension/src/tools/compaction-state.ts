@@ -24,6 +24,9 @@ const COMPACTION_ABORT_SUPPRESSION_TTL_MS = 30_000;
 let inFlightSince: number | null = null;
 let resumeRequestedSince: number | null = null;
 let abortSuppressionRequestedSince: number | null = null;
+// Auto-compact resume (turn_end watcher, plan-verified):
+// session_compact re-checks plan state before scheduling the continuation.
+let autoCompactResumeSince: number | null = null;
 
 export function markCompactionInFlight(now = Date.now()): void {
   inFlightSince = now;
@@ -60,6 +63,27 @@ export function consumeCompactionResumeRequest(now = Date.now()): boolean {
   if (resumeRequestedSince === null) return false;
   const requestedAt = resumeRequestedSince;
   resumeRequestedSince = null;
+  return now - requestedAt <= COMPACTION_RESUME_REQUEST_TTL_MS;
+}
+
+/**
+ * Mark that the turn_end auto-compact watcher triggered ctx.compact() while
+ * plan work was active. Unlike the explicit (manage_context) resume,
+ * session_compact will re-verify plan state before scheduling the continuation
+ * — if work completed while compaction was in flight the follow-up is skipped.
+ */
+export function markAutoCompactResumeRequested(now = Date.now()): void {
+  autoCompactResumeSince = now;
+}
+
+export function clearAutoCompactResumeRequest(): void {
+  autoCompactResumeSince = null;
+}
+
+export function consumeAutoCompactResumeRequest(now = Date.now()): boolean {
+  if (autoCompactResumeSince === null) return false;
+  const requestedAt = autoCompactResumeSince;
+  autoCompactResumeSince = null;
   return now - requestedAt <= COMPACTION_RESUME_REQUEST_TTL_MS;
 }
 
@@ -104,4 +128,5 @@ export function resetCompactionArbiterForTests(): void {
   inFlightSince = null;
   resumeRequestedSince = null;
   abortSuppressionRequestedSince = null;
+  autoCompactResumeSince = null;
 }

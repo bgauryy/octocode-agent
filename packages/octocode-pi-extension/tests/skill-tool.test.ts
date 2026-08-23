@@ -97,6 +97,14 @@ test('discoverSkills skips directories without SKILL.md and missing roots withou
   assert.ok(!discoverSkills(cwd).some((s) => s.name === 'not-a-skill'));
 });
 
+test('discoverSkills filters Awareness Lite because it is prompt-owned coordination', () => {
+  const cwd = tmpWorkspace();
+  makeSkillDir(path.join(cwd, '.agents', 'skills'), 'octocode-awareness-lite', 'Old skill copy.');
+  const piSkills: SkillInfo[] = [{ name: 'octocode-awareness-lite', description: 'Pi copy.', path: '/pi/octocode-awareness-lite/SKILL.md' }];
+  const skills = discoverSkills(cwd, piSkills);
+  assert.ok(!skills.some((s) => s.name === 'octocode-awareness-lite'));
+});
+
 // ─── usage ledger (observability) ─────────────────────────────────────────────
 
 test('usage ledger records loads and formats dashboard lines, newest first', () => {

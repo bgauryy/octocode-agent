@@ -75,6 +75,33 @@ ${refresh}
   .deps { color:var(--muted); font-size:.8rem; }
   pre { overflow-x:auto; }
   pre.mermaid { background:transparent; display:flex; justify-content:center; }
+  /* Embedded RFC document: render as a real doc, not a status panel. */
+  section.rfc h2 .rfc-status { color:var(--gold); font-size:.75rem; letter-spacing:.04em; margin-left:.5rem; }
+  .rfc-body { color:var(--ink); }
+  .rfc-body h1, .rfc-body h2, .rfc-body h3, .rfc-body h4 { color:var(--teal); text-transform:none; letter-spacing:normal; margin:1.2rem 0 .5rem; }
+  .rfc-body h1 { font-size:1.15rem; } .rfc-body h2 { font-size:1rem; } .rfc-body h3 { font-size:.9rem; }
+  .rfc-body a { color:var(--lav); }
+  .rfc-body code { background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:.05rem .3rem; font-size:.85em; }
+  .rfc-body pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.75rem; }
+  .rfc-body pre code { border:none; padding:0; }
+  .rfc-body table { border-collapse:collapse; width:100%; margin:.5rem 0; font-size:.9rem; }
+  .rfc-body th, .rfc-body td { border:1px solid var(--line); padding:.35rem .6rem; text-align:left; }
+  .rfc-body blockquote { border-left:3px solid var(--line); margin:.5rem 0; padding:.1rem 0 .1rem .8rem; color:var(--muted); }
+  /* Phase timeline */
+  ol.phase-timeline { list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:.4rem; }
+  ol.phase-timeline .ph { display:inline-flex; align-items:center; gap:.4rem; font-size:.82rem;
+    padding:.4rem .7rem; border-radius:8px; border:1px solid var(--line); color:var(--muted); background:var(--bg); }
+  ol.phase-timeline .ph .ph-g { font-family:ui-monospace,monospace; }
+  ol.phase-timeline .ph.done { color:var(--muted); }
+  ol.phase-timeline .ph.now { color:var(--gold); border-color:var(--gold); font-weight:600;
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--gold) 18%, transparent); }
+  ol.phase-timeline .ph.todo { opacity:.65; }
+  /* Decisions */
+  ul.decisions { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.5rem; }
+  ul.decisions li { display:flex; flex-direction:column; gap:.15rem; padding:.5rem .7rem;
+    border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+  ul.decisions .dq { color:var(--muted); font-size:.82rem; }
+  ul.decisions .da { color:var(--lav); }
   details pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:1rem; color:var(--muted); }
   summary { cursor:pointer; color:var(--lav); font-size:.85rem; }
   footer { color:var(--muted); font-size:.75rem; margin-top:1.5rem; }

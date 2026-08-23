@@ -130,6 +130,14 @@ export async function runSelectOverlay(
   if (ctx?.mode !== "tui" || !ctx?.hasUI || typeof ctx.ui?.custom !== "function") return undefined;
   const enableFilter = opts.filter ?? opts.items.length > 8;
 
+  // TODO(abort): the awaited custom() promise settles only on a user keypress
+  // (done() in onSelect/onCancel/empty-esc). If the surrounding tool turn is
+  // aborted while the overlay is open, this can hang. There is currently no safe
+  // wiring to force-dismiss it: PiContext exposes no AbortSignal or abort event
+  // (see PiContext in types.ts), and the custom() `onHandle` callback yields an
+  // untyped `handle: unknown` with no documented dismiss method — calling one
+  // would fabricate an API. Wiring a real abort path needs either a signal on
+  // PiContext or a typed dismiss handle, plus threading a signal from callers.
   return ctx.ui.custom<string | null>(
     (
       tui: any,
@@ -179,7 +187,7 @@ export async function runSelectOverlay(
             lines.push(fgTok(theme, "dim", `filter: ${filter}`));
           }
           if (empty) {
-            lines.push(fgTok(theme, "warning", "  no matches — backspace to clear"));
+            lines.push(fgTok(theme, "muted", "  no matches — backspace to clear"));
           } else {
             lines.push(...(list.render(w) as string[]).map((l: string) => ` ${l}`));
           }
@@ -238,6 +246,11 @@ export async function runMultiSelectOverlay(
 ): Promise<string[] | undefined> {
   if (ctx?.mode !== "tui" || !ctx?.hasUI || typeof ctx.ui?.custom !== "function") return undefined;
 
+  // TODO(abort): same gap as runSelectOverlay — this awaited custom() promise
+  // settles only on a user keypress (done() in the confirm/cancel handlers), so
+  // an aborted tool turn can hang with the overlay open. No safe programmatic
+  // dismiss exists: PiContext carries no AbortSignal/abort event and custom()'s
+  // `onHandle` handle is untyped (`unknown`) with no documented dismiss API.
   const result = await ctx.ui.custom<string[] | null>(
     (
       tui: any,

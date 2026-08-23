@@ -181,19 +181,27 @@ export async function applyDialLevel(
       model = 'not-found';
       warnings.push(`OCTOCODE_DIAL_${key}_MODEL is set but OCTOCODE_DIAL_${key}_PROVIDER is missing — model unchanged.`);
     } else {
-      const resolved = ctx?.modelRegistry?.find(provider, modelId);
-      if (!resolved) {
+      // Never throw for host/model shortfalls: a rejecting model lookup/setModel must
+      // not leave the dial half-applied or propagate out of restoreDialOnStartup.
+      // Warn and fall through to persist a consistent level state.
+      try {
+        const resolved = ctx?.modelRegistry?.find(provider, modelId);
+        if (!resolved) {
+          model = 'not-found';
+          warnings.push(`Model ${provider}/${modelId} not found in the model registry — model unchanged.`);
+        } else if (typeof pi.setModel !== 'function') {
+          model = 'not-found';
+          warnings.push('Host does not support setModel — model unchanged.');
+        } else if (await pi.setModel(resolved)) {
+          model = 'applied';
+        } else {
+          // pi.setModel contract: resolves false when the provider API key is missing.
+          model = 'no-api-key';
+          warnings.push(`No API key for ${provider}/${modelId} — model unchanged; dial otherwise applied.`);
+        }
+      } catch (error) {
         model = 'not-found';
-        warnings.push(`Model ${provider}/${modelId} not found in the model registry — model unchanged.`);
-      } else if (typeof pi.setModel !== 'function') {
-        model = 'not-found';
-        warnings.push('Host does not support setModel — model unchanged.');
-      } else if (await pi.setModel(resolved)) {
-        model = 'applied';
-      } else {
-        // pi.setModel contract: resolves false when the provider API key is missing.
-        model = 'no-api-key';
-        warnings.push(`No API key for ${provider}/${modelId} — model unchanged; dial otherwise applied.`);
+        warnings.push(`Could not set model ${provider}/${modelId}: ${error instanceof Error ? error.message : String(error)} — model unchanged; dial otherwise applied.`);
       }
     }
   }

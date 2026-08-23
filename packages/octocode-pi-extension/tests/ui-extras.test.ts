@@ -7,6 +7,7 @@ import {
   buildWorkingMessage,
   buildFooterSegments,
   buildShortcutHintsRow,
+  buildCommandsRow,
   getFooterDensity,
   setFooterDensity,
   parseFooterDensity,
@@ -17,6 +18,7 @@ import {
   OCTOCODE_THEME_DARK,
   OCTOCODE_THEME_LIGHT,
   buildAgentFooterRows,
+  type CommandEntry,
 } from '../src/ui-extras.js';
 
 test('buildShortcutHintsRow formats bound shortcuts and drops blank/unbound keys', () => {
@@ -61,6 +63,50 @@ test('buildShortcutHintsRow color-codes keycaps and action labels', () => {
 
 test('buildShortcutHintsRow returns empty string when nothing is bound', () => {
   assert.equal(buildShortcutHintsRow([{ key: '', label: 'think' }, { key: '  ', label: 'perm' }]), '');
+});
+
+test('buildCommandsRow renders /name desc for each entry, joined by SEP', () => {
+  // Without a theme, paint() is a passthrough, so the output is plain text.
+  const entries: CommandEntry[] = [
+    { name: 'harness', desc: 'inspect',  token: 'symbol'   },
+    { name: 'plan',    desc: 'goal',     token: 'link'     },
+    { name: 'agents',  desc: 'workers',  token: 'brandAlt' },
+  ];
+  const row = buildCommandsRow(entries);
+  assert.ok(row.includes('/harness'), 'contains /harness');
+  assert.ok(row.includes('inspect'),  'contains harness desc');
+  assert.ok(row.includes('/plan'),    'contains /plan');
+  assert.ok(row.includes('goal'),     'contains plan desc');
+  assert.ok(row.includes('/agents'),  'contains /agents');
+  assert.ok(row.includes('workers'),  'contains agents desc');
+  // Commands are separated by SEP (· with spaces).
+  assert.ok(row.includes('·'), 'uses SEP separator');
+});
+
+test('buildCommandsRow returns empty string for empty list', () => {
+  assert.equal(buildCommandsRow([]), '');
+});
+
+test('buildCommandsRow applies theme colors: dim slash, per-token name, dim desc', () => {
+  // TOKEN_FG_MAP: 'dim'→'dim', 'symbol'→'syntaxType', 'brand'→'accent'
+  const calls: Array<[string, string]> = [];
+  const theme = {
+    fg: (color: string, text: string) => { calls.push([color, text]); return `[${color}:${text}]`; },
+    bold: (text: string) => text,
+  };
+  const entries: CommandEntry[] = [
+    { name: 'harness', desc: 'inspect',  token: 'symbol' }, // symbol → syntaxType
+    { name: 'now',     desc: 'snapshot', token: 'brand'  }, // brand  → accent
+  ];
+  const row = buildCommandsRow(entries, theme);
+  const dimCalls      = calls.filter(([c]) => c === 'dim');
+  const symbolCalls   = calls.filter(([c]) => c === 'syntaxType');
+  const brandCalls    = calls.filter(([c]) => c === 'accent');
+  assert.ok(dimCalls.some(([, t]) => t === '/'),         'slash is dim');
+  assert.ok(dimCalls.some(([, t]) => t === 'inspect'),   'harness desc is dim');
+  assert.ok(symbolCalls.some(([, t]) => t === 'harness'),'harness name uses symbol → syntaxType');
+  assert.ok(brandCalls.some(([, t]) => t === 'now'),     'now name uses brand → accent');
+  assert.ok(row.includes('harness'), 'harness appears in row');
 });
 
 test('formatCompact abbreviates thousands and millions', () => {

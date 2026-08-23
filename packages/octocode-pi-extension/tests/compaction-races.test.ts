@@ -25,8 +25,8 @@ import {
   resetCompactionArbiterForTests,
 } from '../src/tools/compaction-state.js';
 import { resetCompactionResumeStateForTests, setCompactionResumeRetryDelayForTests } from '../src/tools/compaction-resume.js';
-import { markCompactionResumeRequested } from '../src/tools/compaction-state.js';
-import { activePlanScope, clearPlan, setPlan } from '../src/tools/active-plan.js';
+import { markCompactionResumeRequested, markAutoCompactResumeRequested } from '../src/tools/compaction-state.js';
+import { PLAN_ENTRY_TYPE, activePlanScope, adoptPlanFromBranch, clearPlan, setPlan } from '../src/tools/active-plan.js';
 
 type Handler = (event: unknown, ctx: unknown) => unknown | Promise<unknown>;
 
@@ -163,7 +163,25 @@ test('auto-compaction skips terminal completion answers even if stale plan work 
   assert.equal(later.compactCalls.length, 1, 'skipping terminal completion must not consume the threshold edge for later real work');
 });
 
-test('auto-compaction fires on a fresh threshold crossing with unfinished plan work', async () => {
+test('auto-compaction skips stale unfinished plan state with no active doing step', async () => {
+  const { fire } = makeHarness();
+  const scope = activePlanScope();
+  adoptPlanFromBranch(scope, [{
+    type: 'custom',
+    customType: PLAN_ENTRY_TYPE,
+    data: { steps: [{ text: 'stale todo from an old plan', status: 'todo' }] },
+  }]);
+  const { ctx, compactCalls } = makeCtx({ tokens: 90, branch: [{ type: 'message' }] });
+
+  await fire('turn_end', TURN_STOP, ctx);
+  assert.equal(compactCalls.length, 0, 'stale unfinished plan state is not active work');
+
+  setPlan(scope, ['continue after compaction']);
+  await fire('turn_end', TURN_STOP, ctx);
+  assert.equal(compactCalls.length, 1, 'skipping stale state must not consume the threshold edge for later active work');
+});
+
+test('auto-compaction fires on a fresh threshold crossing with active plan work', async () => {
   const { fire } = makeHarness();
   setPlan(activePlanScope(), ['continue after compaction']);
   const { ctx, compactCalls } = makeCtx({ tokens: 90 });
@@ -385,6 +403,91 @@ test('manage_context description no longer tells the model to compact at 60% (ra
   assert.doesNotMatch(tool.description ?? '', /60%/);
   assert.match(tool.description ?? '', /research→execution boundary/);
   assert.match(tool.description ?? '', /[Aa]utomatic compaction/);
+});
+
+// ── Stale-resume guard (TDD) ──────────────────────────────────────────────────
+// Auto-compact resumes are plan-verified: if work completed while compaction was
+// in flight the follow-up must be suppressed. Explicit resumes (manage_context)
+// always fire — the model was mid-task by definition.
+
+test('session_compact suppresses auto-compact resume when plan cleared before session_compact fires', async () => {
+  const { fire, sentUserMessages } = makeHarness();
+  // Simulate: turn_end fires, plan is active, auto-compact is triggered.
+  const scope = activePlanScope();
+  setPlan(scope, ['step not yet done']);
+  markAutoCompactResumeRequested();
+
+  // Simulate: work finishes and plan clears BEFORE session_compact arrives.
+  clearPlan(scope);
+
+  const { ctx } = makeCtx();
+  await fire(
+    'session_compact',
+    { compactionEntry: {}, fromExtension: true, reason: 'auto', willRetry: false },
+    ctx,
+  );
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(
+    sentUserMessages.length,
+    0,
+    'stale auto-compact resume must not fire when plan is empty at session_compact time',
+  );
+});
+
+test('session_compact suppresses auto-compact resume when last assistant turn signals completion', async () => {
+  const { fire, sentUserMessages } = makeHarness();
+  const scope = activePlanScope();
+  setPlan(scope, ['step not yet done']);
+  markAutoCompactResumeRequested();
+
+  // Branch has a final assistant turn that says work is done.
+  const { ctx } = makeCtx({
+    branch: [
+      {
+        type: 'message',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Prior work was already complete, verified, and closed. Nothing to continue.' }],
+        },
+      } as never,
+    ],
+  });
+  await fire(
+    'session_compact',
+    { compactionEntry: {}, fromExtension: true, reason: 'auto', willRetry: false },
+    ctx,
+  );
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(
+    sentUserMessages.length,
+    0,
+    'stale auto-compact resume must not fire when last assistant turn clearly completed the session',
+  );
+  // Clean up so the plan check in later tests is not tainted.
+  clearPlan(scope);
+});
+
+test('session_compact still resumes manage_context compactions even without active plan', async () => {
+  const { fire, sentUserMessages } = makeHarness();
+  setCompactionResumeRetryDelayForTests(0);
+  // manage_context uses the explicit (non-plan-verified) resume flag.
+  markCompactionResumeRequested();
+
+  const { ctx } = makeCtx(); // no plan set — explicit resumes bypass the plan check
+  await fire(
+    'session_compact',
+    { compactionEntry: {}, fromExtension: true, reason: 'auto', willRetry: false },
+    ctx,
+  );
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(
+    sentUserMessages.length,
+    1,
+    'explicit (manage_context) resume must always fire regardless of plan state',
+  );
 });
 
 test('session_compact resume survives a willRetry pass and fires exactly once on success', async () => {

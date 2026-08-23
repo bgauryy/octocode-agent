@@ -53,7 +53,7 @@ describe('runCli', () => {
   it('prints help', () => {
     expect(runCli(['help'])).toBe(0);
     expect(stdout).toContain('plan create|list|done');
-    expect(stdout).toContain('work start|touch|list|end');
+    expect(stdout).toContain('work start|touch|list|show|end');
     expect(stdout).toContain('handoff add|list|clear');
     expect(stdout).toContain('agent join|touch|leave|list');
     expect(stdout).toContain('message send|inbox|list|read');
@@ -266,9 +266,9 @@ describe('runCli', () => {
 
   it('reports command errors through the CLI dispatcher', () => {
     expect(() => runCli(['plan', 'nope', '--workspace', workspace])).toThrow('plan action must be create, list, or done');
-    expect(() => runCli(['task', 'nope', '--workspace', workspace])).toThrow('task action must be add, list, claim, done, or reopen');
-    expect(() => runCli(['lock', 'nope', '--workspace', workspace])).toThrow('lock action must be acquire, release, or list');
-    expect(() => runCli(['work', 'nope', '--workspace', workspace])).toThrow('work action must be start, touch, list, or end');
+    expect(() => runCli(['task', 'nope', '--workspace', workspace])).toThrow('task action must be add, list, ready, show, depend, claim, heartbeat, release, done, or reopen');
+    expect(() => runCli(['lock', 'nope', '--workspace', workspace])).toThrow('lock action must be acquire, wait, prune, release, or list');
+    expect(() => runCli(['work', 'nope', '--workspace', workspace])).toThrow('work action must be start, touch, list, show, or end');
     expect(() => runCli(['handoff', 'nope', '--workspace', workspace])).toThrow('handoff action must be add, list, or clear');
     expect(() => runCli(['agent', 'nope', '--workspace', workspace])).toThrow('agent action must be join, touch, leave, or list');
     expect(() => runCli(['message', 'nope', '--workspace', workspace])).toThrow('message action must be send, inbox, list, read, or prune');

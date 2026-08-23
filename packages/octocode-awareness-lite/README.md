@@ -9,8 +9,8 @@ to fake in chat:
 
 - a local SQLite database;
 - Plans;
-- Tasks;
-- Locks;
+- Tasks with dependency readiness, leases, and check receipts;
+- Locks with wait/prune helpers;
 - Manual advisory work presence;
 - Manual handoff notes;
 - Agent registry and a tiny message inbox;
@@ -20,8 +20,10 @@ to fake in chat:
 That is it. Lite stores repo-local coordination history, not git history, diffs,
 or a semantic repo index. Agents should pair it with normal source-of-truth checks
 such as `git status`, diffs, logs, and tests. No signal threads, reflection, docs
-catalog, maintenance loop, embeddings, or projections. The only optional hook is
-a small pre-edit lock-conflict gate for Pi/Claude/Cursor/Codex write tools.
+catalog, maintenance loop, built-in embeddings, or projections. Memory can use an
+optional host-owned `OCTOCODE_EMBED_CMD` for semantic recall, but Lite does not
+ship or manage an embedding runtime. The only optional hook is a small pre-edit
+lock-conflict gate for Pi/Claude/Cursor/Codex write tools.
 
 ## Install / run
 
@@ -56,27 +58,38 @@ Override it with `--db /path/to/file.sqlite3`.
 ```bash
 octocode-awareness-lite status --stale-after 30m
 octocode-awareness-lite schema
+octocode-awareness-lite schema command --name task
 
 octocode-awareness-lite plan create --title "ship auth" --goal "make login production ready"
 octocode-awareness-lite plan list
 octocode-awareness-lite plan done --plan-id plan_...
 
-octocode-awareness-lite task add --plan-id plan_... --title "fix token refresh" --file src/auth.ts --check "yarn test"
-octocode-awareness-lite task list --plan-id plan_...
-octocode-awareness-lite task claim --task-id task_... --agent-id agent-a
+octocode-awareness-lite task add --plan-id plan_... --title "fix token refresh" --file src/auth.ts --path src/auth.ts,tests/auth.test.ts --depends-on task_prev --reasoning "refresh is flaky" --acceptance "token refresh is covered" --priority 10 --check "yarn test"
+octocode-awareness-lite task list --plan-id plan_... --agent-id agent-a
+octocode-awareness-lite task ready --plan-id plan_...
+octocode-awareness-lite task show --task-id task_...
+octocode-awareness-lite task depend --task-id task_... --depends-on task_prev
+octocode-awareness-lite task claim --task-id task_... --agent-id agent-a --lease 1800
+octocode-awareness-lite task heartbeat --task-id task_... --agent-id agent-a --lease 1800
+octocode-awareness-lite task release --task-id task_... --agent-id agent-a --blocked-reason "waiting for review"
 octocode-awareness-lite task done --task-id task_... --agent-id agent-a
 octocode-awareness-lite task reopen --task-id task_... --agent-id agent-a --reason "check failed"
 
 # After running the task's check command:
-octocode-awareness-lite check audit
-octocode-awareness-lite check mark --task-id task_... --agent-id agent-a --message "yarn test passed"
+octocode-awareness-lite check audit --agent-id agent-a --plan-id plan_... --min-age 5m
+octocode-awareness-lite check mark --task-id task_... --agent-id agent-a --message "yarn test passed" --status SUCCESS
+octocode-awareness-lite check mark --task-id task_... --agent-id agent-a --message "integration failed" --status FAILED
 
 octocode-awareness-lite lock acquire --file src/auth.ts --agent-id agent-a --reason "editing token refresh"
+octocode-awareness-lite lock wait --file src/auth.ts --agent-id agent-a --wait 30s --retry-interval 500ms
+octocode-awareness-lite lock prune              # dry-run
+octocode-awareness-lite lock prune --confirm
 octocode-awareness-lite lock list
 octocode-awareness-lite lock release --file src/auth.ts --agent-id agent-a
 
 octocode-awareness-lite work start --file src/auth.ts --agent-id agent-a --reason "editing token refresh"
-octocode-awareness-lite work list
+octocode-awareness-lite work list --file src/auth.ts --agent-id agent-a
+octocode-awareness-lite work show --file src/auth.ts
 octocode-awareness-lite work end --file src/auth.ts --agent-id agent-a
 
 octocode-awareness-lite handoff add --agent-id agent-a --summary "continue auth docs" --file src/auth.ts,README.md
@@ -122,8 +135,9 @@ import { openAwarenessLite } from '@octocodeai/octocode-awareness-lite';
 const aw = openAwarenessLite({ workspace: process.cwd() });
 aw.joinAgent({ agentId: 'agent-a', name: 'Agent A', role: 'implementer' });
 const plan = aw.createPlan({ title: 'ship auth' });
-const task = aw.addTask({ planId: plan.planId, title: 'fix token refresh' });
-aw.claimTask({ taskId: task.taskId, agentId: 'agent-a' });
+const task = aw.addTask({ planId: plan.planId, title: 'fix token refresh', paths: ['src/auth.ts'], acceptance: 'tests pass' });
+aw.claimTask({ taskId: task.taskId, agentId: 'agent-a', leaseSeconds: 1800 });
+aw.heartbeatTask({ taskId: task.taskId, agentId: 'agent-a' });
 aw.sendMessage({ fromAgentId: 'agent-a', toAgentId: 'agent-b', topic: 'review', text: 'ready for review' });
 aw.close();
 ```
@@ -135,7 +149,8 @@ agent should coordinate through lite instead of the full Awareness system.
 
 The skill teaches agents the approach: use the local DB as a shared coordination
 ledger, not as proof of code truth; inspect peers before editing; keep task claims
-small; declare manual work presence; use locks only for non-mergeable risk; verify
+small; use dependencies/readiness for ordered work; refresh claim leases during long
+sessions; declare manual work presence; use locks only for non-mergeable risk; verify
 with real checks; and preserve only useful repo memory.
 
 1. `schema` when unsure about commands/entities.
@@ -143,15 +158,15 @@ with real checks; and preserve only useful repo memory.
 3. `agent join --agent-id <id>` so peers can identify you, then check `message inbox --agent-id <id>`.
 4. `memory recall --query <topic>` for local gotchas.
 5. Create or choose a plan.
-6. Add tasks with `--check`, claim one task, and start `work` presence for files you are touching.
-7. Acquire `lock`s only for files where parallel edits would be unsafe.
-8. Use `message send` for active peer coordination and `handoff add` only for durable continuation notes.
-9. Do the work; refresh `work start`/`touch` during long sessions.
-10. Run the task's check command.
-11. `task done`, then `check mark` with the command result.
-12. If a check fails later, use `task reopen --reason <why>`.
+6. Add tasks with `--check`, `--acceptance`, and optional `--depends-on`; use `task ready` before claiming ordered work.
+7. Claim one task with a lease, heartbeat it during long sessions, and start `work` presence for files you are touching.
+8. Acquire `lock`s only for files where parallel edits would be unsafe; use `lock wait` rather than busy-looping.
+9. Use `message send` for active peer coordination and `handoff add` only for durable continuation notes.
+10. Do the work; refresh `work start`/`touch` during long sessions.
+11. Run the task's check command.
+12. `task done`, then `check mark --status SUCCESS` with the command result; use `--status FAILED` to reopen with the failure reason.
 13. Store reusable local learnings with `memory store`; remove stale ones with `memory forget` or dry-run `memory prune --older-than ...` before `--confirm`.
-14. Dry-run `message prune --older-than ...` for old coordination noise, then repeat with `--confirm` only when the matches are safe to delete.
+14. Dry-run `message prune --older-than ...` and `lock prune` for old coordination noise, then repeat with `--confirm` only when the matches are safe to delete.
 15. `check audit` must report `ok: true`, then `plan done`, before concluding.
 
 ## Boundaries
@@ -162,8 +177,9 @@ pruned opportunistically when listed; agents are not auto-expired, but
 `status --stale-after` and `agent list --stale-after` report stale active peers
 from `lastSeenAt`. `lock` is the stronger advisory exclusive claim for sensitive
 files. `handoff` is a simple note, not an inbox or signal thread. Memory and
-message pruning is explicit and dry-run by default; add `--confirm` to delete.
+message and lock pruning are explicit and dry-run by default; add `--confirm` to delete. Task claim leases are local safety rails: an expired claim becomes `OPEN` again during status/list operations, but the code/test result is still the source of truth.
 
 Keep future additions boring and local. JSON import/export may be useful for
-debugging, but do not add signal threads/inbox, lifecycle hooks beyond the
-pre-edit lock gate, reflection, generated docs, embeddings, or remote sync here.
+debugging, but do not add signal threads, lifecycle hooks beyond the pre-edit lock
+gate, reflection, generated docs, bundled embedding services, projections, or
+remote sync here.

@@ -14,6 +14,20 @@ import path from 'node:path';
 const baselineDirty = new Set<string>(); // absolute paths dirty before this session
 const ownWrites = new Set<string>(); // absolute paths this session has written
 
+// ─── Status painter hook ────────────────────────────────────────────────────
+
+/** Callback registered by the host to paint/clear the peer-WIP status chip. */
+let statusPainter: ((count: number) => void) | undefined;
+
+/**
+ * Register a painter that is called whenever the peer-WIP count changes
+ * (after the baseline is set and after each file is claimed by this session).
+ * Pass `undefined` on session shutdown to detach.
+ */
+export function setPeerWipStatusPainter(fn: ((count: number) => void) | undefined): void {
+  statusPainter = fn;
+}
+
 /**
  * Parse `git status --porcelain` output into repo-relative paths. Handles the
  * two-char status prefix, rename arrows (`R  old -> new` → the new path), and
@@ -48,6 +62,7 @@ export function setPeerWipBaseline(cwd: string, porcelain: string): void {
   for (const rel of parseGitPorcelain(porcelain)) {
     baselineDirty.add(path.resolve(cwd, rel));
   }
+  statusPainter?.(peerWipCount());
 }
 
 /** True when `absPath` was dirty before this session and we have not written it yet. */
@@ -58,6 +73,7 @@ export function isPeerWip(absPath: string): boolean {
 /** Mark a path as written by this session (suppresses further peer-WIP warnings for it). */
 export function markOwnWrite(absPath: string): void {
   ownWrites.add(absPath);
+  statusPainter?.(peerWipCount());
 }
 
 /** Count of pre-session dirty files this session has not yet touched. */
@@ -78,4 +94,5 @@ export function peerWipNotice(absPath: string, requestPath: string): string {
 export function resetPeerWipForTests(): void {
   baselineDirty.clear();
   ownWrites.clear();
+  statusPainter = undefined;
 }

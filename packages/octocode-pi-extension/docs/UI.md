@@ -61,7 +61,7 @@ Modern TUI commands: `/octocode-palette`, `/octocode-dial`, `/octocode-footer` (
 
 Scrollback rule (pi-tui `tui-main-screen.js`): a change to any line **above the visible viewport** — or a width/height change — forces a full redraw that clears the screen *and scrollback*. Octocode therefore renders **nothing above the transcript** (no `setHeader`; the session name lives only in the terminal title), keeps every transcript entry/message/tool row a pure function of its data, and confines live state to the footer, status chips, and the below-editor panel — all registered once and repainted via `tui.requestRender`. Per-frame render closures never do O(session) work: context usage is sampled on events + the 1 s tick (`pi.getContextUsage()` rebuilds the session branch per call), and the banner's version read is memoized. Diagnose any remaining full redraw with `PI_DEBUG_REDRAW=1` (pi logs each `fullRender:` reason to `pi-debug.log`).
 
-Motion language: the transcript and footer are **static** — the only moving element is pi's working spinner (and the agent-ledger spinner in the below-editor panel). Attention flags (`⚠ ✗ ✉`, ≥90% context) are painted warning/error **and bold**; brightness always means state, never decoration. The banner card is a fixed teal gradient — an animated banner at the top of the scrollback invalidated pi-tui's line diff on every repaint and caused scroll jumps.
+Motion language: the transcript and footer are **static** — the only moving element is pi's working spinner (and the agent-ledger spinner in the below-editor panel). Attention flags (`⚠ ✗ ✉`, ≥90% context) are painted warning/error **and bold**; brightness always means state, never decoration. The banner card is a fixed purple gradient — an animated banner at the top of the scrollback invalidated pi-tui's line diff on every repaint and caused scroll jumps.
 
 ## Agent ledger
 
@@ -94,15 +94,15 @@ Ledger badges:
 
 | Colour | Token(s) | Means | Never used for |
 |---|---|---|---|
-| **Teal** (`accent`) | `brand`, `title` | Octocode identity: the `◆` mark, banner body, tool names, the focused/selected row, and anything **in flight** (spinner, `running`, `doing`, `Fetching…`, `Spawning agent…`) | warnings, success |
+| **Purple** (`accent`) | `brand`, `title` | Octocode identity: the `◆` mark, banner body, tool names, the focused/selected row, and anything **in flight** (spinner, `running`, `doing`, `Fetching…`, `Spawning agent…`) | warnings, success |
 | **Lavender** (`mdLink`) | `link` | Links, peer/agent messaging (`✉` unread, `queued` workers), model thinking rows | decoration |
-| **Sky** (`mdCode`) | `path`, `symbol` | File paths and identifiers — the data the user reads most; distinct from teal so a path never looks like a tool title | — |
+| **Sky** (`mdCode`) | `path`, `symbol` | File paths and identifiers — the data the user reads most; distinct from purple so a path never looks like a tool title | — |
 | **Gold** (`warning`) | `warning` | **Act on me**: blocked workers `⚠`, `perm relaxed`, ≥75 % context, genuine tool warnings | frames, spinners, in-flight labels, "no match", cancels, pros/cons |
 | **Green / Red** | `success`, `error`, `diffAdd`, `diffRemove` | Outcomes only: done/failed rows, `✓`/`✗` result glyphs, `+`/`-` diff lines | selection state, recommended badges |
 | **Default fg** | `count`, `bright` | Values (counts, totals) and pending plan rows — bright against dim labels | — |
 | **Grey ramp** | `muted` → `dim` → theme `faint` | Secondary text → chrome (separators, `│` bars, hints, finished plan rows) → rules | primary content |
 
-The footer speaks in words, not glyphs: `context ▓▓░░ 25% · 250k/1M · turn 8 · 14s · session 1h · agents 3 (2 live) · now: … · mail 2 · blocked 1 · failed 1 · dial deep · perm default · prompt ~12k · main (5 changed)`. Below it, **one row per subagent** — `agent <name> (<id>) · <state> · <elapsed> · now: <activity>` — live workers first, at most four rows then `… N more agents`; the state word carries the ledger colour (running teal, blocked gold-bold, failed red-bold, done green). Hidden at compact density (`/octocode-footer compact`).
+The footer speaks in words, not glyphs: `context ▓▓░░ 25% · 250k/1M · turn 8 · 14s · session 1h · agents 3 (2 live) · now: … · mail 2 · blocked 1 · failed 1 · dial deep · perm default · prompt ~12k · main (5 changed)`. Below it, **one row per subagent** — `agent <name> (<id>) · <state> · <elapsed> · now: <activity>` — live workers first, at most four rows then `… N more agents`; the state word carries the ledger colour (running purple, blocked gold-bold, failed red-bold, done green). Hidden at compact density (`/octocode-footer compact`).
 
 Attention states in the footer (`⚠`, `✗`, `✉`, near-full ctx) are additionally **bold** (`FooterSegment.attention`) — the only emphasis in the toolbar, so bold always means "look here". Per-row budget: at most three colours plus the grey ramp.
 

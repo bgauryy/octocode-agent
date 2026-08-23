@@ -57,9 +57,9 @@ All commands print JSON. Run `schema` instead of guessing command shapes.
 All Lite state is local to the repository DB unless `--db` points elsewhere.
 
 - **Plans** — shared work areas with `planId`, title, goal, `OPEN`/`DONE`, and timestamps.
-- **Tasks** — claimable work units with `taskId`, `planId`, title, `filePath`, `checkCommand`, owner `agentId`, status, done time, and verification receipt fields.
+- **Tasks** — claimable work units with `taskId`, `planId`, title, `filePath`/`paths`, dependency readiness, lease fields, `checkCommand`, owner `agentId`, status, done time, and verification receipt fields.
 - **Work** — manual advisory file presence; tells peers what files you are touching without blocking them.
-- **Locks** — advisory exclusive file claims for sensitive/non-mergeable edits; the optional hook checks these before writes.
+- **Locks** — advisory exclusive file claims for sensitive/non-mergeable edits, with wait/prune helpers; the optional hook checks these before writes.
 - **Checks** — verification debt; done tasks are not trustworthy until their check receipt is marked.
 - **Handoffs** — manual continuation notes with related files; not a signal thread or task queue.
 - **Agents** — lightweight identity records (`ACTIVE`, `IDLE`, `LEFT`) for peers sharing one repo DB; `--stale-after` interprets `lastSeenAt` without a daemon.
@@ -76,7 +76,9 @@ Pi/Claude/Cursor/Codex write tools. It reads the host's write-tool event JSON,
 extracts target paths, checks active Lite locks, prints `ok/blocked/conflicts`,
 and exits `2` when another agent owns a conflicting lock. It does not auto-record
 work, create handoffs, or enforce verification. There is no signal thread,
-reflection, embeddings, remote sync, generated docs, or live heartbeat daemon.
+reflection, bundled embedding service, remote sync, generated docs, or live heartbeat daemon.
+Memory can use an optional host-owned `OCTOCODE_EMBED_CMD` for semantic recall,
+but Lite does not ship or manage an embedding runtime.
 Lite only knows touched files you manually declare with `work`, and stale agents
 are only reported from `lastSeenAt`, so always combine it with normal repo
 inspection: `git status`, diffs, and tests.
@@ -113,7 +115,9 @@ How to read it:
 - `status.handoffs > 0`: read continuation notes before deciding.
 - `status.memories > 0`: recall relevant gotchas before deciding.
 - `task.status = CLAIMED` with another `agentId`: leave that task alone.
-- overlapping `task.filePath` or `work.filePath`: inspect and coordinate; work presence is advisory, not exclusive.
+- `task ready`: prefer ready tasks; `task claim` will reject dependencies that are not done and verified.
+- `task.status = CLAIMED` with an expired lease may become `OPEN` during status/list operations; verify current code/tests before relying on it.
+- overlapping `task.filePath`/`task.paths` or `work.filePath`: inspect and coordinate; work presence is advisory, not exclusive.
 - overlapping `lock.filePath`: do not edit unless you own the lock, it expired, or you coordinated externally.
 - handoffs and memory are hints, not proof; verify against current code/tests.
 
@@ -132,21 +136,30 @@ octocode-awareness-lite message inbox --workspace "$PWD" --agent-id "$AGENT_ID"
 
 ### 2. Choose or create scoped work
 
-Reuse an existing `OPEN` plan/task when it matches. Otherwise create a small task
-that names the target file and check command clearly.
+Reuse an existing `OPEN`/ready plan task when it matches. Otherwise create a small
+task that names the target file(s), acceptance, dependencies, and check command
+clearly.
 
 ```bash
 octocode-awareness-lite plan create --workspace "$PWD" --title "short goal" --goal "why"
-octocode-awareness-lite task add --workspace "$PWD" --plan-id plan_... --title "small task" --file path/to/file --check "yarn test"
+octocode-awareness-lite task add --workspace "$PWD" --plan-id plan_... --title "small task" --file path/to/file --path path/to/file,tests/file.test.ts --depends-on task_prev --acceptance "observable done state" --check "yarn test"
+octocode-awareness-lite task ready --workspace "$PWD" --plan-id plan_...
+octocode-awareness-lite task show --workspace "$PWD" --task-id task_...
 ```
 
 ### 3. Claim before editing
 
 ```bash
-octocode-awareness-lite task claim --workspace "$PWD" --task-id task_... --agent-id "$AGENT_ID"
+octocode-awareness-lite task claim --workspace "$PWD" --task-id task_... --agent-id "$AGENT_ID" --lease 1800
+octocode-awareness-lite task heartbeat --workspace "$PWD" --task-id task_... --agent-id "$AGENT_ID" --lease 1800
 ```
 
-If the task belongs to another `agentId`, stop or choose different work.
+If the task belongs to another `agentId` or is blocked by dependencies, stop or
+choose different work. If you cannot proceed, release it with context:
+
+```bash
+octocode-awareness-lite task release --workspace "$PWD" --task-id task_... --agent-id "$AGENT_ID" --blocked-reason "waiting for review"
+```
 
 ### 4. Declare touched files with `work`
 
@@ -167,6 +180,7 @@ replace task claims, `work` presence, or real verification.
 
 ```bash
 octocode-awareness-lite lock acquire --workspace "$PWD" --file path/to/file --agent-id "$AGENT_ID" --reason "editing" --ttl 1800
+octocode-awareness-lite lock wait --workspace "$PWD" --file path/to/file --agent-id "$AGENT_ID" --wait 30s --retry-interval 500ms
 ```
 
 Optional hook install, when the user or repo asks for hook-based protection:
@@ -180,7 +194,8 @@ octocode-awareness-lite hooks install --workspace "$PWD" --host claude --project
 
 ```bash
 octocode-awareness-lite task list --workspace "$PWD"
-octocode-awareness-lite work list --workspace "$PWD"
+octocode-awareness-lite task ready --workspace "$PWD"
+octocode-awareness-lite work list --workspace "$PWD" --agent-id "$AGENT_ID"
 octocode-awareness-lite lock list --workspace "$PWD"
 octocode-awareness-lite handoff list --workspace "$PWD"
 ```
@@ -195,13 +210,15 @@ task done and record the check receipt.
 
 ```bash
 octocode-awareness-lite task done --workspace "$PWD" --task-id task_... --agent-id "$AGENT_ID"
-octocode-awareness-lite check mark --workspace "$PWD" --task-id task_... --agent-id "$AGENT_ID" --message "yarn test passed"
-octocode-awareness-lite check audit --workspace "$PWD"
+octocode-awareness-lite check mark --workspace "$PWD" --task-id task_... --agent-id "$AGENT_ID" --message "yarn test passed" --status SUCCESS
+octocode-awareness-lite check audit --workspace "$PWD" --agent-id "$AGENT_ID"
 ```
 
-If a check fails or later evidence shows the task is incomplete, reopen it:
+If a check fails or later evidence shows the task is incomplete, mark the check
+failed (which reopens the task with the failure reason) or reopen it explicitly:
 
 ```bash
+octocode-awareness-lite check mark --workspace "$PWD" --task-id task_... --agent-id "$AGENT_ID" --message "check failed" --status FAILED
 octocode-awareness-lite task reopen --workspace "$PWD" --task-id task_... --agent-id "$AGENT_ID" --reason "check failed"
 ```
 
@@ -238,6 +255,8 @@ as a substitute for task/check cleanup.
 ```bash
 octocode-awareness-lite message prune --workspace "$PWD" --older-than 30d --read-only          # dry-run
 octocode-awareness-lite message prune --workspace "$PWD" --older-than 30d --read-only --confirm
+octocode-awareness-lite lock prune --workspace "$PWD"                                      # dry-run
+octocode-awareness-lite lock prune --workspace "$PWD" --confirm
 ```
 
 ### 11. Close cleanly

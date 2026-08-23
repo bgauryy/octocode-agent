@@ -10,7 +10,7 @@
 import path from 'node:path';
 import type { ToolDefinition, ToolCallResult, PiContext, PiTheme, NotifyFn } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { paint } from '../tui/cli-design.js';
+import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { SEP } from '../tui/palette.js';
 import { buildPlanPrompt } from '../prompts/plan-prompt.js';
 import { enterPlanMode, exitPlanMode, isPlanMode } from './plan-mode.js';
@@ -20,12 +20,44 @@ import { serveDirectory, unmount } from './local-server.js';
 import { PLAN_APPROVE_DESC, PLAN_APPROVE_LABEL, PLAN_PROPOSE_HINT, PLAN_REJECT_DESC, PLAN_REJECT_LABEL } from '../tui/content.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel } from './status-panel.js';
-import { activePlanScope, setPlan, addStep, startStep, completeStep, removeStep, clearPlan, getPlan, renderActivePlanAddendum, MARK, stepLabel, displayStatus, depsMet, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
+import { activePlanScope, setPlan, addStep, startStep, completeStep, removeStep, clearPlan, getPlan, renderActivePlanAddendum, MARK, stepLabel, displayStatus, depsMet, resolveRfcPath, setPlanRfc, getPlanRfc, addPlanDecision, getPlanDecisions, planPhaseIndex, PLAN_PHASES, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
 
-type PlanAction = 'set' | 'propose' | 'add' | 'start' | 'complete' | 'remove' | 'clear' | 'show';
+type PlanAction = 'set' | 'propose' | 'clarify' | 'add' | 'start' | 'complete' | 'remove' | 'clear' | 'show';
+
+/** One clarify-phase question: a prompt plus optional multiple-choice options. */
+interface ClarifyQuestion {
+  prompt: string;
+  options?: Array<{ value?: string; label: string; description?: string; recommended?: boolean; pros?: string[]; cons?: string[] }>;
+}
+
+/** Cap on questions per clarify call — a bounded interview, not an interrogation. */
+const MAX_CLARIFY = 3;
+
+/** At/above this step count a plan is treated as consequential regardless of self-report. */
+const CONSEQUENTIAL_STEP_COUNT = 5;
+/** Risk vocabulary that flags consequential work in a step's text. */
+const RISK_RE = /\b(migrat|schema|auth|delete|\bdrop\b|truncate|rename|breaking|public[\s-]?api|deprecat|secret|credential|\btoken\b|encrypt|permission|rollback|backfill|lockfile|release)\w*/i;
+
+/**
+ * Heuristic "does this look consequential?" from the proposed steps alone — step
+ * count and risk vocabulary. Pure and exported for testing. Returns the verdict
+ * plus the human-readable signals that fired (for the gate's block message).
+ */
+export function inferConsequential(steps: StepInput[]): { consequential: boolean; signals: string[] } {
+  const texts = steps.map((s) => (typeof s === 'string' ? s : s?.text ?? ''));
+  const signals: string[] = [];
+  if (texts.length >= CONSEQUENTIAL_STEP_COUNT) signals.push(`${texts.length} steps`);
+  const hits = new Set<string>();
+  for (const t of texts) {
+    const m = t.match(RISK_RE);
+    if (m) hits.add(m[0].toLowerCase());
+  }
+  if (hits.size) signals.push(`risk terms: ${[...hits].slice(0, 4).join(', ')}`);
+  return { consequential: signals.length > 0, signals };
+}
 
 interface PlanParams {
   action: PlanAction;
@@ -34,6 +66,14 @@ interface PlanParams {
   activeForm?: string;
   dependsOn?: number[];
   index?: number;
+  /** For set/propose: mark the work consequential so the RFC gate applies (an accepted RFC is required). */
+  consequential?: boolean;
+  /** For set/propose: path to the accepted RFC (a `.octocode/rfc/<name>/` dir or its RFC.md). Renders on the plan page. */
+  rfcPath?: string;
+  /** For action:clarify — up to 3 high-impact questions to ask the user before proposing. */
+  questions?: ClarifyQuestion[];
+  /** Required with consequential:false when the work still looks consequential — the justification for skipping the RFC. */
+  reason?: string;
 }
 
 const TEXT_MARK: Record<DisplayStatus, string> = { ...MARK, blocked: '[!]' };
@@ -49,6 +89,22 @@ function renderList(steps: PlanStep[]): string {
 
 const GLYPH: Record<DisplayStatus, string> = { todo: '○', doing: '▸', done: '✓', blocked: '⊘' };
 const BAR_WIDTH = 8;
+
+/**
+ * A one-line phase stepper — `✓ Research → ✓ RFC → ▸ Build …` — so the panel
+ * always shows where in the flow the plan is. Done phases fade, the current one
+ * is brand-bold, upcoming ones are muted. Same color contract as the checklist.
+ */
+export function phaseStepperLine(steps: PlanStep[], theme?: PiTheme): string {
+  const cur = planPhaseIndex(steps);
+  const bold = (t: string) => (typeof theme?.bold === 'function' ? theme.bold(t) : t);
+  const parts = PLAN_PHASES.map((label, i) => {
+    if (i < cur) return paint(theme, 'dim', `✓ ${label}`);
+    if (i === cur) return paint(theme, 'brand', bold(`▸ ${label}`));
+    return paint(theme, 'muted', `○ ${label}`);
+  });
+  return parts.join(paint(theme, 'dim', ' → '));
+}
 
 /** Render a compact `███░░` progress bar for done/total. */
 function progressBar(done: number, total: number): string {
@@ -94,7 +150,7 @@ export function planPanelLines(steps: PlanStep[], theme?: PiTheme, width?: numbe
     return paintStep(ds, `${GLYPH[ds]} ${i + 1}. ${stepLabel(s)}${suffix}`);
   });
   // Brand-colored header: a plan with 0/5 done is not a success signal.
-  const lines = [paint(theme, 'brand', header), ...rows];
+  const lines = [paint(theme, 'brand', header), phaseStepperLine(steps, theme), ...rows];
   return width ? lines.map((l) => truncateToWidth(l, width)) : lines;
 }
 
@@ -248,21 +304,22 @@ export function registerPlanTool(
     name: 'plan',
     label: 'Plan',
     description: [
-      'Record and track the task breakdown from the think-first gate as a visible, compaction-durable checklist.',
-      'The plan is re-injected into your context every turn (<active_plan>), so it survives compaction — set it once, then start/complete steps as you go.',
-      'Use for non-trivial multi-step work (multiple files/phases/risky edits). Skip for obvious single-step tasks. For shared/persistent multi-agent plans use the awareness plan/task CLI instead, and mirror scope changes there when a local plan changes task ownership or acceptance.',
-      'Actions: set (replace with an ordered step list for already-approved/obvious work; dependsOn expresses ordering) · propose (set + render the plan panel + ask the user to approve/reject through the UI — free-text reply = change request; use for user-visible, multi-phase, risky, or preference-dependent plans, and never execute a rejected plan) · add (append a step) · start (mark a step doing; multiple independent steps may be doing in parallel) · complete (mark a step done, auto-advances) · remove (delete a step, dependencies renumber) · show · clear (when the task is finished/abandoned).',
+      'Record and track the task breakdown from the think-first gate as a visible, compaction-durable checklist and reviewable plan document.',
+      'The plan is re-injected into your context every turn (<active_plan>), so it survives compaction — set it once, then start/complete steps as you go. Mutations also write plan.md/plan.html under the Octocode temp plan directory; when an RFC is linked (rfcPath), the plan.html renders that RFC document itself above the derived checklist and dependency diagram.',
+      'Use for non-trivial multi-step work (multiple files/phases/risky edits). Skip for obvious single-step tasks. For consequential work, load octocode-rfc-generator first, discuss the RFC/implementation plan doc with the user, incorporate missing points, wait for approval, and only then derive these steps from the accepted document — pass consequential:true and rfcPath pointing at that RFC (a consequential set/propose with no RFC is BLOCKED). For shared/persistent multi-agent plans mirror those document-derived steps into the awareness plan/task CLI instead of creating task-only backlogs.',
+      'Actions: clarify (ask ≤3 high-impact questions via inline cards before proposing — explore first, ask only what the repo can’t answer; each answer is recorded in the durable decision log and renders on the plan page) · set (replace with an ordered step list for already-approved/obvious work; dependsOn expresses ordering) · propose (set + render the plan panel + ask the user to approve/reject through the UI — free-text reply = change request; use for user-visible, multi-phase, risky, or preference-dependent plans, and never execute a rejected plan) · add (append a step) · start (mark a step doing; multiple independent steps may be doing in parallel) · complete (mark a step done, auto-advances) · remove (delete a step, dependencies renumber) · show · clear (when the task is finished/abandoned).',
       'index is optional for start/complete/remove: complete/remove default to the single current doing step; when multiple steps are doing, pass index. start defaults to the next runnable todo.',
     ].join('\n'),
     promptSnippet: 'Track a compaction-durable task-breakdown checklist (set/add/start/complete/remove/show/clear)',
     promptGuidelines: [
-      'When the think-first gate says decompose and execution is already approved/obvious, record the steps with plan(set:[...]); for user-visible, multi-phase, risky, or preference-dependent plans use plan(propose:[...]) first and wait for approval. Then work the active step and plan(complete) it — with no index it completes the single current step, so the serial loop is: work, plan(complete), repeat.',
-      'Keep the checklist truthful as scope shifts: plan(add) newly discovered steps, plan(remove) obsolete ones, and clear the plan (plan clear) once the task is done or abandoned so a stale checklist does not linger. If Awareness task/work state exists, update it in the same turn so local plan and shared tasks do not diverge.',
+      'Explore first, ask second: when intent/scope/trade-offs stay open after a research pass, run plan(clarify) with ≤3 high-impact multiple-choice questions the repo can’t answer (mark a recommended default) — each answer is recorded in the durable decision log and renders on the plan page. Skip clarify for obvious work.',
+      'When the think-first gate says decompose and execution is already approved/obvious, record the steps with plan(set:[...]); for user-visible, multi-phase, risky, or preference-dependent plans use plan(propose:[...]) first and wait for approval. For consequential work, use octocode-rfc-generator to research/write the RFC or implementation plan first, discuss it with the user, revise missing points, and wait for approval before deriving plan steps from that accepted document — then pass consequential:true and rfcPath (the .octocode/rfc/<name>/ dir or its RFC.md) so the plan page renders the RFC and the gate is satisfied. The tool also auto-detects consequential-looking plans (≥5 steps or risk terms) and blocks them without an RFC; to skip deliberately, pass consequential:false with a short reason (logged). Then work the active step and plan(complete) it — with no index it completes the single current step, so the serial loop is: work, plan(complete), repeat.',
+      'Keep the checklist truthful as scope shifts: plan(add) newly discovered document-backed steps, plan(remove) obsolete ones, and clear the plan (plan clear) once the task is done or abandoned so a stale checklist does not linger. If Awareness task/work state exists, update it in the same turn so local plan and shared tasks do not diverge; shared tasks should point back to the plan/RFC acceptance and verification anchors.',
       'For independent lanes, encode ordering with dependsOn, start runnable lanes with plan(start:N) before batching/spawning, and pass explicit indices when completing parallel steps.',
-      'Optionally give each step an activeForm (present-continuous label, e.g. "Editing file") — it is shown in the live plan panel while that step runs; propose also shows the full checklist below the editor before the approval prompt.',
+      'Optionally give each step an activeForm (present-continuous label, e.g. "Editing file") — it is shown in the live plan panel while that step runs; propose also shows the full checklist below the editor before the approval prompt. The plan widget/doc should make the flow gate visible: RFC/research → discuss + approve → derive plan/tasks → verify.',
     ],
     parameters: Type.Object({
-      action: Type.Unsafe({ type: 'string', enum: ['set', 'propose', 'add', 'start', 'complete', 'remove', 'clear', 'show'], description: 'set|propose|add|start|complete|remove|clear|show' }),
+      action: Type.Unsafe({ type: 'string', enum: ['set', 'propose', 'clarify', 'add', 'start', 'complete', 'remove', 'clear', 'show'], description: 'set|propose|clarify|add|start|complete|remove|clear|show' }),
       steps: Type.Optional(
         Type.Array(
           Type.Union([
@@ -280,22 +337,133 @@ export function registerPlanTool(
       activeForm: Type.Optional(Type.String({ description: 'Optional present-continuous label for action:add (e.g. "Editing file").' })),
       dependsOn: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description: 'For action:add — 1-based indices of steps that must be done first.' })),
       index: Type.Optional(Type.Integer({ minimum: 1, description: '1-based step number for start/complete/remove. Omit to target the current doing step (complete/remove) or the next runnable todo (start).' })),
+      consequential: Type.Optional(Type.Boolean({ description: 'For set/propose: mark the work consequential (multi-phase, public-contract, architecture, migration, risky, or preference-dependent). When true — or when the steps look consequential (≥5 steps or risk terms) — an accepted RFC is required (pass rfcPath) or the call is blocked. Pass false to declare trivial.' })),
+      reason: Type.Optional(Type.String({ description: 'Required with consequential:false when the steps still look consequential — a short justification for skipping the RFC (recorded in the decision log).' })),
+      rfcPath: Type.Optional(Type.String({ description: 'For set/propose: the accepted RFC this plan derives from — a `.octocode/rfc/<name>/` folder or its RFC.md. The plan page renders this document; must live under the workspace .octocode/rfc/ tree.' })),
+      questions: Type.Optional(Type.Array(
+        Type.Object({
+          prompt: Type.String({ description: 'A high-impact question the repo cannot answer (skip anything answerable by reading code).' }),
+          options: Type.Optional(Type.Array(Type.Object({
+            label: Type.String(),
+            value: Type.Optional(Type.String()),
+            description: Type.Optional(Type.String()),
+            recommended: Type.Optional(Type.Boolean({ description: 'Marks the recommended default; lands the cursor here.' })),
+            pros: Type.Optional(Type.Array(Type.String())),
+            cons: Type.Optional(Type.Array(Type.String())),
+          }), { description: 'Multiple-choice options; omit for a free-text question. A free-text escape is always offered.' })),
+        }),
+        { description: 'For action:clarify — up to 3 high-impact questions asked via inline cards; answers are recorded in the plan decision log.' },
+      )),
     }),
 
     async execute(_id: string, raw: Record<string, unknown>, _signal, _onUpdate, ctx?: PiContext) {
       const p = raw as unknown as PlanParams;
       const scope = activePlanScope(ctx);
       let steps: PlanStep[];
+
+      // ── Clarify phase (interview) ────────────────────────────────────────────
+      // Ask ≤3 high-impact questions via the inline ask card, record each answer
+      // into the durable decision log, and steer toward a decision-complete
+      // propose. Precedes plan(propose); never mutates steps.
+      if (p.action === 'clarify') {
+        const clarifyResult = (text: string, isError = false): ToolCallResult => ({
+          content: [{ type: 'text' as const, text }],
+          ...(isError ? { isError: true } : {}),
+          details: { action: 'clarify', decisions: getPlanDecisions(scope) },
+        }) as unknown as ToolCallResult;
+        const questions = (Array.isArray(p.questions) ? p.questions : []).filter((q) => q && String(q.prompt ?? '').trim()).slice(0, MAX_CLARIFY);
+        if (questions.length === 0) {
+          return clarifyResult('[PLAN] clarify needs a questions[] list (≤3 high-impact questions the repo can’t answer). Skip clarify for obvious work.', true);
+        }
+        if (!ctx) {
+          return clarifyResult(`[PLAN] this host cannot prompt — ask these inline and continue:\n${questions.map((q, i) => `${i + 1}. ${q.prompt}`).join('\n')}`);
+        }
+        const recorded: string[] = [];
+        let halted: string | undefined;
+        for (const [i, q] of questions.entries()) {
+          const prompt = String(q.prompt).trim();
+          const options = (Array.isArray(q.options) ? q.options : [])
+            .map((o) => ({ value: String(o.value ?? o.label ?? '').trim(), label: o.label, description: o.description, recommended: o.recommended, pros: o.pros, cons: o.cons }))
+            .filter((o) => o.value);
+          // Number the questions so the interview reads as a bounded sequence, not
+          // a stream of disconnected prompts. The decision log keeps the clean prompt.
+          const shown = questions.length > 1 ? `(${i + 1}/${questions.length}) ${prompt}` : prompt;
+          const outcome = await runAskPrompt(ctx, { question: shown, options });
+          if (!outcome || outcome.status === 'unavailable') {
+            halted = `This host cannot prompt — ask the remaining question(s) inline: ${prompt}`;
+            break;
+          }
+          if (outcome.status === 'cancelled') { halted = 'Interview cancelled — proceed only with what is already decided.'; break; }
+          const answer = outcome.status === 'text' ? String(outcome.value ?? '').trim() : String(outcome.label ?? outcome.value ?? '').trim();
+          if (answer) { addPlanDecision(scope, prompt, answer); recorded.push(`${prompt} → ${answer}`); }
+        }
+        refreshPlanUi(ctx);
+        const head = recorded.length ? `[PLAN] recorded ${recorded.length} decision(s):\n${recorded.map((r, i) => `${i + 1}. ${r}`).join('\n')}` : '[PLAN] no decisions recorded';
+        const tail = halted ? `\n${halted}` : '\nWhen intent + approach are decision-complete, call plan(propose) — the decisions travel with the plan and render on its page.';
+        return clarifyResult(`${head}${tail}`);
+      }
+
+      // ── RFC gate (set/propose only) ──────────────────────────────────────────
+      // Symmetric with the write-tool block in plan mode: consequential work may
+      // not be planned without an accepted RFC. Resolves any supplied rfcPath,
+      // falls back to a previously-linked RFC, and blocks (without mutating the
+      // plan or exiting plan mode) when the work is declared consequential but no
+      // valid RFC is present. Returns the resolved absolute path to associate.
+      const resolveGate = (): { rfc?: string; hasNewRfc: boolean; error?: ToolCallResult } => {
+        const gateError = (text: string): ToolCallResult => ({
+          content: [{ type: 'text' as const, text }],
+          isError: true,
+          details: { action: p.action, error: 'rfc-gate' },
+        }) as unknown as ToolCallResult;
+        const supplied = typeof p.rfcPath === 'string' ? p.rfcPath.trim() : '';
+        if (supplied) {
+          const res = resolveRfcPath(planWorkspace(scope), supplied);
+          if (res.error) {
+            return { hasNewRfc: false, error: gateError(`[PLAN] rfcPath did not resolve: ${res.error}. Point rfcPath at the accepted RFC under .octocode/rfc/ (the folder or its RFC.md).`) };
+          }
+          return { rfc: res.path, hasNewRfc: true };
+        }
+        const existing = getPlanRfc(scope);
+        // Heuristic: does the step list *look* consequential even if the caller
+        // didn't say so? This makes the RFC precondition harder to skip by simply
+        // omitting `consequential` — the trigger no longer rests only on self-report.
+        const { consequential: inferred, signals } = inferConsequential(Array.isArray(p.steps) ? p.steps : []);
+        const treatConsequential = p.consequential === true || (inferred && p.consequential !== false);
+        if (treatConsequential && !existing) {
+          const why = p.consequential === true
+            ? 'consequential work'
+            : `this looks consequential (${signals.join('; ')})`;
+          return { hasNewRfc: false, error: gateError(`[PLAN] ${why} needs an accepted RFC first. Load octocode-rfc-generator, write or update the RFC, then re-call plan with rfcPath pointing at it (…/.octocode/rfc/<name>/RFC.md). If this is genuinely trivial, pass consequential:false with a short reason.`) };
+        }
+        // Skipping the RFC despite consequential signals costs a justification —
+        // recorded in the decision log so a rubber-stamp skip is at least visible.
+        if (inferred && p.consequential === false) {
+          const reason = typeof p.reason === 'string' ? p.reason.trim() : '';
+          if (!reason) {
+            return { hasNewRfc: false, error: gateError(`[PLAN] this looks consequential (${signals.join('; ')}) but consequential:false was set. To skip the RFC, pass reason:"…" explaining why it's safe; otherwise write an RFC and pass rfcPath.`) };
+          }
+          addPlanDecision(scope, `Skipped RFC despite consequential signals (${signals.join('; ')})`, reason);
+        }
+        return { rfc: existing, hasNewRfc: false };
+      };
+
       switch (p.action) {
-        case 'set':
+        case 'set': {
+          const gate = resolveGate();
+          if (gate.error) return gate.error;
           steps = setPlan(scope, Array.isArray(p.steps) ? p.steps : []);
+          if (gate.hasNewRfc) setPlanRfc(scope, gate.rfc);
           writeCurrentPlanArtifacts(scope, steps, 'active');
           break;
+        }
         case 'propose': {
           // Plan WITH the user first: set the plan (panel renders the checklist
           // below the editor) and ask for sign-off. No browser here — the
           // free-text row is the adjust channel.
+          const gate = resolveGate();
+          if (gate.error) return gate.error;
           steps = setPlan(scope, Array.isArray(p.steps) ? p.steps : []);
+          if (gate.hasNewRfc) setPlanRfc(scope, gate.rfc);
           const artifacts = writeCurrentPlanArtifacts(scope, steps, 'draft');
           refreshPlanUi(ctx);
           const outcome = ctx
@@ -431,10 +599,12 @@ export function registerPlanTool(
       } as unknown as ToolCallResult;
     },
 
-    renderCall(raw: unknown) {
+    renderCall(raw: unknown, theme?: PiTheme) {
       const p = raw as PlanParams;
       const extra = p.action === 'set' || p.action === 'propose' ? ` (${(p.steps ?? []).length} steps)` : p.index ? ` #${p.index}` : '';
-      return makeRenderer((w) => [truncateToWidth(`plan(${p.action}${extra})`, w)]);
+      // Lead with the brand-painted tool title + dim args, matching bash/edit/write/memory.
+      const title = cliToolTitle(theme, 'plan');
+      return makeRenderer((w) => [truncateToWidth(`${title}${paint(theme, 'dim', `(${p.action}${extra})`)}`, w)]);
     },
 
     renderResult(result: unknown, _opts: unknown, theme?: PiTheme) {

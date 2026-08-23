@@ -37,11 +37,13 @@ interface BuiltPanel {
  * Collapse a header+rows section to at most maxRows rows, appending a muted
  * "… N more" line when trimmed. `section[0]` is treated as the header.
  */
-export function collapseSection(section: string[], maxRows: number, noun: string): string[] {
+export function collapseSection(section: string[], maxRows: number, noun: string, theme?: PiTheme): string[] {
   if (section.length <= maxRows + 1) return section;
   const [header, ...rows] = section;
   const shown = rows.slice(0, maxRows);
-  return [header!, ...shown, `… ${rows.length - maxRows} more ${noun}`];
+  // Paint the overflow marker muted: unpainted it renders at default fg — the
+  // brightest thing in an otherwise-dim panel, so the truncation notice shouts.
+  return [header!, ...shown, paint(theme, 'muted', `… ${rows.length - maxRows} more ${noun}`)];
 }
 
 /**
@@ -59,7 +61,7 @@ export function modelPanelLines(ctx: PiContext | undefined, theme?: PiTheme): st
 }
 
 /** Join non-empty sections with a single blank-line separator, within the total budget. */
-function composeSections(sections: string[][]): string[] {
+function composeSections(sections: string[][], theme?: PiTheme): string[] {
   const lines: string[] = [];
   for (const section of sections) {
     if (section.length === 0) continue;
@@ -67,7 +69,7 @@ function composeSections(sections: string[][]): string[] {
     lines.push(...section);
   }
   if (lines.length <= PANEL_MAX_LINES) return lines;
-  return [...lines.slice(0, PANEL_MAX_LINES - 1), `… ${lines.length - (PANEL_MAX_LINES - 1)} more`];
+  return [...lines.slice(0, PANEL_MAX_LINES - 1), paint(theme, 'muted', `… ${lines.length - (PANEL_MAX_LINES - 1)} more`)];
 }
 
 export function composeStatusPanelLines(ctx: PiContext, theme: PiTheme | undefined, width?: number): BuiltPanel {
@@ -75,7 +77,7 @@ export function composeStatusPanelLines(ctx: PiContext, theme: PiTheme | undefin
   // Resolve the plan scope at render time, not registration time: /tree, /fork,
   // resume, and compaction can move the active branch while the widget remains
   // registered exactly once.
-  const planSection = collapseSection(planPanelLines(getPlan(activePlanScope(ctx)), theme, width), PLAN_MAX_ROWS, 'steps');
+  const planSection = collapseSection(planPanelLines(getPlan(activePlanScope(ctx)), theme, width), PLAN_MAX_ROWS, 'steps', theme);
   const awarenessSection = awarenessPanelLines(cwd, theme, width);
   const agentSection = agentPanelLines(theme, 6, width);
   return {
@@ -84,7 +86,7 @@ export function composeStatusPanelLines(ctx: PiContext, theme: PiTheme | undefin
       planSection,
       awarenessSection,
       agentSection,
-    ]),
+    ], theme),
     hasVolatileSections: planSection.length > 0 || awarenessSection.length > 0 || agentSection.length > 0,
   };
 }

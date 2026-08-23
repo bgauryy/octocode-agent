@@ -69,11 +69,30 @@ export function withRegistryLock<T>(dir: string, lockName: string, label: string
     } catch {
       try {
         if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) {
-          fs.rmdirSync(lock);
+          // Atomic steal: rename() lets exactly ONE racer move the stale dir; the
+          // rest get ENOENT and retry. A bare rmdir here is unsafe — two processes
+          // that both saw the lock as stale would each rmdir, and the second would
+          // delete the FIRST's freshly re-created lock, admitting both into fn().
+          const tomb = `${lock}.stale-${process.pid}-${start}`;
+          fs.renameSync(lock, tomb);
+          // Re-confirm on the moved inode: if it was actually fresh (a holder
+          // grabbed it between our stat and rename), put it back rather than
+          // stealing a live lock; otherwise drop the tombstone.
+          let stillStale = true;
+          try {
+            stillStale = Date.now() - fs.statSync(tomb).mtimeMs > LOCK_STALE_MS;
+          } catch {
+            stillStale = true;
+          }
+          if (stillStale) {
+            try { fs.rmdirSync(tomb); } catch { /* already gone */ }
+          } else {
+            try { fs.renameSync(tomb, lock); } catch { try { fs.rmdirSync(tomb); } catch { /* orphan avoided */ } }
+          }
           continue;
         }
       } catch {
-        // lock vanished between mkdir and stat → retry immediately
+        // lock vanished / was stolen by another racer between mkdir and reclaim → retry
       }
       if (Date.now() - start > LOCK_TIMEOUT_MS) throw new Error(`${label} registry lock timeout`);
       // Block ~15ms without burning the CPU / event loop. Atomics.wait on a

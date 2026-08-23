@@ -15,9 +15,9 @@
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import { sliceBetween } from '../utils.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { paint } from '../tui/cli-design.js';
+import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
-import { spawnRpcAgent, waitForAgent, isSubagentProcess } from './agent-tools.js';
+import { spawnRpcAgent, waitForAgentTurn, isSubagentProcess, killWorkerById } from './agent-tools.js';
 import {
   resolveSkill,
   registerSkill,
@@ -149,8 +149,18 @@ const defaultGenerator: SkillGenerator = async (a) => {
     },
     a.ctx,
   );
-  await waitForAgent(record, 120_000);
-  return parseGeneratedSkill(record.lastOutput || record.stderr || '', a.skillType);
+  try {
+    // Progress-aware: ride out long-but-active authoring turns (resets on every
+    // event, probes on quiet gaps), with a generous absolute backstop so a truly
+    // hung smith can't wedge the main process forever.
+    await waitForAgentTurn(record, { maxSilenceMs: 120_000, absoluteCapMs: 600_000 });
+    return parseGeneratedSkill(record.lastOutput || record.stderr || '', a.skillType);
+  } finally {
+    // On timeout/error the spawned smith worker is still alive — kill it so it
+    // does not orphan, and its record becomes droppable (reclaimable slot).
+    // On success the process has already exited, so this is a harmless no-op.
+    killWorkerById(record.id);
+  }
 };
 
 function getGenerator(): SkillGenerator {
@@ -330,16 +340,23 @@ export function registerCallSkill(
       } as unknown as ToolCallResult;
     },
 
-    renderCall(rawParams: unknown) {
+    renderCall(rawParams: unknown, theme?: PiTheme) {
       const p = rawParams as CallSkillParams;
-      const raw = `callSkill(${p.skillType}${p.mode && p.mode !== 'auto' ? `, ${p.mode}` : ''})`;
-      return makeRenderer((w) => [truncateToWidth(raw, w)]);
+      // Brand title + dim args, matching the other tool-call rows.
+      const title = cliToolTitle(theme, 'callSkill');
+      const args = `(${p.skillType}${p.mode && p.mode !== 'auto' ? `, ${p.mode}` : ''})`;
+      return makeRenderer((w) => [truncateToWidth(`${title}${paint(theme, 'dim', args)}`, w)]);
     },
 
     renderResult(result: unknown, _opts: unknown, theme?: PiTheme) {
       const r = result as { content?: Array<{ text?: string }> };
       const first = (r?.content?.[0]?.text ?? '').split('\n')[0] || 'callSkill';
-      const colored = first.startsWith('[ERROR]') || first.startsWith('[DECLINED]') ? paint(theme, 'warning', first) : paint(theme, 'success', first);
+      // Contract: red=error, gold=act-on-me (declined awaiting your call), green=win.
+      const colored = first.startsWith('[ERROR]')
+        ? paint(theme, 'error', first)
+        : first.startsWith('[DECLINED]') || first.startsWith('[BLOCKED]')
+          ? paint(theme, 'warning', first)
+          : paint(theme, 'success', first);
       return makeRenderer((w) => [truncateToWidth(colored, w)]);
     },
   });

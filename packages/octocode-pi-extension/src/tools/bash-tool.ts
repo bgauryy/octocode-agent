@@ -9,6 +9,7 @@ const BASH_COLLAPSED_LINES = 3;
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import path from 'node:path';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
 import { cliToolTitle, paint, cliStatusGlyph, cliStatusToken } from '../tui/cli-design.js';
@@ -281,11 +282,15 @@ async function runBash(
     };
     signal?.addEventListener('abort', onAbort, { once: true });
 
+    // Decode per-stream so multibyte UTF-8 sequences split across chunk
+    // boundaries are not corrupted; flush trailing partial bytes on close.
+    const outDec = new StringDecoder('utf8');
+    const errDec = new StringDecoder('utf8');
     child.stdout?.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString('utf8');
+      stdout += outDec.write(chunk);
     });
     child.stderr?.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf8');
+      stderr += errDec.write(chunk);
     });
     child.on('error', (err) => {
       if (timer) clearTimeout(timer);
@@ -300,6 +305,8 @@ async function runBash(
       signal?.removeEventListener('abort', onAbort);
       if (!settled) {
         settled = true;
+        stdout += outDec.end();
+        stderr += errDec.end();
         resolve({ stdout, stderr, code, signal: sig, aborted });
       }
     });

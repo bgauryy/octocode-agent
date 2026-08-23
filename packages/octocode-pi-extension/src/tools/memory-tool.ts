@@ -75,6 +75,35 @@ interface MemoryParams {
 
 type ParsedJson = Record<string, unknown> | unknown[];
 
+/**
+ * Scan from the opening bracket at `open` tracking brace/bracket depth while
+ * respecting string literals and escapes, and return the index just past the
+ * matching close — or -1 if the structure never balances.
+ */
+function findBalancedEnd(s: string, open: number): number {
+  const opener = s[open];
+  const closer = opener === '{' ? '}' : ']';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = open; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === opener) depth++;
+    else if (ch === closer) {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
 function parseJson(stdout: string): ParsedJson | null {
   const trimmed = stdout.trim();
   if (!trimmed) return null;
@@ -82,12 +111,16 @@ function parseJson(stdout: string): ParsedJson | null {
   // first — a per-line scan can never match an indented object and silently
   // reported "0 memories" for every successful call.
   try { return JSON.parse(trimmed) as ParsedJson; } catch { /* fall through */ }
-  // Log lines may precede the JSON: parse from the first brace/bracket to EOF.
-  const start = Math.min(
-    ...['{', '['].map((ch) => { const i = trimmed.indexOf(ch); return i === -1 ? Number.POSITIVE_INFINITY : i; }),
-  );
-  if (Number.isFinite(start) && start > 0) {
-    try { return JSON.parse(trimmed.slice(start)) as ParsedJson; } catch { /* fall through */ }
+  // Balanced scan: awareness-lite may print pretty (multi-line) JSON surrounded
+  // by plain log text. From each candidate opening bracket, walk forward to its
+  // matching close (respecting strings/escapes) and try to parse that slice.
+  // Trying successive openers tolerates a stray brace inside a leading log line.
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (ch !== '{' && ch !== '[') continue;
+    const end = findBalancedEnd(trimmed, i);
+    if (end === -1) continue;
+    try { return JSON.parse(trimmed.slice(i, end)) as ParsedJson; } catch { /* keep scanning */ }
   }
   // Last resort: a single JSON line among log output.
   const lines = trimmed.split('\n');
@@ -204,7 +237,7 @@ export function registerMemoryTool(
       'record — persist a reusable, verified learning/gotcha/decision with a label, importance (1-10), optional tags, and optional source/evidence. Never store secrets, raw logs, routine status, or facts git/docs already own.',
       'review — read memories and flag stale/low-quality candidates; never mutates. suggest — validate and shape a candidate record; never stores automatically.',
       'forget — delete a specific memory by id (destructive; only when clearly obsolete).',
-      'Awareness Lite/SQLite is canonical; this tool shells the same CLI the octocode-awareness-lite skill documents.',
+      'Awareness Lite/SQLite is canonical; this tool shells the same CLI documented in the prompt-owned <awareness> section.',
     ].join('\n'),
     promptSnippet: 'Recall/record/review/suggest/forget durable Awareness memory (first-class wrapper over the memory CLI)',
     promptGuidelines: [

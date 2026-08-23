@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openAwarenessLite, isEmbeddingEnabled, type AgentStatus, type TaskStatus } from './index.js';
+import { openAwarenessLite, isEmbeddingEnabled, type AgentStatus, type CheckStatus, type TaskStatus } from './index.js';
 import { runPreEditLockGate, type HookHost } from './hooks.js';
 
 type InstallHost = 'claude' | 'codex' | 'cursor';
@@ -68,9 +68,8 @@ function print(value: unknown): void {
 }
 
 function usage(): string {
-  return `octocode-awareness-lite <command> [action]\n\nCommands:\n  status [--stale-after]\n  schema                entities and command shapes\n  plan create|list|done\n  task add|list|claim|done|reopen\n  lock acquire|release|list\n  work start|touch|list|end manual advisory file presence\n  handoff add|list|clear manual notes for later agents\n  agent join|touch|leave|list [--stale-after]\n  message send|inbox|list|read|prune\n  check audit|mark      verify-gate receipt flow\n  verify audit|mark     alias for check\n  memory store|recall|list|reindex|forget|delete|prune\n  memory recall --semantic  cosine recall via OCTOCODE_EMBED_CMD (falls back to lexical)\n  hooks pre-edit        JSON lock-conflict gate; exits 2 when another agent owns a lock\n  hooks install         writes the optional pre-edit hook for claude|codex|cursor; use --dry-run first\n\nHook install:\n  hooks install --host claude|cursor|codex --project-dir <repo> [--cli <path>] [--dry-run]\n  writes .claude/settings.json, .cursor/hooks.json, or .codex/hooks.json\n\nGlobal flags:\n  --workspace <path>  Workspace root, default cwd\n  --db <path>         SQLite database path`;
+  return `octocode-awareness-lite <command> [action]\n\nCommands:\n  status [--stale-after]\n  schema [commands|list|command --name <noun>] entities and command shapes\n  plan create|list|done\n  task add|list|ready|show|depend|claim|heartbeat|release|done|reopen\n  lock acquire|wait|prune|release|list\n  work start|touch|list|show|end manual advisory file presence\n  handoff add|list|clear manual notes for later agents\n  agent join|touch|leave|list [--stale-after]\n  message send|inbox|list|read|prune\n  check audit|mark      verify-gate receipt flow\n  verify audit|mark     alias for check\n  memory store|recall|list|reindex|forget|delete|prune\n  memory recall --semantic  cosine recall via OCTOCODE_EMBED_CMD (falls back to lexical)\n  hooks pre-edit        JSON lock-conflict gate; exits 2 when another agent owns a lock\n  hooks install         writes the optional pre-edit hook for claude|codex|cursor; use --dry-run first\n\nHook install:\n  hooks install --host claude|cursor|codex --project-dir <repo> [--cli <path>] [--dry-run]\n  writes .claude/settings.json, .cursor/hooks.json, or .codex/hooks.json\n\nGlobal flags:\n  --workspace <path>  Workspace root, default cwd\n  --db <path>         SQLite database path`;
 }
-
 function hasHelpFlag(parsed: ParsedArgs): boolean {
   return parsed.command === 'help' || parsed.command === '--help' || parsed.action === 'help' || parsed.action === '--help' || parsed.flags.has('help');
 }
@@ -135,7 +134,10 @@ export function runCli(argv: string[]): number {
         print(aw.status({ staleAfterMs: getDurationFlag(parsed.flags, 'stale-after') }));
         return 0;
       case 'schema':
-        print(aw.schema());
+        if (!parsed.action) print(aw.schema());
+        else if (parsed.action === 'commands' || parsed.action === 'list') print(aw.schemaCommand(parsed.action));
+        else if (parsed.action === 'command') print(aw.schemaCommand(requireFlag(parsed.flags, 'name')));
+        else throw new Error('schema action must be commands, list, or command --name');
         return 0;
       case 'plan': {
         switch (parsed.action) {
@@ -159,16 +161,55 @@ export function runCli(argv: string[]): number {
               planId: requireFlag(parsed.flags, 'plan-id'),
               title: requireFlag(parsed.flags, 'title'),
               filePath: getFlag(parsed.flags, 'file'),
+              paths: getFlag(parsed.flags, 'path'),
+              reasoning: getFlag(parsed.flags, 'reasoning'),
+              acceptance: getFlag(parsed.flags, 'acceptance'),
               checkCommand: getFlag(parsed.flags, 'check'),
+              dependsOn: getFlag(parsed.flags, 'depends-on'),
+              priority: getFlag(parsed.flags, 'priority') ? Number(getFlag(parsed.flags, 'priority')) : undefined,
             }));
             return 0;
           case 'list': {
             const status = getFlag(parsed.flags, 'status') as TaskStatus | undefined;
-            print(aw.listTasks({ planId: getFlag(parsed.flags, 'plan-id'), status }));
+            print(aw.listTasks({ planId: getFlag(parsed.flags, 'plan-id'), status, agentId: getFlag(parsed.flags, 'agent-id') }));
             return 0;
           }
+          case 'ready':
+            print(aw.listReadyTasks({
+              planId: getFlag(parsed.flags, 'plan-id'),
+              limit: getFlag(parsed.flags, 'limit') ? Number(getFlag(parsed.flags, 'limit')) : undefined,
+            }));
+            return 0;
+          case 'show':
+            print(aw.getTask(requireFlag(parsed.flags, 'task-id')));
+            return 0;
+          case 'depend':
+            print(aw.addTaskDependency({
+              taskId: requireFlag(parsed.flags, 'task-id'),
+              dependsOnTaskId: requireFlag(parsed.flags, 'depends-on'),
+              agentId: getFlag(parsed.flags, 'agent-id'),
+            }));
+            return 0;
           case 'claim':
-            print(aw.claimTask({ taskId: requireFlag(parsed.flags, 'task-id'), agentId: requireFlag(parsed.flags, 'agent-id') }));
+            print(aw.claimTask({
+              taskId: requireFlag(parsed.flags, 'task-id'),
+              agentId: requireFlag(parsed.flags, 'agent-id'),
+              leaseSeconds: getFlag(parsed.flags, 'lease') ? Number(getFlag(parsed.flags, 'lease')) : undefined,
+            }));
+            return 0;
+          case 'heartbeat':
+            print(aw.heartbeatTask({
+              taskId: requireFlag(parsed.flags, 'task-id'),
+              agentId: requireFlag(parsed.flags, 'agent-id'),
+              leaseSeconds: getFlag(parsed.flags, 'lease') ? Number(getFlag(parsed.flags, 'lease')) : undefined,
+            }));
+            return 0;
+          case 'release':
+            print(aw.releaseTask({
+              taskId: requireFlag(parsed.flags, 'task-id'),
+              agentId: requireFlag(parsed.flags, 'agent-id'),
+              blockedReason: getFlag(parsed.flags, 'blocked-reason'),
+            }));
             return 0;
           case 'done':
             print(aw.doneTask({ taskId: requireFlag(parsed.flags, 'task-id'), agentId: requireFlag(parsed.flags, 'agent-id') }));
@@ -178,10 +219,11 @@ export function runCli(argv: string[]): number {
               taskId: requireFlag(parsed.flags, 'task-id'),
               agentId: requireFlag(parsed.flags, 'agent-id'),
               reason: getFlag(parsed.flags, 'reason'),
+              leaseSeconds: getFlag(parsed.flags, 'lease') ? Number(getFlag(parsed.flags, 'lease')) : undefined,
             }));
             return 0;
           default:
-            throw new Error('task action must be add, list, claim, done, or reopen');
+            throw new Error('task action must be add, list, ready, show, depend, claim, heartbeat, release, done, or reopen');
         }
       }
       case 'lock': {
@@ -194,6 +236,19 @@ export function runCli(argv: string[]): number {
               ttlSeconds: Number(getFlag(parsed.flags, 'ttl') ?? 1800),
             }));
             return 0;
+          case 'wait': {
+            const result = aw.waitForLock({
+              filePath: requireFlag(parsed.flags, 'file'),
+              agentId: getFlag(parsed.flags, 'agent-id'),
+              waitMs: getDurationFlag(parsed.flags, 'wait') ?? getDurationFlag(parsed.flags, 'wait-seconds'),
+              retryIntervalMs: getDurationFlag(parsed.flags, 'retry-interval'),
+            });
+            print(result);
+            return result.ok ? 0 : 2;
+          }
+          case 'prune':
+            print(aw.pruneLocks({ dryRun: !parsed.flags.has('confirm') }));
+            return 0;
           case 'release':
             print(aw.releaseLock({ filePath: requireFlag(parsed.flags, 'file'), agentId: requireFlag(parsed.flags, 'agent-id') }));
             return 0;
@@ -201,7 +256,7 @@ export function runCli(argv: string[]): number {
             print(aw.listLocks());
             return 0;
           default:
-            throw new Error('lock action must be acquire, release, or list');
+            throw new Error('lock action must be acquire, wait, prune, release, or list');
         }
       }
       case 'work': {
@@ -216,13 +271,16 @@ export function runCli(argv: string[]): number {
             }));
             return 0;
           case 'list':
-            print(aw.listWork());
+            print(aw.listWork({ filePath: getFlag(parsed.flags, 'file'), agentId: getFlag(parsed.flags, 'agent-id') }));
+            return 0;
+          case 'show':
+            print(aw.showWork({ filePath: requireFlag(parsed.flags, 'file') }));
             return 0;
           case 'end':
             print(aw.endWork({ filePath: requireFlag(parsed.flags, 'file'), agentId: requireFlag(parsed.flags, 'agent-id') }));
             return 0;
           default:
-            throw new Error('work action must be start, touch, list, or end');
+            throw new Error('work action must be start, touch, list, show, or end');
         }
       }
       case 'handoff': {
@@ -318,13 +376,18 @@ export function runCli(argv: string[]): number {
       case 'verify': {
         switch (parsed.action) {
           case 'audit':
-            print(aw.auditChecks());
+            print(aw.auditChecks({
+              agentId: getFlag(parsed.flags, 'agent-id'),
+              planId: getFlag(parsed.flags, 'plan-id'),
+              minAgeMs: getDurationFlag(parsed.flags, 'min-age'),
+            }));
             return 0;
           case 'mark':
             print(aw.markCheck({
               taskId: requireFlag(parsed.flags, 'task-id'),
               agentId: requireFlag(parsed.flags, 'agent-id'),
               message: requireFlag(parsed.flags, 'message'),
+              status: (getFlag(parsed.flags, 'status') as CheckStatus | undefined) ?? 'SUCCESS',
             }));
             return 0;
           default:

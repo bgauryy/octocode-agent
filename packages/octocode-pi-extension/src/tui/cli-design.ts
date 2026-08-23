@@ -39,7 +39,7 @@ const ANSI_BY_TOKEN: Partial<Record<SemanticToken, string>> = {
   path: '\u001b[36m',
   link: '\u001b[35m',
   linkUrl: '\u001b[2m', // theme resolves mdLinkUrl → dim
-  count: '\u001b[33m',
+  count: '\u001b[39m', // default fg (themed count is default-fg); 33m collided with warning
   symbol: '\u001b[36m',
   title: '\u001b[36m',
   success: '\u001b[32m',
@@ -103,7 +103,10 @@ export function summarizeInlineValue(value: unknown, max = 90): string {
   const compact = sanitizeLine(raw.replace(/\s+/g, ' ').trim());
   // Cell-width aware so CJK/emoji payloads truncate to `max` visible cells and
   // never overflow the row (byte-length .slice under-counts wide glyphs).
-  return truncateToWidth(compact, max);
+  // truncateToWidth injects an SGR reset around its ellipsis; this value is plain
+  // text that the caller then paints (e.g. dim), and an embedded reset would end
+  // that paint span early — so strip any SGR from the (plain) result.
+  return truncateToWidth(compact, max).replace(/\x1b\[[0-9;]*m/g, '');
 }
 
 export type CliToolRowState = 'queued' | 'running' | 'update' | 'done' | 'failed';

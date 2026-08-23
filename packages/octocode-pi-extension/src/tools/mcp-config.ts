@@ -363,7 +363,7 @@ export function patchGlobalMcpOctocodeEnv(configPath = globalMcpPath()): void {
     entry['env'] = { ...OCTOCODE_MCP_ENV_DEFAULTS, ...env };
     servers[DEFAULT_OCTOCODE_MCP_SERVER_NAME] = entry;
     raw['mcpServers'] = servers;
-    fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n', 'utf8');
+    writeMcpJsonAtomic(configPath, raw);
   } catch (err) {
     // Must not block session start, but make the failure observable.
     warnMcp(`failed to patch global mcp.json env: ${(err as Error)?.message ?? String(err)}`);

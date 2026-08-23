@@ -272,12 +272,23 @@ export async function launchWithSdk(
 
   // Settings: read from Pi's default dir, then apply octocode-specific defaults.
   // keep in sync: re-applied after service creation (see [OVERRIDE-REAPPLY]).
+  // Runtime-only product GUARANTEES — applyOverrides never persists to disk.
+  // Applied twice: before createAgentSessionServices (initial) and after
+  // (re-apply because Pi rebuilds settings on project-trust; see [OVERRIDE-REAPPLY]).
+  // Deep-merges on top of global+project settings — only include values that
+  // MUST be forced regardless of user preference. Everything else lives in
+  // ~/.pi/agent/settings.json where users can tune it.
   const octocodeSessionOverrides = {
+    // Always compact — agent sessions depend on it.
     compaction: { enabled: true },
-    retry: { enabled: true, maxRetries: 3 },
-    // Keep Pi's startup help and loaded-resource summary visible for
-    // octocode-agent runs. Runtime-only (applyOverrides never persists) — the
-    // Octocode extension still appends its own branded banner after Pi's intro.
+    retry: {
+      // Always retry on transient errors.
+      enabled: true,
+      // Prevent double-retry: Pi handles retries; disable provider-level retries.
+      // Pi default is undefined (no cap), so this MUST be forced here.
+      provider: { maxRetries: 0 },
+    },
+    // Keep Pi's startup summary visible — extension appends its own branded banner.
     quietStartup: false,
   } as const;
   let settingsManager: unknown;

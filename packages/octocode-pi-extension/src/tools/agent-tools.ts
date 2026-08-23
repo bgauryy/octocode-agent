@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -171,6 +172,19 @@ interface AgentRecord {
   policyWarnings: string[];
   promptFiles: string[];
   waiters: Set<() => void>;
+  /**
+   * Heartbeat subscribers. Notified on every inbound RPC event (via touch) so a
+   * blocking `wait` can reset its silence watchdog instead of enforcing a rigid
+   * wall-clock deadline: as long as the worker streams events, the wait keeps going.
+   */
+  activityListeners: Set<() => void>;
+  /**
+   * In-flight liveness probes: request id → resolver. When the parent sends a
+   * `get_state` probe during a silence gap, the child's correlated `response`
+   * event resolves the matching entry, proving the worker is alive-but-quiet
+   * rather than hung.
+   */
+  pendingProbes: Map<string, () => void>;
   nextRequestId: number;
   worktree?: InternalWorktreeState;
   /** Stable Awareness Lite id used to register this worker in the shared agent list. */
@@ -397,16 +411,22 @@ function renderExpandedAgentResult(header: string, result: ToolCallResult, theme
   ]);
 }
 
-function agentDisplayMeta(state: AgentDisplayState, theme?: PiTheme): { icon: string; label: string } {
+// `frozen` pins the running glyph to a static frame: the live ledger (below the
+// editor) may animate, but a persisted transcript result entry must be a PURE
+// function of its captured state \u2014 sampling the moving ledgerSpinnerFrame there
+// would repaint the row on every tick and make the scrollback jump.
+function agentDisplayMeta(state: AgentDisplayState, theme?: PiTheme, opts: { frozen?: boolean } = {}): { icon: string; label: string } {
   const raw: { icon: string; label: string; color: Parameters<typeof paint>[1] } = (() => {
     switch (state) {
       case 'done': return { icon: '\u2713', label: 'done', color: 'success' };
       case 'failed': return { icon: '\u2717', label: 'failed', color: 'error' };
-      case 'killed': return { icon: '\u2717', label: 'killed', color: 'warning' };
+      // killed is a neutral terminal state (dismissed), not act-on-me \u2014 gold is
+      // reserved for blocked (the row you must act on). Muted so the two differ.
+      case 'killed': return { icon: '\u2717', label: 'killed', color: 'muted' };
       case 'blocked': return { icon: '!', label: 'blocked', color: 'warning' };
       // Running is normal activity (brand), idle is quiet (muted) \u2014 warning and
       // success stay reserved for real attention/outcome states.
-      case 'running': return { icon: LEDGER_SPINNER[ledgerSpinnerFrame % LEDGER_SPINNER.length], label: 'running', color: 'brand' };
+      case 'running': return { icon: opts.frozen ? LEDGER_SPINNER[0]! : LEDGER_SPINNER[ledgerSpinnerFrame % LEDGER_SPINNER.length], label: 'running', color: 'brand' };
       case 'idle': return { icon: '\u25CE', label: 'idle', color: 'muted' };
       case 'queued': return { icon: '\u21e5', label: 'queued', color: 'link' };
       case 'starting': return { icon: '\u25CB', label: 'starting', color: 'dim' };
@@ -610,6 +630,15 @@ function buildPiArgs(params: SpawnAgentParams, name: string, promptFiles: string
 function touch(record: AgentRecord, status?: AgentStatus): void {
   record.updatedAt = Date.now();
   if (status) record.status = status;
+  // Every touch is driven by an inbound RPC event (tool call, output delta, turn
+  // boundary, …) — i.e. proof the worker is alive and progressing. Fan it out to
+  // any blocking waiter so it can reset its silence watchdog. A throwing listener
+  // must never break the event pipeline.
+  if (record.activityListeners.size > 0) {
+    for (const listener of record.activityListeners) {
+      try { listener(); } catch { /* listener errors are isolated */ }
+    }
+  }
 }
 
 /**
@@ -1069,12 +1098,22 @@ function processRpcLine(record: AgentRecord, line: string): void {
     recordToolEnd(record, eventObject);
   } else if (eventType === 'response') {
     pushCapped(record.responses, event);
-    const resp = event as { success?: boolean; command?: string; error?: string };
+    const resp = event as { id?: string; success?: boolean; command?: string; error?: string };
+    // A correlated reply to a liveness probe: resolve the pending probe so the
+    // waiter learns the worker is alive-but-quiet (not hung). Any response at all
+    // proves the RPC channel is live, so it also counts as a heartbeat below.
+    if (resp.id && record.pendingProbes.has(resp.id)) {
+      const resolveProbe = record.pendingProbes.get(resp.id)!;
+      record.pendingProbes.delete(resp.id);
+      resolveProbe();
+    }
     if (resp.success === false) {
       if (!record.error) record.error = resp.error ?? `RPC command failed: ${resp.command ?? 'unknown'}`;
       pushLedgerEvent(record, 'error', record.error);
-      touch(record);
     }
+    // Heartbeat on every response (success or not) so a blocking wait resets its
+    // silence watchdog whenever the channel proves live.
+    touch(record);
   } else if (eventType === 'agent_start') {
     // ONE queued turn has started: decrement (never hard-reset) the pending
     // counter, so when two follow-ups are queued the ledger keeps showing
@@ -1116,8 +1155,8 @@ function processRpcLine(record: AgentRecord, line: string): void {
  * On failure the record is transitioned to 'failed' and all waiters are notified
  * so AgentMessage action:'wait' resolves immediately instead of hanging to timeout.
  */
-function sendRpc(record: AgentRecord, payload: Record<string, unknown>): boolean {
-  const id = `${record.id}-${record.nextRequestId++}`;
+function sendRpc(record: AgentRecord, payload: Record<string, unknown>, explicitId?: string): boolean {
+  const id = explicitId ?? `${record.id}-${record.nextRequestId++}`;
   try {
     record.process.stdin.write(`${JSON.stringify({ id, ...payload })}\n`);
     return true;
@@ -1291,6 +1330,8 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     policyWarnings: policyResult.warnings,
     promptFiles,
     waiters: new Set(),
+    activityListeners: new Set(),
+    pendingProbes: new Map(),
     nextRequestId: 1,
     worktree,
     awarenessAgentId,
@@ -1310,8 +1351,12 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   evictStaleAgents();
 
   let stdoutBuffer = '';
+  // Decode incrementally: a multibyte UTF-8 sequence split across two `data`
+  // chunks must not be turned into replacement chars — inside a JSON RPC line
+  // that corruption makes JSON.parse throw and the event is silently dropped.
+  const rpcDecoder = new StringDecoder('utf8');
   proc.stdout.on('data', (chunk) => {
-    stdoutBuffer += chunk.toString();
+    stdoutBuffer += rpcDecoder.write(chunk);
     const lines = stdoutBuffer.split('\n');
     stdoutBuffer = lines.pop() ?? '';
     for (const line of lines) processRpcLine(record, line);
@@ -1330,6 +1375,9 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   proc.on('error', (error) => {
     record.error = error instanceof Error ? error.message : String(error);
     pushLedgerEvent(record, 'error', record.error);
+    // Dead process: no agent_start will ever arrive to drain queued turns, so
+    // strand pendingMessages at zero or the record never becomes terminal.
+    record.pendingMessages = 0;
     touch(record, 'failed');
     removePromptFiles(record);
     cleanupRecordWorktree(record);
@@ -1338,9 +1386,15 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     refreshAgentLedgerUi(ctx);
   });
   proc.on('close', (code, signal) => {
+    stdoutBuffer += rpcDecoder.end();
     if (stdoutBuffer.trim()) processRpcLine(record, stdoutBuffer);
+    stdoutBuffer = '';
     record.exitCode = typeof code === 'number' ? code : undefined;
     record.signal = typeof signal === 'string' ? signal : undefined;
+    // Process is gone: any queued turn that never reached agent_start is stranded,
+    // so floor the counter or isTerminal() (and thus `wait`) never resolves and the
+    // ledger keeps showing 'queued' against a dead worker.
+    record.pendingMessages = 0;
     if (record.status !== 'killed') touch(record, code === 0 ? 'exited' : 'failed');
     pushLedgerEvent(record, record.status === 'failed' ? 'error' : 'exit', `process closed with code ${record.exitCode ?? 'unknown'}`);
     removePromptFiles(record);
@@ -1473,19 +1527,171 @@ function getAgent(agentId: unknown): AgentRecord {
   return record;
 }
 
-export function waitForAgent(record: AgentRecord, timeoutMs: number): Promise<void> {
-  if (isTerminal(record)) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const onDone = () => {
+/** Why a `wait` returned. `terminal` = turn finished; `idle` = quiet gap the
+ *  watchdog surfaced; `cap` = the optional absolute backstop fired. */
+export type WaitReason = 'terminal' | 'idle' | 'cap';
+
+export interface WaitOutcome {
+  reason: WaitReason;
+  /** True when the worker is not terminal — the turn is still in flight. */
+  stillRunning: boolean;
+  /** For reason:'idle' — whether a liveness probe got a reply (alive-but-quiet vs hung). */
+  probedAlive: boolean;
+}
+
+export interface WaitOptions {
+  /**
+   * How long the worker may stream NO events before the watchdog checks in.
+   * The timer resets on every inbound event, so an actively-working worker never
+   * trips it — this bounds silence, not total runtime. Default 120s.
+   */
+  maxSilenceMs?: number;
+  /**
+   * Optional absolute backstop (total wall-clock) so a caller that must not block
+   * forever can bound the wait even while the worker keeps proving itself alive.
+   * Omit for the interactive path (silence + probe is enough).
+   */
+  absoluteCapMs?: number;
+  /** Send a get_state liveness probe on a silence gap before declaring idle. Default true. */
+  probe?: boolean;
+  /** How long to await the probe's correlated response before giving up on it. Default 4s. */
+  probeGraceMs?: number;
+}
+
+const DEFAULT_WAIT_MAX_SILENCE_MS = 120_000;
+const DEFAULT_PROBE_GRACE_MS = 4_000;
+
+/**
+ * Actively confirm a quiet worker is alive by sending a `get_state` RPC and
+ * awaiting its correlated `response` (pi RPC echoes the request id). Resolves
+ * true if the child answers within graceMs, false if it stays silent or the
+ * pipe is dead — distinguishing "alive but mid-generation" from "hung/crashed".
+ */
+function probeWorkerAlive(record: AgentRecord, graceMs: number): Promise<boolean> {
+  if (!isProcessAlive(record)) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const probeId = `${record.id}-probe-${record.nextRequestId++}`;
+    let settled = false;
+    const finish = (alive: boolean) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      resolve();
+      record.pendingProbes.delete(probeId);
+      resolve(alive);
     };
-    const timer = setTimeout(() => {
-      record.waiters.delete(onDone);
-      reject(new Error(`Timed out waiting for agent "${record.name}" after ${timeoutMs}ms. Use AgentMessage action:"status" to inspect.`));
-    }, timeoutMs);
-    record.waiters.add(onDone);
+    record.pendingProbes.set(probeId, () => finish(true));
+    const timer = setTimeout(() => finish(false), graceMs);
+    timer.unref?.();
+    // get_state is a cheap read-only query; the child answers with a `response`
+    // carrying probeId, which processRpcLine routes back to finish(true).
+    if (!sendRpc(record, { type: 'get_state' }, probeId)) finish(false);
   });
+}
+
+/**
+ * Progress-aware wait. Instead of a rigid wall-clock deadline that errors while
+ * the worker is healthily churning, this resolves (never rejects) when the turn
+ * ends, OR when the worker has been silent past maxSilenceMs AND a liveness probe
+ * can't confirm it is still alive-and-quiet. Every inbound event resets the
+ * silence watchdog, so long-but-active turns run to completion.
+ */
+export function waitForAgent(record: AgentRecord, opts: WaitOptions | number = {}): Promise<WaitOutcome> {
+  // Back-compat: a bare number is treated as the silence budget.
+  const options: WaitOptions = typeof opts === 'number' ? { maxSilenceMs: opts } : opts;
+  const maxSilenceMs = options.maxSilenceMs ?? DEFAULT_WAIT_MAX_SILENCE_MS;
+  const probeGraceMs = options.probeGraceMs ?? DEFAULT_PROBE_GRACE_MS;
+  const probeEnabled = options.probe ?? true;
+
+  if (isTerminal(record)) {
+    return Promise.resolve({ reason: 'terminal', stillRunning: false, probedAlive: false });
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let silenceTimer: ReturnType<typeof setTimeout>;
+    let absoluteTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = () => {
+      clearTimeout(silenceTimer);
+      if (absoluteTimer) clearTimeout(absoluteTimer);
+      record.waiters.delete(onTerminal);
+      record.activityListeners.delete(onActivity);
+    };
+    const settle = (outcome: WaitOutcome) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(outcome);
+    };
+
+    const armSilence = () => {
+      clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(onSilence, maxSilenceMs);
+      silenceTimer.unref?.();
+    };
+
+    const onTerminal = () => settle({ reason: 'terminal', stillRunning: false, probedAlive: false });
+
+    const onActivity = () => {
+      if (settled) return;
+      // Terminal transitions also touch(); if this event flipped us terminal,
+      // resolve as done rather than re-arming.
+      if (isTerminal(record)) onTerminal();
+      else armSilence();
+    };
+
+    const onSilence = () => {
+      if (settled) return;
+      if (isTerminal(record)) { onTerminal(); return; }
+      if (!probeEnabled) {
+        settle({ reason: 'idle', stillRunning: true, probedAlive: false });
+        return;
+      }
+      void probeWorkerAlive(record, probeGraceMs).then((alive) => {
+        if (settled) return;
+        if (isTerminal(record)) { onTerminal(); return; }
+        // Alive-but-quiet or hung/dead: either way hand a truthful snapshot back
+        // to the caller (no error). Callers that need the final result loop until
+        // reason:'terminal'; probedAlive tells them whether it's worth waiting more.
+        settle({ reason: 'idle', stillRunning: !isTerminal(record), probedAlive: alive });
+      });
+    };
+
+    record.waiters.add(onTerminal);
+    record.activityListeners.add(onActivity);
+    armSilence();
+
+    if (options.absoluteCapMs && options.absoluteCapMs > 0) {
+      absoluteTimer = setTimeout(() => {
+        settle({ reason: 'cap', stillRunning: !isTerminal(record), probedAlive: isProcessAlive(record) });
+      }, options.absoluteCapMs);
+      absoluteTimer.unref?.();
+    }
+  });
+}
+
+/**
+ * Block until the worker's turn genuinely finishes, transparently riding out
+ * quiet-but-alive gaps. Loops the progress-aware waitForAgent, continuing while
+ * the worker is idle-but-probe-alive, and stops on terminal, on a confirmed hang
+ * (probe failed / process gone), or when the absolute cap is hit. Used by the
+ * internal single-shot callers that need the final output, not a live snapshot.
+ */
+export async function waitForAgentTurn(
+  record: AgentRecord,
+  opts: { maxSilenceMs?: number; absoluteCapMs?: number } = {},
+): Promise<WaitOutcome> {
+  const startedAt = record.updatedAt;
+  const absoluteCapMs = opts.absoluteCapMs;
+  let outcome: WaitOutcome;
+  do {
+    const remaining = absoluteCapMs ? Math.max(1, absoluteCapMs - (Date.now() - startedAt)) : undefined;
+    outcome = await waitForAgent(record, { maxSilenceMs: opts.maxSilenceMs, absoluteCapMs: remaining });
+    if (outcome.reason === 'terminal' || outcome.reason === 'cap') break;
+    // reason:'idle' — keep waiting only if the worker is still alive-and-quiet.
+    if (!outcome.probedAlive || !isProcessAlive(record)) break;
+  } while (!isTerminal(record));
+  return outcome;
 }
 
 function renderAgentResult(records: AgentRecord[], header: string): ToolCallResult {
@@ -1559,9 +1765,9 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme, width?: number): str
     const handback = summary.normalizedResult?.status && summary.normalizedResult.status !== 'unknown'
       ? ` · ${summary.normalizedResult.status}/${summary.normalizedResult.confidence}`
       : '';
-    const active = summary.activeTool
-      ? ` · ${paint(theme, 'brand', 'running')} ${summary.activeTool}`
-      : state === 'running' ? ` · ${paint(theme, 'brand', 'running')}` : '';
+    // meta.label already prints "running"; don't repeat it. Show only the tool the
+    // worker is currently in, so the row reads "… · running · bash" not "· running · running bash".
+    const active = summary.activeTool ? ` · ${paint(theme, 'brand', summary.activeTool)}` : '';
     // Show what the worker is doing: total tool calls + the distinct tools it has used.
     const callCount = record.toolCalls.length;
     const toolNames = [...new Set(record.toolCalls.map((call) => call.toolName).filter(Boolean))].slice(0, 4);
@@ -1801,6 +2007,11 @@ function renderSingleAgentResult(record: AgentRecord, header: string, opts: { fu
 
 function killAgent(record: AgentRecord, opts: { forceKillDelayMs?: number } = {}): void {
   pushLedgerEvent(record, 'killed', 'kill requested');
+  // The process is going away, so any queued turns will never emit agent_start
+  // to decrement this. Strand them at zero here, or isTerminal() stays false
+  // forever and a later `wait` blocks its full timeout on a dead worker while
+  // the ledger advertises a phantom 'queued' state.
+  record.pendingMessages = 0;
   touch(record, 'killed');
   try {
     record.process.stdin.end?.();
@@ -1959,7 +2170,10 @@ export function registerAgentTools(
       const det = result.details as { agent?: { name?: string } } | null;
       const agentName = det?.agent?.name ?? 'agent';
       const displayStatus = ok ? 'spawned' : 'failed';
-      const icon = ok ? paint(theme, 'success', '✓') : statusIcon('failed', theme);
+      // A just-spawned worker is RUNNING, not done — a green ✓ reads as "finished"
+      // and disagrees with AgentMessage's brand in-flight glyph for the same worker.
+      // Use the frozen (static, transcript-safe) brand running icon on success.
+      const icon = ok ? agentDisplayMeta(getAgentDisplayState({ status: 'running' }), theme, { frozen: true }).icon : statusIcon('failed', theme);
       const label = cliToolTitle(theme, 'spawnAgent');
       const nameStr = paint(theme, 'brand', agentName);
       const statusStr = paint(theme, 'dim', displayStatus);
@@ -1997,7 +2211,7 @@ export function registerAgentTools(
           'For action:"send", how to queue if the worker is currently streaming. Defaults to followUp only while the worker is already running.',
         ),
       ),
-      timeoutMs: Type.Optional(Type.Integer({ description: 'wait timeout in milliseconds. Default 300000.' })),
+      timeoutMs: Type.Optional(Type.Integer({ description: 'For action:"wait": max silence (ms) tolerated before the wait checks in — NOT a hard deadline. An actively-streaming worker keeps the wait alive past this; it only returns early on a genuine quiet gap, and then with a live snapshot (never an error). Default 300000.' })),
       remove: Type.Optional(Type.Boolean({ description: 'After kill, remove the agent record from the registry.' })),
       full: Type.Optional(Type.Boolean({
         description:
@@ -2020,12 +2234,21 @@ export function registerAgentTools(
 
       if (action === 'wait') {
         if (ctx?.hasUI) ctx.ui?.setStatus?.('agent-wait', `\u29D7 Waiting for \u201C${record.name}\u201D\u2026`);
+        // timeoutMs is the silence budget, not a rigid deadline: an actively
+        // streaming worker keeps the wait alive indefinitely. On a genuine quiet
+        // gap we probe liveness and return a truthful snapshot instead of erroring.
+        let outcome: WaitOutcome;
         try {
-          await waitForAgent(record, Number(params['timeoutMs'] ?? 300000));
+          outcome = await waitForAgent(record, { maxSilenceMs: Number(params['timeoutMs'] ?? 300000) });
         } finally {
           if (ctx?.hasUI) ctx.ui?.setStatus?.('agent-wait', undefined);
         }
-        const waitResult = renderSingleAgentResult(record, 'Agent turn completed', renderOpts);
+        const header = outcome.reason === 'terminal'
+          ? 'Agent turn completed'
+          : outcome.probedAlive
+            ? 'Agent still working (alive, no output during the wait window \u2014 call wait again to keep collecting)'
+            : 'Agent unresponsive (no output and liveness probe unanswered \u2014 inspect with status or kill)';
+        const waitResult = renderSingleAgentResult(record, header, renderOpts);
         if (params['remove'] === true) {
           // An idle (non-terminal) worker's process is still alive; deleting the
           // record would orphan it beyond the reach of shutdown cleanup.
@@ -2156,7 +2379,9 @@ export function registerAgentTools(
       // single-agent actions
       const agentName = det?.agent?.name ?? 'agent';
       const state = getAgentDisplayState(ok ? (det?.agent ?? { status: 'idle' }) : { status: 'failed' });
-      const meta = agentDisplayMeta(state, theme);
+      // Result renderer → transcript entry: freeze the running glyph so repaints
+      // don't animate the persisted row (contract: entry renderers are pure).
+      const meta = agentDisplayMeta(state, theme, { frozen: true });
       const label = cliToolTitle(theme, 'AgentMessage');
       const nameStr = paint(theme, 'brand', agentName);
       const header = `${meta.icon} ${label} · ${nameStr} · ${meta.label}`;

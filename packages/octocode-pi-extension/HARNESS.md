@@ -6,7 +6,7 @@ Everything the extension registers with Pi on load: tools, system-prompt section
 
 ## System Prompt
 
-Authored as XML-tagged sections in `src/prompts/prompt.ts` (single file; one const per section), built into `dist/system/SYSTEM_PROMPT.md`, and injected via the `before_agent_start` hook. 14 sections, in order: `<authority>` · `<work_mode>` · `<think_first>` · `<octocode_cli>` · `<skills>` · `<agents>` · `<tools>` · `<ui_ux>` · `<browser_agent>` · `<search_and_research>` · `<code>` · `<testing>` · `<output>` · `<ultimate_reminders>`. The concept-level contract lives in `tests/prompt-contract.test.ts`.
+Authored as a stable seven-section decision kernel in `src/prompts/prompt.ts`, built into `dist/system/SYSTEM_PROMPT.md`, and injected via the `before_agent_start` hook: `<authority>` · `<operating_model>` · `<judgment>` · `<repository>` · `<code_quality>` · `<capability_routing>` · `<output>`. The kernel owns cross-task decisions; live tool/MCP/skill catalogs, plan mode, and typed-role prompts own operational detail. The concept-level contract lives in `tests/prompt-contract.test.ts`.
 
 Every turn the hook also appends live addenda: the `<mcp_catalog>` block (MCP server instructions/tools/schemas), `<dynamic_capabilities>` (callTool/callSkill registries), available-skills projection, and the `<active_plan>` block — all rebuilt per turn so they survive compaction. With `--no-context` set, the hook suppresses project context in the assembled prompt text.
 

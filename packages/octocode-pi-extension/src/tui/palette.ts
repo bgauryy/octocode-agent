@@ -177,7 +177,9 @@ const GAUGE_EMPTY = '░';
  * Build a fixed-width unicode gauge for context-window usage.
  *
  * Severity token: <75% success, <90% warning, ≥90% error — so a filling
- * context window visibly shifts colour before it runs out.
+ * context window visibly shifts colour before it runs out. (A green→gold→red
+ * health gauge is a deliberate, conventional exception to the "green = outcomes
+ * only" rule — the intent is codified in palette.test.ts.)
  *
  * @param pct    Usage percentage (clamped to 0–100).
  * @param cells  Bar width in cells (default 8, min 1).

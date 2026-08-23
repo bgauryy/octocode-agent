@@ -694,7 +694,7 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
         }
       }));
     }
-    return result(resolveMcpCallText(payload), payload);
+    return result(resolveMcpCallText(payload), payload, payload?.isError === true);
   }
 
   return result(`Unknown MCP action: ${action}`, undefined, true);
@@ -741,7 +741,9 @@ function renderResult(resultValue: ToolCallResult, opts: { expanded?: boolean; i
   if (opts.isPartial) {
     return makeRenderer((width) => {
       const line = `mcp ${action} · ${target} · running…`;
-      return [theme?.fg ? theme.fg('warning', clip(line, width)) : clip(line, width)];
+      // In-flight is not an alert: gold (warning) is reserved for act-on-me. Use
+      // the identity/in-flight brand color like other running rows.
+      return [theme?.fg ? theme.fg('accent', clip(line, width)) : clip(line, width)];
     });
   }
   const lines = (resultValue.content[0] as { text?: string } | undefined)?.text?.split('\n').filter(Boolean) ?? ['MCP result'];

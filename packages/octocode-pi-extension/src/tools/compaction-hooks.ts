@@ -1,6 +1,7 @@
 import type { PiContext, PiInstance, SessionBeforeCompactEvent, SessionCompactEvent, NotifyFn } from '../types.js';
 import { clearCompactionWorkingState, scheduleCompactionContinuation } from './compaction-resume.js';
-import { clearCompactionInFlight, consumeCompactionResumeRequest, markCompactionInFlight } from './compaction-state.js';
+import { clearCompactionInFlight, consumeAutoCompactResumeRequest, consumeCompactionResumeRequest, markCompactionInFlight } from './compaction-state.js';
+import { activePlanScope, hasActivePlanWork } from './active-plan.js';
 import { emitCompactionCheckpoint, type CompactionCheckpointDetails } from './custom-messages.js';
 import { writeCompactionArtifact } from './compaction-artifacts.js';
 import { clearAllReadStates } from './file-state.js';
@@ -286,7 +287,9 @@ export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void 
       clearCompactionWorkingState(ctx);
       return;
     }
-    const shouldResume = consumeCompactionResumeRequest();
+    // Consume both resume flags before any early-return so neither leaks.
+    const shouldExplicitResume = consumeCompactionResumeRequest();
+    const shouldAutoResume = consumeAutoCompactResumeRequest();
     let artifactLatestPath: string | undefined;
     // Completed compaction → branded checkpoint card in the transcript. The
     // dedupe guard makes this idempotent even if the hook observes the same
@@ -307,9 +310,26 @@ export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void 
     // recover. Pi's event.fromExtension means "summary supplied by extension"
     // (e.g. our overflow fallback), not "ctx.compact was called by extension";
     // manual /compact and Pi's own pre-prompt compaction still stop by design.
-    if (!shouldResume) {
+    if (!shouldExplicitResume && !shouldAutoResume) {
       clearCompactionWorkingState(ctx);
       return;
+    }
+    // Stale-resume guard: auto-compact resumes are plan-verified.
+    // The plan was active when turn_end triggered compaction, but work may have
+    // completed while compaction was in flight (same-turn or delayed). Re-verify
+    // at completion time; if work is done, skip the follow-up rather than sending
+    // a spurious "Re-orient" that the model can only answer "nothing to do".
+    // Explicit resumes (manage_context) bypass this check — the model is always
+    // mid-task when it calls that tool.
+    if (shouldAutoResume && !shouldExplicitResume) {
+      const branch = ctx.sessionManager?.getBranch?.();
+      if (
+        !hasActivePlanWork(activePlanScope(ctx)) ||
+        isCompletedSessionAssistantText(latestAssistantText(branch))
+      ) {
+        clearCompactionWorkingState(ctx);
+        return;
+      }
     }
     const docHint = artifactLatestPath ? ` Compaction doc: ${artifactLatestPath}.` : '';
     const continuation =

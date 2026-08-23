@@ -164,8 +164,17 @@ export function refreshWorktreeState(state: InternalWorktreeState): InternalWork
 
 export function removeAgentWorktree(state: InternalWorktreeState, opts: { force?: boolean } = {}): void {
   const removeArgs = ['worktree', 'remove', opts.force ? '--force' : undefined, state.path].filter(Boolean) as string[];
-  try { git(state.parentCwd, removeArgs); } catch {
-    if (!opts.force) throw new Error(`worktree ${state.path} has unmerged work; refusing to remove without force.`);
+  try { git(state.parentCwd, removeArgs); } catch (err) {
+    if (!opts.force) {
+      const message = err instanceof Error ? err.message : String(err);
+      // git refuses to remove a worktree with local changes; only then is
+      // "unmerged work" the accurate diagnosis. Any other failure (missing
+      // worktree, locked, unexpected git error) should surface as-is.
+      if (/contains modified or untracked|unmerged|not empty|use --force/i.test(message)) {
+        throw new Error(`worktree ${state.path} has unmerged work; refusing to remove without force.`);
+      }
+      throw new Error(`failed to remove worktree ${state.path}: ${message}`);
+    }
     try { fs.rmSync(state.path, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
   try { git(state.parentCwd, ['branch', '-D', state.branch]); } catch { /* best-effort */ }
@@ -213,8 +222,15 @@ export function sweepAgentWorktrees(parentCwd: string, liveWorktreePaths: Iterab
   let removed = 0;
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith(META_SUFFIX)) continue;
-    const meta = readMeta(path.join(root, entry.name));
+    const metaFile = path.join(root, entry.name);
+    const meta = readMeta(metaFile);
     if (!meta || live.has(path.resolve(meta.path))) continue;
+    // The worktree directory is gone (pruned/deleted out from under us); the
+    // sidecar meta json would otherwise linger forever. Drop it best-effort.
+    if (!fs.existsSync(meta.path)) {
+      try { fs.rmSync(metaFile, { force: true }); } catch { /* best-effort */ }
+      continue;
+    }
     try {
       if (cleanupWorktreeIfNoWork(meta) === 'removed') removed += 1;
     } catch {

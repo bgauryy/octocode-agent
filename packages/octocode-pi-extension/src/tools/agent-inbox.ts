@@ -63,6 +63,10 @@ const STATE_GLYPHS: Record<InboxDisplayState, string> = {
   done: '✓', //     ✓
   blocked: '!',
   failed: '✗', //   ✗
+  // The inbox is COLORLESS (glyph + spelled-out state word, no paint), so killed
+  // keeps its own ⊘ rather than reusing failed's ✗ — a distinct glyph is the only
+  // visual signal here. (⊘ also means 'blocked' in the plan surfaces, but that is a
+  // separate, colored domain, so the reuse doesn't confuse in practice.)
   killed: '⊘', //   ⊘
 };
 

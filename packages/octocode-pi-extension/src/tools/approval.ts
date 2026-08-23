@@ -230,8 +230,13 @@ export function classifySensitiveCommand(command: string): ApprovalRequest | nul
   }
 
   // Mutating git — scan each command segment for `git <subcommand>`.
+  // The pre-subcommand flag run must consume git's global options that take a
+  // SEPARATE argument (`git -C <path> push`, `git -c core.hooksPath=x commit`,
+  // `git --git-dir <dir> reset`) — otherwise the path/config token stops the
+  // scan and the subcommand is never classified, silently skipping approval for
+  // destructive `-C`/`-c`-prefixed git (reset --hard, clean, push).
   for (const seg of cmd.split(/[;|&\n]+/)) {
-    const m = /\bgit\s+(?:-[^\s]+\s+)*([a-z][a-z-]*)/.exec(seg.trim());
+    const m = /\bgit\s+(?:(?:-[Cc]|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env)\s+\S+\s+|-[^\s]+\s+)*([a-z][a-z-]*)/.exec(seg.trim());
     if (m && MUTATING_GIT_SUBCOMMANDS.has(m[1]!)) {
       return { actionClass: 'git-write', title: `Run sensitive git command (git ${m[1]})`, detail: seg.trim() };
     }

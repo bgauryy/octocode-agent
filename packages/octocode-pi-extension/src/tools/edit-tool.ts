@@ -102,7 +102,13 @@ function normalizeToLF(text: string): string {
 }
 
 function detectLineEnding(text: string): '\n' | '\r\n' {
-  return text.includes('\r\n') ? '\r\n' : '\n';
+  // Only report CRLF when the file is UNIFORMLY CRLF (every LF is part of a CRLF).
+  // A mixed file (some bare LF, some CRLF) reports '\n' so restoreLineEndings leaves
+  // it untouched — otherwise editing one line would rewrite every originally-LF line
+  // to CRLF (spurious whole-file churn).
+  if (!text.includes('\r\n')) return '\n';
+  // Strip CRLF pairs; if any bare LF remains, the file is mixed → treat as LF.
+  return text.replace(/\r\n/g, '').includes('\n') ? '\n' : '\r\n';
 }
 
 function restoreLineEndings(text: string, ending: '\n' | '\r\n'): string {
@@ -818,6 +824,20 @@ function queriesFromRequest(request: EditRequest): EditQuery[] {
   return [{ path: request.path!, edits: request.edits!, requireRecentRead: request.requireRecentRead }];
 }
 
+/**
+ * Acquire the per-file mutex for EVERY key, then run `fn` while holding them all,
+ * so a batch can validate every target and write every target as one indivisible
+ * critical section. Locks are acquired in a globally consistent (sorted) order so
+ * two concurrent batches with overlapping targets can never circular-wait/deadlock.
+ * With a single key this is exactly `withFileMutationQueue(key, fn)`.
+ */
+function withFileMutationQueues<T>(keys: string[], fn: () => Promise<T>): Promise<T> {
+  const sorted = [...new Set(keys)].sort();
+  const run = (index: number): Promise<T> =>
+    index >= sorted.length ? fn() : withFileMutationQueue(sorted[index], () => run(index + 1));
+  return run(0);
+}
+
 export function registerEditTool(
   pi: { registerTool?(def: ToolDefinition): void },
   Type: TypeBoxBuilder,
@@ -860,28 +880,41 @@ export function registerEditTool(
       // Peer-WIP advisory: warn (once) before co-mingling edits into a file that
       // was already dirty in the working tree before this session started.
       const peerNotice = prepared.map((item) => peerWipNotice(item.absolutePath, item.requestPath)).filter(Boolean).join('');
-      // Phase 2: write each file through its per-file mutex queue.
-      // Serializes concurrent writes from parallel tool calls on the same file.
-      await Promise.all(
-        prepared.map((item) =>
-          withFileMutationQueue(item.absolutePath, async () => {
-            if (signal?.aborted) throw new Error('Operation aborted');
-            // Lost-update guard: prepareEdit computed finalContent from item.rawContent
-            // OUTSIDE this mutex. If a concurrent edit call (or external writer) changed
-            // the file since then, writing finalContent would silently clobber it. Re-read
-            // under the lock and fail loudly instead of losing the intervening change.
-            const currentRaw = await readFile(item.absolutePath, 'utf8');
-            if (currentRaw !== item.rawContent) {
-              throw new Error(
-                `${item.requestPath} changed on disk after it was read for editing ` +
-                  `(concurrent edit or external write). Re-read the file and retry.`,
-              );
-            }
-            await atomicWriteUtf8(item.absolutePath, item.finalContent);
-            await recordFileReadState(item.absolutePath);
-            markOwnWrite(item.absolutePath);
-          }),
-        ),
+      // Phase 2: check-all-then-write-all under every target's per-file mutex.
+      // Hold every file's lock, re-verify EVERY lost-update guard, and only if all
+      // pass write any. The prepare phase is all-or-nothing; validating all targets
+      // before writing any makes the write phase all-or-nothing too, so a concurrent
+      // change to file B can't leave file A already mutated (half-applied change).
+      await withFileMutationQueues(
+        prepared.map((item) => item.absolutePath),
+        async () => {
+          if (signal?.aborted) throw new Error('Operation aborted');
+          // Pre-write validation pass over ALL targets: prepareEdit computed each
+          // finalContent from item.rawContent OUTSIDE this mutex. If a concurrent edit
+          // call (or external writer) changed any file since then, writing would silently
+          // clobber it. Re-read every target under the locks and, if any drifted, abort
+          // the whole batch and write NOTHING.
+          await Promise.all(
+            prepared.map(async (item) => {
+              const currentRaw = await readFile(item.absolutePath, 'utf8');
+              if (currentRaw !== item.rawContent) {
+                throw new Error(
+                  `${item.requestPath} changed on disk after it was read for editing ` +
+                    `(concurrent edit or external write). Re-read the file and retry.`,
+                );
+              }
+            }),
+          );
+          if (signal?.aborted) throw new Error('Operation aborted');
+          // Every target verified unchanged — now write them all.
+          await Promise.all(
+            prepared.map(async (item) => {
+              await atomicWriteUtf8(item.absolutePath, item.finalContent);
+              await recordFileReadState(item.absolutePath);
+              markOwnWrite(item.absolutePath);
+            }),
+          );
+        },
       );
       if (signal?.aborted) throw new Error('Operation aborted');
       const replacements = prepared.reduce((sum, item) => sum + item.result.replacements, 0);

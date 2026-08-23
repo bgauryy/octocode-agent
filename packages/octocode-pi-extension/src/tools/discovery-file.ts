@@ -37,13 +37,36 @@ export interface DiscoveredMcpConfig {
   error?: string;
 }
 
+/** Per-section character counts for the harness prompt overhead. */
+export interface SystemPromptStats {
+  /** Octocode system prompt text (prompt.ts + Pi's own prompt). */
+  sysChars: number;
+  /** MCP catalog addendum chars (all server instructions + tool schemas). */
+  mcpChars: number;
+  /**
+   * Dynamic addenda chars: available-skills block + active-plan block +
+   * dynamic-capabilities addendum (changes every turn).
+   */
+  dynamicChars: number;
+  /** Total of all three sections. */
+  totalChars: number;
+  /** Rough token estimate at 4 chars/token. */
+  estimatedTokens: number;
+  mcpServers: number;
+  mcpTools: number;
+  skills: number;
+}
+
 export interface DiscoverySnapshot {
   version: 1;
   generatedAt: string;
   workspace: string;
   harness: string;
+  /** System prompt overhead snapshot from the last before_agent_start (or session_start). */
+  systemPromptStats?: SystemPromptStats;
   /** Model-callable native tool names registered by the extension. */
   nativeTools: string[];
+  nativeToolCount: number;
   skills: Array<{ name: string; description: string; source: string; path: string }>;
   mcp: McpDiscoverySnapshot & { discoveredConfigs: DiscoveredMcpConfig[] };
 }
@@ -122,15 +145,38 @@ export function getDiscoveryFilePath(cwd: string): string {
 
 export async function buildDiscoverySnapshot(
   ctx: PiContext | undefined,
-  opts: { skills: DiscoveredSkill[]; nativeTools: string[]; home?: string },
+  opts: {
+    skills: DiscoveredSkill[];
+    nativeTools: string[];
+    home?: string;
+    overhead?: {
+      sysChars: number; mcpChars: number; dynamicChars: number;
+      totalChars: number; mcpServers: number; mcpTools: number; skills: number;
+    };
+  },
 ): Promise<DiscoverySnapshot> {
   const workspace = ctx?.cwd ?? process.cwd();
+  const sortedTools = [...opts.nativeTools].sort((a, b) => a.localeCompare(b));
+  const systemPromptStats: SystemPromptStats | undefined = opts.overhead
+    ? {
+        sysChars: opts.overhead.sysChars,
+        mcpChars: opts.overhead.mcpChars,
+        dynamicChars: opts.overhead.dynamicChars,
+        totalChars: opts.overhead.totalChars,
+        estimatedTokens: Math.round(opts.overhead.totalChars / 4),
+        mcpServers: opts.overhead.mcpServers,
+        mcpTools: opts.overhead.mcpTools,
+        skills: opts.overhead.skills,
+      }
+    : undefined;
   return {
     version: 1,
     generatedAt: new Date().toISOString(),
     workspace,
     harness: '@octocodeai/pi-extension',
-    nativeTools: [...opts.nativeTools].sort((a, b) => a.localeCompare(b)),
+    ...(systemPromptStats ? { systemPromptStats } : {}),
+    nativeTools: sortedTools,
+    nativeToolCount: sortedTools.length,
     skills: opts.skills.map((skill) => ({
       name: skill.name,
       description: skill.description,
@@ -150,7 +196,13 @@ export async function buildDiscoverySnapshot(
  */
 export async function writeDiscoveryFile(
   ctx: PiContext | undefined,
-  opts: { skills: DiscoveredSkill[]; nativeTools: string[]; home?: string },
+  opts: {
+    skills: DiscoveredSkill[];
+    nativeTools: string[];
+    home?: string;
+    overhead?: { sysChars: number; mcpChars: number; dynamicChars: number;
+                 totalChars: number; mcpServers: number; mcpTools: number; skills: number };
+  },
 ): Promise<string | null> {
   try {
     const snapshot = await buildDiscoverySnapshot(ctx, opts);

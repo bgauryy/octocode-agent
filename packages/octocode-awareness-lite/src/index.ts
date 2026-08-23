@@ -15,6 +15,7 @@ export { isEmbeddingEnabled } from './embed.js';
 
 export type PlanStatus = 'OPEN' | 'DONE';
 export type TaskStatus = 'OPEN' | 'CLAIMED' | 'DONE';
+export type CheckStatus = 'SUCCESS' | 'FAILED';
 
 export interface AwarenessLiteOptions {
   workspace?: string;
@@ -42,9 +43,16 @@ export interface Task {
   planId: string;
   title: string;
   filePath: string | null;
+  paths: string[];
+  reasoning: string | null;
+  acceptance: string | null;
   checkCommand: string | null;
   status: TaskStatus;
+  priority: number;
+  dependencies: string[];
   agentId: string | null;
+  claimedAt: string | null;
+  leaseExpiresAt: string | null;
   createdAt: string;
   updatedAt: string;
   doneAt: string | null;
@@ -83,6 +91,19 @@ export interface CheckAudit {
   ok: boolean;
   pending: Task[];
   pendingCount: number;
+  filters: {
+    agentId: string | null;
+    planId: string | null;
+    minAgeMs: number | null;
+  };
+}
+
+export interface LockWaitResult {
+  ok: boolean;
+  lockFree: boolean;
+  filePath: string;
+  waitedMs: number;
+  conflict: Lock | null;
 }
 
 export interface MemoryItem {
@@ -137,9 +158,16 @@ interface TaskRow {
   plan_id: string;
   title: string;
   file_path: string | null;
+  paths_json?: string | null;
+  reasoning?: string | null;
+  acceptance?: string | null;
   check_command: string | null;
   status: TaskStatus;
+  priority?: number | null;
+  dependencies_json?: string | null;
   agent_id: string | null;
+  claimed_at?: string | null;
+  lease_expires_at?: string | null;
   created_at: string;
   updated_at: string;
   done_at: string | null;
@@ -246,15 +274,29 @@ function planFromRow(row: PlanRow): Plan {
   };
 }
 
+function parseStringArrayJson(value: string | null | undefined): string[] {
+  if (!value) return [];
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map((item) => String(item).trim()).filter(Boolean);
+}
+
 function taskFromRow(row: TaskRow): Task {
   return {
     taskId: row.task_id,
     planId: row.plan_id,
     title: row.title,
     filePath: row.file_path,
+    paths: parseStringArrayJson(row.paths_json),
+    reasoning: row.reasoning ?? null,
+    acceptance: row.acceptance ?? null,
     checkCommand: row.check_command,
     status: row.status,
+    priority: Number(row.priority ?? 0),
+    dependencies: parseStringArrayJson(row.dependencies_json),
     agentId: row.agent_id,
+    claimedAt: row.claimed_at ?? null,
+    leaseExpiresAt: row.lease_expires_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     doneAt: row.done_at,
@@ -347,6 +389,17 @@ function splitTags(tags: string | string[] | undefined | null): string[] {
 function splitFiles(files: string | string[] | undefined | null): string[] {
   if (Array.isArray(files)) return files.map((file) => file.trim()).filter(Boolean);
   return (files ?? '').split(',').map((file) => file.trim()).filter(Boolean);
+}
+
+function sleepMs(ms: number): void {
+  if (ms <= 0) return;
+  const buffer = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(buffer), 0, 0, ms);
+}
+
+function normalizeLeaseSeconds(value: number | undefined, fallback = 1800): number {
+  if (!value || !Number.isFinite(value) || value <= 0) return fallback;
+  return Math.min(Math.max(Math.floor(value), 1), 3600);
 }
 
 // ─── Agent naming ─────────────────────────────────────────────────────────────
@@ -462,6 +515,7 @@ export class AwarenessLite {
   } {
     this.pruneExpiredLocks();
     this.pruneExpiredWork();
+    this.evictExpiredTaskClaims();
     const pendingChecks = this.countPendingChecks();
     return {
       dbPath: this.dbPath,
@@ -469,7 +523,7 @@ export class AwarenessLite {
       plans: this.count('plans'),
       activePlans: this.countPlansByStatus('OPEN'),
       tasks: this.count('tasks'),
-      readyTasks: this.countTasksByStatus('OPEN'),
+      readyTasks: this.countReadyTasks(),
       inProgressTasks: this.countTasksByStatus('CLAIMED'),
       pendingChecks,
       verifyTasks: pendingChecks,
@@ -515,24 +569,56 @@ export class AwarenessLite {
     return this.getPlan(params.planId);
   }
 
-  addTask(params: { planId: string; title: string; filePath?: string | null; checkCommand?: string | null }): Task {
+  addTask(params: {
+    planId: string;
+    title: string;
+    filePath?: string | null;
+    paths?: string | string[] | null;
+    reasoning?: string | null;
+    acceptance?: string | null;
+    checkCommand?: string | null;
+    dependsOn?: string | string[] | null;
+    priority?: number;
+  }): Task {
     this.getPlan(params.planId);
     const stamp = now();
     const taskId = id('task');
-    this.db.prepare(`INSERT INTO tasks(task_id, plan_id, title, file_path, check_command, status, agent_id, created_at, updated_at, done_at, verified_at, verified_by, verification_message)
-      VALUES (?, ?, ?, ?, ?, 'OPEN', NULL, ?, ?, NULL, NULL, NULL, NULL)`).run(
+    const paths = splitFiles(params.paths);
+    const fallbackPath = params.filePath?.trim() || null;
+    const allPaths = paths.length > 0 ? paths : (fallbackPath ? [fallbackPath] : []);
+    const filePath = fallbackPath ?? allPaths[0] ?? null;
+    const dependencies = splitFiles(params.dependsOn);
+    this.db.prepare(`INSERT INTO tasks(task_id, plan_id, title, file_path, paths_json, reasoning, acceptance, check_command, status, priority, dependencies_json, agent_id, claimed_at, lease_expires_at, created_at, updated_at, done_at, verified_at, verified_by, verification_message)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, NULL, NULL, NULL, ?, ?, NULL, NULL, NULL, NULL)`).run(
         taskId,
         params.planId,
         required(params.title, 'title'),
-        params.filePath?.trim() || null,
+        filePath,
+        JSON.stringify(allPaths),
+        params.reasoning?.trim() || null,
+        params.acceptance?.trim() || null,
         params.checkCommand?.trim() || null,
+        Math.trunc(params.priority ?? 0),
+        JSON.stringify(dependencies),
         stamp,
         stamp,
       );
     return this.getTask(taskId);
   }
 
-  listTasks(params: { planId?: string; status?: TaskStatus } = {}): Task[] {
+  addTaskDependency(params: { taskId: string; dependsOnTaskId: string; agentId?: string | null }): Task {
+    const task = this.getTask(params.taskId);
+    const dependsOn = this.getTask(params.dependsOnTaskId);
+    if (task.planId !== dependsOn.planId) throw new Error('task dependencies must stay within one plan');
+    if (task.taskId === dependsOn.taskId) throw new Error('task cannot depend on itself');
+    const dependencies = [...new Set([...task.dependencies, dependsOn.taskId])];
+    this.db.prepare('UPDATE tasks SET dependencies_json = ?, updated_at = ? WHERE task_id = ?')
+      .run(JSON.stringify(dependencies), now(), task.taskId);
+    return this.getTask(task.taskId);
+  }
+
+  listTasks(params: { planId?: string; status?: TaskStatus; agentId?: string } = {}): Task[] {
+    this.evictExpiredTaskClaims();
     const clauses: string[] = [];
     const values: string[] = [];
     if (params.planId) {
@@ -543,9 +629,19 @@ export class AwarenessLite {
       clauses.push('status = ?');
       values.push(params.status);
     }
+    if (params.agentId) {
+      clauses.push('agent_id = ?');
+      values.push(params.agentId);
+    }
     const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
-    const rows = this.db.prepare(`SELECT * FROM tasks${where} ORDER BY created_at ASC`).all(...values);
+    const rows = this.db.prepare(`SELECT * FROM tasks${where} ORDER BY priority DESC, created_at ASC`).all(...values);
     return (rows as unknown as TaskRow[]).map(taskFromRow);
+  }
+
+  listReadyTasks(params: { planId?: string; limit?: number } = {}): Task[] {
+    return this.listTasks({ planId: params.planId, status: 'OPEN' })
+      .filter((task) => this.taskDependenciesSatisfied(task))
+      .slice(0, Math.min(Math.max(params.limit ?? 100, 1), 500));
   }
 
   getTask(taskId: string): Task {
@@ -554,12 +650,37 @@ export class AwarenessLite {
     return taskFromRow(row);
   }
 
-  claimTask(params: { taskId: string; agentId: string }): Task {
+  claimTask(params: { taskId: string; agentId: string; leaseSeconds?: number }): Task {
+    this.evictExpiredTaskClaims();
     const task = this.getTask(params.taskId);
+    const agentId = required(params.agentId, 'agent-id');
     if (task.status === 'DONE') throw new Error(`task already done: ${params.taskId}`);
-    if (task.agentId && task.agentId !== params.agentId) throw new Error(`task ${params.taskId} belongs to ${task.agentId}`);
-    this.db.prepare("UPDATE tasks SET status = 'CLAIMED', agent_id = ?, updated_at = ? WHERE task_id = ?")
-      .run(required(params.agentId, 'agent-id'), now(), params.taskId);
+    if (task.agentId && task.agentId !== agentId) throw new Error(`task ${params.taskId} belongs to ${task.agentId}`);
+    this.assertTaskDependenciesSatisfied(task);
+    const stamp = now();
+    const expiresAt = new Date(Date.now() + normalizeLeaseSeconds(params.leaseSeconds) * 1000).toISOString();
+    this.db.prepare("UPDATE tasks SET status = 'CLAIMED', agent_id = ?, claimed_at = ?, lease_expires_at = ?, updated_at = ? WHERE task_id = ?")
+      .run(agentId, stamp, expiresAt, stamp, params.taskId);
+    return this.getTask(params.taskId);
+  }
+
+  heartbeatTask(params: { taskId: string; agentId: string; leaseSeconds?: number }): Task {
+    const task = this.getTask(params.taskId);
+    const agentId = required(params.agentId, 'agent-id');
+    if (task.status !== 'CLAIMED' || task.agentId !== agentId) throw new Error(`task ${params.taskId} is not claimed by ${agentId}`);
+    const stamp = now();
+    const expiresAt = new Date(Date.now() + normalizeLeaseSeconds(params.leaseSeconds) * 1000).toISOString();
+    this.db.prepare('UPDATE tasks SET lease_expires_at = ?, updated_at = ? WHERE task_id = ?').run(expiresAt, stamp, params.taskId);
+    return this.getTask(params.taskId);
+  }
+
+  releaseTask(params: { taskId: string; agentId: string; blockedReason?: string | null }): Task {
+    const task = this.getTask(params.taskId);
+    const agentId = required(params.agentId, 'agent-id');
+    if (task.agentId && task.agentId !== agentId) throw new Error(`task ${params.taskId} belongs to ${task.agentId}`);
+    this.db.prepare(`UPDATE tasks SET status = 'OPEN', agent_id = NULL, claimed_at = NULL, lease_expires_at = NULL,
+      updated_at = ?, verification_message = ? WHERE task_id = ?`)
+      .run(now(), params.blockedReason?.trim() || null, params.taskId);
     return this.getTask(params.taskId);
   }
 
@@ -568,19 +689,20 @@ export class AwarenessLite {
     const agentId = required(params.agentId, 'agent-id');
     if (task.agentId && task.agentId !== agentId) throw new Error(`task ${params.taskId} belongs to ${task.agentId}`);
     const stamp = now();
-    this.db.prepare("UPDATE tasks SET status = 'DONE', agent_id = ?, updated_at = ?, done_at = ? WHERE task_id = ?")
+    this.db.prepare("UPDATE tasks SET status = 'DONE', agent_id = ?, claimed_at = NULL, lease_expires_at = NULL, updated_at = ?, done_at = ? WHERE task_id = ?")
       .run(agentId, stamp, stamp, params.taskId);
     return this.getTask(params.taskId);
   }
 
-  reopenTask(params: { taskId: string; agentId: string; reason?: string | null }): Task {
+  reopenTask(params: { taskId: string; agentId: string; reason?: string | null; leaseSeconds?: number }): Task {
     const task = this.getTask(params.taskId);
     const agentId = required(params.agentId, 'agent-id');
     if (task.agentId && task.agentId !== agentId) throw new Error(`task ${params.taskId} belongs to ${task.agentId}`);
     const stamp = now();
-    this.db.prepare(`UPDATE tasks SET status = 'CLAIMED', agent_id = ?, updated_at = ?, done_at = NULL,
+    const expiresAt = new Date(Date.now() + normalizeLeaseSeconds(params.leaseSeconds) * 1000).toISOString();
+    this.db.prepare(`UPDATE tasks SET status = 'CLAIMED', agent_id = ?, claimed_at = ?, lease_expires_at = ?, updated_at = ?, done_at = NULL,
       verified_at = NULL, verified_by = NULL, verification_message = ? WHERE task_id = ?`)
-      .run(agentId, stamp, params.reason?.trim() || null, params.taskId);
+      .run(agentId, stamp, expiresAt, stamp, params.reason?.trim() || null, params.taskId);
     return this.getTask(params.taskId);
   }
 
@@ -610,6 +732,30 @@ export class AwarenessLite {
     this.pruneExpiredLocks();
     const rows = this.db.prepare('SELECT * FROM locks ORDER BY file_path ASC').all() as unknown as LockRow[];
     return rows.map(lockFromRow);
+  }
+
+  waitForLock(params: { filePath: string; agentId?: string | null; waitMs?: number; retryIntervalMs?: number }): LockWaitResult {
+    const filePath = resolve(this.workspace, required(params.filePath, 'file'));
+    const agentId = params.agentId?.trim() || null;
+    const waitMs = Math.max(0, Math.floor(params.waitMs ?? 0));
+    const retryIntervalMs = Math.min(Math.max(Math.floor(params.retryIntervalMs ?? 250), 25), 5000);
+    const start = Date.now();
+    for (;;) {
+      this.pruneExpiredLocks();
+      const row = this.db.prepare('SELECT * FROM locks WHERE file_path = ?').get(filePath) as unknown as LockRow | undefined;
+      const conflict = row && row.agent_id !== agentId ? lockFromRow(row) : null;
+      if (!conflict) return { ok: true, lockFree: true, filePath, waitedMs: Date.now() - start, conflict: null };
+      if (Date.now() - start >= waitMs) return { ok: false, lockFree: false, filePath, waitedMs: Date.now() - start, conflict };
+      sleepMs(Math.min(retryIntervalMs, Math.max(0, waitMs - (Date.now() - start))));
+    }
+  }
+
+  pruneLocks(params: { dryRun?: boolean } = {}): { dryRun: boolean; matched: number; deleted: number } {
+    const stamp = now();
+    const matched = (this.db.prepare('SELECT COUNT(*) AS count FROM locks WHERE expires_at <= ?').get(stamp) as { count: number }).count;
+    const dryRun = params.dryRun !== false;
+    if (!dryRun && matched > 0) this.db.prepare('DELETE FROM locks WHERE expires_at <= ?').run(stamp);
+    return { dryRun, matched, deleted: dryRun ? 0 : matched };
   }
 
   releaseLock(params: { filePath: string; agentId: string }): { released: boolean } {
@@ -643,10 +789,25 @@ export class AwarenessLite {
     return this.getWorkPresence(filePath, agentId);
   }
 
-  listWork(): WorkPresence[] {
+  listWork(params: { filePath?: string | null; agentId?: string | null } = {}): WorkPresence[] {
     this.pruneExpiredWork();
-    const rows = this.db.prepare('SELECT * FROM work_presence ORDER BY file_path ASC, agent_id ASC').all() as unknown as WorkPresenceRow[];
+    const clauses: string[] = [];
+    const values: string[] = [];
+    if (params.filePath) {
+      clauses.push('file_path = ?');
+      values.push(resolve(this.workspace, params.filePath));
+    }
+    if (params.agentId) {
+      clauses.push('agent_id = ?');
+      values.push(params.agentId);
+    }
+    const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+    const rows = this.db.prepare(`SELECT * FROM work_presence${where} ORDER BY file_path ASC, agent_id ASC`).all(...values) as unknown as WorkPresenceRow[];
     return rows.map(workPresenceFromRow);
+  }
+
+  showWork(params: { filePath: string }): WorkPresence[] {
+    return this.listWork({ filePath: required(params.filePath, 'file') });
   }
 
   endWork(params: { filePath: string; agentId: string }): { ended: boolean } {
@@ -677,17 +838,31 @@ export class AwarenessLite {
     return { cleared: result.changes > 0 };
   }
 
-  auditChecks(): CheckAudit {
-    const pending = this.listPendingChecks();
-    return { ok: pending.length === 0, pending, pendingCount: pending.length };
+  auditChecks(params: { agentId?: string | null; planId?: string | null; minAgeMs?: number | null } = {}): CheckAudit {
+    const pending = this.listPendingChecks(params);
+    return {
+      ok: pending.length === 0,
+      pending,
+      pendingCount: pending.length,
+      filters: {
+        agentId: params.agentId?.trim() || null,
+        planId: params.planId?.trim() || null,
+        minAgeMs: params.minAgeMs ?? null,
+      },
+    };
   }
 
-  markCheck(params: { taskId: string; agentId: string; message: string }): Task {
+  markCheck(params: { taskId: string; agentId: string; message: string; status?: CheckStatus }): Task {
     const task = this.getTask(params.taskId);
     if (task.status !== 'DONE') throw new Error(`task is not done: ${params.taskId}`);
+    const agentId = required(params.agentId, 'agent-id');
+    const message = required(params.message, 'message');
+    if (params.status === 'FAILED') {
+      return this.reopenTask({ taskId: params.taskId, agentId, reason: message });
+    }
     const stamp = now();
     this.db.prepare('UPDATE tasks SET verified_at = ?, verified_by = ?, verification_message = ?, updated_at = ? WHERE task_id = ?')
-      .run(stamp, required(params.agentId, 'agent-id'), required(params.message, 'message'), stamp, params.taskId);
+      .run(stamp, agentId, message, stamp, params.taskId);
     return this.getTask(params.taskId);
   }
 
@@ -934,33 +1109,56 @@ export class AwarenessLite {
     return {
       entities: {
         plan: ['planId', 'title', 'goal', 'status', 'createdAt', 'updatedAt'],
-        task: ['taskId', 'planId', 'title', 'filePath', 'checkCommand', 'status', 'agentId', 'doneAt', 'verifiedAt', 'verifiedBy', 'verificationMessage'],
+        task: ['taskId', 'planId', 'title', 'filePath', 'paths', 'reasoning', 'acceptance', 'checkCommand', 'status', 'priority', 'dependencies', 'agentId', 'claimedAt', 'leaseExpiresAt', 'doneAt', 'verifiedAt', 'verifiedBy', 'verificationMessage'],
         lock: ['filePath', 'agentId', 'reason', 'acquiredAt', 'expiresAt'],
         work: ['filePath', 'agentId', 'reason', 'startedAt', 'updatedAt', 'expiresAt'],
         handoff: ['handoffId', 'agentId', 'summary', 'files', 'createdAt', 'clearedAt'],
-        memory: ['memoryId', 'label', 'text', 'tags', 'createdAt'],
+        memory: ['memoryId', 'label', 'text', 'tags', 'createdAt', 'similarity?'],
         agent: ['agentId', 'name', 'role', 'status', 'metadata', 'createdAt', 'lastSeenAt'],
         message: ['messageId', 'fromAgentId', 'toAgentId', 'topic', 'text', 'files', 'createdAt', 'readAt'],
       },
       commands: {
         status: ['status'],
         plan: ['create --title [--goal]', 'list', 'done --plan-id [--force]'],
-        task: ['add --plan-id --title [--file] [--check]', 'list [--plan-id] [--status]', 'claim --task-id --agent-id', 'done --task-id --agent-id', 'reopen --task-id --agent-id [--reason]'],
-        lock: ['acquire --file --agent-id [--reason] [--ttl]', 'release --file --agent-id', 'list'],
-        work: ['start --file --agent-id [--reason] [--ttl]', 'touch --file --agent-id [--reason] [--ttl]', 'list', 'end --file --agent-id'],
+        task: ['add --plan-id --title [--file] [--path] [--depends-on] [--reasoning] [--acceptance] [--priority] [--check]', 'list [--plan-id] [--status] [--agent-id]', 'ready [--plan-id] [--limit]', 'show --task-id', 'depend --task-id --depends-on [--agent-id]', 'claim --task-id --agent-id [--lease]', 'heartbeat --task-id --agent-id [--lease]', 'release --task-id --agent-id [--blocked-reason]', 'done --task-id --agent-id', 'reopen --task-id --agent-id [--reason]'],
+        lock: ['acquire --file --agent-id [--reason] [--ttl]', 'wait --file [--agent-id] [--wait] [--retry-interval]', 'prune [--confirm]', 'release --file --agent-id', 'list'],
+        work: ['start --file --agent-id [--reason] [--ttl]', 'touch --file --agent-id [--reason] [--ttl]', 'list [--file] [--agent-id]', 'show --file', 'end --file --agent-id'],
         handoff: ['add --agent-id --summary [--file]', 'list [--include-cleared]', 'clear --handoff-id'],
-        check: ['audit', 'mark --task-id --agent-id --message'],
+        check: ['audit [--agent-id] [--plan-id] [--min-age]', 'mark --task-id --agent-id --message [--status SUCCESS|FAILED]'],
         memory: ['store --label --text [--tags]', 'recall [--query] [--label] [--limit] [--semantic]', 'list [--limit]', 'reindex [--force] [--limit]', 'forget --memory-id', 'delete --memory-id', 'prune --older-than [--label] [--confirm]'],
         agent: ['join --agent-id [--name] [--role] [--meta]', 'touch --agent-id', 'leave --agent-id', 'list [--include-left] [--stale-after]'],
         message: ['send --from --text [--to] [--topic] [--file]', 'inbox --agent-id [--topic] [--include-read] [--limit]', 'list [--agent-id] [--topic] [--include-read] [--limit]', 'read --message-id --agent-id', 'prune --older-than [--read-only] [--confirm]'],
         hooks: ['pre-edit [--agent-id] [--host] < event.json', 'install --host claude|codex|cursor [--project-dir] [--dry-run]'],
-        schema: ['schema'],
+        schema: ['schema', 'schema commands', 'schema command <noun>', 'schema list'],
       },
     };
   }
 
-  private listPendingChecks(): Task[] {
-    const rows = this.db.prepare("SELECT * FROM tasks WHERE status = 'DONE' AND verified_at IS NULL ORDER BY done_at ASC, updated_at ASC").all();
+  schemaCommand(command?: string): unknown {
+    const schema = this.schema();
+    if (!command || command === 'commands') return schema.commands;
+    if (command === 'list') return Object.keys(schema.commands);
+    const actions = schema.commands[command];
+    if (!actions) throw new Error(`unknown schema command: ${command}`);
+    return { command, actions };
+  }
+
+  private listPendingChecks(params: { agentId?: string | null; planId?: string | null; minAgeMs?: number | null } = {}): Task[] {
+    const clauses = ["status = 'DONE'", 'verified_at IS NULL'];
+    const values: string[] = [];
+    if (params.agentId) {
+      clauses.push('agent_id = ?');
+      values.push(params.agentId);
+    }
+    if (params.planId) {
+      clauses.push('plan_id = ?');
+      values.push(params.planId);
+    }
+    if (params.minAgeMs && params.minAgeMs > 0) {
+      clauses.push('done_at <= ?');
+      values.push(cutoffIso(params.minAgeMs));
+    }
+    const rows = this.db.prepare(`SELECT * FROM tasks WHERE ${clauses.join(' AND ')} ORDER BY done_at ASC, updated_at ASC`).all(...values);
     return (rows as unknown as TaskRow[]).map(taskFromRow);
   }
 
@@ -1027,6 +1225,34 @@ export class AwarenessLite {
     const row = this.db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE status = 'DONE' AND verified_at IS NULL").get() as { count: number };
     return row.count;
   }
+
+  private countReadyTasks(): number {
+    return this.listReadyTasks().length;
+  }
+
+  private taskDependenciesSatisfied(task: Task): boolean {
+    return task.dependencies.every((taskId) => {
+      const dependency = this.getTask(taskId);
+      return dependency.status === 'DONE' && Boolean(dependency.verifiedAt);
+    });
+  }
+
+  private assertTaskDependenciesSatisfied(task: Task): void {
+    for (const taskId of task.dependencies) {
+      const dependency = this.getTask(taskId);
+      if (dependency.status !== 'DONE' || !dependency.verifiedAt) {
+        throw new Error(`task ${task.taskId} is blocked by ${taskId}`);
+      }
+    }
+  }
+
+  private evictExpiredTaskClaims(): void {
+    const stamp = now();
+    this.db.prepare(`UPDATE tasks SET status = 'OPEN', agent_id = NULL, claimed_at = NULL, lease_expires_at = NULL,
+      updated_at = ?, verification_message = COALESCE(verification_message, 'claim lease expired')
+      WHERE status = 'CLAIMED' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`).run(stamp, stamp);
+  }
+
   private countOpenHandoffs(): number {
     const row = this.db.prepare('SELECT COUNT(*) AS count FROM handoffs WHERE cleared_at IS NULL').get() as { count: number };
     return row.count;
@@ -1153,11 +1379,19 @@ export class AwarenessLite {
         PRIMARY KEY(message_id, agent_id)
       );
     `);
+    this.addColumnIfMissing('tasks', 'paths_json', "TEXT NOT NULL DEFAULT '[]'");
+    this.addColumnIfMissing('tasks', 'reasoning', 'TEXT');
+    this.addColumnIfMissing('tasks', 'acceptance', 'TEXT');
     this.addColumnIfMissing('tasks', 'check_command', 'TEXT');
+    this.addColumnIfMissing('tasks', 'priority', 'INTEGER NOT NULL DEFAULT 0');
+    this.addColumnIfMissing('tasks', 'dependencies_json', "TEXT NOT NULL DEFAULT '[]'");
+    this.addColumnIfMissing('tasks', 'claimed_at', 'TEXT');
+    this.addColumnIfMissing('tasks', 'lease_expires_at', 'TEXT');
     this.addColumnIfMissing('tasks', 'verified_at', 'TEXT');
     this.addColumnIfMissing('tasks', 'verified_by', 'TEXT');
     this.addColumnIfMissing('tasks', 'verification_message', 'TEXT');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_unverified ON tasks(status, verified_at)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_lease ON tasks(status, lease_expires_at)');
     // Optional semantic-memory columns (host-owned embedder via OCTOCODE_EMBED_CMD).
     this.addColumnIfMissing('memories', 'embedding', 'BLOB');
     this.addColumnIfMissing('memories', 'embedding_model', 'TEXT');

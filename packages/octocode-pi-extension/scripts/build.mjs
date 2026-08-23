@@ -65,6 +65,9 @@ const SKIPPED_FILES = new Set([
 ]);
 
 const EXCLUDED_BUNDLED_SKILLS = new Set([
+  // Awareness Lite is prompt-owned in pi-extension (<awareness>) and exposed as a CLI,
+  // not a loadable skill; bundling its SKILL.md causes duplicate skill-load UI noise.
+  'octocode-awareness-lite',
   // 3D mannequin/animation workflow is intentionally not part of the coding-agent bundle.
   'octocode-mannequin',
 ]);
@@ -204,13 +207,11 @@ function copySkillDirectories(sourceRoot, targetRoot) {
 function refreshPackageSkills() {
   fs.rmSync(SOURCE_PATHS.skills, { recursive: true, force: true });
   fs.mkdirSync(SOURCE_PATHS.skills, { recursive: true });
-  // Bundle EVERY workflow skill from the octocode dependency first, then layer
-  // the Awareness Lite package's canonical skill on top so the package-owned
-  // coordination skill always wins if a name ever collides. All of them become
-  // discoverable on init via the resources_discover hook — no on-demand install
-  // step needed for a fresh checkout. (If a user also installs the same skill
-  // globally with `octocode skill --add`, Pi surfaces a [Skill conflicts]
-  // notice — expected with a self-contained bundle.)
+  // Bundle workflow skills from dependencies, excluding prompt-owned flows such as
+  // Awareness Lite. Remaining skills become discoverable on init via the
+  // resources_discover hook — no on-demand install step needed for a fresh checkout.
+  // (If a user also installs the same skill globally with `octocode skill --add`,
+  // Pi surfaces a [Skill conflicts] notice — expected with a self-contained bundle.)
   const octocodeCopied = copySkillDirectories(SOURCE_PATHS.octocodeSkills, SOURCE_PATHS.skills);
   const awarenessCopied = copySkillDirectories(SOURCE_PATHS.awarenessSkills, SOURCE_PATHS.skills);
   assertNoHiddenLocalOnlyEntries(SOURCE_PATHS.skills);

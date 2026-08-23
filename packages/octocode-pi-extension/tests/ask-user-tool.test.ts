@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import { Type } from 'typebox';
+import { visibleWidth } from '@earendil-works/pi-tui';
 import { registerAskUserTool } from '../src/tools/ask-user-tool.js';
 import type { PiContext, ToolDefinition } from '../src/types.js';
 
@@ -97,6 +98,52 @@ test('askUser emits CURSOR_MARKER at the caret in text mode when focused (IME po
   assert.deepEqual(result.details, { status: 'text', value: 'Gu' });
 });
 
+test('askUser accepts bracketed paste in free-text mode', async () => {
+  const tool = loadTool();
+  const { ctx, send, render, focus } = overlayCtx();
+  const pending = tool.execute('id', { question: 'What should we do?' }, undefined, undefined, ctx);
+
+  focus();
+  send('\x1b[200~paste this answer\x1b[201~');
+  assert.match(render(100).join('\n'), /paste this answer/);
+  send('\r');
+  const result = await pending;
+
+  assert.deepEqual(result.details, { status: 'text', value: 'paste this answer' });
+});
+
+test('askUser free-text mode supports cursor editing through Pi Input', async () => {
+  const tool = loadTool();
+  const { ctx, send } = overlayCtx();
+  const pending = tool.execute('id', { question: 'Name?' }, undefined, undefined, ctx);
+
+  send('ac');
+  send('\x1b[D');
+  send('b');
+  send('\r');
+  const result = await pending;
+
+  assert.deepEqual(result.details, { status: 'text', value: 'abc' });
+});
+
+test('askUser uses a wider responsive card without exceeding the terminal', async () => {
+  const tool = loadTool();
+  const wide = overlayCtx();
+  const pendingWide = tool.execute('id', { question: 'Choose?', options: ['safe', 'fast'] }, undefined, undefined, wide.ctx);
+  const wideLines = wide.render(160);
+
+  assert.ok(visibleWidth(wideLines[0]!) >= 100, 'wide terminals should receive a substantially wider card');
+  assert.ok(wideLines.every((line) => visibleWidth(line) <= 160), 'wide rendering stays within the terminal');
+  wide.send('\x1b');
+  await pendingWide;
+
+  const narrow = overlayCtx();
+  const pendingNarrow = tool.execute('id', { question: 'Choose?', options: ['safe', 'fast'] }, undefined, undefined, narrow.ctx);
+  assert.ok(narrow.render(36).every((line) => visibleWidth(line) <= 36), 'narrow rendering never overflows');
+  narrow.send('\x1b');
+  await pendingNarrow;
+});
+
 test('askUser validates that a non-empty question is required', async () => {
   const tool = loadTool();
   const result = await tool.execute('id', { question: '   ' });
@@ -189,7 +236,7 @@ test('askUser renders choices inline in the message flow, not as a floating over
   assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'safe' });
 });
 
-test('askUser option picker always allows a custom free-text answer without allowFreeText', async () => {
+test('askUser option picker allows bracketed paste in the custom free-text answer', async () => {
   const tool = loadTool();
   const { ctx, send } = overlayCtx();
 
@@ -207,7 +254,7 @@ test('askUser option picker always allows a custom free-text answer without allo
   send('\x1b[B');
   send('\x1b[B');
   send('\r');
-  send('custom plan');
+  send('[200~custom plan[201~');
   send('\r');
   const result = await pending;
 
@@ -304,7 +351,7 @@ test('askUser echoes the question in free-text and cancelled results', async () 
   assert.match((cancelled.content[0] as { text: string }).text, /cancelled/i);
 });
 
-test('askUser schema gains preview, multiSelect, min/max, and fields additively', () => {
+test('askUser schema gains preview, disabled options, multiSelect, min/max, and field validation additively', () => {
   const tool = loadTool();
   const params = tool.parameters as {
     properties: Record<string, { items?: { properties?: Record<string, unknown> } }>;
@@ -314,8 +361,9 @@ test('askUser schema gains preview, multiSelect, min/max, and fields additively'
   assert.ok(params.properties['min'], 'min input exists');
   assert.ok(params.properties['max'], 'max input exists');
   assert.ok(params.properties['options']!.items?.properties?.['preview'], 'options gain preview');
+  assert.ok(params.properties['options']!.items?.properties?.['disabled'], 'options gain disabled');
   const fieldProps = params.properties['fields']!.items?.properties ?? {};
-  assert.deepEqual(Object.keys(fieldProps).sort(), ['label', 'name', 'placeholder', 'required']);
+  assert.deepEqual(Object.keys(fieldProps).sort(), ['label', 'maxLength', 'minLength', 'name', 'pattern', 'placeholder', 'required']);
 });
 
 test('askUser renders recommended badge, pros/cons under the focused row, and lands the cursor on the recommended option', async () => {
@@ -361,6 +409,8 @@ test('askUser schema exposes pros, cons, and recommended on options', () => {
   assert.ok(optProps['pros'], 'options gain pros');
   assert.ok(optProps['cons'], 'options gain cons');
   assert.ok(optProps['recommended'], 'options gain recommended');
+  assert.ok(optProps['disabled'], 'options gain disabled');
+  assert.ok(optProps['group'], 'options gain group');
 });
 
 test('askUser multiSelect returns multiSelected values through the overlay', async () => {
@@ -482,39 +532,27 @@ test('askUser form collects fields in order via the overlay modal', async () => 
   assert.deepEqual(result.details, { status: 'form', values: { name: 'Guy', email: 'guy@example.com' } });
 });
 
-test('askUser form re-prompts required fields once, then rejects when still empty', async () => {
+test('askUser form keeps focus on invalid fields until valid or escaped', async () => {
   const tool = loadTool();
-
-  // Re-prompt succeeds on the second try.
-  const okHarness = overlayCtx();
-  const okPending = loadTool().execute(
+  const harness = overlayCtx();
+  const pending = tool.execute(
     'id',
-    { question: 'Profile', fields: [{ name: 'name', label: 'Name', required: true }] },
+    { question: 'Profile', fields: [{ name: 'name', label: 'Name', required: true, minLength: 3 }] },
     undefined,
     undefined,
-    okHarness.ctx,
+    harness.ctx,
   );
-  okHarness.send('\r');
-  okHarness.send('Guy');
-  okHarness.send('\r');
-  const okResult = await okPending;
-  assert.deepEqual(okResult.details, { status: 'form', values: { name: 'Guy' } });
 
-  // Still empty after the re-prompt → rejected as cancelled with the field named.
-  const rejectedHarness = overlayCtx();
-  const rejectedPending = tool.execute(
-    'id',
-    { question: 'Profile', fields: [{ name: 'name', label: 'Name', required: true }] },
-    undefined,
-    undefined,
-    rejectedHarness.ctx,
-  );
-  rejectedHarness.send('\r');
-  rejectedHarness.send('   ');
-  rejectedHarness.send('\r');
-  const rejected = await rejectedPending;
-  assert.match((rejected.content[0] as { text: string }).text, /Required field "Name" was left empty/);
-  assert.deepEqual(rejected.details, { status: 'cancelled', label: 'Name' });
+  harness.send('\r');
+  assert.match(harness.render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, ''), /Name is required/);
+  harness.send('Al');
+  harness.send('\r');
+  assert.match(harness.render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, ''), /Name must be at least 3 characters/);
+  harness.send('i');
+  harness.send('\r');
+  const result = await pending;
+
+  assert.deepEqual(result.details, { status: 'form', values: { name: 'Ali' } });
 });
 
 test('askUser form cancels when the user escapes any prompt', async () => {
@@ -592,6 +630,140 @@ test('askUser windows long option lists around the cursor with more-markers', as
   send('\x1b');
   const result = await pending;
   assert.deepEqual(result.details, { status: 'cancelled' });
+});
+
+test('askUser disabled options stay visible but cannot be selected', async () => {
+  const tool = loadTool();
+  const { ctx, send, render } = overlayCtx();
+
+  const pending = tool.execute(
+    'id',
+    {
+      question: 'Choose?',
+      options: [
+        { value: 'blocked', label: 'Blocked', disabled: 'needs auth' },
+        { value: 'safe', label: 'Safe' },
+      ],
+    },
+    undefined,
+    undefined,
+    ctx,
+  );
+
+  let plain = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /Blocked \(needs auth\)/);
+  send('\r');
+  plain = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /"Blocked" is needs auth/);
+  send('\x1b[B');
+  send('\r');
+  const result = await pending;
+
+  assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'Safe' });
+});
+
+test('askUser renders grouped choices as non-selectable headings', async () => {
+  const tool = loadTool();
+  const { ctx, send, render } = overlayCtx();
+
+  const pending = tool.execute(
+    'id',
+    {
+      question: 'Choose?',
+      options: [
+        { value: 'safe', label: 'Safe', group: 'Recommended' },
+        { value: 'fast', label: 'Fast', group: 'Risky' },
+      ],
+    },
+    undefined,
+    undefined,
+    ctx,
+  );
+
+  const plain = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /┌ Recommended/);
+  assert.match(plain, /┌ Risky/);
+  send('\r');
+  const result = await pending;
+
+  assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'Safe' });
+});
+
+test('askUser filters options with slash search and clears search with escape before cancellation', async () => {
+  const tool = loadTool();
+  const { ctx, send, render } = overlayCtx();
+
+  const pending = tool.execute(
+    'id',
+    { question: 'Choose?', options: ['alpha', 'beta', 'gamma'] },
+    undefined,
+    undefined,
+    ctx,
+  );
+
+  send('/');
+  send('ga');
+  let plain = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /\/ ga/);
+  assert.match(plain, /gamma/);
+  assert.doesNotMatch(plain, /alpha/);
+  send('\x1b');
+  plain = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /alpha/);
+  send('/');
+  send('zz');
+  plain = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /No matches/);
+  send('\x1b');
+  send('\x1b');
+  const result = await pending;
+
+  assert.deepEqual(result.details, { status: 'cancelled' });
+});
+
+test('askUser multiSelect supports all and invert shortcuts while skipping disabled options', async () => {
+  const tool = loadTool();
+  const { ctx, send, render } = overlayCtx();
+
+  const pending = tool.execute(
+    'id',
+    {
+      question: 'Pick?',
+      multiSelect: true,
+      options: [
+        { value: 'a', label: 'A' },
+        { value: 'b', label: 'B', disabled: true },
+        { value: 'c', label: 'C' },
+      ],
+    },
+    undefined,
+    undefined,
+    ctx,
+  );
+
+  send('a');
+  assert.match(render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, ''), /2 selected/);
+  send('i');
+  assert.match(render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, ''), /0 selected/);
+  send('i');
+  send('\r');
+  const result = await pending;
+
+  assert.deepEqual(result.details, { status: 'multiSelected', values: ['a', 'c'] });
+});
+
+test('askUser renders a final submitted state after completion', async () => {
+  const tool = loadTool();
+  const { ctx, send, render } = overlayCtx();
+
+  const pending = tool.execute('id', { question: 'Choose?', options: ['safe'] }, undefined, undefined, ctx);
+  send('\r');
+  const result = await pending;
+  const plain = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+
+  assert.match(plain, /safe/);
+  assert.match(plain, /submitted/);
+  assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'safe' });
 });
 
 test('askUser multiSelect and form degrade to inline hints without an interactive UI', async () => {

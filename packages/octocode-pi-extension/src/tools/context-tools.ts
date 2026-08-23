@@ -11,11 +11,11 @@ import type { PiContext, PiCommandContext, PiInstance, ToolDefinition, PiTheme, 
 import type { registerUniqueTool } from './octocode-tools.js';
 import { singleLineRenderer } from './render-helpers.js';
 import { stringEnumSchema } from './schema-helpers.js';
-import { activePlanScope, hasIncompletePlanSteps } from './active-plan.js';
+import { activePlanScope, hasActivePlanWork } from './active-plan.js';
 import { isSubagentProcess } from './agent-tools.js';
 import { clearCompactionWorkingState } from './compaction-resume.js';
 import { isCompletedSessionAssistantText, latestAssistantText } from './compaction-hooks.js';
-import { branchTipIsCompaction, clearCompactionAbortSuppressionRequest, clearCompactionInFlight, clearCompactionResumeRequest, consumeCompactionAbortSuppressionRequest, isCompactionInFlight, markCompactionAbortSuppressionRequested, markCompactionInFlight, markCompactionResumeRequested, resetCompactionArbiterForTests } from './compaction-state.js';
+import { branchTipIsCompaction, clearAutoCompactResumeRequest, clearCompactionAbortSuppressionRequest, clearCompactionInFlight, clearCompactionResumeRequest, consumeCompactionAbortSuppressionRequest, isCompactionInFlight, markAutoCompactResumeRequested, markCompactionAbortSuppressionRequested, markCompactionInFlight, markCompactionResumeRequested, resetCompactionArbiterForTests } from './compaction-state.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -115,6 +115,7 @@ export function registerContextTools(
     onError: (error: Error) => {
       clearCompactionInFlight();
       clearCompactionResumeRequest();
+      clearAutoCompactResumeRequest();
       clearCompactionAbortSuppressionRequest();
       clearCompactionWorkingState(ctx);
       if (isNothingToCompact(error)) {
@@ -158,13 +159,13 @@ export function registerContextTools(
       }
       if (prevFill !== null && prevFill >= AUTO_COMPACT_THRESHOLD) return;
       // turn_end compaction runs BETWEEN turns — no in-flight run is aborted, so
-      // compacting with no unfinished work just spends budget after the session
-      // has effectively ended. Do not record this as a threshold crossing: if a
-      // later user turn creates plan work while still above 80%, it should still
-      // be eligible to compact. Also skip terminal completion answers even if the
-      // model has not cleared the active plan yet; the follow-up would only say
-      // "prior work was already complete" and surprise the user with a spinner.
-      if (!hasIncompletePlanSteps(activePlanScope(ctx))) return;
+      // compacting with no active in-progress work just spends budget after the
+      // session has effectively ended. Do not record this as a threshold crossing:
+      // if a later user turn creates active work while still above 80%, it should
+      // still be eligible to compact. Also skip stale todo/blocked plan state left
+      // after a terminal answer; the follow-up would only say "prior work was
+      // already complete" and surprise the user with a spinner.
+      if (!hasActivePlanWork(activePlanScope(ctx))) return;
       if (isCompletedSessionAssistantText(latestAssistantText(ctx.sessionManager?.getBranch?.()))) return;
       lastAutoCompactTokens = usage.tokens;
 
@@ -183,8 +184,9 @@ export function registerContextTools(
       markCompactionInFlight();
       // turn_end compaction runs BETWEEN turns, so reaching this point means
       // unfinished plan work exists and the post-compaction continuation is
-      // intentional rather than a wasted extra turn after task completion.
-      markCompactionResumeRequested();
+      // intentional. Use the plan-verified flag so session_compact can re-check
+      // plan state at completion time and suppress stale resumes.
+      markAutoCompactResumeRequested();
       ctx.compact({
         customInstructions: COMPACTION_CONTINUATION_INSTRUCTIONS,
         // No continuation scheduled here: the session_compact hook is the single

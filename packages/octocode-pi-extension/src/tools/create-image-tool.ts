@@ -40,8 +40,25 @@ const MAX_PNG_BYTES = 4 * 1024 * 1024; // 4MB
 /** Guard against pathological render sizes. */
 const MAX_RENDER_WIDTH = 4096;
 const MAX_RENDER_HEIGHT = 8192;
-/** Dedicated headless port so HTML rendering never clashes with a user's chromeDebug session on 9222. */
-const HTML_RENDER_PORT = 9445;
+/**
+ * Dedicated headless port range so HTML rendering never clashes with a user's
+ * chromeDebug session on 9222. Each render picks a DISTINCT port (base + a
+ * rotating offset with wraparound) so two parallel createImage({html}) calls do
+ * not share one headless Chrome — otherwise the first to finish SIGTERMs the
+ * shared instance and kills the other mid-render. A distinct port means each
+ * call launches, owns, and tears down its own instance (connectToChrome uses a
+ * port-specific profile, and cleanupConnection kills only the pid it launched).
+ */
+const HTML_RENDER_PORT_BASE = 9445;
+const HTML_RENDER_PORT_RANGE = 100; // ports 9445–9544
+let htmlRenderPortCounter = 0;
+
+/** Next distinct headless render port, rotating within the safe range. */
+function nextHtmlRenderPort(): number {
+  const offset = htmlRenderPortCounter % HTML_RENDER_PORT_RANGE;
+  htmlRenderPortCounter = (htmlRenderPortCounter + 1) % HTML_RENDER_PORT_RANGE;
+  return HTML_RENDER_PORT_BASE + offset;
+}
 
 export interface CreateImageResult {
   ok: boolean;
@@ -157,8 +174,11 @@ export async function renderHtmlToPng(
 ): Promise<Buffer> {
   findChromePath(); // throws a clear error if Chrome is not installed
 
+  // Distinct port per render so concurrent HTML renders each own/launch/kill
+  // their own headless Chrome instead of sharing (and killing) one another's.
+  const renderPort = nextHtmlRenderPort();
   const conn = await connectToChrome({
-    port: HTML_RENDER_PORT,
+    port: renderPort,
     launch: true,
     headless: true,
     newTab: 'about:blank',

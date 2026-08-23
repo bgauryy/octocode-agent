@@ -31,6 +31,14 @@ export interface PlanStep {
 /** A step input: either a bare imperative string, or {text, activeForm, dependsOn}. */
 export type StepInput = string | { text: string; activeForm?: string; dependsOn?: number[] };
 
+/** A recorded planning decision — the question asked in the clarify phase and the answer chosen. */
+export interface PlanDecision {
+  /** The question / choice point. */
+  q: string;
+  /** The resolved answer (chosen option label, or the free-text reply). */
+  a: string;
+}
+
 /** Derived display status: a todo step whose dependencies aren't all done shows as 'blocked'. */
 export type DisplayStatus = StepStatus | 'blocked';
 
@@ -54,13 +62,41 @@ export function displayStatus(step: PlanStep, list: PlanStep[]): DisplayStatus {
   return step.status === 'todo' && !depsMet(step, list) ? 'blocked' : step.status;
 }
 
+/** The planning flow phases, in order — shared by the panel stepper and the browser timeline. */
+export const PLAN_PHASES = ['Research', 'RFC', 'Approve', 'Build', 'Verify'] as const;
+
+/**
+ * Which flow phase a plan is in, from its step state alone: Verify once every
+ * step is done, Build once any step is in-flight, else Approve (steps exist but
+ * none started). Research/RFC read as done because the steps were derived from
+ * them. Returns an index into PLAN_PHASES.
+ */
+export function planPhaseIndex(steps: PlanStep[]): number {
+  if (steps.length === 0) return 2;
+  const done = steps.filter((s) => s.status === 'done').length;
+  if (done === steps.length) return 4; // Verify
+  if (steps.some((s) => s.status === 'doing' || s.status === 'done')) return 3; // Build
+  return 2; // Approve
+}
+
 const MAX_STEPS = 40;
 const MAX_STEP_CHARS = 160;
+const MAX_DECISIONS = 20;
+const MAX_DECISION_CHARS = 300;
 
 // Keyed by session scope (cwd + Pi session file when available). Module-scoped
 // in-memory cache; backed by disk so the plan survives compaction and process
 // restart of the same session without leaking into a fresh session in the same cwd.
 const plans = new Map<string, PlanStep[]>();
+// Plan-level RFC association (scope → absolute RFC.md path). Set once the plan
+// is derived from an accepted RFC; the plan surface renders that document and
+// the enforcement gate requires it for consequential work. Kept beside `plans`
+// so it travels with the same persistence + branch-adoption path.
+const planRfc = new Map<string, string>();
+// Plan-level decision log (scope → {q,a}[]): the clarify-phase interview answers
+// and any gate justifications. Durable rationale for the plan — persisted and
+// branch-adopted with the same pattern as `planRfc`.
+const planDecisions = new Map<string, PlanDecision[]>();
 const loaded = new Set<string>();
 
 export interface ActivePlanContext {
@@ -98,6 +134,31 @@ function sanitizeStored(raw: unknown): PlanStep[] {
   return out;
 }
 
+/** Extract a stored rfcPath (absolute string) from a persisted/snapshot record, if present. */
+function readRfcFromStored(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const val = (raw as Record<string, unknown>).rfcPath;
+  return typeof val === 'string' && val.trim() ? val : undefined;
+}
+
+/** Extract a validated decision log from a persisted/snapshot record, if present. */
+function readDecisionsFromStored(raw: unknown): PlanDecision[] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const arr = (raw as Record<string, unknown>).decisions;
+  if (!Array.isArray(arr)) return undefined;
+  const out: PlanDecision[] = [];
+  for (const d of arr) {
+    if (!d || typeof d !== 'object') continue;
+    const rec = d as Record<string, unknown>;
+    const q = typeof rec.q === 'string' ? cleanDecision(rec.q) : '';
+    const a = typeof rec.a === 'string' ? cleanDecision(rec.a) : '';
+    if (!q || !a) continue;
+    out.push({ q, a });
+    if (out.length >= MAX_DECISIONS) break;
+  }
+  return out.length ? out : undefined;
+}
+
 /** Read the persisted plan for a workspace. Returns [] on any error or missing file. */
 function readFromDisk(cwd: string): PlanStep[] {
   try {
@@ -109,30 +170,62 @@ function readFromDisk(cwd: string): PlanStep[] {
   }
 }
 
+/** Read just the persisted rfcPath for a workspace, bypassing the in-memory cache. */
+function readRfcFromDisk(cwd: string): string | undefined {
+  try {
+    const file = planFile(cwd);
+    if (!fs.existsSync(file)) return undefined;
+    return readRfcFromStored(JSON.parse(fs.readFileSync(file, 'utf8')));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Read just the persisted decision log for a workspace, bypassing the in-memory cache. */
+function readDecisionsFromDisk(cwd: string): PlanDecision[] | undefined {
+  try {
+    const file = planFile(cwd);
+    if (!fs.existsSync(file)) return undefined;
+    return readDecisionsFromStored(JSON.parse(fs.readFileSync(file, 'utf8')));
+  } catch {
+    return undefined;
+  }
+}
+
 /** Atomically persist (or delete when empty) the plan for a workspace. Never throws. */
 function writeToDisk(cwd: string, steps: PlanStep[]): void {
   try {
     const file = planFile(cwd);
+    // The plan is the primary record — no steps means no plan, so drop the file
+    // (and with it any lingering rfcPath) rather than persisting a stepless doc.
     if (steps.length === 0) {
       if (fs.existsSync(file)) fs.rmSync(file, { force: true });
       return;
     }
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    const rfcPath = planRfc.get(cwd);
+    const decisions = planDecisions.get(cwd);
     const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ version: 1, scope: cwd, steps, updatedAt: new Date().toISOString() }));
+    fs.writeFileSync(tmp, JSON.stringify({ version: 1, scope: cwd, steps, ...(rfcPath ? { rfcPath } : {}), ...(decisions && decisions.length ? { decisions } : {}), updatedAt: new Date().toISOString() }));
     fs.renameSync(tmp, file);
   } catch {
     // Persistence is best-effort; degrade to in-memory.
   }
 }
 
-/** Lazily hydrate the in-memory plan from disk once per workspace per process. */
+/** Lazily hydrate the in-memory plan (and its rfcPath) from disk once per workspace per process. */
 function ensureLoaded(cwd: string): void {
   if (loaded.has(cwd)) return;
   loaded.add(cwd);
   if (plans.has(cwd)) return;
   const disk = readFromDisk(cwd);
-  if (disk.length > 0) plans.set(cwd, disk);
+  if (disk.length > 0) {
+    plans.set(cwd, disk);
+    const rfcPath = readRfcFromDisk(cwd);
+    if (rfcPath) planRfc.set(cwd, rfcPath);
+    const decisions = readDecisionsFromDisk(cwd);
+    if (decisions) planDecisions.set(cwd, decisions);
+  }
 }
 
 // ─── Branch/fork-correct persistence (pi appendEntry pattern) ─────────────────
@@ -147,16 +240,16 @@ function ensureLoaded(cwd: string): void {
 /** customType of the plan-snapshot session entries. */
 export const PLAN_ENTRY_TYPE = 'octocode-plan';
 
-let planEntryAppender: ((steps: PlanStep[]) => void) | null = null;
+let planEntryAppender: ((steps: PlanStep[], rfcPath?: string, decisions?: PlanDecision[]) => void) | null = null;
 
 /** Wire (or clear) the host-side appender that snapshots plans into session entries. */
-export function setPlanEntryAppender(appender: ((steps: PlanStep[]) => void) | null): void {
+export function setPlanEntryAppender(appender: ((steps: PlanStep[], rfcPath?: string, decisions?: PlanDecision[]) => void) | null): void {
   planEntryAppender = appender;
 }
 
-function appendPlanEntry(steps: PlanStep[]): void {
+function appendPlanEntry(steps: PlanStep[], rfcPath?: string, decisions?: PlanDecision[]): void {
   try {
-    planEntryAppender?.(steps);
+    planEntryAppender?.(steps, rfcPath, decisions);
   } catch {
     // Session-entry snapshots are best-effort; disk persistence still holds.
   }
@@ -175,8 +268,22 @@ export function adoptPlanFromBranch(cwd: string, branchEntries: unknown[]): bool
     const rec = entry as Record<string, unknown>;
     if (rec.type !== 'custom' || rec.customType !== PLAN_ENTRY_TYPE) continue;
     const steps = sanitizeStored(rec.data);
-    if (steps.length === 0) plans.delete(cwd);
-    else plans.set(cwd, steps);
+    const rfcPath = readRfcFromStored(rec.data);
+    const decisions = readDecisionsFromStored(rec.data);
+    if (steps.length === 0) {
+      plans.delete(cwd);
+      planRfc.delete(cwd);
+      planDecisions.delete(cwd);
+    } else {
+      plans.set(cwd, steps);
+      // The RFC link and decision log are part of the plan snapshot, so a
+      // fork/tree jump restores (or clears) them in lockstep with the steps
+      // rather than leaking a stale RFC or decisions from another branch.
+      if (rfcPath) planRfc.set(cwd, rfcPath);
+      else planRfc.delete(cwd);
+      if (decisions) planDecisions.set(cwd, decisions);
+      else planDecisions.delete(cwd);
+    }
     loaded.add(cwd);
     turnsSinceUpdate.set(cwd, 0);
     writeToDisk(cwd, steps);
@@ -189,12 +296,128 @@ export function adoptPlanFromBranch(cwd: string, branchEntries: unknown[]): bool
 function persist(cwd: string): void {
   const steps = plans.get(cwd) ?? [];
   writeToDisk(cwd, steps);
-  appendPlanEntry(steps);
+  appendPlanEntry(steps, planRfc.get(cwd), planDecisions.get(cwd));
 }
 
 /** Test hook: read the persisted plan straight from disk, bypassing the in-memory cache. */
 export function readPersistedPlanForTests(cwd: string): PlanStep[] {
   return readFromDisk(cwd);
+}
+
+/** Test hook: read the persisted rfcPath straight from disk, bypassing the in-memory cache. */
+export function readPersistedRfcForTests(cwd: string): string | undefined {
+  return readRfcFromDisk(cwd);
+}
+
+/** Test hook: read the persisted decision log straight from disk, bypassing the in-memory cache. */
+export function readPersistedDecisionsForTests(cwd: string): PlanDecision[] | undefined {
+  return readDecisionsFromDisk(cwd);
+}
+
+// ─── Plan ↔ RFC association ───────────────────────────────────────────────────
+
+/** The absolute RFC.md path this plan was derived from, if any. */
+export function getPlanRfc(cwd: string): string | undefined {
+  ensureLoaded(cwd);
+  return planRfc.get(cwd);
+}
+
+/**
+ * Associate (or clear, with `undefined`) the RFC document this plan derives from.
+ * Persisted alongside the steps so the plan surface can render the RFC and the
+ * enforcement gate can require it. No-op persistence when there is no plan yet —
+ * the RFC link is meaningless without steps and the stepless disk file is dropped.
+ */
+export function setPlanRfc(cwd: string, rfcPath: string | undefined): void {
+  ensureLoaded(cwd);
+  if (rfcPath && rfcPath.trim()) planRfc.set(cwd, rfcPath.trim());
+  else planRfc.delete(cwd);
+  persist(cwd);
+}
+
+// ─── Decision log ─────────────────────────────────────────────────────────────
+
+/** The recorded clarify-phase decisions for this plan (question → answer). */
+export function getPlanDecisions(cwd: string): PlanDecision[] {
+  ensureLoaded(cwd);
+  return planDecisions.get(cwd) ?? [];
+}
+
+/** Append one decision (question → answer). Ignored when either side is empty. Persists. */
+export function addPlanDecision(cwd: string, q: string, a: string): PlanDecision[] {
+  ensureLoaded(cwd);
+  const cq = cleanDecision(q);
+  const ca = cleanDecision(a);
+  if (cq && ca) {
+    const list = (planDecisions.get(cwd) ?? []).slice();
+    list.push({ q: cq, a: ca });
+    planDecisions.set(cwd, list.slice(0, MAX_DECISIONS));
+    persist(cwd);
+  }
+  return planDecisions.get(cwd) ?? [];
+}
+
+/** Replace the whole decision log (or clear with []/undefined). Persists. */
+export function setPlanDecisions(cwd: string, decisions: PlanDecision[] | undefined): PlanDecision[] {
+  ensureLoaded(cwd);
+  const cleaned = (decisions ?? [])
+    .map((d) => ({ q: cleanDecision(d?.q ?? ''), a: cleanDecision(d?.a ?? '') }))
+    .filter((d) => d.q && d.a)
+    .slice(0, MAX_DECISIONS);
+  if (cleaned.length) planDecisions.set(cwd, cleaned);
+  else planDecisions.delete(cwd);
+  persist(cwd);
+  return planDecisions.get(cwd) ?? [];
+}
+
+export interface RfcResolution {
+  /** Absolute path to the resolved RFC.md, present only when ok. */
+  path?: string;
+  /** Human-readable reason the input could not be resolved, present only when not ok. */
+  error?: string;
+}
+
+/**
+ * Resolve a user/agent-supplied RFC reference against a workspace, enforcing that
+ * it lands on an existing file inside `<workspace>/.octocode/rfc/`. Accepts either
+ * a directory (→ its `RFC.md`) or a Markdown file path (absolute or relative to
+ * the workspace). Guards against path traversal and symlink escape so the plan
+ * surface never reads — nor the local server ever exposes — a file outside the
+ * workspace's RFC tree. Pure: touches only the filesystem, never the plan maps.
+ */
+export function resolveRfcPath(workspace: string, input: string): RfcResolution {
+  const raw = String(input ?? '').trim();
+  if (!raw) return { error: 'no RFC path given' };
+  const rfcRoot = path.resolve(workspace, '.octocode', 'rfc');
+  try {
+    let candidate = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(workspace, raw);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(candidate);
+    } catch {
+      return { error: `no such RFC path: ${raw}` };
+    }
+    if (stat.isDirectory()) candidate = path.join(candidate, 'RFC.md');
+    // Resolve symlinks before the containment check so a symlinked file cannot
+    // point outside the RFC tree while appearing to live inside it.
+    let real: string;
+    try {
+      real = fs.realpathSync(candidate);
+    } catch {
+      return { error: `no such RFC file: ${path.relative(workspace, candidate) || candidate}` };
+    }
+    const realRoot = fs.existsSync(rfcRoot) ? fs.realpathSync(rfcRoot) : rfcRoot;
+    const withinRoot = real === realRoot || real.startsWith(realRoot + path.sep);
+    if (!withinRoot) {
+      return { error: `RFC must live under .octocode/rfc/ (got ${raw})` };
+    }
+    if (!fs.statSync(real).isFile()) {
+      return { error: `RFC path is not a file: ${raw}` };
+    }
+    return { path: real };
+  } catch (err) {
+    return { error: `could not resolve RFC path: ${(err as Error).message}` };
+  }
 }
 
 // Turns since the plan was last mutated, per workspace. Reset to 0 on every mutation;
@@ -221,17 +444,24 @@ function clean(text: string): string {
   return oneLine.length > MAX_STEP_CHARS ? `${oneLine.slice(0, MAX_STEP_CHARS - 1)}…` : oneLine;
 }
 
+/** Collapse + cap decision text (longer budget than a step — a decision can carry a short rationale). */
+function cleanDecision(text: string): string {
+  const oneLine = String(text ?? '').replace(/\s+/g, ' ').trim();
+  return oneLine.length > MAX_DECISION_CHARS ? `${oneLine.slice(0, MAX_DECISION_CHARS - 1)}…` : oneLine;
+}
+
 export function getPlan(cwd: string): PlanStep[] {
   ensureLoaded(cwd);
   return plans.get(cwd) ?? [];
 }
 
 /**
- * Whether the scope still has unfinished plan steps — the "active work remains"
- * signal used to decide if a post-compaction continuation turn is warranted.
+ * Whether the scope has an actively owned in-progress step. Auto-compaction uses
+ * this stricter signal so stale todo/blocked plan state after a finished turn
+ * cannot trigger a surprise compaction; it should fire only while work is live.
  */
-export function hasIncompletePlanSteps(cwd: string): boolean {
-  return getPlan(cwd).some((step) => step.status !== 'done');
+export function hasActivePlanWork(cwd: string): boolean {
+  return getPlan(cwd).some((step) => step.status === 'doing');
 }
 
 function normalizeInput(step: StepInput): { text: string; activeForm?: string; dependsOn?: number[] } {
@@ -331,6 +561,8 @@ export function removeStep(cwd: string, index: number): PlanStep[] {
 
 export function clearPlan(cwd: string): void {
   plans.delete(cwd);
+  planRfc.delete(cwd);
+  planDecisions.delete(cwd);
   turnsSinceUpdate.delete(cwd);
   loaded.add(cwd);
   writeToDisk(cwd, []);

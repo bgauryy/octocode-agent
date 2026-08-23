@@ -46,6 +46,16 @@ const SKILL_CONTENT_CAP = 48_000;
 /** Cap on listed sibling files per skill. */
 const SKILL_FILE_LIST_CAP = 30;
 
+const PROMPT_OWNED_SKILLS = new Set([
+  // Awareness Lite coordination is embedded in <awareness>; exposing the old
+  // SKILL.md makes the model load duplicate instructions and creates noisy UI rows.
+  'octocode-awareness-lite',
+]);
+
+function isPromptOwnedSkill(name: string): boolean {
+  return PROMPT_OWNED_SKILLS.has(name.toLowerCase());
+}
+
 // ─── Discovery ────────────────────────────────────────────────────────────────
 
 function parseFrontmatterField(text: string, field: string): string {
@@ -72,6 +82,7 @@ function scanSkillRoot(dir: string, source: string, out: Map<string, DiscoveredS
       continue;
     }
     const name = parseFrontmatterField(text, 'name') || entry.name;
+    if (isPromptOwnedSkill(name)) continue;
     if (out.has(name)) continue; // earlier roots win (bundled < user < project ordering handled by caller)
     out.set(name, {
       name,
@@ -122,7 +133,7 @@ export function discoverSkills(cwd: string, piSkills?: SkillInfo[], home = os.ho
   const found = new Map<string, DiscoveredSkill>();
   for (const skill of piSkills ?? []) {
     const name = skill.name?.trim();
-    if (!name) continue;
+    if (!name || isPromptOwnedSkill(name)) continue;
     const md = (skill as { path?: string; filePath?: string }).path
       ?? (skill as { path?: string; filePath?: string }).filePath ?? '';
     found.set(name, {

@@ -44,6 +44,16 @@ export interface ReadStateCheck {
 
 export const MAX_RECORDED_READ_STATES = 1_000;
 
+/**
+ * Upper size bound for the mtime+size "fast path" to still fall through to a
+ * content-hash comparison. On coarse-mtime filesystems an external same-size
+ * rewrite within one mtime tick slips past an mtime+size-only check, so for
+ * files at or under this size we always hash-verify (an unchanged file still
+ * hash-matches and reports fresh). Above it, hashing is costly and an exact
+ * same-size in-tick overwrite is unlikely, so the fast path is preserved.
+ */
+export const FAST_PATH_HASH_MAX_BYTES = 5 * 1024 * 1024; // 5MB
+
 const readStates = new Map<string, ReadState>();
 
 /**
@@ -173,7 +183,18 @@ export async function checkReadState(
   const stats = await stat(absolutePath);
   let stale: boolean;
   if (stats.mtimeMs === state.mtimeMs && stats.size === state.size) {
-    stale = false;
+    // mtime+size match. On coarse-mtime filesystems a same-size external rewrite
+    // within one mtime tick can slip past an mtime+size-only check, so fall
+    // through to a content-hash comparison for reasonably-sized files (an
+    // unchanged file still hash-matches and reports fresh). For very large files
+    // hashing is expensive and an exact same-size in-tick overwrite is unlikely,
+    // so keep the fast path.
+    if (stats.size <= FAST_PATH_HASH_MAX_BYTES) {
+      const current = await readFile(absolutePath, 'utf8');
+      stale = contentHash(current) !== state.contentHash;
+    } else {
+      stale = false;
+    }
   } else {
     const current = await readFile(absolutePath, 'utf8');
     stale = contentHash(current) !== state.contentHash;

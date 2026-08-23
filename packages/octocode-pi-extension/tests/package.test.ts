@@ -415,7 +415,7 @@ test('build copies bundled Octocode skills without secret env files', () => {
   // redundant root skills/ dir and no pi.skills declaration — that duplicate
   // package-scanned copy caused [Skill conflicts].
   const skills = listBundledSkills(distDir);
-  assert.ok(skills.includes('octocode-awareness-lite'), 'Awareness Lite skill is bundled into dist/skills');
+  assert.equal(skills.includes('octocode-awareness-lite'), false, 'Awareness Lite is prompt-owned and exposed as a CLI, not a loadable skill');
   assert.equal(skills.includes('octocode-mannequin'), false, 'mannequin skill is intentionally excluded from the coding-agent bundle');
   for (const skill of skills) {
     assert.equal(
@@ -840,8 +840,11 @@ test('footer default density surfaces MCP connection and skill counts as separat
     overhead: { totalChars: 4_000, sysChars: 2_000, mcpServers: 3, mcpTools: 18, skills: 13 },
     dirty: false,
   }, 'default').map((segment) => segment.text);
-  assert.ok(segments.includes('mcp 3'), 'footer shows connected MCP server count');
-  assert.ok(segments.includes('skills 13'), 'footer shows available skill count');
+  // mcp N and skills N are now merged into a single segment separated by SEP.
+  assert.ok(
+    segments.some((s) => s.includes('mcp 3') && s.includes('skills 13')),
+    'footer shows MCP server count and skill count in one merged segment',
+  );
   assert.equal(
     buildFooterSegments({
       tokens: 50_000,
@@ -851,7 +854,7 @@ test('footer default density surfaces MCP connection and skill counts as separat
       activeWorkers: 0,
       overhead: { totalChars: 4_000, sysChars: 2_000, mcpServers: 3, mcpTools: 18, skills: 13 },
       dirty: false,
-    }, 'compact').some((segment) => segment.text === 'mcp 3' || segment.text === 'skills 13'),
+    }, 'compact').some((segment) => segment.text.includes('mcp 3') || segment.text.includes('skills 13')),
     false,
     'compact footer remains high-signal only',
   );
@@ -2204,20 +2207,25 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
     },
   }, undefined, 'Improve toolbar UX\nextra context ignored');
   assert.deepEqual(calls, [
-    ['thinking', 'Octocode thinking'],
+    // title + status chips fire first; WeakSet-guarded one-time calls (thinking label,
+    // indicator, message) come after because they are inside the first-call block.
     ['title', 'Octocode · Improve toolbar UX'],
     ['status', 'octocode', '<◆ Octocode>'],
-    ['status', 'octocode-thinking', '<thinking>'],
+    // ctx has no model → getThinkingStatus returns '' → chip is cleared (undefined)
+    ['status', 'octocode-thinking', undefined],
+    ['thinking', 'Octocode thinking'],
     ['indicator', '<✦><✧><✶><✺><✹><✷><✶><✧>', '120'],
     ['working', '<Thinking><…>'],
   ]);
+  // reasoning:false → chip is hidden (empty string, not 'thinking unsupported')
   assert.equal(
     getThinkingStatus({ model: { id: 'gpt-5.5', reasoning: false } }, 'high'),
-    'thinking unsupported'
+    ''
   );
+  // reasoning:true → just the level, no 'thinking' prefix
   assert.equal(
     getThinkingStatus({ model: { id: 'claude', reasoning: true } }, 'high'),
-    'thinking high'
+    'high'
   );
 });
 
@@ -2592,10 +2600,9 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
     assert.match(notifications.at(-1)!.message, /- total: \d+ chars \(~\d+ tokens\)/);
 
     await commands.get('octocode-harness')!.handler('', ctx);
-    assert.match(notifications.at(-1)!.message, /native tools/);
-    assert.match(notifications.at(-1)!.message, /builtin overrides: edit, write, bash/);
-    assert.match(notifications.at(-1)!.message, /builtin removed: read, grep, find, ls/);
-    assert.match(notifications.at(-1)!.message, /builtin passthrough: \(none\)/);
+    assert.match(notifications.at(-1)!.message, /native tools/i);
+    assert.match(notifications.at(-1)!.message, /overridden.*edit.*write.*bash/i);
+    assert.match(notifications.at(-1)!.message, /removed.*read.*grep.*find.*ls/i);
 
     await commands.get('octocode-cron')!.handler('list', ctx);
     assert.match(notifications.at(-1)!.message, /Octocode session jobs/);
@@ -2666,7 +2673,8 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
     assert.ok(
       statuses.some(
         ([key, value]) =>
-          key === 'octocode-thinking' && value?.includes('thinking low')
+          // getThinkingStatus now returns just the level ('low'), no 'thinking' prefix
+          key === 'octocode-thinking' && value?.includes('low') && !value.includes('thinking low')
       )
     );
 
@@ -3582,6 +3590,20 @@ function createMockAgentProcess(): MockAgentProcess {
     stdin: {
       write(data: string) {
         proc.stdinWrites.push(data);
+        // Mimic a live pi RPC child answering the liveness probe: a get_state
+        // command gets a correlated `response` back so waitForAgent's watchdog
+        // can tell "alive but quiet" from "hung". Emitted async to avoid reentrancy.
+        try {
+          const msg = JSON.parse(data) as { id?: string; type?: string };
+          if (msg && msg.type === 'get_state' && msg.id) {
+            setTimeout(
+              () => proc.emitStdout({ id: msg.id, type: 'response', command: 'get_state', success: true }),
+              0,
+            );
+          }
+        } catch {
+          /* non-JSON writes (prompt payloads) are ignored here */
+        }
       },
       end() {
         /* no-op */
@@ -5262,7 +5284,7 @@ test('evictStaleAgents removes oldest terminal agents when registry reaches MAX_
   }
 });
 
-test('waitForAgent timeout error uses agent name, not internal UUID', async () => {
+test('waitForAgent silence gap returns a live snapshot (no rigid timeout error) for an alive worker', async () => {
   const spawned: MockAgentProcess[] = [];
   setAgentProcessFactoryForTests((_command, _args, _options) => {
     const proc = createMockAgentProcess();
@@ -5277,26 +5299,30 @@ test('waitForAgent timeout error uses agent name, not internal UUID', async () =
     const result = await invokeExecute(
       spawnTool,
       { task: 'run forever', name: 'my-named-agent' },
-      { cwd: '/repo' }
     );
     const agentId = (result.details as { agent: { agentId: string } }).agent
       .agentId;
 
-    // Wait with a tiny timeout — must mention the agent name, not the UUID
-    await assert.rejects(
-      () =>
-        invokeExecute(messageTool, { action: 'wait', agentId, timeoutMs: 1 }),
-      (err: Error) => {
-        assert.ok(
-          err.message.includes('my-named-agent'),
-          `Error must include agent name, got: ${err.message}`
-        );
-        assert.ok(
-          !err.message.includes(agentId),
-          `Error must NOT expose internal UUID, got: ${err.message}`
-        );
-        return true;
-      }
+    // A tiny silence budget: the worker never streamed anything, so the watchdog
+    // trips almost immediately. It must NOT reject — it probes liveness (the mock
+    // answers get_state) and returns a truthful "still working" snapshot instead.
+    const waited = await invokeExecute(messageTool, {
+      action: 'wait',
+      agentId,
+      timeoutMs: 1,
+    });
+    const text = (waited.content[0] as { text: string }).text;
+    // The still-working header must name the agent, never leak the internal UUID.
+    assert.match(text, /still working/i, `Expected an alive snapshot, got: ${text}`);
+    assert.ok(text.includes('my-named-agent'), `Snapshot must include agent name, got: ${text}`);
+    assert.ok(
+      (waited.details as { agent: { status: string } }).agent.status !== 'failed',
+      'An alive-but-quiet worker must not be reported as failed'
+    );
+    // The parent actually sent a get_state liveness probe over the pipe.
+    assert.ok(
+      spawned[0]!.stdinWrites.some((w) => w.includes('get_state')),
+      'wait must send a get_state liveness probe on a silence gap'
     );
   } finally {
     setAgentProcessFactoryForTests(null);

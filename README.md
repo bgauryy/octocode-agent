@@ -104,7 +104,7 @@ duplicated here — updating the core updates what the agent launches.
 On load it sets `$OCTOCODE_CLI` and `$OCTOCODE_AWARENESS_CLI`, injects the operating-model
 system prompt, registers edit-safety hooks, arms the session-scoped approval gate, and wires
 Awareness lifecycle automation. The full TUI layer it adds — banner, footer cockpit,
-permission levels, plan approval + live HTML plan page — is summarized in
+permission levels, an RFC-backed plan gate + a live HTML plan/RFC page — is summarized in
 [Terminal Experience](#terminal-experience).
 
 ```text
@@ -172,8 +172,8 @@ that always *means* something:
 | **Footer cockpit** | Context gauge · merged turn timing (`turn 8 · 14s` live, `turns 7 · last 12s` idle) · session uptime · workers/awareness/peer state · effort dial · **always-visible permission mode** · prompt overhead · `branch* ΔN` changed files. `/octocode-footer legend` explains every segment; `compact`/`default`/`full` tune density. |
 | **Motion language** | *Wave* (footer wordmark ripples) = working · *glow* (breathing ⚠ ✗ ✉ and a ≥90% context gauge) = act on me · *gloss sweep* = brand splash. Deterministic, timer-free, test-pinned so status colors can never become decoration. |
 | **Approval gate** | Sensitive bash (installs, git mutation, deletes, sudo, publish, system/infra, shell-rc persistence, backtick/`$()` evasion) prompts Yes / No / Always-allow. Session-scoped levels — `strict` / `default` / `relaxed` — via `/octocode-permissions`, a cycle shortcut (default `ctrl+shift+a`), or `OCTOCODE_PERMISSION_LEVEL`. Everything resets on a new session; headless hosts always deny rather than assume consent. |
-| **Plan workflow** | `plan action:propose` sets the checklist *and* asks for sign-off inline (Approve / Reject; free-text reply = change request, echoed to the agent verbatim). `/octocode-plan html` opens a **live local page** — status checklist, mermaid dependency diagram, shareable `plan.md` — that rewrites on every plan change while you keep talking in the terminal. |
-| **Widgets** | Unified below-editor status panel (model → plan → awareness → agents), card-styled `askUser` prompts (72-col frame, quiet chrome), filter-preserving select overlays, worker inbox, command palette (default `ctrl+shift+k`). |
+| **Plan workflow** | A gated **research → RFC → approve** flow. `/octocode-plan new <goal>` enters **plan mode** (write tools blocked until approval); the agent orients, then `plan action:clarify` runs a bounded ≤3-question interview whose answers land in a durable **decision log**. Consequential work routes through the `octocode-rfc-generator` skill — and `plan action:propose` **blocks** a consequential plan that has no RFC. Propose sets the checklist *and* asks for sign-off inline (Approve / Reject; free-text = change request, echoed verbatim). `/octocode-plan html` opens a **live local page** — phase timeline, status checklist, mermaid dependency diagram, the **rendered RFC**, the decision log, and a shareable `plan.md` — rewriting on every change while you keep talking in the terminal. |
+| **Widgets** | Unified below-editor status panel (model → plan → awareness → agents) with a live **phase stepper** (Research → RFC → Approve → Build → Verify), card-styled `askUser` prompts (72-col frame, quiet chrome, recommended-default + pros/cons), filter-preserving select overlays, worker inbox, command palette (default `ctrl+shift+k`). |
 
 All copy lives in one content module and all design constants (palette tokens, separators,
 brand marks, wave/glow painters) in one design module — wording and colors cannot drift
@@ -364,7 +364,7 @@ Every surface below is exercised end-to-end (live smoke runs + the package test 
 
 | Package | Suite |
 |---|---|
-| `@octocodeai/pi-extension` | Vitest suites across 68 test files (1,070+ tests) — tools, prompts, CDP schemes, subagents, approval gate + permission levels, footer/widgets/animation, plan HTML surface |
+| `@octocodeai/pi-extension` | Vitest suites across 73 test files (1,200+ tests) — tools, prompts, CDP schemes, subagents, approval gate + permission levels, footer/widgets/animation, the plan/RFC surface (clarify interview, decision log, consequential gate, phase stepper) |
 | `@octocodeai/octocode-awareness-lite` | SQLite coordination engine + CLI contract tests (zero runtime deps) |
 | `@octocodeai/octocode-awareness` | Vitest suites across 90 test files + zero-dependency pack verification |
 

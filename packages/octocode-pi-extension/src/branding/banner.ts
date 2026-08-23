@@ -6,9 +6,9 @@
  * sees a line whose visible width exceeds the terminal width.
  */
 
-import { truncatePlainToWidth, truncateToWidth } from '../tools/render-helpers.js';
+import { truncatePlainToWidth, truncateToWidth, visibleWidth } from '../tools/render-helpers.js';
 import { BETA_ISSUES_PREFIX, BETA_ISSUES_URL, BETA_LABEL, TAGLINE } from '../tui/content.js';
-import { paint, type SemanticToken } from '../tui/palette.js';
+import { paint, SEP, type SemanticToken } from '../tui/palette.js';
 
 // ─── Minimal theme interface ──────────────────────────────────────────────────
 
@@ -29,13 +29,6 @@ export interface BannerTheme {
  * in sync by eye.
  */
 const WORDMARK_ART: readonly string[] = [
-  '          ░░▒▒▓▓▓▓▒▒░░                     ░▒▓██████████▓▒░',
-  '        ░▒▓███▀▀▀▀███▓▒░                  ▒▓███▀▀▀██▀▀▀███▓▒',
-  '        ▒▓██        ██▓▒                  ▓████ ▀ ██ ▀ ████▓',
-  '        ░▒▓███▄▄▄▄███▓▒░                  ▒▓██████████████▓▒',
-  '          ░░▒▒▓▓▓▓▒▒░░ ▀█▄                ▄▄  ██  ██  ██  ▄▄',
-  '                         ▀█▄              ▀████▀  ██  ▀████▀',
-  '',
   ' ██████╗  ██████╗████████╗ ██████╗  ██████╗ ██████╗ ██████╗ ███████╗',
   '██╔═══██╗██╔════╝╚══██╔══╝██╔═══██╗██╔════╝██╔═══██╗██╔══██╗██╔════╝',
   '██║   ██║██║        ██║   ██║   ██║██║     ██║   ██║██║  ██║█████╗',
@@ -43,6 +36,21 @@ const WORDMARK_ART: readonly string[] = [
   '╚██████╔╝╚██████╗   ██║   ╚██████╔╝╚██████╗╚██████╔╝██████╔╝███████╗',
   ' ╚═════╝  ╚═════╝   ╚═╝    ╚═════╝  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝',
 ];
+
+/**
+ * Natural column width of the wordmark art — the widest of its rows (~68).
+ * Below this the art can't be shown honestly: a hard clip turns every row into
+ * a mid-letter fragment + "…", stacking six ellipses over broken block-letters.
+ * So under this width renderWordmarkLines drops the art and falls back to the
+ * compact `🔍🐙 Octocode` brand mark, which reads fine at any width.
+ */
+const WORDMARK_WIDTH = WORDMARK_ART.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
+
+/** Emoji lens+octopus mark prefixing the compact brand line (same glyphs as the HTML page / octocode CLI). */
+const BRAND_MARK_EMOJI = '🔍🐙';
+
+/** Product name shown after the emoji mark on the compact brand line. */
+const BRAND_NAME = 'Octocode';
 
 /**
  * Static purple ramp keyed by a small math equation instead of fixed columns.
@@ -87,6 +95,14 @@ function purpleGradientToken(row: number, col: number, lineWidth: number): Seman
  * SGR resets), then the surviving glyphs are painted.
  */
 export function renderWordmarkLines(theme: BannerTheme, width: number): string[] {
+  // Narrow terminals: the ~68-column ANSI-Shadow art cannot survive a hard clip
+  // (each row degrades to a mid-letter fragment + "…"), so below the art's
+  // natural width fall back to the single compact brand mark, which renders
+  // cleanly at any width. Still pure in (theme, width) — no animation.
+  if (width < WORDMARK_WIDTH) {
+    const mark = `${BRAND_MARK_EMOJI} ${paint(theme, 'title', theme.bold(BRAND_NAME))}`;
+    return [truncateToWidth(mark, width)];
+  }
   return WORDMARK_ART.map((line, row) => {
     const clipped = truncatePlainToWidth(line, width);
     let painted = '';
@@ -148,8 +164,43 @@ export function renderBetaNotice(theme: BannerTheme, width: number): string {
 }
 
 /**
- * Convenience: banner lines, then the tagline, then the beta notice.
+ * Optional live session snapshot surfaced below the beta notice.
+ * Data is captured once when the banner entry is appended (at session_start)
+ * so it reads as a startup summary, not a live readout — avoids time-varying
+ * bytes in a transcript entry (which would invalidate pi-tui's line diff and
+ * cause scroll jumps during streaming).
  */
-export function renderBannerWithTagline(theme: BannerTheme, width: number, version?: string): string[] {
-  return [...renderBannerLines(theme, width, version), renderTagline(theme, width), renderBetaNotice(theme, width)];
+export interface BannerSessionInfo {
+  /** Model identifier (e.g. "claude-opus-4-5"). */
+  model?: string;
+  /** Provider name (e.g. "anthropic"). */
+  provider?: string;
+  /** Thinking level active at session start (e.g. "medium"). */
+  thinking?: string;
+}
+
+/**
+ * Render a single muted session-info line: `model: provider/id · thinking: level`.
+ * Returns `null` when there is nothing worth showing.
+ */
+export function renderSessionInfoLine(theme: BannerTheme, width: number, info: BannerSessionInfo): string | null {
+  const parts: string[] = [];
+  if (info.model && info.provider) parts.push(`model: ${info.provider}/${info.model}`);
+  else if (info.model) parts.push(`model: ${info.model}`);
+  if (info.thinking) parts.push(`thinking: ${info.thinking}`);
+  if (parts.length === 0) return null;
+  return truncateToWidth(paint(theme, 'muted', parts.join(SEP)), width);
+}
+
+/**
+ * Convenience: banner lines, then the tagline, then the beta notice,
+ * and optionally a session-info snapshot line when `info` is provided.
+ */
+export function renderBannerWithTagline(theme: BannerTheme, width: number, version?: string, info?: BannerSessionInfo): string[] {
+  const lines: string[] = [...renderBannerLines(theme, width, version), renderTagline(theme, width), renderBetaNotice(theme, width)];
+  if (info) {
+    const infoLine = renderSessionInfoLine(theme, width, info);
+    if (infoLine !== null) lines.push(infoLine);
+  }
+  return lines;
 }

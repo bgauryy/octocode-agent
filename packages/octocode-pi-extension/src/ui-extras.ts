@@ -257,8 +257,9 @@ export function buildFooterSegments(input: FooterInput, density: FooterDensity =
       : '';
     segs.push({ text: `prompt ~${tok(o.totalChars)}${breakdown}`, token: 'dim' });
     if (!compact) {
-      segs.push({ text: `mcp ${o.mcpServers}`, token: 'dim' });
-      segs.push({ text: `skills ${o.skills}`, token: 'dim' });
+      // One merged segment instead of two separate ones — /octocode-harness
+      // shows the full breakdown with sources, tool names, and descriptions.
+      segs.push({ text: `mcp ${o.mcpServers}${SEP}skills ${o.skills}`, token: 'dim' });
     }
   }
 
@@ -387,7 +388,8 @@ export interface ShortcutHint {
  * level, model select, expand tools, command palette, stop) are discoverable
  * without opening the docs. Entries whose key is blank are dropped (the host
  * didn't bind that action); the row is empty when nothing resolves. Rendered as
- * individually-coloured keycaps plus semantically-coloured action labels when a
+ * bold+dim keycaps (uniform color tier) and semantically-coloured action labels
+ * (think=link, perm=warning, model=brand, tools=symbol, stop=error) when a
  * theme is available, falling back to plain `key label · key label` in
  * tests/plain mode.
  */
@@ -401,6 +403,36 @@ export function buildShortcutHintsRow(hints: readonly ShortcutHint[], theme?: Pa
       const label = paint(theme, h.token ?? 'muted', h.label.trim());
       return `${key} ${label}`;
     })
+    .join(SEP);
+}
+
+/**
+ * A slash-command entry for the footer discovery row.
+ * `token` colors the command name; `desc` is a one-word label painted dim.
+ */
+export interface CommandEntry {
+  /** Bare command name without the leading '/'. */
+  name: string;
+  /** One-word description rendered dim next to the name. */
+  desc: string;
+  /** Semantic color applied to the command name (meaningful per category). */
+  token: SemanticToken;
+}
+
+/**
+ * Build the slash-command discovery row shown below the shortcut-hints row.
+ * Each entry is rendered as:
+ *   dim "/" + colored name + dim desc
+ * matching the two-tone keys-row pattern: chrome/key in one tier, action
+ * label in a second tier. Colors are LCI-aligned — spread across the
+ * perceptual hue circle — so each command category reads at a glance.
+ * The list is truncated at the terminal width by the caller.
+ */
+export function buildCommandsRow(commands: readonly CommandEntry[], theme?: PaintTheme): string {
+  if (commands.length === 0) return '';
+  return commands
+    .map(({ name, desc, token }) =>
+      `${paint(theme, 'dim', '/')}${paint(theme, token, name)} ${paint(theme, 'dim', desc)}`)
     .join(SEP);
 }
 

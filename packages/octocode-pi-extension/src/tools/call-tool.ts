@@ -17,9 +17,9 @@
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import { sliceBetween } from '../utils.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { paint } from '../tui/cli-design.js';
+import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
-import { spawnRpcAgent, waitForAgent, isSubagentProcess } from './agent-tools.js';
+import { spawnRpcAgent, waitForAgentTurn, isSubagentProcess, killWorkerById } from './agent-tools.js';
 import { requestApproval } from './approval.js';
 import {
   resolveTool,
@@ -254,9 +254,19 @@ const defaultGenerator: ToolGenerator = async (a) => {
     },
     a.ctx,
   );
-  await waitForAgent(record, 120_000);
-  const output = record.lastOutput || record.stderr || '';
-  return parseGeneratedTool(output, a.toolType);
+  try {
+    // Progress-aware: reset on every event and probe on quiet gaps so a long-but-
+    // active tool-smith turn runs to completion, with an absolute backstop against
+    // a genuinely hung worker wedging the main process.
+    await waitForAgentTurn(record, { maxSilenceMs: 120_000, absoluteCapMs: 600_000 });
+    const output = record.lastOutput || record.stderr || '';
+    return parseGeneratedTool(output, a.toolType);
+  } finally {
+    // On timeout/error the spawned smith worker is still alive — kill it so it
+    // does not orphan, and its record becomes droppable (reclaimable slot).
+    // On success the process has already exited, so this is a harmless no-op.
+    killWorkerById(record.id);
+  }
 };
 
 // ─── orchestration ─────────────────────────────────────────────────────────────
@@ -578,18 +588,24 @@ export function registerCallTool(
       } as unknown as ToolCallResult;
     },
 
-    renderCall(rawParams: unknown) {
+    renderCall(rawParams: unknown, theme?: PiTheme) {
       const p = rawParams as CallToolParams;
-      const raw = `callTool(${p.toolType}${p.mode && p.mode !== 'auto' ? `, ${p.mode}` : ''})`;
-      return makeRenderer((w) => [truncateToWidth(raw, w)]);
+      // Brand title + dim args, matching the other tool-call rows.
+      const title = cliToolTitle(theme, 'callTool');
+      const args = `(${p.toolType}${p.mode && p.mode !== 'auto' ? `, ${p.mode}` : ''})`;
+      return makeRenderer((w) => [truncateToWidth(`${title}${paint(theme, 'dim', args)}`, w)]);
     },
 
     renderResult(result: unknown, _opts: unknown, theme?: PiTheme) {
       const r = result as { content?: Array<{ text?: string }> };
       const first = (r?.content?.[0]?.text ?? '').split('\n')[0] || 'callTool';
-      const colored = first.startsWith('[ERROR]') || first.startsWith('[BLOCKED]')
-        ? paint(theme, 'warning', first)
-        : paint(theme, 'success', first);
+      // Match the codebase color contract: red=error, gold=act-on-me (blocked/
+      // declined/proposal awaiting your decision), green=only a positive outcome.
+      const colored = first.startsWith('[ERROR]')
+        ? paint(theme, 'error', first)
+        : first.startsWith('[BLOCKED]') || first.startsWith('[DECLINED]') || first.startsWith('[PROPOSAL]')
+          ? paint(theme, 'warning', first)
+          : paint(theme, 'success', first);
       return makeRenderer((w) => [truncateToWidth(colored, w)]);
     },
   });
