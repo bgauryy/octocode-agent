@@ -1,0 +1,62 @@
+# Runtime state and initialization
+
+The Pi extension has one ephemeral session/view store, created with `zustand/vanilla` at
+every `session_start`. It is not a second configuration database. SQLite remains canonical
+for durable MCP server/tool enablement, server definition files remain canonical for
+transport configuration, `catalog.json` remains the exact derived inventory, and
+`mcp.md` is an optional derived prompt cache used only with `OCTOCODE_COMPACT_MCP=1`.
+
+## Ownership
+
+`runtime-store.ts` owns initialization phase, task receipts, MCP loading projection,
+managed status slots, working visibility/message, and user notices. `runtime-renderer.ts`
+subscribes once per session context, diffs rendered values, and is the only implementation
+that mutates Pi status or working-message APIs. Tool and resource modules publish state
+through `setManagedStatus`, `setManagedWorking`, or `publishMcpRuntimeState`.
+
+Resource lifetime stays local to the owning manager. MCP clients, Chrome connections,
+worker processes, file queues, timers, schema validators, and filesystem watchers do not
+belong in Zustand. Their observable state may be projected into the runtime store.
+
+The footer and below-editor panel keep register-once Pi component factories because Pi
+requires `setFooter`/`setWidget` once followed by `requestRender`. Their lifecycle is
+started and disposed by the same session hooks; their component-specific caches remain
+local.
+
+## Initialization order
+
+`initializeOctocodeSession()` is the sole `session_start` initializer:
+
+1. Dispose a previous renderer binding without touching a stale replacement context.
+2. Create and bind the new runtime store.
+3. Resolve project trust and propagate Octocode environment configuration.
+4. Reset/restore session-scoped policy, plans, metrics, panels, and UI components.
+5. Restore MCP prompt cache and start live schema discovery.
+6. Start independent background receipts: checkpoints, GitHub auth, update check,
+   discovery inventory, Awareness registration, and MCP refresh.
+7. Mark the interactive session ready. Background task/MCP state remains visible without
+   blocking normal agent work.
+
+Environment propagation precedes MCP configuration and process startup. Non-critical
+background failures become degraded task receipts; they do not reject session startup.
+
+## MCP prompt readiness
+
+MCP has separate promises for prompt readiness and live refresh completion. By default,
+a matching persisted `catalog.json` immediately supplies `<mcp_catalog>` with enabled
+server/tool descriptions and exact input schemas. With `OCTOCODE_COMPACT_MCP=1`, prompt
+readiness instead consumes matching `catalog.json` + `mcp.md`. Exact schemas refresh
+privately for execution and the next session. A cold or changed configuration waits up to
+35 seconds for stable first-turn prompt bytes; compact mode alone performs guide generation.
+If the deadline wins, the late refresh is persisted for the next session.
+
+The renderer shows cache checking, discovery, guide optimization, counts, cached state,
+and degraded completion. Initialization emits one aggregate ready notice; stage changes
+use the persistent status/working surfaces instead of notification spam.
+
+## Disposal
+
+`session_shutdown` marks the runtime disposing, suppresses late panel/inbox callbacks,
+stops resource managers, then disposes the renderer and store. Replacement-session
+shutdown skips UI clears because Pi may already have invalidated that context; quit clears
+the live UI. Generation checks prevent late GitHub/MCP results from changing a new session.

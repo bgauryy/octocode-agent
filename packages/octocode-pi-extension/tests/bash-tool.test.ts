@@ -17,8 +17,8 @@ function executeBash(
   ctx?: { cwd?: string },
 ): Promise<ToolCallResult> {
   const definition = tool as ToolDefinition;
-  const prepared = definition.prepareArguments?.(params) as Record<string, unknown> | undefined;
-  return definition.execute(id, prepared ?? params, signal, undefined, ctx);
+  const envelope = Array.isArray(params['queries']) ? params : { queries: [params] };
+  return definition.execute(id, envelope, signal, undefined, ctx);
 }
 
 test('extractBashWriteTargets finds redirects and tee', () => {
@@ -279,9 +279,10 @@ const renderTheme = { fg: (c: string, t: string) => `<${c}>${t}</${c}>`, bold: (
 
 test('bash renderers identify the Octocode override in call, partial, and result rows', () => {
   const tool = loadBashTool();
-  const call = (tool.renderCall!({ command: 'echo hi', reasoning: 'verify shell rendering' }, renderTheme as never) as { render(w: number): string[] }).render(120);
+  const call = (tool.renderCall!({ queries: [{ command: 'echo hi', reasoning: 'verify shell rendering' }] }, renderTheme as never) as { render(w: number): string[] }).render(120);
   assert.match(call[0]!, /bash \(Octocode\)/);
-  assert.match(call[1]!, /why: .*verify shell rendering/);
+  assert.match(call[1]!, /verify shell rendering/);
+  assert.doesNotMatch(call[1]!, /why:|reasoning:/i);
   const partial = (tool.renderResult!({ content: [] }, { isPartial: true }, renderTheme as never) as { render(w: number): string[] }).render(120);
   assert.match(partial[0]!, /bash \(Octocode\)/);
 });

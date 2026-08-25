@@ -51,7 +51,7 @@ import {
   estimateTokens,
 } from './utils.js';
 import { registerUniqueTool } from './tools/octocode-tools.js';
-import { registerContextTools, resetAutoCompactState } from './tools/context-tools.js';
+import { registerContextTools } from './tools/context-tools.js';
 import { registerCompactionHooks, resetCompactionCheckpointDedupe } from './tools/compaction-hooks.js';
 import { clearCompactionInFlight, clearCompactionResumeRequest, clearAutoCompactResumeRequest, clearCompactionAbortSuppressionRequest } from './tools/compaction-state.js';
 import { resetCompactionResumeSchedule } from './tools/compaction-resume.js';
@@ -113,6 +113,8 @@ import { createSessionArtifactContext, resolveSessionIdentity } from './tools/se
 import { createCheckpointInputHook, registerRewindCommand } from './tools/rewind-command.js';
 import { registerDialCommand, restoreDialOnStartup, getActiveDialLevel } from './tools/effort-dial.js';
 import { registerAiWatch, isWatchActive, markOwnWrite, markBashActivity, stopWatch } from './tools/ai-watch.js';
+import { setManagedFooter, setManagedStatus, setManagedWorking, setManagedWorkingIndicator, setManagedWorkingMessage } from './tools/runtime-renderer.js';
+import { SessionRuntime } from './session-runtime.js';
 import { registerExportCommand } from './tools/export-command.js';
 import { assertPathAllowed } from './tools/path-guard.js';
 import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
@@ -523,7 +525,7 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
   // tokens / turns / timing / agents / git. Plan stays in the below-editor panel.
   if (!footerRegisteredCtxs.has(ctx)) {
     footerRegisteredCtxs.add(ctx);
-    ctx.ui?.setFooter?.((tui: unknown, theme, footerData) => {
+      setManagedFooter(ctx, (tui: unknown, theme, footerData) => {
       footerRequestRenderByCtx.set(ctx, () => (tui as { requestRender?: () => void } | undefined)?.requestRender?.());
       const renderer = makeRenderer((width) => buildOctocodeFooterLines(ctx, state, width, theme, footerData));
       const unsubscribe = footerData?.onBranchChange?.(() => {
@@ -666,12 +668,12 @@ export function applyOctocodeUi(ctx: PiContext | undefined, level?: string, cont
   // Title flashes (desktop-notify) restore to the live harness title, not a constant.
   recordSessionTitle(windowTitle);
   const label = paint(ui.theme, 'brand', '◆ Octocode');
-  ui.setStatus?.('octocode', label);
+  setManagedStatus(ctx, 'octocode', label);
   // Thinking-level chip: only show the level string (e.g. 'medium') when the model
   // supports reasoning. Empty → chip is hidden. The chip becomes 'thinking…' while
   // a turn is active (turn_start hook), and restores here on every level/model change.
   const thinkingStatus = getThinkingStatus(ctx, level);
-  ui.setStatus?.('octocode-thinking', thinkingStatus ? paint(ui.theme, 'dim', thinkingStatus) : undefined);
+  setManagedStatus(ctx, 'octocode-thinking', thinkingStatus ? paint(ui.theme, 'dim', thinkingStatus) : undefined);
   // One-time per context: working indicator frames, branded message, and the hidden
   // thinking label. These never change within a session; re-applying them on every
   // model/thinking/input event would cause unnecessary redraws and micro-flicker.
@@ -681,11 +683,10 @@ export function applyOctocodeUi(ctx: PiContext | undefined, level?: string, cont
     // Glyph-only indicator + branded message: Pi renders these side-by-side,
     // so keeping "Octocode" out of the frames avoids "Octocode Octocode …".
     const t = ui.theme;
-    ui.setWorkingIndicator?.(buildWorkingIndicator(t));
-    // Custom working message: the animated frames supply ALL motion; the text
-    // is the static branded verb. No elapsed time, no dot cycling — a second
-    // cadence at a different phase reads as jitter, not liveliness.
-    ui.setWorkingMessage?.(buildWorkingMessage(t));
+      setManagedWorkingIndicator(ctx, buildWorkingIndicator(t));
+    // Message/visibility are runtime state rendered by runtime-renderer. Only the
+    // immutable indicator component is installed directly on the UI context.
+    setManagedWorkingMessage(ctx, buildWorkingMessage(t));
   }
 }
 
@@ -1372,7 +1373,6 @@ async function wireOctocodePiExtension(
     completedTurns: 0,
     githubAuth: { status: 'checking' },
   };
-  let githubAuthProbeGeneration = 0;
   // Live footer ticker: while a turn is active, re-render the footer every second
   // so `active`/`session` durations advance (they are otherwise only refreshed on
   // turn/session events). Reads are in-memory only (no git/disk per tick); git
@@ -1393,6 +1393,7 @@ async function wireOctocodePiExtension(
   // cleanupSpawnedAgentsForShutdown() kills workers, or the teardown burst of
   // killed/exit ledger events would spam desktop notifications.
   let agentInbox: AgentInboxRegistration | undefined;
+  let sessionRuntime: SessionRuntime | undefined;
   // Model-callable tool names, shared between registration (uniqueness check)
   // and the discovery-file inventory. Builtin overrides register through the
   // same helper as support tools, so no manual pre-seeding is needed.
@@ -1423,7 +1424,7 @@ async function wireOctocodePiExtension(
   };
   // Latest session cwd for the AI! watcher (registration happens before any ctx exists).
   let latestSessionCwd: string | undefined;
-  let latestSessionUi: PiContext['ui'] | undefined;
+  let latestSessionCtx: PiContext | undefined;
   // Feed the watch-mode loop guards: our own file mutations and bash runs
   // cause fs events that must not loop back into the agent as AI! prompts.
   const suppressWatchForTool = (event: { toolName?: string; args?: unknown }, ctx: PiContext | undefined): void => {
@@ -1495,7 +1496,60 @@ async function wireOctocodePiExtension(
       refreshStatusPanel(ctx);
     });
 
-    hooks.on('session_start', 'octocode-session-start', async (_event: unknown, ctx: PiContext | undefined) => {
+    const disposeSessionResources = async (reason: string, ctx: PiContext | undefined): Promise<void> => {
+      const canUseShutdownContext = reason === 'quit';
+      awarenessMutationGate.cleanup();
+      updateAwarenessLiteRegistry('leave', pi, undefined, latestSessionCwd);
+      cronScheduler.stop();
+      stopMcpConfigWatchers();
+      stopMetricsTicker();
+      metricsState.activeTurnStartedAt = undefined;
+      suppressStatusPanel();
+      suppressAwarenessPanel();
+      agentInbox?.shutdown({ restoreTitle: canUseShutdownContext });
+      setAgentLedgerMetricsRefreshForUi(undefined);
+      stopWatch();
+      const cleanedAgents = cleanupSpawnedAgentsForShutdown();
+      const stoppedMcpServers = stopAllMcpServers();
+      const closedChrome = closeAllChromeConnections();
+      if (closedChrome > 0 && canUseShutdownContext) notify(ctx, `Closed ${closedChrome} cached CDP connection(s).`, 'info');
+      setPeerWipStatusPainter(undefined);
+      latestSessionCtx = undefined;
+      latestSessionCwd = undefined;
+      if (ctx) footerRegisteredCtxs.delete(ctx);
+      if (canUseShutdownContext && ctx?.hasUI) {
+        if (cleanedAgents > 0) ctx.ui?.notify?.(`Octocode closed ${cleanedAgents} spawned subagent(s).`, 'info');
+        if (stoppedMcpServers > 0) ctx.ui?.notify?.(`Octocode stopped ${stoppedMcpServers} MCP server(s).`, 'info');
+      }
+    };
+
+    const initializeOctocodeSession = async (ctx: PiContext | undefined): Promise<void> => {
+      await sessionRuntime?.dispose('replace');
+      const runtime = new SessionRuntime({ ctx, onDispose: (reason) => disposeSessionResources(reason ?? 'shutdown', ctx) });
+      sessionRuntime = runtime;
+      const runtimeStore = runtime.store;
+      const initializationTasks: Promise<unknown>[] = [];
+      // Environment is a prerequisite for every process/config consumer, notably
+      // MCP discovery. It must run before any server warm starts.
+      await runtime.runTask({
+        name: 'environment',
+        message: 'loading configuration',
+        critical: true,
+        readyMessage: 'configuration loaded',
+        run: async () => {
+        const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : false;
+        const { applied, skippedProtected } = propagateOctocodeEnv({
+          home: getOctocodeHome(),
+          cwd: ctx?.cwd ?? process.cwd(),
+          trusted,
+        });
+        if (applied.length > 0) notify(ctx, `Octocode env: ${applied.join(', ')}`, 'info');
+        if (skippedProtected.length > 0) {
+          notify(ctx, `Octocode env: skipped protected key(s): ${skippedProtected.join(', ')}.`, 'warning');
+        }
+        },
+      });
+      runtimeStore.getState().setStage('restoring session');
       // Undo the shutdown-time suppression from a previous session in this process.
       resumeStatusPanel();
       resumeAwarenessPanel();
@@ -1519,7 +1573,6 @@ async function wireOctocodePiExtension(
       // tool's stale-read gate in this one, and the auto-compaction edge
       // trigger must not carry the old session's threshold crossing.
       clearAllReadStates();
-      resetAutoCompactState();
       // Snapshot the working tree's pre-session dirty set so file can warn
       // before co-mingling changes into peer/user uncommitted work.
       if (ctx?.cwd) {
@@ -1530,13 +1583,16 @@ async function wireOctocodePiExtension(
         // let it race — wiring first eliminates the race entirely).
         if (ctx.hasUI) {
           setPeerWipStatusPainter((count) => {
-            ctx.ui?.setStatus?.(
+            setManagedStatus(
+              ctx,
               'octocode-peer-wip',
               count > 0 ? paintUi(ctx.ui, 'warning', `⚑ ${count} pre-existing dirty`) : undefined,
             );
           });
         }
-        void execGitSummary(pi, ['status', '--porcelain'], 800).then((porc) => setPeerWipBaseline(baselineCwd, porc));
+        void execGitSummary(pi, ['status', '--porcelain'], 800).then((porc) => {
+          if (runtime.isCurrent()) setPeerWipBaseline(baselineCwd, porc);
+        });
       }
       // A new session inherits no compaction state from a previous one in this
       // process: clear the in-flight/resume singletons (TTL is only a backstop),
@@ -1583,10 +1639,9 @@ async function wireOctocodePiExtension(
       metricsState.lastTurnMs = undefined;
       metricsState.completedTurns = 0;
       metricsState.githubAuth = { status: 'checking' };
-      const authProbeGeneration = ++githubAuthProbeGeneration;
       stopMetricsTicker();
       latestSessionCwd = ctx?.cwd;
-      latestSessionUi = ctx?.ui;
+      latestSessionCtx = ctx;
       // Branch-correct plan state: adopt the newest octocode-plan snapshot on
       // this session's branch (pi copies entries up to the fork point, so a
       // fork restores exactly the plan that existed there). clearWhenMissing
@@ -1609,8 +1664,21 @@ async function wireOctocodePiExtension(
         });
       }
       // Trim shadow-git checkpoint history in the background (keeps 30).
-      void getCheckpointEngine(ctx).then((engine) => engine?.prune());
-      await refreshFooterDirtyState(pi, metricsState);
+      initializationTasks.push(runtime.runTask({
+        name: 'checkpoints',
+        message: 'checking checkpoints',
+        readyMessage: 'checkpoints ready',
+        run: async () => {
+          const engine = await getCheckpointEngine(ctx);
+          await engine?.prune();
+        },
+      }));
+      initializationTasks.push(runtime.runTask({
+        name: 'dirty-state',
+        message: 'checking workspace changes',
+        readyMessage: 'workspace state checked',
+        run: () => refreshFooterDirtyState(pi, metricsState),
+      }));
       applyOctocodeUi(ctx, pi.getThinkingLevel?.());
       // Seed the footer's prompt-overhead segment before the first turn so the
       // toolbar carries its full data from frame one; before_agent_start
@@ -1634,35 +1702,55 @@ async function wireOctocodePiExtension(
       // Credential resolution belongs to Octocode (env → Octocode storage → gh CLI).
       // Probe once per session without delaying startup, and ignore stale results after
       // /new, /resume, /fork, reload, or shutdown.
-      void probeGitHubAuth(pi.exec?.bind(pi)).then((authState) => {
-        if (authProbeGeneration !== githubAuthProbeGeneration) return;
+      initializationTasks.push(runtime.runTask({
+        name: 'github-auth',
+        message: 'checking GitHub authentication',
+        readyMessage: 'GitHub authentication checked',
+        run: () => probeGitHubAuth(pi.exec?.bind(pi)),
+      }).then((authState) => {
+        if (!authState) return;
+        if (!runtime.isCurrent()) return;
         metricsState.githubAuth = authState;
         updateOctocodeMetricsUi(ctx, metricsState);
-      });
+      }));
       // Surface any disk-restored plan / live agents in the below-editor panel right at launch.
       refreshStatusPanel(ctx);
       // AI Watch: if OCTOCODE_WATCH=1 auto-started the watcher before this TUI
       // session existed, paint the persistent chip now that we have a UI context.
       // /octocode-watch on|off already paints via the setStatus dep for manual toggles.
       if (ctx?.hasUI && isWatchActive()) {
-        latestSessionUi?.setStatus?.('octocode-watch', 'watch: on');
+        setManagedStatus(ctx, 'octocode-watch', 'watch: on');
       }
       cronScheduler.start(ctx);
       // Announce this session in the shared Awareness Lite agent registry with
       // its generated host-tagged name (fire-and-forget; peers see it via
       // `agent list` and can `message send` to it).
       updateAwarenessLiteRegistry('join', pi, ctx);
-      // Full MCP discovery at init: connect every configured server and cache its
-      // instructions, tools, and exact input schemas for the <mcp_catalog> block.
+      // Full MCP discovery at init: connect every enabled configured server and
+      // cache only enabled tools with descriptions and exact input schemas.
       // Fire-and-forget here; before_agent_start awaits it (bounded) so turn 1's
       // system prompt already carries the catalog. Once discovery lands, write
       // the machine-readable inventory (.octocode/discovery.json): all skills +
       // full MCP configuration + native tool surface, for users/peer agents.
       const sessionCwd = ctx?.cwd ?? process.cwd();
-      void warmMcpCatalog(ctx).then(() => {
+      runtimeStore.getState().setStage('loading MCP catalog');
+      const liveMcpWarm = warmMcpCatalog(ctx, runtime.signal);
+      initializationTasks.push(runtime.runTask({
+        name: 'mcp',
+        message: 'loading MCP catalog',
+        readyMessage: 'MCP catalog ready',
+        run: async () => {
+          if (!await mcpCatalogReady(ctx)) throw new Error('MCP prompt catalog was not ready before the startup deadline');
+        },
+      }));
+      void liveMcpWarm.then(() => {
         // The old warm may settle after /new invalidates its ctx. Shutdown and
         // the next session both advance this generation before microtasks resume.
-        if (authProbeGeneration !== githubAuthProbeGeneration) return;
+        if (!runtime.isCurrent()) return;
+        const liveMcpState = runtimeStore.getState().mcp;
+        if (liveMcpState.status === 'degraded' || liveMcpState.status === 'failed') {
+          runtimeStore.getState().degradeTask('mcp', liveMcpState.message ?? 'MCP live refresh failed');
+        }
         writeDiscoveryFile(ctx, {
           skills: discoverSkills(sessionCwd, latestAvailableSkills),
           nativeTools: [...registeredToolNames],
@@ -1677,14 +1765,19 @@ async function wireOctocodePiExtension(
       // Pi's own checks never run in print/rpc mode either, and ctx.hasUI is false
       // there, so this also skips the npm-view subprocess entirely for scripted use.
       if (ctx?.hasUI) {
-        void checkForCoreUpdate(readOwnVersion(getAssetPaths().baseDir)).then((update) => {
-          if (!update || authProbeGeneration !== githubAuthProbeGeneration) return;
+        initializationTasks.push(runtime.runTask({
+          name: 'update-check',
+          message: 'checking for updates',
+          readyMessage: 'update check complete',
+          run: () => checkForCoreUpdate(readOwnVersion(getAssetPaths().baseDir)),
+        }).then((update) => {
+          if (!update || !runtime.isCurrent()) return;
           notify(
             ctx,
             `@octocodeai/pi-extension ${update.latestVersion} is available (current: ${update.currentVersion}). Run: octocode-agent update core`,
             'info',
           );
-        });
+        }));
       }
       // Watch mcp.json (global + project) for external edits and hot-reload: drop stale
       // connections + cache and notify the user — no agent restart needed.
@@ -1710,100 +1803,34 @@ async function wireOctocodePiExtension(
           'warning',
         );
       }
+      await Promise.allSettled(initializationTasks);
+      if (!runtime.isCurrent()) return;
+      const degradedTasks = Object.values(runtimeStore.getState().tasks)
+        .filter((task) => task.status === 'degraded' || task.status === 'failed').length;
+      const mcp = runtimeStore.getState().mcp;
+      const mcpSummary = mcp.status === 'ready'
+        ? ` · MCP ${mcp.servers} server${mcp.servers === 1 ? '' : 's'} · ${mcp.tools} tools${mcp.source === 'cache' ? ' · cached' : ''}`
+        : ' · MCP loading in background';
+      runtime.settleInitialization({
+        readyMessage: `Octocode ready${mcpSummary}`,
+        degradedMessage: `Octocode ready with ${degradedTasks} warning${degradedTasks === 1 ? '' : 's'}${mcpSummary}`,
+      });
+    };
+
+    hooks.on('session_start', 'octocode-session-start', async (_event: unknown, ctx: PiContext | undefined) => {
       try {
-        const trusted = ctx?.isProjectTrusted
-          ? Boolean(await ctx.isProjectTrusted())
-          : false;
-        const { applied, skippedProtected } = propagateOctocodeEnv({
-          home: getOctocodeHome(),
-          cwd: ctx?.cwd ?? process.cwd(),
-          trusted,
-        });
-        if (applied.length > 0) {
-          notify(
-            ctx,
-            `Octocode env: ${applied.join(', ')}`,
-            'info',
-          );
-        }
-        if (skippedProtected.length > 0) {
-          notify(
-            ctx,
-            `Octocode env: skipped protected key(s): ${skippedProtected.join(', ')}.`,
-            'warning',
-          );
-        }
+        await initializeOctocodeSession(ctx);
       } catch (error) {
-        notify(
-          ctx,
-          `Octocode env load failed: ${(error as Error)?.message ?? String(error)}`,
-          'warning',
-        );
+        sessionRuntime?.store.getState().failed(error);
+        throw error;
       }
     });
 
     // Clean up status labels and spawned workers when the session tears down
     // so they don't leak across /new, /resume, /fork, reload, or quit.
-    hooks.on('session_shutdown', 'octocode-session-shutdown', async (event: SessionShutdownEvent, ctx: PiContext | undefined) => {
-      // Pi invalidates the old extension context before replacement shutdown
-      // hooks run. Use only data captured during session_start in that case.
-      const canUseShutdownContext = event.reason === 'quit';
-      // Best-effort registry departure so peers stop seeing a stale ACTIVE row.
-      awarenessMutationGate.cleanup();
-      updateAwarenessLiteRegistry('leave', pi, undefined, latestSessionCwd);
-      cronScheduler.stop();
-      stopMcpConfigWatchers();
-      // Stop the per-second metrics interval (it would otherwise keep firing
-      // against the replaced session's stale ctx) and suppress the panels so
-      // late async callbacks cannot resurrect widgets after the clears below.
-      stopMetricsTicker();
-      githubAuthProbeGeneration += 1;
-      metricsState.activeTurnStartedAt = undefined;
-      suppressStatusPanel();
-      suppressAwarenessPanel();
-      // Order matters: suppress inbox/desktop notifications BEFORE killing the
-      // spawned workers, so the teardown burst of killed/exit ledger events is
-      // ignored instead of flashing OSC 9 notifications at the user.
-      agentInbox?.shutdown({ restoreTitle: canUseShutdownContext });
-      setAgentLedgerMetricsRefreshForUi(undefined);
-      // stopWatch paints through the UI callback captured at registration. Drop
-      // that callback before replacement teardown, when its context is stale.
-      if (!canUseShutdownContext) latestSessionUi = undefined;
-      stopWatch();
-      const cleanedAgents = cleanupSpawnedAgentsForShutdown();
-      const stoppedMcpServers = stopAllMcpServers();
-      const closedChrome = closeAllChromeConnections();
-      if (closedChrome > 0 && canUseShutdownContext) notify(ctx, `Closed ${closedChrome} cached CDP connection(s).`, 'info');
-      // Detach painters and captured session data even when UI calls are unsafe.
-      setPeerWipStatusPainter(undefined);
-      latestSessionUi = undefined;
-      latestSessionCwd = undefined;
-      if (canUseShutdownContext && ctx?.hasUI) {
-        ctx.ui?.setStatus?.('octocode', undefined);
-        ctx.ui?.setStatus?.('octocode-thinking', undefined);
-        ctx.ui?.setStatus?.('agent-wait', undefined);
-        ctx.ui?.setStatus?.('chrome-debug', undefined);
-        ctx.ui?.setStatus?.('octocode-mcp', undefined);
-        ctx.ui?.setStatus?.('octocode-peer-wip', undefined);
-        ctx.ui?.setStatus?.('octocode-watch', undefined);
-        // Clear the agents ledger status synchronously too; cleanupSpawnedAgentsForShutdown
-        // hides the ledger but only defers this clear to later worker-close callbacks.
-        ctx.ui?.setStatus?.('octocode-agents', undefined);
-        // The unified below-editor panel is now persistent (it always shows the main
-        // agent model), so it no longer self-clears via refreshStatusPanel emptiness —
-        // clear it explicitly on shutdown.
-        ctx.ui?.setWidget?.('octocode-status-panel', undefined);
-        ctx.ui?.setFooter?.(undefined);
-        footerRegisteredCtxs.delete(ctx);
-        ctx.ui?.setWorkingMessage?.(undefined);
-        ctx.ui?.setWorkingVisible?.(false);
-        if (cleanedAgents > 0) {
-          ctx.ui?.notify?.(`Octocode closed ${cleanedAgents} spawned subagent(s).`, 'info');
-        }
-        if (stoppedMcpServers > 0) {
-          ctx.ui?.notify?.(`Octocode stopped ${stoppedMcpServers} MCP server(s).`, 'info');
-        }
-      }
+    hooks.on('session_shutdown', 'octocode-session-shutdown', async (event: SessionShutdownEvent, _ctx: PiContext | undefined) => {
+      await sessionRuntime?.dispose(event.reason);
+      sessionRuntime = undefined;
     });
 
     hooks.on('model_select', 'octocode-model-select', async (_event: unknown, ctx: PiContext | undefined) => {
@@ -1939,10 +1966,9 @@ async function wireOctocodePiExtension(
       if (cachedSystemPromptText === null) {
         cachedSystemPromptText = readTextIfExists(getAssetPaths().systemPrompt);
       }
-      // Bounded wait for the init-time MCP discovery: the <mcp_catalog> block must
-      // be in the FIRST turn's prompt — a catalog that first appears later changes
-      // the prompt prefix and busts the provider prompt cache. No-op (cache hit)
-      // on every subsequent turn.
+      // Bounded wait for init-time MCP discovery. The first turn receives either
+      // the exact <mcp_catalog> (default) or the opt-in compact
+      // <mcp_catalog_index>; subsequent turns reuse the same session bytes.
       await mcpCatalogReady(ctx);
       const mcpCatalog = getCachedMcpCatalogAddendum(ctx);
       // Live projection of the agent's self-created dynamic tools/skills. Rebuilt every
@@ -2023,20 +2049,20 @@ async function wireOctocodePiExtension(
         const ui = ctx.ui;
         if (!ui) return;
         // Keep the working row visible for the full turn, not just during streaming.
-        ui.setWorkingVisible?.(true);
+        setManagedWorking(ctx, true, buildWorkingMessage(ui.theme));
         // Swap the status chip to an active indicator so it's clear the agent is busy.
-        ui.setStatus?.('octocode-thinking', paint(ui.theme, 'brand', 'thinking…'));
+        setManagedStatus(ctx, 'octocode-thinking', paint(ui.theme, 'brand', 'thinking…'));
       });
       pi.on('turn_end', (_event: unknown, ctx: PiContext | undefined) => {
         if (!ctx?.hasUI) return;
         const ui = ctx.ui;
         if (!ui) return;
         // Hide the working row when the turn (including all tool calls) is complete.
-        ui.setWorkingVisible?.(false);
+        setManagedWorking(ctx, false);
         // Restore the quiet thinking-level chip (or clear it if unsupported).
         const level = pi.getThinkingLevel?.();
         const status = getThinkingStatus(ctx, level);
-        ui.setStatus?.('octocode-thinking', status ? paint(ui.theme, 'dim', status) : undefined);
+        setManagedStatus(ctx, 'octocode-thinking', status ? paint(ui.theme, 'dim', status) : undefined);
       });
     }
 
@@ -2466,7 +2492,7 @@ async function wireOctocodePiExtension(
   registerAiWatch(pi, {
     cwd: () => latestSessionCwd ?? process.cwd(),
     // Paint/clear the 'watch: on' chip on every startWatch/stopWatch transition.
-    setStatus: (text) => latestSessionUi?.setStatus?.('octocode-watch', text),
+    setStatus: (text) => setManagedStatus(latestSessionCtx, 'octocode-watch', text),
   });
   registerRewindCommand(pi, { getEngine: getCheckpointEngine, notify });
   registerExportCommand(pi);

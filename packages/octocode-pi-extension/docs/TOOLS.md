@@ -336,10 +336,20 @@ for the complete cross-host location matrix.
 
 Startup reads a versioned private snapshot from
 `$OCTOCODE_HOME/agent/mcp/workspaces/<workspace-digest>/`. `catalog.json` retains exact
-schemas. A matching `mcp.md` is consumed into the first-turn prompt; on a miss the active
-model generates it from every enabled tool name, description, and input schema, with a
-deterministic schema-aware fallback. Calls load the exact private schema and validate
-arguments before sending them. There is no prepare action or schema lease.
+schemas for enabled tools from enabled servers. By default the first-turn system prompt
+receives those exact tool names, descriptions, and input schemas in `<mcp_catalog>`.
+Set `OCTOCODE_COMPACT_MCP=1` to enable the compact flow: a matching `mcp.md` is consumed,
+or the active model generates it from the exact enabled catalog with a deterministic
+schema-aware fallback. Calls validate against the exact private schema before sending.
+There is no prepare action or schema lease.
+
+Cached prompt readiness is independent from live schema refresh: `catalog.json` releases
+the default exact prompt immediately; in compact mode, matching `catalog.json` + `mcp.md`
+does the same. Cold/changed startup waits through two bounded discovery attempts per
+enabled server and, only in compact mode, bounded guide generation (35 seconds total),
+then freezes stable prompt bytes for that session and persists any late result for the
+next one. The shared runtime renderer shows checking, discovery, optional generation,
+counts, and degraded state. See [RUNTIME_STATE.md](./RUNTIME_STATE.md).
 
 ### 1. Active config locations
 

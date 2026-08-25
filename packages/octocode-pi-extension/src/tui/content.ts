@@ -4,8 +4,8 @@
  * Rules:
  *   - Strings only: no logic, no colors, no layout (palette.ts owns design
  *     constants; this file owns the words a user reads).
- *   - Every module that shows one of these strings imports it from here (or a
- *     re-export kept for back-compat) — never restates it inline, so wording
+ *   - Every module that shows one of these strings imports it from here — never
+ *     restates it inline, so wording
  *     can be edited (or one day translated) in one place.
  *   - Dynamic sentences (counts, names, paths interpolated at runtime) stay at
  *     their call sites; only stable copy lives here.
@@ -68,6 +68,20 @@ export const PLAN_REJECT_LABEL = 'Reject plan';
 export const PLAN_REJECT_DESC = 'do not execute';
 /** Free-text row doubles as the adjust channel; the question advertises it. */
 export const PLAN_PROPOSE_HINT = 'type feedback to request changes';
+
+/** Question shown after plan(set) to offer the local browser view. */
+export const PLAN_SET_BROWSER_QUESTION = 'View this plan in your browser?';
+/** Question shown after plan(propose) non-RFC is approved, to pick a review surface. */
+export const PLAN_APPROVED_REVIEW_QUESTION = 'Plan approved — how would you like to review it?';
+/** Question shown after plan(complete) marks every step done. */
+export const PLAN_COMPLETE_QUESTION = 'Plan complete — what would you like to do next?';
+
+// ─── Free-text escape labels ────────────────────────────────────────────────
+
+/** Default free-text escape label for generic askUser calls. */
+export const FREE_TEXT_DISCUSS = 'Discuss or type your own answer…';
+/** Plan-context free-text escape — signals the user wants to redirect rather than pick an option. */
+export const FREE_TEXT_TELL_DIFFERENTLY = 'No, and tell me what to do differently';
 
 // ─── Footer legend ─────────────────────────────────────────────────────────────
 

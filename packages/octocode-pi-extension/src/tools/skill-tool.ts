@@ -354,29 +354,20 @@ export function registerSkillTool(
   const renderCall = (args: unknown, theme?: PiTheme) => {
     const queries = ((args ?? {}) as Record<string, unknown>)['queries'];
     const items = Array.isArray(queries) ? queries as Record<string, unknown>[] : [];
-    if (items.length === 0) {
+    const item = items[0];
+    if (!item) {
       return makeRenderer((width) => [truncateToWidth(`${paint(theme, 'brand', '◆ skill')}`, width)]);
     }
-    if (items.length === 1) {
-      const item = items[0]!;
-      const type = String(item['type'] ?? 'load');
-      if (type === 'call') {
-        const skillType = String(item['skillType'] ?? '?');
-        const mode = typeof item['mode'] === 'string' ? ` ${item['mode']}` : '';
-        return makeRenderer((width) => [truncateToWidth(
-          `${paint(theme, 'brand', '◆ skill')} ${paint(theme, 'dim', '·')} ${paint(theme, 'title', `call:${skillType}`)}${paint(theme, 'dim', mode)}`, width)]);
-      }
-      const isList = item['action'] === 'list';
-      const target = isList ? 'list' : String(item['name'] ?? '?');
-      const reason = typeof item['reason'] === 'string' ? item['reason'].trim() : '';
-      const why = !isList && reason
-        ? ` ${paint(theme, 'warning', 'why:')} ${paint(theme, 'bright', reason)}`
-        : '';
+    const type = String(item['type'] ?? 'load');
+    if (type === 'call') {
+      const skillType = String(item['skillType'] ?? '?');
+      const mode = typeof item['mode'] === 'string' ? ` ${item['mode']}` : '';
       return makeRenderer((width) => [truncateToWidth(
-        `${paint(theme, 'brand', '◆ skill')} ${paint(theme, 'dim', '·')} ${paint(theme, 'title', target)}${why}`, width)]);
+        `${paint(theme, 'brand', '◆ skill')} ${paint(theme, 'dim', '·')} ${paint(theme, 'title', `call:${skillType}`)}${paint(theme, 'dim', mode)}`, width)]);
     }
+    const target = item['action'] === 'list' ? 'list' : String(item['name'] ?? '?');
     return makeRenderer((width) => [truncateToWidth(
-      `${paint(theme, 'brand', '◆ skill')} ${paint(theme, 'dim', `· ${items.length} queries`)}`, width)]);
+      `${paint(theme, 'brand', '◆ skill')} ${paint(theme, 'dim', '·')} ${paint(theme, 'title', target)}`, width)]);
   };
 
   const renderResult = (resultValue: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) => {

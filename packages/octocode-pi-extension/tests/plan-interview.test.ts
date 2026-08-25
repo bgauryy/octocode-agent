@@ -7,11 +7,19 @@ import { afterEach, test, vi } from 'vitest';
 import { Type } from 'typebox';
 import type { ToolDefinition, PiContext } from '../src/types.js';
 
-// A scripted outcome queue + a record of the questions actually shown, hoisted so
-// the vi.mock factory can close over them.
-const { outcomes, asked } = vi.hoisted(() => ({ outcomes: [] as unknown[], asked: [] as string[] }));
+// A scripted outcome queue + a record of the questions / pagination metadata
+// actually shown, hoisted so the vi.mock factory can close over them.
+const { outcomes, asked, paginations } = vi.hoisted(() => ({
+  outcomes: [] as unknown[],
+  asked: [] as string[],
+  paginations: [] as Array<{ current: number; total: number } | undefined>,
+}));
 vi.mock('../src/tools/ask-user-tool.js', () => ({
-  runAskPrompt: async (_ctx: unknown, params: { question: string }) => { asked.push(params.question); return outcomes.shift(); },
+  runAskPrompt: async (_ctx: unknown, params: { question: string; pagination?: { current: number; total: number } }) => {
+    asked.push(params.question);
+    paginations.push(params.pagination);
+    return outcomes.shift();
+  },
 }));
 
 import { registerPlanTool } from '../src/tools/plan-tool.js';
@@ -25,12 +33,14 @@ function loadTool(): ToolDefinition {
 }
 
 const CWD = '/tmp/plan-interview-ws';
-afterEach(() => { outcomes.length = 0; asked.length = 0; clearPlan(CWD); });
+afterEach(() => { outcomes.length = 0; asked.length = 0; paginations.length = 0; clearPlan(CWD); });
 
 async function clarify(questions: unknown): Promise<{ content: Array<{ text: string }>; isError?: boolean }> {
   const tool = loadTool();
   const ctx = { cwd: CWD } as unknown as PiContext; // hasUI falsy → skip panel; runAskPrompt is mocked
-  return (await tool.execute('id', { action: 'clarify', questions }, undefined, undefined, ctx)) as { content: Array<{ text: string }>; isError?: boolean };
+  return (await tool.execute('id', {
+    queries: [{ action: 'clarify', questions, reasoning: 'collect plan decisions in this test' }],
+  }, undefined, undefined, ctx)) as { content: Array<{ text: string }>; isError?: boolean };
 }
 
 test('plan(clarify) records selected (label) and free-text answers into the decision log', async () => {
@@ -49,12 +59,15 @@ test('plan(clarify) records selected (label) and free-text answers into the deci
   assert.match(res.content[0]!.text, /decision-complete/);
 });
 
-test('plan(clarify) numbers multi-question interviews (n/total) but keeps the clean prompt in the log', async () => {
+test('plan(clarify) passes pagination metadata for multi-question interviews and keeps the clean prompt in both the overlay and the log', async () => {
   outcomes.push({ status: 'selected', label: 'X', value: 'x' });
   outcomes.push({ status: 'selected', label: 'Y', value: 'y' });
   await clarify([{ prompt: 'First?' }, { prompt: 'Second?' }]);
-  assert.deepEqual(asked, ['(1/2) First?', '(2/2) Second?'], 'shown questions are numbered');
-  assert.deepEqual(getPlanDecisions(CWD).map((d) => d.q), ['First?', 'Second?'], 'the decision log keeps the clean prompt');
+  // Numbering is now expressed via the pagination badge in the overlay header
+  // rather than a prefix in the question string, so the question text is clean.
+  assert.deepEqual(asked, ['First?', 'Second?'], 'question text is the clean prompt (numbering is in params.pagination)');
+  assert.deepEqual(paginations, [{ current: 1, total: 2 }, { current: 2, total: 2 }], 'pagination metadata is threaded to the overlay');
+  assert.deepEqual(getPlanDecisions(CWD).map((d) => d.q), ['First?', 'Second?'], 'the decision log also keeps the clean prompt');
 });
 
 test('plan(clarify) does not number a single-question interview', async () => {
@@ -87,7 +100,7 @@ test('plan(clarify) halts on cancel and keeps only prior answers', async () => {
 test('plan(clarify) with no interactive host lists the questions to ask inline', async () => {
   // The handler branches on `!ctx`; simulate a host with no ctx.
   const tool = loadTool();
-  const res = (await tool.execute('id', { action: 'clarify', questions: [{ prompt: 'Which DB?' }] }, undefined, undefined, undefined)) as { content: Array<{ text: string }> };
+  const res = (await tool.execute('id', { queries: [{ action: 'clarify', questions: [{ prompt: 'Which DB?' }], reasoning: 'exercise headless clarification' }] }, undefined, undefined, undefined)) as { content: Array<{ text: string }> };
   assert.match(res.content[0]!.text, /cannot prompt/);
   assert.match(res.content[0]!.text, /Which DB\?/);
 });

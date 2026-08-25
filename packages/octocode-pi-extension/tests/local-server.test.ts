@@ -212,6 +212,25 @@ test('a mounted management page can send a same-origin typed action and receive 
   assert.deepEqual(await response.json(), { ok: true, value: { updated: true } });
 });
 
+test('a mounted management page can require an unguessable action token', async () => {
+  const dir = tmpDir();
+  fs.writeFileSync(path.join(dir, 'index.html'), 'manager');
+  const served = await serveDirectory('manager-token', dir, {
+    actionToken: 'secret-token',
+    onAction: async () => ({ updated: true }),
+  });
+  const endpoint = `${served!.url}__octocode/action`;
+  const headers = { origin: new URL(served!.url).origin, 'content-type': 'application/json' };
+  const denied = await fetch(endpoint, { method: 'POST', headers, body: '{}' });
+  assert.equal(denied.status, 403);
+  const accepted = await fetch(endpoint, {
+    method: 'POST',
+    headers: { ...headers, 'x-octocode-action-token': 'secret-token' },
+    body: '{}',
+  });
+  assert.equal(accepted.status, 200);
+});
+
 test('localServer forwards browser messages into the running agent task', async () => {
   const delivered: Array<{ message: string; deliverAs?: string }> = [];
   const tool = loadLocalServerTool(undefined, async (message, options) => {

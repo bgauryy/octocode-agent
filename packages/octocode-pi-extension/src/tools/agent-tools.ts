@@ -29,6 +29,7 @@ import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { resumeStatusPanel } from './status-panel.js';
 import { stringEnumSchema } from './schema-helpers.js';
+import { setManagedStatus, setManagedWidget } from './runtime-renderer.js';
 import { getRandomAgentName } from '../agentNames.js';
 import {
   assertWorktreeSpawnAllowed,
@@ -1679,9 +1680,7 @@ function probeWorkerAlive(record: AgentRecord, graceMs: number): Promise<boolean
  * can't confirm it is still alive-and-quiet. Every inbound event resets the
  * silence watchdog, so long-but-active turns run to completion.
  */
-export function waitForAgent(record: AgentRecord, opts: WaitOptions | number = {}): Promise<WaitOutcome> {
-  // Back-compat: a bare number is treated as the silence budget.
-  const options: WaitOptions = typeof opts === 'number' ? { maxSilenceMs: opts } : opts;
+export function waitForAgent(record: AgentRecord, options: WaitOptions = {}): Promise<WaitOutcome> {
   const maxSilenceMs = options.maxSilenceMs ?? DEFAULT_WAIT_MAX_SILENCE_MS;
   const probeGraceMs = options.probeGraceMs ?? DEFAULT_PROBE_GRACE_MS;
   const probeEnabled = options.probe ?? true;
@@ -1968,8 +1967,9 @@ function formatOctocodeAgentsHelp(): string {
 }
 
 function showAgentInspectionPanel(ctx?: PiContext): void {
-  if (!ctx?.hasUI || !ctx.ui?.setWidget) return;
-  ctx.ui.setWidget(
+  if (!ctx?.hasUI) return;
+  setManagedWidget(
+    ctx,
     'octocode-status-panel',
     (_tui: unknown, theme: PiTheme) => makeRenderer((width) => {
       const lines = agentPanelLines(theme, 10, width);
@@ -2322,7 +2322,7 @@ export function registerAgentTools(
       }
 
       if (action === 'wait') {
-        getActiveAgentUi(ctx)?.setStatus?.('agent-wait', `\u29D7 Waiting for \u201C${record.name}\u201D\u2026`);
+        setManagedStatus(ctx, 'agent-wait', `\u29D7 Waiting for \u201C${record.name}\u201D\u2026`);
         // timeoutMs is the silence budget, not a rigid deadline: an actively
         // streaming worker keeps the wait alive indefinitely. On a genuine quiet
         // gap we probe liveness and return a truthful snapshot instead of erroring.
@@ -2330,7 +2330,7 @@ export function registerAgentTools(
         try {
           outcome = await waitForAgent(record, { maxSilenceMs: Number(params['timeoutMs'] ?? 300000) });
         } finally {
-          getActiveAgentUi(ctx)?.setStatus?.('agent-wait', undefined);
+          setManagedStatus(ctx, 'agent-wait', undefined);
         }
         const header = outcome.reason === 'terminal'
           ? 'Agent turn completed'

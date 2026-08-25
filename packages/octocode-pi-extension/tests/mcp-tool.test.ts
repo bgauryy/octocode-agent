@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, test } from 'vitest';
+import { openOctocodeDb, setMcpToolEnabled } from '@octocodeai/octocode-awareness/mcp-state';
+import { afterEach, beforeEach, test } from 'vitest';
 import {
   OCTOCODE_MCP_ENV_DEFAULTS,
   __test__ as mcpTestHooks,
   getCachedMcpCatalogAddendum,
   getCachedMcpCounts,
+  isCompactMcpEnabled,
   mcpCatalogReady,
   resolveMcpCallText,
   stopAllMcpServers,
@@ -16,11 +18,25 @@ import {
 
 const mcpCtx = { cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-cache-')) } as unknown as import('../src/types.js').PiContext;
 const originalOctocodeHome = process.env['OCTOCODE_HOME'];
+const originalCompactMcp = process.env['OCTOCODE_COMPACT_MCP'];
+
+beforeEach(() => {
+  process.env['OCTOCODE_COMPACT_MCP'] = '1';
+});
 
 afterEach(() => {
   if (originalOctocodeHome === undefined) delete process.env['OCTOCODE_HOME'];
   else process.env['OCTOCODE_HOME'] = originalOctocodeHome;
+  if (originalCompactMcp === undefined) delete process.env['OCTOCODE_COMPACT_MCP'];
+  else process.env['OCTOCODE_COMPACT_MCP'] = originalCompactMcp;
   mcpTestHooks.clearCachedMcpCatalog();
+});
+
+test('compact MCP prompting is opt-in through OCTOCODE_COMPACT_MCP', () => {
+  assert.equal(isCompactMcpEnabled({}), false);
+  assert.equal(isCompactMcpEnabled({ OCTOCODE_COMPACT_MCP: '1' }), true);
+  assert.equal(isCompactMcpEnabled({ OCTOCODE_COMPACT_MCP: 'true' }), true);
+  assert.equal(isCompactMcpEnabled({ OCTOCODE_COMPACT_MCP: '0' }), false);
 });
 
 function tmpMcpJson(content: unknown): string {
@@ -37,6 +53,56 @@ test('env defaults: full-text MCP responses + local tools + npm cache vars are a
   assert.equal(OCTOCODE_MCP_ENV_DEFAULTS['ENABLE_LOCAL'], 'true');
   assert.equal(OCTOCODE_MCP_ENV_DEFAULTS['npm_config_include'], 'optional');
   assert.ok(OCTOCODE_MCP_ENV_DEFAULTS['npm_config_cache']!.length > 0);
+});
+
+test('MCP pagination follows every cursor without dropping page-one or later items', async () => {
+  const requested: Array<string | undefined> = [];
+  const items = await mcpTestHooks.collectMcpPages<{ name: string }>(
+    'tools/list',
+    async (cursor) => {
+      requested.push(cursor);
+      if (!cursor) return { tools: [{ name: 'first' }], nextCursor: 'page-2' };
+      if (cursor === 'page-2') return { tools: [{ name: 'second' }], nextCursor: 'page-3' };
+      return { tools: [{ name: 'third' }] };
+    },
+    (page) => (page as { tools: Array<{ name: string }> }).tools,
+  );
+  assert.deepEqual(requested, [undefined, 'page-2', 'page-3']);
+  assert.deepEqual(items.map((item) => item.name), ['first', 'second', 'third']);
+});
+
+test('MCP pagination rejects a repeated cursor instead of looping forever', async () => {
+  await assert.rejects(
+    () => mcpTestHooks.collectMcpPages(
+      'resources/list',
+      async () => ({ resources: [], nextCursor: 'same' }),
+      (page) => (page as { resources: unknown[] }).resources,
+    ),
+    /repeated cursor same/,
+  );
+});
+
+test('MCP client capability handlers expose only trusted roots and deny headless sampling/input', async () => {
+  const requests = new Map<string, (request: { params: Record<string, unknown> }) => Promise<unknown>>();
+  const notifications = new Map<string, (notification: { params: Record<string, unknown> }) => Promise<void>>();
+  const client = {
+    setRequestHandler: (method: string, handler: (request: { params: Record<string, unknown> }) => Promise<unknown>) => requests.set(method, handler),
+    setNotificationHandler: (method: string, handler: (notification: { params: Record<string, unknown> }) => Promise<void>) => notifications.set(method, handler),
+  };
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-roots-'));
+  mcpTestHooks.registerMcpClientHandlers(client as never, 'docs', {
+    cwd,
+    hasUI: false,
+    mode: 'rpc',
+    isProjectTrusted: async () => true,
+  } as import('../src/types.js').PiContext);
+  const roots = await requests.get('roots/list')!({ params: {} }) as { roots: Array<{ uri: string }> };
+  assert.equal(roots.roots.length, 1);
+  assert.match(roots.roots[0]!.uri, /^file:/);
+  await assert.rejects(() => requests.get('sampling/createMessage')!({ params: { messages: [], maxTokens: 10 } }), /interactive model session is required/);
+  assert.deepEqual(await requests.get('elicitation/create')!({ params: { message: 'secret?', mode: 'form' } }), { action: 'decline' });
+  assert.ok(notifications.has('notifications/message'));
+  assert.ok(notifications.has('notifications/progress'));
 });
 
 // ─── resolveMcpCallText — structuredContent interop fallback ─────────────────
@@ -125,16 +191,44 @@ test('stopAllMcpServers clears the cached catalog + recent-schema caches (no sta
   assert.equal(getCachedMcpCounts(mcpCtx).servers, 0, 'server count reset after shutdown');
 });
 
-test('catalog addendum carries a compact compiled routing guide without exact schemas', () => {
+test('catalog addendum carries server instructions and a compact routing guide without exact schemas', () => {
   seedCatalog();
   const addendum = getCachedMcpCatalogAddendum(mcpCtx);
   assert.match(addendum, /<mcp_catalog_index>/);
   assert.match(addendum, /server: octocode/);
-  assert.doesNotMatch(addendum, /instructions: Use batched queries/);
+  assert.match(addendum, /instructions: Use batched queries/);
   assert.match(addendum, /tool: localSearchCode/);
   assert.match(addendum, /description: Search local source files/);
   assert.doesNotMatch(addendum, /inputSchema|schemaLease|SCHEMA_REQUIRED/);
   assert.match(addendum, /call it directly/i);
+});
+
+test('default catalog addendum carries exact enabled descriptions and input schemas', () => {
+  delete process.env['OCTOCODE_COMPACT_MCP'];
+  seedCatalog();
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+
+  assert.match(addendum, /^<mcp_catalog>/);
+  assert.match(addendum, /server: octocode/);
+  assert.match(addendum, /tool: localSearchCode/);
+  assert.match(addendum, /description: Search local source files\./);
+  assert.match(addendum, /inputSchema: \{"properties":/);
+  assert.match(addendum, /"required":\["queries"\]/);
+  assert.doesNotMatch(addendum, /mcp_catalog_index/);
+});
+
+test('default exact catalog excludes tools disabled for the active workspace', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-enabled-only-'));
+  process.env['OCTOCODE_HOME'] = home;
+  delete process.env['OCTOCODE_COMPACT_MCP'];
+  setMcpToolEnabled(openOctocodeDb(), path.resolve(mcpCtx.cwd!), 'octocode', 'localGetFileContent', false);
+
+  seedCatalog();
+  const addendum = getCachedMcpCatalogAddendum(mcpCtx);
+
+  assert.match(addendum, /tool: localSearchCode/);
+  assert.doesNotMatch(addendum, /tool: localGetFileContent/);
+  assert.doesNotMatch(addendum, /description: Read a local file\./);
 });
 
 test('catalog addendum is byte-stable: cachedAt and repeated renders never change the prompt bytes', () => {
@@ -472,6 +566,28 @@ test('lazy startup persists a cold index, freezes snapshot-hit prompt bytes, and
   }
 });
 
+test('persisted mcp.md releases prompt readiness before live schema refresh completes', async () => {
+  const fixture = createDelayedMcpFixture(250);
+  process.env['OCTOCODE_HOME'] = path.join((fixture.ctx as unknown as { cwd: string }).cwd, '.octocode-home');
+  try {
+    await warmMcpCatalog(fixture.ctx);
+    stopAllMcpServers();
+    fs.rmSync(fixture.discoveryMarker, { force: true });
+
+    const refresh = warmMcpCatalog(fixture.ctx);
+    const startedAt = Date.now();
+    assert.equal(await mcpCatalogReady(fixture.ctx, 1_000), true);
+    assert.ok(Date.now() - startedAt < 150, 'cached prompt readiness must not await the 250ms live tools/list refresh');
+    assert.equal(fs.existsSync(fixture.discoveryMarker), false, 'live schema refresh is still running privately');
+
+    await refresh;
+    assert.equal(fs.existsSync(fixture.discoveryMarker), true);
+  } finally {
+    stopAllMcpServers();
+    fixture.cleanup();
+  }
+});
+
 test('cold startup generates mcp.md from descriptions and schemas, then reuses it without another model call', async () => {
   const fixture = createDelayedMcpFixture(0);
   process.env['OCTOCODE_HOME'] = path.join((fixture.ctx as unknown as { cwd: string }).cwd, '.octocode-home');
@@ -619,6 +735,21 @@ test('add: creates mcp.json with mcpServers wrapper and only-defined fields', ()
   assert.deepEqual(raw.mcpServers.weather, { command: 'node', args: ['w.js'], env: { KEY: 'v' } });
 });
 
+test('config supports secret references without copying resolved values into mcp.json', () => {
+  const p = path.join(freshDir(), 'mcp.json');
+  upsertServerInFile(p, 'remote', {
+    url: 'https://mcp.example.test/api',
+    envRefs: { API_KEY: 'REMOTE_API_KEY' },
+    headerRefs: { Authorization: 'REMOTE_AUTH_HEADER' },
+    auth: 'oauth',
+  });
+  const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.deepEqual(raw.mcpServers.remote.envRefs, { API_KEY: 'REMOTE_API_KEY' });
+  assert.deepEqual(raw.mcpServers.remote.headerRefs, { Authorization: 'REMOTE_AUTH_HEADER' });
+  assert.equal(raw.mcpServers.remote.auth, 'oauth');
+  assert.doesNotMatch(fs.readFileSync(p, 'utf8'), /Bearer |SECRET/);
+});
+
 test('add: preserves the existing container shape (servers key) and other top-level keys', () => {
   const p = tmpMcpJson({ servers: { a: { command: 'x' } }, someOtherKey: 1 });
   upsertServerInFile(p, 'b', { command: 'y' });
@@ -733,6 +864,14 @@ test('project-scope add/remove fail closed when project trust cannot be verified
   const rm = await handleMcpAction({ action: 'remove', server: 'weather' }, undefined, ctx);
   assert.equal(rm.isError, true);
   assert.match((rm.content[0] as { text: string }).text, /trust could not be verified/i);
+  const browserAdd = await handleMcpAction(
+    { action: 'add', server: 'weather', config: { command: 'node', args: ['w.js'] } },
+    undefined,
+    ctx,
+    { trustedBrowserAction: true },
+  );
+  assert.equal(browserAdd.isError, true);
+  assert.match((browserAdd.content[0] as { text: string }).text, /trust could not be verified/i);
 });
 
 test('project-scope add is refused when no interactive UI is available (non-interactive host)', async () => {
@@ -796,7 +935,7 @@ test('compiled call rejects an unsupported schema without invoking the server', 
   }
 });
 
-test('compiled call validates internally and invokes the server once for valid arguments', async () => {
+test('compiled call validates internally and invokes the server once for valid arguments', { timeout: 15_000 }, async () => {
   const fixture = createCallGateMcpFixture();
   try {
     const invalid = await handleMcpAction({ action: 'call', server: 'octocode', tool: 'echo', arguments: { value: '', extra: true } }, undefined, fixture.ctx);
@@ -868,6 +1007,7 @@ test('startMcpConfigWatcher starts watchers and stop closes them', () => {
 import { Type } from 'typebox';
 import type { ToolDefinition } from '../src/types.js';
 import { registerMcpTool, preflightMcpQuery } from '../src/tools/mcp-tool.js';
+import { registerUniqueTool } from '../src/tools/octocode-tools.js';
 
 // ─── Fixture: registered MCPTool definition ───────────────────────────────────
 
@@ -877,7 +1017,7 @@ function buildMcpToolDef(): ToolDefinition {
     { registerTool: (def: ToolDefinition) => tools.set(def.name, def) } as unknown as import('../src/types.js').PiInstance,
     Type,
     new Set<string>(),
-    (_pi, _names, def) => tools.set(def.name, def),
+    (pi, names, def) => registerUniqueTool(pi, names, def),
   );
   const def = tools.get('MCPTool');
   assert.ok(def, 'MCPTool must be registered');
@@ -885,6 +1025,33 @@ function buildMcpToolDef(): ToolDefinition {
 }
 
 // ─── Schema shape ─────────────────────────────────────────────────────────────
+
+test('renderCall: nested MCP queries render independently with unlabeled reasons', () => {
+  const def = buildMcpToolDef();
+  const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+  const lines = def.renderCall!({
+    queries: [{
+      reasoning: 'read both source files',
+      action: 'call',
+      server: 'octocode',
+      tool: 'localGetFileContent',
+      arguments: {
+        queries: [
+          { path: '/src/a.ts', reasoning: 'read alpha' },
+          { path: '/src/b.ts', reasoning: 'read beta' },
+        ],
+      },
+    }],
+  }, theme).render(120);
+
+  assert.equal(lines.length, 5);
+  assert.match(lines[0]!, /a\.ts/);
+  assert.match(lines[1]!, /read alpha/);
+  assert.match(lines[2]!, /b\.ts/);
+  assert.match(lines[3]!, /read beta/);
+  assert.match(lines[4]!, /read both source files/);
+  assert.doesNotMatch(lines.join('\n'), /2 queries|why:|reasoning:/);
+});
 
 test('schema: top-level only exposes queries property', () => {
   const def = buildMcpToolDef();

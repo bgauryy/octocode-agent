@@ -215,8 +215,7 @@ function execBashH4(
   ctx?: { cwd?: string },
 ): Promise<ToolCallResult> {
   const definition = tool as ToolDefinition;
-  const prepared = definition.prepareArguments?.(params) as Record<string, unknown> | undefined;
-  return definition.execute(id, prepared ?? params, undefined, undefined, ctx);
+  return definition.execute(id, { queries: [params] }, undefined, undefined, ctx);
 }
 
 test('H4: env-exfil approval fires even when classifySensitiveCommand also matches (no ?? hidden-gate regression)', async () => {

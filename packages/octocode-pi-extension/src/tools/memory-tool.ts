@@ -287,16 +287,9 @@ export function registerMemoryTool(
       reasoningDescription: 'Concise reason this memory operation is necessary.',
     }),
 
-    prepareArguments(args: unknown) {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      return Array.isArray(input['queries']) ? args : { queries: [input] };
-    },
-
     async execute(id: string, raw: Record<string, unknown>, signal, onUpdate, ctx?: PiContext): Promise<ToolCallResult> {
-      const envelope = Array.isArray(raw['queries']) ? raw : { queries: [raw] };
-      const envelopeQueries = Array.isArray(envelope.queries)
-        ? envelope.queries as Record<string, unknown>[]
+      const envelopeQueries = Array.isArray(raw.queries)
+        ? raw.queries as Record<string, unknown>[]
         : [];
       const queryCount = envelopeQueries.length;
       if (queryCount === 1) {
@@ -310,7 +303,7 @@ export function registerMemoryTool(
       }
       return executeQueryBatch({
         toolCallId: id,
-        raw: envelope,
+        raw,
         signal,
         onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
         ctx,
@@ -451,12 +444,11 @@ export function registerMemoryTool(
     renderCall(raw: unknown, theme?: PiTheme) {
       const envelope = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
       const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as MemoryParams[] : [];
-      const p = queries[0] ?? envelope as unknown as MemoryParams;
+      const p = queries[0] ?? {} as MemoryParams;
       const action = String(p?.action ?? 'recall');
       const hint = p?.query ? `"${p.query}"` : p?.label ? `[${p.label}]` : p?.memoryId ? p.memoryId : '';
       const title = cliToolTitle(theme, 'memory');
-      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
-      const body = paint(theme, 'dim', `${action} ${hint}${more}`.trim());
+      const body = paint(theme, 'dim', `${action} ${hint}`.trim());
       return makeRenderer((w) => [truncateToWidth(`${title} ${body}`, w)]);
     },
 

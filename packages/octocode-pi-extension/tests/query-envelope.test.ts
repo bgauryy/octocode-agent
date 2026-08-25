@@ -10,8 +10,8 @@ import type { ToolCallResult } from '../src/types.js';
 
 const typeBuilder = Type as unknown as (typeof import('typebox'))['Type'];
 
-function textResult(text: string, details?: unknown): ToolCallResult {
-  return { content: [{ type: 'text', text }], details };
+function textResult(text: string, details?: unknown, isError = false): ToolCallResult {
+  return { content: [{ type: 'text', text }], details, isError };
 }
 
 describe('query envelope', () => {
@@ -90,41 +90,89 @@ describe('query envelope', () => {
       ['b', 1, 'call-1:1'],
     ]);
     expect(events).toHaveLength(2);
-    expect((result.details as { results: Array<{ index: number; reasoning: string }> }).results).toMatchObject([
-      { index: 0, reasoning: 'run one' },
-      { index: 1, reasoning: 'run two' },
+    expect((result.details as { results: Array<{ index: number; reasoning: string; status: string; summary: string }> }).results).toMatchObject([
+      { index: 0, reasoning: 'run one', status: 'success', summary: 'done a' },
+      { index: 1, reasoning: 'run two', status: 'success', summary: 'done b' },
     ]);
     expect((result.content[0] as { text: string }).text).toMatch(/2 queries succeeded/);
   });
 
-  it('stops on the first runtime failure and reports retained prior effects', async () => {
+  it('stops on the first runtime failure and retains success, failure, and not-run rows', async () => {
     const applied: string[] = [];
-
-    await expect(executeQueryBatch({
-      toolCallId: 'call-2',
-      raw: {
-        queries: [
-          { reasoning: 'apply first', value: 'a' },
-          { reasoning: 'fail second', value: 'b' },
-          { reasoning: 'never third', value: 'c' },
-        ],
-      },
-      execute: async (query, index) => {
-        if (index === 1) throw new Error('boom');
-        applied.push(String(query.value));
-        return textResult('ok');
-      },
-    })).rejects.toMatchObject({
-      name: 'QueryBatchError',
-      failedIndex: 1,
-      completedCount: 1,
-    });
-
-    expect(applied).toEqual(['a']);
+    let failure: QueryBatchError | undefined;
 
     try {
       await executeQueryBatch({
+        toolCallId: 'call-2',
+        raw: {
+          queries: [
+            { reasoning: 'apply first', value: 'a' },
+            { reasoning: 'fail second', value: 'b' },
+            { reasoning: 'never third', value: 'c' },
+          ],
+        },
+        execute: async (query, index) => {
+          if (index === 1) throw new Error('boom');
+          applied.push(String(query.value));
+          return textResult('first applied');
+        },
+      });
+    } catch (error) {
+      failure = error as QueryBatchError;
+    }
+
+    expect(failure).toBeInstanceOf(QueryBatchError);
+    expect(failure).toMatchObject({
+      name: 'QueryBatchError',
+      failedIndex: 1,
+      completedCount: 1,
+      rows: [
+        { index: 0, reasoning: 'apply first', status: 'success', summary: 'first applied' },
+        { index: 1, reasoning: 'fail second', status: 'failed', summary: 'boom' },
+        { index: 2, reasoning: 'never third', status: 'not-run', summary: 'not run' },
+      ],
+    });
+    expect(failure?.message).toMatch(/\[0\].*first applied[\s\S]*\[1\].*boom[\s\S]*\[2\].*not run/);
+    expect(applied).toEqual(['a']);
+  });
+
+  it('reports the real structured failure instead of the first successful progress line', async () => {
+    let failure: QueryBatchError | undefined;
+    try {
+      await executeQueryBatch({
         toolCallId: 'call-3',
+        raw: {
+          queries: [
+            { reasoning: 'measure source', value: 'wc' },
+            { reasoning: 'build package', value: 'build' },
+          ],
+        },
+        execute: async (_query, index) => index === 0
+          ? textResult('118 15059 prompt.ts')
+          : textResult(
+            'Synced 11 skill(s) into skills\nTS2322: actual compilation failure\n(exit 2)',
+            { code: 2, stdout: 'Synced 11 skill(s) into skills\n', stderr: 'building package\nTS2322: actual compilation failure' },
+            true,
+          ),
+      });
+    } catch (error) {
+      failure = error as QueryBatchError;
+    }
+
+    expect(failure).toBeInstanceOf(QueryBatchError);
+    expect(failure?.rows[1]).toMatchObject({
+      index: 1,
+      status: 'failed',
+      summary: 'TS2322: actual compilation failure',
+    });
+    expect(failure?.message).toContain('TS2322: actual compilation failure');
+    expect(failure?.message).not.toMatch(/failed[^\n]*Synced 11 skill/);
+  });
+
+  it('preserves the concise single-query error contract', async () => {
+    try {
+      await executeQueryBatch({
+        toolCallId: 'call-4',
         raw: { queries: [{ reasoning: 'fail now', value: 'x' }] },
         execute: async () => { throw new Error('bad'); },
       });

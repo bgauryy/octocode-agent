@@ -240,13 +240,6 @@ export function registerMediaTool(
       reasoningDescription: 'Concise reason this media operation is necessary.',
     }),
 
-    prepareArguments(args: unknown) {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      if (Array.isArray(input['queries'])) return input;
-      return { queries: [{ reasoning: `media ${input['type'] ?? ''}`.trim(), ...input }] };
-    },
-
     async execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal, onUpdate?: unknown, ctx?: PiContext): Promise<ToolCallResult> {
       const cwd = ctx?.cwd ?? process.cwd();
       return executeQueryBatch({
@@ -279,13 +272,12 @@ export function registerMediaTool(
     renderCall(args: unknown, theme?: PiTheme) {
       const envelope = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
       const queries = Array.isArray(envelope['queries']) ? (envelope['queries'] as Record<string, unknown>[]) : [];
-      const input = queries[0] ?? envelope;
+      const input = queries[0] ?? {};
       const operation = typeof input['type'] === 'string' ? (input['type'] as string) : 'media';
       const hint = typeof input['source'] === 'string' ? path.basename(input['source'] as string)
         : typeof input['name'] === 'string' ? (input['name'] as string) : '';
-      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
       const title = cliToolTitle(theme, 'media');
-      return makeRenderer((width) => [truncateToWidth(`${title} ${paint(theme, 'dim', `${operation}${hint ? ` · ${hint}` : ''}${more}`)}`, width)]);
+      return makeRenderer((width) => [truncateToWidth(`${title} ${paint(theme, 'dim', `${operation}${hint ? ` · ${hint}` : ''}`)}`, width)]);
     },
 
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme, context?: RenderContext) {

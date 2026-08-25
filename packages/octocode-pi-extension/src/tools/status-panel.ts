@@ -16,6 +16,7 @@
  */
 
 import type { PiContext, PiTheme } from '../types.js';
+import { setManagedWidget } from './runtime-renderer.js';
 import { paint } from '../tui/cli-design.js';
 import { makeRenderer } from './render-helpers.js';
 import { activePlanScope, getPlan } from './active-plan.js';
@@ -136,7 +137,7 @@ export function resetStatusPanelStateForTests(): void {
 }
 
 function clearPanel(ctx: PiContext): void {
-  ctx.ui?.setWidget?.(WIDGET_NAME, undefined);
+  setManagedWidget(ctx, WIDGET_NAME, undefined);
   panelRegisteredCtxs.delete(ctx);
   panelRequestRenderByCtx.delete(ctx);
 }
@@ -162,7 +163,8 @@ export function refreshStatusPanel(ctx?: PiContext): void {
     return;
   }
   panelRegisteredCtxs.add(ctx);
-  ctx.ui?.setWidget?.(
+  setManagedWidget(
+    ctx,
     WIDGET_NAME,
     (tui: unknown, theme: PiTheme) => {
       panelRequestRenderByCtx.set(ctx, () => (tui as { requestRender?: () => void } | undefined)?.requestRender?.());

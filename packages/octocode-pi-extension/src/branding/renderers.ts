@@ -5,14 +5,17 @@
  * funnel through which every Octocode extension tool registration passes. Decorating
  * there means zero per-tool changes and zero risk of missing a future tool.
  *
- * Strategy: only inject branded renderCall / renderResult when the tool definition
- * does not already provide its own. Custom renderers in individual tool files are
- * preserved as-is; this decorator fills only the gaps.
+ * Strategy: preserve each tool's single-operation renderer, but wrap all call
+ * renderers into the same operation/reasoning blocks and all ordered batch
+ * outcomes into the same compact per-query result rows.
  */
 
 import {
   buildOctocodeRenderCall,
   buildOctocodeRenderResult,
+  buildQueryCallBlocks,
+  buildQueryResultRows,
+  extractQueryResultRows,
 } from '../tools/render-helpers.js';
 import type { ToolDefinition, PiTheme, RenderContext, ToolCallResult, RenderResultOptions } from '../types.js';
 
@@ -27,8 +30,8 @@ export interface WithOctocodeRenderOpts {
 }
 
 /**
- * Decorator that adds Octocode-branded `renderCall` / `renderResult` to a tool
- * definition when that definition does not already supply its own renderers.
+ * Decorator that normalizes per-query call/results while retaining each tool's
+ * existing single-operation renderer and rich single-query output.
  *
  * Signature: `withOctocodeRender(def, opts?) → def`
  *
@@ -41,15 +44,21 @@ export function withOctocodeRender<T extends ToolDefinition>(
 ): T {
   const displayName = opts.displayName ?? def.name;
 
-  if (!def.renderCall) {
-    def.renderCall = function brandedRenderCall(
-      args: unknown,
-      theme?: PiTheme,
-      _context?: RenderContext,
-    ) {
+  const ownCall = def.renderCall;
+  def.renderCall = function brandedRenderCall(
+    args: unknown,
+    theme?: PiTheme,
+    context?: RenderContext,
+  ) {
+      if (ownCall) {
+        return buildQueryCallBlocks(
+          args,
+          theme,
+          (singleArgs) => ownCall(singleArgs, theme, context),
+        );
+      }
       return buildOctocodeRenderCall(displayName, args, theme);
     };
-  }
 
   if (!def.renderResult) {
     def.renderResult = function brandedRenderResult(
@@ -78,6 +87,9 @@ export function withOctocodeRender<T extends ToolDefinition>(
     ) {
       if (!opts?.isPartial && context?.isError && !result?.isError) {
         return buildOctocodeRenderResult(displayName, result, opts, theme, context);
+      }
+      if (extractQueryResultRows(result).length > 1) {
+        return buildQueryResultRows(displayName, result, theme)!;
       }
       return own(result, opts, theme, context);
     };

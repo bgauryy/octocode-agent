@@ -365,7 +365,7 @@ export interface ToolDefinition extends Partial<Omit<PiToolDefinition<any, unkno
   promptSnippet?: string;
   promptGuidelines?: string[];
   parameters: TSchema;
-  /** Optional compatibility shim. Runs before schema validation. */
+  /** Optional pre-validation argument normalizer. */
   prepareArguments?(args: unknown): unknown;
   execute(
     toolCallId: string,

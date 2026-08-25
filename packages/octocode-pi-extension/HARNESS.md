@@ -26,7 +26,7 @@ MCPTool({queries:[{reasoning:"Search remote code.", action:"call", server:"octoc
 
 Available tools via `MCPTool server:"octocode"`: `ghSearchCode` · `ghSearchRepos` · `ghSearchPullRequests` · `ghSearchIssues` · `ghSearchCommits` · `ghGetFileContent` · `ghViewRepoStructure` · `ghCloneRepo` · `localSearchCode` · `localFindFiles` · `localFindDeadCode` · `localGetFileContent` · `localViewStructure` · `lspGetSemantics` · `npmSearch`
 
-`warmMcpCatalog()` runs at `session_start`. A matching private snapshot consumes cached `mcp.md` into the first turn. A miss discovers enabled tools and generates a concise guide from every tool name, description, and input schema, with a deterministic schema-aware fallback. Exact schemas remain private and calls validate internally, so no prepare round trip is required.
+`warmMcpCatalog()` runs at `session_start`. The default first-turn prompt contains exact descriptions and input schemas for enabled tools from enabled MCP servers. Set `OCTOCODE_COMPACT_MCP=1` to consume/generate the concise cached `mcp.md` guide instead, with a deterministic schema-aware fallback. Calls always validate against the exact private catalog, so no prepare round trip is required.
 
 **Edit stale-check**: `MCPTool` intercepts `server:"octocode" tool:"localGetFileContent"` calls and runs `recordFileReadState()` so `file` operations with `type:"edit"` can detect stale targets.
 

@@ -103,7 +103,7 @@ test('ANSI-aware rendering helpers keep visible width stable', () => {
 
 test('buildToolCallSummary formats each Octocode direct-tool family', () => {
   const cases: Array<[string, unknown, RegExp]> = [
-    ['ghSearchCode', { queries: [{ owner: 'octo', repo: 'repo', keywords: ['foo', 'bar'], language: 'ts', filename: 'a.ts' }, { keywords: ['more'] }] }, /"foo bar".*file:a\.ts.*lang:ts.*in octo\/repo.*\+1/],
+    ['ghSearchCode', { queries: [{ owner: 'octo', repo: 'repo', keywords: ['foo', 'bar'], language: 'ts', filename: 'a.ts' }, { keywords: ['more'] }] }, /"foo bar".*file:a\.ts.*lang:ts.*in octo\/repo/],
     ['ghSearchRepos', { queries: [{ keywords: ['agent'], language: 'Rust' }] }, /"agent".*lang:Rust/],
     ['ghGetFileContent', { queries: [{ owner: 'octo', repo: 'repo', path: 'src/a.ts', matchString: 'needle in haystack' }] }, /octo\/repo:src\/a\.ts \/needle in haystack\//],
     ['ghGetFileContent', { queries: [{ owner: 'octo', repo: 'repo', path: 'src/a.ts', startLine: 3, endLine: 8 }] }, /:src\/a\.ts:3-8/],
@@ -113,7 +113,7 @@ test('buildToolCallSummary formats each Octocode direct-tool family', () => {
     ['ghSearchCommits', { queries: [{ owner: 'octo', repo: 'repo', path: 'src', base: 'main', head: 'next' }] }, /octo\/repo path:src main\.\.next/],
     ['ghCloneRepo', { queries: [{ owner: 'octo', repo: 'repo', sparsePath: 'src' }] }, /octo\/repo\/src/],
     ['ghUnknown', { queries: [{ owner: 'octo', repo: 'repo' }] }, /octo\/repo/],
-    ['localSearchCode', { queries: [{ searchText: 'class Foo', path: '/very/long/path/to/project/src', mode: 'ast' }, { searchText: 'next' }] }, /\[ast\] "class Foo".*project\/src.*\+1/],
+    ['localSearchCode', { queries: [{ searchText: 'class Foo', path: '/very/long/path/to/project/src', mode: 'ast' }, { searchText: 'next' }] }, /\[ast\] "class Foo".*project\/src/],
     ['localGetFileContent', { queries: [{ path: '/tmp/src/file.ts', startLine: 10, endLine: 12 }] }, /file\.ts:10-12/],
     ['localGetFileContent', { queries: [{ path: '/tmp/src/file.ts', matchString: 'export function longName' }] }, /file\.ts \/export function long/],
     ['localViewStructure', { queries: [{ path: '/tmp/workspace', maxDepth: 4 }] }, /workspace depth:4/],
@@ -208,9 +208,10 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   assert.match(call, /<accent>◇<\/accent>/);
   assert.match(call, /<toolTitle><b>ghSearchCode<\/b><\/toolTitle>/);
   assert.match(call, /<dim> · <\/dim><dim>"x" in o\/r<\/dim>/);
-  const callLines = buildOctocodeRenderCall('ghSearchCode', { queries: [{ owner: 'o', repo: 'r', keywords: ['x'] }] }, theme).render(120);
-  assert.match(callLines.join('\n'), /request:/);
-  assert.match(callLines.join('\n'), /"queries"/);
+  const callLines = buildOctocodeRenderCall('ghSearchCode', { queries: [{ owner: 'o', repo: 'r', keywords: ['x'], reasoning: 'find x' }] }, theme).render(120);
+  assert.equal(callLines.length, 2);
+  assert.match(callLines[1]!, /find x/);
+  assert.doesNotMatch(callLines.join('\n'), /request:|reasoning:/);
 
   const running = buildOctocodeRenderResult('localSearchCode', textResult('still running'), { isPartial: true }, theme).render(120)[0]!;
   assert.match(running, /<accent>⠋|<accent>⠙|<accent>⠹|<accent>⠸|<accent>⠼|<accent>⠴|<accent>⠦|<accent>⠧|<accent>⠇|<accent>⠏/);
@@ -240,6 +241,22 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   assert.match(withPreview, /a\.ts/);
   assert.match(withPreview, /“const answer = 42;”/);
   assert.doesNotMatch(withPreview, /→ ok/, 'a structured preview replaces the raw-text fallback');
+
+  const providerRows = buildOctocodeRenderResult(
+    'localGetFileContent',
+    textResult('batch complete', {
+      results: [
+        { data: { resolvedPath: '/tmp/a.ts', totalLines: 2 } },
+        { status: 'error', error: 'permission denied' },
+      ],
+    }),
+    { expanded: false },
+    theme,
+  ).render(180);
+  assert.equal(providerRows.length, 2);
+  assert.match(providerRows[0]!, /✓.*\[0\].*a\.ts/);
+  assert.match(providerRows[1]!, /✗.*\[1\].*permission denied/);
+  assert.doesNotMatch(providerRows.join('\n'), /2 queries/);
 
   const expanded = buildOctocodeRenderResult(
     'ghGetFileContent',

@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { paintUi } from '../tui/palette.js';
 import type { PiContext } from '../types.js';
 import { resolveSessionIdentity, type SessionIdentityInput } from './session-artifacts.js';
+import { setManagedStatus } from './runtime-renderer.js';
 
 const [STATUS_KEY] = ['octocode-plan-mode'] as const;
 const RUNTIME_INSTANCE_ID = randomUUID();
@@ -117,10 +118,10 @@ function paintStatus(ctx: PiContext | undefined): void {
   const policy = policies.get(key);
   const text = policy && phaseBlocksEffects(policy.phase) ? `plan · ${policy.phase.replace('_', ' ')}` : undefined;
   if (text) {
-    ctx.ui?.setStatus?.(STATUS_KEY, paintUi(ctx.ui, 'warning', text));
+    setManagedStatus(ctx, STATUS_KEY, paintUi(ctx.ui, 'warning', text));
     visibleStatusSlots.add(key);
   } else if (visibleStatusSlots.delete(key)) {
-    ctx.ui?.setStatus?.(STATUS_KEY, undefined);
+    setManagedStatus(ctx, STATUS_KEY, undefined);
   }
 }
 

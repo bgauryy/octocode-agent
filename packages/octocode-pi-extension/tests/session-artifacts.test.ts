@@ -6,9 +6,7 @@ import { afterEach, test } from 'vitest';
 import {
   compareAndSwapPlanProjection,
   createSessionArtifactContext,
-  importLegacyPlanOnce,
   isPathInsideSessionRoot,
-  legacyPlanPathForScope,
   readPlanProjection,
   resolveSessionIdentity,
   writePlanBranchSnapshot,
@@ -141,44 +139,6 @@ test('manifest tracks bounded producer paths and NDJSON events append complete p
     { sequence: 2, type: 'implementation.start' },
   ]);
   if (process.platform !== 'win32') assert.equal(fs.statSync(ctx.resolve('plan/events.jsonl')).mode & 0o777, 0o600);
-});
-
-test('legacy plan import is copy-once with provenance and never changes the source', () => {
-  const workspace = tempRoot('octocode-session-import-');
-  const home = tempRoot('octocode-session-home-');
-  process.env['OCTOCODE_HOME'] = home;
-  const scope = `${workspace}\0/sessions/legacy.jsonl`;
-  const source = legacyPlanPathForScope(scope);
-  fs.mkdirSync(path.dirname(source), { recursive: true });
-  const sourceBytes = '{"version":1,"scope":"legacy","steps":[{"text":"Keep me","status":"doing"}]}\n';
-  fs.writeFileSync(source, sourceBytes);
-
-  const ctx = createSessionArtifactContext({ cwd: workspace, sessionManager: { getSessionId: () => 'import-test' } });
-  const imported = importLegacyPlanOnce(ctx, scope);
-  assert.equal(imported.status, 'imported');
-  assert.ok(imported.importedPath);
-  assert.equal(fs.readFileSync(imported.importedPath!, 'utf8'), sourceBytes);
-  assert.equal(fs.readFileSync(source, 'utf8'), sourceBytes);
-  assert.equal(importLegacyPlanOnce(ctx, scope).status, 'already-imported');
-
-  const recoveryWorkspace = tempRoot('octocode-session-import-recovery-');
-  const recoveryCtx = createSessionArtifactContext({ cwd: recoveryWorkspace, sessionManager: { getSessionId: () => 'import-recovery' } });
-  recoveryCtx.writeText('plan/legacy-plan-v1.json', sourceBytes);
-  const recovered = importLegacyPlanOnce(recoveryCtx, scope);
-  assert.equal(recovered.status, 'already-imported', 'matching bytes repair interrupted provenance');
-  assert.equal(recoveryCtx.inspect()!.imports?.[0]?.source, source);
-
-  const record = ctx.inspect()!.imports?.[0];
-  assert.equal(record?.kind, 'legacy-plan-v1');
-  assert.equal(record?.source, source);
-  assert.match(record?.sourceSha256 ?? '', /^[a-f0-9]{64}$/);
-
-  const badScope = `${workspace}\0/sessions/bad.jsonl`;
-  const badSource = legacyPlanPathForScope(badScope);
-  fs.writeFileSync(badSource, '{bad json');
-  const bad = importLegacyPlanOnce(ctx, badScope);
-  assert.equal(bad.status, 'invalid');
-  assert.equal(fs.readFileSync(badSource, 'utf8'), '{bad json');
 });
 
 test('branch snapshots are immutable/idempotent and projection CAS rejects stale generations', () => {

@@ -809,13 +809,14 @@ describe('captureScreenshot', () => {
 
 describe('getScreenshotDir', () => {
   test('resolves under workspace cwd when provided', () => {
-    const dir = getScreenshotDir('/my/workspace');
-    assert.equal(dir, '/my/workspace/.octocode/screenshots');
+    const dir = getScreenshotDir('/my/workspace', 'session-test');
+    assert.equal(dir, '/my/workspace/.octocode/agent/session-test/browser/screenshots');
   });
 
-  test('falls back to getOctocodeHome when cwd is not provided', () => {
-    const dir = getScreenshotDir(undefined);
+  test('keeps browser artifacts isolated by session key', () => {
+    const dir = getScreenshotDir(process.cwd(), 'session-test');
     assert.ok(dir.includes('.octocode'), 'Should be under .octocode home');
+    assert.ok(dir.includes('session-test'));
     assert.ok(dir.includes('screenshots'));
   });
 });
@@ -1073,6 +1074,7 @@ test('connectToChrome attaches through fake CDP HTTP and WebSocket, writes metad
         port,
         targetUrl: 'app.example',
         workspaceCwd: tmp,
+        sessionKey: 'chrome-debug-test',
         timeoutMs: 1000,
       });
 
@@ -1081,10 +1083,10 @@ test('connectToChrome attaches through fake CDP HTTP and WebSocket, writes metad
       assert.equal(conn.metadata.activeTarget?.via, 'target-url');
       assert.equal(conn.metadata.identity?.tabHost, 'app.example');
       assert.deepEqual(conn.metadata.identity?.cookieNames, ['sid', 'prefs']);
-      assert.equal(conn.screenshotDir, path.join(tmp, '.octocode', 'screenshots'));
+      assert.equal(conn.screenshotDir, path.join(tmp, '.octocode', 'agent', 'chrome-debug-test', 'browser', 'screenshots'));
       assert.equal(readSessionMeta(conn.sessionFile)?.activeTarget?.title, 'Dashboard');
 
-      const logPath = path.join(getSessionDir(tmp, port), 'cdp-events.jsonl');
+      const logPath = path.join(getSessionDir(tmp, port, 'chrome-debug-test'), 'cdp-events.jsonl');
       assert.equal(fs.existsSync(logPath), true);
       assert.ok(ConnectWebSocket.instances[0]!.sent.some((line) => line.includes('Runtime.evaluate')));
 
@@ -1449,19 +1451,9 @@ describe('chromeDebug queries[] envelope', () => {
     assert.ok(Array.isArray(required) && required.includes('scheme'), 'scheme must be required in each item');
   });
 
-  test('prepareArguments wraps flat call in queries[] with fallback reasoning', () => {
+  test('tool definition does not normalize flat calls', () => {
     const tool = makeChromeDebugTool();
-    assert.ok(typeof (tool as unknown as Record<string, unknown>)['prepareArguments'] === 'function', 'prepareArguments must exist');
-    const pa = (tool as unknown as Record<string, unknown>)['prepareArguments'] as (a: unknown) => unknown;
-    // Already has queries[] — pass through unchanged
-    const alreadyWrapped = { queries: [{ reasoning: 'r', scheme: 'debug' }] };
-    assert.deepEqual(pa(alreadyWrapped), alreadyWrapped);
-    // Flat format — gets wrapped
-    const wrapped = pa({ scheme: 'screenshot', port: 9222 }) as { queries: Array<Record<string, unknown>> };
-    assert.ok(Array.isArray(wrapped.queries), 'should produce queries array');
-    assert.equal(wrapped.queries.length, 1);
-    assert.equal(wrapped.queries[0]!['scheme'], 'screenshot');
-    assert.ok(typeof wrapped.queries[0]!['reasoning'] === 'string', 'should add fallback reasoning string');
+    assert.equal(tool.prepareArguments, undefined);
   });
 
   test('single query result passes through unchanged (passthroughSingle)', async () => {

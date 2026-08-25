@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Type } from 'typebox';
 import { registerAwarenessCoordinationTools } from '../src/tools/awareness-coordination-tools.js';
+import { registerUniqueTool } from '../src/tools/octocode-tools.js';
 import type { ToolDefinition, ToolCallResult } from '../src/types.js';
 
 function register(): Map<string, ToolDefinition> {
@@ -11,9 +12,9 @@ function register(): Map<string, ToolDefinition> {
   const pi = { registerTool: (def: ToolDefinition) => tools.set(def.name, def) };
   const registerFn = (
     p: { registerTool?: (d: ToolDefinition) => void },
-    _names: Set<string>,
+    names: Set<string>,
     def: ToolDefinition,
-  ): void => { p.registerTool?.(def); };
+  ): void => { registerUniqueTool(p, names, def); };
   registerAwarenessCoordinationTools(
     pi,
     Type as unknown as (typeof import('typebox'))['Type'],
@@ -104,5 +105,32 @@ describe('first-class Awareness coordination tools', () => {
     process.env['OCTOCODE_AGENT_ID'] = 'pi:peer';
     const inbox = await run('message', one({ action: 'inbox' }));
     expect(inbox.text).toMatch(/1 message/);
+  });
+
+  it('message batch retains success, failure, and not-run rows', async () => {
+    const message = tools.get('message')!;
+    const batch = {
+      queries: [
+        { reasoning: 'send first', action: 'send', to: 'pi:peer', text: 'first' },
+        { reasoning: 'read missing', action: 'read', messageId: 'missing-message' },
+        { reasoning: 'never send third', action: 'send', to: 'pi:peer', text: 'third' },
+      ],
+    };
+
+    await expect((message.execute as (
+      id: string,
+      raw: Record<string, unknown>,
+      signal: unknown,
+      update: unknown,
+      ctx: unknown,
+    ) => Promise<ToolCallResult>)('batch', batch, undefined, undefined, { cwd: ws })).rejects.toMatchObject({
+      failedIndex: 1,
+      completedCount: 1,
+      rows: [
+        { index: 0, status: 'success' },
+        { index: 1, status: 'failed' },
+        { index: 2, status: 'not-run', summary: 'not run' },
+      ],
+    });
   });
 });

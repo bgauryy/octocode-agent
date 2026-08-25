@@ -35,6 +35,24 @@ export const DIRECT_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = Object
 
 export const SCHEMA_DESCRIPTION_MAX_CHARS = 180;
 
+function prepareQueryEnvelope(
+  toolName: string,
+  args: unknown,
+): unknown {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return args;
+  const input = args as Record<string, unknown>;
+  if (!Array.isArray(input['queries'])) return args;
+  return {
+    ...input,
+    queries: input['queries'].map((value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+      const query = value as Record<string, unknown>;
+      const reasoning = typeof query['reasoning'] === 'string' ? query['reasoning'].trim() : '';
+      return reasoning ? query : { ...query, reasoning: `${toolName} operation` };
+    }),
+  };
+}
+
 function compactSchemaValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(compactSchemaValue);
   if (!value || typeof value !== 'object') return value;
@@ -63,5 +81,10 @@ export function registerUniqueTool(
   registeredToolNames.add(toolDefinition.name);
   const description = DIRECT_TOOL_DESCRIPTIONS[toolDefinition.name] ?? toolDefinition.description;
   const parameters = compactSchemaValue(toolDefinition.parameters) as ToolDefinition['parameters'];
-  pi.registerTool?.(withOctocodeRender({ ...toolDefinition, description, parameters }));
+  pi.registerTool?.(withOctocodeRender({
+    ...toolDefinition,
+    description,
+    parameters,
+    prepareArguments: (args: unknown) => prepareQueryEnvelope(toolDefinition.name, args),
+  }));
 }

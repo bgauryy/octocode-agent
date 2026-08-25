@@ -233,7 +233,7 @@ test('memory surfaces a CLI failure as an error result', async () => {
 test('renderCall and renderResult produce concise themed lines', async () => {
   stubRunner({ code: 0, stdout: JSON.stringify([{ memoryId: 'a' }, { memoryId: 'b' }, { memoryId: 'c' }]), stderr: '' });
   const tool = loadTool();
-  const callLine = tool.renderCall!({ action: 'recall', query: 'abc' }, theme).render(80)[0]!;
+  const callLine = tool.renderCall!({ queries: [{ reasoning: 'recall test memory', action: 'recall', query: 'abc' }] }, theme).render(80)[0]!;
   assert.match(callLine, /memory/);
   assert.match(callLine, /recall/);
   const res = await tool.execute('id', { action: 'recall', query: 'abc' }, undefined, undefined, ctx);

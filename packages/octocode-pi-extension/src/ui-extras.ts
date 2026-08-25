@@ -337,8 +337,6 @@ function effectiveAgentStatus(entry: AgentFooterEntry): string {
   return processStatus;
 }
 
-/** @deprecated No longer used — all agents are shown without a cap. */
-export const AGENT_FOOTER_MAX_ROWS = 0;
 const AGENT_DOING_MAX = 96;
 
 function agentStateToken(status: string): { token: SemanticToken; attention: boolean } {

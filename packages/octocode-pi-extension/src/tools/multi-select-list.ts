@@ -4,7 +4,7 @@
  * Deliberately free of pi-coding-agent and Node APIs so the whole state machine
  * — cursor, toggles, min/max gating, rendering — is unit-testable standalone.
  * Keyboard decoding uses pi-tui's matchesKey/Key helpers so Kitty keyboard
- * protocol and legacy terminal byte sequences share one host-compatible path.
+ * protocol and traditional terminal byte sequences share one host input path.
  */
 
 import { Key, matchesKey } from '@earendil-works/pi-tui';
@@ -20,7 +20,7 @@ export interface MultiSelectItem {
   preview?: string;
 }
 
-/** Minimal theme surface, structurally compatible with PiTheme (method syntax → bivariant). */
+/** Minimal theme surface matching the PiTheme method shape. */
 export interface MultiSelectTheme {
   fg?(color: string, text: string): string;
   bold?(text: string): string;

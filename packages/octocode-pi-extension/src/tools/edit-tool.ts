@@ -351,21 +351,7 @@ export function applyCustomEditsToContent(content: string, edits: EditOperation[
     const mode = edit.matchMode ?? 'exact';
     if (mode === 'lineRange') replacements.push(...lineRangeReplacement(content, edit, editIndex, filePath));
     else if (mode === 'normalized') replacements.push(...normalizedReplacements(content, edit, editIndex, edits.length, filePath));
-    else {
-      // Exact match first; auto-fallback to normalized (whitespace/indent-tolerant) when
-      // the exact bytes aren’t found — common after copy-paste or minor reformatting.
-      // If normalized also fails, re-throw the original exact-mode error which includes
-      // nearby-content hints so the model can correct its oldText.
-      try {
-        replacements.push(...exactReplacements(content, edit, editIndex, edits.length, filePath));
-      } catch (exactErr) {
-        try {
-          replacements.push(...normalizedReplacements(content, edit, editIndex, edits.length, filePath));
-        } catch {
-          throw exactErr;
-        }
-      }
-    }
+    else replacements.push(...exactReplacements(content, edit, editIndex, edits.length, filePath));
   }
 
   replacements.sort((a, b) => a.start - b.start || a.end - b.end);
@@ -704,12 +690,13 @@ function renderCallLine(args: unknown, theme?: PiTheme): string {
   const fileCount = queriesArr.length;
   const filePath = fileCount === 1
     ? (typeof queriesArr[0]?.['path'] === 'string' ? queriesArr[0]['path'] as string : '(missing path)')
-    : fileCount > 1
-      ? `${fileCount} files`
-      : typeof input['path'] === 'string' ? input['path'] : '(missing path)';
-  const editCount = queriesArr.length > 0
-    ? queriesArr.reduce((sum, q) => sum + (Array.isArray(q['edits']) ? (q['edits'] as unknown[]).length : 0), 0)
-    : Array.isArray(input['edits']) ? (input['edits'] as unknown[]).length : 0;
+      : fileCount > 1
+        ? `${fileCount} files`
+        : '(missing path)';
+  const editCount = queriesArr.reduce(
+    (sum, q) => sum + (Array.isArray(q['edits']) ? (q['edits'] as unknown[]).length : 0),
+    0,
+  );
   const title = cliToolTitle(theme, EDIT_TOOL_DISPLAY_NAME);
   const suffix = paint(theme, 'dim', `${filePath} · ${editCount} edit${editCount === 1 ? '' : 's'}`);
   return `${title} ${suffix}`;
@@ -982,33 +969,6 @@ export function registerEditTool(
       'GOTCHA: For multiple repetitive or mechanical changes across a file (e.g. renaming a symbol everywhere, bulk formatting), prefer shell commands like sed instead of many individual edit calls.',
     ],
     parameters: buildParameters(Type),
-    prepareArguments(args: unknown): unknown {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      // Already in universal queries[] envelope — ensure each query has reasoning.
-      if (Array.isArray(input['queries'])) {
-        return {
-          queries: (input['queries'] as unknown[]).map((q) => {
-            if (!q || typeof q !== 'object') return q;
-            const query = q as Record<string, unknown>;
-            if (typeof query['reasoning'] === 'string' && query['reasoning'].trim()) return q;
-            // Derive reasoning from first edit if the model omitted query-level reasoning.
-            const edits = Array.isArray(query['edits']) ? query['edits'] as Record<string, unknown>[] : [];
-            const derived = typeof edits[0]?.['reasoning'] === 'string' ? edits[0]['reasoning'] as string : 'edit file';
-            return { ...query, reasoning: derived };
-          }),
-        };
-      }
-      // Old single-file mode: { path, edits[], requireRecentRead? } → wrap in queries[].
-      if (typeof input['path'] === 'string' && Array.isArray(input['edits'])) {
-        const edits = input['edits'] as Record<string, unknown>[];
-        const derived = typeof edits[0]?.['reasoning'] === 'string' ? edits[0]['reasoning'] as string : 'edit file';
-        const entry: Record<string, unknown> = { reasoning: derived, path: input['path'], edits: input['edits'] };
-        if (input['requireRecentRead'] !== undefined) entry['requireRecentRead'] = input['requireRecentRead'];
-        return { queries: [entry] };
-      }
-      return args;
-    },
     async execute(_toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal, onUpdate?: unknown, ctx?: { cwd?: string }): Promise<ToolCallResult> {
       const cwd = ctx?.cwd ?? process.cwd();
       if (signal?.aborted) throw new Error('Operation aborted');

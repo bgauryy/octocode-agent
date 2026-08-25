@@ -19,7 +19,6 @@ import { escapePromptMetadata } from './prompt-safety.js';
 import {
   compareAndSwapPlanProjection,
   createSessionArtifactContext,
-  importLegacyPlanOnce,
   readPlanProjection,
   writePlanBranchSnapshot,
   type PlanBranchSnapshotV1,
@@ -186,8 +185,7 @@ const MAX_REVIEW_TEXT_CHARS = 8_000;
 // in-memory cache; backed by disk so the plan survives compaction and process
 // restart of the same session without leaking into a fresh session in the same cwd.
 const plans = new Map<string, PlanStep[]>();
-// Review phase is branch-authoritative. Legacy `active` records hydrate as
-// `executing`; all pre-Start phases keep checklist steps non-running.
+// Review phase is branch-authoritative; all pre-Start phases keep checklist steps non-running.
 const planLifecycle = new Map<string, PlanPhase>();
 const planReview = new Map<string, Omit<ReviewState, 'phase' | 'rfcPath' | 'decisions'>>();
 // Plan-level RFC association (scope → absolute RFC.md path). Set once the plan
@@ -214,12 +212,10 @@ export interface ActivePlanContext {
 }
 
 interface PlanStoredV3 {
-  version: 1 | 2 | 3;
+  version: 3;
   scope: string;
   steps: PlanStep[];
   phase?: PlanPhase;
-  /** Legacy field: `active` hydrates additively as `executing`. */
-  lifecycle?: PlanPhase | 'active';
   rfcPath?: string;
   revision?: string;
   acceptedRevision?: string;
@@ -242,7 +238,6 @@ interface PlanSnapshotMeta {
 
 interface ScopeBinding {
   identityInput: SessionIdentityInput;
-  legacyScope: string;
 }
 
 const scopeBindings = new Map<string, ScopeBinding>();
@@ -256,8 +251,7 @@ export function activePlanScope(ctx?: ActivePlanContext): string {
     : sessionFile
       ? `${cwd}\0${sessionFile}`
       : cwd;
-  const legacyScope = sessionFile ? `${cwd}\0${sessionFile}` : cwd;
-  scopeBindings.set(scope, { identityInput: { cwd, sessionManager: ctx?.sessionManager }, legacyScope });
+  scopeBindings.set(scope, { identityInput: { cwd, sessionManager: ctx?.sessionManager } });
   return scope;
 }
 
@@ -265,16 +259,15 @@ function bindingForScope(scope: string): ScopeBinding {
   const known = scopeBindings.get(scope);
   if (known) return known;
   const separator = scope.indexOf('\0');
-  if (separator < 0) return { identityInput: { cwd: scope }, legacyScope: scope };
+  if (separator < 0) return { identityInput: { cwd: scope } };
   const cwd = scope.slice(0, separator);
   const discriminator = scope.slice(separator + 1);
   if (discriminator.startsWith('id:')) {
     const sessionId = discriminator.slice(3);
-    return { identityInput: { cwd, sessionManager: { getSessionId: () => sessionId } }, legacyScope: cwd };
+    return { identityInput: { cwd, sessionManager: { getSessionId: () => sessionId } } };
   }
   return {
     identityInput: { cwd, sessionManager: { getSessionFile: () => discriminator } },
-    legacyScope: scope,
   };
 }
 
@@ -294,15 +287,10 @@ function cleanPaths(value: unknown): string[] | undefined {
   return paths.length ? paths : undefined;
 }
 
-function legacyStepId(scope: string, index: number, text: string): string {
-  const digest = createHash('sha256').update(`${scope}\0${index}\0${text}`).digest('hex').slice(0, 24);
-  return `step-${digest}`;
-}
-
 function sanitizeStored(raw: unknown): PlanStep[] {
   if (!raw || typeof raw !== 'object' || !Array.isArray((raw as { steps?: unknown }).steps)) return [];
   const record = raw as Record<string, unknown>;
-  const scope = typeof record.scope === 'string' && record.scope.trim() ? record.scope : 'legacy-branch';
+  if (record.version !== 3) return [];
   const sourceSteps = record.steps as unknown[];
   const out: PlanStep[] = [];
   const sourceRecords: Record<string, unknown>[] = [];
@@ -313,9 +301,8 @@ function sanitizeStored(raw: unknown): PlanStep[] {
     const rec = candidate as Record<string, unknown>;
     const text = typeof rec.text === 'string' ? clean(rec.text) : '';
     if (!text) continue;
-    const storedId = typeof rec.id === 'string' ? rec.id.trim().slice(0, 128) : '';
-    let id = storedId || legacyStepId(scope, sourceIndex, text);
-    if (usedIds.has(id)) id = legacyStepId(`${scope}\0duplicate`, sourceIndex, text);
+    const id = typeof rec.id === 'string' ? rec.id.trim().slice(0, 128) : '';
+    if (!id || usedIds.has(id)) continue;
     usedIds.add(id);
     const status: StepStatus = rec.status === 'doing' || rec.status === 'done' ? rec.status : 'todo';
     const step: PlanStep = { id, text, status };
@@ -337,12 +324,7 @@ function sanitizeStored(raw: unknown): PlanStep[] {
   const knownIds = new Set(out.map((step) => step.id));
   out.forEach((step, index) => {
     const rec = sourceRecords[index]!;
-    const stableDeps = cleanStepIds(rec.dependsOnStepIds)?.filter((id) => id !== step.id && knownIds.has(id));
-    const legacyDeps = cleanDeps(rec.dependsOn)?.flatMap((depIndex) => {
-      const dependency = out[depIndex - 1];
-      return dependency && dependency.id !== step.id ? [dependency.id] : [];
-    });
-    const dependencies = stableDeps ?? (legacyDeps?.length ? [...new Set(legacyDeps)] : undefined);
+    const dependencies = cleanStepIds(rec.dependsOnStepIds)?.filter((id) => id !== step.id && knownIds.has(id));
     if (dependencies?.length) step.dependsOnStepIds = dependencies;
   });
   return out;
@@ -366,8 +348,7 @@ function readCoordinationFromStored(raw: unknown, scope: string): PlanCoordinati
     ? root.coordination as Record<string, unknown>
     : {};
   const mode: PlanCoordinationMode = value.mode === 'required' || value.mode === 'local' ? value.mode : 'auto';
-  const fallbackKey = `legacy-plan-${createHash('sha256').update(scope).digest('hex').slice(0, 24)}`;
-  const sourcePlanKey = cleanContractText(value.sourcePlanKey, 256) ?? fallbackKey;
+  const sourcePlanKey = cleanContractText(value.sourcePlanKey, 256) ?? `pi-plan-${randomUUID()}`;
   const coordinationWorkspace = cleanContractText(value.coordinationWorkspace, 2_000) ?? workspaceForScope(scope);
   const localReason = cleanContractText(value.localReason);
   const awarenessPlanId = cleanContractText(value.awarenessPlanId, 256);
@@ -416,8 +397,7 @@ function readLifecycleFromStored(raw: unknown): PlanPhase {
   if (!raw || typeof raw !== 'object') return 'executing';
   const rec = raw as Record<string, unknown>;
   if (typeof rec.phase === 'string' && PLAN_PHASE_SET.has(rec.phase as PlanPhase)) return rec.phase as PlanPhase;
-  if (typeof rec.lifecycle === 'string' && PLAN_PHASE_SET.has(rec.lifecycle as PlanPhase)) return rec.lifecycle as PlanPhase;
-  return rec.lifecycle === 'draft' ? 'draft' : 'executing';
+  return 'executing';
 }
 
 function cleanReviewText(value: unknown): string {
@@ -461,7 +441,7 @@ function reviewMetadataFromStored(raw: unknown): Omit<ReviewState, 'phase' | 'rf
   const rec = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
   const branchSnapshotId = typeof rec.branchSnapshotId === 'string' && rec.branchSnapshotId.trim()
     ? rec.branchSnapshotId
-    : typeof rec.snapshotId === 'string' && rec.snapshotId.trim() ? rec.snapshotId : 'legacy';
+    : 'untracked-plan';
   const generation = Number.isSafeInteger(rec.generation) && Number(rec.generation) >= 0 ? Number(rec.generation) : 0;
   const revision = typeof rec.revision === 'string' && rec.revision.trim() ? rec.revision : undefined;
   const acceptedRevision = typeof rec.acceptedRevision === 'string' && rec.acceptedRevision.trim() ? rec.acceptedRevision : undefined;
@@ -502,15 +482,12 @@ function buildStoredPlan(cwd: string, steps: PlanStep[]): PlanStoredV3 {
   };
 }
 
-/** Read the branch-authoritative disk projection, falling back to a copy-once legacy import. */
+/** Read the branch-authoritative disk projection. */
 function readStoredFromDisk(cwd: string): PlanStoredV3 | undefined {
   try {
     const ctx = artifactContextForScope(cwd);
     const projection = readPlanProjection<PlanStoredV3>(ctx);
-    if (projection) return projection.state;
-    const imported = importLegacyPlanOnce(ctx, bindingForScope(cwd).legacyScope);
-    if (!imported.importedPath) return undefined;
-    return JSON.parse(fs.readFileSync(imported.importedPath, 'utf8')) as PlanStoredV3;
+    return projection?.state.version === 3 ? projection.state : undefined;
   } catch {
     return undefined;
   }
@@ -651,6 +628,15 @@ export function adoptPlanFromBranch(cwd: string, branchEntries: unknown[], optio
     const rec = entry as Record<string, unknown>;
     if (rec.type !== 'custom' || rec.customType !== PLAN_ENTRY_TYPE) continue;
     const data = rec.data && typeof rec.data === 'object' ? rec.data as Record<string, unknown> : {};
+    if (data.version !== 3) continue;
+    const snapshotId = typeof data.branchSnapshotId === 'string' ? data.branchSnapshotId.trim() : '';
+    const entryGeneration = Number.isSafeInteger(data.generation) && Number(data.generation) > 0
+      ? Number(data.generation)
+      : 0;
+    const entryTimestamp = typeof data.capturedAt === 'string' && Number.isFinite(Date.parse(data.capturedAt))
+      ? data.capturedAt
+      : '';
+    if (!snapshotId || entryGeneration === 0 || !entryTimestamp) continue;
     const steps = sanitizeStored(data);
     const lifecycle = readLifecycleFromStored(data);
     const rfcPath = readRfcFromStored(data);
@@ -674,20 +660,6 @@ export function adoptPlanFromBranch(cwd: string, branchEntries: unknown[], optio
     }
     loaded.add(cwd);
     turnsSinceUpdate.set(cwd, 0);
-    const fallbackId = createHash('sha256').update(JSON.stringify(data)).digest('hex').slice(0, 24);
-    const snapshotId = typeof rec.id === 'string' && rec.id.trim()
-      ? rec.id
-      : typeof data.snapshotId === 'string' && data.snapshotId.trim()
-        ? data.snapshotId
-        : `legacy-${fallbackId}`;
-    const entryGeneration = Number.isSafeInteger(data.generation) && Number(data.generation) > 0
-      ? Number(data.generation)
-      : 1;
-    const entryTimestamp = typeof data.capturedAt === 'string' && Number.isFinite(Date.parse(data.capturedAt))
-      ? data.capturedAt
-      : typeof rec.timestamp === 'string' && Number.isFinite(Date.parse(rec.timestamp))
-        ? rec.timestamp
-        : new Date(0).toISOString();
     planLifecycle.set(cwd, lifecycle);
     planReview.set(cwd, reviewMetadataFromStored({ ...data, branchSnapshotId: snapshotId, generation: entryGeneration }));
     const stored: PlanStoredV3 = {
@@ -976,7 +948,11 @@ export function getPlanLifecycle(cwd: string): PlanPhase {
 
 export function getPlanReviewState(cwd: string): ReviewState {
   ensureLoaded(cwd);
-  const metadata = planReview.get(cwd) ?? reviewMetadataFromStored(undefined);
+  let metadata = planReview.get(cwd);
+  if (!metadata) {
+    metadata = reviewMetadataFromStored(undefined);
+    planReview.set(cwd, metadata);
+  }
   return {
     phase: getPlanLifecycle(cwd),
     branchSnapshotId: metadata.branchSnapshotId,
@@ -1155,7 +1131,7 @@ function phaseAllowsExecution(phase: PlanPhase): boolean {
   return phase === 'executing' || phase === 'verifying';
 }
 
-/** Promote an accepted/legacy draft and start its first runnable step. */
+/** Promote an accepted draft and start its first runnable step. */
 export function activatePlan(cwd: string): PlanStep[] {
   const list = getPlan(cwd).slice();
   if (list.length > 0 && !list.some((step) => step.status === 'doing')) {

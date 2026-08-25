@@ -34,6 +34,8 @@ export interface LocalMount {
   onMessage?: (message: string) => void | Promise<void>;
   /** Optional same-origin typed action bridge for local management pages. */
   onAction?: (action: unknown) => unknown | Promise<unknown>;
+  /** Optional unguessable token required in x-octocode-action-token. */
+  actionToken?: string;
 }
 
 export interface ServedMount {
@@ -167,6 +169,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       if (!mount.onAction) return send(404, 'action bridge unavailable');
       const origin = req.headers.origin;
       if (origin !== `http://${host}`) return send(403, 'forbidden');
+      if (mount.actionToken && req.headers['x-octocode-action-token'] !== mount.actionToken) return send(403, 'forbidden');
       if (!(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) return send(415, 'application/json required');
       let body = '';
       req.setEncoding('utf8');
@@ -290,6 +293,7 @@ export async function serveDirectory(
     indexFile?: string;
     onMessage?: (message: string) => void | Promise<void>;
     onAction?: (action: unknown) => unknown | Promise<unknown>;
+    actionToken?: string;
   },
 ): Promise<ServedMount | undefined> {
   if (!MOUNT_NAME.test(name)) return undefined;
@@ -298,6 +302,7 @@ export async function serveDirectory(
     indexFile: opts?.indexFile ?? 'index.html',
     onMessage: opts?.onMessage,
     onAction: opts?.onAction,
+    actionToken: opts?.actionToken,
   });
   const base = await ensureServer();
   if (!base) {

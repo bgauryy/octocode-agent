@@ -95,7 +95,7 @@ function expandIpv6(ip: string): number[] | null {
 
 /**
  * Extract the embedded IPv4 (dotted) from an IPv6 that carries one — IPv4-mapped
- * (::ffff:0:0/96), IPv4-compatible (::/96, deprecated), NAT64 (64:ff9b::/96), and
+ * (::ffff:0:0/96), zero-prefix (::/96), NAT64 (64:ff9b::/96), and
  * 6to4 (2002::/16). Returns null when the address carries no embedded IPv4.
  * These forms otherwise reach the loopback/metadata ranges past the SSRF guard.
  */
@@ -103,7 +103,7 @@ function embeddedIpv4(g: number[]): string | null {
   const asV4 = (a: number, b: number): string =>
     `${(a >>> 8) & 0xff}.${a & 0xff}.${(b >>> 8) & 0xff}.${b & 0xff}`;
   const zeroPrefix = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0;
-  if (zeroPrefix && (g[5] === 0xffff || g[5] === 0)) return asV4(g[6]!, g[7]!); // mapped / compatible
+  if (zeroPrefix && (g[5] === 0xffff || g[5] === 0)) return asV4(g[6]!, g[7]!); // mapped / zero-prefix
   if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
     return asV4(g[6]!, g[7]!); // NAT64
   }

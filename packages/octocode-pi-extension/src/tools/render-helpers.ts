@@ -156,6 +156,53 @@ export function makeCachedRenderer(lines: (width: number) => string[]): RenderCa
 
 type QueryLike = Record<string, unknown>;
 
+export interface QueryCallRenderOptions {
+  reason?: (query: QueryLike, index: number) => string;
+  stripReasonKeys?: string[];
+}
+
+function queryEnvelope(args: unknown): { envelope: QueryLike; queries: QueryLike[] } {
+  const envelope = args && typeof args === 'object' && !Array.isArray(args)
+    ? args as QueryLike
+    : {};
+  const values = Array.isArray(envelope['queries'])
+    ? envelope['queries'].filter((value): value is QueryLike => Boolean(value) && typeof value === 'object' && !Array.isArray(value))
+    : Object.keys(envelope).length > 0
+      ? [envelope]
+      : [];
+  return { envelope, queries: values };
+}
+
+/**
+ * Render every submitted query as its existing single-operation block followed
+ * immediately by one muted, unlabeled reasoning line.
+ */
+export function buildQueryCallBlocks(
+  args: unknown,
+  theme: PiTheme | undefined,
+  renderSingle: (singleArgs: Record<string, unknown>, index: number) => RenderCallReturn,
+  options: QueryCallRenderOptions = {},
+): RenderCallReturn {
+  const { envelope, queries } = queryEnvelope(args);
+  if (queries.length === 0) return renderSingle(args as Record<string, unknown>, 0);
+  const stripKeys = new Set(options.stripReasonKeys ?? ['reasoning', 'reason']);
+  const reasonFor = options.reason ?? ((query: QueryLike) => str(query['reason'] ?? query['reasoning']).trim());
+
+  return makeCachedRenderer((width) => {
+    const lines: string[] = [];
+    for (const [index, query] of queries.entries()) {
+      const clean = Object.fromEntries(Object.entries(query).filter(([key]) => !stripKeys.has(key)));
+      const singleArgs = Array.isArray(envelope['queries'])
+        ? { ...envelope, queries: [clean] }
+        : { queries: [clean] };
+      lines.push(...renderSingle(singleArgs, index).render(width));
+      const reason = reasonFor(query, index);
+      if (reason) lines.push(truncateToWidth(paint(theme, 'muted', `  ${reason}`), width));
+    }
+    return lines;
+  });
+}
+
 function str(v: unknown): string {
   return typeof v === 'string' && v ? v : '';
 }
@@ -188,7 +235,6 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
   const a = (args ?? {}) as Record<string, unknown>;
   const queries = Array.isArray(a.queries) ? (a.queries as QueryLike[]) : [];
   const q = queries[0] ?? {};
-  const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
 
   // ── GitHub tools ─────────────────────────────────────────────────────────
   if (toolName.startsWith('gh')) {
@@ -204,13 +250,13 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
         lang ? `lang:${lang}` : '',
         repo ? `in ${repo}` : '',
       ].filter(Boolean).join(' ');
-      return (parts + more).trim();
+      return parts.trim();
     }
 
     if (toolName === 'ghSearchRepos') {
       const kw = arr(q.keywords).join(' ');
       const lang = str(q.language);
-      return ([kw ? `"${kw}"` : '', lang ? `lang:${lang}` : ''].filter(Boolean).join(' ') + more).trim();
+      return [kw ? `"${kw}"` : '', lang ? `lang:${lang}` : ''].filter(Boolean).join(' ').trim();
     }
 
     if (toolName === 'ghGetFileContent') {
@@ -219,12 +265,12 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       const start = q.startLine != null ? `:${q.startLine}` : '';
       const end = q.endLine != null ? `-${q.endLine}` : '';
       const anchor = matchStr ? ` /${truncatePlainToWidth(matchStr, 20, '')}/` : start + end;
-      return (`${repo}${p ? `:${p}` : ''}${anchor}` + more).trim();
+      return `${repo}${p ? `:${p}` : ''}${anchor}`.trim();
     }
 
     if (toolName === 'ghViewRepoStructure') {
       const p = str(q.path);
-      return (`${repo}${p && p !== '.' ? `/${p}` : ''}` + more).trim();
+      return `${repo}${p && p !== '.' ? `/${p}` : ''}`.trim();
     }
 
     if (toolName === 'ghSearchPullRequests' || toolName === 'ghSearchIssues') {
@@ -232,21 +278,21 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       const number = q.prNumber ?? q.issueNumber;
       const kind = toolName === 'ghSearchPullRequests' ? 'PR' : 'issue';
       const detail = number != null ? `${kind} #${number}` : keywords ? `"${keywords}"` : kind;
-      return (`${repo} ${detail}` + more).trim();
+      return `${repo} ${detail}`.trim();
     }
 
     if (toolName === 'ghSearchCommits') {
       const pathValue = str(q.path);
       const range = [str(q.base), str(q.head)].filter(Boolean).join('..');
-      return (`${repo}${pathValue ? ` path:${pathValue}` : ''}${range ? ` ${range}` : ''}` + more).trim();
+      return `${repo}${pathValue ? ` path:${pathValue}` : ''}${range ? ` ${range}` : ''}`.trim();
     }
 
     if (toolName === 'ghCloneRepo') {
       const sp = str(q.sparsePath);
-      return (`${repo}${sp ? `/${sp}` : ''}` + more).trim();
+      return `${repo}${sp ? `/${sp}` : ''}`.trim();
     }
 
-    return (repo + more).trim();
+    return repo.trim();
   }
 
   // ── Local tools ───────────────────────────────────────────────────────────
@@ -256,7 +302,7 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       const p = str(q.path);
       const mode = str(q.mode);
       const modeTag = mode && mode !== 'paginated' ? `[${mode}] ` : '';
-      return (`${modeTag}${kw ? `"${kw}"` : ''}${p ? ` in ${shortPath(p)}` : ''}` + more).trim();
+      return `${modeTag}${kw ? `"${kw}"` : ''}${p ? ` in ${shortPath(p)}` : ''}`.trim();
     }
 
     if (toolName === 'localGetFileContent') {
@@ -265,26 +311,26 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       const end = q.endLine != null ? `-${q.endLine}` : '';
       const matchStr = str(q.matchString);
       const anchor = matchStr ? ` /${truncatePlainToWidth(matchStr, 20, '')}/` : start + end;
-      return (shortPath(p) + anchor + more).trim();
+      return (shortPath(p) + anchor).trim();
     }
 
     if (toolName === 'localViewStructure') {
       const p = str(q.path);
       const depth = q.maxDepth != null ? ` depth:${q.maxDepth}` : '';
-      return (shortPath(p) + depth + more).trim();
+      return (shortPath(p) + depth).trim();
     }
 
     if (toolName === 'localFindFiles') {
       const p = str(q.path);
       const names = arr(q.names).join(', ');
       const pat = str(q.pathPattern);
-      return (`${shortPath(p)}${names ? ` [${names}]` : ''}${pat ? ` ${pat}` : ''}` + more).trim();
+      return `${shortPath(p)}${names ? ` [${names}]` : ''}${pat ? ` ${pat}` : ''}`.trim();
     }
 
     if (toolName === 'localFindDeadCode') {
       const p = str(q.path);
       const entrypoints = arr(q.entrypoints).join(', ');
-      return (`${shortPath(p)}${entrypoints ? ` entries:[${entrypoints}]` : ''}` + more).trim();
+      return `${shortPath(p)}${entrypoints ? ` entries:[${entrypoints}]` : ''}`.trim();
     }
 
     if (toolName === 'lspGetSemantics') {
@@ -293,18 +339,18 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       const uri = str(q.uri);
       const file = uri ? basename(uri.replace(/\?.*$/, '')) : '';
       const line = q.lineHint != null ? `:${q.lineHint}` : '';
-      return (`${type}${sym ? ` "${sym}"` : ''}${file ? ` in ${file}${line}` : ''}` + more).trim();
+      return `${type}${sym ? ` "${sym}"` : ''}${file ? ` in ${file}${line}` : ''}`.trim();
     }
 
     // Other local-tool fallthrough.
     const p = str(q.path);
-    return (shortPath(p) + more).trim();
+    return shortPath(p).trim();
   }
 
   // ── npm ──────────────────────────────────────────────────────────────────
   if (toolName === 'npmSearch') {
     const pkg = str(q.packageName);
-    return (pkg + more).trim();
+    return pkg.trim();
   }
 
   // ── fallback: pick the 3 most informative string values ──────────────────
@@ -314,7 +360,7 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
     .map(([, v]) => truncatePlainToWidth(String(v ?? ''), 40))
     .filter(Boolean)
     .slice(0, 3);
-  return (parts.join(' ') + more).trim();
+  return parts.join(' ').trim();
 }
 
 // ─── Result stats (replaces generic "N items" in renderResult) ────────────────
@@ -509,16 +555,6 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
 
 // ─── renderCall / renderResult builders ──────────────────────────────────────
 
-function stringifyToolPayload(payload: unknown): string {
-  if (payload === undefined) return '';
-  if (typeof payload === 'string') return payload;
-  try {
-    return JSON.stringify(payload, null, 2);
-  } catch {
-    return String(payload);
-  }
-}
-
 function renderLabeledPayloadLines(label: string, payload: string, theme?: PiTheme): RenderCallReturn {
   const maxLines = 25;
   const allLines = payload.split('\n');
@@ -536,8 +572,7 @@ function renderLabeledPayloadLines(label: string, payload: string, theme?: PiThe
   });
 }
 
-/** Build the renderCall component for any octocode tool. */
-export function buildOctocodeRenderCall(
+function buildOctocodeSingleRenderCall(
   toolName: string,
   args: unknown,
   theme?: PiTheme,
@@ -548,18 +583,20 @@ export function buildOctocodeRenderCall(
   const summaryStr = summary
     ? `${paint(theme, 'dim', ' · ')}${paint(theme, 'dim', summary)}`
     : '';
-  const rawLine = `${icon} ${nameStr}${summaryStr}`;
-  const requestPayload = stringifyToolPayload(args);
-  // Data is fixed here (args/theme captured); cache by width to skip per-frame
-  // recompute while streaming.
-  if (!requestPayload || requestPayload === '{}') {
-    return makeCachedRenderer((width) => [truncateToWidth(rawLine, width)]);
-  }
-  const requestRenderer = renderLabeledPayloadLines('request', requestPayload, theme);
-  return makeCachedRenderer((width) => [
-    truncateToWidth(rawLine, width),
-    ...requestRenderer.render(width),
-  ]);
+  return makeCachedRenderer((width) => [truncateToWidth(`${icon} ${nameStr}${summaryStr}`, width)]);
+}
+
+/** Build one operation/reasoning block per Octocode MCP query. */
+export function buildOctocodeRenderCall(
+  toolName: string,
+  args: unknown,
+  theme?: PiTheme,
+): RenderCallReturn {
+  return buildQueryCallBlocks(
+    args,
+    theme,
+    (singleArgs) => buildOctocodeSingleRenderCall(toolName, singleArgs, theme),
+  );
 }
 
 /** First non-empty, trimmed line of a result's text content (its error message or summary). */
@@ -583,6 +620,102 @@ function buildExpandedResultBody(header: string, result: ToolCallResult, theme?:
   ]);
 }
 
+export interface QueryResultRenderRow {
+  index: number;
+  status: 'success' | 'failed' | 'not-run';
+  summary: string;
+}
+
+/** Extract only canonical query-envelope rows; provider `results[]` arrays do not qualify. */
+export function extractQueryResultRows(result: ToolCallResult): QueryResultRenderRow[] {
+  const details = result.details && typeof result.details === 'object'
+    ? result.details as Record<string, unknown>
+    : {};
+  const values = Array.isArray(details['results']) ? details['results'] : [];
+  const rows = values.flatMap((value): QueryResultRenderRow[] => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    const row = value as Record<string, unknown>;
+    const status = row['status'];
+    if (typeof row['index'] !== 'number' || !['success', 'failed', 'not-run'].includes(String(status))) return [];
+    return [{
+      index: row['index'],
+      status: status as QueryResultRenderRow['status'],
+      summary: str(row['summary']) || (status === 'not-run' ? 'not run' : String(status)),
+    }];
+  });
+  if (rows.length > 0) return rows;
+
+  const text = (result.content as Array<{ type?: string; text?: string }> | undefined)
+    ?.find?.((part) => part?.type === 'text')?.text ?? '';
+  return text.split('\n').flatMap((line): QueryResultRenderRow[] => {
+    const match = line.trim().match(/^\[(\d+)\]\s+(success|failed|not-run):\s*(.*)$/i);
+    if (!match) return [];
+    return [{
+      index: Number(match[1]),
+      status: match[2]!.toLowerCase() as QueryResultRenderRow['status'],
+      summary: match[3]!.trim() || (match[2]!.toLowerCase() === 'not-run' ? 'not run' : match[2]!),
+    }];
+  });
+}
+
+function renderQueryResultRows(
+  toolName: string,
+  rows: QueryResultRenderRow[],
+  theme?: PiTheme,
+): RenderCallReturn {
+  const title = cliToolTitle(theme, toolName);
+  return makeCachedRenderer((width) => rows.map((row) => {
+    const glyph = row.status === 'success' ? CLI_GLYPH.success : row.status === 'failed' ? CLI_GLYPH.error : '–';
+    const token = row.status === 'success' ? 'success' : row.status === 'failed' ? 'error' : 'muted';
+    const line = `${paint(theme, token, glyph)} ${title} ${paint(theme, 'dim', `[${row.index}] · `)}${paint(theme, token, row.summary)}`;
+    return truncateToWidth(line, width);
+  }));
+}
+
+export function buildQueryResultRows(
+  toolName: string,
+  result: ToolCallResult,
+  theme?: PiTheme,
+): RenderCallReturn | undefined {
+  const rows = extractQueryResultRows(result);
+  return rows.length > 0 ? renderQueryResultRows(toolName, rows, theme) : undefined;
+}
+
+function buildProviderQueryResultRows(
+  toolName: string,
+  result: ToolCallResult,
+  theme?: PiTheme,
+): RenderCallReturn | undefined {
+  const details = result.details && typeof result.details === 'object'
+    ? result.details as Record<string, unknown>
+    : {};
+  const values = Array.isArray(details['results']) ? details['results'] : [];
+  if (values.length < 2) return undefined;
+
+  const rows = values.map((value, index): QueryResultRenderRow => {
+    const record = value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+    const data = record['data'] && typeof record['data'] === 'object' && !Array.isArray(record['data'])
+      ? record['data'] as Record<string, unknown>
+      : {};
+    const error = str(record['error'] ?? data['error']);
+    const failed = Boolean(error) || ['error', 'failed'].includes(str(record['status']).toLowerCase());
+    const stats = buildResultStats(toolName, { results: [value] });
+    const summary = error || [
+      stats.summary,
+      stats.paths?.join(', '),
+      stats.previews?.join(' | '),
+    ].filter(Boolean).join(' · ') || 'ok';
+    return {
+      index: typeof record['index'] === 'number' ? record['index'] : index,
+      status: failed ? 'failed' : 'success',
+      summary,
+    };
+  });
+  return renderQueryResultRows(toolName, rows, theme);
+}
+
 /** Build the renderResult component for any octocode tool. */
 export function buildOctocodeRenderResult(
   toolName: string,
@@ -601,6 +734,11 @@ export function buildOctocodeRenderResult(
       return [`${spinner} ${nameStr} ${paint(theme, 'dim', CLI_STATUS_TEXT.running)}`];
     });
   }
+
+  const queryRows = buildQueryResultRows(toolName, result, theme);
+  if (queryRows && extractQueryResultRows(result).length > 1) return queryRows;
+  const providerRows = buildProviderQueryResultRows(toolName, result, theme);
+  if (providerRows) return providerRows;
 
   // Pi ignores isError in the returned ToolCallResult value and instead sets a
   // system-level context.isError when execute() throws or the call is rejected
@@ -629,11 +767,7 @@ export function buildOctocodeRenderResult(
   // glance separates "what happened" from "which files". Painted as separate SGR
   // spans — safe under pi-tui width measurement (OSC 8 hyperlinks are not, so
   // clickable links are intentionally omitted from TUI rows).
-  const summarySeg = stats.summary
-    ? stats.summary
-    : stats.queryCount !== undefined && stats.queryCount > 1
-      ? `${stats.queryCount} queries`
-      : '';
+  const summarySeg = stats.summary ?? '';
   const pathSeg = stats.paths && stats.paths.length > 0 ? stats.paths.join(', ') : '';
 
   const previewSeg = stats.previews && stats.previews.length > 0 ? stats.previews.join(' | ') : '';

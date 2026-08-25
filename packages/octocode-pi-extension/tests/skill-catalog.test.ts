@@ -6,7 +6,7 @@ test('available skills addendum lists loadable skills and filters prompt-owned A
   const addendum = renderAvailableSkillsAddendum([
     { name: 'octocode-roast', description: 'Critical review workflow.', source: 'user', scope: 'global' },
     { name: 'octocode-awareness', description: 'External-agent coordination workflow.' },
-    { name: 'octocode-awareness-lite', description: 'Legacy external-agent coordination workflow.' },
+    { name: 'octocode-awareness-lite', description: 'Lightweight external-agent coordination workflow.' },
   ]);
 
   assert.match(addendum, /<available_skills>/);
@@ -55,7 +55,7 @@ test('skills dashboard lists loadable skills, filters Awareness aliases, and sho
   const dashboard = renderSkillsDashboard([
     { name: 'octocode-roast', description: 'Critical review workflow.', source: 'user', scope: 'global' },
     { name: 'octocode-awareness', description: 'External-agent coordination workflow.' },
-    { name: 'octocode-awareness-lite', description: 'Legacy external-agent coordination workflow.' },
+    { name: 'octocode-awareness-lite', description: 'Lightweight external-agent coordination workflow.' },
   ]);
 
   assert.match(dashboard, /^◆ Octocode skills/m);

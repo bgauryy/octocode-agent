@@ -5,12 +5,11 @@
  * a declarative scheme registry. A `raw` action exposes any Domain.method.
  * Screenshots are written to `<workspace>/.octocode/agent/<session-key>/browser/screenshots/`
  * (session-scoped). Session metadata lands at `browser/port-<N>/session.json` inside the
- * same session tree. Legacy fallback: `<workspace>/.octocode/screenshots/` when no session
- * key is available.
+ * same session tree. A deterministic session identity is derived when the host does not provide one.
  *
  * Mirrors the web-tool.ts + agent-tools.ts patterns:
  *   - in-process execution with AbortSignal
- *   - ctx.ui.setStatus() feedback
+ *   - renderer-managed status feedback
  *   - redaction at the return boundary
  *   - renderCall + renderResult for TUI
  */
@@ -27,6 +26,7 @@ import { appendImageLines } from './image-render.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { setManagedStatus } from './runtime-renderer.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -36,7 +36,7 @@ type RegisterFn = typeof registerUniqueTool;
 const STATUS_NAME = 'chrome-debug';
 
 function setStatus(ctx: PiContext | undefined, msg: string | undefined): void {
-  ctx?.ui?.setStatus?.(STATUS_NAME, msg);
+  setManagedStatus(ctx, STATUS_NAME, msg);
 }
 
 // ─── Tool description ─────────────────────────────────────────────────────────
@@ -245,14 +245,6 @@ export function registerChromeDebugTool(
       });
     })(),
 
-    prepareArguments(args: unknown) {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      if (Array.isArray(input['queries'])) return args;
-      // Backward-compat: wrap a flat chromeDebug call in a single-item queries array.
-      return { queries: [{ reasoning: 'chromeDebug query', ...input }] };
-    },
-
     async execute(
       toolCallId: string,
       rawParams: Record<string, unknown>,
@@ -421,8 +413,7 @@ export function registerChromeDebugTool(
     renderCall(args: unknown, theme?: PiTheme) {
       const envelope = (args ?? {}) as Record<string, unknown>;
       const queryList = Array.isArray(envelope['queries']) ? envelope['queries'] as Record<string, unknown>[] : [];
-      // Support both queries[] envelope format and legacy flat format
-      const a = queryList.length > 0 ? queryList[0]! : envelope;
+      const a = queryList[0] ?? {};
       const scheme = typeof a['scheme'] === 'string' ? a['scheme'] : '?';
       const action = typeof a['action'] === 'string' ? a['action'] : '';
       const port = typeof a['port'] === 'number' ? a['port'] : 9222;

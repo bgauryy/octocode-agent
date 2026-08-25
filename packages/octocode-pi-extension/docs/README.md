@@ -12,6 +12,7 @@ Docs in this directory belong to the Pi harness extension. Keep harness runtime,
 | [AGENT_ORCHESTRATOR.md](AGENT_ORCHESTRATOR.md) | Pi SDK subagent orchestration contract and rollback notes. |
 | [CRON.md](CRON.md) | Session job safety model and cron-style maintenance commands. |
 | [UI.md](UI.md) | Octocode Pi UI surfaces and troubleshooting. |
+| [RUNTIME_STATE.md](RUNTIME_STATE.md) | Session initialization, Zustand state ownership, rendering, MCP readiness, and disposal. |
 
 Harness-wide capability discovery (MCP catalog, `skill` tool, `.octocode/discovery.json`, context composition) is documented at repo root: [`docs/DISCOVERY.md`](../../../docs/DISCOVERY.md).
 

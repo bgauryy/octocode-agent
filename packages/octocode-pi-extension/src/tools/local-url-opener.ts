@@ -142,3 +142,24 @@ export async function openLocalUrl(
     };
   }
 }
+
+/** Open an http(s) URL only after the caller has recorded explicit user consent. */
+export async function openApprovedExternalUrl(
+  target: string,
+  approved: boolean,
+): Promise<LocalUrlOpenResult> {
+  const requested: LocalUrlOpenPreference = 'system';
+  if (!approved) return { ok: false, requested, openedIn: 'none', message: 'External URL opening was not approved.' };
+  let url: URL;
+  try { url = new URL(target); } catch { return { ok: false, requested, openedIn: 'none', message: 'Invalid external URL.' }; }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return { ok: false, requested, openedIn: 'none', message: `Refusing unsupported URL protocol: ${url.protocol}` };
+  }
+  try {
+    const { command, args } = systemCommand(process.platform, url.href);
+    await defaultLaunch(command, args);
+    return { ok: true, requested, openedIn: 'system' };
+  } catch (error) {
+    return { ok: false, requested, openedIn: 'none', message: `Could not open authorization URL: ${(error as Error).message}` };
+  }
+}

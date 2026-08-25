@@ -14,6 +14,7 @@ import {
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import {
+  executeQueryBatch,
   QUERY_BATCH_MAX_ITEMS,
   QUERY_REASONING_MAX_LENGTH,
 } from './query-envelope.js';
@@ -191,25 +192,28 @@ function buildLockTool(Type: TypeBoxBuilder): ToolDefinition {
     name: 'lock', label: 'Lock',
     description: ['Exceptional exclusive file locks for sensitive or non-mergeable work.', 'Peer-held locks are checked automatically at mutation time; do not acquire a lock for ordinary mergeable edits.', 'Actions: acquire, wait, release.'].join('\n'),
     promptSnippet: 'Exceptional exclusive locks; mutation-time conflict checks are automatic', parameters: buildLockParameters(Type),
-    async execute(_id: string, raw: Record<string, unknown>, _signal: unknown, _onUpdate: unknown, ctx?: PiContext): Promise<ToolCallResult> {
+    async execute(toolCallId: string, raw: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: unknown, ctx?: PiContext): Promise<ToolCallResult> {
       const prepared = prepareQueries(group, raw, getAwarenessLiteAgentId(ctx));
       if (!Array.isArray(prepared)) return awarenessError(`[lock] ${prepared.error}`);
-      const results: Array<{ action: string; summary: string; result: unknown }> = [];
-      for (const [index, query] of prepared.entries()) {
-        if (!['acquire', 'release', 'wait'].includes(query.action)) return awarenessError(`[lock] queries[${index}] unknown lock action "${query.action}".`);
-        let response;
-        try { response = runAwarenessCommand(query.request, ctx?.cwd ?? process.cwd()); }
-        catch (error) { return awarenessError(`[lock] queries[${index}] failed: ${error instanceof Error ? error.message : String(error)}`); }
-        if (!response.ok) return awarenessError(`[lock] queries[${index}] failed: ${response.error ?? 'unknown error'}`);
-        results.push({ action: query.action, summary: summarizeLock(query.action, response.json, query.params), result: response.json });
-      }
-      if (results.length === 1) { const only = results[0]!; return awarenessOk(only.summary, only.action, only.result); }
-      return awarenessOk(`Lock: ${results.length} queries succeeded.`, 'batch', results);
+      return executeQueryBatch({
+        toolCallId,
+        raw,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
+        ctx,
+        passthroughSingle: true,
+        async execute(_query, index) {
+          const operation = prepared[index]!;
+          const response = runAwarenessCommand(operation.request, ctx?.cwd ?? process.cwd());
+          if (!response.ok) return awarenessError(`[lock] ${response.error ?? 'unknown error'}`);
+          return awarenessOk(summarizeLock(operation.action, response.json, operation.params), operation.action, response.json);
+        },
+      });
     },
     renderCall(raw: unknown, theme?: PiTheme) {
       const queries = Array.isArray((raw as Params | undefined)?.['queries']) ? ((raw as Params)['queries'] as Params[]) : [];
       const first = queries[0] ?? {};
-      return renderAwarenessCall('lock', str(first['action']), [str(first['file']), queries.length > 1 ? `+${queries.length - 1}` : ''].filter(Boolean).join(' '), theme);
+      return renderAwarenessCall('lock', str(first['action']), str(first['file']), theme);
     },
     renderResult(result: ToolCallResult, _opts: unknown, theme?: PiTheme) { return renderAwarenessResult(result, theme); },
   } as unknown as ToolDefinition;
@@ -247,37 +251,29 @@ function makeTool(group: CommandGroup, Type: TypeBoxBuilder): ToolDefinition {
     description,
     promptSnippet,
     parameters: buildParameters(Type, group),
-    async execute(_id: string, raw: Record<string, unknown>, _signal: unknown, _onUpdate: unknown, ctx?: PiContext): Promise<ToolCallResult> {
+    async execute(toolCallId: string, raw: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: unknown, ctx?: PiContext): Promise<ToolCallResult> {
       const cwd = ctx?.cwd ?? process.cwd();
-      const agentId = getAwarenessLiteAgentId(ctx);
-      const prepared = prepareQueries(group, raw, agentId);
+      const prepared = prepareQueries(group, raw, getAwarenessLiteAgentId(ctx));
       if (!Array.isArray(prepared)) return awarenessError(`[${group.resource}] ${prepared.error}`);
 
-      const results: Array<{ action: string; summary: string; result: unknown }> = [];
-      for (const [index, query] of prepared.entries()) {
-        let res;
-        try {
-          res = runAwarenessCommand(query.request, cwd);
-        } catch (err) {
-          const completed = results.length > 0 ? ` after ${results.length} prior queries succeeded` : '';
-          return awarenessError(`[${group.resource}] queries[${index}] failed${completed}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        if (!res.ok) {
-          const completed = results.length > 0 ? ` after ${results.length} prior queries succeeded` : '';
-          return awarenessError(`[${group.resource}] queries[${index}] failed${completed}: ${res.error ?? 'unknown error'}`);
-        }
-        results.push({
-          action: query.action,
-          summary: summarize(query.action, res.json, query.params),
-          result: res.json,
-        });
-      }
-
-      if (results.length === 1) {
-        const only = results[0]!;
-        return awarenessOk(only.summary, only.action, only.result);
-      }
-      return awarenessOk(`${group.label}: ${results.length} queries succeeded.`, 'batch', results);
+      return executeQueryBatch({
+        toolCallId,
+        raw,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
+        ctx,
+        passthroughSingle: true,
+        async execute(_query, index) {
+          const operation = prepared[index]!;
+          const response = runAwarenessCommand(operation.request, cwd);
+          if (!response.ok) return awarenessError(`[${group.resource}] ${response.error ?? 'unknown error'}`);
+          return awarenessOk(
+            summarize(operation.action, response.json, operation.params),
+            operation.action,
+            response.json,
+          );
+        },
+      });
     },
     renderCall(raw: unknown, theme?: PiTheme) {
       const queries = Array.isArray((raw as Params | undefined)?.['queries'])
@@ -286,8 +282,7 @@ function makeTool(group: CommandGroup, Type: TypeBoxBuilder): ToolDefinition {
       const first = queries[0] ?? {};
       const action = group.singleton ? group.actions[0]!.action : str(first['action']);
       const value = HINT_FIELDS.map((f) => str(first[f])).find(Boolean) ?? '';
-      const more = queries.length > 1 ? `+${queries.length - 1}` : '';
-      return renderAwarenessCall(group.resource, action, [value, more].filter(Boolean).join(' '), theme);
+      return renderAwarenessCall(group.resource, action, value, theme);
     },
     renderResult(result: ToolCallResult, _opts: unknown, theme?: PiTheme) {
       return renderAwarenessResult(result, theme);

@@ -2,7 +2,7 @@ import { lstat, unlink } from 'node:fs/promises';
 import type { Stats } from 'node:fs';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
 import { CLI_GLYPH, CLI_STATUS_TEXT, cliSpinnerFrame, cliToolTitle, paint } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildQueryCallBlocks, makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import {
   forgetFileReadState,
@@ -195,11 +195,6 @@ export function registerFileTool(
       'Do not use bash redirection, sed, or rm for ordinary file mutations when file is available.',
     ],
     parameters: buildParameters(Type),
-    prepareArguments(args: unknown): unknown {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      return Array.isArray(input['queries']) ? input : { queries: [input] };
-    },
     async execute(toolCallId, params, signal, onUpdate, ctx): Promise<ToolCallResult> {
       const cwd = ctx?.cwd ?? process.cwd();
       const rawQueries = Array.isArray(params['queries']) ? params['queries'] as Array<Record<string, unknown>> : [];
@@ -235,20 +230,17 @@ export function registerFileTool(
       });
     },
     renderCall(args: unknown, theme?: PiTheme) {
-      const queries = Array.isArray((args as Record<string, unknown> | undefined)?.['queries'])
-        ? (args as Record<string, unknown>)['queries'] as Array<Record<string, unknown>>
-        : [];
-      const first = queries[0] ?? {};
-      const operation = typeof first['type'] === 'string' ? first['type'] : 'mutate';
-      const filePath = typeof first['path'] === 'string' ? first['path'] : '(missing path)';
-      const reasoning = typeof first['reasoning'] === 'string' ? first['reasoning'].trim() : '';
-      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
-      const title = cliToolTitle(theme, FILE_TOOL_DISPLAY_NAME);
-      const meta = paint(theme, 'dim', `${operation} · ${filePath}${more}`);
-      return makeRenderer((width) => [
-        truncateToWidth(`${title} ${meta}`, width),
-        ...(reasoning ? [truncateToWidth(`  ${paint(theme, 'muted', reasoning)}`, width)] : []),
-      ]);
+      return buildQueryCallBlocks(args, theme, (singleArgs) => {
+        const queries = Array.isArray(singleArgs['queries'])
+          ? singleArgs['queries'] as Array<Record<string, unknown>>
+          : [];
+        const first = queries[0] ?? {};
+        const operation = typeof first['type'] === 'string' ? first['type'] : 'mutate';
+        const filePath = typeof first['path'] === 'string' ? first['path'] : '(missing path)';
+        const title = cliToolTitle(theme, FILE_TOOL_DISPLAY_NAME);
+        const meta = paint(theme, 'dim', `${operation} · ${filePath}`);
+        return makeRenderer((width) => [truncateToWidth(`${title} ${meta}`, width)]);
+      });
     },
     renderResult(result: ToolCallResult, opts: { isPartial?: boolean; expanded?: boolean }, theme?: PiTheme) {
       // Partial: spinner + tool name while the batch is still executing.

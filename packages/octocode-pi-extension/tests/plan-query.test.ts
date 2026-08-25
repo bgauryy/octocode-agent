@@ -3,7 +3,7 @@
  *
  * Covers: schema shape, per-query reasoning, preflight validation,
  * multi-query ordered execution, single-query detail passthrough,
- * legacy flat-param normalization, and renderCall envelope awareness.
+ * flat-call rejection, and renderCall envelope awareness.
  */
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -14,6 +14,7 @@ import { Type } from 'typebox';
 import { openAwarenessLite } from '@octocodeai/octocode-awareness/lite';
 import type { ToolDefinition, PiContext } from '../src/types.js';
 import { handleOctocodePlanCommand, registerPlanTool } from '../src/tools/plan-tool.js';
+import { registerUniqueTool } from '../src/tools/octocode-tools.js';
 import { completeUnifiedPlanTask } from '../src/tools/awareness-shared.js';
 import { acceptPlanReview, clearPlan, getPlan, getPlanReviewState, proposePlanReview, setPlan, setPlanRfc, updatePlanCoordination } from '../src/tools/active-plan.js';
 
@@ -22,7 +23,7 @@ const CWD = '/tmp/plan-query-test-ws';
 function loadTool(): ToolDefinition {
   const tools = new Map<string, ToolDefinition>();
   const pi = { registerTool: (d: ToolDefinition) => tools.set(d.name, d) };
-  registerPlanTool(pi, Type, new Set<string>(), (p, n, d) => { n.add(d.name); p.registerTool?.(d); });
+  registerPlanTool(pi, Type, new Set<string>(), registerUniqueTool);
   return tools.get('plan')!;
 }
 
@@ -553,15 +554,12 @@ test('missing reasoning on envelope query throws before execution', async () => 
   );
 });
 
-// ─── Legacy flat-param normalization ─────────────────────────────────────────
-
-test('legacy flat params without queries[] are accepted and normalized', async () => {
+test('flat params without queries[] are rejected', async () => {
   const tool = loadTool();
-  // Direct flat call (as existing tests do) — should still work
-  // 'Migrated step' would trigger the consequential gate (risk term 'migrat'); use neutral text.
-  const result = await tool.execute('id', { action: 'set', steps: ['Simple task'] } as Record<string, unknown>, undefined, undefined, ctx);
-  assert.equal(result.isError, undefined);
-  assert.equal(getPlan(CWD).length, 1);
+  await assert.rejects(
+    () => tool.execute('id', { action: 'set', steps: ['Simple task'] } as Record<string, unknown>, undefined, undefined, ctx),
+    /queries/i,
+  );
 });
 
 // ─── renderCall envelope awareness ───────────────────────────────────────────
@@ -578,7 +576,7 @@ test('renderCall reads action from queries[0]', () => {
   assert.match(output, /3/); // step count
 });
 
-test('renderCall shows +N for multi-query calls', () => {
+test('renderCall shows every operation and its reasoning for multi-query calls', () => {
   const tool = loadTool();
   const rendered = tool.renderCall?.(
     {
@@ -590,6 +588,13 @@ test('renderCall shows +N for multi-query calls', () => {
     },
     undefined,
   );
-  const output = rendered?.render(120).join('') ?? '';
-  assert.match(output, /\+2/); // +2 more queries
+  const lines = rendered?.render(120) ?? [];
+  assert.equal(lines.length, 6);
+  assert.match(lines[0]!, /set/);
+  assert.match(lines[1]!, /set/);
+  assert.match(lines[2]!, /start/);
+  assert.match(lines[3]!, /start/);
+  assert.match(lines[4]!, /complete/);
+  assert.match(lines[5]!, /complete/);
+  assert.doesNotMatch(lines.join('\n'), /\+2|why:|reasoning:/i);
 });

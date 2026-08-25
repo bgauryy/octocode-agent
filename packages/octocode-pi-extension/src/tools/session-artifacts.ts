@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getOctocodeHome } from '../env.js';
 
 export const SESSION_MANIFEST_VERSION = 1 as const;
 export const PLAN_SNAPSHOT_VERSION = 1 as const;
@@ -55,12 +54,6 @@ export interface SessionArtifactManifestV1 {
   createdAt: string;
   updatedAt: string;
   producers: Partial<Record<SessionArtifactProducer, ProducerManifestRecord>>;
-  imports?: Array<{
-    kind: 'legacy-plan-v1';
-    source: string;
-    importedAt: string;
-    sourceSha256: string;
-  }>;
 }
 
 export interface SessionArtifactContext {
@@ -402,74 +395,6 @@ export function createSessionArtifactContext(input: SessionIdentityInput = {}): 
 
 export function isPathInsideSessionRoot(ctx: SessionArtifactContext, candidate: string): boolean {
   return isInside(ctx.root, path.resolve(candidate));
-}
-
-export interface LegacyPlanImportResult {
-  status: 'imported' | 'already-imported' | 'missing' | 'invalid';
-  sourcePath: string;
-  importedPath?: string;
-}
-
-export function legacyPlanPathForScope(scope: string): string {
-  const hash = sha256(scope).slice(0, 16);
-  return path.join(getOctocodeHome(), 'plans', `${hash}.json`);
-}
-
-function readValidLegacyPlan(sourcePath: string): Buffer | undefined {
-  try {
-    const bytes = fs.readFileSync(sourcePath);
-    const parsed = JSON.parse(bytes.toString('utf8')) as { steps?: unknown };
-    return parsed && typeof parsed === 'object' && Array.isArray(parsed.steps) ? bytes : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function recordLegacyPlanImport(ctx: SessionArtifactContext, sourcePath: string, bytes: Buffer): void {
-  const internal = internals.get(ctx);
-  if (!internal) throw new Error('Unknown session artifact context');
-  const sourceSha256 = sha256(bytes);
-  internal.mutateManifest((manifest) => {
-    const existing = manifest.imports ?? [];
-    if (!existing.some((record) => record.kind === 'legacy-plan-v1' && record.source === sourcePath && record.sourceSha256 === sourceSha256)) {
-      existing.push({
-        kind: 'legacy-plan-v1',
-        source: sourcePath,
-        importedAt: new Date().toISOString(),
-        sourceSha256,
-      });
-    }
-    manifest.imports = existing;
-  });
-}
-
-export function importLegacyPlanOnce(ctx: SessionArtifactContext, scope: string): LegacyPlanImportResult {
-  const sourcePath = legacyPlanPathForScope(scope);
-  const relativeTarget = 'plan/legacy-plan-v1.json';
-  const importedPath = ctx.resolve(relativeTarget);
-  const existingRecord = ctx.inspect()?.imports?.find((record) => record.kind === 'legacy-plan-v1' && record.source === sourcePath);
-
-  if (!fs.existsSync(sourcePath)) {
-    return existingRecord && fs.existsSync(importedPath)
-      ? { status: 'already-imported', sourcePath, importedPath }
-      : { status: 'missing', sourcePath };
-  }
-  const sourceBytes = readValidLegacyPlan(sourcePath);
-  if (!sourceBytes) return { status: 'invalid', sourcePath };
-
-  if (fs.existsSync(importedPath)) {
-    const importedBytes = fs.readFileSync(importedPath);
-    if (sha256(importedBytes) !== sha256(sourceBytes)) return { status: 'invalid', sourcePath };
-    // Recover a crash between the atomic target write and manifest provenance.
-    ctx.registerProducer('plan', relativeTarget);
-    recordLegacyPlanImport(ctx, sourcePath, sourceBytes);
-    return { status: 'already-imported', sourcePath, importedPath };
-  }
-
-  ctx.writeText(relativeTarget, sourceBytes.toString('utf8'));
-  ctx.registerProducer('plan', relativeTarget);
-  recordLegacyPlanImport(ctx, sourcePath, sourceBytes);
-  return { status: 'imported', sourcePath, importedPath };
 }
 
 export interface PlanBranchSnapshotV1<T = unknown> {

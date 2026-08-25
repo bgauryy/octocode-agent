@@ -12,9 +12,14 @@ export interface McpServerConfig {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Destination environment key -> source process environment key. */
+  envRefs?: Record<string, string>;
   cwd?: string;
   url?: string;
   headers?: Record<string, string>;
+  /** HTTP header name -> source process environment key. */
+  headerRefs?: Record<string, string>;
+  auth?: 'none' | 'oauth';
   disabled?: boolean;
   description?: string;
   timeoutMs?: number;
@@ -30,6 +35,8 @@ export interface McpLoadedConfig {
   /** All parsed definitions before file/DB enablement is applied. */
   configuredServers: Map<string, McpServerConfig>;
   servers: Map<string, McpServerConfig>;
+  /** Effective winning definition source for each configured server. */
+  serverSources: Map<string, McpConfigSource>;
   sources: McpConfigSource[];
   warnings: string[];
 }
@@ -126,7 +133,23 @@ export function buildServerEnv(name: string, config: McpServerConfig): Record<st
       if (key.startsWith('OCTOCODE_') || key === 'GITHUB_TOKEN' || key === 'GH_TOKEN') base[key] = value;
     }
   }
-  return { ...base, ...(config.env ?? {}) };
+  const referenced: Record<string, string> = {};
+  for (const [destination, source] of Object.entries(config.envRefs ?? {})) {
+    const value = process.env[source];
+    if (value === undefined) throw new Error(`MCP environment reference ${source} for ${destination} is not set`);
+    referenced[destination] = value;
+  }
+  return { ...base, ...(config.env ?? {}), ...referenced };
+}
+
+export function buildServerHeaders(config: McpServerConfig): Record<string, string> {
+  const referenced: Record<string, string> = {};
+  for (const [header, source] of Object.entries(config.headerRefs ?? {})) {
+    const value = process.env[source];
+    if (value === undefined) throw new Error(`MCP header reference ${source} for ${header} is not set`);
+    referenced[header] = value;
+  }
+  return { ...(config.headers ?? {}), ...referenced };
 }
 
 export function projectMcpPath(cwd: string): string {
@@ -161,12 +184,12 @@ function parseStringArray(value: unknown): string[] | undefined {
   });
 }
 
-function parseStringRecord(value: unknown): Record<string, string> | undefined {
+function parseStringRecord(value: unknown, label: string): Record<string, string> | undefined {
   if (value === undefined) return undefined;
-  if (!isPlainRecord(value)) throw new Error('env must be an object');
+  if (!isPlainRecord(value)) throw new Error(`${label} must be an object`);
   const out: Record<string, string> = {};
   for (const [key, raw] of Object.entries(value)) {
-    if (typeof raw !== 'string') throw new Error(`env.${key} must be a string`);
+    if (typeof raw !== 'string' || raw.length === 0) throw new Error(`${label}.${key} must be a non-empty string`);
     out[key] = raw;
   }
   return out;
@@ -192,10 +215,13 @@ function parseServerConfig(name: string, value: unknown): McpServerConfig {
     transport: isHttp ? 'http' : 'stdio',
     command: isHttp ? undefined : String(rawCommand),
     args: parseStringArray(value['args']),
-    env: parseStringRecord(value['env']),
+    env: parseStringRecord(value['env'], 'env'),
+    envRefs: parseStringRecord(value['envRefs'], 'envRefs'),
     cwd: value['cwd'] === undefined ? undefined : String(value['cwd']),
     url: isHttp ? String(rawUrl) : undefined,
-    headers: parseStringRecord(value['headers']),
+    headers: parseStringRecord(value['headers'], 'headers'),
+    headerRefs: parseStringRecord(value['headerRefs'], 'headerRefs'),
+    auth: value['auth'] === 'oauth' ? 'oauth' : 'none',
     disabled: value['disabled'] === true,
     description: value['description'] === undefined ? undefined : String(value['description']),
     timeoutMs: timeoutMs === undefined ? undefined : Math.max(1_000, Math.min(120_000, Number(timeoutMs))),
@@ -266,7 +292,10 @@ export function upsertServerInFile(filePath: string, name: string, serverJson: R
     : { command: parsed.command };
   if (parsed.args && parsed.args.length) entry['args'] = parsed.args;
   if (parsed.env && Object.keys(parsed.env).length) entry['env'] = parsed.env;
+  if (parsed.envRefs && Object.keys(parsed.envRefs).length) entry['envRefs'] = parsed.envRefs;
   if (parsed.headers && Object.keys(parsed.headers).length) entry['headers'] = parsed.headers;
+  if (parsed.headerRefs && Object.keys(parsed.headerRefs).length) entry['headerRefs'] = parsed.headerRefs;
+  if (parsed.auth === 'oauth') entry['auth'] = 'oauth';
   if (parsed.cwd) entry['cwd'] = parsed.cwd;
   if (parsed.timeoutMs) entry['timeoutMs'] = parsed.timeoutMs;
   if (parsed.description) entry['description'] = parsed.description;
@@ -303,15 +332,21 @@ export async function loadMcpConfig(
   const defaultServer = buildDefaultOctocodeMcpServer();
   const servers = new Map<string, McpServerConfig>([[DEFAULT_OCTOCODE_MCP_SERVER_NAME, defaultServer]]);
   const sourcePath = defaultServer.command === 'npx' ? 'npx -y octocode-mcp@latest' : `node ${defaultServer.args?.[0] ?? 'octocode-mcp'}`;
-  const sources: McpConfigSource[] = [{ scope: 'built-in', path: sourcePath, trusted: true }];
+  const builtInSource: McpConfigSource = { scope: 'built-in', path: sourcePath, trusted: true };
+  const sources: McpConfigSource[] = [builtInSource];
+  const serverSources = new Map<string, McpConfigSource>([[DEFAULT_OCTOCODE_MCP_SERVER_NAME, builtInSource]]);
   const warnings: string[] = [];
 
   for (const candidate of globalMcpConfigPaths(pathOptions)) {
     try {
       const globalServers = readConfigFile(candidate);
       if (globalServers) {
-        sources.push({ scope: 'global', path: candidate, trusted: true });
-        for (const [name, config] of globalServers) servers.set(name, config);
+        const source: McpConfigSource = { scope: 'global', path: candidate, trusted: true };
+        sources.push(source);
+        for (const [name, config] of globalServers) {
+          servers.set(name, config);
+          serverSources.set(name, source);
+        }
       }
     } catch (error) {
       warnings.push(`${candidate}: ${(error as Error).message}`);
@@ -328,8 +363,12 @@ export async function loadMcpConfig(
     try {
       const projectServers = readConfigFile(candidate);
       if (projectServers) {
-        sources.push({ scope: 'project', path: candidate, trusted: true });
-        for (const [name, config] of projectServers) servers.set(name, config);
+        const source: McpConfigSource = { scope: 'project', path: candidate, trusted: true };
+        sources.push(source);
+        for (const [name, config] of projectServers) {
+          servers.set(name, config);
+          serverSources.set(name, source);
+        }
       }
     } catch (error) {
       warnings.push(`${candidate}: ${(error as Error).message}`);
@@ -347,7 +386,7 @@ export async function loadMcpConfig(
     warnings.push(`MCP enablement database unavailable: ${(error as Error).message}`);
     for (const [name, config] of servers) if (config.disabled) servers.delete(name);
   }
-  return { configuredServers, servers, sources, warnings };
+  return { configuredServers, servers, serverSources, sources, warnings };
 }
 
 export function resolveServerCwd(config: McpServerConfig, ctx?: PiContext): string {
@@ -376,11 +415,14 @@ export function configSignature(config: McpServerConfig): string {
     command: config.command,
     args: config.args ?? [],
     env: config.env ?? {},
+    envRefs: config.envRefs ?? {},
     cwd: config.cwd ?? null,
     timeoutMs: config.timeoutMs ?? null,
     transport: config.transport,
     url: config.url ?? null,
     headers: config.headers ?? {},
+    headerRefs: config.headerRefs ?? {},
+    auth: config.auth ?? 'none',
   });
 }
 

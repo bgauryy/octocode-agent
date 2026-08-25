@@ -19,11 +19,10 @@ import {
 import { registerPlanTool, refreshPlanUi, handleOctocodePlanCommand, inferConsequential, phaseStepperLine, planPanelLines, setPlanDirectoryServerForTests } from '../src/tools/plan-tool.js';
 import { planArtifactsDir, setPlanOpenerForTests } from '../src/tools/plan-html.js';
 import { isPlanMode, enterPlanMode, exitPlanMode, planModeToolGate, PLAN_MODE_BLOCK_REASON } from '../src/tools/plan-mode.js';
-import { createSessionArtifactContext, legacyPlanPathForScope, readPlanProjection } from '../src/tools/session-artifacts.js';
+import { createSessionArtifactContext, readPlanProjection } from '../src/tools/session-artifacts.js';
 import type { PiContext } from '../src/types.js';
 import {
   FORKED_SESSION_FIXTURE,
-  LEGACY_PLAN_RECORD_FIXTURE,
   RETRY_AFTER_SHARED_COMMIT_FIXTURE,
   TASK_LINKED_WORKER_TERMINAL_FIXTURES,
 } from './fixtures/unified-orchestration.js';
@@ -368,7 +367,17 @@ function loadTool(sendUserMessage?: (message: string, options?: { deliverAs?: 's
   const tools = new Map<string, ToolDefinition>();
   const pi = { registerTool: (d: ToolDefinition) => tools.set(d.name, d), sendUserMessage };
   registerPlanTool(pi, Type, new Set<string>(), (p, n, d) => { n.add(d.name); p.registerTool?.(d); });
-  return tools.get('plan')!;
+  const tool = tools.get('plan')!;
+  return {
+    ...tool,
+    execute(id, params, signal, onUpdate, ctx) {
+      const input = params as Record<string, unknown>;
+      const envelope = Array.isArray(input['queries'])
+        ? input
+        : { queries: [{ ...input, reasoning: 'exercise the plan tool contract in this test' }] };
+      return tool.execute(id, envelope, signal, onUpdate, ctx);
+    },
+  };
 }
 
 test('refreshPlanUi renders a live below-editor checklist without compact footer duplication', () => {
@@ -491,7 +500,7 @@ test('plan tool set writes a reviewable local plan artifact immediately', async 
     assert.match(md, /Status: active/);
     assert.match(md, /Workspace: \/tmp\/plan-artifact-ws/);
     assert.match(md, /OCTOCODE_PLAN_CHECKLIST_START/);
-    assert.match((res.content[0] as { text: string }).text, new RegExp(mdPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match((res.content[0] as { text: string }).text, /\[PLAN\] 0\/2 done/);
   } finally {
     clearPlan(cwd);
     fs.rmSync(home, { recursive: true, force: true });
@@ -768,13 +777,7 @@ test('re-adopting the same authoritative branch entry is projection-idempotent',
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-adopt-idempotent-'));
   const ctx = { cwd: workspace, sessionManager: { getSessionId: () => 'adopt-idempotent' } };
   const scope = activePlanScope(ctx);
-  const branch = [{
-    id: 'stable-entry-id',
-    type: 'custom',
-    customType: PLAN_ENTRY_TYPE,
-    timestamp: new Date(0).toISOString(),
-    data: { version: 1, steps: [{ text: 'same state', status: 'doing' }] },
-  }];
+  const branch = [planEntry([{ id: 'same-state', text: 'same state', status: 'doing' }], 'stable-entry-id')];
   try {
     assert.equal(adoptPlanFromBranch(scope, branch), true);
     const artifacts = createSessionArtifactContext(ctx);
@@ -800,14 +803,21 @@ test('branch adoption restores complete review metadata and actual entry identit
       customType: PLAN_ENTRY_TYPE,
       timestamp: '2026-01-01T00:00:00.000Z',
       data: {
-        version: 2,
+        version: 3,
+        branchSnapshotId: 'actual-branch-entry',
+        capturedAt: '2026-01-01T00:00:00.000Z',
         phase: 'accepted',
         generation: 7,
+        coordination: {
+          mode: 'auto',
+          sourcePlanKey: 'review-adopt-plan',
+          coordinationWorkspace: workspace,
+        },
         rfcPath: path.join(workspace, '.octocode/rfc/demo/RFC.md'),
         revision: 'current-hash',
         acceptedRevision: 'current-hash',
         acceptedAt: '2026-01-01T00:00:00.000Z',
-        steps: [{ text: 'Implement', status: 'todo' }],
+        steps: [{ id: 'implement', text: 'Implement', status: 'todo' }],
         decisions: [{ q: 'API?', a: 'Typed' }],
         blockingQuestions: [{ id: 'q1', prompt: 'Resolved?', answer: 'Yes', blocking: true }],
         comments: [{ id: 'c1', body: 'Looks good', blocking: false, resolved: false }],
@@ -834,32 +844,6 @@ test('branch adoption restores complete review metadata and actual entry identit
   }
 });
 
-test('session-ID storage imports the exact old session-file scope once and retains the source', () => {
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-legacy-import-'));
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-legacy-home-'));
-  const previousHome = process.env['OCTOCODE_HOME'];
-  process.env['OCTOCODE_HOME'] = home;
-  const sessionFile = path.join(workspace, 'legacy.jsonl');
-  const legacyScope = `${workspace}\0${sessionFile}`;
-  const source = legacyPlanPathForScope(legacyScope);
-  fs.mkdirSync(path.dirname(source), { recursive: true });
-  fs.writeFileSync(source, JSON.stringify({ version: 1, scope: legacyScope, steps: [{ text: 'legacy step', status: 'doing' }] }));
-  const ctx = { cwd: workspace, sessionManager: { getSessionId: () => 'new-session-id', getSessionFile: () => sessionFile } };
-  const scope = activePlanScope(ctx);
-  try {
-    assert.deepEqual(getPlan(scope).map((step) => step.text), ['legacy step']);
-    assert.equal(getPlanLifecycle(scope), 'executing', 'legacy records without a phase hydrate as executing');
-    assert.ok(fs.existsSync(source), 'legacy source remains untouched');
-    assert.ok(fs.existsSync(createSessionArtifactContext(ctx).resolve('plan/legacy-plan-v1.json')));
-  } finally {
-    clearPlan(scope);
-    if (previousHome === undefined) delete process.env['OCTOCODE_HOME'];
-    else process.env['OCTOCODE_HOME'] = previousHome;
-    fs.rmSync(workspace, { recursive: true, force: true });
-    fs.rmSync(home, { recursive: true, force: true });
-  }
-});
-
 // ─── Branch/fork-correct plan state (pi appendEntry pattern) ──────────────────
 //
 // Pi docs: extension state belongs in session entries so /fork and /tree roll
@@ -873,12 +857,26 @@ const BRANCH_CWD = '/tmp/plan-branch-test-ws';
 let planEntrySequence = 0;
 function planEntry(steps: Array<Record<string, unknown>>, id?: string): Record<string, unknown> {
   planEntrySequence += 1;
+  const snapshotId = id ?? `plan-entry-${planEntrySequence}`;
+  const capturedAt = new Date(planEntrySequence * 1_000).toISOString();
   return {
-    id: id ?? `plan-entry-${planEntrySequence}`,
+    id: snapshotId,
     type: 'custom',
     customType: PLAN_ENTRY_TYPE,
-    timestamp: new Date(planEntrySequence * 1_000).toISOString(),
-    data: { version: 1, steps },
+    timestamp: capturedAt,
+    data: {
+      version: 3,
+      branchSnapshotId: snapshotId,
+      generation: planEntrySequence,
+      capturedAt,
+      phase: 'executing',
+      coordination: {
+        mode: 'auto',
+        sourcePlanKey: `test-plan-${snapshotId}`,
+        coordinationWorkspace: BRANCH_CWD,
+      },
+      steps: steps.map((step, index) => ({ id: step.id ?? `${snapshotId}-step-${index + 1}`, ...step })),
+    },
   };
 }
 
@@ -927,7 +925,7 @@ test('adoptPlanFromBranch with an empty snapshot clears the scope; without any s
     assert.equal(
       adoptPlanFromBranch(BRANCH_CWD, [{ type: 'message' }, { type: 'compaction' }]),
       false,
-      'branches predating the feature leave disk state untouched (back-compat)'
+      'branches without a snapshot leave disk state untouched'
     );
     assert.deepEqual(getPlan(BRANCH_CWD).map((s) => s.text), ['pre-existing']);
 
@@ -987,11 +985,12 @@ test('rfcPath round-trips through the session snapshot and adoptPlanFromBranch',
     assert.equal(last.rfcPath, '/abs/.octocode/rfc/x/RFC.md', 'the snapshot carries the RFC link');
 
     // A branch entry WITH an rfcPath restores it; one WITHOUT clears it.
-    const withRfc = { type: 'custom', customType: PLAN_ENTRY_TYPE, data: { version: 1, steps: [{ text: 'forked', status: 'doing' }], rfcPath: '/abs/.octocode/rfc/y/RFC.md' } };
+    const withRfc = planEntry([{ id: 'forked', text: 'forked', status: 'doing' }]);
+    (withRfc.data as Record<string, unknown>).rfcPath = '/abs/.octocode/rfc/y/RFC.md';
     assert.equal(adoptPlanFromBranch(cwd, [withRfc]), true);
     assert.equal(getPlanRfc(cwd), '/abs/.octocode/rfc/y/RFC.md', 'fork restores the branch RFC link');
 
-    const withoutRfc = { type: 'custom', customType: PLAN_ENTRY_TYPE, data: { version: 1, steps: [{ text: 'other', status: 'doing' }] } };
+    const withoutRfc = planEntry([{ id: 'other', text: 'other', status: 'doing' }]);
     assert.equal(adoptPlanFromBranch(cwd, [withoutRfc]), true);
     assert.equal(getPlanRfc(cwd), undefined, 'a snapshot without an RFC clears the link (no stale leak)');
   } finally {
@@ -1087,11 +1086,12 @@ test('decisions round-trip through the session snapshot and adoptPlanFromBranch'
     addPlanDecision(cwd, 'Q1', 'A1');
     assert.deepEqual((snaps[snaps.length - 1]!.decisions as PlanDecision[]), [{ q: 'Q1', a: 'A1' }]);
 
-    const withDecisions = { type: 'custom', customType: PLAN_ENTRY_TYPE, data: { version: 1, steps: [{ text: 'forked', status: 'doing' }], decisions: [{ q: 'Q2', a: 'A2' }] } };
+    const withDecisions = planEntry([{ id: 'forked-decisions', text: 'forked', status: 'doing' }]);
+    (withDecisions.data as Record<string, unknown>).decisions = [{ q: 'Q2', a: 'A2' }];
     assert.equal(adoptPlanFromBranch(cwd, [withDecisions]), true);
     assert.deepEqual(getPlanDecisions(cwd), [{ q: 'Q2', a: 'A2' }], 'fork restores the branch decisions');
 
-    const withoutDecisions = { type: 'custom', customType: PLAN_ENTRY_TYPE, data: { version: 1, steps: [{ text: 'other', status: 'doing' }] } };
+    const withoutDecisions = planEntry([{ id: 'other-decisions', text: 'other', status: 'doing' }]);
     assert.equal(adoptPlanFromBranch(cwd, [withoutDecisions]), true);
     assert.deepEqual(getPlanDecisions(cwd), [], 'a snapshot without decisions clears them (no stale leak)');
   } finally {
@@ -1480,10 +1480,7 @@ test('status panel registers its widget ONCE per session and repaints via tui.re
   assert.ok(calls.widget.some((w) => (w as { cleared: boolean }).cleared), 'empty panel clears the widget');
 });
 
-test('unified orchestration fixtures encode migration, retry, fork, and worker terminal contracts', () => {
-  assert.equal(LEGACY_PLAN_RECORD_FIXTURE.version, 1);
-  assert.equal('sourcePlanKey' in LEGACY_PLAN_RECORD_FIXTURE, false, 'legacy records intentionally lack stable source identity');
-
+test('unified orchestration fixtures encode retry, fork, and worker terminal contracts', () => {
   assert.equal(RETRY_AFTER_SHARED_COMMIT_FIXTURE.expected.awarenessPlanCount, 1);
   assert.equal(
     RETRY_AFTER_SHARED_COMMIT_FIXTURE.expected.awarenessTaskCount,

@@ -231,15 +231,20 @@ function ruleLine(theme: PiTheme | undefined, prefixPlain: string, width: number
   return paint(theme, token, prefixPlain + '─'.repeat(fill));
 }
 
-function askHeaderLines(theme: PiTheme | undefined, question: string, width: number): string[] {
+function askHeaderLines(theme: PiTheme | undefined, question: string, width: number, pagination?: { current: number; total: number }): string[] {
   const bar = paint(theme, 'dim', '│');
   // Wrap rather than truncate: the question is the one string the user must
   // read in full. wrapTextWithAnsi keeps any styling intact across lines.
   const wrapped = wrapTextWithAnsi(question, Math.max(8, askFrameWidth(width) - 2));
-  // Dim frame, brand mark: `╭─ ` dim + `◆ Input needed` brand + dim fill.
-  const prefix = `╭─ ◆ ${ASK_HEADER_LABEL} `;
+  // Pagination badge: · 2 of 3 · shown in muted color between the header mark and the fill.
+  const pageBadge = pagination
+    ? paint(theme, 'muted', ` · ${pagination.current} of ${pagination.total} ·`)
+    : '';
+  const pageBadgePlain = pagination ? ` · ${pagination.current} of ${pagination.total} ·` : '';
+  // Dim frame, brand mark: `╭─ ` dim + `◆ Input needed` brand + optional pagination + dim fill.
+  const prefix = `╭─ ◆ ${ASK_HEADER_LABEL}${pageBadgePlain} `;
   const fill = Math.max(0, askFrameWidth(width) - visibleWidth(prefix));
-  const header = `${paint(theme, 'dim', '╭─ ')}${paint(theme, 'brand', `◆ ${ASK_HEADER_LABEL}`)}${paint(theme, 'dim', ` ${'─'.repeat(fill)}`)}`;
+  const header = `${paint(theme, 'dim', '╭─ ')}${paint(theme, 'brand', `◆ ${ASK_HEADER_LABEL}`)}${pageBadge}${paint(theme, 'dim', ` ${'─'.repeat(fill)}`)}`;  
   return [header, ...wrapped.map((line) => `${bar} ${line}`), bar];
 }
 
@@ -254,6 +259,10 @@ const ASK_LIST_MAX_VISIBLE = 7;
 /** Max pros (and, separately, cons) detail lines painted under the focused row. */
 const ASK_LIST_DETAIL_CAP = 2;
 const ASK_LIST_DESCRIPTION_CAP = 2;
+/** Max description lines for non-focused rows (1 clipped line keeps the list scannable). */
+const ASK_LIST_DESCRIPTION_CAP_ALL = 1;
+/** Unicode circled digit glyphs for option badges ①–⑨ (U+2460–U+2468, 1-cell wide, East-Asian Narrow). */
+const CIRCLE_DIGITS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨'] as const;
 
 function renderAskChoiceLines(
   theme: PiTheme | undefined,
@@ -265,6 +274,7 @@ function renderAskChoiceLines(
   width: number,
   warning?: string,
   searchQuery?: string,
+  pagination?: { current: number; total: number },
 ): string[] {
   const bar = paint(theme, 'dim', '│');
   // Scroll window: long lists would overflow the terminal height (pi clips the
@@ -309,18 +319,34 @@ function renderAskChoiceLines(
     const checked = selected && !item.empty && !item.freeText ? (selected.has(optionIndex) ? paint(theme, 'brand', '[x]') : paint(theme, 'dim', '[ ]')) : '';
     // Numbered rows advertise the 1-9 quick-select keys; rows past 9 pad the same
     // 3 cells so the label column doesn't jump. Free-text/empty rows are unnumbered.
+    // Circle badge for options 0–8 (①–⑨, 1-cell wide + 2 spaces = 3-cell column).
+    // Options 9+ fall back to plain `N. ` so the label column stays consistent.
     const ordinal = !item.freeText && !item.empty
-      ? (optionIndex < 9 ? paint(theme, active ? 'brand' : 'dim', `${optionIndex + 1}.`) + ' ' : '   ')
+      ? (optionIndex < 9
+        ? paint(theme, active ? 'brand' : 'dim', CIRCLE_DIGITS[optionIndex]!) + '  '
+        : `${optionIndex + 1}. `)
       : '';
     const rawLabel = disabled || item.empty ? paint(theme, 'muted', item.label) : item.freeText ? paint(theme, active ? 'brand' : 'muted', item.label) : (active ? paint(theme, 'brand', item.label) : item.label);
-    // Recommended badge sits right after the label so the default choice is
-    // scannable even when the row isn't focused.
-    const badge = item.recommended ? ` ${paint(theme, 'brand', '★ recommended')}` : '';
+    // Recommended pill: [recommended] in brand color, always visible regardless
+    // of focus so the safe default is scannable at a glance.
+    const badge = item.recommended
+      ? ` ${paint(theme, 'dim', '[')}${paint(theme, 'brand', 'recommended')}${paint(theme, 'dim', ']')}`
+      : '';
     const disabledBadge = disabled ? ` ${paint(theme, 'muted', `(${disabled})`)}` : '';
     const line = `${rowBar} ${marker} ${checked ? `${checked} ` : ''}${ordinal}${rawLabel}${badge}${disabledBadge}`;
     // Expand the FOCUSED row with its trade-offs (pros ✓ / cons ✗) and any
     // preview — collapsed rows stay one line so the list stays scannable.
     const detail: string[] = [];
+    // Always show a single dim description line for non-focused selectable rows
+    // so the user can read every option's nuance without needing to navigate to it.
+    if (!active && item.description && !item.freeText && !item.groupHeader && !item.empty) {
+      const descWidth = Math.max(8, askFrameWidth(width) - 6);
+      // Show at most ASK_LIST_DESCRIPTION_CAP_ALL lines (default 1) so the list
+      // stays scannable without the user needing to navigate to each option.
+      for (const d of wrapTextWithAnsi(item.description, descWidth).slice(0, ASK_LIST_DESCRIPTION_CAP_ALL)) {
+        detail.push(`${bar}     ${paint(theme, 'muted', d)}`);
+      }
+    }
     if (active) {
       if (item.description) {
         const detailWidth = Math.max(8, askFrameWidth(width) - 6);
@@ -342,7 +368,7 @@ function renderAskChoiceLines(
   if (start > 0) rows.unshift(`${bar} ${paint(theme, 'dim', `↑ ${start} more`)}`);
   if (end < items.length) rows.push(`${bar} ${paint(theme, 'dim', `↓ ${items.length - end} more`)}`);
   return [
-    ...askHeaderLines(theme, question, width),
+    ...askHeaderLines(theme, question, width, pagination),
     ...rows,
     // Breathing room between the last row and the footer rule.
     paint(theme, 'dim', '│'),
@@ -407,7 +433,15 @@ function renderAskFinalLines(
  */
 export async function runAskPrompt(
   ctx: PiContext,
-  params: { question: string; options: AskOption[]; placeholder?: string },
+  params: {
+    question: string;
+    options: AskOption[];
+    placeholder?: string;
+    /** Context-specific label for the always-present free-text escape row. */
+    freeTextLabel?: string;
+    /** When set, renders a '· N of T ·' pagination badge in the header. */
+    pagination?: { current: number; total: number };
+  },
 ): Promise<AskOutcome | undefined> {
   return runAskOverlay(ctx, params);
 }
@@ -422,6 +456,8 @@ async function runAskOverlay(
     min?: number;
     max?: number;
     fields?: AskField[];
+    freeTextLabel?: string;
+    pagination?: { current: number; total: number };
   },
 ): Promise<AskOutcome | undefined> {
   if (!supportsAskOverlay(ctx)) return undefined;
@@ -526,7 +562,10 @@ async function runAskOverlay(
       const choiceRows = (): ChoiceRow[] => {
         const visible = optionRows();
         const rows = visible.length ? visible : [{ label: 'No matches', description: 'press esc to clear search', empty: true }];
-        rows.push({ label: '✎ Discuss or type your own answer…', description: 'ask a question or reply in your own words', freeText: true });
+        const ftLabel = params.freeTextLabel
+          ? `✎ ${params.freeTextLabel}`
+          : '✎ Discuss or type your own answer…';
+        rows.push({ label: ftLabel, description: 'ask a question or reply in your own words', freeText: true });
         return rows;
       };
       // Now that choiceRows() exists, place the cursor on the recommended option's
@@ -613,6 +652,7 @@ async function runAskOverlay(
           w,
           warning,
           searchMode ? searchQuery : undefined,
+          params.pagination,
         ), w);
       };
 
@@ -836,16 +876,9 @@ export function registerAskUserTool(
       reasoningDescription: 'Concise reason this question is necessary to decide the next action.',
     }),
 
-    prepareArguments(args: unknown) {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      return Array.isArray(input['queries']) ? args : { queries: [input] };
-    },
-
     async execute(id: string, raw: Record<string, unknown>, signal, onUpdate, ctx?: PiContext): Promise<ToolCallResult> {
-      const envelope = Array.isArray(raw['queries']) ? raw : { queries: [raw] };
-      const queries = Array.isArray(envelope.queries)
-        ? envelope.queries as Record<string, unknown>[]
+      const queries = Array.isArray(raw.queries)
+        ? raw.queries as Record<string, unknown>[]
         : [];
       const runQuery = async (query: Record<string, unknown>): Promise<ToolCallResult> => {
       const p = query as unknown as AskParams;
@@ -950,7 +983,7 @@ export function registerAskUserTool(
 
       return executeQueryBatch({
         toolCallId: id,
-        raw: envelope,
+        raw,
         signal,
         onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
         ctx,
@@ -964,8 +997,7 @@ export function registerAskUserTool(
     renderCall(raw: unknown, theme?: PiTheme) {
       const envelope = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
       const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as AskParams[] : [];
-      const first = (queries[0] ?? {}) as Partial<AskParams> & Record<string, unknown>;
-      const p = queries[0] ?? envelope as unknown as AskParams;
+      const p = queries[0] ?? {} as AskParams;
       const q = String(p?.question ?? 'ask');
       const count = Array.isArray(p?.options) ? p.options.length : 0;
       const fieldCount = Array.isArray(p?.fields) ? p.fields.length : 0;
@@ -976,14 +1008,9 @@ export function registerAskUserTool(
             ? ` (${count} options, multi)`
             : ` (${count} options)`
           : ' (free text)';
-      const reasoning = typeof first['reasoning'] === 'string' ? first['reasoning'].trim() : '';
       const title = cliToolTitle(theme, 'askUser');
-      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
-      const body = paint(theme, 'dim', q + suffix + more);
-      return makeRenderer((w) => [
-        truncateToWidth(`${title} ${body}`, w),
-        ...(reasoning ? [truncateToWidth(`  ${paint(theme, 'muted', reasoning)}`, w)] : []),
-      ]);
+      const body = paint(theme, 'dim', q + suffix);
+      return makeRenderer((w) => [truncateToWidth(`${title} ${body}`, w)]);
     },
 
     renderResult(result: ToolCallResult, opts: RenderResultOptions, theme?: PiTheme) {

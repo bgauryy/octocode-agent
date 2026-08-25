@@ -137,10 +137,10 @@ export function parseAwarenessStatus(json: string): AwarenessStatus | null {
     return typeof v === 'number' && Number.isFinite(v) ? v : 0;
   };
   return {
-    activePlans: raw['activePlans'] === undefined ? num('plans') : num('activePlans'),
-    readyTasks: raw['readyTasks'] === undefined ? num('tasks') : num('readyTasks'),
+    activePlans: num('activePlans'),
+    readyTasks: num('readyTasks'),
     inProgressTasks: num('inProgressTasks'),
-    verifyTasks: raw['verifyTasks'] === undefined ? num('pendingChecks') : num('verifyTasks'),
+    verifyTasks: num('verifyTasks'),
     lockCount: num('locks'),
     workCount: num('work'),
     agentCount: num('agents'),

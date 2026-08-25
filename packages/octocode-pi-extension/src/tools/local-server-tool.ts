@@ -115,17 +115,6 @@ export function registerLocalServerTool(
     ],
     parameters,
 
-    prepareArguments(args: unknown) {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      if (Array.isArray(input['queries'])) return input;
-      return {
-        queries: [
-          { reasoning: `localServer ${String(input['action'] ?? 'status')}`, ...input },
-        ],
-      };
-    },
-
     async execute(
       toolCallId: string,
       params: Record<string, unknown>,
@@ -243,10 +232,9 @@ export function registerLocalServerTool(
           : p.name
             ? `${p.action} ${p.name}`
             : String(p.action ?? '');
-      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
       return makeRenderer((width) => [
         truncateToWidth(
-          `${cliToolTitle(theme, 'localServer')} ${paint(theme, 'dim', `${suffix}${more}`)}`,
+          `${cliToolTitle(theme, 'localServer')} ${paint(theme, 'dim', suffix)}`,
           width,
         ),
       ]);

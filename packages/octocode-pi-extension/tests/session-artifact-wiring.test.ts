@@ -7,7 +7,7 @@
  *  - getInternalErrorLogPath     → routes to session dir (zero I/O) or fallback
  *  - getSessionDir               → chrome-debug session routing
  *  - getScreenshotDir            → chrome-debug screenshot routing
- *  - writeCompactionArtifact     → session dir + manifest vs legacy fallback
+ *  - writeCompactionArtifact     → session dir + manifest
  *  - resolveSessionIdentity      → key derivation (pure, deterministic)
  */
 
@@ -210,30 +210,13 @@ test('getSessionDir: with sessionKey routes to browser/port-N inside session tre
   assert.equal(dir, '/ws/.octocode/agent/my-key-abc/browser/port-9222');
 });
 
-test('getSessionDir: without sessionKey routes to legacy chrome-debug/port-N', () => {
-  const dir = getSessionDir('/ws', 9222);
-  assert.equal(dir, '/ws/.octocode/chrome-debug/port-9222');
-});
-
 test('getScreenshotDir: with cwd + sessionKey routes to browser/screenshots inside session tree', () => {
   const dir = getScreenshotDir('/ws', 'my-key-abc');
   assert.equal(dir, '/ws/.octocode/agent/my-key-abc/browser/screenshots');
 });
 
-test('getScreenshotDir: with cwd only → legacy workspace screenshots dir', () => {
-  const dir = getScreenshotDir('/ws');
-  assert.equal(dir, '/ws/.octocode/screenshots');
-});
-
-test('getScreenshotDir: no cwd, no sessionKey → global octocode home screenshots', () => {
-  const dir = getScreenshotDir(undefined, undefined);
-  assert.ok(path.isAbsolute(dir), 'must be absolute');
-  assert.ok(dir.endsWith('screenshots'), 'must end with screenshots');
-  assert.ok(!dir.includes('.octocode/agent/'), 'must not be session-scoped');
-});
-
 // ---------------------------------------------------------------------------
-// writeCompactionArtifact — session dir + manifest vs legacy fallback
+// writeCompactionArtifact — session dir + manifest
 // ---------------------------------------------------------------------------
 
 test('writeCompactionArtifact: routes to session artifact dir when cwd + session provided', () => {
@@ -284,11 +267,11 @@ test('writeCompactionArtifact: registers compaction producer in the session mani
   assert.ok(compactionPaths.some((p) => p.endsWith('latest.md')), 'latest.md must be a registered producer path');
 });
 
-test('writeCompactionArtifact: falls back to legacy dir when no cwd provided', () => {
-  const sessionManager = makeSessionManager('legacy-test');
+test('writeCompactionArtifact: skips writes when cwd is absent', () => {
+  const sessionManager = makeSessionManager('missing-cwd-test');
   const details = {
-    label: 'legacy-chk-00000000',
-    summary: 'Legacy fallback test',
+    label: 'missing-cwd-chk-00000000',
+    summary: 'Missing cwd test',
     checkpointId: '00000000',
     timestamp: new Date().toISOString(),
     turnCount: 1,
@@ -296,19 +279,13 @@ test('writeCompactionArtifact: falls back to legacy dir when no cwd provided', (
     reducedTokenCount: 50,
   };
 
-  // Without cwd the function should write to the global ~/.octocode/tmp/compaction/ dir.
-  const result = writeCompactionArtifact(details, sessionManager);
-  // May return undefined if the global dir is not writable in CI — just verify
-  // it does NOT write inside a workspace session tree.
-  if (result) {
-    assert.ok(!result.path.includes('.octocode/agent/'), 'legacy path must not be session-scoped');
-  }
+  assert.equal(writeCompactionArtifact(details, sessionManager), undefined);
 });
 
-test('writeCompactionArtifact: without session arg falls back to legacy path', () => {
+test('writeCompactionArtifact: skips writes when session is absent', () => {
   const details = {
     label: 'no-session-chk-ffffffff',
-    summary: 'No session fallback',
+    summary: 'Missing session test',
     checkpointId: 'ffffffff',
     timestamp: new Date().toISOString(),
     turnCount: 0,
@@ -316,11 +293,7 @@ test('writeCompactionArtifact: without session arg falls back to legacy path', (
     reducedTokenCount: 0,
   };
 
-  // No session and no cwd → full legacy path.
-  const result = writeCompactionArtifact(details);
-  if (result) {
-    assert.ok(!result.path.includes('.octocode/agent/'), 'no-session result must not be session-scoped');
-  }
+  assert.equal(writeCompactionArtifact(details), undefined);
 });
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,10 @@ import { registerBashTool } from '../src/tools/bash-tool.js';
 import { registerFileTool } from '../src/tools/file-tool.js';
 import { registerAskUserTool } from '../src/tools/ask-user-tool.js';
 import { registerPlanTool } from '../src/tools/plan-tool.js';
+import { registerWebTool } from '../src/tools/web-tool.js';
+import { registerReadMediaTool } from '../src/tools/read-media-tool.js';
+import { registerMediaTool } from '../src/tools/create-media-tool.js';
+import { registerUnifiedAgentTool } from '../src/tools/unified-agent-tool.js';
 import type { ToolDefinition, PiTheme, ToolCallResult, RenderResultOptions } from '../src/types.js';
 // ─── Stub theme ───────────────────────────────────────────────────────────────
 
@@ -73,6 +77,37 @@ describe('registerUniqueTool with builtin overrides', () => {
     }
     expect(() => registerWriteTool(pi, Type, names, registerUniqueTool)).toThrow(/tool name collision: write/);
   });
+
+  it('renders Bash, file, plan, web, media, and agent queries as operation/reason pairs', () => {
+    const tools = new Map<string, ToolDefinition>();
+    const pi = { registerTool: (def: ToolDefinition) => tools.set(def.name, def) };
+    const names = new Set<string>();
+    registerBashTool(pi, Type, names, registerUniqueTool);
+    registerFileTool(pi, Type, names, registerUniqueTool);
+    registerPlanTool(pi, Type, names, registerUniqueTool);
+    registerWebTool(pi, Type, names, registerUniqueTool);
+    registerReadMediaTool(pi, Type, names, registerUniqueTool);
+    registerMediaTool(pi, Type, names, registerUniqueTool);
+    registerUnifiedAgentTool(pi, Type, names, registerUniqueTool);
+
+    const cases: Array<[string, Array<Record<string, unknown>>]> = [
+      ['bash', [{ reasoning: 'run alpha', command: 'echo alpha' }, { reasoning: 'run beta', command: 'echo beta' }]],
+      ['file', [{ reasoning: 'write alpha', type: 'write', path: '/a.ts' }, { reasoning: 'delete beta', type: 'delete', path: '/b.ts' }]],
+      ['plan', [{ reasoning: 'show plan', action: 'show' }, { reasoning: 'clear plan', action: 'clear' }]],
+      ['web', [{ reasoning: 'search alpha', query: 'alpha' }, { reasoning: 'fetch beta', url: 'https://example.com/beta' }]],
+      ['readMedia', [{ reasoning: 'inspect alpha', type: 'image', path: '/a.png', view: 'metadata' }, { reasoning: 'inspect beta', type: 'image', path: '/b.png', view: 'metadata' }]],
+      ['media', [{ reasoning: 'render alpha', type: 'image', dest: '/a.png' }, { reasoning: 'render beta', type: 'image', dest: '/b.png' }]],
+      ['agent', [{ reasoning: 'inspect alpha', type: 'inspect', agentId: 'alpha' }, { reasoning: 'inspect beta', type: 'inspect', agentId: 'beta' }]],
+    ];
+
+    for (const [toolName, queries] of cases) {
+      const lines = render(tools.get(toolName)!.renderCall!({ queries }, stubTheme), 160);
+      expect(lines, toolName).toHaveLength(4);
+      expect(lines[1], toolName).toContain(String(queries[0]!['reasoning']));
+      expect(lines[3], toolName).toContain(String(queries[1]!['reasoning']));
+      expect(lines.join('\n'), toolName).not.toMatch(/\+1|2 queries|why:|reasoning:/i);
+    }
+  });
 });
 
 // ─── withOctocodeRender — basic decoration ────────────────────────────────────
@@ -91,23 +126,66 @@ describe('withOctocodeRender', () => {
     expect(typeof def.renderResult).toBe('function');
   });
 
-  it('preserves existing renderCall', () => {
-    const customRenderCall = vi.fn().mockReturnValue({ render: () => ['custom'], invalidate: () => {} });
+  it('wraps an existing renderCall into ordered operation/reasoning blocks', () => {
+    const customRenderCall = vi.fn((args: unknown) => {
+      const envelope = args as { queries?: Array<Record<string, unknown>> };
+      const query = envelope.queries?.[0] ?? {};
+      return { render: () => [`custom ${String(query['value'] ?? '?')}`], invalidate: () => {} };
+    });
     const def = makeDef({ renderCall: customRenderCall });
     withOctocodeRender(def);
-    // same reference preserved
-    expect(def.renderCall).toBe(customRenderCall);
+
+    expect(def.renderCall).not.toBe(customRenderCall);
+    const lines = render(def.renderCall!({
+      queries: [
+        { value: 'alpha', reasoning: 'first reason' },
+        { value: 'beta', reasoning: 'second reason' },
+      ],
+    }, stubTheme), 120);
+
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toContain('custom alpha');
+    expect(lines[1]).toContain('first reason');
+    expect(lines[2]).toContain('custom beta');
+    expect(lines[3]).toContain('second reason');
+    expect(lines.join('\n')).not.toMatch(/why:|reasoning:/i);
+    expect(customRenderCall).toHaveBeenCalledTimes(2);
+    for (const [callArgs] of customRenderCall.mock.calls) {
+      expect(JSON.stringify(callArgs)).not.toContain('reasoning');
+    }
   });
 
-  it('delegates to an existing renderResult for normal results', () => {
+  it('delegates single-query results and renders multi-query results one row per query', () => {
     const customRenderResult = vi.fn().mockReturnValue({ render: () => ['custom'], invalidate: () => {} });
     const def = makeDef({ renderResult: customRenderResult });
     withOctocodeRender(def);
-    // The tool's own renderer is wrapped (not replaced): a normal result still
-    // flows through it unchanged.
-    const out = def.renderResult!(makeResult(), {} as RenderResultOptions, stubTheme);
+
+    const single = def.renderResult!(makeResult(), {} as RenderResultOptions, stubTheme);
     expect(customRenderResult).toHaveBeenCalledOnce();
-    expect(out.render(80)).toEqual(['custom']);
+    expect(single.render(80)).toEqual(['custom']);
+
+    customRenderResult.mockClear();
+    const batch = makeResult({
+      details: {
+        results: [
+          { index: 0, reasoning: 'first', status: 'success', summary: 'alpha ok', result: {} },
+          { index: 1, reasoning: 'second', status: 'failed', summary: 'beta failed', result: {} },
+          { index: 2, reasoning: 'third', status: 'not-run', summary: 'not run', result: undefined },
+        ],
+      },
+    });
+    const output = def.renderResult!(
+      batch,
+      {} as RenderResultOptions,
+      stubTheme,
+      { args: { queries: [{ reasoning: 'first' }, { reasoning: 'second' }, { reasoning: 'third' }] } } as never,
+    );
+    const lines = output.render(120);
+    expect(customRenderResult).not.toHaveBeenCalled();
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(/✓.*\[0\].*alpha ok/);
+    expect(lines[1]).toMatch(/✗.*\[1\].*beta failed/);
+    expect(lines[2]).toMatch(/[–-].*\[2\].*not run/);
   });
 
   it('overrides an existing renderResult on a system error (context.isError)', () => {
@@ -285,6 +363,22 @@ describe('buildOctocodeRenderCall', () => {
     const lines = render(c);
     expect(lines[0]).toContain('localViewStructure');
   });
+
+  it('renders every nested Octocode query with its unlabeled reason on the next line', () => {
+    const c = buildOctocodeRenderCall('localGetFileContent', {
+      queries: [
+        { path: '/src/a.ts', reasoning: 'read alpha' },
+        { path: '/src/b.ts', reasoning: 'read beta' },
+      ],
+    }, stubTheme);
+    const lines = render(c, 120);
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toContain('a.ts');
+    expect(lines[1]).toContain('read alpha');
+    expect(lines[2]).toContain('b.ts');
+    expect(lines[3]).toContain('read beta');
+    expect(lines.join('\n')).not.toMatch(/\+1|2 queries|why:|reasoning:/i);
+  });
 });
 
 // ─── buildToolCallSummary spot checks ────────────────────────────────────────
@@ -310,7 +404,7 @@ describe('buildToolCallSummary', () => {
     expect(typeof summary).toBe('string');
   });
 
-  it('appends +N for multiple queries', () => {
+  it('does not collapse multiple queries into a +N summary', () => {
     const summary = buildToolCallSummary('localGetFileContent', {
       queries: [
         { path: '/a.ts' },
@@ -318,7 +412,7 @@ describe('buildToolCallSummary', () => {
         { path: '/c.ts' },
       ],
     });
-    expect(summary).toContain('+2');
+    expect(summary).not.toMatch(/\+2|3 queries/);
   });
 });
 
@@ -330,9 +424,7 @@ function loadTool(
 ): ToolDefinition {
   const tools = new Map<string, ToolDefinition>();
   const pi = { registerTool: (d: ToolDefinition) => tools.set(d.name, d) };
-  registerFn(pi, Type, new Set(), (_p: unknown, _names: unknown, def: ToolDefinition) => {
-    pi.registerTool(def);
-  });
+  registerFn(pi, Type, new Set(), registerUniqueTool);
   return tools.get(toolName)!;
 }
 
@@ -402,6 +494,28 @@ describe('file-tool renderResult', () => {
       ),
     );
     expect(lines).toHaveLength(1);
+  });
+
+  it('renderCall: renders every file query and its unlabeled reasoning one by one', () => {
+    const tool = loadTool(registerFileTool as never, 'file');
+    const lines = render(
+      tool.renderCall!(
+        {
+          queries: [
+            { type: 'write', path: '/src/a.ts', reasoning: 'create alpha' },
+            { type: 'delete', path: '/src/b.ts', reasoning: 'remove beta' },
+          ],
+        },
+        stubTheme,
+      ),
+      120,
+    );
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toMatch(/write.*a\.ts/);
+    expect(lines[1]).toContain('create alpha');
+    expect(lines[2]).toMatch(/delete.*b\.ts/);
+    expect(lines[3]).toContain('remove beta');
+    expect(lines.join('\n')).not.toMatch(/\+1|why:|reasoning:/i);
   });
 });
 

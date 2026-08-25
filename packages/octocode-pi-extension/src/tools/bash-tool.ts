@@ -397,16 +397,11 @@ export function registerBashTool(
     promptGuidelines: [
       'Octocode custom bash replaces Pi built-in bash; prefer file for ordinary creates, edits, and deletes.',
       'Use bash for git, builds, tests, package managers, and bulk mechanical edits (e.g. sed).',
-      'Commands that obviously print inherited environment variables or secret-like env vars require approval; bash otherwise keeps the inherited environment for compatibility.',
+      'Commands that obviously print inherited environment variables or secret-like env vars require approval; bash otherwise keeps the inherited environment.',
       'Redirects (>, >>, tee) and cp/mv destinations must stay inside the working directory, home, OS temp, or ALLOWED_PATHS.',
       'Do not use bash to bypass the file path-guard.',
     ],
     parameters,
-    prepareArguments(args: unknown) {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      return Array.isArray(input['queries']) ? args : { queries: [input] };
-    },
     async execute(
       toolCallId: string,
       params: Record<string, unknown>,
@@ -472,16 +467,11 @@ export function registerBashTool(
     renderCall(args: unknown, theme?: PiTheme) {
       const envelope = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
       const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as Record<string, unknown>[] : [];
-      const input = queries[0] ?? envelope;
+      const input = queries[0] ?? {};
       const command = typeof input['command'] === 'string' ? input['command'] : '(missing command)';
-      const reasoning = typeof input['reasoning'] === 'string' ? input['reasoning'].trim() : '';
-      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
       const title = cliToolTitle(theme, BASH_TOOL_DISPLAY_NAME);
       const suffix = paint(theme, 'dim', command);
-      return makeRenderer((width) => [
-        truncateToWidth(`${title} ${suffix}${paint(theme, 'dim', more)}`, width),
-        ...(reasoning ? [truncateToWidth(`  why: ${paint(theme, 'dim', reasoning)}`, width)] : []),
-      ]);
+      return makeRenderer((width) => [truncateToWidth(`${title} ${suffix}`, width)]);
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {

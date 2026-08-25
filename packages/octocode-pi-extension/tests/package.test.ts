@@ -47,7 +47,6 @@ import { recordFileReadState, clearReadStatesForTests } from '../src/tools/file-
 import { assertPathAllowed } from '../src/tools/path-guard.js';
 import { getPermissionLevel, setPermissionLevel } from '../src/tools/approval.js';
 import { resetCompactionResumeStateForTests } from '../src/tools/compaction-resume.js';
-import { markCompactionResumeRequested } from '../src/tools/compaction-state.js';
 import { activePlanScope, clearPlan, getPlan, getPlanReviewState, setPlan } from '../src/tools/active-plan.js';
 import { handleOctocodePlanCommand, setPlanDirectoryServerForTests } from '../src/tools/plan-tool.js';
 import { setPlanOpenerForTests } from '../src/tools/plan-html.js';
@@ -307,22 +306,21 @@ async function captureExtensions(): Promise<CaptureResult> {
 
   // Preserve deep runtime parity tests for consolidated agent capabilities while
   // keeping retired names absent from the real public map. `has`/iteration still
-  // report only public tools; `get` falls back to these internal definitions for
-  // legacy behavior tests below.
-  const legacyTools = new Map<string, ToolDef>();
-  const captureLegacy = (_pi: unknown, names: Set<string>, def: ToolDef) => {
+  // report only public tools; `get` resolves internal definitions for focused runtime tests below.
+  const internalTools = new Map<string, ToolDef>();
+  const captureInternal = (_pi: unknown, names: Set<string>, def: ToolDef) => {
     names.add(def.name);
-    legacyTools.set(def.name, def);
+    internalTools.set(def.name, def);
   };
-  const legacyNames = new Set<string>();
-  registerAgentTools(pi as never, Type, legacyNames, captureLegacy as never);
-  registerSpawnSubagentTool(pi as never, Type, legacyNames, captureLegacy as never, () => {});
-  registerBrowserAgentTool(pi as never, Type, legacyNames, captureLegacy as never, () => {});
-  registerEditTool(pi as never, Type, legacyNames, captureLegacy as never);
-  registerWriteTool(pi as never, Type, legacyNames, captureLegacy as never);
+  const internalNames = new Set<string>();
+  registerAgentTools(pi as never, Type, internalNames, captureInternal as never);
+  registerSpawnSubagentTool(pi as never, Type, internalNames, captureInternal as never, () => {});
+  registerBrowserAgentTool(pi as never, Type, internalNames, captureInternal as never, () => {});
+  registerEditTool(pi as never, Type, internalNames, captureInternal as never);
+  registerWriteTool(pi as never, Type, internalNames, captureInternal as never);
   const publicGet = tools.get.bind(tools);
   Object.defineProperty(tools, 'get', {
-    value: (name: string) => publicGet(name) ?? legacyTools.get(name),
+    value: (name: string) => publicGet(name) ?? internalTools.get(name),
   });
 
   return {
@@ -345,8 +343,27 @@ function invokeExecute(
   params: Record<string, unknown>,
   ctx: unknown = { cwd: process.cwd() }
 ) {
-  const prepared = tool.prepareArguments?.(params) as Record<string, unknown> | undefined;
-  return tool.execute('call-id', prepared ?? params, undefined, undefined, ctx);
+  const expectsQueries = Boolean((tool.parameters as { properties?: Record<string, unknown> } | undefined)?.properties?.['queries']);
+  let input = params;
+  if (expectsQueries) {
+    const sourceQueries = Array.isArray(params['queries']) ? params['queries'] : [params];
+    input = {
+      ...params,
+      queries: sourceQueries.map((raw) => {
+        const query = raw as Record<string, unknown>;
+        const firstEdit = Array.isArray(query['edits']) ? query['edits'][0] as Record<string, unknown> | undefined : undefined;
+        return {
+          ...query,
+          reasoning: typeof query['reasoning'] === 'string' && query['reasoning'].trim()
+            ? query['reasoning']
+            : typeof firstEdit?.['reasoning'] === 'string' && firstEdit['reasoning'].trim()
+              ? firstEdit['reasoning']
+              : 'exercise the tool contract in this integration test',
+        };
+      }),
+    };
+  }
+  return tool.execute('call-id', input, undefined, undefined, ctx);
 }
 
 function argValues(args: string[], flag: string): string[] {
@@ -719,7 +736,23 @@ test('plan state is branch-correct: mutations append session entries; session_st
         getSessionFile: () => undefined,
         getBranch: () => [
           { type: 'message' },
-          { type: 'custom', customType: 'octocode-plan', data: { version: 1, steps: [{ text: 'forked step', status: 'doing' }] } },
+          {
+            type: 'custom',
+            customType: 'octocode-plan',
+            data: {
+              version: 3,
+              branchSnapshotId: 'forked-snapshot',
+              generation: 1,
+              capturedAt: '2026-01-01T00:00:00.000Z',
+              phase: 'executing',
+              coordination: {
+                mode: 'auto',
+                sourcePlanKey: 'forked-plan',
+                coordinationWorkspace: forkCwd,
+              },
+              steps: [{ id: 'forked-step', text: 'forked step', status: 'doing' }],
+            },
+          },
         ],
       },
     };
@@ -736,7 +769,20 @@ test('plan state is branch-correct: mutations append session entries; session_st
       cwd: forkCwd,
       hasUI: false,
       sessionManager: {
-        getBranch: () => [{ id: 'accepted-entry', type: 'custom', customType: 'octocode-plan', data: { version: 2, phase: 'accepted', generation: 3, steps: [{ text: 'forked step', status: 'todo' }] } }],
+        getBranch: () => [{
+          id: 'accepted-entry',
+          type: 'custom',
+          customType: 'octocode-plan',
+          data: {
+            version: 3,
+            branchSnapshotId: 'accepted-entry',
+            generation: 3,
+            capturedAt: '2026-01-01T00:00:00.000Z',
+            phase: 'accepted',
+            coordination: { mode: 'auto', sourcePlanKey: 'accepted-plan', coordinationWorkspace: forkCwd },
+            steps: [{ id: 'accepted-step', text: 'forked step', status: 'todo' }],
+          },
+        }],
       },
     };
     await treeHandler({}, reviewCtx);
@@ -745,7 +791,20 @@ test('plan state is branch-correct: mutations append session entries; session_st
     const executingCtx = {
       ...reviewCtx,
       sessionManager: {
-        getBranch: () => [{ id: 'executing-entry', type: 'custom', customType: 'octocode-plan', data: { version: 2, phase: 'executing', generation: 4, steps: [{ text: 'forked step', status: 'doing' }] } }],
+        getBranch: () => [{
+          id: 'executing-entry',
+          type: 'custom',
+          customType: 'octocode-plan',
+          data: {
+            version: 3,
+            branchSnapshotId: 'executing-entry',
+            generation: 4,
+            capturedAt: '2026-01-01T00:01:00.000Z',
+            phase: 'executing',
+            coordination: { mode: 'auto', sourcePlanKey: 'executing-plan', coordinationWorkspace: forkCwd },
+            steps: [{ id: 'executing-step', text: 'forked step', status: 'doing' }],
+          },
+        }],
       },
     };
     await treeHandler({}, executingCtx);
@@ -764,7 +823,7 @@ test('plan state is branch-correct: mutations append session entries; session_st
 
 test('session_start clears stale fallback-scoped plan when branch has no plan snapshot', withTempMemoryHome(async () => {
   // Regression: without clearWhenMissing:true the old comment said
-  // "branches without a snapshot leave disk state alone for back-compat",
+  // "branches without a snapshot leave disk state alone",
   // which left orphaned plan state from a prior session visible in a new one.
   const { handlers } = await captureExtensions();
   const staleCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-stale-plan-'));
@@ -1039,6 +1098,20 @@ test('public direct palette is exactly 16 queries-only tools with bounded per-qu
     const reasoning = queries.items?.properties?.['reasoning'] as { minLength?: number; maxLength?: number };
     assert.equal(reasoning.minLength, 1, `${name} rejects empty reasoning`);
     assert.equal(reasoning.maxLength, 240, `${name} bounds reasoning at 240 characters`);
+    const prepared = tools.get(name)!.prepareArguments?.({ queries: [{}] }) as {
+      queries?: Array<Record<string, unknown>>;
+    } | undefined;
+    assert.equal(
+      typeof prepared?.queries?.[0]?.['reasoning'],
+      'string',
+      `${name} repairs omitted per-query reasoning before Pi validation`,
+    );
+    const flat = { reasoning: 'flat calls are unsupported' };
+    assert.deepEqual(
+      tools.get(name)!.prepareArguments?.(flat),
+      flat,
+      `${name} does not convert flat arguments into queries`,
+    );
   }
 
   for (const retired of [
@@ -1048,6 +1121,26 @@ test('public direct palette is exactly 16 queries-only tools with bounded per-qu
     'readImage', 'createMedia', 'edit', 'write',
   ]) {
     assert.equal(tools.has(retired), false, `${retired} is retired without a public alias`);
+  }
+});
+
+test('all 16 public direct tools enter the shared query executor', async () => {
+  const { tools } = await captureExtensions();
+  for (const name of [...OCTOCODE_SUPPORT_TOOL_NAMES, 'bash']) {
+    const outcome = await Promise.resolve(
+      tools.get(name)!.execute('empty-batch', { queries: [] }, undefined, undefined, { cwd: process.cwd() }),
+    ).then(
+      result => ({ result, error: undefined }),
+      error => ({ result: undefined, error }),
+    );
+    const message = outcome.error instanceof Error
+      ? outcome.error.message
+      : outcome.result?.content
+        .filter((entry): entry is { type: 'text'; text: string } => entry.type === 'text')
+        .map(entry => entry.text)
+        .join('\n') ?? '';
+    assert.match(message, /queries.*non-empty|at least 1/i, `${name} rejects an empty batch at the shared query boundary`);
+    if (outcome.result) assert.equal(outcome.result.isError, true, `${name} returns an explicit error result`);
   }
 });
 
@@ -1080,7 +1173,7 @@ test('every direct tool contract is concise enough for per-turn agent context', 
   assert.ok(totalContractChars <= 45_000, `direct tool contracts use ${totalContractChars} chars`);
 });
 
-test('the removed unified-flow flag cannot restore legacy tools', async () => {
+test('the removed unified-flow flag cannot restore retired tools', async () => {
   const previousFlag = process.env['OCTOCODE_UNIFIED_TASK_FLOW'];
   process.env['OCTOCODE_UNIFIED_TASK_FLOW'] = '0';
   try {
@@ -1131,7 +1224,7 @@ test('retains the internal edit engine contract used by file', async () => {
   );
   assert.ok(editTool.renderCall, 'custom edit provides a renderer');
   assert.ok(editTool.renderResult, 'custom edit provides a result renderer');
-  const callLine = editTool.renderCall!({ path: 'a.ts', edits: [{ oldText: 'a', newText: 'b', reasoning: 'test' }] })
+  const callLine = editTool.renderCall!({ queries: [{ reasoning: 'edit test file', path: 'a.ts', edits: [{ oldText: 'a', newText: 'b', reasoning: 'test' }] }] })
     .render(120)
     .join('\n');
   assert.match(callLine, /edit \(Octocode\)/);
@@ -1171,16 +1264,15 @@ test('retains the internal write engine path guard used by file', async () => {
   }
 });
 
-test('write file_path alias folds via prepareArguments', async () => {
+test('write rejects file_path instead of path', async () => {
   const { tools } = await captureExtensions();
   const writeTool = tools.get('write')!;
-  assert.ok(writeTool.prepareArguments);
-  const folded = writeTool.prepareArguments!({
-    file_path: 'a.ts',
-    content: 'x',
-    reasoning: 'exercise the legacy path alias',
-  }) as { queries: Array<{ path: string; content: string; reasoning: string }> };
-  assert.equal(folded.queries[0]?.path, 'a.ts');
+  await assert.rejects(
+    () => invokeExecute(writeTool, {
+      queries: [{ file_path: 'a.ts', content: 'x', reasoning: 'verify path is required' }],
+    }),
+    /path must be a non-empty string/,
+  );
 });
 
 test('write records read-state so a follow-up edit is not stale', async () => {
@@ -2232,13 +2324,13 @@ test('mcp tool reads canonical project config, lists tools, calls tools, and hon
       }, trustedCtx)
     );
     const cachedPrompt = (beforeStartWithCachedMcp as { systemPrompt?: string }).systemPrompt ?? '';
-    assert.match(cachedPrompt, /<mcp_catalog_index>/);
+    assert.match(cachedPrompt, /<mcp_catalog>/);
     assert.match(cachedPrompt, /server: fake/);
-    assert.doesNotMatch(cachedPrompt, /instructions: Use echo only for MCP bridge smoke tests\./);
+    assert.match(cachedPrompt, /instructions: Use echo only for MCP bridge smoke tests\./);
     assert.match(cachedPrompt, /tool: echo/);
     assert.match(cachedPrompt, /description: Echo text/);
-    assert.match(cachedPrompt, /Input: text \(string, required\)/);
-    assert.doesNotMatch(cachedPrompt, /inputSchema/);
+    assert.match(cachedPrompt, /inputSchema: .*"required":\["text"\]/);
+    assert.match(cachedPrompt, /"text":\{"type":"string"\}/);
     assert.match(cachedPrompt, /<runtime_capabilities>/);
     assert.match(cachedPrompt, /effective_inline_images: false/);
     assert.match(cachedPrompt, /<available_skills>/);
@@ -2259,33 +2351,33 @@ test('mcp tool reads canonical project config, lists tools, calls tools, and hon
     assert.match((invalid.content[0] as { text: string }).text, /MCP_SCHEMA_INVALID/);
 
     // Prompt-caching contract: the catalog block is byte-stable — call/describe
-    // activity must NOT change the rendered <mcp_catalog_index> bytes (any churn would
+    // activity must NOT change the rendered <mcp_catalog> bytes (any churn would
     // invalidate the provider prompt cache from that point on).
     const afterUse = await captureExtensions().then(({ handlers }) =>
       handlers.get('before_agent_start')!.at(-1)!({ systemPrompt: 'Pi base prompt' }, trustedCtx)
     );
     const hotPrompt = (afterUse as { systemPrompt?: string }).systemPrompt ?? '';
     const catalogSlice = (prompt: string): string =>
-      prompt.slice(prompt.indexOf('<mcp_catalog_index>'), prompt.indexOf('</mcp_catalog_index>'));
+      prompt.slice(prompt.indexOf('<mcp_catalog>'), prompt.indexOf('</mcp_catalog>'));
     assert.match(hotPrompt, /tool: echo/);
     assert.equal(catalogSlice(hotPrompt), catalogSlice(cachedPrompt), 'catalog bytes identical before and after call/describe');
 
     const statusResult = await invokeMcp({ action: 'status' });
     assert.match((statusResult.content[0] as { text: string }).text, /Octocode MCP status/);
 
-    const renderedCall = mcpTool.renderCall!({ action: 'list', server: 'fake' }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }).render(80).join('\n');
+    const renderedCall = mcpTool.renderCall!({ queries: [{ reasoning: 'list tools', action: 'list', server: 'fake' }] }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }).render(80).join('\n');
     assert.match(renderedCall, /mcp list · fake/);
-    const renderedResult = (mcpTool.renderResult as unknown as (result: unknown, opts: unknown, theme: unknown, context: unknown) => { render(width?: number): string[] })(listed, {}, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, { args: { action: 'list', server: 'fake' }, invalidate: () => undefined }).render(80).join('\n');
+    const renderedResult = (mcpTool.renderResult as unknown as (result: unknown, opts: unknown, theme: unknown, context: unknown) => { render(width?: number): string[] })(listed, {}, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, { args: { queries: [{ reasoning: 'list tools', action: 'list', server: 'fake' }] }, invalidate: () => undefined }).render(80).join('\n');
     assert.match(renderedResult, /mcp list · fake · fake: 1 tool/);
 
-    const renderedOctocodeCall = mcpTool.renderCall!({ action: 'call', tool: 'localGetFileContent', arguments: { queries: [{ path: '/tmp/a.ts', startLine: 1 }] } }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }).render(120).join('\n');
+    const renderedOctocodeCall = mcpTool.renderCall!({ queries: [{ reasoning: 'read file', action: 'call', tool: 'localGetFileContent', arguments: { queries: [{ path: '/tmp/a.ts', startLine: 1 }] } }] }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }).render(120).join('\n');
     assert.match(renderedOctocodeCall, /localGetFileContent/);
     assert.match(renderedOctocodeCall, /a\.ts:1/);
     const renderedOctocodeResult = (mcpTool.renderResult as unknown as (result: unknown, opts: unknown, theme: unknown, context: unknown) => { render(width?: number): string[] })(
       { content: [{ type: 'text', text: 'ok' }], details: { results: [{ data: { resolvedPath: '/tmp/a.ts', totalLines: 2, content: 'const answer = 42;' } }] } },
       {},
       { fg: (_color: string, text: string) => text, bold: (text: string) => text },
-      { args: { action: 'call', tool: 'localGetFileContent' }, invalidate: () => undefined },
+      { args: { queries: [{ reasoning: 'read file', action: 'call', tool: 'localGetFileContent' }] }, invalidate: () => undefined },
     ).render(120).join('\n');
     assert.match(renderedOctocodeResult, /localGetFileContent/);
     assert.match(renderedOctocodeResult, /2 lines/);
@@ -2356,12 +2448,10 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
     },
   }, undefined, 'Improve toolbar UX\nextra context ignored');
   assert.deepEqual(calls, [
-    // title + status chips fire first; WeakSet-guarded one-time calls (thinking label,
+    // title + the changed status chip fire first; WeakSet-guarded one-time calls (thinking label,
     // indicator, message) come after because they are inside the first-call block.
     ['title', 'Octocode · Improve toolbar UX'],
     ['status', 'octocode', '<◆ Octocode>'],
-    // ctx has no model → getThinkingStatus returns '' → chip is cleared (undefined)
-    ['status', 'octocode-thinking', undefined],
     ['thinking', 'Octocode thinking'],
     ['indicator', '<✦><✧><✶><✺><✹><✷><✶><✧>', '120'],
     ['working', '<Thinking><…>'],
@@ -2609,7 +2699,7 @@ test('CLI slash commands removed — extension commands are lean', async () => {
   );
   assert.equal(commands.has('cron'), false, 'duplicate /cron alias is removed');
   assert.equal(commands.has('mcp'), true, 'canonical MCP manager command is registered');
-  assert.equal(commands.has('octocode-mcp'), false, 'legacy MCP command is removed');
+  assert.equal(commands.has('octocode-mcp'), false, 'retired MCP command is removed');
   assert.equal(
     commands.has('octocode-skills-update'),
     true,
@@ -2623,12 +2713,12 @@ test('CLI slash commands removed — extension commands are lean', async () => {
   for (const eventName of ['tool_execution_start', 'tool_execution_end', 'session_start', 'before_agent_start', 'agent_end', 'session_before_compact', 'session_compact', 'session_shutdown']) {
     assert.ok((handlers.get(eventName)?.length ?? 0) > 0, `Awareness-aligned hook registered for ${eventName}`);
   }
-  assert.equal(commands.has('octocode-memory-digest'), false, 'legacy memory digest command removed');
-  assert.equal(commands.has('octocode-memory-forget'), false, 'legacy memory forget command removed');
+  assert.equal(commands.has('octocode-memory-digest'), false, 'retired memory digest command removed');
+  assert.equal(commands.has('octocode-memory-forget'), false, 'retired memory forget command removed');
   assert.equal(
     commands.has('_octocode-handoff-impl'),
     false,
-    'legacy handoff command removed'
+    'retired handoff command removed'
   );
   assert.equal(
     commands.has('_octocode-clear-context-impl'),
@@ -2832,13 +2922,10 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
     }
     assert.equal(statuses.length, statusesBeforeReplacement, 'replacement teardown never paints through old UI');
 
-    // Normal quit still owns explicit UI cleanup while the context is valid.
+    // A duplicate shutdown after replacement is idempotent and cannot clear
+    // surfaces that belonged to the already-disposed generation.
     for (const handler of handlers.get('session_shutdown')!) await handler({ reason: 'quit' }, ctx);
-    assert.ok(statuses.some(([key, value]) => key === 'agent-wait' && value === undefined));
-    assert.ok(statuses.some(([key, value]) => key === 'chrome-debug' && value === undefined));
-    assert.ok(widgets.some(([key, value]) => key === 'octocode-status-panel' && value === undefined));
-    assert.deepEqual(working.at(-2), { kind: 'message', value: undefined });
-    assert.deepEqual(working.at(-1), { kind: 'visible', value: false });
+    assert.equal(statuses.length, statusesBeforeReplacement);
   } finally {
     fs.rmSync(ctx.cwd, { recursive: true, force: true });
   }
@@ -3143,307 +3230,34 @@ test('session_before_compact respects explicit manual compaction instructions ev
   assert.equal(result, undefined);
 });
 
-test('session_compact resumes ONLY extension-triggered compaction; manual /compact and retries stop by design', async () => {
-  resetCompactionResumeStateForTests();
+test('Pi exclusively owns threshold compaction and continuation', async () => {
   const { handlers, sentUserMessages } = await captureExtensions();
-  const handler = handlers.get('session_compact')!.at(-1)!;
-  const notifications: Array<{ message: string; level?: string }> = [];
-  const working: Array<{ kind: 'message'; value?: string } | { kind: 'visible'; value: boolean }> = [];
-  const testCtx = {
-    hasUI: true,
-    ui: {
-      notify: (message: string, level?: string) => notifications.push({ message, level }),
-      setWorkingMessage: (message?: string) => working.push({ kind: 'message', value: message }),
-      setWorkingVisible: (visible: boolean) => working.push({ kind: 'visible', value: visible }),
-    },
-  };
-
-  // User /compact (fromExtension:false): Pi 0.80.3 deliberately stops after
-  // manual compaction — resuming would burn an unrequested agent turn.
-  await handler(
-    { compactionEntry: {}, fromExtension: false, reason: 'manual', willRetry: false },
-    testCtx
-  );
-  await waitForNextMacrotask();
-  assert.equal(sentUserMessages.length, 0, 'no auto-resume for a user /compact');
-  assert.deepEqual(working, [
-    { kind: 'message', value: undefined },
-    { kind: 'visible', value: false },
-  ], 'working UI still cleared');
-
-  // Octocode-triggered ctx.compact aborts the in-flight run → resume needed.
-  // Pi's fromExtension remains false for the default summary; Octocode owns a
-  // separate resume-intent marker for this case.
-  resetCompactionResumeStateForTests();
-  markCompactionResumeRequested();
-  await handler(
-    { compactionEntry: {}, fromExtension: false, reason: 'manual', willRetry: false },
-    testCtx
-  );
-  assert.equal(sentUserMessages.length, 0, 'resume prompt waits until next macrotask');
-  await waitForNextMacrotask();
-  assert.equal(sentUserMessages.length, 1);
-  assert.match(sentUserMessages[0]!.msg, /Compaction is complete\./);
-  assert.match(sentUserMessages[0]!.msg, /Compaction doc: .*latest\.md/);
-  assert.match(sentUserMessages[0]!.msg, /Re-orient from the compacted context/);
-  assert.equal(sentUserMessages[0]!.opts?.['deliverAs'], 'followUp');
-  assert.deepEqual(notifications.at(-1), {
-    message: 'Compaction complete. Resuming…',
-    level: 'info',
-  });
-
-  resetCompactionResumeStateForTests();
-  markCompactionResumeRequested();
-  await handler(
-    { compactionEntry: {}, fromExtension: false, reason: 'overflow', willRetry: true },
-    { hasUI: true, ui: { setWorkingMessage: () => undefined, setWorkingVisible: () => undefined } }
-  );
-  await waitForNextMacrotask();
-  assert.equal(sentUserMessages.length, 1, 'no extra resume when Pi will retry overflow recovery itself');
-});
-
-test('turn_end auto-compact resumes via session_compact ONLY when unfinished plan work remains', withTempMemoryHome(async () => {
-  resetCompactionResumeStateForTests();
-  const { handlers, sentUserMessages } = await captureExtensions();
-  const turnEndHandlers = handlers.get('turn_end');
-  assert.ok(
-    turnEndHandlers && turnEndHandlers.length > 0,
-    'turn_end handler registered by extension'
-  );
-  const handler = turnEndHandlers![0]!;
-
-  let compactOptions: {
-    customInstructions?: string;
-    onComplete?: (opts?: unknown) => void;
-    onError?: (err: Error) => void;
-  } = {};
-  const notifications: Array<{ message: string; level?: string }> = [];
-  const working: Array<{ kind: 'message'; value?: string } | { kind: 'visible'; value: boolean }> = [];
-  const ctx = (usage: { tokens: number; contextWindow: number }) => ({
-    hasUI: true,
-    getContextUsage: () => usage,
-    compact: (options: typeof compactOptions) => {
-      compactOptions = options;
-    },
-    ui: {
-      notify: (message: string, level?: string) =>
-        notifications.push({ message, level }),
-      setWorkingMessage: (message?: string) =>
-        working.push({ kind: 'message', value: message }),
-      setWorkingVisible: (visible: boolean) =>
-        working.push({ kind: 'visible', value: visible }),
-    },
-  });
-
-  // Sub-threshold: must NOT trigger compaction.
-  await handler(undefined, ctx({ tokens: 100, contextWindow: 1000 }));
-  assert.ok(
-    compactOptions.onComplete === undefined,
-    'no compaction below 80% threshold'
-  );
-
-  // Rising edge across 80% with NO unfinished plan work: do not compact at all.
-  // This is an ended-session state, so even summarizing would spend budget with
-  // no concrete next step to protect.
-  await handler(undefined, ctx({ tokens: 810, contextWindow: 1000 }));
-  assert.equal(
-    compactOptions.onComplete,
-    undefined,
-    'no compaction at 81% when no unfinished plan work remains'
-  );
-  assert.equal(notifications.length, 0, 'no auto-compact notification without plan work');
-  assert.equal(sentUserMessages.length, 0);
-
-  const sessionCompactCtx = {
-    hasUI: true,
-    ui: {
-      notify: (message: string, level?: string) => notifications.push({ message, level }),
-      setWorkingMessage: () => undefined,
-      setWorkingVisible: () => undefined,
-    },
-  };
-  await handlers.get('session_compact')!.at(-1)!(
-    { compactionEntry: {}, fromExtension: true, reason: 'manual', willRetry: false },
-    sessionCompactCtx
-  );
-  await waitForNextMacrotask();
-  assert.equal(
-    sentUserMessages.length,
-    0,
-    'no continuation when no unfinished plan work remains — compaction at end of task must not spawn a turn'
-  );
-
-  // Same high-water mark WITH unfinished plan work: the prior no-work skip did
-  // not consume the threshold edge, so the in-progress plan can still compact
-  // and continue when work actually exists.
+  let compactCalls = 0;
   const scope = activePlanScope();
-  setPlan(scope, ['finish the refactor']);
+  setPlan(scope, ['unfinished step must not activate an extension compactor']);
   try {
-    compactOptions = {};
-    await handler(undefined, ctx({ tokens: 810, contextWindow: 1000 }));
-    const onCompleteWithPlan = compactOptions.onComplete as
-      ((opts?: unknown) => void) | undefined;
-    assert.ok(
-      typeof onCompleteWithPlan === 'function',
-      'compaction re-triggered on a fresh rising edge'
-    );
-    onCompleteWithPlan!();
-    await handlers.get('session_compact')!.at(-1)!(
-      { compactionEntry: {}, fromExtension: true, reason: 'manual', willRetry: false },
-      sessionCompactCtx
-    );
-    await waitForNextMacrotask();
-    assert.equal(sentUserMessages.length, 1, 'followUp queued via session_compact when plan work remains');
-    assert.match(sentUserMessages[0]!.msg, /Compaction is complete.*resume the active authorized plan.*overall request/i);
-    assert.doesNotMatch(sentUserMessages[0]!.msg, /next small step only/i, 'resume does not force a stop after one substep');
-    assert.equal(sentUserMessages[0]!.opts?.['deliverAs'], 'followUp');
-    assert.deepEqual(notifications.at(-1), {
-      message: 'Compaction complete. Resuming…',
-      level: 'info',
-    });
-  } finally {
-    clearPlan(scope);
-  }
-}));
-
-test('turn_end auto-compact skips output length stops because compaction cannot fix response budget', async () => {
-  const { handlers, sentUserMessages } = await captureExtensions();
-  const handler = handlers.get('turn_end')![0]!;
-  let compactCalled = false;
-  const notifications: Array<{ message: string; level?: string }> = [];
-
-  await handler(
-    { message: { stopReason: 'length', usage: { input: 100, output: 4096 } } },
-    {
-      hasUI: true,
-      getContextUsage: () => ({ tokens: 850, contextWindow: 1000 }),
-      compact: () => {
-        compactCalled = true;
-      },
-      ui: {
-        notify: (message: string, level?: string) =>
-          notifications.push({ message, level }),
-      },
+    for (const handler of handlers.get('turn_end') ?? []) {
+      await handler(
+        { message: { stopReason: 'stop' } },
+        {
+          hasUI: false,
+          getContextUsage: () => ({ tokens: 990, contextWindow: 1000 }),
+          compact: () => { compactCalls += 1; },
+        },
+      );
     }
-  );
-
-  assert.equal(compactCalled, false);
-  assert.equal(sentUserMessages.length, 0);
-  assert.deepEqual(notifications.at(-1), {
-    message: 'Model hit the maximum output token limit. Compaction does not increase one-response output budget; continue with a shorter/chunked response or write long output to a file.',
-    level: 'warning',
-  });
-});
-
-test('turn_end auto-compact still allows zero-output length stops to flow to context checks', async () => {
-  const { handlers, sentUserMessages } = await captureExtensions();
-  const handler = handlers.get('turn_end')![0]!;
-  const scope = activePlanScope();
-  setPlan(scope, ['continue after compaction']);
-  let compactOptions: { onComplete?: (opts?: unknown) => void } = {};
-
-  await handler(
-    { message: { stopReason: 'length', usage: { input: 990, output: 0 } } },
-    {
-      hasUI: true,
-      getContextUsage: () => ({ tokens: 850, contextWindow: 1000 }),
-      compact: (options: typeof compactOptions) => {
-        compactOptions = options;
-      },
-      ui: { notify: () => undefined },
-    }
-  );
-
-  try {
-    assert.equal(typeof compactOptions.onComplete, 'function');
-    assert.equal(sentUserMessages.length, 0);
   } finally {
     clearPlan(scope);
   }
-});
+  assert.equal(compactCalls, 0, 'non-compaction turn_end hooks never call ctx.compact');
 
-test('turn_end auto-compact reports errors without queueing a continuation', async () => {
-  const { handlers, sentUserMessages } = await captureExtensions();
-  const handler = handlers.get('turn_end')![0]!;
-  const scope = activePlanScope();
-  setPlan(scope, ['continue after compaction']);
-  let compactOptions: {
-    onComplete?: (opts?: unknown) => void;
-    onError?: (err: Error) => void;
-  } = {};
-  const notifications: Array<{ message: string; level?: string }> = [];
-  const working: Array<{ kind: 'message'; value?: string } | { kind: 'visible'; value: boolean }> = [];
-
-  await handler(undefined, {
-    hasUI: true,
-    getContextUsage: () => ({ tokens: 850, contextWindow: 1000 }),
-    compact: (options: typeof compactOptions) => {
-      compactOptions = options;
-    },
-    ui: {
-      notify: (message: string, level?: string) =>
-        notifications.push({ message, level }),
-      setWorkingMessage: (message?: string) =>
-        working.push({ kind: 'message', value: message }),
-      setWorkingVisible: (visible: boolean) =>
-        working.push({ kind: 'visible', value: visible }),
-    },
-  });
-
-  const onError = compactOptions.onError as (err: Error) => void;
-  onError(new Error('Nothing to compact'));
-  assert.equal(
-    sentUserMessages.length,
-    0,
-    'no continuation on empty-session compaction'
+  const sessionCompact = handlers.get('session_compact')!.at(-1)!;
+  await sessionCompact(
+    { compactionEntry: {}, fromExtension: false, reason: 'threshold', willRetry: false },
+    { hasUI: false }
   );
-  assert.deepEqual(notifications[1], {
-    message: 'Auto-compaction skipped: session is too small to compact.',
-    level: 'info',
-  });
-
-  onError(new Error('summary request failed'));
-  assert.deepEqual(notifications[2], {
-    message: 'Auto-compaction failed: summary request failed',
-    level: 'error',
-  });
-  try {
-    assert.deepEqual(working, [
-      { kind: 'message', value: undefined },
-      { kind: 'visible', value: false },
-      { kind: 'message', value: undefined },
-      { kind: 'visible', value: false },
-    ]);
-  } finally {
-    clearPlan(scope);
-  }
-});
-
-test('turn_end auto-compact warns instead of silently no-oping when compact is unavailable', async () => {
-  const { handlers, sentUserMessages } = await captureExtensions();
-  const handler = handlers.get('turn_end')![0]!;
-  const scope = activePlanScope();
-  setPlan(scope, ['continue after compaction']);
-  const notifications: Array<{ message: string; level?: string }> = [];
-
-  await handler(undefined, {
-    hasUI: true,
-    getContextUsage: () => ({ tokens: 850, contextWindow: 1000 }),
-    ui: {
-      notify: (message: string, level?: string) =>
-        notifications.push({ message, level }),
-    },
-  });
-
-  try {
-    assert.deepEqual(notifications.at(-1), {
-      message: 'Auto-compaction skipped: ctx.compact is not available in this runtime.',
-      level: 'warning',
-    });
-    assert.equal(sentUserMessages.length, 0);
-  } finally {
-    clearPlan(scope);
-  }
+  await waitForNextMacrotask();
+  assert.equal(sentUserMessages.length, 0, 'Octocode does not queue a second continuation after Pi compacts');
 });
 
 test('lists every extension harness surface', () => {
@@ -4060,7 +3874,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     assert.equal(
       tools.has('handoff_context'),
       false,
-      'legacy handoff_context removed'
+      'retired handoff_context removed'
     );
 
     const result = await invokeExecute(

@@ -6,9 +6,7 @@
     "workspaceIsolation": true,
     "rawSessionFilePersisted": false
   },
-  "migrationDecision": {
-    "legacyBehavior": "copy-once-with-hash-and-provenance",
-    "deleteLegacySource": false,
+  "planStorageDecision": {
     "customEntryAuthority": "active-branch-only",
     "projection": "branch-snapshot-plus-generation-CAS"
   },
@@ -22,9 +20,8 @@
       "source": "src/tools/active-plan.ts",
       "symbol": "readStoredFromDisk/projectStoredPlan",
       "classification": "session-owned",
-      "status": "migrated",
-      "currentPath": "<OCTOCODE_HOME>/plans/<scope-hash>.json",
-      "targetPath": "plan/branches/<sourceEntryId>.json plus plan/state.json projection"
+      "status": "current",
+      "currentPath": "plan/branches/<sourceEntryId>.json plus plan/state.json projection"
     },
     {
       "id": "plan-review-page",
@@ -38,11 +35,10 @@
     {
       "id": "compaction-checkpoints",
       "source": "src/tools/compaction-artifacts.ts",
-      "symbol": "compactionArtifactsDir/writeCompactionArtifact",
+      "symbol": "writeCompactionArtifact",
       "classification": "session-owned",
-      "status": "pending-session-migration",
-      "currentPath": "<OCTOCODE_HOME>/tmp/compaction",
-      "targetPath": "compaction/"
+      "status": "current",
+      "currentPath": "compaction/"
     },
     {
       "id": "worker-handback",

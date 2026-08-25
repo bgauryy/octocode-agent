@@ -493,13 +493,13 @@ export function registerUnifiedAgentTool(
   // Workers cannot spawn workers — never register this tool inside a subagent process.
   if (isSubagentProcess()) return;
 
-  // Capture the proven legacy executors without registering their public names.
-  const legacyTools = new Map<string, ToolDefinition>();
+  // Reuse the lifecycle executor without registering its internal public name.
+  const lifecycleTools = new Map<string, ToolDefinition>();
   registerAgentTools(pi as PiInstance, Type, new Set<string>(), (_pi, _names, definition) => {
-    legacyTools.set(definition.name, definition);
+    lifecycleTools.set(definition.name, definition);
   });
-  const legacyAgentMessage = legacyTools.get('AgentMessage');
-  if (!legacyAgentMessage) throw new Error('AgentMessage runtime is unavailable.');
+  const agentMessageExecutor = lifecycleTools.get('AgentMessage');
+  if (!agentMessageExecutor) throw new Error('AgentMessage runtime is unavailable.');
 
   // ── Item schema ─────────────────────────────────────────────────────────────
   const operationEnum = stringEnumSchema(
@@ -529,7 +529,7 @@ export function registerUnifiedAgentTool(
   );
 
   // All lifecycle-specific fields are optional; type is the discriminator.
-  // (Google-compatible: string enum, no Type.Union / Type.Literal.)
+  // Google-family schemas require a string enum instead of Type.Union / Type.Literal.
   const itemSchema = Type.Object(
     {
       type: operationEnum as ReturnType<TypeBoxBuilder['String']>,
@@ -670,38 +670,38 @@ export function registerUnifiedAgentTool(
           const agentId = query['agentId'] as string | undefined;
           const full = query['full'] === true;
           const remove = query['remove'] === true;
-          let legacyParams: Record<string, unknown>;
+          let executorParams: Record<string, unknown>;
           switch (type) {
             case 'inspect':
-              legacyParams = agentId
+              executorParams = agentId
                 ? { action: 'status', agentId, full }
                 : { action: 'list', full };
               break;
             case 'wait':
-              legacyParams = { action: 'wait', agentId, timeoutMs: query['timeoutMs'], remove, full };
+              executorParams = { action: 'wait', agentId, timeoutMs: query['timeoutMs'], remove, full };
               break;
             case 'message':
-              legacyParams = {
+              executorParams = {
                 action: query['delivery'] === 'followUp' ? 'followUp' : 'send',
                 agentId,
                 message: query['message'],
               };
               break;
             case 'steer':
-              legacyParams = { action: 'steer', agentId, message: query['message'] };
+              executorParams = { action: 'steer', agentId, message: query['message'] };
               break;
             case 'abort':
-              legacyParams = { action: 'abort', agentId, full };
+              executorParams = { action: 'abort', agentId, full };
               break;
             case 'kill':
-              legacyParams = { action: 'kill', agentId, remove, full };
+              executorParams = { action: 'kill', agentId, remove, full };
               break;
             default:
               throw new Error(`Unknown agent operation: ${type as string}`);
           }
-          return legacyAgentMessage.execute(
+          return agentMessageExecutor.execute(
             itemId,
-            legacyParams,
+            executorParams,
             itemSignal,
             itemUpdate,
             itemCtx,

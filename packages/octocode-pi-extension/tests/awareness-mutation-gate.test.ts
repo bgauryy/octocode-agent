@@ -17,7 +17,7 @@ describe('awareness mutation gate', () => {
     expect(startWork).not.toHaveBeenCalled();
   });
 
-  it('supports legacy and queries envelopes and refreshes owned work after lock success', () => {
+  it('supports host and queries envelopes and refreshes owned work after lock success', () => {
     const startWork = vi.fn();
     const gate = createAwarenessMutationGate({ storeExists: () => true, queryTarget: () => ({ blocked: false }), startWork, endWork: vi.fn() });
     expect(gate.preflight(event('write', { path: 'a.ts' }), cwd, 'me')).toBeUndefined();

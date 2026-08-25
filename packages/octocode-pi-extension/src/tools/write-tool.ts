@@ -23,8 +23,7 @@ export function resolveWritePath(filePath: string, cwd = process.cwd()): string 
 }
 
 export function validateWriteParams(params: Record<string, unknown>): { path: string; content: string; reasoning: string } {
-  // Pi render path accepts file_path; fold it for compatibility.
-  const rawPath = params['path'] ?? params['file_path'];
+  const rawPath = params['path'];
   if (typeof rawPath !== 'string' || rawPath.trim().length === 0) {
     throw new Error('Write tool input is invalid. path must be a non-empty string.');
   }
@@ -100,21 +99,6 @@ export function registerWriteTool(
       'Do not use bash/cat redirection for ordinary file creates when write is available.',
     ],
     parameters,
-    prepareArguments(args: unknown) {
-      if (!args || typeof args !== 'object') return args;
-      const normalize = (value: unknown): unknown => {
-        if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-        const input = value as Record<string, unknown>;
-        if (typeof input['path'] !== 'string' && typeof input['file_path'] === 'string') {
-          const { file_path: legacyPath, ...rest } = input;
-          return { ...rest, path: legacyPath };
-        }
-        return input;
-      };
-      const input = args as Record<string, unknown>;
-      if (Array.isArray(input['queries'])) return { queries: input['queries'].map(normalize) };
-      return { queries: [normalize(input)] };
-    },
     async execute(
       toolCallId: string,
       params: Record<string, unknown>,
@@ -143,23 +127,13 @@ export function registerWriteTool(
     renderCall(args: unknown, theme?: PiTheme) {
       const envelope = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
       const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as Record<string, unknown>[] : [];
-      const input = queries[0] ?? envelope;
-      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
-      const filePath =
-        typeof input['path'] === 'string'
-          ? input['path']
-          : typeof input['file_path'] === 'string'
-            ? input['file_path']
-            : '(missing path)';
+      const input = queries[0] ?? {};
+      const filePath = typeof input['path'] === 'string' ? input['path'] : '(missing path)';
       const content = typeof input['content'] === 'string' ? input['content'] : '';
-      const reasoning = typeof input['reasoning'] === 'string' ? input['reasoning'].trim() : '';
       const lines = content.length === 0 ? 0 : content.split('\n').length;
       const title = cliToolTitle(theme, WRITE_TOOL_DISPLAY_NAME);
-      const suffix = paint(theme, 'dim', `${filePath} · ${lines} line${lines === 1 ? '' : 's'}${more}`);
-      return makeRenderer((width) => [
-        truncateToWidth(`${title} ${suffix}`, width),
-        ...(reasoning ? [truncateToWidth(`  why: ${paint(theme, 'dim', reasoning)}`, width)] : []),
-      ]);
+      const suffix = paint(theme, 'dim', `${filePath} · ${lines} line${lines === 1 ? '' : 's'}`);
+      return makeRenderer((width) => [truncateToWidth(`${title} ${suffix}`, width)]);
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {

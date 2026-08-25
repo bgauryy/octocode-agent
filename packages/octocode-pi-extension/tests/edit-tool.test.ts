@@ -75,30 +75,21 @@ test('schema sets minItems:1 on the queries array', () => {
   assert.equal(schema.properties?.queries?.minItems, 1);
 });
 
-// ─── prepareArguments: normalisation ─────────────────────────────────────────
-
-test('prepareArguments is defined', () => {
-  assert.ok(typeof editTool.prepareArguments === 'function', 'prepareArguments must be a function');
-});
-
-test('prepareArguments converts old path+edits format into queries[]', () => {
-  const result = editTool.prepareArguments!({
+test('prepareArguments leaves flat edit input unchanged', () => {
+  const input = {
     path: 'a.txt',
     edits: [{ reasoning: 'fix typo', oldText: 'old', newText: 'new' }],
-  }) as { queries: { path: string; reasoning: string }[] };
-  assert.ok(Array.isArray(result.queries), 'must produce queries[]');
-  assert.equal(result.queries.length, 1);
-  assert.equal(result.queries[0]!.path, 'a.txt');
-  assert.ok(result.queries[0]!.reasoning, 'query must carry reasoning');
+  };
+  assert.deepEqual(editTool.prepareArguments!(input), input);
 });
 
-test('prepareArguments derives missing query-level reasoning from first edit reasoning', () => {
+test('prepareArguments fills missing query-level reasoning inside queries[]', () => {
   const result = editTool.prepareArguments!({
     queries: [
       { path: 'a.txt', edits: [{ reasoning: 'from edit', oldText: 'x', newText: 'y' }] },
     ],
   }) as { queries: { reasoning: string }[] };
-  assert.equal(result.queries[0]!.reasoning, 'from edit');
+  assert.equal(result.queries[0]!.reasoning, 'edit operation');
 });
 
 test('prepareArguments leaves existing query-level reasoning unchanged', () => {
@@ -110,17 +101,9 @@ test('prepareArguments leaves existing query-level reasoning unchanged', () => {
   assert.equal(result.queries[0]!.reasoning, 'explicit');
 });
 
-test('prepareArguments passes through well-formed queries[] unchanged', () => {
-  const input = {
-    queries: [{ reasoning: 'do it', path: 'a.txt', edits: [{ reasoning: 'r', oldText: 'x', newText: 'y' }] }],
-  };
-  const result = editTool.prepareArguments!(input) as typeof input;
-  assert.equal(result.queries[0]!.reasoning, 'do it');
-});
-
 // ─── Execute: single query (passthroughSingle) ───────────────────────────────
 
-test('single query returns legacy result shape with files[] and replacements', async () => {
+test('single query returns file and replacement details', async () => {
   writeFile('a.txt', 'hello world\n');
   const result = await run({
     queries: [{
@@ -398,11 +381,11 @@ test('renderResult for successful edit includes replacement count', () => {
   assert.ok(lines.join('\n').includes('3 replacement'), 'replacement count must appear');
 });
 
-// ─── Fix 2: exact → normalized auto-fallback ————————————————————————
+// ─── Explicit normalized matching ———————————————————————————————————
 
-test('Fix 2: exact mode auto-falls-back to normalized when indentation differs', async () => {
+test('normalized mode tolerates indentation differences only when explicitly requested', async () => {
   // File uses 2-space indent; oldText uses 4-space indent (copy-paste drift).
-  // Exact match fails; the tool should silently fall back to normalized mode.
+  // Exact matching remains strict; callers opt into normalized matching.
   writeFile('fallback.ts', 'function foo() {\n  return 1;\n}\n');
 
   const result = await run({
@@ -411,6 +394,7 @@ test('Fix 2: exact mode auto-falls-back to normalized when indentation differs',
       path: 'fallback.ts',
       edits: [{
         reasoning: 'update return',
+        matchMode: 'normalized',
         // 4-space indent — does not match file’s 2-space exactly
         oldText: 'function foo() {\n    return 1;\n}\n',
         newText: 'function foo() {\n  return 2;\n}\n',
@@ -418,7 +402,7 @@ test('Fix 2: exact mode auto-falls-back to normalized when indentation differs',
     }],
   });
 
-  assert.equal(result.isError, undefined, 'should succeed via normalized fallback');
+  assert.equal(result.isError, undefined, 'should succeed via explicit normalized matching');
   assert.ok(
     fs.readFileSync(path.join(tmpDir, 'fallback.ts'), 'utf8').includes('return 2'),
     'replacement must be applied',
@@ -427,7 +411,7 @@ test('Fix 2: exact mode auto-falls-back to normalized when indentation differs',
   const details = result.details as { files?: Array<{ usedModes?: string[] }> } | undefined;
   assert.ok(
     details?.files?.[0]?.usedModes?.includes('normalized'),
-    'usedModes must include normalized (fallback path)',
+    'usedModes must include normalized',
   );
 });
 

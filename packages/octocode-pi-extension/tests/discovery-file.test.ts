@@ -112,7 +112,7 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   for (const config of configs) {
     assert.equal(config.active, expectedActive.has(config.path), `${config.path} active classification`);
   }
-  assert.equal(byPath(projectOctocodeCompat).active, false, 'legacy .octocode/mcp.json remains inventory-only');
+  assert.equal(byPath(projectOctocodeCompat).active, false, 'retired .octocode/mcp.json remains inventory-only');
   assert.equal(byPath(projectClaudeCompat).active, false);
   assert.equal(byPath(userClaudeCompat).active, false);
 });

@@ -71,7 +71,7 @@ test('UX corpus and rubric freeze reproducible launch evidence', () => {
   }
 });
 
-test('session artifact producer inventory closes ownership and migration decisions', () => {
+test('session artifact producer inventory closes ownership and storage decisions', () => {
   const fixture = readJson('session-artifact-producers-v1.json');
   assert.equal(fixture['version'], 1);
 
@@ -80,10 +80,9 @@ test('session artifact producer inventory closes ownership and migration decisio
   assert.equal(identity['workspaceIsolation'], true);
   assert.equal(identity['rawSessionFilePersisted'], false);
 
-  const migration = fixture['migrationDecision'] as Record<string, unknown>;
-  assert.equal(migration['deleteLegacySource'], false);
-  assert.equal(migration['customEntryAuthority'], 'active-branch-only');
-  assert.equal(migration['projection'], 'branch-snapshot-plus-generation-CAS');
+  const storage = fixture['planStorageDecision'] as Record<string, unknown>;
+  assert.equal(storage['customEntryAuthority'], 'active-branch-only');
+  assert.equal(storage['projection'], 'branch-snapshot-plus-generation-CAS');
 
   const producers = fixture['producers'] as Array<Record<string, unknown>>;
   assert.equal(new Set(producers.map((producer) => producer['id'])).size, producers.length);
@@ -96,7 +95,7 @@ test('session artifact producer inventory closes ownership and migration decisio
     assert.equal(typeof producer['id'], 'string');
     assert.equal(typeof producer['source'], 'string');
     assert.equal(typeof producer['symbol'], 'string');
-    assert.ok(['migrated', 'pending-session-migration', 'explicit-exclusion'].includes(String(producer['status'])));
+    assert.ok(['current', 'migrated', 'pending-session-migration', 'explicit-exclusion'].includes(String(producer['status'])));
   }
 });
 

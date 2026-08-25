@@ -177,13 +177,8 @@ describe('readMedia tool', () => {
     const f = path.join(dir, 'shot.png');
     await writeFile(f, PNG_1x1);
     const tool = getTool();
-    // backward-compat: flat arg works via queries[0] ?? envelope
-    const call = tool.renderCall!({ type: 'image', path: 'shot.png' }).render(120).join('');
-    expect(call).toContain('readMedia');
+    const call = tool.renderCall!({ queries: [{ reasoning: 'r', type: 'image', path: 'shot.png' }] }).render(120).join('');
     expect(call).toContain('shot.png');
-    // envelope form
-    const callEnv = tool.renderCall!({ queries: [{ reasoning: 'r', type: 'image', path: 'shot.png' }] }).render(120).join('');
-    expect(callEnv).toContain('shot.png');
 
     const result = await tool.execute!(
       't4',

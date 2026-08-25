@@ -1,13 +1,3 @@
-export const LEGACY_PLAN_RECORD_FIXTURE = {
-  version: 1,
-  scope: '/workspace\0/session.jsonl',
-  steps: [
-    { text: 'prepare schema', status: 'done' },
-    { text: 'wire runtime', status: 'doing', dependsOn: [1] },
-  ],
-  rfcPath: '/workspace/.octocode/rfc/unified/RFC.md',
-} as const;
-
 export const RETRY_AFTER_SHARED_COMMIT_FIXTURE = {
   sourcePlanKey: 'octocode-plan:session-1:branch-main:revision-abc',
   sourceStepKeys: ['step-schema', 'step-runtime'],

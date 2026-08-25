@@ -1,12 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Client, StreamableHTTPClientTransport, type Transport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { getMcpEnablement, openOctocodeDb, setMcpServerEnabled, setMcpToolEnabled } from '@octocodeai/octocode-awareness/mcp-state';
+import { getMcpEnablement, listMcpOverrides, openOctocodeDb, setMcpServerEnabled, setMcpToolEnabled } from '@octocodeai/octocode-awareness/mcp-state';
 import type { NotifyFn, PiContext, PiInstance, PiTheme, RenderCallReturn, RenderContext, ToolCallResult, ToolDefinition, TSchema } from '../types.js';
 import { capMapSize } from '../utils.js';
 import {
   DEFAULT_OCTOCODE_MCP_SERVER_NAME,
+  buildServerHeaders,
   buildServerEnv,
   configSignature,
   globalMcpConfigPaths,
@@ -37,6 +39,7 @@ import { assertPathAllowed } from './path-guard.js';
 import { buildQueryEnvelopeSchema, executeQueryBatch, type QueryRecord } from './query-envelope.js';
 import { stringEnumSchema } from './schema-helpers.js';
 import { runSelectOverlay } from './ui-overlays.js';
+import { publishMcpRuntimeState, runtimeStoreFor, setManagedStatus } from './runtime-renderer.js';
 import { recordFileReadState } from './file-state.js';
 import { buildOctocodeRenderCall, buildOctocodeRenderResult, makeRenderer, truncateToWidth } from './render-helpers.js';
 import {
@@ -46,6 +49,7 @@ import {
   measureMcpCatalog,
   readMcpCatalogGuide,
   readMcpCatalogSnapshot,
+  renderMcpCatalogExact,
   renderMcpCatalogIndex,
   sameMcpCatalogContent,
   stableSchemaDigest,
@@ -58,6 +62,14 @@ import {
   compileMcpSchemaValidator,
   type McpCompiledSchemaValidator,
 } from './mcp-schema-validator.js';
+import { createMcpOAuthFlow, revokeStoredMcpOAuthCredentials, type McpOAuthFlow } from './mcp-oauth.js';
+
+export const OCTOCODE_COMPACT_MCP_ENV = 'OCTOCODE_COMPACT_MCP';
+
+export function isCompactMcpEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env[OCTOCODE_COMPACT_MCP_ENV]?.trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 
@@ -72,20 +84,29 @@ interface McpConnection {
   transport: Transport;
   stderr: string[];
   startedAt: number;
+  oauth?: McpOAuthFlow;
 }
 
 const MCP_STATUS_NAME = 'octocode-mcp';
 const MAX_TEXT_CHARS = 24_000;
+const MAX_MCP_PAGES = 100;
+const MAX_MCP_PAGE_ITEMS = 10_000;
+const MCP_DISCOVERY_ATTEMPT_TIMEOUT_MS = 7_500;
+export const MCP_PROMPT_READY_TIMEOUT_MS = 35_000;
 const connections = new Map<string, McpConnection>();
 const pendingConnections = new Map<string, Promise<McpConnection>>();
 const cachedCatalogs = new Map<string, ListedMcpServer[]>();
 const cachedSnapshots = new Map<string, McpCatalogSnapshotV1>();
 const cachedCatalogGuides = new Map<string, string>();
-const preparedServers = new Set<string>();
+const schemaFreshServers = new Set<string>();
 const compiledValidators = new Map<string, McpCompiledSchemaValidator>();
 const mcpSchemaMetrics = { snapshotHits: 0, snapshotMisses: 0, blockedCalls: 0 };
 /** In-flight init discoveries keyed by cwd, so turn 1 can await the warm started at session_start. */
 const warmsInFlight = new Map<string, Promise<void>>();
+/** Prompt readiness is intentionally separate from live refresh completion. A
+ * matching persisted guide resolves this barrier immediately while exact schema
+ * refresh continues in the background. */
+const promptReadiness = new Map<string, Promise<boolean>>();
 /**
  * Monotonic per-cwd generation for startup warms. A timeout or genuine cache
  * invalidation advances it so a stale async warm cannot repopulate prompt bytes.
@@ -93,6 +114,37 @@ const warmsInFlight = new Map<string, Promise<void>>();
 const warmGenerations = new Map<string, number>();
 /** Bound the cwd-keyed caches so a long-lived process visiting many cwds cannot grow them without limit. */
 const MAX_CACHED_CWDS = 32;
+
+interface McpCursorPage {
+  nextCursor?: string;
+}
+
+async function collectMcpPages<T>(
+  label: string,
+  fetchPage: (cursor: string | undefined) => Promise<McpCursorPage>,
+  readItems: (page: McpCursorPage) => T[],
+): Promise<T[]> {
+  const items: T[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  for (let pageNumber = 1; pageNumber <= MAX_MCP_PAGES; pageNumber += 1) {
+    const page = await fetchPage(cursor);
+    const pageItems = readItems(page);
+    if (!Array.isArray(pageItems)) throw new Error(`${label} returned a non-array page`);
+    if (items.length + pageItems.length > MAX_MCP_PAGE_ITEMS) {
+      throw new Error(`${label} exceeded the ${MAX_MCP_PAGE_ITEMS}-item safety limit`);
+    }
+    items.push(...pageItems);
+    const nextCursor = typeof page.nextCursor === 'string' && page.nextCursor.length > 0
+      ? page.nextCursor
+      : undefined;
+    if (!nextCursor) return items;
+    if (seenCursors.has(nextCursor)) throw new Error(`${label} repeated cursor ${nextCursor}`);
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+  throw new Error(`${label} exceeded the ${MAX_MCP_PAGES}-page safety limit`);
+}
 
 function cacheKey(ctx?: PiContext): string {
   return path.resolve(ctx?.cwd ?? process.cwd());
@@ -111,7 +163,7 @@ function invalidateAllWarmResults(): void {
   for (const key of warmsInFlight.keys()) invalidateWarmResult(key);
 }
 
-async function ensureConnection(name: string, config: McpServerConfig, ctx?: PiContext, signal?: AbortSignal): Promise<McpConnection> {
+async function ensureConnection(name: string, config: McpServerConfig, ctx?: PiContext, signal?: AbortSignal, timeoutMs?: number): Promise<McpConnection> {
   config = normalizeServerConfig(name, config);
   const sig = configSignature(config);
   const existing = connections.get(name);
@@ -129,7 +181,7 @@ async function ensureConnection(name: string, config: McpServerConfig, ctx?: PiC
     const conn = await pending;
     if (conn.configSig === sig) return conn;
   }
-  const connectPromise = connectServer(name, config, sig, ctx, signal);
+  const connectPromise = connectServer(name, config, sig, ctx, signal, false, timeoutMs);
   pendingConnections.set(name, connectPromise);
   try {
     return await connectPromise;
@@ -138,13 +190,17 @@ async function ensureConnection(name: string, config: McpServerConfig, ctx?: PiC
   }
 }
 
-async function connectServer(name: string, config: McpServerConfig, sig: string, ctx?: PiContext, signal?: AbortSignal): Promise<McpConnection> {
+async function connectServer(name: string, config: McpServerConfig, sig: string, ctx?: PiContext, signal?: AbortSignal, oauthRetry = false, timeoutMs?: number): Promise<McpConnection> {
   let transport: Transport;
+  let oauth: McpOAuthFlow | undefined;
   let stderr: { on(event: string, listener: (chunk: Buffer) => void): unknown } | null | undefined;
   if (config.transport === 'http' || config.url) {
+    if (config.auth === 'oauth') oauth = await createMcpOAuthFlow(name, config.url!, ctx);
     transport = new StreamableHTTPClientTransport(new URL(config.url!), {
-      requestInit: { headers: config.headers },
+      requestInit: { headers: buildServerHeaders(config) },
+      ...(oauth ? { authProvider: oauth.provider } : {}),
     });
+    if (oauth) oauth.attachTransport(transport as StreamableHTTPClientTransport);
   } else {
     const cwd = resolveServerCwd(config, ctx);
     assertPathAllowed(cwd, ctx?.cwd ?? process.cwd(), `mcp:${name}`);
@@ -161,15 +217,22 @@ async function connectServer(name: string, config: McpServerConfig, sig: string,
   const client = new Client(
     { name: 'octocode-pi-extension', version: '1.5.0' },
     {
+      capabilities: {
+        roots: { listChanged: true },
+        sampling: {},
+        elicitation: { form: {}, url: {} },
+      },
+      inputRequired: { autoFulfill: true, maxRounds: 8 },
       versionNegotiation: { mode: 'auto' },
       listChanged: {
-        tools: { onChanged: () => invalidateServerCache(name) },
-        prompts: { onChanged: () => invalidateServerCache(name) },
-        resources: { onChanged: () => invalidateServerCache(name) },
+        tools: { onChanged: () => refreshChangedMcpServer(name, ctx) },
+        prompts: { onChanged: () => refreshChangedMcpServer(name, ctx) },
+        resources: { onChanged: () => refreshChangedMcpServer(name, ctx) },
       },
     },
   );
-  const connection: McpConnection = { name, config, configSig: sig, client, transport, stderr: [], startedAt: Date.now() };
+  registerMcpClientHandlers(client, name, ctx, signal);
+  const connection: McpConnection = { name, config, configSig: sig, client, transport, stderr: [], startedAt: Date.now(), ...(oauth ? { oauth } : {}) };
   stderr?.on('data', (chunk: Buffer) => {
     const text = chunk.toString('utf8').trim();
     if (!text) return;
@@ -179,27 +242,119 @@ async function connectServer(name: string, config: McpServerConfig, sig: string,
   transport.onclose = () => {
     // Delete only our own entry — a reconnect may already own the slot.
     if (connections.get(name) === connection) connections.delete(name);
+    connection.oauth?.close();
   };
   transport.onerror = (error) => {
     connection.stderr.push(error.message);
   };
   try {
-    await client.connect(transport, requestOptions(config, signal));
+    await client.connect(transport, requestOptions(timeoutMs === undefined ? config : { ...config, timeoutMs }, signal));
   } catch (error) {
     const stderrText = connection.stderr.length > 0 ? `\nstderr:\n${connection.stderr.join('\n')}` : '';
     await client.close().catch(() => undefined);
+    const authorized = oauth && !oauthRetry ? await oauth.hasTokens().catch(() => false) : false;
+    oauth?.close();
+    if (authorized) return connectServer(name, config, sig, ctx, signal, true, timeoutMs);
     throw new Error(`${(error as Error).message}${stderrText}`);
   }
   connections.set(name, connection);
   return connection;
 }
 
+function refreshChangedMcpServer(name: string, ctx?: PiContext): void {
+  invalidateServerCache(name);
+  invalidateCwdCache(ctx);
+  runtimeStoreFor(ctx)?.getState().announce(`MCP ${name}: catalog changed; refreshing descriptions and schemas.`, 'info');
+  void warmMcpCatalog(ctx);
+}
+
+function requestSummary(value: unknown, max = 1_200): string {
+  const text = JSON.stringify(value)?.replace(/\s+/g, ' ') ?? String(value);
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+function registerMcpClientHandlers(client: Client, serverName: string, ctx?: PiContext, signal?: AbortSignal): void {
+  client.setRequestHandler('roots/list', async () => {
+    const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : false;
+    if (!trusted || !ctx?.cwd) return { roots: [] };
+    return { roots: [{ uri: pathToFileURL(path.resolve(ctx.cwd)).href, name: path.basename(path.resolve(ctx.cwd)) || 'workspace' }] };
+  });
+  client.setRequestHandler('sampling/createMessage', async (request) => {
+    const params = request.params as Record<string, unknown>;
+    if (!ctx?.hasUI || !ctx.ui?.confirm || !ctx.model || !ctx.modelRegistry?.complete) {
+      throw new Error(`MCP ${serverName} sampling denied: an interactive model session is required`);
+    }
+    const approved = await ctx.ui.confirm(
+      `Allow MCP sampling from ${serverName}?`,
+      `${requestSummary(params['messages'])}\nmaxTokens: ${String(params['maxTokens'] ?? 'server default')}`,
+      { signal },
+    );
+    if (!approved) throw new Error(`MCP ${serverName} sampling denied by user`);
+    const response = await ctx.modelRegistry.complete(ctx.model, {
+      systemPrompt: typeof params['systemPrompt'] === 'string' ? params['systemPrompt'] : undefined,
+      messages: [{ role: 'user', content: requestSummary(params['messages'], 24_000), timestamp: Date.now() }],
+    }, { signal });
+    const text = assistantText(response);
+    if (!text) throw new Error(`MCP ${serverName} sampling returned no text`);
+    return {
+      role: 'assistant' as const,
+      content: { type: 'text' as const, text },
+      model: ctx.model.id ?? 'octocode-active-model',
+      stopReason: 'endTurn' as const,
+    };
+  });
+  client.setRequestHandler('elicitation/create', async (request) => {
+    const params = request.params as Record<string, unknown>;
+    if (!ctx?.hasUI || !ctx.ui?.confirm) return { action: 'decline' as const };
+    const message = typeof params['message'] === 'string' ? params['message'] : `MCP ${serverName} requests input.`;
+    const approved = await ctx.ui.confirm(`MCP input request from ${serverName}`, message, { signal });
+    if (!approved) return { action: 'decline' as const };
+    if (params['mode'] === 'url') {
+      const url = typeof params['url'] === 'string' ? params['url'] : undefined;
+      if (url) ctx.ui.notify?.(`Open this approved MCP URL to continue: ${url}`, 'info');
+      return { action: 'accept' as const };
+    }
+    if (!ctx.ui.editor) return { action: 'decline' as const };
+    const value = await ctx.ui.editor(`Input for ${serverName}`, '{}');
+    if (value === undefined) return { action: 'cancel' as const };
+    let content: Record<string, string | number | boolean | string[]>;
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (!isPlainRecord(parsed)) throw new Error('input must be a JSON object');
+      content = {};
+      for (const [key, raw] of Object.entries(parsed)) {
+        if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') content[key] = raw;
+        else if (Array.isArray(raw) && raw.every((item) => typeof item === 'string')) content[key] = raw;
+        else throw new Error(`${key} must be a string, number, boolean, or string array`);
+      }
+    } catch (error) {
+      ctx.ui.notify?.(`MCP input rejected: ${(error as Error).message}`, 'warning');
+      return { action: 'cancel' as const };
+    }
+    return { action: 'accept' as const, content };
+  });
+  client.setNotificationHandler('notifications/message', async (notification) => {
+    const params = notification.params as Record<string, unknown>;
+    const level = params['level'] === 'error' ? 'error' : params['level'] === 'warning' ? 'warning' : 'info';
+    runtimeStoreFor(ctx)?.getState().announce(`MCP ${serverName}: ${requestSummary(params['data'])}`, level);
+  });
+  client.setNotificationHandler('notifications/progress', async (notification) => {
+    const params = notification.params as Record<string, unknown>;
+    publishMcpRuntimeState(ctx, { message: `progress ${String(params['progress'] ?? '')}${params['total'] !== undefined ? `/${String(params['total'])}` : ''}` });
+  });
+}
+
 async function stopConnection(name: string): Promise<boolean> {
   const connection = connections.get(name);
   if (!connection) return false;
   connections.delete(name);
+  connection.oauth?.close();
   await connection.client.close().catch(() => undefined);
   return true;
+}
+
+export function isMcpServerConnected(name: string): boolean {
+  return connections.has(name);
 }
 
 export function stopAllMcpServers(): number {
@@ -207,6 +362,7 @@ export function stopAllMcpServers(): number {
   for (const name of names) {
     const connection = connections.get(name);
     connections.delete(name);
+    connection?.oauth?.close();
     void connection?.client.close().catch(() => undefined);
   }
   // Drop the injected-catalog cache so a following session in the same process
@@ -217,7 +373,7 @@ export function stopAllMcpServers(): number {
   cachedCatalogs.clear();
   cachedSnapshots.clear();
   cachedCatalogGuides.clear();
-  preparedServers.clear();
+  schemaFreshServers.clear();
   compiledValidators.clear();
   return names.length;
 }
@@ -362,11 +518,17 @@ function sortListedCatalog(entries: ListedMcpServer[]): ListedMcpServer[] {
   });
 }
 
-function configSignaturesFor(loaded: McpLoadedConfig): Record<string, string> {
-  return Object.fromEntries([...loaded.servers.entries()].map(([name, config]) => [
+function configSignaturesFor(loaded: McpLoadedConfig, ctx?: PiContext): Record<string, string> {
+  const signatures = Object.fromEntries([...loaded.servers.entries()].map(([name, config]) => [
     name,
     configSignature(normalizeServerConfig(name, config)),
   ]));
+  try {
+    signatures['$enablement'] = stableSchemaDigest(listMcpOverrides(openOctocodeDb(), path.resolve(ctx?.cwd ?? process.cwd())));
+  } catch {
+    signatures['$enablement'] = 'unavailable';
+  }
+  return signatures;
 }
 
 function snapshotFromListed(
@@ -375,7 +537,7 @@ function snapshotFromListed(
   options: { loaded?: McpLoadedConfig; capturedAt?: string } = {},
 ): McpCatalogSnapshotV1 {
   const configSignatures = options.loaded
-    ? configSignaturesFor(options.loaded)
+    ? configSignaturesFor(options.loaded, ctx)
     : Object.fromEntries(entries.map((entry) => [entry.name, entry.configSignature ?? `test:${entry.name}`]));
   const scopeKey = path.resolve(ctx?.cwd ?? process.cwd());
   let db: ReturnType<typeof openOctocodeDb> | undefined;
@@ -408,7 +570,10 @@ function cachePromptSnapshot(ctx: PiContext | undefined, snapshot: McpCatalogSna
   cachedSnapshots.set(key, snapshot);
   capMapSize(cachedSnapshots, MAX_CACHED_CWDS);
   cachedCatalogGuides.delete(key);
-  cachedCatalogGuides.set(key, guide ?? renderMcpCatalogIndex(snapshot));
+  cachedCatalogGuides.set(
+    key,
+    guide ?? (isCompactMcpEnabled() ? renderMcpCatalogIndex(snapshot) : renderMcpCatalogExact(snapshot)),
+  );
   capMapSize(cachedCatalogGuides, MAX_CACHED_CWDS);
 }
 
@@ -459,8 +624,8 @@ function invalidateCwdCache(ctx?: PiContext): void {
   cachedCatalogs.delete(key);
   cachedSnapshots.delete(key);
   cachedCatalogGuides.delete(key);
-  for (const prepared of [...preparedServers]) {
-    if (prepared.startsWith(`${key}\0`)) preparedServers.delete(prepared);
+  for (const freshnessKey of [...schemaFreshServers]) {
+    if (freshnessKey.startsWith(`${key}\0`)) schemaFreshServers.delete(freshnessKey);
   }
   compiledValidators.clear();
 }
@@ -482,8 +647,8 @@ function invalidateServerCache(name: string): void {
       else cachedCatalogs.set(key, next);
     }
   }
-  for (const prepared of [...preparedServers]) {
-    if (prepared.includes(`\0${name}\0`)) preparedServers.delete(prepared);
+  for (const freshnessKey of [...schemaFreshServers]) {
+    if (freshnessKey.includes(`\0${name}\0`)) schemaFreshServers.delete(freshnessKey);
   }
   compiledValidators.clear();
 }
@@ -498,6 +663,11 @@ function warnMcpWarmFailure(message: string): void {
 }
 
 function notifyMcpWarm(ctx: PiContext | undefined, message: string, level: 'info' | 'warning' = 'info'): void {
+  const store = runtimeStoreFor(ctx);
+  if (store) {
+    if (store.getState().phase !== 'initializing') store.getState().announce(message, level);
+    return;
+  }
   try { ctx?.ui?.notify?.(message, level); } catch { /* UI unavailable */ }
 }
 
@@ -518,6 +688,12 @@ export async function generateMcpCatalogGuide(
   signal?: AbortSignal,
   timeoutMs = 15_000,
 ): Promise<{ guide: string; generated: boolean }> {
+  publishMcpRuntimeState(ctx, {
+    status: 'running',
+    message: `optimizing ${snapshot.servers.reduce((sum, server) => sum + server.tools.length, 0)} tool descriptions`,
+    servers: snapshot.servers.length,
+    tools: snapshot.servers.reduce((sum, server) => sum + server.tools.length, 0),
+  });
   const complete = ctx?.modelRegistry?.complete;
   if (!ctx?.model || !complete) return { guide: renderMcpCatalogIndex(snapshot), generated: false };
   const controller = new AbortController();
@@ -553,40 +729,128 @@ export async function generateMcpCatalogGuide(
 }
 
 /**
- * Warm MCP discovery once per workspace. Eager mode fills the full turn-one
- * catalog. Lazy mode first restores a matching persisted snapshot, then refreshes
- * exact schemas privately for execution and the next session without mutating a
- * snapshot-hit prompt. Errors stay best-effort so a broken server cannot block
- * session startup.
+ * Warm MCP discovery once per workspace. By default the prompt receives exact
+ * enabled descriptions and input schemas from catalog.json. Setting
+ * OCTOCODE_COMPACT_MCP enables the generated/cache-efficient mcp.md guide instead.
+ * A matching snapshot is prompt-ready immediately, then refreshes privately for
+ * execution and the next session without mutating this session's prompt bytes.
  */
 export function warmMcpCatalog(ctx?: PiContext, signal?: AbortSignal): Promise<void> {
   const key = cacheKey(ctx);
   const existing = warmsInFlight.get(key);
   if (existing) return existing;
   const generation = warmGeneration(key);
+  let resolvePromptReady: (ready: boolean) => void = () => undefined;
+  const promptReady = new Promise<boolean>((resolve) => { resolvePromptReady = resolve; });
+  promptReadiness.set(key, promptReady);
+  let promptReadySettled = false;
+  const settlePromptReady = (ready: boolean): void => {
+    if (promptReadySettled) return;
+    promptReadySettled = true;
+    resolvePromptReady(ready);
+  };
   const warm = (async (): Promise<void> => {
     const listed: ListedMcpServer[] = [];
     try {
+      const compactMcp = isCompactMcpEnabled();
       const loaded = await loadMcpConfig(ctx);
+      publishMcpRuntimeState(ctx, {
+        status: 'running',
+        message: 'checking cache',
+        servers: loaded.servers.size,
+        tools: 0,
+        totalServers: loaded.servers.size,
+        completedServers: 0,
+        failedServers: [],
+        currentServer: undefined,
+      });
       let snapshotHit = false;
       const identity = snapshotFromListed(ctx, [], { loaded });
       const persisted = await readMcpCatalogSnapshot({
         workspaceKey: identity.workspaceKey,
         configDigest: identity.configDigest,
       });
-      const persistedGuide = persisted ? await readMcpCatalogGuide({ snapshot: persisted }) : undefined;
-      if (persisted && persistedGuide) {
+      const persistedGuide = compactMcp && persisted ? await readMcpCatalogGuide({ snapshot: persisted }) : undefined;
+      const persistedPrompt = persisted
+        ? compactMcp
+          ? persistedGuide
+          : renderMcpCatalogExact(persisted)
+        : undefined;
+      if (persisted && persistedPrompt) {
         snapshotHit = true;
         mcpSchemaMetrics.snapshotHits += 1;
-        cachePromptSnapshot(ctx, persisted, persistedGuide);
+        cachePromptSnapshot(ctx, persisted, persistedPrompt);
         cachedCatalogs.set(key, listedFromSnapshot(persisted));
         capMapSize(cachedCatalogs, MAX_CACHED_CWDS);
-        notifyMcpWarm(ctx, `MCP ready: using cached mcp.md (${persisted.servers.length} server(s), ${persisted.servers.reduce((sum, server) => sum + server.tools.length, 0)} tool(s)).`);
+        const toolCount = persisted.servers.reduce((sum, server) => sum + server.tools.length, 0);
+        publishMcpRuntimeState(ctx, {
+          status: 'ready',
+          source: 'cache',
+          servers: persisted.servers.length,
+          tools: toolCount,
+          totalServers: loaded.servers.size,
+          completedServers: loaded.servers.size,
+          failedServers: [],
+          currentServer: undefined,
+          message: compactMcp ? 'cached guide ready' : 'cached exact catalog ready',
+        });
+        settlePromptReady(true);
+        notifyMcpWarm(
+          ctx,
+          compactMcp
+            ? `MCP ready: using cached mcp.md (${persisted.servers.length} server(s), ${persisted.servers.reduce((sum, server) => sum + server.tools.length, 0)} tool(s)).`
+            : `MCP ready: using exact enabled catalog.json (${persisted.servers.length} server(s), ${persisted.servers.reduce((sum, server) => sum + server.tools.length, 0)} tool(s)).`,
+        );
       } else {
         mcpSchemaMetrics.snapshotMisses += 1;
-        notifyMcpWarm(ctx, 'MCP configuration changed or cache is missing; discovering tools and generating a concise mcp.md from descriptions and input schemas…');
+        publishMcpRuntimeState(ctx, {
+          status: 'running',
+          source: 'none',
+          servers: loaded.servers.size,
+          tools: 0,
+          totalServers: loaded.servers.size,
+          completedServers: 0,
+          failedServers: [],
+          currentServer: undefined,
+          message: 'discovering tools',
+        });
+        notifyMcpWarm(
+          ctx,
+          compactMcp
+            ? 'MCP configuration changed or cache is missing; discovering tools and generating a concise mcp.md from descriptions and input schemas…'
+            : 'MCP configuration changed or cache is missing; discovering enabled tools and exact input schemas…',
+        );
       }
-      const discoveries = await Promise.allSettled([...loaded.servers].map(([name, config]) => listServerTools(name, config, ctx, signal)));
+      const serverEntries = [...loaded.servers];
+      let completedServers = 0;
+      const failedServers: string[] = [];
+      const activeServers = new Set<string>();
+      const discoveries = await Promise.allSettled(serverEntries.map(async ([name, config]) => {
+        const discoveryTimeoutMs = Math.min(config.timeoutMs ?? MCP_DISCOVERY_ATTEMPT_TIMEOUT_MS, MCP_DISCOVERY_ATTEMPT_TIMEOUT_MS);
+        activeServers.add(name);
+        publishMcpRuntimeState(ctx, { currentServer: name, message: 'discovering tools' });
+        try {
+          try {
+            return await listServerTools(name, config, ctx, signal, discoveryTimeoutMs);
+          } catch (firstError) {
+            if (signal?.aborted) throw firstError;
+            publishMcpRuntimeState(ctx, { currentServer: name, message: 'retrying discovery' });
+            await stopConnection(name);
+            return await listServerTools(name, config, ctx, signal, discoveryTimeoutMs);
+          }
+        } catch (error) {
+          failedServers.push(name);
+          throw error;
+        } finally {
+          activeServers.delete(name);
+          completedServers += 1;
+          publishMcpRuntimeState(ctx, {
+            completedServers,
+            failedServers: [...failedServers].sort(),
+            currentServer: [...activeServers].sort()[0],
+          });
+        }
+      }));
       for (const discovery of discoveries) {
         // Best-effort per server: a slow/broken MCP must not prevent the rest of
         // the catalog from being cached or block session start.
@@ -594,12 +858,22 @@ export function warmMcpCatalog(ctx?: PiContext, signal?: AbortSignal): Promise<v
       }
       if (listed.length > 0) {
         const refreshed = snapshotFromListed(ctx, listed, { loaded });
-        let promptGuide = persistedGuide;
-        if (!persisted || !persistedGuide || !sameMcpCatalogContent(persisted, refreshed)) {
-          const generatedGuide = await generateMcpCatalogGuide(refreshed, ctx, signal);
+        let promptGuide = persistedPrompt;
+        if (!persisted || !persistedPrompt || !sameMcpCatalogContent(persisted, refreshed)) {
+          const generatedGuide = compactMcp
+            ? await generateMcpCatalogGuide(refreshed, ctx, signal)
+            : { guide: renderMcpCatalogExact(refreshed), generated: false };
           promptGuide = generatedGuide.guide;
-          await writeMcpCatalogSnapshot(refreshed, { guide: generatedGuide.guide }).then((snapshotPath) => {
-            notifyMcpWarm(ctx, `MCP ready: ${generatedGuide.generated ? 'generated' : 'built'} and saved mcp.md beside ${snapshotPath}.`);
+          await writeMcpCatalogSnapshot(refreshed, {
+            ...(compactMcp ? { guide: generatedGuide.guide } : {}),
+            writeGuide: compactMcp,
+          }).then((snapshotPath) => {
+            notifyMcpWarm(
+              ctx,
+              compactMcp
+                ? `MCP ready: ${generatedGuide.generated ? 'generated' : 'built'} and saved mcp.md beside ${snapshotPath}.`
+                : `MCP ready: saved exact enabled descriptions and input schemas to ${snapshotPath}.`,
+            );
           }).catch((error) => {
             warnMcpWarmFailure(`catalog snapshot write failed: ${(error as Error).message}`);
           });
@@ -608,7 +882,35 @@ export function warmMcpCatalog(ctx?: PiContext, signal?: AbortSignal): Promise<v
         // private execution state and the persisted replacement belongs to the next session.
         if (warmGeneration(key) === generation) {
           cacheListedCatalog(ctx, listed, { loaded, updatePromptSnapshot: !snapshotHit, promptGuide });
+          const toolCount = listed.reduce((sum, server) => sum + server.tools.length, 0);
+          publishMcpRuntimeState(ctx, {
+            status: failedServers.length > 0 ? 'degraded' : 'ready',
+            source: persistedPrompt ? 'cache' : 'generated',
+            servers: listed.length,
+            tools: toolCount,
+            totalServers: loaded.servers.size,
+            completedServers: loaded.servers.size,
+            failedServers: [...failedServers].sort(),
+            currentServer: undefined,
+            message: failedServers.length > 0
+              ? `catalog ready with ${failedServers.length} failed server${failedServers.length === 1 ? '' : 's'}`
+              : 'catalog ready',
+          });
+          settlePromptReady(true);
         }
+      } else if (loaded.servers.size > 0 && warmGeneration(key) === generation) {
+        publishMcpRuntimeState(ctx, {
+          status: 'degraded',
+          source: 'none',
+          servers: 0,
+          tools: 0,
+          totalServers: loaded.servers.size,
+          completedServers: loaded.servers.size,
+          failedServers: [...failedServers].sort(),
+          currentServer: undefined,
+          message: 'no enabled MCP server could be discovered',
+        });
+        settlePromptReady(false);
       }
       // A late cache miss is deliberately persisted above but never injected into
       // this session after the first-turn deadline invalidates the generation.
@@ -616,11 +918,15 @@ export function warmMcpCatalog(ctx?: PiContext, signal?: AbortSignal): Promise<v
       // Best-effort: a missing/unreadable MCP config must not block session start,
       // but a genuine load error (e.g. malformed mcp.json) is worth surfacing.
       warnMcpWarmFailure(`catalog warm failed: ${(err as Error)?.message ?? String(err)}`);
+      publishMcpRuntimeState(ctx, { status: 'degraded', source: 'none', message: 'ready with warnings' });
+      settlePromptReady(false);
     }
   })().finally(() => {
+    settlePromptReady(Boolean(cachedCatalogs.get(key)?.length));
     if (warmsInFlight.get(key) === warm) {
       warmsInFlight.delete(key);
       warmGenerations.delete(key);
+      promptReadiness.delete(key);
     }
   });
   warmsInFlight.set(key, warm);
@@ -628,28 +934,27 @@ export function warmMcpCatalog(ctx?: PiContext, signal?: AbortSignal): Promise<v
 }
 
 /**
- * Bounded wait for the already-running init warm so turn one has either the eager
- * catalog or lazy index. This function never spawns servers. If the deadline wins,
- * the late result may update a lazy snapshot for a future session but cannot alter
- * this session's prompt suffix; eager mode likewise keeps the suffix empty rather
- * than causing a reconnect storm or cache-prefix mutation.
+ * Bounded wait for the already-running init warm so turn one has either the exact
+ * catalog or the opt-in compact index. This function never spawns servers. If the
+ * deadline wins, the late result may update a future session but cannot alter this
+ * session's prompt suffix.
  */
-export async function mcpCatalogReady(ctx?: PiContext, timeoutMs = 60_000): Promise<boolean> {
+export async function mcpCatalogReady(ctx?: PiContext, timeoutMs = MCP_PROMPT_READY_TIMEOUT_MS): Promise<boolean> {
   const key = cacheKey(ctx);
   if (cachedCatalogs.get(key)?.length) return true;
-  const pending = warmsInFlight.get(key);
+  const pending = promptReadiness.get(key);
   if (!pending) return false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let completed = false;
   try {
     completed = await Promise.race([
-      pending.then(() => true),
+      pending,
       new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
   }
-  const ready = Boolean(cachedCatalogs.get(key)?.length);
+  const ready = completed && Boolean(cachedCatalogs.get(key)?.length);
   if (!completed && !ready) invalidateWarmResult(key);
   return ready;
 }
@@ -723,6 +1028,8 @@ export async function getMcpDiscoverySnapshot(ctx?: PiContext): Promise<McpDisco
 }
 
 export const __test__ = {
+  collectMcpPages,
+  registerMcpClientHandlers,
   setCachedMcpCatalog(ctx: PiContext | undefined, entries: ListedMcpServer[]): void {
     cacheListedCatalog(ctx, entries);
   },
@@ -730,7 +1037,7 @@ export const __test__ = {
     cachedCatalogs.clear();
     cachedSnapshots.clear();
     cachedCatalogGuides.clear();
-    preparedServers.clear();
+    schemaFreshServers.clear();
     compiledValidators.clear();
     mcpSchemaMetrics.snapshotHits = 0;
     mcpSchemaMetrics.snapshotMisses = 0;
@@ -813,10 +1120,16 @@ function summarizeSchema(tool: Record<string, unknown>): string {
   return fields.length > 0 ? ` schema: ${fields.slice(0, 8).join(', ')}${fields.length > 8 ? ', …' : ''}` : ' schema: object';
 }
 
-async function listServerTools(name: string, config: McpServerConfig, ctx: PiContext | undefined, signal: AbortSignal | undefined): Promise<ListedMcpServer> {
-  const connection = await ensureConnection(name, config, ctx, signal);
-  const payload = await connection.client.listTools(undefined, requestOptions(config, signal));
-  const tools = payload.tools;
+async function listServerTools(name: string, config: McpServerConfig, ctx: PiContext | undefined, signal: AbortSignal | undefined, timeoutMs?: number): Promise<ListedMcpServer> {
+  const requestConfig = timeoutMs === undefined ? config : { ...config, timeoutMs };
+  const connection = await ensureConnection(name, config, ctx, signal, timeoutMs);
+  const tools = await collectMcpPages<Record<string, unknown>>(
+    `${name} tools/list`,
+    async (cursor) => connection.client.listTools(cursor ? { cursor } : undefined, requestOptions(requestConfig, signal)) as Promise<McpCursorPage>,
+    (page) => Array.isArray((page as Record<string, unknown>)['tools'])
+      ? (page as Record<string, unknown>)['tools'] as Record<string, unknown>[]
+      : [],
+  );
   const instructions = connection.client.getInstructions();
   const lines = [`${name}: ${tools.length} tool(s)`];
   if (instructions) lines.push(`instructions: ${capCatalogText(instructions, 300)}`);
@@ -834,7 +1147,7 @@ async function listServerTools(name: string, config: McpServerConfig, ctx: PiCon
   };
 }
 
-interface PreparedMcpTool {
+interface ValidatedMcpTool {
   server: string;
   tool: string;
   instructions?: string;
@@ -843,11 +1156,11 @@ interface PreparedMcpTool {
   validator: McpCompiledSchemaValidator;
 }
 
-function preparedServerKey(ctx: PiContext | undefined, server: string, signature: string): string {
+function schemaFreshServerKey(ctx: PiContext | undefined, server: string, signature: string): string {
   return `${cacheKey(ctx)}\0${server}\0${signature}`;
 }
 
-async function ensurePreparedServer(
+async function ensureCurrentServerCatalog(
   server: string,
   loaded: McpLoadedConfig,
   ctx: PiContext | undefined,
@@ -856,12 +1169,12 @@ async function ensurePreparedServer(
   const config = loaded.servers.get(server);
   if (!config) return undefined;
   const signature = configSignature(normalizeServerConfig(server, config));
-  const freshnessKey = preparedServerKey(ctx, server, signature);
+  const freshnessKey = schemaFreshServerKey(ctx, server, signature);
   const cached = cachedCatalogs.get(cacheKey(ctx))?.find((entry) => entry.name === server && entry.configSignature === signature);
-  if (cached && preparedServers.has(freshnessKey)) return cached;
+  if (cached && schemaFreshServers.has(freshnessKey)) return cached;
   const listed = await listServerTools(server, config, ctx, signal);
   cacheListedCatalog(ctx, [listed], { loaded, updatePromptSnapshot: false });
-  preparedServers.add(freshnessKey);
+  schemaFreshServers.add(freshnessKey);
   return listed;
 }
 
@@ -874,13 +1187,13 @@ function validatorForSchema(inputSchema: unknown, schemaDigest: string): McpComp
   return validator;
 }
 
-async function prepareOneMcpTool(
+async function validateOneMcpTool(
   target: { server: string; tool: string },
   loaded: McpLoadedConfig,
   ctx: PiContext | undefined,
   signal: AbortSignal | undefined,
-): Promise<PreparedMcpTool> {
-  const server = await ensurePreparedServer(target.server, loaded, ctx, signal);
+): Promise<ValidatedMcpTool> {
+  const server = await ensureCurrentServerCatalog(target.server, loaded, ctx, signal);
   if (!server) throw new Error(`Unknown MCP server: ${target.server}`);
   const rawTool = server.tools.find((candidate) => isPlainRecord(candidate) && candidate['name'] === target.tool);
   if (!isPlainRecord(rawTool) || !Object.hasOwn(rawTool, 'inputSchema')) {
@@ -912,7 +1225,12 @@ async function prepareOneMcpTool(
   };
 }
 
-export async function handleMcpAction(params: Record<string, unknown>, signal?: AbortSignal, ctx?: PiContext): Promise<ToolCallResult> {
+export async function handleMcpAction(
+  params: Record<string, unknown>,
+  signal?: AbortSignal,
+  ctx?: PiContext,
+  options: { trustedBrowserAction?: boolean } = {},
+): Promise<ToolCallResult> {
   const action = (params['action'] ?? 'list') as McpAction;
   const loaded = await loadMcpConfig(ctx);
   const serverName = typeof params['server'] === 'string' ? params['server'] : undefined;
@@ -952,6 +1270,8 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
       const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : false;
       if (!trusted) return result('Refusing to write project MCP configuration: project trust could not be verified. Use scope:"global" or trust the project.', undefined, true);
     }
+    if (scope === 'project' && !options.trustedBrowserAction) {
+    }
     const cfg = isPlainRecord(params['config']) ? params['config'] : undefined;
     if (!cfg) return result('MCPTool add requires a config object, e.g. {command, args, env, cwd}.', undefined, true);
     if (scope === 'project') {
@@ -971,7 +1291,7 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
         return result(`Project MCP add refused: ${why2}. Ask the user to edit .octocode/agent/mcp/servers.json directly if they want this server.`, undefined, true);
       }
     }
-    if (scope === 'global') {
+    if (scope === 'global' && !options.trustedBrowserAction) {
       // Adding a server means spawning an arbitrary local process on the next
       // call — that decision belongs to the user, not the model. Hard gate:
       // interactive approval, or refuse when no UI is available.
@@ -995,10 +1315,10 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
       parsed = upsertServerInFile(target, serverName, cfg);
     } catch (error) {
       return result(`MCPTool add failed: ${(error as Error).message}`, undefined, true);
-    }
-    // Apply immediately: drop any stale connection + cache so the next call spawns fresh.
-    await stopConnection(serverName);
-    invalidateServerCache(serverName);
+      }
+      // Apply immediately: drop any stale connection + cache so the next call spawns fresh.
+      await stopConnection(serverName);
+      invalidateServerCache(serverName);
     invalidateCwdCache(ctx);
     void warmMcpCatalog(ctx);
     const shadowNote = serverName === DEFAULT_OCTOCODE_MCP_SERVER_NAME
@@ -1016,6 +1336,8 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
     if (scope === 'project') {
       const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : false;
       if (!trusted) return result('Refusing to write project MCP configuration: project trust could not be verified.', undefined, true);
+    }
+    if (scope === 'project' && !options.trustedBrowserAction) {
       // Require interactive consent before removing from project config.
       const rmChoice = await runSelectOverlay(ctx, {
         title: `Remove MCP server "${serverName}" from PROJECT servers.json?`,
@@ -1037,6 +1359,10 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
       return result(`MCPTool remove failed: ${(error as Error).message}`, undefined, true);
     }
     await stopConnection(serverName);
+    const removedConfig = loaded.configuredServers.get(serverName);
+    if (removed && removedConfig?.auth === 'oauth' && removedConfig.url) {
+      await revokeStoredMcpOAuthCredentials(serverName, removedConfig.url).catch(() => undefined);
+    }
     invalidateServerCache(serverName);
     invalidateCwdCache(ctx);
     void warmMcpCatalog(ctx);
@@ -1085,17 +1411,30 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
     const connection = await ensureConnection(serverName, config, ctx, signal);
     let payload: unknown;
     if (action === 'resources') {
-      const [resources, templates] = await Promise.all([
-        connection.client.listResources(undefined, requestOptions(config, signal)),
-        connection.client.listResourceTemplates(undefined, requestOptions(config, signal)),
+      const [resources, resourceTemplates] = await Promise.all([
+        collectMcpPages<unknown>(
+          `${serverName} resources/list`,
+          async (cursor) => connection.client.listResources(cursor ? { cursor } : undefined, requestOptions(config, signal)) as Promise<McpCursorPage>,
+          (page) => Array.isArray((page as Record<string, unknown>)['resources']) ? (page as Record<string, unknown>)['resources'] as unknown[] : [],
+        ),
+        collectMcpPages<unknown>(
+          `${serverName} resources/templates/list`,
+          async (cursor) => connection.client.listResourceTemplates(cursor ? { cursor } : undefined, requestOptions(config, signal)) as Promise<McpCursorPage>,
+          (page) => Array.isArray((page as Record<string, unknown>)['resourceTemplates']) ? (page as Record<string, unknown>)['resourceTemplates'] as unknown[] : [],
+        ),
       ]);
-      payload = { resources: resources.resources, resourceTemplates: templates.resourceTemplates };
+      payload = { resources, resourceTemplates };
     } else if (action === 'read-resource') {
       const uri = typeof params['uri'] === 'string' ? params['uri'] : '';
       if (!uri) return result('MCPTool read-resource requires uri', undefined, true);
       payload = await connection.client.readResource({ uri }, requestOptions(config, signal));
     } else if (action === 'prompts') {
-      payload = await connection.client.listPrompts(undefined, requestOptions(config, signal));
+      const prompts = await collectMcpPages<unknown>(
+        `${serverName} prompts/list`,
+        async (cursor) => connection.client.listPrompts(cursor ? { cursor } : undefined, requestOptions(config, signal)) as Promise<McpCursorPage>,
+        (page) => Array.isArray((page as Record<string, unknown>)['prompts']) ? (page as Record<string, unknown>)['prompts'] as unknown[] : [],
+      );
+      payload = { prompts };
     } else if (action === 'get-prompt') {
       const name = typeof params['name'] === 'string' ? params['name'] : '';
       if (!name) return result('MCPTool get-prompt requires name', undefined, true);
@@ -1113,18 +1452,18 @@ export async function handleMcpAction(params: Record<string, unknown>, signal?: 
     if (typeof tool !== 'string' || tool.trim().length === 0) return result('MCPTool call requires tool', undefined, true);
     const config = loaded.servers.get(serverName)!;
     const argumentsPayload = isPlainRecord(params['arguments']) ? params['arguments'] : {};
-    let prepared: PreparedMcpTool;
+    let validated: ValidatedMcpTool;
     try {
-      prepared = await prepareOneMcpTool({ server: serverName, tool }, loaded, ctx, signal);
+      validated = await validateOneMcpTool({ server: serverName, tool }, loaded, ctx, signal);
     } catch (error) {
       const code = error instanceof McpSchemaUnsupportedError ? error.code : 'SCHEMA_UNAVAILABLE';
       return result(`${code} ${serverName}/${tool}\n${(error as Error).message}`, { server: serverName, tool }, true);
     }
-    const validation = prepared.validator.validate(argumentsPayload);
+    const validation = validated.validator.validate(argumentsPayload);
     if (!validation.valid) {
       mcpSchemaMetrics.blockedCalls += 1;
       const lines = validation.errors.map((error) => `- ${error.instancePath || '/'}: ${error.message}`);
-      return result(`MCP_SCHEMA_INVALID ${serverName}/${tool}\n${lines.join('\n')}`, { server: serverName, tool, inputSchema: prepared.inputSchema, errors: validation.errors }, true);
+      return result(`MCP_SCHEMA_INVALID ${serverName}/${tool}\n${lines.join('\n')}`, { server: serverName, tool, inputSchema: validated.inputSchema, errors: validation.errors }, true);
     }
     const connection = await ensureConnection(serverName, config, ctx, signal);
     const payload = await connection.client.callTool({ name: tool, arguments: argumentsPayload }, requestOptions(config, signal));
@@ -1161,30 +1500,22 @@ function clip(text: string, width: number): string {
   return truncateToWidth(clean, width);
 }
 
-/** Extract effective per-action params from a queries[] envelope (single-query) or a legacy flat shape. */
+/** Extract effective per-action params from a single-query envelope. */
 function extractQueryParams(args: unknown): Record<string, unknown> {
   const envelope = isPlainRecord(args) ? args : {};
   const queries = Array.isArray(envelope['queries']) ? envelope['queries'] : null;
   if (queries && queries.length === 1 && isPlainRecord(queries[0])) {
     return queries[0] as Record<string, unknown>;
   }
-  return envelope;
+  return {};
 }
 
 function renderCall(args: unknown, theme?: PiTheme): RenderCallReturn {
-  // Multi-query: render an aggregate label.
-  const envelope = isPlainRecord(args) ? args : {};
-  const queries = Array.isArray(envelope['queries']) ? envelope['queries'] : null;
-  if (queries && queries.length > 1) {
-    return makeRenderer((width) => {
-      const line = `mcp ${queries.length} queries`;
-      return [theme?.fg ? theme.fg('dim', clip(line, width)) : clip(line, width)];
-    });
-  }
   const p = extractQueryParams(args);
   const server = typeof p['server'] === 'string' ? p['server'] : DEFAULT_OCTOCODE_MCP_SERVER_NAME;
-  if (p['action'] === 'call' && server === DEFAULT_OCTOCODE_MCP_SERVER_NAME && typeof p['tool'] === 'string') {
-    return buildOctocodeRenderCall(p['tool'], p['arguments'], theme);
+  if (p['action'] === 'call' && typeof p['tool'] === 'string') {
+    const displayName = server === DEFAULT_OCTOCODE_MCP_SERVER_NAME ? p['tool'] : `${server}.${p['tool']}`;
+    return buildOctocodeRenderCall(displayName, p['arguments'], theme);
   }
 
   const { action, target } = formatMcpTarget(p);
@@ -1260,7 +1591,7 @@ export function registerMcpTool(
   });
 
   const execute = async (toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal, onUpdate?: unknown, ctx?: PiContext): Promise<ToolCallResult> => {
-    ctx?.ui?.setStatus?.(MCP_STATUS_NAME, 'mcp · running');
+    setManagedStatus(ctx, MCP_STATUS_NAME, 'mcp · running');
     try {
       return await executeQueryBatch({
         toolCallId,
@@ -1277,18 +1608,18 @@ export function registerMcpTool(
     } catch (error) {
       return result(`[MCP_ERROR] ${(error as Error).message}`, undefined, true);
     } finally {
-      ctx?.ui?.setStatus?.(MCP_STATUS_NAME, undefined);
+      setManagedStatus(ctx, MCP_STATUS_NAME, undefined);
     }
   };
 
   const common = {
     label: 'MCPTool',
     description: 'MCP 2026-07-28 client for stdio and Streamable HTTP servers, with automatic era negotiation, internal schema validation, tools, resources, prompts, and runtime management.',
-    promptSnippet: 'Use <mcp_catalog_index> to select a tool and call it directly. Exact schemas are compiled and validated internally; there is no prepare or schema-lease round trip.',
+    promptSnippet: 'Use the injected enabled MCP catalog to select a tool and call it directly. When OCTOCODE_COMPACT_MCP is enabled it is a concise <mcp_catalog_index>; otherwise <mcp_catalog> includes exact descriptions and input schemas. Exact schemas are compiled and validated internally; there is no prepare or schema-lease round trip.',
     promptGuidelines: [
       'MCPTool default server: octocode = pinned local octocode-mcp binary (npx -y octocode-mcp@latest fallback) — the default research surface for code/file/structure/history/package lookups.',
       'Canonical config is $OCTOCODE_HOME/agent/mcp/servers.json plus trusted <workspace>/.octocode/agent/mcp/servers.json.',
-      'Local servers use stdio; remote servers use Streamable HTTP. The official v2 client negotiates 2026-07-28 automatically and falls back to the 2025 era when needed. Deprecated SSE/WebSocket transports are not supported.',
+      'Local servers use stdio; remote servers use Streamable HTTP. Only those transports are supported.',
       'Use resources/read-resource and prompts/get-prompt/complete for the non-tool core MCP primitives.',
       'Manage servers at runtime without restarting the agent: add/remove writes the canonical config; restart/stop reconnect. Live connections auto-reconnect when config changes.',
       'Active MCP config directories are watched: external edits hot-reload automatically \u2014 stale connections and catalogs are dropped and the user is notified. The built-in `octocode` server is pinned-local first with an npx fallback and cannot be removed.',

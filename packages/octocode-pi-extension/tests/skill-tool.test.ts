@@ -11,6 +11,7 @@ import {
   registerSkillTool,
   resetSkillUsageForTests,
 } from '../src/tools/skill-tool.js';
+import { registerUniqueTool } from '../src/tools/octocode-tools.js';
 import type { ToolDefinition, ToolCallResult, PiContext, SkillInfo } from '../src/types.js';
 
 afterEach(() => {
@@ -126,7 +127,7 @@ async function makeTool(piSkills?: SkillInfo[]): Promise<ToolDefinition> {
     { registerTool: (d: ToolDefinition) => { def = d; } },
     Type,
     new Set<string>(),
-    (_pi, _names, d) => { def = d; },
+    (pi, names, d) => registerUniqueTool(pi, names, d),
     () => piSkills,
   );
   assert.ok(def);
@@ -446,7 +447,8 @@ test('skill render rows: single type:load explains trigger, suppresses success, 
   // renderCall: shows skill name and reason
   const callRow = def.renderCall!(q([{ reasoning: 'Load demo-flow.', type: 'load', name: 'demo-flow', reason }]), theme).render(100).join('\n');
   assert.match(callRow, /◆ skill · demo-flow/);
-  assert.match(callRow, /why: The task needs a repeatable demo workflow\./);
+  assert.match(callRow, /\n  The task needs a repeatable demo workflow\./);
+  assert.doesNotMatch(callRow, /why:|reasoning:/);
 
   // Success: renderResult returns no rows (silent on success)
   const ok = await run(def, q([{ reasoning: 'Load demo-flow.', type: 'load', name: 'demo-flow', reason }]), cwd);
@@ -477,14 +479,19 @@ test('skill render rows: type:call success shows its concise outcome', async () 
   });
 });
 
-test('skill render rows: multi-query shows query count', async () => {
+test('skill render rows: multi-query renders each operation and unlabeled reason', async () => {
   const def = await makeTool();
   const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
-  const callRow = def.renderCall!(q([
+  const callLines = def.renderCall!(q([
     { reasoning: 'Load a.', type: 'load', name: 'a', reason: 'needs a' },
     { reasoning: 'Load b.', type: 'load', name: 'b', reason: 'needs b' },
-  ]), theme).render(100).join('\n');
-  assert.match(callRow, /2 queries/);
+  ]), theme).render(100);
+  assert.equal(callLines.length, 4);
+  assert.match(callLines[0]!, /◆ skill · a/);
+  assert.match(callLines[1]!, /needs a/);
+  assert.match(callLines[2]!, /◆ skill · b/);
+  assert.match(callLines[3]!, /needs b/);
+  assert.doesNotMatch(callLines.join('\n'), /2 queries|why:|reasoning:/);
 });
 
 test('skill render rows: single type:call shows callSkill action', async () => {

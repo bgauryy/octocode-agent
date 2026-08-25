@@ -32,6 +32,7 @@ import {
 import { resetCompactionArbiterForTests } from '../src/tools/compaction-state.js';
 import { resetCompactionResumeStateForTests } from '../src/tools/compaction-resume.js';
 import { visibleWidth } from '../src/tools/render-helpers.js';
+import { createSessionArtifactContext } from '../src/tools/session-artifacts.js';
 import type { PiInstance, PiTheme } from '../src/types.js';
 
 const theme = { fg: (c: string, t: string) => '<' + c + '>' + t + '</' + c + '>' } as unknown as PiTheme;
@@ -282,8 +283,10 @@ test('session_compact completion emits exactly one checkpoint card per compactio
     reason: 'threshold',
     willRetry: false,
   };
-  await fire('session_compact', event, { hasUI: false });
-  await fire('session_compact', event, { hasUI: false });
+  const sessionManager = { getSessionId: () => 'compaction-test' };
+  const ctx = { hasUI: false, cwd: testHome, sessionManager };
+  await fire('session_compact', event, ctx);
+  await fire('session_compact', event, ctx);
   const cards = checkpointCards(sent);
   assert.equal(cards.length, 1, 'two hook firings for the same compaction must emit one card');
   assert.equal(cards[0]!.content, 'Compaction checkpoint saved: c-1');
@@ -295,8 +298,10 @@ test('session_compact completion emits exactly one checkpoint card per compactio
   assert.equal(details.fromExtension, false);
   assert.deepEqual(details.readFiles, ['src/a.ts']);
   assert.deepEqual(details.modifiedFiles, ['src/b.ts']);
-  assert.equal(details.artifactPath, path.join(testHome, 'tmp', 'compaction', 'c-1.md'));
-  assert.equal(details.latestArtifactPath, path.join(testHome, 'tmp', 'compaction', 'sessions', 'unknown-session', 'latest.md'));
+  const artifacts = createSessionArtifactContext({ cwd: testHome, sessionManager });
+  assert.ok(details.artifactPath?.startsWith(`${path.dirname(artifacts.resolve('compaction/latest.md'))}${path.sep}`));
+  assert.ok(details.artifactPath?.endsWith('-c-1.md'));
+  assert.equal(details.latestArtifactPath, artifacts.resolve('compaction/latest.md'));
 
   const markdown = fs.readFileSync(details.artifactPath!, 'utf8');
   assert.match(markdown, /# Compaction checkpoint c-1/);

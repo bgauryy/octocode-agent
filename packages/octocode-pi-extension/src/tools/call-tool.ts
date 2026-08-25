@@ -564,18 +564,11 @@ export function registerCallTool(
       reasoningDescription: 'Concise reason this dynamic tool operation is necessary.',
     }),
 
-    prepareArguments(args: unknown) {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      return Array.isArray(input['queries']) ? args : { queries: [input] };
-    },
-
     async execute(id: string, rawParams: Record<string, unknown>, signal, onUpdate, ctx?: PiContext) {
-      const envelope = Array.isArray(rawParams['queries']) ? rawParams : { queries: [rawParams] };
-      const queryCount = Array.isArray(envelope.queries) ? envelope.queries.length : 0;
+      const queryCount = Array.isArray(rawParams.queries) ? rawParams.queries.length : 0;
       return executeQueryBatch({
         toolCallId: id,
-        raw: envelope,
+        raw: rawParams,
         signal,
         onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
         ctx,
@@ -619,11 +612,10 @@ export function registerCallTool(
     renderCall(rawParams: unknown, theme?: PiTheme) {
       const envelope = rawParams && typeof rawParams === 'object' ? rawParams as Record<string, unknown> : {};
       const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as CallToolParams[] : [];
-      const p = queries[0] ?? envelope as unknown as CallToolParams;
+      const p = queries[0] ?? {} as CallToolParams;
       // Brand title + dim args, matching the other tool-call rows.
       const title = cliToolTitle(theme, 'callTool');
-      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
-      const args = `(${p.toolType}${p.mode && p.mode !== 'auto' ? `, ${p.mode}` : ''}${more})`;
+      const args = `(${p.toolType}${p.mode && p.mode !== 'auto' ? `, ${p.mode}` : ''})`;
       return makeRenderer((w) => [truncateToWidth(`${title}${paint(theme, 'dim', args)}`, w)]);
     },
 

@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'vitest';
 import {
-  listBundledSkills,
   listExtensionHarness,
   OCTOCODE_SUPPORT_TOOL_NAMES,
   OVERRIDDEN_BUILTIN_TOOL_NAMES,
@@ -26,6 +25,19 @@ const OCTOCODE_RESEARCH_TOOL_NAMES = [
   'localViewStructure',
   'lspGetSemantics',
   'npmSearch',
+] as const;
+const EXPECTED_BUNDLED_SKILLS = [
+  'octocode-brainstorming',
+  'octocode-chrome-devtools',
+  'octocode-documentation',
+  'octocode-graph-eval',
+  'octocode-prompt-optimizer',
+  'octocode-research',
+  'octocode-rfc-generator',
+  'octocode-roast',
+  'octocode-scraping',
+  'octocode-skills',
+  'octocode-subagent',
 ] as const;
 
 function readPackageFile(relativePath: string): string {
@@ -119,9 +131,12 @@ test('agent-facing research inventories match the current 15-tool catalog', () =
   assert.doesNotMatch(documents[0][1], /\$OCTO search|`oqlSearch`/);
 });
 
-test('README bundled-skill count and names match the built assets', () => {
+test('README bundled-skill count and names match the canonical bundle inventory', () => {
   const readme = readPackageFile('README.md');
-  const skills = listBundledSkills(path.join(packageRoot, 'dist'));
+  // package.test.ts separately verifies that these sources were copied to dist.
+  // Keep this documentation check independent of a parallel build replacing
+  // dist/skills.
+  const skills = EXPECTED_BUNDLED_SKILLS;
 
   assert.equal(skills.length, 11);
   assert.match(readme, new RegExp(`## Bundled skills \\(${skills.length}\\)`));

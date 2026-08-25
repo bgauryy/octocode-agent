@@ -7,9 +7,6 @@
  * never fail because a temp doc could not be written.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { getOctocodeHome } from '../env.js';
 import { createSessionArtifactContext, type SessionIdentityInput } from './session-artifacts.js';
 import type { CompactionCheckpointDetails } from './custom-messages.js';
 
@@ -31,17 +28,6 @@ function safeFilename(value: string): string {
 function mdList(items: string[] | undefined): string {
   if (!items || items.length === 0) return '(none)';
   return items.map((item) => `- ${item}`).join('\n');
-}
-
-function sessionFilename(session?: CompactionArtifactSession): string {
-  const sessionId = session?.getSessionId?.();
-  const sessionFile = session?.getSessionFile?.();
-  const raw = sessionId || (sessionFile ? path.basename(sessionFile) : 'unknown-session');
-  return safeFilename(raw);
-}
-
-export function compactionArtifactsDir(): string {
-  return path.join(getOctocodeHome(), 'tmp', 'compaction');
 }
 
 export function buildCompactionMarkdown(details: CompactionCheckpointDetails, createdAt = new Date()): string {
@@ -76,13 +62,10 @@ export function buildCompactionMarkdown(details: CompactionCheckpointDetails, cr
 /**
  * Write compaction checkpoint markdown artifacts.
  *
- * Primary (when `cwd` + `session` are provided): routes into the session
+ * Requires `cwd` + `session` and routes into the session
  * artifact tree at `<workspace>/.octocode/agent/<session-key>/compaction/`.
  * Both a timestamped snapshot and a `latest.md` pointer are written there,
  * and both are registered as `compaction` producers in the manifest.
- *
- * Fallback (legacy): `~/.octocode/tmp/compaction/` with a per-session subdir.
- *
  * Never throws.
  */
 export function writeCompactionArtifact(
@@ -91,30 +74,18 @@ export function writeCompactionArtifact(
   cwd?: string,
 ): CompactionArtifact | undefined {
   try {
-    if (cwd && session) {
-      const input: SessionIdentityInput = { cwd, sessionManager: session };
-      const artifactCtx = createSessionArtifactContext(input);
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const snapshotRel = `compaction/${timestamp}-${safeFilename(details.label)}.md`;
-      const latestRel = 'compaction/latest.md';
-      const markdown = buildCompactionMarkdown(details);
-      artifactCtx.writeText(snapshotRel, markdown);
-      artifactCtx.writeText(latestRel, markdown);
-      artifactCtx.registerProducer('compaction', snapshotRel);
-      artifactCtx.registerProducer('compaction', latestRel);
-      return { path: artifactCtx.resolve(snapshotRel), latestPath: artifactCtx.resolve(latestRel) };
-    }
-    // Legacy fallback.
-    const dir = compactionArtifactsDir();
-    const sessionDir = path.join(dir, 'sessions', sessionFilename(session));
-    fs.mkdirSync(dir, { recursive: true });
-    fs.mkdirSync(sessionDir, { recursive: true });
-    const filePath = path.join(dir, `${safeFilename(details.label)}.md`);
-    const latestPath = path.join(sessionDir, 'latest.md');
+    if (!cwd || !session) return undefined;
+    const input: SessionIdentityInput = { cwd, sessionManager: session };
+    const artifactCtx = createSessionArtifactContext(input);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const snapshotRel = `compaction/${timestamp}-${safeFilename(details.label)}.md`;
+    const latestRel = 'compaction/latest.md';
     const markdown = buildCompactionMarkdown(details);
-    fs.writeFileSync(filePath, markdown, 'utf8');
-    fs.writeFileSync(latestPath, markdown, 'utf8');
-    return { path: filePath, latestPath };
+    artifactCtx.writeText(snapshotRel, markdown);
+    artifactCtx.writeText(latestRel, markdown);
+    artifactCtx.registerProducer('compaction', snapshotRel);
+    artifactCtx.registerProducer('compaction', latestRel);
+    return { path: artifactCtx.resolve(snapshotRel), latestPath: artifactCtx.resolve(latestRel) };
   } catch {
     return undefined;
   }

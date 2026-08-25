@@ -16,8 +16,8 @@ import { adoptPlanModePolicy, enterPlanMode, exitPlanMode, isPlanMode } from './
 import { runAskPrompt } from './ask-user-tool.js';
 import { enablePlanHtmlSync, resetPlanHtmlSync, openPlanHtml, syncPlanHtmlIfEnabled, writePlanArtifacts, planArtifactsDir, readRfcDoc } from './plan-html.js';
 import { serveDirectory, unmount } from './local-server.js';
-import { PLAN_APPROVE_DESC, PLAN_APPROVE_LABEL, PLAN_PROPOSE_HINT, PLAN_REJECT_DESC, PLAN_REJECT_LABEL } from '../tui/content.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { FREE_TEXT_TELL_DIFFERENTLY, PLAN_APPROVE_DESC, PLAN_APPROVE_LABEL, PLAN_APPROVED_REVIEW_QUESTION, PLAN_COMPLETE_QUESTION, PLAN_PROPOSE_HINT, PLAN_REJECT_DESC, PLAN_REJECT_LABEL, PLAN_SET_BROWSER_QUESTION } from '../tui/content.js';
+import { buildQueryCallBlocks, makeRenderer, truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel } from './status-panel.js';
 import { activePlanScope, setPlan, activatePlan, proposePlanReview, acceptPlanReview, requestPlanChanges, startAcceptedPlan, addStep, startStep, completeStep, removeStep, clearPlan, getPlan, getPlanReviewState, getPlanCoordination, updatePlanCoordination, setPlanAwarenessMappings, renderActivePlanAddendum, MARK, stepLabel, displayStatus, depsMet, dependencyIndexes, resolveRfcPath, setPlanRfc, getPlanRfc, addPlanDecision, getPlanDecisions, planPhaseIndex, PLAN_PHASES, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
 import { completeUnifiedPlanTask, finalizeUnifiedPlan, getAwarenessLiteAgentId, projectUnifiedPlan, type ObservedCheckReceipt, type UnifiedPlanScope } from './awareness-shared.js';
@@ -47,7 +47,7 @@ const MAX_CLARIFY = 3;
 /** At/above this step count a plan is treated as consequential regardless of self-report. */
 const CONSEQUENTIAL_STEP_COUNT = 5;
 /** Risk vocabulary that flags consequential work in a step's text. */
-const RISK_RE = /\b(migrat|schema|auth|delete|\bdrop\b|truncate|rename|breaking|public[\s-]?api|deprecat|secret|credential|\btoken\b|encrypt|permission|rollback|backfill|lockfile|release)\w*/i;
+const RISK_RE = /\b(migrat|schema|auth|delete|\bdrop\b|truncate|rename|breaking|public[\s-]?api|secret|credential|\btoken\b|encrypt|permission|rollback|backfill|lockfile|release)\w*/i;
 
 /**
  * Heuristic "does this look consequential?" from the proposed steps alone — step
@@ -514,20 +514,42 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
     }
     const recorded: string[] = [];
     let halted: string | undefined;
-    for (const [i, q] of questions.entries()) {
+    // Use a mutable index so back-navigation can revisit a prior question.
+    let qi = 0;
+    while (qi < questions.length) {
+      const q = questions[qi]!;
       const prompt = String(q.prompt).trim();
       const options = (Array.isArray(q.options) ? q.options : [])
         .map((o) => ({ value: String(o.value ?? o.label ?? '').trim(), label: o.label, description: o.description, recommended: o.recommended, pros: o.pros, cons: o.cons }))
         .filter((o) => o.value);
-      const shown = questions.length > 1 ? `(${i + 1}/${questions.length}) ${prompt}` : prompt;
-      const outcome = await runAskPrompt(ctx, { question: shown, options });
+      // Prepend a back-navigation option for questions after the first.
+      const backOption = qi > 0 ? [{ value: '__back__', label: '← Previous question', description: 'go back and change your last answer' }] : [];
+      const outcome = await runAskPrompt(ctx, {
+        question: prompt,
+        options: [...backOption, ...options],
+        pagination: questions.length > 1 ? { current: qi + 1, total: questions.length } : undefined,
+        freeTextLabel: 'Skip or tell me what to ask differently',
+      });
       if (!outcome || outcome.status === 'unavailable') {
         halted = `This host cannot prompt — ask the remaining question(s) inline: ${prompt}`;
         break;
       }
       if (outcome.status === 'cancelled') { halted = 'Interview cancelled — proceed only with what is already decided.'; break; }
+      // Back navigation: remove the previously recorded answer and revisit.
+      if (outcome.status === 'selected' && outcome.value === '__back__') {
+        const prevPrompt = String(questions[qi - 1]!.prompt).trim();
+        // Iterate backwards to avoid requiring findLastIndex.
+        let lastIdx = -1;
+        for (let k = recorded.length - 1; k >= 0; k--) {
+          if (recorded[k]!.startsWith(prevPrompt + ' →')) { lastIdx = k; break; }
+        }
+        if (lastIdx >= 0) recorded.splice(lastIdx, 1);
+        qi -= 1;
+        continue;
+      }
       const answer = outcome.status === 'text' ? String(outcome.value ?? '').trim() : String(outcome.label ?? outcome.value ?? '').trim();
       if (answer) { addPlanDecision(scope, prompt, answer); recorded.push(`${prompt} → ${answer}`); }
+      qi += 1;
     }
     refreshPlanUi(ctx);
     const head = recorded.length ? `[PLAN] recorded ${recorded.length} decision(s):\n${recorded.map((r, i) => `${i + 1}. ${r}`).join('\n')}` : '[PLAN] no decisions recorded';
@@ -694,22 +716,34 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
       if (approved) {
         const approvedArtifacts = writeCurrentPlanArtifacts(scope, steps, 'approved');
         if (approvedArtifacts) pageNote = `\nPlan doc: ${approvedArtifacts.mdPath}`;
-        const wantsBrowser = ctx?.hasUI && ctx.mode === 'tui'
+        // 3-way surface choice: consistent with the RFC-backed propose flow.
+        const reviewSurfaceApproved = ctx?.hasUI && ctx.mode === 'tui'
           ? await runAskPrompt(ctx, {
-              question: 'Show the approved plan in your browser? (hosted locally, live-updates as the plan changes)',
+              question: PLAN_APPROVED_REVIEW_QUESTION,
               options: [
-                { value: 'yes', label: 'Open in browser', description: 'serve the plan page on localhost and open it', recommended: true },
-                { value: 'no', label: 'Not now', description: 'keep it to the terminal — /octocode-plan html opens it later' },
+                { value: 'browser', label: 'Open in browser', description: 'serve the plan page on localhost — live-updates as the plan changes', recommended: true },
+                { value: 'chat', label: 'Show TL;DR in chat', description: 'print step summary and file paths here without opening a browser' },
+                { value: 'no', label: 'Not now', description: '/octocode-plan html opens it later' },
               ],
+              freeTextLabel: FREE_TEXT_TELL_DIFFERENTLY,
             })
           : undefined;
-        if (wantsBrowser?.status === 'selected' && wantsBrowser.value === 'yes') {
+        if (reviewSurfaceApproved?.status === 'selected' && reviewSurfaceApproved.value === 'browser') {
           const url = await servePlanPage(ctx, scope);
           pageNote = url
             ? `\nLive plan page: ${url} (local server, updates as the plan changes)`
             : '\nCould not start the local plan server — /octocode-plan html retries.';
+        } else if (reviewSurfaceApproved?.status === 'selected' && reviewSurfaceApproved.value === 'chat') {
+          const tldrLines = [
+            `${steps.length} step${steps.length === 1 ? '' : 's'} · approved`,
+            ...(approvedArtifacts ? [`Plan markdown: ${approvedArtifacts.mdPath}`, `Plan HTML: ${approvedArtifacts.htmlPath}`] : []),
+          ];
+          pageNote = `\n${tldrLines.join('\n')}`;
         } else {
-          pageNote += '\nTip for the user: /octocode-plan html serves it in the browser.';
+          // Not now or no UI: surface paths so the agent can relay them.
+          pageNote = approvedArtifacts
+            ? `\nPlan doc: ${approvedArtifacts.mdPath}\nPlan HTML: ${approvedArtifacts.htmlPath}\n/octocode-plan html opens a live visual plan page.`
+            : '\n/octocode-plan html opens a live visual plan page.';
         }
       }
       return {
@@ -833,11 +867,52 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
   const artifactHint = (p.action === 'set' || p.action === 'add' || p.action === 'start' || p.action === 'complete' || p.action === 'remove') && steps.length > 0
     ? `\nPlan doc: ${path.join(planArtifactsDir(scope), 'plan.md')}`
     : '';
-  const htmlHint = p.action === 'set' && steps.length >= 4
-    ? '\nTip for the user: /octocode-plan html opens a live visual plan page.'
-    : '';
+  // plan(set): offer the browser view via runAskPrompt instead of a text tip.
+  // plan(complete) all-done: ask what to do next.
+  let lifecycleNote = '';
+  if (p.action === 'set' && steps.length > 0 && ctx?.hasUI && ctx.mode === 'tui') {
+    const viewBrowser = await runAskPrompt(ctx, {
+      question: PLAN_SET_BROWSER_QUESTION,
+      options: [
+        { value: 'yes', label: 'Open in browser', description: 'serve the plan page on localhost — live-updates as steps change', recommended: true },
+        { value: 'no', label: 'Not now', description: '/octocode-plan html opens it later' },
+      ],
+      freeTextLabel: FREE_TEXT_TELL_DIFFERENTLY,
+    });
+    if (viewBrowser?.status === 'selected' && viewBrowser.value === 'yes') {
+      const url = await servePlanPage(ctx, scope);
+      lifecycleNote = url
+        ? `\nLive plan page: ${url} (local server, live-updates as the plan changes)`
+        : '\nCould not start the local plan server — /octocode-plan html retries.';
+    } else if (viewBrowser?.status === 'text' && viewBrowser.value) {
+      lifecycleNote = `\nUser note: ${viewBrowser.value}`;
+    } else {
+      lifecycleNote = artifactHint
+        ? `${artifactHint}\n/octocode-plan html opens a live visual plan page.`
+        : '\n/octocode-plan html opens a live visual plan page.';
+    }
+  } else if (p.action === 'complete' && steps.length > 0 && steps.every((s) => s.status === 'done') && ctx?.hasUI && ctx.mode === 'tui') {
+    const nextStep = await runAskPrompt(ctx, {
+      question: PLAN_COMPLETE_QUESTION,
+      options: [
+        { value: 'browser', label: 'View completed plan in browser', description: 'open the plan page to review the final state' },
+        { value: 'continue', label: 'Continue to next task', description: 'tell me what to work on next', recommended: true },
+      ],
+      freeTextLabel: FREE_TEXT_TELL_DIFFERENTLY,
+    });
+    if (nextStep?.status === 'selected' && nextStep.value === 'browser') {
+      const url = await servePlanPage(ctx, scope);
+      lifecycleNote = url
+        ? `\nCompleted plan page: ${url}`
+        : `\nCompleted plan: ${path.join(planArtifactsDir(scope), 'plan.html')}`;
+    } else if (nextStep?.status === 'text' && nextStep.value) {
+      lifecycleNote = `\nUser direction: ${nextStep.value}`;
+    }
+  }
+
+  const baseNote = lifecycleNote || (p.action !== 'set' ? artifactHint : '');
   return {
-    content: [{ type: 'text', text: `${header}\n${renderList(steps)}${artifactHint}${htmlHint}` }],
+    content: [{ type: 'text', text: `${header}\n${renderList(steps)}${baseNote}` }],
     details: { action: p.action, steps: planResultSteps(steps), addendum: renderActivePlanAddendum(scope) },
   } as unknown as ToolCallResult;
 }
@@ -874,6 +949,7 @@ export function registerPlanTool(
       'Keep the checklist truthful as scope shifts: plan(add) newly discovered document-backed steps, plan(remove) obsolete ones, and plan(clear) once the task is done or abandoned. Shared task projection, ownership, dependencies, check receipts, and finalization are internal to plan; there is no separate public task tool.',
       'For independent lanes, encode ordering with dependsOn, start runnable lanes with plan(start:N) before batching/spawning, and pass explicit indices when completing parallel steps.',
       'Optionally give each step an activeForm (present-continuous label, e.g. "Editing file") — it is shown in the live plan panel while that step runs; propose also shows the full checklist below the editor before the approval prompt. The plan widget/doc should make the flow gate visible: RFC/research → review exact revision → Accept → separate Start → execute → verify.',
+      'Plan lifecycle prompts: after plan(set) the tool automatically uses askUser to offer the local browser view (plan.html, live-updating) — do not add a separate askUser call for this. After plan(complete) marks every step done, the tool automatically asks what to do next; if the user says continue, pick up the next task without prompting again. The tool outputs plan.md and plan.html paths in the result — surface them to the user when the askUser prompt is unavailable.',
     ],
     parameters: buildQueryEnvelopeSchema(Type, Type.Object({
       action: Type.Unsafe({ type: 'string', enum: ['set', 'propose', 'clarify', 'add', 'start', 'complete', 'remove', 'clear', 'show'], description: 'Plan lifecycle operation; use the matching action branch and fields.' }),
@@ -939,25 +1015,10 @@ export function registerPlanTool(
       ],
     }), { reasoningDescription: 'Why this plan transition is necessary.' }),
 
-    prepareArguments(args: unknown): unknown {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      // Already envelope-shaped: pass through.
-      if (Array.isArray(input['queries'])) return input;
-      // Legacy flat call: wrap in queries with a default reasoning.
-      return { queries: [{ reasoning: 'plan operation', ...input }] };
-    },
-
     async execute(toolCallId: string, rawArgs: Record<string, unknown>, signal?: AbortSignal, onUpdate?: (update: ToolCallResult) => void, ctx?: PiContext) {
-      // Normalize: accept both the envelope { queries: [...] } and legacy flat params.
-      // Legacy callers that pass flat params get a default reasoning injected so the
-      // envelope contract is satisfied without requiring test-layer changes.
-      const raw: Record<string, unknown> = Array.isArray(rawArgs['queries'])
-        ? rawArgs
-        : { queries: [{ reasoning: 'plan operation', ...rawArgs }] };
       return executeQueryBatch({
         toolCallId,
-        raw,
+        raw: rawArgs,
         signal,
         onUpdate,
         ctx,
@@ -1009,24 +1070,18 @@ export function registerPlanTool(
     },
 
     renderCall(raw: unknown, theme?: PiTheme) {
-      // raw is the query envelope { queries: [...] }
-      const envelope = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
-      const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as Record<string, unknown>[] : [];
-      const first = queries[0] ?? {};
-      const q = first as unknown as PlanParams;
-      const extra = q.action === 'set' || q.action === 'propose'
-        ? ` (${(q.steps ?? []).length} steps)`
-        : q.index ? ` #${q.index}` : '';
-      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
-      const reasoning = typeof first['reasoning'] === 'string' ? (first['reasoning'] as string).trim() : '';
-      const title = cliToolTitle(theme, 'plan');
-      // Space between title and the dim parenthetical so 'plan (start)' renders
-      // correctly — previously lacked the space producing 'plan(start)'.
-      const meta = paint(theme, 'dim', ` (${q.action}${extra}${more})`);
-      return makeRenderer((w) => [
-        truncateToWidth(`${title}${meta}`, w),
-        ...(reasoning ? [truncateToWidth(`  ${paint(theme, 'dim', reasoning)}`, w)] : []),
-      ]);
+      return buildQueryCallBlocks(raw, theme, (singleArgs) => {
+        const queries = Array.isArray(singleArgs['queries'])
+          ? singleArgs['queries'] as Record<string, unknown>[]
+          : [];
+        const q = (queries[0] ?? {}) as unknown as PlanParams;
+        const extra = q.action === 'set' || q.action === 'propose'
+          ? ` (${(q.steps ?? []).length} steps)`
+          : q.index ? ` #${q.index}` : '';
+        const title = cliToolTitle(theme, 'plan');
+        const meta = paint(theme, 'dim', ` (${q.action}${extra})`);
+        return makeRenderer((w) => [truncateToWidth(`${title}${meta}`, w)]);
+      });
     },
 
 

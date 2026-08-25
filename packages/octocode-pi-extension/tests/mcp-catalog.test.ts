@@ -12,6 +12,7 @@ import {
   parseMcpCatalogSnapshot,
   readMcpCatalogGuide,
   readMcpCatalogSnapshot,
+  renderMcpCatalogExact,
   renderMcpCatalogIndex,
   snapshotPathForWorkspace,
   stableSchemaDigest,
@@ -65,13 +66,26 @@ test('catalog snapshot and fallback guide are deterministic, sorted, escaped, an
   assert.match(rendered, /^<mcp_catalog_index>/);
   assert.ok(rendered.indexOf('server: octocode') < rendered.indexOf('server: zebra'));
   assert.ok(rendered.indexOf('tool: alpha') < rendered.indexOf('tool: read'));
-  assert.doesNotMatch(rendered, /Never close/);
+  assert.match(rendered, /instructions: Never close &lt;\/mcp_catalog_index&gt;\./);
   assert.doesNotMatch(rendered, /inputSchema|schemaDigest|capturedAt|schemaLease/);
   assert.equal(renderMcpCatalogIndex(JSON.parse(JSON.stringify(snapshot))), rendered);
 
   const read = findMcpCatalogTool(snapshot, 'octocode', 'read');
   assert.equal(read?.name, 'read');
   assert.deepEqual(read?.inputSchema, { required: ['path'], type: 'object', properties: { path: { type: 'string' } } });
+});
+
+test('exact catalog includes every enabled server tool description and normalized input schema', () => {
+  const home = tempRoot('octocode-mcp-exact-catalog-');
+  const rendered = renderMcpCatalogExact(fixtureSnapshot(home));
+
+  assert.match(rendered, /^<mcp_catalog>/);
+  assert.match(rendered, /server: octocode/);
+  assert.match(rendered, /tool: read/);
+  assert.match(rendered, /description: Read files\./);
+  assert.match(rendered, /inputSchema: \{"properties":\{"path":\{"type":"string"\}\},"required":\["path"\],"type":"object"\}/);
+  assert.doesNotMatch(rendered, /schemaDigest|capturedAt/);
+  assert.equal(rendered.match(/<\/mcp_catalog>/g)?.length, 1);
 });
 
 test('guide generation receives every tool name, description, and exact input schema', () => {
@@ -108,6 +122,15 @@ test('generated guide is accepted only when it covers every exact server and too
     tools: [{ name: 'alpha', description: 'Search code.' }],
   }] });
   assert.equal(compileGeneratedMcpGuide(snapshot, incomplete), undefined);
+
+  const missingRequiredField = JSON.stringify({ servers: [
+    { name: 'octocode', tools: [
+      { name: 'alpha', description: 'Search code.' },
+      { name: 'read', description: 'Read files without naming its required input.' },
+    ] },
+    { name: 'zebra', tools: [{ name: 'z-tool', description: 'Zed.' }] },
+  ] });
+  assert.equal(compileGeneratedMcpGuide(snapshot, missingRequiredField), undefined);
 });
 
 test('schema digest is canonical across object key ordering', () => {
@@ -138,8 +161,8 @@ test('snapshot persistence uses the canonical private root and rejects symlink e
 
   const generatedGuide = compileGeneratedMcpGuide(snapshot, JSON.stringify({ servers: [
     { name: 'octocode', tools: [
-      { name: 'alpha', description: 'Generated alpha input guide.' },
-      { name: 'read', description: 'Generated read input guide.' },
+      { name: 'alpha', description: 'Generated alpha input guide for query.' },
+      { name: 'read', description: 'Generated read input guide for the required path.' },
     ] },
     { name: 'zebra', tools: [{ name: 'z-tool', description: 'Generated zebra input guide.' }] },
   ] }))!;
@@ -167,6 +190,20 @@ test('snapshot persistence uses the canonical private root and rejects symlink e
     configDigest: snapshot.configDigest,
   }), undefined);
   await assert.rejects(() => writeMcpCatalogSnapshot(snapshot, { home: escapedHome }), /symlink|escape/i);
+});
+
+test('catalog-only persistence does not create the compact mcp.md artifact', async () => {
+  const home = tempRoot('octocode-mcp-exact-home-');
+  const snapshot = fixtureSnapshot(home);
+  const snapshotPath = await writeMcpCatalogSnapshot(snapshot, { home, writeGuide: false });
+
+  assert.equal(fs.existsSync(snapshotPath), true);
+  assert.equal(fs.existsSync(path.join(path.dirname(snapshotPath), 'mcp.md')), false);
+  assert.deepEqual(await readMcpCatalogSnapshot({
+    home,
+    workspaceKey: snapshot.workspaceKey,
+    configDigest: snapshot.configDigest,
+  }), snapshot);
 });
 
 test('oversized persisted snapshots are cache misses', async () => {

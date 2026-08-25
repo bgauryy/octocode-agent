@@ -24,6 +24,14 @@ export interface QueryBatchItemResult {
   result: ToolCallResult;
 }
 
+export interface QueryBatchResultRow {
+  index: number;
+  reasoning: string;
+  status: 'success' | 'failed' | 'not-run';
+  summary: string;
+  result?: unknown;
+}
+
 export interface ExecuteQueryBatchOptions extends PreparedQueryBatchOptions {
   toolCallId: string;
   raw: Record<string, unknown>;
@@ -51,21 +59,24 @@ export class QueryBatchError extends Error {
   readonly failedIndex: number;
   readonly completedCount: number;
   readonly originalError: unknown;
+  readonly rows: QueryBatchResultRow[];
 
-  constructor(failedIndex: number, completedCount: number, error: unknown) {
+  constructor(failedIndex: number, completedCount: number, error: unknown, rows: QueryBatchResultRow[] = []) {
     const detail = error instanceof Error ? error.message : String(error);
-    super(`queries[${failedIndex}] failed after ${completedCount} prior queries succeeded: ${detail}`);
+    const rowText = rows.length > 0 ? `\n${rows.map((row) => `[${row.index}] ${row.status}: ${row.summary}`).join('\n')}` : '';
+    super(`queries[${failedIndex}] failed after ${completedCount} prior queries succeeded: ${detail}${rowText}`);
     this.name = 'QueryBatchError';
     this.failedIndex = failedIndex;
     this.completedCount = completedCount;
     this.originalError = error;
+    this.rows = rows;
   }
 }
 
 /**
  * Add the universal per-query reasoning field without using Type.Intersect or
- * Type.Union, which keeps the emitted schema compatible with Google-family
- * providers. The caller still owns action-specific runtime preflight.
+ * Type.Union, which keeps the emitted schema accepted by Google-family providers.
+ * The caller still owns action-specific runtime preflight.
  */
 export function buildQueryEnvelopeSchema(
   Type: TypeBoxBuilder,
@@ -149,9 +160,31 @@ export async function prepareQueryBatch(
   return queries;
 }
 
+function nonEmptyLines(value: unknown): string[] {
+  return typeof value === 'string'
+    ? value.split('\n').map((line) => line.trim()).filter(Boolean)
+    : [];
+}
+
 function defaultSummary(result: ToolCallResult): string {
+  const details = result.details && typeof result.details === 'object'
+    ? result.details as Record<string, unknown>
+    : {};
   const text = result.content.find((part) => part.type === 'text') as { text?: string } | undefined;
-  return text?.text?.split('\n').find(Boolean)?.trim() || (result.isError ? 'failed' : 'ok');
+  const textLines = nonEmptyLines(text?.text);
+
+  if (result.isError) {
+    for (const key of ['error', 'message']) {
+      const structured = nonEmptyLines(details[key]);
+      if (structured.length > 0) return structured.at(-1)!;
+    }
+    const stderr = nonEmptyLines(details['stderr']);
+    if (stderr.length > 0) return stderr.at(-1)!;
+    const diagnostics = textLines.filter((line) => !/^\((?:exit|killed by|aborted)\b/i.test(line));
+    return diagnostics.at(-1) ?? textLines.at(-1) ?? 'failed';
+  }
+
+  return textLines[0] ?? 'ok';
 }
 
 function progressResult(index: number, total: number, reasoning: string): ToolCallResult {
@@ -168,10 +201,21 @@ function progressResult(index: number, total: number, reasoning: string): ToolCa
 export async function executeQueryBatch(options: ExecuteQueryBatchOptions): Promise<ToolCallResult> {
   const queries = await prepareQueryBatch(options.raw, options);
   const results: QueryBatchItemResult[] = [];
+  const summarize = options.summarize ?? ((result: ToolCallResult) => defaultSummary(result));
+  const successRows = (): QueryBatchResultRow[] => results.map((entry) => ({
+    index: entry.index,
+    reasoning: entry.reasoning,
+    status: 'success',
+    summary: summarize(entry.result, queries[entry.index]!, entry.index),
+    result: entry.result.details,
+  }));
 
   for (const [index, query] of queries.entries()) {
     if (options.signal?.aborted) {
-      throw new QueryBatchError(index, results.length, new Error('query batch aborted'));
+      throw new QueryBatchError(index, results.length, new Error('query batch aborted'), [
+        ...successRows(),
+        ...queries.slice(index).map((remaining, offset) => ({ index: index + offset, reasoning: remaining.reasoning, status: 'not-run' as const, summary: 'not run' })),
+      ]);
     }
     options.onUpdate?.(progressResult(index, queries.length, query.reasoning));
 
@@ -189,7 +233,12 @@ export async function executeQueryBatch(options: ExecuteQueryBatchOptions): Prom
         throw new Error(defaultSummary(result));
       }
     } catch (error) {
-      throw new QueryBatchError(index, results.length, error);
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new QueryBatchError(index, results.length, error, [
+        ...successRows(),
+        { index, reasoning: query.reasoning, status: 'failed', summary: detail },
+        ...queries.slice(index + 1).map((remaining, offset) => ({ index: index + 1 + offset, reasoning: remaining.reasoning, status: 'not-run' as const, summary: 'not run' })),
+      ]);
     }
     results.push({ index, reasoning: query.reasoning, result });
   }
@@ -198,10 +247,10 @@ export async function executeQueryBatch(options: ExecuteQueryBatchOptions): Prom
     return results[0]!.result;
   }
 
-  const summarize = options.summarize ?? ((result: ToolCallResult) => defaultSummary(result));
   const summaries = results.map((entry) => ({
     index: entry.index,
     reasoning: entry.reasoning,
+    status: 'success' as const,
     summary: summarize(entry.result, queries[entry.index]!, entry.index),
     result: entry.result.details,
   }));

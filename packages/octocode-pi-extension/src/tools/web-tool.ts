@@ -117,19 +117,6 @@ export function registerWebTool(
     ],
     parameters,
 
-    prepareArguments(args: unknown) {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      if (Array.isArray(input['queries'])) return input;
-      const reasoning =
-        typeof input['url'] === 'string'
-          ? `fetch ${input['url'] as string}`
-          : typeof input['query'] === 'string'
-            ? `search: ${input['query'] as string}`
-            : 'web lookup';
-      return { queries: [{ reasoning, ...input }] };
-    },
-
     async execute(
       toolCallId: string,
       params: Record<string, unknown>,
@@ -166,7 +153,6 @@ export function registerWebTool(
       const a = queries[0] ?? envelope;
       const url = typeof a['url'] === 'string' && a['url'] ? (a['url'] as string) : '';
       const query = typeof a['query'] === 'string' && a['query'] ? (a['query'] as string) : '';
-      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
       const nameStr = cliToolTitle(theme, 'web', { bold: true });
       const displayUrl = url.length > 70 ? `${url.slice(0, 67)}\u2026` : url;
       const displayQuery = query.length > 70 ? `${query.slice(0, 67)}\u2026` : query;
@@ -175,7 +161,7 @@ export function registerWebTool(
         : query
           ? paint(theme, 'dim', `"${displayQuery}"`)
           : '';
-      const rawLine = detail ? `${nameStr} ${detail}${more}` : nameStr;
+      const rawLine = detail ? `${nameStr} ${detail}` : nameStr;
       return makeRenderer((w) => [truncateToWidth(rawLine, w)]);
     },
 

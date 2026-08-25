@@ -178,19 +178,9 @@ export async function checkReadState(
   if (!state) {
     const message = 'No prior localGetFileContent read state recorded for this file.';
     if (requireRecentRead) {
-      // Content-anchored edits (exact/normalized oldText) are self-verifying even without
-      // a prior read — the oldText match guarantees the model is editing the right region.
-      // Position-anchored edits (lineRange without oldText) genuinely need fresh line
-      // numbers, so they still hard-fail to prevent silent line-number drift.
-      if (!opts.contentAnchored) {
-        throw new Error(
-          `${message} Re-read the file before editing or set requireRecentRead:false intentionally.`,
-        );
-      }
-      return {
-        state: 'missing',
-        message: `${message} Proceeding because all edits are content-anchored (oldText verifies correctness).`,
-      };
+      throw new Error(
+        `${message} Re-read the file before editing or set requireRecentRead:false intentionally.`,
+      );
     }
     return { state: 'missing', message };
   }

@@ -45,12 +45,12 @@ test('parseAwarenessStatus maps the Lite status JSON fields', () => {
   assert.equal(s.messageCount, 5);
 });
 
-test('parseAwarenessStatus falls back to legacy Lite status totals', () => {
+test('parseAwarenessStatus ignores retired status total keys', () => {
   const s = parseAwarenessStatus(JSON.stringify({ plans: 1, tasks: 3, pendingChecks: 2 }))!;
-  assert.equal(s.activePlans, 1);
-  assert.equal(s.readyTasks, 3);
+  assert.equal(s.activePlans, 0);
+  assert.equal(s.readyTasks, 0);
   assert.equal(s.inProgressTasks, 0);
-  assert.equal(s.verifyTasks, 2);
+  assert.equal(s.verifyTasks, 0);
 });
 
 test('parseAwarenessStatus returns null on bad JSON', () => {

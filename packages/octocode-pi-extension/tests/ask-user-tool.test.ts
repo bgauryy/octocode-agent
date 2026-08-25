@@ -454,10 +454,11 @@ test('askUser progressively discloses focused descriptions and trade-offs and la
   );
 
   const before = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
-  assert.match(before, /Leave it ★ recommended/);
-  // Focused-row contract: only focused option (Leave it) shows pros/cons; Aggressive cut is quiet.
+  assert.match(before, /Leave it \[recommended\]/);
+  // Focused-row contract: description is always visible for all rows; pros/cons only appear on focused row.
   assert.match(before, /Keeps the supported behavior unchanged/);
-  assert.doesNotMatch(before, /Removes the compatibility path/);
+  // Non-focused rows now always show their description (dim), so Aggressive cut's description IS visible.
+  assert.match(before, /Removes the compatibility path/);
   assert.doesNotMatch(before, /✓ small diff/, 'non-focused Aggressive cut does not show pros');
   assert.doesNotMatch(before, /✗ thins the safety net/, 'non-focused Aggressive cut does not show cons');
   assert.match(before, /✓ no risk/);
@@ -466,9 +467,9 @@ test('askUser progressively discloses focused descriptions and trade-offs and la
 
   send('\x1b[A');
   const after = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
-  // After moving focus to Aggressive cut: its detail appears; Leave it goes quiet.
+  // After moving focus to Aggressive cut: its detail appears; Leave it's description stays visible (always-on).
   assert.match(after, /Removes the compatibility path/);
-  assert.doesNotMatch(after, /Keeps the supported behavior unchanged/);
+  assert.match(after, /Keeps the supported behavior unchanged/);
   assert.match(after, /✓ small diff/);
   assert.match(after, /✗ thins the safety net/);
 
@@ -661,8 +662,8 @@ test('askUser single-select digit keys pick the numbered option outright', async
     ctx,
   );
   const plain = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
-  assert.match(plain, /1\. alpha/, 'options are numbered for quick-select');
-  assert.match(plain, /2\. beta/);
+  assert.match(plain, /①  alpha/, 'options use circle badge for quick-select');
+  assert.match(plain, /②  beta/);
   send('2');
   const result = await pending;
   assert.deepEqual(result.details, { status: 'selected', value: 'beta', label: 'beta' });

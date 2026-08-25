@@ -170,16 +170,16 @@ test('multi-query: two queries execute in order and return batch summary', async
 test('web renderCall handles url, query, empty args, theming, and truncation', async () => {
   const { tool } = await loadRegisteredWebTool({});
 
-  const urlLine = tool.renderCall!({ url: 'https://example.com/' }, theme).render(120)[0]!;
+  const urlLine = tool.renderCall!({ queries: [{ reasoning: 'read example', url: 'https://example.com/' }] }, theme).render(120)[0]!;
   assert.match(urlLine, /<toolTitle><b>web<\/b><\/toolTitle>/);
   assert.match(urlLine, /<mdLink>https:\/\/example\.com\//);
 
-  const queryLine = tool.renderCall!({ query: 'what changed in vitest coverage' }, theme).render(120)[0]!;
+  const queryLine = tool.renderCall!({ queries: [{ reasoning: 'search changes', query: 'what changed in vitest coverage' }] }, theme).render(120)[0]!;
   assert.match(queryLine, /<dim>"what changed in vitest coverage"/);
 
   assert.equal(tool.renderCall!({}, undefined).render(120)[0], 'web');
 
-  const narrow = tool.renderCall!({ url: `https://example.com/${'x'.repeat(200)}` }, undefined).render(30)[0]!;
+  const narrow = tool.renderCall!({ queries: [{ reasoning: 'read long URL', url: `https://example.com/${'x'.repeat(200)}` }] }, undefined).render(30)[0]!;
   assert.ok(narrow.includes('\u2026'), 'long calls are truncated to terminal width');
 });
 

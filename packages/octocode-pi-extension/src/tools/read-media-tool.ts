@@ -97,13 +97,6 @@ export function registerReadMediaTool(
       reasoningDescription: 'Why this media must be inspected.',
     }),
 
-    prepareArguments(args: unknown) {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      if (Array.isArray(input['queries'])) return input;
-      return { queries: [{ reasoning: 'inspect media', ...input }] };
-    },
-
     async execute(toolCallId, params, signal, onUpdate, ctx): Promise<ToolCallResult> {
       const cwd = ctx?.cwd ?? process.cwd();
       return executeQueryBatch({
@@ -180,12 +173,11 @@ export function registerReadMediaTool(
     renderCall(args: unknown, theme?: PiTheme) {
       const envelope = (args ?? {}) as Record<string, unknown>;
       const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as Record<string, unknown>[] : [];
-      const input = queries[0] ?? envelope;
+      const input = queries[0] ?? {};
       const type = typeof input['type'] === 'string' ? input['type'] : 'media';
       const filePath = typeof input['path'] === 'string' ? input['path'] : '(missing path)';
-      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
       return makeRenderer((width) => [
-        truncateToWidth(`${cliToolTitle(theme, 'readMedia')} ${paint(theme, 'dim', `${type} · ${filePath}${more}`)}`, width),
+        truncateToWidth(`${cliToolTitle(theme, 'readMedia')} ${paint(theme, 'dim', `${type} · ${filePath}`)}`, width),
       ]);
     },
 
