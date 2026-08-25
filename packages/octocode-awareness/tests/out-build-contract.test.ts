@@ -39,16 +39,20 @@ describe('Awareness out build contract', () => {
 
   it('builds only Awareness-owned entries and never imports the octocode CLI', () => {
     const build = read('build.mjs');
-    const buildConfig = read('buildConfig.mjs');
+    const entries = read('build.entries.mjs'); // replaces buildConfig.mjs
     const source = `${read('src/index.ts')}\n${read('bin/awareness.ts')}`;
 
-    expect(build).toContain('entryPoints: coreEntryPoints');
-    expect(buildConfig).toContain("'octocode-awareness': 'bin/awareness.ts'");
-    expect(build).toContain('outdir: outDir');
-    expect(build).toContain('.out-build-');
-    expect(build).toContain('renameSync(outDir, publishedOutDir)');
-    expect(build).not.toContain('rmSync(publishedOutDir');
-    expect(build).not.toContain("packages/octocode/out");
+    // build.mjs delegates entry-point declarations to build.entries.mjs
+    expect(build).toContain("from './build.entries.mjs'");
+    expect(build).toMatch(/entryPoints:\s+coreEntryPoints/);
+    expect(build).toMatch(/outdir:\s+outDir/);
+    // New: builds directly to out/ — no temp staging directories
+    expect(build).not.toContain('.out-build-');
+    expect(build).not.toContain('renameSync');
+    // Entry point declarations live in build.entries.mjs
+    expect(entries).toContain("'octocode-awareness': 'bin/awareness.ts'");
+    // Neither file bundles the external octocode CLI
+    expect(build).not.toContain('packages/octocode/out');
     expect(source).not.toMatch(/from ['"]octocode(?:\/|['"])/);
     expect(source).not.toContain('@octocodeai/octocode-tools-core');
   });

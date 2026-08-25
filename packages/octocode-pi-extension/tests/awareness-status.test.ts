@@ -2,11 +2,15 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'vitest';
 import {
   parseAwarenessStatus,
+  parseTaskActivities,
   parseLastMessage,
   hasAwarenessSignal,
+  renderAwarenessSignalAddendum,
   formatAwarenessPanel,
   refreshAwarenessPanel,
+  getCachedAwarenessStatus,
   setAwarenessStatusRunnerForTests,
+  setAwarenessTaskActivityRunnerForTests,
   resetAwarenessStatusStateForTests,
   forceAwarenessStatusRefreshForTests,
   type AwarenessStatus,
@@ -53,6 +57,21 @@ test('parseAwarenessStatus returns null on bad JSON', () => {
   assert.equal(parseAwarenessStatus('not json'), null);
 });
 
+test('parseTaskActivities returns doing before ready and de-duplicates task ids', () => {
+  const doing = JSON.stringify([
+    { taskId: 'task-doing-123', title: 'Implement review server', status: 'CLAIMED', agentId: 'octo-builder' },
+  ]);
+  const ready = JSON.stringify([
+    { taskId: 'task-ready-456', title: 'Run browser checks', status: 'OPEN', agentId: null },
+    { taskId: 'task-doing-123', title: 'duplicate', status: 'OPEN', agentId: null },
+  ]);
+  assert.deepEqual(parseTaskActivities(doing, ready), [
+    { taskId: 'task-doing-123', title: 'Implement review server', state: 'doing', agentId: 'octo-builder' },
+    { taskId: 'task-ready-456', title: 'Run browser checks', state: 'ready' },
+  ]);
+  assert.deepEqual(parseTaskActivities('bad', '[]'), []);
+});
+
 test('hasAwarenessSignal is false only when everything is zero', () => {
   const zero: AwarenessStatus = {
     activePlans: 0, readyTasks: 0, inProgressTasks: 0, verifyTasks: 0,
@@ -60,6 +79,45 @@ test('hasAwarenessSignal is false only when everything is zero', () => {
   };
   assert.equal(hasAwarenessSignal(zero), false);
   assert.equal(hasAwarenessSignal({ ...zero, readyTasks: 1 }), true);
+});
+
+test('renderAwarenessSignalAddendum omits passive or unavailable state', () => {
+  const passive: AwarenessStatus = {
+    activePlans: 2, readyTasks: 0, inProgressTasks: 0, verifyTasks: 0,
+    lockCount: 0, workCount: 3, agentCount: 2, messageCount: 4,
+  };
+  assert.equal(renderAwarenessSignalAddendum(null), '');
+  assert.equal(renderAwarenessSignalAddendum(passive, 'octo-me'), '');
+});
+
+test('renderAwarenessSignalAddendum exposes only a bounded unread-direct-message signal', () => {
+  const signal: AwarenessStatus = {
+    activePlans: 1, readyTasks: 2, inProgressTasks: 2, verifyTasks: 3,
+    lockCount: 1, workCount: 4, agentCount: 3, messageCount: 5,
+    unreadInbox: 1,
+    lastInbound: { from: 'peer', preview: 'untrusted message body must not enter the system prompt' },
+    taskActivities: [
+      { taskId: 'task-own', title: 'Private own title', state: 'doing', agentId: 'octo-me' },
+      { taskId: 'task-peer', title: 'Untrusted peer title', state: 'doing', agentId: 'octo-peer' },
+    ],
+  };
+  const text = renderAwarenessSignalAddendum(signal, 'octo-me');
+  assert.match(text, /^<awareness_signal>/);
+  assert.match(text, /Unread direct peer messages: 1/);
+  assert.match(text, /\bmessage\b/);
+  assert.doesNotMatch(text, /ready tasks|peer-owned tasks|verification debt|active locks|\bplan\b|\block\b/);
+  assert.doesNotMatch(text, /untrusted message body|Private own title|Untrusted peer title/);
+  assert.doesNotMatch(text, /\b(?:awarenessPlan|claim|task|work|verify|handoff|awarenessAgents)\b/);
+  assert.ok(text.length < 700, 'signal addendum remains bounded');
+});
+
+test('renderAwarenessSignalAddendum omits non-message shared state', () => {
+  const state: AwarenessStatus = {
+    activePlans: 1, readyTasks: 2, inProgressTasks: 2, verifyTasks: 3,
+    lockCount: 1, workCount: 4, agentCount: 3, messageCount: 5,
+    unreadInbox: 0,
+  };
+  assert.equal(renderAwarenessSignalAddendum(state, 'octo-me'), '');
 });
 
 test('formatAwarenessPanel renders counts and surfaces verify-debt', () => {
@@ -92,6 +150,20 @@ test('parseLastMessage summarizes the newest peer message', () => {
 test('parseLastMessage returns undefined for empty or bad input', () => {
   assert.equal(parseLastMessage('[]'), undefined);
   assert.equal(parseLastMessage('not json'), undefined);
+});
+
+test('formatAwarenessPanel renders concrete doing and ready task rows', () => {
+  const s: AwarenessStatus = {
+    ...parseAwarenessStatus(FULL)!,
+    taskActivities: [
+      { taskId: 'task-doing-123', title: 'Implement review server', state: 'doing', agentId: 'octo-builder' },
+      { taskId: 'task-ready-456', title: 'Run browser checks', state: 'ready' },
+    ],
+  };
+  const lines = formatAwarenessPanel(s);
+  assert.equal(lines.length, 3);
+  assert.match(lines[1]!, /task.*DOING.*Implement review server.*octo-builder.*task-d/);
+  assert.match(lines[2]!, /task.*READY.*Run browser checks.*task-r/);
 });
 
 test('formatAwarenessPanel renders the last peer message when present', () => {
@@ -128,6 +200,18 @@ test('refreshAwarenessPanel renders a widget from the async runner result', asyn
   await new Promise((r) => setTimeout(r, 5));
   assert.equal(calls, 1, 'runner invoked once');
   assert.ok(widget.some((w) => w.isFn && !w.cleared), 'a below-editor widget was rendered');
+});
+
+test('refreshAwarenessPanel enriches the cache with concrete task activity', async () => {
+  setAwarenessStatusRunnerForTests(async () => FULL);
+  setAwarenessTaskActivityRunnerForTests(async () => ({
+    claimed: JSON.stringify([{ taskId: 'task-doing', title: 'Implement lifecycle', status: 'CLAIMED', agentId: 'octo-worker' }]),
+    ready: JSON.stringify([{ taskId: 'task-ready', title: 'Verify CLI', status: 'OPEN', agentId: null }]),
+  }));
+  const { ctx } = uiCtx();
+  refreshAwarenessPanel(ctx);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(getCachedAwarenessStatus(ctx.cwd!)?.taskActivities?.map((task) => task.state), ['doing', 'ready']);
 });
 
 test('refreshAwarenessPanel throttles repeated calls within the window', async () => {

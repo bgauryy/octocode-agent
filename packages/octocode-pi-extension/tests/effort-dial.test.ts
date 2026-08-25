@@ -18,42 +18,31 @@ import {
   restoreDialOnStartup,
   type EffortLevel,
 } from '../src/tools/effort-dial.js';
-import type { CommandDefinition, PiContext, PiInstance, PiModel } from '../src/types.js';
+import type { CommandDefinition, PiContext, PiInstance } from '../src/types.js';
 
 // ─── Fakes ────────────────────────────────────────────────────────────────────
 
 interface FakePi {
   pi: PiInstance;
   thinkingCalls: string[];
-  modelCalls: PiModel[];
   commands: Map<string, CommandDefinition>;
-  setModelResult: boolean;
 }
 
-function makeFakePi(opts?: { setModelResult?: boolean; withSetModel?: boolean }): FakePi {
+function makeFakePi(): FakePi {
   const fake: FakePi = {
     pi: undefined as unknown as PiInstance,
     thinkingCalls: [],
-    modelCalls: [],
     commands: new Map<string, CommandDefinition>(),
-    setModelResult: opts?.setModelResult ?? true,
   };
   const raw: Record<string, unknown> = {
     setThinkingLevel: (level: string) => { fake.thinkingCalls.push(level); },
     registerCommand: (name: string, def: CommandDefinition) => { fake.commands.set(name, def); },
   };
-  if (opts?.withSetModel !== false) {
-    raw['setModel'] = async (model: PiModel) => {
-      fake.modelCalls.push(model);
-      return fake.setModelResult;
-    };
-  }
   fake.pi = raw as unknown as PiInstance;
   return fake;
 }
 
 function makeCtx(opts?: {
-  find?: (provider: string, id: string) => PiModel | undefined;
   custom?: <T>(...args: unknown[]) => Promise<T | undefined>;
 }): { ctx: PiContext; notifications: Array<{ message: string; level?: string }> } {
   const notifications: Array<{ message: string; level?: string }> = [];
@@ -66,7 +55,6 @@ function makeCtx(opts?: {
       notify: (message: string, level?: string) => { notifications.push({ message, level }); },
       ...(opts?.custom ? { custom: opts.custom } : {}),
     },
-    ...(opts?.find ? { modelRegistry: { find: opts.find } } : {}),
   } as unknown as PiContext;
   return { ctx, notifications };
 }
@@ -96,9 +84,6 @@ test('each dial level maps to the spec thinking level and worker cap', async () 
     assert.equal(env[DIAL_MAX_ACTIVE_ENV], String(expected[level].workers), `worker cap for ${level}`);
     assert.equal(result.thinking, expected[level].thinking);
     assert.equal(result.maxActiveWorkers, expected[level].workers);
-    assert.equal(result.model, 'skipped');
-    // No dial model env → the model is never touched.
-    assert.deepEqual(fake.modelCalls, []);
     assert.deepEqual(result.warnings, []);
   }
 });
@@ -167,83 +152,6 @@ test('restoreDialOnStartup is a no-op when the user never dialed', async () => {
   assert.equal(env[DIAL_MAX_ACTIVE_ENV], '6', 'user-set worker cap must not be clobbered');
   assert.equal(getActiveDialLevel(), undefined, 'footer shows no dial segment');
 });
-
-// ─── Model override via env ───────────────────────────────────────────────────
-
-test('model override applies only when the level env vars are present', async () => {
-  resetDialStateForTests();
-  const registryModel: PiModel = { id: 'super-model', provider: 'acme' };
-  const findCalls: Array<[string, string]> = [];
-  const { ctx } = makeCtx({
-    find: (provider, id) => {
-      findCalls.push([provider, id]);
-      return provider === 'acme' && id === 'super-model' ? registryModel : undefined;
-    },
-  });
-
-  // Env set for ultra ONLY — applying 'high' must not touch the model.
-  const env: NodeJS.ProcessEnv = {
-    OCTOCODE_DIAL_ULTRA_MODEL: 'super-model',
-    OCTOCODE_DIAL_ULTRA_PROVIDER: 'acme',
-  };
-  const fake = makeFakePi();
-  const highResult = await applyDialLevel(fake.pi, ctx, 'high', { home: tmpHome(), env });
-  assert.equal(highResult.model, 'skipped');
-  assert.deepEqual(fake.modelCalls, []);
-  assert.deepEqual(findCalls, []);
-
-  const ultraResult = await applyDialLevel(fake.pi, ctx, 'ultra', { home: tmpHome(), env });
-  assert.equal(ultraResult.model, 'applied');
-  assert.deepEqual(findCalls, [['acme', 'super-model']]);
-  assert.deepEqual(fake.modelCalls, [registryModel]);
-  assert.deepEqual(ultraResult.warnings, []);
-});
-
-test('setModel resolving false reports no API key but keeps the dial applied', async () => {
-  resetDialStateForTests();
-  const registryModel: PiModel = { id: 'super-model', provider: 'acme' };
-  const { ctx } = makeCtx({ find: () => registryModel });
-  const fake = makeFakePi({ setModelResult: false });
-  const env: NodeJS.ProcessEnv = {
-    OCTOCODE_DIAL_ULTRA_MODEL: 'super-model',
-    OCTOCODE_DIAL_ULTRA_PROVIDER: 'acme',
-  };
-  const home = tmpHome();
-
-  const result = await applyDialLevel(fake.pi, ctx, 'ultra', { home, env });
-
-  assert.equal(result.model, 'no-api-key');
-  assert.equal(result.warnings.length, 1);
-  assert.match(result.warnings[0]!, /No API key for acme\/super-model/);
-  // The rest of the dial still applied and persisted.
-  assert.deepEqual(fake.thinkingCalls, ['xhigh']);
-  assert.equal(env[DIAL_MAX_ACTIVE_ENV], '8');
-  assert.equal(getDialLevel(), 'ultra');
-  assert.equal(loadDialLevel(home), 'ultra');
-});
-
-test('unresolvable model or missing provider env warns and leaves the model untouched', async () => {
-  resetDialStateForTests();
-  const { ctx } = makeCtx({ find: () => undefined });
-  const fake = makeFakePi();
-
-  const notFound = await applyDialLevel(fake.pi, ctx, 'low', {
-    home: tmpHome(),
-    env: { OCTOCODE_DIAL_LOW_MODEL: 'ghost', OCTOCODE_DIAL_LOW_PROVIDER: 'acme' },
-  });
-  assert.equal(notFound.model, 'not-found');
-  assert.match(notFound.warnings[0]!, /not found in the model registry/);
-  assert.deepEqual(fake.modelCalls, []);
-
-  const missingProvider = await applyDialLevel(fake.pi, ctx, 'low', {
-    home: tmpHome(),
-    env: { OCTOCODE_DIAL_LOW_MODEL: 'ghost' },
-  });
-  assert.equal(missingProvider.model, 'not-found');
-  assert.match(missingProvider.warnings[0]!, /OCTOCODE_DIAL_LOW_PROVIDER is missing/);
-  assert.deepEqual(fake.modelCalls, []);
-});
-
 // ─── parseDialLevel / getDialLevel ────────────────────────────────────────────
 
 test('parseDialLevel accepts the four levels case-insensitively and rejects the rest', () => {

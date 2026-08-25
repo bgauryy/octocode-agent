@@ -1,86 +1,65 @@
-# Subagents & Agent Communication
+# Subagents and Agent Communication
 
-How the extension spawns agents, the types available, and the **communication + isolation**
-model (parent↔worker control, durable Awareness Lite notes, parent-only isolation). Verified
-against the Awareness Lite message surface and `AgentMessage` controls.
+The extension exposes one model-callable `agent` facade for spawning workers and controlling their lifecycle. Workers have no parent conversation context, so every spawn query needs a self-contained task packet.
 
-## Two ways to spawn
+## Spawn profiles
 
-| Tool | Use | Isolation default |
-|---|---|---|
-| `spawnSubagent` | **Typed** specialist (pre-wired tools + system prompt + Octocode skills) | `resourceMode:"octocode"` (has the awareness peer bus) |
-| `spawnAgent` | **Clean** worker: only the tools/prompt you pass | `resourceMode:"lean"` (no skills/peer bus unless added) |
-
-Workers never receive `spawnAgent`/`AgentMessage` — **no recursive spawning**. Both return an
-`agentId` coordinated via `AgentMessage`.
-
-## Typed subagents (all types)
-
-| Type | Tools | Model | When to use |
+| Profile | Resources | Default mode | Use |
 |---|---|---|---|
-| `researcher` | `web`, `MCPTool` | default | Fast evidence gathering: prior art, package/repo lookup, concise claim ledgers. |
-| `architect` | `bash`, `web`, `MCPTool` | default | Root-cause + local-code architecture; targeted debug/test loops (has `bash`). |
-| `planner` | `web`, `MCPTool` | default | Dependency-ordered plans, risks, verification strategy, RFC handoff packets. |
-| `browser-agent` | `chromeDebug`, `web`, `MCPTool` | default | Multi-turn Chrome DevTools work: security/network/DOM/coverage/workers/emulation. Gated by `OCTOCODE_CHROME_DEBUG`. |
+| `researcher` | `web`, `MCPTool`, installed Octocode skills | typed Octocode | Evidence gathering, prior art, and package or repository lookup. |
+| `planner` | `web`, `MCPTool`, installed Octocode skills | typed Octocode | Dependency-ordered plans, risks, verification strategy, and RFC handoffs. |
+| `architect` | `bash`, `web`, `MCPTool`, installed Octocode skills | typed Octocode | Root-cause and architecture analysis with targeted debug or test loops. |
+| `browser` | Chrome DevTools specialist prompt and tools | typed browser | Multi-turn security, network, DOM, coverage, worker, or emulation workflows. |
+| `custom` | Explicit `tools` and `systemPrompt` | `resourceMode:"lean"` | A clean bounded worker with only the resources the parent provides. |
 
-All typed subagents load the bundled Octocode skills and (in `octocode` mode) the awareness
-runtime. Pass `model`/`provider`/`thinking` per task (fastest capable for small, strongest for
-large/high-risk); look models up with `pi -ne --list-models`.
+Typed profiles use their packaged system prompts and tool sets. The custom profile accepts `resourceMode:"lean"|"octocode"|"default"`. Pass `model`, `provider`, and `thinking` when the task needs an override; resolve live model identifiers with `pi -ne --list-models`.
 
-## Communication model — two planes
+Workers never receive the `agent` facade, so they can't spawn or control sub-workers recursively. A spawn returns an `agentId`; use it in a later lifecycle query. Spawn queries and lifecycle queries with explicit IDs can't share a batch because generated IDs aren't available during preflight.
 
-### Plane A — Parent ↔ Worker (`AgentMessage`, in-process, live)
-`send` · `followUp` · `steer` · `abort` · `kill` · `wait` · `status` · `list`.
-- **Control/interrupt (parent→worker):** `steer` (redirect before the next model step), `abort`
-  (graceful turn interrupt, worker survives), `kill remove:true` (terminate).
-- **Worker→parent:** pull only — `wait`/`status` + terminal `[DONE]`/`[BLOCKED]`/`[FAILED]`
-  result markers. No mid-turn push.
-- **Worker↔worker live control: parent-only.** Workers do not receive `AgentMessage` or
-  spawn tools, so they cannot steer/interrupt/kill each other. They may communicate through
-  durable Awareness Lite `message`/`handoff` notes when the worker has the Lite CLI available.
-- **Lifecycle rule:** kill each worker the moment you collect its final receipt unless you will
-  send another turn — idle ≠ terminated (a worker holds a live process until killed or session
-  shutdown).
+## Live parent-worker control
 
-### Plane B — Peer ↔ Peer (Awareness Lite `message`, durable/async)
-`message send|inbox|list|read|prune` supports directed `--to` messages or
-broadcast coordination notes with `--topic`, `--text`, and optional `--file`. Durable in SQLite;
-agents pull the inbox explicitly through `npx @octocodeai/octocode-awareness-lite` rather than receiving
-real-time worker-to-worker pushes.
+The `agent` query `type` selects an operation:
 
-## Isolation & grouping (verified)
+| Type | Use |
+|---|---|
+| `spawn` | Start one typed, browser, or custom worker. |
+| `inspect` | List workers without `agentId`, or inspect one worker with it. |
+| `wait` | Wait for the current turn and return the retained output/history. |
+| `message` | Start an idle turn or queue a follow-up through `delivery:"send"|"followUp"`. |
+| `steer` | Redirect a running turn after its current tool call. |
+| `abort` | Interrupt the active turn gracefully; keep the process alive. |
+| `kill` | Terminate the process and optionally remove its record. |
 
-### Parent-only subagent (fully isolated)
-Spawn **lean, without the Awareness Lite peer bus** (`spawnAgent`, `resourceMode:"lean"`, no
-Awareness Lite CLI/tool path unless explicitly provided). Its only live channel is
-`AgentMessage`↔parent. Use for untrusted/bounded work that must not touch shared coordination
-state.
+Worker-to-parent results are pull-based: inspect or wait for `[DONE]`, `[BLOCKED]`, or `[FAILED]` markers. Workers can't steer, abort, or kill each other. Kill a worker after collecting its final receipt unless another turn is planned; idle workers still hold a process until killed or session shutdown.
 
-### Grouped agents (only communicate with each other)
-A **group is a convention over existing primitives — no new schema**:
-- **Directed messages** (`--to`) are addressed to one peer; broadcasts omit a target.
-- **Scope** is primarily `--workspace`; agents in one workspace do not see another workspace's
-  messages, handoffs, tasks, locks, or work presence.
-- **Handoffs** are explicit continuation notes for later agents, not live group chat.
+## Durable peer communication
 
-Recipe for a private group `{A,B}`:
+Awareness Lite `message` and `handoff` are a separate, asynchronous plane shared by agents on any host. Directed messages use `--to`; broadcasts omit a target. Workspace scope isolates plans, tasks, locks, work presence, handoffs, and messages.
+
 ```bash
-# member A leaves a directed async note for B
-npx @octocodeai/octocode-awareness-lite message send --workspace "$PWD" --from A --to B --topic "<x>" --text "<y>"
-npx @octocodeai/octocode-awareness-lite message inbox --workspace "$PWD" --agent-id B
+npx @octocodeai/octocode-awareness-lite message send \
+  --workspace "$PWD" --from A --to B --topic "<topic>" --text "<message>"
+npx @octocodeai/octocode-awareness-lite message inbox \
+  --workspace "$PWD" --agent-id B
 ```
 
-Expected isolation: the addressed peer can see the message in its inbox; broadcast messages are
-visible to peers in the same workspace; a different workspace scope does not see the message.
+Peer messages are pull-based, not real-time. Use the `agent` facade for urgent parent-worker control and Awareness messages for coordination that must survive a worker turn or cross host boundaries.
 
-## Efficiency notes (tokens + timeliness)
-- Peer messages are **pull-based** and async, not real-time.
-- For urgent coordination, the parent should poll `message inbox`/worker status and steer workers.
-- Prefer directed messages over broadcast to keep coordination private and cheap.
+## Isolation
 
-## Quick reference
-```
-spawnSubagent({agent, task, url?, port?, model?, provider?, thinking?})
-spawnAgent({task, tools?, resourceMode?, model?, provider?, systemPrompt?})   # lean = parent-only isolation
-AgentMessage({action:"wait|status|send|steer|followUp|abort|kill", agentId, message?, remove?})
+Use `profile:"custom"` with `resourceMode:"lean"` for a parent-only worker that shouldn't join the Awareness peer bus. Add only the tool paths and resources it needs. Use typed or `resourceMode:"octocode"` profiles when the worker must coordinate through the same Awareness workspace.
+
+## Example
+
+```text
+agent({queries:[{
+  reasoning:"Delegate an independent evidence-gathering lane.",
+  type:"spawn",
+  profile:"researcher",
+  task:"Goal: …\nContext: …\nScope: …\nOwnership: read-only …\nAcceptance: …\nReturn: …"
+}]})
+→ agentId: "abc123"
+
+agent({queries:[{reasoning:"Collect the worker turn.",type:"wait",agentId:"abc123",timeoutMs:60000}]})
+agent({queries:[{reasoning:"Free the completed worker process.",type:"kill",agentId:"abc123",remove:true}]})
 ```

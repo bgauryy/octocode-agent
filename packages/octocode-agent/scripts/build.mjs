@@ -1,23 +1,31 @@
 #!/usr/bin/env node
-import { chmod, rm } from 'node:fs/promises';
+/**
+ * octocode-agent build script.
+ * Single ESM bundle → out/octocode-agent.mjs (executable).
+ */
 import { build } from 'esbuild';
+import { chmod, rm } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { baseOptions } from '../../../build.config.mjs';
 
-const outfile = new URL('../out/octocode-agent.mjs', import.meta.url).pathname;
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const outfile     = join(packageRoot, 'out', 'octocode-agent.mjs');
 
-await rm(new URL('../out/', import.meta.url), { recursive: true, force: true });
+await rm(join(packageRoot, 'out'), { recursive: true, force: true });
 
 await build({
-  entryPoints: [new URL('../src/cli.ts', import.meta.url).pathname],
+  ...baseOptions,
+  entryPoints: [join(packageRoot, 'src', 'cli.ts')],
   outfile,
-  bundle: true,
-  platform: 'node',
-  format: 'esm',
-  target: 'node22',
+  // pi + extension are runtime deps resolved from node_modules, not bundled.
+  external: [
+    ...baseOptions.external,
+    '@earendil-works/pi-coding-agent',
+    '@octocodeai/pi-extension',
+  ],
   banner: { js: '#!/usr/bin/env node' },
-  external: ['@earendil-works/pi-coding-agent', '@octocodeai/pi-extension'],
-  sourcemap: false,
   minify: false,
-  logLevel: 'info',
 });
 
 await chmod(outfile, 0o755);

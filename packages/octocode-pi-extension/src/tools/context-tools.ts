@@ -1,34 +1,16 @@
-/**
- * Context session-management tools:
- * manage_context (type:"compact" | type:"new")
- *
- * IMPORTANT — session-control APIs (ctx.newSession, ctx.reload) are ONLY
- * available in ExtensionCommandContext (registerCommand handlers). They are
- * NOT exposed to tool execute() contexts and will always be undefined there.
- */
-import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
-import type { PiContext, PiCommandContext, PiInstance, ToolDefinition, PiTheme, TurnEndEvent, NotifyFn } from '../types.js';
+/** Context compaction automation and lifecycle recovery. */
+import type { PiContext, PiInstance, TurnEndEvent, NotifyFn } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { singleLineRenderer } from './render-helpers.js';
-import { stringEnumSchema } from './schema-helpers.js';
 import { activePlanScope, hasActivePlanWork } from './active-plan.js';
-import { isSubagentProcess } from './agent-tools.js';
 import { clearCompactionWorkingState } from './compaction-resume.js';
 import { isCompletedSessionAssistantText, latestAssistantText } from './compaction-hooks.js';
-import { branchTipIsCompaction, clearAutoCompactResumeRequest, clearCompactionAbortSuppressionRequest, clearCompactionInFlight, clearCompactionResumeRequest, consumeCompactionAbortSuppressionRequest, isCompactionInFlight, markAutoCompactResumeRequested, markCompactionAbortSuppressionRequested, markCompactionInFlight, markCompactionResumeRequested, resetCompactionArbiterForTests } from './compaction-state.js';
+import { branchTipIsCompaction, clearAutoCompactResumeRequest, clearCompactionAbortSuppressionRequest, clearCompactionInFlight, clearCompactionResumeRequest, consumeCompactionAbortSuppressionRequest, isCompactionInFlight, markAutoCompactResumeRequested, markCompactionAbortSuppressionRequested, markCompactionInFlight, resetCompactionArbiterForTests } from './compaction-state.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
 const AUTO_COMPACT_THRESHOLD = 0.80;
 const COMPACTION_CONTINUATION_INSTRUCTIONS =
   'Preserve continuation state, not transcript: goal, constraints, current mode, decisions, read/modified files, live workers/locks, blockers/open questions, verification owed, and exact next pickup. Mark partial/failed work separately.';
-
-function buildCompactionInstructions(instructions: unknown): string {
-  const userInstructions = typeof instructions === 'string' ? instructions.trim() : '';
-  return userInstructions
-    ? `${userInstructions}\n\n${COMPACTION_CONTINUATION_INSTRUCTIONS}`
-    : COMPACTION_CONTINUATION_INSTRUCTIONS;
-}
 
 function isNothingToCompact(error: Error): boolean {
   return /nothing to compact/i.test(error.message);
@@ -96,9 +78,9 @@ export function resetAutoCompactState(): void {
 
 export function registerContextTools(
   pi: PiInstance,
-  Type: TypeBoxBuilder,
-  registeredToolNames: Set<string>,
-  registerFn: RegisterFn,
+  _Type: TypeBoxBuilder,
+  _registeredToolNames: Set<string>,
+  _registerFn: RegisterFn,
   notify: NotifyFn,
 ): void {
   // Fresh wiring = fresh edge-trigger state (mirrors the pre-module-level
@@ -144,7 +126,11 @@ export function registerContextTools(
       // An aborted turn reports the PRE-abort context size — most often it is
       // the very turn a ctx.compact() just killed, so acting on that usage
       // fires a second compact straight into "Already compacted".
-      if (event?.message?.stopReason === 'aborted') return;
+      // An error turn (API 4xx/5xx, network failure, invalid request) also
+      // reports stale context size and the session may be ending — compacting
+      // after a provider error wastes budget and runs past session teardown.
+      const stopReason = event?.message?.stopReason;
+      if (stopReason === 'aborted' || stopReason === 'error') return;
 
       const usage = ctx.getContextUsage?.();
       if (!usage || usage.tokens == null) return; // tokens null = unknown (right after compaction)
@@ -170,7 +156,7 @@ export function registerContextTools(
       lastAutoCompactTokens = usage.tokens;
 
       // Stand down for any compaction that is already running (pi's internal
-      // auto, user /compact, manage_context) and for a branch tip that is
+      // auto or user /compact) and for a branch tip that is
       // already a compaction entry — pi's exact "Already compacted" condition.
       if (isCompactionInFlight() || branchTipIsCompaction(ctx)) return;
 
@@ -184,164 +170,18 @@ export function registerContextTools(
       markCompactionInFlight();
       // turn_end compaction runs BETWEEN turns, so reaching this point means
       // unfinished plan work exists and the post-compaction continuation is
-      // intentional. Use the plan-verified flag so session_compact can re-check
-      // plan state at completion time and suppress stale resumes.
+      // intentional. The session_compact hook remains the single scheduler.
       markAutoCompactResumeRequested();
+      // ctx.compact() aborts the in-flight run, so Pi emits one assistant
+      // message with stopReason 'aborted'. Arm the suppression flag so the
+      // message_end hook (downgradeCompactionAbortMessage) rewrites that single
+      // abort into a benign checkpoint notice instead of leaking a raw
+      // "This operation was aborted" error to the transcript.
+      markCompactionAbortSuppressionRequested();
       ctx.compact({
         customInstructions: COMPACTION_CONTINUATION_INSTRUCTIONS,
-        // No continuation scheduled here: the session_compact hook is the single
-        // scheduler. Pi's session_compact.fromExtension means "summary supplied
-        // by extension", so the resume intent is tracked by compaction-state.
-        // Scheduling from BOTH paths raced on a 1.5s wall-clock dedupe window —
-        // any ordering delay over it sent the continuation twice.
         ...compactionCallbacks(ctx, 'Auto-compaction'),
       });
     });
   }
-
-  if (pi.registerCommand) {
-    pi.registerCommand('_octocode-clear-context-impl', {
-      description: '[internal] Start a new session — invoked by the clear_context tool.',
-      handler: async (_args, ctx: PiCommandContext) => {
-        if (!ctx.newSession) {
-          notify(ctx, 'clear_context: ctx.newSession not available in this runtime.', 'error');
-          return;
-        }
-        const result = await ctx.newSession();
-        if (result?.cancelled) {
-          notify(ctx, 'clear_context: session switch was cancelled.', 'warning');
-        }
-      },
-    });
-  }
-
-  registerFn(pi, registeredToolNames, {
-    name: 'manage_context',
-    label: 'Manage Context',
-    description:
-      'Compact or reset the conversation context. ' +
-      'type:"compact" — summarize history to free context window space; call at a research→execution boundary or before a large new task. ' +
-      'Automatic compaction already runs when the context nears its limit — never call this right after a compaction (it is a no-op), and do not call it on a percentage schedule. ' +
-      'type:"new" — start a fresh session with no prior context; call only when the next task is fully unrelated to the current conversation.',
-    promptSnippet: 'Compact or reset conversation context',
-    parameters: Type.Object({
-      type: stringEnumSchema(
-        Type,
-        ['compact', 'new'],
-        '"compact" summarizes history to free space. "new" starts a completely fresh session.',
-      ),
-      instructions: Type.Optional(
-        Type.String({
-          description: 'Focus instructions for the compaction summary (e.g. "focus on recent file changes"). Only used when type:"compact".',
-        }),
-      ),
-    }),
-    async execute(
-      _toolCallId: string,
-      params: Record<string, unknown>,
-      _signal?: AbortSignal,
-      _onUpdate?: unknown,
-      ctx?: PiContext,
-    ) {
-      if (params['type'] === 'new') {
-        // type:"new" is only meaningful in the host Pi process: it queues a
-        // /_octocode-clear-context-impl command that was registered only there.
-        // Inside a spawned worker that command doesn't exist, so the follow-up
-        // would be delivered as a user message and treated as unknown input.
-        if (isSubagentProcess()) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: 'manage_context type:"new" is not supported inside a spawned worker process. Use it from the parent agent session instead.',
-            }],
-            isError: true,
-          };
-        }
-        pi.sendUserMessage('/_octocode-clear-context-impl', { deliverAs: 'followUp', expandPromptTemplates: true });
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: 'New session queued. The context will be cleared after this turn completes.',
-            },
-          ],
-        };
-      }
-
-      // type === 'compact'
-      if (!ctx?.compact) {
-        throw new Error('manage_context: ctx.compact is not available in this runtime. Use /compact manually.');
-      }
-
-      // Pre-flight guards: do not race a running compaction, and do not call
-      // into pi's guaranteed "Already compacted" throw (branch tip is already
-      // a compaction entry / usage unknown because no assistant message landed
-      // since the last compaction).
-      if (isCompactionInFlight()) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: 'Compaction skipped: another compaction is already in progress. Continue the task; the context will shrink when it finishes.',
-          }],
-        };
-      }
-      const usage = ctx.getContextUsage?.();
-      if (branchTipIsCompaction(ctx) || (usage != null && usage.tokens === null)) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: 'Compaction skipped: the context was just compacted — there is no new history to summarize. Continue the task from the compacted context.',
-          }],
-        };
-      }
-
-      markCompactionInFlight();
-      // Unlike the turn_end path, this tool call happens MID-turn: ctx.compact()
-      // aborts the in-flight agent run, so a continuation is always required to
-      // recover — active work exists by definition (the model was mid-task).
-      markCompactionResumeRequested();
-      markCompactionAbortSuppressionRequested();
-      ctx.compact({
-        customInstructions: buildCompactionInstructions(params['instructions']),
-        // Continuation is scheduled by the session_compact hook — the single
-        // scheduler; see the auto-compaction comment above.
-        ...compactionCallbacks(ctx, 'Compaction'),
-      });
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: 'Compaction triggered. The agent will continue after the summary is saved.',
-          },
-        ],
-      };
-    },
-
-    renderCall(args: unknown, theme?: PiTheme) {
-      const a = (args ?? {}) as Record<string, unknown>;
-      const type = typeof a['type'] === 'string' ? a['type'] : 'compact';
-      const instructions = type === 'compact' && typeof a['instructions'] === 'string' && a['instructions'] ? a['instructions'] : '';
-      const nameStr = cliToolTitle(theme, 'manage_context', { bold: true });
-      const typeStr = paint(theme, 'dim', ` (${type})`);
-      const displayInstructions = instructions.length > 50 ? `${instructions.slice(0, 47)}…` : instructions;
-      const detail = instructions
-        ? paint(theme, 'dim', ` "${displayInstructions}"`)
-        : '';
-      return singleLineRenderer(`${nameStr}${typeStr}${detail}`);
-    },
-
-    renderResult(result, opts, theme?: PiTheme) {
-      if (opts.isPartial) {
-        return singleLineRenderer(paint(theme, 'brand', CLI_STATUS_TEXT.processing));
-      }
-      const ok = !result.isError;
-      const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
-      const nameStr = cliToolTitle(theme, 'manage_context');
-      const msg = ok
-        ? paint(theme, 'dim', ` · ${CLI_STATUS_TEXT.done}`)
-        : '';
-      return singleLineRenderer(`${icon} ${nameStr}${msg}`);
-    },
-  } satisfies ToolDefinition);
 }

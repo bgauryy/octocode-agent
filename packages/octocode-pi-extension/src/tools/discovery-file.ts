@@ -15,21 +15,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { PiContext } from '../types.js';
-import { PI_CONFIG_DIR } from '../constants.js';
+import { getOctocodeHome } from '../env.js';
 import { getMcpDiscoverySnapshot, type McpDiscoverySnapshot } from './mcp-tool.js';
 import type { DiscoveredSkill } from './skill-tool.js';
 
 /** One MCP config file found in a common ecosystem location. */
 export interface DiscoveredMcpConfig {
   path: string;
-  /** Which ecosystem owns the location: claude | cursor | codex | octocode | pi. */
+  /** Which ecosystem owns the location: agents | claude | cursor | codex | octocode | pi. */
   host: string;
   scope: 'project' | 'user';
   format: 'json' | 'toml';
   /**
-   * True only for the configs this harness actually loads (.pi/agent/mcp.json).
-   * Foreign configs are inventory ONLY — never auto-spawned; add one explicitly
-   * via MCPTool action:add if wanted.
+   * True only for the canonical Octocode `agent/mcp/servers.json` files. Foreign configs
+   * are inventory ONLY — never auto-spawned; add one explicitly via MCPTool.
    */
   active: boolean;
   servers: Array<{ name: string; command?: string }>;
@@ -73,17 +72,24 @@ export interface DiscoverySnapshot {
 
 // ─── MCP config discoverability across common ecosystem locations ─────────────
 
-function parseJsonMcpServers(text: string): Array<{ name: string; command?: string }> {
+function parseJsonMcpServers(text: string, allowRootServers: boolean): Array<{ name: string; command?: string }> {
   const json = JSON.parse(text) as Record<string, unknown>;
   const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
   if (!isRecord(json)) throw new Error('config must contain an object');
-  const container = isRecord(json['mcpServers']) ? json['mcpServers'] : isRecord(json['servers']) ? json['servers'] : json;
+  const container = isRecord(json['mcpServers'])
+    ? json['mcpServers']
+    : isRecord(json['servers'])
+      ? json['servers']
+      : allowRootServers
+        ? json
+        : {};
   return Object.entries(container)
     .filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]))
     .map(([name, server]) => ({
       name,
       ...(typeof server['command'] === 'string' ? { command: server['command'] } : {}),
-    }));
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
@@ -95,45 +101,78 @@ function parseTomlMcpServers(text: string): Array<{ name: string; command?: stri
   const servers: Array<{ name: string; command?: string }> = [];
   const sections = text.split(/^\[/m);
   for (const section of sections) {
-    const header = section.match(/^mcp_servers\.([A-Za-z0-9_-]+)\]/);
+    const header = section.match(/^mcp_servers\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\]/);
     if (!header) continue;
     const command = section.match(/^command\s*=\s*["']([^"']+)["']/m);
-    servers.push({ name: header[1]!, ...(command ? { command: command[1]! } : {}) });
+    const name = header[1] ?? header[2] ?? header[3];
+    if (name) servers.push({ name, ...(command ? { command: command[1]! } : {}) });
   }
-  return servers;
+  return servers.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export interface DiscoverMcpConfigOptions {
+  /** OS user home override, primarily for tests. */
+  homeDir?: string;
+  /** Octocode home override; defaults to getOctocodeHome(). */
+  octocodeHome?: string;
+}
+
+type McpConfigCandidate = Omit<DiscoveredMcpConfig, 'servers' | 'error'> & {
+  /** Only Octocode-owned JSON configs accept an unwrapped root server map. */
+  allowRootServers?: boolean;
+};
+
+function resolveDiscoveryRoots(options: string | DiscoverMcpConfigOptions | undefined): { homeDir: string; octocodeHome: string } {
+  if (typeof options === 'string') {
+    return { homeDir: options, octocodeHome: path.join(options, '.octocode') };
+  }
+  const homeDir = options?.homeDir ?? os.homedir();
+  const octocodeHome = options?.octocodeHome
+    ?? (options?.homeDir ? path.join(homeDir, '.octocode') : getOctocodeHome());
+  return { homeDir, octocodeHome };
 }
 
 /**
- * Inventory every MCP config file in the common ecosystem locations (claude,
- * cursor, codex, octocode, pi — project and user scope). Discovery only: the
- * harness LOADS just its own .pi/agent/mcp.json files (marked active); foreign
- * configs are listed so users/agents can see them and opt in via MCPTool add.
+ * Inventory MCP configs in official host locations. Active=true is restricted to canonical Octocode paths;
+ * Claude, Cursor, Codex, and .agents files are metadata-only and never spawned.
  */
-export function discoverMcpConfigs(cwd: string, home = os.homedir()): DiscoveredMcpConfig[] {
-  const candidates: Array<Omit<DiscoveredMcpConfig, 'servers' | 'error'>> = [
-    { path: path.join(cwd, PI_CONFIG_DIR, 'agent', 'mcp.json'), host: 'pi', scope: 'project', format: 'json', active: true },
-    { path: path.join(cwd, PI_CONFIG_DIR, 'mcp.json'), host: 'pi', scope: 'project', format: 'json', active: false },
+export function discoverMcpConfigs(
+  cwd: string,
+  options?: string | DiscoverMcpConfigOptions,
+): DiscoveredMcpConfig[] {
+  const { homeDir, octocodeHome } = resolveDiscoveryRoots(options);
+  const candidates: McpConfigCandidate[] = [
+    { path: path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json'), host: 'octocode', scope: 'project', format: 'json', active: true, allowRootServers: true },
+    // Official and compatibility project inventory (never auto-loaded).
     { path: path.join(cwd, '.mcp.json'), host: 'claude', scope: 'project', format: 'json', active: false },
     { path: path.join(cwd, '.claude', 'mcp.json'), host: 'claude', scope: 'project', format: 'json', active: false },
     { path: path.join(cwd, '.cursor', 'mcp.json'), host: 'cursor', scope: 'project', format: 'json', active: false },
     { path: path.join(cwd, '.codex', 'config.toml'), host: 'codex', scope: 'project', format: 'toml', active: false },
-    { path: path.join(cwd, '.octocode', 'mcp.json'), host: 'octocode', scope: 'project', format: 'json', active: false },
-    { path: path.join(home, PI_CONFIG_DIR, 'agent', 'mcp.json'), host: 'pi', scope: 'user', format: 'json', active: true },
-    { path: path.join(home, PI_CONFIG_DIR, 'mcp.json'), host: 'pi', scope: 'user', format: 'json', active: false },
-    { path: path.join(home, '.claude', 'mcp.json'), host: 'claude', scope: 'user', format: 'json', active: false },
-    { path: path.join(home, '.cursor', 'mcp.json'), host: 'cursor', scope: 'user', format: 'json', active: false },
-    { path: path.join(home, '.codex', 'config.toml'), host: 'codex', scope: 'user', format: 'toml', active: false },
-    { path: path.join(home, '.octocode', 'mcp.json'), host: 'octocode', scope: 'user', format: 'json', active: false },
+    { path: path.join(cwd, '.agents', 'mcp.json'), host: 'agents', scope: 'project', format: 'json', active: false },
+    { path: path.join(cwd, '.octocode', 'mcp.json'), host: 'octocode', scope: 'project', format: 'json', active: false, allowRootServers: true },
+    { path: path.join(octocodeHome, 'agent', 'mcp', 'servers.json'), host: 'octocode', scope: 'user', format: 'json', active: true, allowRootServers: true },
+    // Official and compatibility user inventory (never auto-loaded).
+    { path: path.join(homeDir, '.claude.json'), host: 'claude', scope: 'user', format: 'json', active: false },
+    { path: path.join(homeDir, '.claude', 'mcp.json'), host: 'claude', scope: 'user', format: 'json', active: false },
+    { path: path.join(homeDir, '.cursor', 'mcp.json'), host: 'cursor', scope: 'user', format: 'json', active: false },
+    { path: path.join(homeDir, '.codex', 'config.toml'), host: 'codex', scope: 'user', format: 'toml', active: false },
+    { path: path.join(homeDir, '.agents', 'mcp.json'), host: 'agents', scope: 'user', format: 'json', active: false },
+    { path: path.join(octocodeHome, 'mcp.json'), host: 'octocode', scope: 'user', format: 'json', active: false, allowRootServers: true },
   ];
   const found: DiscoveredMcpConfig[] = [];
+  const seen = new Set<string>();
   for (const candidate of candidates) {
-    if (!fs.existsSync(candidate.path)) continue;
+    if (seen.has(candidate.path) || !fs.existsSync(candidate.path)) continue;
+    seen.add(candidate.path);
+    const { allowRootServers = false, ...metadata } = candidate;
     try {
       const text = fs.readFileSync(candidate.path, 'utf8');
-      const servers = candidate.format === 'toml' ? parseTomlMcpServers(text) : parseJsonMcpServers(text);
-      found.push({ ...candidate, servers });
+      const servers = candidate.format === 'toml'
+        ? parseTomlMcpServers(text)
+        : parseJsonMcpServers(text, allowRootServers);
+      found.push({ ...metadata, servers });
     } catch (error) {
-      found.push({ ...candidate, servers: [], error: (error as Error).message });
+      found.push({ ...metadata, servers: [], error: (error as Error).message });
     }
   }
   return found;
@@ -149,6 +188,7 @@ export async function buildDiscoverySnapshot(
     skills: DiscoveredSkill[];
     nativeTools: string[];
     home?: string;
+    octocodeHome?: string;
     overhead?: {
       sysChars: number; mcpChars: number; dynamicChars: number;
       totalChars: number; mcpServers: number; mcpTools: number; skills: number;
@@ -185,7 +225,7 @@ export async function buildDiscoverySnapshot(
     })),
     mcp: {
       ...(await getMcpDiscoverySnapshot(ctx)),
-      discoveredConfigs: discoverMcpConfigs(workspace, opts.home),
+      discoveredConfigs: discoverMcpConfigs(workspace, { homeDir: opts.home, octocodeHome: opts.octocodeHome }),
     },
   };
 }
@@ -200,6 +240,7 @@ export async function writeDiscoveryFile(
     skills: DiscoveredSkill[];
     nativeTools: string[];
     home?: string;
+    octocodeHome?: string;
     overhead?: { sysChars: number; mcpChars: number; dynamicChars: number;
                  totalChars: number; mcpServers: number; mcpTools: number; skills: number };
   },

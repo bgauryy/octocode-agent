@@ -108,7 +108,9 @@ test('buildToolCallSummary formats each Octocode direct-tool family', () => {
     ['ghGetFileContent', { queries: [{ owner: 'octo', repo: 'repo', path: 'src/a.ts', matchString: 'needle in haystack' }] }, /octo\/repo:src\/a\.ts \/needle in haystack\//],
     ['ghGetFileContent', { queries: [{ owner: 'octo', repo: 'repo', path: 'src/a.ts', startLine: 3, endLine: 8 }] }, /:src\/a\.ts:3-8/],
     ['ghViewRepoStructure', { queries: [{ owner: 'octo', repo: 'repo', path: 'packages/pi' }] }, /octo\/repo\/packages\/pi/],
-    ['ghHistoryResearch', { queries: [{ owner: 'octo', repo: 'repo', type: 'commits', prNumber: 17 }] }, /octo\/repo commits#17/],
+    ['ghSearchPullRequests', { queries: [{ owner: 'octo', repo: 'repo', prNumber: 17 }] }, /octo\/repo PR #17/],
+    ['ghSearchIssues', { queries: [{ owner: 'octo', repo: 'repo', keywordsToSearch: ['memory', 'leak'] }] }, /octo\/repo "memory leak"/],
+    ['ghSearchCommits', { queries: [{ owner: 'octo', repo: 'repo', path: 'src', base: 'main', head: 'next' }] }, /octo\/repo path:src main\.\.next/],
     ['ghCloneRepo', { queries: [{ owner: 'octo', repo: 'repo', sparsePath: 'src' }] }, /octo\/repo\/src/],
     ['ghUnknown', { queries: [{ owner: 'octo', repo: 'repo' }] }, /octo\/repo/],
     ['localSearchCode', { queries: [{ searchText: 'class Foo', path: '/very/long/path/to/project/src', mode: 'ast' }, { searchText: 'next' }] }, /\[ast\] "class Foo".*project\/src.*\+1/],
@@ -116,7 +118,7 @@ test('buildToolCallSummary formats each Octocode direct-tool family', () => {
     ['localGetFileContent', { queries: [{ path: '/tmp/src/file.ts', matchString: 'export function longName' }] }, /file\.ts \/export function long/],
     ['localViewStructure', { queries: [{ path: '/tmp/workspace', maxDepth: 4 }] }, /workspace depth:4/],
     ['localFindFiles', { queries: [{ path: '/tmp/workspace', names: ['a.ts', 'b.ts'], pathPattern: 'src/**' }] }, /workspace \[a\.ts, b\.ts\] src\/\*\*/],
-    ['localBinaryInspect', { queries: [{ path: '/tmp/archive.zip', mode: 'list' }] }, /archive\.zip \(list\)/],
+    ['localFindDeadCode', { queries: [{ path: '/tmp/workspace', entrypoints: ['src/index.ts'] }] }, /workspace entries:\[src\/index\.ts\]/],
     ['lspGetSemantics', { queries: [{ type: 'references', symbolName: 'run', uri: 'file:///tmp/src/main.ts?x=1', lineHint: 42 }] }, /references "run" in main\.ts:42/],
     ['npmSearch', { queries: [{ packageName: 'vitest' }] }, /vitest/],
     ['customTool', { queries: [{ id: 'skip', reasoning: 'skip', alpha: 'one', beta: 'two', gamma: 'three', delta: 'four' }] }, /one two three/],
@@ -185,9 +187,17 @@ test('buildResultStats extracts meaningful per-tool result summaries', () => {
     queryCount: 2,
     paths: ['pkg@1.2.3', 'other'],
   });
-  assert.deepEqual(buildResultStats('ghHistoryResearch', { results: [result({ items: [{}, {}] }), result({ prs: [{}] }), result({ commits: [{}, {}, {}] })] }), {
-    queryCount: 3,
-    summary: '6 items',
+  assert.deepEqual(buildResultStats('ghSearchPullRequests', { results: [result({ items: [{}, {}] }), result({ prs: [{}] })] }), {
+    queryCount: 2,
+    summary: '3 items',
+  });
+  assert.deepEqual(buildResultStats('ghSearchIssues', { results: [result({ issues: [{}, {}] })] }), {
+    queryCount: 1,
+    summary: '2 items',
+  });
+  assert.deepEqual(buildResultStats('ghSearchCommits', { results: [result({ commits: [{}, {}, {}] })] }), {
+    queryCount: 1,
+    summary: '3 items',
   });
   assert.deepEqual(buildResultStats('unknown', { results: [result({})] }), { queryCount: 1 });
   assert.deepEqual(buildResultStats('unknown', null), {});

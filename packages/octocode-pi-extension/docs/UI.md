@@ -1,30 +1,145 @@
-# Octocode Pi UI
+# Octocode TUI design
 
-This extension keeps the TUI compact by default and puts detail behind slash commands.
+This page is the canonical design contract and widget inventory for the Octocode Pi terminal interface. Implementation details live under `src/tui/`, `src/tools/ui-overlays.ts`, `src/tools/ask-user-tool.ts`, `src/tools/status-panel.ts`, and `src/ui-extras.ts`.
 
-## Main surfaces
+The TUI is conversation-first: transcript content is durable, decisions appear inline at the point of interruption, persistent state has one owner, and detailed navigation uses temporary overlays or explicit commands.
 
-| Surface | Where | Purpose |
+## Design goals
+
+- Keep your task and the next required action visible before metrics or decoration.
+- Give each fact one stable owner. Do not repeat agent state in the footer and status panel.
+- Make every action keyboard-complete, cancellable, and understandable without color.
+- Adapt to narrow editor panes and wide terminals without edge-to-edge reading measures.
+- Render from state. Rendering must not start I/O, mutate workflow state, or scan the session.
+- Keep noninteractive and RPC use deterministic. A missing TTY must never leave an invisible prompt waiting for input.
+- Show progress quickly, but reserve motion for active work and stop it when the work stops.
+
+## Surface hierarchy
+
+The visual order is also the attention order:
+
+1. Transcript: user messages, agent responses, tool rows, and durable completion cards.
+2. Inline decision: one focused `askUser` card at the bottom of the conversation.
+3. Editor: the normal input surface when no decision owns focus.
+4. Status panel: Model → Plan → Awareness, below the editor.
+5. Footer: compact session health and worker activity.
+6. Overlay: temporary navigation or management opened through an explicit action.
+7. Browser companion: optional rich review, opened only after an explicit choice.
+
+Only one interactive surface owns keyboard focus. Closing or submitting that surface returns focus to the editor. An overlay must not obscure an unresolved inline decision.
+
+## Widget inventory
+
+| Family | Widget and owner | Contract |
 |---|---|---|
-| Header | session start | Brand, loaded capability hint, common commands |
-| Status footer | always-on | The sole spawned-agent surface: Octocode label, context/turn metrics, agent counts, one row per worker, directional `msg→` / `msg←` communication activity, git/blocked/failed segments, and the effort dial `◉ <level>`; detailed thinking mode also appears as the separate `octocode-thinking` status entry |
-| Working indicator | during turns | `✦ ✧ ✶ ✧` spinner frames with a `Thinking…` message (the word "Octocode" is kept out of the frames to avoid "Octocode Octocode…" doubling) |
-| Unified status panel | below-editor widget (`octocode-status-panel`) | One block: Model → Plan → Awareness; the Plan header can show multiple active parallel lanes. Spawned agents are intentionally excluded so the footer is their single stable location; persistent while a model is known, cleared on shutdown |
-| Thinking blocks | `OCTOCODE_SHELL=1` runtime stream | Shows `🧠 thinking` start/end rows and streams reasoning deltas instead of dropping them |
-| Tool rows | tool streams/renderers | Shared renderers show a `◇` call row, animated braille running state, then a result row that always carries the outcome: structured stats/paths/preview when the tool reports them, otherwise `→ first line of the response` (ctrl+o expands the full text); the Octocode shell also prints call/update/result blocks |
-| Live agent progress | while workers run | Footer rows show name, state, elapsed time, current tool/progress, and latest message direction; refreshed every 1s until no worker is active (ticker is `unref`-ed and self-stops) |
-| Dashboard | `/octocode` | Status, agents, tools, setup paths, skills, health, and modern next actions |
-| Agent ledger | custom footer + `/octocode-agents` details | Spawned-worker state, message flow, and controls without duplicate status/widget rows |
-| Decision picker | `askUser` tool | Inline in-flow list for real user choices — rendered in the message flow (not a floating overlay): single pick, multi-select (space toggles, min/max), per-option previews, and short sequential forms; falls back to inline questions when no interactive UI is available |
-| Inline images | expanded tool renderers | chrome-debug / browser-agent screenshots render inline (Kitty/iTerm2) with a `🖼` placeholder on terminals without image support |
-| Worker inbox | `/octocode-inbox` | Two-stage overlay: pick a worker, then view transcript / steer / kill; completions and failures fire OSC 9 desktop notifications + a terminal-title flash |
-| Command palette | `/octocode-palette` or `ctrl+shift+k` | Prefix-filter picker over every slash command and direct actions (`OCTOCODE_PALETTE_KEY` overrides the shortcut) |
-| Mention autocomplete | editor `@` / `#` | `@` completes worker ids/names and skill names, `#` completes plan steps; delegates to Pi's file completion otherwise |
-| Effort dial | `/octocode-dial` + footer `◉ <level>` | One knob for thinking level + worker parallelism (`low`/`medium`/`high`/`ultra`); persisted and restored per session |
-| Checkpoints | `/octocode-rewind` | Shadow-git snapshots taken automatically before each user prompt; restore files (and optionally rewind the conversation) without ever touching the user's repo |
-| Watch mode | `/octocode-watch` | Comments ending in `AI!` saved from any editor are picked up and injected as prompts (steer mid-turn, follow-up otherwise) |
-| Conversation cards | compaction / handoff events | Branded collapsed/expanded cards for compaction checkpoints and awareness handoffs (rich detail stays out of the LLM context) |
-| Branded export | `/octocode-export` | Takes a pi `/export` HTML file and writes an Octocode-branded `-octocode.html` sibling |
+| Session chrome | Terminal title and session banner (`branding/`, `index.ts`) | Identify the session once. Never animate or repaint above the transcript. |
+| Activity | Working indicator (`ui-extras.ts`) | Show one spinner and a short factual activity label; stop immediately when idle. |
+| Transcript | Thinking blocks and tool rows (`tui/cli-design.ts`, render helpers) | Call → running/update → outcome. Expanded detail stays behind the standard expand action. |
+| Transcript | Inline images (browser and Chrome tool renderers) | Render only when expanded; provide a text placeholder when the terminal cannot display images. |
+| Transcript | Conversation cards (compaction and handoff renderers) | Keep the summary durable and the payload collapsible. |
+| Decision | Single-select `askUser` (`ask-user-tool.ts`) | Recommended choice receives initial focus. The widget supports arrow keys, number keys, Enter, filtering, disabled reasons, and free text. |
+| Decision | Multi-select `askUser` (`ask-user-tool.ts`) | Space toggles, Enter confirms, min/max validation stays inline, and selected count remains visible. |
+| Decision | Text and form `askUser` (`ask-user-tool.ts`) | Use Pi's input component for cursor movement, paste, graphemes, validation, and IME positioning. |
+| Decision | Plan/RFC review (`plan-tool.ts`) | Ask for Browser, Local RFC, or Chat TL;DR; acceptance binds an exact revision and never starts implementation. |
+| Navigation | Shared select overlay (`ui-overlays.ts`) | Search visible labels and descriptions; preserve focus through filtering; cancel with Escape or Ctrl-C. |
+| Navigation | Shared multi-select overlay (`ui-overlays.ts`, `multi-select-list.ts`) | Use the same focus, selection, validation, and cancellation language as `askUser`. |
+| Navigation | Command palette (`command-palette.ts`) | Filter all public commands and direct actions; dispatch the selected command through the normal message path. |
+| Workers | Worker inbox and agent inspection (`agent-inbox.ts`, `agent-tools.ts`) | Pick → inspect → steer or stop. Worker state has one persistent owner in the footer. |
+| Configuration | Effort dial (`effort-dial.ts`) | Show the current value, explain each choice, and persist the selected level. |
+| Safety | MCP consent and removal pickers (`mcp-tool.ts`) | Name the external process or server and make cancel the safe exit. Never mutate when interactive consent is unavailable. |
+| Recovery | Checkpoint picker (`rewind-command.ts`) | Identify snapshots by time and intent; distinguish file restoration from conversation rewind. |
+| Editor | Mention and plan-step autocomplete (`autocomplete-providers.ts`) | `@` selects workers or skills, `#` selects plan steps, and all other input delegates to file completion. |
+| Editor | Watch mode (`ai-watch.ts`) | Convert explicit `AI!` comments into steer or follow-up messages without stealing editor focus. |
+| Persistent state | Unified status panel (`status-panel.ts`) | Model → Plan → Awareness. Collapse long sections and never duplicate worker rows. |
+| Persistent state | Footer (`ui-extras.ts`, footer registration in `index.ts`) | Show compact health, context, task activity, permission level, and workers; warnings are bold and textual. |
+| Discovery | Dashboard and command guide (`index.ts`, `commands-command.ts`) | Present health first, then the smallest useful next actions. The live command registry owns command inventory. |
+| Feedback | Inline validation and notifications (`ask-user-tool.ts`, `desktop-notify.ts`) | Keep recoverable validation next to the control; reserve desktop notifications for completion, failure, or blocked work. |
+| Export | Branded HTML export (`export-command.ts`) | Produce a sibling artifact without changing transcript state. |
+
+## Responsive layout
+
+Decision cards use a bounded reading measure instead of a percentage of a wide terminal:
+
+| Terminal width | Inline decision card |
+|---:|---|
+| Under 52 columns | Use the full width, compact key help, and no horizontal gutter. |
+| 52–75 columns | Leave a two-column gutter when possible and use the remaining width. |
+| 76–99 columns | Center a 72-column card. |
+| 100 columns or wider | Grow gradually to a maximum of 88 columns and center it. |
+
+Shared picker overlays use an 88-column target, 40-column minimum, one-cell outer margin, and at most 80% of terminal height. Lists show at most seven option rows; `↑ N more` and `↓ N more` preserve position. Descriptions, previews, and trade-offs appear only for the focused item and count against the visible-row budget.
+
+The status panel and footer degrade by priority: keep the required action and error state, then current work, then counts, then passive metrics. Never truncate Enter, Escape, or cancellation guidance before optional shortcuts.
+
+## Input and focus
+
+| Input | Meaning |
+|---|---|
+| Up/Down or Ctrl-P/Ctrl-N | Move one selectable row in logical reading order. |
+| Enter | Select or submit the focused control. |
+| Escape or Ctrl-C | Cancel the active decision or overlay. Escape clears an active filter first. |
+| `/` | Start explicit filtering in `askUser`; shared overlays filter as you type. |
+| `1`–`9` | Select or toggle the corresponding visible option when the UI shows numbers. |
+| Space | Toggle the focused multi-select option. |
+| `a` / `i` | Select all or invert multi-select choices when constraints allow it. |
+
+The focused row always has a cursor glyph and a contrasting rail or prefix. Color reinforces focus but never carries it alone. Disabled rows remain visible and include a reason. Key help describes only actions available in the current state.
+
+## State and feedback
+
+Every interactive widget maps explicit state to a pure view:
+
+`idle → focused → validating/loading → submitted | cancelled | unavailable`
+
+- Validation keeps the value and focus in place and gives one actionable correction.
+- Loading keeps cancellation available and updates a factual progress label.
+- Submission collapses to the question and a concise result.
+- Cancellation is neutral: neither an error nor a success.
+- Unavailable interactive UI produces an inline, machine-legible fallback for the agent.
+
+Outcome words and glyphs accompany color: `✓ done`, `⚠ blocked`, `✗ failed`, `running`, and `cancelled`. The TUI honors terminal theme capabilities and `NO_COLOR` through the shared semantic palette and ANSI fallback.
+
+## Core flows
+
+### Ordinary decision
+
+`agent question → inline decision owns focus → user selects, filters, or writes → compact result enters transcript → editor regains focus`
+
+### Consequential plan
+
+`RFC revision ready → choose Browser, Local RFC, or Chat TL;DR → request changes or accept exact bytes → separate Start decision → one executable step begins`
+
+### Long-running work
+
+`tool starts → visible response within 100 ms when possible → one running indicator plus factual updates → terminal outcome row → notify only if attention moved elsewhere`
+
+### Noninteractive host
+
+`interactive UI unavailable → do not open a picker or browser → return the question, choices, and required reply format inline → agent asks in chat → normal tool flow resumes with the answer`
+
+### Destructive or external mutation
+
+`show target and consequence → offer safe cancel → require explicit confirmation proportional to risk → mutate once → show receipt and recovery path`
+
+## Evidence behind the contract
+
+- The [Command Line Interface Guidelines](https://clig.dev/) require TTY-gated prompts, a noninteractive alternative, a clear escape route, early feedback, useful progress, and concise human-readable errors.
+- [Inquirer select guidance](https://github.com/SBoudrias/Inquirer.js/blob/main/packages/select/README.md) uses pagination for lists longer than seven items, focused descriptions, visible disabled reasons, configurable key help, and stable default focus.
+- [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Ratatui's Elm architecture guidance](https://ratatui.rs/concepts/application-patterns/the-elm-architecture/) keep state updates separate from pure rendering. [Ratatui layout guidance](https://ratatui.rs/concepts/layout/) supports constraint-based adaptation to terminal size.
+- WCAG's keyboard principles require [logical focus order](https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html) and a perceivable focus indicator. Its [use-of-color guidance](https://www.w3.org/WAI/WCAG22/Understanding/use-of-color) requires text, shape, or another cue in addition to color.
+- The [`NO_COLOR` convention](https://no-color.org/) and terminal capability checks keep output usable in monochrome and automated environments.
+
+## Conformance checklist
+
+A new or changed widget is not complete until it satisfies these checks:
+
+- One owner for each displayed fact and one keyboard-focus owner.
+- Pure width-bounded render at 36, 52, 80, 120, and 160 columns.
+- Logical keyboard order, visible focus, Enter, Escape/Ctrl-C, and current-state help.
+- Text or glyph state cues that remain understandable with color removed.
+- Empty, loading, disabled, validation, success, failure, cancellation, and unavailable states.
+- No prompt or automatic browser launch without interactive user choice.
+- Targeted renderer/input tests, typecheck, package build, and a real TTY smoke for changed interaction paths.
 
 ## Dashboard
 
@@ -40,28 +155,32 @@ The dashboard is scan-first:
 ◆ Octocode dashboard
 Status
 ✓ system prompt: found
-✓ tools: 0 native Pi tools + 17 support tools
+✓ tools: 0 native Pi tools + 15 support tools
 ✓ metrics: ctx ▓▓▓▓▓░░░░░ 50% (50k/100k)
 Agents
 Octocode agents: none
 Health
 ✓ no dashboard warnings
 Next actions
-/octocode-palette · /octocode-now · /octocode-tasks · /octocode-skills · /octocode-agents · /octocode-inbox · /octocode-cron · /octocode-dial · /octocode-watch · /octocode-status
+/commands (all slash commands) · /octocode-palette
 ```
 
 Warnings appear when the context is high, assets are missing, or search falls back to a weaker provider.
 
 ## Command inventory
 
-Always-on orientation and health commands: `/octocode`, `/octocode-now`, `/octocode-status`, `/octocode-harness`.
-Work-state commands: `/octocode-plan` (`new <goal>` = plan mode: research → `plan(propose)` → approve/adjust/reject gate; write tools are **blocked by a `tool_call` hook** until approval — `off` lifts it; a `plan mode` status chip shows while on), `/octocode-tasks`, `/octocode-agents`, `/octocode-inbox`, `/octocode-cron`, `/cron`.
-Configuration and integration commands: `/octocode-mcp`, `/mcp`, `/octocode-setup`, `/octocode-skills`, `/octocode-skills-update`, `/octocode-theme`, `/octocode-chrome`.
+Run `/commands` for the live registry grouped into Octocode commands, Pi/extension commands, and skills/templates. It reads `pi.getCommands()` at invocation time, hides private names beginning with `_`, and uses each registered description as when-to-use guidance.
+
+Always-on orientation and health commands: `/commands`, `/octocode`, `/octocode-now`, `/octocode-harness`.
+Work-state commands: `/octocode-plan` (`new <goal>` = plan mode: research → `plan(propose)` → approve/adjust/reject gate; write tools are **blocked by a `tool_call` hook** until approval — `off` lifts it; a `plan mode` status chip shows while on), `/octocode-tasks`, `/octocode-agents`, `/octocode-inbox`, `/octocode-cron`.
+Configuration and integration commands: `/mcp`, `/octocode-setup`, `/octocode-skills`, `/octocode-skills-update`, `/octocode-theme`, `/octocode-chrome`.
 Modern TUI commands: `/octocode-palette`, `/octocode-dial`, `/octocode-footer` (`legend` explains every segment), `/octocode-permissions` (level cycle: `ctrl+shift+a`), `/octocode-profile` (apply `~/.octocode/profiles.json` live), `/octocode-plan html` (live local plan page), `/octocode-rewind`, `/octocode-watch`, `/octocode-export`.
 
-Scrollback rule (pi-tui `tui-main-screen.js`): a change to any line **above the visible viewport** — or a width/height change — forces a full redraw that clears the screen *and scrollback*. Octocode therefore renders **nothing above the transcript** (no `setHeader`; the session name lives only in the terminal title), keeps every transcript entry/message/tool row a pure function of its data, and confines live state to the footer, status chips, and the below-editor panel — all registered once and repainted via `tui.requestRender`. Per-frame render closures never do O(session) work: context usage is sampled on events + the 1 s tick (`pi.getContextUsage()` rebuilds the session branch per call), and the banner's version read is memoized. Diagnose any remaining full redraw with `PI_DEBUG_REDRAW=1` (pi logs each `fullRender:` reason to `pi-debug.log`).
+At session start, the footer probes `npx octocode auth status --json` asynchronously. It paints `github ✓` green and paints `github ✗ login required` or `github check failed` red. The probe retains only authenticated/source/expiry status, never token values. When the probe reports a missing login, `/commands` shows `npx octocode auth login` and `gh auth login`.
 
-Motion language: the transcript and footer use no animated decoration — pi's working spinner is the only moving glyph; live agent rows only update factual elapsed/state/message text. Attention flags (`⚠ ✗ ✉`, ≥90% context) are painted warning/error **and bold**; brightness always means state, never decoration. The banner card is a fixed purple gradient — an animated banner at the top of the scrollback invalidated pi-tui's line diff on every repaint and caused scroll jumps.
+Scrollback rule (pi-tui `tui-main-screen.js`): a change to any line **above the visible viewport** — or a width/height change — forces a full redraw that clears the screen *and scrollback*. Octocode therefore renders **nothing above the transcript**: it does not call `setHeader`, and the session name lives only in the terminal title. Every transcript entry, message, and tool row is a pure function of its data. Live state stays in the footer, status chips, and below-editor panel; Octocode registers these surfaces once and repaints them with `tui.requestRender`. Per-frame render closures never do O(session) work. Events and the 1-second tick sample context usage because `pi.getContextUsage()` rebuilds the session branch per call; the banner also memoizes its version read. Diagnose any remaining full redraw with `PI_DEBUG_REDRAW=1` (pi logs each `fullRender:` reason to `pi-debug.log`).
+
+Motion language: the transcript and footer use no animated decoration — pi's working spinner is the only moving glyph; live agent rows only update factual elapsed/state/message text. The palette paints attention flags (`⚠ ✗ ✉`, ≥90% context) as warning/error **and bold**; brightness always means state, never decoration. The banner card is a fixed purple gradient — an animated banner at the top of the scrollback invalidated pi-tui's line diff on every repaint and caused scroll jumps.
 
 ## Agent ledger
 
@@ -81,10 +200,10 @@ Ledger badges:
 |---|---|---|
 | `⚠ recovery` | Evidence-free status/action loop detected | Inspect, re-diagnose, verify independently |
 | `⚠ needs verify` | Done handback lacks evidence/verification | Run acceptance checks before final answer |
-| `blocked` | Worker asked parent for input | Send an answer with `AgentMessage` |
-| `failed` | Process/tool failed | Inspect stderr/output, then retry or kill |
+| `blocked` | Worker asked parent for input | Send an answer with an `agent` message query |
+| `failed` | Process/tool failed | Inspect stderr/output. Retry or kill. |
 | `msg→ <action>` | Parent sent, steered, or queued a message to this worker | Watch the queued count or wait for the turn |
-| `msg← reply` | Worker replied to the parent | Read the preview or inspect with `AgentMessage status` |
+| `msg← reply` | Worker replied to the parent | Read the preview or run an `agent` inspect query |
 
 ## Visual contract
 
@@ -94,17 +213,17 @@ Ledger badges:
 
 `src/tui/palette.ts` (`TOKEN`) is the only place a *kind of data* is bound to a theme token; `themes/octocode-{dark,light}.json` own the hex values. Every surface — banner, header, footer, plan panel, tool rows, ask-user, agent ledger, overlays — paints through `paint(theme, token, …)` so one colour keeps one meaning everywhere:
 
-| Colour | Token(s) | Means | Never used for |
+| Colour | Tokens | Means | Never used for |
 |---|---|---|---|
 | **Purple** (`accent`) | `brand`, `title` | Octocode identity: the `◆` mark, banner body, tool names, the focused/selected row, and anything **in flight** (spinner, `running`, `doing`, `Fetching…`, `Spawning agent…`) | warnings, success |
 | **Lavender** (`mdLink`) | `link` | Links, peer/agent messaging (`✉` unread, `queued` workers), model thinking rows | decoration |
-| **Sky** (`mdCode`) | `path`, `symbol` | File paths and identifiers — the data the user reads most; distinct from purple so a path never looks like a tool title | — |
+| **Sky** (`mdCode`) | `path`, `symbol` | File paths and identifiers — the data you read most; distinct from purple so a path never looks like a tool title | — |
 | **Gold** (`warning`) | `warning` | **Act on me**: blocked workers `⚠`, `perm relaxed`, ≥75 % context, genuine tool warnings | frames, spinners, in-flight labels, "no match", cancels, pros/cons |
 | **Green / Red** | `success`, `error`, `diffAdd`, `diffRemove` | Outcomes only: done/failed rows, `✓`/`✗` result glyphs, `+`/`-` diff lines | selection state, recommended badges |
-| **Default fg** | `count`, `bright` | Values (counts, totals) and pending plan rows — bright against dim labels | — |
+| **Default fg** | `count`, `bright` | Values such as counts and totals, plus pending plan rows — bright against dim labels | — |
 | **Grey ramp** | `muted` → `dim` → theme `faint` | Secondary text → chrome (separators, `│` bars, hints, finished plan rows) → rules | primary content |
 
-The footer speaks in words, not glyphs: `context ▓▓░░ 25% · 250k/1M · turn 8 · 14s · session 1h · agents 3 (2 live) · now: … · mail 2 · blocked 1 · failed 1 · dial deep · perm default · prompt ~12k · main (5 changed)`. Below it, **one row per subagent** — `agent <name> (<id>) · <state> · <elapsed> · now: <activity>` — live workers first, at most four rows then `… N more agents`; the state word carries the ledger colour (running purple, blocked gold-bold, failed red-bold, done green). Hidden at compact density (`/octocode-footer compact`).
+The footer speaks in words, not glyphs: `context ▓▓░░ 25% · 250k/1M · turn 8 · 14s · session 1h · agents 3 (2 live) · now: … · mail 2 · blocked 1 · failed 1 · dial deep · perm default · prompt ~12k · main (5 changed)`. Below it, **one row per subagent** — `agent <name> (<id>) · <state> · <elapsed> · now: <activity>` — with live workers first and no hidden row cap. The state word carries the ledger colour (running purple, blocked gold-bold, failed red-bold, done green). Compact density (`/octocode-footer compact`) hides worker rows.
 
 Attention states in the footer (`⚠`, `✗`, `✉`, near-full ctx) are additionally **bold** (`FooterSegment.attention`) — the only emphasis in the toolbar, so bold always means "look here". Per-row budget: at most three colours plus the grey ramp.
 
@@ -112,7 +231,7 @@ Raw ANSI output (shell transcript rows, `coloredDiff`) goes through `cli-design.
 
 ## Width and theme rules
 
-- Rendered lines are built through shared width-safe renderers.
+- Shared width-safe renderers build every rendered line.
 - Use theme colors from callback contexts when Pi provides a theme; raw shell rows use the visual contract's `NO_COLOR`-aware fallback.
 - The `askUser` decision picker uses Pi `ctx.ui.custom(builder)` inline (no overlay options) so the prompt appears in the message flow at the bottom, reading as part of the conversation rather than a floating overlay box.
 - Footer/status success is quiet; warnings and errors notify.
@@ -124,5 +243,5 @@ Raw ANSI output (shell transcript rows, `coloredDiff`) goes through `cli-design.
 |---|---|
 | Extension looks inactive | Run `/octocode`, then `/octocode-harness` |
 | Ledger is noisy | Run `/octocode-agents hide` or `/octocode-agents prune` |
-| Context bar is near full | Compact or use `/octocode-status` for details |
+| Context bar is near full | Compact or use `/octocode-harness` for prompt-overhead details |
 | Worker says done too early | Inspect and verify acceptance yourself |

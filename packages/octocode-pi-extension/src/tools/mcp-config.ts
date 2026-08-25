@@ -2,15 +2,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { getDefaultEnvironment } from '@modelcontextprotocol/client/stdio';
+import { getMcpEnablement, openOctocodeDb } from '@octocodeai/octocode-awareness/mcp-state';
 import type { PiContext } from '../types.js';
-import { getPiMcpConfigPath } from '../utils.js';
+import { getOctocodeHome } from '../env.js';
 
 export interface McpServerConfig {
-  command: string;
+  transport?: 'stdio' | 'http';
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
   disabled?: boolean;
   description?: string;
   timeoutMs?: number;
@@ -23,12 +27,21 @@ export interface McpConfigSource {
 }
 
 export interface McpLoadedConfig {
+  /** All parsed definitions before file/DB enablement is applied. */
+  configuredServers: Map<string, McpServerConfig>;
   servers: Map<string, McpServerConfig>;
   sources: McpConfigSource[];
   warnings: string[];
 }
 
 export type McpScope = 'project' | 'global';
+
+export interface McpConfigPathOptions {
+  /** OS user home override, primarily for tests. */
+  homeDir?: string;
+  /** Octocode home override; defaults to getOctocodeHome(). */
+  octocodeHome?: string;
+}
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEFAULT_OCTOCODE_MCP_SERVER_NAME = 'octocode';
@@ -86,6 +99,7 @@ export function buildDefaultOctocodeMcpServer(): McpServerConfig {
       // for sub-100ms cold start when the pinned dep is unavailable.
       { command: 'npx', args: ['-y', 'octocode-mcp@latest'] };
   return {
+    transport: 'stdio',
     ...spawn,
     env: { ...OCTOCODE_MCP_ENV_DEFAULTS },
     description: 'Built-in Octocode MCP server (lazy stdio bridge, pinned-local first).',
@@ -116,11 +130,22 @@ export function buildServerEnv(name: string, config: McpServerConfig): Record<st
 }
 
 export function projectMcpPath(cwd: string): string {
-  return getPiMcpConfigPath('project', cwd);
+  return path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json');
 }
 
-export function globalMcpPath(): string {
-  return getPiMcpConfigPath('global');
+export function globalMcpPath(_homeDir = os.homedir(), octocodeHome = getOctocodeHome()): string {
+  return path.join(octocodeHome, 'agent', 'mcp', 'servers.json');
+}
+
+/** The single canonical global MCP server-definition file. */
+export function globalMcpConfigPaths(options: McpConfigPathOptions = {}): string[] {
+  const octocodeHome = options.octocodeHome ?? getOctocodeHome();
+  return [globalMcpPath(options.homeDir, octocodeHome)];
+}
+
+/** The single canonical project MCP server-definition file. */
+export function projectMcpConfigPaths(cwd: string): string[] {
+  return [projectMcpPath(cwd)];
 }
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -152,16 +177,25 @@ function parseServerConfig(name: string, value: unknown): McpServerConfig {
     throw new Error(`invalid server name ${JSON.stringify(name)}; use letters, numbers, _, -, or .`);
   }
   if (!isPlainRecord(value)) throw new Error(`server ${name} must be an object`);
-  const command = value['command'];
-  if (typeof command !== 'string' || command.trim().length === 0) {
-    throw new Error(`server ${name}.command must be a non-empty string`);
+  const rawUrl = value['url'];
+  const rawCommand = value['command'];
+  const isHttp = typeof rawUrl === 'string' && rawUrl.trim().length > 0;
+  if (!isHttp && (typeof rawCommand !== 'string' || rawCommand.trim().length === 0))
+    throw new Error(`server ${name} requires either a non-empty command or an http(s) url`);
+  if (isHttp) {
+    const parsedUrl = new URL(rawUrl as string);
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') throw new Error(`server ${name}.url must use http or https`);
+    if (rawCommand !== undefined) throw new Error(`server ${name} cannot define both command and url`);
   }
   const timeoutMs = value['timeoutMs'];
   return {
-    command,
+    transport: isHttp ? 'http' : 'stdio',
+    command: isHttp ? undefined : String(rawCommand),
     args: parseStringArray(value['args']),
     env: parseStringRecord(value['env']),
     cwd: value['cwd'] === undefined ? undefined : String(value['cwd']),
+    url: isHttp ? String(rawUrl) : undefined,
+    headers: parseStringRecord(value['headers']),
     disabled: value['disabled'] === true,
     description: value['description'] === undefined ? undefined : String(value['description']),
     timeoutMs: timeoutMs === undefined ? undefined : Math.max(1_000, Math.min(120_000, Number(timeoutMs))),
@@ -179,7 +213,7 @@ function parseConfigText(text: string): Map<string, McpServerConfig> {
   const servers = new Map<string, McpServerConfig>();
   for (const [name, raw] of Object.entries(rawServers)) {
     const server = parseServerConfig(name, raw);
-    if (!server.disabled) servers.set(name, server);
+    servers.set(name, server);
   }
   return servers;
 }
@@ -227,9 +261,12 @@ export function upsertServerInFile(filePath: string, name: string, serverJson: R
   }
   const container = serverContainer(raw);
   // Persist only defined fields, in a stable shape.
-  const entry: Record<string, unknown> = { command: parsed.command };
+  const entry: Record<string, unknown> = parsed.transport === 'http'
+    ? { url: parsed.url }
+    : { command: parsed.command };
   if (parsed.args && parsed.args.length) entry['args'] = parsed.args;
   if (parsed.env && Object.keys(parsed.env).length) entry['env'] = parsed.env;
+  if (parsed.headers && Object.keys(parsed.headers).length) entry['headers'] = parsed.headers;
   if (parsed.cwd) entry['cwd'] = parsed.cwd;
   if (parsed.timeoutMs) entry['timeoutMs'] = parsed.timeoutMs;
   if (parsed.description) entry['description'] = parsed.description;
@@ -257,7 +294,10 @@ export function removeServerFromFile(filePath: string, name: string): boolean {
   return true;
 }
 
-export async function loadMcpConfig(ctx?: PiContext): Promise<McpLoadedConfig> {
+export async function loadMcpConfig(
+  ctx?: PiContext,
+  pathOptions: McpConfigPathOptions = {},
+): Promise<McpLoadedConfig> {
   const cwd = ctx?.cwd ?? process.cwd();
   const trusted = ctx?.isProjectTrusted ? Boolean(await ctx.isProjectTrusted()) : true;
   const defaultServer = buildDefaultOctocodeMcpServer();
@@ -266,18 +306,19 @@ export async function loadMcpConfig(ctx?: PiContext): Promise<McpLoadedConfig> {
   const sources: McpConfigSource[] = [{ scope: 'built-in', path: sourcePath, trusted: true }];
   const warnings: string[] = [];
 
-  const globalPath = globalMcpPath();
-  try {
-    const globalServers = readConfigFile(globalPath);
-    if (globalServers) {
-      sources.push({ scope: 'global', path: globalPath, trusted: true });
-      for (const [name, config] of globalServers) servers.set(name, config);
+  for (const candidate of globalMcpConfigPaths(pathOptions)) {
+    try {
+      const globalServers = readConfigFile(candidate);
+      if (globalServers) {
+        sources.push({ scope: 'global', path: candidate, trusted: true });
+        for (const [name, config] of globalServers) servers.set(name, config);
+      }
+    } catch (error) {
+      warnings.push(`${candidate}: ${(error as Error).message}`);
     }
-  } catch (error) {
-    warnings.push(`${globalPath}: ${(error as Error).message}`);
   }
 
-  for (const candidate of [projectMcpPath(cwd)]) {
+  for (const candidate of projectMcpConfigPaths(cwd)) {
     if (!fs.existsSync(candidate)) continue;
     if (!trusted) {
       sources.push({ scope: 'project', path: candidate, trusted: false });
@@ -295,7 +336,18 @@ export async function loadMcpConfig(ctx?: PiContext): Promise<McpLoadedConfig> {
     }
   }
 
-  return { servers, sources, warnings };
+  const configuredServers = new Map(servers);
+  try {
+    const db = openOctocodeDb();
+    const scopeKey = path.resolve(cwd);
+    for (const [name, config] of servers) {
+      if (!getMcpEnablement(db, scopeKey, name, undefined, !config.disabled)) servers.delete(name);
+    }
+  } catch (error) {
+    warnings.push(`MCP enablement database unavailable: ${(error as Error).message}`);
+    for (const [name, config] of servers) if (config.disabled) servers.delete(name);
+  }
+  return { configuredServers, servers, sources, warnings };
 }
 
 export function resolveServerCwd(config: McpServerConfig, ctx?: PiContext): string {
@@ -326,6 +378,9 @@ export function configSignature(config: McpServerConfig): string {
     env: config.env ?? {},
     cwd: config.cwd ?? null,
     timeoutMs: config.timeoutMs ?? null,
+    transport: config.transport,
+    url: config.url ?? null,
+    headers: config.headers ?? {},
   });
 }
 

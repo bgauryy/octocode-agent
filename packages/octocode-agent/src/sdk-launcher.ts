@@ -219,11 +219,7 @@ export async function launchWithSdk(
   const env = deps.env ?? process.env;
   const home = (deps.resolveHome ?? getOctocodeHome)(env);
 
-  // Mirror PI_CACHE_RETENTION into process.env — the in-process Pi SDK reads it directly.
-  if (env.PI_CACHE_RETENTION && !process.env.PI_CACHE_RETENTION) {
-    process.env.PI_CACHE_RETENTION = env.PI_CACHE_RETENTION;
-  }
-  // Same in-process mirror for the version-check kill switch: Pi's
+  // In-process mirror for the version-check kill switch: Pi's
   // checkForNewPiVersion reads process.env directly (the built launch env is
   // otherwise only forwarded to the subprocess path).
   if (env.PI_SKIP_VERSION_CHECK !== undefined && process.env.PI_SKIP_VERSION_CHECK === undefined) {
@@ -370,8 +366,9 @@ export async function launchWithSdk(
           services: unknown;
           sessionManager: unknown;
           sessionStartEvent: unknown;
+          noTools: 'builtin';
         }) => Promise<unknown>
-      )({ services, sessionManager: sm, sessionStartEvent })) as object),
+      )({ services, sessionManager: sm, sessionStartEvent, noTools: 'builtin' })) as object),
       services,
       diagnostics: (services as Record<string, unknown>)['diagnostics'],
     };

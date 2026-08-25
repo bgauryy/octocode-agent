@@ -100,7 +100,6 @@ npm run check && ./test.sh   # fork's CI gate
 | `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` | Suppress project context file loading (enabled by default) |
 | `OCTOCODE_AGENT_EXTENSION_SPEC` | Override the core extension spec (npm:/git:/path) |
 | `OCTOCODE_AGENT_CLEAN=1` | Suppress user skills (fully deterministic agent) |
-| `OCTOCODE_AGENT_FULL_TOOLS=1` | Keep grep/find/ls (opt out of lean tool set) |
 
 ## What `--no-context-files` Does (opt-in)
 

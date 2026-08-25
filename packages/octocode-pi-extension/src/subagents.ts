@@ -95,9 +95,9 @@ const SKILLS_DIR = resolveSkillsDir();
  * Returns external skill search roots, re-evaluated on every call so skills
  * installed after process start are discovered without a restart.
  *
- * `npx octocode skill --name <skill> --platform pi` lands in ~/.pi/agent/skills/;
+ * `npx octocode skill install <skill> --platform pi` lands in ~/.pi/agent/skills/;
  * monorepo / standalone workspaces often stage skills at <cwd>/.agents/skills/ via
- * `octocode skill --add --path`. No existsSync filter here — bundledSkillPath checks
+ * direct placement. No existsSync filter here — bundledSkillPath checks
  * for SKILL.md presence in each root, so absent dirs are handled gracefully.
  *
  * Exported for testing dynamic cwd behaviour.
@@ -129,9 +129,9 @@ function bundledSkillPath(
   skillName: (typeof OCTOCODE_SKILL_NAMES)[number]
 ): string | null {
   // Preferred: a skill staged in the package's dist/skills/ (what build.mjs composes).
-  // Fallbacks: skills installed outside the package — `npx octocode skill --name <skill>
+  // Fallbacks: skills installed outside the package — `npx octocode skill install <skill>
   // --platform pi` lands in ~/.pi/agent/skills/, and monorepo layouts often stage skills
-  // at <cwd>/.agents/skills/ via `octocode skill --add --path ...`. Surfacing them lets
+  // at <cwd>/.agents/skills/ via direct placement. Surfacing them lets
   // typed subagents load skills the package itself doesn't ship; install them via
   // `npx octocode skill ... --platform pi` as needed. First hit wins — the bundled
   // copy wins over an external install when both exist, keeping tests deterministic.

@@ -204,7 +204,7 @@ const TASK_ROUTES: TaskRoute[] = [
   },
 ];
 
-function routeTask(task: string): { schemes: string[]; cdpDomains: string[]; contextKeys: string[] } {
+export function routeTask(task: string): { schemes: string[]; cdpDomains: string[]; contextKeys: string[] } {
   const matched = TASK_ROUTES.filter((r) => r.pattern.test(task));
 
   if (matched.length === 0) {
@@ -224,7 +224,7 @@ function routeTask(task: string): { schemes: string[]; cdpDomains: string[]; con
 
 // ─── Spawn config builder ──────────────────────────────────────────────────────
 
-function buildSpawnConfig(params: {
+export function buildSpawnConfig(params: {
   task: string;
   url?: string;
   port: number;

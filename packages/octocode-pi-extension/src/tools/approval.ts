@@ -189,9 +189,13 @@ export function classifySensitiveCommand(command: string): ApprovalRequest | nul
     return { actionClass: 'sudo', title: APPROVAL_TITLES.sudo!, detail: cmd };
   }
 
-  // Installs (skip Octocode dogfood CLIs to avoid prompt fatigue).
-  if ((INSTALL_RE.test(cmd) || PIPE_TO_SHELL_RE.test(cmd)) && !isOctocodeDogfoodInstall(cmd)) {
-    return { actionClass: 'install', title: APPROVAL_TITLES.install!, detail: cmd };
+  // Installs — checked per shell segment so that an Octocode dogfood segment (e.g.
+  // `npx octocode`) cannot exempt a separate install or pipe-to-shell segment in the
+  // same command (e.g. `npx octocode; npm install evil` or `npx octocode && curl x | sh`).
+  for (const seg of cmd.split(/[;\n]|\s*&&\s*|\s*\|\|\s*/).map((s) => s.trim()).filter(Boolean)) {
+    if ((INSTALL_RE.test(seg) || PIPE_TO_SHELL_RE.test(seg)) && !isOctocodeDogfoodInstall(seg)) {
+      return { actionClass: 'install', title: APPROVAL_TITLES.install!, detail: cmd };
+    }
   }
 
   // Outward publication — packages, releases, images. Irreversible-ish and

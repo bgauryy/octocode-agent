@@ -10,11 +10,9 @@
  *   // in the session_shutdown hook (before/alongside cleanupSpawnedAgentsForShutdown):
  *   agentInbox.shutdown();
  *
- * registerAgentInbox also self-registers a pi.on('session_shutdown') guard, so
- * the explicit shutdown() call is a belt-and-braces ordering guarantee: the
- * suppress flag MUST be set before cleanupSpawnedAgentsForShutdown() kills the
- * workers, otherwise the burst of killed/exit ledger events would spam desktop
- * notifications during teardown.
+ * The extension lifecycle owns the single session_shutdown hook and MUST call
+ * shutdown() before cleanupSpawnedAgentsForShutdown(). A second hook here would
+ * receive Pi's already-invalid replacement context and duplicate teardown.
  *
  * Surfaces:
  *  - '/octocode-inbox' command → stage 1 pick a worker (select overlay), stage 2
@@ -164,7 +162,7 @@ export async function runAgentInboxOverlay(deps: AgentInboxDeps): Promise<void> 
   const { ctx, notify } = deps;
   const entries = deps.listEntries();
   if (entries.length === 0) {
-    notify(ctx, 'Octocode inbox: no spawned workers this session. Use spawnAgent to delegate work.', 'info');
+    notify(ctx, 'Octocode inbox: no spawned workers this session. Use agent with type:"spawn" to delegate work.', 'info');
     return;
   }
 
@@ -282,7 +280,7 @@ export interface AgentInboxRegistration {
   /** Detach the ledger listener (idempotent). */
   unsubscribe(): void;
   /** Full shutdown: set the suppress flag FIRST, then detach. Call before killing workers. */
-  shutdown(): void;
+  shutdown(options?: { restoreTitle?: boolean }): void;
   /**
    * Undo shutdown()'s suppression + detach so a following session can notify
    * again (idempotent). Must be called on session_start — the registration is
@@ -352,11 +350,11 @@ export function registerAgentInbox(
     detached = true;
     unsubscribeLedger();
   };
-  const shutdown = (): void => {
+  const shutdown = (options: { restoreTitle?: boolean } = {}): void => {
     // Order matters: suppress BEFORE detaching so any event already in flight is ignored,
     // and BEFORE workers are killed so teardown killed/exit events never notify.
     localSuppressed = true;
-    suppressDesktopNotifications();
+    suppressDesktopNotifications(options);
     clearTitleFlashTimer();
     unsubscribe();
   };
@@ -378,11 +376,6 @@ export function registerAgentInbox(
   pi.on('agent_start', async (_event, ctx) => { turnActive = true; lastCtx = ctx ?? lastCtx; });
   pi.on('agent_end', async (_event, ctx) => { turnActive = false; lastCtx = ctx ?? lastCtx; });
   pi.on('session_start', async (_event, ctx) => { lastCtx = ctx ?? lastCtx; });
-  // Belt-and-braces: even if index.ts forgets to call shutdown(), suppress on session_shutdown.
-  // NOTE: pi hook ordering between extensions is not guaranteed, which is why index.ts should
-  // ALSO call shutdown() at the top of its own session_shutdown handler (see file header).
-  pi.on('session_shutdown', async (_event, ctx) => { lastCtx = ctx ?? lastCtx; shutdown(); });
-
   pi.registerCommand?.(OCTOCODE_INBOX_COMMAND, {
     description: 'Open the Octocode worker inbox (view transcript / steer / kill spawned workers)',
     handler: async (_args, ctx) => {

@@ -1,11 +1,11 @@
-# Octocode Harness — Capability Discovery, MCP Catalog, Skills & Observability
+# Octocode harness — capability discovery, MCP catalog, skills, and observability
 
 How the Octocode Pi extension (`@octocodeai/pi-extension`) discovers everything the
-agent can do — MCP servers, Agent Skills, native tools — injects it into the model's
-context for smart prompt caching, and makes all of it observable to users and peer
-agents.
+agent can do—MCP servers, Agent Skills, and native tools—while keeping model-visible
+catalog bytes stable and making the capability surface observable to users and peers.
 
-All sizes and examples below are real, measured against the built package.
+Character and latency measurements below use the deterministic fixture documented in
+`.octocode/rfc/lazy-mcp-schema-hydration/KPI.md`; they don't estimate provider cost.
 
 ---
 
@@ -13,88 +13,79 @@ All sizes and examples below are real, measured against the built package.
 
 ```
 session_start
- ├─ warmMcpCatalog()            connect EVERY configured MCP server,
- │                              cache instructions + tools + exact input schemas
+ ├─ warmMcpCatalog()            eager: discover the full catalog
+ │                              lazy: restore a matching private snapshot first,
+ │                                    then refresh live state for the next session
  ├─ …once discovery lands…
  │   └─ writeDiscoveryFile()    .octocode/discovery.json — machine-readable
  │                              inventory: skills + MCP configs + native tools
  └─ startMcpConfigWatcher()     hot-reload mcp.json edits (no restart)
 
 before_agent_start (every turn)
- ├─ await mcpCatalogReady()     bounded wait so TURN 1 already has the catalog
+ ├─ await mcpCatalogReady()     bounded wait; never starts a server itself
  ├─ stripPiSkillsSection()      Octocode owns the skill flow (see §3)
  └─ system prompt = Pi prompt
-      + static Octocode prompt      (~26.7k chars ≈ 6.7k tokens)
-      + <mcp_catalog>               (~61.5k chars ≈ 15.4k tokens, byte-stable)
-      + <dynamic_capabilities>      (self-created tools/skills, usually empty)
-      + <available_skills>          (~2k chars, live skill catalog)
-      + <active_plan>               (compaction-durable plan state)
+      + static Octocode prompt
+      + <mcp_catalog>            eager full-schema rollback path
+        OR <mcp_catalog_index>   lazy names/descriptions only, byte-stable
+      + <dynamic_capabilities>   self-created tools/skills, usually empty
+      + <available_skills>       live skill catalog
+      + <active_plan>            compaction-durable plan state
 ```
 
-Design rule everywhere: **stable bytes**. Everything injected per turn is
-byte-identical across turns unless the underlying capability genuinely changed —
-that is what makes provider prompt caching pay for the large catalog once per
-cache window instead of every turn.
+Design rule everywhere: **stable bytes**. A lazy snapshot hit freezes the current
+session's index while live refresh writes a snapshot for the next session. If discovery
+misses the first-turn deadline, its late result doesn't appear in later prompts. Explicit
+config and tool-list changes invalidate prepared freshness and leases; validator reuse
+remains keyed by the exact schema digest.
 
 ---
 
-## 2. MCP: full discovery at init, `<mcp_catalog>` in the prompt
+## 2. MCP: persistent selection index and internal exact schemas
 
-Source: `packages/octocode-pi-extension/src/tools/mcp-tool.ts`
+Sources: `packages/octocode-pi-extension/src/tools/mcp-tool.ts`,
+`src/tools/mcp-catalog.ts`, and `src/tools/mcp-schema-validator.ts`
 
-### Config sources (loaded, in override order)
+### Config sources (loaded in override order)
 
 | Precedence | Scope | Path | Loaded when |
 |---|---|---|---|
-| 1 | built-in | pinned local `octocode-mcp` (npx fallback) | always (`octocode` server, cannot be removed) |
-| 2 | global | `~/.pi/agent/mcp.json` | if the file exists |
-| 3 | project | `<workspace>/.pi/agent/mcp.json` | only if the project is trusted |
+| 1 | Built-in | Pinned local `octocode-mcp` (`npx` fallback) | Always as `octocode`; can't be removed |
+| 2 | Global | `$OCTOCODE_HOME/agent/mcp/servers.json` | When present |
+| 3 | Project | `<workspace>/.octocode/agent/mcp/servers.json` | Trusted workspace only |
 
-### Init discovery
+### Startup and persistence
 
-`warmMcpCatalog()` runs at `session_start`: it connects every configured server and
-caches its **instructions, tool list, and exact `inputSchema` JSON**. It is deduped
-per workspace and awaitable — `before_agent_start` calls `mcpCatalogReady()`
-(bounded, 10s, never spawns servers itself) so the catalog is in the **first**
-turn's prompt. A catalog that first appeared on turn 2 would change the prompt
-prefix and invalidate the provider cache for the whole session.
+`warmMcpCatalog()` is deduplicated per workspace:
 
-### The `<mcp_catalog>` block
+1. Compute workspace and config digests.
+2. Read the versioned snapshot under `$OCTOCODE_HOME/agent/mcp/workspaces/`.
+3. On a valid hit, render its schema-free index immediately and freeze those prompt bytes.
+4. Discover configured servers in the background, use current schemas only for private
+   execution state, and persist the replacement for a later session.
 
-Injected every turn (survives compaction). Contents per server:
+A malformed, unsupported-version, oversized, digest-mismatched, or symlink-escaping
+snapshot is a cache miss. Snapshot files are private on POSIX systems. The bounded
+`mcpCatalogReady()` wait never starts servers, and a late refresh can't change the
+current session's prompt suffix.
 
-```
-server: octocode
-instructions: <full server instructions, cap 4,000 chars>
-tool: ghSearchCode
-description: <full description, cap 2,000 chars>
-inputSchema: {"type":"object","required":["queries"],…}   ← exact, compact JSON, cap 8,000 chars
-tool: …
-```
+### Select, validate, call
 
-- The built-in `octocode` server is listed **first** and the header names it the
-  default research surface.
-- Caps are a safety net against rogue servers (80,000 chars/server), not a
-  compaction strategy — the full octocode server (14 tools, ~60k chars ≈ 15k
-  tokens) fits untruncated. Truncation is always explicit and actionable
-  (`…[schema truncated — run MCPTool describe server:X tool:Y …]`).
-- **Byte-stability contract** (pinned by tests): no timestamps, no fresh/stale
-  labels, no usage-dependent schema inlining. The block's bytes change only when
-  the MCP config actually changes: an `mcp.json` edit (file watcher hot-reloads),
-  `MCPTool add/remove/restart/stop`, or a server's `tools/list_changed`
-  notification.
-
-The model calls tools straight from the catalog — no list/describe round-trip:
-
-```
-MCPTool({action:"call", server:"octocode", tool:"ghSearchCode",
-         arguments:{queries:[{keywords:["…"]}]}})
+```js
+MCPTool({queries:[{reasoning:"Search code.", action:"call", server:"octocode",
+  tool:"ghSearchCode", arguments:{queries:[/* … */]}}]})
 ```
 
-`list`/`describe` remain for truncated entries or failed schema validation.
-`add`/`remove`/`restart`/`stop` manage servers at runtime without an agent restart
-(global adds require interactive user approval; project writes require a trusted
-project).
+`call` discovers the current schema without invoking the remote tool, compiles or reuses
+a validator keyed by schema digest, and validates arguments immediately before
+`client.callTool`. Invalid arguments return bounded, path-specific
+`MCP_SCHEMA_INVALID` errors. Unsupported schemas return `SCHEMA_UNSUPPORTED`; both paths
+perform zero remote tool invocations.
+
+`describe` exposes one current exact schema when explicit inspection is useful. Config
+drift, list-change signals, restart, and stop invalidate affected discovery freshness;
+validator reuse remains keyed by schema digest. Management actions remain live without an
+agent restart; adding arbitrary server code requires trust and interactive approval.
 
 ### TUI observability
 
@@ -120,14 +111,14 @@ this". Octocode removes the weak `read` builtin entirely, so that instruction is
 dead end, and Pi's section uses the same `<available_skills>` tag as Octocode's
 (duplicate catalogs). The extension therefore **strips Pi's skills section from
 the prompt deterministically** every turn (`stripPiSkillsSection`), regardless of
-tool-set timing. The user-facing `/skill:<name>` command is untouched.
+tool-set timing. Pi's user-facing `/skill:<name>` command remains available.
 
 ### The `skill` tool (the Claude Code / agentskills.io pattern)
 
 | Call | Returns |
 |---|---|
-| `skill({action:"load", name:"…", reason:"why it matches"})` | Full `SKILL.md` (cap 48k, explicit truncation pointer) + skill directory + shipped files, with "resolve relative paths against this directory". The default action requires a concise, user-facing `reason`. Names have a case-insensitive fallback. |
-| `skill({action:"list"})` | Every discovered skill with source tag and session usage (`loaded 2× this session`). |
+| `skill({queries:[{reasoning:"load matching skill", type:"load", action:"load", name:"…", reason:"why it matches"}]})` | Full `SKILL.md` (cap 48k, explicit truncation pointer) + skill directory + shipped files, with "resolve relative paths against this directory". Loading requires a concise, user-facing `reason`. Names have a case-insensitive fallback. |
+| `skill({queries:[{reasoning:"refresh skill catalog", type:"load", action:"list"}]})` | Every discovered skill with source tag and session usage (`loaded 2× this session`). |
 
 Loads are recorded in a per-session **usage ledger** — shown in `skill list` and the
 `/octocode-skills` dashboard ("Loaded this session"). The TUI renders one branded call
@@ -159,7 +150,7 @@ locations is directly loadable by the agent.
   entries / 120-char descriptions, overflow points at `/octocode-skills`) teaches
   loading via the `skill` tool.
 - The static prompt's `<skills>` section and `<ultimate_reminders>` name
-  `skill({action:"load"…})` as THE loading mechanism.
+  `skill({queries:[{reasoning:"load matching skill", type:"load", action:"load"…}]})` as THE loading mechanism.
 
 ---
 
@@ -178,7 +169,7 @@ harness surface:
   "generatedAt": "2026-08-22T…",
   "workspace": "/Users/…/octocode-agent",
   "harness": "@octocodeai/pi-extension",
-  "nativeTools": ["AgentMessage", "MCPTool", "askUser", "bash", "…"],   // sorted
+  "nativeTools": ["MCPTool", "agent", "askUser", "bash", "file", "…"], // sorted extension-owned palette
   "skills": [
     { "name": "octocode-research", "description": "Use when code must be checked…",
       "source": "user", "path": "/Users/…/skills/octocode-research/SKILL.md" }
@@ -189,11 +180,13 @@ harness surface:
                     "tools": [ { "name": "ghSearchCode", "description": "…" }, … ] } ],
     "warnings": [],
     "discoveredConfigs": [
-      { "path": "~/.pi/agent/mcp.json",  "host": "pi",     "scope": "user",
-        "format": "json", "active": true,  "servers": [{ "name": "octocode" }] },
-      { "path": "~/.cursor/mcp.json",    "host": "cursor", "scope": "user",
-        "format": "json", "active": false, "servers": [{ "name": "octocode" }] },
-      { "path": "~/.codex/config.toml",  "host": "codex",  "scope": "user",
+      { "path": "$OCTOCODE_HOME/agent/mcp.json", "host": "octocode", "scope": "user",
+        "format": "json", "active": true,  "servers": [{ "name": "docs", "command": "npx" }] },
+      { "path": "~/.claude.json",         "host": "claude", "scope": "user",
+        "format": "json", "active": false, "servers": [{ "name": "memory", "command": "memory-mcp" }] },
+      { "path": "~/.cursor/mcp.json",     "host": "cursor", "scope": "user",
+        "format": "json", "active": false, "servers": [{ "name": "figma" }] },
+      { "path": "~/.codex/config.toml",   "host": "codex",  "scope": "user",
         "format": "toml", "active": false, "servers": [{ "name": "node_repl" }] }
     ]
   }
@@ -202,53 +195,62 @@ harness surface:
 
 ### MCP config discoverability (`mcp.discoveredConfigs`)
 
-Every MCP config file found in the common ecosystem locations, project and user
-scope:
+Every existing MCP config file found in these project and user locations:
 
-| Host | Locations |
-|---|---|
-| claude | `<ws>/.mcp.json`, `<ws>/.claude/mcp.json`, `~/.claude/mcp.json` |
-| cursor | `<ws>/.cursor/mcp.json`, `~/.cursor/mcp.json` |
-| codex | `<ws>/.codex/config.toml`, `~/.codex/config.toml` (top-level `[mcp_servers.<name>]` tables; nested `.env` sub-tables are correctly skipped) |
-| octocode | `<ws>/.octocode/mcp.json`, `~/.octocode/mcp.json` |
-| pi | `<ws>/.pi/agent/mcp.json`, `~/.pi/agent/mcp.json` (**active**), `.pi/mcp.json` variants |
+| Host | Project locations | User locations | Activation |
+|---|---|---|---|
+| Octocode | `<ws>/.octocode/agent/mcp/servers.json` | `$OCTOCODE_HOME/agent/mcp/servers.json` | Active |
+| Claude Code | Official `<ws>/.mcp.json`; compatibility `<ws>/.claude/mcp.json` | Official `~/.claude.json`; compatibility `~/.claude/mcp.json` | Inventory-only |
+| Cursor | `<ws>/.cursor/mcp.json` | `~/.cursor/mcp.json` | Inventory-only |
+| Codex | `<ws>/.codex/config.toml` | `~/.codex/config.toml` | Inventory-only |
+| `.agents` compatibility | `<ws>/.agents/mcp.json` | `~/.agents/mcp.json` | Inventory-only; this is an Octocode discovery convention, not part of the AGENTS.md specification |
 
-**Security boundary:** only the harness's own `.pi/agent/mcp.json` files are
-`active: true` (actually loaded). Foreign configs are inventory only — an MCP
-server is arbitrary local code, so nothing discovered elsewhere is ever
-auto-spawned. Opting in is explicit: `MCPTool({action:"add", server, config, scope})`.
-Malformed files are reported with an `error` field, never thrown.
+The global canonical file loads first, followed by the trusted project's canonical file.
+The built-in `octocode` server is lower than both file-based entries.
+
+**Security boundary:** the harness loads only the two canonical Octocode paths marked active.
+Foreign configs are metadata-only because they can contain arbitrary local commands and
+remote credentials. Discovery emits only each server's name and optional local `command`;
+it never emits arguments, environment variables, headers, or URLs. To opt in to a trusted
+server, use `MCPTool({queries:[{reasoning:"Add the trusted server.", action:"add",
+server:"name", scope:"project", config:{command:"...", args:[]}}]})`. Streamable HTTP
+entries use `config:{url:"https://..."}`. Malformed files receive an
+`error` field instead of aborting discovery.
+
+Host references: [Claude Code MCP](https://code.claude.com/docs/en/mcp),
+[Cursor MCP](https://cursor.com/docs/mcp),
+[Codex MCP](https://developers.openai.com/codex/mcp/), and
+[AGENTS.md](https://agents.md/).
 
 ---
 
 ## 5. What is in the model's context (measured)
 
-Per-turn Octocode system-prompt addendum, stable → volatile order:
+Per-turn Octocode system-prompt addenda stay in stable-to-volatile order:
 
-| # | Block | Size (real run) | Changes when |
+| # | Block | Model-visible contents | Changes when |
 |---|---|---|---|
-| 1 | Static Octocode prompt | 26,672 chars ≈ 6.7k tok | package release |
-| 2 | `<mcp_catalog>` | 61,457 chars ≈ 15.4k tok | MCP config change only |
-| 3 | `<dynamic_capabilities>` | 0 (until created) | callTool/callSkill registry change |
-| 4 | `<available_skills>` | ~2k chars | skill install/removal |
-| 5 | `<active_plan>` | 0 (until `plan(set)`) | plan progress |
-|  | **Total** | **~90k chars ≈ 22.5k tok** | mostly prompt-cached |
+| 1 | Static Octocode prompt | Harness policy | package release |
+| 2a | `<mcp_catalog>` in eager mode | Instructions, descriptions, and every exact schema | explicit catalog invalidation |
+| 2b | `<mcp_catalog_index>` in lazy mode | Instructions, names, and descriptions only | session boundary or explicit invalidation |
+| 3 | `<dynamic_capabilities>` | Created tool and workflow registries | registry change |
+| 4 | `<available_skills>` | Live skill names and descriptions | skill install or removal |
+| 5 | `<active_plan>` | Current durable checklist | plan progress |
 
-The table measures only Octocode system-prompt addenda. It excludes Pi's base
-prompt, cwd/project context, API `tools` definitions, and conditional extras such
-as a `<repo_state>` git snapshot when the user's message mentions repo-, diff-,
-or branch-related words.
+The accepted 12-tool large-schema fixture measures 202,888 eager catalog characters and
+752 lazy index characters: a 99.63% reduction. Character count is canonical; it is not a
+provider-token or cost claim. A 200-sample local benchmark measured 1.61 ms snapshot-hit
+p95 versus 0.007 ms for in-memory index rendering, or 1.60 ms added harness latency.
+See the RFC KPI document for commands, environment, and all safety guardrails.
 
-Native tool definitions (`edit`, `write`, `bash`, `skill`, `MCPTool`, `web`,
-`plan`, `askUser`, `memory`, `callTool`, `callSkill`, `spawnAgent`,
-`spawnSubagent`, `AgentMessage`, `readImage`, `createImage`, plus `chromeDebug`
-and `browserAgent` when Chrome debugging is enabled) ride in the API `tools`
-parameter, so the footer budget does not include them. The Octocode research
-tools deliberately do **not** ride as native API tools; they ride through
-`MCPTool`, with their schemas in `<mcp_catalog>`.
+These measurements exclude Pi's base prompt, workspace context, API `tools` definitions,
+and conditional prompt blocks. Native support-tool definitions ride in the API `tools`
+parameter. Octocode research tools remain behind `MCPTool`; in lazy mode their schemas
+are delivered only by preparation results, not the first-turn prompt.
 
-Live view: the footer's overhead segment and `/octocode-status` (prompt budget)
-show the Octocode system-prompt addenda per turn.
+Live view: the footer and `/octocode-status` show prompt-block sizes. `MCPTool` action
+`status` also returns the schema mode, snapshot hit/miss counts, preparation count, and
+blocked-call count in structured details.
 
 ---
 
@@ -256,7 +258,9 @@ show the Octocode system-prompt addenda per turn.
 
 | Concern | Source | Tests |
 |---|---|---|
-| MCP client, catalog, discovery snapshot | `packages/octocode-pi-extension/src/tools/mcp-tool.ts` | `tests/mcp-tool.test.ts`, `tests/package.test.ts` |
+| MCP gateway and mode integration | `packages/octocode-pi-extension/src/tools/mcp-tool.ts` | `tests/mcp-tool.test.ts`, `tests/package.test.ts` |
+| Persistent catalog snapshot and index | `packages/octocode-pi-extension/src/tools/mcp-catalog.ts` | `tests/mcp-catalog.test.ts` |
+| Schema leases and local validation | `packages/octocode-pi-extension/src/tools/mcp-schema-lease.ts`, `src/tools/mcp-schema-validator.ts` | `tests/mcp-schema-validator.test.ts`, `tests/mcp-tool.test.ts` |
 | `skill` tool + skill discovery + usage ledger | `packages/octocode-pi-extension/src/tools/skill-tool.ts` | `tests/skill-tool.test.ts` |
 | Skill catalog UI (prompt block + dashboard) | `packages/octocode-pi-extension/src/tools/skill-catalog.ts` | `tests/skill-catalog.test.ts` |
 | Discovery file + MCP config discoverability | `packages/octocode-pi-extension/src/tools/discovery-file.ts` | `tests/discovery-file.test.ts` |

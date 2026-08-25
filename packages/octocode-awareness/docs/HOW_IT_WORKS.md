@@ -22,7 +22,7 @@ Host starts
        |-> signals, refinements, sessions, memory
        `-> optional .octocode/ query exports (read-only, on request)
 
-Hooks / Pi bridge --------------> same library and SQLite (edge automation)
+Host hooks ---------------------> same library and SQLite (edge automation)
 ```
 
 Each layer has one job:
@@ -38,8 +38,8 @@ Each layer has one job:
    It creates and changes plans, tasks, runs, file presence, locks, verification,
    signals, refinements, sessions, memory, maintenance, and queries (with optional
    read-only exports). CLI help and JSON schemas own exact flags and payloads.
-4. **Hooks and the Pi bridge automate deterministic edges.** They call the same
-   library used by the CLI. They can register sessions, declare writes, heartbeat,
+4. **Host hooks automate deterministic edges.** They call the same library used by
+   the CLI. They can register sessions, declare writes, heartbeat,
    roll back failed writes, finalize fallback runs, deliver changed context, and
    surface verification debt. They never choose goals, create a plan, decide a lock
    is warranted, mark tests successful, or turn memory into authority.
@@ -72,8 +72,8 @@ INSTALL PACKAGE -> INSTALL SKILL -> INIT STORE -> SET IDENTITY
    not create repository work.
 3. Set one stable `OCTOCODE_AGENT_ID` for the main agent. Host-provided child IDs keep
    subagents distinct while the parent CLI and hooks share one identity.
-4. Choose one hook surface: Claude skill frontmatter or Claude settings, Codex/Cursor
-   project settings, or the Pi bridge. Never install both Claude surfaces.
+4. Choose one hook surface: Claude skill frontmatter or Claude settings, or
+   Codex/Cursor project settings. Never install both Claude surfaces.
 5. Preview configuration writes, install after approval, then run strict config
    health. Strict success proves exact entries and existing script targets, not that
    the host executed them or delivered context.

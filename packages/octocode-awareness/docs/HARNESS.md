@@ -50,23 +50,22 @@ read-only query exports. Architecture narrative lives in [HOW_IT_WORKS.md](HOW_I
 - The living-system language is an operational metaphor, never a claim of
   sentience, autonomy, self-selected goals, or cross-machine synchronization.
 
-## Host Parity
+## Host parity
 
-| Behavior | Shell hosts | Pi |
+| Behavior | Claude/Codex | Cursor |
 |---|---|---|
-| Guard before presence | integrated pre-edit runner | tool-call guard |
-| Advisory declaration | pre-edit | tool call/start |
-| Edit audit/heartbeat | post-edit | tool result/end |
-| Changed briefing | prompt/session start | before agent start |
-| Verification gate | Stop/SubagentStop | bounded agent-end reminder |
-| Pre-compact finalize/capture | PreCompact (Codex, Cursor only) | pre-compact; session remains reusable |
-| Session-end finalize/capture | SessionEnd (Claude, Cursor only) | shutdown; session is ended |
+| Guard before presence | integrated pre-edit runner | integrated pre-edit runner |
+| Advisory declaration | pre-edit | pre-edit |
+| Edit audit/heartbeat | PostToolUse | postToolUse |
+| Changed briefing | UserPromptSubmit or SessionStart | sessionStart |
+| Verification gate | Stop/SubagentStop | stop/subagentStop |
+| Pre-compact finalize/capture | PreCompact (Codex only) | preCompact; session remains reusable |
+| Session-end finalize/capture | SessionEnd (Claude only) | sessionEnd; session is ended |
 
 Claude may run skill frontmatter; do not also install duplicate project settings.
 Codex/Cursor require explicit installed config.
-Pi never uses shell hook installation. Claude installs `SessionEnd` but not
-`PreCompact`; Codex installs `PreCompact` but not `SessionEnd` (unsupported);
-Cursor installs both. See `docs/HOOKS.md` Host Support.
+Claude installs `SessionEnd` but not `PreCompact`; Codex installs `PreCompact` but
+not `SessionEnd` (unsupported); Cursor installs both. See `docs/HOOKS.md` Host Support.
 
 ## Self-Improvement Boundary
 
@@ -88,7 +87,7 @@ yarn workspace @octocodeai/octocode-awareness build
 yarn workspace @octocodeai/octocode-awareness test:smoke
 ```
 
-Migration tests must cover legacy generation-1 execution tables, generation-2
+Migration tests must cover generation-1 execution tables, generation-2
 `files_json`/typed locks, generation-3 normalized run files/exclusive locks, and
 the canonical OCT1/v1 identity. Hook tests must replay equivalent shell/Pi
 events. Output tests must enforce byte/detail caps, not only row counts.

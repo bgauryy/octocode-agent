@@ -100,7 +100,7 @@ export interface FooterInput {
   /** Live progress note for the most-recent running worker (name or its deltaSummary). */
   agentDoing?: string;
   /** Awareness Lite agents present in this workspace, shown in the lower toolbar. */
-  awarenessAgents?: number;
+  awarenessPeers?: number;
   /** Pre-session working-tree files not yet touched this session (likely peer/user WIP). */
   peerDirty?: number;
   /** Unread Awareness Lite messages addressed to this session's agent. */
@@ -114,6 +114,8 @@ export interface FooterInput {
   permissionLevel?: string;
   /** Count of action classes the user "always allowed" this session. */
   approvedClassCount?: number;
+  /** GitHub credential health resolved through `npx octocode auth status --json`. */
+  githubAuth?: 'checking' | 'authenticated' | 'missing' | 'error';
   /**
    * Per-turn Octocode harness prompt overhead, for the context-breakdown segment.
    * Estimated tokens use the ~4 chars/token heuristic. Distinct from the live `ctx`
@@ -246,6 +248,18 @@ export function buildFooterSegments(input: FooterInput, density: FooterDensity =
     });
   }
 
+  // Credential health is always visible at every density. Missing/error states
+  // are act-on-me conditions; `/commands` carries the login instructions.
+  if (input.githubAuth === 'authenticated') {
+    segs.push({ text: 'github ✓', token: 'success' });
+  } else if (input.githubAuth === 'missing') {
+    segs.push({ text: 'github ✗ login required', token: 'error', attention: true });
+  } else if (input.githubAuth === 'error') {
+    segs.push({ text: 'github check failed', token: 'error', attention: true });
+  } else if (input.githubAuth === 'checking') {
+    segs.push({ text: 'github checking…', token: 'dim' });
+  }
+
   // Harness prompt overhead: total est. tokens injected as context, always shown
   // (even in compact) and labeled 'prompt'. Default/full densities also expose
   // the live capability counts separately so users can see MCP connectivity and
@@ -257,9 +271,10 @@ export function buildFooterSegments(input: FooterInput, density: FooterDensity =
       ? ` (sys ${tok(o.sysChars)} · mcp ${o.mcpServers}/${o.mcpTools} · skills ${o.skills})`
       : '';
     segs.push({ text: `prompt ~${tok(o.totalChars)}${breakdown}`, token: 'dim' });
-    if (!compact) {
+    if (!compact && density !== 'full') {
       // One merged segment instead of two separate ones — /octocode-harness
       // shows the full breakdown with sources, tool names, and descriptions.
+      // Full density already carries these counts inside the prompt breakdown.
       segs.push({ text: `mcp ${o.mcpServers}${SEP}skills ${o.skills}`, token: 'dim' });
     }
   }
@@ -284,6 +299,8 @@ export interface AgentFooterEntry {
   agentId: string;
   name: string;
   status: string;
+  /** Structured worker result status; overrides an idle RPC process when the turn is done/blocked/failed. */
+  normalizedStatus?: string;
   startedAt: string;
   updatedAt: string;
   deltaSummary?: string;
@@ -310,8 +327,18 @@ export interface AgentFooterRow {
 }
 
 const AGENT_TERMINAL = new Set(['done', 'failed', 'killed', 'completed', 'exited', 'error']);
-/** Max per-agent rows under the footer before collapsing into `… N more`. */
-export const AGENT_FOOTER_MAX_ROWS = 4;
+
+function effectiveAgentStatus(entry: AgentFooterEntry): string {
+  const processStatus = entry.status.toLowerCase();
+  if (AGENT_TERMINAL.has(processStatus)) return processStatus;
+  const normalized = entry.normalizedStatus?.toLowerCase();
+  if (normalized === 'done' || normalized === 'failed' || normalized === 'blocked') return normalized;
+  if ((entry.pendingMessages ?? 0) > 0 && processStatus === 'idle') return 'queued';
+  return processStatus;
+}
+
+/** @deprecated No longer used — all agents are shown without a cap. */
+export const AGENT_FOOTER_MAX_ROWS = 0;
 const AGENT_DOING_MAX = 96;
 
 function agentStateToken(status: string): { token: SemanticToken; attention: boolean } {
@@ -340,14 +367,16 @@ export function buildAgentFooterRows(
   entries: readonly AgentFooterEntry[],
   nowMs: number = Date.now(),
 ): { rows: AgentFooterRow[]; overflow: number } {
-  const isLive = (e: AgentFooterEntry): boolean => !AGENT_TERMINAL.has(e.status);
+  const isLive = (e: AgentFooterEntry): boolean => !AGENT_TERMINAL.has(effectiveAgentStatus(e));
   const ordered = [...entries].sort((a, b) => {
     const liveDelta = Number(isLive(b)) - Number(isLive(a));
     return liveDelta !== 0 ? liveDelta : Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
   });
-  const shown = ordered.slice(0, AGENT_FOOTER_MAX_ROWS);
-  const rows = shown.map((e): AgentFooterRow => {
-    const { token, attention } = agentStateToken(e.status);
+  // No row cap — show every agent so the operator sees all workers without
+  // opening /octocode-agents.
+  const rows = ordered.map((e): AgentFooterRow => {
+    const status = effectiveAgentStatus(e);
+    const { token, attention } = agentStateToken(status);
     const started = Date.parse(e.startedAt);
     const ended = isLive(e) ? nowMs : Date.parse(e.updatedAt);
     const elapsedMs = Number.isFinite(started) && Number.isFinite(ended) ? Math.max(0, ended - started) : undefined;
@@ -369,14 +398,14 @@ export function buildAgentFooterRows(
     const doing = activityParts.length > 0 ? ellipsize(activityParts.join(' · '), AGENT_DOING_MAX) : undefined;
     return {
       label: `agent ${e.name} (${e.agentId.slice(0, 6)})`,
-      state: e.status,
+      state: status,
       token,
       attention,
       elapsed: formatDurationShort(elapsedMs),
       doing,
     };
   });
-  return { rows, overflow: Math.max(0, ordered.length - shown.length) };
+  return { rows, overflow: 0 };
 }
 
 export interface ShortcutHint {

@@ -15,7 +15,7 @@
  *
  * SCOPE — this guard is PROCESS-LOCAL. The read-state map and mutation queue only
  * serialise edits issued within *this* Pi process. They do NOT protect against a
- * second process (e.g. a parallel spawnAgent worker) editing the same file
+ * second process (for example, a parallel agent worker) editing the same file
  * concurrently. Cross-process safety is a separate layer: declare edited paths
  * via Awareness (`work start`) and take an exclusive lease (`lock acquire`) for
  * non-mergeable or risky shared files — the Awareness pre-edit `tool_call` gate
@@ -155,6 +155,11 @@ export async function recordFileReadState(filePath: string, cwd = process.cwd())
   pruneOldReadStates();
 }
 
+/** Drop stale-read metadata after a file is deleted. */
+export function forgetFileReadState(filePath: string, cwd = process.cwd()): void {
+  readStates.delete(resolveFilePath(filePath, cwd));
+}
+
 /**
  * Check whether `absolutePath` has changed since the last recorded read.
  *
@@ -173,9 +178,19 @@ export async function checkReadState(
   if (!state) {
     const message = 'No prior localGetFileContent read state recorded for this file.';
     if (requireRecentRead) {
-      throw new Error(
-        `${message} Re-read the file before editing or set requireRecentRead:false intentionally.`,
-      );
+      // Content-anchored edits (exact/normalized oldText) are self-verifying even without
+      // a prior read — the oldText match guarantees the model is editing the right region.
+      // Position-anchored edits (lineRange without oldText) genuinely need fresh line
+      // numbers, so they still hard-fail to prevent silent line-number drift.
+      if (!opts.contentAnchored) {
+        throw new Error(
+          `${message} Re-read the file before editing or set requireRecentRead:false intentionally.`,
+        );
+      }
+      return {
+        state: 'missing',
+        message: `${message} Proceeding because all edits are content-anchored (oldText verifies correctness).`,
+      };
     }
     return { state: 'missing', message };
   }

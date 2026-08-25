@@ -87,7 +87,7 @@ export function estimateTokens(chars: number): number {
 
 /**
  * The text between the first occurrence of `start` and the next `end` marker
- * (to end-of-text when `end` is absent), trimmed. Shared by the callSkill /
+ * (to end-of-text when `end` is absent), trimmed. Shared by the dynamic skill and
  * callTool generated-output parsers.
  */
 export function sliceBetween(text: string, start: string, end: string): string {

@@ -33,7 +33,7 @@ function tmpWorkspace(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'octo-skill-tool-'));
 }
 
-// ─── discovery ────────────────────────────────────────────────────────────────
+// ─── discovery ─────────────────────────────────────────────────────────────────────
 
 test('discoverSkills finds project skills under .agents/skills with frontmatter name + description', () => {
   const cwd = tmpWorkspace();
@@ -97,15 +97,16 @@ test('discoverSkills skips directories without SKILL.md and missing roots withou
   assert.ok(!discoverSkills(cwd).some((s) => s.name === 'not-a-skill'));
 });
 
-test('discoverSkills filters Awareness Lite because it is prompt-owned coordination', () => {
+test('discoverSkills filters both Awareness aliases because coordination is prompt- and tool-owned in Pi', () => {
   const cwd = tmpWorkspace();
-  makeSkillDir(path.join(cwd, '.agents', 'skills'), 'octocode-awareness-lite', 'Old skill copy.');
-  const piSkills: SkillInfo[] = [{ name: 'octocode-awareness-lite', description: 'Pi copy.', path: '/pi/octocode-awareness-lite/SKILL.md' }];
+  const names = ['octocode-awareness', 'octocode-awareness-lite'];
+  for (const name of names) makeSkillDir(path.join(cwd, '.agents', 'skills'), name, 'External-agent skill copy.');
+  const piSkills: SkillInfo[] = names.map((name) => ({ name, description: 'Pi copy.', path: `/pi/${name}/SKILL.md` }));
   const skills = discoverSkills(cwd, piSkills);
-  assert.ok(!skills.some((s) => s.name === 'octocode-awareness-lite'));
+  for (const name of names) assert.ok(!skills.some((skill) => skill.name === name), `${name} is not loadable in Pi`);
 });
 
-// ─── usage ledger (observability) ─────────────────────────────────────────────
+// ─── usage ledger (observability) ──────────────────────────────────────────────────────────────
 
 test('usage ledger records loads and formats dashboard lines, newest first', () => {
   recordSkillLoad('a-skill', 1000);
@@ -116,7 +117,7 @@ test('usage ledger records loads and formats dashboard lines, newest first', () 
   assert.deepEqual(lines, ['- b-skill: loaded 1×', '- a-skill: loaded 2×']);
 });
 
-// ─── the skill tool ───────────────────────────────────────────────────────────
+// ─── the unified skill tool (queries[] envelope) ─────────────────────────────────────────
 
 async function makeTool(piSkills?: SkillInfo[]): Promise<ToolDefinition> {
   const { Type } = await import('typebox');
@@ -133,14 +134,46 @@ async function makeTool(piSkills?: SkillInfo[]): Promise<ToolDefinition> {
 }
 
 async function run(def: ToolDefinition, params: Record<string, unknown>, cwd: string): Promise<ToolCallResult> {
-  return def.execute('id', params, undefined, undefined, { cwd } as unknown as PiContext) as Promise<ToolCallResult>;
+  try {
+    return await (def.execute('id', params, undefined, undefined, { cwd } as unknown as PiContext) as Promise<ToolCallResult>);
+  } catch (err) {
+    // executeQueryBatch throws QueryBatchError on validation/execution failures;
+    // convert to an isError result so tests can assert on the text.
+    const msg = err instanceof Error ? err.message : String(err);
+    return { content: [{ type: 'text', text: msg }], isError: true };
+  }
 }
 
-test('skill load returns SKILL.md content, directory, and shipped files; records usage', async () => {
+/** Convenience: wrap in the queries[] envelope. */
+function q(items: Record<string, unknown>[]): Record<string, unknown> {
+  return { queries: items };
+}
+
+// ─── type:load ────────────────────────────────────────────────────────────────────────
+
+test('queries must be a non-empty array — top-level validation', async () => {
+  const cwd = tmpWorkspace();
+  const def = await makeTool();
+  const r1 = await run(def, {}, cwd);
+  assert.equal(r1.isError, true);
+  assert.match((r1.content[0] as { text: string }).text, /queries must be a non-empty array/);
+  const r2 = await run(def, { queries: [] }, cwd);
+  assert.equal(r2.isError, true);
+});
+
+test('each query requires non-empty reasoning', async () => {
+  const cwd = tmpWorkspace();
+  const def = await makeTool();
+  const r = await run(def, q([{ type: 'load', action: 'list' }]), cwd);
+  assert.equal(r.isError, true);
+  assert.match((r.content[0] as { text: string }).text, /reasoning/);
+});
+
+test('type:load action:load returns SKILL.md content, directory, and shipped files; records usage', async () => {
   const cwd = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Demo.', { 'scripts/run.sh': '#!/bin/sh\n' });
   const def = await makeTool();
-  const res = await run(def, { action: 'load', name: 'demo-flow', reason: 'The current task needs the demo workflow.' }, cwd);
+  const res = await run(def, q([{ reasoning: 'Need the demo workflow.', type: 'load', name: 'demo-flow', reason: 'The current task needs the demo workflow.' }]), cwd);
   const text = (res.content[0] as { text: string }).text;
   assert.equal(res.isError ?? false, false);
   assert.match(text, /skill: demo-flow \[project\]/);
@@ -151,58 +184,312 @@ test('skill load returns SKILL.md content, directory, and shipped files; records
   assert.equal(getSkillUsage().get('demo-flow')?.count, 1, 'load recorded for observability');
 });
 
-test('skill load is the default action and matches names case-insensitively', async () => {
+test('type:load is default when type field omitted — load action also default', async () => {
   const cwd = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'Demo-Flow', 'Demo.');
   const def = await makeTool();
-  const res = await run(def, { name: 'demo-flow', reason: 'The current task needs the demo workflow.' }, cwd);
+  // No type field, no action field — should default to type:load action:load
+  const res = await run(def, q([{ reasoning: 'Need the demo.', name: 'demo-flow', reason: 'The current task needs the demo workflow.' }]), cwd);
   assert.equal(res.isError ?? false, false);
   assert.match((res.content[0] as { text: string }).text, /skill: Demo-Flow/);
 });
 
-test('skill load requires a user-visible trigger reason', async () => {
+test('type:load action:load requires a user-visible trigger reason', async () => {
   const cwd = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Demo.');
   const def = await makeTool();
-  const res = await run(def, { action: 'load', name: 'demo-flow' }, cwd);
+  const res = await run(def, q([{ reasoning: 'Testing.', type: 'load', action: 'load', name: 'demo-flow' }]), cwd);
   assert.equal(res.isError, true);
   assert.match((res.content[0] as { text: string }).text, /requires reason explaining why it matches the current task/);
 });
 
-test('skill load on an unknown name errors with the available catalog', async () => {
+test('type:load action:load on unknown name errors with the available catalog', async () => {
   const cwd = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Demo.');
   const def = await makeTool();
-  const res = await run(def, { action: 'load', name: 'nope', reason: 'The task needs a workflow.' }, cwd);
+  const res = await run(def, q([{ reasoning: 'Testing.', type: 'load', name: 'nope', reason: 'The task needs a workflow.' }]), cwd);
   assert.equal(res.isError, true);
   assert.match((res.content[0] as { text: string }).text, /Unknown skill: nope/);
   assert.match((res.content[0] as { text: string }).text, /demo-flow/);
 });
 
-test('skill list shows every discovered skill with source and session usage', async () => {
+test('type:load action:list shows every discovered skill with source and session usage', async () => {
   const cwd = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Demo workflow.');
   const def = await makeTool();
-  await run(def, { action: 'load', name: 'demo-flow', reason: 'The current task needs the demo workflow.' }, cwd);
-  const res = await run(def, { action: 'list' }, cwd);
+  await run(def, q([{ reasoning: 'Load first.', type: 'load', name: 'demo-flow', reason: 'The current task needs the demo workflow.' }]), cwd);
+  const res = await run(def, q([{ reasoning: 'List all skills.', type: 'load', action: 'list' }]), cwd);
   const text = (res.content[0] as { text: string }).text;
-  assert.match(text, /skill\(\{action:"load", name:"…", reason:"why it matches"\}\)/);
+  assert.match(text, /skill\(\{queries:/);
   assert.match(text, /- demo-flow \[project\] \(loaded 1× this session\): Demo workflow\./);
 });
 
-test('skill render rows explain the trigger, suppress successful results, and keep errors visible', async () => {
+// ─── ordered multi-query ──────────────────────────────────────────────────────────────────
+
+test('multi-query: two type:load items execute in order and both succeed', async () => {
+  const cwd = tmpWorkspace();
+  makeSkillDir(path.join(cwd, '.agents', 'skills'), 'skill-a', 'Skill A.');
+  makeSkillDir(path.join(cwd, '.agents', 'skills'), 'skill-b', 'Skill B.');
+  const def = await makeTool();
+  const res = await run(def, q([
+    { reasoning: 'Load skill-a.', type: 'load', name: 'skill-a', reason: 'Task needs skill A.' },
+    { reasoning: 'Load skill-b.', type: 'load', name: 'skill-b', reason: 'Task needs skill B.' },
+  ]), cwd);
+  assert.equal(res.isError ?? false, false);
+  const text = (res.content[0] as { text: string }).text;
+  assert.match(text, /2 quer/);
+  assert.equal(getSkillUsage().get('skill-a')?.count, 1);
+  assert.equal(getSkillUsage().get('skill-b')?.count, 1);
+});
+
+test('multi-query: stops on first error and does not execute subsequent items', async () => {
+  const cwd = tmpWorkspace();
+  makeSkillDir(path.join(cwd, '.agents', 'skills'), 'skill-a', 'Skill A.');
+  const def = await makeTool();
+  const res = await run(def, q([
+    { reasoning: 'Load unknown.', type: 'load', name: 'nope', reason: 'Task needs this.' },
+    { reasoning: 'Load skill-a.', type: 'load', name: 'skill-a', reason: 'Task needs skill A.' },
+  ]), cwd);
+  assert.equal(res.isError, true);
+  assert.match((res.content[0] as { text: string }).text, /queries\[0\] failed/);
+  // skill-a was NOT loaded because execution stopped at index 0
+  assert.equal(getSkillUsage().get('skill-a'), undefined);
+});
+
+// ─── type:call dynamic skill lifecycle ────────────────────────────────────────────────
+
+/**
+ * Isolate dynamic-skill filesystem operations to a temp dir by pointing
+ * OCTOCODE_DYNAMIC_SKILLS_DIR at a throw-away directory.
+ */
+async function withTempSkillsDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-dyn-skills-'));
+  const old = process.env['OCTOCODE_DYNAMIC_SKILLS_DIR'];
+  process.env['OCTOCODE_DYNAMIC_SKILLS_DIR'] = dir;
+  try {
+    return await fn(dir);
+  } finally {
+    if (old === undefined) delete process.env['OCTOCODE_DYNAMIC_SKILLS_DIR'];
+    else process.env['OCTOCODE_DYNAMIC_SKILLS_DIR'] = old;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('type:call mode:list returns dynamic skill list (empty initially)', async () => {
+  const cwd = tmpWorkspace();
+  const def = await makeTool();
+  await withTempSkillsDir(async () => {
+    const res = await run(def, q([{ reasoning: 'List dynamic skills.', type: 'call', skillType: 'any', mode: 'list' }]), cwd);
+    assert.equal(res.isError ?? false, false);
+    const text = (res.content[0] as { text: string }).text;
+    assert.match(text, /\[SKILLS\]/);
+  });
+});
+
+test('type:call mode:auto proposes creation when skill is missing (no silent authoring)', async () => {
+  const cwd = tmpWorkspace();
+  const def = await makeTool();
+  await withTempSkillsDir(async () => {
+    const res = await run(def, q([{
+      reasoning: 'Need a multi-step deploy workflow.',
+      type: 'call',
+      skillType: 'deploy-workflow',
+      mode: 'auto',
+      intent: 'deploy the service step by step then run smoke tests and rollback on failure',
+    }]), cwd);
+    assert.equal(res.isError ?? false, false);
+    const text = (res.content[0] as { text: string }).text;
+    // Should be a PROPOSAL since no skill exists and approveCreate is not set
+    assert.match(text, /\[PROPOSAL\]/);
+  });
+});
+
+test('type:call mode:use on missing skill returns error (no creation in use mode)', async () => {
+  const cwd = tmpWorkspace();
+  const def = await makeTool();
+  await withTempSkillsDir(async () => {
+    const res = await run(def, q([{
+      reasoning: 'Try to reuse existing skill only.',
+      type: 'call',
+      skillType: 'nonexistent-skill',
+      mode: 'use',
+    }]), cwd);
+    assert.equal(res.isError, true);
+    assert.match((res.content[0] as { text: string }).text, /\[ERROR\]/);
+  });
+});
+
+test('type:call trivial single-action intent is declined unless force:true', async () => {
+  const cwd = tmpWorkspace();
+  const def = await makeTool();
+  await withTempSkillsDir(async () => {
+    // Short intent with no multi-step signal → declined
+    const declined = await run(def, q([{
+      reasoning: 'Creating a skill for a simple action.',
+      type: 'call',
+      skillType: 'run-test',
+      mode: 'create',
+      intent: 'run test',
+      reason: 'Need it.',
+      approveCreate: true,
+    }]), cwd);
+    assert.equal(declined.isError ?? false, false);
+    assert.match((declined.content[0] as { text: string }).text, /\[DECLINED\]/);
+
+    // Same but with force:true and a mock generator — generator injected via setSkillGeneratorForTests
+    const { setSkillGeneratorForTests } = await import('../src/tools/call-skill.js');
+    const mockSkillMd = '---\nname: run-test\ndescription: Runs tests then reports results and retries on failure.\n---\n\n# Run Test\n\n## Steps\n1. Run the test suite with npm test.\n2. Capture and display output.\n3. On failure retry once and report.\n';
+    setSkillGeneratorForTests(async () => ({
+      name: 'run-test',
+      description: 'Runs tests then reports results and retries on failure.',
+      reason: 'Recurring multi-step test workflow.',
+      skillMd: mockSkillMd,
+    }));
+    try {
+      const forced = await run(def, q([{
+        reasoning: 'Creating a forced skill.',
+        type: 'call',
+        skillType: 'run-test',
+        mode: 'create',
+        intent: 'run test step by step then retry and report on failure',
+        reason: 'This is a recurring multi-step test workflow.',
+        approveCreate: true,
+        force: true,
+      }]), cwd);
+      // Should succeed with the mock generator
+      assert.equal(forced.isError ?? false, false);
+      assert.match((forced.content[0] as { text: string }).text, /\[CREATED\]/);
+    } finally {
+      setSkillGeneratorForTests(null);
+    }
+  });
+});
+
+test('type:call mode:delete removes a dynamic skill', async () => {
+  const cwd = tmpWorkspace();
+  const def = await makeTool();
+  const { setSkillGeneratorForTests } = await import('../src/tools/call-skill.js');
+  await withTempSkillsDir(async () => {
+    const mockSkillMd = '---\nname: cleanup-flow\ndescription: Cleans up build artifacts then archives logs and notifies the team.\n---\n\n# Cleanup Flow\n\n## Steps\n1. Remove build artifacts.\n2. Archive logs.\n3. Send team notification.\n';
+    setSkillGeneratorForTests(async () => ({
+      name: 'cleanup-flow',
+      description: 'Cleans up build artifacts then archives logs and notifies the team.',
+      reason: 'Recurring cleanup workflow.',
+      skillMd: mockSkillMd,
+    }));
+    try {
+      // First create the skill
+      const created = await run(def, q([{
+        reasoning: 'Create cleanup-flow skill.',
+        type: 'call',
+        skillType: 'cleanup-flow',
+        mode: 'create',
+        intent: 'clean up build artifacts then archive logs and notify the team',
+        reason: 'Recurring cleanup workflow after builds.',
+        approveCreate: true,
+        force: true,
+      }]), cwd);
+      assert.match((created.content[0] as { text: string }).text, /\[CREATED\]/);
+
+      // Now delete it
+      const deleted = await run(def, q([{
+        reasoning: 'Remove obsolete cleanup-flow skill.',
+        type: 'call',
+        skillType: 'cleanup-flow',
+        mode: 'delete',
+      }]), cwd);
+      assert.equal(deleted.isError ?? false, false);
+      assert.match((deleted.content[0] as { text: string }).text, /\[DELETED\]/);
+
+      // Deleting again reports an error
+      const gone = await run(def, q([{
+        reasoning: 'Try to delete already-removed skill.',
+        type: 'call',
+        skillType: 'cleanup-flow',
+        mode: 'delete',
+      }]), cwd);
+      assert.equal(gone.isError, true);
+    } finally {
+      setSkillGeneratorForTests(null);
+    }
+  });
+});
+
+test('type:call create requires explicit reason field (replaces metadata.reason)', async () => {
+  const cwd = tmpWorkspace();
+  const def = await makeTool();
+  await withTempSkillsDir(async () => {
+    const res = await run(def, q([{
+      reasoning: 'Create without reason.',
+      type: 'call',
+      skillType: 'no-reason-workflow',
+      mode: 'create',
+      intent: 'step one then step two then step three',
+      approveCreate: true,
+      force: true,
+    }]), cwd);
+    // No reason provided → error from orchestrate
+    assert.equal(res.isError, true);
+    assert.match((res.content[0] as { text: string }).text, /\[ERROR\]/);
+  });
+});
+
+// ─── render rows ────────────────────────────────────────────────────────────────────────
+
+test('skill render rows: single type:load explains trigger, suppresses success, shows errors', async () => {
   const cwd = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Demo.');
   const def = await makeTool();
   const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
   const reason = 'The task needs a repeatable demo workflow.';
-  const callRow = def.renderCall!({ action: 'load', name: 'demo-flow', reason }, theme).render(100).join('\n');
+
+  // renderCall: shows skill name and reason
+  const callRow = def.renderCall!(q([{ reasoning: 'Load demo-flow.', type: 'load', name: 'demo-flow', reason }]), theme).render(100).join('\n');
   assert.match(callRow, /◆ skill · demo-flow/);
   assert.match(callRow, /why: The task needs a repeatable demo workflow\./);
-  const ok = await run(def, { name: 'demo-flow', reason }, cwd);
+
+  // Success: renderResult returns no rows (silent on success)
+  const ok = await run(def, q([{ reasoning: 'Load demo-flow.', type: 'load', name: 'demo-flow', reason }]), cwd);
   const okLines = (def.renderResult as (r: ToolCallResult, o: object, t: object) => { render(w: number): string[] })(ok, {}, theme).render(100);
   assert.deepEqual(okLines, []);
-  const bad = await run(def, { name: 'nope', reason }, cwd);
+
+  // Failure: renderResult shows the error
+  const bad = await run(def, q([{ reasoning: 'Load nope.', type: 'load', name: 'nope', reason }]), cwd);
   const badRow = (def.renderResult as (r: ToolCallResult, o: object, t: object) => { render(w: number): string[] })(bad, {}, theme).render(100).join('\n');
-  assert.match(badRow, /✗ skill · Unknown skill: nope/);
+  assert.match(badRow, /✗ skill/);
+});
+
+test('skill render rows: type:call success shows its concise outcome', async () => {
+  const cwd = tmpWorkspace();
+  const def = await makeTool();
+  const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+
+  await withTempSkillsDir(async () => {
+    const proposal = await run(def, q([{
+      reasoning: 'Need a reusable deploy workflow.',
+      type: 'call',
+      skillType: 'deploy-render-flow',
+      mode: 'auto',
+      intent: 'deploy in stages and verify each stage before continuing',
+    }]), cwd);
+    const row = (def.renderResult as (r: ToolCallResult, o: object, t: object) => { render(w: number): string[] })(proposal, {}, theme).render(100).join('\n');
+    assert.match(row, /✓ skill · \[PROPOSAL\]/);
+  });
+});
+
+test('skill render rows: multi-query shows query count', async () => {
+  const def = await makeTool();
+  const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+  const callRow = def.renderCall!(q([
+    { reasoning: 'Load a.', type: 'load', name: 'a', reason: 'needs a' },
+    { reasoning: 'Load b.', type: 'load', name: 'b', reason: 'needs b' },
+  ]), theme).render(100).join('\n');
+  assert.match(callRow, /2 queries/);
+});
+
+test('skill render rows: single type:call shows callSkill action', async () => {
+  const def = await makeTool();
+  const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+  const callRow = def.renderCall!(q([{ reasoning: 'Manage deploy.', type: 'call', skillType: 'deploy-flow', mode: 'auto' }]), theme).render(100).join('\n');
+  assert.match(callRow, /◆ skill · call:deploy-flow/);
 });

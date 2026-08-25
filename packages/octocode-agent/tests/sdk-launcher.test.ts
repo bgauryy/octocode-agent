@@ -185,6 +185,7 @@ function buildMockSdk({
   runtimeShouldThrow = false,
   sessionThrows = false,
   onCreateServices,
+  onCreateSession,
   onApplyOverrides,
   onPrintMode,
   onInteractiveMode,
@@ -194,6 +195,7 @@ function buildMockSdk({
   runtimeShouldThrow?: boolean;
   sessionThrows?: boolean;
   onCreateServices?: (opts: unknown) => void;
+  onCreateSession?: (opts: unknown) => void;
   onApplyOverrides?: (overrides: unknown) => void;
   onPrintMode?: (opts: unknown) => void;
   onInteractiveMode?: (opts: unknown) => void;
@@ -227,7 +229,10 @@ function buildMockSdk({
           sessionStartEvent: {},
         });
       },
-      createAgentSessionFromServices: async () => ({}),
+      createAgentSessionFromServices: async (opts: unknown) => {
+        onCreateSession?.(opts);
+        return {};
+      },
       createAgentSessionServices: async (opts: unknown) => {
         onCreateServices?.(opts);
         // Mirror production: services.settingsManager is the SAME instance the
@@ -357,6 +362,19 @@ describe('launchWithSdk', () => {
       noExtensions: true,
       extensionFactories: expect.any(Array),
     });
+  });
+
+  it('disables all Pi builtins before the SDK session is created', async () => {
+    const sessionOptions: unknown[] = [];
+    const result = await launchWithSdk([], {
+      importPiSdk: buildMockSdk({ onCreateSession: (opts) => sessionOptions.push(opts) }),
+      importExtensionFactory: noopExtensionFactory,
+      env: {},
+    } satisfies SdkDeps);
+
+    expect(result).toBe(0);
+    expect(sessionOptions).toHaveLength(1);
+    expect(sessionOptions[0]).toMatchObject({ noTools: 'builtin' });
   });
 
   it('returns 0 on successful print mode run', async () => {
@@ -499,22 +517,6 @@ describe('launchWithSdk', () => {
       env: {},
     } satisfies SdkDeps);
     expect(result).toBe(0);
-  });
-
-  it('mirrors PI_CACHE_RETENTION from deps.env into process.env', async () => {
-    const prev = process.env.PI_CACHE_RETENTION;
-    delete process.env.PI_CACHE_RETENTION;
-    try {
-      await launchWithSdk([], {
-        importPiSdk: buildMockSdk(),
-        importExtensionFactory: noopExtensionFactory,
-        env: { PI_CACHE_RETENTION: 'long' },
-      } satisfies SdkDeps);
-      expect(process.env.PI_CACHE_RETENTION).toBe('long');
-    } finally {
-      if (prev === undefined) delete process.env.PI_CACHE_RETENTION;
-      else process.env.PI_CACHE_RETENTION = prev;
-    }
   });
 
   it('mirrors PI_SKIP_VERSION_CHECK from deps.env into process.env (in-process version check reads it)', async () => {

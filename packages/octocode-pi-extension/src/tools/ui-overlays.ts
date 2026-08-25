@@ -30,8 +30,11 @@ function fgTok(theme: PiTheme | undefined, token: SemanticToken, text: string): 
  * Shared responsive geometry for Octocode overlays: cap the height and let pi
  * hide the overlay entirely on terminals too narrow to render it legibly.
  */
-const OCTOCODE_OVERLAY_OPTIONS = {
+export const OCTOCODE_OVERLAY_OPTIONS = {
+  width: 88,
+  minWidth: 40,
   maxHeight: "80%",
+  margin: 1,
   visible: (termWidth: number) => termWidth >= 40,
 } as const;
 
@@ -301,4 +304,3 @@ export async function runMultiSelectOverlay(
   );
   return result ?? undefined;
 }
-

@@ -28,6 +28,8 @@ export interface OctocodePageOptions {
   bodyHtml: string;
   /** Auto-reload period. The page shows a "live" hint when set. */
   refreshSeconds?: number;
+  /** Stable state token used to reload only when generated content actually changes. */
+  refreshToken?: string;
   /** Load + initialize mermaid (dark theme) for `<pre class="mermaid">` blocks. */
   mermaid?: boolean;
 }
@@ -37,8 +39,29 @@ export interface OctocodePageOptions {
  * (octocode-dark palette: teal accent, lavender links, gold highlights).
  */
 export function renderOctocodePage(opts: OctocodePageOptions): string {
-  const refresh = opts.refreshSeconds
-    ? `<meta http-equiv="refresh" content="${Math.max(1, Math.floor(opts.refreshSeconds))}">`
+  const refreshSeconds = opts.refreshSeconds ? Math.max(1, Math.floor(opts.refreshSeconds)) : undefined;
+  const refresh = refreshSeconds && opts.refreshToken
+    ? `<meta name="octocode-refresh-token" content="${escapeHtml(opts.refreshToken)}">
+<script type="module">
+  (() => {
+    const token = document.querySelector('meta[name="octocode-refresh-token"]')?.content;
+    const scrollKey = 'octocode-page-scroll:' + location.pathname;
+    try { const saved = sessionStorage.getItem(scrollKey); if (saved) requestAnimationFrame(() => scrollTo(0, Number(saved))); } catch {}
+    setInterval(async () => {
+      if (document.activeElement?.matches('textarea, input, [contenteditable="true"]')) return;
+      try {
+        const response = await fetch(location.href, { cache: 'no-store' });
+        if (!response.ok) return;
+        const next = new DOMParser().parseFromString(await response.text(), 'text/html')
+          .querySelector('meta[name="octocode-refresh-token"]')?.content;
+        if (next && token && next !== token) {
+          try { sessionStorage.setItem(scrollKey, String(scrollY)); } catch {}
+          location.reload();
+        }
+      } catch { /* keep the current readable page when polling fails */ }
+    }, ${refreshSeconds * 1000});
+  })();
+</script>`
     : '';
   const mermaid = opts.mermaid
     ? `<script type="module">
@@ -46,7 +69,7 @@ export function renderOctocodePage(opts: OctocodePageOptions): string {
       mermaid.initialize({ startOnLoad: true, theme: 'dark', themeVariables: { primaryColor: '#1c2128', primaryTextColor: '#C9D1D9', lineColor: '#8B949E' } });
     </script>`
     : '';
-  const live = opts.refreshSeconds ? ` · live (refreshes every ${opts.refreshSeconds}s)` : '';
+  const live = refreshSeconds ? ` · live (checks for updates every ${refreshSeconds}s)` : '';
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -96,14 +119,41 @@ ${refresh}
   ol.phase-timeline .ph.now { color:var(--gold); border-color:var(--gold); font-weight:600;
     box-shadow:0 0 0 3px color-mix(in srgb, var(--gold) 18%, transparent); }
   ol.phase-timeline .ph.todo { opacity:.65; }
+  .phase-note { margin:.7rem 0 0; color:var(--muted); font-size:.8rem; }
+  .phase-note strong { color:var(--gold); font-weight:600; }
+  .phase-note.abandoned { color:var(--red); }
   /* Decisions */
   ul.decisions { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.5rem; }
   ul.decisions li { display:flex; flex-direction:column; gap:.15rem; padding:.5rem .7rem;
     border:1px solid var(--line); border-radius:8px; background:var(--bg); }
   ul.decisions .dq { color:var(--muted); font-size:.82rem; }
   ul.decisions .da { color:var(--lav); }
+  .browser-reply label { display:block; color:var(--muted); font-size:.82rem; margin-bottom:.35rem; }
+  .reply-help { color:var(--muted); margin:-.25rem 0 .8rem; font-size:.86rem; }
+  .browser-reply textarea { width:100%; resize:vertical; min-height:6rem; padding:.75rem; color:var(--ink);
+    background:var(--bg); border:1px solid var(--line); border-radius:8px; font:inherit; }
+  .browser-reply textarea:focus { outline:2px solid var(--lav); outline-offset:2px; }
+  .reply-actions { display:flex; flex-wrap:wrap; gap:.55rem; margin-top:.7rem; }
+  .reply-actions button { cursor:pointer; border:1px solid var(--line); border-radius:7px; padding:.5rem .75rem;
+    color:var(--ink); background:var(--bg); font:inherit; font-size:.82rem; }
+  .reply-actions button:hover { border-color:var(--lav); }
+  .reply-actions button.primary { color:var(--bg); background:var(--teal); border-color:var(--teal); font-weight:700; }
+  .reply-actions button:disabled { cursor:wait; opacity:.55; }
+  .reply-status { min-height:1.4em; margin:.55rem 0 0; color:var(--teal); font-size:.82rem; }
   details pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:1rem; color:var(--muted); }
   summary { cursor:pointer; color:var(--lav); font-size:.85rem; }
+  code { background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:.05rem .3rem; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { padding:.55rem; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.06em; }
+  button { cursor:pointer; border:1px solid var(--line); border-radius:7px; padding:.45rem .7rem; color:var(--ink); background:var(--bg); font:inherit; }
+  button:hover { border-color:var(--lav); }
+  button.primary { color:var(--bg); background:var(--teal); border-color:var(--teal); font-weight:700; }
+  .badge { display:inline-block; padding:.08rem .42rem; border:1px solid var(--line); border-radius:999px; color:var(--muted); font-size:.75rem; }
+  .badge.on { color:var(--teal); border-color:var(--teal); }
+  .stack { display:flex; flex-direction:column; gap:.55rem; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:.8rem; }
+  .muted { color:var(--muted); }
   footer { color:var(--muted); font-size:.75rem; margin-top:1.5rem; }
 </style>
 ${mermaid}

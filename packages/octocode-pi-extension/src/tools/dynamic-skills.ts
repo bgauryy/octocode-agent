@@ -1,5 +1,5 @@
 /**
- * dynamic-skills — the deterministic core of the `callSkill` meta-tool.
+ * dynamic-skills — the deterministic core of the unified `skill` call lifecycle.
  *
  * A "dynamic skill" is an approved, reusable **workflow** the agent follows: a directory
  * with a `SKILL.md` (Agent Skills frontmatter + markdown steps) and optional `scripts/`.
@@ -15,11 +15,12 @@
  * This module owns everything deterministic and unit-testable: registry read/write,
  * O(1) resolve, frontmatter+structure validation (the skill verification gate, weaker
  * than a tool's test gate), CRUD delete, and a junk sweep. Authoring (writing SKILL.md
- * content) needs an LLM and lives in the `callSkill` tool via a skill-smith subagent.
+ * content) needs an LLM and lives in the private call orchestrator via a skill-smith subagent.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { parseFrontmatter as piParseFrontmatter, stripFrontmatter as piStripFrontmatter } from '@earendil-works/pi-coding-agent';
 import { getPiUserSkillsDir } from '../utils.js';
 import { KEYWORD_MATCH_THRESHOLD, tokenize, withRegistryLock, writeJsonAtomic, readJsonSafe } from './registry-store.js';
 
@@ -123,16 +124,16 @@ export interface Frontmatter {
   [k: string]: unknown;
 }
 
-/** Parse the leading `--- ... ---` YAML-ish frontmatter (name/description only needed). */
+/**
+ * Parse the leading `--- ... ---` YAML frontmatter via pi's canonical yaml-based parser.
+ * Returns null when no frontmatter block is present (preserves null-on-absent semantics).
+ * Replaces the former hand-rolled regex parser; uses the same implementation Pi itself
+ * uses when loading skills, ensuring byte-identical field extraction.
+ */
 export function parseFrontmatter(skillMd: string): Frontmatter | null {
-  const m = /^---\s*\n([\s\S]*?)\n---\s*(?:\n|$)/.exec(skillMd);
-  if (!m) return null;
-  const fm: Frontmatter = {};
-  for (const line of m[1].split('\n')) {
-    const kv = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line.trim());
-    if (kv) fm[kv[1]] = kv[2].replace(/^["']|["']$/g, '');
-  }
-  return fm;
+  const { frontmatter } = piParseFrontmatter<Frontmatter>(skillMd);
+  // Pi returns {} when the document has no frontmatter block.
+  return Object.keys(frontmatter).length > 0 ? frontmatter : null;
 }
 
 /**
@@ -160,7 +161,7 @@ export function validateSkill(input: SkillInput): SkillValidation {
     return { ok: false, reason: 'invalid-frontmatter', detail: 'description exceeds 1024 chars' };
   }
   // Structure: a body after the frontmatter with at least one heading and real content.
-  const body = input.skillMd.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '').trim();
+  const body = piStripFrontmatter(input.skillMd).trim();
   if (!/^#\s+\S/m.test(body) || body.length < 40) {
     return { ok: false, reason: 'invalid-structure', detail: 'SKILL.md needs a heading and substantive steps' };
   }

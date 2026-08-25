@@ -52,7 +52,6 @@ describe('production guidance contract', () => {
     expect(helpData).toContain('AGENTS.md = trigger/router');
     expect(helpData).toContain('Agent Skill = operating policy');
     expect(helpData).toContain('CLI/SQLite = canonical live state');
-    expect(helpData).toContain('hooks/Pi bridge = deterministic lifecycle automation');
   });
   it('routes every skill reference explicitly and removes mutating compatibility setup', () => {
     const skill = read(resolve(SKILL_ROOT, 'SKILL.md'));
@@ -274,8 +273,8 @@ describe('production guidance contract', () => {
     expect(packageAgents).not.toContain('## Lifecycle');
     expect(packageAgents).not.toContain('## Hooks');
     expect(packageAgents).not.toContain('Standalone WORK');
-    expect(skill).toContain('Core loop:');
-    expect(skill).toContain('Feature map — when to use what');
+    expect(skill).toMatch(/full-package core loop/i);
+    expect(skill).toContain('Feature map —');
     expect(userGuide).toContain('## Operating Loop');
     expect(hooks).toContain('## Lifecycle');
     expect(architecture).toMatch(/AGENTS\.md \/ CLAUDE\.md[\s\S]*Agent Skill[\s\S]*CLI[\s\S]*hooks/i);
@@ -300,7 +299,6 @@ describe('production guidance contract', () => {
     expect(verification).toContain('scripts/smoke-multi-agent.mjs');
     expect(verification).toContain('hooks check --host <claude|codex|cursor>');
     expect(verification).toMatch(/config.*runtime.*unverified/is);
-    expect(verification).toContain('wirePiAwarenessHooks(pi)');
     expect(verification).toContain('yarn workspace @octocodeai/octocode-awareness lint');
     expect(verification).toContain('yarn workspace @octocodeai/octocode-awareness pack:check');
     expect(verification).toContain('focused skill-behavior checks');

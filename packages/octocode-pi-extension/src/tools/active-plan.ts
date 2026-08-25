@@ -12,25 +12,106 @@
  * Pure + deterministic; the `plan` tool is a thin wrapper over these functions.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getOctocodeHome } from '../env.js';
+import { escapePromptMetadata } from './prompt-safety.js';
+import {
+  compareAndSwapPlanProjection,
+  createSessionArtifactContext,
+  importLegacyPlanOnce,
+  readPlanProjection,
+  writePlanBranchSnapshot,
+  type PlanBranchSnapshotV1,
+  type PlanProjectionV1,
+  type SessionIdentityInput,
+} from './session-artifacts.js';
 
 export type StepStatus = 'todo' | 'doing' | 'done';
-export type PlanLifecycle = 'draft' | 'active';
+export type PlanPhase =
+  | 'researching'
+  | 'needs_answers'
+  | 'draft'
+  | 'in_review'
+  | 'accepted'
+  | 'executing'
+  | 'verifying'
+  | 'complete'
+  | 'abandoned';
+export type PlanLifecycle = PlanPhase;
+
+export interface ReviewQuestion {
+  id: string;
+  prompt: string;
+  answer?: string;
+  blocking: boolean;
+}
+
+export interface PlanReviewComment {
+  id: string;
+  body: string;
+  section?: string;
+  blocking: boolean;
+  resolved: boolean;
+}
+
+export interface ReviewState {
+  phase: PlanPhase;
+  branchSnapshotId: string;
+  generation: number;
+  rfcPath?: string;
+  revision?: string;
+  acceptedRevision?: string;
+  acceptedAt?: string;
+  startedAt?: string;
+  decisions: PlanDecision[];
+  blockingQuestions: ReviewQuestion[];
+  comments: PlanReviewComment[];
+}
 
 export interface PlanStep {
+  /** Stable local identity; preserved across add/remove/reorder/reload. */
+  id: string;
   text: string;
   status: StepStatus;
   /** Present-continuous label shown while this step is the active one (e.g. "Editing file"). */
   activeForm?: string;
-  /** 1-based indices of steps that must be `done` before this one can start. */
-  dependsOn?: number[];
+  /** Stable IDs of steps that must be `done` before this one can start. */
+  dependsOnStepIds?: string[];
+  /** Shared-task execution and verification contract. */
+  paths?: string[];
+  reasoning?: string;
+  acceptance?: string;
+  checkCommand?: string;
+  /** Persisted mapping created when the plan is materialized into Awareness. */
+  awarenessTaskId?: string;
 }
 
-/** A step input: either a bare imperative string, or {text, activeForm, dependsOn}. */
-export type StepInput = string | { text: string; activeForm?: string; dependsOn?: number[] };
+export interface PlanStepInput {
+  text: string;
+  activeForm?: string;
+  /** 1-based display indices accepted only at the mutation boundary. */
+  dependsOn?: number[];
+  paths?: string[];
+  reasoning?: string;
+  acceptance?: string;
+  checkCommand?: string;
+}
+
+/** A step input: either a bare imperative string, or a task-contract object. */
+export type StepInput = string | PlanStepInput;
+
+export type PlanCoordinationMode = 'auto' | 'required' | 'local';
+
+export interface PlanCoordination {
+  mode: PlanCoordinationMode;
+  localReason?: string;
+  /** Stable origin identity used for idempotent Awareness materialization. */
+  sourcePlanKey: string;
+  awarenessPlanId?: string;
+  coordinationWorkspace: string;
+  materializedRevision?: string;
+}
 
 /** A recorded planning decision — the question asked in the clarify phase and the answer chosen. */
 export interface PlanDecision {
@@ -49,13 +130,27 @@ function cleanDeps(deps: unknown): number[] | undefined {
   return out.length ? out : undefined;
 }
 
-/** Whether all of a step's dependencies resolve to `done` steps (out-of-range deps are ignored). */
-export function depsMet(step: PlanStep, list: PlanStep[]): boolean {
-  if (!step.dependsOn || step.dependsOn.length === 0) return true;
-  return step.dependsOn.every((d) => {
-    const dep = list[d - 1];
-    return !dep || dep.status === 'done';
+function cleanStepIds(ids: unknown): string[] | undefined {
+  if (!Array.isArray(ids)) return undefined;
+  const out = [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim()))].slice(0, MAX_STEPS);
+  return out.length ? out : undefined;
+}
+
+/** Current 1-based display indices for a step's stable dependency IDs. */
+export function dependencyIndexes(step: PlanStep, list: PlanStep[]): number[] {
+  if (!step.dependsOnStepIds?.length) return [];
+  const indexById = new Map(list.map((candidate, index) => [candidate.id, index + 1]));
+  return step.dependsOnStepIds.flatMap((id) => {
+    const index = indexById.get(id);
+    return index === undefined ? [] : [index];
   });
+}
+
+/** Whether all of a step's stable dependencies resolve to `done` steps. */
+export function depsMet(step: PlanStep, list: PlanStep[]): boolean {
+  if (!step.dependsOnStepIds?.length) return true;
+  const byId = new Map(list.map((candidate) => [candidate.id, candidate]));
+  return step.dependsOnStepIds.every((id) => byId.get(id)?.status === 'done');
 }
 
 /** Display status for a step: 'blocked' when it's a todo with unmet dependencies. */
@@ -84,14 +179,17 @@ const MAX_STEPS = 40;
 const MAX_STEP_CHARS = 160;
 const MAX_DECISIONS = 20;
 const MAX_DECISION_CHARS = 300;
+const MAX_REVIEW_ITEMS = 100;
+const MAX_REVIEW_TEXT_CHARS = 8_000;
 
 // Keyed by session scope (cwd + Pi session file when available). Module-scoped
 // in-memory cache; backed by disk so the plan survives compaction and process
 // restart of the same session without leaking into a fresh session in the same cwd.
 const plans = new Map<string, PlanStep[]>();
-// Draft plans are reviewable but deliberately have no doing step until the user
-// approves them. Legacy persisted plans without this field are treated as active.
-const planLifecycle = new Map<string, PlanLifecycle>();
+// Review phase is branch-authoritative. Legacy `active` records hydrate as
+// `executing`; all pre-Start phases keep checklist steps non-running.
+const planLifecycle = new Map<string, PlanPhase>();
+const planReview = new Map<string, Omit<ReviewState, 'phase' | 'rfcPath' | 'decisions'>>();
 // Plan-level RFC association (scope → absolute RFC.md path). Set once the plan
 // is derived from an accepted RFC; the plan surface renders that document and
 // the enforcement gate requires it for consequential work. Kept beside `plans`
@@ -101,41 +199,187 @@ const planRfc = new Map<string, string>();
 // and any gate justifications. Durable rationale for the plan — persisted and
 // branch-adopted with the same pattern as `planRfc`.
 const planDecisions = new Map<string, PlanDecision[]>();
+// Shared execution projection metadata. This travels with the same branch snapshot
+// as steps so retries and tree navigation retain exact Awareness mappings.
+const planCoordination = new Map<string, PlanCoordination>();
 const loaded = new Set<string>();
 
 export interface ActivePlanContext {
   cwd?: string;
-  sessionManager?: { getSessionFile?(): string | undefined };
+  sessionManager?: {
+    getSessionId?(): string | undefined;
+    getSessionFile?(): string | undefined;
+    getBranch?(): unknown[];
+  };
 }
+
+interface PlanStoredV3 {
+  version: 1 | 2 | 3;
+  scope: string;
+  steps: PlanStep[];
+  phase?: PlanPhase;
+  /** Legacy field: `active` hydrates additively as `executing`. */
+  lifecycle?: PlanPhase | 'active';
+  rfcPath?: string;
+  revision?: string;
+  acceptedRevision?: string;
+  acceptedAt?: string;
+  startedAt?: string;
+  decisions?: PlanDecision[];
+  blockingQuestions?: ReviewQuestion[];
+  comments?: PlanReviewComment[];
+  coordination?: PlanCoordination;
+  branchSnapshotId?: string;
+  generation?: number;
+  updatedAt: string;
+}
+
+interface PlanSnapshotMeta {
+  snapshotId: string;
+  generation: number;
+  capturedAt: string;
+}
+
+interface ScopeBinding {
+  identityInput: SessionIdentityInput;
+  legacyScope: string;
+}
+
+const scopeBindings = new Map<string, ScopeBinding>();
 
 export function activePlanScope(ctx?: ActivePlanContext): string {
   const cwd = ctx?.cwd ?? process.cwd();
-  const sessionFile = ctx?.sessionManager?.getSessionFile?.();
-  return sessionFile ? `${cwd}\0${sessionFile}` : cwd;
+  const sessionId = ctx?.sessionManager?.getSessionId?.()?.trim();
+  const sessionFile = ctx?.sessionManager?.getSessionFile?.()?.trim();
+  const scope = sessionId
+    ? `${cwd}\0id:${sessionId}`
+    : sessionFile
+      ? `${cwd}\0${sessionFile}`
+      : cwd;
+  const legacyScope = sessionFile ? `${cwd}\0${sessionFile}` : cwd;
+  scopeBindings.set(scope, { identityInput: { cwd, sessionManager: ctx?.sessionManager }, legacyScope });
+  return scope;
 }
 
-function planFile(scope: string): string {
-  const hash = createHash('sha256').update(scope).digest('hex').slice(0, 16);
-  return path.join(getOctocodeHome(), 'plans', `${hash}.json`);
+function bindingForScope(scope: string): ScopeBinding {
+  const known = scopeBindings.get(scope);
+  if (known) return known;
+  const separator = scope.indexOf('\0');
+  if (separator < 0) return { identityInput: { cwd: scope }, legacyScope: scope };
+  const cwd = scope.slice(0, separator);
+  const discriminator = scope.slice(separator + 1);
+  if (discriminator.startsWith('id:')) {
+    const sessionId = discriminator.slice(3);
+    return { identityInput: { cwd, sessionManager: { getSessionId: () => sessionId } }, legacyScope: cwd };
+  }
+  return {
+    identityInput: { cwd, sessionManager: { getSessionFile: () => discriminator } },
+    legacyScope: scope,
+  };
+}
+
+export function artifactContextForScope(scope: string) {
+  return createSessionArtifactContext(bindingForScope(scope).identityInput);
+}
+
+function cleanContractText(value: unknown, max = 2_000): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.replace(/\s+/g, ' ').trim();
+  return text ? text.slice(0, max) : undefined;
+}
+
+function cleanPaths(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const paths = [...new Set(value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean))].slice(0, 100);
+  return paths.length ? paths : undefined;
+}
+
+function legacyStepId(scope: string, index: number, text: string): string {
+  const digest = createHash('sha256').update(`${scope}\0${index}\0${text}`).digest('hex').slice(0, 24);
+  return `step-${digest}`;
 }
 
 function sanitizeStored(raw: unknown): PlanStep[] {
   if (!raw || typeof raw !== 'object' || !Array.isArray((raw as { steps?: unknown }).steps)) return [];
+  const record = raw as Record<string, unknown>;
+  const scope = typeof record.scope === 'string' && record.scope.trim() ? record.scope : 'legacy-branch';
+  const sourceSteps = record.steps as unknown[];
   const out: PlanStep[] = [];
-  for (const s of (raw as { steps: unknown[] }).steps) {
-    if (!s || typeof s !== 'object') continue;
-    const rec = s as Record<string, unknown>;
+  const sourceRecords: Record<string, unknown>[] = [];
+  const usedIds = new Set<string>();
+  for (let sourceIndex = 0; sourceIndex < sourceSteps.length; sourceIndex += 1) {
+    const candidate = sourceSteps[sourceIndex];
+    if (!candidate || typeof candidate !== 'object') continue;
+    const rec = candidate as Record<string, unknown>;
     const text = typeof rec.text === 'string' ? clean(rec.text) : '';
     if (!text) continue;
+    const storedId = typeof rec.id === 'string' ? rec.id.trim().slice(0, 128) : '';
+    let id = storedId || legacyStepId(scope, sourceIndex, text);
+    if (usedIds.has(id)) id = legacyStepId(`${scope}\0duplicate`, sourceIndex, text);
+    usedIds.add(id);
     const status: StepStatus = rec.status === 'doing' || rec.status === 'done' ? rec.status : 'todo';
-    const step: PlanStep = { text, status };
+    const step: PlanStep = { id, text, status };
     if (typeof rec.activeForm === 'string' && rec.activeForm.trim()) step.activeForm = clean(rec.activeForm);
-    const deps = cleanDeps(rec.dependsOn);
-    if (deps) step.dependsOn = deps;
+    const paths = cleanPaths(rec.paths);
+    const reasoning = cleanContractText(rec.reasoning);
+    const acceptance = cleanContractText(rec.acceptance);
+    const checkCommand = cleanContractText(rec.checkCommand);
+    const awarenessTaskId = cleanContractText(rec.awarenessTaskId, 256);
+    if (paths) step.paths = paths;
+    if (reasoning) step.reasoning = reasoning;
+    if (acceptance) step.acceptance = acceptance;
+    if (checkCommand) step.checkCommand = checkCommand;
+    if (awarenessTaskId) step.awarenessTaskId = awarenessTaskId;
     out.push(step);
+    sourceRecords.push(rec);
     if (out.length >= MAX_STEPS) break;
   }
+  const knownIds = new Set(out.map((step) => step.id));
+  out.forEach((step, index) => {
+    const rec = sourceRecords[index]!;
+    const stableDeps = cleanStepIds(rec.dependsOnStepIds)?.filter((id) => id !== step.id && knownIds.has(id));
+    const legacyDeps = cleanDeps(rec.dependsOn)?.flatMap((depIndex) => {
+      const dependency = out[depIndex - 1];
+      return dependency && dependency.id !== step.id ? [dependency.id] : [];
+    });
+    const dependencies = stableDeps ?? (legacyDeps?.length ? [...new Set(legacyDeps)] : undefined);
+    if (dependencies?.length) step.dependsOnStepIds = dependencies;
+  });
   return out;
+}
+
+function workspaceForScope(scope: string): string {
+  return bindingForScope(scope).identityInput.cwd ?? scope.split('\0', 1)[0]!;
+}
+
+function freshCoordination(scope: string): PlanCoordination {
+  return {
+    mode: 'auto',
+    sourcePlanKey: `pi-plan-${randomUUID()}`,
+    coordinationWorkspace: workspaceForScope(scope),
+  };
+}
+
+function readCoordinationFromStored(raw: unknown, scope: string): PlanCoordination {
+  const root = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const value = root.coordination && typeof root.coordination === 'object'
+    ? root.coordination as Record<string, unknown>
+    : {};
+  const mode: PlanCoordinationMode = value.mode === 'required' || value.mode === 'local' ? value.mode : 'auto';
+  const fallbackKey = `legacy-plan-${createHash('sha256').update(scope).digest('hex').slice(0, 24)}`;
+  const sourcePlanKey = cleanContractText(value.sourcePlanKey, 256) ?? fallbackKey;
+  const coordinationWorkspace = cleanContractText(value.coordinationWorkspace, 2_000) ?? workspaceForScope(scope);
+  const localReason = cleanContractText(value.localReason);
+  const awarenessPlanId = cleanContractText(value.awarenessPlanId, 256);
+  const materializedRevision = cleanContractText(value.materializedRevision, 256);
+  return {
+    mode,
+    sourcePlanKey,
+    coordinationWorkspace,
+    ...(localReason ? { localReason } : {}),
+    ...(awarenessPlanId ? { awarenessPlanId } : {}),
+    ...(materializedRevision ? { materializedRevision } : {}),
+  };
 }
 
 /** Extract a stored rfcPath (absolute string) from a persisted/snapshot record, if present. */
@@ -163,73 +407,157 @@ function readDecisionsFromStored(raw: unknown): PlanDecision[] | undefined {
   return out.length ? out : undefined;
 }
 
-function readLifecycleFromStored(raw: unknown): PlanLifecycle {
-  if (!raw || typeof raw !== 'object') return 'active';
-  return (raw as Record<string, unknown>).lifecycle === 'draft' ? 'draft' : 'active';
+const PLAN_PHASE_SET = new Set<PlanPhase>([
+  'researching', 'needs_answers', 'draft', 'in_review', 'accepted',
+  'executing', 'verifying', 'complete', 'abandoned',
+]);
+
+function readLifecycleFromStored(raw: unknown): PlanPhase {
+  if (!raw || typeof raw !== 'object') return 'executing';
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec.phase === 'string' && PLAN_PHASE_SET.has(rec.phase as PlanPhase)) return rec.phase as PlanPhase;
+  if (typeof rec.lifecycle === 'string' && PLAN_PHASE_SET.has(rec.lifecycle as PlanPhase)) return rec.lifecycle as PlanPhase;
+  return rec.lifecycle === 'draft' ? 'draft' : 'executing';
 }
 
-/** Read the persisted plan for a workspace. Returns [] on any error or missing file. */
+function cleanReviewText(value: unknown): string {
+  return typeof value === 'string' ? value.trim().slice(0, MAX_REVIEW_TEXT_CHARS) : '';
+}
+
+function readQuestionsFromStored(raw: unknown): ReviewQuestion[] {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).blockingQuestions : undefined;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): ReviewQuestion[] => {
+    if (!item || typeof item !== 'object') return [];
+    const rec = item as Record<string, unknown>;
+    const id = cleanReviewText(rec.id);
+    const prompt = cleanReviewText(rec.prompt);
+    if (!id || !prompt) return [];
+    const answer = cleanReviewText(rec.answer);
+    return [{ id, prompt, blocking: rec.blocking !== false, ...(answer ? { answer } : {}) }];
+  }).slice(0, MAX_REVIEW_ITEMS);
+}
+
+function readCommentsFromStored(raw: unknown): PlanReviewComment[] {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).comments : undefined;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): PlanReviewComment[] => {
+    if (!item || typeof item !== 'object') return [];
+    const rec = item as Record<string, unknown>;
+    const id = cleanReviewText(rec.id);
+    const body = cleanReviewText(rec.body);
+    if (!id || !body) return [];
+    const section = cleanReviewText(rec.section);
+    return [{ id, body, blocking: rec.blocking === true, resolved: rec.resolved === true, ...(section ? { section } : {}) }];
+  }).slice(0, MAX_REVIEW_ITEMS);
+}
+
+function readOptionalTimestamp(raw: Record<string, unknown>, key: string): string | undefined {
+  const value = raw[key];
+  return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : undefined;
+}
+
+function reviewMetadataFromStored(raw: unknown): Omit<ReviewState, 'phase' | 'rfcPath' | 'decisions'> {
+  const rec = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const branchSnapshotId = typeof rec.branchSnapshotId === 'string' && rec.branchSnapshotId.trim()
+    ? rec.branchSnapshotId
+    : typeof rec.snapshotId === 'string' && rec.snapshotId.trim() ? rec.snapshotId : 'legacy';
+  const generation = Number.isSafeInteger(rec.generation) && Number(rec.generation) >= 0 ? Number(rec.generation) : 0;
+  const revision = typeof rec.revision === 'string' && rec.revision.trim() ? rec.revision : undefined;
+  const acceptedRevision = typeof rec.acceptedRevision === 'string' && rec.acceptedRevision.trim() ? rec.acceptedRevision : undefined;
+  return {
+    branchSnapshotId,
+    generation,
+    ...(revision ? { revision } : {}),
+    ...(acceptedRevision ? { acceptedRevision } : {}),
+    ...(readOptionalTimestamp(rec, 'acceptedAt') ? { acceptedAt: readOptionalTimestamp(rec, 'acceptedAt') } : {}),
+    ...(readOptionalTimestamp(rec, 'startedAt') ? { startedAt: readOptionalTimestamp(rec, 'startedAt') } : {}),
+    blockingQuestions: readQuestionsFromStored(rec),
+    comments: readCommentsFromStored(rec),
+  };
+}
+
+function buildStoredPlan(cwd: string, steps: PlanStep[]): PlanStoredV3 {
+  const rfcPath = planRfc.get(cwd);
+  const decisions = planDecisions.get(cwd);
+  const phase = planLifecycle.get(cwd) ?? 'executing';
+  const review = planReview.get(cwd) ?? reviewMetadataFromStored(undefined);
+  return {
+    version: 3,
+    scope: cwd,
+    steps,
+    phase,
+    coordination: planCoordination.get(cwd) ?? readCoordinationFromStored(undefined, cwd),
+    rfcPath,
+    ...(review.revision ? { revision: review.revision } : {}),
+    ...(review.acceptedRevision ? { acceptedRevision: review.acceptedRevision } : {}),
+    ...(review.acceptedAt ? { acceptedAt: review.acceptedAt } : {}),
+    ...(review.startedAt ? { startedAt: review.startedAt } : {}),
+    ...(decisions && decisions.length ? { decisions } : {}),
+    ...(review.blockingQuestions.length ? { blockingQuestions: review.blockingQuestions } : {}),
+    ...(review.comments.length ? { comments: review.comments } : {}),
+    branchSnapshotId: review.branchSnapshotId,
+    generation: review.generation,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/** Read the branch-authoritative disk projection, falling back to a copy-once legacy import. */
+function readStoredFromDisk(cwd: string): PlanStoredV3 | undefined {
+  try {
+    const ctx = artifactContextForScope(cwd);
+    const projection = readPlanProjection<PlanStoredV3>(ctx);
+    if (projection) return projection.state;
+    const imported = importLegacyPlanOnce(ctx, bindingForScope(cwd).legacyScope);
+    if (!imported.importedPath) return undefined;
+    return JSON.parse(fs.readFileSync(imported.importedPath, 'utf8')) as PlanStoredV3;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Read the persisted plan for a workspace. Returns [] on any error or missing state. */
 function readFromDisk(cwd: string): PlanStep[] {
-  try {
-    const file = planFile(cwd);
-    if (!fs.existsSync(file)) return [];
-    return sanitizeStored(JSON.parse(fs.readFileSync(file, 'utf8')));
-  } catch {
-    return [];
-  }
+  return sanitizeStored(readStoredFromDisk(cwd));
 }
 
-/** Read just the persisted rfcPath for a workspace, bypassing the in-memory cache. */
 function readRfcFromDisk(cwd: string): string | undefined {
-  try {
-    const file = planFile(cwd);
-    if (!fs.existsSync(file)) return undefined;
-    return readRfcFromStored(JSON.parse(fs.readFileSync(file, 'utf8')));
-  } catch {
-    return undefined;
-  }
+  return readRfcFromStored(readStoredFromDisk(cwd));
 }
 
-/** Read just the persisted decision log for a workspace, bypassing the in-memory cache. */
 function readDecisionsFromDisk(cwd: string): PlanDecision[] | undefined {
-  try {
-    const file = planFile(cwd);
-    if (!fs.existsSync(file)) return undefined;
-    return readDecisionsFromStored(JSON.parse(fs.readFileSync(file, 'utf8')));
-  } catch {
-    return undefined;
-  }
+  return readDecisionsFromStored(readStoredFromDisk(cwd));
 }
 
 function readLifecycleFromDisk(cwd: string): PlanLifecycle | undefined {
-  try {
-    const file = planFile(cwd);
-    if (!fs.existsSync(file)) return undefined;
-    return readLifecycleFromStored(JSON.parse(fs.readFileSync(file, 'utf8')));
-  } catch {
-    return undefined;
-  }
+  const stored = readStoredFromDisk(cwd);
+  return stored ? readLifecycleFromStored(stored) : undefined;
 }
 
-/** Atomically persist (or delete when empty) the plan for a workspace. Never throws. */
-function writeToDisk(cwd: string, steps: PlanStep[]): void {
+/** Persist a rebuildable projection and immutable branch snapshot. Never changes in-memory authority. */
+function projectStoredPlan(cwd: string, stored: PlanStoredV3, meta: PlanSnapshotMeta): void {
   try {
-    const file = planFile(cwd);
-    // The plan is the primary record — no steps means no plan, so drop the file
-    // (and with it any lingering rfcPath) rather than persisting a stepless doc.
-    if (steps.length === 0) {
-      if (fs.existsSync(file)) fs.rmSync(file, { force: true });
-      return;
-    }
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    const lifecycle = planLifecycle.get(cwd) ?? 'active';
-    const rfcPath = planRfc.get(cwd);
-    const decisions = planDecisions.get(cwd);
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ version: 1, scope: cwd, steps, lifecycle, ...(rfcPath ? { rfcPath } : {}), ...(decisions && decisions.length ? { decisions } : {}), updatedAt: new Date().toISOString() }));
-    fs.renameSync(tmp, file);
+    const ctx = artifactContextForScope(cwd);
+    const current = readPlanProjection<PlanStoredV3>(ctx);
+    const snapshot: PlanBranchSnapshotV1<PlanStoredV3> = {
+      version: 1,
+      sourceEntryId: meta.snapshotId,
+      generation: meta.generation,
+      capturedAt: meta.capturedAt,
+      state: stored,
+    };
+    writePlanBranchSnapshot(ctx, snapshot);
+    const alreadyProjected = current?.sourceEntryId === snapshot.sourceEntryId
+      && current.capturedAt === snapshot.capturedAt
+      && JSON.stringify(current.state) === JSON.stringify(snapshot.state);
+    if (alreadyProjected) return;
+    const projection: PlanProjectionV1<PlanStoredV3> = {
+      ...snapshot,
+      generation: (current?.generation ?? 0) + 1,
+    };
+    compareAndSwapPlanProjection(ctx, current?.generation ?? null, projection);
   } catch {
-    // Persistence is best-effort; degrade to in-memory.
+    // CustomEntry/in-memory state remains authoritative; the projection is rebuildable.
   }
 }
 
@@ -238,13 +566,16 @@ function ensureLoaded(cwd: string): void {
   if (loaded.has(cwd)) return;
   loaded.add(cwd);
   if (plans.has(cwd)) return;
-  const disk = readFromDisk(cwd);
+  const stored = readStoredFromDisk(cwd);
+  const disk = sanitizeStored(stored);
   if (disk.length > 0) {
     plans.set(cwd, disk);
-    planLifecycle.set(cwd, readLifecycleFromDisk(cwd) ?? 'active');
-    const rfcPath = readRfcFromDisk(cwd);
+    planLifecycle.set(cwd, stored ? readLifecycleFromStored(stored) : 'executing');
+    planReview.set(cwd, reviewMetadataFromStored(stored));
+    planCoordination.set(cwd, readCoordinationFromStored(stored, cwd));
+    const rfcPath = readRfcFromStored(stored);
     if (rfcPath) planRfc.set(cwd, rfcPath);
-    const decisions = readDecisionsFromDisk(cwd);
+    const decisions = readDecisionsFromStored(stored);
     if (decisions) planDecisions.set(cwd, decisions);
   }
 }
@@ -261,18 +592,49 @@ function ensureLoaded(cwd: string): void {
 /** customType of the plan-snapshot session entries. */
 export const PLAN_ENTRY_TYPE = 'octocode-plan';
 
-let planEntryAppender: ((steps: PlanStep[], rfcPath?: string, decisions?: PlanDecision[], lifecycle?: PlanLifecycle) => void) | null = null;
+type PlanEntryAppender = (
+  steps: PlanStep[],
+  rfcPath: string | undefined,
+  decisions: PlanDecision[] | undefined,
+  lifecycle: PlanPhase,
+  review: ReviewState,
+  coordination: PlanCoordination,
+  meta: PlanSnapshotMeta,
+) => void;
+
+let planEntryAppender: PlanEntryAppender | null = null;
 
 /** Wire (or clear) the host-side appender that snapshots plans into session entries. */
-export function setPlanEntryAppender(appender: ((steps: PlanStep[], rfcPath?: string, decisions?: PlanDecision[], lifecycle?: PlanLifecycle) => void) | null): void {
+export function setPlanEntryAppender(appender: PlanEntryAppender | null): void {
   planEntryAppender = appender;
 }
 
-function appendPlanEntry(steps: PlanStep[], rfcPath?: string, decisions?: PlanDecision[], lifecycle?: PlanLifecycle): void {
+function nextSnapshotMeta(cwd: string): PlanSnapshotMeta {
+  let generation = 1;
   try {
-    planEntryAppender?.(steps, rfcPath, decisions, lifecycle);
+    generation = (readPlanProjection<PlanStoredV3>(artifactContextForScope(cwd))?.generation ?? 0) + 1;
   } catch {
-    // Session-entry snapshots are best-effort; disk persistence still holds.
+    // A missing/corrupt projection cannot block the authoritative CustomEntry append.
+  }
+  return { snapshotId: `plan-${randomUUID()}`, generation, capturedAt: new Date().toISOString() };
+}
+
+function appendPlanEntry(
+  steps: PlanStep[],
+  rfcPath: string | undefined,
+  decisions: PlanDecision[] | undefined,
+  lifecycle: PlanPhase,
+  review: ReviewState,
+  coordination: PlanCoordination,
+  meta: PlanSnapshotMeta,
+): 'appended' | 'unavailable' | 'failed' {
+  if (!planEntryAppender) return 'unavailable';
+  try {
+    planEntryAppender(steps, rfcPath, decisions, lifecycle, review, coordination, meta);
+    return 'appended';
+  } catch {
+    // Never let an unrecorded mutation become restorable disk state.
+    return 'failed';
   }
 }
 
@@ -282,24 +644,26 @@ function appendPlanEntry(steps: PlanStep[], rfcPath?: string, decisions?: PlanDe
  * snapshot at all (sessions predating this feature). Adoption is
  * reconciliation, not a mutation: it never re-appends a session entry.
  */
-export function adoptPlanFromBranch(cwd: string, branchEntries: unknown[]): boolean {
+export function adoptPlanFromBranch(cwd: string, branchEntries: unknown[], options: { clearWhenMissing?: boolean } = {}): boolean {
   for (let i = branchEntries.length - 1; i >= 0; i -= 1) {
     const entry = branchEntries[i];
     if (!entry || typeof entry !== 'object') continue;
     const rec = entry as Record<string, unknown>;
     if (rec.type !== 'custom' || rec.customType !== PLAN_ENTRY_TYPE) continue;
-    const steps = sanitizeStored(rec.data);
-    const lifecycle = readLifecycleFromStored(rec.data);
-    const rfcPath = readRfcFromStored(rec.data);
-    const decisions = readDecisionsFromStored(rec.data);
+    const data = rec.data && typeof rec.data === 'object' ? rec.data as Record<string, unknown> : {};
+    const steps = sanitizeStored(data);
+    const lifecycle = readLifecycleFromStored(data);
+    const rfcPath = readRfcFromStored(data);
+    const decisions = readDecisionsFromStored(data);
+    const coordination = readCoordinationFromStored(data, cwd);
     if (steps.length === 0) {
       plans.delete(cwd);
-      planLifecycle.delete(cwd);
       planRfc.delete(cwd);
       planDecisions.delete(cwd);
+      planCoordination.delete(cwd);
     } else {
       plans.set(cwd, steps);
-      planLifecycle.set(cwd, lifecycle);
+      planCoordination.set(cwd, coordination);
       // The RFC link and decision log are part of the plan snapshot, so a
       // fork/tree jump restores (or clears) them in lockstep with the steps
       // rather than leaking a stale RFC or decisions from another branch.
@@ -310,17 +674,60 @@ export function adoptPlanFromBranch(cwd: string, branchEntries: unknown[]): bool
     }
     loaded.add(cwd);
     turnsSinceUpdate.set(cwd, 0);
-    writeToDisk(cwd, steps);
+    const fallbackId = createHash('sha256').update(JSON.stringify(data)).digest('hex').slice(0, 24);
+    const snapshotId = typeof rec.id === 'string' && rec.id.trim()
+      ? rec.id
+      : typeof data.snapshotId === 'string' && data.snapshotId.trim()
+        ? data.snapshotId
+        : `legacy-${fallbackId}`;
+    const entryGeneration = Number.isSafeInteger(data.generation) && Number(data.generation) > 0
+      ? Number(data.generation)
+      : 1;
+    const entryTimestamp = typeof data.capturedAt === 'string' && Number.isFinite(Date.parse(data.capturedAt))
+      ? data.capturedAt
+      : typeof rec.timestamp === 'string' && Number.isFinite(Date.parse(rec.timestamp))
+        ? rec.timestamp
+        : new Date(0).toISOString();
+    planLifecycle.set(cwd, lifecycle);
+    planReview.set(cwd, reviewMetadataFromStored({ ...data, branchSnapshotId: snapshotId, generation: entryGeneration }));
+    const stored: PlanStoredV3 = {
+      ...buildStoredPlan(cwd, steps),
+      updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : entryTimestamp,
+    };
+    projectStoredPlan(cwd, stored, { snapshotId, generation: entryGeneration, capturedAt: entryTimestamp });
     return true;
+  }
+  if (options.clearWhenMissing) {
+    plans.delete(cwd);
+    planLifecycle.delete(cwd);
+    planReview.delete(cwd);
+    planRfc.delete(cwd);
+    planDecisions.delete(cwd);
+    planCoordination.delete(cwd);
+    turnsSinceUpdate.delete(cwd);
+    loaded.add(cwd);
   }
   return false;
 }
 
-/** Persist the current in-memory plan for a workspace. */
+/** Persist one versioned CustomEntry and its rebuildable session-root projection. */
 function persist(cwd: string): void {
   const steps = plans.get(cwd) ?? [];
-  writeToDisk(cwd, steps);
-  appendPlanEntry(steps, planRfc.get(cwd), planDecisions.get(cwd), planLifecycle.get(cwd) ?? 'active');
+  const lifecycle = planLifecycle.get(cwd) ?? 'executing';
+  const meta = nextSnapshotMeta(cwd);
+  const previous = planReview.get(cwd) ?? reviewMetadataFromStored(undefined);
+  const coordination = planCoordination.get(cwd) ?? readCoordinationFromStored(undefined, cwd);
+  planCoordination.set(cwd, coordination);
+  const review: ReviewState = {
+    ...getPlanReviewState(cwd),
+    branchSnapshotId: meta.snapshotId,
+    generation: meta.generation,
+  };
+  const appendResult = appendPlanEntry(steps, planRfc.get(cwd), planDecisions.get(cwd), lifecycle, review, coordination, meta);
+  if (appendResult === 'appended') {
+    planReview.set(cwd, { ...previous, branchSnapshotId: meta.snapshotId, generation: meta.generation });
+    projectStoredPlan(cwd, buildStoredPlan(cwd, steps), meta);
+  }
 }
 
 /** Test hook: read the persisted plan straight from disk, bypassing the in-memory cache. */
@@ -484,12 +891,271 @@ export function getPlan(cwd: string): PlanStep[] {
   return plans.get(cwd) ?? [];
 }
 
-export function getPlanLifecycle(cwd: string): PlanLifecycle {
+export function getPlanCoordination(cwd: string): PlanCoordination {
   ensureLoaded(cwd);
-  return planLifecycle.get(cwd) ?? 'active';
+  const current = planCoordination.get(cwd) ?? readCoordinationFromStored(undefined, cwd);
+  planCoordination.set(cwd, current);
+  return { ...current };
 }
 
-/** Promote an approved draft and start its first runnable step. */
+export function updatePlanCoordination(
+  cwd: string,
+  updates: {
+    mode?: PlanCoordinationMode;
+    localReason?: string | null;
+    coordinationWorkspace?: string;
+    awarenessPlanId?: string | null;
+    materializedRevision?: string | null;
+  },
+): PlanCoordination {
+  const current = getPlanCoordination(cwd);
+  const mode = updates.mode ?? current.mode;
+  const localReason = updates.localReason === undefined
+    ? current.localReason
+    : cleanContractText(updates.localReason);
+  if (mode === 'local' && !localReason) throw new Error('local coordination mode requires localReason');
+  const coordinationWorkspace = cleanContractText(updates.coordinationWorkspace, 2_000) ?? current.coordinationWorkspace;
+  const awarenessPlanId = updates.awarenessPlanId === undefined
+    ? current.awarenessPlanId
+    : cleanContractText(updates.awarenessPlanId, 256);
+  const materializedRevision = updates.materializedRevision === undefined
+    ? current.materializedRevision
+    : cleanContractText(updates.materializedRevision, 256);
+  const next: PlanCoordination = {
+    mode,
+    sourcePlanKey: current.sourcePlanKey,
+    coordinationWorkspace,
+    ...(mode === 'local' && localReason ? { localReason } : {}),
+    ...(awarenessPlanId ? { awarenessPlanId } : {}),
+    ...(materializedRevision ? { materializedRevision } : {}),
+  };
+  planCoordination.set(cwd, next);
+  if (getPlan(cwd).length > 0) persist(cwd);
+  return { ...next };
+}
+
+export function setPlanAwarenessMappings(
+  cwd: string,
+  mapping: { awarenessPlanId: string; taskIdsByStepId: Record<string, string>; materializedRevision?: string },
+): PlanStep[] {
+  const list = getPlan(cwd);
+  const awarenessPlanId = cleanContractText(mapping.awarenessPlanId, 256);
+  if (!awarenessPlanId) throw new Error('awarenessPlanId is required');
+  const taskIds = new Map(Object.entries(mapping.taskIdsByStepId).map(([stepId, taskId]) => [stepId, cleanContractText(taskId, 256)]));
+  for (const step of list) {
+    if (!taskIds.get(step.id)) throw new Error(`missing Awareness task mapping for step ${step.id}`);
+  }
+  const next = list.map((step) => ({ ...step, awarenessTaskId: taskIds.get(step.id)! }));
+  plans.set(cwd, next);
+  const current = getPlanCoordination(cwd);
+  planCoordination.set(cwd, {
+    ...current,
+    awarenessPlanId,
+    ...(mapping.materializedRevision ? { materializedRevision: cleanContractText(mapping.materializedRevision, 256) } : {}),
+  });
+  markUpdated(cwd);
+  persist(cwd);
+  return next;
+}
+
+export function clearPlanAwarenessMappings(cwd: string): PlanStep[] {
+  const next = getPlan(cwd).map(({ awarenessTaskId: _taskId, ...step }) => step);
+  plans.set(cwd, next);
+  const current = getPlanCoordination(cwd);
+  const { awarenessPlanId: _planId, materializedRevision: _revision, ...local } = current;
+  planCoordination.set(cwd, local);
+  markUpdated(cwd);
+  persist(cwd);
+  return next;
+}
+
+export function getPlanLifecycle(cwd: string): PlanPhase {
+  ensureLoaded(cwd);
+  return planLifecycle.get(cwd) ?? 'executing';
+}
+
+export function getPlanReviewState(cwd: string): ReviewState {
+  ensureLoaded(cwd);
+  const metadata = planReview.get(cwd) ?? reviewMetadataFromStored(undefined);
+  return {
+    phase: getPlanLifecycle(cwd),
+    branchSnapshotId: metadata.branchSnapshotId,
+    generation: metadata.generation,
+    ...(planRfc.get(cwd) ? { rfcPath: planRfc.get(cwd) } : {}),
+    ...(metadata.revision ? { revision: metadata.revision } : {}),
+    ...(metadata.acceptedRevision ? { acceptedRevision: metadata.acceptedRevision } : {}),
+    ...(metadata.acceptedAt ? { acceptedAt: metadata.acceptedAt } : {}),
+    ...(metadata.startedAt ? { startedAt: metadata.startedAt } : {}),
+    decisions: planDecisions.get(cwd) ?? [],
+    blockingQuestions: metadata.blockingQuestions,
+    comments: metadata.comments,
+  };
+}
+
+export type PlanReviewTransitionCode =
+  | 'invalid_transition'
+  | 'missing_rfc'
+  | 'rfc_unreadable'
+  | 'revision_changed'
+  | 'unresolved_blockers'
+  | 'no_runnable_step';
+
+export interface CurrentRfcRevision {
+  path?: string;
+  revision?: string;
+  error?: Extract<PlanReviewTransitionCode, 'missing_rfc' | 'rfc_unreadable'>;
+}
+
+export type PlanReviewTransitionResult =
+  | { ok: true; state: ReviewState; steps: PlanStep[] }
+  | { ok: false; code: PlanReviewTransitionCode; message: string; state: ReviewState; steps: PlanStep[] };
+
+/** Hash the exact canonical RFC.md bytes currently linked to this plan. */
+export function currentRfcRevision(cwd: string): CurrentRfcRevision {
+  ensureLoaded(cwd);
+  const rfcPath = planRfc.get(cwd);
+  if (!rfcPath) return { error: 'missing_rfc' };
+  try {
+    const bytes = fs.readFileSync(rfcPath);
+    return { path: rfcPath, revision: createHash('sha256').update(bytes).digest('hex') };
+  } catch {
+    return { path: rfcPath, error: 'rfc_unreadable' };
+  }
+}
+
+function transitionError(cwd: string, code: PlanReviewTransitionCode, message: string): PlanReviewTransitionResult {
+  return { ok: false, code, message, state: getPlanReviewState(cwd), steps: getPlan(cwd) };
+}
+
+function unresolvedReviewBlockers(state: ReviewState): boolean {
+  return state.blockingQuestions.some((question) => question.blocking && !question.answer?.trim())
+    || state.comments.some((comment) => comment.blocking && !comment.resolved);
+}
+
+function storeReviewTransition(
+  cwd: string,
+  phase: PlanPhase,
+  metadata: Omit<ReviewState, 'phase' | 'rfcPath' | 'decisions'>,
+  steps: PlanStep[] = getPlan(cwd),
+): PlanReviewTransitionResult {
+  plans.set(cwd, steps);
+  planLifecycle.set(cwd, phase);
+  planReview.set(cwd, metadata);
+  markUpdated(cwd);
+  persist(cwd);
+  return { ok: true, state: getPlanReviewState(cwd), steps: getPlan(cwd) };
+}
+
+/** Enter review and bind the displayed revision to the exact current RFC bytes. */
+export function proposePlanReview(cwd: string): PlanReviewTransitionResult {
+  const state = getPlanReviewState(cwd);
+  if (state.phase !== 'draft' && state.phase !== 'in_review') {
+    return transitionError(cwd, 'invalid_transition', `review.propose is not valid from ${state.phase}`);
+  }
+  if (unresolvedReviewBlockers(state)) {
+    return transitionError(cwd, 'unresolved_blockers', 'review.propose requires all blocking questions and comments to be resolved');
+  }
+  const current = currentRfcRevision(cwd);
+  if (!current.revision) {
+    const code = current.error ?? 'rfc_unreadable';
+    return transitionError(cwd, code, code === 'missing_rfc' ? 'review.propose requires a linked RFC' : 'the linked RFC could not be read');
+  }
+  const todoSteps = getPlan(cwd).map((step) => ({ ...step, status: 'todo' as const }));
+  return storeReviewTransition(cwd, 'in_review', {
+    branchSnapshotId: state.branchSnapshotId,
+    generation: state.generation,
+    revision: current.revision,
+    blockingQuestions: state.blockingQuestions,
+    comments: state.comments,
+  }, todoSteps);
+}
+
+/** Accept only the exact RFC revision displayed to the user; acceptance never starts work. */
+export function acceptPlanReview(cwd: string, displayedRevision: string): PlanReviewTransitionResult {
+  const state = getPlanReviewState(cwd);
+  if (state.phase !== 'in_review') {
+    return transitionError(cwd, 'invalid_transition', `review.accept is not valid from ${state.phase}`);
+  }
+  if (unresolvedReviewBlockers(state)) {
+    return transitionError(cwd, 'unresolved_blockers', 'review.accept requires all blocking questions and comments to be resolved');
+  }
+  const current = currentRfcRevision(cwd);
+  if (!current.revision) {
+    const code = current.error ?? 'rfc_unreadable';
+    return transitionError(cwd, code, code === 'missing_rfc' ? 'review.accept requires a linked RFC' : 'the linked RFC could not be read');
+  }
+  const displayed = displayedRevision.trim();
+  if (!displayed || displayed !== state.revision || displayed !== current.revision) {
+    return transitionError(cwd, 'revision_changed', 'the displayed RFC revision no longer matches the canonical RFC bytes');
+  }
+  return storeReviewTransition(cwd, 'accepted', {
+    branchSnapshotId: state.branchSnapshotId,
+    generation: state.generation,
+    revision: current.revision,
+    acceptedRevision: current.revision,
+    acceptedAt: new Date().toISOString(),
+    blockingQuestions: state.blockingQuestions,
+    comments: state.comments,
+  }, getPlan(cwd).map((step) => ({ ...step, status: 'todo' as const })));
+}
+
+/** Return an in-review or accepted RFC to draft; feedback always clears acceptance. */
+export function requestPlanChanges(cwd: string): PlanReviewTransitionResult {
+  const state = getPlanReviewState(cwd);
+  if (state.phase !== 'in_review' && state.phase !== 'accepted') {
+    return transitionError(cwd, 'invalid_transition', `review.request_changes is not valid from ${state.phase}`);
+  }
+  return storeReviewTransition(cwd, 'draft', {
+    branchSnapshotId: state.branchSnapshotId,
+    generation: state.generation,
+    revision: state.revision,
+    blockingQuestions: state.blockingQuestions,
+    comments: state.comments,
+  }, getPlan(cwd).map((step) => ({ ...step, status: 'todo' as const })));
+}
+
+/** Start an accepted current revision and activate exactly one dependency-ready step. */
+export function startAcceptedPlan(cwd: string): PlanReviewTransitionResult {
+  const state = getPlanReviewState(cwd);
+  if (state.phase !== 'accepted') {
+    return transitionError(cwd, 'invalid_transition', `implementation.start is not valid from ${state.phase}`);
+  }
+  if (unresolvedReviewBlockers(state)) {
+    return transitionError(cwd, 'unresolved_blockers', 'implementation.start requires all blocking questions and comments to be resolved');
+  }
+  const current = currentRfcRevision(cwd);
+  if (!current.revision || !state.acceptedRevision || current.revision !== state.acceptedRevision) {
+    // Canonical bytes changed after acceptance. Invalidate the sidecar acceptance
+    // and return to draft; the changed bytes must be proposed and reviewed anew.
+    storeReviewTransition(cwd, 'draft', {
+      branchSnapshotId: state.branchSnapshotId,
+      generation: state.generation,
+      blockingQuestions: state.blockingQuestions,
+      comments: state.comments,
+    }, getPlan(cwd).map((step) => ({ ...step, status: 'todo' as const })));
+    return transitionError(cwd, current.error ?? 'revision_changed', 'the accepted RFC revision no longer matches the canonical RFC bytes');
+  }
+  const steps = getPlan(cwd).map((step) => step.status === 'done' ? step : { ...step, status: 'todo' as const });
+  const next = steps.findIndex((step) => step.status === 'todo' && depsMet(step, steps));
+  if (next < 0) return transitionError(cwd, 'no_runnable_step', 'implementation.start requires one dependency-ready step');
+  steps[next] = { ...steps[next]!, status: 'doing' };
+  return storeReviewTransition(cwd, 'executing', {
+    branchSnapshotId: state.branchSnapshotId,
+    generation: state.generation,
+    revision: state.revision,
+    acceptedRevision: state.acceptedRevision,
+    acceptedAt: state.acceptedAt,
+    startedAt: new Date().toISOString(),
+    blockingQuestions: state.blockingQuestions,
+    comments: state.comments,
+  }, steps);
+}
+
+function phaseAllowsExecution(phase: PlanPhase): boolean {
+  return phase === 'executing' || phase === 'verifying';
+}
+
+/** Promote an accepted/legacy draft and start its first runnable step. */
 export function activatePlan(cwd: string): PlanStep[] {
   const list = getPlan(cwd).slice();
   if (list.length > 0 && !list.some((step) => step.status === 'doing')) {
@@ -497,7 +1163,7 @@ export function activatePlan(cwd: string): PlanStep[] {
     if (next >= 0) list[next] = { ...list[next]!, status: 'doing' };
   }
   plans.set(cwd, list);
-  planLifecycle.set(cwd, 'active');
+  planLifecycle.set(cwd, 'executing');
   markUpdated(cwd);
   persist(cwd);
   return list;
@@ -512,19 +1178,52 @@ export function hasActivePlanWork(cwd: string): boolean {
   return getPlan(cwd).some((step) => step.status === 'doing');
 }
 
-function normalizeInput(step: StepInput): { text: string; activeForm?: string; dependsOn?: number[] } {
-  if (typeof step === 'string') return { text: clean(step) };
+type NormalizedStepInput = Omit<PlanStep, 'status' | 'dependsOnStepIds' | 'awarenessTaskId'> & { dependsOn?: number[] };
+
+function normalizeInput(step: StepInput): NormalizedStepInput {
+  if (typeof step === 'string') return { id: `step-${randomUUID()}`, text: clean(step) };
   const text = clean(step.text);
   const activeForm = step.activeForm ? clean(step.activeForm) : undefined;
   const dependsOn = cleanDeps(step.dependsOn);
-  return { text, ...(activeForm ? { activeForm } : {}), ...(dependsOn ? { dependsOn } : {}) };
+  const paths = cleanPaths(step.paths);
+  const reasoning = cleanContractText(step.reasoning);
+  const acceptance = cleanContractText(step.acceptance);
+  const checkCommand = cleanContractText(step.checkCommand);
+  return {
+    id: `step-${randomUUID()}`,
+    text,
+    ...(activeForm ? { activeForm } : {}),
+    ...(dependsOn ? { dependsOn } : {}),
+    ...(paths ? { paths } : {}),
+    ...(reasoning ? { reasoning } : {}),
+    ...(acceptance ? { acceptance } : {}),
+    ...(checkCommand ? { checkCommand } : {}),
+  };
 }
 
-/** Replace the whole plan; drafts remain entirely todo until activatePlan records approval. */
-export function setPlan(cwd: string, steps: StepInput[], lifecycle: PlanLifecycle = 'active'): PlanStep[] {
-  const cleaned = steps.map(normalizeInput).filter((s) => s.text).slice(0, MAX_STEPS);
-  const next: PlanStep[] = cleaned.map((s, i) => ({ ...s, status: lifecycle === 'active' && i === 0 ? 'doing' : 'todo' }));
+function dependencyIdsFromIndexes(indexes: number[] | undefined, list: Array<{ id: string }>, ownId: string): string[] | undefined {
+  if (!indexes?.length) return undefined;
+  const ids = [...new Set(indexes.flatMap((index) => {
+    const dependency = list[index - 1];
+    return dependency && dependency.id !== ownId ? [dependency.id] : [];
+  }))];
+  return ids.length ? ids : undefined;
+}
+
+/** Replace the whole plan; pre-Start phases remain entirely todo. */
+export function setPlan(cwd: string, steps: StepInput[], lifecycle: PlanLifecycle = 'executing'): PlanStep[] {
+  const cleaned = steps.map(normalizeInput).filter((step) => step.text).slice(0, MAX_STEPS);
+  const next: PlanStep[] = cleaned.map((step, index) => {
+    const { dependsOn, ...stable } = step;
+    const dependsOnStepIds = dependencyIdsFromIndexes(dependsOn, cleaned, step.id);
+    return {
+      ...stable,
+      status: phaseAllowsExecution(lifecycle) && index === 0 ? 'doing' : 'todo',
+      ...(dependsOnStepIds ? { dependsOnStepIds } : {}),
+    };
+  });
   plans.set(cwd, next);
+  planCoordination.set(cwd, freshCoordination(cwd));
   planLifecycle.set(cwd, lifecycle);
   loaded.add(cwd);
   markUpdated(cwd);
@@ -532,13 +1231,15 @@ export function setPlan(cwd: string, steps: StepInput[], lifecycle: PlanLifecycl
   return next;
 }
 
-export function addStep(cwd: string, text: string, activeForm?: string, dependsOn?: number[]): PlanStep[] {
+export function addStep(cwd: string, input: PlanStepInput): PlanStep[];
+export function addStep(cwd: string, text: string, activeForm?: string, dependsOn?: number[]): PlanStep[];
+export function addStep(cwd: string, input: string | PlanStepInput, activeForm?: string, dependsOn?: number[]): PlanStep[] {
   const list = getPlan(cwd).slice();
-  const t = clean(text);
-  const af = activeForm ? clean(activeForm) : undefined;
-  const deps = cleanDeps(dependsOn);
-  if (t && list.length < MAX_STEPS) {
-    list.push({ text: t, status: 'todo', ...(af ? { activeForm: af } : {}), ...(deps ? { dependsOn: deps } : {}) });
+  const normalized = normalizeInput(typeof input === 'string' ? { text: input, activeForm, dependsOn } : input);
+  if (normalized.text && list.length < MAX_STEPS) {
+    const { dependsOn: inputDependencies, ...stable } = normalized;
+    const dependsOnStepIds = dependencyIdsFromIndexes(inputDependencies, list, stable.id);
+    list.push({ ...stable, status: 'todo', ...(dependsOnStepIds ? { dependsOnStepIds } : {}) });
   }
   plans.set(cwd, list);
   markUpdated(cwd);
@@ -556,7 +1257,7 @@ export function addStep(cwd: string, text: string, activeForm?: string, dependsO
  */
 export function startStep(cwd: string, index: number): PlanStep[] {
   const list = getPlan(cwd).slice();
-  if (getPlanLifecycle(cwd) === 'draft') return list;
+  if (!phaseAllowsExecution(getPlanLifecycle(cwd))) return list;
   const i = index - 1;
   if (i >= 0 && i < list.length) list[i] = { ...list[i]!, status: 'doing' };
   plans.set(cwd, list);
@@ -568,7 +1269,7 @@ export function startStep(cwd: string, index: number): PlanStep[] {
 /** Mark a step (1-based) done and auto-advance the next todo to doing. */
 export function completeStep(cwd: string, index: number): PlanStep[] {
   const list = getPlan(cwd).slice();
-  if (getPlanLifecycle(cwd) === 'draft') return list;
+  if (!phaseAllowsExecution(getPlanLifecycle(cwd))) return list;
   const i = index - 1;
   if (i >= 0 && i < list.length) {
     list[i] = { ...list[i]!, status: 'done' };
@@ -593,14 +1294,14 @@ export function removeStep(cwd: string, index: number): PlanStep[] {
   const list = getPlan(cwd).slice();
   const i = index - 1;
   if (i < 0 || i >= list.length) return list;
-  list.splice(i, 1);
+  const [removed] = list.splice(i, 1);
   const next = list.map((step) => {
-    if (!step.dependsOn) return step;
-    const deps = step.dependsOn.filter((d) => d !== index).map((d) => (d > index ? d - 1 : d));
-    const { dependsOn: _dropped, ...rest } = step;
-    return deps.length ? { ...rest, dependsOn: deps } : rest;
+    if (!step.dependsOnStepIds?.length || !removed) return step;
+    const dependencies = step.dependsOnStepIds.filter((id) => id !== removed.id);
+    const { dependsOnStepIds: _dropped, ...rest } = step;
+    return dependencies.length ? { ...rest, dependsOnStepIds: dependencies } : rest;
   });
-  if (getPlanLifecycle(cwd) === 'active' && next.length > 0 && !next.some((s) => s.status === 'doing')) {
+  if (phaseAllowsExecution(getPlanLifecycle(cwd)) && next.length > 0 && !next.some((s) => s.status === 'doing')) {
     const nextTodo = next.findIndex((s) => s.status === 'todo' && depsMet(s, next));
     if (nextTodo >= 0) next[nextTodo] = { ...next[nextTodo]!, status: 'doing' };
   }
@@ -613,13 +1314,14 @@ export function removeStep(cwd: string, index: number): PlanStep[] {
 export function clearPlan(cwd: string): void {
   plans.delete(cwd);
   planLifecycle.delete(cwd);
+  planReview.delete(cwd);
   planRfc.delete(cwd);
   planDecisions.delete(cwd);
+  planCoordination.delete(cwd);
   turnsSinceUpdate.delete(cwd);
   loaded.add(cwd);
-  writeToDisk(cwd, []);
   // Snapshot the cleared state too: a fork taken after clear must start clean.
-  appendPlanEntry([]);
+  persist(cwd);
 }
 
 export const MARK: Record<StepStatus, string> = { todo: '[ ]', doing: '[~]', done: '[x]' };
@@ -637,11 +1339,17 @@ export function stepLabel(s: PlanStep): string {
 export function renderActivePlanAddendum(cwd: string): string {
   const list = getPlan(cwd);
   if (list.length === 0) return '';
-  if (getPlanLifecycle(cwd) === 'draft') {
+  const promptLabel = (step: PlanStep): string => escapePromptMetadata(stepLabel(step));
+  const promptText = (step: PlanStep): string => escapePromptMetadata(step.text);
+  if (!phaseAllowsExecution(getPlanLifecycle(cwd))) {
+    const phase = getPlanLifecycle(cwd);
     return [
       '<active_plan>',
-      `This proposed task breakdown is awaiting user approval (0/${list.length} done). Do not execute or start any step until activatePlan records approval.`,
-      ...list.map((s, i) => `${DISPLAY_MARK[displayStatus(s, list)]} ${i + 1}. ${s.text}${s.dependsOn?.length ? ` (needs ${s.dependsOn.join(',')})` : ''}`),
+      `This task breakdown is in ${phase.replace('_', ' ')} (0/${list.length} done). Implementation has not started; do not execute or start any step before the separate Start transition.`,
+      ...list.map((s, i) => {
+        const dependencies = dependencyIndexes(s, list);
+        return `${DISPLAY_MARK[displayStatus(s, list)]} ${i + 1}. ${promptText(s)}${dependencies.length ? ` (needs ${dependencies.join(',')})` : ''}`;
+      }),
       'next: awaiting user approval',
       '</active_plan>',
     ].join('\n');
@@ -660,18 +1368,21 @@ export function renderActivePlanAddendum(cwd: string): string {
     nudges.push('note: no step is in progress — mark the next runnable step with plan(start:N) so unfinished work has an active owner.');
   }
   if (runnableTodos.length > 0 && doing.length > 0) {
-    nudges.push(`parallel-ready: ${runnableTodos.map(({ step, index }) => `${index}. ${stepLabel(step)}`).join(' | ')} — start independent lanes with plan(start:N) before spawning/batching, or leave them todo if they depend on the current decision.`);
+    nudges.push(`parallel-ready: ${runnableTodos.map(({ step, index }) => `${index}. ${promptLabel(step)}`).join(' | ')} — start independent lanes with plan(start:N) before spawning/batching, or leave them todo if they depend on the current decision.`);
   }
   if (stale) {
     nudges.push(`note: this plan has not been updated in ${STALE_PLAN_TURNS}+ turns — advance it (plan start/complete), add/remove changed scope, or clear it if the work is done or abandoned.`);
   }
   const nextLine = doing.length > 1
-    ? `now: ${doing.map(stepLabel).join(' | ')}`
-    : current ? `next: ${stepLabel(current)}` : 'next: (all steps done — verify, then plan clear)';
+    ? `now: ${doing.map(promptLabel).join(' | ')}`
+    : current ? `next: ${promptLabel(current)}` : 'next: (all steps done — verify, then plan clear)';
   return [
     '<active_plan>',
-    `Your current task breakdown (${done}/${list.length} done). Execute active steps, start any independent parallel lanes with plan(start:N), then update it via the plan tool (start/complete/add/remove). Keep it proportional; clear it when the task is finished.`,
-    ...list.map((s, i) => `${DISPLAY_MARK[displayStatus(s, list)]} ${i + 1}. ${s.text}${s.dependsOn?.length ? ` (needs ${s.dependsOn.join(',')})` : ''}`),
+    `Your current task breakdown (${done}/${list.length} done). Execute active steps; start independent parallel lanes with plan(start:N); advance and clear via plan(start/complete/add/remove/clear).`,
+    ...list.map((s, i) => {
+      const dependencies = dependencyIndexes(s, list);
+      return `${DISPLAY_MARK[displayStatus(s, list)]} ${i + 1}. ${promptText(s)}${dependencies.length ? ` (needs ${dependencies.join(',')})` : ''}`;
+    }),
     nextLine,
     ...nudges,
     '</active_plan>',

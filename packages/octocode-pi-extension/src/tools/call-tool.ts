@@ -19,6 +19,7 @@ import { sliceBetween } from '../utils.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 import { spawnRpcAgent, waitForAgentTurn, isSubagentProcess, killWorkerById } from './agent-tools.js';
 import { requestApproval } from './approval.js';
 import {
@@ -539,7 +540,7 @@ export function registerCallTool(
       'Maintain the library: it auto-prunes junk each call; use mode:"list" to review and mode:"delete" to remove obsolete or superseded tools.',
       'Generated tools are verification-gated (their test must pass) and sandboxed; approve net/fs/exec explicitly via metadata._allow only when required.',
     ],
-    parameters: Type.Object({
+    parameters: buildQueryEnvelopeSchema(Type, Type.Object({
       toolType: Type.String({
         description: 'Logical name of the capability, e.g. "getCurrentTime", "toSlug", "uuidV4". Used as the O(1) registry key.',
       }),
@@ -559,40 +560,70 @@ export function registerCallTool(
             'auto (default): reuse or create. run: reuse only, error on miss. create: force (re)generate. enhance/fix: regenerate an existing tool (version bump). list: inventory. delete: remove a tool.',
         }),
       ),
+    }, { additionalProperties: false }), {
+      reasoningDescription: 'Concise reason this dynamic tool operation is necessary.',
     }),
 
-    async execute(_id: string, rawParams: Record<string, unknown>, _signal, _onUpdate, ctx?: PiContext) {
-      const params = rawParams as unknown as CallToolParams;
-      const outcome = await orchestrate(params, ctx);
+    prepareArguments(args: unknown) {
+      if (!args || typeof args !== 'object') return args;
+      const input = args as Record<string, unknown>;
+      return Array.isArray(input['queries']) ? args : { queries: [input] };
+    },
 
-      const header = renderHeader(outcome);
-      const parts: string[] = [header];
-      if (outcome.status === 'ran' || outcome.status === 'created-and-ran') {
-        parts.push(JSON.stringify(outcome.result, null, 2));
-      }
-      if (outcome.status === 'listed') {
-        parts.push(
-          (outcome.tools ?? [])
-            .map((t) => `  ${t.name} v${t.version} — ${t.description} (calls ${t.calls}, fails ${t.failures})`)
-            .join('\n') || '  (no dynamic tools)',
-        );
-      }
-      if (outcome.pruned && outcome.pruned.length > 0) {
-        parts.push(`[MAINTAINED] pruned junk: ${outcome.pruned.join(', ')}`);
-      }
-
-      return {
-        content: [{ type: 'text', text: parts.join('\n') }],
-        isError: outcome.status === 'error',
-        details: outcome,
-      } as unknown as ToolCallResult;
+    async execute(id: string, rawParams: Record<string, unknown>, signal, onUpdate, ctx?: PiContext) {
+      const envelope = Array.isArray(rawParams['queries']) ? rawParams : { queries: [rawParams] };
+      const queryCount = Array.isArray(envelope.queries) ? envelope.queries.length : 0;
+      return executeQueryBatch({
+        toolCallId: id,
+        raw: envelope,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
+        ctx,
+        passthroughSingle: true,
+        preflight: queryCount > 1
+          ? (query) => {
+              const params = query as unknown as CallToolParams;
+              if (!params.toolType?.trim()) throw new Error('toolType must be a non-empty string.');
+              const mode = params.mode ?? 'auto';
+              if ((mode === 'create' || mode === 'enhance' || mode === 'fix') && !String(params.metadata?.['reason'] ?? '').trim()) {
+                throw new Error(`mode:"${mode}" requires metadata.reason.`);
+              }
+            }
+          : undefined,
+        async execute(query) {
+          const outcome = await orchestrate(query as unknown as CallToolParams, ctx);
+          const header = renderHeader(outcome);
+          const parts: string[] = [header];
+          if (outcome.status === 'ran' || outcome.status === 'created-and-ran') {
+            parts.push(JSON.stringify(outcome.result, null, 2));
+          }
+          if (outcome.status === 'listed') {
+            parts.push(
+              (outcome.tools ?? [])
+                .map((t) => `  ${t.name} v${t.version} — ${t.description} (calls ${t.calls}, fails ${t.failures})`)
+                .join('\n') || '  (no dynamic tools)',
+            );
+          }
+          if (outcome.pruned && outcome.pruned.length > 0) {
+            parts.push(`[MAINTAINED] pruned junk: ${outcome.pruned.join(', ')}`);
+          }
+          return {
+            content: [{ type: 'text', text: parts.join('\n') }],
+            isError: outcome.status === 'error',
+            details: outcome,
+          } as unknown as ToolCallResult;
+        },
+      });
     },
 
     renderCall(rawParams: unknown, theme?: PiTheme) {
-      const p = rawParams as CallToolParams;
+      const envelope = rawParams && typeof rawParams === 'object' ? rawParams as Record<string, unknown> : {};
+      const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as CallToolParams[] : [];
+      const p = queries[0] ?? envelope as unknown as CallToolParams;
       // Brand title + dim args, matching the other tool-call rows.
       const title = cliToolTitle(theme, 'callTool');
-      const args = `(${p.toolType}${p.mode && p.mode !== 'auto' ? `, ${p.mode}` : ''})`;
+      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
+      const args = `(${p.toolType}${p.mode && p.mode !== 'auto' ? `, ${p.mode}` : ''}${more})`;
       return makeRenderer((w) => [truncateToWidth(`${title}${paint(theme, 'dim', args)}`, w)]);
     },
 

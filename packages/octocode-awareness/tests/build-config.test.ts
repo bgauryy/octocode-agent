@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error -- plain ESM build config, no type declarations needed
-import { coreEntryPoints, external, skillScriptEntries } from '../buildConfig.mjs';
+// @ts-expect-error -- plain ESM build entries, no type declarations needed
+import { coreEntryPoints, external, skillScriptEntries } from '../build.entries.mjs';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { dependencies?: Record<string, string> };
@@ -35,6 +35,7 @@ describe('build config contract', () => {
       'extract-hook-files',
       'hook-runner',
       'index',
+      'mcp-state',
       'octocode-awareness',
       'schema-api',
     ]);

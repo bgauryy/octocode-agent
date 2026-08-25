@@ -24,7 +24,6 @@ import {
   resolvePackageJson,
   readPackageVersion,
   spawnExitStatus,
-  LEAN_EXCLUDE_TOOLS,
   launcherRoot,
   versionData,
   configData,
@@ -61,12 +60,6 @@ describe('constants', () => {
   it('CORE_SPEC is the npm: spec for pi -e flag', () => {
     expect(CORE_SPEC).toBe(`npm:${CORE_PACKAGE}`);
     expect(CORE_SPEC).toContain('@octocodeai/pi-extension');
-  });
-
-  it('LEAN_EXCLUDE_TOOLS contains grep, find, ls', () => {
-    expect(LEAN_EXCLUDE_TOOLS).toContain('grep');
-    expect(LEAN_EXCLUDE_TOOLS).toContain('find');
-    expect(LEAN_EXCLUDE_TOOLS).toContain('ls');
   });
 
   it('spawnExitStatus treats null or missing status as failure', () => {
@@ -230,14 +223,6 @@ describe('buildLaunchEnv', () => {
     expect(env.OCTOCODE_PROMPT_MODE).toBe('custom-mode');
   });
 
-  it('sets PI_CACHE_RETENTION=long by default; never overrides an explicit value', () => {
-    const defaultEnv = buildLaunchEnv({});
-    expect(defaultEnv.PI_CACHE_RETENTION).toBe('long');
-
-    const explicitEnv = buildLaunchEnv({ PI_CACHE_RETENTION: 'short' });
-    expect(explicitEnv.PI_CACHE_RETENTION).toBe('short');
-  });
-
   it('defaults PI_SKIP_VERSION_CHECK=1 (our update story wins); explicit values keep control', () => {
     expect(buildLaunchEnv({}).PI_SKIP_VERSION_CHECK).toBe('1');
     expect(buildLaunchEnv({ PI_SKIP_VERSION_CHECK: '' }).PI_SKIP_VERSION_CHECK).toBe('');
@@ -339,6 +324,7 @@ describe('helpReport', () => {
     expect(report).toContain('OCTOCODE_PI_BIN');
     expect(report).toContain('OCTOCODE_PI_PACKAGE');
     expect(report).toContain('SDK embed');
+    expect(report).toContain('suppress Pi native tools');
   });
 });
 
@@ -556,10 +542,11 @@ describe('completionScript', () => {
 // ── buildPiArgs ────────────────────────────────────────────────────────────────
 
 describe('buildPiArgs', () => {
-  it('default includes --no-extensions and lean exclude while keeping context files', () => {
+  it('default disables every Pi builtin while keeping extension tools and context files', () => {
     const args = buildPiArgs('npm:@octocodeai/pi-extension', [], {});
     expect(args).toContain('--no-extensions');
-    expect(args).toContain('--exclude-tools');
+    expect(args).toContain('--no-builtin-tools');
+    expect(args).not.toContain('--exclude-tools');
     expect(args).not.toContain('--no-context-files');
   });
 
@@ -574,11 +561,9 @@ describe('buildPiArgs', () => {
     expect(args).toContain('--no-context-files');
   });
 
-  it('FULL_TOOLS opts out of lean; CLEAN additionally suppresses user skills and context', () => {
-    const fullArgs = buildPiArgs('spec', [], { OCTOCODE_AGENT_FULL_TOOLS: '1' });
-    expect(fullArgs).not.toContain('--exclude-tools');
-
+  it('CLEAN suppresses user skills and context without restoring Pi builtins', () => {
     const cleanArgs = buildPiArgs('spec', [], { OCTOCODE_AGENT_CLEAN: '1' });
+    expect(cleanArgs).toContain('--no-builtin-tools');
     expect(cleanArgs).toContain('--no-skills');
     expect(cleanArgs).toContain('--no-context-files');
   });
@@ -1012,4 +997,3 @@ describe('styled surfaces', () => {
     expect(report).not.toContain('/Users/');
   });
 });
-

@@ -12,11 +12,9 @@
  * `read`ing the returned SKILL.md path.
  */
 
-import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
+import type { ToolDefinition, PiContext } from '../types.js';
 import { sliceBetween } from '../utils.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { cliToolTitle, paint } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { spawnRpcAgent, waitForAgentTurn, isSubagentProcess, killWorkerById } from './agent-tools.js';
 import {
   resolveSkill,
@@ -179,7 +177,7 @@ interface SkillOutcome {
   skills?: Array<{ name: string; description: string; version: number; uses: number }>;
 }
 
-async function orchestrate(params: CallSkillParams, ctx?: PiContext): Promise<SkillOutcome> {
+export async function orchestrate(params: CallSkillParams, ctx?: PiContext): Promise<SkillOutcome> {
   const metadata = params.metadata ?? {};
   const mode: Mode = params.mode ?? 'auto';
   const intent = typeof metadata['intent'] === 'string' ? (metadata['intent'] as string) : '';
@@ -266,98 +264,15 @@ async function orchestrate(params: CallSkillParams, ctx?: PiContext): Promise<Sk
   };
 }
 
-function renderHeader(o: SkillOutcome): string {
-  switch (o.status) {
-    case 'reuse': return `[REUSE] ${o.message}`;
-    case 'created': return `[CREATED] ${o.message}`;
-    case 'proposal': return `[PROPOSAL] ${o.message}`;
-    case 'declined': return `[DECLINED] ${o.message}`;
-    case 'listed': return `[SKILLS] ${(o.skills ?? []).length} dynamic skill(s)`;
-    case 'deleted': return `[DELETED] ${o.message}`;
-    default: return `[ERROR] ${o.message}`;
-  }
-}
-
 // ─── registration ─────────────────────────────────────────────────────────────
 
 export function registerCallSkill(
-  pi: { registerTool?(def: ToolDefinition): void },
-  Type: TypeBoxBuilder,
-  registeredToolNames: Set<string>,
-  registerFn: RegisterFn,
+  _pi: { registerTool?(def: ToolDefinition): void },
+  _Type: TypeBoxBuilder,
+  _registeredToolNames: Set<string>,
+  _registerFn: RegisterFn,
 ): void {
   if (isSubagentProcess()) return;
-
-  registerFn(pi, registeredToolNames, {
-    name: 'callSkill',
-    label: 'Call Skill',
-    description: [
-      'Meta-tool for workflows: request a reusable multi-step workflow by name and callSkill reuses, proposes, or maintains a dynamic skill (a SKILL.md the agent follows).',
-      'Resolves an existing skill in O(1); on a miss it PROPOSES creation (never silently authors). After you research/brainstorm and the user confirms, re-call with mode:"create" and metadata.reason; a skill-smith authors the SKILL.md, which is registered ONLY if it passes frontmatter+structure validation.',
-      '',
-      'Modes: auto (reuse, else propose) · use (reuse only) · create (author after approval) · enhance/fix (revise existing) · list · delete. Every call prunes junk skills.',
-      'A skill must be a recurring MULTI-STEP workflow — not a one-off action a single tool/bash call or callTool covers. Skills orchestrate; callTool executes.',
-      'metadata reserved keys: intent (what the workflow does), reason (REQUIRED to create), _approveCreate (approve in auto mode), _force (override the triviality decline).',
-    ].join('\n'),
-    promptSnippet: 'Reuse, propose, or maintain a dynamic multi-step workflow skill',
-    promptGuidelines: [
-      'Use callSkill for recurring multi-step workflows; never for a single action a tool/bash/callTool already covers.',
-      'On a creation proposal: research existing skills/tools/commands and brainstorm the smallest workflow, then ASK the user before re-calling with mode:"create" and a clear metadata.reason.',
-      'Maintain the library: it auto-prunes broken skills; use mode:"list" to review and mode:"delete" to remove obsolete skills.',
-      'Follow a created/reused skill by reading its SKILL.md path (or /skill:<name>); spawned subagents see new skills immediately, the main prompt after a reload.',
-    ],
-    parameters: Type.Object({
-      skillType: Type.String({ description: 'Skill name / workflow id (lowercase a-z, 0-9, hyphens). O(1) registry key.' }),
-      metadata: Type.Optional(
-        Type.Unsafe({
-          type: 'object',
-          additionalProperties: true,
-          description: 'Reserved keys: intent, reason (required to create), _approveCreate, _force.',
-        }),
-      ),
-      mode: Type.Optional(
-        Type.Unsafe({
-          type: 'string',
-          enum: ['auto', 'use', 'create', 'enhance', 'fix', 'list', 'delete'],
-          description: 'auto (default) · use · create · enhance/fix · list · delete.',
-        }),
-      ),
-    }),
-
-    async execute(_id: string, rawParams: Record<string, unknown>, _signal, _onUpdate, ctx?: PiContext) {
-      const outcome = await orchestrate(rawParams as unknown as CallSkillParams, ctx);
-      const parts: string[] = [renderHeader(outcome)];
-      if (outcome.status === 'listed') {
-        parts.push(
-          (outcome.skills ?? []).map((s) => `  ${s.name} v${s.version} — ${s.description} (uses ${s.uses})`).join('\n') || '  (no dynamic skills)',
-        );
-      }
-      if (outcome.pruned && outcome.pruned.length > 0) parts.push(`[MAINTAINED] pruned broken skills: ${outcome.pruned.join(', ')}`);
-      return {
-        content: [{ type: 'text', text: parts.join('\n') }],
-        isError: outcome.status === 'error',
-        details: outcome,
-      } as unknown as ToolCallResult;
-    },
-
-    renderCall(rawParams: unknown, theme?: PiTheme) {
-      const p = rawParams as CallSkillParams;
-      // Brand title + dim args, matching the other tool-call rows.
-      const title = cliToolTitle(theme, 'callSkill');
-      const args = `(${p.skillType}${p.mode && p.mode !== 'auto' ? `, ${p.mode}` : ''})`;
-      return makeRenderer((w) => [truncateToWidth(`${title}${paint(theme, 'dim', args)}`, w)]);
-    },
-
-    renderResult(result: unknown, _opts: unknown, theme?: PiTheme) {
-      const r = result as { content?: Array<{ text?: string }> };
-      const first = (r?.content?.[0]?.text ?? '').split('\n')[0] || 'callSkill';
-      // Contract: red=error, gold=act-on-me (declined awaiting your call), green=win.
-      const colored = first.startsWith('[ERROR]')
-        ? paint(theme, 'error', first)
-        : first.startsWith('[DECLINED]') || first.startsWith('[BLOCKED]')
-          ? paint(theme, 'warning', first)
-          : paint(theme, 'success', first);
-      return makeRenderer((w) => [truncateToWidth(colored, w)]);
-    },
-  });
+  // callSkill registration suppressed: type:"call" is now served by the unified skill facade.
+  // Remove this function entirely after RFC Phase 3 parity tests pass.
 }

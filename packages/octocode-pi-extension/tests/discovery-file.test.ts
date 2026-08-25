@@ -59,30 +59,62 @@ function write(filePath: string, content: string): void {
   fs.writeFileSync(filePath, content);
 }
 
-test('discoverMcpConfigs inventories claude/cursor/codex/octocode/pi configs with hosts, scopes, and servers', () => {
+test('discoverMcpConfigs inventories official and compatibility MCP locations without activating foreign hosts', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-disc-cwd-'));
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-disc-home-'));
-  write(path.join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { linear: { command: 'npx', args: ['-y', 'linear-mcp'] } } }));
-  write(path.join(cwd, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { figma: { command: 'figma-mcp' } } }));
-  write(path.join(cwd, '.codex', 'config.toml'), '[other]\nx = 1\n[mcp_servers.github]\ncommand = "gh-mcp"\n[mcp_servers.github.env]\nTOKEN = "x"\n[mcp_servers.jira]\n');
-  write(path.join(cwd, '.octocode', 'mcp.json'), JSON.stringify({ servers: { extra: { command: 'extra-mcp' } } }));
-  write(path.join(cwd, '.pi', 'agent', 'mcp.json'), JSON.stringify({ mcpServers: { active1: { command: 'a' } } }));
-  write(path.join(home, '.claude', 'mcp.json'), JSON.stringify({ mcpServers: { memory: { command: 'mem-mcp' } } }));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-disc-home-'));
+  const octocodeHome = path.join(homeDir, '.octocode-custom');
 
-  const configs = discoverMcpConfigs(cwd, home);
-  const byPath = (suffix: string) => configs.find((c) => c.path.endsWith(suffix))!;
-  assert.deepEqual(byPath('.mcp.json').servers, [{ name: 'linear', command: 'npx' }]);
-  assert.equal(byPath('.mcp.json').host, 'claude');
-  assert.deepEqual(byPath('.cursor/mcp.json').servers, [{ name: 'figma', command: 'figma-mcp' }]);
-  assert.deepEqual(byPath('config.toml').servers, [{ name: 'github', command: 'gh-mcp' }, { name: 'jira' }], 'toml server names + commands extracted');
-  assert.equal(byPath('config.toml').format, 'toml');
-  assert.deepEqual(byPath('.octocode/mcp.json').servers, [{ name: 'extra', command: 'extra-mcp' }], 'bare servers container supported');
-  assert.equal(byPath('.claude/mcp.json').scope, 'user');
-  // Only the harness's own .pi/agent/mcp.json is ACTIVE — foreign configs are inventory only.
-  assert.equal(byPath('.pi/agent/mcp.json').active, true);
-  for (const config of configs.filter((c) => !c.path.includes('.pi/agent/'))) {
-    assert.equal(config.active, false, `${config.path} must not be auto-loaded`);
+  const projectClaude = path.join(cwd, '.mcp.json');
+  const projectClaudeCompat = path.join(cwd, '.claude', 'mcp.json');
+  const projectCursor = path.join(cwd, '.cursor', 'mcp.json');
+  const projectCodex = path.join(cwd, '.codex', 'config.toml');
+  const projectAgents = path.join(cwd, '.agents', 'mcp.json');
+  const projectOctocodeCompat = path.join(cwd, '.octocode', 'mcp.json');
+  const projectOctocode = path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json');
+  const userClaude = path.join(homeDir, '.claude.json');
+  const userClaudeCompat = path.join(homeDir, '.claude', 'mcp.json');
+  const userCursor = path.join(homeDir, '.cursor', 'mcp.json');
+  const userCodex = path.join(homeDir, '.codex', 'config.toml');
+  const userAgents = path.join(homeDir, '.agents', 'mcp.json');
+  const userOctocode = path.join(octocodeHome, 'agent', 'mcp', 'servers.json');
+
+  write(projectClaude, JSON.stringify({ mcpServers: { linear: { command: 'npx', args: ['-y', 'linear-mcp'] } } }));
+  write(projectClaudeCompat, JSON.stringify({ mcpServers: { claudeCompat: { command: 'claude-compat' } } }));
+  write(projectCursor, JSON.stringify({ mcpServers: { figma: { url: 'https://example.invalid/mcp', headers: { Authorization: 'secret' } } } }));
+  write(projectCodex, '[other]\nx = 1\n[mcp_servers.github]\ncommand = "gh-mcp"\n[mcp_servers.github.env]\nTOKEN = "x"\n[mcp_servers.jira]\n');
+  write(projectAgents, JSON.stringify({ mcpServers: { sharedAgent: { command: 'agent-mcp' } } }));
+  write(projectOctocodeCompat, JSON.stringify({ servers: { oldOctocode: { command: 'old-octocode-mcp' } } }));
+  write(projectOctocode, JSON.stringify({ mcpServers: { octocodeAgent: { command: 'octocode-agent' } } }));
+  write(userClaude, JSON.stringify({ mcpServers: { memory: { command: 'mem-mcp', env: { TOKEN: 'never-report-me' } } } }));
+  write(userClaudeCompat, JSON.stringify({ mcpServers: { userCompat: { command: 'user-compat' } } }));
+  write(userCursor, JSON.stringify({ mcpServers: { browser: { command: 'browser-mcp' } } }));
+  write(userCodex, '[mcp_servers.docs]\nurl = "https://example.invalid/mcp"\n');
+  write(userAgents, JSON.stringify({ mcpServers: { globalAgent: { command: 'global-agent-mcp' } } }));
+  write(userOctocode, JSON.stringify({ mcpServers: { globalOctocode: { command: 'global-octocode' } } }));
+
+  const configs = discoverMcpConfigs(cwd, { homeDir, octocodeHome });
+  const byPath = (filePath: string) => configs.find((config) => config.path === filePath)!;
+
+  assert.deepEqual(byPath(projectClaude).servers, [{ name: 'linear', command: 'npx' }]);
+  assert.equal(byPath(projectClaude).host, 'claude');
+  assert.deepEqual(byPath(projectCursor).servers, [{ name: 'figma' }], 'remote URL and headers are not exposed');
+  assert.deepEqual(byPath(projectCodex).servers, [{ name: 'github', command: 'gh-mcp' }, { name: 'jira' }], 'TOML server names + commands extracted');
+  assert.equal(byPath(projectCodex).format, 'toml');
+  assert.equal(byPath(projectAgents).host, 'agents');
+  assert.equal(byPath(userClaude).scope, 'user');
+  assert.deepEqual(byPath(userClaude).servers, [{ name: 'memory', command: 'mem-mcp' }]);
+  assert.equal(JSON.stringify(configs).includes('never-report-me'), false, 'env secrets never enter discovery output');
+
+  const expectedActive = new Set([
+    projectOctocode,
+    userOctocode,
+  ]);
+  for (const config of configs) {
+    assert.equal(config.active, expectedActive.has(config.path), `${config.path} active classification`);
   }
+  assert.equal(byPath(projectOctocodeCompat).active, false, 'legacy .octocode/mcp.json remains inventory-only');
+  assert.equal(byPath(projectClaudeCompat).active, false);
+  assert.equal(byPath(userClaudeCompat).active, false);
 });
 
 test('discoverMcpConfigs reports malformed configs as errors instead of throwing, and skips absent files', () => {

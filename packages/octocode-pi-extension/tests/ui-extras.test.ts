@@ -87,6 +87,37 @@ test('buildCommandsRow returns empty string for empty list', () => {
   assert.equal(buildCommandsRow([]), '');
 });
 
+test('buildFooterSegments renders green/red GitHub auth states at every density', () => {
+  const base = {
+    tokens: 0,
+    contextWindow: 0,
+    completedTurns: 0,
+    sessionMs: 0,
+    activeWorkers: 0,
+    dirty: false,
+  };
+
+  const authenticated = buildFooterSegments({ ...base, githubAuth: 'authenticated' }, 'compact');
+  assert.deepEqual(authenticated.find((segment) => segment.text.startsWith('github ')), {
+    text: 'github ✓',
+    token: 'success',
+  });
+
+  const missing = buildFooterSegments({ ...base, githubAuth: 'missing' }, 'default');
+  assert.deepEqual(missing.find((segment) => segment.text.startsWith('github ')), {
+    text: 'github ✗ login required',
+    token: 'error',
+    attention: true,
+  });
+
+  const failed = buildFooterSegments({ ...base, githubAuth: 'error' }, 'full');
+  assert.deepEqual(failed.find((segment) => segment.text.startsWith('github ')), {
+    text: 'github check failed',
+    token: 'error',
+    attention: true,
+  });
+});
+
 test('buildCommandsRow applies theme colors: dim slash, per-token name, dim desc', () => {
   // TOKEN_FG_MAP: 'dim'→'dim', 'symbol'→'syntaxType', 'brand'→'accent'
   const calls: Array<[string, string]> = [];
@@ -185,7 +216,7 @@ test('buildFooterSegments composes context %, tokens, turns, timing, workers, an
   const segs = buildFooterSegments({
     tokens: 16_000, contextWindow: 200_000,
     completedTurns: 3, activeTurnMs: 9000, lastTurnMs: undefined,
-    sessionMs: 120_000, activeWorkers: 2, workerTotal: 2, awarenessAgents: 4, peerDirty: 3,
+    sessionMs: 120_000, activeWorkers: 2, workerTotal: 2, awarenessPeers: 4, peerDirty: 3,
     branch: 'main', dirty: true,
   });
   const joined = segs.map((s) => s.text).join(' | ');
@@ -213,8 +244,10 @@ test('buildFooterSegments always renders labeled harness context total; breakdow
   assert.match(def, /prompt ~12\.0k/);
   assert.doesNotMatch(def, /sys /);
   // full: adds the sys/mcp/skills breakdown
-  const full = buildFooterSegments(base, 'full').map((s) => s.text).join(' | ');
+  const fullSegments = buildFooterSegments(base, 'full').map((s) => s.text);
+  const full = fullSegments.join(' | ');
   assert.match(full, /prompt ~12\.0k \(sys 8\.0k · mcp 2\/38 · skills 3\)/);
+  assert.equal(fullSegments.filter((text) => text.includes('mcp 2')).length, 1, 'full density renders MCP/skill counts only in the prompt breakdown');
   // compact: still shown (labeled total, no breakdown)
   const compact = buildFooterSegments(base, 'compact').map((s) => s.text).join(' | ');
   assert.match(compact, /prompt ~12\.0k/);
@@ -309,7 +342,7 @@ const DENSITY_INPUT = {
   tokens: 16_000, contextWindow: 200_000,
   completedTurns: 3, activeTurnMs: 9000, lastTurnMs: undefined,
   sessionMs: 120_000, activeWorkers: 2, agentDoing: 'Editing agent-tools.ts',
-  awarenessAgents: 4, blockedWorkers: 1, failedWorkers: 1,
+  awarenessPeers: 4, blockedWorkers: 1, failedWorkers: 1,
   dial: 'deep', branch: 'main', dirty: true,
 };
 
@@ -507,9 +540,32 @@ test('buildAgentFooterRows: one row per subagent, live first, state colour + ela
     },
   ], t0 + 6000);
   assert.match(replied.rows[0]!.doing ?? '', /msg← reply: \[DONE\] review complete/);
+  const normalized = buildAgentFooterRows([
+    {
+      agentId: 'deadbeef1',
+      name: 'architect',
+      status: 'idle',
+      normalizedStatus: 'done',
+      startedAt: new Date(t0).toISOString(),
+      updatedAt: new Date(t0 + 5000).toISOString(),
+      deltaSummary: '[DONE] architecture handback ready',
+    },
+    {
+      agentId: 'baadf00d1',
+      name: 'reviewer',
+      status: 'idle',
+      normalizedStatus: 'blocked',
+      startedAt: new Date(t0).toISOString(),
+      updatedAt: new Date(t0 + 6000).toISOString(),
+      deltaSummary: '[BLOCKED] waiting on answer',
+    },
+  ], t0 + 60_000);
+  assert.deepEqual(normalized.rows.map((row) => row.state), ['blocked', 'done']);
+  assert.equal(normalized.rows[1]!.elapsed, '5s', 'normalized done freezes elapsed instead of looking idle for an hour');
+  assert.equal(normalized.rows[1]!.token, 'success');
   const many = buildAgentFooterRows(Array.from({ length: 6 }, (_, i) => ({
     agentId: `id${i}`, name: `w${i}`, status: 'running', startedAt: new Date(t0).toISOString(), updatedAt: new Date(t0 + i).toISOString(),
   })), t0);
-  assert.equal(many.rows.length, 4);
-  assert.equal(many.overflow, 2);
-});
+            assert.equal(many.rows.length, 6);
+            assert.equal(many.overflow, 0);
+          });

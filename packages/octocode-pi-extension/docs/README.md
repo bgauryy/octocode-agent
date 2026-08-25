@@ -8,7 +8,7 @@ Docs in this directory belong to the Pi harness extension. Keep harness runtime,
 | [TOOLS.md](TOOLS.md) | Tool inventory, routing rules, CLI schema lookup, and Awareness-as-CLI guidance. |
 | [AWARENESS_AGENT_FLOW.md](AWARENESS_AGENT_FLOW.md) | Agent lifecycle for using Awareness inside Pi sessions. |
 | [REFLECT.md](REFLECT.md) | Reflection and memory workflow as exposed through the harness. |
-| [OVERRIDES.md](OVERRIDES.md) | Why and how the extension replaces selected Pi built-ins. |
+| [OVERRIDES.md](OVERRIDES.md) | Branded-launcher native-tool suppression, direct-extension backstop, and replacement routes. |
 | [AGENT_ORCHESTRATOR.md](AGENT_ORCHESTRATOR.md) | Pi SDK subagent orchestration contract and rollback notes. |
 | [CRON.md](CRON.md) | Session job safety model and cron-style maintenance commands. |
 | [UI.md](UI.md) | Octocode Pi UI surfaces and troubleshooting. |

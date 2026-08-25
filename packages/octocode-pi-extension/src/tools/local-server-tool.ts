@@ -1,36 +1,40 @@
-/**
- * localServer — first-class wrapper around the shared loopback static server.
- *
- * Features such as plan HTML, design reviews, diffs, and reports can use the
- * internal helper directly, but agents also need a visible, validated tool for
- * serving already-authored local artifacts. The server remains loopback-only,
- * static-only, and path-guarded.
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ToolDefinition, ToolCallResult, PiContext, PiTheme } from '../types.js';
-import type { registerUniqueTool } from './octocode-tools.js';
 import { assertPathAllowed } from './path-guard.js';
 import { resolveFilePath } from './file-state.js';
-import { getLocalServerBaseUrl, listLocalServerMounts, serveDirectory, stopLocalServer, unmount } from './local-server.js';
+import {
+  getLocalServerBaseUrl,
+  listLocalServerMounts,
+  serveDirectory,
+  stopLocalServer,
+  unmount,
+} from './local-server.js';
 import { cliStatusGlyph, cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
+import type { ToolCallResult, ToolDefinition, PiContext, PiTheme } from '../types.js';
+import type { registerUniqueTool } from './octocode-tools.js';
+import { openLocalUrl, type LocalUrlOpenPreference, type LocalUrlOpenResult } from './local-url-opener.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
 
-type LocalServerAction = 'serve' | 'unmount' | 'status' | 'stop';
-
-interface LocalServerParams {
-  action: LocalServerAction;
+interface LocalServerQuery {
+  reasoning: string;
+  action: 'serve' | 'unmount' | 'status' | 'stop';
   name?: string;
   dir?: string;
   indexFile?: string;
+  open?: boolean;
+  browser?: LocalUrlOpenPreference;
 }
 
-function textResult(text: string, details: Record<string, unknown>, isError = false): ToolCallResult {
-  return { content: [{ type: 'text', text }], details, isError } as unknown as ToolCallResult;
+interface LocalServerToolDependencies {
+  openUrl?: (url: string, preference: LocalUrlOpenPreference) => Promise<LocalUrlOpenResult>;
+}
+
+function textResult(text: string, details: Record<string, unknown>): ToolCallResult {
+  return { content: [{ type: 'text' as const, text }], details } as unknown as ToolCallResult;
 }
 
 function cleanMountName(name: unknown): string {
@@ -42,95 +46,224 @@ function renderStatus(): string {
   const mounts = listLocalServerMounts();
   if (!baseUrl) return '[localServer] stopped';
   if (mounts.length === 0) return `[localServer] running at ${baseUrl} (no mounts)`;
-  return [`[localServer] running at ${baseUrl}`, ...mounts.map((m) => `- ${m.name}: ${baseUrl}${m.name}/ -> ${m.dir} (${m.indexFile})`)].join('\n');
+  return [
+    `[localServer] running at ${baseUrl}`,
+    ...mounts.map((m) => `- ${m.name}: ${baseUrl}${m.name}/ -> ${m.dir} (${m.indexFile})`),
+  ].join('\n');
 }
 
 export function registerLocalServerTool(
-  pi: { registerTool?(def: ToolDefinition): void },
+  pi: {
+    registerTool?(def: ToolDefinition): void;
+    sendUserMessage?(message: string, options?: { deliverAs?: 'steer' | 'followUp' }): void | Promise<void>;
+  },
   Type: TypeBoxBuilder,
   registeredToolNames: Set<string>,
   registerFn: RegisterFn,
+  dependencies: LocalServerToolDependencies = {},
 ): void {
+  const openUrl = dependencies.openUrl ?? ((url, preference) => openLocalUrl(url, { preference }));
+  const querySchema = Type.Object(
+    {
+      action: Type.Unsafe({
+        type: 'string',
+        enum: ['serve', 'unmount', 'status', 'stop'],
+        description: 'serve|unmount|status|stop',
+      }),
+      name: Type.Optional(Type.String({
+        description: 'Mount name: one safe URL path segment. Required for serve/unmount.',
+      })),
+      dir: Type.Optional(Type.String({
+        description: 'Directory to serve for action:serve. Relative paths resolve against cwd.',
+      })),
+      indexFile: Type.Optional(Type.String({
+        description: 'File served at the mount root for action:serve. Default index.html.',
+      })),
+      open: Type.Optional(Type.Boolean({
+        description: 'Open the mounted page. Defaults to true in the interactive TUI and false in headless modes.',
+      })),
+      browser: Type.Optional(Type.Unsafe({
+        type: 'string',
+        enum: ['auto', 'chrome', 'system', 'vscode', 'none'],
+        description: 'Browser target for action:serve. auto prefers VS Code when available, then Chrome, then the system opener.',
+      })),
+    },
+    { additionalProperties: false },
+  );
+
+  const parameters = buildQueryEnvelopeSchema(Type, querySchema, {
+    reasoningDescription: 'Concise reason this local server operation is necessary.',
+  });
+
   registerFn(pi, registeredToolNames, {
     name: 'localServer',
     label: 'Local Server',
     description: [
       'Serve local, agent-authored static artifacts over a shared loopback-only HTTP server.',
       'Actions: serve (mount a directory), unmount (remove one mount), status (show base URL and mounts), stop (stop server and clear mounts).',
-      'Use for HTML plan/design/report artifacts when a browser view helps. Do not open a browser automatically; ask the user first, or use a slash command that represents explicit user intent.',
+      'Use for HTML plan/design/report artifacts when a browser view helps. Interactive TUI serves open automatically; pass open:false to keep the URL terminal-only.',
+      'Browser routing: VS Code integrated browser when the extension-host API is available, otherwise Chrome, then the platform default browser.',
       'Security: static files only, bound to 127.0.0.1, mount names are a single URL segment, and served directories must pass the Octocode path guard (cwd/home/tmp/ALLOWED_PATHS).',
+      'Pass one or more queries[] entries; each requires reasoning and an action.',
     ].join('\n'),
     promptSnippet: 'Serve local static artifacts over a loopback-only, path-guarded local server.',
     promptGuidelines: [
       'Use localServer for generated HTML/Markdown artifacts that are clearer in a browser (plans, design diagrams, reports).',
-      'Always ask before opening a browser; returning the localhost URL is safe, opening it is user-visible.',
+      'In the interactive TUI, action:serve opens the page by default. Use open:false when the user only wants the URL.',
       'Serve only directories you authored or inspected; never expose secrets, home directories wholesale, or untrusted downloads.',
       'Unmount or stop surfaces when they are no longer useful.',
     ],
-    parameters: Type.Object({
-      action: Type.Unsafe({ type: 'string', enum: ['serve', 'unmount', 'status', 'stop'], description: 'serve|unmount|status|stop' }),
-      name: Type.Optional(Type.String({ description: 'Mount name: one safe URL path segment. Required for serve/unmount.' })),
-      dir: Type.Optional(Type.String({ description: 'Directory to serve for action:serve. Relative paths resolve against cwd.' })),
-      indexFile: Type.Optional(Type.String({ description: 'File served at the mount root for action:serve. Default index.html.' })),
-    }),
+    parameters,
 
-    async execute(_id: string, raw: Record<string, unknown>, _signal, _onUpdate, ctx?: PiContext): Promise<ToolCallResult> {
-      const p = raw as unknown as LocalServerParams;
-      const cwd = ctx?.cwd ?? process.cwd();
-      if (p.action === 'status') {
-        return textResult(renderStatus(), { action: p.action, baseUrl: getLocalServerBaseUrl(), mounts: listLocalServerMounts() });
-      }
-      if (p.action === 'stop') {
-        stopLocalServer();
-        return textResult('[localServer] stopped', { action: p.action, baseUrl: undefined, mounts: [] });
-      }
-
-      const name = cleanMountName(p.name);
-      if (!name) return textResult(`[localServer] ${p.action} requires a mount name.`, { action: p.action, error: 'missing-name' }, true);
-
-      if (p.action === 'unmount') {
-        unmount(name);
-        return textResult(`[localServer] unmounted ${name}`, { action: p.action, name, baseUrl: getLocalServerBaseUrl(), mounts: listLocalServerMounts() });
-      }
-
-      if (p.action !== 'serve') {
-        return textResult(`[localServer] unknown action: ${String(p.action)}`, { action: p.action, error: 'unknown-action' }, true);
-      }
-
-      const dirInput = typeof p.dir === 'string' ? p.dir.trim() : '';
-      if (!dirInput) return textResult('[localServer] serve requires dir.', { action: p.action, name, error: 'missing-dir' }, true);
-      const dir = resolveFilePath(dirInput, cwd);
-      try {
-        assertPathAllowed(dir, cwd, 'localServer serve');
-        if (!fs.statSync(dir).isDirectory()) {
-          return textResult(`[localServer] not a directory: ${dir}`, { action: p.action, name, dir, error: 'not-directory' }, true);
-        }
-      } catch (err) {
-        return textResult(`[localServer] ${(err as Error).message}`, { action: p.action, name, dir, error: 'path-blocked' }, true);
-      }
-
-      const indexFile = typeof p.indexFile === 'string' && p.indexFile.trim() ? path.basename(p.indexFile.trim()) : 'index.html';
-      const served = await serveDirectory(name, dir, { indexFile });
-      if (!served) {
-        return textResult('[localServer] could not mount directory (invalid name or server start failed).', { action: p.action, name, dir, indexFile, error: 'mount-failed' }, true);
-      }
-      return textResult(
-        `[localServer] ${name}: ${served.url}\nServing ${dir} (${indexFile})`,
-        { action: p.action, name, dir, indexFile, url: served.url, baseUrl: getLocalServerBaseUrl(), mounts: listLocalServerMounts() },
-      );
+    prepareArguments(args: unknown) {
+      if (!args || typeof args !== 'object') return args;
+      const input = args as Record<string, unknown>;
+      if (Array.isArray(input['queries'])) return input;
+      return {
+        queries: [
+          { reasoning: `localServer ${String(input['action'] ?? 'status')}`, ...input },
+        ],
+      };
     },
 
-    renderCall(raw: unknown, theme?: PiTheme) {
-      const p = raw as LocalServerParams;
-      const suffix = p.action === 'serve' ? `${p.name ?? '?'} -> ${p.dir ?? '?'}` : p.name ? `${p.action} ${p.name}` : p.action;
-      return makeRenderer((width) => [truncateToWidth(`${cliToolTitle(theme, 'localServer')} ${paint(theme, 'dim', suffix)}`, width)]);
+    async execute(
+      toolCallId: string,
+      params: Record<string, unknown>,
+      signal?: AbortSignal,
+      onUpdate?: unknown,
+      ctx?: PiContext,
+    ): Promise<ToolCallResult> {
+      const cwd = ctx?.cwd ?? process.cwd();
+      return executeQueryBatch({
+        toolCallId,
+        raw: params,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
+        ctx,
+        passthroughSingle: true,
+        async execute(query) {
+          const p = query as unknown as LocalServerQuery;
+
+          if (p.action === 'status') {
+            return textResult(renderStatus(), {
+              action: p.action,
+              baseUrl: getLocalServerBaseUrl(),
+              mounts: listLocalServerMounts(),
+            });
+          }
+
+          if (p.action === 'stop') {
+            stopLocalServer();
+            return textResult('[localServer] stopped', {
+              action: p.action,
+              baseUrl: undefined,
+              mounts: [],
+            });
+          }
+
+          const name = cleanMountName(p.name);
+          if (!name) throw new Error(`[localServer] ${p.action} requires a mount name.`);
+
+          if (p.action === 'unmount') {
+            unmount(name);
+            return textResult(`[localServer] unmounted ${name}`, {
+              action: p.action,
+              name,
+              baseUrl: getLocalServerBaseUrl(),
+              mounts: listLocalServerMounts(),
+            });
+          }
+
+          if (p.action !== 'serve') {
+            throw new Error(`[localServer] unknown action: ${String(p.action)}`);
+          }
+
+          const dirInput = typeof p.dir === 'string' ? p.dir.trim() : '';
+          if (!dirInput) throw new Error('[localServer] serve requires dir.');
+
+          const dir = resolveFilePath(dirInput, cwd);
+          assertPathAllowed(dir, cwd, 'localServer serve');
+          if (!fs.statSync(dir).isDirectory()) {
+            throw new Error(`[localServer] not a directory: ${dir}`);
+          }
+
+          const indexFile =
+            typeof p.indexFile === 'string' && p.indexFile.trim()
+              ? path.basename(p.indexFile.trim())
+              : 'index.html';
+          const served = await serveDirectory(name, dir, {
+            indexFile,
+            onMessage: pi.sendUserMessage
+              ? (message) => pi.sendUserMessage!(message, { deliverAs: 'followUp' })
+              : undefined,
+          });
+          if (!served) {
+            throw new Error('[localServer] could not mount directory (invalid name or server start failed).');
+          }
+
+          const interactive = Boolean(ctx?.hasUI && ctx.mode === 'tui');
+          const shouldOpen = interactive && p.open !== false;
+          const preference = p.browser ?? 'auto';
+          const opened = shouldOpen
+            ? await openUrl(served.url, preference)
+            : { ok: true, requested: preference, openedIn: 'none' as const };
+          const openLine = shouldOpen
+            ? opened.ok
+              ? `Opened in ${opened.openedIn === 'vscode' ? 'VS Code' : opened.openedIn === 'chrome' ? 'Chrome' : 'the default browser'}.`
+              : `Browser not opened: ${opened.message ?? 'unknown error'}`
+            : interactive
+              ? 'Browser opening disabled for this mount.'
+              : 'Browser not opened in headless mode.';
+
+          return textResult(`[localServer] ${name}: ${served.url}\nServing ${dir} (${indexFile})\n${openLine}`, {
+            action: p.action,
+            name,
+            dir,
+            indexFile,
+            url: served.url,
+            baseUrl: getLocalServerBaseUrl(),
+            mounts: listLocalServerMounts(),
+            opened: shouldOpen && opened.ok && opened.openedIn !== 'none',
+            openedIn: opened.openedIn,
+            browserMessage: opened.message,
+          });
+        },
+      });
+    },
+
+    renderCall(args: unknown, theme?: PiTheme) {
+      const envelope = (args ?? {}) as Record<string, unknown>;
+      const queries = Array.isArray(envelope['queries'])
+        ? (envelope['queries'] as Record<string, unknown>[])
+        : [];
+      const p = (queries[0] ?? envelope) as unknown as LocalServerQuery;
+      const suffix =
+        p.action === 'serve'
+          ? `${p.name ?? '?'} -> ${p.dir ?? '?'}`
+          : p.name
+            ? `${p.action} ${p.name}`
+            : String(p.action ?? '');
+      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
+      return makeRenderer((width) => [
+        truncateToWidth(
+          `${cliToolTitle(theme, 'localServer')} ${paint(theme, 'dim', `${suffix}${more}`)}`,
+          width,
+        ),
+      ]);
     },
 
     renderResult(result: ToolCallResult, _opts: unknown, theme?: PiTheme) {
       const ok = !result.isError;
-      const text = result.content.find((c) => c.type === 'text')?.text ?? '';
-      const first = text.split('\n').find(Boolean) ?? (ok ? 'localServer ok' : 'localServer failed');
-      return makeRenderer((width) => [truncateToWidth(`${paint(theme, ok ? 'success' : 'error', cliStatusGlyph(ok))} ${cliToolTitle(theme, 'localServer')} ${paint(theme, 'dim', first)}`, width)]);
+      const first =
+        ((result.content.find((c) => c.type === 'text') as { text?: string } | undefined)?.text ?? '')
+          .split('\n')
+          .find(Boolean) ?? (ok ? 'localServer ok' : 'localServer failed');
+      return makeRenderer((width) => [
+        truncateToWidth(
+          `${paint(theme, ok ? 'success' : 'error', cliStatusGlyph(ok))} ${cliToolTitle(theme, 'localServer')} ${paint(theme, 'dim', first)}`,
+          width,
+        ),
+      ]);
     },
-  });
+  } satisfies ToolDefinition);
 }

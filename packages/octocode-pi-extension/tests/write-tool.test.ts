@@ -44,7 +44,8 @@ function run(
   const withReasoning = Object.hasOwn(params, 'reasoning')
     ? params
     : { ...params, reasoning: 'test write operation' };
-  return writeTool.execute('call-1', withReasoning, signal, undefined, { cwd });
+  const prepared = writeTool.prepareArguments?.(withReasoning) as Record<string, unknown> | undefined;
+  return writeTool.execute('call-1', prepared ?? withReasoning, signal, undefined, { cwd });
 }
 
 // ─── Registration ─────────────────────────────────────────────────────────────
@@ -52,18 +53,13 @@ function run(
 test('registerWriteTool registers the "write" tool with correct metadata', () => {
   assert.equal(writeTool.name, 'write');
   assert.match(writeTool.description ?? '', /path-guard/);
-  assert.ok(
-    (writeTool.parameters as { properties?: Record<string, unknown> }).properties?.['path'],
-    'schema must have a path property',
-  );
-  assert.ok(
-    (writeTool.parameters as { properties?: Record<string, unknown> }).properties?.['content'],
-    'schema must have a content property',
-  );
-  assert.ok(
-    (writeTool.parameters as { properties?: Record<string, unknown> }).properties?.['reasoning'],
-    'schema must have a reasoning property',
-  );
+  const schema = writeTool.parameters as {
+    properties?: { queries?: { items?: { properties?: Record<string, unknown> } } };
+  };
+  assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries']);
+  assert.ok(schema.properties?.queries?.items?.properties?.['path'], 'query must have a path property');
+  assert.ok(schema.properties?.queries?.items?.properties?.['content'], 'query must have a content property');
+  assert.ok(schema.properties?.queries?.items?.properties?.['reasoning'], 'query must have a reasoning property');
 });
 
 // ─── Successful writes ────────────────────────────────────────────────────────
@@ -132,7 +128,7 @@ test('aborts before writing without creating the target file', async () => {
   controller.abort();
   await assert.rejects(
     () => run({ path: filePath, content: 'not written' }, tmpDir, controller.signal),
-    /Operation aborted/,
+    /query batch aborted/,
   );
   assert.equal(fs.existsSync(filePath), false);
 });
@@ -156,8 +152,8 @@ test('rejects when content is not a string', async () => {
 
 test('rejects when reasoning is missing', async () => {
   await assert.rejects(
-    () => writeTool.execute('call-missing-reasoning', { path: 'file.txt', content: 'hi' }, undefined, undefined, { cwd: tmpDir }),
-    /reasoning is required/,
+    () => writeTool.execute('call-missing-reasoning', { queries: [{ path: 'file.txt', content: 'hi' }] }, undefined, undefined, { cwd: tmpDir }),
+    /requires non-empty reasoning/,
   );
 });
 
@@ -182,14 +178,16 @@ test('blocks writes to a path outside all allowed roots', async () => {
 test('prepareArguments folds file_path into path when path is absent', () => {
   assert.ok(writeTool.prepareArguments, 'prepareArguments must be defined');
   const result = writeTool.prepareArguments!({ file_path: 'x.txt', content: 'hi' }) as Record<string, unknown>;
-  assert.equal(result['path'], 'x.txt');
+  const query = (result['queries'] as Array<Record<string, unknown>>)[0]!;
+  assert.equal(query['path'], 'x.txt');
 });
 
 test('prepareArguments leaves input unchanged when path is already present', () => {
   const input = { path: 'x.txt', content: 'hi' };
   const result = writeTool.prepareArguments!(input) as Record<string, unknown>;
-  assert.equal(result['path'], 'x.txt');
-  assert.equal(result['file_path'], undefined);
+  const query = (result['queries'] as Array<Record<string, unknown>>)[0]!;
+  assert.equal(query['path'], 'x.txt');
+  assert.equal(query['file_path'], undefined);
 });
 
 // ─── renderCall ──────────────────────────────────────────────────────

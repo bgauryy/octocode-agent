@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getOctocodeHome } from '../env.js';
+import { createSessionArtifactContext, type SessionIdentityInput } from './session-artifacts.js';
 import type { CompactionCheckpointDetails } from './custom-messages.js';
 
 export interface CompactionArtifact {
@@ -73,14 +74,37 @@ export function buildCompactionMarkdown(details: CompactionCheckpointDetails, cr
 }
 
 /**
- * Write `<checkpoint>.md` plus a per-session `sessions/<session>/latest.md` pointer.
+ * Write compaction checkpoint markdown artifacts.
+ *
+ * Primary (when `cwd` + `session` are provided): routes into the session
+ * artifact tree at `<workspace>/.octocode/agent/<session-key>/compaction/`.
+ * Both a timestamped snapshot and a `latest.md` pointer are written there,
+ * and both are registered as `compaction` producers in the manifest.
+ *
+ * Fallback (legacy): `~/.octocode/tmp/compaction/` with a per-session subdir.
+ *
  * Never throws.
  */
 export function writeCompactionArtifact(
   details: CompactionCheckpointDetails,
   session?: CompactionArtifactSession,
+  cwd?: string,
 ): CompactionArtifact | undefined {
   try {
+    if (cwd && session) {
+      const input: SessionIdentityInput = { cwd, sessionManager: session };
+      const artifactCtx = createSessionArtifactContext(input);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const snapshotRel = `compaction/${timestamp}-${safeFilename(details.label)}.md`;
+      const latestRel = 'compaction/latest.md';
+      const markdown = buildCompactionMarkdown(details);
+      artifactCtx.writeText(snapshotRel, markdown);
+      artifactCtx.writeText(latestRel, markdown);
+      artifactCtx.registerProducer('compaction', snapshotRel);
+      artifactCtx.registerProducer('compaction', latestRel);
+      return { path: artifactCtx.resolve(snapshotRel), latestPath: artifactCtx.resolve(latestRel) };
+    }
+    // Legacy fallback.
     const dir = compactionArtifactsDir();
     const sessionDir = path.join(dir, 'sessions', sessionFilename(session));
     fs.mkdirSync(dir, { recursive: true });

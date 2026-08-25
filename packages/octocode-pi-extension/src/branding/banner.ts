@@ -22,28 +22,19 @@ export interface BannerTheme {
 
 
 /**
- * Octocode banner art: the lens + octopus emblem on top, the block-style
- * OCTOCODE wordmark (figlet "ANSI Shadow" face) below. Painted by
- * renderWordmarkLines with a STATIC purple gradient. Duplicated by design in
- * octocode-agent `src/ui.ts` (raw 256-color substrate) — keep the two copies
- * in sync by eye.
+ * Octocode banner art: the block-style OCTOCODE CODE wordmark
+ * (figlet "ANSI Shadow" face) painted by renderWordmarkLines with a
+ * vibrant purple→teal→purple gradient.
  */
 const WORDMARK_ART: readonly string[] = [
-  ' ██████╗  ██████╗████████╗ ██████╗  ██████╗ ██████╗ ██████╗ ███████╗',
-  '██╔═══██╗██╔════╝╚══██╔══╝██╔═══██╗██╔════╝██╔═══██╗██╔══██╗██╔════╝',
-  '██║   ██║██║        ██║   ██║   ██║██║     ██║   ██║██║  ██║█████╗',
-  '██║   ██║██║        ██║   ██║   ██║██║     ██║   ██║██║  ██║██╔══╝',
-  '╚██████╔╝╚██████╗   ██║   ╚██████╔╝╚██████╗╚██████╔╝██████╔╝███████╗',
-  ' ╚═════╝  ╚═════╝   ╚═╝    ╚═════╝  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝',
+  ' ██████╗  ██████╗████████╗ ██████╗  ██████╗ ██████╗ ██████╗ ███████╗   ██████╗ ██████╗ ██████╗ ███████╗',
+  '██╔═══██╗██╔════╝╚══██╔══╝██╔═══██╗██╔════╝██╔═══██╗██╔══██╗██╔════╝  ██╔════╝██╔═══██╗██╔══██╗██╔════╝',
+  '██║   ██║██║        ██║   ██║   ██║██║     ██║   ██║██║  ██║█████╗    ██║     ██║   ██║██║  ██║█████╗',
+  '██║   ██║██║        ██║   ██║   ██║██║     ██║   ██║██║  ██║██╔══╝    ██║     ██║   ██║██║  ██║██╔══╝',
+  '╚██████╔╝╚██████╗   ██║   ╚██████╔╝╚██████╗╚██████╔╝██████╔╝███████╗  ╚██████╗╚██████╔╝██████╔╝███████╗',
+  ' ╚═════╝  ╚═════╝   ╚═╝    ╚═════╝  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝   ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝',
 ];
 
-/**
- * Natural column width of the wordmark art — the widest of its rows (~68).
- * Below this the art can't be shown honestly: a hard clip turns every row into
- * a mid-letter fragment + "…", stacking six ellipses over broken block-letters.
- * So under this width renderWordmarkLines drops the art and falls back to the
- * compact `🔍🐙 Octocode` brand mark, which reads fine at any width.
- */
 const WORDMARK_WIDTH = WORDMARK_ART.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
 
 /** Emoji lens+octopus mark prefixing the compact brand line (same glyphs as the HTML page / octocode CLI). */
@@ -52,38 +43,87 @@ const BRAND_MARK_EMOJI = '🔍🐙';
 /** Product name shown after the emoji mark on the compact brand line. */
 const BRAND_NAME = 'Octocode';
 
-/**
- * Static purple ramp keyed by a small math equation instead of fixed columns.
- * `gradient = 0.68·diagonal + 0.24·sinusoidalGlow - 0.20·lensGlint` keeps
- * the mark mostly purple/lavender, adds a glossy highlight where the lens
- * should catch light, and leaves a muted violet shadow at the far edge.
- * No teal/cyan detours: the banner should read as purple first.
- *
- * Deliberately NOT animated: the banner is a transcript entry at the top of
- * the scrollback, and any time-varying bytes there invalidate pi-tui's line
- * diff for everything below it on every repaint — which surfaced as scroll
- * jumps while the model streamed.
- */
-const PURPLE_RAMP: readonly SemanticToken[] = [
-  'bright', // white/lavender glint
-  'link',   // lavender
-  'brand',  // purple accent
-  'title',  // saturated purple title token
+/** Static purple-family gradient used when the full wordmark cannot fit. */
+const COMPACT_BRAND_RAMP: readonly SemanticToken[] = [
+  'link',
+  'brand',
+  'title',
+  'muted',
   'brand',
   'link',
-  'muted',  // violet-gray shadow
+  'title',
+  'muted',
 ];
 
-function purpleGradientToken(row: number, col: number, lineWidth: number): SemanticToken {
-  const maxRow = Math.max(1, WORDMARK_ART.length - 1);
-  const maxCol = Math.max(1, lineWidth - 1);
-  const x = col / maxCol;
-  const y = row / maxRow;
-  const diagonal = (x + y) / 2;
-  const sinusoidalGlow = 0.5 + 0.5 * Math.sin(Math.PI * (1.2 * x - 0.65 * y + 0.18));
-  const lensGlint = Math.max(0, 1 - Math.hypot(x - 0.16, y - 0.08) * 7);
-  const gradient = Math.max(0, Math.min(1, 0.68 * diagonal + 0.24 * sinusoidalGlow - 0.2 * lensGlint));
-  return PURPLE_RAMP[Math.min(PURPLE_RAMP.length - 1, Math.floor(gradient * PURPLE_RAMP.length))] ?? 'brand';
+// ─── True-colour wave gradient ────────────────────────────────────────────────
+//
+// Deliberately NOT animated: the banner is a transcript entry at the top of
+// the scrollback, and any time-varying bytes there invalidate pi-tui's line
+// diff for everything below it on every repaint — which surfaced as scroll
+// jumps while the model streamed.
+//
+// Formula (static snapshot, no time variable):
+//   wave = 0.28·A + 0.22·B + 0.20·C + 0.18·D + 0.12·E + 0.08·micro
+//   hue  = 278 + wave·42    →  250 … 320  (blue-violet → magenta)
+//   sat  = 88  + wave·9
+//   lig  = 56  + wave·20
+//
+// Every character gets its own value via `micro = sin(col·17.391 + row·31.719)`
+// so no two neighbours share the exact hex — true per-pixel colour variety.
+// Output uses ANSI 24-bit true-colour (ESC[38;2;R;G;Bm), which pi-tui's
+// AnsiCodeTracker already parses and preserves across line-wraps.
+
+/** HSL (degrees, %, %) → clamped [r, g, b] byte triple. */
+function hslToRgb(h: number, s: number, l: number): readonly [number, number, number] {
+  h = ((h % 360) + 360) % 360;
+  s /= 100; l /= 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number): number => {
+    const k = (n + h / 30) % 12;
+    return Math.round(255 * Math.max(0, Math.min(1, l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1))));
+  };
+  return [f(0), f(8), f(4)] as const;
+}
+
+/** Wrap `ch` in an ANSI 24-bit foreground colour; reset immediately after. */
+function trueColorChar(r: number, g: number, b: number, ch: string): string {
+  return `\x1b[38;2;${r};${g};${b}m${ch}\x1b[0m`;
+}
+
+/**
+ * Compute the wave-gradient RGB colour for a single banner character.
+ *
+ * @param col       Column index within the plain (pre-clip) art line.
+ * @param row       Row index within WORDMARK_ART (0-based).
+ * @param lineWidth Visible width of the clipped art line (for normalisation).
+ */
+function waveCharColor(
+  col: number,
+  row: number,
+  lineWidth: number,
+): readonly [number, number, number] {
+  const nx = col / Math.max(1, lineWidth - 1);           // 0 → 1 horizontal
+  const ny = row / Math.max(1, WORDMARK_ART.length - 1); // 0 → 1 vertical
+
+  // Five overlapping sine waves produce an organic interference pattern.
+  const A = Math.sin(nx * Math.PI * 5.0  + 0.20);                       // horizontal roll
+  const B = Math.sin(ny * Math.PI * 3.5  + 0.80);                       // vertical roll
+  const C = Math.cos((nx + ny) * Math.PI * 4.5 + 0.50);                // diagonal sweep
+  const D = Math.sin(nx * Math.PI * 7.0  - ny * Math.PI * 2.5 + 0.30); // skewed wave
+  const E = Math.cos(nx * Math.PI * 2.0  + ny * Math.PI * 6.0 + 1.00); // cross-wave
+
+  // Deterministic per-character micro-noise — every glyph gets a unique hex.
+  const micro = Math.sin(col * 17.391 + row * 31.719) * 0.08;
+
+  // Weighted mix in [-1, 1]
+  const wave = A * 0.28 + B * 0.22 + C * 0.20 + D * 0.18 + E * 0.12 + micro;
+
+  // Purple spectrum: hue 250 (blue-violet) ↔ 320 (hot magenta)
+  const hue = 278 + wave * 42;
+  const sat = 88  + wave * 9;
+  const lig = 56  + wave * 20;
+
+  return hslToRgb(hue, sat, lig);
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -95,13 +135,26 @@ function purpleGradientToken(row: number, col: number, lineWidth: number): Seman
  * SGR resets), then the surviving glyphs are painted.
  */
 export function renderWordmarkLines(theme: BannerTheme, width: number): string[] {
-  // Narrow terminals: the ~68-column ANSI-Shadow art cannot survive a hard clip
-  // (each row degrades to a mid-letter fragment + "…"), so below the art's
-  // natural width fall back to the single compact brand mark, which renders
-  // cleanly at any width. Still pure in (theme, width) — no animation.
+  // Narrow terminals: the art cannot survive a hard clip (each row degrades to
+  // a mid-letter fragment + "…"), so below WORDMARK_WIDTH fall back to the
+  // compact brand mark. Still pure in (theme, width) — no animation.
+  //
+  // HEIGHT STABILITY: always return exactly WORDMARK_ART.length lines, even
+  // in compact mode. The banner is the FIRST entry in the transcript, so its
+  // line number is 0 in the document. If its height changes (1 vs 6 lines)
+  // on a terminal resize across the WORDMARK_WIDTH boundary, pi-tui's
+  // differential renderer sees firstChanged=0 < viewportTop → fullRender(true)
+  // → clears scrollback → user loses their scroll position. Padding with empty
+  // strings keeps the height constant; the blank rows are invisible above
+  // committed messages in a live session.
   if (width < WORDMARK_WIDTH) {
-    const mark = `${BRAND_MARK_EMOJI} ${paint(theme, 'title', theme.bold(BRAND_NAME))}`;
-    return [truncateToWidth(mark, width)];
+    const name = [...BRAND_NAME]
+      .map((ch, index) => paint(theme, COMPACT_BRAND_RAMP[index] ?? 'brand', ch))
+      .join('');
+    const mark = `${BRAND_MARK_EMOJI} ${name}`;
+    const lines: string[] = [truncateToWidth(mark, width)];
+    while (lines.length < WORDMARK_ART.length) lines.push('');
+    return lines;
   }
   return WORDMARK_ART.map((line, row) => {
     const clipped = truncatePlainToWidth(line, width);
@@ -113,7 +166,8 @@ export function renderWordmarkLines(theme: BannerTheme, width: number): string[]
       if (ch === ' ') {
         painted += ch;
       } else {
-        painted += paint(theme, purpleGradientToken(row, col, clipped.length), ch);
+        const [r, g, b] = waveCharColor(col, row, clipped.length);
+        painted += trueColorChar(r, g, b, ch);
       }
       col++;
     }

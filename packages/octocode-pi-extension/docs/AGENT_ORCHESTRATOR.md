@@ -17,11 +17,11 @@
 ## Runtime flow
 
 1. `wireOctocodePiExtension` creates a hook composer and registers existing Pi lifecycle hooks through it. `tool_call` middleware is fail-safe: a thrown middleware error returns `{ block: true, reason }`.
-2. `spawnAgent` / `spawnSubagent` call `spawnRpcAgent`.
+2. The public `agent` facade maps typed, browser, and custom profiles to `spawnRpcAgent`.
 3. Spawn policy runs before process creation. Capacity blocks; packet/model/tool issues warn.
 4. The worker runs isolated Pi RPC with recursive worker tools excluded.
 5. RPC messages update the in-memory worker record, ledger events, active tool, and normalized handback.
-6. `AgentMessage` and `/octocode-agents` read the ledger; they never expose process handles.
+6. `agent` lifecycle queries and `/octocode-agents` read the ledger; they never expose process handles.
 7. `session_shutdown` kills active workers and clears the Octocode agent UI.
 
 ## UX contract

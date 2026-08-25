@@ -176,7 +176,7 @@ function buildDeterministicCompaction(preparation: Record<string, unknown>, reas
       : undefined,
     formatFileList('Read files', readFiles),
     formatFileList('Modified files', modifiedFiles),
-    '## Resume instructions\nRe-orient from retained recent messages. If active work remains, continue with the next small step only; otherwise stop and wait for the user. If output would be long, write it to a file and reply with a concise summary and path.',
+    '## Resume instructions\nRe-orient from retained recent messages. If an active authorized plan remains, resume the active authorized plan and continue runnable work until the overall request meets acceptance, a real blocker or approval gate is reached, or the user asks to pause. Do not stop merely because one substep passes. If no active work remains, stop and wait for the user.',
   ].filter(Boolean).join('\n\n');
 
   return {
@@ -191,16 +191,31 @@ function buildDeterministicCompaction(preparation: Record<string, unknown>, reas
 //
 // session_compact can be observed more than once for the same compaction
 // (multiple registrations across reloads, replayed events); the card must be
-// idempotent per compaction. Pi hands us the same compactionEntry object for
-// the same compaction, so object identity is the dedupe key; a string key of
-// the last emission covers hosts that pass a non-object entry.
+// idempotent per compaction.
+//
+// Dedupe strategy (in priority order):
+//   1. Stable string id  — entry.id is a server-assigned identifier stable
+//      across retries; tracked in a resettable Set<string> so
+//      resetCompactionCheckpointDedupe() can clear() on session boundaries.
+//   2. Object identity   — Pi hands us the same compactionEntry object for
+//      the same compaction when no id is present; tracked in a `let` WeakSet
+//      so reset can reassign a fresh instance (WeakSet has no .clear()).
+//   3. Fallback string   — non-object entries keyed by reason:String(entry).
 
-const emittedCheckpointEntries = new WeakSet<object>();
+const emittedCheckpointIds = new Set<string>();
+let emittedCheckpointEntries = new WeakSet<object>();
 let lastCheckpointFallbackKey: string | null = null;
 
 function shouldEmitCheckpointCard(event: SessionCompactEvent): boolean {
   const entry = event.compactionEntry;
   if (entry !== null && entry !== undefined && typeof entry === 'object') {
+    const rec = entry as Record<string, unknown>;
+    const id = typeof rec.id === 'string' && rec.id.trim() ? rec.id : undefined;
+    if (id !== undefined) {
+      if (emittedCheckpointIds.has(id)) return false;
+      emittedCheckpointIds.add(id);
+      return true;
+    }
     if (emittedCheckpointEntries.has(entry)) return false;
     emittedCheckpointEntries.add(entry);
     return true;
@@ -231,6 +246,8 @@ function buildCheckpointDetails(event: SessionCompactEvent): CompactionCheckpoin
 }
 
 export function resetCompactionCheckpointDedupe(): void {
+  emittedCheckpointIds.clear();
+  emittedCheckpointEntries = new WeakSet();
   lastCheckpointFallbackKey = null;
 }
 
@@ -273,20 +290,20 @@ export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void 
   });
 
   pi.on('session_compact', async (event: SessionCompactEvent, ctx: PiContext) => {
+    if (event.willRetry) {
+      // Pi will retry this compaction and fire session_compact again on success.
+      // Leave the in-flight arbiter mark and read-states intact: the compaction
+      // is still pending, and clearing them here enables reentrant auto-compaction
+      // to race the retry window. Leave the resume request intact too (do NOT
+      // consume or clear it) so the successful retry pass schedules the continuation.
+      clearCompactionWorkingState(ctx);
+      return;
+    }
     clearCompactionInFlight();
     // The transcript the read-states were recorded against is gone; the edit
     // tool's stale-read gate must demand a fresh read, not trust pre-compaction
     // knowledge the model no longer has.
     clearAllReadStates();
-    if (event.willRetry) {
-      // Pi will retry this compaction and fire session_compact again on success.
-      // Leave the resume request intact (do NOT consume or clear it) so the
-      // successful retry pass schedules the continuation. Consuming it here —
-      // as the code originally did before this guard — permanently swallowed
-      // the request and the retried compaction never auto-resumed.
-      clearCompactionWorkingState(ctx);
-      return;
-    }
     // Consume both resume flags before any early-return so neither leaks.
     const shouldExplicitResume = consumeCompactionResumeRequest();
     const shouldAutoResume = consumeAutoCompactResumeRequest();
@@ -297,7 +314,7 @@ export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void 
     // context); rich data rides in details for the renderer only.
     if (shouldEmitCheckpointCard(event)) {
       const details = buildCheckpointDetails(event);
-      const artifact = writeCompactionArtifact(details, ctx.sessionManager);
+      const artifact = writeCompactionArtifact(details, ctx.sessionManager, ctx.cwd);
       if (artifact) {
         details.artifactPath = artifact.path;
         details.latestArtifactPath = artifact.latestPath;
@@ -319,8 +336,8 @@ export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void 
     // completed while compaction was in flight (same-turn or delayed). Re-verify
     // at completion time; if work is done, skip the follow-up rather than sending
     // a spurious "Re-orient" that the model can only answer "nothing to do".
-    // Explicit resumes (manage_context) bypass this check — the model is always
-    // mid-task when it calls that tool.
+    // Explicitly marked resumes bypass this check because their caller owns
+    // the continuation decision.
     if (shouldAutoResume && !shouldExplicitResume) {
       const branch = ctx.sessionManager?.getBranch?.();
       if (
@@ -333,7 +350,7 @@ export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void 
     }
     const docHint = artifactLatestPath ? ` Compaction doc: ${artifactLatestPath}.` : '';
     const continuation =
-      `Compaction is complete.${docHint} Re-orient from the compacted context. If an active task remains, continue with its next small step only; if the prior work was already complete, do not start new work — reply briefly and stop. If the answer would be long, write it to a file and reply with a concise summary and path.`;
+      `Compaction is complete.${docHint} Re-orient from the compacted context. If an active authorized plan remains, resume the active authorized plan and continue runnable work until the overall request meets acceptance, a real blocker or approval gate is reached, or the user asks to pause. Do not stop merely because one substep passes. If the prior work was already complete, do not start new work.`;
     scheduleCompactionContinuation(pi, ctx, notify, continuation, 'Compaction complete. Resuming…');
   });
 }

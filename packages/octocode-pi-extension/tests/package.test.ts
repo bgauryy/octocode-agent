@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { beforeAll, test, vi } from 'vitest';
+import { Type } from 'typebox';
+import type { PiContext } from '../src/types.js';
 import {
   MANAGED_BLOCK_END,
   MANAGED_BLOCK_START,
@@ -39,16 +41,24 @@ import {
   normalizeWorkerOutput,
   evaluateWorkerRecoveryRisk,
 } from '../src/index.js';
+import { runAwarenessLiteInProcess } from '../src/assets.js';
 import { applyCustomEditsToContent } from '../src/tools/edit-tool.js';
 import { recordFileReadState, clearReadStatesForTests } from '../src/tools/file-state.js';
 import { assertPathAllowed } from '../src/tools/path-guard.js';
-import { patchGlobalMcpOctocodeEnv } from '../src/tools/mcp-tool.js';
 import { getPermissionLevel, setPermissionLevel } from '../src/tools/approval.js';
 import { resetCompactionResumeStateForTests } from '../src/tools/compaction-resume.js';
 import { markCompactionResumeRequested } from '../src/tools/compaction-state.js';
-import { activePlanScope, clearPlan, getPlan, setPlan } from '../src/tools/active-plan.js';
+import { activePlanScope, clearPlan, getPlan, getPlanReviewState, setPlan } from '../src/tools/active-plan.js';
+import { handleOctocodePlanCommand, setPlanDirectoryServerForTests } from '../src/tools/plan-tool.js';
+import { setPlanOpenerForTests } from '../src/tools/plan-html.js';
 import { buildFooterSegments, getFooterDensity, setFooterDensity } from '../src/ui-extras.js';
 import { PI_CONFIG_DIR } from '../src/constants.js';
+import { registerAgentTools } from '../src/tools/agent-tools.js';
+import { registerSpawnSubagentTool } from '../src/tools/spawn-subagent-tool.js';
+import { registerBrowserAgentTool } from '../src/tools/browser-agent-tool.js';
+import { registerEditTool } from '../src/tools/edit-tool.js';
+import { registerWriteTool } from '../src/tools/write-tool.js';
+import { DIRECT_TOOL_DESCRIPTIONS } from '../src/tools/octocode-tools.js';
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
 const distDir = path.join(packageRoot, 'dist');
@@ -88,6 +98,30 @@ async function waitForNextMacrotask(): Promise<void> {
 beforeAll(() => {
   ensureDistAssetsForUnitTests();
 }, 120_000);
+
+test('failed normal build removes package-root skill staging', () => {
+  const stagedSkills = path.join(packageRoot, 'skills');
+  assert.throws(
+    () => execFileSync(
+      process.execPath,
+      [path.join(packageRoot, 'scripts', 'build.mjs')],
+      {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          OCTOCODE_TEST_FAIL_BUILD_AFTER_SKILL_SYNC: '1',
+        },
+        stdio: 'pipe',
+      }
+    ),
+    /Command failed/
+  );
+  assert.equal(
+    fs.existsSync(stagedSkills),
+    false,
+    'normal build failure must not leave a second discoverable skill tree'
+  );
+});
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -212,6 +246,17 @@ async function captureExtensions(): Promise<CaptureResult> {
     registerCommand: (name: string, cmd: CommandDef) => {
       commands.set(name, cmd);
     },
+    getCommands: () => [...commands.entries()].map(([name, command]) => ({
+      name,
+      description: command.description,
+      source: 'extension' as const,
+      sourceInfo: {
+        path: '/test',
+        source: '@octocodeai/pi-extension',
+        scope: 'temporary' as const,
+        origin: 'package' as const,
+      },
+    })),
     registerFlag: (
       name: string,
       def: { description: string; type: string; default?: unknown }
@@ -259,6 +304,27 @@ async function captureExtensions(): Promise<CaptureResult> {
     }
   ).default;
   await extension(pi);
+
+  // Preserve deep runtime parity tests for consolidated agent capabilities while
+  // keeping retired names absent from the real public map. `has`/iteration still
+  // report only public tools; `get` falls back to these internal definitions for
+  // legacy behavior tests below.
+  const legacyTools = new Map<string, ToolDef>();
+  const captureLegacy = (_pi: unknown, names: Set<string>, def: ToolDef) => {
+    names.add(def.name);
+    legacyTools.set(def.name, def);
+  };
+  const legacyNames = new Set<string>();
+  registerAgentTools(pi as never, Type, legacyNames, captureLegacy as never);
+  registerSpawnSubagentTool(pi as never, Type, legacyNames, captureLegacy as never, () => {});
+  registerBrowserAgentTool(pi as never, Type, legacyNames, captureLegacy as never, () => {});
+  registerEditTool(pi as never, Type, legacyNames, captureLegacy as never);
+  registerWriteTool(pi as never, Type, legacyNames, captureLegacy as never);
+  const publicGet = tools.get.bind(tools);
+  Object.defineProperty(tools, 'get', {
+    value: (name: string) => publicGet(name) ?? legacyTools.get(name),
+  });
+
   return {
     tools,
     commands,
@@ -279,7 +345,8 @@ function invokeExecute(
   params: Record<string, unknown>,
   ctx: unknown = { cwd: process.cwd() }
 ) {
-  return tool.execute('call-id', params, undefined, undefined, ctx);
+  const prepared = tool.prepareArguments?.(params) as Record<string, unknown> | undefined;
+  return tool.execute('call-id', prepared ?? params, undefined, undefined, ctx);
 }
 
 function argValues(args: string[], flag: string): string[] {
@@ -373,7 +440,7 @@ test('build copies bundled Octocode skills without secret env files', () => {
   );
   assert.match(
     getAwarenessCLIPath(distDir),
-    /octocode-awareness-lite.*cli\.js/,
+    /octocode-awareness.*lite.*cli\.js/,
     'Awareness Lite CLI resolves to the installed scoped package runtime'
   );
   assert.equal(
@@ -384,7 +451,7 @@ test('build copies bundled Octocode skills without secret env files', () => {
 
   const schemaSpec = buildAwarenessLiteCommand(['schema']);
   assert.equal(schemaSpec.cmd, process.execPath, 'Awareness Lite schema smoke uses local Node runtime');
-  assert.match(schemaSpec.args[0]!, /octocode-awareness-lite.*cli\.js$/, 'schema smoke uses installed scoped package CLI');
+  assert.match(schemaSpec.args[0]!, /octocode-awareness.*lite.*cli\.js$/, 'schema smoke uses installed scoped package CLI');
   const schemaOutput = execFileSync(
     schemaSpec.cmd,
     schemaSpec.args,
@@ -458,11 +525,15 @@ test('build copies bundled Octocode skills without secret env files', () => {
   );
   assert.equal(packageJson.pi?.skills, undefined, 'pi.skills removed — resources_discover is the single source');
 
-  assert.ok(skills.includes('octocode-awareness-lite'), 'dist bundles the octocode-awareness-lite skill');
+  assert.equal(
+    skills.includes('octocode-awareness-lite'),
+    false,
+    'Awareness Lite is prompt-owned and must not duplicate into Pi skill discovery'
+  );
   assert.equal(
     fs.existsSync(path.join(distDir, 'skills', 'octocode-awareness-lite', 'SKILL.md')),
-    true,
-    'Awareness Lite skill SKILL.md is bundled for Pi resource discovery'
+    false,
+    'Awareness Lite coordination is not shipped as a duplicate loadable skill'
   );
   const forbiddenEnv = path.join(
     distDir,
@@ -607,15 +678,15 @@ test(
   withTempMemoryHome(() => {
     const status = formatStatus(distDir);
     assert.match(status, /system prompt: found/);
-    assert.match(status, /MCP research \(octocode server\) · 17 support · 3 guarded built-ins · 4 replaced/);
-    assert.match(status, /awareness lite CLI: .*octocode-awareness-lite.*cli\.js/);
+    assert.match(status, new RegExp(`MCP research \\(octocode server\\) · ${OCTOCODE_SUPPORT_TOOL_NAMES.length} support · 1 guarded built-ins · 6 replaced`));
+    assert.match(status, /awareness lite CLI: .*octocode-awareness.*lite.*cli\.js/);
     assert.match(status, /management CLI: npx octocode/);
     assert.match(status, /internal error log: .*\.octocode\/logs\/error\.txt/);
     assert.match(
       status,
-      /disabled\/replaced built-ins: overridden: edit, write, bash/
+      /disabled\/replaced built-ins: overridden: bash; removed: read, edit, write, grep, find, ls/
     );
-    assert.match(status, /removed: read, grep, find, ls/);
+    assert.match(status, /removed: read, edit, write, grep, find, ls/);
     assert.doesNotMatch(status, /passthrough: bash/);
   })
 );
@@ -631,8 +702,11 @@ test('plan state is branch-correct: mutations append session entries; session_st
     await invokeExecute(planTool, { action: 'set', steps: ['step A', 'step B'] }, ctx);
     const snapshots = appendedEntries.filter((entry) => entry.customType === 'octocode-plan');
     assert.equal(snapshots.length, 1, 'plan set appends one snapshot entry');
-    const stepsData = (snapshots[0]!.data as { version: number; steps: Array<{ text: string; status: string }> });
-    assert.equal(stepsData.version, 1);
+    const stepsData = (snapshots[0]!.data as { version: number; phase: string; branchSnapshotId: string; generation: number; steps: Array<{ text: string; status: string }> });
+    assert.equal(stepsData.version, 3);
+    assert.equal(stepsData.phase, 'executing');
+    assert.match(stepsData.branchSnapshotId, /^plan-/);
+    assert.equal(stepsData.generation, 1);
     assert.deepEqual(stepsData.steps.map((s) => s.text), ['step A', 'step B']);
 
     // Fork simulation: a fresh scope whose session branch carries a snapshot —
@@ -656,19 +730,70 @@ test('plan state is branch-correct: mutations append session entries; session_st
       'session_start adopts the plan snapshot from the forked branch'
     );
 
-    // /tree rewind to a point where the plan had been cleared → plan clears.
     const treeHandler = handlers.get('session_tree')![0]!;
-    await treeHandler({}, {
+    const toolGate = handlers.get('tool_call')![0]!;
+    const reviewCtx = {
       cwd: forkCwd,
       hasUI: false,
       sessionManager: {
-        getBranch: () => [{ type: 'custom', customType: 'octocode-plan', data: { version: 1, steps: [] } }],
+        getBranch: () => [{ id: 'accepted-entry', type: 'custom', customType: 'octocode-plan', data: { version: 2, phase: 'accepted', generation: 3, steps: [{ text: 'forked step', status: 'todo' }] } }],
       },
-    });
-    assert.deepEqual(getPlan(activePlanScope(forkCtx)), [], 'session_tree re-adopts the branch snapshot (cleared)');
+    };
+    await treeHandler({}, reviewCtx);
+    assert.ok(await toolGate({ toolName: 'edit', input: {} }, reviewCtx), 'accepted branch restores pre-Start mutation block');
+
+    const executingCtx = {
+      ...reviewCtx,
+      sessionManager: {
+        getBranch: () => [{ id: 'executing-entry', type: 'custom', customType: 'octocode-plan', data: { version: 2, phase: 'executing', generation: 4, steps: [{ text: 'forked step', status: 'doing' }] } }],
+      },
+    };
+    await treeHandler({}, executingCtx);
+    assert.equal(await toolGate({ toolName: 'edit', input: {} }, executingCtx), undefined, 'executing branch enables the owning session');
+
+    // /tree navigation to a branch with no plan snapshot clears both state and policy.
+    const emptyCtx = { ...reviewCtx, sessionManager: { getBranch: () => [] } };
+    await treeHandler({}, emptyCtx);
+    assert.deepEqual(getPlan(activePlanScope(emptyCtx)), [], 'snapshot-less destination branch clears prior plan state');
+    assert.equal(await toolGate({ toolName: 'edit', input: {} }, emptyCtx), undefined, 'snapshot-less branch clears only its policy');
     clearPlan(activePlanScope(forkCtx));
   } finally {
     clearPlan(activePlanScope(ctx));
+  }
+}));
+
+test('session_start clears stale fallback-scoped plan when branch has no plan snapshot', withTempMemoryHome(async () => {
+  // Regression: without clearWhenMissing:true the old comment said
+  // "branches without a snapshot leave disk state alone for back-compat",
+  // which left orphaned plan state from a prior session visible in a new one.
+  const { handlers } = await captureExtensions();
+  const staleCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-stale-plan-'));
+  const staleScope = activePlanScope({ cwd: staleCwd });
+  try {
+    // Seed a stale plan simulating leftover state from a previous session.
+    setPlan(staleScope, ['orphaned step from prior session']);
+    assert.deepEqual(getPlan(staleScope).map((s) => s.text), ['orphaned step from prior session'],
+      'precondition: stale plan is present before session_start');
+
+    // Fire session_start with a branch that has NO octocode-plan snapshot entry.
+    const freshCtx = {
+      cwd: staleCwd,
+      hasUI: false,
+      sessionManager: {
+        getSessionFile: () => undefined,
+        getBranch: () => [{ type: 'message' }], // no plan snapshot
+      },
+    };
+    for (const handler of handlers.get('session_start')!) await handler({}, freshCtx);
+
+    assert.deepEqual(
+      getPlan(staleScope),
+      [],
+      'session_start must clear stale plan when branch has no plan snapshot (clearWhenMissing:true)',
+    );
+  } finally {
+    clearPlan(staleScope);
+    fs.rmSync(staleCwd, { recursive: true, force: true });
   }
 }));
 
@@ -706,21 +831,23 @@ test('enum tool params use string-enum schemas (Google API compat), never litera
   // {type:"string", enum:[...]} schema (see stringEnumSchema / pi-ai StringEnum).
   const { tools } = await captureExtensions();
   const prop = (tool: string, name: string): Record<string, unknown> => {
-    const params = tools.get(tool)!.parameters as { properties: Record<string, Record<string, unknown>> };
-    return params.properties[name]!;
+    const params = tools.get(tool)!.parameters as {
+      properties: { queries: { items: { properties: Record<string, Record<string, unknown>> } } };
+    };
+    return params.properties.queries.items.properties[name]!;
   };
 
   const mcpAction = prop('MCPTool', 'action');
   assert.equal(mcpAction['type'], 'string');
-  assert.deepEqual(mcpAction['enum'], ['list', 'describe', 'call', 'status', 'restart', 'stop', 'config', 'add', 'remove']);
+  assert.deepEqual(mcpAction['enum'], ['list', 'describe', 'call', 'resources', 'read-resource', 'prompts', 'get-prompt', 'complete', 'enable', 'disable', 'status', 'restart', 'stop', 'config', 'add', 'remove']);
   const mcpScope = prop('MCPTool', 'scope');
   assert.equal(mcpScope['type'], 'string');
   assert.deepEqual(mcpScope['enum'], ['project', 'global']);
-  const contextType = prop('manage_context', 'type');
-  assert.equal(contextType['type'], 'string');
-  assert.deepEqual(contextType['enum'], ['compact', 'new']);
+  const agentType = prop('agent', 'type');
+  assert.equal(agentType['type'], 'string');
+  assert.deepEqual(agentType['enum'], ['spawn', 'inspect', 'wait', 'message', 'steer', 'abort', 'kill']);
 
-  for (const [name, schema] of [['MCPTool.action', mcpAction], ['MCPTool.scope', mcpScope], ['manage_context.type', contextType]] as const) {
+  for (const [name, schema] of [['MCPTool.action', mcpAction], ['MCPTool.scope', mcpScope], ['agent.type', agentType]] as const) {
     const json = JSON.stringify(schema);
     assert.doesNotMatch(json, /anyOf|"const"/, `${name} must not compile to anyOf/const`);
   }
@@ -755,7 +882,7 @@ test('/octocode-profile applies profile fields to the live session', withTempMem
   fs.writeFileSync(path.join(tmp!, 'profiles.json'), JSON.stringify({
     deep: {
       model: 'anthropic/claude-sonnet-4',
-      tools: 'edit,write,bash,read',
+      tools: 'file,bash,read',
       excludeTools: 'bash read',
       approve: 'always',
     },
@@ -780,7 +907,7 @@ test('/octocode-profile applies profile fields to the live session', withTempMem
   try {
     await profileCmd.handler('deep', ctx);
     assert.deepEqual(modelCalls, [{ provider: 'anthropic', id: 'claude-sonnet-4' }]);
-    assert.deepEqual(activeTools, ['edit', 'write'], 'profile tools are included/excluded and weak builtins stay disabled');
+    assert.deepEqual(activeTools, ['file'], 'profile tools are included/excluded and weak builtins stay disabled');
     assert.equal(getPermissionLevel(), 'relaxed', 'approve:always maps to the closest live session permission mode');
     assert.match(notifications.at(-1)!.message, /Applied profile "deep" live/);
     assert.match(notifications.at(-1)!.message, /model: anthropic\/claude-sonnet-4/);
@@ -873,9 +1000,11 @@ test('disable built-in read in favor of localGetFileContent (records read state 
   assert.equal(activeTools.includes('bash'), true, 'bash remains available');
   assert.equal(
     activeTools.includes('edit'),
-    true,
-    'edit remains active because the custom tool overrides the built-in by name'
+    false,
+    'built-in edit is disabled in favor of the unified file tool'
   );
+  assert.equal(activeTools.includes('write'), false, 'built-in write is disabled in favor of the unified file tool');
+  assert.equal(tools.has('file'), true, 'the unified file tool is registered');
   assert.equal(
     tools.has('MCPTool'),
     true,
@@ -888,11 +1017,91 @@ test('disable built-in read in favor of localGetFileContent (records read state 
   );
 });
 
-test('replaces built-in edit by custom tool override', async () => {
+test('public direct palette is exactly 16 queries-only tools with bounded per-query reasoning', async () => {
+  const { tools } = await captureExtensions();
+  const expected = [...OCTOCODE_SUPPORT_TOOL_NAMES, 'bash'];
+  assert.equal(expected.length, 16);
+  assert.deepEqual([...tools.keys()].sort(), [...expected].sort());
+
+  for (const name of expected) {
+    const schema = tools.get(name)!.parameters as {
+      required?: string[];
+      properties?: Record<string, unknown>;
+    };
+    assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries'], `${name} only exposes top-level queries`);
+    assert.deepEqual(schema.required, ['queries'], `${name} requires queries`);
+    const queries = schema.properties?.['queries'] as {
+      maxItems?: number;
+      items?: { required?: string[]; properties?: Record<string, unknown> };
+    };
+    assert.equal(queries.maxItems, 100, `${name} caps batches at 100 queries`);
+    assert.ok(queries.items?.required?.includes('reasoning'), `${name} requires per-query reasoning`);
+    const reasoning = queries.items?.properties?.['reasoning'] as { minLength?: number; maxLength?: number };
+    assert.equal(reasoning.minLength, 1, `${name} rejects empty reasoning`);
+    assert.equal(reasoning.maxLength, 240, `${name} bounds reasoning at 240 characters`);
+  }
+
+  for (const retired of [
+    'browserAgent', 'spawnSubagent', 'spawnAgent', 'AgentMessage',
+    'callSkill', 'work', 'manage_context',
+    'awarenessStatus', 'awarenessPlan', 'claim', 'task', 'handoff', 'verify', 'awarenessAgents',
+    'readImage', 'createMedia', 'edit', 'write',
+  ]) {
+    assert.equal(tools.has(retired), false, `${retired} is retired without a public alias`);
+  }
+});
+
+test('every direct tool contract is concise enough for per-turn agent context', async () => {
+  const { tools } = await captureExtensions();
+  assert.deepEqual([...Object.keys(DIRECT_TOOL_DESCRIPTIONS)].sort(), [...tools.keys()].sort(), 'every direct tool uses the curated concise description catalog');
+  let totalContractChars = 0;
+  const visitDescriptions = (value: unknown, toolName: string): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) visitDescriptions(item, toolName);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (key === 'description' && typeof child === 'string') {
+        assert.ok(child.length <= 180, `${toolName} schema description is ${child.length} chars`);
+      } else {
+        visitDescriptions(child, toolName);
+      }
+    }
+  };
+
+  for (const [name, tool] of tools) {
+    const description = tool.description ?? '';
+    const schemaText = JSON.stringify(tool.parameters);
+    assert.ok(description.length <= 360, `${name} description is ${description.length} chars`);
+    visitDescriptions(tool.parameters, name);
+    totalContractChars += description.length + schemaText.length;
+  }
+  assert.ok(totalContractChars <= 45_000, `direct tool contracts use ${totalContractChars} chars`);
+});
+
+test('the removed unified-flow flag cannot restore legacy tools', async () => {
+  const previousFlag = process.env['OCTOCODE_UNIFIED_TASK_FLOW'];
+  process.env['OCTOCODE_UNIFIED_TASK_FLOW'] = '0';
+  try {
+    const { tools } = await captureExtensions();
+    const expected = [...OCTOCODE_SUPPORT_TOOL_NAMES, 'bash'];
+    assert.equal(expected.length, 16);
+    assert.deepEqual([...tools.keys()].sort(), [...expected].sort());
+    for (const retired of ['awarenessPlan', 'claim', 'task', 'handoff', 'verify', 'awarenessAgents']) {
+      assert.equal(tools.has(retired), false, `${retired} cannot be restored by an obsolete environment variable`);
+    }
+  } finally {
+    if (previousFlag === undefined) delete process.env['OCTOCODE_UNIFIED_TASK_FLOW'];
+    else process.env['OCTOCODE_UNIFIED_TASK_FLOW'] = previousFlag;
+  }
+});
+
+test('retains the internal edit engine contract used by file', async () => {
   const { tools } = await captureExtensions();
   const editTool = tools.get('edit')!;
   assert.equal(editTool.label, 'edit (Octocode)');
-  assert.match(editTool.description!, /Replaces Pi built-in edit/);
+  assert.match(editTool.description!, /exact current-file text replacement.*stale-read checks/i);
   assert.ok(
     editTool.promptGuidelines!.some(line =>
       line.includes('replaces Pi built-in edit')
@@ -900,25 +1109,25 @@ test('replaces built-in edit by custom tool override', async () => {
   );
   const params = editTool.parameters as {
     properties: {
-      edits: { items: { properties: Record<string, unknown> } };
-      queries: unknown;
+      queries: { items: { properties: { edits: { items: { properties: Record<string, unknown> } } } } };
     };
   };
+  const editProperties = params.properties.queries.items.properties.edits.items.properties;
   assert.ok(
-    params.properties.edits.items.properties['replaceAll'],
+    editProperties['replaceAll'],
     'custom edit supports replaceAll'
   );
   assert.ok(
-    params.properties.edits.items.properties['reasoning'],
+    editProperties['reasoning'],
     'custom edit supports per-edit reasoning metadata'
   );
   assert.ok(
-    params.properties.edits.items.properties['matchMode'],
+    editProperties['matchMode'],
     'custom edit supports match modes'
   );
   assert.ok(
     params.properties.queries,
-    'custom edit supports multi-file queries'
+    'custom edit exposes the universal multi-file query envelope'
   );
   assert.ok(editTool.renderCall, 'custom edit provides a renderer');
   assert.ok(editTool.renderResult, 'custom edit provides a result renderer');
@@ -928,12 +1137,13 @@ test('replaces built-in edit by custom tool override', async () => {
   assert.match(callLine, /edit \(Octocode\)/);
 });
 
-test('replaces built-in write by custom tool override with path guard', async () => {
+test('retains the internal write engine path guard used by file', async () => {
   const { tools, activeTools } = await captureExtensions();
   const writeTool = tools.get('write')!;
   assert.equal(writeTool.label, 'write (Octocode)');
-  assert.match(writeTool.description!, /Replaces Pi built-in write/);
-  assert.equal(activeTools.includes('write'), true, 'write stays active as Octocode override');
+  assert.match(writeTool.description!, /Octocode custom write/i);
+  assert.equal(activeTools.includes('write'), false, 'native write stays disabled');
+  assert.equal(tools.has('file'), true, 'file replaces native edit/write');
   assert.equal(activeTools.includes('read'), false);
   assert.equal(activeTools.includes('grep'), false);
 
@@ -941,9 +1151,11 @@ test('replaces built-in write by custom tool override with path guard', async ()
   try {
     const target = path.join(tmp, 'nested', 'hello.txt');
     const result = await invokeExecute(writeTool, {
-      path: target,
-      content: 'hello from octocode write\n',
-      reasoning: 'verify custom write override creates files inside the allowed root',
+      queries: [{
+        path: target,
+        content: 'hello from octocode write\n',
+        reasoning: 'verify custom write override creates files inside the allowed root',
+      }],
     }, { cwd: tmp });
     assert.match((result.content[0] as { text: string }).text!, /Successfully wrote/);
     assert.equal(fs.readFileSync(target, 'utf8'), 'hello from octocode write\n');
@@ -951,7 +1163,7 @@ test('replaces built-in write by custom tool override with path guard', async ()
     // Outside allowed roots must fail (/usr is not cwd/home/tmp).
     const outside = `/usr/octocode-pi-write-should-block-${process.pid}.txt`;
     await assert.rejects(
-      () => invokeExecute(writeTool, { path: outside, content: 'x', reasoning: 'verify path guard rejects unsafe write target' }, { cwd: tmp }),
+      () => invokeExecute(writeTool, { queries: [{ path: outside, content: 'x', reasoning: 'verify path guard rejects unsafe write target' }] }, { cwd: tmp }),
       /write blocked|outside the allowed roots/,
     );
   } finally {
@@ -966,8 +1178,9 @@ test('write file_path alias folds via prepareArguments', async () => {
   const folded = writeTool.prepareArguments!({
     file_path: 'a.ts',
     content: 'x',
-  }) as { path: string; content: string };
-  assert.equal(folded.path, 'a.ts');
+    reasoning: 'exercise the legacy path alias',
+  }) as { queries: Array<{ path: string; content: string; reasoning: string }> };
+  assert.equal(folded.queries[0]?.path, 'a.ts');
 });
 
 test('write records read-state so a follow-up edit is not stale', async () => {
@@ -979,7 +1192,7 @@ test('write records read-state so a follow-up edit is not stale', async () => {
     const target = path.join(tmp, 'seed.ts');
     await invokeExecute(
       writeTool,
-      { path: target, content: 'const x = 1;\n', reasoning: 'seed file before verifying edit stale-read state' },
+      { queries: [{ path: target, content: 'const x = 1;\n', reasoning: 'seed file before verifying edit stale-read state' }] },
       { cwd: tmp },
     );
     const edited = await invokeExecute(
@@ -1065,6 +1278,8 @@ test('custom edit not-found diagnostics preserve visible leading whitespace in s
 });
 
 test('custom edit requires reasoning and shows it in output', async () => {
+  const previousNoColor = process.env['NO_COLOR'];
+  delete process.env['NO_COLOR'];
   const { tools } = await captureExtensions();
   const tmp = fs.mkdtempSync(
     path.join(os.tmpdir(), 'octocode-edit-reasoning-')
@@ -1116,11 +1331,15 @@ test('custom edit requires reasoning and shows it in output', async () => {
     // 'left' was not changed (the rejected call did not write); only 'right' was replaced.
     assert.equal(fs.readFileSync(target, 'utf8'), 'left\nRIGHT\n');
   } finally {
+    if (previousNoColor === undefined) delete process.env['NO_COLOR'];
+    else process.env['NO_COLOR'] = previousNoColor;
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
 test('custom edit returns diff and patch details', async () => {
+  const previousNoColor = process.env['NO_COLOR'];
+  delete process.env['NO_COLOR'];
   const { tools } = await captureExtensions();
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-edit-diff-'));
   const target = path.join(tmp, 'diff.txt');
@@ -1182,6 +1401,8 @@ test('custom edit returns diff and patch details', async () => {
       themedLines.some(line => line.includes('<toolDiffAdded>+ TWO</toolDiffAdded>'))
     );
   } finally {
+    if (previousNoColor === undefined) delete process.env['NO_COLOR'];
+    else process.env['NO_COLOR'] = previousNoColor;
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
@@ -1770,7 +1991,7 @@ test('custom edit supports all-or-nothing multi-file queries', async () => {
         },
       ],
     });
-    assert.match((result.content[0] as { text: string }).text, /2 file\(s\)/);
+    assert.match((result.content[0] as { text: string }).text, /2 queries succeeded/);
     assert.equal(fs.readFileSync(first, 'utf8'), 'ALPHA\n');
     assert.equal(fs.readFileSync(second, 'utf8'), 'BETA\n');
   } finally {
@@ -1928,10 +2149,10 @@ test('research tools served via MCPTool — not registered as native Pi tools', 
   // bundled octocode MCP server through MCPTool, not as individually-registered
   // native Pi tools. This keeps the Pi tool palette lean (fewer tokens per turn).
   const nativeResearchTools = [
-    'ghSearchCode', 'ghSearchRepos', 'ghHistoryResearch', 'ghGetFileContent',
-    'ghViewRepoStructure', 'ghCloneRepo', 'localSearchCode', 'localFindFiles',
-    'localGetFileContent', 'localViewStructure', 'lspGetSemantics',
-    'localBinaryInspect', 'npmSearch',
+    'ghSearchCode', 'ghSearchRepos', 'ghSearchPullRequests', 'ghSearchIssues',
+    'ghSearchCommits', 'ghGetFileContent', 'ghViewRepoStructure', 'ghCloneRepo',
+    'localSearchCode', 'localFindFiles', 'localFindDeadCode', 'localGetFileContent',
+    'localViewStructure', 'lspGetSemantics', 'npmSearch',
   ];
   for (const toolName of nativeResearchTools) {
     assert.equal(
@@ -1943,30 +2164,34 @@ test('research tools served via MCPTool — not registered as native Pi tools', 
   assert.equal(tools.has('MCPTool'), true, 'MCPTool is registered as the research gateway');
 });
 
-test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors trust', async () => {
+test('mcp tool reads canonical project config, lists tools, calls tools, and honors trust', async () => {
   const { tools } = await captureExtensions();
   const mcpTool = tools.get('MCPTool')!;
   assert.ok(mcpTool, 'MCPTool registered');
   assert.equal(tools.has('mcp'), false, 'mcp alias was removed to slim the tool surface');
-  assert.match(mcpTool.promptSnippet!, /MCPTool is the dedicated MCP gateway/);
-  assert.match(mcpTool.promptSnippet!, /action:list\/describe/);
+  assert.match(mcpTool.promptSnippet!, /mcp_catalog_index/);
+  assert.match(mcpTool.promptSnippet!, /Exact schemas are compiled and validated internally/i);
+  assert.match(mcpTool.description!, /call MCP tools directly/i);
+  assert.match(mcpTool.description!, /stdio and Streamable HTTP/i);
+  assert.doesNotMatch(mcpTool.description!, /prepare/i);
+  const mcpGuidelines = mcpTool.promptGuidelines?.join('\n') ?? '';
+  assert.match(mcpGuidelines, /\.octocode\/agent\/mcp\/servers\.json/);
+  assert.match(mcpGuidelines, /Streamable HTTP/i);
+  assert.match(mcpGuidelines, /pinned local.*npx.*fallback/i);
 
   const tmp = fs.mkdtempSync(path.join(packageRoot, '.tmp-mcp-test-'));
   try {
     const serverPath = path.join(tmp, 'server.mjs');
     fs.writeFileSync(serverPath, `
-      import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-      import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-      import * as z from 'zod/v4';
-      const server = new McpServer({ name: 'fake', version: '1.0.0' }, { instructions: 'Use echo only for MCP bridge smoke tests.' });
-      server.registerTool('echo', {
-        description: 'Echo text',
-        inputSchema: { text: z.string() }
-      }, async ({ text }) => ({ content: [{ type: 'text', text: 'echo:' + text }] }));
+      import { Server } from '@modelcontextprotocol/server';
+      import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+      const server = new Server({ name: 'fake', version: '1.0.0' }, { capabilities: { tools: {} }, instructions: 'Use echo only for MCP bridge smoke tests.' });
+      server.setRequestHandler('tools/list', async () => ({ tools: [{ name:'echo', description:'Echo text', inputSchema:{ type:'object', required:['text'], properties:{ text:{ type:'string' } } } }] }));
+      server.setRequestHandler('tools/call', async (request) => ({ content: [{ type:'text', text:'echo:' + request.params.arguments?.text }] }));
       await server.connect(new StdioServerTransport());
     `);
-    fs.mkdirSync(path.join(tmp, '.pi', 'agent'), { recursive: true });
-    fs.writeFileSync(path.join(tmp, '.pi', 'agent', 'mcp.json'), JSON.stringify({
+    fs.mkdirSync(path.join(tmp, '.octocode', 'agent', 'mcp'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.octocode', 'agent', 'mcp', 'servers.json'), JSON.stringify({
       mcpServers: {
         fake: {
           command: 'node',
@@ -1978,14 +2203,16 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
     }));
 
     const trustedCtx = { cwd: tmp, isProjectTrusted: async () => true, ui: { setStatus: () => undefined } };
-    const config = await invokeExecute(mcpTool, { action: 'config' }, trustedCtx);
+    const invokeMcp = (params: Record<string, unknown>, context: Record<string, unknown> = trustedCtx) =>
+      invokeExecute(mcpTool, { queries: [{ reasoning: 'Exercise the MCP gateway contract.', ...params }] }, context);
+    const config = await invokeMcp({ action: 'config' });
     assert.match((config.content[0] as { text: string }).text, /servers: .*octocode/);
     // Built-in octocode server resolves to the pinned local binary
     // (node .../octocode-mcp/dist/index.js) when installed, else the npx
     // fallback (npx -y octocode-mcp@latest); both contain "octocode-mcp".
     assert.match((config.content[0] as { text: string }).text, /octocode-mcp/);
 
-    const listed = await invokeExecute(mcpTool, { action: 'list', server: 'fake' }, trustedCtx);
+    const listed = await invokeMcp({ action: 'list', server: 'fake' });
     assert.match((listed.content[0] as { text: string }).text, /fake: 1 tool/);
     assert.match((listed.content[0] as { text: string }).text, /instructions: Use echo only for MCP bridge smoke tests/);
     assert.match((listed.content[0] as { text: string }).text, /echo: Echo text/);
@@ -2005,43 +2232,45 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
       }, trustedCtx)
     );
     const cachedPrompt = (beforeStartWithCachedMcp as { systemPrompt?: string }).systemPrompt ?? '';
-    assert.match(cachedPrompt, /<mcp_catalog>/);
+    assert.match(cachedPrompt, /<mcp_catalog_index>/);
     assert.match(cachedPrompt, /server: fake/);
-    assert.match(cachedPrompt, /instructions: Use echo only for MCP bridge smoke tests\./);
+    assert.doesNotMatch(cachedPrompt, /instructions: Use echo only for MCP bridge smoke tests\./);
     assert.match(cachedPrompt, /tool: echo/);
     assert.match(cachedPrompt, /description: Echo text/);
-    // Caching contract: the every-turn catalog carries the exact compact
-    // inputSchema JSON for every discovered tool — no describe round-trip needed.
-    assert.match(cachedPrompt, /inputSchema: \{"type":"object"/);
-    assert.match(cachedPrompt, /"text"/);
+    assert.match(cachedPrompt, /Input: text \(string, required\)/);
+    assert.doesNotMatch(cachedPrompt, /inputSchema/);
     assert.match(cachedPrompt, /<runtime_capabilities>/);
     assert.match(cachedPrompt, /effective_inline_images: false/);
     assert.match(cachedPrompt, /<available_skills>/);
-    assert.match(cachedPrompt, /octocode-awareness-lite: Shared workspace coordination and verification\./);
+    assert.doesNotMatch(cachedPrompt, /octocode-awareness-lite:/);
     assert.match(cachedPrompt, /octocode-roast: Critical review and adversarial critique\. \[user\/global\]/);
-    assert.match(cachedPrompt, /load the minimal matching skill BEFORE acting via skill\(\{action:"load", name:"…", reason:"why it matches"\}\)/);
+    assert.match(cachedPrompt, /load the minimal matching skill BEFORE acting via skill\(\{queries:/);
 
-    const called = await invokeExecute(mcpTool, { action: 'call', server: 'fake', tool: 'echo', arguments: { text: 'ok' } }, trustedCtx);
+    const called = await invokeMcp({ action: 'call', server: 'fake', tool: 'echo', arguments: { text: 'ok' } });
     assert.match((called.content[0] as { text: string }).text, /echo:ok/);
 
-    const described = await invokeExecute(mcpTool, { action: 'describe', server: 'fake', tool: 'echo' }, trustedCtx);
+    const described = await invokeMcp({ action: 'describe', server: 'fake', tool: 'echo' });
     assert.match((described.content[0] as { text: string }).text, /Use echo only for MCP bridge smoke tests/);
     assert.match((described.content[0] as { text: string }).text, /"name": "echo"/);
     assert.match((described.content[0] as { text: string }).text, /"inputSchema"/);
 
+    const invalid = await invokeMcp({ action: 'call', server: 'fake', tool: 'echo', arguments: { text: 42 } });
+    assert.equal(invalid.isError, true);
+    assert.match((invalid.content[0] as { text: string }).text, /MCP_SCHEMA_INVALID/);
+
     // Prompt-caching contract: the catalog block is byte-stable — call/describe
-    // activity must NOT change the rendered <mcp_catalog> bytes (any churn would
+    // activity must NOT change the rendered <mcp_catalog_index> bytes (any churn would
     // invalidate the provider prompt cache from that point on).
     const afterUse = await captureExtensions().then(({ handlers }) =>
       handlers.get('before_agent_start')!.at(-1)!({ systemPrompt: 'Pi base prompt' }, trustedCtx)
     );
     const hotPrompt = (afterUse as { systemPrompt?: string }).systemPrompt ?? '';
     const catalogSlice = (prompt: string): string =>
-      prompt.slice(prompt.indexOf('<mcp_catalog>'), prompt.indexOf('</mcp_catalog>'));
+      prompt.slice(prompt.indexOf('<mcp_catalog_index>'), prompt.indexOf('</mcp_catalog_index>'));
     assert.match(hotPrompt, /tool: echo/);
     assert.equal(catalogSlice(hotPrompt), catalogSlice(cachedPrompt), 'catalog bytes identical before and after call/describe');
 
-    const statusResult = await invokeExecute(mcpTool, { action: 'status' }, trustedCtx);
+    const statusResult = await invokeMcp({ action: 'status' });
     assert.match((statusResult.content[0] as { text: string }).text, /Octocode MCP status/);
 
     const renderedCall = mcpTool.renderCall!({ action: 'list', server: 'fake' }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }).render(80).join('\n');
@@ -2062,96 +2291,14 @@ test('mcp tool reads .pi/agent/mcp.json, lists tools, calls tools, and honors tr
     assert.match(renderedOctocodeResult, /2 lines/);
     assert.match(renderedOctocodeResult, /const answer = 42;/);
 
-    const stopped = await invokeExecute(mcpTool, { action: 'stop', server: 'fake' }, trustedCtx);
+    const stopped = await invokeMcp({ action: 'stop', server: 'fake' });
     assert.match((stopped.content[0] as { text: string }).text, /fake: stopped/);
 
-    const untrusted = await invokeExecute(mcpTool, { action: 'config' }, { cwd: tmp, isProjectTrusted: async () => false });
+    const untrusted = await invokeMcp({ action: 'config' }, { cwd: tmp, isProjectTrusted: async () => false });
     assert.match((untrusted.content[0] as { text: string }).text, /skipped because the project is not trusted/);
   } finally {
-    try { await invokeExecute(mcpTool, { action: 'stop' }, { cwd: tmp }); } catch {}
+    try { await invokeExecute(mcpTool, { queries: [{ reasoning: 'Stop fixture.', action: 'stop' }] }, { cwd: tmp }); } catch {}
     fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test('patchGlobalMcpOctocodeEnv adds npm_config_cache and npm_config_include when missing', () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-mcp-patch-'));
-  const configPath = path.join(tmp, 'mcp.json');
-  try {
-    // Config with octocode server but no env block.
-    fs.writeFileSync(configPath, JSON.stringify({
-      mcpServers: {
-        octocode: { command: 'npx', args: ['-y', 'octocode-mcp@latest'], lifecycle: 'lazy', directTools: true },
-      },
-    }, null, 2), 'utf8');
-
-    // patchGlobalMcpOctocodeEnv normally targets globalMcpPath() (~/.pi/agent/mcp.json).
-    // Temporarily override $HOME so it targets our temp file.
-    const origHome = process.env['HOME'];
-    process.env['HOME'] = tmp;
-    // Also need the file at the exact path the function reads.
-    fs.mkdirSync(path.join(tmp, '.pi', 'agent'), { recursive: true });
-    fs.copyFileSync(configPath, path.join(tmp, '.pi', 'agent', 'mcp.json'));
-    try {
-      patchGlobalMcpOctocodeEnv();
-    } finally {
-      if (origHome === undefined) delete process.env['HOME'];
-      else process.env['HOME'] = origHome;
-    }
-
-    const patched = JSON.parse(fs.readFileSync(path.join(tmp, '.pi', 'agent', 'mcp.json'), 'utf8'));
-    const env = patched.mcpServers.octocode.env;
-    assert.ok(env, 'env block was added');
-    assert.ok(typeof env.npm_config_cache === 'string' && env.npm_config_cache.length > 0, 'npm_config_cache set');
-    assert.ok(typeof env.npm_config_include === 'string' && env.npm_config_include.length > 0, 'npm_config_include set');
-    // Other fields preserved.
-    assert.equal(patched.mcpServers.octocode.lifecycle, 'lazy');
-    assert.equal(patched.mcpServers.octocode.directTools, true);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test('patchGlobalMcpOctocodeEnv is idempotent and preserves user-supplied env overrides', () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-mcp-patch-'));
-  try {
-    const piDir = path.join(tmp, '.pi', 'agent');
-    fs.mkdirSync(piDir, { recursive: true });
-    const userCache = '/custom/npm/cache';
-    const configPath = path.join(piDir, 'mcp.json');
-    fs.writeFileSync(configPath, JSON.stringify({
-      mcpServers: {
-        octocode: {
-          command: 'npx', args: ['-y', 'octocode-mcp@latest'],
-          env: { npm_config_cache: userCache, npm_config_include: 'optional', MY_VAR: '1' },
-        },
-      },
-    }, null, 2), 'utf8');
-
-    const origHome = process.env['HOME'];
-    process.env['HOME'] = tmp;
-    try { patchGlobalMcpOctocodeEnv(); }
-    finally {
-      if (origHome === undefined) delete process.env['HOME'];
-      else process.env['HOME'] = origHome;
-    }
-
-    const patched = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    // User's cache path must NOT be overwritten.
-    assert.equal(patched.mcpServers.octocode.env.npm_config_cache, userCache, 'user cache preserved');
-    assert.equal(patched.mcpServers.octocode.env.MY_VAR, '1', 'extra user env preserved');
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test('patchGlobalMcpOctocodeEnv is silent when mcp.json does not exist', () => {
-  const origHome = process.env['HOME'];
-  process.env['HOME'] = path.join(os.tmpdir(), 'no-such-home-' + Date.now());
-  try {
-    assert.doesNotThrow(() => patchGlobalMcpOctocodeEnv());
-  } finally {
-    if (origHome === undefined) delete process.env['HOME'];
-    else process.env['HOME'] = origHome;
   }
 });
 
@@ -2233,6 +2380,10 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
 
 test('Octocode metrics footer updates on session and turn lifecycle (single surface, no status dup)', async () => {
   const { handlers, pi } = await captureExtensions();
+  pi.execResults.set('octocode auth status --json', {
+    stdout: JSON.stringify({ authenticated: true, tokenSource: 'octocode', tokenExpired: false }),
+    code: 0,
+  });
   const statusCalls: Array<[string, string | undefined]> = [];
   const footerCalls: Array<(tui: unknown, theme: unknown, footerData?: unknown) => { render: (w?: number) => string[]; dispose?: () => void }> = [];
   const theme = { fg: (_c: string, text: string) => text, bold: (text: string) => text };
@@ -2266,15 +2417,17 @@ test('Octocode metrics footer updates on session and turn lifecycle (single surf
   // Run every session_start handler: the composer chain plus feature modules'
   // own registrations (e.g. agent-inbox context tracking) coexist on the event.
   for (const handler of handlers.get('session_start')!) await handler(undefined, ctx);
+  await new Promise<void>((resolve) => setImmediate(resolve));
   // Redundancy fix: the metrics are ONLY on the footer now, never a status line.
   assert.equal(statusCalls.some(([key]) => key === 'octocode-metrics'), false);
   assert.ok(footerCalls.length > 0, 'footer set on session_start');
-  // Session announces itself in the shared Awareness Lite registry
-  // (fire-and-forget `agent join` with the session-stable agent id).
-  const joinCall = pi.execCalls.find((c: { args: string[] }) => c.args.includes('join'));
-  assert.ok(joinCall, 'session_start fires an Awareness Lite agent join');
-  assert.ok(joinCall!.args.includes('agent'), 'join goes through the agent command');
-  assert.ok(joinCall!.args.includes('--agent-id'), 'join carries the session agent id');
+  // Awareness presence now writes through the in-process Lite runtime; this
+  // footer test intentionally observes only Pi subprocess calls.
+  assert.equal(
+    pi.execCalls.some((call) => call.args.includes('join')),
+    false,
+    'session presence does not shell through pi.exec',
+  );
   const initial = renderFooter();
   assert.match(initial, /◆ Octocode/);
   assert.match(initial, /context [▓░]{8} 50% · 50\.0k\/100k/);
@@ -2282,20 +2435,26 @@ test('Octocode metrics footer updates on session and turn lifecycle (single surf
   assert.doesNotMatch(initial, /turns 0/);
   assert.doesNotMatch(initial, /last —/);
   assert.match(initial, /update-awareness/);
-  assert.match(initial, /keys .*shift\+tab.*think.*ctrl\+shift\+a.*permissions.*esc.*stop/);
+  assert.match(initial, /keys .*shift\+tab.*think.*ctrl\+shift\+a.*perm.*esc.*stop/);
+  assert.match(initial, /\/commands guide/); // moved to brand row — no 'cmds' prefix
+  assert.doesNotMatch(initial, /\/harness inspect|\/now snapshot|\/status dash/);
+  assert.match(initial, /github ✓/);
+  assert.ok(
+    pi.execCalls.some((call) => call.command === 'npx' && call.args.join(' ') === 'octocode auth status --json'),
+    'session_start checks GitHub auth through the Octocode CLI',
+  );
 
   const component = renderFooterComponent();
   branch = 'feature/pi-footer';
+  const rendersBeforeBranchChange = renderRequests;
   branchChange?.();
-  assert.equal(renderRequests, 1);
+  assert.equal(renderRequests, rendersBeforeBranchChange + 1);
   assert.match(component.render(200).join(''), /feature\/pi-footer/);
   component.dispose?.();
   assert.equal(branchChange, undefined);
 
-  const turnStart = handlers.get('turn_start')!.at(-1)!;
-  const turnEnd = handlers.get('turn_end')!.at(-1)!;
-  await turnStart(undefined, ctx);
-  await turnEnd(undefined, ctx);
+  for (const turnStart of handlers.get('turn_start') ?? []) await turnStart(undefined, ctx);
+  for (const turnEnd of handlers.get('turn_end') ?? []) await turnEnd(undefined, ctx);
 
   const latest = renderFooter();
   assert.match(latest, /turns 1/);
@@ -2331,17 +2490,16 @@ test('Octocode dashboard command summarizes status, agents, setup, skills, and h
   assert.match(dashboard, /Agents/);
   assert.match(dashboard, /Tools/);
   assert.match(dashboard, /research: GitHub\/local\/LSP\/npm via MCPTool/);
-  assert.match(dashboard, /guarded mutations: edit, write, bash/);
+  assert.match(dashboard, /support: file,/);
+  assert.match(dashboard, /guarded mutations: bash/);
   assert.match(dashboard, /Session jobs/);
   assert.match(dashboard, /session jobs:/);
   assert.match(dashboard, /Setup/);
   assert.match(dashboard, /Skills/);
   assert.match(dashboard, /Next actions/);
-  assert.match(dashboard, /\/octocode-now/);
-  assert.match(dashboard, /\/octocode-tasks/);
-  assert.match(dashboard, /\/octocode-skills/);
-  assert.match(dashboard, /\/octocode-agents/);
-  assert.match(dashboard, /\/octocode-cron/);
+  assert.match(dashboard, /\/commands \(all slash commands\)/);
+  assert.match(dashboard, /\/octocode-palette/);
+  assert.doesNotMatch(dashboard, /\/octocode-status/);
 });
 
 test('/octocode (dashboard) vs /octocode-now (cockpit): distinction is explicit and cross-referenced', async () => {
@@ -2404,8 +2562,8 @@ test('Octocode now, tasks, and skills commands provide orientation surfaces', as
 
   const skills = notices.find((n) => n.message.startsWith('◆ Octocode skills'))?.message ?? '';
   assert.match(skills, /Available now/);
-  assert.match(skills, /- octocode-awareness-lite: Shared repo coordination\. \[bundled\]/);
-  assert.match(skills, /npx octocode skill --name <skill> --platform pi/);
+  assert.doesNotMatch(skills, /octocode-awareness-lite: .*\[bundled\]/);
+  assert.match(skills, /npx octocode skill install <skill> --platform pi/);
 });
 
 test('formatOctocodeDashboard is scan-friendly and includes health warnings', () => {
@@ -2418,11 +2576,10 @@ test('formatOctocodeDashboard is scan-friendly and includes health warnings', ()
   assert.match(dashboard, /ctx ▓▓▓▓▓▓▓▓▓░ 92%/);
   assert.match(dashboard, /⚠ context above 90%/);
   assert.match(dashboard, /Management: npx octocode/);
-  assert.match(dashboard, /Awareness Lite: .*octocode-awareness-lite.*cli\.js/);
-  assert.match(dashboard, /user CLI: npx @octocodeai\/octocode-awareness-lite/);
-  for (const command of ['/octocode-palette', '/octocode-inbox', '/octocode-dial', '/octocode-watch', '/octocode-status']) {
-    assert.match(dashboard, new RegExp(command.replace('/', '\\/')));
-  }
+  assert.match(dashboard, /Awareness Lite: .*octocode-awareness.*lite.*cli\.js/);
+  assert.match(dashboard, /user CLI: npx -p @octocodeai\/octocode-awareness octocode-awareness-lite/);
+  assert.match(dashboard, /\/commands/);
+  assert.doesNotMatch(dashboard, /\/octocode-status/);
 });
 
 test('CLI slash commands removed — extension commands are lean', async () => {
@@ -2433,11 +2590,8 @@ test('CLI slash commands removed — extension commands are lean', async () => {
     true,
     'friendly dashboard command is registered'
   );
-  assert.equal(
-    commands.has('octocode-status'),
-    true,
-    'extension status command is preserved'
-  );
+  assert.equal(commands.has('commands'), true, 'single live command guide is registered');
+  assert.equal(commands.has('octocode-status'), false, 'superseded status command is removed');
   assert.equal(
     commands.has('octocode-harness'),
     true,
@@ -2453,11 +2607,9 @@ test('CLI slash commands removed — extension commands are lean', async () => {
     true,
     'session jobs command is registered'
   );
-  assert.equal(
-    commands.has('cron'),
-    true,
-    'short session jobs command alias is registered'
-  );
+  assert.equal(commands.has('cron'), false, 'duplicate /cron alias is removed');
+  assert.equal(commands.has('mcp'), true, 'canonical MCP manager command is registered');
+  assert.equal(commands.has('octocode-mcp'), false, 'legacy MCP command is removed');
   assert.equal(
     commands.has('octocode-skills-update'),
     true,
@@ -2465,7 +2617,7 @@ test('CLI slash commands removed — extension commands are lean', async () => {
   );
   assert.deepEqual(
     listExtensionHarness().extensionCommands,
-    ['/octocode', '/octocode-status', '/octocode-harness', '/octocode-now', '/octocode-tasks', '/octocode-skills', '/octocode-agents', '/octocode-cron', '/cron', '/octocode-mcp', '/mcp', '/octocode-setup', '/octocode-skills-update', '/octocode-plan', '/octocode-theme', '/octocode-chrome', '/octocode-footer', '/octocode-permissions', '/octocode-profile', '/octocode-inbox', '/octocode-palette', '/octocode-rewind', '/octocode-dial', '/octocode-watch', '/octocode-export'],
+    ['/commands', '/octocode', '/octocode-harness', '/octocode-now', '/octocode-tasks', '/octocode-skills', '/octocode-agents', '/octocode-cron', '/mcp', '/octocode-setup', '/octocode-skills-update', '/octocode-plan', '/octocode-theme', '/octocode-chrome', '/octocode-footer', '/octocode-permissions', '/octocode-profile', '/octocode-inbox', '/octocode-palette', '/octocode-rewind', '/octocode-dial', '/octocode-watch', '/octocode-export'],
     'harness inventory lists every public Octocode slash command'
   );
   for (const eventName of ['tool_execution_start', 'tool_execution_end', 'session_start', 'before_agent_start', 'agent_end', 'session_before_compact', 'session_compact', 'session_shutdown']) {
@@ -2473,7 +2625,6 @@ test('CLI slash commands removed — extension commands are lean', async () => {
   }
   assert.equal(commands.has('octocode-memory-digest'), false, 'legacy memory digest command removed');
   assert.equal(commands.has('octocode-memory-forget'), false, 'legacy memory forget command removed');
-  // Session-control internal trampoline stays for manage_context type:"new" path.
   assert.equal(
     commands.has('_octocode-handoff-impl'),
     false,
@@ -2481,8 +2632,8 @@ test('CLI slash commands removed — extension commands are lean', async () => {
   );
   assert.equal(
     commands.has('_octocode-clear-context-impl'),
-    true,
-    'internal clear command registered for command-context session control'
+    false,
+    'retired model context trampoline is not registered'
   );
   // CLI slash commands are gone — users use `npx octocode` instead.
   assert.equal(
@@ -2530,7 +2681,7 @@ test('disableBuiltinTools is defensive and only removes disabled built-ins', () 
     } as DisablePi),
     true
   );
-  assert.deepEqual(active, ['bash', 'edit', 'write']);
+  assert.deepEqual(active, ['bash']);
 
   assert.equal(
     disableBuiltinTools({
@@ -2593,31 +2744,21 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
   try {
     assert.equal(flags.get('no-context')?.default, false);
 
-    await commands.get('octocode-status')!.handler('', ctx);
-    assert.match(notifications.at(-1)!.message, /Octocode Pi extension/);
-    // "Compaction is budget": /octocode-status surfaces the per-turn prompt cost
-    // of each Octocode addendum so oversized blocks are visible.
-    assert.match(notifications.at(-1)!.message, /Prompt budget \(per-turn Octocode system-prompt additions/);
-    assert.match(notifications.at(-1)!.message, /- static system prompt: (\d+ chars \(~\d+ tokens\)|\(empty\))/);
-    assert.match(notifications.at(-1)!.message, /- total: \d+ chars \(~\d+ tokens\)/);
+    await commands.get('commands')!.handler('', ctx);
+    assert.match(notifications.at(-1)!.message, /◆ Commands — live slash-command guide/);
+    assert.match(notifications.at(-1)!.message, /\/octocode-harness — Use when:/);
+    assert.doesNotMatch(notifications.at(-1)!.message, /\/_octocode-clear-context-impl/);
 
     await commands.get('octocode-harness')!.handler('', ctx);
     assert.match(notifications.at(-1)!.message, /native tools/i);
-    assert.match(notifications.at(-1)!.message, /overridden.*edit.*write.*bash/i);
-    assert.match(notifications.at(-1)!.message, /removed.*read.*grep.*find.*ls/i);
+    assert.match(notifications.at(-1)!.message, /overridden.*bash/i);
+    assert.match(notifications.at(-1)!.message, /removed.*read.*edit.*write.*grep.*find.*ls/i);
 
     await commands.get('octocode-cron')!.handler('list', ctx);
     assert.match(notifications.at(-1)!.message, /Octocode session jobs/);
 
-    await commands.get('cron')!.handler('check', ctx);
+    await commands.get('octocode-cron')!.handler('check', ctx);
     assert.match(notifications.at(-1)!.message, /Octocode session job check/);
-
-    await commands.get('octocode-mcp')!.handler('status', ctx);
-    assert.match(notifications.at(-1)!.message, /Octocode MCP status/);
-    assert.match(notifications.at(-1)!.message, /configured: .*octocode/);
-
-    await commands.get('mcp')!.handler('config', ctx);
-    assert.match(notifications.at(-1)!.message, /Octocode MCP config/);
 
     await commands.get('octocode-setup')!.handler('', { ...ctx, hasUI: false });
     assert.match(
@@ -2680,7 +2821,19 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
       )
     );
 
-    for (const handler of handlers.get('session_shutdown')!) await handler({ reason: 'new' }, ctx);
+    const staleReplacementCtx = new Proxy(ctx, {
+      get() {
+        throw new Error('replacement shutdown dereferenced stale Pi context');
+      },
+    });
+    const statusesBeforeReplacement = statuses.length;
+    for (const handler of handlers.get('session_shutdown')!) {
+      await handler({ reason: 'new' }, staleReplacementCtx);
+    }
+    assert.equal(statuses.length, statusesBeforeReplacement, 'replacement teardown never paints through old UI');
+
+    // Normal quit still owns explicit UI cleanup while the context is valid.
+    for (const handler of handlers.get('session_shutdown')!) await handler({ reason: 'quit' }, ctx);
     assert.ok(statuses.some(([key, value]) => key === 'agent-wait' && value === undefined));
     assert.ok(statuses.some(([key, value]) => key === 'chrome-debug' && value === undefined));
     assert.ok(widgets.some(([key, value]) => key === 'octocode-status-panel' && value === undefined));
@@ -2771,19 +2924,18 @@ test('extension lifecycle notifications fall back to console outside UI contexts
     infos.push(String(message));
   };
   try {
-    await commands.get('octocode-status')!.handler('', undefined);
-    assert.ok(infos.some((message) => /\[octocode:info\].*Octocode Pi extension/.test(message)));
+    await commands.get('octocode')!.handler('', undefined);
+    assert.ok(infos.some((message) => /\[octocode:info\].*Octocode dashboard/.test(message)));
   } finally {
     console.info = originalInfo;
   }
 });
 
 test('extension logs rich internal errors to repo .octocode/logs/error.txt', async () => {
-  const { commands, handlers } = await captureExtensions();
+  const { handlers } = await captureExtensions();
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-error-log-'));
   const logPath = getInternalErrorLogPath(tmp);
   try {
-    await commands.get('_octocode-clear-context-impl')!.handler('', { cwd: tmp, mode: 'tui' });
     await handlers.get('tool_execution_start')!.at(-1)!({
       toolCallId: 'call-1',
       toolName: 'exampleTool',
@@ -2817,7 +2969,6 @@ test('extension logs rich internal errors to repo .octocode/logs/error.txt', asy
     assert.match(text, /mode: tui/);
     assert.match(text, /model: test-model/);
     assert.match(text, /context: 50\/100 \(50%\)/);
-    assert.match(text, /source: notify/);
     assert.match(text, /source: tool_execution_end/);
     assert.match(text, /=== Octocode Pi Extension Warning ===/);
     assert.match(text, /severity: warning/);
@@ -2832,220 +2983,12 @@ test('extension logs rich internal errors to repo .octocode/logs/error.txt', asy
   }
 });
 
-test('manage_context type:compact defers the continuation to the session_compact hook (single scheduler)', async () => {
-  resetCompactionResumeStateForTests();
-  const { tools, handlers, sentUserMessages } = await captureExtensions();
-  const compactTool = tools.get('manage_context')!;
-  let compactOptions: {
-    customInstructions?: string;
-    onComplete?: (opts?: unknown) => void;
-    onError?: (err: Error) => void;
-  } = {};
-  const notifications: Array<{ message: string; level: string }> = [];
-  const working: Array<{ kind: 'message'; value?: string } | { kind: 'visible'; value: boolean }> = [];
-
-  const result = await invokeExecute(
-    compactTool,
-    { type: 'compact', instructions: 'focus on recent file changes' },
-    {
-      hasUI: true,
-      compact: (options: typeof compactOptions) => {
-        compactOptions = options;
-      },
-      ui: {
-        notify: (message: string, level: string) =>
-          notifications.push({ message, level }),
-        setWorkingMessage: (message?: string) =>
-          working.push({ kind: 'message', value: message }),
-        setWorkingVisible: (visible: boolean) =>
-          working.push({ kind: 'visible', value: visible }),
-      },
-    }
-  );
-
-  assert.match(
-    (result.content[0] as { text: string }).text,
-    /will continue after the summary is saved/
-  );
-  assert.match(
-    compactOptions.customInstructions ?? '',
-    /focus on recent file changes/
-  );
-  assert.match(
-    compactOptions.customInstructions ?? '',
-    /Preserve continuation state, not transcript/
-  );
-  assert.match(
-    compactOptions.customInstructions ?? '',
-    /live workers\/locks, blockers\/open questions, verification owed, and exact next pickup/
-  );
-  assert.equal(
-    sentUserMessages.length,
-    0,
-    'no follow-up before compaction completes'
-  );
-
-  // onComplete only clears working UI — scheduling from BOTH onComplete and the
-  // session_compact hook raced on a wall-clock dedupe window and could double-send.
-  compactOptions.onComplete?.();
-  await waitForNextMacrotask();
-  assert.equal(sentUserMessages.length, 0, 'onComplete does not schedule the continuation');
-  assert.deepEqual(working, [
-    { kind: 'message', value: undefined },
-    { kind: 'visible', value: false },
-  ]);
-
-  // The session_compact hook is the single scheduler. Pi's fromExtension means
-  // "summary supplied by extension", so a default ctx.compact summary reports
-  // false even when Octocode triggered it; Octocode tracks resume intent itself.
-  await handlers.get('session_compact')!.at(-1)!(
-    { compactionEntry: {}, fromExtension: false, reason: 'manual', willRetry: false },
-    {
-      hasUI: true,
-      ui: {
-        notify: (message: string, level: string) => notifications.push({ message, level }),
-        setWorkingMessage: () => undefined,
-        setWorkingVisible: () => undefined,
-      },
-    }
-  );
-  await waitForNextMacrotask();
-  assert.equal(sentUserMessages.length, 1);
-  assert.match(sentUserMessages[0]!.msg, /Compaction is complete\./);
-  assert.match(sentUserMessages[0]!.msg, /Compaction doc: .*latest\.md/);
-  assert.match(sentUserMessages[0]!.msg, /Re-orient from the compacted context/);
-  assert.equal(sentUserMessages[0]!.opts?.['deliverAs'], 'followUp');
-  assert.deepEqual(notifications.at(-1), {
-    message: 'Compaction complete. Resuming…',
-    level: 'info',
-  });
-});
-
-test('manage_context type:compact treats empty-session compaction as a no-op', async () => {
-  const { tools, sentUserMessages } = await captureExtensions();
-  const compactTool = tools.get('manage_context')!;
-  let compactOptions: { onError?: (err: Error) => void } = {};
-  const notifications: Array<{ message: string; level: string }> = [];
-  const working: Array<{ kind: 'message'; value?: string } | { kind: 'visible'; value: boolean }> = [];
-
-  await invokeExecute(
-    compactTool,
-    { type: 'compact' },
-    {
-      hasUI: true,
-      compact: (options: typeof compactOptions) => {
-        compactOptions = options;
-      },
-      ui: {
-        notify: (message: string, level: string) =>
-          notifications.push({ message, level }),
-        setWorkingMessage: (message?: string) =>
-          working.push({ kind: 'message', value: message }),
-        setWorkingVisible: (visible: boolean) =>
-          working.push({ kind: 'visible', value: visible }),
-      },
-    }
-  );
-
-  compactOptions.onError?.(new Error('Nothing to compact'));
-  assert.equal(sentUserMessages.length, 0);
-  assert.deepEqual(notifications[0], {
-    message: 'Compaction skipped: session is too small to compact.',
-    level: 'info',
-  });
-  assert.deepEqual(working, [
-    { kind: 'message', value: undefined },
-    { kind: 'visible', value: false },
-  ]);
-});
-
-test('manage_context type:new, missing compact support, and render states are explicit', async () => {
-  const { tools, sentUserMessages } = await captureExtensions();
-  const compactTool = tools.get('manage_context')!;
-
-  const newResult = await invokeExecute(compactTool, { type: 'new' });
-  assert.match((newResult.content[0] as { text: string }).text, /New session queued/);
-  assert.deepEqual(sentUserMessages.at(-1), {
-    msg: '/_octocode-clear-context-impl',
-    opts: { deliverAs: 'followUp', expandPromptTemplates: true },
-  });
-
-  await assert.rejects(
-    () => invokeExecute(compactTool, { type: 'compact' }, {}),
-    /ctx\.compact is not available/
-  );
-
-  assert.match(
-    compactTool.renderCall!(
-      { type: 'new' },
-      {
-        bold: (text: string) => `<b>${text}</b>`,
-        fg: (_color: string, text: string) => text,
-      }
-    ).render(120)[0]!,
-    /manage_context<\/b> \(new\)/
-  );
-  assert.equal(
-    compactTool.renderResult!(
-      { isError: false, content: [{ type: 'text', text: 'ok' }] },
-      { isPartial: true }
-    ).render(120)[0],
-    'Processing…'
-  );
-  assert.equal(
-    compactTool.renderResult!(
-      { isError: true, content: [{ type: 'text', text: 'bad' }] },
-      { expanded: false }
-    ).render(120)[0],
-    '✗ manage_context'
-  );
-
-  const { commands } = await captureExtensions();
-  const notifications: Array<{ message: string; level?: string }> = [];
-  await commands.get('_octocode-clear-context-impl')!.handler('', {
-    ui: {
-      notify: (message: string, level?: string) =>
-        notifications.push({ message, level }),
-    },
-  });
-  assert.match(notifications.at(-1)!.message, /ctx\.newSession not available/);
-
-  const cancelled: Array<{ message: string; level?: string }> = [];
-  await commands.get('_octocode-clear-context-impl')!.handler('', {
-    newSession: async () => ({ cancelled: true }),
-    ui: {
-      notify: (message: string, level?: string) =>
-        cancelled.push({ message, level }),
-    },
-  });
-  assert.deepEqual(cancelled.at(-1), {
-    message: 'clear_context: session switch was cancelled.',
-    level: 'warning',
-  });
-});
-
-test('manage_context type:new returns isError when called inside a spawned worker', async () => {
-  // The /_octocode-clear-context-impl command is registered only in the host Pi
-  // process. Sending it from inside a worker would silently fail as an unknown
-  // command. Verify the guard returns a clear error instead.
-  const { tools } = await captureExtensions();
-  const compactTool = tools.get('manage_context')!;
-  const prev = process.env['OCTOCODE_PI_SUBAGENT'];
-  process.env['OCTOCODE_PI_SUBAGENT'] = '1';
-  try {
-    const result = await invokeExecute(compactTool, { type: 'new' });
-    assert.equal(result.isError, true, 'must be flagged as an error in worker context');
-    assert.match(
-      (result.content[0] as { text: string }).text,
-      /not supported inside a spawned worker/
-    );
-  } finally {
-    if (prev === undefined) {
-      delete process.env['OCTOCODE_PI_SUBAGENT'];
-    } else {
-      process.env['OCTOCODE_PI_SUBAGENT'] = prev;
-    }
-  }
+test('model-callable context controls are retired while automatic compaction hooks remain', async () => {
+  const { tools, commands, handlers } = await captureExtensions();
+  assert.equal(tools.has('manage_context'), false);
+  assert.equal(commands.has('_octocode-clear-context-impl'), false);
+  assert.ok((handlers.get('session_before_compact')?.length ?? 0) > 0);
+  assert.ok((handlers.get('session_compact')?.length ?? 0) > 0);
 });
 
 test('session_before_compact provides the deterministic checkpoint ONLY on overflow, including written files', async () => {
@@ -3100,6 +3043,8 @@ test('session_before_compact provides the deterministic checkpoint ONLY on overf
   assert.match(result.compaction?.summary ?? '', /Read Pi compaction internals/);
   assert.match(result.compaction?.summary ?? '', /src\/tools\/context-tools\.ts/);
   assert.match(result.compaction?.summary ?? '', /src\/new-file\.ts/, 'files created via write appear as modified');
+  assert.match(result.compaction?.summary ?? '', /resume the active authorized plan.*overall request/i, 'overflow checkpoints preserve whole-task continuation');
+  assert.doesNotMatch(result.compaction?.summary ?? '', /next small step only/i, 'overflow checkpoints do not impose an artificial one-step stop');
   assert.deepEqual(result.compaction?.details?.modifiedFiles, ['src/index.ts', 'src/new-file.ts']);
   assert.deepEqual(result.compaction?.details?.readFiles, ['src/tools/context-tools.ts'], 'modified files excluded from reads');
   assert.match(notifications.at(-1)?.message ?? '', /deterministic split-turn compaction checkpoint \(overflow path/);
@@ -3349,7 +3294,8 @@ test('turn_end auto-compact resumes via session_compact ONLY when unfinished pla
     );
     await waitForNextMacrotask();
     assert.equal(sentUserMessages.length, 1, 'followUp queued via session_compact when plan work remains');
-    assert.match(sentUserMessages[0]!.msg, /Compaction is complete.*next small step only/i);
+    assert.match(sentUserMessages[0]!.msg, /Compaction is complete.*resume the active authorized plan.*overall request/i);
+    assert.doesNotMatch(sentUserMessages[0]!.msg, /next small step only/i, 'resume does not force a stop after one substep');
     assert.equal(sentUserMessages[0]!.opts?.['deliverAs'], 'followUp');
     assert.deepEqual(notifications.at(-1), {
       message: 'Compaction complete. Resuming…',
@@ -3504,8 +3450,8 @@ test('lists every extension harness surface', () => {
   const harness = listExtensionHarness(distDir);
   assert.deepEqual(harness.tools, [], 'native research tools removed — served via MCPTool octocode server');
   assert.deepEqual(harness.supportTools, OCTOCODE_SUPPORT_TOOL_NAMES);
-  assert.deepEqual(harness.overriddenBuiltins, ['edit', 'write', 'bash']);
-  assert.deepEqual(harness.disabledBuiltins, ['read', 'grep', 'find', 'ls']);
+  assert.deepEqual(harness.overriddenBuiltins, ['bash']);
+  assert.deepEqual(harness.disabledBuiltins, ['read', 'edit', 'write', 'grep', 'find', 'ls']);
   assert.deepEqual(harness.passthroughBuiltins, []);
   assert.ok(harness.extensionCommands.includes('/octocode-harness'));
   assert.match(
@@ -3515,7 +3461,7 @@ test('lists every extension harness surface', () => {
   );
   assert.match(
     harness.awarenessCliNote,
-    /Awareness Lite CLI: .*octocode-awareness-lite.*cli\.js/,
+    /Awareness Lite CLI: .*octocode-awareness.*lite.*cli\.js/,
     'awarenessCliNote shows installed Awareness Lite CLI command'
   );
   assert.ok(!('cliCommands' in harness), 'cliCommands removed from harness');
@@ -3549,13 +3495,14 @@ test('README and UI docs list every harness surface exposed by the extension', (
 });
 
 test('research tools are NOT registered as native Pi tools — served via MCPTool octocode server', async () => {
-  // MCPTool-first: 13 research tools removed from Pi palette to cut per-turn tokens.
-  // They are served via MCPTool({action:"call",server:"octocode",tool:"..."}).
+  // MCPTool-first: 15 research tools stay out of the Pi palette to cut per-turn tokens.
+  // They are served through an MCPTool queries[] item with action:"call" and server:"octocode".
   const { tools } = await captureExtensions();
   const absent = [
     'localViewStructure', 'localSearchCode', 'localGetFileContent', 'localFindFiles',
-    'localBinaryInspect', 'lspGetSemantics', 'ghSearchCode', 'ghGetFileContent',
-    'ghViewRepoStructure', 'ghSearchRepos', 'ghHistoryResearch', 'ghCloneRepo', 'npmSearch',
+    'localFindDeadCode', 'lspGetSemantics', 'ghSearchCode', 'ghGetFileContent',
+    'ghViewRepoStructure', 'ghSearchRepos', 'ghSearchPullRequests', 'ghSearchIssues',
+    'ghSearchCommits', 'ghCloneRepo', 'npmSearch',
   ];
   for (const name of absent) {
     assert.equal(tools.has(name), false, `${name} must not be a native Pi tool`);
@@ -3872,38 +3819,34 @@ test('activation wires only the Awareness Lite pre-edit lock gate', async () => 
   );
 });
 
-test('Awareness Lite pre-edit gate blocks lock conflicts through the installed package CLI', async () => {
-  const { handlers, pi } = await captureExtensions();
-  const event = { toolName: 'write', input: { path: 'README.md' } };
-  const ctx = { cwd: '/repo', sessionManager: { getSessionId: () => 'session-a' } };
-  const cliSpec = buildAwarenessLiteCommand([]);
-  const args = [
-    cliSpec.args[0]!,
-    'hooks',
-    'pre-edit',
-    '--host',
-    'pi',
-    '--workspace',
-    '/repo',
-    '--agent-id',
-    'pi:session-a',
-    '--event-json',
-    JSON.stringify(event),
-  ];
-  pi.execResults.set(args.join(' '), {
-    code: 2,
-    stdout: JSON.stringify({ message: 'Awareness Lite lock conflict: /repo/README.md held by agent-b' }),
-  });
+test('Awareness Lite pre-edit gate blocks lock conflicts', async () => {
+  const { handlers } = await captureExtensions();
+  // Real temp workspace + a real peer lock exercises the in-process gate.
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'awlite-gate-'));
+  try {
+    fs.writeFileSync(path.join(workspace, 'README.md'), '# x');
+    const lock = runAwarenessLiteInProcess(['lock', 'acquire', '--file', 'README.md', '--agent-id', 'agent-b', '--workspace', workspace]);
+    assert.equal(lock.code, 0, 'peer lock acquired');
+    const event = { toolName: 'write', input: { path: 'README.md' } };
+    const ctx = { cwd: workspace, sessionManager: { getSessionId: () => 'session-a' } };
 
-  await withAgentId('pi:session-a', async () => {
-    const result = await handlers.get('tool_call')![0]!(event, ctx);
-    assert.deepEqual(result, {
-      block: true,
-      reason: 'Awareness Lite lock conflict: /repo/README.md held by agent-b',
+    await withAgentId('pi:session-a', async () => {
+      const result = await handlers.get('tool_call')![0]!(event, ctx) as { block?: boolean; reason?: string } | undefined;
+      assert.equal(result?.block, true, 'gate blocks a peer lock');
+      assert.match(result!.reason!, /lock conflict/i);
+      assert.match(result!.reason!, /README\.md/);
+      assert.match(result!.reason!, /agent-b/);
     });
-    assert.deepEqual(pi.execCalls[0], { command: process.execPath, args });
-  });
+
+    await withAgentId('agent-b', async () => {
+      const result = await handlers.get('tool_call')![0]!(event, { cwd: workspace, sessionManager: { getSessionId: () => 'b' } });
+      assert.equal(result, undefined, 'the lock owner edits without a block');
+    });
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
 });
+
 test('AgentMessage routes steer/follow_up RPCs and does not fake running on idle steer', async () => {
   const spawned: Array<{ proc: MockAgentProcess }> = [];
   setAgentProcessFactoryForTests(() => {
@@ -4078,7 +4021,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     );
     assert.match(
       spawnTool.promptGuidelines?.join('\n') ?? '',
-      /Before spawning, break the request into explicit subtasks/
+      /Before spawning, map dependencies and current Awareness ownership/
     );
     assert.match(
       spawnTool.promptGuidelines?.join('\n') ?? '',
@@ -4900,51 +4843,30 @@ test('spawnSubagent covers context injection, unknown agent, and render fallback
   }
 });
 
-test('spawnSubagent remains available for non-browser specialists when Chrome debug is disabled', async () => {
+test('unified agent keeps non-browser profiles available when Chrome debug is disabled', async () => {
   const previous = process.env['OCTOCODE_CHROME_DEBUG'];
   process.env['OCTOCODE_CHROME_DEBUG'] = '0';
   try {
     const { tools } = await captureExtensions();
     assert.equal(tools.has('chromeDebug'), false);
     assert.equal(tools.has('browserAgent'), false);
-    assert.equal(
-      tools.has('spawnSubagent'),
-      true,
-      'non-browser typed subagents should not be Chrome-gated'
-    );
-    assert.equal(
-      tools.has('spawnAgent'),
-      true,
-      'clean arbitrary workers still use spawnAgent'
-    );
-    const spawnSubagent = tools.get('spawnSubagent')!;
-    const schema = spawnSubagent.parameters as {
-      properties?: { agent?: { enum?: string[] } };
+    assert.equal(tools.has('spawnSubagent'), false);
+    assert.equal(tools.has('spawnAgent'), false);
+    assert.equal(tools.has('AgentMessage'), false);
+    assert.equal(tools.has('agent'), true, 'typed and custom profiles are not Chrome-gated');
+    const agent = tools.get('agent')!;
+    const schema = agent.parameters as {
+      properties: { queries: { items: { properties: { profile: { enum?: string[] } } } } };
     };
-    assert.deepEqual(schema.properties?.agent?.enum, [
+    assert.deepEqual(schema.properties.queries.items.properties.profile.enum, [
       'researcher',
       'planner',
       'architect',
+      'browser',
+      'custom',
     ]);
-    assert.match(spawnSubagent.description!, /researcher/);
-    assert.match(spawnSubagent.description!, /architect/);
-    assert.doesNotMatch(spawnSubagent.description!, /browser-agent/);
-    assert.match(
-      spawnSubagent.promptGuidelines!.join('\n'),
-      /clean arbitrary workers/
-    );
-    assert.match(
-      spawnSubagent.promptGuidelines!.join('\n'),
-      /browserAgent/
-    );
-    await assert.rejects(
-      () =>
-        invokeExecute(spawnSubagent, {
-          agent: 'browser-agent',
-          task: 'try browser work',
-        }),
-      /Unknown subagent/
-    );
+    assert.match(agent.description!, /researcher/);
+    assert.match(agent.description!, /architect/);
   } finally {
     if (previous === undefined) delete process.env['OCTOCODE_CHROME_DEBUG'];
     else process.env['OCTOCODE_CHROME_DEBUG'] = previous;
@@ -5629,18 +5551,74 @@ test('plan propose: approval card outcomes drive machine-legible [PLAN] verdicts
   const { tools } = await captureExtensions();
   const planTool = tools.get('plan')!;
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-plan-propose-'));
-  const askCtx = (outcome: unknown) => ({
-    cwd,
-    mode: 'tui',
-    hasUI: true,
-    ui: { custom: async () => outcome },
-  });
+  setPlanDirectoryServerForTests(async (name) => ({ name, url: `http://127.0.0.1:41737/${name}/` }));
+  setPlanOpenerForTests(async () => ({ ok: true }));
+  const askCtx = (...outcomes: unknown[]) => {
+    let index = 0;
+    return {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      ui: { custom: async () => outcomes[index++] },
+    };
+  };
   try {
     // Approve → begin executing.
     let res = await invokeExecute(planTool, { action: 'propose', steps: ['step A', 'step B'] }, askCtx({ status: 'selected', value: 'approve' }));
     let text = (res.content[0] as { text: string }).text;
     assert.match(text, /\[PLAN\] approved — begin executing/);
     assert.match(text, /step A/);
+
+    const rfcPath = path.join(cwd, '.octocode', 'rfc', 'review', 'RFC.md');
+    fs.mkdirSync(path.dirname(rfcPath), { recursive: true });
+    fs.writeFileSync(rfcPath, '# Reviewable design\n');
+
+    // Browser review is an explicit surface choice; its exact slash command
+    // Accepts without starting implementation.
+    let rfcCtx = askCtx({ status: 'selected', value: 'browser' }) as unknown as PiContext;
+    res = await invokeExecute(
+      planTool,
+      { action: 'propose', steps: ['RFC step A', 'RFC step B'], consequential: true, rfcPath },
+      rfcCtx,
+    );
+    text = (res.content[0] as { text: string }).text;
+    let review = getPlanReviewState(activePlanScope({ cwd }));
+    assert.equal(review.phase, 'in_review');
+    assert.match(text, /browser review opened/i);
+    await handleOctocodePlanCommand(`accept ${review.revision}`, rfcCtx, () => undefined);
+    review = getPlanReviewState(activePlanScope({ cwd }));
+    assert.equal(review.phase, 'accepted');
+    assert.ok(review.acceptedRevision);
+    assert.equal(review.startedAt, undefined);
+    assert.deepEqual(getPlan(activePlanScope({ cwd })).map((step) => step.status), ['todo', 'todo']);
+
+    // Request changes from the browser is a real transition back to draft.
+    rfcCtx = askCtx({ status: 'selected', value: 'browser' }) as unknown as PiContext;
+    res = await invokeExecute(
+      planTool,
+      { action: 'propose', steps: ['RFC step A'], consequential: true, rfcPath },
+      rfcCtx,
+    );
+    await handleOctocodePlanCommand('changes clarify the rollback section', rfcCtx, () => undefined);
+    review = getPlanReviewState(activePlanScope({ cwd }));
+    assert.equal(review.phase, 'draft');
+    assert.equal(review.acceptedRevision, undefined);
+
+    // The distinct browser Start command rechecks accepted bytes and starts one step.
+    rfcCtx = askCtx({ status: 'selected', value: 'browser' }) as unknown as PiContext;
+    res = await invokeExecute(
+      planTool,
+      { action: 'propose', steps: ['RFC step A', 'RFC step B'], consequential: true, rfcPath },
+      rfcCtx,
+    );
+    review = getPlanReviewState(activePlanScope({ cwd }));
+    await handleOctocodePlanCommand(`accept ${review.revision}`, rfcCtx, () => undefined);
+    await handleOctocodePlanCommand('start', rfcCtx, () => undefined);
+    review = getPlanReviewState(activePlanScope({ cwd }));
+    assert.equal(review.phase, 'executing');
+    assert.ok(review.startedAt);
+    assert.deepEqual(getPlan(activePlanScope({ cwd })).map((step) => step.status), ['doing', 'todo']);
+    clearPlan(activePlanScope({ cwd }));
 
     // Free-text reply = adjust request, echoed verbatim for the agent to act on.
     res = await invokeExecute(planTool, { action: 'propose', steps: ['step A'] }, askCtx({ status: 'text', value: 'split step A into two' }));
@@ -5658,6 +5636,8 @@ test('plan propose: approval card outcomes drive machine-legible [PLAN] verdicts
     text = (res.content[0] as { text: string }).text;
     assert.match(text, /cannot prompt — present the plan inline/);
   } finally {
+    setPlanDirectoryServerForTests(undefined);
+    setPlanOpenerForTests(undefined);
     clearPlan(activePlanScope({ cwd }));
   }
-}));
+}), 15_000);

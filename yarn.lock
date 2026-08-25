@@ -1124,15 +1124,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@hono/node-server@npm:^1.19.9 || ^2.0.5":
-  version: 2.1.1
-  resolution: "@hono/node-server@npm:2.1.1"
-  peerDependencies:
-    hono: ^4
-  checksum: 10c0/7ef810ca647c56d8d9386fd81609e18443b3a5634aa5ecabdf357e7ca724613c535e863c15ded9b7ae89b935a073040fb11e6d59041f3b1c3e153d8ecb699880
-  languageName: node
-  linkType: hard
-
 "@humanfs/core@npm:^0.19.2":
   version: 0.19.2
   resolution: "@humanfs/core@npm:0.19.2"
@@ -1571,6 +1562,30 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@modelcontextprotocol/client@npm:^2.0.0":
+  version: 2.0.0
+  resolution: "@modelcontextprotocol/client@npm:2.0.0"
+  dependencies:
+    "@modelcontextprotocol/core": "npm:2.0.0"
+    cross-spawn: "npm:^7.0.5"
+    eventsource: "npm:^3.0.2"
+    eventsource-parser: "npm:^3.0.0"
+    jose: "npm:^6.1.3"
+    pkce-challenge: "npm:^5.0.0"
+    zod: "npm:^4.2.0"
+  checksum: 10c0/23d1d16539c76a69d1848dc67c495b3aa6d048946dd894ed449bca0de7ce9835a71904476c6eeb9f75fe8dfca1964c61372d9d7d283b7cabfa3258d288db6859
+  languageName: node
+  linkType: hard
+
+"@modelcontextprotocol/core@npm:2.0.0, @modelcontextprotocol/core@npm:^2.0.0":
+  version: 2.0.0
+  resolution: "@modelcontextprotocol/core@npm:2.0.0"
+  dependencies:
+    zod: "npm:^4.2.0"
+  checksum: 10c0/1cb96fcebfb60651775bcaa3b1e92b47b9317239e9e0352a2d6a404f77d1abfb68ce5b462becd073cddc4db08f2f0024cd3c7dd2582e3463ddb958f65b73fbe3
+  languageName: node
+  linkType: hard
+
 "@modelcontextprotocol/sdk@npm:^1.29.0":
   version: 1.29.0
   resolution: "@modelcontextprotocol/sdk@npm:1.29.0"
@@ -1604,36 +1619,13 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@modelcontextprotocol/sdk@npm:^1.30.0":
-  version: 1.30.0
-  resolution: "@modelcontextprotocol/sdk@npm:1.30.0"
+"@modelcontextprotocol/server@npm:^2.0.0":
+  version: 2.0.0
+  resolution: "@modelcontextprotocol/server@npm:2.0.0"
   dependencies:
-    "@hono/node-server": "npm:^1.19.9 || ^2.0.5"
-    ajv: "npm:^8.17.1"
-    ajv-formats: "npm:^3.0.1"
-    content-type: "npm:^1.0.5"
-    cors: "npm:^2.8.5"
-    cross-spawn: "npm:^7.0.5"
-    eventsource: "npm:^3.0.2"
-    eventsource-parser: "npm:^3.0.0"
-    express: "npm:^5.2.1"
-    express-rate-limit: "npm:^8.2.1"
-    hono: "npm:^4.11.4"
-    jose: "npm:^6.1.3"
-    json-schema-typed: "npm:^8.0.2"
-    pkce-challenge: "npm:^5.0.0"
-    raw-body: "npm:^3.0.0"
-    zod: "npm:^3.25 || ^4.0"
-    zod-to-json-schema: "npm:^3.25.1"
-  peerDependencies:
-    "@cfworker/json-schema": ^4.1.1
-    zod: ^3.25 || ^4.0
-  peerDependenciesMeta:
-    "@cfworker/json-schema":
-      optional: true
-    zod:
-      optional: false
-  checksum: 10c0/6d12d5c88048b42b0d64906222f804eecbfc0aae02fc42a200d2438f037276cc7863510a8ce649e82c96d5972f62a58bfbdedf79624b0558a607738f5e58b97e
+    "@modelcontextprotocol/core": "npm:2.0.0"
+    zod: "npm:^4.2.0"
+  checksum: 10c0/18f5dbb4c533eda392a66565d8177d792c8018d3455d2cb241102917f660c0c73181e80cbf2b76b1c0e8efae22e7ee0fbb1c27e667d439ba596f1c6059c1d8af
   languageName: node
   linkType: hard
 
@@ -1685,24 +1677,11 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@octocodeai/octocode-awareness-lite@npm:^0.2.0, @octocodeai/octocode-awareness-lite@workspace:packages/octocode-awareness-lite":
-  version: 0.0.0-use.local
-  resolution: "@octocodeai/octocode-awareness-lite@workspace:packages/octocode-awareness-lite"
-  dependencies:
-    "@types/node": "npm:^26.2.0"
-    "@vitest/coverage-v8": "npm:^4.1.11"
-    esbuild: "npm:^0.28.2"
-    typescript: "npm:^5.9.3"
-    vitest: "npm:^4.1.11"
-  bin:
-    octocode-awareness-lite: ./out/cli.js
-  languageName: unknown
-  linkType: soft
-
-"@octocodeai/octocode-awareness@workspace:packages/octocode-awareness":
+"@octocodeai/octocode-awareness@npm:^1.2.1, @octocodeai/octocode-awareness@workspace:packages/octocode-awareness":
   version: 0.0.0-use.local
   resolution: "@octocodeai/octocode-awareness@workspace:packages/octocode-awareness"
   dependencies:
+    "@octocodeai/octocode-shared": "workspace:^"
     "@types/node": "npm:^26.2.0"
     "@vitest/coverage-v8": "npm:^4.1.11"
     esbuild: "npm:^0.28.2"
@@ -1711,6 +1690,7 @@ __metadata:
     zod: "npm:^4.4.3"
   bin:
     octocode-awareness: ./out/octocode-awareness.js
+    octocode-awareness-lite: ./out/lite/cli.js
   languageName: unknown
   linkType: soft
 
@@ -1801,6 +1781,19 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@octocodeai/octocode-shared@workspace:^, @octocodeai/octocode-shared@workspace:packages/octocode-shared":
+  version: 0.0.0-use.local
+  resolution: "@octocodeai/octocode-shared@workspace:packages/octocode-shared"
+  dependencies:
+    "@octocodeai/config": "npm:18.0.1"
+    "@types/node": "npm:^26.2.0"
+    "@vitest/coverage-v8": "npm:^4.1.11"
+    esbuild: "npm:^0.28.2"
+    typescript: "npm:^5.9.3"
+    vitest: "npm:^4.1.11"
+  languageName: unknown
+  linkType: soft
+
 "@octocodeai/octocode-tools-core@npm:18.1.2":
   version: 18.1.2
   resolution: "@octocodeai/octocode-tools-core@npm:18.1.2"
@@ -1825,13 +1818,16 @@ __metadata:
   dependencies:
     "@earendil-works/pi-coding-agent": "npm:0.84.2"
     "@earendil-works/pi-tui": "npm:^0.84.2"
-    "@modelcontextprotocol/sdk": "npm:^1.30.0"
+    "@modelcontextprotocol/client": "npm:^2.0.0"
+    "@modelcontextprotocol/core": "npm:^2.0.0"
+    "@modelcontextprotocol/server": "npm:^2.0.0"
     "@octocodeai/config": "npm:^18.0.1"
-    "@octocodeai/octocode-awareness-lite": "npm:^0.2.0"
+    "@octocodeai/octocode-awareness": "npm:^1.2.1"
     "@octocodeai/octocode-engine": "npm:^18.1.2"
     "@resvg/resvg-js": "npm:^2.6.2"
     "@types/node": "npm:^26.2.0"
     "@vitest/coverage-v8": "npm:^4.1.11"
+    chrome-launcher: "npm:^1.2.1"
     marked: "npm:^18.0.5"
     octocode: "npm:^18.3.0"
     octocode-mcp: "npm:^18.2.2"
@@ -2807,6 +2803,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@types/node@npm:*":
+  version: 26.3.0
+  resolution: "@types/node@npm:26.3.0"
+  dependencies:
+    undici-types: "npm:~8.3.0"
+  checksum: 10c0/b1b71d722cea67807abde4993d71aa6e4e24ae3072635ff5fbca3e5fbe7f0d4adc20507ab3f1e14b13720d742fb5cae4b12c7326fbe706fcda24e2aab8306374
+  languageName: node
+  linkType: hard
+
 "@types/node@npm:>=13.7.0":
   version: 26.1.1
   resolution: "@types/node@npm:26.1.1"
@@ -3501,6 +3506,20 @@ __metadata:
   languageName: node
   linkType: hard
 
+"chrome-launcher@npm:^1.2.1":
+  version: 1.2.1
+  resolution: "chrome-launcher@npm:1.2.1"
+  dependencies:
+    "@types/node": "npm:*"
+    escape-string-regexp: "npm:^4.0.0"
+    is-wsl: "npm:^2.2.0"
+    lighthouse-logger: "npm:^2.0.1"
+  bin:
+    print-chrome-path: bin/print-chrome-path.cjs
+  checksum: 10c0/4262abf41dc77f05718632bdde07d628e87ebb5221e59d2cc927ba066aa472ea08f8e5be76e4908c718c8480a50330e7c35f25c1e0b41dbf5e25a4eb5ee89b05
+  languageName: node
+  linkType: hard
+
 "cjs-module-lexer@npm:^2.2.0":
   version: 2.2.0
   resolution: "cjs-module-lexer@npm:2.2.0"
@@ -3654,7 +3673,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"debug@npm:4, debug@npm:^4.3.1, debug@npm:^4.3.2, debug@npm:^4.3.4, debug@npm:^4.3.5, debug@npm:^4.4.0, debug@npm:^4.4.3":
+"debug@npm:4, debug@npm:^4.3.1, debug@npm:^4.3.2, debug@npm:^4.3.4, debug@npm:^4.3.5, debug@npm:^4.4.0, debug@npm:^4.4.1, debug@npm:^4.4.3":
   version: 4.4.3
   resolution: "debug@npm:4.4.3"
   dependencies:
@@ -4960,6 +4979,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"is-docker@npm:^2.0.0":
+  version: 2.2.1
+  resolution: "is-docker@npm:2.2.1"
+  bin:
+    is-docker: cli.js
+  checksum: 10c0/e828365958d155f90c409cdbe958f64051d99e8aedc2c8c4cd7c89dcf35329daed42f7b99346f7828df013e27deb8f721cf9408ba878c76eb9e8290235fbcdcc
+  languageName: node
+  linkType: hard
+
 "is-docker@npm:^3.0.0":
   version: 3.0.0
   resolution: "is-docker@npm:3.0.0"
@@ -5014,6 +5042,15 @@ __metadata:
   version: 4.0.0
   resolution: "is-promise@npm:4.0.0"
   checksum: 10c0/ebd5c672d73db781ab33ccb155fb9969d6028e37414d609b115cc534654c91ccd061821d5b987eefaa97cf4c62f0b909bb2f04db88306de26e91bfe8ddc01503
+  languageName: node
+  linkType: hard
+
+"is-wsl@npm:^2.2.0":
+  version: 2.2.0
+  resolution: "is-wsl@npm:2.2.0"
+  dependencies:
+    is-docker: "npm:^2.0.0"
+  checksum: 10c0/a6fa2d370d21be487c0165c7a440d567274fbba1a817f2f0bfa41cc5e3af25041d84267baa22df66696956038a43973e72fca117918c91431920bdef490fa25e
   languageName: node
   linkType: hard
 
@@ -5219,6 +5256,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"lighthouse-logger@npm:^2.0.1":
+  version: 2.0.2
+  resolution: "lighthouse-logger@npm:2.0.2"
+  dependencies:
+    debug: "npm:^4.4.1"
+    marky: "npm:^1.2.2"
+  checksum: 10c0/bbce3939a0359d5f1f84b7cc623f1ee3daf5a28e55b7b9bf7d461d906121e64fa6de290c53bd6bdd6068a67442fa39a7deb6f61da2e0e1721c39ec4cc80876b8
+  languageName: node
+  linkType: hard
+
 "lightningcss-android-arm64@npm:1.32.0":
   version: 1.32.0
   resolution: "lightningcss-android-arm64@npm:1.32.0"
@@ -5420,6 +5467,13 @@ __metadata:
   bin:
     marked: bin/marked.js
   checksum: 10c0/7ffdfae727e1cb73e786431953950ee941c38251c8d469b07058446043d070a8746d51ef52d59c1c935875126a35c04b579ac1f1e5b6b0b94aa9eeb44f815287
+  languageName: node
+  linkType: hard
+
+"marky@npm:^1.2.2":
+  version: 1.3.0
+  resolution: "marky@npm:1.3.0"
+  checksum: 10c0/6619cdb132fdc4f7cd3e2bed6eebf81a38e50ff4b426bbfb354db68731e4adfebf35ebfd7c8e5a6e846cbf9b872588c4f76db25782caee8c1529ec9d483bf98b
   languageName: node
   linkType: hard
 
@@ -7413,7 +7467,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"zod@npm:^3.25 || ^4.0, zod@npm:^4.4.3":
+"zod@npm:^3.25 || ^4.0, zod@npm:^4.2.0, zod@npm:^4.4.3":
   version: 4.4.3
   resolution: "zod@npm:4.4.3"
   checksum: 10c0/7ea31b558e88f9faf44f31dd185e2e1cbf51fed3081787fb96cc2534749b50c0acfc6da7f0922a7353ed092dd358c7d50c28ea96c94d04af64191bd33152eca3

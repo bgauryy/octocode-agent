@@ -2,24 +2,55 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { execCli, runPreEditLockGate, type PreEditHookResult, type PreEditHookOptions } from '@octocodeai/octocode-awareness/lite';
 
 const extensionDir = path.dirname(fileURLToPath(import.meta.url));
 const requireFromExtension = createRequire(import.meta.url);
 
-export const AWARENESS_LITE_PACKAGE = '@octocodeai/octocode-awareness-lite';
+// Awareness Lite is now folded into the single @octocodeai/octocode-awareness
+// package (subpath ./lite, bin `octocode-awareness-lite`). The constant keeps
+// its historical name because launcher/status code imports it.
+export const AWARENESS_LITE_PACKAGE = '@octocodeai/octocode-awareness';
 
 export interface AwarenessLiteCommandSpec {
   cmd: string;
   args: string[];
 }
 
-export function resolveAwarenessLiteCliPath(): string {
-  const mainPath = requireFromExtension.resolve(AWARENESS_LITE_PACKAGE);
-  return path.join(path.dirname(mainPath), 'cli.js');
+export interface AwarenessLiteRunResult {
+  code: number;
+  stdout: string;
+  stderr: string;
 }
 
+export function resolveAwarenessLiteCliPath(): string {
+  // Resolve the folded-in Lite CLI via its subpath export → out/lite/cli.js.
+  return requireFromExtension.resolve(`${AWARENESS_LITE_PACKAGE}/lite/cli`);
+}
+
+/**
+ * Build a spawn spec (`node cli.js …`) for the Awareness Lite bin. Retained for
+ * the surfaces the model/user or a foreign host invokes as a real command:
+ * launcher verbs (surfaces.ts) and the `$OCTOCODE_AWARENESS_CLI` env var. The
+ * extension's OWN calls run in-process via runAwarenessLiteInProcess instead.
+ */
 export function buildAwarenessLiteCommand(args: string[] = []): AwarenessLiteCommandSpec {
   return { cmd: process.execPath, args: [resolveAwarenessLiteCliPath(), ...args] };
+}
+
+/**
+ * Run an Awareness Lite command vector IN-PROCESS — no child process — via the
+ * library's `execCli`. Returns the same JSON-on-stdout / exit-code contract the
+ * `cli.js` bin produced, so callers that already build an argv and parse stdout
+ * keep working unchanged (exit 2 still signals a lock-wait/pre-edit block).
+ */
+export function runAwarenessLiteInProcess(args: string[]): AwarenessLiteRunResult {
+  return execCli(args);
+}
+
+/** Run the Awareness Lite pre-edit lock gate in-process (library call, no spawn). */
+export function runAwarenessLitePreEdit(options: PreEditHookOptions): PreEditHookResult {
+  return runPreEditLockGate(options);
 }
 
 export interface AssetPaths {
@@ -52,7 +83,7 @@ export function getAwarenessCLIPath(_baseDir = extensionDir): string {
   try {
     return `${process.execPath} ${resolveAwarenessLiteCliPath()}`;
   } catch {
-    return `npx ${AWARENESS_LITE_PACKAGE}`;
+    return `npx -p ${AWARENESS_LITE_PACKAGE} octocode-awareness-lite`;
   }
 }
 

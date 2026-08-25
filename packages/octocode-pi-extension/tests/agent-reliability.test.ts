@@ -198,6 +198,32 @@ test('spawnRpcAgent assigns a durable handback file in the parent workspace and 
   }
 });
 
+test('spawnRpcAgent falls back visibly when the parent workspace cannot hold a handback', () => {
+  if (isSubagentProcess()) return;
+
+  const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-handback-fallback-test-')));
+  const invalidWorkspace = path.join(tmpDir, 'workspace-is-a-file');
+  fs.writeFileSync(invalidWorkspace, 'not a directory', 'utf8');
+  let fallbackAgentDir: string | undefined;
+  try {
+    const mock = makeMockAgentProcess({ stdinThrows: false });
+    setAgentProcessFactoryForTests(() => mock as never);
+
+    const record = spawnRpcAgent({ task: 'Goal: test fallback\nContext: ctx\nScope: scope\nOwnership: read\nAcceptance: done\nReturn: result', cwd: invalidWorkspace, resourceMode: 'lean' });
+    fallbackAgentDir = path.dirname(record.handbackPath);
+    const initialPrompt = String(mock.writes[0]?.['message'] ?? '');
+
+    assert.ok(record.handbackPath.startsWith(path.join(os.tmpdir(), 'octocode-agent-handbacks', record.id)));
+    assert.match(record.handbackPath, /handback\.md$/);
+    assert.equal(fs.existsSync(fallbackAgentDir), true);
+    assert.ok(record.policyWarnings.some(warning => /temporary fallback/.test(warning)));
+    assert.ok(initialPrompt.includes(record.handbackPath));
+  } finally {
+    if (fallbackAgentDir) fs.rmSync(fallbackAgentDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('worker ledger and transcript surface handback artifact status and [ARTIFACT] output', () => {
   if (isSubagentProcess()) return;
 

@@ -20,14 +20,14 @@ These profiles describe how the extension should be explained and configured. Th
 
 | Profile | Best for | Surface |
 |---|---|---|
-| Lite | First run, cautious users, MCP/web tasks | Core guarded edit/write/bash, MCPTool, web, askUser, manage_context, basic docs. |
+| Lite | First run, cautious users, MCP/web tasks | Guarded file/bash, MCPTool, web, askUser, and basic docs. |
 | Default | Daily coding | Lite + local/GitHub/LSP/npm research, skills, plan, Awareness Lite memory/checks, image tools. |
-| Pro | Large repos, parallel work, deep debugging | Default + spawned workers, browserAgent/Chrome DevTools, cron/session jobs, watch mode, full Awareness workflow. |
+| Pro | Large repos, parallel work, deep debugging | Default + `agent` worker/browser profiles, Chrome DevTools, cron/session jobs, watch mode, and the full Awareness workflow. |
 
 ## Where Octocode should win
 
 - **Evidence:** local/GitHub/LSP/npm research is first-class and routed through one MCP schema surface.
-- **Safety:** weak read/search builtins are removed; edit/write/bash are guarded with stale-read checks, path guards, and clearer diffs.
+- **Safety:** weak builtins are removed; `file` and `bash` enforce stale-read/lost-update checks, path guards, and clear diffs.
 - **Coordination:** Awareness Lite tracks shared tasks, work presence, locks, verification receipts, handoffs, messages, and memory.
 - **Workflow:** bundled skills turn repeated work into named procedures: research, docs, RFC, eval, scraping, subagents, prompt optimization, critique.
 - **Operator UX:** dashboards, command palette, permissions, plan mode, worker inbox, rewind, watch mode, and export make the harness inspectable.

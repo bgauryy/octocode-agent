@@ -2,16 +2,17 @@ import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import { renderAvailableSkillsAddendum, renderSkillsDashboard } from '../src/tools/skill-catalog.js';
 
-test('available skills addendum lists skill names, descriptions, and source metadata', () => {
+test('available skills addendum lists loadable skills and filters prompt-owned Awareness aliases', () => {
   const addendum = renderAvailableSkillsAddendum([
     { name: 'octocode-roast', description: 'Critical review workflow.', source: 'user', scope: 'global' },
-    { name: 'octocode-awareness-lite', description: 'Shared repo coordination and verification.' },
+    { name: 'octocode-awareness', description: 'External-agent coordination workflow.' },
+    { name: 'octocode-awareness-lite', description: 'Legacy external-agent coordination workflow.' },
   ]);
 
   assert.match(addendum, /<available_skills>/);
   assert.match(addendum, /Skills available by name this turn/);
-  assert.match(addendum, /load the minimal matching skill BEFORE acting via skill\(\{action:"load", name:"…", reason:"why it matches"\}\)/);
-  assert.match(addendum, /- octocode-awareness-lite: Shared repo coordination and verification\./);
+  assert.match(addendum, /load the minimal matching skill BEFORE acting via skill\(\{queries:/);
+  assert.doesNotMatch(addendum, /octocode-awareness/);
   assert.match(addendum, /- octocode-roast: Critical review workflow\. \[user\/global\]/);
 });
 
@@ -50,19 +51,20 @@ test('available skills addendum caps descriptions tighter than the dashboard', (
   assert.ok(dashboardLine.length > addendumLine.length, 'dashboard keeps the longer description');
 });
 
-test('skills dashboard lists discovered skills and install guidance', () => {
+test('skills dashboard lists loadable skills, filters Awareness aliases, and shows install guidance', () => {
   const dashboard = renderSkillsDashboard([
     { name: 'octocode-roast', description: 'Critical review workflow.', source: 'user', scope: 'global' },
-    { name: 'octocode-awareness-lite', description: 'Shared repo coordination and verification.' },
+    { name: 'octocode-awareness', description: 'External-agent coordination workflow.' },
+    { name: 'octocode-awareness-lite', description: 'Legacy external-agent coordination workflow.' },
   ]);
 
   assert.match(dashboard, /^◆ Octocode skills/m);
   assert.match(dashboard, /Available now/);
-  assert.match(dashboard, /- octocode-awareness-lite: Shared repo coordination and verification\./);
+  assert.doesNotMatch(dashboard, /octocode-awareness/);
   assert.match(dashboard, /- octocode-roast: Critical review workflow\. \[user\/global\]/);
-  assert.match(dashboard, /skill\(\{action:"load", name:"…", reason:"why it matches"\}\)/, 'dashboard teaches the skill tool');
+  assert.match(dashboard, /skill\(\{queries:/, 'dashboard teaches the unified skill query envelope');
   assert.match(dashboard, /\/skill:<name>/);
-  assert.match(dashboard, /npx octocode skill --name <skill> --platform pi/);
+  assert.match(dashboard, /npx octocode skill install <skill> --platform pi/);
 });
 
 test('skills dashboard surfaces session usage and the discovery inventory path', () => {

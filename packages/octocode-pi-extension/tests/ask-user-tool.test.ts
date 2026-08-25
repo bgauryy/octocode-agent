@@ -12,7 +12,15 @@ function loadTool(): ToolDefinition {
     names.add(def.name);
     p.registerTool?.(def);
   });
-  return tools.get('askUser')!;
+  const tool = tools.get('askUser')!;
+  const execute = tool.execute.bind(tool);
+  tool.execute = (id, params, signal, onUpdate, ctx) => {
+    const envelope = Array.isArray(params['queries'])
+      ? params
+      : { queries: [{ reasoning: 'resolve a genuine test decision', ...params }] };
+    return execute(id, envelope, signal, onUpdate, ctx);
+  };
+  return tool;
 }
 
 // Inline harness: askUser renders via ctx.ui.custom(builder) with NO overlay
@@ -22,6 +30,7 @@ function loadTool(): ToolDefinition {
 function overlayCtx() {
   let component: { render(w: number): string[]; handleInput(d: string): void } | undefined;
   let overlayOpts: { overlay?: boolean } | undefined;
+  const pendingInputs: string[] = [];
   const tui = { requestRender: () => {} };
   const ctx = {
     hasUI: true,
@@ -34,12 +43,16 @@ function overlayCtx() {
         new Promise((resolve) => {
           overlayOpts = opts;
           component = factory(tui, undefined, undefined, (v) => resolve(v));
+          for (const input of pendingInputs.splice(0)) component.handleInput(input);
         }),
     },
   } as unknown as PiContext;
   return {
     ctx,
-    send: (data: string) => component?.handleInput(data),
+    send: (data: string) => {
+      if (component) component.handleInput(data);
+      else pendingInputs.push(data);
+    },
     render: (w = 100) => component?.render(w) ?? [],
     overlayOpts: () => overlayOpts,
     // Simulate the TUI granting focus (Focusable.focused = true).
@@ -60,6 +73,43 @@ test('askUser registration teaches option lists, concise labels, and inline fall
   assert.match(tool.promptGuidelines?.join('\n') ?? '', /recommended:true/);
   assert.match(tool.promptGuidelines?.join('\n') ?? '', /Discuss or type your own answer/);
   assert.match(tool.promptGuidelines?.join('\n') ?? '', /fall back to asking the question directly/);
+  const schema = tool.parameters as {
+    properties?: { queries?: { items?: { properties?: Record<string, unknown>; required?: string[] } } };
+    required?: string[];
+  };
+  assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries']);
+  assert.ok(schema.required?.includes('queries'));
+  assert.ok(schema.properties?.queries?.items?.properties?.['reasoning']);
+  assert.ok(schema.properties?.queries?.items?.required?.includes('reasoning'));
+});
+
+test('askUser processes multiple noninteractive questions in source order', async () => {
+  const tool = loadTool();
+  const result = await tool.execute('batch', {
+    queries: [
+      { reasoning: 'resolve first decision', question: 'First?' },
+      { reasoning: 'resolve second decision', question: 'Second?' },
+    ],
+  }, undefined, undefined, { hasUI: false, mode: 'rpc' } as unknown as PiContext);
+  assert.match((result.content[0] as { text: string }).text, /2 queries succeeded/);
+  assert.equal((result.details as { results: unknown[] }).results.length, 2);
+});
+
+test('askUser preflights every question before opening an earlier prompt', async () => {
+  const tool = loadTool();
+  let customCalled = false;
+  const ctx = {
+    hasUI: true,
+    mode: 'tui',
+    ui: { custom: async () => { customCalled = true; return undefined; } },
+  } as unknown as PiContext;
+  await assert.rejects(tool.execute('batch-invalid', {
+    queries: [
+      { reasoning: 'ask valid first question', question: 'First?' },
+      { reasoning: 'invalid blank question', question: '   ' },
+    ],
+  }, undefined, undefined, ctx), /queries\[1\] failed preflight/);
+  assert.equal(customCalled, false);
 });
 
 test('askUser falls back to inline in RPC mode even though hasUI is true and custom exists', async () => {
@@ -126,16 +176,35 @@ test('askUser free-text mode supports cursor editing through Pi Input', async ()
   assert.deepEqual(result.details, { status: 'text', value: 'abc' });
 });
 
-test('askUser uses a wider responsive card without exceeding the terminal', async () => {
+test('askUser centers a bounded responsive card without exceeding the terminal', async () => {
   const tool = loadTool();
   const wide = overlayCtx();
   const pendingWide = tool.execute('id', { question: 'Choose?', options: ['safe', 'fast'] }, undefined, undefined, wide.ctx);
   const wideLines = wide.render(160);
 
-  assert.ok(visibleWidth(wideLines[0]!) >= 100, 'wide terminals should receive a substantially wider card');
+  const wideHeader = wideLines[0]!.replace(/\x1b\[[0-9;]*m/g, '');
+  const wideStart = wideHeader.indexOf('╭');
+  assert.equal(wideStart, 36, 'an 88-column card is centered in a 160-column terminal');
+  assert.equal(visibleWidth(wideHeader.slice(wideStart)), 88, 'wide terminals cap the reading measure at 88 columns');
   assert.ok(wideLines.every((line) => visibleWidth(line) <= 160), 'wide rendering stays within the terminal');
   wide.send('\x1b');
   await pendingWide;
+
+  for (const [terminalWidth, expectedStart, expectedCardWidth] of [
+    [52, 2, 48],
+    [80, 4, 72],
+    [100, 14, 72],
+    [120, 17, 86],
+  ] as const) {
+    const sized = overlayCtx();
+    const pendingSized = tool.execute('id', { question: 'Choose?', options: ['safe', 'fast'] }, undefined, undefined, sized.ctx);
+    const header = sized.render(terminalWidth)[0]!.replace(/\x1b\[[0-9;]*m/g, '');
+    const start = header.indexOf('╭');
+    assert.equal(start, expectedStart, `${terminalWidth}-column terminal centers the decision card`);
+    assert.equal(visibleWidth(header.slice(start)), expectedCardWidth, `${terminalWidth}-column card uses the responsive reading measure`);
+    sized.send('\x1b');
+    await pendingSized;
+  }
 
   const narrow = overlayCtx();
   const pendingNarrow = tool.execute('id', { question: 'Choose?', options: ['safe', 'fast'] }, undefined, undefined, narrow.ctx);
@@ -225,10 +294,9 @@ test('askUser renders choices inline in the message flow, not as a floating over
   assert.match(lines.join('\n'), /Choose a strategy\?/);
   // Discuss / free-text row appears AFTER the listed options.
   assert.match(lines.join('\n'), /Discuss or type your own answer/);
-  // The decision hierarchy is carried by the heading and whitespace, not a heavy perimeter frame.
+  // The decision hierarchy is carried by the heading ("Input needed") and whitespace.
   const plain = lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
-  assert.match(plain, /Decision needed/);
-  assert.doesNotMatch(plain, /^[╭╰]/m, 'inline decisions do not draw a full top\/bottom box frame');
+  assert.match(plain, /Input needed/);
   send('\r');
   const result = await pending;
 
@@ -354,19 +422,20 @@ test('askUser echoes the question in free-text and cancelled results', async () 
 test('askUser schema gains preview, disabled options, multiSelect, min/max, and field validation additively', () => {
   const tool = loadTool();
   const params = tool.parameters as {
-    properties: Record<string, { items?: { properties?: Record<string, unknown> } }>;
+    properties: { queries: { items: { properties: Record<string, { items?: { properties?: Record<string, unknown> } }> } } };
   };
+  const queryProps = params.properties.queries.items.properties;
 
-  assert.ok(params.properties['multiSelect'], 'multiSelect input exists');
-  assert.ok(params.properties['min'], 'min input exists');
-  assert.ok(params.properties['max'], 'max input exists');
-  assert.ok(params.properties['options']!.items?.properties?.['preview'], 'options gain preview');
-  assert.ok(params.properties['options']!.items?.properties?.['disabled'], 'options gain disabled');
-  const fieldProps = params.properties['fields']!.items?.properties ?? {};
+  assert.ok(queryProps['multiSelect'], 'multiSelect input exists');
+  assert.ok(queryProps['min'], 'min input exists');
+  assert.ok(queryProps['max'], 'max input exists');
+  assert.ok(queryProps['options']!.items?.properties?.['preview'], 'options gain preview');
+  assert.ok(queryProps['options']!.items?.properties?.['disabled'], 'options gain disabled');
+  const fieldProps = queryProps['fields']!.items?.properties ?? {};
   assert.deepEqual(Object.keys(fieldProps).sort(), ['label', 'maxLength', 'minLength', 'name', 'pattern', 'placeholder', 'required']);
 });
 
-test('askUser renders stable pros and trade-offs under every visible option and lands on the recommendation', async () => {
+test('askUser progressively discloses focused descriptions and trade-offs and lands on the recommendation', async () => {
   const tool = loadTool();
   const { ctx, send, render } = overlayCtx();
 
@@ -375,8 +444,8 @@ test('askUser renders stable pros and trade-offs under every visible option and 
     {
       question: 'Which approach?',
       options: [
-        { value: 'risky', label: 'Aggressive cut', pros: ['small diff'], cons: ['thins the safety net'] },
-        { value: 'safe', label: 'Leave it', recommended: true, pros: ['no risk', 'load-bearing'], cons: ['no line-count win'] },
+        { value: 'risky', label: 'Aggressive cut', description: 'Removes the compatibility path.', pros: ['small diff'], cons: ['thins the safety net'] },
+        { value: 'safe', label: 'Leave it', description: 'Keeps the supported behavior unchanged.', recommended: true, pros: ['no risk', 'load-bearing'], cons: ['no line-count win'] },
       ],
     },
     undefined,
@@ -385,19 +454,23 @@ test('askUser renders stable pros and trade-offs under every visible option and 
   );
 
   const before = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
-  assert.match(before, /Leave it ★ Recommended/);
-  assert.match(before, /Pros\n\s+\+ small diff/);
-  assert.match(before, /Trade-offs\n\s+- thins the safety net/);
-  assert.match(before, /\+ no risk/);
-  assert.match(before, /\+ load-bearing/);
-  assert.match(before, /- no line-count win/);
-  assert.match(before, /Choice 2 of 3/, 'position includes the free-text escape row');
+  assert.match(before, /Leave it ★ recommended/);
+  // Focused-row contract: only focused option (Leave it) shows pros/cons; Aggressive cut is quiet.
+  assert.match(before, /Keeps the supported behavior unchanged/);
+  assert.doesNotMatch(before, /Removes the compatibility path/);
+  assert.doesNotMatch(before, /✓ small diff/, 'non-focused Aggressive cut does not show pros');
+  assert.doesNotMatch(before, /✗ thins the safety net/, 'non-focused Aggressive cut does not show cons');
+  assert.match(before, /✓ no risk/);
+  assert.match(before, /✓ load-bearing/);
+  assert.match(before, /✗ no line-count win/);
 
   send('\x1b[A');
   const after = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
-  assert.equal(after.split('\n').length, before.split('\n').length, 'moving focus does not expand or collapse comparison data');
-  assert.match(after, /\+ no risk/);
-  assert.match(after, /- thins the safety net/);
+  // After moving focus to Aggressive cut: its detail appears; Leave it goes quiet.
+  assert.match(after, /Removes the compatibility path/);
+  assert.doesNotMatch(after, /Keeps the supported behavior unchanged/);
+  assert.match(after, /✓ small diff/);
+  assert.match(after, /✗ thins the safety net/);
 
   send('\x1b[B');
   send('\r');
@@ -408,9 +481,9 @@ test('askUser renders stable pros and trade-offs under every visible option and 
 test('askUser schema exposes pros, cons, and recommended on options', () => {
   const tool = loadTool();
   const params = tool.parameters as {
-    properties: Record<string, { items?: { properties?: Record<string, unknown> } }>;
+    properties: { queries: { items: { properties: Record<string, { items?: { properties?: Record<string, unknown> } }> } } };
   };
-  const optProps = params.properties['options']!.items?.properties ?? {};
+  const optProps = params.properties.queries.items.properties['options']!.items?.properties ?? {};
   assert.ok(optProps['pros'], 'options gain pros');
   assert.ok(optProps['cons'], 'options gain cons');
   assert.ok(optProps['recommended'], 'options gain recommended');
@@ -630,16 +703,16 @@ test('askUser windows long rich lists by complete option blocks with position an
   assert.match(first, /opt-01/);
   assert.match(first, /pro-01/);
   assert.match(first, /con-01/);
-  assert.match(first, /opt-02[\s\S]*pro-02[\s\S]*con-02/, 'every painted option is a complete comparison block');
-  assert.match(first, /Choice 1 of 21/, 'position includes the free-text escape row');
+  // Focused-row contract: opt-01 (focused) shows its detail; opt-02 visible without pros/cons.
+  assert.doesNotMatch(first, /opt-02[\s\S]*pro-02/, 'non-focused rows show label only, without pros/cons');
   assert.match(first, /↓ \d+ more/, 'hidden tail advertised');
   assert.doesNotMatch(first, /opt-20/, 'blocks beyond the viewport are not painted');
 
   for (let i = 0; i < 15; i++) send('\x1b[B');
   const scrolled = render(100).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
   assert.match(scrolled, /↑ \d+ more/, 'hidden head advertised after scrolling');
+  // opt-16 is focused so its detail (pro-16, con-16) IS shown.
   assert.match(scrolled, /opt-16[\s\S]*pro-16[\s\S]*con-16/);
-  assert.match(scrolled, /Choice 16 of 21/);
 
   send('\x1b');
   const result = await pending;

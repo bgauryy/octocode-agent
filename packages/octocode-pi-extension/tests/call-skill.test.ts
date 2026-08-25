@@ -5,8 +5,8 @@ import os from 'node:os';
 import { afterEach, beforeEach, test } from 'vitest';
 import { Type } from 'typebox';
 import type { ToolDefinition } from '../src/types.js';
+import { registerSkillTool } from '../src/tools/skill-tool.js';
 import {
-  registerCallSkill,
   setSkillGeneratorForTests,
   parseGeneratedSkill,
   assessSkillTriviality,
@@ -30,11 +30,11 @@ afterEach(() => {
 function loadTool(): ToolDefinition {
   const tools = new Map<string, ToolDefinition>();
   const pi = { registerTool: (def: ToolDefinition) => tools.set(def.name, def) };
-  registerCallSkill(pi, Type, new Set<string>(), (p, n, def) => {
+  registerSkillTool(pi, Type, new Set<string>(), (p, n, def) => {
     n.add(def.name);
     p.registerTool?.(def);
-  });
-  return tools.get('callSkill')!;
+  }, () => []);
+  return tools.get('skill')!;
 }
 
 const skill: GeneratedSkill = {
@@ -46,18 +46,33 @@ const skill: GeneratedSkill = {
 const createMeta = { intent: 'run tests then bump version then publish the package', reason: 'recurring release workflow' };
 
 async function run(tool: ToolDefinition, params: Record<string, unknown>) {
-  return (await tool.execute('id', params)) as {
+  const metadata = (params['metadata'] ?? {}) as Record<string, unknown>;
+  const query = {
+    reasoning: 'exercise the dynamic skill lifecycle contract',
+    type: 'call',
+    skillType: params['skillType'],
+    mode: params['mode'],
+    intent: metadata['intent'],
+    reason: metadata['reason'],
+    approveCreate: metadata['_approveCreate'],
+    force: metadata['_force'],
+  };
+  return (await tool.execute('id', { queries: [query] })) as {
     content: Array<{ text: string }>;
     isError?: boolean;
     details: { status: string; skillName?: string; skillMd?: string };
   };
 }
 
-test('registers callSkill with the documented schema', () => {
+test('registers unified skill call operations with the documented schema', () => {
   const tool = loadTool();
-  assert.equal(tool.name, 'callSkill');
-  const props = (tool.parameters as { properties: Record<string, unknown> }).properties;
-  assert.ok(props.skillType && props.metadata && props.mode);
+  assert.equal(tool.name, 'skill');
+  const props = (tool.parameters as {
+    properties: { queries: { items: { properties: Record<string, unknown> } } };
+  }).properties;
+  assert.deepEqual(Object.keys(props), ['queries']);
+  const queryProps = props.queries.items.properties;
+  assert.ok(queryProps.type && queryProps.skillType && queryProps.intent && queryProps.mode);
 });
 
 test('auto miss PROPOSES creation instead of authoring', async () => {

@@ -1,6 +1,6 @@
 ---
 name: browser-agent
-description: "Use when browser work needs multiple turns of Chrome DevTools Protocol interaction: security/cookie/storage audits, network analysis, DOM inspection, coverage, workers/service-workers, device emulation, or multi-step automation. Spawns a dedicated browser subagent via spawnSubagent that stays alive for follow-up instructions via AgentMessage. For single-shot tasks (one screenshot, one network pass), call chromeDebug directly instead."
+description: "Use when browser work needs multiple turns of Chrome DevTools Protocol interaction: security/cookie/storage audits, network analysis, DOM inspection, coverage, workers/service-workers, device emulation, or multi-step automation. Spawns a browser-profile worker through the unified agent tool and manages follow-ups through the same lifecycle facade. For one CDP operation, call chromeDebug directly instead."
 ---
 
 # Browser Agent
@@ -10,7 +10,7 @@ The subagent has `chromeDebug` + `web` + local read tools and emits structured o
 
 ## Single-shot vs multi-turn
 
-| Use `chromeDebug` directly | Use `spawnSubagent(browser-agent)` |
+| Use `chromeDebug` directly | Use `agent` with `profile:"browser"` |
 |---|---|
 | One screenshot | Security + storage + network audit in sequence |
 | One-pass network log | Watch network while user interacts |
@@ -21,35 +21,37 @@ The subagent has `chromeDebug` + `web` + local read tools and emits structured o
 ## Spawn
 
 ```
-spawnSubagent({
-  agent: "browser-agent",
-  task:  "<what to do — be specific>",
-  url:   "https://example.com",    // optional: target URL
-  port:  9222,                     // optional: Chrome debug port (default 9222)
-  launch: false,                   // optional: start Chrome if not running
-})
+agent({queries:[{
+  reasoning: "The audit needs multiple CDP phases.",
+  type: "spawn",
+  profile: "browser",
+  task: "<what to do — be specific>",
+  url: "https://example.com",     // optional
+  port: 9222,                      // optional; default 9222
+  launch: false                    // optional
+}]})
 → { agentId: "abc123…" }
 ```
 
 The subagent receives the pre-built system prompt (CDP reference + chromeDebug guide + protocol).
-It stays alive and waits for follow-up instructions via AgentMessage.
+It stays alive and accepts follow-up operations through `agent`.
 
 ## Multi-turn coordination
 
 ```
 // Spawn
-agentId = spawnSubagent({agent:"browser-agent", task:"audit https://example.com security", url:"https://example.com"})
+agentId = agent({queries:[{reasoning:"Run a multi-phase security audit.", type:"spawn", profile:"browser", task:"audit https://example.com security", url:"https://example.com"}]})
 
 // Wait for first pass
-AgentMessage({action:"wait", agentId, timeoutMs:60000})
+agent({queries:[{reasoning:"Collect the first audit phase.", type:"wait", agentId, timeoutMs:60000}]})
 
 // Steer (interrupt current turn) or send (queue after current turn)
-AgentMessage({action:"send", agentId, message:"now check the /api/login endpoint too"})
-AgentMessage({action:"wait", agentId, timeoutMs:30000})
+agent({queries:[{reasoning:"Queue the next audit phase.", type:"message", agentId, delivery:"followUp", message:"now check the /api/login endpoint too"}]})
+agent({queries:[{reasoning:"Collect the follow-up phase.", type:"wait", agentId, timeoutMs:30000}]})
 
 // Done — collect and kill
-AgentMessage({action:"status", agentId})   // read full output
-AgentMessage({action:"kill",   agentId, remove:true})
+agent({queries:[{reasoning:"Inspect the retained worker result.", type:"inspect", agentId, full:true}]})
+agent({queries:[{reasoning:"Release the completed worker.", type:"kill", agentId, remove:true}]})
 ```
 
 ## Output protocol
@@ -67,46 +69,46 @@ The subagent prefixes every line:
 | `[FAILED] reason` | Objective cannot be completed — with partial findings |
 | `[DONE] summary` | Task complete |
 
-Parse `AgentMessage(status).lastOutput` for these prefixes.
+Parse `agent` inspect/wait output for these prefixes.
 Relay `[FINDING]` and `[ACTION]` lines to the user.
-Pass `[BLOCKED]` reason back via `AgentMessage(send, message: answer)`.
+Pass a `[BLOCKED]` answer back with an `agent` message query.
 
 ## Async polling (long tasks)
 
 For tasks that take > 30s, poll instead of blocking:
 ```
-agentId = spawnSubagent({agent:"browser-agent", task:"run 30s monitor", url:"...", port:9222})
+agentId = agent({queries:[{reasoning:"Run a long browser monitor.", type:"spawn", profile:"browser", task:"run 30s monitor", url:"...", port:9222}]})
 // Poll every 10s while working on something else
 while True:
-  status = AgentMessage({action:"status", agentId})
+  status = agent({queries:[{reasoning:"Check monitor progress.", type:"inspect", agentId}]})
   if status.status == "idle":  // [DONE] emitted, waiting
     break
   // optionally: print status.lastOutput preview
   wait 10s
-AgentMessage({action:"kill", agentId, remove:true})
+agent({queries:[{reasoning:"Release the completed monitor.", type:"kill", agentId, remove:true}]})
 ```
 
 ## Kill discipline (always)
 
 **Always kill the agent after the last [DONE].** Agents do not self-terminate.
 ```
-AgentMessage({action:"kill", agentId, remove:true})
+agent({queries:[{reasoning:"Release the completed worker.", type:"kill", agentId, remove:true}]})
 ```
 If the agent is stuck > 2× expected time:
 ```
-AgentMessage({action:"abort", agentId})  // graceful interrupt
+agent({queries:[{reasoning:"Interrupt the stuck worker safely.", type:"abort", agentId}]})
 // wait 5s, then send next instruction or kill
-AgentMessage({action:"kill", agentId, remove:true})
+agent({queries:[{reasoning:"Release the interrupted worker.", type:"kill", agentId, remove:true}]})
 ```
 
 ## Parallel browsers
 
 Spawn multiple simultaneously for independent audits:
 ```
-secId = spawnSubagent({agent:"browser-agent", task:"security audit",     url:"https://example.com"})
-perfId = spawnSubagent({agent:"browser-agent", task:"performance audit", url:"https://example.com", port:9223})
-AgentMessage({action:"wait", agentId:secId,  timeoutMs:90000})
-AgentMessage({action:"wait", agentId:perfId, timeoutMs:90000})
+secId = agent({queries:[{reasoning:"Run the security lane.", type:"spawn", profile:"browser", task:"security audit", url:"https://example.com"}]})
+perfId = agent({queries:[{reasoning:"Run the performance lane.", type:"spawn", profile:"browser", task:"performance audit", url:"https://example.com", port:9223}]})
+agent({queries:[{reasoning:"Collect the security lane.", type:"wait", agentId:secId, timeoutMs:90000}]})
+agent({queries:[{reasoning:"Collect the performance lane.", type:"wait", agentId:perfId, timeoutMs:90000}]})
 ```
 
 ## chromeDebug scheme quick reference
@@ -145,7 +147,7 @@ tail -f ~/.octocode/chrome-debug/port-9222/cdp-events.jsonl | python3 -c "import
 
 **Option 3 — poll subagent output**:
 ```
-AgentMessage({action:"status", agentId})  // read lastOutput field (up to 12KB)
+agent({queries:[{reasoning:"Inspect current browser findings.", type:"inspect", agentId}]})
 ```
 Call every 5–10s during long tasks to see [STATUS]/[FINDING] lines as they arrive.
 
@@ -156,10 +158,10 @@ Open DevTools → Settings → Experiments → “Protocol Monitor” → More T
 
 | Signal | What to send |
 |---|---|
-| `[BLOCKED] Chrome not running` | `AgentMessage(send: "use launch:true or start Chrome manually")` |
-| `[BLOCKED] auth required` | Tell user to log in, then `AgentMessage(send: "continue")` |
-| Agent `failed` status | `AgentMessage(status)` → read error → `kill` → re-spawn with fix |
-| Agent stuck > 2× expected time | `AgentMessage(abort)` → wait 5s → `AgentMessage(send, new instruction)` |
+| `[BLOCKED] Chrome not running` | Send an `agent` message: `use launch:true or start Chrome manually` |
+| `[BLOCKED] auth required` | Tell the user to log in, then send an `agent` message: `continue` |
+| Agent `failed` status | `agent` inspect → read error → kill → spawn with corrected task |
+| Agent stuck > 2× expected time | `agent` abort → wait briefly → message with new instruction or kill |
 
 ## Reference
 

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { buildAwarenessLiteCommand } from './assets.js';
+import { buildAwarenessLiteCommand, runAwarenessLiteInProcess } from './assets.js';
 import type { PiContext, PiExecResult, PiInstance } from './types.js';
 
 const DEFAULT_JOB_TIMEOUT_MS = 60_000;
@@ -162,6 +162,10 @@ export function createOctocodeCronScheduler(
 ): OctocodeCronScheduler {
   const env = options.env ?? process.env;
   const now = options.now ?? Date.now;
+  // Default execution is IN-PROCESS (no child process). An explicit executor or a
+  // pi.exec seam (tests, foreign hosts) opts back into subprocess spawning and
+  // preserves the `node cli.js …` spec assertions those callers make.
+  const useSubprocess = Boolean(options.executor || options.pi?.exec);
   const executor = options.executor ?? makeExecutor(options.pi);
   const states = new Map<string, MutableJobState>();
   let active = false;
@@ -213,12 +217,15 @@ export function createOctocodeCronScheduler(
     state.lastStartedAt = now();
     state.lastMessage = undefined;
     try {
-      const spec = buildAwarenessLiteCommand(state.definition.awarenessArgs(ctx));
-      const result = await executor(
-        spec.cmd,
-        spec.args,
-        { timeout: DEFAULT_JOB_TIMEOUT_MS },
-      );
+      const args = state.definition.awarenessArgs(ctx);
+      let result: PiExecResult;
+      if (useSubprocess) {
+        const spec = buildAwarenessLiteCommand(args);
+        result = await executor(spec.cmd, spec.args, { timeout: DEFAULT_JOB_TIMEOUT_MS });
+      } else {
+        const r = runAwarenessLiteInProcess(args);
+        result = { stdout: r.stdout, stderr: r.stderr, code: r.code };
+      }
       const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join('\n'));
       state.lastExitCode = result.code;
       state.status = result.code === 0 ? 'succeeded' : 'failed';

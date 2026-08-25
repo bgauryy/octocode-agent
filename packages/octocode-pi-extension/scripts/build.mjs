@@ -15,7 +15,7 @@ const require = createRequire(import.meta.url);
 
 // Resolve workspace/package sources via package resolution — no path hardcoding.
 const CONFIG_LOADER_SRC = require.resolve('@octocodeai/config');
-const AWARENESS_PACKAGE_ROOT = path.dirname(path.dirname(require.resolve('@octocodeai/octocode-awareness-lite')));
+const AWARENESS_PACKAGE_ROOT = path.dirname(path.dirname(require.resolve('@octocodeai/octocode-awareness')));
 const OCTOCODE_PACKAGE_ROOT = path.dirname(require.resolve('octocode/package.json'));
 
 const SOURCE_PATHS = {
@@ -68,6 +68,10 @@ const EXCLUDED_BUNDLED_SKILLS = new Set([
   // Awareness Lite is prompt-owned in pi-extension (<awareness>) and exposed as a CLI,
   // not a loadable skill; bundling its SKILL.md causes duplicate skill-load UI noise.
   'octocode-awareness-lite',
+  // The full Awareness skill ships with the (now single) @octocodeai/octocode-awareness
+  // package for separate installs; the harness uses the inline <awareness> prompt, so it
+  // is not bundled as a loadable skill here (preserves the prior 0-awareness-skills bundle).
+  'octocode-awareness',
   // 3D mannequin/animation workflow is intentionally not part of the coding-agent bundle.
   'octocode-mannequin',
 ]);
@@ -288,7 +292,13 @@ function compileTsc() {
 
 async function build() {
   syncPackageSkills();
-  clean();
+  try {
+    // Deterministic failure point used by the cleanup regression test. It must
+    // remain after staging and before any destructive output cleanup.
+    if (process.env['OCTOCODE_TEST_FAIL_BUILD_AFTER_SKILL_SYNC'] === '1') {
+      throw new Error('test failure after package skill sync');
+    }
+    clean();
 
   // 1. Compile TypeScript -> dist/ (generates .js + .d.ts for all src/ modules).
   compileTsc();
@@ -343,20 +353,23 @@ async function build() {
   // factory). Remove the staging <root>/skills so Pi's package scanner can't
   // surface a SECOND copy and emit a [Skill conflicts] block. (skills/** is also
   // dropped from package.json "files", so it never ships either.)
-  fs.rmSync(SOURCE_PATHS.skills, { recursive: true, force: true });
+    bundleOctocodeCLI();
 
-  bundleOctocodeCLI();
+    assertNoHiddenLocalOnlyEntries(distDir);
 
-  assertNoHiddenLocalOnlyEntries(distDir);
-
-  const skillNames = assertBundledSkills();
-  console.log(
-    `Built @octocodeai/pi-extension with ${skillNames.length} skill(s).`
-  );
-  if (skillNames.length > 0) console.log(`Skills: ${skillNames.join(', ')}`);
-  console.log(
-    `Config loader: octocode-config.mjs injected into ${configInjected} skill script dir(s)`
-  );
+    const skillNames = assertBundledSkills();
+    console.log(
+      `Built @octocodeai/pi-extension with ${skillNames.length} skill(s).`
+    );
+    if (skillNames.length > 0) console.log(`Skills: ${skillNames.join(', ')}`);
+    console.log(
+      `Config loader: octocode-config.mjs injected into ${configInjected} skill script dir(s)`
+    );
+  } finally {
+    // Package-root skills are staging only. Never leave them behind after a
+    // failed normal build, or Pi may discover a second conflicting skill copy.
+    fs.rmSync(SOURCE_PATHS.skills, { recursive: true, force: true });
+  }
 }
 
 if (process.argv.includes('--clean')) {

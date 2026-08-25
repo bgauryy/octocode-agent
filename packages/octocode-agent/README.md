@@ -22,6 +22,20 @@ octocode-agent
 
 Install `@octocodeai/pi-extension` directly only when you are already a Pi user and want to add the Octocode harness to your own Pi install (`pi install npm:@octocodeai/pi-extension`). That is an advanced/integration path, not the primary Octocode-agent install path.
 
+### One tool palette
+
+The launcher does not expose Pi's native `read`, `bash`, `edit`, `write`, `grep`, `find`, or
+`ls` tools. Both the default SDK path and subprocess fallback suppress all Pi built-ins before
+the session starts; there is no environment opt-out. The core supplies the full palette:
+
+- local reads/search use Octocode research through `MCPTool`;
+- `file` owns `edit`, `write`, and `delete` effects;
+- the core registers its guarded same-name `bash` implementation;
+- `readMedia` perceives local media, while `media` creates or transforms artifacts.
+
+Direct extension installs also remove the replaced built-ins on load/session start as a
+defensive backstop. See the core's [override contract](../octocode-pi-extension/docs/OVERRIDES.md).
+
 ## The core is the agent — one update path
 
 `octocode-agent` has a real dependency on `@octocodeai/pi-extension`, so `npm install -g` and `npx` both get the pinned core automatically. Updating the core updates what the agent launches:
@@ -63,10 +77,10 @@ On launch the platform:
 
 1. Imports Pi's SDK from its installed package and imports the bundled core factory (`createOctocodePiExtension`) from `@octocodeai/pi-extension`.
 2. Sets the launch environment: `OCTOCODE_PROMPT_MODE=octocode-first` (harness leads; Pi prompt is preserved below), `OCTOCODE_AGENT=1`, and long Pi cache retention. It never overrides an `OCTOCODE_PROMPT_MODE` you set yourself.
-3. Starts Pi in-process with `extensionFactories: [createOctocodePiExtension({ promptMode: 'octocode-first' })]`, so the Octocode core loads without global Pi settings mutation.
-4. Falls back to resolving the Pi executable and running `pi --no-extensions -e <core>` when the SDK path is unavailable. The fallback loads the extension **and its packaged skills** for that run only — no global settings mutation, no trust prompt for our own package.
+3. Starts Pi in-process with `noTools: "builtin"` and `extensionFactories: [createOctocodePiExtension({ promptMode: 'octocode-first' })]`, so the Octocode core owns the tool palette without global Pi settings mutation.
+4. Falls back to resolving the Pi executable and running `pi --no-builtin-tools --no-extensions -e <core>` when the SDK path is unavailable. The fallback loads the extension **and its packaged skills** for that run only — no global settings mutation, no trust prompt for our own package.
 
-The core's default export stays append-mode and single-arg-callable, so the same package also works as a plain `pi install npm:@octocodeai/pi-extension`. Octocode-first mode is selected purely by the launcher/core contract — no divergent harness code path. The legacy value `OCTOCODE_PROMPT_MODE=replace` remains accepted as an alias.
+The core's default export stays append-mode and single-arg-callable, so the same package also works as a plain `pi install npm:@octocodeai/pi-extension`. Octocode-first mode is selected purely by the launcher/core contract — no divergent harness code path.
 
 **Tunables (env):**
 - `OCTOCODE_AGENT_EXTENSION_SPEC` — override the core spec Pi loads (`npm:…`, `git:…`, or a path). Default: the bundled package.

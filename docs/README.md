@@ -1,12 +1,9 @@
-# Docs
+# Documentation
 
-Cross-package documentation for the Octocode agent monorepo. Package internals
-stay package-local (`packages/*/docs`); this shelf holds harness-wide topics.
+Use these guides to configure and extend Octocode. Package implementation details stay in
+`packages/*/docs`.
 
-| Doc | What it covers |
+| Guide | What it covers |
 |---|---|
-| [DISCOVERY.md](DISCOVERY.md) | Capability discovery end to end: MCP init discovery + the `<mcp_catalog>` prompt block (smart caching), the `skill` tool + skill discovery across common ecosystem roots, the `.octocode/discovery.json` inventory (skills + MCP config discoverability), observability surfaces, and the measured context composition. |
-
-Package docs: [pi-extension](../packages/octocode-pi-extension/docs/README.md) ·
-[awareness](../packages/octocode-awareness/docs/README.md) ·
-[agent](../packages/octocode-agent/docs/README.md)
+| [MCP servers and skills](MCP.md) | Configure external stdio MCP servers. Install or create Agent Skills. Inspect capability discovery. |
+| [Capability discovery](DISCOVERY.md) | Advanced reference for MCP catalog initialization, skill discovery, the `.octocode/discovery.json` inventory, and observability surfaces. |

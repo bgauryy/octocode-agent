@@ -1,7 +1,7 @@
 # Awareness Architecture
 
 ```text
-agent lobby -> CLI / hooks / Pi bridge -> runtime -> global awareness.sqlite3
+agent lobby -> CLI / host hooks -> runtime -> global awareness.sqlite3
                                                    |-> live views
                                                    `-> optional query exports -> .octocode/
 ```

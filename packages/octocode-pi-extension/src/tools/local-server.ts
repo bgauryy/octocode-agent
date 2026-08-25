@@ -30,6 +30,10 @@ export interface LocalMount {
   dir: string;
   /** File served when the request targets the mount root. */
   indexFile: string;
+  /** Optional same-origin browser feedback bridge for this mount. */
+  onMessage?: (message: string) => void | Promise<void>;
+  /** Optional same-origin typed action bridge for local management pages. */
+  onAction?: (action: unknown) => unknown | Promise<unknown>;
 }
 
 export interface ServedMount {
@@ -48,6 +52,7 @@ const MOUNT_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.htm': 'text/html; charset=utf-8',
+  '.xhtml': 'application/xhtml+xml; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -93,10 +98,6 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     res.end(body);
   };
   try {
-    if (req.method && req.method !== 'GET' && req.method !== 'HEAD') {
-      send(405, 'method not allowed');
-      return;
-    }
     // Host allowlist: defeats DNS-rebinding (a remote page that rebinds its
     // hostname to 127.0.0.1:<port> would otherwise be same-origin). Only the
     // loopback names for our exact port are accepted.
@@ -111,6 +112,86 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     const mount = name ? mounts.get(name) : undefined;
     if (!mount) {
       send(404, 'not found');
+      return;
+    }
+    const isMessageEndpoint = segments.length === 2
+      && segments[0] === '__octocode'
+      && segments[1] === 'message';
+    if (isMessageEndpoint) {
+      if (req.method !== 'POST') {
+        send(405, 'method not allowed');
+        return;
+      }
+      if (!mount.onMessage) {
+        send(404, 'message bridge unavailable');
+        return;
+      }
+      const origin = req.headers.origin;
+      if (origin !== `http://${host}`) {
+        send(403, 'forbidden');
+        return;
+      }
+      if (!(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
+        send(415, 'application/json required');
+        return;
+      }
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => {
+        body += chunk;
+        if (body.length > 16_384) req.destroy();
+      });
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body) as { message?: unknown };
+          const message = typeof parsed.message === 'string' ? parsed.message.trim() : '';
+          if (!message || message.length > 8_000) {
+            send(400, 'message must contain 1-8000 characters');
+            return;
+          }
+          void Promise.resolve(mount.onMessage?.(message)).then(
+            () => send(202, 'accepted'),
+            () => send(500, 'could not deliver message'),
+          );
+        } catch {
+          send(400, 'invalid JSON');
+        }
+      });
+      return;
+    }
+    const isActionEndpoint = segments.length === 2
+      && segments[0] === '__octocode'
+      && segments[1] === 'action';
+    if (isActionEndpoint) {
+      if (req.method !== 'POST') return send(405, 'method not allowed');
+      if (!mount.onAction) return send(404, 'action bridge unavailable');
+      const origin = req.headers.origin;
+      if (origin !== `http://${host}`) return send(403, 'forbidden');
+      if (!(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) return send(415, 'application/json required');
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => {
+        body += chunk;
+        if (body.length > 16_384) req.destroy();
+      });
+      req.on('end', () => {
+        try {
+          const parsed: unknown = JSON.parse(body);
+          void Promise.resolve(mount.onAction?.(parsed)).then((value) => {
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(JSON.stringify({ ok: true, value }));
+          }, (error) => {
+            res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(JSON.stringify({ ok: false, error: (error as Error).message }));
+          });
+        } catch {
+          send(400, 'invalid JSON');
+        }
+      });
+      return;
+    }
+    if (req.method && req.method !== 'GET' && req.method !== 'HEAD') {
+      send(405, 'method not allowed');
       return;
     }
     const rel = segments.length > 0 ? segments.join('/') : mount.indexFile;
@@ -182,7 +263,8 @@ async function ensureServer(): Promise<string | undefined> {
       serverPort = port;
       baseUrl = `http://127.0.0.1:${port}/`;
       return baseUrl;
-    } catch {
+    } catch (error) {
+      try { process.stderr.write(`[octocode-local-server] ${(error as Error).message}\n`); } catch { /* no stderr */ }
       return undefined;
     } finally {
       starting = undefined;
@@ -204,10 +286,19 @@ async function ensureServer(): Promise<string | undefined> {
 export async function serveDirectory(
   name: string,
   dir: string,
-  opts?: { indexFile?: string },
+  opts?: {
+    indexFile?: string;
+    onMessage?: (message: string) => void | Promise<void>;
+    onAction?: (action: unknown) => unknown | Promise<unknown>;
+  },
 ): Promise<ServedMount | undefined> {
   if (!MOUNT_NAME.test(name)) return undefined;
-  mounts.set(name, { dir: path.resolve(dir), indexFile: opts?.indexFile ?? 'index.html' });
+  mounts.set(name, {
+    dir: path.resolve(dir),
+    indexFile: opts?.indexFile ?? 'index.html',
+    onMessage: opts?.onMessage,
+    onAction: opts?.onAction,
+  });
   const base = await ensureServer();
   if (!base) {
     mounts.delete(name);
@@ -244,5 +335,9 @@ export function getLocalServerBaseUrl(): string | undefined {
 
 /** Snapshot of current mounts for status/tool rendering. */
 export function listLocalServerMounts(): LocalServerMountInfo[] {
-  return [...mounts.entries()].map(([name, mount]) => ({ name, ...mount }));
+  return [...mounts.entries()].map(([name, mount]) => ({
+    name,
+    dir: mount.dir,
+    indexFile: mount.indexFile,
+  }));
 }

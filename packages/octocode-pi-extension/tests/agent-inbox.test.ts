@@ -423,9 +423,10 @@ test('registerAgentInbox resume: re-arms notifications and re-subscribes after s
   assert.equal(h.unsubCalls.length, 2, 'resume re-subscribed exactly one live listener');
 });
 
-test('registerAgentInbox: pi session_shutdown event also triggers the suppress path', async () => {
+test('registerAgentInbox leaves session_shutdown ownership to the extension lifecycle', () => {
   const h = makeHarness();
-  await h.fakePi.handlers['session_shutdown']?.({ reason: 'quit' }, undefined);
+  assert.equal(h.fakePi.handlers['session_shutdown'], undefined);
+  h.registration.shutdown();
   assert.equal(h.unsubCalls.length, 1);
   h.emit(makeEntry({ status: 'exited' }), 'exit');
   assert.deepEqual(h.notifications, []);

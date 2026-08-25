@@ -73,23 +73,6 @@ export type { AttendEvidence, AttendParams, AttendResult } from './attend.js';
 // Notifications
 export { insertNotification, getNotifications, resolveNotification, pruneNotifications, agentSignal } from './notifications.js';
 
-// Pi native hook adapter
-export {
-  createPiAwarenessBridge,
-  extractPiWriteTargetPaths,
-  getPiAwarenessAgentId,
-  getPiAwarenessSessionId,
-  wirePiAwarenessHooks,
-} from './pi-hooks.js';
-export type {
-  PiAwarenessBridgeOptions,
-  PiLikeApi,
-  PiLikeContext,
-  PiLikeSessionManager,
-  PiLikeUi,
-  PiToolEvent,
-} from './pi-hooks.js';
-
 // Verify gate
 export { auditUnverified, markVerified } from './verify.js';
 export type {

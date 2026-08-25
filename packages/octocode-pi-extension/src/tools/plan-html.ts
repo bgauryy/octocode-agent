@@ -15,12 +15,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { getOctocodeHome } from '../env.js';
-import { displayStatus, getPlanRfc, getPlanDecisions, planPhaseIndex, PLAN_PHASES, type DisplayStatus, type PlanStep, type PlanDecision } from './active-plan.js';
+import { dependencyIndexes, displayStatus, getPlanRfc, getPlanDecisions, getPlanReviewState, planPhaseIndex, PLAN_PHASES, artifactContextForScope, type DisplayStatus, type PlanStep, type PlanDecision, type PlanPhase, type ReviewState } from './active-plan.js';
 import { escapeHtml, renderOctocodePage } from '../tui/html-page.js';
 import { renderMarkdown } from '../tui/markdown.js';
+import { openLocalUrl } from './local-url-opener.js';
 
 const REFRESH_SECONDS = 3;
 
@@ -87,8 +87,8 @@ export function buildPlanMermaid(steps: PlanStep[]): string {
     lines.push(`  ${id}["${i + 1}. ${mermaidLabel(step.text)}"]:::${displayStatus(step, steps)}`);
   });
   steps.forEach((step, i) => {
-    for (const dep of step.dependsOn ?? []) {
-      if (dep >= 1 && dep <= steps.length) lines.push(`  S${dep} --> S${i + 1}`);
+    for (const dep of dependencyIndexes(step, steps)) {
+      lines.push(`  S${dep} --> S${i + 1}`);
     }
   });
   // Mirror the TUI panel's color meaning so the browser diagram and terminal agree:
@@ -110,6 +110,8 @@ export interface PlanMarkdownOptions {
   rfc?: RfcDoc;
   /** The clarify-phase decision log, rendered as a Decisions section. */
   decisions?: PlanDecision[];
+  /** Persisted lifecycle phase; distinguishes Review, Accepted, and Execute. */
+  phase?: PlanPhase;
 }
 
 /** A one-line RFC pointer for plan.md meta (link + status, or a not-found note). */
@@ -123,7 +125,8 @@ export function buildPlanMarkdown(steps: PlanStep[], opts: PlanMarkdownOptions =
   const done = steps.filter((s) => s.status === 'done').length;
   const rows = steps.map((step, i) => {
     const ds = displayStatus(step, steps);
-    const deps = ds === 'blocked' && step.dependsOn?.length ? ` _(needs ${step.dependsOn.join(', ')})_` : '';
+    const dependencies = dependencyIndexes(step, steps);
+    const deps = ds === 'blocked' && dependencies.length ? ` _(needs ${dependencies.join(', ')})_` : '';
     const doing = ds === 'doing' ? ' _(in progress)_' : '';
     return `${MD_MARK[ds]} ${i + 1}. ${step.text}${doing}${deps}`;
   });
@@ -131,6 +134,7 @@ export function buildPlanMarkdown(steps: PlanStep[], opts: PlanMarkdownOptions =
     `Status: ${opts.status ?? 'active'}`,
     opts.workspace ? `Workspace: ${opts.workspace}` : undefined,
     opts.rfc ? rfcMdMeta(opts.rfc) : undefined,
+    opts.phase ? `Phase: ${opts.phase}` : undefined,
     `Generated: ${(opts.generatedAt ?? new Date()).toISOString()}`,
   ].filter(Boolean) as string[];
   const decisionsBlock = opts.decisions && opts.decisions.length
@@ -177,14 +181,35 @@ function rfcSectionHtml(rfc: RfcDoc | undefined): string {
 }
 
 /** The horizontal phase timeline — where the plan is in the flow (done ✓ / now ▸ / upcoming ○). */
-function phaseTimelineHtml(steps: PlanStep[]): string {
-  const cur = planPhaseIndex(steps);
-  const items = PLAN_PHASES.map((label, i) => {
+const REVIEW_PHASE_TIMELINE: ReadonlyArray<{ phase: Exclude<PlanPhase, 'abandoned'>; label: string }> = [
+  { phase: 'researching', label: 'Research' },
+  { phase: 'needs_answers', label: 'Clarify' },
+  { phase: 'draft', label: 'Draft' },
+  { phase: 'in_review', label: 'Review' },
+  { phase: 'accepted', label: 'Accepted' },
+  { phase: 'executing', label: 'Execute' },
+  { phase: 'verifying', label: 'Verify' },
+  { phase: 'complete', label: 'Complete' },
+];
+
+function phaseTimelineHtml(steps: PlanStep[], review?: ReviewState): string {
+  const labels = review ? REVIEW_PHASE_TIMELINE.map((item) => item.label) : [...PLAN_PHASES];
+  const cur = review
+    ? review.phase === 'abandoned'
+      ? -1
+      : Math.max(0, REVIEW_PHASE_TIMELINE.findIndex((item) => item.phase === review.phase))
+    : planPhaseIndex(steps);
+  const items = labels.map((label, i) => {
     const cls = i < cur ? 'done' : i === cur ? 'now' : 'todo';
     const glyph = i < cur ? '✓' : i === cur ? '▸' : '○';
     return `<li class="ph ${cls}"><span class="ph-g">${glyph}</span>${escapeHtml(label)}</li>`;
   });
-  return `<section class="timeline"><h2>Flow</h2><ol class="phase-timeline">${items.join('')}</ol></section>`;
+  const note = review?.phase === 'abandoned'
+    ? '<p class="phase-note abandoned">This plan was abandoned.</p>'
+    : review
+      ? `<p class="phase-note">Current state: <strong>${escapeHtml(review.phase.replace(/_/g, ' '))}</strong></p>`
+      : '';
+  return `<section class="timeline"><h2>Flow</h2><ol class="phase-timeline">${items.join('')}</ol>${note}</section>`;
 }
 
 /** The Decisions section — the clarify-phase interview answers that shaped the plan. Empty when none. */
@@ -194,25 +219,93 @@ function decisionsSectionHtml(decisions: PlanDecision[] | undefined): string {
   return `<section><h2>Decisions</h2><ul class="decisions">${rows.join('')}</ul></section>`;
 }
 
+/** Same-origin browser controls that feed review decisions back into the active agent task. */
+function browserReplySectionHtml(review?: ReviewState): string {
+  const revision = review?.revision ?? review?.acceptedRevision;
+  const contextualActions = review?.phase === 'in_review' && revision
+    ? `<button type="button" data-reply-command="/octocode-plan accept ${escapeHtml(revision)}" class="primary">Approve revision · ${escapeHtml(revision.slice(0, 8))}</button>
+    <button type="button" data-reply-command="/octocode-plan changes">Request changes</button>`
+    : review?.phase === 'accepted'
+      ? '<button type="button" data-reply-command="/octocode-plan start" class="primary">Start implementation</button>\n    <button type="button" data-reply-command="/octocode-plan changes">Reopen review</button>'
+      : '';
+  const help = review?.phase === 'in_review'
+    ? 'Approve the exact displayed revision, request changes, or send a note. Approval keeps implementation blocked.'
+    : review?.phase === 'accepted'
+      ? 'The design is accepted. Start is the separate action that enables implementation.'
+      : 'Send a note directly to the running agent task.';
+  return `<section class="browser-reply" data-browser-reply>
+  <h2>Reply to the agent</h2>
+  <p class="reply-help">${escapeHtml(help)}</p>
+  <label for="octocode-reply">Feedback</label>
+  <textarea id="octocode-reply" maxlength="8000" rows="4" placeholder="What should change, or what should the agent know?"></textarea>
+  <div class="reply-actions">
+    <button type="button" data-reply-action="send">Send feedback</button>
+    ${contextualActions}
+  </div>
+  <p class="reply-status" role="status" aria-live="polite" aria-atomic="true"></p>
+</section>
+<script type="module">
+(() => {
+  const root = document.querySelector('[data-browser-reply]');
+  if (!root) return;
+  const input = root.querySelector('textarea');
+  const status = root.querySelector('.reply-status');
+  const storageKey = 'octocode-plan-reply';
+  try { input.value = sessionStorage.getItem(storageKey) || ''; } catch {}
+  input.addEventListener('input', () => { try { sessionStorage.setItem(storageKey, input.value); } catch {} });
+  const send = async (button) => {
+    const notes = input.value.trim();
+    const command = button.dataset.replyCommand || '';
+    const message = command
+      ? command === '/octocode-plan changes' && notes ? command + ' ' + notes : command
+      : notes;
+    if (!message) { status.textContent = 'Write feedback before sending.'; input.focus(); return; }
+    root.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+    status.textContent = 'Sending…';
+    try {
+      const response = await fetch('__octocode/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      input.value = '';
+      try { sessionStorage.removeItem(storageKey); } catch {}
+      status.textContent = 'Sent to the agent.';
+    } catch (error) {
+      status.textContent = 'Could not send: ' + (error instanceof Error ? error.message : String(error));
+    } finally {
+      root.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+    }
+  };
+  root.querySelectorAll('button').forEach((button) => {
+    button.addEventListener('click', () => void send(button));
+  });
+})();
+</script>`;
+}
+
 /** The plan page body (phase timeline + RFC + decisions + checklist + diagram + raw markdown). */
-export function buildPlanPageHtml(steps: PlanStep[], rfc?: RfcDoc, decisions?: PlanDecision[]): string {
+export function buildPlanPageHtml(steps: PlanStep[], rfc?: RfcDoc, decisions?: PlanDecision[], review?: ReviewState): string {
   const done = steps.filter((s) => s.status === 'done').length;
   const glyph: Record<DisplayStatus, string> = { done: '✓', doing: '▸', todo: '○', blocked: '⊘' };
   const items = steps.map((step, i) => {
     const ds = displayStatus(step, steps);
-    const deps = ds === 'blocked' && step.dependsOn?.length
-      ? ` <span class="deps">(needs ${step.dependsOn.map(String).map(escapeHtml).join(', ')})</span>`
+    const dependencies = dependencyIndexes(step, steps);
+    const deps = ds === 'blocked' && dependencies.length
+      ? ` <span class="deps">(needs ${dependencies.map(String).map(escapeHtml).join(', ')})</span>`
       : '';
     return `<li class="${ds}"><span class="glyph">${glyph[ds]}</span>${i + 1}. ${escapeHtml(step.text)}${deps}</li>`;
   });
   const gates = FLOW_GATES.map((gate, i) => `<li>${i + 1}. ${escapeHtml(gate)}</li>`);
   return [
     // Phase timeline up top: where the plan sits in the flow at a glance.
-    phaseTimelineHtml(steps),
+    phaseTimelineHtml(steps, review),
     // RFC next: the plan the user reviews leads with the accepted decision doc,
     // then the interview decisions, the derived checklist, and dependency flow.
     rfcSectionHtml(rfc),
     decisionsSectionHtml(decisions),
+    browserReplySectionHtml(review),
     // ul.steps (not ol): the stylesheet only resets list-style on ul.steps, so an
     // ol here would stack a browser decimal marker on top of the manual "1." prefix.
     '<section><h2>Flow gates</h2><ul class="steps gates">',
@@ -225,7 +318,7 @@ export function buildPlanPageHtml(steps: PlanStep[], rfc?: RfcDoc, decisions?: P
     `<pre class="mermaid">${escapeHtml(buildPlanMermaid(steps))}</pre>`,
     '<div class="sub">Diagram needs network once (mermaid CDN); the checklist above always renders.</div>',
     '</section>',
-    `<details><summary>Raw markdown (.octocode/plan.md)</summary><pre>${escapeHtml(buildPlanMarkdown(steps, rfc ? { rfc } : {}))}</pre></details>`,
+    `<details><summary>Raw markdown (.octocode/plan.md)</summary><pre>${escapeHtml(buildPlanMarkdown(steps, { ...(rfc ? { rfc } : {}), ...(review ? { phase: review.phase } : {}) }))}</pre></details>`,
   ].filter(Boolean).join('\n');
 }
 
@@ -237,38 +330,70 @@ export interface PlanArtifacts {
 }
 
 /**
- * Directory for a plan scope's HTML/MD under the global Octocode home:
- * `~/.octocode/tmp/plan/<scope-hash>/`. Keyed by the same scope string the
- * plan JSON uses, so a session's page is one predictable place and parallel
- * scopes never share a file.
+ * Directory for a plan scope's HTML/MD.
+ *
+ * Primary: `<workspace>/.octocode/agent/<session-key>/plan/` — scoped to the
+ * session artifact tree so all tool outputs land under one session root.
+ * Fallback: `~/.octocode/tmp/plan/<scope-hash>/` — used when the workspace is
+ * not yet initialised or the session artifact dir cannot be created.
  */
 export function planArtifactsDir(scope: string): string {
-  const hash = createHash('sha256').update(scope || 'default').digest('hex').slice(0, 16);
-  return path.join(getOctocodeHome(), 'tmp', 'plan', hash);
+  try {
+    return artifactContextForScope(scope).resolve('plan');
+  } catch {
+    // Fallback: global home keyed by scope hash.
+    const hash = createHash('sha256').update(scope || 'default').digest('hex').slice(0, 16);
+    return path.join(getOctocodeHome(), 'tmp', 'plan', hash);
+  }
 }
 
-/** Write plan.html + plan.md under `~/.octocode/tmp/plan/<scope-hash>/`. Never throws. */
+/** Write plan.html + plan.md under the session artifact dir (fallback: `~/.octocode/tmp/plan/<hash>/`). Never throws. */
 export function writePlanArtifacts(scope: string, steps: PlanStep[], opts: PlanArtifactOptions = {}): PlanArtifacts | undefined {
   try {
     // Read the linked RFC + decision log fresh each write so an open plan page
     // tracks RFC/decision edits too (via the same meta-refresh as step changes).
     const rfc = readRfcDoc(scope);
     const decisions = getPlanDecisions(scope);
-    const dir = planArtifactsDir(scope);
+    const review = getPlanReviewState(scope);
+    // Create the artifact context ONCE — used for both dir resolution and manifest
+    // registration so we pay the dir-walk + manifest lock overhead only one time.
+    let artifactCtx: ReturnType<typeof artifactContextForScope> | undefined;
+    let dir: string;
+    try {
+      artifactCtx = artifactContextForScope(scope);
+      dir = artifactCtx.resolve('plan');
+    } catch {
+      // Fallback when workspace is not initialised or session context is absent.
+      const hash = createHash('sha256').update(scope || 'default').digest('hex').slice(0, 16);
+      dir = path.join(getOctocodeHome(), 'tmp', 'plan', hash);
+    }
     fs.mkdirSync(dir, { recursive: true });
     const htmlPath = path.join(dir, 'plan.html');
     const mdPath = path.join(dir, 'plan.md');
-    fs.writeFileSync(
-      htmlPath,
-      renderOctocodePage({
-        title: 'Octocode plan',
-        bodyHtml: buildPlanPageHtml(steps, rfc, decisions),
-        refreshSeconds: REFRESH_SECONDS,
-        mermaid: true,
-      }),
-      'utf8',
-    );
-    fs.writeFileSync(mdPath, buildPlanMarkdown(steps, { ...opts, ...(rfc ? { rfc } : {}), ...(decisions.length ? { decisions } : {}) }), 'utf8');
+    const html = renderOctocodePage({
+      title: 'Octocode plan',
+      bodyHtml: buildPlanPageHtml(steps, rfc, decisions, review),
+      refreshSeconds: REFRESH_SECONDS,
+      refreshToken: `${review.branchSnapshotId}:${review.generation}`,
+      mermaid: true,
+    });
+    const markdown = buildPlanMarkdown(steps, { ...opts, phase: review.phase, ...(rfc ? { rfc } : {}), ...(decisions.length ? { decisions } : {}) });
+    if (artifactCtx) {
+      // Session artifacts use the shared atomic/private writer. The fallback
+      // remains a best-effort global-home projection for pre-session hosts.
+      artifactCtx.writeText('plan/plan.html', html);
+      artifactCtx.writeText('plan/plan.md', markdown);
+    } else {
+      fs.writeFileSync(htmlPath, html, 'utf8');
+      fs.writeFileSync(mdPath, markdown, 'utf8');
+    }
+    // Register both files in the session artifact manifest using the already-open context.
+    if (artifactCtx) {
+      try {
+        artifactCtx.registerProducer('plan', 'plan/plan.html');
+        artifactCtx.registerProducer('plan', 'plan/plan.md');
+      } catch { /* best-effort — never break the plan tool */ }
+    }
     return { htmlPath, mdPath };
   } catch {
     return undefined; // Best-effort surface — a write failure must never break the plan tool.
@@ -310,17 +435,11 @@ export interface PlanOpenResult {
   message?: string;
 }
 
-type Opener = (target: string) => PlanOpenResult;
+type Opener = (target: string) => PlanOpenResult | Promise<PlanOpenResult>;
 
-const defaultOpener: Opener = (target) => {
-  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
-  const args = process.platform === 'win32' ? ['/c', 'start', '""', target] : [target];
-  try {
-    spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, message: `Could not open plan page automatically: ${(error as Error).message}. Open ${target} manually.` };
-  }
+const defaultOpener: Opener = async (target) => {
+  const result = await openLocalUrl(target);
+  return { ok: result.ok, message: result.message };
 };
 
 let opener: Opener = defaultOpener;
@@ -329,6 +448,6 @@ export function setPlanOpenerForTests(next: Opener | undefined): void {
   opener = next ?? defaultOpener;
 }
 
-export function openPlanHtml(htmlPath: string): PlanOpenResult {
+export async function openPlanHtml(htmlPath: string): Promise<PlanOpenResult> {
   return opener(htmlPath);
 }

@@ -1,117 +1,129 @@
 # Awareness Lite Agent Flow in Pi
 
-Awareness Lite has one agent-facing interface in Pi: the published CLI invoked as
-`npx @octocodeai/octocode-awareness-lite`, guided by the `octocode-awareness-lite` skill.
-Coordination is not duplicated as Pi tools.
+Pi exposes one coordinated task flow over the Awareness Lite ledger. The model uses
+`plan` for session and shared execution; it does not manually synchronize a local
+checklist with separate plan, task, work-presence, and verification tools.
 
-## Why
+Awareness Lite remains the cross-host SQLite backend. Other agents use its canonical
+CLI and library operations; Pi has one model-facing coordination surface.
 
-One CLI/schema keeps flags, help, other coding agents, and Pi on the same
-small SQLite contract. Lite coordination is explicit: the Pi bridge exposes the
-Lite skill assets but does not automate full lifecycle hooks or bundle the CLI runtime.
+## Pi surface
 
-## Identity
+| Concern | Owner |
+|---|---|
+| Session or shared execution | `plan` |
+| Unread direct peer input | Automatic count → `message` inbox |
+| Exceptional non-mergeable exclusivity | `lock` |
+| Necessary peer communication | `message` |
+| Reusable verified learning | `memory` |
+| Backend diagnostics and recovery | `$OCTOCODE_AWARENESS_CLI` |
 
-- An explicit user `OCTOCODE_AGENT_ID` remains stable.
-- Otherwise Pi derives `pi:<session-file>` for the current session.
-- Sequential `/new`, `/resume`, and forked sessions refresh the derived identity.
-- Hooks and CLI subprocesses inherit that same current identity.
-- Spawned Pi workers derive child identities as `<parent>:worker:<short-id>` and record that mapping in the in-session worker ledger (`/octocode-agents`; see [`AGENT_ORCHESTRATOR.md`](./AGENT_ORCHESTRATOR.md)). Durable Awareness writes for raw worker output stay deferred until privacy/storage review accepts them.
+The catalog is unconditional. The Lite CLI and library retain canonical backend
+operations, and existing SQLite data remains readable.
 
-## Start
+## Identity and automatic lifecycle
 
-```bash
-npx @octocodeai/octocode-awareness-lite status --workspace "$PWD"
+- An explicit `OCTOCODE_AGENT_ID` remains stable.
+- Otherwise Pi derives a session identity and refreshes it for `/new`, `/resume`, and
+  forks.
+- Pi joins and leaves the shared peer registry automatically.
+- Spawned workers use child identities derived from their parent session.
+- Routine advisory file presence is created by the mutation gate and cleaned at
+  session shutdown; leases provide crash recovery.
+
+Do not add manual join, start-presence, finish-presence, or status calls to a normal
+solo task.
+
+## Signals, not ceremony
+
+The TUI shows passive shared state. The model receives a bounded
+`<awareness_signal>` only when it has unread direct peer messages. Global plan, task,
+work, lock, peer, and verification counts do not enter model context.
+
+Peer-authored message bodies and task titles are not injected into the system prompt.
+The signal routes directly to `message`; deeper diagnosis and recovery remain available
+through the Awareness skill/CLI. A plan count, an agent count, automatic
+presence, or already-read messages alone do not require a coordination call.
+
+## Plan scope
+
+`plan` accepts `scope: auto | session | shared`.
+
+- `session` keeps the checklist local to the Pi session.
+- `shared` projects the stable plan and step identities onto existing Awareness Lite
+  plans and tasks.
+- `auto` stays session-local unless Pi can safely adopt one currently claimed shared
+  task owned by this agent. It does not adopt by title or path and does not manufacture
+  a shared plan for routine solo work.
+
+Projection reuses Awareness Lite's transactional materialization and reconciliation.
+Repeated Start or projection is idempotent: stable source and step keys reconcile the
+same rows, dependencies, paths, acceptance criteria, and declared check commands.
+
+For an RFC plan, user **Accept** records the exact reviewed revision but creates no
+shared rows. A separate user **Start** authorizes implementation and materializes the
+shared graph. Repeated Start reconciles rather than duplicates it.
+
+## Completion and observed receipts
+
+For a mapped shared step, call `plan.complete` with the check that actually ran:
+
+```text
+receipt: {
+  command: "<exact declared check command>",
+  status: "SUCCESS" | "FAILED",
+  message: "<concise observed result>"
+}
 ```
 
-Inspect plan/task/lock/work counts and pending verification checks. Recalled
-memories are leads; verify them against current source/tests.
+The command must match the task's declared check command. On success, Pi completes the
+shared task, records the check receipt, advances the local step, claims the next
+ready dependency, and closes the shared plan after every task is verified.
 
-## Choose work
+A failed receipt reopens shared execution and leaves the local step active. If receipt
+persistence fails after shared completion, Pi attempts compensation by reopening the
+task. An unrecoverable compensation failure is reported as explicit verification debt;
+it is never hidden behind a locally completed step.
 
-Claim a matching task:
+Slash completion, removal, and clear operations cannot bypass mapped shared receipt or
+unfinished-task safety. Separate submit/verify operations remain backend recovery or a
+configured independent-review workflow, not the normal Pi completion path.
 
-```bash
-npx @octocodeai/octocode-awareness-lite task list --workspace "$PWD" --plan-id plan_123 --status OPEN
-npx @octocodeai/octocode-awareness-lite task claim \
-  --workspace "$PWD" --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID"
-```
+## Mutation-time coordination
 
-Or open standalone Work:
+Before identifiable mutations, Pi:
 
-```bash
-npx @octocodeai/octocode-awareness-lite work start \
-  --workspace "$PWD" --agent-id "$OCTOCODE_AGENT_ID" \
-  --file src/a.ts --reason "fix parser"
-```
+1. extracts every explicit target from structured write inputs or batched `queries[]`;
+2. extracts explicit bash targets recognized by `extractBashWriteTargets` (for example,
+   redirects, `tee`, `cp`, `mv`, and in-place editors);
+3. checks all targets for peer-held locks before starting any advisory presence; and
+4. starts or refreshes this session's advisory presence only after the complete lock
+   pass succeeds.
 
-Every file edit should belong to a Task or manual Work presence with a reason.
-Advisory presence is the default and allows informed overlap. Use `lock acquire`
-for sensitive/non-mergeable changes.
+A same-owner lock is allowed and a peer-owned lock blocks the mutation. If no Awareness
+store exists, mutation safety fails open. If a store exists but lock state cannot be
+queried, an identifiable mutation fails closed. Advisory-presence failures warn and
+fail open.
 
-## Hooks during edits
+Implicit generated output and opaque interpreters with no extracted path cannot be
+preflighted and are not claimed as covered. Use an explicit `lock` for sensitive or
+non-mergeable state when concurrent mutation would be unsafe.
 
-Awareness Lite does not wire full Pi lifecycle automation. Pi only runs the Lite
-pre-edit lock gate for write tools; agents still coordinate explicitly by running
-`task`, `work`, `lock`, `handoff`, and `check` commands through `npx @octocodeai/octocode-awareness-lite`.
+## Exceptional tools
 
-## Finish exactly owned work
+- `lock acquire|wait|release`: only for state that cannot be merged safely. Mutation
+  checks already enforce peer-held locks; ordinary source edits do not need one.
+- `message`: only when a peer needs a blocker, question, decision, or overlap notice.
+- `memory`: recall only when prior learning can change the approach; store only
+  verified reusable outcomes that source and docs do not already own.
 
-For a task:
+## Diagnostics and recovery
 
-```bash
-npx @octocodeai/octocode-awareness-lite task done \
-  --workspace "$PWD" --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID"
-npx @octocodeai/octocode-awareness-lite check mark \
-  --workspace "$PWD" --task-id task_123 --agent-id "$OCTOCODE_AGENT_ID" \
-  --message "parser tests passed"
-```
+Use `node "$OCTOCODE_AWARENESS_CLI" schema ...` to inspect exact Lite command shapes
+before invoking backend recovery. The CLI remains appropriate for verification-debt
+audit, unresolved continuation notes, stale ownership, or a backend state that the
+reduced Pi tools intentionally do not expose.
 
-For standalone Work:
-
-```bash
-npx @octocodeai/octocode-awareness-lite work end \
-  --workspace "$PWD" --file src/a.ts --agent-id "$OCTOCODE_AGENT_ID"
-npx @octocodeai/octocode-awareness-lite check audit --workspace "$PWD"
-```
-
-Never use a batch success operation to clear another agent’s debt. Verification
-records evidence; it does not execute the check.
-
-## Recall and record
-
-Use targeted retrieval only when durable context can change the plan:
-
-```bash
-npx @octocodeai/octocode-awareness-lite memory recall \
-  --workspace "$PWD" --query "parser regression" --limit 5
-```
-
-Record only reusable, verified facts:
-
-```bash
-npx @octocodeai/octocode-awareness-lite memory store \
-  --workspace "$PWD" --label GOTCHA \
-  --text "parser regression: Malformed escapes must be rejected before tokenization"
-```
-
-Skip routine status, raw logs, obvious edits, secrets, and facts already captured
-in source/docs.
-
-## Handoff
-
-```bash
-npx @octocodeai/octocode-awareness-lite handoff list --workspace "$PWD"
-npx @octocodeai/octocode-awareness-lite handoff add \
-  --workspace "$PWD" --agent-id "$OCTOCODE_AGENT_ID" \
-  --summary "Parser task ready; run parser tests before finishing" --file src/parser.ts
-```
-
-Use a Plan Task for selectable durable work; handoffs are notes, not a second
-task queue.
-
-## Cleanup
-
-Use the same `npx @octocodeai/octocode-awareness-lite` CLI for read-only status and explicit cleanup. Lite has no
-maintenance digest or repo projection flow; `memory forget`/`delete` require a
-specific `--memory-id`.
+Never hand-edit the SQLite database or generated Awareness state. Recovery records
+evidence; it does not execute a check, authorize taking over another agent's task, or
+make an expired lease count as success.

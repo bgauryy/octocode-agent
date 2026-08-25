@@ -227,10 +227,18 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       return (`${repo}${p && p !== '.' ? `/${p}` : ''}` + more).trim();
     }
 
-    if (toolName === 'ghHistoryResearch') {
-      const type = str(q.type) || 'prs';
-      const prNum = q.prNumber != null ? `#${q.prNumber}` : '';
-      return (`${repo} ${type}${prNum}` + more).trim();
+    if (toolName === 'ghSearchPullRequests' || toolName === 'ghSearchIssues') {
+      const keywords = arr(q.keywordsToSearch).join(' ');
+      const number = q.prNumber ?? q.issueNumber;
+      const kind = toolName === 'ghSearchPullRequests' ? 'PR' : 'issue';
+      const detail = number != null ? `${kind} #${number}` : keywords ? `"${keywords}"` : kind;
+      return (`${repo} ${detail}` + more).trim();
+    }
+
+    if (toolName === 'ghSearchCommits') {
+      const pathValue = str(q.path);
+      const range = [str(q.base), str(q.head)].filter(Boolean).join('..');
+      return (`${repo}${pathValue ? ` path:${pathValue}` : ''}${range ? ` ${range}` : ''}` + more).trim();
     }
 
     if (toolName === 'ghCloneRepo') {
@@ -273,10 +281,10 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       return (`${shortPath(p)}${names ? ` [${names}]` : ''}${pat ? ` ${pat}` : ''}` + more).trim();
     }
 
-    if (toolName === 'localBinaryInspect') {
+    if (toolName === 'localFindDeadCode') {
       const p = str(q.path);
-      const mode = str(q.mode);
-      return (`${basename(p)}${mode ? ` (${mode})` : ''}` + more).trim();
+      const entrypoints = arr(q.entrypoints).join(', ');
+      return (`${shortPath(p)}${entrypoints ? ` entries:[${entrypoints}]` : ''}` + more).trim();
     }
 
     if (toolName === 'lspGetSemantics') {
@@ -288,7 +296,7 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       return (`${type}${sym ? ` "${sym}"` : ''}${file ? ` in ${file}${line}` : ''}` + more).trim();
     }
 
-    // localBinaryInspect fallthrough
+    // Other local-tool fallthrough.
     const p = str(q.path);
     return (shortPath(p) + more).trim();
   }
@@ -483,12 +491,13 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
     return { queryCount, paths: paths.slice(0, 3) };
   }
 
-  if (toolName === 'ghHistoryResearch') {
+  if (toolName === 'ghSearchPullRequests' || toolName === 'ghSearchIssues' || toolName === 'ghSearchCommits') {
     let count = 0;
     for (const r of results) {
       const data = (r.data ?? {}) as Record<string, unknown>;
       if (Array.isArray(data.items)) count += data.items.length;
       else if (Array.isArray(data.prs)) count += data.prs.length;
+      else if (Array.isArray(data.issues)) count += data.issues.length;
       else if (Array.isArray(data.commits)) count += data.commits.length;
     }
     return { queryCount, summary: count > 0 ? `${count} items` : undefined };

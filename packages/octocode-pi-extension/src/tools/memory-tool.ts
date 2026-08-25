@@ -11,15 +11,12 @@
  * mutate, or reinterpret memory; it shells the same CLI the skill documents.
  */
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { buildAwarenessLiteCommand } from '../assets.js';
-
-const execFileAsync = promisify(execFile);
+import { runAwarenessLiteInProcess } from '../assets.js';
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { CLI_GLYPH, cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -33,18 +30,19 @@ export interface MemoryCliResult {
 export type MemoryCliRunner = (args: string[]) => MemoryCliResult | Promise<MemoryCliResult>;
 
 /**
- * Default runner: invoke the published Awareness Lite CLI via npx. Async on purpose —
- * a sync exec here blocked the whole event loop (TUI freeze, unprocessable
- * abort) for up to the 20s timeout.
+ * Default runner: execute the Awareness Lite `memory` command IN-PROCESS via the
+ * library (no child process). Store/list/forget and lexical recall are fast
+ * local-SQLite ops. Kept async so the tool's execute path and the injectable
+ * test seam are unchanged. Caveat: `recall --semantic` WITH an OCTOCODE_EMBED_CMD
+ * configured runs the host embedder via spawnSync and would block the event loop
+ * for its duration — that env is opt-in and unset by default here.
  */
 const defaultRunner: MemoryCliRunner = async (args) => {
-  const spec = buildAwarenessLiteCommand(args);
   try {
-    const { stdout } = await execFileAsync(spec.cmd, spec.args, { encoding: 'utf8', timeout: 20_000 });
-    return { code: 0, stdout, stderr: '' };
+    const { code, stdout, stderr } = runAwarenessLiteInProcess(args);
+    return { code, stdout, stderr };
   } catch (err) {
-    const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
-    return { code: typeof e.code === 'number' ? e.code : 1, stdout: e.stdout ?? '', stderr: e.stderr ?? e.message ?? 'memory CLI failed' };
+    return { code: 1, stdout: '', stderr: err instanceof Error ? err.message : 'memory CLI failed' };
   }
 };
 
@@ -222,6 +220,34 @@ function tagsFromChangedFiles(files: unknown): string[] {
   return Array.from(tags);
 }
 
+function preflightMemoryParams(p: MemoryParams): void {
+  if (!['recall', 'record', 'forget', 'review', 'suggest'].includes(String(p.action))) {
+    throw new Error(`unknown action "${String(p.action)}".`);
+  }
+  if (p.action === 'suggest' || p.action === 'record') {
+    const observation = String(p.observation ?? '').trim();
+    if (!observation) throw new Error(`${p.action} requires an observation.`);
+    const validationError = validateRecordObservation(observation);
+    if (validationError) throw new Error(validationError);
+  }
+  if (p.action === 'record') {
+    if (!String(p.label ?? '').trim()) throw new Error('record requires a label (e.g. GOTCHA).');
+    const importance = Number(p.importance);
+    if (!Number.isInteger(importance) || importance < 1 || importance > 10) {
+      throw new Error('record requires importance 1-10.');
+    }
+  }
+  if (p.action === 'recall' && (p.mode ?? 'lexical') !== 'recent') {
+    const tags = Array.isArray(p.tags) ? p.tags.map(String).filter(Boolean) : [];
+    if (!String(p.query ?? ((p.mode ?? 'lexical') === 'tagged' ? tags[0] ?? '' : '')).trim()) {
+      throw new Error(`recall mode ${p.mode ?? 'lexical'} requires a query${p.mode === 'tagged' ? ' or at least one tag' : ''}.`);
+    }
+  }
+  if (p.action === 'forget' && !String(p.memoryId ?? '').trim()) {
+    throw new Error('forget requires a memoryId.');
+  }
+}
+
 export function registerMemoryTool(
   pi: { registerTool?(def: ToolDefinition): void },
   Type: TypeBoxBuilder,
@@ -244,7 +270,7 @@ export function registerMemoryTool(
       'Recall only when prior learning could change the approach; use review/suggest before cleanup or recording uncertain learnings; record only verified, reusable outcomes with source/evidence and useful tags.',
       'Re-verify recalled facts before relying on them; never store secrets, logs, or routine status.',
     ],
-    parameters: Type.Object({
+    parameters: buildQueryEnvelopeSchema(Type, Type.Object({
       action: Type.Unsafe({ type: 'string', enum: ['recall', 'record', 'forget', 'review', 'suggest'], description: 'recall|record|forget|review|suggest' }),
       query: Type.Optional(Type.String({ description: 'recall/review: what to search for.' })),
       mode: Type.Optional(Type.Unsafe({ type: 'string', enum: ['lexical', 'semantic', 'recent', 'tagged'], description: 'recall: lexical|semantic|recent|tagged.' })),
@@ -257,10 +283,43 @@ export function registerMemoryTool(
       changedFiles: Type.Optional(Type.Array(Type.String(), { description: 'suggest: changed files used to derive candidate tags.' })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: 'recall/review: max memories to return or inspect.' })),
       memoryId: Type.Optional(Type.String({ description: 'forget: the memory id to delete.' })),
+    }, { additionalProperties: false }), {
+      reasoningDescription: 'Concise reason this memory operation is necessary.',
     }),
 
-    async execute(_id: string, raw: Record<string, unknown>, _signal, _onUpdate, ctx?: PiContext): Promise<ToolCallResult> {
-      const p = raw as unknown as MemoryParams;
+    prepareArguments(args: unknown) {
+      if (!args || typeof args !== 'object') return args;
+      const input = args as Record<string, unknown>;
+      return Array.isArray(input['queries']) ? args : { queries: [input] };
+    },
+
+    async execute(id: string, raw: Record<string, unknown>, signal, onUpdate, ctx?: PiContext): Promise<ToolCallResult> {
+      const envelope = Array.isArray(raw['queries']) ? raw : { queries: [raw] };
+      const envelopeQueries = Array.isArray(envelope.queries)
+        ? envelope.queries as Record<string, unknown>[]
+        : [];
+      const queryCount = envelopeQueries.length;
+      if (queryCount === 1) {
+        try {
+          preflightMemoryParams(envelopeQueries[0] as unknown as MemoryParams);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const action = String((envelopeQueries[0] as Record<string, unknown>)['action'] ?? '');
+          return errorResult(`[memory] ${action === 'suggest' ? 'suggestion rejected: ' : ''}${message}`);
+        }
+      }
+      return executeQueryBatch({
+        toolCallId: id,
+        raw: envelope,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
+        ctx,
+        passthroughSingle: true,
+        preflight: queryCount > 1
+          ? (query) => { preflightMemoryParams(query as unknown as MemoryParams); }
+          : undefined,
+        async execute(query) {
+      const p = query as unknown as MemoryParams;
       const cwd = ctx?.cwd ?? process.cwd();
       let args: string[];
 
@@ -385,14 +444,19 @@ export function registerMemoryTool(
       const payload = p.action === 'review' ? { result: json, candidates: details['candidates'] } : json;
       const text = payload ? `${summary}\n${JSON.stringify(payload)}` : summary;
       return { content: [{ type: 'text', text }], details } as unknown as ToolCallResult;
+        },
+      });
     },
 
     renderCall(raw: unknown, theme?: PiTheme) {
-      const p = raw as MemoryParams;
+      const envelope = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+      const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as MemoryParams[] : [];
+      const p = queries[0] ?? envelope as unknown as MemoryParams;
       const action = String(p?.action ?? 'recall');
       const hint = p?.query ? `"${p.query}"` : p?.label ? `[${p.label}]` : p?.memoryId ? p.memoryId : '';
       const title = cliToolTitle(theme, 'memory');
-      const body = paint(theme, 'dim', `${action} ${hint}`.trim());
+      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
+      const body = paint(theme, 'dim', `${action} ${hint}${more}`.trim());
       return makeRenderer((w) => [truncateToWidth(`${title} ${body}`, w)]);
     },
 

@@ -11,7 +11,6 @@ import {
 import { agentId } from '../bin/hook-payload.js';
 import { connectDb, resolveDbPath } from '../src/db.js';
 import { runHooksInstall } from '../src/hooks-install.js';
-import { wirePiAwarenessHooks } from '../src/pi-hooks.js';
 import { auditUnverified, markVerified } from '../src/verify.js';
 
 function runPreEditChild(payload: Record<string, unknown>, env: NodeJS.ProcessEnv): Promise<void> {
@@ -146,22 +145,6 @@ describe('full-loop host hook contracts', () => {
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }
-  });
-
-  it('keeps Pi lifecycle context and continuation in process', () => {
-    const events: string[] = [];
-    const bridge = wirePiAwarenessHooks({
-      on: (eventName: string) => { events.push(eventName); },
-    });
-    expect(bridge).toBeTruthy();
-    expect(events).toEqual(expect.arrayContaining([
-      'tool_call',
-      'tool_result',
-      'before_agent_start',
-      'agent_end',
-      'session_before_compact',
-      'session_shutdown',
-    ]));
   });
 
   it('aggregates one session turn into one pending fallback HOOK run', async () => {

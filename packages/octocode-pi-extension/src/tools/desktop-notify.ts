@@ -31,12 +31,12 @@ const DEFAULT_RESTORE_TITLE = 'Octocode';
 let suppressed = false;
 
 /** Suppress all desktop-notification emitters (session_shutdown ordering race guard). */
-export function suppressDesktopNotifications(): void {
+export function suppressDesktopNotifications(options: { restoreTitle?: boolean } = {}): void {
   suppressed = true;
-  // A pending title restore must not fire into the next session — but if a
-  // flash is mid-display, restore the title NOW instead of leaving the "⚠ …"
-  // marker stuck in the terminal tab forever.
-  restorePendingTitleFlash();
+  // A pending title restore must not fire into the next session. Restore it
+  // immediately only while the shutdown context is still valid (normal quit);
+  // Pi invalidates that context before replacement shutdown hooks run.
+  if (options.restoreTitle !== false) restorePendingTitleFlash();
   clearTitleFlashTimer();
 }
 

@@ -25,6 +25,7 @@ import path from 'node:path';
 import { Resvg } from '@resvg/resvg-js';
 
 import type { TSchema, ToolCallResult, ToolDefinition, PiContext, PiTheme, RenderContext } from '../types.js';
+import { createSessionArtifactContext } from './session-artifacts.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
@@ -32,6 +33,7 @@ import { assertPathAllowed } from './path-guard.js';
 import { resolveFilePath } from './file-state.js';
 import { buildImageLinesFromData, effectiveInlineImages, formatBytes, isTerminalImageCapable } from './image-render.js';
 import { connectToChrome, cleanupConnection, findChromePath } from '../chrome-debug.js';
+import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -243,6 +245,57 @@ export async function renderHtmlToPng(
   }
 }
 
+/**
+ * Render an HTML document to a PDF using headless Chrome via the bundled CDP
+ * engine (Page.printToPDF). Mirrors renderHtmlToPng — launches a dedicated
+ * headless instance, injects the document, waits for fonts, and always tears the
+ * browser down. Throws with a clear message if Chrome is missing or fails.
+ */
+export async function renderHtmlToPdf(
+  html: string,
+  cwd: string,
+  opts: { landscape?: boolean; background?: boolean; scale?: number; signal?: AbortSignal } = {},
+): Promise<Buffer> {
+  findChromePath(); // throws a clear error if Chrome is not installed
+
+  const renderPort = nextHtmlRenderPort();
+  const conn = await connectToChrome({
+    port: renderPort,
+    launch: true,
+    headless: true,
+    newTab: 'about:blank',
+    workspaceCwd: cwd,
+    signal: opts.signal,
+  });
+  const { session } = conn;
+  try {
+    await session.send('Page.enable', {});
+    const frameTree = await session.send('Page.getFrameTree', {});
+    const frameId = ((frameTree['frameTree'] as Record<string, unknown> | undefined)?.['frame'] as Record<string, unknown> | undefined)?.['id'] as string | undefined;
+    if (!frameId) throw new Error('could not resolve the page frame');
+    await session.send('Page.setDocumentContent', { frameId, html: wrapHtml(html) });
+
+    await new Promise((r) => setTimeout(r, 200));
+    await session.send('Runtime.evaluate', {
+      expression: 'document.fonts && document.fonts.ready ? document.fonts.ready.then(() => true) : true',
+      awaitPromise: true,
+      timeout: 3000,
+    }).catch(() => undefined);
+
+    const pdf = await session.send('Page.printToPDF', {
+      printBackground: opts.background !== false,
+      landscape: opts.landscape === true,
+      scale: opts.scale && opts.scale > 0 ? opts.scale : 1,
+      preferCSSPageSize: true,
+    });
+    const data = pdf['data'] as string | undefined;
+    if (!data) throw new Error('printToPDF returned no data');
+    return Buffer.from(data, 'base64');
+  } finally {
+    await cleanupConnection(session, false, true).catch(() => undefined);
+  }
+}
+
 /** Async core for HTML mode: render + finalize. Never throws. */
 export async function createImageFromHtml(
   html: string,
@@ -262,20 +315,44 @@ export async function createImageFromHtml(
 }
 
 /**
- * Persist a rendered PNG to <cwd>/.octocode/images/ so it can be opened when the
- * terminal can't display it inline. Returns the absolute path, or undefined on
- * failure (never throws — this is a best-effort fallback).
+ * Persist a rendered PNG so it can be opened when the terminal can't display
+ * it inline.
+ *
+ * Primary: `<workspace>/.octocode/agent/<session-key>/images/<name>.png`
+ * (registered as an `image` producer in the session artifact manifest).
+ * Fallback: `<OS tmp>/octocode-images/<session-id>/` when session context
+ * is unavailable or the artifact dir cannot be created.
+ *
+ * Never throws — this is best-effort.
  */
 function persistFallbackPng(base64: string, ctx?: PiContext, name?: string): string | undefined {
+  const safeBase = (name ?? 'image.png').replace(/[^\w.-]+/g, '_').replace(/\.png$/i, '') || 'image';
+  fallbackFileCounter = (fallbackFileCounter + 1) % Number.MAX_SAFE_INTEGER;
+  const suffix = `${Date.now()}-${fallbackFileCounter}`;
+
+  // Primary: session artifact dir.
+  if (ctx?.sessionManager) {
+    try {
+      const artifactCtx = createSessionArtifactContext({ cwd: ctx.cwd, sessionManager: ctx.sessionManager });
+      const relPath = `images/${safeBase}-${suffix}.png`;
+      const file = artifactCtx.resolve(relPath);
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(file, Buffer.from(base64, 'base64'), { mode: 0o600 });
+      artifactCtx.registerProducer('image', relPath);
+      implicitArtifactFiles.add(file);
+      implicitArtifactDirs.add(path.dirname(file));
+      return file;
+    } catch { /* fall through to OS-temp fallback */ }
+  }
+
+  // Fallback: OS temp.
   try {
     const sessionId = ctx?.sessionManager?.getSessionId?.() ?? `pid-${process.pid}`;
     const safeSession = sessionId.replace(/[^\w.-]+/g, '_').slice(0, 96) || `pid-${process.pid}`;
     const dir = path.join(FALLBACK_ROOT, safeSession);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.chmodSync(dir, 0o700);
-    const safeBase = (name ?? 'image.png').replace(/[^\w.-]+/g, '_').replace(/\.png$/i, '') || 'image';
-    fallbackFileCounter = (fallbackFileCounter + 1) % Number.MAX_SAFE_INTEGER;
-    const file = path.join(dir, `${safeBase}-${Date.now()}-${fallbackFileCounter}.png`);
+    const file = path.join(dir, `${safeBase}-${suffix}.png`);
     fs.writeFileSync(file, Buffer.from(base64, 'base64'), { mode: 0o600 });
     implicitArtifactFiles.add(file);
     implicitArtifactDirs.add(dir);
@@ -341,72 +418,92 @@ export function registerCreateImageTool(
       'Prefer text for textual answers. The rendered PNG stays out of model context by default; set showToModel:true only if you need to inspect the result. Max 4MB output.',
       'If the terminal can\'t show inline images (VS Code/tmux/plain xterm), the tool saves the PNG and says so — OFFER to open it in a browser and ALWAYS ask the user first (askUser); never open a browser automatically.',
     ],
-    parameters: buildParameters(Type),
-    async execute(_id: string, params: Record<string, unknown>, signal?: AbortSignal, _onUpdate?: unknown, ctx?: PiContext): Promise<ToolCallResult> {
-      if (signal?.aborted) throw new Error('Operation aborted');
-      const svg = typeof params['svg'] === 'string' ? (params['svg'] as string) : undefined;
-      const html = typeof params['html'] === 'string' ? (params['html'] as string) : undefined;
-      if (!svg && !html) throw new Error('createImage: provide `svg` or `html`.');
-      if (svg && html) throw new Error('createImage: provide only one of `svg` or `html`, not both.');
+    parameters: buildQueryEnvelopeSchema(Type, buildParameters(Type), {
+      reasoningDescription: 'Concise reason this image creation is necessary.',
+    }),
 
+    prepareArguments(args: unknown) {
+      if (!args || typeof args !== 'object') return args;
+      const input = args as Record<string, unknown>;
+      if (Array.isArray(input['queries'])) return input;
+      const mode = typeof input['html'] === 'string' ? 'html' : 'svg';
+      return { queries: [{ reasoning: `create ${mode} image`, ...input }] };
+    },
+
+    async execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal, onUpdate?: unknown, ctx?: PiContext): Promise<ToolCallResult> {
       const cwd = ctx?.cwd ?? process.cwd();
-      const shared = {
-        width: typeof params['width'] === 'number' ? (params['width'] as number) : undefined,
-        background: typeof params['background'] === 'string' ? (params['background'] as string) : undefined,
-        name: typeof params['name'] === 'string' ? (params['name'] as string) : undefined,
-        saveTo: typeof params['saveTo'] === 'string' ? (params['saveTo'] as string) : undefined,
-      };
+      return executeQueryBatch({
+        toolCallId,
+        raw: params,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
+        ctx,
+        passthroughSingle: true,
+        async execute(query, _index, _callId, batchSignal) {
+          if (batchSignal?.aborted) throw new Error('Operation aborted');
+          const svg = typeof query['svg'] === 'string' ? (query['svg'] as string) : undefined;
+          const html = typeof query['html'] === 'string' ? (query['html'] as string) : undefined;
+          if (!svg && !html) throw new Error('createImage: provide `svg` or `html`.');
+          if (svg && html) throw new Error('createImage: provide only one of `svg` or `html`, not both.');
 
-      const res = svg
-        ? createImageFromSvg(svg, cwd, shared)
-        : await createImageFromHtml(html!, cwd, {
-            ...shared,
-            height: typeof params['height'] === 'number' ? (params['height'] as number) : undefined,
-            signal,
-          });
+          const shared = {
+            width: typeof query['width'] === 'number' ? (query['width'] as number) : undefined,
+            background: typeof query['background'] === 'string' ? (query['background'] as string) : undefined,
+            name: typeof query['name'] === 'string' ? (query['name'] as string) : undefined,
+            saveTo: typeof query['saveTo'] === 'string' ? (query['saveTo'] as string) : undefined,
+          };
 
-      if (!res.ok) {
-        return { content: [{ type: 'text', text: res.message }], isError: true, details: { ok: false } };
-      }
+          const res = svg
+            ? createImageFromSvg(svg, cwd, shared)
+            : await createImageFromHtml(html!, cwd, {
+                ...shared,
+                height: typeof query['height'] === 'number' ? (query['height'] as number) : undefined,
+                signal: batchSignal,
+              });
 
-      // On terminals that can't display inline images (VS Code, tmux, plain
-      // xterm, …) the picture won't show. Persist it so the user can open it,
-      // and tell the agent to OFFER opening it in a browser — never auto-open.
-      const protocolCapable = isTerminalImageCapable();
-      const inlineEffective = effectiveInlineImages(ctx);
-      let savedPath = res.savedPath;
-      let temporaryArtifact = false;
-      let message = res.message;
-      if (!inlineEffective) {
-        if (!savedPath && res.base64) {
-          savedPath = persistFallbackPng(res.base64, ctx, res.name);
-          temporaryArtifact = Boolean(savedPath);
-        }
-        const reason = protocolCapable
-          ? 'inline image display is disabled or unavailable in the current UI mode'
-          : 'this terminal has no inline-image support (e.g. VS Code / tmux)';
-        const where = savedPath ? ` Saved to ${savedPath}.` : '';
-        message = `${res.message} — ${reason}, so it won't render inline here.${where} Offer to open it in a browser; ask the user first, never open automatically.`;
-      }
+          if (!res.ok) throw new Error(res.message);
 
-      const showToModel = params['showToModel'] === true;
-      const content: ToolCallResult['content'] = [{ type: 'text', text: message }];
-      if (showToModel) content.unshift({ type: 'image', data: res.base64!, mimeType: 'image/png' });
+          // On terminals that can't display inline images (VS Code, tmux, plain
+          // xterm, …) the picture won't show. Persist it so the user can open it,
+          // and tell the agent to OFFER opening it in a browser — never auto-open.
+          const protocolCapable = isTerminalImageCapable();
+          const inlineEffective = effectiveInlineImages(ctx);
+          let savedPath = res.savedPath;
+          let temporaryArtifact = false;
+          let message = res.message;
+          if (!inlineEffective) {
+            if (!savedPath && res.base64) {
+              savedPath = persistFallbackPng(res.base64, ctx, res.name);
+              temporaryArtifact = Boolean(savedPath);
+            }
+            const reason = protocolCapable
+              ? 'inline image display is disabled or unavailable in the current UI mode'
+              : 'this terminal has no inline-image support (e.g. VS Code / tmux)';
+            const where = savedPath ? ` Saved to ${savedPath}.` : '';
+            message = `${res.message} — ${reason}, so it won't render inline here.${where} Offer to open it in a browser; ask the user first, never open automatically.`;
+          }
 
-      return {
-        content,
-        // base64 lives in details so renderResult can inline it without re-encoding
-        // and without pushing pixels into model context unless showToModel is set.
-        details: { ok: true, base64: res.base64, mimeType: 'image/png', bytes: res.bytes, name: res.name, savedPath, terminalSupportsImages: protocolCapable, effectiveInlineImages: inlineEffective, temporaryArtifact },
-      };
+          const showToModel = query['showToModel'] === true;
+          const content: ToolCallResult['content'] = [{ type: 'text', text: message }];
+          if (showToModel) content.unshift({ type: 'image', data: res.base64!, mimeType: 'image/png' });
+
+          return {
+            content,
+            details: { ok: true, base64: res.base64, mimeType: 'image/png', bytes: res.bytes, name: res.name, savedPath, terminalSupportsImages: protocolCapable, effectiveInlineImages: inlineEffective, temporaryArtifact },
+          };
+        },
+      });
     },
 
     renderCall(args: unknown, theme?: PiTheme) {
-      const input = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
+      const envelope = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
+      const queries = Array.isArray(envelope['queries']) ? (envelope['queries'] as Record<string, unknown>[]) : [];
+      const input = queries[0] ?? envelope;
       const mode = typeof input['html'] === 'string' ? 'html' : 'svg';
       const name = typeof input['name'] === 'string' ? (input['name'] as string) : mode;
+      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
       const title = cliToolTitle(theme, 'createImage');
-      return makeRenderer((width) => [truncateToWidth(`${title} ${paint(theme, 'dim', `${mode} · ${name}`)}`, width)]);
+      return makeRenderer((width) => [truncateToWidth(`${title} ${paint(theme, 'dim', `${mode} \u00b7 ${name}${more}`)}`, width)]);
     },
 
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme, context?: RenderContext) {

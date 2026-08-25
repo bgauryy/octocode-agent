@@ -5,13 +5,50 @@
  * as individual Pi tools. They are served via the bundled octocode MCP server through
  * MCPTool. This removes 13 tool definitions from the Pi tool palette, cutting per-turn
  * token cost. Full MCP discovery runs at session_start via warmMcpCatalog() and
- * before_agent_start awaits it (mcpCatalogReady) so the <mcp_catalog> block —
- * instructions, tools, exact input schemas — is in the system prompt from turn 1.
+ * before_agent_start awaits it (mcpCatalogReady) so the generated/reused
+ * <mcp_catalog_index> — tools plus concise schema-aware input guidance — is in the
+ * system prompt from turn 1. Exact schemas stay private for validation.
  */
 import { withOctocodeRender } from '../branding/renderers.js';
 import type { ToolDefinition } from '../types.js';
 
 // ─── Registration helper ─────────────────────────────────────────────────────
+
+export const DIRECT_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = Object.freeze({
+  file: 'Create, edit, or delete files through one guarded mutation boundary. edit uses stale/lost-update checks and diffs; write is atomic; delete rejects directories and rechecks before unlinking.',
+  bash: 'Run builds, tests, Git, and mechanical shell tasks with guarded write targets and per-command reasoning. Prefer file for ordinary file mutations.',
+  readMedia: 'Read local media into model context. image returns pixels; video returns metadata, a frame, or contact sheet; audio returns metadata, waveform, or spectrogram. Read-only—use media to create or transform files.',
+  media: 'Create or transform media. Render image/PDF from SVG, HTML, Markdown, or images; make GIFs, trim clips, extract audio, or convert formats. Writes are path-guarded; use readMedia for inspection.',
+  web: 'Fetch a URL or search the current web for documentation, releases, errors, and other information outside the repository. Prefer repository/MCP tools for code evidence.',
+  chromeDebug: 'Inspect or automate a live Chrome page through CDP: DOM, console, network, screenshots, performance, storage, security, coverage, or raw Domain.method calls. Use agent profile:browser for multi-turn browser work.',
+  agent: 'Spawn researcher, planner, architect, browser, or custom workers; then inspect, wait, message, steer, abort, or kill them. Spawn first and use the returned agentId in later lifecycle calls.',
+  callTool: 'Reuse a verified dynamic tool, or propose/create/fix/delete one after approval. Use only for small reusable deterministic capabilities—not trivial shell one-liners or multi-step workflows.',
+  skill: 'Load an installed Agent Skill, or list/manage reusable dynamic workflow skills. Use type:load for installed skills and type:call for dynamic workflow lifecycle.',
+  plan: 'Maintain a visible compaction-safe checklist. Use for multi-step/risky/shared work; skip obvious one-step tasks. Consequential RFCs require review then Start; shared completion requires an observed check receipt.',
+  localServer: 'Serve inspected local static artifacts on a shared 127.0.0.1 server. Use for HTML plans/designs/reports; ask before opening a browser.',
+  askUser: 'Ask one genuine decision question using options, multi-select, free text, or fields. Mark the safe default recommended and include concise trade-offs; ordinary conversation does not need this tool.',
+  memory: 'Recall, record, review, suggest, or forget durable Awareness learning. Treat recall as a lead; record only verified reusable lessons, never secrets, routine status, or facts owned by code/docs.',
+  lock: 'Acquire, wait for, or release an exceptional exclusive file lock. Ordinary mergeable edits rely on automatic peer checks and do not need a lock.',
+  message: 'Send or read small cross-agent coordination messages for overlap, blockers, questions, or decisions. Do not use as routine status ceremony.',
+  MCPTool: 'Call MCP tools directly with internally validated schemas, or manage configured stdio and Streamable HTTP servers. Use server:octocode for repository research; external calls may have side effects.',
+});
+
+export const SCHEMA_DESCRIPTION_MAX_CHARS = 180;
+
+function compactSchemaValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(compactSchemaValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => {
+    if (key !== 'description' || typeof child !== 'string') {
+      return [key, compactSchemaValue(child)];
+    }
+    const normalized = child.replace(/\s+/g, ' ').trim();
+    if (normalized.length <= SCHEMA_DESCRIPTION_MAX_CHARS) return [key, normalized];
+    const prefix = normalized.slice(0, SCHEMA_DESCRIPTION_MAX_CHARS - 1);
+    const boundary = prefix.lastIndexOf(' ');
+    return [key, `${prefix.slice(0, boundary > 80 ? boundary : prefix.length)}…`];
+  }));
+}
 
 export function registerUniqueTool(
   pi: { registerTool?(def: ToolDefinition): void },
@@ -24,5 +61,7 @@ export function registerUniqueTool(
     );
   }
   registeredToolNames.add(toolDefinition.name);
-  pi.registerTool?.(withOctocodeRender(toolDefinition));
+  const description = DIRECT_TOOL_DESCRIPTIONS[toolDefinition.name] ?? toolDefinition.description;
+  const parameters = compactSchemaValue(toolDefinition.parameters) as ToolDefinition['parameters'];
+  pi.registerTool?.(withOctocodeRender({ ...toolDefinition, description, parameters }));
 }

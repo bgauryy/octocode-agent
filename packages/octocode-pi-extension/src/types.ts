@@ -324,6 +324,11 @@ export interface PiContext {
   sessionManager?: PiSessionManager;
   modelRegistry?: {
     find(provider: string, id: string): PiModel | undefined;
+    complete?(
+      model: PiModel,
+      context: { systemPrompt?: string; messages: Array<{ role: 'user'; content: string; timestamp: number }> },
+      options?: { signal?: AbortSignal },
+    ): Promise<unknown>;
   };
 }
 

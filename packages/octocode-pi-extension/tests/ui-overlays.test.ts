@@ -1,12 +1,24 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import type { PiTheme } from '../src/types.js';
-import { octocodeSelectListTheme, applyFilterKey, selectItemMatchesFilter } from '../src/tools/ui-overlays.js';
+import { OCTOCODE_OVERLAY_OPTIONS, octocodeSelectListTheme, applyFilterKey, selectItemMatchesFilter } from '../src/tools/ui-overlays.js';
 
 const theme = {
   fg: (color: string, t: string) => `<${color}>${t}</${color}>`,
   bold: (t: string) => `*${t}*`,
 } as unknown as PiTheme;
+
+test('shared picker overlays use a bounded modern dialog geometry', () => {
+  assert.deepEqual(OCTOCODE_OVERLAY_OPTIONS, {
+    width: 88,
+    minWidth: 40,
+    maxHeight: '80%',
+    margin: 1,
+    visible: OCTOCODE_OVERLAY_OPTIONS.visible,
+  });
+  assert.equal(OCTOCODE_OVERLAY_OPTIONS.visible(39), false);
+  assert.equal(OCTOCODE_OVERLAY_OPTIONS.visible(40), true);
+});
 
 test('octocodeSelectListTheme returns all five SelectList theme functions', () => {
   const t = octocodeSelectListTheme(theme);

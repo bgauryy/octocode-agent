@@ -64,7 +64,6 @@ These are generated artifacts — do not hand-edit. Maintainers regenerate them 
 
 - Claude may run frontmatter hooks while the skill is active.
 - Codex/Cursor: `awareness hooks install`, then `hooks check --strict`.
-- Pi: `wirePiAwarenessHooks(pi)` for custom Pi embeddings — never install shell hooks for Pi. (The shipped `@octocodeai/pi-extension` does NOT call it; it composes its own Awareness **Lite** lock gate instead.)
 - Normal hooks are silent; only changed peers/briefings and real conflicts surface.
 
 ## Verification (monorepo)

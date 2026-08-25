@@ -162,3 +162,13 @@ test('suppressDesktopNotifications restores a mid-flash title immediately, then 
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(titles.length, 2, 'no late restore into the next session');
 });
+
+test('replacement shutdown cancels a title restore without touching the stale session UI', async () => {
+  const { ctx, titles } = makeTitleCtx();
+  flashTerminalTitle(ctx, 'flash', 'Octocode', 10_000);
+  suppressDesktopNotifications({ restoreTitle: false });
+  assert.equal(isTitleFlashPendingForTests(), false);
+  assert.deepEqual(titles, ['⚠ flash'], 'replacement session owns the next title paint');
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(titles.length, 1, 'cancelled restore never calls the old session UI');
+});

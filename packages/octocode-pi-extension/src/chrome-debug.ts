@@ -94,6 +94,10 @@ export interface ChromeDebugConnectOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   workspaceCwd?: string;
+  /** Resolved session key from resolveSessionIdentity — when present, screenshots and
+   *  session metadata land under `<workspace>/.octocode/agent/<sessionKey>/browser/`
+   *  instead of the shared `.octocode/screenshots/` and `.octocode/chrome-debug/` dirs. */
+  sessionKey?: string;
 }
 
 export interface ChromeConnection {
@@ -493,11 +497,17 @@ export async function launchChrome(opts: {
 
 // ─── Session metadata ─────────────────────────────────────────────────────────
 
-export function getSessionDir(workspaceCwd: string, port: number): string {
+export function getSessionDir(workspaceCwd: string, port: number, sessionKey?: string): string {
+  if (sessionKey) {
+    return path.join(workspaceCwd, '.octocode', 'agent', sessionKey, 'browser', `port-${port}`);
+  }
   return path.join(workspaceCwd, '.octocode', 'chrome-debug', `port-${port}`);
 }
 
-export function getScreenshotDir(workspaceCwd?: string): string {
+export function getScreenshotDir(workspaceCwd?: string, sessionKey?: string): string {
+  if (workspaceCwd && sessionKey) {
+    return path.join(workspaceCwd, '.octocode', 'agent', sessionKey, 'browser', 'screenshots');
+  }
   if (workspaceCwd) {
     return path.join(workspaceCwd, '.octocode', 'screenshots');
   }
@@ -721,6 +731,7 @@ export async function connectToChrome(opts: ChromeDebugConnectOptions): Promise<
     timeoutMs = 60_000,
     signal,
     workspaceCwd,
+    sessionKey,
   } = opts;
 
   // When launching, use a port-specific profile so parallel instances don't conflict.
@@ -794,7 +805,7 @@ export async function connectToChrome(opts: ChromeDebugConnectOptions): Promise<
   // CDP event log — write NDJSON for terminal visibility: tail -f <logPath>
   const cdpLogPath = process.env['OCTOCODE_CDP_DEBUG'] === '1'
     ? path.join(
-        getSessionDir(workspaceCwd ?? path.join(os.homedir(), '.octocode'), port),
+        getSessionDir(workspaceCwd ?? path.join(os.homedir(), '.octocode'), port, sessionKey),
         'cdp-events.jsonl',
       )
     : undefined;
@@ -807,9 +818,9 @@ export async function connectToChrome(opts: ChromeDebugConnectOptions): Promise<
   // ── Step 6: Infer identity + session metadata ─────────────────────────────
   const identity = await inferIdentity(session, mode, version, mode === 'launched' ? userDataDir : undefined);
 
-  const sessionDir = getSessionDir(workspaceCwd ?? process.cwd(), port);
+  const sessionDir = getSessionDir(workspaceCwd ?? process.cwd(), port, sessionKey);
   const sessionFile = path.join(sessionDir, 'session.json');
-  const screenshotDir = getScreenshotDir(workspaceCwd);
+  const screenshotDir = getScreenshotDir(workspaceCwd, sessionKey);
 
   const metadata: SessionMetadata = {
     port,

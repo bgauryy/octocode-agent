@@ -13,12 +13,12 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "yarn workspaces foreach -Apt run build",
-    "lint": "yarn workspaces foreach -Apt run lint",
-    "lint:fix": "yarn workspaces foreach -Apt run lint:fix",
-    "test": "yarn workspaces foreach -Apt run test",
-    "test:quiet": "yarn workspaces foreach -Apt run test:quiet",
-    "typecheck": "yarn workspaces foreach -Apt run typecheck"
+    "build": "yarn workspaces foreach -At run build",
+    "lint": "yarn workspaces foreach -At run lint",
+    "lint:fix": "yarn workspaces foreach -At run lint:fix",
+    "test": "yarn workspaces foreach -At run test",
+    "test:quiet": "yarn workspaces foreach -At run test:quiet",
+    "typecheck": "yarn workspaces foreach -At run typecheck"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

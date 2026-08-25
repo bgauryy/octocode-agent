@@ -25,10 +25,11 @@
  * surfaces, and it never blocks or fakes an answer.
  */
 
-import { CLI_GLYPH, CLI_STATUS_TEXT, cliToolTitle, paint } from '../tui/cli-design.js';
-import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
+import { CLI_GLYPH, CLI_STATUS_TEXT, cliSpinnerFrame, cliToolTitle, paint } from '../tui/cli-design.js';
+import type { ToolDefinition, ToolCallResult, PiTheme, PiContext, RenderResultOptions } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth, visibleWidth } from './render-helpers.js';
+import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 import { ASK_HEADER_LABEL } from '../tui/content.js';
 import { CURSOR_MARKER, Input, Key, matchesKey, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 
@@ -180,20 +181,45 @@ function isPrintableInput(data: string): boolean {
   });
 }
 
-/**
- * Responsive card sizing: use most of an ordinary terminal and grow enough on
- * wide screens to keep option descriptions and free-text answers readable,
- * without turning the frame into an edge-to-edge wall.
- */
-const ASK_FRAME_MIN_WIDTH = 48;
-const ASK_FRAME_MAX_WIDTH = 120;
-const ASK_FRAME_WIDTH_RATIO = 0.92;
+/** Keep decision cards readable in wide terminals and usable in small panes. */
+const ASK_FRAME_PREFERRED_WIDTH = 72;
+const ASK_FRAME_MAX_WIDTH = 88;
+const ASK_FRAME_GUTTER = 2;
+const ASK_FRAME_COMPACT_BREAKPOINT = 52;
+
+interface AskFrameLayout {
+  width: number;
+  leftPadding: number;
+}
+
+function askFrameLayout(width: number): AskFrameLayout {
+  const available = Math.max(1, Math.floor(width || 80));
+  if (available < ASK_FRAME_COMPACT_BREAKPOINT) return { width: available, leftPadding: 0 };
+
+  const usable = available - (ASK_FRAME_GUTTER * 2);
+  const responsive = Math.floor(available * 0.72);
+  const cardWidth = Math.min(
+    ASK_FRAME_MAX_WIDTH,
+    usable,
+    Math.max(ASK_FRAME_PREFERRED_WIDTH, responsive),
+  );
+  return {
+    width: cardWidth,
+    leftPadding: Math.floor((available - cardWidth) / 2),
+  };
+}
 
 function askFrameWidth(width: number): number {
-  const available = Math.max(1, width || 80);
-  const responsive = Math.floor(available * ASK_FRAME_WIDTH_RATIO);
-  const preferred = Math.max(Math.min(ASK_FRAME_MIN_WIDTH, available), responsive);
-  return Math.min(available, ASK_FRAME_MAX_WIDTH, preferred);
+  return askFrameLayout(width).width;
+}
+
+function positionAskLines(lines: string[], terminalWidth: number): string[] {
+  const layout = askFrameLayout(terminalWidth);
+  const padding = ' '.repeat(layout.leftPadding);
+  return lines.map((line) => {
+    const bounded = line.includes(CURSOR_MARKER) ? line : truncateToWidth(line, layout.width);
+    return `${padding}${bounded}`;
+  });
 }
 
 /**
@@ -224,9 +250,10 @@ function askFooterLine(theme: PiTheme | undefined, help: string, width: number, 
 }
 
 /** Max option rows painted at once; longer lists scroll in a window around the cursor. */
-const ASK_LIST_MAX_VISIBLE = 10;
+const ASK_LIST_MAX_VISIBLE = 7;
 /** Max pros (and, separately, cons) detail lines painted under the focused row. */
-const ASK_LIST_DETAIL_CAP = 4;
+const ASK_LIST_DETAIL_CAP = 2;
+const ASK_LIST_DESCRIPTION_CAP = 2;
 
 function renderAskChoiceLines(
   theme: PiTheme | undefined,
@@ -248,7 +275,8 @@ function renderAskChoiceLines(
   // and help off-screen.
   const focused = items[cursor];
   const focusedDetail = focused
-    ? Math.min(ASK_LIST_DETAIL_CAP, (focused.pros?.length ?? 0)) +
+    ? (focused.description ? 1 : 0) +
+      Math.min(ASK_LIST_DETAIL_CAP, (focused.pros?.length ?? 0)) +
       Math.min(ASK_LIST_DETAIL_CAP, (focused.cons?.length ?? 0)) +
       (focused.preview ? Math.min(3, focused.preview.split('\n').length) : 0)
     : 0;
@@ -289,12 +317,17 @@ function renderAskChoiceLines(
     // scannable even when the row isn't focused.
     const badge = item.recommended ? ` ${paint(theme, 'brand', '★ recommended')}` : '';
     const disabledBadge = disabled ? ` ${paint(theme, 'muted', `(${disabled})`)}` : '';
-    const desc = item.description ? paint(theme, 'dim', ` — ${item.description}`) : '';
-    const line = `${rowBar} ${marker} ${checked ? `${checked} ` : ''}${ordinal}${rawLabel}${badge}${disabledBadge}${desc}`;
+    const line = `${rowBar} ${marker} ${checked ? `${checked} ` : ''}${ordinal}${rawLabel}${badge}${disabledBadge}`;
     // Expand the FOCUSED row with its trade-offs (pros ✓ / cons ✗) and any
     // preview — collapsed rows stay one line so the list stays scannable.
     const detail: string[] = [];
     if (active) {
+      if (item.description) {
+        const detailWidth = Math.max(8, askFrameWidth(width) - 6);
+        for (const descriptionLine of wrapTextWithAnsi(item.description, detailWidth).slice(0, ASK_LIST_DESCRIPTION_CAP)) {
+          detail.push(`${rowBar}     ${paint(theme, 'dim', descriptionLine)}`);
+        }
+      }
       // Pros/cons are descriptive trade-offs, not outcomes — green/red are reserved
       // for real outcomes. The ✓/✗ glyphs carry the polarity; pros read at default
       // fg (prominent) and cons muted (secondary), no status color misused.
@@ -462,7 +495,7 @@ async function runAskOverlay(
         help: string,
         width: number,
       ): string[] => {
-        const inputWidth = Math.max(1, askFrameWidth(width) - 2);
+        const inputWidth = Math.max(1, askFrameWidth(width) - 4);
         const inputLine = textInput.render(inputWidth)[0] ?? '';
         return renderAskTextLines(
           theme,
@@ -538,12 +571,12 @@ async function runAskOverlay(
 
       const render = (width: number): string[] => {
         const w = width > 0 ? width : 80;
-        if (finalOutcome) return renderAskFinalLines(theme, params.question, finalOutcome, w);
+        if (finalOutcome) return positionAskLines(renderAskFinalLines(theme, params.question, finalOutcome, w), w);
         if (mode === 'text') {
           const help = askFrameWidth(w) < 56
             ? 'enter submit • esc cancel'
             : 'enter submit • esc cancel • paste supported';
-          return renderTextPrompt(params.question, params.placeholder, help, w);
+          return positionAskLines(renderTextPrompt(params.question, params.placeholder, help, w), w);
         }
         if (mode === 'form') {
           const field = fields[fieldIndex]!;
@@ -552,7 +585,7 @@ async function runAskOverlay(
           const help = askFrameWidth(w) < 56
             ? 'enter next • esc cancel'
             : 'enter next • esc cancel • paste supported';
-          return renderTextPrompt(`${params.question} — ${label} (${step})`, field.placeholder, help, w);
+          return positionAskLines(renderTextPrompt(`${params.question} — ${label} (${step})`, field.placeholder, help, w), w);
         }
         const rows = choiceRows();
         clampCursor();
@@ -570,7 +603,7 @@ async function runAskOverlay(
           : narrow
             ? '↑↓ • / filter • enter • esc'
             : '↑↓ navigate • / filter • 1-9 select • enter select • esc cancel';
-        return renderAskChoiceLines(
+        return positionAskLines(renderAskChoiceLines(
           theme,
           params.question,
           rows,
@@ -580,7 +613,7 @@ async function runAskOverlay(
           w,
           warning,
           searchMode ? searchQuery : undefined,
-        );
+        ), w);
       };
 
       const move = (delta: number): void => {
@@ -758,7 +791,7 @@ export function registerAskUserTool(
       'Use disabled options to show unavailable choices with a reason instead of hiding them when that helps the user understand constraints.',
       'Use fields[] to gather a few related short answers in one call instead of a chain of separate free-text questions; add required/minLength/maxLength/pattern only when the answer has a real format constraint.',
     ],
-    parameters: Type.Object({
+    parameters: buildQueryEnvelopeSchema(Type, Type.Object({
       question: Type.String({ description: 'The question to show the user. Keep it one clear sentence.' }),
       options: Type.Optional(
         Type.Array(
@@ -799,10 +832,23 @@ export function registerAskUserTool(
           { description: 'Simple sequential form: one text input per field, answers returned keyed by name. Takes precedence over options[].' },
         ),
       ),
+    }, { additionalProperties: false }), {
+      reasoningDescription: 'Concise reason this question is necessary to decide the next action.',
     }),
 
-    async execute(_id: string, raw: Record<string, unknown>, _signal, _onUpdate, ctx?: PiContext): Promise<ToolCallResult> {
-      const p = raw as unknown as AskParams;
+    prepareArguments(args: unknown) {
+      if (!args || typeof args !== 'object') return args;
+      const input = args as Record<string, unknown>;
+      return Array.isArray(input['queries']) ? args : { queries: [input] };
+    },
+
+    async execute(id: string, raw: Record<string, unknown>, signal, onUpdate, ctx?: PiContext): Promise<ToolCallResult> {
+      const envelope = Array.isArray(raw['queries']) ? raw : { queries: [raw] };
+      const queries = Array.isArray(envelope.queries)
+        ? envelope.queries as Record<string, unknown>[]
+        : [];
+      const runQuery = async (query: Record<string, unknown>): Promise<ToolCallResult> => {
+      const p = query as unknown as AskParams;
       const question = String(p.question ?? '').trim();
       if (!question) {
         return { content: [{ type: 'text', text: '[askUser] error: question is required.' }], isError: true };
@@ -892,10 +938,34 @@ export function registerAskUserTool(
             details: outcome,
           } as unknown as ToolCallResult;
       }
+      };
+
+      if (queries.length === 1) {
+        const query = queries[0]!;
+        const reasoning = typeof query['reasoning'] === 'string' ? query['reasoning'].trim() : '';
+        if (!reasoning) throw new Error('queries[0] requires non-empty reasoning.');
+        if (reasoning.length > 240) throw new Error('queries[0].reasoning must be at most 240 characters.');
+        return runQuery(query);
+      }
+
+      return executeQueryBatch({
+        toolCallId: id,
+        raw: envelope,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
+        ctx,
+        preflight(query) {
+          if (!String(query['question'] ?? '').trim()) throw new Error('question is required.');
+        },
+        execute: runQuery,
+      });
     },
 
     renderCall(raw: unknown, theme?: PiTheme) {
-      const p = raw as AskParams;
+      const envelope = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+      const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as AskParams[] : [];
+      const first = (queries[0] ?? {}) as Partial<AskParams> & Record<string, unknown>;
+      const p = queries[0] ?? envelope as unknown as AskParams;
       const q = String(p?.question ?? 'ask');
       const count = Array.isArray(p?.options) ? p.options.length : 0;
       const fieldCount = Array.isArray(p?.fields) ? p.fields.length : 0;
@@ -906,25 +976,42 @@ export function registerAskUserTool(
             ? ` (${count} options, multi)`
             : ` (${count} options)`
           : ' (free text)';
+      const reasoning = typeof first['reasoning'] === 'string' ? first['reasoning'].trim() : '';
       const title = cliToolTitle(theme, 'askUser');
-      const body = paint(theme, 'dim', q + suffix);
-      return makeRenderer((w) => [truncateToWidth(`${title} ${body}`, w)]);
+      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
+      const body = paint(theme, 'dim', q + suffix + more);
+      return makeRenderer((w) => [
+        truncateToWidth(`${title} ${body}`, w),
+        ...(reasoning ? [truncateToWidth(`  ${paint(theme, 'muted', reasoning)}`, w)] : []),
+      ]);
     },
 
-    renderResult(result: ToolCallResult, _opts: unknown, theme?: PiTheme) {
+    renderResult(result: ToolCallResult, opts: RenderResultOptions, theme?: PiTheme) {
+      // Partial: spinner while the interactive overlay is open.
+      if (opts.isPartial) {
+        const title = cliToolTitle(theme, 'askUser');
+        return makeRenderer((w) => [
+          truncateToWidth(
+            `${paint(theme, 'brand', cliSpinnerFrame())} ${title} ${paint(theme, 'dim', CLI_STATUS_TEXT.running)}`,
+            w,
+          ),
+        ]);
+      }
       const d = (result.details ?? {}) as AskOutcome;
       let line: string;
-      if (d.status === 'selected') line = paint(theme, 'success', `${CLI_GLYPH.success} ${d.label}`);
-      else if (d.status === 'text') line = paint(theme, 'success', `${CLI_GLYPH.success} ${d.value}`);
+      if (d.status === 'selected')      line = paint(theme, 'success', `${CLI_GLYPH.success} ${d.label}`);
+      else if (d.status === 'text')     line = paint(theme, 'success', `${CLI_GLYPH.success} ${d.value}`);
       else if (d.status === 'multiSelected') {
         const n = Array.isArray(d.values) ? d.values.length : 0;
         line = paint(theme, 'success', `${CLI_GLYPH.success} ${n} selected`);
       } else if (d.status === 'form') {
         const n = d.values && !Array.isArray(d.values) ? Object.keys(d.values).length : 0;
         line = paint(theme, 'success', `${CLI_GLYPH.success} form submitted (${n} field${n === 1 ? '' : 's'})`);
+      } else if (d.status === 'cancelled') {
+        line = paint(theme, 'muted', `⨯ ${CLI_STATUS_TEXT.cancelled}`);
+      } else {
+        line = paint(theme, 'dim', CLI_STATUS_TEXT.unavailable);
       }
-      else if (d.status === 'cancelled') line = paint(theme, 'muted', `⨯ ${CLI_STATUS_TEXT.cancelled}`);
-      else line = paint(theme, 'dim', CLI_STATUS_TEXT.unavailable);
       return makeRenderer((w) => [truncateToWidth(line, w)]);
     },
   });

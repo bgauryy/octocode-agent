@@ -3,7 +3,7 @@ import { insertEditLog } from '../src/audit.js';
 import { activeTaskClaimForAgent } from '../src/tasks.js';
 import { endWork, startWork, touchWork } from '../src/work.js';
 import { discardUncommittedHookFiles } from '../src/work-hook.js';
-import { evaluateHarnessGuard } from '../src/pi-hooks.js';
+import { evaluateHarnessGuard } from '../src/harness-guard.js';
 import { agentId, artifact, completeHookControl, db, emitHookContext, extractFiles, hookBlockOutcome, hookSkillRoot, hookToolFailed, resolveHookPath, shellHookHost, workspace } from './hook-payload.js';
 import { emitPeerDelta, registerHookAgent } from './hook-peers.js';
 import { activeRunForFiles, consumeHookRun, isAggregatedFallbackHookRun, recordHookRun, refreshFallbackVerificationPlan, runOrigin, startOrAttachFallbackHookRun, withHookDbRetry } from './hook-run-state.js';

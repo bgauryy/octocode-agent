@@ -89,6 +89,23 @@ export function paint(theme: PaintTheme | undefined, token: SemanticToken, text:
   return theme?.fg(TOKEN[token], text) ?? text;
 }
 
+/**
+ * Paint through a Pi UI object without assuming its lazy theme getter has been
+ * initialized. RPC and plain-output sessions may expose `ui` while that getter
+ * still throws; status text must remain functional and unstyled in those modes.
+ */
+export function paintUi(
+  ui: { readonly theme?: PaintTheme } | undefined,
+  token: SemanticToken,
+  text: string,
+): string {
+  try {
+    return paint(ui?.theme, token, text);
+  } catch {
+    return text;
+  }
+}
+
 // ─── Terminal capability gates ─────────────────────────────────────────────────
 
 function envFlag(value: string | undefined): boolean {

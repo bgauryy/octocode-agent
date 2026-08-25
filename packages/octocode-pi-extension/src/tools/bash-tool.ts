@@ -11,6 +11,7 @@ import { access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import path from 'node:path';
+import { getShellConfig } from '@earendil-works/pi-coding-agent';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
 import { cliToolTitle, paint, cliStatusGlyph, cliStatusToken } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
@@ -19,6 +20,7 @@ import { classifySensitiveCommand, requestApproval, type ApprovalRequest } from 
 import { isPlanMode, PLAN_MODE_BLOCK_REASON } from './plan-mode.js';
 import type { PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
+import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -63,16 +65,21 @@ export function extractBashWriteTargets(command: string, cwd: string): string[] 
       .replace(/\\ /g, ' ');
     if (!cleaned || cleaned === '-' || cleaned.startsWith('&') || cleaned.startsWith('(')) return;
     // Skip /dev/null and process substitutions.
-    if (cleaned === '/dev/null' || cleaned.startsWith('/dev/fd/')) return;
+    // Strip trailing ')' chars — they close a surrounding $(...) subshell and are
+    // never part of an unquoted redirect target in valid shell (e.g. `> /dev/null)`
+    // inside `$(cmd > /dev/null)` would otherwise capture "/dev/null)").
+    const noTrailingParen = cleaned.replace(/\)+$/, '');
+    if (!noTrailingParen || noTrailingParen === '/dev/null' || noTrailingParen.startsWith('/dev/fd/')) return;
     targets.push(path.isAbsolute(cleaned) ? cleaned : path.resolve(cwd, cleaned));
   };
 
   // Redirects: > file, >> file, 2> file, &> file, exec > file.
   // Note: destinations containing shell variable references ($VAR, ${VAR}) are recorded
-  // as the literal token (resolved relative to cwd if not absolute) and passed to the
-  // path guard. This is intentionally fail-open: the guard sees "$OUTFILE" as a relative
-  // path inside cwd, which is allowed. Agents should use explicit paths instead.
-  const redirectRe = /(?:^|[\s;|&])(?:\d*)?>>?\s*([^\s;|&<>]+)/g;
+  // as the literal token (resolved relative to cwd if not absolute). assertBashCommandAllowed
+  // rejects such tokens before the path guard via assertNoShellExpansionInWriteTargets;
+  // this extractor's contract is unchanged — it still records the raw token for callers.
+  // Exclude ')' so `> /dev/null)` inside $(...) doesn't capture the subshell-closing paren.
+  const redirectRe = /(?:^|[\s;|&])(?:\d*)?>>?\s*([^\s;|&<>)]+)/g;
   let match: RegExpExecArray | null;
   while ((match = redirectRe.exec(command)) !== null) {
     push(match[1]!);
@@ -187,6 +194,53 @@ export function classifyEnvExfilCommand(command: string): ApprovalRequest | null
   };
 }
 
+/** Detects $VAR, ${VAR}, $(cmd), or backtick substitution in a write-target token. */
+const SHELL_EXPANSION_RE = /(?:\$[\w{(]|`)/;
+
+function containsShellExpansion(token: string): boolean {
+  return SHELL_EXPANSION_RE.test(token);
+}
+
+/**
+ * Reject redirect / tee / cp|mv destinations that contain shell variable or command
+ * substitution.  The path guard cannot verify these without executing the shell, so
+ * we hard-error with a clear diagnostic asking for a literal path.
+ */
+function assertNoShellExpansionInWriteTargets(command: string): void {
+  const blocked = (raw: string, kind: string): never => {
+    throw new Error(
+      `bash blocked: ${kind} target "${raw}" contains a shell variable or command substitution — ` +
+      `the real destination cannot be verified by the path guard without executing the shell. ` +
+      `Use a literal path instead (e.g. replace "$OUTFILE" with the explicit "/path/to/file").`,
+    );
+  };
+
+  // Exclude ')' so `> /dev/null)` inside $(...) doesn't capture the subshell-closing paren.
+  const redirectRe = /(?:^|[\s;|&])(?:\d*)?>>?\s*([^\s;|&<>)]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = redirectRe.exec(command)) !== null) {
+    const raw = (m[1] ?? '').replace(/^['"]|['"]$/g, '').replace(/\)+$/, '');
+    if (!raw || raw === '-' || raw.startsWith('&') || raw === '/dev/null' || raw.startsWith('/dev/fd/')) continue;
+    if (containsShellExpansion(raw)) blocked(raw, 'redirect');
+  }
+
+  const teeRe = /\btee\b(?:\s+-a)?\s+([^\n;|&]+)/g;
+  while ((m = teeRe.exec(command)) !== null) {
+    for (const part of (m[1] ?? '').trim().split(/\s+/)) {
+      if (!part || part.startsWith('-')) continue;
+      const raw = part.replace(/^['"]|['"]$/g, '');
+      if (containsShellExpansion(raw)) blocked(raw, 'tee');
+    }
+  }
+
+  const copyRe = /\b(?:cp|mv|install)\b(?:\s+-[a-zA-Z]+|\s+--[^\s]+)*\s+(.+)$/gm;
+  while ((m = copyRe.exec(command)) !== null) {
+    const args = (m[1] ?? '').trim().split(/\s+/).filter((a) => !a.startsWith('-'));
+    const dest = args.at(-1);
+    if (dest && containsShellExpansion(dest)) blocked(dest, 'copy/move destination');
+  }
+}
+
 export function assertBashCommandAllowed(command: string, cwd: string): void {
   for (const pattern of BLOCKED_COMMAND_PATTERNS) {
     if (pattern.test(command)) {
@@ -196,6 +250,8 @@ export function assertBashCommandAllowed(command: string, cwd: string): void {
       );
     }
   }
+  // Reject ambiguous write targets with shell expansion before the path guard.
+  assertNoShellExpansionInWriteTargets(command);
   for (const target of extractBashWriteTargets(command, cwd)) {
     assertPathAllowed(target, cwd, 'bash write');
   }
@@ -230,7 +286,7 @@ async function runBash(
   });
   if (signal?.aborted) throw new Error('Operation aborted');
 
-  const shell = process.env.SHELL || '/bin/bash';
+  const shell = getShellConfig().shell;
   return await new Promise((resolve, reject) => {
     const child = spawn(shell, ['-lc', command], {
       cwd,
@@ -319,97 +375,111 @@ export function registerBashTool(
   registeredToolNames: Set<string>,
   registerFn: RegisterFn,
 ): void {
-  const parameters = Type.Object(
+  const querySchema = Type.Object(
     {
       command: Type.String({ description: 'Bash command to execute' }),
-      reasoning: Type.String({ description: 'REQUIRED. Why this shell command is necessary; shown to users so they understand the intent before/while it runs.' }),
       timeout: Type.Optional(
         Type.Integer({ description: 'Timeout in seconds (optional, no default timeout)' }),
       ),
     },
     { additionalProperties: false },
   ) as TSchema;
+  const parameters = buildQueryEnvelopeSchema(Type, querySchema, {
+    reasoningDescription: 'Concise reason this shell command is necessary.',
+  });
 
   registerFn(pi, registeredToolNames, {
     name: 'bash',
     label: 'bash (Octocode)',
     description:
-      'Octocode custom bash tool. Replaces Pi built-in bash with the same shell execution plus Octocode path-guard on redirect/tee/cp/mv and sed -i / perl -i in-place write targets (cwd / home / OS temp / ALLOWED_PATHS), a small blocklist of catastrophic commands, and approval for obvious environment-variable exfiltration commands. Requires a non-empty reasoning field explaining why the command is necessary. Note: opaque interpreters (node -e, python -c) can still write arbitrary paths and are not guarded — prefer edit/write for file mutations; use bash for git, builds, tests, and bulk mechanical edits.',
+      'Octocode custom bash tool. Pass one or more ordered operations in queries; every query requires concise reasoning. Replaces Pi built-in bash with the same shell execution plus Octocode path-guard on redirect/tee/cp/mv and sed -i / perl -i in-place write targets (cwd / home / OS temp / ALLOWED_PATHS), a small blocklist of catastrophic commands, and approval for obvious environment-variable exfiltration commands. Batches are preflighted, ordered, non-transactional, and stop on the first runtime failure. Note: opaque interpreters (node -e, python -c) can still write arbitrary paths and are not guarded — prefer edit/write for file mutations; use bash for git, builds, tests, and bulk mechanical edits.',
     promptSnippet: 'Run shell commands with Octocode path-guard on write targets.',
     promptGuidelines: [
-      'Octocode custom bash replaces Pi built-in bash; prefer edit/write for ordinary file creates and surgical edits.',
+      'Octocode custom bash replaces Pi built-in bash; prefer file for ordinary creates, edits, and deletes.',
       'Use bash for git, builds, tests, package managers, and bulk mechanical edits (e.g. sed).',
       'Commands that obviously print inherited environment variables or secret-like env vars require approval; bash otherwise keeps the inherited environment for compatibility.',
       'Redirects (>, >>, tee) and cp/mv destinations must stay inside the working directory, home, OS temp, or ALLOWED_PATHS.',
-      'Do not use bash to bypass the edit/write path-guard.',
+      'Do not use bash to bypass the file path-guard.',
     ],
     parameters,
+    prepareArguments(args: unknown) {
+      if (!args || typeof args !== 'object') return args;
+      const input = args as Record<string, unknown>;
+      return Array.isArray(input['queries']) ? args : { queries: [input] };
+    },
     async execute(
-      _toolCallId: string,
+      toolCallId: string,
       params: Record<string, unknown>,
       signal?: AbortSignal,
-      _onUpdate?: unknown,
+      onUpdate?: unknown,
       ctx?: PiContext,
     ): Promise<ToolCallResult> {
-      if (typeof params['command'] !== 'string' || params['command'].trim().length === 0) {
-        throw new Error('Bash tool input is invalid. command must be a non-empty string.');
-      }
-      if (typeof params['reasoning'] !== 'string' || params['reasoning'].trim().length === 0) {
-        throw new Error('Bash tool input is invalid. reasoning is required — provide a non-empty string explaining why this command is necessary.');
-      }
-      const command = params['command'];
-      const timeout =
-        typeof params['timeout'] === 'number' && Number.isFinite(params['timeout'])
-          ? params['timeout']
-          : undefined;
       const cwd = ctx?.cwd ?? process.cwd();
-      assertBashCommandAllowed(command, cwd);
-      if (isPlanMode() && bashLooksMutatingForPlanMode(command, cwd)) {
-        throw new Error(`bash blocked: ${PLAN_MODE_BLOCK_REASON}`);
-      }
+      return executeQueryBatch({
+        toolCallId,
+        raw: params,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
+        ctx,
+        passthroughSingle: true,
+        preflight(query) {
+          if (typeof query['command'] !== 'string' || query['command'].trim().length === 0) {
+            throw new Error('command must be a non-empty string.');
+          }
+          assertBashCommandAllowed(query['command'], cwd);
+          if (isPlanMode(ctx)) throw new Error(`bash blocked: ${PLAN_MODE_BLOCK_REASON}`);
+        },
+        async execute(query) {
+          const command = query['command'] as string;
+          const timeout = typeof query['timeout'] === 'number' && Number.isFinite(query['timeout'])
+            ? query['timeout']
+            : undefined;
 
-      // Context-aware consent: installs, mutating git, file deletes, and sudo are
-      // protected. Ask before running (Yes / No / Always allow this session).
-      const sensitive = classifySensitiveCommand(command) ?? classifyEnvExfilCommand(command);
-      if (sensitive) {
-        const outcome = await requestApproval(ctx, sensitive);
-        if (!outcome.approved) {
-          const why = outcome.interactive
-            ? 'The user declined this action.'
-            : 'This host is non-interactive, so consent could not be collected. Ask the user inline to confirm before retrying.';
-          throw new Error(
-            `bash blocked: "${sensitive.title}" requires user approval. ${why}`,
-          );
-        }
-      }
+          // Evaluate env-exfil independently — the previous `??` short-circuit let
+          // classifySensitiveCommand silently mask classifyEnvExfilCommand, so a command
+          // like `git push && env` never prompted for env-exfil even when git-write was
+          // always-allowed. Check both and deduplicate by actionClass to avoid a redundant
+          // prompt when both return the same class (e.g. 'system').
+          const envExfil = classifyEnvExfilCommand(command);
+          const sensitive = classifySensitiveCommand(command);
+          const seenClasses = new Set<string>();
+          for (const request of [envExfil, sensitive].filter(Boolean) as ApprovalRequest[]) {
+            if (seenClasses.has(request.actionClass)) continue;
+            seenClasses.add(request.actionClass);
+            const outcome = await requestApproval(ctx, request);
+            if (!outcome.approved) {
+              const why = outcome.interactive
+                ? 'The user declined this action.'
+                : 'This host is non-interactive, so consent could not be collected. Ask the user inline to confirm before retrying.';
+              throw new Error(`bash blocked: "${request.title}" requires user approval. ${why}`);
+            }
+          }
+          if (signal?.aborted) throw new Error('Operation aborted');
 
-      if (signal?.aborted) throw new Error('Operation aborted');
-
-      const { stdout, stderr, code, signal: killedBy, aborted } = await runBash(command, cwd, timeout, signal);
-      const combined = [stdout, stderr].filter(Boolean).join('\n');
-      // A process killed by a signal (code === null) is a failure, not a quiet
-      // success — including our own abort; the old `code !== null` guard let a
-      // SIGTERM-ed child report ok. Always surface the reason: Pi records
-      // non-throwing results as success, so this line is the model's only
-      // failure signal when the command printed normal-looking output.
-      const isError = aborted || code !== 0;
-      const exitNote = aborted ? '(aborted)' : killedBy ? `(killed by ${killedBy})` : `(exit ${code ?? 'null'})`;
-      const body = isError && combined ? `${combined}\n${exitNote}` : combined;
-      const text = truncateOutput(body || exitNote);
-      return {
-        content: [{ type: 'text', text }],
-        isError,
-        details: { code, stdout, stderr },
-      };
+          const { stdout, stderr, code, signal: killedBy, aborted } = await runBash(command, cwd, timeout, signal);
+          const combined = [stdout, stderr].filter(Boolean).join('\n');
+          const isError = aborted || code !== 0;
+          const exitNote = aborted ? '(aborted)' : killedBy ? `(killed by ${killedBy})` : `(exit ${code ?? 'null'})`;
+          const body = isError && combined ? `${combined}\n${exitNote}` : combined;
+          return {
+            content: [{ type: 'text', text: truncateOutput(body || exitNote) }],
+            isError,
+            details: { code, stdout, stderr },
+          };
+        },
+      });
     },
     renderCall(args: unknown, theme?: PiTheme) {
-      const input = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
+      const envelope = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
+      const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as Record<string, unknown>[] : [];
+      const input = queries[0] ?? envelope;
       const command = typeof input['command'] === 'string' ? input['command'] : '(missing command)';
       const reasoning = typeof input['reasoning'] === 'string' ? input['reasoning'].trim() : '';
+      const more = queries.length > 1 ? ` +${queries.length - 1}` : '';
       const title = cliToolTitle(theme, BASH_TOOL_DISPLAY_NAME);
       const suffix = paint(theme, 'dim', command);
       return makeRenderer((width) => [
-        truncateToWidth(`${title} ${suffix}`, width),
+        truncateToWidth(`${title} ${suffix}${paint(theme, 'dim', more)}`, width),
         ...(reasoning ? [truncateToWidth(`  why: ${paint(theme, 'dim', reasoning)}`, width)] : []),
       ]);
     },

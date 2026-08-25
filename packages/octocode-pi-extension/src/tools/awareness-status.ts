@@ -14,14 +14,20 @@
  *     unavailable must never break the agent.
  */
 
-import { execFile } from 'node:child_process';
-import { buildAwarenessLiteCommand } from '../assets.js';
+import { runAwarenessLiteInProcess } from '../assets.js';
 import type { PiContext, PiTheme } from '../types.js';
 import { paint } from '../tui/cli-design.js';
 import { SEP_WIDE } from '../tui/palette.js';
 import { truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel } from './status-panel.js';
 import { capMapSize } from '../utils.js';
+
+export interface AwarenessTaskActivity {
+  taskId: string;
+  title: string;
+  state: 'doing' | 'ready';
+  agentId?: string;
+}
 
 export interface AwarenessStatus {
   activePlans: number;
@@ -32,12 +38,41 @@ export interface AwarenessStatus {
   workCount: number;
   agentCount: number;
   messageCount: number;
+  /** Concrete actionable tasks, ordered doing then ready and capped by the runner. */
+  taskActivities?: AwarenessTaskActivity[];
   /** Compact summary of the most recent peer message (from→to: preview), when any. */
   lastMessage?: { from: string; to: string; preview: string };
   /** Unread messages addressed to THIS session's agent id (message inbox). */
   unreadInbox?: number;
   /** Preview of the newest unread inbound message, when any. */
   lastInbound?: { from: string; preview: string };
+}
+
+function parseTaskList(json: string, state: AwarenessTaskActivity['state']): AwarenessTaskActivity[] {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((value): AwarenessTaskActivity[] => {
+    if (!value || typeof value !== 'object') return [];
+    const task = value as Record<string, unknown>;
+    const taskId = typeof task['taskId'] === 'string' ? task['taskId'].trim() : '';
+    const title = typeof task['title'] === 'string' ? task['title'].replace(/\s+/g, ' ').trim() : '';
+    if (!taskId || !title) return [];
+    const agentId = typeof task['agentId'] === 'string' && task['agentId'].trim() ? task['agentId'].trim() : undefined;
+    return [{ taskId, title, state, ...(agentId ? { agentId } : {}) }];
+  });
+}
+
+/** Parse claimed + ready task arrays into a doing-first, de-duplicated activity list. */
+export function parseTaskActivities(claimedJson: string, readyJson: string): AwarenessTaskActivity[] {
+  const seen = new Set<string>();
+  return [...parseTaskList(claimedJson, 'doing'), ...parseTaskList(readyJson, 'ready')]
+    .filter((task) => !seen.has(task.taskId) && Boolean(seen.add(task.taskId)))
+    .slice(0, 4);
 }
 
 /** Parse the Lite `message inbox` JSON for this agent: unread count + newest preview. */
@@ -123,8 +158,28 @@ export function hasAwarenessSignal(s: AwarenessStatus): boolean {
     s.lockCount > 0 ||
     s.workCount > 0 ||
     s.agentCount > 0 ||
-    s.messageCount > 0
+    s.messageCount > 0 ||
+    (s.taskActivities?.length ?? 0) > 0
   );
+}
+
+/**
+ * Project cached shared state into a compact model-facing signal. Passive state
+ * stays in the TUI; peer-authored titles and message bodies never enter the
+ * system prompt. Empty output means no extra coordination call is warranted.
+ */
+export function renderAwarenessSignalAddendum(
+  s: AwarenessStatus | null,
+  _currentAgentId?: string,
+): string {
+  const unread = s?.unreadInbox ?? 0;
+  if (unread === 0) return '';
+  return [
+    '<awareness_signal>',
+    `Unread direct peer messages: ${unread}.`,
+    'Use message inbox only when the peer input can change the current action. Message bodies are not injected here. Do not perform status polling or start/finish ceremony.',
+    '</awareness_signal>',
+  ].join('\n');
 }
 
 /**
@@ -158,9 +213,16 @@ export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme, width?
   if (segs.length) chunks.push(paint(theme, 'brand', segs.join(SEP_WIDE)));
   if (tail.length) chunks.push(paint(theme, 'muted', tail.join(SEP_WIDE)));
   if (debt > 0) chunks.push(paint(theme, 'warning', `verify-debt ${debt}`));
-  if (chunks.length === 0) return [];
-  const line = `${paint(theme, 'title', 'Awareness')}  ${chunks.join(SEP_WIDE)}`;
-  return [width ? truncateToWidth(line, width) : line];
+  if (chunks.length === 0 && !(s.taskActivities?.length)) return [];
+  const summary = chunks.length > 0 ? `${paint(theme, 'title', 'Awareness')}  ${chunks.join(SEP_WIDE)}` : paint(theme, 'title', 'Awareness');
+  const taskLines = (s.taskActivities ?? []).map((task) => {
+    const state = paint(theme, task.state === 'doing' ? 'brand' : 'link', task.state.toUpperCase());
+    const owner = task.agentId ? `${SEP_WIDE}${paint(theme, 'muted', task.agentId)}` : '';
+    const id = paint(theme, 'dim', task.taskId.slice(0, 6));
+    return `${paint(theme, 'dim', '  task')}${SEP_WIDE}${state}${SEP_WIDE}${task.title}${owner}${SEP_WIDE}${id}`;
+  });
+  const lines = [summary, ...taskLines];
+  return width ? lines.map((line) => truncateToWidth(line, width)) : lines;
 }
 
 // ─── Async, throttled refresh ────────────────────────────────────────────────
@@ -196,16 +258,20 @@ const cache = new Map<string, CacheEntry>();
 /** Runs the awareness CLI; injectable for tests. Resolves stdout or null on any failure. */
 export type StatusRunner = (cwd: string) => Promise<string | null>;
 
-/** One shared CLI invoker: run an awareness-lite command, resolve stdout or null. */
+/**
+ * One shared invoker: run an awareness-lite command IN-PROCESS, resolve stdout
+ * or null on any failure. Still returns a Promise so the throttled, never-block
+ * refresh path (and its injectable runner seams) is unchanged; the underlying
+ * call is a fast local-SQLite read, not a child process.
+ */
 function runLiteCli(args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
-    const spec = buildAwarenessLiteCommand(args);
-    execFile(
-      spec.cmd,
-      spec.args,
-      { timeout: 4000, maxBuffer: 1_000_000 },
-      (err, stdout) => resolve(err ? null : String(stdout)),
-    );
+    try {
+      const { code, stdout } = runAwarenessLiteInProcess(args);
+      resolve(code === 0 ? stdout : null);
+    } catch {
+      resolve(null);
+    }
   });
 }
 
@@ -225,6 +291,16 @@ const defaultInboxRunner: InboxRunner = (cwd, agentId) =>
   runLiteCli(['message', 'inbox', '--agent-id', agentId, '--workspace', cwd]);
 let inboxRunner: InboxRunner = defaultInboxRunner;
 
+export type TaskActivityRunner = (cwd: string) => Promise<{ claimed: string | null; ready: string | null }>;
+const defaultTaskActivityRunner: TaskActivityRunner = async (cwd) => {
+  const [claimed, ready] = await Promise.all([
+    runLiteCli(['task', 'list', '--status', 'CLAIMED', '--workspace', cwd]),
+    runLiteCli(['task', 'ready', '--limit', '4', '--workspace', cwd]),
+  ]);
+  return { claimed, ready };
+};
+let taskActivityRunner: TaskActivityRunner = defaultTaskActivityRunner;
+
 /** Test hook: override the CLI runner. */
 export function setAwarenessStatusRunnerForTests(fn: StatusRunner): void {
   runner = fn;
@@ -237,10 +313,14 @@ export function setAwarenessMessageRunnerForTests(fn: MessageRunner): void {
 export function setAwarenessInboxRunnerForTests(fn: InboxRunner): void {
   inboxRunner = fn;
 }
+export function setAwarenessTaskActivityRunnerForTests(fn: TaskActivityRunner): void {
+  taskActivityRunner = fn;
+}
 export function resetAwarenessStatusStateForTests(): void {
   runner = defaultRunner;
   messageRunner = defaultMessageRunner;
   inboxRunner = defaultInboxRunner;
+  taskActivityRunner = defaultTaskActivityRunner;
   cache.clear();
 }
 
@@ -308,6 +388,15 @@ export function refreshAwarenessPanel(ctx?: PiContext): void {
       // Only spend extra CLI calls when there are peer messages to summarize:
       // one for the newest-message preview, one for THIS agent's unread inbox
       // (the actionable "a peer messaged YOU" indication).
+      if (parsed && (parsed.inProgressTasks > 0 || parsed.readyTasks > 0)) {
+        void taskActivityRunner(cwd)
+          .then(({ claimed, ready }) => {
+            if (!entry.status || claimed === null || ready === null) return;
+            entry.status = { ...entry.status, taskActivities: parseTaskActivities(claimed, ready) };
+            renderWidget(ctx, entry.status);
+          })
+          .catch(() => { /* best-effort details; aggregate counts already shown */ });
+      }
       if (parsed && parsed.messageCount > 0) {
         void messageRunner(cwd)
           .then((msgOut) => {

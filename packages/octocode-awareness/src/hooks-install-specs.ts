@@ -66,7 +66,6 @@ Targets:
   --host claude         Write Claude Code hooks to .claude/settings.json (install default).
   --host codex         Write Codex hooks to .codex/hooks.json.
   --host cursor        Write Cursor hooks to .cursor/hooks.json.
-  Pi                   No shell install target; use wirePiAwarenessHooks(pi) or @octocodeai/pi-extension.
 
 Options:
   --project-dir <path>  Target a project hook file under <path> (default: cwd).

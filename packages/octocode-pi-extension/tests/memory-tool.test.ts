@@ -9,6 +9,13 @@ function loadTool(): ToolDefinition {
   const pi = { registerTool: (def: ToolDefinition) => { captured = def; } };
   registerMemoryTool(pi, Type, new Set<string>(), (_pi, _names, def) => { captured = def; });
   if (!captured) throw new Error('memory tool not registered');
+  const execute = captured.execute.bind(captured);
+  captured.execute = (id, params, signal, onUpdate, ctx) => {
+    const envelope = Array.isArray(params['queries'])
+      ? params
+      : { queries: [{ reasoning: 'exercise memory behavior', ...params }] };
+    return execute(id, envelope, signal, onUpdate, ctx);
+  };
   return captured;
 }
 
@@ -22,6 +29,50 @@ function stubRunner(result: MemoryCliResult) {
   setMemoryCliRunnerForTests((args) => { calls.push(args); return result; });
   return calls;
 }
+
+test('memory exposes only a required queries envelope with per-query reasoning', () => {
+  const tool = loadTool();
+  const schema = tool.parameters as {
+    properties?: { queries?: { items?: { properties?: Record<string, unknown>; required?: string[] } } };
+    required?: string[];
+  };
+  assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries']);
+  assert.ok(schema.required?.includes('queries'));
+  assert.ok(schema.properties?.queries?.items?.properties?.['reasoning']);
+  assert.ok(schema.properties?.queries?.items?.required?.includes('reasoning'));
+});
+
+test('memory executes multiple validated queries in source order', async () => {
+  const calls = stubRunner({ code: 0, stdout: JSON.stringify([{ memoryId: 'mem_a' }]), stderr: '' });
+  const tool = loadTool();
+  const res = await tool.execute('batch', {
+    queries: [
+      { reasoning: 'recall parser guidance', action: 'recall', query: 'parser' },
+      { reasoning: 'review memory quality', action: 'review', query: 'parser' },
+    ],
+  }, undefined, undefined, ctx);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map((args) => args[1]), ['recall', 'recall']);
+  assert.match((res.content[0] as { text: string }).text, /2 queries succeeded/);
+});
+
+test('memory preflights the whole batch before an earlier mutation', async () => {
+  const calls = stubRunner({ code: 0, stdout: JSON.stringify({ memoryId: 'mem_new' }), stderr: '' });
+  const tool = loadTool();
+  await assert.rejects(tool.execute('batch-invalid', {
+    queries: [
+      {
+        reasoning: 'record verified behavior',
+        action: 'record',
+        label: 'GOTCHA',
+        observation: 'Tool runner self-heals after the first failed launch.',
+        importance: 6,
+      },
+      { reasoning: 'invalid later recall', action: 'recall' },
+    ],
+  }, undefined, undefined, ctx), /queries\[1\] failed preflight/);
+  assert.equal(calls.length, 0);
+});
 
 test('memory recall builds the CLI args and returns the recalled count', async () => {
   const calls = stubRunner({ code: 0, stdout: JSON.stringify([{ memoryId: 'mem_a' }, { memoryId: 'mem_b' }]), stderr: '' });

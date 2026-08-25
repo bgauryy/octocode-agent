@@ -2,7 +2,7 @@
  * status-panel — the single unified below-editor "Octocode" panel.
  *
  * Rather than separate plan and Awareness widgets stacking under the editor,
- * this composes them into ONE widget with blank-line-separated sections. Spawned
+ * this composes them into ONE compact widget. Spawned
  * agents deliberately live only in the custom footer, so they are not duplicated
  * above the input. Each source module
  * exposes a pure `*PanelLines(theme)` builder and delegates its widget rendering
@@ -30,7 +30,6 @@ const PANEL_MAX_LINES = 24; // hard cap on total panel lines
 
 interface BuiltPanel {
   lines: string[];
-  hasVolatileSections: boolean;
 }
 
 /**
@@ -60,12 +59,33 @@ export function modelPanelLines(ctx: PiContext | undefined, theme?: PiTheme): st
   return [paint(theme, 'muted', `model: ${provider}/${id}`)];
 }
 
-/** Join non-empty sections with a single blank-line separator, within the total budget. */
+/** Format a raw token count as a human-readable string (e.g. 45k, 1.2M). */
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
+/**
+ * Live context-window usage line so the operator always sees how full the
+ * context is. Colour-coded: muted → title (>60%) → warning (>80%).
+ * Empty when ctx.getContextUsage() is unavailable or tokens are unknown
+ * (right after a compaction the count is transiently null).
+ */
+export function tokenPanelLines(ctx: PiContext | undefined, theme?: PiTheme): string[] {
+  const usage = ctx?.getContextUsage?.();
+  if (!usage || usage.tokens == null || !(usage.contextWindow > 0)) return [];
+  const pct = Math.round((usage.tokens / usage.contextWindow) * 100);
+  const fill = usage.tokens / usage.contextWindow;
+  const token: Parameters<typeof paint>[1] = fill >= 0.8 ? 'warning' : fill >= 0.6 ? 'title' : 'muted';
+  return [paint(theme, token, `ctx: ${formatTokens(usage.tokens)}/${formatTokens(usage.contextWindow)} (${pct}%)`)];
+}
+
+/** Join non-empty sections densely, within the total budget. */
 function composeSections(sections: string[][], theme?: PiTheme): string[] {
   const lines: string[] = [];
   for (const section of sections) {
     if (section.length === 0) continue;
-    if (lines.length > 0) lines.push('');
     lines.push(...section);
   }
   if (lines.length <= PANEL_MAX_LINES) return lines;
@@ -82,10 +102,10 @@ export function composeStatusPanelLines(ctx: PiContext, theme: PiTheme | undefin
   return {
     lines: composeSections([
       modelPanelLines(ctx, theme),
+      tokenPanelLines(ctx, theme),
       planSection,
       awarenessSection,
     ], theme),
-    hasVolatileSections: planSection.length > 0 || awarenessSection.length > 0,
   };
 }
 
@@ -111,28 +131,6 @@ export function resumeStatusPanel(): void {
 // Keyed by ctx so a new session re-registers; cleared when the panel empties.
 const panelRegisteredCtxs = new WeakSet<object>();
 const panelRequestRenderByCtx = new WeakMap<object, () => void>();
-const panelMinHeightByCtx = new WeakMap<object, Map<number, number>>();
-
-function stabilizePanelHeight(ctx: PiContext, width: number, built: BuiltPanel): string[] {
-  const lines = built.lines;
-  // Model-only is the stable baseline. Do not keep blank rows from a finished
-  // plan/agent/awareness burst forever; once volatile sections are gone, reset
-  // the remembered height to the actual model-only height.
-  if (!built.hasVolatileSections) {
-    panelMinHeightByCtx.set(ctx, new Map([[width, lines.length]]));
-    return lines;
-  }
-  let heights = panelMinHeightByCtx.get(ctx);
-  if (!heights) {
-    heights = new Map<number, number>();
-    panelMinHeightByCtx.set(ctx, heights);
-  }
-  const previous = heights.get(width) ?? 0;
-  const next = Math.min(PANEL_MAX_LINES, Math.max(previous, lines.length));
-  heights.set(width, next);
-  return lines.length >= next ? lines : [...lines, ...Array.from({ length: next - lines.length }, () => '')];
-}
-
 export function resetStatusPanelStateForTests(): void {
   panelSuppressed = false;
 }
@@ -141,7 +139,6 @@ function clearPanel(ctx: PiContext): void {
   ctx.ui?.setWidget?.(WIDGET_NAME, undefined);
   panelRegisteredCtxs.delete(ctx);
   panelRequestRenderByCtx.delete(ctx);
-  panelMinHeightByCtx.delete(ctx);
 }
 
 export function refreshStatusPanel(ctx?: PiContext): void {
@@ -154,7 +151,8 @@ export function refreshStatusPanel(ctx?: PiContext): void {
   const hasPlan = getPlan(activePlanScope(ctx)).length > 0;
   const hasAwareness = hasCachedAwarenessSignal(cwd);
   const hasModel = modelPanelLines(ctx).length > 0;
-  if (!hasPlan && !hasAwareness && !hasModel) {
+  const hasTokens = tokenPanelLines(ctx).length > 0;
+  if (!hasPlan && !hasAwareness && !hasModel && !hasTokens) {
     clearPanel(ctx);
     return;
   }
@@ -171,8 +169,7 @@ export function refreshStatusPanel(ctx?: PiContext): void {
       return makeRenderer((width) => {
         // Width flows into every section builder so lines are clipped at the
         // source (pi errors on over-wide lines); makeRenderer stays the net.
-        const built = composeStatusPanelLines(ctx, theme, width);
-        const lines = stabilizePanelHeight(ctx, width, built);
+        const lines = composeStatusPanelLines(ctx, theme, width).lines;
         return lines.length > 0 ? lines : [''];
       });
     },

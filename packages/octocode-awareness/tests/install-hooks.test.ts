@@ -88,7 +88,7 @@ it('runs the hook installer directly for help, install, strict check, and remove
       const help = runHooksInstall(['--help'], { cwd: projectDir, hookDir });
       expect(help.exitCode).toBe(0);
       expect(help.text).toContain('--host codex');
-      expect(help.text).toContain('wirePiAwarenessHooks');
+      expect(help.text).not.toContain('wirePiAwarenessHooks');
 
       const dryRun = runHooksInstall(['--host', 'codex', '--project-dir', projectDir, '--dry-run'], { cwd: projectDir, hookDir });
       expect(dryRun.exitCode).toBe(0);
@@ -167,7 +167,6 @@ it('skill install script prints the hook init flow without SQLite warnings', () 
     expect(parsed.commands.hooks_check_codex).toContain('hooks check --host codex');
     expect(parsed.commands.hooks_install_cursor).toContain('hooks install --host cursor');
     expect(parsed.commands.hooks_check_cursor).toContain('hooks check --host cursor');
-    expect(parsed.commands.pi_bridge).toContain('wirePiAwarenessHooks');
     for (const key of ['schema', 'awareness', 'init', 'attend', 'hooks_preview_codex', 'hooks_preview_cursor']) {
       expect(parsed.commands[key]).toContain(parsed.scriptsDir);
     }
@@ -188,7 +187,6 @@ it('skill install script prints the hook init flow without SQLite warnings', () 
     expect(nextSteps).toContain('do not also install');
     expect(nextSteps).toContain('Codex and Cursor');
     expect(nextSteps).not.toContain('Claude, Codex, and Cursor project hooks');
-    expect(parsed.next_steps.join('\n')).toContain('For Pi: do not run shell hook install');
   });
 it('skill smoke script help is quiet about node:sqlite ExperimentalWarning', () => {
     const result = spawnSync(NODE, [SKILL_SMOKE_SCRIPT, '--help'], {

@@ -99,9 +99,6 @@ export const CORE_PACKAGE = '@octocodeai/pi-extension';
 export const CORE_SPEC = `npm:${CORE_PACKAGE}`;
 export const PI_PACKAGE = '@earendil-works/pi-coding-agent';
 
-/** Lean tool exclusions — drop OS builtins in favour of Octocode-native tools. */
-export const LEAN_EXCLUDE_TOOLS = ['grep', 'find', 'ls'];
-
 // ── Pure helpers ───────────────────────────────────────────────────────────────
 
 /** Normalize spawnSync-like results: null status means signal/failed child, never success. */
@@ -222,7 +219,6 @@ export function resolvePiBin(env: NodeJS.ProcessEnv = process.env): PiBinInfo | 
 /**
  * Build the environment Pi launches with.
  * Sets OCTOCODE_PROMPT_MODE=octocode-first and OCTOCODE_AGENT=1.
- * Defaults PI_CACHE_RETENTION=long (never clobbers an explicit user value).
  */
 export function buildLaunchEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
@@ -230,7 +226,6 @@ export function buildLaunchEnv(
   const env = { ...baseEnv };
   if (!env.OCTOCODE_PROMPT_MODE) env.OCTOCODE_PROMPT_MODE = OCTOCODE_PROMPT_MODE;
   env.OCTOCODE_AGENT = '1';
-  if (!env.PI_CACHE_RETENTION) env.PI_CACHE_RETENTION = 'long';
   // Octocode owns its update story (`octocode-agent update`) — Pi's own
   // "New version … Run pi update (pi.dev)" widget is the single most visible
   // Pi-branded surface in a branded session; suppress it by default.
@@ -291,7 +286,7 @@ export function parseInvocation(argv: string[] = []): ParsedInvocation {
  * Build Pi argv for the subprocess path.
  * Fixed:  --no-extensions (prevents global extension conflicts)
  * Opt-in: OCTOCODE_AGENT_CLEAN=1 → --no-skills --no-context-files
- * Opt-out: OCTOCODE_AGENT_FULL_TOOLS=1 keeps grep/find/ls
+ * Fixed:  --no-builtin-tools; the extension supplies the complete public palette.
  */
 export function buildPiArgs(
   spec: string,
@@ -301,8 +296,9 @@ export function buildPiArgs(
   const args: string[] = ['--no-extensions'];
   const clean = env.OCTOCODE_AGENT_CLEAN === '1';
   if (clean) args.push('--no-skills');
-  if (env.OCTOCODE_AGENT_FULL_TOOLS !== '1')
-    args.push('--exclude-tools', LEAN_EXCLUDE_TOOLS.join(','));
+  // Pi then enables extension/custom tools, including Octocode's guarded `bash`,
+  // without activating any native read/edit/write/search implementation.
+  args.push('--no-builtin-tools');
   if (clean || env.OCTOCODE_AGENT_NO_CONTEXT_FILES === '1') args.push('--no-context-files');
   args.push('-e', spec);
   return [...args, ...argv];
@@ -410,6 +406,7 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
     section(p, 'Launch modes'),
     ...wrapText('SDK embed (default)   — in-process runtime session with direct API access', terminalWidth() - 2).map((l) => `  ${p.dim(l)}`),
     ...wrapText('Subprocess fallback   — spawns the runtime binary via the -e flag.', terminalWidth() - 2).map((l) => `  ${p.dim(l)}`),
+    ...wrapText('Both modes suppress Pi native tools; the Octocode core supplies the complete palette.', terminalWidth() - 2).map((l) => `  ${p.dim(l)}`),
     ...wrapText('Force with OCTOCODE_LAUNCHER_MODE=subprocess.', terminalWidth()).map((l) => `  ${p.dim(l)}`),
     '',
     section(p, 'Fork dev'),

@@ -49,7 +49,7 @@ Follow `attend.next`. Load inventories only when the next action needs them.
 | `AGENTS.md` / host instructions | Trigger Awareness and point at the smallest owner. |
 | `octocode-awareness` skill | Decide when and how to plan, coordinate, lock, verify, remember, or clean. |
 | CLI / SQLite | Read and mutate canonical live plans, tasks, presence, verification, signals, and memory. |
-| Hooks / Pi bridge | Automate deterministic start/write/failure/stop/compact/session edges; never replace judgment. |
+| Host hooks | Automate deterministic start/write/failure/stop/compact/session edges; never replace judgment. |
 | `.octocode/` | Discover authored plan docs and bounded generated snapshots when live SQLite is unavailable to a reader. |
 
 Agents should begin with `attend`, not by reading `.octocode/`. A plan document may
@@ -230,13 +230,6 @@ HOOK aggregate ACTIVE; a failed write discards hook-created presence and creates
 edit audit or verification debt. Stop, PreCompact, or SessionEnd finalizes successful
 work once to PENDING. PreCompact keeps the session reusable; SessionEnd marks it ended.
 Prompt briefings and handoffs are deduplicated; stop debt is capped.
-
-Pi uses:
-
-```ts
-import { wirePiAwarenessHooks } from '@octocodeai/octocode-awareness';
-wirePiAwarenessHooks(pi, { skillRoot });
-```
 
 See [HOOKS.md](HOOKS.md) for host differences.
 

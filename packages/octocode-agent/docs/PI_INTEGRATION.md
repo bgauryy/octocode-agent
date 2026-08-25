@@ -61,7 +61,7 @@ await new InteractiveMode(runtime, { /* initialMessage, … */ }).run();
 ```
 
 The launcher sets `OCTOCODE_PROMPT_MODE=octocode-first` + `OCTOCODE_AGENT=1`; the core
-reads the mode with no divergent harness code path. Legacy `replace` is accepted as an alias.
+reads the mode with no divergent harness code path.
 Supported SDK-level args include `--print`, `--mode rpc`, `--continue`, `--session`,
 `--no-session`, `--name`, and an initial message. `OCTOCODE_AGENT_CLEAN=1` and
 `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` remain honored by the subprocess fallback.
@@ -139,9 +139,17 @@ extension commands. On 0.80.x, `registerCommand` **keeps all** same-named comman
 assigns numeric suffixes in load order (`/review:1`, `/review:2`) (`extensions.md`
 §registerCommand). Implication: name collisions no longer silently drop our command — but
 the `/octocode` umbrella is still the right UX (one discoverable namespace) and avoids
-`:1` suffixes. `/new` (not `/clear`) remains Pi's native wipe; Octocode exposes reset/compaction through the guarded `manage_context` tool and the private `_octocode-clear-context-impl` command.
+`:1` suffixes. `/new` (not `/clear`) remains Pi's native wipe; Octocode keeps reset and
+compaction behind its private command/UI implementation rather than adding another public
+model tool.
 
-The core owns the `/octocode*` command namespace (dashboard, status, harness, agents, cron, MCP, setup, skills, tasks, plan, palette, theme, permissions, inbox, export, and related aliases). Model-facing support tools include `web`, `chromeDebug`, `browserAgent`, `spawnSubagent`, `MCPTool`, `askUser`, `memory`, `manage_context`, `spawnAgent`, `AgentMessage`, `readImage`, and `createImage`; `/mcp` is a slash-command alias, not a model-callable `mcp` tool alias. Awareness Lite coordination is primarily CLI/skill-driven, with `memory` as the small model-callable wrapper for recall/record/forget.
+The core owns the `/octocode*` command namespace (dashboard, status, harness, agents, cron,
+MCP, setup, skills, tasks, plan, palette, theme, permissions, inbox, export, and related
+aliases). Its 16-tool direct palette is guarded `bash` plus `file`, `web`, `chromeDebug`,
+`agent`, `callTool`, `skill`, `plan`, `localServer`, `MCPTool`, `askUser`, `memory`, `lock`,
+`message`, `readMedia`, and `media`; `/mcp` is a slash-command alias, not a model-callable
+tool. Awareness diagnostics/recovery remain available through the bundled CLI without
+expanding the direct palette.
 
 ---
 
@@ -158,9 +166,8 @@ Our core injects via the `before_agent_start` event, which on 0.80.x hands the e
 `.appendSystemPrompt`, `.contextFiles`, `.skills`, `.selectedTools`, `.toolSnippets`
 (`extensions.md` §before_agent_start). Returning `{ systemPrompt }` replaces it for the turn.
 
-- **append mode (default):** Pi prompt first, harness addendum after. Unchanged legacy behavior.
+- **append mode (default):** Pi prompt first, harness addendum after.
 - **octocode-first mode (launcher):** harness leads as authority, Pi's prompt is preserved below.
-  `replace` remains a legacy alias, but the behavior is intentionally prepend-not-drop.
   A true full replacement can be implemented later with the SDK `systemPromptOverride` /
   `systemPromptOptions` path if product branding needs it.
 
@@ -172,9 +179,13 @@ Built-ins: `read, bash, edit, write, grep, find, ls`; **default active** = `read
 edit, write` (`sdk.md`/`usage.md`). Pruning options:
 - CLI: `--tools/-t <allowlist>`, `--exclude-tools/-xt`, `--no-builtin-tools/-nbt`, `--no-tools`.
   Caveat: a `-t` allowlist must also list every custom/extension tool name to keep it enabled — brittle, so the launcher does **not** set `-t` by default.
-- Extension: `pi.setActiveTools([...])` at `session_start` (RFC G2/Phase 3). This is the
-  preferred lean-tools mechanism because it can keep our registered tools while dropping
-  `grep`/`find`/`ls`.
+- Launcher guarantee: the subprocess path always passes `--no-builtin-tools`, and the
+  default SDK path always creates the session with `noTools:"builtin"`. Pi then enables
+  extension tools, retaining Octocode's guarded same-name `bash` while native
+  `read`/`edit`/`write`/`grep`/`find`/`ls` never enter the initial model palette. The
+  branded launcher has no native-tool opt-out.
+- Extension backstop: `pi.setActiveTools([...])` removes the same native names after
+  registration and again at `session_start`, covering non-launcher hosts and later resets.
 - **Web access is not a Pi built-in** — the core registers a single `web` tool via
   `pi.registerTool` (RFC G3, **implemented**; `src/web.js`). `web({url})` fetches and reads
   a page as clean text; `web({query})` searches via a **provider ladder — Tavily → Serper →

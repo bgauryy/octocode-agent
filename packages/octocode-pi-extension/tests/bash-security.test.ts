@@ -105,14 +105,61 @@ test('H2: detects exec >> append redirect', () => {
   assert.ok(targets.includes('/tmp/appended.log'));
 });
 
-test('H2: variable-expansion redirect is recorded as a relative path (documented fail-open)', () => {
-  // $OUTFILE cannot be shell-expanded; the extractor records the literal token so
-  // the path guard can inspect it (fail-open: the token is treated as relative to cwd).
+test('H2: variable-expansion redirect: extractor records token (contract unchanged), assertBashCommandAllowed now rejects it (no longer fail-open)', () => {
+  // extractBashWriteTargets still records the raw token for callers.
   const targets = extractBashWriteTargets('echo hi > $OUTFILE', CWD);
-  assert.ok(
-    targets.length > 0,
-    'variable-expanded target must be recorded, not silently dropped',
+  assert.ok(targets.length > 0, 'extractor still records the raw token');
+  // assertBashCommandAllowed rejects before the path guard runs.
+  assert.throws(
+    () => assertBashCommandAllowed('echo hi > $OUTFILE', CWD),
+    /shell variable|command substitution|literal path/i,
+    'ambiguous $VAR redirect must be rejected, not silently treated as relative to cwd'
   );
+});
+
+// ─── H2b: Shell-expansion rejection regressions ─────────────────────────────
+
+test('H2b: ${VAR} redirect is rejected', () => {
+  assert.throws(
+    () => assertBashCommandAllowed('echo hi > ${OUTFILE}', CWD),
+    /shell variable|command substitution|literal path/i,
+  );
+});
+
+test('H2b: $(cmd) redirect is rejected', () => {
+  assert.throws(
+    () => assertBashCommandAllowed('echo hi > $(mktemp)', CWD),
+    /shell variable|command substitution|literal path/i,
+  );
+});
+
+test('H2b: backtick redirect is rejected', () => {
+  assert.throws(
+    () => assertBashCommandAllowed('echo hi > `mktemp`', CWD),
+    /shell variable|command substitution|literal path/i,
+  );
+});
+
+test('H2b: tee with $VAR target is rejected', () => {
+  assert.throws(
+    () => assertBashCommandAllowed('echo hi | tee $LOGFILE', CWD),
+    /shell variable|command substitution|literal path/i,
+  );
+});
+
+test('H2b: cp with $VAR destination is rejected', () => {
+  assert.throws(
+    () => assertBashCommandAllowed('cp src.txt $DEST', CWD),
+    /shell variable|command substitution|literal path/i,
+  );
+});
+
+test('H2b: plain literal redirect within cwd is still allowed', () => {
+  assert.doesNotThrow(() => assertBashCommandAllowed('echo hi > output.txt', CWD));
+});
+
+test('H2b: /dev/null redirect is always allowed (never blocked as ambiguous)', () => {
+  assert.doesNotThrow(() => assertBashCommandAllowed('echo hi > /dev/null', CWD));
 });
 
 // ─── H3: In-place editor write targets ───────────────────────────────────────
@@ -139,4 +186,56 @@ test('H3: sed WITHOUT -i (read-only) records no write target', () => {
 
 test('H3: assertBashCommandAllowed blocks sed -i outside allowed roots', () => {
   assert.throws(() => assertBashCommandAllowed("sed -i 's/x/y/' /etc/hosts", CWD));
+});
+
+// ─── H4: Env-exfil not hidden by a concurrent sensitive classification ─────────
+//
+// Regression: `const sensitive = classify(...) ?? classifyEnvExfil(...)` silently
+// skipped classifyEnvExfilCommand whenever classifySensitiveCommand returned non-null.
+// A compound `git push && env` with git-write always-allowed would exfiltrate env vars.
+
+import { allowAlways, resetApprovalStore } from '../src/tools/approval.js';
+import { registerBashTool } from '../src/tools/bash-tool.js';
+import { registerUniqueTool } from '../src/tools/octocode-tools.js';
+import { Type } from 'typebox';
+import type { ToolDefinition, ToolCallResult } from '../src/types.js';
+import os from 'node:os';
+
+function loadBashToolForH4(): ToolDefinition {
+  let def: ToolDefinition | undefined;
+  registerBashTool({ registerTool: (d: ToolDefinition) => { def = d; } }, Type as never, new Set<string>(), registerUniqueTool);
+  assert.ok(def, 'bash tool registered');
+  return def!;
+}
+
+function execBashH4(
+  tool: object,
+  id: string,
+  params: Record<string, unknown>,
+  ctx?: { cwd?: string },
+): Promise<ToolCallResult> {
+  const definition = tool as ToolDefinition;
+  const prepared = definition.prepareArguments?.(params) as Record<string, unknown> | undefined;
+  return definition.execute(id, prepared ?? params, undefined, undefined, ctx);
+}
+
+test('H4: env-exfil approval fires even when classifySensitiveCommand also matches (no ?? hidden-gate regression)', async () => {
+  resetApprovalStore();
+  allowAlways('git-write'); // auto-approve git-write so only env-exfil would block
+  const tool = loadBashToolForH4();
+  // Before the fix: git push satisfied `??`, env-exfil was silently skipped.
+  await assert.rejects(
+    () => execBashH4(tool, 'h4', { command: 'git push && env', reasoning: 'hidden exfil regression' }, { cwd: os.tmpdir() }),
+    /Expose inherited environment variables.*requires user approval.*non-interactive/i,
+    'env-exfil must still prompt even when another approval class is auto-approved'
+  );
+});
+
+test('H4: standalone env blocked non-interactively (baseline unchanged)', async () => {
+  resetApprovalStore();
+  const tool = loadBashToolForH4();
+  await assert.rejects(
+    () => execBashH4(tool, 'h4b', { command: 'env', reasoning: 'baseline' }, { cwd: os.tmpdir() }),
+    /Expose inherited environment variables.*requires user approval.*non-interactive/i,
+  );
 });

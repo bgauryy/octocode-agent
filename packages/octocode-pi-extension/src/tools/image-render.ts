@@ -220,8 +220,8 @@ export function buildImageLines(
 /**
  * Data-based variant of buildImageLines: render already-in-memory base64 image
  * data (no disk read) using the same capability gate, placeholder fallback, and
- * ctx.state cache. Used by tools that already hold the bytes (readImage,
- * createImage) so they don't re-read the file.
+ * ctx.state cache. Used by tools that already hold the bytes (`readMedia`,
+ * `media`) so they don't re-read the file.
  *
  * `cacheKey` must be a stable per-slot identifier (e.g. the file path). The same
  * RAW-lines invariant applies: callers MUST NOT run the output through

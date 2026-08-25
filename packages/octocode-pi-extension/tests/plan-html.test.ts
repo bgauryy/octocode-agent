@@ -19,7 +19,7 @@ import {
   setPlanOpenerForTests,
   type RfcDoc,
 } from '../src/tools/plan-html.js';
-import { setPlan, setPlanRfc, setPlanDecisions, getPlan, clearPlan, type PlanStep } from '../src/tools/active-plan.js';
+import { setPlan, setPlanRfc, setPlanDecisions, getPlan, clearPlan, type PlanStep, type ReviewState } from '../src/tools/active-plan.js';
 
 const ORIGINAL_HOME = process.env['OCTOCODE_HOME'];
 afterEach(() => {
@@ -30,9 +30,9 @@ afterEach(() => {
 });
 
 const STEPS: PlanStep[] = [
-  { text: 'Design schema', status: 'done' },
-  { text: 'Build "core" <module>', status: 'doing' },
-  { text: 'Ship it', status: 'todo', dependsOn: [1, 2] },
+  { id: 'schema', text: 'Design schema', status: 'done' },
+  { id: 'core', text: 'Build "core" <module>', status: 'doing' },
+  { id: 'ship', text: 'Ship it', status: 'todo', dependsOnStepIds: ['schema', 'core'] },
 ];
 
 test('buildPlanMermaid draws status-classed nodes and dependency edges', () => {
@@ -64,13 +64,13 @@ test('buildPlanMarkdown renders flow gates, progress, checkboxes, and the mermai
 
 test('buildPlanPageHtml escapes dynamic checklist text and embeds the diagram', () => {
   const html = buildPlanPageHtml([
-    { text: 'Design schema', status: 'todo', dependsOn: [3, '<script>'] as unknown as number[] },
+    { id: 'lead', text: 'Design schema', status: 'todo', dependsOnStepIds: ['ship', '<script>'] },
     ...STEPS,
   ]);
   assert.match(html, /&lt;module&gt;/, 'HTML in step text is escaped');
   assert.doesNotMatch(html, /<module>/);
-  assert.match(html, /needs 3, &lt;script&gt;/, 'dependency labels are escaped');
-  assert.doesNotMatch(html, /needs 3, <script>/);
+  assert.match(html, /needs 4/, 'known stable dependency IDs resolve to current display indices');
+  assert.doesNotMatch(html, /<script>/, 'unknown dependency IDs are never rendered');
   assert.match(html, /<section><h2>Flow gates<\/h2>/);
   assert.match(html, /Discuss the plan with the user; incorporate missing points and wait for approval/);
   assert.match(html, /<pre class="mermaid">/);
@@ -157,11 +157,48 @@ test('writePlanArtifacts embeds the linked RFC and live-sync re-reads it fresh',
 
 test('buildPlanPageHtml renders the phase timeline with the current phase marked', () => {
   // A step in flight → Build is current; Research/RFC/Approve read as done.
-  const html = buildPlanPageHtml([{ text: 'a', status: 'doing' }, { text: 'b', status: 'todo' }]);
+  const html = buildPlanPageHtml([{ id: 'a', text: 'a', status: 'doing' }, { id: 'b', text: 'b', status: 'todo' }]);
   assert.match(html, /class="phase-timeline"/);
   assert.match(html, /class="ph now"><span class="ph-g">▸<\/span>Build/);
   assert.match(html, /class="ph done"><span class="ph-g">✓<\/span>Research/);
   assert.match(html, /class="ph todo"><span class="ph-g">○<\/span>Verify/);
+});
+
+test('buildPlanPageHtml uses the persisted review phase and revision for smart actions', () => {
+  const review: ReviewState = {
+    phase: 'in_review',
+    branchSnapshotId: 'snapshot',
+    generation: 3,
+    revision: 'abcdef1234567890',
+    decisions: [],
+    blockingQuestions: [],
+    comments: [],
+  };
+  const html = buildPlanPageHtml(STEPS, undefined, [], review);
+  assert.match(html, /class="ph now"><span class="ph-g">▸<\/span>Review/);
+  assert.match(html, /data-reply-command="\/octocode-plan accept abcdef1234567890"/);
+  assert.match(html, /Approve revision/);
+  assert.match(html, /data-reply-command="\/octocode-plan changes"/);
+  assert.doesNotMatch(html, /data-reply-command="\/octocode-plan start"/);
+});
+
+test('accepted plan HTML offers Start as a separate action', () => {
+  const review: ReviewState = {
+    phase: 'accepted',
+    branchSnapshotId: 'snapshot',
+    generation: 4,
+    revision: 'abcdef1234567890',
+    acceptedRevision: 'abcdef1234567890',
+    acceptedAt: new Date().toISOString(),
+    decisions: [],
+    blockingQuestions: [],
+    comments: [],
+  };
+  const html = buildPlanPageHtml(STEPS, undefined, [], review);
+  assert.match(html, /class="ph now"><span class="ph-g">▸<\/span>Accepted/);
+  assert.match(html, /data-reply-command="\/octocode-plan start"/);
+  assert.match(html, /Start implementation/);
+  assert.doesNotMatch(html, /Approve revision/);
 });
 
 test('buildPlanPageHtml renders a Decisions section only when decisions are present', () => {
@@ -195,12 +232,21 @@ test('writePlanArtifacts embeds the plan decision log', () => {
   }
 });
 
-test('openPlanHtml returns a user-visible fallback when the browser opener fails', () => {
+test('openPlanHtml returns a user-visible fallback when the browser opener fails', async () => {
   setPlanOpenerForTests((target) => ({ ok: false, message: `Could not open ${target}` }));
-  const result = openPlanHtml('http://127.0.0.1:1234/plan/');
+  const result = await openPlanHtml('http://127.0.0.1:1234/plan/');
   assert.equal(result.ok, false);
   assert.match(result.message ?? '', /Could not open/);
   assert.match(result.message ?? '', /127\.0\.0\.1/);
+});
+
+test('plan HTML includes a direct, acceptance-aware browser reply widget', () => {
+  const html = buildPlanPageHtml(STEPS);
+  assert.match(html, /Reply to the agent/);
+  assert.match(html, /__octocode\/message/);
+  assert.match(html, /Send feedback/);
+  assert.match(html, /role="status" aria-live="polite" aria-atomic="true"/);
+  assert.doesNotMatch(html, /data-reply-command=/, 'no state-changing action is shown without persisted review state');
 });
 
 test('writePlanArtifacts writes html + md under the octocode home; live sync rewrites on change', () => {
@@ -214,7 +260,10 @@ test('writePlanArtifacts writes html + md under the octocode home; live sync rew
   assert.ok(artifacts.htmlPath.startsWith(path.join(home, 'tmp', 'plan')), 'html lives under the home tmp/plan dir');
   const page = fs.readFileSync(artifacts.htmlPath, 'utf8');
   assert.match(page, /<!doctype html>/);
-  assert.match(page, /http-equiv="refresh"/, 'page auto-refreshes for live updates');
+  assert.doesNotMatch(page, /http-equiv="refresh"/, 'live updates do not blindly reload while the user is reviewing');
+  assert.match(page, /name="octocode-refresh-token"/, 'page exposes a stable change token');
+  assert.match(page, /setInterval/, 'page polls for a changed token');
+  assert.match(page, /activeElement.*textarea/, 'polling defers reload while feedback is being typed');
   assert.match(page, /cdn\.jsdelivr\.net\/npm\/mermaid/);
   const md = fs.readFileSync(artifacts.mdPath, 'utf8');
   assert.match(md, /Status: draft/);
@@ -230,6 +279,27 @@ test('writePlanArtifacts writes html + md under the octocode home; live sync rew
   syncPlanHtmlIfEnabled(STEPS);
   assert.equal(fs.existsSync(artifacts.htmlPath), false, 'sync is a no-op until armed');
   enablePlanHtmlSync(scope);
-  syncPlanHtmlIfEnabled([{ text: 'Only step', status: 'done' }]);
+  syncPlanHtmlIfEnabled([{ id: 'only', text: 'Only step', status: 'done' }]);
   assert.match(fs.readFileSync(artifacts.htmlPath, 'utf8'), /1\/1 done/);
+});
+
+test('writePlanArtifacts saves session review files privately under the workspace manifest', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-plan-session-'));
+  try {
+    const artifacts = writePlanArtifacts(workspace, STEPS, { status: 'draft', workspace })!;
+    const sessionRoot = path.join(workspace, '.octocode', 'agent');
+    assert.ok(artifacts.htmlPath.startsWith(sessionRoot));
+    assert.ok(artifacts.mdPath.startsWith(sessionRoot));
+    assert.equal(fs.statSync(artifacts.htmlPath).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(artifacts.mdPath).mode & 0o777, 0o600);
+
+    const manifestPath = path.join(path.dirname(path.dirname(artifacts.htmlPath)), 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+      producers?: { plan?: { paths?: string[] } };
+    };
+    assert.deepEqual(manifest.producers?.plan?.paths, ['plan/plan.html', 'plan/plan.md']);
+  } finally {
+    clearPlan(workspace);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
 });

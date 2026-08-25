@@ -15,6 +15,9 @@ import { registerUniqueTool } from '../src/tools/octocode-tools.js';
 import { registerEditTool } from '../src/tools/edit-tool.js';
 import { registerWriteTool } from '../src/tools/write-tool.js';
 import { registerBashTool } from '../src/tools/bash-tool.js';
+import { registerFileTool } from '../src/tools/file-tool.js';
+import { registerAskUserTool } from '../src/tools/ask-user-tool.js';
+import { registerPlanTool } from '../src/tools/plan-tool.js';
 import type { ToolDefinition, PiTheme, ToolCallResult, RenderResultOptions } from '../src/types.js';
 // ─── Stub theme ───────────────────────────────────────────────────────────────
 
@@ -318,3 +321,224 @@ describe('buildToolCallSummary', () => {
     expect(summary).toContain('+2');
   });
 });
+
+// ─── Shared load helper ───────────────────────────────────────────────────────
+
+function loadTool(
+  registerFn: (pi: { registerTool?: (d: ToolDefinition) => void }, T: unknown, names: Set<string>, reg: unknown) => void,
+  toolName: string,
+): ToolDefinition {
+  const tools = new Map<string, ToolDefinition>();
+  const pi = { registerTool: (d: ToolDefinition) => tools.set(d.name, d) };
+  registerFn(pi, Type, new Set(), (_p: unknown, _names: unknown, def: ToolDefinition) => {
+    pi.registerTool(def);
+  });
+  return tools.get(toolName)!;
+}
+
+// ─── file-tool custom renderer ────────────────────────────────────────────────
+
+describe('file-tool renderResult', () => {
+  it('write + path: renders op \u00b7 path with no dangling separator', () => {
+    const tool = loadTool(registerFileTool as never, 'file');
+    const result: ToolCallResult = {
+      content: [{ type: 'text', text: 'written' }],
+      details: { operation: 'write', path: '/src/foo.ts', bytes: 42 },
+      isError: false,
+    };
+    const lines = render(tool.renderResult!(result, { isPartial: false }, stubTheme));
+    const joined = lines.join('\n');
+    expect(joined).toContain('write');
+    expect(joined).toContain('/src/foo.ts');
+    // The separator appears between op and path, not at the end.
+    expect(lines[0]).not.toMatch(/\u00b7\s*$/);
+  });
+
+  it('write without path: no dangling \u00b7 separator', () => {
+    const tool = loadTool(registerFileTool as never, 'file');
+    const result: ToolCallResult = {
+      content: [{ type: 'text', text: 'written' }],
+      details: { operation: 'write' }, // deliberately no path key
+      isError: false,
+    };
+    const lines = render(tool.renderResult!(result, { isPartial: false }, stubTheme));
+    expect(lines[0]).toContain('write');
+    // Must NOT produce a dangling «·» at the end of the line.
+    expect(lines[0]).not.toMatch(/\u00b7\s*$/);
+  });
+
+  it('isPartial: shows spinner (not static \u2026 prefix)', () => {
+    const tool = loadTool(registerFileTool as never, 'file');
+    const result: ToolCallResult = { content: [], details: undefined, isError: false };
+    const lines = render(tool.renderResult!(result, { isPartial: true }, stubTheme));
+    expect(lines).toHaveLength(1);
+    // The old output was the static string «… file (Octocode)» — now it uses the
+    // spinner frame (a rotating character), so the line must NOT start with the
+    // literal … glyph that the old code produced.
+    const stripped = lines[0].replace(/\x1b\[[0-9;]*m/g, '');
+    expect(stripped).not.toMatch(/^…/);
+    // The tool name must still be present.
+    expect(stripped).toContain('file (Octocode)');
+  });
+
+  it('renderCall: reasoning appears on a second line', () => {
+    const tool = loadTool(registerFileTool as never, 'file');
+    const lines = render(
+      tool.renderCall!(
+        { queries: [{ type: 'write', path: '/src/x.ts', reasoning: 'create fixture for test' }] },
+        stubTheme,
+      ),
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain('create fixture for test');
+  });
+
+  it('renderCall: no second line when reasoning is absent', () => {
+    const tool = loadTool(registerFileTool as never, 'file');
+    const lines = render(
+      tool.renderCall!(
+        { queries: [{ type: 'write', path: '/src/x.ts' }] },
+        stubTheme,
+      ),
+    );
+    expect(lines).toHaveLength(1);
+  });
+});
+
+// ─── askUser custom renderer ──────────────────────────────────────────────────
+
+describe('askUser renderCall + renderResult', () => {
+  it('renderCall: reasoning appears on second line when provided', () => {
+    const tool = loadTool(registerAskUserTool as never, 'askUser');
+    const lines = render(
+      tool.renderCall!(
+        {
+          queries: [{
+            question: 'Which approach?',
+            options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }],
+            reasoning: 'need user preference before committing',
+          }],
+        },
+        stubTheme,
+      ),
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('Which approach?');
+    expect(lines[1]).toContain('need user preference before committing');
+  });
+
+  it('renderCall: only one line when reasoning is absent', () => {
+    const tool = loadTool(registerAskUserTool as never, 'askUser');
+    const lines = render(
+      tool.renderCall!(
+        { queries: [{ question: 'Confirm?', options: [{ value: 'y', label: 'Yes' }] }] },
+        stubTheme,
+      ),
+    );
+    expect(lines).toHaveLength(1);
+  });
+
+  it('renderResult isPartial: shows spinner not silent blank', () => {
+    const tool = loadTool(registerAskUserTool as never, 'askUser');
+    const result: ToolCallResult = { content: [], details: undefined, isError: false };
+    const lines = render(tool.renderResult!(result, { isPartial: true }, stubTheme));
+    expect(lines).toHaveLength(1);
+    // Should show the tool name while waiting for input.
+    const stripped = lines[0].replace(/\x1b\[[0-9;]*m/g, '');
+    expect(stripped).toContain('askUser');
+  });
+
+  it('renderResult final: selected status shows \u2713 and label', () => {
+    const tool = loadTool(registerAskUserTool as never, 'askUser');
+    const result: ToolCallResult = {
+      content: [{ type: 'text', text: 'selected' }],
+      details: { status: 'selected', value: 'a', label: 'Option A' },
+      isError: false,
+    };
+    const lines = render(tool.renderResult!(result, { isPartial: false }, stubTheme));
+    const joined = lines.join('\n');
+    expect(joined).toContain('\u2713'); // success glyph
+    expect(joined).toContain('Option A');
+  });
+
+  it('renderResult final: cancelled shows cancel indicator', () => {
+    const tool = loadTool(registerAskUserTool as never, 'askUser');
+    const result: ToolCallResult = {
+      content: [{ type: 'text', text: 'cancelled' }],
+      details: { status: 'cancelled' },
+      isError: false,
+    };
+    const lines = render(tool.renderResult!(result, { isPartial: false }, stubTheme));
+    const stripped = lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+    expect(stripped).toContain('cancelled');
+  });
+});
+
+// ─── plan-tool custom renderer ────────────────────────────────────────────────
+
+describe('plan-tool renderCall + renderResult', () => {
+  it('renderCall: space between title and action parenthetical', () => {
+    const tool = loadTool(registerPlanTool as never, 'plan');
+    const lines = render(
+      tool.renderCall!(
+        { queries: [{ action: 'start', index: 2 }] },
+        stubTheme,
+      ),
+    );
+    // Must not produce 'plan(start)' without a space — should be 'plan (start #2)'
+    expect(lines[0]).not.toMatch(/plan\(/);
+    expect(lines[0]).toContain('start');
+  });
+
+  it('renderCall: reasoning on second line when provided', () => {
+    const tool = loadTool(registerPlanTool as never, 'plan');
+    const lines = render(
+      tool.renderCall!(
+        { queries: [{ action: 'complete', reasoning: 'all acceptance criteria met' }] },
+        stubTheme,
+      ),
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain('all acceptance criteria met');
+  });
+
+  it('renderCall: only one line when reasoning is absent', () => {
+    const tool = loadTool(registerPlanTool as never, 'plan');
+    const lines = render(
+      tool.renderCall!(
+        { queries: [{ action: 'show' }] },
+        stubTheme,
+      ),
+    );
+    expect(lines).toHaveLength(1);
+  });
+
+  it('renderResult isPartial: shows spinner', () => {
+    const tool = loadTool(registerPlanTool as never, 'plan');
+    const result: ToolCallResult = { content: [], details: undefined, isError: false };
+    const lines = render(tool.renderResult!(result, { isPartial: true }, stubTheme));
+    expect(lines).toHaveLength(1);
+    const stripped = lines[0].replace(/\x1b\[[0-9;]*m/g, '');
+    expect(stripped).toContain('plan');
+  });
+
+  it('renderResult step summary: shows done/total counts', () => {
+    const tool = loadTool(registerPlanTool as never, 'plan');
+    const result: ToolCallResult = {
+      content: [{ type: 'text', text: '\u25c6 plan 1/3' }],
+      details: {
+        action: 'complete',
+        steps: [
+          { id: '1', text: 'step one', status: 'done' },
+          { id: '2', text: 'step two', status: 'todo' },
+          { id: '3', text: 'step three', status: 'todo' },
+        ],
+      },
+      isError: false,
+    };
+    const lines = render(tool.renderResult!(result, { isPartial: false }, stubTheme));
+    const joined = lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+    expect(joined).toContain('1/3');
+  });
+});
+

@@ -1,5 +1,6 @@
 import type { SkillInfo } from '../types.js';
 import { truncatePlainToWidth } from './render-helpers.js';
+import { escapePromptMetadata } from './prompt-safety.js';
 
 // Dashboard caps: on-demand output, so it can afford the full picture.
 const MAX_SKILLS = 80;
@@ -9,6 +10,17 @@ const MAX_DESCRIPTION_CHARS = 180;
 // /octocode-skills dashboard instead of a silent cut ("compaction is budget").
 const MAX_PROMPT_SKILLS = 30;
 const MAX_PROMPT_DESCRIPTION_CHARS = 120;
+
+const PROMPT_OWNED_SKILLS = new Set([
+  // Pi already owns Awareness through its <awareness> prompt section and first-class
+  // tools. Keep both external-agent skill names off the Pi model-facing surface.
+  'octocode-awareness',
+  'octocode-awareness-lite',
+]);
+
+export function isPromptOwnedSkill(name: string): boolean {
+  return PROMPT_OWNED_SKILLS.has(clean(name).toLowerCase());
+}
 
 function clean(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
@@ -35,14 +47,14 @@ function skillSortKey(skill: SkillInfo): string {
  */
 function validSkills(skills: SkillInfo[] | undefined): SkillInfo[] {
   return (skills ?? [])
-    .filter((skill) => clean(skill.name).length > 0)
+    .filter((skill) => clean(skill.name).length > 0 && !isPromptOwnedSkill(skill.name))
     .sort((a, b) => skillSortKey(a).localeCompare(skillSortKey(b)));
 }
 
 function formatSkillLine(skill: SkillInfo, descriptionLimit = MAX_DESCRIPTION_CHARS): string {
-  const description = skill.description ? truncate(skill.description, descriptionLimit) : '(no description)';
+  const description = skill.description ? escapePromptMetadata(truncate(skill.description, descriptionLimit)) : '(no description)';
   const source = [skill.source, skill.scope].filter(Boolean).join('/');
-  return `- ${skill.name}: ${description}${source ? ` [${source}]` : ''}`;
+  return `- ${escapePromptMetadata(skill.name)}: ${description}${source ? ` [${escapePromptMetadata(source)}]` : ''}`;
 }
 
 export interface SkillsDashboardExtras {
@@ -67,8 +79,8 @@ export function renderSkillsDashboard(skills: SkillInfo[] | undefined, extras: S
     ...(usageLines.length > 0 ? usageLines : ['(none yet — the agent loads them via the skill tool when a task matches)']),
     '',
     'How to use',
-    'The agent loads skills with skill({action:"load", name:"…", reason:"why it matches"}); force one with /skill:<name>.',
-    'Install bundled skills with: npx octocode skill --name <skill> --platform pi',
+    'The agent loads skills with skill({queries:[{reasoning:"load matching skill", type:"load", action:"load", name:"…", reason:"why it matches"}]}); force one with /skill:<name>.',
+    'Install bundled skills with: npx octocode skill install <skill> --platform pi',
     'Refresh discovery with /reload after installs/removals.',
     ...(extras.discoveryPath ? [`Machine-readable inventory (skills + MCP config + tools): ${extras.discoveryPath}`] : []),
   ].join('\n');
@@ -84,7 +96,7 @@ export function renderAvailableSkillsAddendum(skills: SkillInfo[] | undefined): 
 
   return [
     '<available_skills>',
-    'Skills available by name this turn. Names/descriptions are enough to decide whether a skill matches; do not preload every skill body. Use this catalog with the <skills> policy: when the user names a skill or the task context matches a description, load the minimal matching skill BEFORE acting via skill({action:"load", name:"…", reason:"why it matches"}) — it returns the full SKILL.md plus the skill directory and files. skill({action:"list"}) refreshes the catalog with usage. Do not load skills as ceremony.',
+    'Skills available by name this turn. Names/descriptions are enough to decide whether a skill matches; do not preload every skill body. Use this catalog with the <skills> policy: when the user names a skill or the task context matches a description, load the minimal matching skill BEFORE acting via skill({queries:[{reasoning:"load matching skill", type:"load", action:"load", name:"…", reason:"why it matches"}]}) — it returns the full SKILL.md plus the skill directory and files. skill({queries:[{reasoning:"refresh skill catalog", type:"load", action:"list"}]}) refreshes the catalog with usage. Do not load skills as ceremony.',
     ...lines,
     '</available_skills>',
   ].join('\n');

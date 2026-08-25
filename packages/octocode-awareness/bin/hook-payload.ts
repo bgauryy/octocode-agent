@@ -3,13 +3,13 @@
  *
  * Shell hook files are intentionally thin wrappers. All parsing, file presence,
  * verification, briefing, and session-capture logic lives here so Claude/Codex
- * skill hooks and Pi native adapters share the same package-owned behavior.
+ * skill and project hooks share the same package-owned behavior.
  */
 import { createHash } from 'node:crypto';
 import { basename, relative, resolve } from 'node:path';
 import { connectDb, resolveDbPath } from '../src/db.js';
 import { canonicalizePath } from '../src/git.js';
-import { extractPiWriteTargetPaths } from '../src/pi-hooks.js';
+import { extractWriteTargetPaths } from '../src/write-targets.js';
 
 export type ShellHookHost = 'claude' | 'codex' | 'cursor';
 
@@ -311,7 +311,7 @@ export function extractFiles(payload: Record<string, unknown>): string[] {
   const input = payloadForFileExtraction(payload);
   const inputObj = objectOrEmpty(input);
   const toolName = payload.tool_name ?? payload.toolName ?? payload.name ?? inputObj.tool_name ?? inputObj.toolName ?? '';
-  return extractPiWriteTargetPaths(toolName, input, { assumeWrite: true });
+  return extractWriteTargetPaths(toolName, input, { assumeWrite: true });
 }
 
 export function resolveHookPath(file: string, cwd = process.cwd()): string {

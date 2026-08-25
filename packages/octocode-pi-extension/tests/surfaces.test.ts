@@ -8,7 +8,7 @@ import {
   loadProfile,
   profileToPiArgs,
 } from '../src/surfaces.js';
-import { getAwarenessCLIPath } from '../src/assets.js';
+import { getAwarenessCLIPath, resolveAwarenessLiteCliPath } from '../src/assets.js';
 
 const selfPath = fileURLToPath(import.meta.url);
 
@@ -46,14 +46,14 @@ describe('buildSurfaceSpec — installed awareness-lite CLI', () => {
     expect(spec.cmd).toBe(process.execPath);
     expect(spec.args.at(-3)).toBe('memory');
     expect(spec.args.slice(-2)).toEqual(['recall', 'x']);
-    expect(spec.args[0]).toMatch(/octocode-awareness-lite.*cli\.js$/);
+    expect(spec.args[0]).toBe(resolveAwarenessLiteCliPath());
   });
 
   it('awareness passes through raw args through the local scoped package CLI', () => {
     const spec = expectCommand(buildSurfaceSpec('awareness', ['status']));
     expect(spec.cmd).toBe(process.execPath);
     expect(spec.args.slice(-1)).toEqual(['status']);
-    expect(spec.args[0]).toMatch(/octocode-awareness-lite.*cli\.js$/);
+    expect(spec.args[0]).toBe(resolveAwarenessLiteCliPath());
   });
 });
 
@@ -62,9 +62,9 @@ describe('getAwarenessCLIPath', () => {
     const prev = process.env.OCTOCODE_AWARENESS_CLI;
     try {
       process.env.OCTOCODE_AWARENESS_CLI = selfPath;
-      expect(getAwarenessCLIPath()).toMatch(/octocode-awareness-lite.*cli\.js/);
+      expect(getAwarenessCLIPath()).toBe(`${process.execPath} ${resolveAwarenessLiteCliPath()}`);
       process.env.OCTOCODE_AWARENESS_CLI = '/no/such/file.js';
-      expect(getAwarenessCLIPath()).toMatch(/octocode-awareness-lite.*cli\.js/);
+      expect(getAwarenessCLIPath()).toBe(`${process.execPath} ${resolveAwarenessLiteCliPath()}`);
     } finally {
       if (prev === undefined) delete process.env.OCTOCODE_AWARENESS_CLI;
       else process.env.OCTOCODE_AWARENESS_CLI = prev;

@@ -9,6 +9,18 @@ import { resetApprovalStore } from '../src/tools/approval.js';
 import { enterPlanMode, exitPlanMode } from '../src/tools/plan-mode.js';
 import type { ToolCallResult, ToolDefinition } from '../src/types.js';
 
+function executeBash(
+  tool: object,
+  id: string,
+  params: Record<string, unknown>,
+  signal?: AbortSignal,
+  ctx?: { cwd?: string },
+): Promise<ToolCallResult> {
+  const definition = tool as ToolDefinition;
+  const prepared = definition.prepareArguments?.(params) as Record<string, unknown> | undefined;
+  return definition.execute(id, prepared ?? params, signal, undefined, ctx);
+}
+
 test('extractBashWriteTargets finds redirects and tee', () => {
   const cwd = '/tmp/work';
   assert.deepEqual(extractBashWriteTargets('echo hi > out.txt', cwd), [
@@ -58,11 +70,11 @@ test('bash abort terminates the shell process and resolves without hanging', asy
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-bash-abort-'));
   const controller = new AbortController();
   try {
-    const promise = bash.execute(
+    const promise = executeBash(
+      bash,
       'abort',
       { command: 'trap "exit 143" TERM; while true; do echo err >&2; sleep 0.05; done', reasoning: 'verify abort handling for long-running commands' },
       controller.signal,
-      undefined,
       { cwd: tmp },
     );
     setTimeout(() => controller.abort(), 50);
@@ -112,19 +124,19 @@ test('bash override blocks writes outside allowed roots', async () => {
   try {
     await assert.rejects(
       () =>
-        bash.execute(
+        executeBash(
+          bash,
           '1',
           { command: `echo pwned > /usr/octocode-bash-block-${process.pid}.txt`, reasoning: 'verify path guard blocks unsafe write targets' },
-          undefined,
           undefined,
           { cwd: tmp },
         ),
       /bash write blocked|outside the allowed roots/,
     );
-    const ok = await bash.execute(
+    const ok = await executeBash(
+      bash,
       '2',
       { command: 'echo hello > ok.txt && cat ok.txt', reasoning: 'verify allowed writes inside the workspace still run' },
-      undefined,
       undefined,
       { cwd: tmp },
     );
@@ -148,8 +160,8 @@ test('bash override rejects missing reasoning', async () => {
     setActiveTools: () => undefined,
   });
   await assert.rejects(
-    () => tools.get('bash')!.execute('missing-reasoning', { command: 'echo hi' }, undefined, undefined, { cwd: os.tmpdir() }),
-    /reasoning is required/,
+    () => executeBash(tools.get('bash')!, 'missing-reasoning', { queries: [{ command: 'echo hi' }] }, undefined, { cwd: os.tmpdir() }),
+    /requires non-empty reasoning/,
   );
 });
 
@@ -199,7 +211,7 @@ test('bash execution requires approval for obvious environment exfiltration and 
   resetApprovalStore();
   const tool = loadBashTool();
   await assert.rejects(
-    () => tool.execute('env-dump', { command: 'env', reasoning: 'verify env exfil approval' }, undefined, undefined, { cwd: os.tmpdir() } as never),
+    () => executeBash(tool, 'env-dump', { command: 'env', reasoning: 'verify env exfil approval' }, undefined, { cwd: os.tmpdir() }),
     /Expose inherited environment variables.*requires user approval.*non-interactive/i,
   );
 });
@@ -216,12 +228,12 @@ test('bash execution runs obvious environment exfiltration after explicit approv
       hasUI: true,
       ui: { select: async () => 'Yes (run once)' },
     };
-    const ok = await tool.execute(
+    const ok = await executeBash(
+      tool,
       'env-approved',
       { command: 'printf "$OCTOCODE_BASH_ENV_TEST_TOKEN"', reasoning: 'verify approved env access still inherits env' },
       undefined,
-      undefined,
-      ctx as never,
+      ctx,
     );
     assert.equal(ok.isError ?? false, false);
     assert.match((ok.content[0] as { text: string }).text, /visible-after-approval/);
@@ -235,17 +247,19 @@ test('bash execution runs obvious environment exfiltration after explicit approv
 test('bash execution blocks mutating commands while plan mode is active', async () => {
   const tool = loadBashTool();
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-bash-plan-mode-'));
-  enterPlanMode();
+  const ctx = { cwd: tmp } as never;
+  enterPlanMode(ctx);
   try {
     await assert.rejects(
-      () => tool.execute('plan-write', { command: 'echo hi > out.txt', reasoning: 'verify plan mode blocks mutating bash' }, undefined, undefined, { cwd: tmp } as never),
-      /Plan mode: no edits until the plan is approved/,
+      () => executeBash(tool, 'plan-write', { command: 'echo hi > out.txt', reasoning: 'verify plan mode blocks mutating bash' }, undefined, ctx),
+      /shell, and external effects stay blocked until the user separately starts implementation/,
     );
-    const ok = await tool.execute('plan-read', { command: 'pwd', reasoning: 'verify read-only bash still works in plan mode' }, undefined, undefined, { cwd: tmp } as never);
-    assert.notEqual(ok.isError, true);
-    assert.match((ok.content[0] as { text: string }).text, new RegExp(tmp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    await assert.rejects(
+      () => executeBash(tool, 'plan-read', { command: 'pwd', reasoning: 'verify shell stays conservatively disabled before Start' }, undefined, ctx),
+      /shell, and external effects stay blocked/,
+    );
   } finally {
-    exitPlanMode();
+    exitPlanMode(ctx);
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });

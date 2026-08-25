@@ -1,9 +1,9 @@
 /**
  * Compaction race-hardening tests.
  *
- * Four independent triggers can start a compaction (pi's built-in threshold
- * auto-compaction, the extension's 80% turn_end watcher, the model-called
- * manage_context tool, and a user /compact). Pi's ctx.compact() has no
+ * Three independent triggers can start a compaction (pi's built-in threshold
+ * auto-compaction, the extension's 80% turn_end watcher, and a user /compact).
+ * Pi's ctx.compact() has no
  * concurrency guard and session.compact() throws "Already compacted" when it
  * lands right after a finished compaction — users saw red error lines right
  * after a successful [compaction] entry. These tests pin the arbiter that
@@ -18,7 +18,7 @@ import { afterEach, beforeEach, test } from 'vitest';
 import { Type } from 'typebox';
 import type { CompactOptions, PiInstance, ToolDefinition } from '../src/types.js';
 import { registerContextTools, resetAutoCompactState } from '../src/tools/context-tools.js';
-import { registerCompactionHooks } from '../src/tools/compaction-hooks.js';
+import { registerCompactionHooks, resetCompactionCheckpointDedupe } from '../src/tools/compaction-hooks.js';
 import {
   markCompactionInFlight,
   isCompactionInFlight,
@@ -34,6 +34,7 @@ interface Harness {
   tools: Map<string, ToolDefinition>;
   notes: Array<{ msg: string; level?: string }>;
   sentUserMessages: Array<{ content: unknown; opts?: Record<string, unknown> }>;
+  sentMessages: Array<{ customType?: string; content?: unknown; details?: unknown }>;
   fire(event: string, evt: unknown, ctx: unknown): Promise<unknown[]>;
 }
 
@@ -42,11 +43,15 @@ function makeHarness(): Harness {
   const handlers = new Map<string, Handler[]>();
   const notes: Array<{ msg: string; level?: string }> = [];
   const sentUserMessages: Array<{ content: unknown; opts?: Record<string, unknown> }> = [];
+  const sentMessages: Array<{ customType?: string; content?: unknown; details?: unknown }> = [];
   const pi = {
     registerTool: (def: ToolDefinition) => tools.set(def.name, def),
     registerCommand: () => undefined,
     sendUserMessage: (content: unknown, opts?: Record<string, unknown>) => {
       sentUserMessages.push({ content, opts });
+    },
+    sendMessage: (msg: { customType?: string; content?: unknown; details?: unknown }) => {
+      sentMessages.push(msg);
     },
     on: (event: string, handler: Handler) => {
       const arr = handlers.get(event) ?? [];
@@ -67,7 +72,7 @@ function makeHarness(): Harness {
   registerContextTools(pi, Type, new Set<string>(), registerFn as never, notify as never);
   const fire = (event: string, evt: unknown, ctx: unknown) =>
     Promise.all((handlers.get(event) ?? []).map((h) => h(evt, ctx)));
-  return { tools, notes, sentUserMessages, fire };
+  return { tools, notes, sentUserMessages, sentMessages, fire };
 }
 
 interface CtxOptions {
@@ -107,7 +112,9 @@ beforeEach(() => {
   resetAutoCompactState();
   resetCompactionArbiterForTests();
   resetCompactionResumeStateForTests();
+  resetCompactionCheckpointDedupe();
   clearPlan(activePlanScope());
+  clearPlan(activePlanScope(makeCtx().ctx));
 });
 
 afterEach(() => {
@@ -141,7 +148,6 @@ test('auto-compaction skips a threshold crossing when no unfinished plan work re
 
 test('auto-compaction skips terminal completion answers even if stale plan work remains', async () => {
   const { fire } = makeHarness();
-  setPlan(activePlanScope(), ['stale unfinished step']);
   const { ctx, compactCalls } = makeCtx({
     tokens: 90,
     branch: [
@@ -155,6 +161,7 @@ test('auto-compaction skips terminal completion answers even if stale plan work 
       } as never,
     ],
   });
+  setPlan(activePlanScope(ctx), ['stale unfinished step']);
   await fire('turn_end', TURN_STOP, ctx);
   assert.equal(compactCalls.length, 0, 'terminal completion answers should not show a surprise compaction spinner');
 
@@ -165,13 +172,13 @@ test('auto-compaction skips terminal completion answers even if stale plan work 
 
 test('auto-compaction skips stale unfinished plan state with no active doing step', async () => {
   const { fire } = makeHarness();
-  const scope = activePlanScope();
+  const { ctx, compactCalls } = makeCtx({ tokens: 90, branch: [{ type: 'message' }] });
+  const scope = activePlanScope(ctx);
   adoptPlanFromBranch(scope, [{
     type: 'custom',
     customType: PLAN_ENTRY_TYPE,
     data: { steps: [{ text: 'stale todo from an old plan', status: 'todo' }] },
   }]);
-  const { ctx, compactCalls } = makeCtx({ tokens: 90, branch: [{ type: 'message' }] });
 
   await fire('turn_end', TURN_STOP, ctx);
   assert.equal(compactCalls.length, 0, 'stale unfinished plan state is not active work');
@@ -183,8 +190,8 @@ test('auto-compaction skips stale unfinished plan state with no active doing ste
 
 test('auto-compaction fires on a fresh threshold crossing with active plan work', async () => {
   const { fire } = makeHarness();
-  setPlan(activePlanScope(), ['continue after compaction']);
   const { ctx, compactCalls } = makeCtx({ tokens: 90 });
+  setPlan(activePlanScope(ctx), ['continue after compaction']);
   await fire('turn_end', TURN_STOP, ctx);
   assert.equal(compactCalls.length, 1);
 });
@@ -192,14 +199,25 @@ test('auto-compaction fires on a fresh threshold crossing with active plan work'
 test('auto-compaction skips aborted turns — their usage is stale (often the very turn a compact() aborted)', async () => {
   const { fire } = makeHarness();
   const { ctx, compactCalls } = makeCtx({ tokens: 90 });
+  setPlan(activePlanScope(ctx), ['continue after compaction']);
   await fire('turn_end', { message: { stopReason: 'aborted', usage: { output: 5 } } }, ctx);
   assert.equal(compactCalls.length, 0);
 });
 
+test('auto-compaction skips error turns — API 4xx/5xx errors report stale context size and the session may be exiting', async () => {
+  const { fire } = makeHarness();
+  const { ctx, compactCalls } = makeCtx({ tokens: 90 });
+  // Active plan work and above-threshold context: without the error guard these
+  // conditions would trigger ctx.compact(), wasting budget and running post-session.
+  setPlan(activePlanScope(ctx), ['continue after compaction']);
+  await fire('turn_end', { message: { stopReason: 'error' } }, ctx);
+  assert.equal(compactCalls.length, 0, 'must not compact after an API error turn');
+});
+
 test('auto-compaction stands down while another compaction is in flight (session_before_compact fired)', async () => {
   const { fire } = makeHarness();
-  setPlan(activePlanScope(), ['continue after compaction']);
   const { ctx, compactCalls } = makeCtx({ tokens: 90 });
+  setPlan(activePlanScope(ctx), ['continue after compaction']);
   await fire(
     'session_before_compact',
     { preparation: {}, reason: 'threshold', willRetry: false },
@@ -223,26 +241,58 @@ test('session_compact clears the in-flight mark so a later crossing compacts aga
   // Edge trigger: dip below the threshold, then cross it again with unfinished work.
   const low = makeCtx({ tokens: 10 });
   await fire('turn_end', TURN_STOP, { ...low.ctx, compact: low.ctx.compact });
-  setPlan(activePlanScope(), ['continue after compaction']);
+  setPlan(activePlanScope(ctx), ['continue after compaction']);
   await fire('turn_end', TURN_STOP, ctx);
   assert.equal(compactCalls.length, 1, 'compacts again once the previous compaction finished');
 });
 
+test('session_compact willRetry preserves in-flight arbiter and prevents duplicate compact triggers', async () => {
+  // Regression: before the fix, clearCompactionInFlight() and clearAllReadStates()
+  // fired unconditionally before the willRetry guard, enabling reentrant
+  // auto-compaction to race the retry window.
+  const { fire } = makeHarness();
+  const { ctx, compactCalls } = makeCtx({ tokens: 90 });
+  setPlan(activePlanScope(ctx), ['step to finish after compaction']);
+
+  // session_before_compact marks in-flight.
+  await fire('session_before_compact', { preparation: {}, reason: 'threshold', willRetry: false }, ctx);
+  assert.equal(isCompactionInFlight(), true, 'in-flight mark set after session_before_compact');
+
+  // Pi retries the compaction (first pass failed). The in-flight mark must
+  // survive the willRetry pass so turn_end cannot race with a second compact.
+  await fire('session_compact', { compactionEntry: {}, reason: 'threshold', willRetry: true }, ctx);
+  assert.equal(isCompactionInFlight(), true, 'in-flight mark preserved during willRetry pass');
+
+  // turn_end fires in the retry window — must NOT trigger a second auto-compact.
+  await fire('turn_end', TURN_STOP, ctx);
+  assert.equal(compactCalls.length, 0, 'no duplicate compact triggered while willRetry in-flight');
+
+  // Successful retry clears the in-flight mark.
+  await fire('session_compact', { compactionEntry: {}, reason: 'threshold', willRetry: false }, ctx);
+  assert.equal(isCompactionInFlight(), false, 'in-flight mark cleared after successful compaction');
+
+  // Edge trigger: dip below the threshold, then cross again with active plan work.
+  const low = makeCtx({ tokens: 10 });
+  await fire('turn_end', TURN_STOP, low.ctx);
+  await fire('turn_end', TURN_STOP, ctx);
+  assert.equal(compactCalls.length, 1, 'compacts once the successful compaction cleared the arbiter');
+});
+
 test('auto-compaction skips when the branch tip is already a compaction entry (pi would throw "Already compacted")', async () => {
   const { fire } = makeHarness();
-  setPlan(activePlanScope(), ['continue after compaction']);
   const { ctx, compactCalls } = makeCtx({
     tokens: 90,
     branch: [{ type: 'message' }, { type: 'compaction' }],
   });
+  setPlan(activePlanScope(ctx), ['continue after compaction']);
   await fire('turn_end', TURN_STOP, ctx);
   assert.equal(compactCalls.length, 0);
 });
 
 test('auto-compaction treats a losing "Already compacted" race as a benign info-level skip', async () => {
   const { fire, notes } = makeHarness();
-  setPlan(activePlanScope(), ['continue after compaction']);
   const { ctx, compactCalls } = makeCtx({ tokens: 90 });
+  setPlan(activePlanScope(ctx), ['continue after compaction']);
   await fire('turn_end', TURN_STOP, ctx);
   assert.equal(compactCalls.length, 1);
   compactCalls[0]!.onError?.(new Error('Already compacted'));
@@ -255,8 +305,8 @@ test('auto-compaction treats a losing "Already compacted" race as a benign info-
 
 test('auto-compaction treats Pi undefined-signal crash after saved compaction as a benign skip', async () => {
   const { fire, notes } = makeHarness();
-  setPlan(activePlanScope(), ['continue after compaction']);
   const { ctx, compactCalls } = makeCtx({ tokens: 90 });
+  setPlan(activePlanScope(ctx), ['continue after compaction']);
   await fire('turn_end', TURN_STOP, ctx);
   assert.equal(compactCalls.length, 1);
   Object.assign(ctx, { sessionManager: { getBranch: () => [{ type: 'message' }, { type: 'compaction' }] } });
@@ -280,66 +330,11 @@ test('session_compact does not auto-resume user or Pi compactions without Octoco
   assert.deepEqual(harness.sentUserMessages, []);
 });
 
-// ─── manage_context tool ─────────────────────────────────────────────────────
+// ─── public surface ──────────────────────────────────────────────────────────
 
-async function executeManageContext(harness: Harness, ctx: unknown) {
-  const tool = harness.tools.get('manage_context')!;
-  return tool.execute('call-id', { type: 'compact' }, undefined, undefined, ctx as never);
-}
-
-test('manage_context treats "Already compacted" onError as a benign info-level skip', async () => {
+test('context automation does not register a model-callable context tool', () => {
   const harness = makeHarness();
-  const { ctx, compactCalls } = makeCtx({ tokens: 90 });
-  await executeManageContext(harness, ctx);
-  assert.equal(compactCalls.length, 1);
-  compactCalls[0]!.onError?.(new Error('Already compacted'));
-  assert.ok(!harness.notes.some((n) => n.level === 'error'));
-  assert.ok(
-    harness.notes.some((n) => n.level === 'info' && /already compacted/i.test(n.msg)),
-  );
-});
-
-test('manage_context auto-resumes even when Pi session_compact.fromExtension is false', async () => {
-  const harness = makeHarness();
-  const { ctx, compactCalls } = makeCtx({ tokens: 90 });
-  await executeManageContext(harness, ctx);
-  assert.equal(compactCalls.length, 1);
-  compactCalls[0]!.onComplete?.();
-  await harness.fire(
-    'session_compact',
-    { compactionEntry: {}, fromExtension: false, reason: 'manual', willRetry: false },
-    ctx,
-  );
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(harness.sentUserMessages.length, 1);
-  assert.match(String(harness.sentUserMessages[0]!.content), /Compaction is complete\./);
-  assert.match(String(harness.sentUserMessages[0]!.content), /Compaction doc: .*sessions\/test-session\/latest\.md/);
-  assert.equal(fs.existsSync(path.join(testHome, 'tmp', 'compaction', 'sessions', 'test-session', 'latest.md')), true);
-  assert.match(String(harness.sentUserMessages[0]!.content), /Re-orient from the compacted context/);
-  assert.equal(harness.sentUserMessages[0]!.opts?.deliverAs, 'followUp');
-});
-
-test('manage_context downgrades the expected mid-turn aborted assistant message', async () => {
-  const harness = makeHarness();
-  const { ctx } = makeCtx({ tokens: 90 });
-  await executeManageContext(harness, ctx);
-
-  const [replacement] = await harness.fire(
-    'message_end',
-    { message: { role: 'assistant', stopReason: 'aborted', errorMessage: 'Operation aborted', content: [] } },
-    ctx,
-  ) as Array<{ message?: { stopReason?: string; errorMessage?: string; content?: Array<{ text?: string }> } } | undefined>;
-
-  assert.equal(replacement?.message?.stopReason, 'stop');
-  assert.equal(replacement?.message?.errorMessage, undefined);
-  assert.match(replacement?.message?.content?.[0]?.text ?? '', /Compaction interrupted this turn/);
-
-  const [second] = await harness.fire(
-    'message_end',
-    { message: { role: 'assistant', stopReason: 'aborted', errorMessage: 'Operation aborted', content: [] } },
-    ctx,
-  );
-  assert.equal(second, undefined, 'suppression is one-shot and must not hide later aborts');
+  assert.equal(harness.tools.has('manage_context'), false);
 });
 
 test('message_end leaves ordinary aborted assistant messages untouched', async () => {
@@ -353,62 +348,41 @@ test('message_end leaves ordinary aborted assistant messages untouched', async (
   assert.equal(replacement, undefined);
 });
 
-test('manage_context pre-flight: skips when the branch tip is already a compaction entry', async () => {
-  const harness = makeHarness();
-  const { ctx, compactCalls } = makeCtx({
-    tokens: 90,
-    branch: [{ type: 'message' }, { type: 'compaction' }],
-  });
-  const result = await executeManageContext(harness, ctx);
-  assert.equal(compactCalls.length, 0, 'must not call compact into a guaranteed throw');
-  assert.notEqual(result.isError, true);
-  assert.match((result.content[0] as { text: string }).text, /just compacted|already compacted/i);
-});
-
-test('manage_context pre-flight: skips when context usage is unknown (right after a compaction)', async () => {
-  const harness = makeHarness();
-  const { ctx, compactCalls } = makeCtx({ tokens: null });
-  const result = await executeManageContext(harness, ctx);
-  assert.equal(compactCalls.length, 0);
-  assert.notEqual(result.isError, true);
-  assert.match((result.content[0] as { text: string }).text, /just compacted|unknown/i);
-});
-
-test('manage_context reports an in-flight compaction instead of racing it', async () => {
+test('auto-compaction downgrades the abort message its own compact() causes (no raw "aborted" leak)', async () => {
   const harness = makeHarness();
   const { ctx, compactCalls } = makeCtx({ tokens: 90 });
-  await harness.fire(
-    'session_before_compact',
-    { preparation: {}, reason: 'manual', willRetry: false },
+  setPlan(activePlanScope(ctx), ['continue after compaction']);
+
+  // turn_end crosses 80% with active work → watcher calls ctx.compact() and
+  // must arm abort suppression for the single abort that compact() will cause.
+  await harness.fire('turn_end', TURN_STOP, ctx);
+  assert.equal(compactCalls.length, 1);
+
+  // The abort message Pi emits for that aborted run is rewritten to a benign
+  // checkpoint notice instead of surfacing "This operation was aborted".
+  const [replacement] = await harness.fire(
+    'message_end',
+    { message: { role: 'assistant', stopReason: 'aborted', errorMessage: 'This operation was aborted', content: [] } },
+    ctx,
+  ) as Array<{ message?: { stopReason?: string; content?: Array<{ text?: string }> } } | undefined>;
+  assert.ok(replacement?.message, 'auto-compact abort should be downgraded');
+  assert.equal(replacement?.message?.stopReason, 'stop');
+  assert.match(replacement?.message?.content?.[0]?.text ?? '', /Compaction interrupted this turn/);
+
+  // Single-shot: a second unrelated abort is left untouched.
+  const [second] = await harness.fire(
+    'message_end',
+    { message: { role: 'assistant', stopReason: 'aborted', errorMessage: 'Operation aborted', content: [] } },
     ctx,
   );
-  const result = await executeManageContext(harness, ctx);
-  assert.equal(compactCalls.length, 0);
-  assert.notEqual(result.isError, true);
-  assert.match((result.content[0] as { text: string }).text, /already in progress/i);
+  assert.equal(second, undefined);
 });
 
-test('manage_context marks the arbiter while its own compaction runs and clears it on completion', async () => {
-  const harness = makeHarness();
-  const { ctx, compactCalls } = makeCtx({ tokens: 90 });
-  await executeManageContext(harness, ctx);
-  assert.equal(isCompactionInFlight(), true, 'own trigger marks in-flight');
-  compactCalls[0]!.onComplete?.();
-  assert.equal(isCompactionInFlight(), false, 'completion clears the mark');
-});
-
-test('manage_context description no longer tells the model to compact at 60% (races the automatics)', () => {
-  const harness = makeHarness();
-  const tool = harness.tools.get('manage_context')!;
-  assert.doesNotMatch(tool.description ?? '', /60%/);
-  assert.match(tool.description ?? '', /research→execution boundary/);
-  assert.match(tool.description ?? '', /[Aa]utomatic compaction/);
-});
 
 // ── Stale-resume guard (TDD) ──────────────────────────────────────────────────
 // Auto-compact resumes are plan-verified: if work completed while compaction was
-// in flight the follow-up must be suppressed. Explicit resumes (manage_context)
-// always fire — the model was mid-task by definition.
+// in flight the follow-up must be suppressed. Explicit internal resume intent
+// remains covered separately for compaction-hook recovery.
 
 test('session_compact suppresses auto-compact resume when plan cleared before session_compact fires', async () => {
   const { fire, sentUserMessages } = makeHarness();
@@ -469,10 +443,10 @@ test('session_compact suppresses auto-compact resume when last assistant turn si
   clearPlan(scope);
 });
 
-test('session_compact still resumes manage_context compactions even without active plan', async () => {
+test('session_compact still honors explicit extension resume intent without active plan', async () => {
   const { fire, sentUserMessages } = makeHarness();
   setCompactionResumeRetryDelayForTests(0);
-  // manage_context uses the explicit (non-plan-verified) resume flag.
+  // Internal recovery uses the explicit non-plan-verified resume flag.
   markCompactionResumeRequested();
 
   const { ctx } = makeCtx(); // no plan set — explicit resumes bypass the plan check
@@ -503,4 +477,43 @@ test('session_compact resume survives a willRetry pass and fires exactly once on
   await fire('session_compact', { reason: 'auto', fromExtension: true, willRetry: false }, ctx);
   await new Promise((r) => setTimeout(r, 5));
   assert.equal(sentUserMessages.length, 1, 'continuation fires exactly once after the successful compaction');
+});
+
+// ─── Checkpoint-card dedupe (TDD) ───────────────────────────────────────────
+// Regression: resetCompactionCheckpointDedupe previously cleared only the
+// fallback string key, leaving the WeakSet permanently populated. After the
+// fix the reset reassigns the WeakSet and clears the stable-id Set so that a
+// new session can re-emit a checkpoint for a previously seen entry/id.
+
+test('resetCompactionCheckpointDedupe resets string-id, object-identity, and fallback-string dedupe paths', async () => {
+  const { fire, sentMessages } = makeHarness();
+  const { ctx } = makeCtx();
+  const checkpoints = () => sentMessages.filter((m) => m.customType === 'octocode-compaction-checkpoint').length;
+
+  // ─ Stable string-id path ──────────────────────────────────────────
+  await fire('session_compact', { compactionEntry: { id: 'cmp-abc' }, reason: 'threshold', fromExtension: false, willRetry: false }, ctx);
+  assert.equal(checkpoints(), 1, 'first id-keyed emission goes through');
+
+  // Same id on a different object: still deduped within the session.
+  await fire('session_compact', { compactionEntry: { id: 'cmp-abc' }, reason: 'threshold', fromExtension: false, willRetry: false }, ctx);
+  assert.equal(checkpoints(), 1, 'duplicate string id is deduped within a session');
+
+  // After session boundary reset, the same id should re-emit.
+  resetCompactionCheckpointDedupe();
+  await fire('session_compact', { compactionEntry: { id: 'cmp-abc' }, reason: 'threshold', fromExtension: false, willRetry: false }, ctx);
+  assert.equal(checkpoints(), 2, 'string-id Set is cleared by reset — same id re-emits in new session');
+
+  // ─ Object-identity path (no string id) ─────────────────────────
+  const entryObj = { reason: 'threshold' }; // no id — goes through WeakSet path
+  await fire('session_compact', { compactionEntry: entryObj, reason: 'threshold', fromExtension: false, willRetry: false }, ctx);
+  assert.equal(checkpoints(), 3, 'first object-identity emission goes through');
+
+  // Same JS object reference: deduped by the WeakSet.
+  await fire('session_compact', { compactionEntry: entryObj, reason: 'threshold', fromExtension: false, willRetry: false }, ctx);
+  assert.equal(checkpoints(), 3, 'same object reference is WeakSet-deduped');
+
+  // Reset reassigns the WeakSet — the same object reference is no longer tracked.
+  resetCompactionCheckpointDedupe();
+  await fire('session_compact', { compactionEntry: entryObj, reason: 'threshold', fromExtension: false, willRetry: false }, ctx);
+  assert.equal(checkpoints(), 4, 'WeakSet reassignment on reset allows same object ref to re-emit in new session');
 });

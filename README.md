@@ -18,7 +18,7 @@
 2. **[`@octocodeai/pi-extension`](packages/octocode-pi-extension)** — the **harness**: system prompt, MCP research bridge, support tools, skills, and Awareness wiring.
 3. **[`@octocodeai/octocode-awareness-lite`](packages/octocode-awareness-lite)** — the bundled **coordination layer**: a lightweight CLI + Agent Skill for shared plans, tasks, file presence, locks, memory, and verification. The heavier [`@octocodeai/octocode-awareness`](packages/octocode-awareness) (attend/reflect/hooks/wiki) is optional and installed explicitly.
 
-> **Pi edits, Octocode researches, Awareness coordinates.** The launcher is thin on purpose — all behavior lives in the harness and coordination packages.
+> **Pi runs the loop, Octocode owns the tools, Awareness coordinates.** The launcher is thin on purpose — all behavior lives in the harness and coordination packages.
 
 ---
 
@@ -29,6 +29,7 @@
   - [1. octocode-agent — the launcher](#1-octocode-agent--the-launcher)
   - [2. Pi Extension — the harness](#2-pi-extension--the-harness)
   - [3. Awareness — CLI + Skill](#3-awareness--cli--skill)
+- [Tool Ownership](#tool-ownership)
 - [Terminal Experience](#terminal-experience)
 - [Extending with MCP Servers and Skills](#extending-with-mcp-servers-and-skills)
 - [Architecture](#architecture)
@@ -95,10 +96,8 @@ duplicated here — updating the core updates what the agent launches.
 
 | Surface | Count | What it is |
 |---|---:|---|
-| Octocode research tools via MCP | 13 | GitHub + local + LSP + npm evidence tools through the built-in `octocode` MCP server |
-| File + shell tools | 4 | `edit`, `write`, `bash` (path-guarded), and `readImage` (shows a local image to a vision model) |
-| Pi support tools | 12 | `web`, `chromeDebug`, `browserAgent`, `spawnAgent`, `spawnSubagent`, `AgentMessage`, `callTool`, `callSkill`, `plan`, `askUser`, `memory`, `manage_context` |
-| MCP client | 1 | `MCPTool` — research bridge + configured-server gateway |
+| Octocode research tools via MCP | 15 | GitHub + local + LSP + npm evidence tools through the built-in `octocode` MCP server |
+| Direct model tools | 16 | Guarded `bash` plus `file`, `web`, `chromeDebug`, `agent`, `callTool`, `skill`, `plan`, `localServer`, `MCPTool`, `askUser`, `memory`, `lock`, `message`, `readMedia`, and `media` |
 | Bundled skill | 1 | `octocode-awareness-lite`; the rest install on demand via `npx octocode skill --add` |
 
 On load it sets `$OCTOCODE_CLI` and `$OCTOCODE_AWARENESS_CLI`, injects the operating-model
@@ -161,6 +160,26 @@ adds `attend`, `reflect`, wiki, and richer hooks; install it explicitly when you
 
 ---
 
+## Tool Ownership
+
+The branded launcher starts Pi with **all native Pi built-ins suppressed** in both launch
+paths: the SDK session uses `noTools: "builtin"`, and the subprocess uses
+`--no-builtin-tools`. There is no environment opt-out. The harness then supplies the complete
+public palette, including its guarded same-name `bash` implementation.
+
+| Pi native tool | Octocode route |
+|---|---|
+| `read` | `MCPTool` → `localGetFileContent`; local media uses `readMedia` |
+| `edit`, `write` | `file` with `type:"edit"`, `"write"`, or `"delete"` |
+| `grep`, `find`, `ls` | `MCPTool` → `localSearchCode`, `localFindFiles`, or `localViewStructure` |
+| `bash` | Octocode's guarded same-name `bash` tool |
+
+Direct Pi users who install only the extension get the same effective palette: the extension
+removes replaced native names on load and again at session start as a defensive backstop.
+See [OVERRIDES.md](packages/octocode-pi-extension/docs/OVERRIDES.md) for the exact contract.
+
+---
+
 ## Terminal Experience
 
 The harness ships a deliberate TUI design system — one palette, one copy source, and motion
@@ -188,11 +207,15 @@ Most integrations only need MCP config — no code change, rebuild, or new skill
 
 MCP server config is read from:
 
-| Scope | Path | Loaded when |
+| Scope | Paths in precedence order | Loaded when |
 |---|---|---|
-| Built-in | pinned local `octocode-mcp` (`npx -y octocode-mcp@latest` fallback) | always, as server `octocode` |
-| Global | `~/.pi/agent/mcp.json` | if the file exists |
-| Project | `<workspace>/.pi/agent/mcp.json` | only after the project is trusted |
+| Built-in | pinned local `octocode-mcp` (`npx -y octocode-mcp@latest` fallback) | Always, as server `octocode` |
+| Global | `~/.pi/mcp.json`; `$OCTOCODE_HOME/agent/mcp.json`; `~/.pi/agent/mcp.json` | When each file exists |
+| Project | `<workspace>/.pi/mcp.json`; `<workspace>/.octocode/agent/mcp.json`; `<workspace>/.pi/agent/mcp.json` | Only after the project is trusted |
+
+A later definition of the same server name wins. Claude Code, Cursor, Codex, `.agents`,
+and compatibility `.octocode/mcp.json` files are discovery inventory only; copy a trusted
+stdio entry into an active path before the gateway can run it.
 
 Minimal config:
 
@@ -213,18 +236,20 @@ Minimal config:
 Inside a session, the agent can also add a trusted server live:
 
 ```js
-MCPTool({
+MCPTool({queries:[{
+  reasoning: "Add the trusted external server.",
   action: "add",
   server: "my-server",
   scope: "project",
   config: { command: "npx", args: ["-y", "@acme/mcp-server@latest"] }
-})
+}]})
 ```
 
-Discovery is automatic: `MCPTool({ action: "list", server: "my-server" })` lists the
-server's tools and schemas; `describe` reads one exact tool schema; `call` invokes it.
-Config files are watched and hot-reloaded, so new tools apply on the next `MCPTool` call.
-You can also inspect/manage servers from `/octocode-mcp` or `/mcp`.
+Discovery is automatic: `MCPTool({queries:[{reasoning:"Inspect the server tools.",
+action:"list",server:"my-server"}]})` lists the server's tools and schemas; `describe`
+reads one exact tool schema; `call` invokes it. Config files are watched and hot-reloaded,
+so new tools apply on the next `MCPTool` call. You can also inspect or manage servers from
+`/octocode-mcp`.
 
 Create or install a skill only when the integration needs operating guidance: when to use
 the tools, how to combine them, validation rules, pitfalls, or a multi-step workflow. For
@@ -347,13 +372,13 @@ Every surface below is exercised end-to-end (live smoke runs + the package test 
 
 | Surface | What's verified |
 |---|---|
-| `bash` / `edit` / `write` | Path-guarded shell, exact-match edits with audit diffs, guarded file writes |
+| `bash` / `file` | Path-guarded shell plus preflighted edit/write/delete batches with stale/lost-update checks and diffs |
 | Octocode research (via MCP) | `localSearchCode` · `localViewStructure` · `localGetFileContent` · `localFindFiles` · `localFindDeadCode` · `npmSearch` · `ghSearchCode` · `ghViewRepoStructure` with `next.*` chaining |
 | `lspGetSemantics` | Live LSP definitions/references/callers with exact file:line anchors |
 | `web` | Search (provider chain Tavily → Serper → Exa → DuckDuckGo), URL fetch with pagination |
-| `readImage` | Loads a local png/jpeg/gif/webp and returns it to a vision-capable model |
-| `chromeDebug` / `browserAgent` | Headless Chrome launch, all 28 CDP schemes implemented (contract-tested), task→scheme routing |
-| Subagents | `spawnAgent` (lean workers, tool allowlists), `spawnSubagent` (typed specialists with auto-loaded skills), `AgentMessage` wait/send/steer/status/list/abort/kill, spawn-policy packet gate |
+| `readMedia` / `media` | Perceives images, video, and audio; authors images/PDFs and transforms media through a separate write boundary |
+| `chromeDebug` / `agent` | Direct CDP operations plus browser-profile routing and multi-turn worker lifecycle |
+| `agent` | Typed/custom/browser worker spawn plus inspect/wait/message/steer/abort/kill lifecycle operations |
 | Awareness (Lite) | `status`, plan/task queue, verification gates (`verify audit`/`mark`), exclusive file locks with the full contention cycle (acquire → conflict → release → re-acquire), agent presence counts |
 
 ### Skills

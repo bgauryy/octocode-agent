@@ -1,9 +1,8 @@
 /**
  * compaction-state — shared arbiter for every compaction trigger.
  *
- * Four independent triggers can start a compaction: pi's built-in threshold
- * auto-compaction, the extension's turn_end watcher, the model-called
- * manage_context tool, and a user /compact. Pi neither serializes
+ * Multiple independent triggers can start a compaction: Pi's built-in threshold
+ * auto-compaction, the extension's turn_end watcher, and a user /compact. Pi neither serializes
  * ctx.compact() calls nor exposes an is-compacting flag, and its
  * session.compact() throws "Already compacted" when it lands right after a
  * finished compaction (branch tip is already a compaction entry). This module
@@ -68,7 +67,7 @@ export function consumeCompactionResumeRequest(now = Date.now()): boolean {
 
 /**
  * Mark that the turn_end auto-compact watcher triggered ctx.compact() while
- * plan work was active. Unlike the explicit (manage_context) resume,
+ * plan work was active. Unlike an explicitly marked resume,
  * session_compact will re-verify plan state before scheduling the continuation
  * — if work completed while compaction was in flight the follow-up is skipped.
  */

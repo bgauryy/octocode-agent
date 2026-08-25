@@ -1186,7 +1186,7 @@ test('chromeDebug tool rejects unknown schemes and renders call/result states', 
   assert.ok(tool.parameters);
 
   await assert.rejects(
-    () => tool.execute('call-1', { scheme: 'definitely-not-real' }),
+    () => tool.execute('call-1', { queries: [{ reasoning: 'test unknown scheme', scheme: 'definitely-not-real' }] }),
     /Unknown scheme/,
   );
 
@@ -1195,10 +1195,7 @@ test('chromeDebug tool rejects unknown schemes and renders call/result states', 
     fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
   };
   const callLine = tool.renderCall!({
-    scheme: 'network',
-    action: 'observe',
-    port: 19333,
-    targetUrl: 'https://example.com/this/is/a/really/long/path/that/gets/truncated',
+    queries: [{ reasoning: 'test render', scheme: 'network', action: 'observe', port: 19333, targetUrl: 'https://example.com/this/is/a/really/long/path/that/gets/truncated' }],
   }, themed).render(120)[0]!;
   assert.match(callLine, /<toolTitle><b>chromeDebug<\/b><\/toolTitle>/);
   // scheme paints with the `link` token → `mdLink` per the palette (TOKEN.link === 'mdLink').
@@ -1322,7 +1319,7 @@ test('chromeDebug tool execute path connects, runs a recipe, cleans up, redacts 
     const statuses: Array<[string, string | undefined]> = [];
     const result = await registeredTool.execute(
       'call-1',
-      { scheme: 'debug', keepTab: false, port: 19333 },
+      { queries: [{ reasoning: 'initial debug pass', scheme: 'debug', keepTab: false, port: 19333 }] },
       undefined,
       undefined,
       { ui: { setStatus: (name: string, value: string | undefined) => statuses.push([name, value]) } },
@@ -1336,7 +1333,7 @@ test('chromeDebug tool execute path connects, runs a recipe, cleans up, redacts 
 
     const stealthResult = await registeredTool.execute(
       'call-2',
-      { scheme: 'debug', stealth: true, cleanup: true, port: 19333 },
+      { queries: [{ reasoning: 'stealth debug pass', scheme: 'debug', stealth: true, cleanup: true, port: 19333 }] },
       undefined,
       undefined,
       { ui: { setStatus: (name: string, value: string | undefined) => statuses.push([name, value]) } },
@@ -1348,7 +1345,7 @@ test('chromeDebug tool execute path connects, runs a recipe, cleans up, redacts 
     await assert.rejects(
       () => registeredTool.execute(
         'call-3',
-        { scheme: 'debug', action: 'fail', keepTab: true, port: 19333 },
+        { queries: [{ reasoning: 'fail test', scheme: 'debug', action: 'fail', keepTab: true, port: 19333 }] },
         undefined,
         undefined,
         { ui: { setStatus: (name: string, value: string | undefined) => statuses.push([name, value]) } },
@@ -1358,7 +1355,7 @@ test('chromeDebug tool execute path connects, runs a recipe, cleans up, redacts 
     assert.equal(mockSession.closed, false, 'failed keepTab:true path keeps the CDP connection cached/open for reuse');
     closeAllChromeConnections(); // clear the module-global cache so later tests are isolated
 
-    assert.match(registeredTool.renderCall({ scheme: 'debug', port: 19333 }).render(120)[0]!, /chromeDebug debug/);
+    assert.match(registeredTool.renderCall({ queries: [{ reasoning: 'r', scheme: 'debug', port: 19333 }] }).render(120)[0]!, /chromeDebug debug/);
     assert.match(
       registeredTool.renderResult(
         { content: [{ type: 'text', text: (result.content[0] as { text: string }).text }], details: result.details },
@@ -1399,21 +1396,116 @@ test('chromeDebug tool is registered with scheme enum including "raw"', async ()
 
   const tool = tools.get('chromeDebug')!;
   const schema = tool.parameters as Record<string, unknown>;
-  const props = schema['properties'] as Record<string, { enum?: string[] }> | undefined;
-  assert.ok(props, 'schema should have properties');
-  assert.ok(props['scheme'], 'schema should have scheme param');
+  // Schema is now a queries[] envelope: { queries: { type: 'array', items: { properties: { reasoning, scheme, ... } } } }
+  const topProps = schema['properties'] as Record<string, unknown> | undefined;
+  assert.ok(topProps, 'schema should have top-level properties');
+  assert.ok(topProps['queries'], 'schema should have queries array at top level');
+  const queriesSchema = topProps['queries'] as { items?: { properties?: Record<string, { enum?: string[]; minLength?: number }> } };
+  const itemProps = queriesSchema?.items?.properties;
+  assert.ok(itemProps, 'queries items should have properties');
+  assert.ok(itemProps['reasoning'], 'query item should have reasoning field');
+  assert.ok(itemProps['scheme'], 'query item should have scheme param');
   assert.ok(
-    Array.isArray(props['scheme'].enum) && (props['scheme'].enum as string[]).includes('raw'),
+    Array.isArray(itemProps['scheme']?.enum) && (itemProps['scheme']!.enum as string[]).includes('raw'),
     'scheme enum should include "raw"',
   );
   assert.ok(
-    Array.isArray(props['scheme'].enum) && (props['scheme'].enum as string[]).includes('debug'),
+    Array.isArray(itemProps['scheme']?.enum) && (itemProps['scheme']!.enum as string[]).includes('debug'),
     'scheme enum should include "debug"',
   );
   assert.ok(
-    Array.isArray(props['scheme'].enum) && (props['scheme'].enum as string[]).includes('screenshot'),
+    Array.isArray(itemProps['scheme']?.enum) && (itemProps['scheme']!.enum as string[]).includes('screenshot'),
     'scheme enum should include "screenshot"',
   );
+});
+
+// ─── queries[] envelope: schema, single-query passthrough, multi-query batch ──
+
+describe('chromeDebug queries[] envelope', () => {
+  function makeChromeDebugTool() {
+    const tools = new Map<string, ToolDefinition>();
+    registerChromeDebugTool(
+      { registerTool: (def) => tools.set(def.name, def) },
+      Type,
+      new Set<string>(),
+      (pi, names, def) => { names.add(def.name); pi.registerTool?.(def); },
+    );
+    return tools.get('chromeDebug')!;
+  }
+
+  test('schema top-level property is queries[] with per-item reasoning required', () => {
+    const tool = makeChromeDebugTool();
+    const schema = tool.parameters as Record<string, unknown>;
+    const topProps = schema['properties'] as Record<string, unknown>;
+    assert.ok(topProps['queries'], 'top-level schema must have queries key');
+    const queriesArr = topProps['queries'] as Record<string, unknown>;
+    assert.equal(queriesArr['type'], 'array', 'queries must be type:array');
+    const items = queriesArr['items'] as Record<string, unknown>;
+    const itemProps = items['properties'] as Record<string, Record<string, unknown>>;
+    assert.ok(itemProps['reasoning'], 'item schema must have reasoning property');
+    assert.ok(itemProps['scheme'], 'item schema must have scheme property');
+    const required = items['required'] as string[];
+    assert.ok(Array.isArray(required) && required.includes('reasoning'), 'reasoning must be required in each item');
+    assert.ok(Array.isArray(required) && required.includes('scheme'), 'scheme must be required in each item');
+  });
+
+  test('prepareArguments wraps flat call in queries[] with fallback reasoning', () => {
+    const tool = makeChromeDebugTool();
+    assert.ok(typeof (tool as unknown as Record<string, unknown>)['prepareArguments'] === 'function', 'prepareArguments must exist');
+    const pa = (tool as unknown as Record<string, unknown>)['prepareArguments'] as (a: unknown) => unknown;
+    // Already has queries[] — pass through unchanged
+    const alreadyWrapped = { queries: [{ reasoning: 'r', scheme: 'debug' }] };
+    assert.deepEqual(pa(alreadyWrapped), alreadyWrapped);
+    // Flat format — gets wrapped
+    const wrapped = pa({ scheme: 'screenshot', port: 9222 }) as { queries: Array<Record<string, unknown>> };
+    assert.ok(Array.isArray(wrapped.queries), 'should produce queries array');
+    assert.equal(wrapped.queries.length, 1);
+    assert.equal(wrapped.queries[0]!['scheme'], 'screenshot');
+    assert.ok(typeof wrapped.queries[0]!['reasoning'] === 'string', 'should add fallback reasoning string');
+  });
+
+  test('single query result passes through unchanged (passthroughSingle)', async () => {
+    // We test at the execute level with mocked chrome deps via the schema rejection
+    // path — it throws before any real CDP work, giving us a clean signal
+    // that the inner-execute path is reached correctly.
+    const tool = makeChromeDebugTool();
+    await assert.rejects(
+      () => tool.execute('t1', { queries: [{ reasoning: 'verify passthrough', scheme: 'not-a-real-scheme' }] }),
+      (err: Error) => {
+        // Must be Unknown scheme (from inner execute), not a batch-wrapper error
+        return err.message.includes('Unknown scheme');
+      },
+    );
+  });
+
+  test('renderCall shows +N suffix for multi-query batches', () => {
+    const tool = makeChromeDebugTool();
+    const themed = {
+      bold: (t: string) => t,
+      fg: (_color: string, t: string) => t,
+    };
+    const singleLine = tool.renderCall!({
+      queries: [{ reasoning: 'r', scheme: 'debug', port: 9222 }],
+    }, themed).render(200)[0]!;
+    assert.ok(!singleLine.includes('+'), 'single query: no +N suffix');
+
+    const multiLine = tool.renderCall!({
+      queries: [
+        { reasoning: 'r1', scheme: 'debug', port: 9222 },
+        { reasoning: 'r2', scheme: 'screenshot', port: 9222 },
+        { reasoning: 'r3', scheme: 'network', port: 9222 },
+      ],
+    }, themed).render(200)[0]!;
+    assert.match(multiLine, /\+2/, 'three-query batch: should show +2 suffix');
+  });
+
+  test('missing queries key causes executeQueryBatch to reject gracefully', async () => {
+    const tool = makeChromeDebugTool();
+    await assert.rejects(
+      () => tool.execute('t2', {} as Record<string, unknown>),
+      /queries must be a non-empty array/,
+    );
+  });
 });
 
 // ─── OCTOCODE_CHROME_DEBUG=0 disables the tool ───────────────────────────────
@@ -1457,6 +1549,146 @@ describe('target selection priority', () => {
     // (selectTarget requires a live HTTP server; tested conceptually here)
     assert.ok(typeof SCHEMES, 'string'); // smoke test that module loaded
     // Real target selection integration is covered by E2E tests
+  });
+});
+
+// ─── navigateAndWait regression: ordering and cleanup ────────────────────────
+
+describe('navigateAndWait load-event ordering and cleanup', () => {
+  /**
+   * Minimal CdpSession implementation that records on/off/send call order
+   * and fires Page.loadEventFired via queueMicrotask after Page.navigate.
+   * Used to verify listener registration order and cleanup without real Chrome.
+   */
+  class TrackSession implements CdpSession {
+    targetInfo: CdpTargetInfo = makeTarget();
+    closed = false;
+    calls: CdpSendCall[] = [];
+    orderLog: string[] = [];
+    handlers = new Map<string, Set<CdpHandler>>();
+
+    async send(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+      this.calls.push({ method, params });
+      this.orderLog.push(`send:${method}`);
+      // Simulate browser firing load event after navigate.
+      if (method === 'Page.navigate') {
+        queueMicrotask(() => this.fire('Page.loadEventFired'));
+      }
+      return {};
+    }
+
+    on(event: string, handler: CdpHandler): void {
+      this.orderLog.push(`on:${event}`);
+      if (!this.handlers.has(event)) this.handlers.set(event, new Set());
+      this.handlers.get(event)!.add(handler);
+    }
+
+    off(event: string, handler: CdpHandler): void {
+      this.orderLog.push(`off:${event}`);
+      this.handlers.get(event)?.delete(handler);
+    }
+
+    close(): void { this.closed = true; }
+
+    fire(event: string, params: Record<string, unknown> = {}): void {
+      for (const h of this.handlers.get(event) ?? []) h(params, {});
+    }
+
+    listenerCount(event: string): number {
+      return this.handlers.get(event)?.size ?? 0;
+    }
+  }
+
+  /** Subclass that never fires Page.loadEventFired — forces the timeout path. */
+  class TimeoutTrackSession extends TrackSession {
+    override async send(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+      this.calls.push({ method, params });
+      this.orderLog.push(`send:${method}`);
+      return {}; // No queueMicrotask: load event never fires; timeout takes over.
+    }
+  }
+
+  test('registers Page.loadEventFired listener before Page.navigate', async () => {
+    const session = new TrackSession();
+    await SCHEME_REGISTRY.console.recipe({
+      session: session as unknown as CdpSession,
+      params: { scheme: 'console', url: 'https://example.com' },
+      screenshotDir: os.tmpdir(),
+    });
+
+    const onIdx = session.orderLog.indexOf('on:Page.loadEventFired');
+    const navIdx = session.orderLog.indexOf('send:Page.navigate');
+    assert.ok(onIdx !== -1, 'Page.loadEventFired listener must be registered');
+    assert.ok(navIdx !== -1, 'Page.navigate must be called');
+    assert.ok(
+      onIdx < navIdx,
+      `on:Page.loadEventFired (${onIdx}) must precede send:Page.navigate (${navIdx})`,
+    );
+  });
+
+  test('removes Page.loadEventFired handler after load fires', async () => {
+    const session = new TrackSession();
+    await SCHEME_REGISTRY.console.recipe({
+      session: session as unknown as CdpSession,
+      params: { scheme: 'console', url: 'https://example.com' },
+      screenshotDir: os.tmpdir(),
+    });
+
+    assert.ok(
+      session.orderLog.includes('off:Page.loadEventFired'),
+      'session.off must be called for Page.loadEventFired after load fires',
+    );
+    assert.equal(
+      session.listenerCount('Page.loadEventFired'),
+      0,
+      'no Page.loadEventFired listeners should remain after load',
+    );
+  });
+
+  test('removes Page.loadEventFired handler after timeout', async () => {
+    // TimeoutTrackSession never fires load event; durationMs:1 forces 1ms timeout.
+    const session = new TimeoutTrackSession();
+    await SCHEME_REGISTRY.console.recipe({
+      session: session as unknown as CdpSession,
+      params: { scheme: 'console', url: 'https://example.com', durationMs: 1 },
+      screenshotDir: os.tmpdir(),
+    });
+
+    assert.ok(
+      session.orderLog.includes('off:Page.loadEventFired'),
+      'session.off must be called for Page.loadEventFired after timeout',
+    );
+    assert.equal(
+      session.listenerCount('Page.loadEventFired'),
+      0,
+      'no Page.loadEventFired listeners should remain after timeout',
+    );
+  });
+
+  test('removes Page.loadEventFired handler after abort', async () => {
+    const session = new TrackSession();
+    const ac = new AbortController();
+
+    // Abort synchronously after starting the recipe so signal.aborted is true
+    // by the time navigateAndWait runs its early-abort check.
+    const p = SCHEME_REGISTRY.console.recipe({
+      session: session as unknown as CdpSession,
+      params: { scheme: 'console', url: 'https://example.com' },
+      screenshotDir: os.tmpdir(),
+      signal: ac.signal,
+    });
+    ac.abort();
+    await p;
+
+    assert.ok(
+      session.orderLog.includes('off:Page.loadEventFired'),
+      'session.off must be called for Page.loadEventFired after abort',
+    );
+    assert.equal(
+      session.listenerCount('Page.loadEventFired'),
+      0,
+      'no Page.loadEventFired listeners should remain after abort',
+    );
   });
 });
 

@@ -296,7 +296,7 @@ test('session_compact completion emits exactly one checkpoint card per compactio
   assert.deepEqual(details.readFiles, ['src/a.ts']);
   assert.deepEqual(details.modifiedFiles, ['src/b.ts']);
   assert.equal(details.artifactPath, path.join(testHome, 'tmp', 'compaction', 'c-1.md'));
-  assert.equal(details.latestArtifactPath, path.join(testHome, 'tmp', 'compaction', 'latest.md'));
+  assert.equal(details.latestArtifactPath, path.join(testHome, 'tmp', 'compaction', 'sessions', 'unknown-session', 'latest.md'));
 
   const markdown = fs.readFileSync(details.artifactPath!, 'utf8');
   assert.match(markdown, /# Compaction checkpoint c-1/);

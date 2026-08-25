@@ -1,10 +1,10 @@
 /**
  * dynamic-catalog — a terse system-prompt projection of the agent's self-created
- * dynamic tools (callTool) and skills (callSkill).
+ * dynamic tools (callTool) and skills (skill type:"call").
  *
  * Why a projection and NOT a file watcher: both registries are read fresh from disk on
  * every access (no in-memory cache), and this addendum is rebuilt on every
- * `before_agent_start` (per turn). So any change — created via callTool/callSkill or
+ * `before_agent_start` (per turn). So any change — created via callTool or skill type:"call" or
  * edited out-of-band — is reflected on the next turn automatically, with no watcher,
  * no cache, and no invalidation logic. The projection subsumes what a watcher would do.
  *
@@ -16,6 +16,7 @@
 import { listTools } from './dynamic-tools.js';
 import { listSkills } from './dynamic-skills.js';
 import { truncatePlainToWidth } from './render-helpers.js';
+import { escapePromptMetadata } from './prompt-safety.js';
 
 const MAX_ENTRIES_PER_KIND = 30;
 const MAX_DESCRIPTION_CHARS = 100;
@@ -39,7 +40,7 @@ function renderSection(label: string, entries: CatalogEntry[]): string[] {
   // (live uses counters would reorder it and churn the provider prompt cache).
   const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
   const shown = sorted.slice(0, MAX_ENTRIES_PER_KIND);
-  const lines = [`${label}:`, ...shown.map((e) => `- ${e.name}: ${truncate(e.description)}`)];
+  const lines = [`${label}:`, ...shown.map((e) => `- ${escapePromptMetadata(e.name)}: ${escapePromptMetadata(truncate(e.description))}`)];
   if (sorted.length > shown.length) {
     lines.push(`- …and ${sorted.length - shown.length} more (call action:"list")`);
   }
@@ -68,8 +69,8 @@ export function getDynamicCapabilitiesAddendum(): string {
 
   return [
     '<dynamic_capabilities>',
-    'Self-created reusable capabilities available this session (via callTool / callSkill). ' +
-      'Prefer reusing these by name before proposing new ones; call action:"list" for full schemas/steps.',
+    'Self-created reusable capabilities available this session (via callTool / skill type:"call"). ' +
+      'Prefer reusing these by name before proposing new ones; use their list modes for full schemas/steps.',
     ...renderSection('tools', toolEntries),
     ...renderSection('skills', skillEntries),
     '</dynamic_capabilities>',

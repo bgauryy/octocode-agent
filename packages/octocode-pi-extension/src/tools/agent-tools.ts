@@ -4,7 +4,7 @@ import { StringDecoder } from 'node:string_decoder';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { getInstallSource, buildAwarenessLiteCommand } from '../assets.js';
+import { getInstallSource, runAwarenessLiteInProcess } from '../assets.js';
 import { truncateUserVisibleToolOutput } from '../utils.js';
 import { OCTOCODE_SPINNER_FRAMES } from '../ui-extras.js';
 import { hasUiTickSubscriber, setUiTickSubscriber } from '../tui/ui-ticker.js';
@@ -407,7 +407,15 @@ export function isLedgerTickerActiveForTests(): boolean {
  */
 function renderExpandedAgentResult(header: string, result: ToolCallResult, theme?: PiTheme) {
   const text = result.content.find((p) => p.type === 'text')?.text ?? '';
-  const outputLines = text.split('\n').slice(2); // skip agent-header + status lines
+  const allLines = text.split('\n');
+  // Line 0 of the result text is always the plain-text agent identifier line
+  // (e.g. "AgentMessage action:wait [my-agent]") produced by renderSingleAgentResult.
+  // The styled `header` arg already occupies the first rendered row, so we skip
+  // exactly one line — not two — so structured fields like agentId: remain visible
+  // in expanded mode. A fixed offset of 1 is safe: the caller always controls the
+  // content format via renderSingleAgentResult, which always puts the identifier
+  // on line 0 and the first structured field (agentId) on line 1.
+  const outputLines = allLines.slice(1);
   return makeRenderer((w) => [
     truncateToWidth(header, w),
     ...outputLines.map((l) => truncateToWidth(paint(theme, 'dim', l), w)),
@@ -493,6 +501,33 @@ function ensureHandbackDir(filePath: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
 }
 
+function prepareHandbackPath(workspace: string, agentId: string): { path: string; warning?: string } {
+  const preferredPath = buildHandbackPath(workspace, agentId);
+  try {
+    ensureHandbackDir(preferredPath);
+    return { path: preferredPath };
+  } catch (preferredError) {
+    const fallbackPath = path.join(
+      os.tmpdir(),
+      'octocode-agent-handbacks',
+      agentId,
+      HANDBACK_ARTIFACT_FILENAME,
+    );
+    try {
+      ensureHandbackDir(fallbackPath);
+    } catch (fallbackError) {
+      const preferredMessage = preferredError instanceof Error ? preferredError.message : String(preferredError);
+      const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      throw new Error(`Unable to prepare worker handback directory (${preferredMessage}); fallback also failed (${fallbackMessage}).`);
+    }
+    const preferredMessage = preferredError instanceof Error ? preferredError.message : String(preferredError);
+    return {
+      path: fallbackPath,
+      warning: `Parent workspace handback directory is unavailable; using temporary fallback ${fallbackPath} (${preferredMessage}).`,
+    };
+  }
+}
+
 function statHandbackArtifact(filePath: string): { path: string; exists: boolean; bytes?: number; modifiedAt?: string } {
   try {
     const stat = fs.statSync(filePath);
@@ -565,10 +600,8 @@ function syncWorkerRegistry(action: 'join' | 'leave', record: AgentRecord): void
   const workspace = record.awarenessWorkspace;
   if (!agentId || !workspace) return;
   try {
-    const spec = buildAwarenessLiteCommand(buildWorkerRegistryArgs(action, { agentId, name: record.name, workspace }));
-    const child = spawn(spec.cmd, spec.args, { stdio: 'ignore', detached: true });
-    child.on('error', () => { /* Awareness is advisory */ });
-    child.unref();
+    // In-process registry write (fast local SQLite); advisory, never throws out.
+    runAwarenessLiteInProcess(buildWorkerRegistryArgs(action, { agentId, name: record.name, workspace }));
   } catch { /* Awareness unresolved — advisory */ }
 }
 
@@ -1142,6 +1175,12 @@ function processRpcLine(record: AgentRecord, line: string): void {
     // silence watchdog whenever the channel proves live.
     touch(record);
   } else if (eventType === 'agent_start') {
+    // A structured result belongs to the turn that just ended. Clear it before
+    // exposing the new turn as running, otherwise a prior [DONE]/[BLOCKED]
+    // overrides the live process state in the footer and ledger.
+    record.normalizedResult = undefined;
+    record.deltaSummary = undefined;
+    record.thinkingSummary = undefined;
     // ONE queued turn has started: decrement (never hard-reset) the pending
     // counter, so when two follow-ups are queued the ledger keeps showing
     // 'queued' work and agent_end after turn 1 does not resolve `wait` while
@@ -1309,8 +1348,8 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   const peerIds = collectPeerAwarenessIds(id);
   const awarenessWorkspace = ctx?.cwd ?? requestedCwd;
   const parentAwarenessAgentId = process.env[AWARENESS_AGENT_ENV_VAR]?.trim() || 'pi-agent';
-  const handbackPath = buildHandbackPath(awarenessWorkspace, id);
-  ensureHandbackDir(handbackPath);
+  const handback = prepareHandbackPath(awarenessWorkspace, id);
+  const handbackPath = handback.path;
   const task = withPeerCoordination(buildInitialPrompt(spawnParams), awarenessAgentId, peerIds, {
     parentId: parentAwarenessAgentId,
     handbackPath,
@@ -1368,7 +1407,9 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     normalizedResult: normalizeWorkerOutput(''),
     recoveryRisk: evaluateWorkerRecoveryRisk(''),
     ledgerEvents: [],
-    policyWarnings: policyResult.warnings,
+    policyWarnings: handback.warning
+      ? [...policyResult.warnings, handback.warning]
+      : policyResult.warnings,
     promptFiles,
     waiters: new Set(),
     activityListeners: new Set(),
@@ -1380,7 +1421,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   };
   pushLedgerEvent(record, 'spawned', `spawned ${name}`, { awarenessAgentId });
   if (record.worktree) pushLedgerEvent(record, 'worktree', `created worktree ${record.worktree.branch}`, record.worktree);
-  for (const warning of policyResult.warnings) pushLedgerEvent(record, 'policy', warning);
+  for (const warning of record.policyWarnings) pushLedgerEvent(record, 'policy', warning);
   agents.set(id, record);
   // Register the worker in the shared Awareness agent list (best-effort, advisory).
   syncWorkerRegistry('join', record);
@@ -1920,10 +1961,22 @@ function formatOctocodeAgentsHelp(): string {
     '- typed specialists: spawnSubagent({agent:"researcher"|"planner"|"architect", task:"..."}) · browser work: browserAgent tool',
     '- generic worker: spawnAgent({task:"...", name:"..."})',
     '- after spawning: AgentMessage({action:"wait"|"status"|"send"|"kill", agentId:"..."})',
-    '- visible UI: running/blocked/failed/done workers appear in the custom footer until hide/prune/remove',
+    '- visible UI: running/blocked/failed/done workers appear in the unified status panel and compact footer until hide/prune/remove',
     '',
     'Tip: ids can be full ids or short prefixes shown by list/status.',
   ].join('\n');
+}
+
+function showAgentInspectionPanel(ctx?: PiContext): void {
+  if (!ctx?.hasUI || !ctx.ui?.setWidget) return;
+  ctx.ui.setWidget(
+    'octocode-status-panel',
+    (_tui: unknown, theme: PiTheme) => makeRenderer((width) => {
+      const lines = agentPanelLines(theme, 10, width);
+      return lines.length > 0 ? lines : [''];
+    }),
+    { placement: 'belowEditor' },
+  );
 }
 
 export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext): Promise<void> {
@@ -1985,6 +2038,7 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
   }
   ledgerHidden = false;
   refreshAgentLedgerUi(ctx);
+  showAgentInspectionPanel(ctx);
   ctx?.ui?.notify?.(formatAgentLedgerDetails(), 'info');
 }
 
@@ -2151,8 +2205,9 @@ export function registerAgentTools(
     promptGuidelines: [
       'Use spawnAgent only when delegation materially helps: independent work ownership, long-running tasks, or adversarial/coverage checks.',
       'Do not spawn agents for ordinary bug fixes/refactors that need shared context; stay in the parent or batch independent tool calls instead.',
-      'Before spawning, break the request into explicit subtasks and delegate only one independent, bounded subtask per worker.',
-      'For useful parallelism, spawn all independent workers first, then use AgentMessage action:"wait" or action:"status" to collect results.',
+      'Before spawning, map dependencies and current Awareness ownership; delegate only one independent, bounded subtask per worker. Run two or more dependency-ready lanes in parallel only when their write ownership is disjoint; keep dependent or shared-file work serial.',
+      'For useful parallelism, spawn all currently runnable independent workers first, then use AgentMessage action:"wait" or action:"status" to collect results.',
+      'Ownership is exclusive: each packet must name exact owned paths or symbols plus read-only boundaries. The parent must not edit delegated paths until completion or explicit release; if overlap appears, stop one lane and coordinate a handoff or reassignment before resuming.',
       'Workers inherit no parent conversation. By default they share cwd/files/environment; pass isolation:"worktree" for an opt-in git worktree after explicit user approval, or isolation:"shared" when sharing is intentional.',
       'Structure the task as a labeled packet — lines starting with "Goal:", "Context:", "Scope:", "Ownership:", "Acceptance:", "Return:" (any of "-"/"—"/":" as separator, headings/bullets OK). A real gate checks for these labels, not just the words, and returns a [POLICY] warning on the spawn response when any are missing.',
       'spawnAgent defaults to resourceMode:"lean". Use resourceMode:"octocode" only when the worker needs Octocode extension tools.',
@@ -2227,7 +2282,7 @@ export function registerAgentTools(
     promptSnippet: 'Message, wait for, list, status, or kill spawned background agents.',
     promptGuidelines: [
       'Use AgentMessage action:"list" or action:"status" before claiming a spawned worker is done; in the UI, also check /octocode-agents or the custom footer ledger for running/blocked/failed workers.',
-      'Use AgentMessage action:"wait" to collect the current turn result. Idle means the turn ended, not necessarily that the delegated objective passed acceptance.',
+      'Use AgentMessage action:"wait" to collect the current turn result. Idle means the turn ended, not necessarily that the delegated objective passed acceptance. A worker [DONE] means only its bounded objective passed; reconcile it and continue the parent plan while runnable authorized work remains.',
       'AgentMessage reads the in-memory spawned-agent registry; after session shutdown or reload, spawn fresh workers instead of relying on old agentIds.',
       'Before final answers, wait/status every relevant worker, reconcile disagreements, inspect any handback file shown by status/wait when it carries important or long findings, and synthesize findings instead of dumping raw worker JSON.',
       'Before AgentMessage kill/remove:true, use wait/status with full:true when the worker result matters; the assigned handback file is the durable fallback after registry removal.',

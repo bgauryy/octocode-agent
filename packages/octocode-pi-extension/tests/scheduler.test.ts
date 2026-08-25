@@ -5,6 +5,7 @@ import {
   formatOctocodeCronStatus,
   handleOctocodeCronCommand,
 } from '../src/scheduler.js';
+import { resolveAwarenessLiteCliPath } from '../src/assets.js';
 import type { PiExecResult } from '../src/types.js';
 
 test('cron scheduler lists the report-first Awareness Lite status job', () => {
@@ -50,7 +51,7 @@ test('cron scheduler can run the default Awareness Lite status job on demand', a
   ]);
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.command, process.execPath);
-  assert.match(calls[0]!.args[0]!, /octocode-awareness-lite.*cli\.js$/);
+  assert.equal(calls[0]!.args[0], resolveAwarenessLiteCliPath());
   assert.deepEqual(calls[0]!.args.slice(1), [
     'status',
     '--workspace',
@@ -72,7 +73,7 @@ test('cron scheduler runs manual checks without an awareness CLI env var', async
 
   assert.equal(results[0]!.status, 'succeeded');
   assert.equal(calls[0]!.command, process.execPath);
-  assert.match(calls[0]!.args[0]!, /octocode-awareness-lite.*cli\.js$/);
+  assert.equal(calls[0]!.args[0], resolveAwarenessLiteCliPath());
   assert.deepEqual(calls[0]!.args.slice(1, 2), ['status']);
 });
 
