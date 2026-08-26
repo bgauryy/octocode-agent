@@ -6,16 +6,15 @@
 /** Output lines shown per-query under a collapsed bash result row (tail of output). */
 const BASH_COLLAPSED_LINES = 3;
 
-import { constants, writeFileSync } from 'node:fs';
-import os from 'node:os';
+import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import path from 'node:path';
 import { getShellConfig } from '@earendil-works/pi-coding-agent';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
-import { cliToolTitle, paint, cliStatusGlyph, cliStatusToken } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { paint } from '../tui/cli-design.js';
+import { buildToolView, makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import { classifySensitiveCommand, requestApproval, type ApprovalRequest } from './approval.js';
 import { isPlanMode, PLAN_MODE_BLOCK_REASON } from './plan-mode.js';
@@ -26,8 +25,7 @@ import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
 
-const DEFAULT_MAX_LINES = 10_000;
-const DEFAULT_MAX_BYTES = 400 * 1024; // 400 KB — keeps context lean while covering real build/test output
+export const BASH_RESULT_PAGE_MAX_CHARS = 20_000;
 const BASH_TOOL_DISPLAY_NAME = 'bash (Octocode)';
 
 const PLAN_MODE_MUTATING_BASH_RE = /(^|[;|&(`\n])\s*(?:sudo\s+)?(?:touch|mkdir|rm|rmdir|mv|cp|install|ln|chmod|chown|truncate|dd|sed\s+[^;|&\n]*\s-i\b|perl\s+[^;|&\n]*\s-i\b|node\s+(?:--[^\s]+\s+)*-[ep]\b|python3?\s+-c\b|ruby\s+-e\b)\b|>>?|\btee\b/i;
@@ -258,46 +256,46 @@ export function assertBashCommandAllowed(command: string, cwd: string): void {
   }
 }
 
-/**
- * Trim oversized output for the model context.
- * When truncation is needed the full text is saved to a temp file so the agent
- * can paginate through it with a follow-up bash command (e.g. sed -n lines).
- */
-function truncateOutput(text: string): string {
-  const lines = text.split('\n');
-  const totalLines = lines.length;
-  const totalBytes = Buffer.byteLength(text, 'utf8');
-  let out = text;
-  let didTruncate = false;
+export interface BashOutputPage {
+  /** Model-visible page including its page label. */
+  text: string;
+  /** Exact slice of the original command output. */
+  payload: string;
+}
 
-  if (totalLines > DEFAULT_MAX_LINES) {
-    out = lines.slice(-DEFAULT_MAX_LINES).join('\n');
-    didTruncate = true;
+/** Split bash output into bounded model content blocks without dropping data. */
+export function paginateBashOutput(text: string): BashOutputPage[] {
+  if (text.length <= BASH_RESULT_PAGE_MAX_CHARS) return [{ text, payload: text }];
+  // Reserve label space so every model-visible content block stays within 20k.
+  const payloadChars = BASH_RESULT_PAGE_MAX_CHARS - 64;
+  const payloads: string[] = [];
+  for (let offset = 0; offset < text.length;) {
+    let end = Math.min(text.length, offset + payloadChars);
+    const last = text.charCodeAt(end - 1);
+    const next = text.charCodeAt(end);
+    if (end < text.length && last >= 0xD800 && last <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) end--;
+    payloads.push(text.slice(offset, end));
+    offset = end;
   }
-  if (Buffer.byteLength(out, 'utf8') > DEFAULT_MAX_BYTES) {
-    // Keep the tail so the most recent (usually most relevant) output is visible.
-    let end = out.length;
-    while (end > 0 && Buffer.byteLength(out.slice(0, end), 'utf8') > DEFAULT_MAX_BYTES) {
-      end = Math.floor(end * 0.9);
-    }
-    out = out.slice(Math.max(0, out.length - end));
-    didTruncate = true;
-  }
+  return payloads.map((payload, index) => ({
+    text: `[bash output page ${index + 1}/${payloads.length}]\n${payload}`,
+    payload,
+  }));
+}
 
-  if (!didTruncate) return out;
-
-  // Save the full output so the agent can read any page without re-running the command.
-  let tmpNote = '';
-  try {
-    const tmpPath = path.join(os.tmpdir(), `octocode_bash_${Date.now().toString(36)}.txt`);
-    writeFileSync(tmpPath, text, 'utf8');
-    tmpNote = `\n  Full output saved to: ${tmpPath}\n  Paginate with e.g.: sed -n '<START>,<END>p' "${tmpPath}" | head -200`;
-  } catch {
-    // Non-fatal; agent will at least see the truncation notice.
-  }
-  const kb = Math.round(totalBytes / 1024);
-  const header = `[bash: showing last ${DEFAULT_MAX_LINES} of ${totalLines} lines (${kb} KB total)${tmpNote}]`;
-  return `${header}\n${out}`;
+function smartBashView(text: string, maxChars: number): { lines: string[]; omittedChars: number } {
+  if (text.length <= maxChars) return { lines: text.split('\n').filter((line) => line.length > 0), omittedChars: 0 };
+  const markerReserve = 96;
+  const retained = Math.max(2, maxChars - markerReserve);
+  const headChars = Math.ceil(retained / 2);
+  const tailChars = retained - headChars;
+  const omittedChars = text.length - headChars - tailChars;
+  const preview = [
+    text.slice(0, headChars),
+    `… ${omittedChars} chars hidden in UI only; complete bash output was delivered to the agent …`,
+    text.slice(text.length - tailChars),
+  ].join('\n');
+  return { lines: preview.split('\n').filter((line) => line.length > 0), omittedChars };
 }
 
 async function runBash(
@@ -484,29 +482,12 @@ export function registerBashTool(
           const exitNote = aborted ? '(aborted)' : killedBy ? `(killed by ${killedBy})` : `(exit ${code ?? 'null'})`;
           const body = isError && combined ? `${combined}\n${exitNote}` : combined;
           return {
-            content: [{ type: 'text', text: truncateOutput(body || exitNote) }],
+            content: paginateBashOutput(body || exitNote).map((page) => ({ type: 'text' as const, text: page.text })),
             isError,
             details: { code, stdout, stderr },
           };
         },
       });
-      // Multi-query batches: the default content only has one-line per-query summaries.
-      // Reconstruct with full stdout/stderr so the model receives complete output.
-      const batchDetails = batchResult.details as {
-        queryRunType?: string;
-        results?: Array<{ index: number; status: string; result?: { code?: number | null; stdout?: string; stderr?: string } }>;
-      } | undefined;
-      if (Array.isArray(batchDetails?.results) && batchDetails!.results.length > 1) {
-        const rows = batchDetails!.results
-          .map((qr) => {
-            const combined = [qr.result?.stdout, qr.result?.stderr].filter(Boolean).join('\n');
-            return `\u2713 [${qr.index}] exit ${qr.result?.code ?? 'null'}:\n${truncateOutput(combined) || '(no output)'}`;
-          })
-          .join('\n\n');
-        const runType = batchDetails?.queryRunType ?? 'sequential';
-        const fullText = `${batchDetails!.results.length} queries succeeded · ${runType}.\n${rows}`;
-        return { ...batchResult, content: [{ type: 'text', text: fullText }] };
-      }
       return batchResult;
     },
     renderCall(args: unknown, theme?: PiTheme) {
@@ -514,19 +495,14 @@ export function registerBashTool(
       const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as Record<string, unknown>[] : [];
       const input = queries[0] ?? {};
       const command = typeof input['command'] === 'string' ? input['command'] : '(missing command)';
-      const title = cliToolTitle(theme, BASH_TOOL_DISPLAY_NAME);
-      const suffix = paint(theme, 'dim', command);
-      return makeRenderer((width) => [truncateToWidth(`${title} ${suffix}`, width)]);
+      return buildToolView({ name: BASH_TOOL_DISPLAY_NAME, state: 'request', segments: [{ text: command, token: 'dim' }] }, theme);
     },
     renderResult: Object.assign(
       function renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
         if (opts.isPartial) {
-          const prog = paint(theme, 'brand', `\u2026 running ${BASH_TOOL_DISPLAY_NAME}`);
-          return makeRenderer((width) => [truncateToWidth(prog, width)]);
+          return buildToolView(() => ({ name: BASH_TOOL_DISPLAY_NAME, state: 'running', status: 'running…' }), theme);
         }
         const ok = !result.isError;
-        const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
-        const nameStr = cliToolTitle(theme, BASH_TOOL_DISPLAY_NAME);
         const details = result.details as {
           code?: number | null;
           stdout?: string;
@@ -544,18 +520,34 @@ export function registerBashTool(
 
         if (queryResults) {
           const qCount = queryResults.length;
-          const header = `${icon} ${nameStr}${paint(theme, 'dim', ` \u00b7 ${qCount} quer${qCount === 1 ? 'y' : 'ies'} \u00b7 ${details?.queryRunType ?? 'sequential'}`)}`;
           return makeRenderer((width) => {
-            const lines: string[] = [truncateToWidth(header, width)];
+            const lines: string[] = buildToolView({
+              name: BASH_TOOL_DISPLAY_NAME,
+              state: ok ? 'success' : 'error',
+              segments: [
+                { text: `${qCount} quer${qCount === 1 ? 'y' : 'ies'}`, token: 'count' },
+                { text: details?.queryRunType ?? 'sequential', token: 'muted' },
+              ],
+            }, theme).render(width);
             for (const qr of queryResults) {
               const qOk = qr.status === 'success';
               const qCode = qr.result?.code;
               const combined = [qr.result?.stdout, qr.result?.stderr].filter(Boolean).join('\n');
-              const qLines = combined.split('\n').filter((l) => l.length > 0);
-              const qHead = `  ${paint(theme, cliStatusToken(qOk), cliStatusGlyph(qOk))} ${paint(theme, 'dim', `[${qr.index}] exit ${qCode ?? 'null'} \u00b7 ${qLines.length} line${qLines.length === 1 ? '' : 's'}`)}`;
-              lines.push(truncateToWidth(qHead, width));
-              const shown = opts.expanded ? qLines : qLines.slice(-BASH_COLLAPSED_LINES);
-              const hidden = qLines.length - shown.length;
+              const allQLines = combined.split('\n').filter((l) => l.length > 0);
+              lines.push(...buildToolView({
+                name: `[${qr.index}]`,
+                state: qOk ? 'success' : 'error',
+                segments: [
+                  { text: `exit ${qCode ?? 'null'}`, token: qOk ? 'dim' : 'error' },
+                  { text: `${allQLines.length} line${allQLines.length === 1 ? '' : 's'}`, token: 'count' },
+                ],
+              }, theme).render(width));
+              const expandedView = smartBashView(
+                combined,
+                Math.max(512, Math.floor(BASH_RESULT_PAGE_MAX_CHARS / qCount)),
+              );
+              const shown = opts.expanded ? expandedView.lines : allQLines.slice(-BASH_COLLAPSED_LINES);
+              const hidden = opts.expanded ? 0 : allQLines.length - shown.length;
               if (hidden > 0) {
                 lines.push(truncateToWidth(paint(theme, 'muted', `    \u2026 ${hidden} more line${hidden === 1 ? '' : 's'}`), width));
               }
@@ -572,17 +564,26 @@ export function registerBashTool(
 
         // Single query: status header + last N lines (tail is most useful for
         // build/test \u2014 errors and final summary appear at the end).
-        const text = result.content.find((c) => c.type === 'text')?.text ?? '';
+        const detailText = [details?.stdout, details?.stderr].filter(Boolean).join('\n');
+        const text = detailText || result.content
+          .filter((c) => c.type === 'text')
+          .map((c) => c.text)
+          .join('\n');
         const allLines = text.split('\n').filter((l) => l.length > 0);
         const code = details?.code;
-        const head = `${icon} ${nameStr}${paint(theme, 'dim', ` \u00b7 exit ${code ?? 'null'} \u00b7 ${allLines.length} line${allLines.length === 1 ? '' : 's'}`)}`;
-        const shown = opts.expanded ? allLines : allLines.slice(-BASH_COLLAPSED_LINES);
-        const hidden = allLines.length - shown.length;
-        return makeRenderer((width) => [
-          truncateToWidth(head, width),
-          ...shown.map((line) => truncateToWidth(ok ? paint(theme, 'dim', `  ${line}`) : paint(theme, 'error', `  ${line}`), width)),
-          ...(hidden > 0 ? [truncateToWidth(paint(theme, 'muted', `  \u2026 ${hidden} more line${hidden === 1 ? '' : 's'} hidden \u2014 ctrl+o expands`), width)] : []),
-        ]);
+        const expandedView = smartBashView(text, BASH_RESULT_PAGE_MAX_CHARS);
+        const shown = opts.expanded ? expandedView.lines : allLines.slice(-BASH_COLLAPSED_LINES);
+        const hidden = opts.expanded ? 0 : allLines.length - shown.length;
+        return buildToolView({
+          name: BASH_TOOL_DISPLAY_NAME,
+          state: ok ? 'success' : 'error',
+          segments: [
+            { text: `exit ${code ?? 'null'}`, token: ok ? 'dim' : 'error' },
+            { text: `${allLines.length} line${allLines.length === 1 ? '' : 's'}`, token: 'count' },
+          ],
+          body: shown.map((line) => ({ text: line, token: ok ? 'dim' : 'error' })),
+          hint: hidden > 0 ? `${hidden} more line${hidden === 1 ? '' : 's'} hidden · ctrl+o expands` : undefined,
+        }, theme);
       },
       // Signal to guardedRenderResult that this renderer handles multi-query itself.
       { multiQueryAware: true },

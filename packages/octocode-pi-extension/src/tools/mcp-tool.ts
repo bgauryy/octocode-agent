@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { Client, StreamableHTTPClientTransport, type Transport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { getMcpEnablement, listMcpOverrides, openOctocodeDb, setMcpServerEnabled, setMcpToolEnabled } from '@octocodeai/octocode-awareness/mcp-state';
-import type { NotifyFn, PiContext, PiInstance, PiTheme, RenderCallReturn, RenderContext, ToolCallResult, ToolDefinition, TSchema } from '../types.js';
+import type { ContentPart, NotifyFn, PiContext, PiInstance, PiTheme, RenderCallReturn, RenderContext, ToolCallResult, ToolDefinition, TSchema } from '../types.js';
 import { capMapSize } from '../utils.js';
 import {
   DEFAULT_OCTOCODE_MCP_SERVER_NAME,
@@ -89,7 +89,6 @@ interface McpConnection {
 }
 
 const MCP_STATUS_NAME = 'octocode-mcp';
-const MAX_TEXT_CHARS = 24_000;
 const MAX_MCP_PAGES = 100;
 const MAX_MCP_PAGE_ITEMS = 10_000;
 const MCP_DISCOVERY_ATTEMPT_TIMEOUT_MS = 7_500;
@@ -483,7 +482,14 @@ export function stopMcpConfigWatchers(): number {
  * structured payload instead — otherwise the model researches blind.
  */
 export function resolveMcpCallText(payload: unknown): string {
-  if (!isPlainRecord(payload)) return stringify(payload);
+  return resolveMcpCallContent(payload)
+    .map((part) => part.type === 'text' ? part.text : stringify(part))
+    .join('\n');
+}
+
+/** Preserve MCP model content natively; use structuredContent for compact stubs. */
+export function resolveMcpCallContent(payload: unknown): ContentPart[] {
+  if (!isPlainRecord(payload)) return [{ type: 'text', text: stringify(payload) }];
   const content = Array.isArray(payload['content']) ? payload['content'] : [];
   const textBlocks = content.filter(
     (item): item is Record<string, unknown> => isPlainRecord(item) && item['type'] === 'text' && typeof item['text'] === 'string',
@@ -494,18 +500,45 @@ export function resolveMcpCallText(payload: unknown): string {
     textBlocks.length > 0 &&
     textBlocks.every((item) => String(item['text']).startsWith('structuredContent available'));
   if (hasStructured && (textBlocks.length === 0 || onlyStub)) {
-    return stringify(structured);
+    const nonText = content.filter((item) => !(isPlainRecord(item) && item['type'] === 'text'));
+    return [
+      { type: 'text', text: stringify(structured) },
+      ...nonText.map((item): ContentPart => {
+        if (
+          isPlainRecord(item)
+          && item['type'] === 'image'
+          && typeof item['data'] === 'string'
+          && typeof item['mimeType'] === 'string'
+        ) {
+          return { type: 'image', data: item['data'], mimeType: item['mimeType'] };
+        }
+        return { type: 'text', text: stringify(item) };
+      }),
+    ];
   }
-  if (textBlocks.length > 0 && textBlocks.length === content.length) {
-    return stringify(textBlocks.map((item) => String(item['text'])).join('\n'));
+  if (content.length > 0) {
+    return content.map((item): ContentPart => {
+      if (isPlainRecord(item) && item['type'] === 'text' && typeof item['text'] === 'string') {
+        return { type: 'text', text: item['text'] };
+      }
+      if (
+        isPlainRecord(item)
+        && item['type'] === 'image'
+        && typeof item['data'] === 'string'
+        && typeof item['mimeType'] === 'string'
+      ) {
+        return { type: 'image', data: item['data'], mimeType: item['mimeType'] };
+      }
+      // Pi currently accepts text/image content only. Keep unsupported MCP blocks
+      // losslessly as JSON text rather than silently dropping them.
+      return { type: 'text', text: stringify(item) };
+    });
   }
-  return stringify(payload);
+  return [{ type: 'text', text: stringify(payload) }];
 }
 
 function stringify(value: unknown): string {
-  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-  if (text.length <= MAX_TEXT_CHARS) return text;
-  return `${text.slice(0, MAX_TEXT_CHARS)}\n… truncated ${text.length - MAX_TEXT_CHARS} chars`;
+  return typeof value === 'string' ? value : (JSON.stringify(value, null, 2) ?? String(value));
 }
 
 function result(text: string, details?: unknown, isError = false): ToolCallResult {
@@ -1571,7 +1604,11 @@ export async function handleMcpAction(
         }
       }));
     }
-    return result(resolveMcpCallText(payload), payload, payload?.isError === true);
+    return {
+      content: resolveMcpCallContent(payload),
+      details: payload,
+      isError: payload?.isError === true,
+    };
   }
 
   return result(`Unknown MCP action: ${action}`, undefined, true);
@@ -1693,7 +1730,6 @@ export function registerMcpTool(
         passthroughSingle: true,
         // MCP payloads are model context, not execution receipts. Returning only
         // summaries here hides successful server results in host-only details.
-        passthroughContent: true,
         preflight: preflightMcpQuery,
         async execute(query, _index, _itemId, batchSignal, _onItemUpdate, itemCtx) {
           return handleMcpAction(query, batchSignal, itemCtx);

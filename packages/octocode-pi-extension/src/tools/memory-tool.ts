@@ -14,8 +14,7 @@
 import { runAwarenessLiteInProcess } from '../assets.js';
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { CLI_GLYPH, cliToolTitle, paint } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildToolView } from './render-helpers.js';
 import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
@@ -448,18 +447,13 @@ export function registerMemoryTool(
       const p = queries[0] ?? {} as MemoryParams;
       const action = String(p?.action ?? 'recall');
       const hint = p?.query ? `"${p.query}"` : p?.label ? `[${p.label}]` : p?.memoryId ? p.memoryId : '';
-      const title = cliToolTitle(theme, 'memory');
-      const body = paint(theme, 'dim', `${action} ${hint}`.trim());
-      return makeRenderer((w) => [truncateToWidth(`${title} ${body}`, w)]);
+      return buildToolView({ name: 'memory', state: 'request', segments: [{ text: action, token: 'bright' }, ...(hint ? [{ text: hint, token: 'dim' as const }] : [])] }, theme);
     },
 
     renderResult(result: ToolCallResult, _opts: unknown, theme?: PiTheme) {
       const ok = !result.isError;
       const first = ((result.content?.[0] as { text?: string } | undefined)?.text ?? '').split('\n')[0] || 'memory';
-      const line = ok
-        ? paint(theme, 'success', `${CLI_GLYPH.success} ${first}`)
-        : paint(theme, 'error', `${CLI_GLYPH.error} ${first}`);
-      return makeRenderer((w) => [truncateToWidth(line, w)]);
+      return buildToolView({ name: 'memory', state: ok ? 'success' : 'error', segments: [{ text: first, token: ok ? 'dim' : 'error' }] }, theme);
     },
   });
 }

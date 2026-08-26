@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import { CURSOR_MARKER } from '@earendil-works/pi-tui';
-import { closeFrameLines, renderFrame, renderInlineRows, renderStack } from '../src/tui/components.js';
+import { closeFrameLines, renderFrame, renderInlineRows, renderStack, renderToolView } from '../src/tui/components.js';
 import { visibleWidth } from '../src/tools/render-helpers.js';
 
 test('renderFrame closes and aligns every border at narrow and wide widths', () => {
@@ -70,6 +70,55 @@ test('renderInlineRows wraps complete segments instead of clipping the important
 
 test('renderStack composes component output without blank padding', () => {
   assert.deepEqual(renderStack({ sections: [['one'], [], ['two', 'three']] }, { width: 20 }), ['one', 'two', 'three']);
+});
+
+test('renderToolView composes the same semantic slots for requests and results', () => {
+  const request = renderToolView({
+    name: 'web',
+    state: 'request',
+    segments: [
+      { text: 'search', token: 'bright' },
+      { text: 'terminal UI', token: 'link' },
+    ],
+    body: [{ text: 'Compare every renderer', token: 'muted' }],
+  }, { width: 80 });
+  const result = renderToolView({
+    name: 'web',
+    state: 'success',
+    segments: [
+      { text: '8 results', token: 'count' },
+      { text: 'https://example.test', token: 'link' },
+    ],
+    hint: 'ctrl+o to expand evidence',
+  }, { width: 80 });
+
+  assert.match(request[0]!, /^◇ web · search · terminal UI$/);
+  assert.equal(request[1], '  Compare every renderer');
+  assert.match(result[0]!, /^✓ web · 8 results · https:\/\/example\.test$/);
+  assert.equal(result[1], '  ctrl+o to expand evidence');
+});
+
+test('renderToolView maps state to meaningful glyphs and remains width-safe', () => {
+  const expected = {
+    request: '◇',
+    running: 'spinner',
+    success: '✓',
+    error: '✗',
+    warning: '!',
+    neutral: '–',
+  } as const;
+  for (const [state, glyph] of Object.entries(expected)) {
+    const lines = renderToolView({
+      name: 'veryLongToolName',
+      state: state as keyof typeof expected,
+      status: state === 'running' ? 'running…' : undefined,
+      segments: [{ text: 'a deliberately long custom tool summary', token: 'path' }],
+      body: [{ text: 'full output remains in tool context', token: 'muted' }],
+    }, { width: 24 });
+    if (glyph === 'spinner') assert.match(lines[0]!, /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+    else assert.ok(lines[0]!.startsWith(glyph), `${state}: ${lines[0]}`);
+    for (const line of lines) assert.ok(visibleWidth(line) <= 24, `${state}: ${line}`);
+  }
 });
 
 test('every primitive is width-safe across pathological terminal sizes', () => {

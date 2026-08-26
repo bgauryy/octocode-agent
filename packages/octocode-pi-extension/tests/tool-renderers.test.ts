@@ -441,7 +441,7 @@ describe('file-tool renderResult', () => {
       details: { operation: 'write', path: '/src/foo.ts', bytes: 42 },
       isError: false,
     };
-    const lines = render(tool.renderResult!(result, { isPartial: false }, stubTheme));
+    const lines = render(tool.renderResult!(result, { isPartial: false }, stubTheme), 160);
     const joined = lines.join('\n');
     expect(joined).toContain('write');
     expect(joined).toContain('/src/foo.ts');

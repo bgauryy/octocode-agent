@@ -21,8 +21,7 @@ import { Marked } from 'marked';
 
 import type { TSchema, ToolCallResult, ToolDefinition, PiContext, PiTheme, RenderContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildToolView } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import { resolveFilePath } from './file-state.js';
 import { buildImageLinesFromData, formatBytes, sniffImageMime } from './image-render.js';
@@ -279,20 +278,25 @@ export function registerMediaTool(
       const operation = typeof input['type'] === 'string' ? (input['type'] as string) : 'media';
       const hint = typeof input['source'] === 'string' ? path.basename(input['source'] as string)
         : typeof input['name'] === 'string' ? (input['name'] as string) : '';
-      const title = cliToolTitle(theme, 'media');
-      return makeRenderer((width) => [truncateToWidth(`${title} ${paint(theme, 'dim', `${operation}${hint ? ` · ${hint}` : ''}`)}`, width)]);
+      return buildToolView({ name: 'media', state: 'request', segments: [{ text: operation, token: 'bright' }, ...(hint ? [{ text: hint, token: 'path' as const }] : [])] }, theme);
     },
 
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme, context?: RenderContext) {
-      if (opts.isPartial) return makeRenderer(() => [paint(theme, 'brand', '… processing media')]);
+      if (opts.isPartial) return buildToolView(() => ({ name: 'media', state: 'running', status: 'processing…' }), theme);
       const ok = !result.isError;
       const note = (result.content.find((c) => c.type === 'text') as { text?: string } | undefined)?.text ?? (ok ? 'done' : 'failed');
-      const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
-      const base = makeRenderer((width) => [truncateToWidth(`${icon} ${cliToolTitle(theme, 'media')} · ${note}`, width)]);
+      const details = (result.details ?? {}) as { base64?: string; mimeType?: string; bytes?: number; savedPath?: string };
+      const base = buildToolView({
+        name: 'media',
+        state: ok ? 'success' : 'error',
+        segments: [
+          ...(details.savedPath ? [{ text: details.savedPath, token: 'path' as const }] : []),
+          { text: note.split('\n').find(Boolean) ?? note, token: ok ? 'dim' : 'error' },
+        ],
+      }, theme);
       if (!ok) return base;
       if (result.content.some((c) => c.type === 'image')) return base;
 
-      const details = (result.details ?? {}) as { base64?: string; mimeType?: string; bytes?: number; savedPath?: string };
       if (!details.base64 || details.mimeType !== 'image/png') return base;
       const cacheKey = details.savedPath ?? 'media';
       return {

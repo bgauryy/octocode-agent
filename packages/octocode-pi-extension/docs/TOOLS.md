@@ -23,7 +23,25 @@ The direct palette contains 17 extension-owned tools: 16 support tools and the g
 | Planning and interaction | `plan`, `askUser`, `localServer` |
 | Awareness | `memory`, `lock`, `message` |
 
-Every direct tool exposes only one top-level field, `queries`. Each query requires a non-empty `reasoning` string of at most 240 characters. A call accepts at most 100 queries, validates the full batch before side effects, executes in source order, stops on the first runtime failure, and keeps prior successful effects. One-query calls preserve the underlying result details and rendering contract.
+Every direct tool exposes only one top-level field, `queries`. Each query requires a non-empty `reasoning` string of at most 240 characters. A call accepts at most 100 queries, validates the full batch before side effects, executes in source order, stops on the first runtime failure, and keeps prior successful effects. Successful batches return a compact receipt index followed by every child content block—including images—in source order; the receipt never replaces model-visible results. One-query calls preserve the underlying result details and rendering contract.
+
+### Tool transcript UI contract
+
+Tool request and result rows use one compositional view shape: **state glyph → tool identity → tool-specific semantic segments → optional evidence body → optional disclosure hint**. Each tool still chooses the useful segments for its domain—for example paths and byte counts for file operations, URLs and pagination for web, exit codes and line counts for Bash, or action/target for Awareness—but the reading order and state language stay stable.
+
+Colors convey meaning rather than decoration:
+
+- brand/accent: a request or operation currently running;
+- green: completed successfully;
+- red: failed and needs correction;
+- gold: warning, blocked state, or user action needed;
+- sky/path: filesystem target;
+- lavender/link: URL or parallel-policy signal;
+- normal/count: totals and numeric evidence;
+- bright/title: tool identity, action, or current focal value;
+- muted/dim: metadata, previews, reasoning, and disclosure hints.
+
+Renderer limits are view-only. The tool result delivered to the model remains unchanged. Bash is the sole direct tool that pages model-visible text, losslessly, into content blocks of at most 20,000 characters; its collapsed/expanded terminal preview is independently bounded and never edits stdout or stderr.
 
 The Awareness Lite CLI remains the canonical backend diagnostics and recovery surface; it does not expand the Pi palette.
 
@@ -91,7 +109,7 @@ Session-scoped maintenance jobs are controlled by `/octocode-cron`; see [CRON.md
 ## Core Tools
 
 ### `bash`
-Execute shell commands in the current working directory. Octocode override of Pi’s built-in bash: same shell execution, plus path-guard on redirect/`tee`/`cp`/`mv` write targets and a small blocklist of catastrophic commands. Every call requires a non-empty `reasoning` field explaining why the command is necessary. Returns stdout + stderr (truncated to last 2 000 lines / 50 KB). Prefer `file` for ordinary mutations; use bash for builds, tests, package commands, and genuinely mechanical changes. Details: [OVERRIDES.md](./OVERRIDES.md).
+Execute shell commands in the current working directory. Octocode override of Pi’s built-in bash: same shell execution, plus path-guard on redirect/`tee`/`cp`/`mv` write targets and a small blocklist of catastrophic commands. Every call requires a non-empty `reasoning` field explaining why the command is necessary. Bash is the only direct tool that pages model-visible text: stdout + stderr is split losslessly into content blocks of at most 20,000 characters, with full stdout/stderr retained in renderer details. Collapsed UI shows the latest lines; expanded UI uses a bounded head/tail preview. Prefer `file` for ordinary mutations; use bash for builds, tests, package commands, and genuinely mechanical changes. Details: [OVERRIDES.md](./OVERRIDES.md).
 
 ### `file`
 
@@ -185,6 +203,8 @@ Runs one direct Chrome DevTools operation. Use it for bounded observations or in
 ### `agent`
 
 Spawns typed, browser, or custom workers and controls their lifecycle. The `type` discriminator supports `spawn`, `inspect`, `wait`, `message`, `steer`, `abort`, and `kill`.
+
+Worker assistant output and stderr are retained and returned without a transport cap. Collapsed and expanded TUI renderers create bounded previews only at display time; they never mutate the result delivered to the parent agent.
 
 Spawn profiles:
 
@@ -323,6 +343,8 @@ See [`AWARENESS_AGENT_FLOW.md`](https://github.com/bgauryy/octocode-mcp/blob/mai
 It lists and calls tools, validates exact schemas internally, reads resources, gets prompts,
 and supports completion without registering each remote tool in Pi. `/mcp` opens the
 local, shared-theme connection and enablement manager.
+
+Call payloads are not character-capped. Native MCP text and image blocks remain native model content; unsupported block types are preserved as lossless JSON text. When an MCP server emits only the compact `structuredContent available` stub, the gateway surfaces the complete `structuredContent` payload instead.
 
 The built-in `octocode` research server is always defined (pinned local `octocode-mcp`,
 with `npx -y octocode-mcp@latest` as fallback). Add a trusted stdio command or Streamable

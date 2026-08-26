@@ -207,9 +207,7 @@ interface AgentDetails {
 
 const MAX_STORED_EVENTS = 200;
 const MAX_LEDGER_EVENTS = 80;
-const MAX_STDERR_CHARS = 64_000;
-export const MAX_AGENT_LAST_OUTPUT_CHARS = 64_000;
-const MAX_VISIBLE_OUTPUT = 12000;
+const MAX_AGENT_VIEW_CHARS = 12_000;
 const HANDBACK_ARTIFACT_FILENAME = 'handback.md';
 /** Maximum number of simultaneously active (non-droppable) agent records. Hard limit enforced on spawn. */
 export const MAX_AGENT_RECORDS = 50;
@@ -412,7 +410,8 @@ export function isLedgerTickerActiveForTests(): boolean {
  */
 function renderExpandedAgentResult(header: string, result: ToolCallResult, theme?: PiTheme) {
   const text = result.content.find((p) => p.type === 'text')?.text ?? '';
-  const allLines = text.split('\n');
+  const preview = truncateUserVisibleToolOutput(text, MAX_AGENT_VIEW_CHARS);
+  const allLines = preview.text.split('\n');
   // Line 0 of the result text is always the plain-text agent identifier line
   // (e.g. "AgentMessage action:wait [my-agent]") produced by renderSingleAgentResult.
   // The styled `header` arg already occupies the first rendered row, so we skip
@@ -421,6 +420,9 @@ function renderExpandedAgentResult(header: string, result: ToolCallResult, theme
   // content format via renderSingleAgentResult, which always puts the identifier
   // on line 0 and the first structured field (agentId) on line 1.
   const outputLines = allLines.slice(1);
+  if (preview.truncated) {
+    outputLines.push(`… ${preview.omittedChars} chars hidden in the UI; the complete agent result remains in tool context`);
+  }
   return makeRenderer((w) => [
     truncateToWidth(header, w),
     ...outputLines.map((l) => truncateToWidth(paint(theme, 'dim', l), w)),
@@ -1077,9 +1079,7 @@ function updateLastOutput(record: AgentRecord, message: unknown): void {
   if (!isAssistantOutputMessage(message)) return;
   const text = extractTextFromMessage(message);
   if (text) {
-    record.lastOutput = text.length > MAX_AGENT_LAST_OUTPUT_CHARS
-      ? text.slice(-MAX_AGENT_LAST_OUTPUT_CHARS)
-      : text;
+    record.lastOutput = text;
     const delta = extractDeltaSummary(text);
     if (delta) record.deltaSummary = delta;
     refreshNormalizedResult(record);
@@ -1453,10 +1453,6 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   });
   proc.stderr.on('data', (chunk) => {
     record.stderr += chunk.toString();
-    // Cap to the tail so a chatty worker can't grow this string unbounded.
-    if (record.stderr.length > MAX_STDERR_CHARS) {
-      record.stderr = record.stderr.slice(-MAX_STDERR_CHARS);
-    }
     pushLedgerEvent(record, 'status', 'stderr received');
     touch(record);
     refreshAgentLedgerUi(ctx);
@@ -2022,7 +2018,9 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
       return;
     }
     refreshAgentLedgerUi(ctx);
-    ctx?.ui?.notify?.((renderSingleAgentResult(record, 'Agent status', { full }).content[0] as { text?: string } | undefined)?.text ?? '', 'info');
+    const fullText = (renderSingleAgentResult(record, 'Agent status', { full }).content[0] as { text?: string } | undefined)?.text ?? '';
+    const preview = truncateUserVisibleToolOutput(fullText, MAX_AGENT_VIEW_CHARS);
+    ctx?.ui?.notify?.(`${preview.text}${preview.truncated ? `\n… ${preview.omittedChars} chars hidden in this UI view` : ''}`, 'info');
     return;
   }
   if (action === 'kill-all') {
@@ -2054,7 +2052,7 @@ export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext)
 }
 
 function renderSingleAgentResult(record: AgentRecord, header: string, opts: { full?: boolean } = {}): ToolCallResult {
-  const output = truncateUserVisibleToolOutput(record.lastOutput || record.stderr || record.error || '', MAX_VISIBLE_OUTPUT);
+  const output = record.lastOutput || record.stderr || record.error || '';
   const summary = summarizeAgent(record, opts);
   const elapsed = formatElapsed(record.startedAt, isTerminal(record) ? record.updatedAt : undefined);
   const statusParts = [
@@ -2090,15 +2088,12 @@ function renderSingleAgentResult(record: AgentRecord, header: string, opts: { fu
   if (summary.worktree) {
     contentParts.push(`worktree: ${summary.worktree.branch} @ ${summary.worktree.path} (+${summary.worktree.aheadCommits} commits, ~${summary.worktree.dirtyFiles} files, ${summary.worktree.mergeState})`);
   }
-  if (output.text) contentParts.push('', output.text);
-  if (output.truncated) contentParts.push(`\u2026 output truncated (${output.omittedChars} chars hidden; full content in details)`);
+  if (output) contentParts.push('', output);
   return {
     content: [{ type: 'text', text: contentParts.join('\n') }],
     details: {
       agent: summary,
-      output: output.text,
-      outputTruncated: output.truncated,
-      omittedChars: output.omittedChars,
+      output,
     },
     isError: record.status === 'failed' || Boolean(record.error),
   };

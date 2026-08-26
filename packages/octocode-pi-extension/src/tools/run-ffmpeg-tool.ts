@@ -28,8 +28,7 @@ function clampInt(val: unknown, min: number, max: number, def: number): number {
   const n = typeof val === 'number' ? val : typeof val === 'string' ? Number(val) : NaN;
   return isNaN(n) ? def : Math.max(min, Math.min(max, Math.round(n)));
 }
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
-import { cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
+import { buildToolView } from './render-helpers.js';
 import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
@@ -263,20 +262,23 @@ export function registerRunFfmpegTool(
       const input = queries[0] ?? {};
       const binary = typeof input['binary'] === 'string' ? input['binary'] : 'ffmpeg';
       const argv = Array.isArray(input['args']) ? (input['args'] as string[]).join(' ') : '(no args)';
-      return makeRenderer((width) => [
-        truncateToWidth(`${cliToolTitle(theme, 'runFfmpeg')} ${paint(theme, 'dim', `${binary} ${argv}`)}`, width),
-      ]);
+      return buildToolView({
+        name: 'runFfmpeg',
+        state: 'request',
+        segments: [{ text: binary, token: 'bright' }, { text: argv, token: 'dim' }],
+      }, theme);
     },
 
     renderResult(result, opts, theme) {
-      if (opts.isPartial) return makeRenderer(() => [paint(theme, 'brand', '⏳ running ffmpeg')]);
+      if (opts.isPartial) return buildToolView(() => ({ name: 'runFfmpeg', state: 'running', status: 'encoding…' }), theme);
       const ok = !result.isError;
       const note = (result.content.find((c) => c.type === 'text') as { text?: string } | undefined)?.text
         ?? (ok ? 'done' : 'failed');
-      const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
-      return makeRenderer((width) => [
-        truncateToWidth(`${icon} ${cliToolTitle(theme, 'runFfmpeg')} · ${note}`, width),
-      ]);
+      return buildToolView({
+        name: 'runFfmpeg',
+        state: ok ? 'success' : 'error',
+        segments: [{ text: note.split('\n').find(Boolean) ?? (ok ? 'done' : 'failed'), token: ok ? 'dim' : 'error' }],
+      }, theme);
     },
   } satisfies ToolDefinition);
 }

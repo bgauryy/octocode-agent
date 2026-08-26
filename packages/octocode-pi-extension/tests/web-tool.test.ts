@@ -8,14 +8,20 @@ const theme: PiTheme = {
   fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
 };
 
-async function loadRegisteredWebTool(out: Record<string, unknown>) {
+async function loadRegisteredWebTool(
+  out: Record<string, unknown>,
+  options: { mockEnv?: boolean } = {},
+) {
   vi.resetModules();
   const runWebTool = vi.fn(async () => out);
   const renderWebResult = vi.fn((result: unknown) => {
     const r = result as { title?: string; url?: string };
     return [`Title: ${r.title ?? 'untitled'}`, `URL: ${r.url ?? 'n/a'}`].join('\n');
   });
+  const propagateOctocodeEnv = vi.fn(() => ({ applied: [], skippedExisting: [], skippedProtected: [], keys: [], sources: {} }));
+  const getOctocodeHome = vi.fn(() => '/mock/home');
   vi.doMock('../src/web.js', () => ({ runWebTool, renderWebResult }));
+  if (options.mockEnv) vi.doMock('../src/env.js', () => ({ propagateOctocodeEnv, getOctocodeHome }));
 
   const { registerWebTool } = await import('../src/tools/web-tool.js');
   const tools = new Map<string, ToolDefinition>();
@@ -37,43 +43,24 @@ async function loadRegisteredWebTool(out: Record<string, unknown>) {
   };
 
   registerWebTool(pi, Type, registeredNames, registerFn);
-  return { tool: tools.get('web')!, runWebTool, renderWebResult };
+  return { tool: tools.get('web')!, runWebTool, renderWebResult, propagateOctocodeEnv, getOctocodeHome };
 }
 
 afterEach(() => {
   vi.doUnmock('../src/web.js');
+  vi.doUnmock('../src/env.js');
   vi.resetModules();
 });
 
-async function loadRegisteredWebToolWithEnvMock(out: Record<string, unknown>) {
-  vi.resetModules();
-  const runWebTool = vi.fn(async () => out);
-  const renderWebResult = vi.fn(() => 'ok');
-  const propagateOctocodeEnv = vi.fn(() => ({ applied: [], skippedExisting: [], skippedProtected: [], keys: [], sources: {} }));
-  const getOctocodeHome = vi.fn(() => '/mock/home');
-  vi.doMock('../src/web.js', () => ({ runWebTool, renderWebResult }));
-  vi.doMock('../src/env.js', () => ({ propagateOctocodeEnv, getOctocodeHome }));
-
-  const { registerWebTool } = await import('../src/tools/web-tool.js');
-  const tools = new Map<string, import('../src/types.js').ToolDefinition>();
-  const pi = { registerTool(def: import('../src/types.js').ToolDefinition) { tools.set(def.name, def); } };
-  const registeredNames = new Set<string>();
-  const registerFn = (_pi: { registerTool?(def: import('../src/types.js').ToolDefinition): void }, names: Set<string>, def: import('../src/types.js').ToolDefinition) => {
-    names.add(def.name); _pi.registerTool?.(def);
-  };
-  registerWebTool(pi, Type, registeredNames, registerFn);
-  return { tool: tools.get('web')!, runWebTool, propagateOctocodeEnv, getOctocodeHome };
-}
-
 test('execute() passes process.env as env dep to runWebTool (explicit env threading)', async () => {
-  const { tool, runWebTool } = await loadRegisteredWebToolWithEnvMock({ url: 'https://x.com' });
+  const { tool, runWebTool } = await loadRegisteredWebTool({ url: 'https://x.com' }, { mockEnv: true });
   await tool.execute('c1', { queries: [{ reasoning: 'fetch url', url: 'https://x.com' }] });
   const deps = (runWebTool.mock.calls[0] as unknown as [unknown, { env?: unknown }])[1];
   assert.strictEqual(deps.env, process.env, 'env dep must be process.env snapshot, not undefined');
 });
 
 test('ensureWebEnv calls propagateOctocodeEnv exactly once across multiple execute() calls', async () => {
-  const { tool, propagateOctocodeEnv } = await loadRegisteredWebToolWithEnvMock({ url: 'https://x.com' });
+  const { tool, propagateOctocodeEnv } = await loadRegisteredWebTool({ url: 'https://x.com' }, { mockEnv: true });
   await tool.execute('c1', { queries: [{ reasoning: 'fetch', url: 'https://x.com' }] });
   await tool.execute('c2', { queries: [{ reasoning: 'fetch', url: 'https://x.com' }] });
   await tool.execute('c3', { queries: [{ reasoning: 'search', query: 'test' }] });
@@ -175,31 +162,23 @@ test('web renderCall handles url, query, empty args, theming, and truncation', a
   assert.match(urlLine, /<toolTitle><b>web<\/b><\/toolTitle>/);
   assert.match(urlLine, /<mdLink>https:\/\/example\.com\//);
 
-  const queryLine = tool.renderCall!({ queries: [{ reasoning: 'search changes', query: 'what changed in vitest coverage' }] }, theme).render(120)[0]!;
+  const queryLine = tool.renderCall!({ queries: [{ reasoning: 'search changes', query: 'what changed in vitest coverage' }] }, theme).render(180)[0]!;
+  assert.match(queryLine, /<text>search<\/text>/);
   assert.match(queryLine, /<dim>"what changed in vitest coverage"/);
 
-  assert.equal(tool.renderCall!({}, undefined).render(120)[0], 'web');
+  assert.equal(tool.renderCall!({}, undefined).render(120)[0], '◇ web');
 
   const narrow = tool.renderCall!({ queries: [{ reasoning: 'read long URL', url: `https://example.com/${'x'.repeat(200)}` }] }, undefined).render(30)[0]!;
   assert.ok(narrow.includes('\u2026'), 'long calls are truncated to terminal width');
 });
 
-test('web renderCall reads first query from envelope', async () => {
-  const { tool } = await loadRegisteredWebTool({});
-  const line = tool.renderCall!(
-    { queries: [{ reasoning: 'r', url: 'https://envelope.com/' }] },
-    theme,
-  ).render(120)[0]!;
-  assert.match(line, /https:\/\/envelope\.com\//);
-});
-
 test('web renderResult covers partial, search stats, page stats, expanded text, and errors', async () => {
   const { tool } = await loadRegisteredWebTool({});
 
-  assert.equal(
-    tool.renderResult!(textResult('pending'), { isPartial: true }, theme).render(80)[0],
-    '<accent>Fetching\u2026</accent>',
-  );
+  const partial = tool.renderResult!(textResult('pending'), { isPartial: true }, theme).render(120)[0]!;
+  assert.match(partial, /<accent>[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]<\/accent>/);
+  assert.match(partial, /<toolTitle>web<\/toolTitle>/);
+  assert.match(partial, /<dim>Fetching\u2026<\/dim>/);
 
   const search = tool.renderResult!(
     textResult('search', { results: [{}, {}] }),
@@ -214,7 +193,7 @@ test('web renderResult covers partial, search stats, page stats, expanded text, 
     { expanded: false },
     theme,
   ).render(120)[0]!;
-  assert.match(page, /page p3 \(more pages available\)/);
+  assert.match(page, /page p3.*more pages available/);
 
   const expanded = tool.renderResult!(
     textResult(Array.from({ length: 25 }, (_, i) => `line ${i + 1}`).join('\n'), { url: 'https://example.com' }),

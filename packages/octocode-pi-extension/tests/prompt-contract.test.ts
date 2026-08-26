@@ -131,6 +131,46 @@ test('main prompt preserves active-work, plan, behavior-baseline, compatibility,
   assert.match(SYSTEM_PROMPT, /do not narrate every tool call or use a fixed timer/i, 'progress remains quiet and event-driven');
 });
 
+test('main prompt keeps research, tests, comments, and reflection evidence-efficient', () => {
+  const localBlock = SYSTEM_PROMPT.match(/<local_tools>\n([\s\S]*?)\n<\/local_tools>/)?.[1] ?? '';
+  const routingBlock = SYSTEM_PROMPT.match(/<capability_routing>\n([\s\S]*?)\n<\/capability_routing>/)?.[1] ?? '';
+  const qualityBlock = SYSTEM_PROMPT.match(/<code_quality>\n([\s\S]*?)\n<\/code_quality>/)?.[1] ?? '';
+  const judgmentBlock = SYSTEM_PROMPT.match(/<judgment>\n([\s\S]*?)\n<\/judgment>/)?.[1] ?? '';
+
+  assert.match(localBlock, /Markdown.*minify:["']symbols["'].*skeleton/i, 'Markdown starts from the supported symbols skeleton');
+  assert.match(localBlock, /skeleton.*choose.*exact.*region|choose.*exact.*region.*skeleton/i, 'the skeleton drives focused exact reads');
+  assert.doesNotMatch(
+    localBlock,
+    /captureText|metavarRanges|orderHint|charOffset|next\.\*/i,
+    'live tool-schema field metadata stays out of the stable prompt',
+  );
+  assert.match(routingBlock, /bundled MCP.*npx octocode tools|npx octocode tools.*bundled MCP/i, 'both supported Octocode tool surfaces are named');
+
+  assert.match(qualityBlock, /TDD|test-driven/i, 'TDD remains explicit');
+  assert.match(qualityBlock, /smallest.*decision-changing|decision-changing.*smallest/i, 'tests stay focused and efficient');
+  assert.match(qualityBlock, /observable.*contract.*implementation|implementation.*observable.*contract/i, 'tests prefer behavior over implementation calls');
+  assert.match(qualityBlock, /mock.*external.*nondeterministic.*narrow|narrow.*mock.*external.*nondeterministic/i, 'external and nondeterministic mocks stay at narrow seams');
+  assert.match(qualityBlock, /real.*internal.*collaborator|internal.*collaborator.*real/i, 'cheap deterministic internals stay real');
+  assert.match(qualityBlock, /table.*cases.*shar|combin.*cases.*shar/i, 'cases with the same setup and outcome are combined');
+  assert.match(qualityBlock, /redundant.*equivalent coverage|equivalent coverage.*redundant/i, 'redundant tests require coverage proof before removal');
+  assert.match(qualityBlock, /skips?.*live.*platform.*condition.*reason|live.*platform.*skips?.*condition.*reason/i, 'skips are explicit capability gates');
+  assert.match(qualityBlock, /comments.*JSDoc.*explanations/i, 'comments and JSDoc are maintained explanations');
+  assert.match(qualityBlock, /why.*non-obvious|non-obvious.*why/i, 'comments explain why instead of narrating syntax');
+
+  assert.match(judgmentBlock, /self-critique|challenge.*hypothesis/i, 'operations include proportional self-critique');
+  assert.match(
+    judgmentBlock,
+    /material steps.*decisions.*observed evidence.*assumptions or inferences/i,
+    'material actions and decisions stay evidence-derived while uncertainty remains explicit',
+  );
+  assert.doesNotMatch(judgmentBlock, /\bprobe\b/i, 'decision guidance uses plain action language instead of probe jargon');
+  assert.match(judgmentBlock, /\.octocode\/REFLECT\.md/i, 'the requested reflection path is handled explicitly');
+  assert.match(judgmentBlock, /workspace.*\.octocode\/REFLECT\.md|\.octocode\/REFLECT\.md.*workspace/i, 'reflection is workspace-local');
+  assert.match(judgmentBlock, /~\/\.octocode.*global|global.*~\/\.octocode/i, 'global Octocode home stays distinct');
+  assert.match(judgmentBlock, /do not invent|never.*hand-edit.*\.octocode/i, 'generated Awareness state is not fabricated');
+  assert.match(judgmentBlock, /memory.*verified.*reusable|verified.*reusable.*memory/i, 'durable memory stays evidence-gated');
+});
+
 test('main and worker prompts make parallel delegation dependency-aware and overlap-safe', () => {
   assert.match(SYSTEM_PROMPT, /before delegating.*dependency graph/i, 'parent maps ordering before spawning');
   assert.match(
@@ -180,6 +220,12 @@ test('main prompt top-level XML sections are balanced, uniquely owned, and remai
   const closes = [...SYSTEM_PROMPT.matchAll(/^<\/([a-z_]+)>$/gm)].map((match) => match[1]);
   assert.deepEqual(closes, opens, 'top-level sections close in the same order they open');
   assert.equal(new Set(opens).size, opens.length, 'each top-level section has one owner');
+  assert.ok(SYSTEM_PROMPT.length <= 15_300, 'the stable kernel stays within its character budget');
+  assert.ok(SYSTEM_PROMPT.trim().split(/\s+/).length <= 2_300, 'the stable kernel stays within its word budget');
+  for (const match of SYSTEM_PROMPT.matchAll(/^<([a-z_]+)>\n([\s\S]*?)\n<\/\1>$/gm)) {
+    const words = match[2]!.trim().split(/\s+/).length;
+    assert.ok(words <= 320, `<${match[1]}> stays focused (received ${words} words)`);
+  }
 
   for (const removedSection of [
     'octocode_cli',

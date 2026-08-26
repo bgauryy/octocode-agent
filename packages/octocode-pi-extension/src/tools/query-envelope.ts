@@ -54,8 +54,6 @@ export interface ExecuteQueryBatchOptions extends PreparedQueryBatchOptions {
   summarize?: (result: ToolCallResult, query: QueryRecord, index: number) => string;
   /** Preserve the original result/detail shape when the envelope contains one query. */
   passthroughSingle?: boolean;
-  /** Return every child content block instead of replacing them with batch receipts. */
-  passthroughContent?: boolean;
 }
 
 /**
@@ -317,12 +315,16 @@ export async function executeQueryBatch(options: ExecuteQueryBatchOptions): Prom
   }));
 
   return {
-    content: options.passthroughContent
-      ? results.flatMap((entry) => entry.result.content)
-      : [{
-          type: 'text',
-          text: `${results.length} quer${results.length === 1 ? 'y' : 'ies'} succeeded · ${queryRunType}.\n${summaries.map((entry) => `✓ [${entry.index}] ${entry.summary}`).join('\n')}`,
-        }],
+    // Keep the compact receipt as a stable index for renderers, then append every
+    // model-facing child block. Replacing child content with the receipt makes
+    // successful batched reads invisible and drops non-text blocks such as images.
+    content: [
+      {
+        type: 'text',
+        text: `${results.length} quer${results.length === 1 ? 'y' : 'ies'} succeeded · ${queryRunType}.\n${summaries.map((entry) => `✓ [${entry.index}] ${entry.summary}`).join('\n')}`,
+      },
+      ...results.flatMap((entry) => entry.result.content),
+    ],
     details: { queryRunType, results: summaries },
   };
 }

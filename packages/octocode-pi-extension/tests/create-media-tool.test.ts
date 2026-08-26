@@ -71,7 +71,7 @@ describe('runMediaOperation image (svg)', () => {
 
 // ── ffmpeg delegation (skipped when binary absent) ──────────────────────────
 const d = ff.ok ? describe : describe.skip;
-d('runMediaOperation ffmpeg delegation', () => {
+d('runMediaOperation ffmpeg delegation [requires ffmpeg]', () => {
   let dir: string;
   let sample: string;
   beforeAll(async () => {

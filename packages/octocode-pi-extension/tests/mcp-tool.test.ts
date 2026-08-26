@@ -11,6 +11,7 @@ import {
   getCachedMcpCounts,
   isCompactMcpEnabled,
   mcpCatalogReady,
+  resolveMcpCallContent,
   resolveMcpCallText,
   stopAllMcpServers,
   warmMcpCatalog,
@@ -187,6 +188,29 @@ test('call text: stub without structuredContent stays as-is (nothing better avai
 test('call text: non-record / malformed payloads stringify without throwing', () => {
   assert.doesNotThrow(() => resolveMcpCallText(null));
   assert.doesNotThrow(() => resolveMcpCallText({ content: 'weird' }));
+});
+
+test('call text: payloads larger than the old 24k cap remain lossless', () => {
+  const full = `prefix-${'x'.repeat(30_000)}-tail`;
+  assert.equal(resolveMcpCallText({ content: [{ type: 'text', text: full }] }), full);
+});
+
+test('call content: native text and image blocks reach the model unchanged', () => {
+  const content = [
+    { type: 'text', text: 'caption' },
+    { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+  ];
+  assert.deepEqual(resolveMcpCallContent({ content }), content);
+});
+
+test('call content: compact stub fallback keeps structured data and native images', () => {
+  const image = { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' };
+  const content = resolveMcpCallContent({
+    content: [{ type: 'text', text: STUB }, image],
+    structuredContent: { results: [{ id: 'full-result' }] },
+  });
+  assert.match((content[0] as { text: string }).text, /full-result/);
+  assert.deepEqual(content[1], image);
 });
 
 // ─── <mcp_catalog> prompt addendum (init discovery, compaction-surviving) ─────
@@ -1222,9 +1246,10 @@ test('multi-query: every MCP result is returned directly to the agent', async ()
     }, undefined, undefined, fixture.ctx);
     assert.equal(res.isError ?? false, false, 'multi-query must succeed when all calls are valid');
     assert.deepEqual(res.content, [
+      { type: 'text', text: '2 queries succeeded · sequential.\n✓ [0] echo:alpha\n✓ [1] BRAVO' },
       { type: 'text', text: 'echo:alpha' },
       { type: 'text', text: 'BRAVO' },
-    ], 'MCP responses must remain in agent-visible content instead of host-only details');
+    ], 'the receipt indexes the batch and every MCP response remains agent-visible');
     assert.equal(fs.readFileSync(fixture.callMarker, 'utf8').trim().split('\n').length, 2);
   } finally {
     stopAllMcpServers();

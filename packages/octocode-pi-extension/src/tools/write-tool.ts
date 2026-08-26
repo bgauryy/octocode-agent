@@ -5,8 +5,7 @@
  */
 import path from 'node:path';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
-import { cliToolTitle, paint, CLI_GLYPH } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildToolView } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import { atomicWriteUtf8, recordFileReadState, withFileMutationQueue } from './file-state.js';
 import { peerWipNotice, markOwnWrite } from './peer-wip.js';
@@ -132,32 +131,35 @@ export function registerWriteTool(
       const filePath = typeof input['path'] === 'string' ? input['path'] : '(missing path)';
       const content = typeof input['content'] === 'string' ? input['content'] : '';
       const lines = content.length === 0 ? 0 : content.split('\n').length;
-      const title = cliToolTitle(theme, WRITE_TOOL_DISPLAY_NAME);
-      const suffix = paint(theme, 'dim', `${filePath} · ${lines} line${lines === 1 ? '' : 's'}`);
-      return makeRenderer((width) => [truncateToWidth(`${title} ${suffix}`, width)]);
+      return buildToolView({
+        name: WRITE_TOOL_DISPLAY_NAME,
+        state: 'request',
+        segments: [{ text: filePath, token: 'path' }, { text: `${lines} line${lines === 1 ? '' : 's'}`, token: 'count' }],
+      }, theme);
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        const prog = paint(theme, 'brand', `… writing ${WRITE_TOOL_DISPLAY_NAME}`);
-        return makeRenderer((width) => [truncateToWidth(prog, width)]);
+        return buildToolView(() => ({ name: WRITE_TOOL_DISPLAY_NAME, state: 'running', status: 'writing…' }), theme);
       }
       if (!result.isError) {
         const batch = (result.details ?? {}) as { results?: unknown[] };
         if (Array.isArray(batch.results)) {
-          const line = `${paint(theme, 'success', CLI_GLYPH.success)} ${cliToolTitle(theme, WRITE_TOOL_DISPLAY_NAME)}${paint(theme, 'dim', ` · ${batch.results.length} writes`)}`;
-          return makeRenderer((width) => [truncateToWidth(line, width)]);
+          return buildToolView({ name: WRITE_TOOL_DISPLAY_NAME, state: 'success', segments: [{ text: `${batch.results.length} writes`, token: 'count' }] }, theme);
         }
         // Result row shows WHAT was written: path + size (the model's text line
         // says the same thing; the user should not have to expand to see it).
         const d = (result.details ?? {}) as { path?: string; bytes?: number };
-        const where = d.path ? ` ${paint(theme, 'path', d.path)}` : '';
-        const size = typeof d.bytes === 'number' ? paint(theme, 'dim', ` · ${d.bytes} bytes`) : '';
-        const line = `${paint(theme, 'success', CLI_GLYPH.success)} ${cliToolTitle(theme, WRITE_TOOL_DISPLAY_NAME)}${where}${size}`;
-        return makeRenderer((width) => [truncateToWidth(line, width)]);
+        return buildToolView({
+          name: WRITE_TOOL_DISPLAY_NAME,
+          state: 'success',
+          segments: [
+            ...(d.path ? [{ text: d.path, token: 'path' as const }] : []),
+            ...(typeof d.bytes === 'number' ? [{ text: `${d.bytes} bytes`, token: 'count' as const }] : []),
+          ],
+        }, theme);
       }
       const text = result.content.find((c) => c.type === 'text')?.text ?? 'write failed';
-      const err = paint(theme, 'error', text);
-      return makeRenderer((width) => [truncateToWidth(err, width)]);
+      return buildToolView({ name: WRITE_TOOL_DISPLAY_NAME, state: 'error', segments: [{ text, token: 'error' }] }, theme);
     },
   });
 }

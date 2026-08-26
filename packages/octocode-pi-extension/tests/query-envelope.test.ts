@@ -83,7 +83,7 @@ describe('query envelope', () => {
     )).rejects.toThrow(/at most 240/);
   });
 
-  it('executes prepared queries in order and returns every result to the agent', async () => {
+  it('executes prepared queries in order and returns every child content block to the agent by default', async () => {
     const events: unknown[] = [];
     const execute = vi.fn(async (query: Record<string, unknown>, index: number, _itemId: string) => {
       return textResult(`done ${String(query.value)}`, { index });
@@ -99,7 +99,6 @@ describe('query envelope', () => {
       },
       execute,
       onUpdate: (update) => events.push(update),
-      passthroughContent: true,
     });
 
     expect(execute.mock.calls.map((call) => [call[0].value, call[1], call[2]])).toEqual([
@@ -113,8 +112,30 @@ describe('query envelope', () => {
     ]);
     expect(result.details).toMatchObject({ queryRunType: 'sequential' });
     expect(result.content).toEqual([
+      { type: 'text', text: '2 queries succeeded · sequential.\n✓ [0] done a\n✓ [1] done b' },
       { type: 'text', text: 'done a' },
       { type: 'text', text: 'done b' },
+    ]);
+  });
+
+  it('preserves non-text child content in a batch instead of replacing it with receipts', async () => {
+    const result = await executeQueryBatch({
+      toolCallId: 'call-media',
+      raw: {
+        queries: [
+          { reasoning: 'return text', value: 'text' },
+          { reasoning: 'return image', value: 'image' },
+        ],
+      },
+      execute: async (_query, index) => index === 0
+        ? textResult('full text result')
+        : { content: [{ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' }] },
+    });
+
+    expect(result.content).toEqual([
+      { type: 'text', text: '2 queries succeeded · sequential.\n✓ [0] full text result\n✓ [1] ok' },
+      { type: 'text', text: 'full text result' },
+      { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
     ]);
   });
 

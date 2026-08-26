@@ -14,8 +14,7 @@ import {
   type Task,
 } from '@octocodeai/octocode-awareness/lite';
 import type { ToolCallResult, PiContext, PiTheme } from '../types.js';
-import { CLI_GLYPH, cliToolTitle, paint } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildToolView } from './render-helpers.js';
 
 /**
  * The session-stable Awareness Lite agent id. OCTOCODE_AGENT_ID (set at
@@ -84,19 +83,22 @@ export function awarenessOk(summary: string, action: string, json: unknown): Too
 
 /** Shared renderCall: `⟨title⟩ action hint`. */
 export function renderAwarenessCall(toolName: string, action: string, hint: string, theme?: PiTheme) {
-  const title = cliToolTitle(theme, toolName);
-  const body = paint(theme, 'dim', `${action} ${hint}`.trim());
-  return makeRenderer((w) => [truncateToWidth(`${title} ${body}`, w)]);
+  return buildToolView({
+    name: toolName,
+    state: 'request',
+    segments: [{ text: action, token: 'bright' }, ...(hint ? [{ text: hint, token: 'dim' as const }] : [])],
+  }, theme);
 }
 
 /** Shared renderResult: success/error glyph + first summary line. */
 export function renderAwarenessResult(result: ToolCallResult, theme?: PiTheme) {
   const ok = !result.isError;
   const first = ((result.content?.[0] as { text?: string } | undefined)?.text ?? '').split('\n')[0] || 'awareness';
-  const line = ok
-    ? paint(theme, 'success', `${CLI_GLYPH.success} ${first}`)
-    : paint(theme, 'error', `${CLI_GLYPH.error} ${first}`);
-  return makeRenderer((w) => [truncateToWidth(line, w)]);
+  return buildToolView({
+    name: 'Awareness',
+    state: ok ? 'success' : 'error',
+    segments: [{ text: first, token: ok ? 'dim' : 'error' }],
+  }, theme);
 }
 
 /** Count rows in an array-or-{items|results} JSON shape, for summaries. */

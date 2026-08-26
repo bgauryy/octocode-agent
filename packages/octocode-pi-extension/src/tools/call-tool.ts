@@ -17,8 +17,7 @@
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import { sliceBetween } from '../utils.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { cliToolTitle, paint } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildToolView } from './render-helpers.js';
 import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 import { spawnRpcAgent, waitForAgentTurn, isSubagentProcess, killWorkerById } from './agent-tools.js';
 import { requestApproval } from './approval.js';
@@ -614,9 +613,14 @@ export function registerCallTool(
       const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as CallToolParams[] : [];
       const p = queries[0] ?? {} as CallToolParams;
       // Brand title + dim args, matching the other tool-call rows.
-      const title = cliToolTitle(theme, 'callTool');
-      const args = `(${p.toolType}${p.mode && p.mode !== 'auto' ? `, ${p.mode}` : ''})`;
-      return makeRenderer((w) => [truncateToWidth(`${title}${paint(theme, 'dim', args)}`, w)]);
+      return buildToolView({
+        name: 'callTool',
+        state: 'request',
+        segments: [
+          { text: String(p.toolType ?? 'capability'), token: 'symbol' },
+          ...(p.mode && p.mode !== 'auto' ? [{ text: p.mode, token: 'dim' as const }] : []),
+        ],
+      }, theme);
     },
 
     renderResult(result: unknown, _opts: unknown, theme?: PiTheme) {
@@ -624,12 +628,12 @@ export function registerCallTool(
       const first = (r?.content?.[0]?.text ?? '').split('\n')[0] || 'callTool';
       // Match the codebase color contract: red=error, gold=act-on-me (blocked/
       // declined/proposal awaiting your decision), green=only a positive outcome.
-      const colored = first.startsWith('[ERROR]')
-        ? paint(theme, 'error', first)
+      const state = first.startsWith('[ERROR]')
+        ? 'error'
         : first.startsWith('[BLOCKED]') || first.startsWith('[DECLINED]') || first.startsWith('[PROPOSAL]')
-          ? paint(theme, 'warning', first)
-          : paint(theme, 'success', first);
-      return makeRenderer((w) => [truncateToWidth(colored, w)]);
+          ? 'warning'
+          : 'success';
+      return buildToolView({ name: 'callTool', state, segments: [{ text: first, token: state === 'success' ? 'dim' : state }] }, theme);
     },
   });
 }

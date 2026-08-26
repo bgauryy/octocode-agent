@@ -59,7 +59,7 @@ Same-name `registerTool` overrides. Pi keeps the tool name; the extension owns t
 
 | Tool | What the override adds |
 |---|---|
-| `bash` | Catastrophic pattern block (`rm -rf /`, `mkfs`, `dd of=/dev/`, `shutdown/reboot/halt`) · best-effort write-target extraction for redirects / `tee` / `cp`/`mv`/`install` → path guard · output truncation (2 000 lines / 50 KB) · timeout support |
+| `bash` | Catastrophic pattern block (`rm -rf /`, `mkfs`, `dd of=/dev/`, `shutdown/reboot/halt`) · best-effort write-target extraction for redirects / `tee` / `cp`/`mv`/`install` → path guard · lossless output paging into ≤20,000-character model content blocks · bounded head/tail UI previews · timeout support |
 
 ### Disabled Built-ins — 6
 

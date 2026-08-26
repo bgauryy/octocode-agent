@@ -9,8 +9,7 @@ import {
   stopLocalServer,
   unmount,
 } from './local-server.js';
-import { cliStatusGlyph, cliToolTitle, paint } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildToolView } from './render-helpers.js';
 import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 import type { ToolCallResult, ToolDefinition, PiContext, PiTheme } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
@@ -232,12 +231,14 @@ export function registerLocalServerTool(
           : p.name
             ? `${p.action} ${p.name}`
             : String(p.action ?? '');
-      return makeRenderer((width) => [
-        truncateToWidth(
-          `${cliToolTitle(theme, 'localServer')} ${paint(theme, 'dim', suffix)}`,
-          width,
-        ),
-      ]);
+      return buildToolView({
+        name: 'localServer',
+        state: 'request',
+        segments: [
+          { text: String(p.action ?? 'status'), token: 'bright' },
+          ...(suffix && suffix !== p.action ? [{ text: suffix.replace(`${p.action} `, ''), token: p.action === 'serve' ? 'path' as const : 'dim' as const }] : []),
+        ],
+      }, theme);
     },
 
     renderResult(result: ToolCallResult, _opts: unknown, theme?: PiTheme) {
@@ -246,12 +247,16 @@ export function registerLocalServerTool(
         ((result.content.find((c) => c.type === 'text') as { text?: string } | undefined)?.text ?? '')
           .split('\n')
           .find(Boolean) ?? (ok ? 'localServer ok' : 'localServer failed');
-      return makeRenderer((width) => [
-        truncateToWidth(
-          `${paint(theme, ok ? 'success' : 'error', cliStatusGlyph(ok))} ${cliToolTitle(theme, 'localServer')} ${paint(theme, 'dim', first)}`,
-          width,
-        ),
-      ]);
+      const details = result.details as Record<string, unknown> | undefined;
+      const url = typeof details?.['url'] === 'string' ? details['url'] : '';
+      return buildToolView({
+        name: 'localServer',
+        state: ok ? 'success' : 'error',
+        segments: [
+          ...(url ? [{ text: url, token: 'link' as const }] : []),
+          { text: first, token: ok ? 'dim' : 'error' },
+        ],
+      }, theme);
     },
   } satisfies ToolDefinition);
 }

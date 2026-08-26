@@ -3,7 +3,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'vitest';
-import { bashLooksMutatingForPlanMode, classifyEnvExfilCommand, extractBashWriteTargets, registerBashTool } from '../src/tools/bash-tool.js';
+import {
+  BASH_RESULT_PAGE_MAX_CHARS,
+  bashLooksMutatingForPlanMode,
+  classifyEnvExfilCommand,
+  extractBashWriteTargets,
+  paginateBashOutput,
+  registerBashTool,
+} from '../src/tools/bash-tool.js';
 import { registerUniqueTool } from '../src/tools/octocode-tools.js';
 import { resetApprovalStore } from '../src/tools/approval.js';
 import { enterPlanMode, exitPlanMode } from '../src/tools/plan-mode.js';
@@ -207,6 +214,26 @@ test('classifyEnvExfilCommand flags obvious inherited environment dumps but not 
   assert.equal(classifyEnvExfilCommand('echo hello'), null);
 });
 
+test('bash alone pages large output at 20,000 characters without dropping any result text', () => {
+  assert.equal(BASH_RESULT_PAGE_MAX_CHARS, 20_000);
+  const full = `${'a'.repeat(21_000)}\n${'b'.repeat(21_000)}\ntail`;
+  const pages = paginateBashOutput(full);
+  assert.ok(pages.length > 1);
+  assert.ok(pages.every((page) => page.text.length <= BASH_RESULT_PAGE_MAX_CHARS));
+  assert.equal(pages.map((page) => page.payload).join(''), full);
+});
+
+test('bash paging never splits a Unicode surrogate pair across content blocks', () => {
+  const payloadBudget = BASH_RESULT_PAGE_MAX_CHARS - 64;
+  const full = `${'a'.repeat(payloadBudget - 1)}😀tail`;
+  const pages = paginateBashOutput(full);
+  assert.equal(pages.map((page) => page.payload).join(''), full);
+  for (const page of pages) {
+    assert.doesNotMatch(page.payload.at(-1) ?? '', /[\uD800-\uDBFF]/);
+    assert.doesNotMatch(page.payload.at(0) ?? '', /[\uDC00-\uDFFF]/);
+  }
+});
+
 test('bash execution requires approval for obvious environment exfiltration and fails closed without UI', async () => {
   resetApprovalStore();
   const tool = loadBashTool();
@@ -294,7 +321,7 @@ test('bash renderResult always renders the result: header with exit/lines, a sho
   const collapsed = (tool.renderResult!(result, { expanded: false }, renderTheme as never) as { render(w: number): string[] }).render(120);
   assert.match(collapsed[0]!, /<success>✓<\/success>/);
   assert.match(collapsed[0]!, /bash \(Octocode\)/);
-  assert.match(collapsed[0]!, /exit 0 · 6 lines/);
+  assert.match(collapsed[0]!, /exit 0.*6 lines/);
   assert.equal(collapsed.length, 1 + 3 + 1, 'header + 3 head lines + hidden hint');
   assert.match(collapsed.at(-1)!, /3 more lines/);
   const expanded = (tool.renderResult!(result, { expanded: true }, renderTheme as never) as { render(w: number): string[] }).render(120);
@@ -303,5 +330,20 @@ test('bash renderResult always renders the result: header with exit/lines, a sho
   const err = (tool.renderResult!(failed, { expanded: false }, renderTheme as never) as { render(w: number): string[] }).render(120);
   assert.match(err[0]!, /<error>✗<\/error>/);
   assert.match(err[0]!, /bash \(Octocode\)/);
-  assert.match(err[1]!, /<error>  boom<\/error>/);
+  assert.match(err[1]!, /^  <error>boom<\/error>/);
+});
+
+test('bash expanded UI uses a smart head/tail preview while the tool result remains complete', () => {
+  const tool = loadBashTool();
+  const out = `HEAD\n${'middle\n'.repeat(5_000)}TAIL`;
+  const result: ToolCallResult = {
+    content: paginateBashOutput(out).map((page) => ({ type: 'text', text: page.text })),
+    details: { code: 0, stdout: out, stderr: '' },
+  };
+  const expanded = (tool.renderResult!(result, { expanded: true }, renderTheme as never) as { render(w: number): string[] }).render(120);
+  assert.ok(expanded.some((line) => line.includes('HEAD')));
+  assert.ok(expanded.some((line) => line.includes('TAIL')));
+  assert.ok(expanded.some((line) => /hidden in UI/.test(line)));
+  assert.ok(expanded.length < 3_000, 'expanded rendering stays bounded');
+  assert.equal((result.details as { stdout: string }).stdout, out, 'renderer never mutates the model result');
 });

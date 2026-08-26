@@ -2,6 +2,7 @@
 import type { PiTheme } from '../types.js';
 import { CURSOR_MARKER } from '@earendil-works/pi-tui';
 import { paint, SEP, type SemanticToken } from './palette.js';
+import { CLI_GLYPH, cliSpinnerFrame } from './cli-design.js';
 import { truncateToWidth, visibleWidth } from '../tools/render-helpers.js';
 
 export interface TuiRenderContext {
@@ -75,6 +76,62 @@ export const renderStack: TuiComponent<StackProps> = (props, context) => {
   return props.sections.flatMap((section) => section)
     .filter((line) => line.length > 0)
     .map((line) => truncateToWidth(line, width));
+};
+
+export type ToolViewState = 'request' | 'running' | 'success' | 'error' | 'warning' | 'neutral';
+
+export interface ToolViewLine {
+  text: string;
+  token?: SemanticToken;
+}
+
+export interface ToolViewProps {
+  /** Stable tool identity. Tool-specific meaning belongs in `segments`, not the title. */
+  name: string;
+  state: ToolViewState;
+  /** Optional explicit state label such as "fetching…" or "exit 2". */
+  status?: string;
+  /** Tool-owned action, target, counts, paths, links, and other compact metadata. */
+  segments?: readonly InlineSegment[];
+  /** Expanded evidence/preview rows. These are view-only and never mutate tool content. */
+  body?: readonly ToolViewLine[];
+  /** Muted interaction or disclosure hint, rendered after the body. */
+  hint?: string;
+}
+
+function toolStateVisual(state: ToolViewState): { glyph: string; token: SemanticToken } {
+  if (state === 'running') return { glyph: cliSpinnerFrame(), token: 'brand' };
+  if (state === 'success') return { glyph: CLI_GLYPH.success, token: 'success' };
+  if (state === 'error') return { glyph: CLI_GLYPH.error, token: 'error' };
+  if (state === 'warning') return { glyph: '!', token: 'warning' };
+  if (state === 'neutral') return { glyph: '–', token: 'muted' };
+  return { glyph: CLI_GLYPH.tool, token: 'brand' };
+}
+
+/**
+ * Shared React-shaped composition for every tool request/result transcript row.
+ * The skeleton is fixed (state → identity → semantic slots → body → hint), while
+ * each tool owns the segments and evidence that make its output useful.
+ */
+export const renderToolView: TuiComponent<ToolViewProps> = (props, context) => {
+  const width = safeWidth(context.width);
+  const visual = toolStateVisual(props.state);
+  const identityName = props.state === 'request' ? (context.theme?.bold?.(props.name) ?? props.name) : props.name;
+  const identity = `${paint(context.theme, visual.token, visual.glyph)} ${paint(context.theme, 'title', identityName)}`;
+  const headerSegments: InlineSegment[] = [
+    ...(props.status ? [{ text: props.status, token: props.state === 'error' ? 'error' : props.state === 'warning' ? 'warning' : 'dim' } as InlineSegment] : []),
+    ...(props.segments ?? []),
+  ];
+  const headerTail = headerSegments
+    .filter((segment) => segment.text.trim().length > 0)
+    .map((segment) => segmentText(segment, context.theme))
+    .join(SEP);
+  const lines = [truncateToWidth(headerTail ? `${identity}${paint(context.theme, 'dim', SEP)}${headerTail}` : identity, width)];
+  for (const line of props.body ?? []) {
+    lines.push(truncateToWidth(`  ${paint(context.theme, line.token ?? 'dim', line.text)}`, width));
+  }
+  if (props.hint) lines.push(truncateToWidth(`  ${paint(context.theme, 'muted', props.hint)}`, width));
+  return lines;
 };
 
 export interface FrameProps {

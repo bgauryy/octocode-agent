@@ -1,6 +1,5 @@
 import path from 'node:path';
-import { cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildToolView } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import { resolveFilePath } from './file-state.js';
 import { buildImageLinesFromData, effectiveInlineImages, formatBytes, isTerminalImageCapable, loadImageForRender, terminalImageProtocol } from './image-render.js';
@@ -182,24 +181,27 @@ export function registerReadMediaTool(
       const input = queries[0] ?? {};
       const type = typeof input['type'] === 'string' ? input['type'] : 'media';
       const filePath = typeof input['path'] === 'string' ? input['path'] : '(missing path)';
-      return makeRenderer((width) => [
-        truncateToWidth(`${cliToolTitle(theme, 'readMedia')} ${paint(theme, 'dim', `${type} · ${filePath}`)}`, width),
-      ]);
+      return buildToolView({ name: 'readMedia', state: 'request', segments: [{ text: type, token: 'bright' }, { text: filePath, token: 'path' }] }, theme);
     },
 
     renderResult(result, opts, theme, context) {
-      if (opts.isPartial) return makeRenderer(() => [paint(theme, 'brand', '… reading media')]);
+      if (opts.isPartial) return buildToolView(() => ({ name: 'readMedia', state: 'running', status: 'reading…' }), theme);
       const ok = !result.isError;
       const note = (result.content.find((c) => c.type === 'text') as { text?: string } | undefined)?.text
         ?? (ok ? 'media loaded' : 'read failed');
-      const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
-      const base = makeRenderer((width) => [
-        truncateToWidth(`${icon} ${cliToolTitle(theme, 'readMedia')} · ${note}`, width),
-      ]);
+      const details = result.details && typeof result.details === 'object' ? result.details as Record<string, unknown> : {};
+      const source = typeof details['sourcePath'] === 'string' ? details['sourcePath'] : '';
+      const base = buildToolView({
+        name: 'readMedia',
+        state: ok ? 'success' : 'error',
+        segments: [
+          { text: note.split('\n').find(Boolean) ?? note, token: ok ? 'dim' : 'error' },
+          ...(source ? [{ text: source, token: 'path' as const }] : []),
+        ],
+      }, theme);
       if (!opts.expanded) return base;
       const image = result.content.find((part) => part.type === 'image') as { data?: string; mimeType?: string } | undefined;
       if (!image?.data || !image.mimeType) return base;
-      const details = result.details && typeof result.details === 'object' ? result.details as Record<string, unknown> : {};
       const sourcePath = typeof details['sourcePath'] === 'string' ? details['sourcePath'] : 'read-media-image';
       const name = path.basename(sourcePath) || 'media-preview';
       const bytes = typeof details['bytes'] === 'number' ? details['bytes'] : undefined;

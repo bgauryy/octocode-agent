@@ -18,7 +18,6 @@ import {
   registerAgentTools,
   setAgentProcessFactoryForTests,
   isSubagentProcess,
-  MAX_AGENT_LAST_OUTPUT_CHARS,
   MAX_AGENT_RECORDS,
   DEFAULT_SPAWN_POLICY,
   DEFAULT_IDLE_REAP_MS,
@@ -156,13 +155,13 @@ test('M7: MAX_AGENT_RECORDS is exported and has the expected value', () => {
   assert.ok(MAX_AGENT_RECORDS > 0);
 });
 
-test('worker lastOutput is capped to a recent tail to bound memory use', () => {
+test('worker lastOutput preserves the complete agent result without truncation', () => {
   if (isSubagentProcess()) return;
 
   const mock = makeMockAgentProcess({ stdinThrows: false });
   setAgentProcessFactoryForTests(() => mock as never);
   const record = spawnRpcAgent({ task: 'large output', resourceMode: 'lean' });
-  const hugeText = `${'x'.repeat(MAX_AGENT_LAST_OUTPUT_CHARS + 500)}\n[DONE] tail`;
+  const hugeText = `${'x'.repeat(80_000)}\n[DONE] tail`;
 
   mock._emit(
     'stdout:data',
@@ -172,8 +171,7 @@ test('worker lastOutput is capped to a recent tail to bound memory use', () => {
     })}\n`),
   );
 
-  assert.equal(record.lastOutput.length, MAX_AGENT_LAST_OUTPUT_CHARS);
-  assert.match(record.lastOutput, /\[DONE\] tail$/);
+  assert.equal(record.lastOutput, hugeText);
   assert.equal(record.normalizedResult?.status, 'done');
 });
 

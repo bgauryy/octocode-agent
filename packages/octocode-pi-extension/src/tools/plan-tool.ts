@@ -9,7 +9,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { ToolDefinition, ToolCallResult, PiContext, PiTheme, NotifyFn, RenderResultOptions } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { CLI_STATUS_TEXT, cliSpinnerFrame, cliToolTitle, paint } from '../tui/cli-design.js';
+import { CLI_STATUS_TEXT, paint } from '../tui/cli-design.js';
 import { SEP } from '../tui/palette.js';
 import { buildPlanPrompt } from '../prompts/plan-prompt.js';
 import { adoptPlanModePolicy, enterPlanMode, exitPlanMode, isPlanMode } from './plan-mode.js';
@@ -17,7 +17,7 @@ import { runAskPrompt } from './ask-user-tool.js';
 import { enablePlanHtmlSync, resetPlanHtmlSync, openPlanHtml, syncPlanHtmlIfEnabled, writePlanArtifacts, planArtifactsDir, readRfcDoc } from './plan-html.js';
 import { serveDirectory, unmount } from './local-server.js';
 import { FREE_TEXT_TELL_DIFFERENTLY, PLAN_APPROVE_DESC, PLAN_APPROVE_LABEL, PLAN_APPROVED_REVIEW_QUESTION, PLAN_COMPLETE_QUESTION, PLAN_PROPOSE_HINT, PLAN_REJECT_DESC, PLAN_REJECT_LABEL, PLAN_SET_BROWSER_QUESTION } from '../tui/content.js';
-import { buildQueryCallBlocks, makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildQueryCallBlocks, buildToolView, truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel } from './status-panel.js';
 import { activePlanScope, setPlan, activatePlan, proposePlanReview, acceptPlanReview, requestPlanChanges, startAcceptedPlan, addStep, startStep, completeStep, removeStep, clearPlan, getPlan, getPlanReviewState, getPlanCoordination, updatePlanCoordination, setPlanAwarenessMappings, renderActivePlanAddendum, MARK, stepLabel, displayStatus, depsMet, dependencyIndexes, resolveRfcPath, setPlanRfc, getPlanRfc, addPlanDecision, getPlanDecisions, planPhaseIndex, PLAN_PHASES, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
 import { completeUnifiedPlanTask, finalizeUnifiedPlan, getAwarenessLiteAgentId, projectUnifiedPlan, type ObservedCheckReceipt, type UnifiedPlanScope } from './awareness-shared.js';
@@ -1080,9 +1080,14 @@ export function registerPlanTool(
         const extra = q.action === 'set' || q.action === 'propose'
           ? ` (${(q.steps ?? []).length} steps)`
           : q.index ? ` #${q.index}` : '';
-        const title = cliToolTitle(theme, 'plan');
-        const meta = paint(theme, 'dim', ` (${q.action}${extra})`);
-        return makeRenderer((w) => [truncateToWidth(`${title}${meta}`, w)]);
+        return buildToolView({
+          name: 'plan',
+          state: 'request',
+          segments: [
+            { text: q.action, token: 'bright' },
+            ...(extra ? [{ text: extra.trim().replace(/^\(|\)$/g, ''), token: 'count' as const }] : []),
+          ],
+        }, theme);
       });
     },
 
@@ -1090,30 +1095,29 @@ export function registerPlanTool(
     renderResult(result: ToolCallResult, opts: RenderResultOptions, theme?: PiTheme) {
       // Partial: spinner while the plan operation is executing.
       if (opts.isPartial) {
-        const title = cliToolTitle(theme, 'plan');
-        return makeRenderer((w) => [
-          truncateToWidth(
-            `${paint(theme, 'brand', cliSpinnerFrame())} ${title} ${paint(theme, 'dim', CLI_STATUS_TEXT.running)}`,
-            w,
-          ),
-        ]);
+        return buildToolView(() => ({ name: 'plan', state: 'running', status: CLI_STATUS_TEXT.running }), theme);
       }
       const r = result as ToolCallResult & { details?: { steps?: PlanStep[]; action?: string; results?: unknown[] } };
       // Multi-query batch result: details.results is an array
       if (Array.isArray(r?.details?.results)) {
         const count = r.details!.results!.length;
-        const line = `◆ plan ${count} operation${count === 1 ? '' : 's'}`;
-        return makeRenderer((w) => [truncateToWidth(paint(theme, 'dim', line), w)]);
+        return buildToolView({ name: 'plan', state: 'success', segments: [{ text: `${count} operation${count === 1 ? '' : 's'}`, token: 'count' }] }, theme);
       }
       // Single-query passthrough: original shape
       const steps = r?.details?.steps ?? [];
       if (r?.details?.action === 'clear' || steps.length === 0) {
-        return makeRenderer((w) => [truncateToWidth(paint(theme, 'dim', '◆ plan cleared'), w)]);
+        return buildToolView({ name: 'plan', state: 'success', segments: [{ text: 'cleared', token: 'dim' }] }, theme);
       }
       const done = steps.filter((s) => s.status === 'done').length;
       const current = steps.find((s) => s.status === 'doing') ?? steps.find((s) => s.status === 'todo');
-      const line = `◆ plan ${done}/${steps.length}${current ? ` · ${stepLabel(current)}` : ''}`;
-      return makeRenderer((w) => [truncateToWidth(paint(theme, 'dim', line), w)]);
+      return buildToolView({
+        name: 'plan',
+        state: done === steps.length ? 'success' : 'neutral',
+        segments: [
+          { text: `${done}/${steps.length}`, token: 'count' },
+          ...(current ? [{ text: stepLabel(current), token: 'bright' as const }] : []),
+        ],
+      }, theme);
     },
   });
 }

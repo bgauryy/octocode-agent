@@ -6,10 +6,10 @@
  */
 import { runWebTool, renderWebResult } from '../web.js';
 import { propagateOctocodeEnv, getOctocodeHome } from '../env.js';
-import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
+import { CLI_STATUS_TEXT } from '../tui/cli-design.js';
 import type { TSchema, ToolDefinition, PiTheme, ToolCallResult } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildToolView } from './render-helpers.js';
 import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
@@ -156,55 +156,50 @@ export function registerWebTool(
       const a = queries[0] ?? envelope;
       const url = typeof a['url'] === 'string' && a['url'] ? (a['url'] as string) : '';
       const query = typeof a['query'] === 'string' && a['query'] ? (a['query'] as string) : '';
-      const nameStr = cliToolTitle(theme, 'web', { bold: true });
       const displayUrl = url.length > 70 ? `${url.slice(0, 67)}\u2026` : url;
       const displayQuery = query.length > 70 ? `${query.slice(0, 67)}\u2026` : query;
-      const detail = url
-        ? paint(theme, 'link', displayUrl)
-        : query
-          ? paint(theme, 'dim', `"${displayQuery}"`)
-          : '';
-      const rawLine = detail ? `${nameStr} ${detail}` : nameStr;
-      return makeRenderer((w) => [truncateToWidth(rawLine, w)]);
+      return buildToolView({
+        name: 'web',
+        state: 'request',
+        segments: url
+          ? [{ text: 'fetch', token: 'bright' }, { text: displayUrl, token: 'link' }]
+          : query
+            ? [{ text: 'search', token: 'bright' }, { text: `"${displayQuery}"`, token: 'dim' }]
+            : [],
+      }, theme);
     },
 
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        const msg = paint(theme, 'brand', CLI_STATUS_TEXT.fetching);
-        return makeRenderer((w) => [truncateToWidth(msg, w)]);
+        return buildToolView(() => ({ name: 'web', state: 'running', status: CLI_STATUS_TEXT.fetching }), theme);
       }
       const ok = !result.isError;
-      const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
-      const nameStr = cliToolTitle(theme, 'web');
-
       const det = result.details as Record<string, unknown> | null;
-      let stat = '';
+      const segments: Array<{ text: string; token: 'count' | 'warning' | 'dim' }> = [];
       if (Array.isArray((det as Record<string, unknown> | null)?.results)) {
         const n = ((det as Record<string, unknown>).results as unknown[]).length;
-        stat = paint(theme, 'dim', ` \u00b7 ${n} result${n === 1 ? '' : 's'}`);
+        segments.push({ text: `${n} result${n === 1 ? '' : 's'}`, token: 'count' });
       } else if (det?.url) {
         const truncated = det.truncated === true;
         const pg = typeof det.page === 'number' && det.page > 1 ? ` p${det.page}` : '';
-        stat = truncated
-          ? paint(theme, 'dim', ` \u00b7 page${pg} (more pages available)`)
-          : paint(theme, 'dim', ` \u00b7 page${pg}`);
+        segments.push({ text: `page${pg}`, token: 'count' });
+        if (truncated) segments.push({ text: 'more pages available', token: 'warning' });
       }
-      const header = `${icon} ${nameStr}${stat}`;
       if (!opts.expanded) {
-        return makeRenderer((w) => [truncateToWidth(header, w)]);
+        return buildToolView({ name: 'web', state: ok ? 'success' : 'error', segments }, theme);
       }
       const text = (result.content as Array<{ type: string; text: string }>)
         ?.find?.((p) => p.type === 'text')?.text ?? '';
       const allLines = text.split('\n');
       const lines = allLines.slice(0, 20);
       const omitted = allLines.length - lines.length;
-      return makeRenderer((w) => [
-        truncateToWidth(header, w),
-        ...lines.map((l) => truncateToWidth(paint(theme, 'dim', l), w)),
-        ...(omitted > 0
-          ? [truncateToWidth(paint(theme, 'muted', `\u2026 ${omitted} more lines`), w)]
-          : []),
-      ]);
+      return buildToolView({
+        name: 'web',
+        state: ok ? 'success' : 'error',
+        segments,
+        body: lines.map((text) => ({ text, token: ok ? 'dim' : 'error' })),
+        hint: omitted > 0 ? `${omitted} more lines hidden in this view` : undefined,
+      }, theme);
     },
   } satisfies ToolDefinition);
 }

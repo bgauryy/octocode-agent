@@ -1,8 +1,8 @@
 import { lstat, unlink } from 'node:fs/promises';
 import type { Stats } from 'node:fs';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
-import { CLI_GLYPH, CLI_STATUS_TEXT, cliSpinnerFrame, cliToolTitle, paint } from '../tui/cli-design.js';
-import { buildQueryCallBlocks, makeRenderer, truncateToWidth } from './render-helpers.js';
+import { CLI_STATUS_TEXT } from '../tui/cli-design.js';
+import { buildQueryCallBlocks, buildToolView } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import {
   forgetFileReadState,
@@ -237,21 +237,13 @@ export function registerFileTool(
         const first = queries[0] ?? {};
         const operation = typeof first['type'] === 'string' ? first['type'] : 'mutate';
         const filePath = typeof first['path'] === 'string' ? first['path'] : '(missing path)';
-        const title = cliToolTitle(theme, FILE_TOOL_DISPLAY_NAME);
-        const meta = paint(theme, 'dim', `${operation} · ${filePath}`);
-        return makeRenderer((width) => [truncateToWidth(`${title} ${meta}`, width)]);
+        return buildToolView({ name: FILE_TOOL_DISPLAY_NAME, state: 'request', segments: [{ text: operation, token: 'bright' }, { text: filePath, token: 'path' }] }, theme);
       });
     },
     renderResult(result: ToolCallResult, opts: { isPartial?: boolean; expanded?: boolean }, theme?: PiTheme) {
       // Partial: spinner + tool name while the batch is still executing.
       if (opts.isPartial) {
-        const title = cliToolTitle(theme, FILE_TOOL_DISPLAY_NAME);
-        return makeRenderer((width) => [
-          truncateToWidth(
-            `${paint(theme, 'brand', cliSpinnerFrame())} ${title} ${paint(theme, 'dim', CLI_STATUS_TEXT.editing)}`,
-            width,
-          ),
-        ]);
+        return buildToolView(() => ({ name: FILE_TOOL_DISPLAY_NAME, state: 'running', status: CLI_STATUS_TEXT.editing }), theme);
       }
 
       const details = result.details as { operation?: string; path?: string; bytes?: number } | undefined;
@@ -262,22 +254,22 @@ export function registerFileTool(
 
       // Write / Delete: icon + tool name, then optional «op · path» and a summary line.
       const ok = !result.isError;
-      const icon = paint(theme, ok ? 'success' : 'error', ok ? CLI_GLYPH.success : CLI_GLYPH.error);
-      const title = cliToolTitle(theme, FILE_TOOL_DISPLAY_NAME);
       const hasPath = typeof details?.path === 'string';
       // «op · /the/path» — separator only when BOTH op and path are present so we
       // never render a dangling «write ·» when the detail object has no path key.
-      const opStr = op ? paint(theme, 'dim', op) : '';
-      const sep   = op && hasPath ? paint(theme, 'dim', ' · ') : '';
-      const pathStr = hasPath ? paint(theme, 'path', details!.path!) : '';
       const summary =
         op === 'write' && typeof details?.bytes === 'number'
-          ? paint(theme, 'muted', `  ${details.bytes} bytes written`)
+          ? `${details.bytes} bytes written`
           : result.content.find((item) => item.type === 'text')?.text?.split('\n')[0] ?? '';
-      return makeRenderer((width) => [
-        truncateToWidth(`${icon} ${title}${opStr ? ` ${opStr}` : ''}${sep}${pathStr}`, width),
-        ...(summary ? [truncateToWidth(summary, width)] : []),
-      ]);
+      return buildToolView({
+        name: FILE_TOOL_DISPLAY_NAME,
+        state: ok ? 'success' : 'error',
+        segments: [
+          ...(op ? [{ text: op, token: 'bright' as const }] : []),
+          ...(hasPath ? [{ text: details!.path!, token: 'path' as const }] : []),
+        ],
+        body: summary ? [{ text: summary, token: ok ? 'muted' : 'error' }] : [],
+      }, theme);
     },
   });
 }

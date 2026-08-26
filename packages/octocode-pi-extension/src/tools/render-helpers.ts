@@ -11,16 +11,18 @@
 import { truncateToWidth as piTruncateToWidth, visibleWidth as piVisibleWidth } from '@earendil-works/pi-tui';
 
 import {
-  CLI_GLYPH,
   CLI_STATUS_TEXT,
-  cliSpinnerFrame,
-  cliStatusGlyph,
-  cliStatusToken,
-  cliToolTitle,
   paint,
 } from '../tui/cli-design.js';
 import type { PiTheme, RenderCallReturn, RenderContext, ToolCallResult } from '../types.js';
-import type { TuiComponent, TuiRenderContext } from '../tui/components.js';
+import {
+  renderToolView,
+  type InlineSegment,
+  type ToolViewLine,
+  type ToolViewProps,
+  type TuiComponent,
+  type TuiRenderContext,
+} from '../tui/components.js';
 
 // ─── ANSI-safe width helpers ──────────────────────────────────────────────────
 //
@@ -138,6 +140,14 @@ export function makeRenderer(lines: (width: number) => string[]): RenderCallRetu
 
 export function singleLineRenderer(rawLine: string): RenderCallReturn {
   return makeRenderer((w) => [truncateToWidth(rawLine, w)]);
+}
+
+/** Public adapter for the shared tool-view composition. */
+export function buildToolView(
+  props: ToolViewProps | (() => ToolViewProps),
+  theme?: PiTheme,
+): RenderCallReturn {
+  return makeComponentRenderer(renderToolView, props, theme);
 }
 
 /**
@@ -575,35 +585,17 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
 
 // ─── renderCall / renderResult builders ──────────────────────────────────────
 
-function renderLabeledPayloadLines(label: string, payload: string, theme?: PiTheme): RenderCallReturn {
-  const maxLines = 25;
-  const allLines = payload.split('\n');
-  const shownLines = allLines.slice(0, maxLines);
-  const omitted = allLines.length - shownLines.length;
-  return makeCachedRenderer((width) => {
-    const out = [truncateToWidth(paint(theme, 'muted', `${label}:`), width)];
-    for (const line of shownLines) {
-      out.push(truncateToWidth(paint(theme, 'dim', `  ${line}`), width));
-    }
-    if (omitted > 0) {
-      out.push(truncateToWidth(paint(theme, 'muted', `  … ${omitted} more line${omitted === 1 ? '' : 's'} hidden`), width));
-    }
-    return out;
-  });
-}
-
 function buildOctocodeSingleRenderCall(
   toolName: string,
   args: unknown,
   theme?: PiTheme,
 ): RenderCallReturn {
   const summary = buildToolCallSummary(toolName, args);
-  const icon = paint(theme, 'brand', CLI_GLYPH.tool);
-  const nameStr = cliToolTitle(theme, toolName, { bold: true });
-  const summaryStr = summary
-    ? `${paint(theme, 'dim', ' · ')}${paint(theme, 'dim', summary)}`
-    : '';
-  return makeCachedRenderer((width) => [truncateToWidth(`${icon} ${nameStr}${summaryStr}`, width)]);
+  return buildToolView({
+    name: toolName,
+    state: 'request',
+    segments: summary ? [{ text: summary, token: 'dim' }] : [],
+  }, theme);
 }
 
 /** Build one operation/reasoning block per Octocode MCP query. */
@@ -627,17 +619,6 @@ function firstResultTextLine(result: ToolCallResult): string {
   const text = (result.content as Array<{ type: string; text: string }> | undefined)
     ?.find?.((p) => p?.type === 'text')?.text ?? '';
   return text.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
-}
-
-/** Expanded body: header + labeled response text + a truncation notice. */
-function buildExpandedResultBody(header: string, result: ToolCallResult, theme?: PiTheme): RenderCallReturn {
-  const text = (result.content as Array<{ type: string; text: string }>)
-    ?.find?.((p) => p.type === 'text')?.text ?? '';
-  const responseRenderer = renderLabeledPayloadLines('response', text, theme);
-  return makeCachedRenderer((width) => [
-    truncateToWidth(header, width),
-    ...responseRenderer.render(width),
-  ]);
 }
 
 export interface QueryResultRenderRow {
@@ -684,17 +665,25 @@ function renderQueryResultRows(
   theme?: PiTheme,
   queryRunType?: 'sequential' | 'parallel',
 ): RenderCallReturn {
-  const title = cliToolTitle(theme, toolName);
   return makeCachedRenderer((width) => [
     ...(queryRunType
-      ? [truncateToWidth(`${paint(theme, 'brand', CLI_GLYPH.tool)} ${title} ${paint(theme, 'dim', `· ${rows.length} queries · ${queryRunType}`)}`, width)]
+      ? buildToolView({
+          name: toolName,
+          state: 'neutral',
+          segments: [
+            { text: `${rows.length} queries`, token: 'count' },
+            { text: queryRunType, token: queryRunType === 'parallel' ? 'link' : 'muted' },
+          ],
+        }, theme).render(width)
       : []),
-    ...rows.map((row) => {
-      const glyph = row.status === 'success' ? CLI_GLYPH.success : row.status === 'failed' ? CLI_GLYPH.error : '–';
-      const token = row.status === 'success' ? 'success' : row.status === 'failed' ? 'error' : 'muted';
-      const line = `${paint(theme, token, glyph)} ${title} ${paint(theme, 'dim', `[${row.index}] · `)}${paint(theme, token, row.summary)}`;
-      return truncateToWidth(line, width);
-    }),
+    ...rows.flatMap((row) => buildToolView({
+      name: toolName,
+      state: row.status === 'success' ? 'success' : row.status === 'failed' ? 'error' : 'neutral',
+      segments: [
+        { text: `[${row.index}]`, token: 'dim' },
+        { text: row.summary, token: row.status === 'success' ? 'success' : row.status === 'failed' ? 'error' : 'muted' },
+      ],
+    }, theme).render(width)),
   ]);
 }
 
@@ -755,14 +744,7 @@ export function buildOctocodeRenderResult(
   context?: RenderContext,
 ): RenderCallReturn {
   if (opts.isPartial) {
-    const nameStr = cliToolTitle(theme, toolName);
-    // Evaluate the spinner frame at render time, not construction time — pi
-    // re-invokes render() on each tick, so baking cliSpinnerFrame() into a
-    // captured string would freeze the spinner for the whole partial phase.
-    return makeRenderer((_w) => {
-      const spinner = paint(theme, 'brand', cliSpinnerFrame());
-      return [`${spinner} ${nameStr} ${paint(theme, 'dim', CLI_STATUS_TEXT.running)}`];
-    });
+    return buildToolView(() => ({ name: toolName, state: 'running', status: CLI_STATUS_TEXT.running }), theme);
   }
 
   const queryRows = buildQueryResultRows(toolName, result, theme);
@@ -775,20 +757,28 @@ export function buildOctocodeRenderResult(
   // (e.g. schema validation). Honor both so an error row never renders as a
   // misleading success/empty row.
   const isError = Boolean(result.isError) || Boolean(context?.isError);
-  const ok = !isError;
-  const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
-  const nameStr = cliToolTitle(theme, toolName);
-
   // On error, surface the actual failure text — execute() error results carry
   // the message in the first text content line — so the row explains WHY it
   // failed instead of showing a bare error glyph with no data.
   if (isError) {
     const errText = firstResultTextLine(result);
-    const errSeg = errText
-      ? `${paint(theme, 'dim', ' · ')}${paint(theme, 'error', truncatePlainToWidth(errText, 200))}`
-      : '';
-    const header = `${icon} ${nameStr}${errSeg}`;
-    return opts.expanded ? buildExpandedResultBody(header, result, theme) : makeCachedRenderer((width) => [truncateToWidth(header, width)]);
+    const segments: InlineSegment[] = errText
+      ? [{ text: truncatePlainToWidth(errText, 200), token: 'error' }]
+      : [];
+    if (!opts.expanded) return buildToolView({ name: toolName, state: 'error', segments }, theme);
+    const text = (result.content as Array<{ type: string; text: string }>)?.find?.((p) => p.type === 'text')?.text ?? '';
+    const allLines = text.split('\n');
+    const shown = allLines.slice(0, 25);
+    return buildToolView({
+      name: toolName,
+      state: 'error',
+      segments,
+      body: [
+        { text: 'response:', token: 'muted' },
+        ...shown.map((line): ToolViewLine => ({ text: line, token: 'error' })),
+      ],
+      hint: allLines.length > shown.length ? `${allLines.length - shown.length} more lines hidden in this view` : undefined,
+    }, theme);
   }
 
   const stats = buildResultStats(toolName, result.details);
@@ -801,22 +791,29 @@ export function buildOctocodeRenderResult(
   const pathSeg = stats.paths && stats.paths.length > 0 ? stats.paths.join(', ') : '';
 
   const previewSeg = stats.previews && stats.previews.length > 0 ? stats.previews.join(' | ') : '';
-  const painted: string[] = [];
-  if (summarySeg) painted.push(paint(theme, 'dim', summarySeg));
-  if (pathSeg) painted.push(paint(theme, 'path', pathSeg));
-  if (previewSeg) painted.push(paint(theme, 'dim', `“${previewSeg}”`));
+  const segments: InlineSegment[] = [];
+  if (summarySeg) segments.push({ text: summarySeg, token: 'count' });
+  if (pathSeg) segments.push({ text: pathSeg, token: 'path' });
+  if (previewSeg) segments.push({ text: `“${previewSeg}”`, token: 'dim' });
   // Every result row carries the result: when the tool reported no structured
   // preview, show the first line of its response (`→ …`) so the operator reads
   // the outcome inline instead of expanding the row (ctrl+o still shows all).
   if (!previewSeg) {
     const firstLine = firstResultTextLine(result);
-    if (firstLine) painted.push(paint(theme, 'dim', `→ ${truncatePlainToWidth(firstLine, RESULT_PREVIEW_MAX)}`));
+    if (firstLine) segments.push({ text: `→ ${truncatePlainToWidth(firstLine, RESULT_PREVIEW_MAX)}`, token: 'dim' });
   }
-  const statStr = painted.length > 0
-    ? `${paint(theme, 'dim', ' · ')}${painted.join(paint(theme, 'dim', ' · '))}`
-    : '';
-
-  const header = `${icon} ${nameStr}${statStr}`;
-
-  return opts.expanded ? buildExpandedResultBody(header, result, theme) : makeCachedRenderer((width) => [truncateToWidth(header, width)]);
+  if (!opts.expanded) return buildToolView({ name: toolName, state: 'success', segments }, theme);
+  const text = (result.content as Array<{ type: string; text: string }>)?.find?.((p) => p.type === 'text')?.text ?? '';
+  const allLines = text.split('\n');
+  const shown = allLines.slice(0, 25);
+  return buildToolView({
+    name: toolName,
+    state: 'success',
+    segments,
+    body: [
+      { text: 'response:', token: 'muted' },
+      ...shown.map((line): ToolViewLine => ({ text: line, token: 'dim' })),
+    ],
+    hint: allLines.length > shown.length ? `${allLines.length - shown.length} more lines hidden in this view` : undefined,
+  }, theme);
 }
