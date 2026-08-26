@@ -28,7 +28,7 @@ function fit(text: string, width: number): string {
 }
 
 function segmentText(segment: InlineSegment, theme?: PiTheme): string {
-  const colored = paint(theme, segment.token ?? 'dim', segment.text);
+  const colored = paint(theme, segment.token ?? 'dim', segment.text ?? '');
   return segment.attention ? (theme?.bold?.(colored) ?? colored) : colored;
 }
 
@@ -48,7 +48,7 @@ export const renderInlineRows: TuiComponent<InlineRowsProps> = (props, context) 
     : [...props.segments];
   const rows: string[] = [];
   let row = props.prefix ?? '';
-  for (const segment of ordered.filter((item) => item.text.trim().length > 0)) {
+  for (const segment of ordered.filter((item) => !!item.text?.trim())) {
     const value = segmentText(segment, context.theme);
     const joiner = row ? separator : '';
     const candidate = `${row}${joiner}${value}`;
@@ -123,12 +123,12 @@ export const renderToolView: TuiComponent<ToolViewProps> = (props, context) => {
     ...(props.segments ?? []),
   ];
   const headerTail = headerSegments
-    .filter((segment) => segment.text.trim().length > 0)
+    .filter((segment) => !!segment.text?.trim())
     .map((segment) => segmentText(segment, context.theme))
     .join(SEP);
   const lines = [truncateToWidth(headerTail ? `${identity}${paint(context.theme, 'dim', SEP)}${headerTail}` : identity, width)];
   for (const line of props.body ?? []) {
-    lines.push(truncateToWidth(`  ${paint(context.theme, line.token ?? 'dim', line.text)}`, width));
+    lines.push(truncateToWidth(`  ${paint(context.theme, line.token ?? 'dim', line.text ?? '')}`, width));
   }
   if (props.hint) lines.push(truncateToWidth(`  ${paint(context.theme, 'muted', props.hint)}`, width));
   return lines;

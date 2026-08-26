@@ -21,9 +21,6 @@ export abstract class LitePlansTasks extends LiteBase {
     staleAgents: number;
     messages: number;
   } {
-    this.pruneExpiredLocks();
-    this.pruneExpiredWork();
-    this.evictExpiredTaskClaims();
     const pendingChecks = this.countPendingChecks();
     return {
       dbPath: this.dbPath,
@@ -31,18 +28,26 @@ export abstract class LitePlansTasks extends LiteBase {
       plans: this.count('plans'),
       activePlans: this.countPlansByStatus('OPEN'),
       tasks: this.count('tasks'),
-      readyTasks: this.countReadyTasks(),
-      inProgressTasks: this.countTasksByStatus('CLAIMED'),
+      readyTasks: this.countReadyTasksReadOnly(),
+      inProgressTasks: this.countActiveClaimedTasks(),
       pendingChecks,
       verifyTasks: pendingChecks,
-      locks: this.count('locks'),
-      work: this.count('work_presence'),
+      locks: this.countActiveExpiring('locks'),
+      work: this.countActiveExpiring('work_presence'),
       memories: this.count('memories'),
       handoffs: this.countOpenHandoffs(),
       agents: this.countPresentAgents(params.staleAfterMs ?? DEFAULT_AGENT_PRESENCE_MS),
       staleAgents: params.staleAfterMs ? this.countStaleAgents(params.staleAfterMs) : 0,
       messages: this.count('messages'),
     };
+  }
+
+  private countReadyTasksReadOnly(): number {
+    const stamp = now();
+    const rows = this.db.prepare(`SELECT * FROM tasks
+      WHERE workspace_path = ? AND (status = 'OPEN' OR (status = 'CLAIMED' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?))
+      ORDER BY priority DESC, created_at ASC`).all(this.workspace, stamp);
+    return (rows as unknown as TaskRow[]).map(taskFromRow).filter((task) => this.taskDependenciesSatisfied(task)).length;
   }
   createPlan(params: { title: string; goal?: string | null }): Plan {
     const stamp = now();

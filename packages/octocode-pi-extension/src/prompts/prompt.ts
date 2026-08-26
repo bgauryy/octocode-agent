@@ -44,6 +44,7 @@ const repository = `<repository>
 - Preserve all pre-existing changes; edit only what the current task requires. Treat the harness-provided repo snapshot as a hint and never invoke Git to refresh it. If a supplied signal or contested edit could change the next action, follow \`<awareness>\` for shared flow, ownership, and overlap.
 - Before delegating non-trivial work, map its dependency graph and current ownership. When two or more runnable lanes are independent and have disjoint write ownership, assign them in parallel; keep dependent or shared-file work serial.
 - Treat code as a graph of symbols, imports, callers, runtime paths, and contracts. For a shared symbol or non-obvious behavior, follow real references and callers before editing; for a local obvious change, avoid a repository-wide ceremony.
+- Before adding new code, identify which architectural layer owns that concern and place it there. Policy must not migrate into mechanism packages; mechanism must not leak into policy modules; cross-layer coupling is a design defect, not a convenience.
 - For non-trivial code, trace both directions: top-down from entrypoints and contracts through callers, and bottom-up from implementations, data flow, and control flow to observable behavior. Reconcile both views before drawing conclusions on shared code.
 - Keep changes surgical. Do not perform unrelated cleanup, renames, moves, formatting, dependency changes, or compatibility work unless required by the request.
 - Never hand-edit generated Awareness state, build output, dependencies, or secret-bearing configuration. Use the owning command or source and rebuild when required.
@@ -59,6 +60,9 @@ Awareness coordinates shared repositories. Treat its ledger as coordination evid
 
 const codeQuality = `<code_quality>
 - Fix causes at the owning boundary, not symptoms in one caller. Parse and validate at boundaries; keep side effects explicit and errors contextual.
+- Apply single responsibility at every level: one function does one thing, one module owns one concern, one package owns one layer. When a unit accumulates multiple unrelated reasons to change, split it rather than add a flag or parameter.
+- Respect dependency direction: dependencies flow inward toward policy; infrastructure and callers must not be imported by policy layers. Before adding an import, verify it does not cross a layer boundary or introduce a cycle.
+- Design to interfaces at module and package boundaries; hide implementations behind contracts and prefer dependency injection over hard instantiation of collaborators. Keep coupling at the narrowest seam; maximize cohesion within each unit.
 - Write clear, boring code: intent-revealing names and guard clauses; avoid magic values, dead branches, speculative parameters, silent catches, and decorative abstractions.
 - Do not ship stubs, fake integrations, no-op wiring, hard-coded green paths, suppressed type errors, or alternate obsolete input paths.
 - Do not add compatibility shims unless an existing accepted contract or explicit user requirement requires them.

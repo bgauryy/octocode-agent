@@ -169,7 +169,10 @@ export function dispatchAwarenessCommand(
             blockedReason: str(p['blockedReason']),
           }));
         case 'done':
-          return done(aw.doneTask({ taskId: reqStr(p, 'taskId', 'task done'), agentId: reqStr(p, 'agentId', 'task done') }));
+          {
+            const task = aw.doneTask({ taskId: reqStr(p, 'taskId', 'task done'), agentId: reqStr(p, 'agentId', 'task done') });
+            return done({ ...task, next: { action: 'check.mark', taskId: task.taskId } });
+          }
         case 'reopen':
           return done(aw.reopenTask({
             taskId: reqStr(p, 'taskId', 'task reopen'),
@@ -258,12 +261,22 @@ export function dispatchAwarenessCommand(
             minAgeMs: num(p['minAgeMs']),
           }));
         case 'mark':
-          return done(aw.markCheck({
-            taskId: reqStr(p, 'taskId', 'check mark'),
-            agentId: reqStr(p, 'agentId', 'check mark'),
-            message: reqStr(p, 'message', 'check mark'),
-            status: (str(p['status']) as CheckStatus | undefined) ?? 'SUCCESS',
-          }));
+          {
+            const task = aw.markCheck({
+              taskId: reqStr(p, 'taskId', 'check mark'),
+              agentId: reqStr(p, 'agentId', 'check mark'),
+              message: reqStr(p, 'message', 'check mark'),
+              status: (str(p['status']) as CheckStatus | undefined) ?? 'SUCCESS',
+            });
+            const planTasks = aw.listTasks({ planId: task.planId });
+            const planCanFinish = planTasks.every((item) => item.status === 'DONE' && Boolean(item.verifiedAt));
+            return done({
+              ...task,
+              next: planCanFinish
+                ? { action: 'plan.done', planId: task.planId }
+                : { action: 'task.ready', planId: task.planId },
+            });
+          }
         default:
           throw new Error(`${req.command} action must be audit or mark`);
       }

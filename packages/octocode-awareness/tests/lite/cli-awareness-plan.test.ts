@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runCli } from '../../src/lite/cli.js';
+import { openAwarenessLite } from '../../src/lite/index.js';
 
 let workspace: string;
 let stdout: string;
@@ -32,6 +33,28 @@ function jsonOut<T>(): T {
 }
 
 describe('plan CLI (Phase 1)', () => {
+  it('shares one coordination store with in-process hosts', () => {
+    expect(runCli(['plan', 'create', '--workspace', workspace, '--title', 'Cross-host plan'])).toBe(0);
+    const plan = jsonOut<{ planId: string }>();
+
+    const aw = openAwarenessLite({ workspace });
+    try {
+      expect(aw.getPlan(plan.planId).title).toBe('Cross-host plan');
+      aw.sendMessage({ fromAgentId: 'pi-agent', toAgentId: 'external-agent', text: 'shared inbox' });
+      aw.storeMemory({ label: 'DECISION', text: 'Use the shared coordination runtime', tags: ['shared'] });
+    } finally {
+      aw.close();
+    }
+
+    stdout = '';
+    expect(runCli(['message', 'inbox', '--workspace', workspace, '--agent-id', 'external-agent'])).toBe(0);
+    expect(jsonOut<Array<{ text: string }>>()).toMatchObject([{ text: 'shared inbox' }]);
+
+    stdout = '';
+    expect(runCli(['memory', 'recall', '--workspace', workspace, '--query', 'coordination runtime'])).toBe(0);
+    expect(jsonOut<Array<{ text: string }>>()).toMatchObject([{ text: 'Use the shared coordination runtime' }]);
+  });
+
   it('creates, lists, shows, marks done, and abandons a plan via CLI', () => {
     // Create
     expect(runCli(['plan', 'create', '--workspace', workspace, '--title', 'My Plan', '--goal', 'ship it'])).toBe(0);

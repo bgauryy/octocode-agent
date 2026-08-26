@@ -249,9 +249,7 @@ export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): At
 
   const next = verificationTargets.length > 0
     ? `octocode-awareness verify audit --agent-id ${agentArg} --workspace ${workspaceArg} --compact${verificationRunId ? `; after its declared test plan: octocode-awareness verify mark --run-id ${shellQuote(verificationRunId)} --agent-id ${agentArg} --message "<check + result>" --compact` : ''}`
-    : readyTasks.length > 0
-      ? `octocode-awareness task claim --task-id ${shellQuote(String(readyTasks[0]?.['id']))} --agent-id ${agentArg} --compact`
-      : ownedClaimedTask && ownedClaimedRunId
+    : ownedClaimedTask && ownedClaimedRunId
         ? `octocode-awareness task heartbeat --task-id ${shellQuote(String(ownedClaimedTask['id']))} --run-id ${shellQuote(ownedClaimedRunId!)} --agent-id ${agentArg} --compact`
         : ownedClaimedTask
           ? `octocode-awareness task show --task-id ${shellQuote(String(ownedClaimedTask['id']))} --compact`
@@ -261,6 +259,8 @@ export function attendAwareness(db: DatabaseSync, params: AttendParams = {}): At
           ? `octocode-awareness signal list --agent-id ${agentArg} --workspace ${workspaceArg} --limit 3 --compact`
           : evidence.length > 0
             ? 'Treat evidence as leads; re-check cited files, then work start before edits'
+            : readyTasks.length > 0 && !query
+              ? `octocode-awareness task claim --task-id ${shellQuote(String(readyTasks[0]?.['id']))} --agent-id ${agentArg} --compact`
             : `octocode-awareness attend --workspace ${workspaceArg} --agent-id ${agentArg} --query "<narrower task>" --compact`;
 
   if (compact) {

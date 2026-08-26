@@ -346,6 +346,7 @@ describe('runCli', () => {
 
     stdout = '';
     expect(runCli(['task', 'done', '--workspace', workspace, '--task-id', task.taskId, '--agent-id', 'agent-a'])).toBe(0);
+    expect(jsonOut<{ next: { action: string; taskId: string } }>().next).toEqual({ action: 'check.mark', taskId: task.taskId });
 
     stdout = '';
     expect(runCli(['check', 'audit', '--workspace', workspace])).toBe(0);
@@ -360,7 +361,10 @@ describe('runCli', () => {
 
     stdout = '';
     expect(runCli(['check', 'mark', '--workspace', workspace, '--task-id', task.taskId, '--agent-id', 'agent-a', '--message', 'cli test passed'])).toBe(0);
-    expect(jsonOut<{ verificationMessage: string }>().verificationMessage).toBe('cli test passed');
+    expect(jsonOut<{ verificationMessage: string; next: { action: string; planId: string } }>()).toMatchObject({
+      verificationMessage: 'cli test passed',
+      next: { action: 'plan.done', planId: plan.planId },
+    });
 
     stdout = '';
     expect(runCli(['check', 'audit', '--workspace', workspace])).toBe(0);
@@ -370,6 +374,46 @@ describe('runCli', () => {
     expect(runCli(['plan', 'done', '--workspace', workspace, '--plan-id', plan.planId])).toBe(0);
     expect(jsonOut<{ status: string }>().status).toBe('DONE');
   });
-});
 
+  it('reports active state without mutating expired rows', () => {
+    expect(runCli(['plan', 'create', '--workspace', workspace, '--title', 'Read-only status'])).toBe(0);
+    const plan = jsonOut<{ planId: string }>();
+    stdout = '';
+    expect(runCli(['task', 'add', '--workspace', workspace, '--plan-id', plan.planId, '--title', 'leased'])).toBe(0);
+    const task = jsonOut<{ taskId: string }>();
+    stdout = '';
+    expect(runCli(['task', 'claim', '--workspace', workspace, '--task-id', task.taskId, '--agent-id', 'agent-a'])).toBe(0);
+    stdout = '';
+    expect(runCli(['lock', 'acquire', '--workspace', workspace, '--file', 'expired.ts', '--agent-id', 'agent-a'])).toBe(0);
+    stdout = '';
+    expect(runCli(['work', 'start', '--workspace', workspace, '--file', 'expired.ts', '--agent-id', 'agent-a'])).toBe(0);
+
+    const db = new DatabaseSync(process.env.OCTOCODE_DB_PATH!);
+    try {
+      const expired = new Date(Date.now() - 60_000).toISOString();
+      db.prepare('UPDATE tasks SET lease_expires_at = ? WHERE task_id = ?').run(expired, task.taskId);
+      db.prepare('UPDATE locks SET expires_at = ? WHERE workspace_path = ?').run(expired, workspace);
+      db.prepare('UPDATE work_presence SET expires_at = ? WHERE workspace_path = ?').run(expired, workspace);
+    } finally {
+      db.close();
+    }
+
+    stdout = '';
+    expect(runCli(['status', '--workspace', workspace])).toBe(0);
+    expect(jsonOut<{ inProgressTasks: number; locks: number; work: number }>()).toMatchObject({
+      inProgressTasks: 0,
+      locks: 0,
+      work: 0,
+    });
+
+    const inspect = new DatabaseSync(process.env.OCTOCODE_DB_PATH!);
+    try {
+      expect(inspect.prepare('SELECT status FROM tasks WHERE task_id = ?').get(task.taskId)).toEqual({ status: 'CLAIMED' });
+      expect((inspect.prepare('SELECT COUNT(*) AS count FROM locks WHERE workspace_path = ?').get(workspace) as { count: number }).count).toBe(1);
+      expect((inspect.prepare('SELECT COUNT(*) AS count FROM work_presence WHERE workspace_path = ?').get(workspace) as { count: number }).count).toBe(1);
+    } finally {
+      inspect.close();
+    }
+  });
+});
 

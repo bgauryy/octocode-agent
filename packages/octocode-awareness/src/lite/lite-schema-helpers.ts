@@ -109,6 +109,18 @@ export abstract class LiteSchemaHelpers extends LiteMemoryAgents {
     return row.count;
   }
 
+  protected countActiveExpiring(table: 'locks' | 'work_presence'): number {
+    const row = this.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE workspace_path = ? AND expires_at > ?`)
+      .get(this.workspace, now()) as { count: number };
+    return row.count;
+  }
+
+  protected countActiveClaimedTasks(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE workspace_path = ? AND status = 'CLAIMED' AND (lease_expires_at IS NULL OR lease_expires_at > ?)")
+      .get(this.workspace, now()) as { count: number };
+    return row.count;
+  }
+
   protected countPlansByStatus(status: PlanStatus): number {
     const row = this.db.prepare('SELECT COUNT(*) AS count FROM plans WHERE workspace_path = ? AND status = ?').get(this.workspace, status) as { count: number };
     return row.count;
