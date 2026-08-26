@@ -50,9 +50,10 @@ describe('docs-catalog', () => {
     const result = showSkillDoc('flow-matrix');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.title).toBe('Awareness Flow Matrix');
-    expect(result.content).toContain('Trigger | Do | Verify / close');
-    expect(result.content).toContain('schema command attend');
+    expect(result.title).toBe('Shared Awareness Flow');
+    expect(result.content).toContain('Trigger | Action | Expected output / close');
+    expect(result.content).toContain('schema commands');
+    expect(result.content).toContain('next: check.mark');
   });
 
   it('returns suggestions for unknown names', () => {

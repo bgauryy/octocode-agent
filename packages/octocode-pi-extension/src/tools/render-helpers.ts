@@ -585,7 +585,7 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
 
 // ─── renderCall / renderResult builders ──────────────────────────────────────
 
-function buildOctocodeSingleRenderCall(
+export function buildOctocodeSingleRenderCall(
   toolName: string,
   args: unknown,
   theme?: PiTheme,

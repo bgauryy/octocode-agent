@@ -1,5 +1,5 @@
 /**
- * First-class Pi coordination tools over the in-process Awareness Lite library.
+ * First-class Pi coordination tools over the in-process Awareness library.
  * The model-facing surface is intentionally narrow: exceptional exclusive locks
  * and peer messages. Shared state is signalled automatically; plans, tasks,
  * verification, and work presence belong to unified plan/mutation flows.
@@ -10,9 +10,10 @@ import {
   type CommandGroup,
   type CommandParam,
   type AwarenessCommandRequest,
-} from '@octocodeai/octocode-awareness/lite';
+} from '@octocodeai/octocode-awareness';
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
+import { buildQueryCallBlocks, buildQueryResultRows } from './render-helpers.js';
 import {
   buildQueryEnvelopeSchema,
   executeQueryBatch,
@@ -20,7 +21,7 @@ import {
   QUERY_REASONING_MAX_LENGTH,
 } from './query-envelope.js';
 import {
-  getAwarenessLiteAgentId,
+  getAwarenessAgentId,
   runAwarenessCommand,
   awarenessError,
   awarenessOk,
@@ -36,6 +37,9 @@ type Params = Record<string, unknown>;
 
 const str = (v: unknown): string => (v === undefined || v === null ? '' : String(v)).trim();
 const has = (v: unknown): boolean => str(v).length > 0;
+const renderedQuery = (value: Params): Params => Array.isArray(value['queries'])
+  ? (value['queries'][0] as Params | undefined) ?? {}
+  : value;
 
 // ─── Schema generation (best-practice discriminated union by `action`) ─────────
 
@@ -192,7 +196,7 @@ function buildLockTool(Type: TypeBoxBuilder): ToolDefinition {
     description: ['Exceptional exclusive file lock for non-mergeable work: single-writer configs, migration scripts, shared counters, or files where concurrent edits cannot be merged.', 'Mutation-time conflict checks are automatic — do not lock for ordinary mergeable edits.', 'On peer conflict: inspect the holder (message inbox); use waitMs to wait briefly; release your lock when done (always release).', 'Actions: acquire, wait (blocks until free or waitMs exceeded), release.'].join('\n'),
     promptSnippet: 'Exceptional exclusive locks; mutation-time conflict checks are automatic', parameters: buildLockParameters(Type),
     async execute(toolCallId: string, raw: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: unknown, ctx?: PiContext): Promise<ToolCallResult> {
-      const prepared = prepareQueries(group, raw, getAwarenessLiteAgentId(ctx));
+      const prepared = prepareQueries(group, raw, getAwarenessAgentId(ctx));
       if (!Array.isArray(prepared)) return awarenessError(`[lock] ${prepared.error}`);
       return executeQueryBatch({
         toolCallId,
@@ -210,11 +214,14 @@ function buildLockTool(Type: TypeBoxBuilder): ToolDefinition {
       });
     },
     renderCall(raw: unknown, theme?: PiTheme) {
-      const queries = Array.isArray((raw as Params | undefined)?.['queries']) ? ((raw as Params)['queries'] as Params[]) : [];
-      const first = queries[0] ?? {};
-      return renderAwarenessCall('lock', str(first['action']), str(first['file']), theme);
+      return buildQueryCallBlocks(raw, theme, (envelope) => {
+        const query = renderedQuery(envelope);
+        return renderAwarenessCall('lock', str(query['action']), str(query['file']), theme);
+      });
     },
-    renderResult(result: ToolCallResult, _opts: unknown, theme?: PiTheme) { return renderAwarenessResult(result, theme); },
+    renderResult(result: ToolCallResult, _opts: unknown, theme?: PiTheme) {
+      return buildQueryResultRows('lock', result, theme) ?? renderAwarenessResult('lock', result, theme);
+    },
   } as unknown as ToolDefinition;
 }
 
@@ -224,8 +231,7 @@ type Summarize = (action: string, json: unknown, p: Params) => string;
 
 const SUMMARIES: Record<string, Summarize> = {
   message: (action, json, p) => {
-    if (action === 'inbox') return `${countRows(json)} message(s) in your inbox.`;
-    if (action === 'read') return 'Marked message read.';
+    if (action === 'read') return `${countRows(json)} message(s) from peers.`;
     return str(p['to']) ? `Sent message to ${str(p['to'])}.` : 'Broadcast message to peers.';
   },
 
@@ -252,7 +258,7 @@ function makeTool(group: CommandGroup, Type: TypeBoxBuilder): ToolDefinition {
     parameters: buildParameters(Type, group),
     async execute(toolCallId: string, raw: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: unknown, ctx?: PiContext): Promise<ToolCallResult> {
       const cwd = ctx?.cwd ?? process.cwd();
-      const prepared = prepareQueries(group, raw, getAwarenessLiteAgentId(ctx));
+      const prepared = prepareQueries(group, raw, getAwarenessAgentId(ctx));
       if (!Array.isArray(prepared)) return awarenessError(`[${group.resource}] ${prepared.error}`);
 
       return executeQueryBatch({
@@ -275,16 +281,16 @@ function makeTool(group: CommandGroup, Type: TypeBoxBuilder): ToolDefinition {
       });
     },
     renderCall(raw: unknown, theme?: PiTheme) {
-      const queries = Array.isArray((raw as Params | undefined)?.['queries'])
-        ? ((raw as Params)['queries'] as Params[])
-        : [];
-      const first = queries[0] ?? {};
-      const action = group.singleton ? group.actions[0]!.action : str(first['action']);
-      const value = HINT_FIELDS.map((f) => str(first[f])).find(Boolean) ?? '';
-      return renderAwarenessCall(group.resource, action, value, theme);
+      return buildQueryCallBlocks(raw, theme, (envelope) => {
+        const query = renderedQuery(envelope);
+        const action = group.singleton ? group.actions[0]!.action : str(query['action']);
+        const value = HINT_FIELDS.map((field) => str(query[field])).find(Boolean) ?? '';
+        return renderAwarenessCall(group.resource, action, value, theme);
+      });
     },
     renderResult(result: ToolCallResult, _opts: unknown, theme?: PiTheme) {
-      return renderAwarenessResult(result, theme);
+      return buildQueryResultRows(group.resource, result, theme)
+        ?? renderAwarenessResult(group.resource, result, theme);
     },
   } as unknown as ToolDefinition;
 }

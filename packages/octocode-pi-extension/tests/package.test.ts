@@ -21,7 +21,7 @@ import {
   getAssetPaths,
   getInternalErrorLogPath,
   getAwarenessCLIPath,
-  buildAwarenessLiteCommand,
+  buildAwarenessCommand,
   getAppendSystemTarget,
   getInstallSource,
   listBundledSkills,
@@ -41,7 +41,7 @@ import {
   normalizeWorkerOutput,
   evaluateWorkerRecoveryRisk,
 } from '../src/index.js';
-import { runAwarenessLiteInProcess } from '../src/assets.js';
+import { runAwarenessInProcess } from '../src/assets.js';
 import { applyCustomEditsToContent } from '../src/tools/edit-tool.js';
 import { recordFileReadState, clearReadStatesForTests } from '../src/tools/file-state.js';
 import { assertPathAllowed } from '../src/tools/path-guard.js';
@@ -458,28 +458,26 @@ test('build copies bundled Octocode skills without secret env files', () => {
   );
   assert.match(
     getAwarenessCLIPath(distDir),
-    /octocode-awareness.*lite.*cli\.js/,
-    'Awareness Lite CLI resolves to the installed scoped package runtime'
+    /octocode-awareness.*octocode-awareness\.js/,
+    'Awareness CLI resolves to the installed scoped package runtime'
   );
   assert.equal(
     fs.existsSync(path.join(distDir, 'awareness', 'cli.js')),
     false,
-    'awareness-lite runtime assets are not bundled under dist/awareness'
+    'awareness runtime assets are not bundled under dist/awareness'
   );
 
-  const schemaSpec = buildAwarenessLiteCommand(['schema']);
-  assert.equal(schemaSpec.cmd, process.execPath, 'Awareness Lite schema smoke uses local Node runtime');
-  assert.match(schemaSpec.args[0]!, /octocode-awareness.*lite.*cli\.js$/, 'schema smoke uses installed scoped package CLI');
+  const schemaSpec = buildAwarenessCommand(['coordination', 'schema', 'commands']);
+  assert.equal(schemaSpec.cmd, process.execPath, 'Awareness schema smoke uses local Node runtime');
+  assert.match(schemaSpec.args[0]!, /octocode-awareness.*octocode-awareness\.js$/, 'schema smoke uses installed scoped package CLI');
   const schemaOutput = execFileSync(
     schemaSpec.cmd,
     schemaSpec.args,
     { encoding: 'utf8' }
   );
-  const commandSchema = JSON.parse(schemaOutput) as {
-    commands: Record<string, string[]>;
-  };
+  const commandSchema = JSON.parse(schemaOutput) as Record<string, string[]>;
   const hasCommand = (command: string, actionPrefix: string) =>
-    commandSchema.commands[command]?.some((action) => action.startsWith(actionPrefix)) === true;
+    commandSchema[command]?.some((action) => action.startsWith(actionPrefix)) === true;
   for (const [command, actionPrefix] of [
     ['status', 'status'],
     ['plan', 'create'],
@@ -492,7 +490,7 @@ test('build copies bundled Octocode skills without secret env files', () => {
     ['message', 'send'],
     ['hooks', 'pre-edit'],
   ] as const) {
-    assert.equal(hasCommand(command, actionPrefix), true, `Awareness Lite schema includes ${command} ${actionPrefix}`);
+    assert.equal(hasCommand(command, actionPrefix), true, `Awareness schema includes ${command} ${actionPrefix}`);
   }
 
   // Skills live ONLY in dist/skills now (single source, surfaced via the
@@ -500,7 +498,7 @@ test('build copies bundled Octocode skills without secret env files', () => {
   // redundant root skills/ dir and no pi.skills declaration — that duplicate
   // package-scanned copy caused [Skill conflicts].
   const skills = listBundledSkills(distDir);
-  assert.equal(skills.includes('octocode-awareness-lite'), false, 'Awareness Lite is prompt-owned and exposed as a CLI, not a loadable skill');
+  assert.equal(skills.includes('octocode-awareness'), false, 'Awareness is prompt-owned and exposed as a CLI, not a loadable skill');
   assert.equal(skills.includes('octocode-mannequin'), false, 'mannequin skill is intentionally excluded from the coding-agent bundle');
   for (const skill of skills) {
     assert.equal(
@@ -544,14 +542,14 @@ test('build copies bundled Octocode skills without secret env files', () => {
   assert.equal(packageJson.pi?.skills, undefined, 'pi.skills removed — resources_discover is the single source');
 
   assert.equal(
-    skills.includes('octocode-awareness-lite'),
+    skills.includes('octocode-awareness'),
     false,
-    'Awareness Lite is prompt-owned and must not duplicate into Pi skill discovery'
+    'Awareness is prompt-owned and must not duplicate into Pi skill discovery'
   );
   assert.equal(
-    fs.existsSync(path.join(distDir, 'skills', 'octocode-awareness-lite', 'SKILL.md')),
+    fs.existsSync(path.join(distDir, 'skills', 'octocode-awareness', 'SKILL.md')),
     false,
-    'Awareness Lite coordination is not shipped as a duplicate loadable skill'
+    'Awareness coordination is not shipped as a duplicate loadable skill'
   );
   const forbiddenEnv = path.join(
     distDir,
@@ -720,7 +718,7 @@ test(
     const status = formatStatus(distDir);
     assert.match(status, /system prompt: found/);
     assert.match(status, new RegExp(`MCP research \\(octocode server\\) · ${OCTOCODE_SUPPORT_TOOL_NAMES.length} support · 1 guarded built-ins · 6 replaced`));
-    assert.match(status, /awareness lite CLI: .*octocode-awareness.*lite.*cli\.js/);
+    assert.match(status, /awareness CLI: .*octocode-awareness.*octocode-awareness\.js/);
     assert.match(status, /management CLI: npx octocode/);
     assert.match(status, /internal error log: .*\.octocode\/logs\/error\.txt/);
     assert.match(
@@ -2364,7 +2362,7 @@ test('mcp initialization reads canonical project config before the agent calls t
         systemPrompt: 'Pi base prompt',
         systemPromptOptions: {
           skills: [
-            { name: 'octocode-awareness-lite', description: 'Shared workspace coordination and verification.' },
+            { name: 'octocode-awareness', description: 'Shared workspace coordination and verification.' },
             { name: 'octocode-roast', description: 'Critical review and adversarial critique.', source: 'user', scope: 'global' },
           ],
         },
@@ -2381,7 +2379,7 @@ test('mcp initialization reads canonical project config before the agent calls t
     assert.match(cachedPrompt, /<runtime_capabilities>/);
     assert.match(cachedPrompt, /effective_inline_images: false/);
     assert.match(cachedPrompt, /<available_skills>/);
-    assert.doesNotMatch(cachedPrompt, /octocode-awareness-lite:/);
+    assert.doesNotMatch(cachedPrompt, /octocode-awareness:/);
     assert.match(cachedPrompt, /octocode-roast: Critical review and adversarial critique\. \[user\/global\]/);
     assert.match(cachedPrompt, /load the minimal matching skill BEFORE acting via skill\(\{queries:/);
 
@@ -2574,8 +2572,8 @@ test('Octocode metrics footer updates on session and turn lifecycle (single surf
   assert.doesNotMatch(initial, /last —/);
   assert.match(initial, /update-awareness/);
   assert.doesNotMatch(initial, /keys .*shift\+tab|ctrl\+shift\+a.*perm|esc.*stop/);
-  assert.match(initial, /\/settings configure/);
-  assert.match(initial, /\/commands guide/); // inline with identity — no redundant brand/cmds prefix
+  assert.match(initial, /\/settings/);
+  assert.doesNotMatch(initial, /\/commands guide/);
   assert.doesNotMatch(initial, /\/harness inspect|\/now snapshot|\/status dash/);
   assert.match(initial, /github ✓/);
   assert.ok(
@@ -2677,7 +2675,7 @@ test('Octocode now, tasks, and skills commands provide orientation surfaces', as
   await handlers.get('before_agent_start')!.at(-1)!({
     systemPrompt: 'base prompt',
     systemPromptOptions: {
-      skills: [{ name: 'octocode-awareness-lite', description: 'Shared repo coordination.', source: 'bundled' }],
+      skills: [{ name: 'octocode-awareness', description: 'Shared repo coordination.', source: 'bundled' }],
     },
   }, ctx);
 
@@ -2701,7 +2699,7 @@ test('Octocode now, tasks, and skills commands provide orientation surfaces', as
 
   const skills = notices.find((n) => n.message.startsWith('◆ Octocode skills'))?.message ?? '';
   assert.match(skills, /Available now/);
-  assert.doesNotMatch(skills, /octocode-awareness-lite: .*\[bundled\]/);
+  assert.doesNotMatch(skills, /octocode-awareness: .*\[bundled\]/);
   assert.match(skills, /npx octocode skill install <skill> --platform pi/);
 });
 
@@ -2715,8 +2713,8 @@ test('formatOctocodeDashboard is scan-friendly and includes health warnings', ()
   assert.match(dashboard, /ctx ▓▓▓▓▓▓▓▓▓░ 92%/);
   assert.match(dashboard, /⚠ context above 90%/);
   assert.match(dashboard, /Management: npx octocode/);
-  assert.match(dashboard, /Awareness Lite: .*octocode-awareness.*lite.*cli\.js/);
-  assert.match(dashboard, /user CLI: npx -p @octocodeai\/octocode-awareness octocode-awareness-lite/);
+  assert.match(dashboard, /Awareness: .*octocode-awareness.*octocode-awareness\.js/);
+  assert.match(dashboard, /user CLI: npx -p @octocodeai\/octocode-awareness octocode-awareness/);
   assert.match(dashboard, /\/commands/);
   assert.doesNotMatch(dashboard, /\/octocode-status/);
 });
@@ -3325,8 +3323,8 @@ test('lists every extension harness surface', () => {
   );
   assert.match(
     harness.awarenessCliNote,
-    /Awareness Lite CLI: .*octocode-awareness.*lite.*cli\.js/,
-    'awarenessCliNote shows installed Awareness Lite CLI command'
+    /Awareness CLI: .*octocode-awareness.*octocode-awareness\.js/,
+    'awarenessCliNote shows installed Awareness CLI command'
   );
   assert.ok(!('cliCommands' in harness), 'cliCommands removed from harness');
 });
@@ -3669,27 +3667,27 @@ test('AgentMessage wait keeps blocking while a queued turn has not started', asy
   }
 });
 
-test('activation wires only the Awareness Lite pre-edit lock gate', async () => {
+test('activation wires only the Awareness pre-edit lock gate', async () => {
   const { handlers } = await captureExtensions();
   assert.equal(
     (handlers.get('tool_call') ?? []).length,
     1,
-    'Awareness Lite wires a minimal pre-edit lock conflict gate',
+    'Awareness wires a minimal pre-edit lock conflict gate',
   );
   assert.equal(
     (handlers.get('tool_result') ?? []).length,
     0,
-    'Awareness Lite intentionally does not wire the full post-edit recorder',
+    'Awareness intentionally does not wire the full post-edit recorder',
   );
 });
 
-test('Awareness Lite pre-edit gate blocks lock conflicts', async () => {
+test('Awareness pre-edit gate blocks lock conflicts', async () => {
   const { handlers } = await captureExtensions();
   // Real temp workspace + a real peer lock exercises the in-process gate.
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'awlite-gate-'));
   try {
     fs.writeFileSync(path.join(workspace, 'README.md'), '# x');
-    const lock = runAwarenessLiteInProcess(['lock', 'acquire', '--file', 'README.md', '--agent-id', 'agent-b', '--workspace', workspace]);
+    const lock = runAwarenessInProcess(['lock', 'acquire', '--file', 'README.md', '--agent-id', 'agent-b', '--workspace', workspace]);
     assert.equal(lock.code, 0, 'peer lock acquired');
     const event = { toolName: 'write', input: { path: 'README.md' } };
     const ctx = { cwd: workspace, sessionManager: { getSessionId: () => 'session-a' } };

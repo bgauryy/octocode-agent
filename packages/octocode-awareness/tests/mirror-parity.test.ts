@@ -55,7 +55,7 @@ function listFiles(root: string): string[] {
 
 describe('package-bundled skill mirrors', () => {
   it('discovers the package-bundled awareness skill', () => {
-    expect(PACKAGE_SKILLS).toEqual(['octocode-awareness', 'octocode-awareness-lite']);
+    expect(PACKAGE_SKILLS).toEqual(['octocode-awareness']);
   });
 
   for (const skill of PACKAGE_SKILLS) {

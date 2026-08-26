@@ -47,7 +47,7 @@ test('main prompt keeps Awareness signal-driven and assigns one owner per coordi
   assert.match(block, /lock.*exceptional/i, 'explicit locks are exceptional');
   assert.match(block, /message.*peer/i, 'message owns necessary peer communication');
   assert.match(block, /memory.*change the approach/i, 'memory remains conditional');
-  assert.doesNotMatch(block, /Awareness Lite CLI|inspect.*schema|backend recovery/i, 'backend recovery detail stays out of the always-loaded prompt');
+  assert.doesNotMatch(block, /Awareness CLI|inspect.*schema|backend recovery/i, 'backend recovery detail stays out of the always-loaded prompt');
   assert.doesNotMatch(block, /before (?:starting|finishing)|start every task|join once|claim or create|declare touched paths|verify audit/i);
   assert.doesNotMatch(block, /awarenessPlan|\bclaim\b|awarenessAgents|\bhandoff\b|\bverify\b|\bwork\b/);
 

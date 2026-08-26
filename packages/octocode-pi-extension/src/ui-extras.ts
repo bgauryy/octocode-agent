@@ -100,11 +100,11 @@ export interface FooterInput {
   failedWorkers?: number;
   /** Live progress note for the most-recent running worker (name or its deltaSummary). */
   agentDoing?: string;
-  /** Awareness Lite agents present in this workspace, shown in the lower toolbar. */
+  /** Awareness agents present in this workspace, shown in the lower toolbar. */
   awarenessPeers?: number;
   /** Pre-session working-tree files not yet touched this session (likely peer/user WIP). */
   peerDirty?: number;
-  /** Unread Awareness Lite messages addressed to this session's agent. */
+  /** Unread Awareness messages addressed to this session's agent. */
   awarenessUnread?: number;
   /** Active model-dial label (e.g. the dial preset name), shown as a branded segment. */
   dial?: string;

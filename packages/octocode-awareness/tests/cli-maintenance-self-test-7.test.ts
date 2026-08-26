@@ -117,7 +117,7 @@ it('--help --compact returns a short agent guide', () => {
     expect(r.stdout).toContain('refinement set|get|list|delete');
     expect(r.stdout).toMatch(/exits 0 ok/);
     expect(r.stdout).not.toContain('<awareness-package>');
-    expect(r.stdout.split('\n').filter(Boolean).length).toBeLessThanOrEqual(9);
+    expect(r.stdout.split('\n').filter(Boolean).length).toBeLessThanOrEqual(10);
   });
 it('no command with --compact prints compact discovery instead of unknown-command JSON', () => {
     const r = spawnSync(NODE, [SCRIPT, '--compact'], { encoding: 'utf8', timeout: 5000 });

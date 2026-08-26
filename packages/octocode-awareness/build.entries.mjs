@@ -19,11 +19,6 @@ export const coreEntryPoints = {
   'mcp-state':          'src/mcp-state.ts',
 };
 
-export const liteEntryPoints = {
-  index: 'src/lite/index.ts',
-  cli:   'src/lite/cli.ts',
-};
-
 /** Standalone (non-split) bundles that land in the Agent Skill's scripts/. */
 export const skillScriptEntries = [
   { entryPoints: ['bin/awareness.ts'],          outfileName: 'awareness.mjs' },

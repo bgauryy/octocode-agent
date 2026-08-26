@@ -143,14 +143,14 @@ describe('resolveSubagentSkills', () => {
     expect(skills.some(s => s.includes('octocode-research'))).toBe(true);
   });
 
-  it('does not include octocode-awareness-lite from an external skill root because coordination is prompt-owned', () => {
-    const skillDir = path.join(tmpDir, '.agents', 'skills', 'octocode-awareness-lite');
+  it('does not include octocode-awareness from an external skill root because coordination is prompt-owned', () => {
+    const skillDir = path.join(tmpDir, '.agents', 'skills', 'octocode-awareness');
     fs.mkdirSync(skillDir, { recursive: true });
-    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# octocode-awareness-lite\n');
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# octocode-awareness\n');
 
     process.chdir(tmpDir);
     const skills = resolveSubagentSkills(SUBAGENT_REGISTRY['architect']);
-    expect(skills.some(s => path.basename(s) === 'octocode-awareness-lite')).toBe(false);
+    expect(skills.some(s => path.basename(s) === 'octocode-awareness')).toBe(false);
   });
 
   it('does not include skills from a dir that no longer exists at call time', () => {

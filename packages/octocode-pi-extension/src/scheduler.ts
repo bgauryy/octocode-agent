@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process';
-import { buildAwarenessLiteCommand, runAwarenessLiteInProcess } from './assets.js';
+import { buildAwarenessCommand, runAwarenessInProcess } from './assets.js';
 import type { PiContext, PiExecResult, PiInstance } from './types.js';
 
 const DEFAULT_JOB_TIMEOUT_MS = 60_000;
-const DEFAULT_CRON_JOB_NAME = 'awareness-lite-status';
-export const DEFAULT_AWARENESS_LITE_STATUS_INTERVAL_MS = 30 * 60 * 1000;
+const DEFAULT_CRON_JOB_NAME = 'awareness-status';
+export const DEFAULT_AWARENESS_STATUS_INTERVAL_MS = 30 * 60 * 1000;
 
 export type OctocodeCronJobStatus =
   | 'idle'
@@ -93,12 +93,12 @@ function workspaceOf(ctx: PiContext | undefined): string {
 function defaultJobs(env: NodeJS.ProcessEnv): OctocodeCronJobDefinition[] {
   return [
     {
-      name: 'awareness-lite-status',
-      label: 'Awareness Lite status',
-      description: 'Report-first Awareness Lite status summary (status prunes expired locks/work rows as a side effect).',
+      name: 'awareness-status',
+      label: 'Awareness status',
+      description: 'Report-first Awareness status summary (status prunes expired locks/work rows as a side effect).',
       intervalMs: parsePositiveInt(
         env['OCTOCODE_CRON_STATUS_INTERVAL_MS'],
-        DEFAULT_AWARENESS_LITE_STATUS_INTERVAL_MS,
+        DEFAULT_AWARENESS_STATUS_INTERVAL_MS,
       ),
       enabledByDefault: env['OCTOCODE_CRON_STATUS'] !== '0',
       awarenessArgs: (ctx) => [
@@ -223,10 +223,10 @@ export function createOctocodeCronScheduler(
       const args = state.definition.awarenessArgs(ctx);
       let result: PiExecResult;
       if (useSubprocess) {
-        const spec = buildAwarenessLiteCommand(args);
+        const spec = buildAwarenessCommand(args);
         result = await executor(spec.cmd, spec.args, { timeout: DEFAULT_JOB_TIMEOUT_MS });
       } else {
-        const r = runAwarenessLiteInProcess(args);
+        const r = runAwarenessInProcess(args);
         result = { stdout: r.stdout, stderr: r.stderr, code: r.code };
       }
       const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join('\n'));

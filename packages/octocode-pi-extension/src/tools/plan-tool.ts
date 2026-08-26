@@ -2,7 +2,7 @@
  * plan — the session and shared task-breakdown facade for the think-first gate.
  * The plan is projected into the system prompt every turn (`renderActivePlanAddendum`),
  * so it survives compaction and stays visible. Shared scope reconciles stable steps
- * onto Awareness Lite internally; callers never synchronize a second mutable graph.
+ * onto Awareness internally; callers never synchronize a second mutable graph.
  */
 
 import path from 'node:path';
@@ -20,7 +20,7 @@ import { FREE_TEXT_TELL_DIFFERENTLY, PLAN_APPROVE_DESC, PLAN_APPROVE_LABEL, PLAN
 import { buildQueryCallBlocks, buildToolView, truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel } from './status-panel.js';
 import { activePlanScope, setPlan, activatePlan, proposePlanReview, acceptPlanReview, requestPlanChanges, startAcceptedPlan, addStep, startStep, completeStep, removeStep, clearPlan, getPlan, getPlanReviewState, getPlanCoordination, updatePlanCoordination, setPlanAwarenessMappings, renderActivePlanAddendum, MARK, stepLabel, displayStatus, depsMet, dependencyIndexes, resolveRfcPath, setPlanRfc, getPlanRfc, addPlanDecision, getPlanDecisions, planPhaseIndex, PLAN_PHASES, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
-import { completeUnifiedPlanTask, finalizeUnifiedPlan, getAwarenessLiteAgentId, projectUnifiedPlan, type ObservedCheckReceipt, type UnifiedPlanScope } from './awareness-shared.js';
+import { completeUnifiedPlanTask, finalizeUnifiedPlan, getAwarenessAgentId, projectUnifiedPlan, type ObservedCheckReceipt, type UnifiedPlanScope } from './awareness-shared.js';
 import { buildQueryEnvelopeSchema, executeQueryBatch, type QueryRecord } from './query-envelope.js';
 
 let planBrowserMessageSender: ((message: string) => void | Promise<void>) | undefined;
@@ -232,7 +232,7 @@ function ensureUnifiedProjection(scope: string, explicit: UnifiedPlanScope | und
     goal: steps.map((step) => step.text).join(' → '),
     rfcPath: getPlanRfc(scope),
     rfcRevision: review.acceptedRevision ?? review.revision,
-    agentId: getAwarenessLiteAgentId(ctx),
+    agentId: getAwarenessAgentId(ctx),
     steps,
   });
   if (projection.scope === 'shared') {
@@ -817,7 +817,7 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
           const shared = completeUnifiedPlanTask({
             workspace: coordination.coordinationWorkspace || planWorkspace(scope),
             taskId: target.awarenessTaskId,
-            agentId: getAwarenessLiteAgentId(ctx),
+            agentId: getAwarenessAgentId(ctx),
             ...(p.receipt ? { receipt: p.receipt } : {}),
           });
           if (shared.reopened) {
@@ -940,7 +940,7 @@ export function registerPlanTool(
     description: [
       'Record and track the task breakdown from the think-first gate as a visible, compaction-durable checklist and reviewable plan document.',
       'The plan is injected at session start (<active_plan>) and re-delivered as a context message when it changes mid-session, so it survives compaction — set it once, then start/complete steps as you go. Mutations also write plan.md/plan.html under the Octocode temp plan directory; when an RFC is linked (rfcPath), the plan.html renders that RFC document itself above the derived checklist and dependency diagram.',
-      'Use for non-trivial multi-step work (multiple files/phases/risky edits). Skip for obvious single-step tasks. For consequential work, load octocode-rfc-generator, make the RFC reviewable, then call propose with consequential:true and rfcPath. Propose enters revision-bound review; explicit user Accept records the exact displayed bytes but keeps mutation blocked, and a separate user Start authorizes implementation. A consequential set/propose with no RFC is blocked. Set scope:"shared" for persistent multi-agent execution; Start projects stable steps and dependencies onto Awareness Lite automatically.',
+      'Use for non-trivial multi-step work (multiple files/phases/risky edits). Skip for obvious single-step tasks. For consequential work, load octocode-rfc-generator, make the RFC reviewable, then call propose with consequential:true and rfcPath. Propose enters revision-bound review; explicit user Accept records the exact displayed bytes but keeps mutation blocked, and a separate user Start authorizes implementation. A consequential set/propose with no RFC is blocked. Set scope:"shared" for persistent multi-agent execution; Start projects stable steps and dependencies onto Awareness automatically.',
       'Actions: clarify (record bounded material questions) · set (replace steps for already-authorized/obvious work) · propose (enter review; when an RFC is linked, user Accept and user Start are distinct interactions) · add · start (mark an execution-phase step doing; multiple independent steps may be doing in parallel, but this agent-callable action cannot accept an RFC or authorize implementation) · complete · remove · show · clear. The user command `/octocode-plan start` separately starts an accepted current RFC revision.',
       'index is optional for start/complete/remove: complete/remove default to the single current doing step; when multiple steps are doing, pass index. start defaults to the next runnable todo. Completing a mapped shared step requires receipt {command,status,message} from the declared check that actually ran.',
     ].join('\n'),

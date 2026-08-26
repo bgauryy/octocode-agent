@@ -4,7 +4,7 @@
  * One file, `<home>/octocode.sqlite3`, opened once per process and cached by
  * resolved path. It holds the agent/session-owned tables plus whatever local
  * coordination tables their owners create idempotently on the same connection
- * (e.g. Awareness Lite's plans/tasks/locks). Full Awareness is deliberately NOT
+ * (e.g. Awareness's plans/tasks/locks). Awareness is deliberately NOT
  * here — it keeps its own file and strict schema contract (see paths.ts).
  *
  * The low-level `node:sqlite` runtime (warning-filtered `DatabaseSync`, BUSY

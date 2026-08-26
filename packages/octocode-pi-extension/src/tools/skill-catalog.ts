@@ -16,10 +16,10 @@ const MAX_DESCRIPTION_CHARS = 180;
 const MAX_PROMPT_DESCRIPTION_CHARS = 120;
 
 const PROMPT_OWNED_SKILLS = new Set([
-  // Pi already owns Awareness through its <awareness> prompt section and first-class
-  // tools. Keep both external-agent skill names off the Pi model-facing surface.
+  // Pi owns Awareness through its prompt and tools. Hide the retired alias too:
+  // an old user install must not create a second coordination surface.
   'octocode-awareness',
-  'octocode-awareness-lite',
+  'octocode-awareness',
 ]);
 
 export function isPromptOwnedSkill(name: string): boolean {

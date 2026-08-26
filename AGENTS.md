@@ -99,7 +99,7 @@ After editing a local package, rebuild it (`yarn workspace <pkg> build`) before 
 
 ## Awareness
 
-In Pi, use `plan` for session/shared execution; stable shared steps, ownership, dependencies, and observed check receipts are projected onto Awareness Lite internally. Advisory file presence, agent registry lifecycle, and mutation-time peer-lock checks are automatic. Do not add manual status, presence, submit, or audit calls to routine solo work.
+In Pi, use `plan` for session/shared execution; stable shared steps, ownership, dependencies, and observed check receipts are projected onto Awareness internally. Advisory file presence, agent registry lifecycle, and mutation-time peer-lock checks are automatic. Do not add manual status, presence, submit, or audit calls to routine solo work.
 
 Activate `octocode-awareness` only when live shared state can change the next action: peers/overlap, shared execution, unread messages, locks, verification debt, recovery, or relevant memory. No public status tool exists; use the Lite CLI for targeted diagnostics/recovery. Use `lock` only for exceptional non-mergeable state, `message` for needed peer coordination, and `memory` when verified learning may change the approach.
 

@@ -2,7 +2,7 @@
  * schema.ts — the agent/session-owned tables of the shared local store.
  *
  * Dependency-free on purpose: it imports NO `node:sqlite`, so any owner of a
- * connection (the shared `openOctocodeDb`, or Awareness Lite opening the same
+ * connection (the shared `openOctocodeDb`, or Awareness opening the same
  * file) can create these tables without dragging the `node:sqlite` top-level
  * import — and its ExperimentalWarning dance — into their module graph.
  *
@@ -24,7 +24,7 @@ export function utcNow(): string {
 /**
  * Create the agent/session-owned tables. Idempotent (`IF NOT EXISTS`), so it is
  * safe to call on every process start and alongside other owners' schema init
- * (e.g. Awareness Lite's plans/tasks/locks) on the same file.
+ * (e.g. Awareness's plans/tasks/locks) on the same file.
  */
 export function initOctocodeSchema(db: SqliteLike): void {
   db.exec(`

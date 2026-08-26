@@ -28,7 +28,7 @@ const SOURCE_PATHS = {
   // The system prompt is one inlined document (src/prompts/prompt.ts → dist/prompts/prompt.js);
   // there are no per-section fragment files to copy.
   promptSource: path.join(packageRoot, 'src', 'prompts', 'prompt.ts'),
-  // Awareness Lite skill source comes from the published package; runtime invocation uses npx.
+  // Awareness skill source comes from the published package; runtime invocation uses npx.
   awarenessSkills: path.join(AWARENESS_PACKAGE_ROOT, 'skills'),
   octocodeSkills: path.join(OCTOCODE_PACKAGE_ROOT, 'skills'),
   // octocode CLI — bundled at build time so the pi-extension is self-contained.
@@ -70,9 +70,9 @@ const SKIPPED_FILES = new Set([
 ]);
 
 const EXCLUDED_BUNDLED_SKILLS = new Set([
-  // Awareness Lite is prompt-owned in pi-extension (<awareness>) and exposed as a CLI,
+  // Awareness is prompt-owned in pi-extension (<awareness>) and exposed as a CLI,
   // not a loadable skill; bundling its SKILL.md causes duplicate skill-load UI noise.
-  'octocode-awareness-lite',
+  'octocode-awareness',
   // The full Awareness skill ships with the (now single) @octocodeai/octocode-awareness
   // package for separate installs; the harness uses the inline <awareness> prompt, so it
   // is not bundled as a loadable skill here (preserves the prior 0-awareness-skills bundle).
@@ -217,7 +217,7 @@ function refreshPackageSkills() {
   fs.rmSync(SOURCE_PATHS.skills, { recursive: true, force: true });
   fs.mkdirSync(SOURCE_PATHS.skills, { recursive: true });
   // Bundle workflow skills from dependencies, excluding prompt-owned flows such as
-  // Awareness Lite. Remaining skills become discoverable on init via the
+  // Awareness. Remaining skills become discoverable on init via the
   // resources_discover hook — no on-demand install step needed for a fresh checkout.
   // (If a user also installs the same skill globally with `octocode skill --add`,
   // Pi surfaces a [Skill conflicts] notice — expected with a self-contained bundle.)
@@ -225,7 +225,7 @@ function refreshPackageSkills() {
   const awarenessCopied = copySkillDirectories(SOURCE_PATHS.awarenessSkills, SOURCE_PATHS.skills);
   assertNoHiddenLocalOnlyEntries(SOURCE_PATHS.skills);
   if (octocodeCopied + awarenessCopied === 0) {
-    throw new Error(`No Awareness Lite/Octocode skills found in ${SOURCE_PATHS.awarenessSkills} or ${SOURCE_PATHS.octocodeSkills}`);
+    throw new Error(`No Awareness/Octocode skills found in ${SOURCE_PATHS.awarenessSkills} or ${SOURCE_PATHS.octocodeSkills}`);
   }
   return { octocodeCopied, awarenessCopied };
 }
@@ -236,7 +236,7 @@ function syncPackageSkills() {
   const skillNames = listSkillNames(SOURCE_PATHS.skills);
   console.log(`Synced ${skillNames.length} skill(s) into ${SOURCE_PATHS.skills}`);
   if (skillNames.length > 0) console.log(`Skills: ${skillNames.join(', ')}`);
-  console.log(`Sources: octocode skills/ (${octocodeCopied}), awareness-lite skills/ (${awarenessCopied})`);
+  console.log(`Sources: octocode skills/ (${octocodeCopied}), awareness skills/ (${awarenessCopied})`);
   return skillNames;
 }
 

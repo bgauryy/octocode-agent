@@ -222,7 +222,6 @@ describe('production guidance contract', () => {
     const skill = read(resolve(SKILL_ROOT, 'SKILL.md'));
     const finish = read(resolve(SKILL_ROOT, 'references/agent-cheatsheet.md'));
     expect(Buffer.byteLength(skill, 'utf8')).toBeLessThanOrEqual(6 * 1024);
-    expect(skill).toContain('smallest capable configured low-cost agent');
     expect(skill).not.toMatch(/Haiku|Composer 2\.5/);
     expect(finish).toMatch(/Always[\s\S]*verify audit[\s\S]*Only when/);
     expect(finish).not.toMatch(/query all[^\n]*repo inject/is);
@@ -237,7 +236,7 @@ describe('production guidance contract', () => {
     expect(rootAgents).not.toMatch(/attend --compact`, then read `.octocode\/AGENTS\.md`/i);
     expect(rootAgents).not.toContain('wiki sync');
     expect(generator).not.toContain('injectRepoContext');
-    expect(skill).toContain('cleanup only under real pressure');
+    expect(skill).toMatch(/cleanup remains dry-run-first/i);
     expect(skill).not.toContain('wiki sync');
     expect(taskFlow).toContain('# run the acceptance check');
   });
@@ -269,12 +268,15 @@ describe('production guidance contract', () => {
     expect(claude).not.toContain('Skiils');
 
     expect(packageAgents).toMatch(/AGENTS.*routes.*skill.*policy.*CLI.*live state.*hooks.*automat/is);
-    expect(packageAgents).toContain('follow `attend.next`');
+    expect(packageAgents).toContain('out/octocode-awareness.js');
+    expect(packageAgents).toContain('Follow typed `next` results');
+    expect(packageAgents).toMatch(/full `octocode-awareness` binary.*separate database/is);
+    expect(packageAgents).not.toMatch(/AWARENESS_CLI="packages\/octocode-awareness\/out\/octocode-awareness\.js"/);
     expect(packageAgents).not.toContain('## Lifecycle');
     expect(packageAgents).not.toContain('## Hooks');
     expect(packageAgents).not.toContain('Standalone WORK');
-    expect(skill).toMatch(/full-package core loop/i);
-    expect(skill).toContain('Feature map —');
+    expect(skill).toContain('One coordination layer');
+    expect(skill).toContain('Quick usage');
     expect(userGuide).toContain('## Operating Loop');
     expect(hooks).toContain('## Lifecycle');
     expect(architecture).toMatch(/AGENTS\.md \/ CLAUDE\.md[\s\S]*Agent Skill[\s\S]*CLI[\s\S]*hooks/i);
@@ -358,9 +360,9 @@ describe('production guidance contract', () => {
       expect(guide).toMatch(/common[\s\S]{0,240}(?:claude|cursor|codex|pi)/i);
     }
     expect(tooling).toContain('export OCTOCODE_AGENT_ID');
-    expect(skillLobby).toContain('first activation');
+    expect(skillLobby).toMatch(/first-time installation/i);
     expect(skillLobby).toContain('scripts/install.mjs');
-    for (const guide of [skillLobby, hooks, packageHooks]) {
+    for (const guide of [hooks, packageHooks]) {
       expect(guide).toMatch(/Claude[\s\S]{0,240}frontmatter/i);
       expect(guide).toMatch(/do not (?:also )?install|do not duplicate/i);
     }

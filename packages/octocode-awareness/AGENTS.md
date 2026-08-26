@@ -6,26 +6,30 @@ owns live state/contracts; package docs own architecture and feature depth.
 
 ## Enter
 
-Activate `octocode-awareness`, export one stable identity, choose the runnable CLI,
-then ask live state. Pi: `node "$OCTOCODE_AWARENESS_CLI"`; package dev after build:
-`node packages/octocode-awareness/out/octocode-awareness.js`; installed smoke:
-`npx @octocodeai/octocode-awareness`. Missing local `out/` means build first.
+Activate `octocode-awareness`, choose one stable identity, then inspect the shared
+shared ledger. Pi sets `$OCTOCODE_AWARENESS_CLI`; package development uses the local
+package build; installed external agents use the published binary. Missing local
+`out/` means build first.
 
 ```bash
 export OCTOCODE_AGENT_ID="${OCTOCODE_AGENT_ID:-codex-awareness}"
-AWARENESS_CLI="packages/octocode-awareness/out/octocode-awareness.js"
-node "$AWARENESS_CLI" attend --workspace "$PWD" --query "<current task>" \
-  --agent-id "$OCTOCODE_AGENT_ID" --compact
+SHARED_CLI="${OCTOCODE_AWARENESS_CLI:-packages/octocode-awareness/out/octocode-awareness.js}"
+node "$SHARED_CLI" status --workspace "$PWD"
+node "$SHARED_CLI" schema commands --workspace "$PWD"
 ```
 
 Never put `node ...` inside a shell variable and run it; shells treat that as one
-executable. Always follow `attend.next`; use `schema command <noun> [action]` only
-for unclear flags. SQLite is canonical. Confirm live work with `attend`/`query`; recall
-with `memory recall --smart`. Never hand-edit `.octocode/` except authored plans.
+executable. Follow typed `next` results; use `schema command <noun>` for unclear
+flags. SQLite is canonical. Never hand-edit generated `.octocode/` state; only
+workspace-root `.octocode/REFLECT.md` is authored reflection.
 
-Manual fallback: attend; `work start`; check while present; `work end`; `verify mark`;
-`verify audit`. Overlap is advisory; use `--exclusive` only for unsafe/non-mergeable
-or sensitive work and never bypass a conflict.
+Shared fallback: `status`; task `claim`; work `start`; run the check while present;
+task `done`; check `mark`; work `end`. Overlap is advisory; use a lock only for
+unsafe, non-mergeable, or sensitive work and never bypass a conflict.
+
+The full `octocode-awareness` binary owns advanced sessions, reflection, projections,
+and maintenance in a separate database. Do not use it for Pi-visible coordination
+until the stores are migrated.
 
 ## Package Constraints
 

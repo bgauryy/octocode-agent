@@ -133,4 +133,37 @@ describe('first-class Awareness coordination tools', () => {
       ],
     });
   });
+
+  it('keeps full model results while rendering compact tool-specific views', async () => {
+    const largeText = `start-${'x'.repeat(25_000)}-end`;
+    const sent = await run('message', one({ action: 'send', to: 'pi:peer', text: largeText }));
+    expect(sent.text).toContain(largeText);
+    expect(sent.text.length).toBeGreaterThan(25_000);
+
+    const message = tools.get('message')!;
+    const call = message.renderCall?.({
+      queries: [
+        { reasoning: 'notify', action: 'send', to: 'pi:peer', text: 'one' },
+        { reasoning: 'inspect', action: 'inbox' },
+      ],
+    }, undefined)?.render(100).join('\n') ?? '';
+    expect(call).toMatch(/message/i);
+    expect(call).toContain('send');
+    expect(call).toContain('inbox');
+
+    const rendered = message.renderResult?.(sent.result, {}, undefined)?.render(80).join('\n') ?? '';
+    expect(rendered).toMatch(/message/i);
+    expect(rendered.length).toBeLessThan(sent.text.length);
+  });
+
+  it('renders a held lock as a tool-specific warning', async () => {
+    writeFileSync(join(ws, 'warning.ts'), 'x');
+    await run('lock', one({ action: 'acquire', file: 'warning.ts' }));
+    process.env['OCTOCODE_AGENT_ID'] = 'pi:peer';
+    const waited = await run('lock', one({ action: 'wait', file: 'warning.ts', waitMs: 0 }));
+    const rendered = tools.get('lock')!.renderResult?.(waited.result, {}, undefined)?.render(100).join('\n') ?? '';
+    expect(rendered).toMatch(/lock/i);
+    expect(rendered).toContain('!');
+    expect(rendered).toMatch(/held by pi:test-a/i);
+  });
 });

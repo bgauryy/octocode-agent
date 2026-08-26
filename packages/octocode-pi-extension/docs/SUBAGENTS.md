@@ -34,12 +34,12 @@ Worker-to-parent results are pull-based: inspect or wait for `[DONE]`, `[BLOCKED
 
 ## Durable peer communication
 
-Awareness Lite `message` and `handoff` are a separate, asynchronous plane shared by agents on any host. Directed messages use `--to`; broadcasts omit a target. Workspace scope isolates plans, tasks, locks, work presence, handoffs, and messages.
+Awareness `message` and `handoff` are a separate, asynchronous plane shared by agents on any host. Directed messages use `--to`; broadcasts omit a target. Workspace scope isolates plans, tasks, locks, work presence, handoffs, and messages.
 
 ```bash
-npx @octocodeai/octocode-awareness-lite message send \
+npx -p @octocodeai/octocode-awareness octocode-awareness message send \
   --workspace "$PWD" --from A --to B --topic "<topic>" --text "<message>"
-npx @octocodeai/octocode-awareness-lite message inbox \
+npx -p @octocodeai/octocode-awareness octocode-awareness message inbox \
   --workspace "$PWD" --agent-id B
 ```
 

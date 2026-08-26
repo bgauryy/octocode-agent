@@ -65,7 +65,9 @@ describe('Awareness out build contract', () => {
     expect(existsSync(resolve(PACKAGE_ROOT, 'out/types/src/index.d.ts'))).toBe(true);
     expect(existsSync(resolve(PACKAGE_ROOT, 'out/skills/octocode-awareness/SKILL.md'))).toBe(true);
     const bundledSkill = read('out/skills/octocode-awareness/SKILL.md');
-    expect(bundledSkill).toContain('smallest capable configured low-cost agent');
+    expect(bundledSkill).toContain('## One coordination layer');
+    expect(bundledSkill).toContain('## Quick usage');
+    expect(bundledSkill).toContain('octocode-awareness coordination schema commands');
     expect(bundledSkill).not.toMatch(/Haiku|Composer 2\.5/);
     expect(existsSync(resolve(PACKAGE_ROOT, 'dist'))).toBe(false);
 

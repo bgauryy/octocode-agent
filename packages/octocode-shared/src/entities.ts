@@ -3,7 +3,7 @@
  *
  * The domain shapes for the local coordination store (plans, tasks, locks, work
  * presence, handoffs, memory, agents, messages) live here so they are defined
- * ONCE and imported by every consumer (Awareness Lite today; open to others).
+ * ONCE and imported by every consumer (Awareness today; open to others).
  * Pure type declarations — no runtime, no dependencies.
  *
  * Note: the full `@octocodeai/octocode-awareness` package intentionally models a

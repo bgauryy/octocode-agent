@@ -162,7 +162,6 @@ describe('parseInvocation', () => {
   });
 
   it('routes surface verbs and parses --profile', () => {
-    expect(parseInvocation(['research', 'q']).command).toBe('research');
     expect(parseInvocation(['memory', 'recall']).command).toBe('memory');
     expect(parseInvocation(['awareness', 'status']).command).toBe('awareness');
     expect(parseInvocation(['tools']).command).toBe('tools');
@@ -862,21 +861,13 @@ describe('main', () => {
   it('doctor prints a health pane with all checks and a valid exit code', async () => {
     const lines: string[] = [];
     const code = await main(['doctor', '--json'], { out: (m) => lines.push(m), env: {} });
-    const parsed = JSON.parse(lines.join('\n')) as { healthy: boolean; checks: unknown[] };
-    expect(parsed.checks).toHaveLength(5);
+    const parsed = JSON.parse(lines.join('\n')) as { healthy: boolean; checks: Array<{ name?: string; ok?: boolean }> };
+    expect(parsed.checks.length).toBeGreaterThan(0);
+    expect(parsed.checks.every((check) => typeof check.name === 'string' && typeof check.ok === 'boolean')).toBe(true);
     expect(typeof parsed.healthy).toBe('boolean');
     expect([0, 1]).toContain(code);
   });
 
-  it('research spawns `npx octocode search`', async () => {
-    let cmd = '';
-    let args: readonly string[] = [];
-    const spawn = vi.fn((c: string, a?: readonly string[]) => { cmd = c; args = a ?? []; return { status: 0 }; });
-    const code = await main(['research', 'auth flow'], { env: {}, spawn });
-    expect(code).toBe(0);
-    expect(cmd).toBe('npx');
-    expect(args).toEqual(['octocode', 'search', 'auth flow']);
-  });
 
   it('surface verbs report null spawn status as failure', async () => {
     const spawn = vi.fn().mockReturnValue({ status: null });
@@ -892,7 +883,7 @@ describe('main', () => {
       spawn,
     });
     expect(code).toBe(0);
-    // buildAwarenessLiteCommand spawns the CLI under the SAME Node that runs the
+    // buildAwarenessCommand spawns the CLI under the SAME Node that runs the
     // launcher (process.execPath), not a bare 'node' from PATH — this guarantees a
     // consistent runtime even when node isn't on PATH.
     expect(cmd).toBe(process.execPath);

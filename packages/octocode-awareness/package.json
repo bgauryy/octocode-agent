@@ -38,21 +38,10 @@
       "types": "./out/types/src/mcp-state.d.ts",
       "import": "./out/mcp-state.js",
       "default": "./out/mcp-state.js"
-    },
-    "./lite": {
-      "types": "./out/types/src/lite/index.d.ts",
-      "import": "./out/lite/index.js",
-      "default": "./out/lite/index.js"
-    },
-    "./lite/cli": {
-      "types": "./out/types/src/lite/cli.d.ts",
-      "import": "./out/lite/cli.js",
-      "default": "./out/lite/cli.js"
     }
   },
   "bin": {
-    "octocode-awareness": "./out/octocode-awareness.js",
-    "octocode-awareness-lite": "./out/lite/cli.js"
+    "octocode-awareness": "./out/octocode-awareness.js"
   },
   "files": [
     "out/**",

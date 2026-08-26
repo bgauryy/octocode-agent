@@ -22,7 +22,7 @@ import { makeRenderer } from './render-helpers.js';
 import { renderStack } from '../tui/components.js';
 import { activePlanScope, getPlan } from './active-plan.js';
 import { planPanelLines } from './plan-tool.js';
-import { awarenessPanelLines, hasCachedAwarenessSignal } from './awareness-status.js';
+
 
 const WIDGET_NAME = 'octocode-status-panel';
 
@@ -48,15 +48,13 @@ function composeSections(sections: string[][]): string[] {
 }
 
 export function composeStatusPanelLines(ctx: PiContext, theme: PiTheme | undefined, width?: number): BuiltPanel {
-  const cwd = ctx.cwd ?? process.cwd();
   // Resolve the plan scope at render time, not registration time: /tree, /fork,
   // resume, and compaction can move the active branch while the widget remains
   // registered exactly once.
   const planSection = planPanelLines(getPlan(activePlanScope(ctx)), theme, width);
   const agentSection = agentPanelSource?.(theme, width) ?? [];
-  const awarenessSection = awarenessPanelLines(cwd, theme, width);
   return {
-    lines: composeSections([planSection, agentSection, awarenessSection]),
+    lines: composeSections([planSection, agentSection]),
   };
 }
 
@@ -98,11 +96,9 @@ export function refreshStatusPanel(ctx?: PiContext): void {
     clearPanel(ctx);
     return;
   }
-  const cwd = ctx.cwd ?? process.cwd();
   const hasPlan = getPlan(activePlanScope(ctx)).length > 0;
   const hasAgents = (agentPanelSource?.(undefined, 80).length ?? 0) > 0;
-  const hasAwareness = hasCachedAwarenessSignal(cwd);
-  if (!hasPlan && !hasAgents && !hasAwareness) {
+  if (!hasPlan && !hasAgents) {
     clearPanel(ctx);
     return;
   }

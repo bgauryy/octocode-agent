@@ -4,7 +4,8 @@ import { StringDecoder } from 'node:string_decoder';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { getInstallSource, runAwarenessLiteInProcess } from '../assets.js';
+import { formatExternalAgentCoordinationContext, openAwareness } from '@octocodeai/octocode-awareness';
+import { getInstallSource } from '../assets.js';
 import { truncateUserVisibleToolOutput } from '../utils.js';
 import { OCTOCODE_SPINNER_FRAMES } from '../ui-extras.js';
 import { hasUiTickSubscriber, setUiTickSubscriber } from '../tui/ui-ticker.js';
@@ -195,7 +196,7 @@ interface AgentRecord {
   pendingProbes: Map<string, () => void>;
   nextRequestId: number;
   worktree?: InternalWorktreeState;
-  /** Stable Awareness Lite id used to register this worker in the shared agent list. */
+  /** Stable Awareness id used to register this worker in the shared agent list. */
   awarenessAgentId?: string;
   /** Workspace whose Awareness registry this worker joins (the parent workspace). */
   awarenessWorkspace?: string;
@@ -563,23 +564,9 @@ function buildInitialPrompt(params: SpawnAgentParams): string {
   return `Context for this delegated agent:\n\n${context}\n\nTask:\n\n${task}`;
 }
 
-/** Build the Awareness Lite CLI args to register/deregister a worker in the shared agent list. */
-export function buildWorkerRegistryArgs(
-  action: 'join' | 'leave',
-  opts: { agentId: string; name?: string; workspace: string },
-): string[] {
-  const args = ['agent', action, '--agent-id', opts.agentId, '--workspace', opts.workspace];
-  if (action === 'join') {
-    args.push('--role', 'worker');
-    if (opts.name) args.push('--name', opts.name);
-  }
-  return args;
-}
-
 /**
  * Append an Awareness coordination footer so the worker knows its own durable id
- * and its sibling ids — enabling worker↔worker and parent↔worker messaging via
- * the octocode-awareness-lite CLI with zero discovery.
+ * and peer ids. The package owns usage policy; Pi adds only its handback path.
  */
 export function withPeerCoordination(
   task: string,
@@ -588,15 +575,11 @@ export function withPeerCoordination(
   opts: { parentId?: string; handbackPath?: string } = {},
 ): string {
   if (!selfId) return task;
-  const peers = peerIds.filter((p) => p && p !== selfId);
+  const coordination = formatExternalAgentCoordinationContext({ selfId, parentId: opts.parentId, peerIds });
   const lines = [
-    'Awareness coordination (durable, cross-agent):',
-    `- your agent id: ${selfId}`,
-    opts.parentId ? `- parent agent id: ${opts.parentId}` : undefined,
-    peers.length ? `- peers: ${peers.join(', ')}` : '- peers: none yet (run `agent list` to discover)',
+    coordination,
     opts.handbackPath ? `- durable handback file: ${opts.handbackPath}` : undefined,
     opts.handbackPath ? '- before a terminal [DONE]/[BLOCKED]/[FAILED] when findings are long or important, write concise Markdown to that exact file (Status, Result, Evidence, Verification, Next), then include `[ARTIFACT] <path>` in your final output.' : undefined,
-    `- message a peer: node "$OCTOCODE_AWARENESS_CLI" message send --from ${selfId} --to <peer> --text "…"; read yours: message inbox --agent-id ${selfId}`,
   ].filter((line): line is string => Boolean(line));
   return `${task}\n\n${lines.join('\n')}`;
 }
@@ -606,10 +589,13 @@ function syncWorkerRegistry(action: 'join' | 'leave', record: AgentRecord): void
   const agentId = record.awarenessAgentId;
   const workspace = record.awarenessWorkspace;
   if (!agentId || !workspace) return;
+  let aw: ReturnType<typeof openAwareness> | undefined;
   try {
-    // In-process registry write (fast local SQLite); advisory, never throws out.
-    runAwarenessLiteInProcess(buildWorkerRegistryArgs(action, { agentId, name: record.name, workspace }));
+    aw = openAwareness({ workspace });
+    if (action === 'join') aw.joinAgent({ agentId, name: record.name, role: 'worker' });
+    else aw.leaveAgent({ agentId });
   } catch { /* Awareness unresolved — advisory */ }
+  finally { aw?.close(); }
 }
 
 /** Awareness ids of other still-alive workers, for peer-messaging discovery. */

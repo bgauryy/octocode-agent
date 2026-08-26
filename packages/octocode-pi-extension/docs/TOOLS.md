@@ -43,7 +43,7 @@ Colors convey meaning rather than decoration:
 
 Renderer limits are view-only. The tool result delivered to the model remains unchanged. Bash is the sole direct tool that pages model-visible text, losslessly, into content blocks of at most 20,000 characters; its collapsed/expanded terminal preview is independently bounded and never edits stdout or stderr.
 
-The Awareness Lite CLI remains the canonical backend diagnostics and recovery surface; it does not expand the Pi palette.
+The Awareness CLI remains the canonical backend diagnostics and recovery surface; it does not expand the Pi palette.
 
 Session-scoped maintenance jobs are controlled by `/octocode-cron`; see [CRON.md](./CRON.md). `OCTOCODE_SUPPORT_TOOL_NAMES` in `src/constants.ts` is the direct support-tool source of truth.
 
@@ -306,9 +306,9 @@ Pi-core/runtime banners that do not pass through extension hooks, such as a mode
 
 ## Memory and Awareness
 
-The unified default facades are `plan`, `memory`, `lock`, and `message`. `plan` owns session/shared projection and receipt-gated completion. There is no separate public `task` tool: plan steps become shared Awareness tasks when projection is needed, while `agent.task` is only the assignment text given to a spawned worker. Only unread direct-message counts enter agent context automatically; global state remains in the user dashboard. Advisory presence, peer registry lifecycle, and mutation-time lock checks are automatic. `lock` is only for exceptional non-mergeable exclusivity. Each facade calls the same in-process Awareness Lite library as the CLI.
+The unified default facades are `plan`, `memory`, `lock`, and `message`. `plan` owns session/shared projection and receipt-gated completion. There is no separate public `task` tool: plan steps become shared Awareness tasks when projection is needed, while `agent.task` is only the assignment text given to a spawned worker. Only unread direct-message counts enter agent context automatically; global state remains in the user dashboard. Advisory presence, peer registry lifecycle, and mutation-time lock checks are automatic. `lock` is only for exceptional non-mergeable exclusivity. Each facade calls the same in-process Awareness library as the CLI.
 
-Use `node "$OCTOCODE_AWARENESS_CLI" <noun> <verb>` for diagnostics or recovery commands that aren't exposed directly and for contract inspection via `schema`. Agents on other hosts may continue using the published Awareness Lite CLI.
+Use `node "$OCTOCODE_AWARENESS_CLI" <noun> <verb>` for diagnostics or recovery commands that aren't exposed directly and for contract inspection via `schema`. Agents on other hosts may continue using the published Awareness CLI.
 
 See [`AWARENESS_AGENT_FLOW.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) for live coordination, [`REFLECT.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-pi-extension/docs/REFLECT.md) for Lite memory guidance, and [`CRON.md`](./CRON.md) for session job controls.
 

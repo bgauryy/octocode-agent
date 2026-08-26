@@ -4,7 +4,7 @@
 <img src="../../../packages/assets/extension.png" width="640px" alt="Octocode + Pi">
 </div>
 
-Octocode’s research tools, Awareness Lite coordination, system prompt, skills,
+Octocode’s research tools, Awareness coordination, system prompt, skills,
 web providers, subagents, and launcher-consumed surface/profile specs as one Pi extension.
 It is the evidence-first, team-ready Pi harness profile: heavier than a single-purpose package,
 but built for repo-scale research, guarded edits, workers, MCP/browser/web, and verification.
@@ -29,9 +29,9 @@ pi install npm:@octocodeai/pi-extension
 
 Direct Pi installation loads the same core harness, but it does not provide the `octocode-agent` launcher UX (`update`, `doctor`, `auth`, `models`, cross-project `resume`, branded launch defaults, and the one-command update path).
 
-The build bundles the Octocode workflow skills and invokes the installed Awareness Lite package runtime directly. For manual commands, use the scoped published CLIs:
+The build bundles the Octocode workflow skills and invokes the installed Awareness package runtime directly. For manual commands, use the scoped published CLIs:
 
-- Awareness Lite → `npx @octocodeai/octocode-awareness-lite <command> [action] --workspace "$PWD"`
+- Shared Awareness → `npx -p @octocodeai/octocode-awareness octocode-awareness <command> [action] --workspace "$PWD"`
 - Management CLI → `npx octocode@latest skill | lsp-server | auth`
 
 ## What loads
@@ -44,7 +44,7 @@ The build bundles the Octocode workflow skills and invokes the installed Awarene
 | Slash command entries | 25 |
 | Bundled main-agent skills | 11 |
 
-Awareness Lite is imported **in-process** (no child CLI). The unified Pi surface uses
+Awareness is imported **in-process** (no child CLI). The unified Pi surface uses
 `plan` for session/shared execution and observed check receipts, `lock` for exceptional
 exclusivity, `message` for peer coordination, and `memory` for relevant durable learning.
 Only an unread direct-message count is injected automatically; registry membership, advisory
@@ -196,7 +196,7 @@ operations through the canonical project config. The gateway uses
 | `/octocode-plan` | `new <goal>` enters **plan mode**: the agent researches, proposes a dependency-ordered plan via `plan(propose)`, and write tools are blocked (tool-call gate, `plan mode` status chip) until you Approve (free-text = change request, Reject = stop, `/octocode-plan off` lifts the gate). Also show, start, complete, remove, or clear the active local plan. `html` writes `.octocode/plan.html` + `plan.md` (status checklist, mermaid dependency diagram) and keeps them live-updated on every plan change. The agent-side `plan` tool also supports `action:propose` — set the steps and ask you to Approve/Reject inline (a free-text reply is a change request). |
 | `/octocode-theme` | Switch the Octocode theme (`sync`, `dark`, or `light`). |
 | `/octocode-chrome` | List or close reused Chrome DevTools Protocol connections. |
-| `/octocode-footer` | Footer density: `compact`, `default`, or `full`. The identity row keeps `/commands — guide` and `/settings configure`; keyboard hints are intentionally omitted. A once-per-session Octocode CLI probe paints `github ✓` green or missing/error states red, and `/commands` provides login guidance without exposing tokens. `legend` prints every segment. |
+| `/octocode-footer` | Footer density: `compact`, `default`, or `full`. The identity row keeps `/settings` (opens the settings HTML page in the browser); keyboard hints are intentionally omitted. A once-per-session Octocode CLI probe paints `github ✓` green or missing/error states red, and `/commands` provides login guidance without exposing tokens. `legend` prints every segment. |
 | `/octocode-permissions` | Session approval controls: show the permission level and always-allowed action classes, `level strict|default|relaxed`, or `revoke all|<class>`. Cycle the level from the keyboard (default `ctrl+shift+a`, override `OCTOCODE_PERMISSIONS_KEY`); pin a session's starting level with `OCTOCODE_PERMISSION_LEVEL`. The footer always shows the live mode (`perm <level> +N`). All state is session-scoped and resets on a new session. |
 | `/octocode-profile` | Apply a named profile from `~/.octocode/profiles.json` to the live Pi session: model, active tool include/exclude scope, and the closest approval mode (`always` → relaxed, `never` → strict, `ask` → default). |
 | `/octocode-inbox` | Worker inbox overlay: pick a spawned agent, then view its transcript, steer it, or kill it. Completions/failures also fire desktop (OSC 9) notifications. |
@@ -230,12 +230,12 @@ supported workflow is discoverable on init with zero setup:
 - `octocode-subagent`
 
 The workflow skills are copied from the `octocode` dependency’s `skills/` tree at
-build time. Awareness Lite remains an installed in-process runtime and recovery CLI,
+build time. Awareness remains an installed in-process runtime and recovery CLI,
 not a bundled skill. The Pi build owns generated skill copies; never edit them by hand.
 Installing the same skill globally (`npx octocode@latest skill --name <skill>
 --platform pi`) is redundant now and will surface a `[Skill conflicts]` notice.
 
-## Awareness Lite bridge
+## Awareness bridge
 
 The bridge exposes `$OCTOCODE_SKILL_ROOT` for the bundled Lite skill and keeps
 `$OCTOCODE_AWARENESS_CLI` as an informational compatibility string pointing at the installed package CLI. Runtime calls use that local dependency path rather than `npx` package resolution. Identity is explicit: pass `--agent-id` to commands that mutate tasks, locks, work, handoffs, or verification state.
@@ -260,7 +260,7 @@ The extension loads Octocode configuration through `@octocodeai/config`.
 
 | Variable | Purpose |
 |---|---|
-| `OCTOCODE_AGENT_ID` | Optional explicit stable identity for Awareness Lite commands. |
+| `OCTOCODE_AGENT_ID` | Optional explicit stable identity for Awareness commands. |
 | `OCTOCODE_AWARENESS_CLI` | Bundled Lite diagnostics/recovery CLI path. |
 | `GITHUB_TOKEN`, `GH_TOKEN`, `OCTOCODE_TOKEN` | GitHub authentication. |
 | `ENABLE_LOCAL` | Enable local research tools (default on). |
@@ -275,8 +275,8 @@ Never put secrets into prompts, logs, Awareness memory, or committed config.
 | Symptom | Action |
 |---|---|
 | Extension appears inactive | Run `/octocode`, then `/octocode-harness`; use `/commands` for the full command guide. |
-| Awareness Lite command missing | Run `npx @octocodeai/octocode-awareness-lite schema`; if npx cannot resolve it, reinstall/update dependencies. |
-| Verification debt remains | Run the stated test, `npx @octocodeai/octocode-awareness-lite check audit --workspace "$PWD"`, then `npx @octocodeai/octocode-awareness-lite check mark --task-id <task-id> --agent-id <agent-id> --message <evidence>`. |
+| Shared Awareness command missing | Run `npx -p @octocodeai/octocode-awareness octocode-awareness schema commands`; if npx cannot resolve it, reinstall/update dependencies. |
+| Verification debt remains | Run the stated test, `npx -p @octocodeai/octocode-awareness octocode-awareness check audit --workspace "$PWD"`, then the returned task's `check mark` action with the exact observed evidence. |
 | Stale work presence | Audit exact ownership and explicitly run `work end` or `lock release` only after review. |
 | Compaction says “Nothing to compact” | Benign: the session is too small to summarize, so the extension reports it as skipped. |
 | Internal/model/tool errors need debugging | Check repo-local `.octocode/logs/error.txt`. Entries include timestamp, uptime, cwd, mode, model/context usage when available, duration, details, stack/cause, and redacted secrets. |

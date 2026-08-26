@@ -41,7 +41,7 @@ import { stringEnumSchema } from './schema-helpers.js';
 import { runSelectOverlay } from './ui-overlays.js';
 import { publishMcpRuntimeState, runtimeStoreFor, setManagedStatus } from './runtime-renderer.js';
 import { recordFileReadState } from './file-state.js';
-import { buildOctocodeRenderCall, buildOctocodeRenderResult, makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildOctocodeSingleRenderCall, buildOctocodeRenderCall, buildOctocodeRenderResult, buildToolView, extractQueryResultRows, makeCachedRenderer, makeRenderer, truncateToWidth } from './render-helpers.js';
 import {
   buildMcpCatalogSnapshot,
   buildMcpGuideGenerationPrompt,
@@ -1643,7 +1643,17 @@ function renderCall(args: unknown, theme?: PiTheme): RenderCallReturn {
   const server = typeof p['server'] === 'string' ? p['server'] : DEFAULT_OCTOCODE_MCP_SERVER_NAME;
   if (p['action'] === 'call' && typeof p['tool'] === 'string') {
     const displayName = server === DEFAULT_OCTOCODE_MCP_SERVER_NAME ? p['tool'] : `${server}.${p['tool']}`;
-    return buildOctocodeRenderCall(displayName, p['arguments'], theme);
+    // When the inner arguments carry multiple sub-queries (e.g. localGetFileContent
+    // reading a.ts AND b.ts) expand them fully so each path + reason is visible.
+    // For a single inner sub-query, the outer buildQueryCallBlocks already appends
+    // the MCPTool query’s reasoning as an indented line; calling buildOctocodeRenderCall
+    // here would add the inner sub-query reason too, producing two redundant lines.
+    const innerEnvelope = isPlainRecord(p['arguments']) ? p['arguments'] as Record<string, unknown> : {};
+    const innerQueryCount = Array.isArray(innerEnvelope['queries']) ? innerEnvelope['queries'].length : 0;
+    if (innerQueryCount > 1) {
+      return buildOctocodeRenderCall(displayName, p['arguments'], theme);
+    }
+    return buildOctocodeSingleRenderCall(displayName, p['arguments'], theme);
   }
 
   const { action, target } = formatMcpTarget(p);
@@ -1654,6 +1664,36 @@ function renderCall(args: unknown, theme?: PiTheme): RenderCallReturn {
 }
 
 function renderResult(resultValue: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme, context?: RenderContext): RenderCallReturn {
+  // ── Multi-query: one result row per called tool, no redundant batch header ──
+  // The call-phase already shows `↳ N queries · sequential`; repeating `MCPTool
+  // · N queries · sequential` in the result duplicates it. Instead render each
+  // row with the actual called tool name so the user sees what ran and what it
+  // returned (e.g. ✓ localSearchCode · 22 matches · 1 file) not a generic label.
+  const envelope = isPlainRecord(context?.args) ? context!.args as Record<string, unknown> : {};
+  const queryList = Array.isArray(envelope['queries']) ? envelope['queries'] as Record<string, unknown>[] : [];
+  if (queryList.length > 1) {
+    const rows = extractQueryResultRows(resultValue);
+    if (rows.length > 1) {
+      return makeCachedRenderer((width) =>
+        rows.flatMap((row) => {
+          const query = queryList[row.index] ?? {};
+          const qServer = typeof query['server'] === 'string' ? query['server'] : DEFAULT_OCTOCODE_MCP_SERVER_NAME;
+          const toolName = (query['action'] === 'call' && typeof query['tool'] === 'string')
+            ? (qServer === DEFAULT_OCTOCODE_MCP_SERVER_NAME
+              ? query['tool'] as string
+              : `${qServer}.${query['tool'] as string}`)
+            : 'MCPTool';
+          return buildToolView({
+            name: toolName,
+            state: row.status === 'success' ? 'success' : row.status === 'failed' ? 'error' : 'neutral',
+            segments: row.summary ? [{ text: row.summary, token: row.status === 'success' ? 'dim' : 'error' }] : [],
+          }, theme).render(width);
+        })
+      );
+    }
+  }
+
+  // ── Single-query: delegate to per-tool or MCP-action renderers ──
   const args = extractQueryParams(context?.args);
   const server = typeof args['server'] === 'string' ? args['server'] : DEFAULT_OCTOCODE_MCP_SERVER_NAME;
   if (args['action'] === 'call' && server === DEFAULT_OCTOCODE_MCP_SERVER_NAME && typeof args['tool'] === 'string') {
@@ -1684,6 +1724,10 @@ function renderResult(resultValue: ToolCallResult, opts: { expanded?: boolean; i
     return rendered.map((line) => theme?.fg ? theme.fg(color, clip(line, width)) : clip(line, width));
   });
 }
+// Opt out of the branded multi-query override: this renderResult handles multi-query
+// rows itself (with per-row actual tool names), so the branded wrapper must not
+// intercept and replace them with the generic MCPTool label.
+(renderResult as { multiQueryAware?: boolean }).multiQueryAware = true;
 
 export function registerMcpTool(
   pi: PiInstance,
@@ -1733,6 +1777,49 @@ export function registerMcpTool(
         preflight: preflightMcpQuery,
         async execute(query, _index, _itemId, batchSignal, _onItemUpdate, itemCtx) {
           return handleMcpAction(query, batchSignal, itemCtx);
+        },
+        // Extract a human-readable stat line from the response text so result rows show
+        // data instead of bare YAML structural headers like "results:" or "base: /path".
+        // Octocode MCP tools emit well-known key:value pairs (totalOccurrences,
+        // filesMatched, returnedChars, summary, …) that we surface as compact stats.
+        summarize(result: ToolCallResult): string {
+          if (result.isError) {
+            const errText = (result.content as Array<{ type: string; text?: string }>)
+              ?.find?.((p) => p?.type === 'text')?.text ?? '';
+            return errText.split('\n').map((l) => l.trim()).filter(Boolean).at(-1) ?? 'failed';
+          }
+          const text = (result.content as Array<{ type: string; text?: string }>)
+            ?.find?.((p) => p?.type === 'text')?.text ?? '';
+          const trimmed = text.split('\n').map((l) => l.trim()).filter(Boolean);
+          // Build a key→value index; first-seen wins (shallowest YAML scope)
+          const kv: Record<string, string> = {};
+          for (const line of trimmed) {
+            const colon = line.indexOf(':');
+            if (colon > 0) {
+              const k = line.slice(0, colon).trim();
+              const v = line.slice(colon + 1).trim();
+              if (v && !kv[k]) kv[k] = v;
+            }
+          }
+          // Self-describing summary (localViewStructure: "N entries (M files, …)")
+          if (kv['summary']) return kv['summary'];
+          // Code search stats
+          const parts: string[] = [];
+          if (kv['totalOccurrences']) parts.push(`${kv['totalOccurrences']} matches`);
+          if (kv['filesMatched'] && kv['filesMatched'] !== kv['totalOccurrences'])
+            parts.push(`${kv['filesMatched']} file${kv['filesMatched'] === '1' ? '' : 's'}`);
+          if (parts.length > 0) return parts.join(' · ');
+          // File-content stats
+          if (kv['returnedChars'] && kv['totalLines']) return `${kv['returnedChars']} chars · ${kv['totalLines']} lines`;
+          if (kv['totalLines']) return `${kv['totalLines']} lines`;
+          if (kv['returnedChars']) return `${kv['returnedChars']} chars`;
+          if (kv['totalEntries']) return `${kv['totalEntries']} entries`;
+          // Fallback: first line that carries real content (skip structural YAML keys)
+          const SKIP = /^(results|base|pagination|data|stats|files|next|hints|shared|status|path|result|id|meta|reasoning|text|content|modified|fileType|name|capped|searchTime|searchEngine|matchedLines|filesSearched|bytesSearched|totalFiles|totalMatches|totalMatchRows|returnedMatchRows)$/i;
+          const meaningful = trimmed.find((l) =>
+            !SKIP.test((l.split(':')[0] ?? '').trim()) && !l.startsWith('-') && !l.startsWith('✓') && !l.startsWith('✗') && l.length > 2
+          );
+          return meaningful ?? trimmed[0] ?? 'ok';
         },
       });
     } catch (error) {

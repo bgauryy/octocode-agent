@@ -2,7 +2,7 @@
  * sqlite-version.ts — embedded-SQLite version gating for safe concurrent WAL.
  *
  * Pure and side-effect-free (only a type import of `node:sqlite`), so both the
- * full Awareness store and Awareness Lite can share one WAL-safety policy
+ * Awareness store can share one WAL-safety policy
  * instead of each hard-coding a journal mode.
  */
 import type { DatabaseSync } from 'node:sqlite';

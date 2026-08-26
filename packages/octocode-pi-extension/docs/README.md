@@ -26,7 +26,7 @@ use `node $OCTOCODE_CLI tools <name> --scheme`.
 
 | Document | Owns |
 |---|---|
-| [AWARENESS_AGENT_FLOW.md](AWARENESS_AGENT_FLOW.md) | Agent lifecycle for using Awareness Lite inside Pi sessions. |
+| [AWARENESS_AGENT_FLOW.md](AWARENESS_AGENT_FLOW.md) | Agent lifecycle for using Awareness inside Pi sessions. |
 | [AGENT_ORCHESTRATOR.md](AGENT_ORCHESTRATOR.md) | Pi SDK subagent orchestration contract, rollback notes, and UX policy. |
 | [SUBAGENTS.md](SUBAGENTS.md) | Spawn profiles, live control, durable peer communication, and isolation. |
 | [REFLECT.md](REFLECT.md) | Reflection and memory workflow as exposed through the harness. |

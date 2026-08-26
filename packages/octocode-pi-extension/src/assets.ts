@@ -2,54 +2,51 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { execCli, runPreEditLockGate, type PreEditHookResult, type PreEditHookOptions } from '@octocodeai/octocode-awareness/lite';
+import { execCli, runPreEditLockGate, type PreEditHookResult, type PreEditHookOptions } from '@octocodeai/octocode-awareness';
 
 const extensionDir = path.dirname(fileURLToPath(import.meta.url));
 const requireFromExtension = createRequire(import.meta.url);
 
-// Awareness Lite is now folded into the single @octocodeai/octocode-awareness
-// package (subpath ./lite, bin `octocode-awareness-lite`). The constant keeps
-// its historical name because launcher/status code imports it.
-export const AWARENESS_LITE_PACKAGE = '@octocodeai/octocode-awareness';
+// One root package and one CLI serve both the harness and external agents.
+export const AWARENESS_PACKAGE = '@octocodeai/octocode-awareness';
 
-export interface AwarenessLiteCommandSpec {
+export interface AwarenessCommandSpec {
   cmd: string;
   args: string[];
 }
 
-export interface AwarenessLiteRunResult {
+export interface AwarenessRunResult {
   code: number;
   stdout: string;
   stderr: string;
 }
 
-export function resolveAwarenessLiteCliPath(): string {
-  // Resolve the folded-in Lite CLI via its subpath export → out/lite/cli.js.
-  return requireFromExtension.resolve(`${AWARENESS_LITE_PACKAGE}/lite/cli`);
+export function resolveAwarenessCliPath(): string {
+  return requireFromExtension.resolve(`${AWARENESS_PACKAGE}/bin/awareness`);
 }
 
 /**
- * Build a spawn spec (`node cli.js …`) for the Awareness Lite bin. Retained for
+ * Build a spawn spec (`node cli.js …`) for the Awareness bin. Retained for
  * the surfaces the model/user or a foreign host invokes as a real command:
  * launcher verbs (surfaces.ts) and the `$OCTOCODE_AWARENESS_CLI` env var. The
- * extension's OWN calls run in-process via runAwarenessLiteInProcess instead.
+ * extension's OWN calls run in-process via runAwarenessInProcess instead.
  */
-export function buildAwarenessLiteCommand(args: string[] = []): AwarenessLiteCommandSpec {
-  return { cmd: process.execPath, args: [resolveAwarenessLiteCliPath(), ...args] };
+export function buildAwarenessCommand(args: string[] = []): AwarenessCommandSpec {
+  return { cmd: process.execPath, args: [resolveAwarenessCliPath(), ...args] };
 }
 
 /**
- * Run an Awareness Lite command vector IN-PROCESS — no child process — via the
+ * Run an Awareness command vector IN-PROCESS — no child process — via the
  * library's `execCli`. Returns the same JSON-on-stdout / exit-code contract the
  * `cli.js` bin produced, so callers that already build an argv and parse stdout
  * keep working unchanged (exit 2 still signals a lock-wait/pre-edit block).
  */
-export function runAwarenessLiteInProcess(args: string[]): AwarenessLiteRunResult {
+export function runAwarenessInProcess(args: string[]): AwarenessRunResult {
   return execCli(args);
 }
 
-/** Run the Awareness Lite pre-edit lock gate in-process (library call, no spawn). */
-export function runAwarenessLitePreEdit(options: PreEditHookOptions): PreEditHookResult {
+/** Run the Awareness pre-edit lock gate in-process (library call, no spawn). */
+export function runAwarenessPreEdit(options: PreEditHookOptions): PreEditHookResult {
   return runPreEditLockGate(options);
 }
 
@@ -58,7 +55,7 @@ export interface AssetPaths {
   docsDir: string;
   skillsDir: string;
   systemPrompt: string;
-  /** Agent-facing Awareness Lite command display string. */
+  /** Agent-facing Awareness command display string. */
   awarenessCliPath: string;
 }
 
@@ -73,7 +70,7 @@ export function getAssetPaths(baseDir = extensionDir): AssetPaths {
 }
 
 /**
- * Returns the agent-facing Awareness Lite command DISPLAY string ("node
+ * Returns the agent-facing Awareness command DISPLAY string ("node
  * /path/cli.js"). Kept under the historical name because launcher/status code
  * imports it. Display-only — the executable-facing `$OCTOCODE_AWARENESS_CLI`
  * env var carries the bare script path (see index.ts). Falls back to the npx
@@ -81,9 +78,9 @@ export function getAssetPaths(baseDir = extensionDir): AssetPaths {
  */
 export function getAwarenessCLIPath(_baseDir = extensionDir): string {
   try {
-    return `${process.execPath} ${resolveAwarenessLiteCliPath()}`;
+    return `${process.execPath} ${resolveAwarenessCliPath()}`;
   } catch {
-    return `npx -p ${AWARENESS_LITE_PACKAGE} octocode-awareness-lite`;
+    return `npx -p ${AWARENESS_PACKAGE} octocode-awareness`;
   }
 }
 

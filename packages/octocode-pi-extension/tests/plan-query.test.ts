@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'vitest';
 import { Type } from 'typebox';
-import { openAwarenessLite } from '@octocodeai/octocode-awareness/lite';
+import { openAwareness } from '@octocodeai/octocode-awareness';
 import type { ToolDefinition, PiContext } from '../src/types.js';
 import { handleOctocodePlanCommand, registerPlanTool } from '../src/tools/plan-tool.js';
 import { registerUniqueTool } from '../src/tools/octocode-tools.js';
@@ -132,7 +132,7 @@ test('unified auto and explicit session scopes keep solo plans out of Awareness'
         }],
       }, undefined, undefined, localCtx);
       assert.equal(result.isError, undefined);
-      const lite = openAwarenessLite({ workspace });
+      const lite = openAwareness({ workspace });
       try {
         assert.equal(lite.listPlans().length, 0, `${scope} created no shared plan`);
         assert.equal(lite.listTasks().length, 0, `${scope} created no shared task`);
@@ -167,7 +167,7 @@ test('unified shared scope idempotently projects step contracts and dependencies
     const local = getPlan(workspace);
     assert.ok(local.every((step) => step.awarenessTaskId), 'every local step has a shared task mapping');
 
-    const lite = openAwarenessLite({ workspace });
+    const lite = openAwareness({ workspace });
     try {
       const plans = lite.listPlans();
       const tasks = lite.listTasks();
@@ -235,7 +235,7 @@ test('shared plan.complete requires a matching receipt, verifies success, and re
     assert.equal(getPlan(workspace)[0]?.status, 'done');
     assert.equal(getPlan(workspace)[1]?.status, 'doing', 'verified predecessor unlocks and claims dependent step');
 
-    let lite = openAwarenessLite({ workspace });
+    let lite = openAwareness({ workspace });
     try {
       const firstTask = lite.getTask(firstLocal!.awarenessTaskId!);
       const secondTask = lite.getTask(secondLocal!.awarenessTaskId!);
@@ -257,7 +257,7 @@ test('shared plan.complete requires a matching receipt, verifies success, and re
     assert.equal(failed.isError, true);
     assert.match((failed.content[0] as { text: string }).text, /failed|reopened/i);
     assert.equal(getPlan(workspace)[1]?.status, 'doing', 'failed check leaves local step in progress');
-    lite = openAwarenessLite({ workspace });
+    lite = openAwareness({ workspace });
     try {
       const reopened = lite.getTask(secondLocal!.awarenessTaskId!);
       assert.equal(reopened.status, 'CLAIMED');
@@ -276,7 +276,7 @@ test('shared plan.complete requires a matching receipt, verifies success, and re
     }, undefined, undefined, localCtx);
     assert.equal(retry.isError, undefined);
     assert.ok(getPlan(workspace).every((step) => step.status === 'done'));
-    lite = openAwarenessLite({ workspace });
+    lite = openAwareness({ workspace });
     try {
       assert.equal(lite.listPlans()[0]?.status, 'DONE', 'shared plan closes after every task is verified');
     } finally {
@@ -294,7 +294,7 @@ test('shared completion compensates a failed check mark and reports verification
   const workspace = mkdtempSync(join(tmpdir(), 'plan-complete-compensate-'));
   const agentId = 'pi:plan-compensation-test';
   try {
-    let lite = openAwarenessLite({ workspace });
+    let lite = openAwareness({ workspace });
     const plan = lite.createPlan({ title: 'Compensation plan' });
     const recoverable = lite.addTask({ planId: plan.planId, title: 'Recoverable', checkCommand: 'test recoverable' });
     lite.claimTask({ taskId: recoverable.taskId, agentId });
@@ -310,7 +310,7 @@ test('shared completion compensates a failed check mark and reports verification
       /task reopened.*injected mark failure/i,
     );
 
-    lite = openAwarenessLite({ workspace });
+    lite = openAwareness({ workspace });
     assert.equal(lite.getTask(recoverable.taskId).status, 'CLAIMED', 'compensation restores an owned runnable task');
     const debt = lite.addTask({ planId: plan.planId, title: 'Debt', checkCommand: 'test debt' });
     lite.claimTask({ taskId: debt.taskId, agentId });
@@ -326,7 +326,7 @@ test('shared completion compensates a failed check mark and reports verification
       /verification debt.*mark unavailable.*reopen unavailable/i,
     );
 
-    lite = openAwarenessLite({ workspace });
+    lite = openAwareness({ workspace });
     try {
       const stranded = lite.getTask(debt.taskId);
       assert.equal(stranded.status, 'DONE');
@@ -355,7 +355,7 @@ test('accepted RFC shared scope creates no Awareness rows until the separate Sta
     assert.equal(proposePlanReview(workspace).ok, true);
     assert.equal(acceptPlanReview(workspace, getPlanReviewState(workspace).revision!).ok, true);
 
-    let lite = openAwarenessLite({ workspace });
+    let lite = openAwareness({ workspace });
     try {
       assert.equal(lite.listPlans().length, 0, 'Accept creates no shared plan');
       assert.equal(lite.listTasks().length, 0, 'Accept creates no shared task');
@@ -364,7 +364,7 @@ test('accepted RFC shared scope creates no Awareness rows until the separate Sta
     }
 
     await handleOctocodePlanCommand('start', localCtx, (_ctx, message) => notices.push(message));
-    lite = openAwarenessLite({ workspace });
+    lite = openAwareness({ workspace });
     try {
       assert.equal(lite.listPlans().length, 1, 'Start creates the shared plan');
       assert.equal(lite.listTasks().length, 1, 'Start creates the shared task');
@@ -386,7 +386,7 @@ test('unified auto scope adopts one current claimed task without manufacturing a
   const workspace = mkdtempSync(join(tmpdir(), 'plan-scope-adopt-'));
   const previousAgent = process.env['OCTOCODE_AGENT_ID'];
   process.env['OCTOCODE_AGENT_ID'] = 'pi:plan-adopt-test';
-  const lite = openAwarenessLite({ workspace });
+  const lite = openAwareness({ workspace });
   const sharedPlan = lite.createPlan({ title: 'Existing shared plan' });
   const sharedTask = lite.addTask({ planId: sharedPlan.planId, title: 'Existing shared task', paths: ['src/existing.ts'], acceptance: 'existing done', checkCommand: 'test existing' });
   lite.claimTask({ taskId: sharedTask.taskId, agentId: process.env['OCTOCODE_AGENT_ID'] });

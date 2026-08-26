@@ -185,7 +185,7 @@ test('README bundled-skill count and names match the canonical bundle inventory'
   for (const skill of skills) {
     assert.ok(readme.includes(`\`${skill}\``), `${skill} missing from README bundled-skill inventory`);
   }
-  assert.doesNotMatch(readme, /`octocode-awareness-lite` is copied|^- `octocode-awareness-lite`$/m);
+  assert.doesNotMatch(readme, /`octocode-awareness` is copied|^- `octocode-awareness`$/m);
 });
 
 test('HARNESS summary counts match stable source contracts', () => {

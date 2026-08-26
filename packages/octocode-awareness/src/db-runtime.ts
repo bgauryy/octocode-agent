@@ -20,7 +20,7 @@ import {
 import { initializeDb } from './db-init.js';
 
 // The low-level `node:sqlite` runtime — warning-filtered `DatabaseSync`, the
-// bounded BUSY retry, and the WAL checkpoint — is shared with Awareness Lite.
+// bounded BUSY retry, and the WAL checkpoint — is shared with Awareness.
 // Re-exported here so every existing `./db-runtime.js` / `./db.js` importer and
 // test keeps its symbols. The shared module has no npm runtime deps.
 export {

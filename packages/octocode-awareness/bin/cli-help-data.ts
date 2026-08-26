@@ -9,6 +9,7 @@ start: attend; workspace status; plan list; task ready; memory recall; signal li
 work: plan; task; advisory work by default; locks only for unsafe/non-mergeable edits; verify; signal; refinement
 learn: memory record|recall; reflect; docs; query
 operate: agent; session; hooks; hook; maintenance; schema
+coordinate: coordination <command>; guide|status|message|handoff|check are direct shortcuts
 first: octocode-awareness attend --workspace "$PWD" --query "<task>" --compact; follow returned next
 map: octocode-awareness schema commands --compact
 flags: octocode-awareness <noun> [action] --help
@@ -20,6 +21,7 @@ exit: 0 ok; 1 validation/verify debt; 2 conflict/wait/strict hook health`;
 export const HELP_COMPACT = `octocode-awareness: canonical noun/verb CLI; AGENTS routes → skill decides → CLI/SQLite acts → hooks automate edges. Use --compact for JSON.
 bundled-skills(${BUNDLED_SKILLS.length}): ${BUNDLED_SKILLS_DIR} — octocode-awareness is bundled; install other workflow skills separately when needed
 loop: attend -> work start -> work end -> verify mark -> verify audit; follow attend.next and <command> --help
+coordinate: coordination <command>; guide|status|message|handoff|check are direct shortcuts
 start: attend; workspace status; plan create|list|show|join|doc|status; task create|list|ready|show|claim|heartbeat|submit|release|depend; memory recall; signal list; docs list
 edit: work start|touch|end|list|show (advisory default); lock acquire|wait|release|prune only for unsafe/non-mergeable edits; verify audit|mark
 msg: signal publish|list|reply|ack|resolve|prune; agent register|list

@@ -8,7 +8,7 @@ import {
   loadProfile,
   profileToPiArgs,
 } from '../src/surfaces.js';
-import { getAwarenessCLIPath, resolveAwarenessLiteCliPath } from '../src/assets.js';
+import { getAwarenessCLIPath, resolveAwarenessCliPath } from '../src/assets.js';
 
 const selfPath = fileURLToPath(import.meta.url);
 
@@ -18,13 +18,6 @@ function expectCommand(spec: ReturnType<typeof buildSurfaceSpec>): { cmd: string
 }
 
 describe('buildSurfaceSpec — external octocode CLI', () => {
-  it('research maps to `npx octocode search`', () => {
-    expect(buildSurfaceSpec('research', ['auth flow'])).toEqual({
-      cmd: 'npx',
-      args: ['octocode', 'search', 'auth flow'],
-    });
-  });
-
   it('tools maps to `npx octocode tools`', () => {
     expect(buildSurfaceSpec('tools', ['--json'])).toEqual({
       cmd: 'npx',
@@ -40,31 +33,31 @@ describe('buildSurfaceSpec — external octocode CLI', () => {
   });
 });
 
-describe('buildSurfaceSpec — installed awareness-lite CLI', () => {
+describe('buildSurfaceSpec — installed awareness CLI', () => {
   it('memory prefixes the memory noun through the local scoped package CLI', () => {
     const spec = expectCommand(buildSurfaceSpec('memory', ['recall', 'x'], { OCTOCODE_AWARENESS_CLI: selfPath }));
     expect(spec.cmd).toBe(process.execPath);
     expect(spec.args.at(-3)).toBe('memory');
     expect(spec.args.slice(-2)).toEqual(['recall', 'x']);
-    expect(spec.args[0]).toBe(resolveAwarenessLiteCliPath());
+    expect(spec.args[0]).toBe(resolveAwarenessCliPath());
   });
 
   it('awareness passes through raw args through the local scoped package CLI', () => {
     const spec = expectCommand(buildSurfaceSpec('awareness', ['status']));
     expect(spec.cmd).toBe(process.execPath);
     expect(spec.args.slice(-1)).toEqual(['status']);
-    expect(spec.args[0]).toBe(resolveAwarenessLiteCliPath());
+    expect(spec.args[0]).toBe(resolveAwarenessCliPath());
   });
 });
 
 describe('getAwarenessCLIPath', () => {
-  it('returns the installed Awareness Lite command regardless of stale env file paths', () => {
+  it('returns the installed Awareness command regardless of stale env file paths', () => {
     const prev = process.env.OCTOCODE_AWARENESS_CLI;
     try {
       process.env.OCTOCODE_AWARENESS_CLI = selfPath;
-      expect(getAwarenessCLIPath()).toBe(`${process.execPath} ${resolveAwarenessLiteCliPath()}`);
+      expect(getAwarenessCLIPath()).toBe(`${process.execPath} ${resolveAwarenessCliPath()}`);
       process.env.OCTOCODE_AWARENESS_CLI = '/no/such/file.js';
-      expect(getAwarenessCLIPath()).toBe(`${process.execPath} ${resolveAwarenessLiteCliPath()}`);
+      expect(getAwarenessCLIPath()).toBe(`${process.execPath} ${resolveAwarenessCliPath()}`);
     } finally {
       if (prev === undefined) delete process.env.OCTOCODE_AWARENESS_CLI;
       else process.env.OCTOCODE_AWARENESS_CLI = prev;

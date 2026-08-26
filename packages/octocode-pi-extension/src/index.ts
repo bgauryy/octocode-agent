@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { propagateOctocodeEnv, getOctocodeHome } from './env.js';
+import { defaultDbPath, openAwareness } from '@octocodeai/octocode-awareness';
 import {
   DISABLED_BUILTIN_TOOL_NAMES,
   OVERRIDDEN_BUILTIN_TOOL_NAMES,
@@ -13,24 +14,23 @@ import {
   listBundledSkills,
   getInstallSource,
   getAwarenessCLIPath,
-  resolveAwarenessLiteCliPath,
-  runAwarenessLiteInProcess,
-  runAwarenessLitePreEdit,
+  resolveAwarenessCliPath,
+  runAwarenessPreEdit,
 } from './assets.js';
 
-// Expose the Awareness Lite CLI for agents. The env var holds the SCRIPT PATH
+// Expose the Awareness CLI for agents. The env var holds the SCRIPT PATH
 // ONLY so the documented `node "$OCTOCODE_AWARENESS_CLI" <command>` invocation
 // works in every shell (a "node /path" two-token string breaks under quoting
 // and under zsh's no-word-split default). Guarded: a broken/missing install
 // must not throw at import time and kill the whole extension load.
 try {
-  process.env.OCTOCODE_AWARENESS_CLI = resolveAwarenessLiteCliPath();
+  process.env.OCTOCODE_AWARENESS_CLI = resolveAwarenessCliPath();
 } catch {
-  // Awareness Lite unresolved — leave the env var unset; prompt/status
+  // Awareness unresolved — leave the env var unset; prompt/status
   // surfaces fall back to the npx form.
 }
 // Mark this process tree as the Octocode harness so generated agent names
-// (workers here, `agent join` rows in Awareness Lite) tag as octo-* even when
+// (workers here, `agent join` rows in Awareness) tag as octo-* even when
 // the session was launched from a Claude Code / Cursor terminal whose host
 // env vars are inherited. Respect an explicit override.
 process.env.OCTOCODE_AGENT_HOST ||= 'octo';
@@ -90,11 +90,11 @@ import { registerLocalServerTool } from './tools/local-server-tool.js';
 import { registerAskUserTool } from './tools/ask-user-tool.js';
 import { registerMemoryTool } from './tools/memory-tool.js';
 import { registerAwarenessCoordinationTools } from './tools/awareness-coordination-tools.js';
-import { getAwarenessLiteAgentId } from './tools/awareness-shared.js';
+import { getAwarenessAgentId } from './tools/awareness-shared.js';
 import { activePlanScope, adoptPlanFromBranch, renderActivePlanAddendum, getPlan, getPlanReviewState, bumpPlanTurn, setPlanEntryAppender, PLAN_ENTRY_TYPE } from './tools/active-plan.js';
 import { getCachedAwarenessStatus, refreshAwarenessPanel, suppressAwarenessPanel, resumeAwarenessPanel, clearAwarenessCacheEntry } from './tools/awareness-status.js';
 import { refreshStatusPanel, suppressStatusPanel, resumeStatusPanel } from './tools/status-panel.js';
-import { buildAgentFooterRows, buildCommandsRow, buildFooterSegments, formatBranchSegment, buildWorkingIndicator, buildWorkingMessage, formatCompact, getFooterDensity, parseFooterDensity, resolveSystemThemeName, setFooterDensity, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName, type CommandEntry } from './ui-extras.js';
+import { buildAgentFooterRows, buildFooterSegments, formatBranchSegment, buildWorkingIndicator, buildWorkingMessage, formatCompact, getFooterDensity, parseFooterDensity, resolveSystemThemeName, setFooterDensity, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName } from './ui-extras.js';
 import { contextGauge, paint, paintUi } from './tui/palette.js';
 import { renderFooterView } from './tui/footer-view.js';
 import { setUiTickSubscriber } from './tui/ui-ticker.js';
@@ -175,7 +175,7 @@ export {
   MANAGED_BLOCK_START,
   MANAGED_BLOCK_END,
 } from './constants.js';
-export { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getAwarenessCLIPath, buildAwarenessLiteCommand } from './assets.js';
+export { getAssetPaths, readTextIfExists, listBundledSkills, getInstallSource, getAwarenessCLIPath, buildAwarenessCommand } from './assets.js';
 export {
   buildSurfaceSpec,
   loadProfile,
@@ -318,17 +318,6 @@ function workerFooterCounts(): WorkerFooterCounts {
  * (where the prompt parts are already assembled) and read by the module-scoped
  * footer refresher. Zero extra work — reuses strings already built each turn.
  */
-/**
- * All custom /octocode-* slash commands shown in the footer discovery row,
- * listed by their suffix (the "octocode-" prefix is stripped for brevity).
- * Ordered by everyday usefulness so truncation at narrow widths drops the
- * least-used commands from the right end.
- */
-// Keep command discovery to one stable entry; /commands reads the complete live
-// registry, including Pi, prompt, skill, and extension commands.
-const OCTOCODE_FOOTER_COMMANDS: readonly CommandEntry[] = [
-  { name: 'commands', desc: 'guide', token: 'link' },
-];
 
 // Footer registration is idempotent per session context. Pi's documented
 // contract (docs/tui.md "Custom Footer": setFooter ONCE + tui.requestRender for
@@ -382,11 +371,7 @@ function buildOctocodeFooterLines(
     const grants = approvedClasses().length > 0 ? ` +${approvedClasses().length}` : '';
     identityParts.push({ text: `perm ${permLevel}${grants}`, token: permLevel === 'relaxed' ? 'warning' : 'dim' });
   }
-  // /commands hint moved from separate cmds row onto the brand row so the
-  // commands guide is always visible without wasting a dedicated footer line.
-  const cmdsHint = buildCommandsRow(OCTOCODE_FOOTER_COMMANDS, theme);
-  if (cmdsHint) identityParts.push({ text: cmdsHint, token: 'dim' });
-  identityParts.push({ text: '/settings configure', token: 'link' });
+  identityParts.push({ text: '/settings', token: 'link' });
 
   // ── Row 2: Metrics (context · session · timing · overhead · agent counts) ──
   const metricsSegments = buildFooterSegments({
@@ -476,13 +461,13 @@ async function execGitSummary(pi: PiInstance, args: string[], timeout = 1200): P
   }
 }
 
-// getAwarenessLiteAgentId is single-sourced in tools/awareness-shared.ts (shared
+// getAwarenessAgentId is single-sourced in tools/awareness-shared.ts (shared
 // with the first-class coordination tools) and imported above.
 
 const awarenessMutationGate = createAwarenessMutationGate({
-  storeExists: () => fs.existsSync(path.join(getOctocodeHome(), 'octocode.sqlite3')),
+  storeExists: () => fs.existsSync(defaultDbPath(process.cwd())),
   queryTarget: (target, workspace, agentId) => {
-    const result = runAwarenessLitePreEdit({
+    const result = runAwarenessPreEdit({
       workspace,
       agentId,
       host: 'pi',
@@ -491,38 +476,47 @@ const awarenessMutationGate = createAwarenessMutationGate({
     return { blocked: result.blocked, message: result.message };
   },
   startWork: (target, workspace, agentId) => {
-    const result = runAwarenessLiteInProcess(['work', 'start', '--agent-id', agentId, '--file', target, '--reason', 'Automatic Pi mutation presence', '--workspace', workspace]);
-    if (result.code !== 0) throw new Error(result.stderr.trim() || `exit ${result.code}`);
+    const aw = openAwareness({ workspace });
+    try {
+      aw.startWork({ filePath: target, agentId, reason: 'Automatic Pi mutation presence' });
+    } finally {
+      aw.close();
+    }
   },
   endWork: (target, workspace, agentId) => {
-    const result = runAwarenessLiteInProcess(['work', 'end', '--agent-id', agentId, '--file', target, '--workspace', workspace]);
-    if (result.code !== 0) throw new Error(result.stderr.trim() || `exit ${result.code}`);
+    const aw = openAwareness({ workspace });
+    try {
+      aw.endWork({ filePath: target, agentId });
+    } finally {
+      aw.close();
+    }
   },
   warn: (message) => console.warn(`[octocode] ${message}`),
 });
 
 /**
- * Fire-and-forget Awareness Lite registry presence. Join at session_start with
+ * Fire-and-forget Awareness registry presence. Join at session_start with
  * the session-stable agent id — Lite generates a funny host-tagged name
  * (octo-* here, since the harness sets OCTOCODE_AGENT_HOST) so peers in other
  * runners (clawde-*, cursea-*) see WHO is active in the shared workspace.
  * Leave at shutdown so the registry doesn't accumulate stale ACTIVE rows.
  * Best-effort: never blocks the session and never throws.
  */
-function updateAwarenessLiteRegistry(action: 'join' | 'leave', _pi: PiInstance, ctx?: PiContext, cwdOverride?: string): void {
+function updateAwarenessRegistry(action: 'join' | 'leave', _pi: PiInstance, ctx?: PiContext, cwdOverride?: string): void {
   const cwd = cwdOverride ?? ctx?.cwd ?? process.cwd();
+  let aw: ReturnType<typeof openAwareness> | undefined;
   try {
-    const args = ['agent', action, '--agent-id', getAwarenessLiteAgentId(cwdOverride === undefined ? ctx : undefined), '--workspace', cwd];
-    if (action === 'join') args.push('--role', 'lead');
-    // In-process presence write (fast local SQLite); advisory, so any failure is
-    // swallowed and never blocks the session.
-    runAwarenessLiteInProcess(args);
-  } catch { /* Awareness Lite unresolved — skip */ }
+    aw = openAwareness({ workspace: cwd });
+    const agentId = getAwarenessAgentId(cwdOverride === undefined ? ctx : undefined);
+    if (action === 'join') aw.joinAgent({ agentId, role: 'lead' });
+    else aw.leaveAgent({ agentId });
+  } catch { /* Awareness unresolved — skip */ }
+  finally { aw?.close(); }
 }
 
-function runAwarenessLiteMutationGate(event: { toolName?: string; input?: Record<string, unknown> }, ctx?: PiContext): { block?: boolean; reason?: string } | void {
+function runAwarenessMutationGate(event: { toolName?: string; input?: Record<string, unknown> }, ctx?: PiContext): { block?: boolean; reason?: string } | void {
   const workspace = ctx?.cwd ?? process.cwd();
-  const agentId = getAwarenessLiteAgentId(ctx);
+  const agentId = getAwarenessAgentId(ctx);
   return awarenessMutationGate.preflight(event, workspace, agentId);
 }
 
@@ -785,7 +779,7 @@ export function formatStatus(baseDir?: string): string {
     `system prompt: ${promptStatus}`,
     `skills: ${skills.length}${skills.length > 0 ? ` (${skills.join(', ')})` : ''}`,
     `octocode tools: ${formatOctocodeToolStatus()}`,
-    `awareness lite CLI: ${getAwarenessCLIPath(baseDir)} — user CLI: npx -p @octocodeai/octocode-awareness octocode-awareness-lite <command> [action] --workspace "$PWD"`,
+    `awareness CLI: ${getAwarenessCLIPath(baseDir)} — user CLI: npx -p @octocodeai/octocode-awareness octocode-awareness <command> [action] --workspace "$PWD"`,
     `management CLI: npx octocode skill | lsp-server | auth (no bundled CLI — use npx octocode for management tasks)`,
     `disabled/replaced built-ins: overridden: ${OVERRIDDEN_BUILTIN_TOOL_NAMES.join(', ')}${DISABLED_BUILTIN_TOOL_NAMES.length ? `; removed: ${DISABLED_BUILTIN_TOOL_NAMES.join(', ')}` : ''}`,
     `web search: ${searchStatus}`,
@@ -862,7 +856,7 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
     ],
     skills: listBundledSkills(baseDir),
     cliNote: `management: npx octocode skill | lsp-server | auth (no bundled CLI — use npx octocode for management tasks)`,
-    awarenessCliNote: `Awareness Lite CLI: ${getAwarenessCLIPath(baseDir)}; user CLI: npx -p @octocodeai/octocode-awareness octocode-awareness-lite <command> [action] --workspace "$PWD"`,
+    awarenessCliNote: `Awareness CLI: ${getAwarenessCLIPath(baseDir)}; user CLI: npx -p @octocodeai/octocode-awareness octocode-awareness <command> [action] --workspace "$PWD"`,
   };
 }
 
@@ -886,7 +880,7 @@ export function formatOctocodeDashboard(ctx?: PiContext, baseDir?: string, sessi
     `${promptOk ? '✓' : '⚠'} system prompt: ${promptOk ? 'found' : 'missing'}`,
     `✓ tools: ${formatOctocodeToolStatus()}`,
     `✓ metrics: ${context.text}`,
-    `Awareness Lite: ${awarenessCliPath} (user CLI: npx -p @octocodeai/octocode-awareness octocode-awareness-lite <command> [action] --workspace "$PWD")`,
+    `Awareness: ${awarenessCliPath} (user CLI: npx -p @octocodeai/octocode-awareness octocode-awareness <command> [action] --workspace "$PWD")`,
     `Management: npx octocode skill | lsp-server | auth`,
     '',
     'Agents',
@@ -938,7 +932,7 @@ function formatPlanLines(ctx?: PiContext): string[] {
 function formatAwarenessLines(ctx?: PiContext): string[] {
   const cwd = ctx?.cwd ?? process.cwd();
   const status = getCachedAwarenessStatus(cwd);
-  if (!status) return ['shared tasks: no cached Awareness Lite status yet — refresh queued; run /octocode-now again'];
+  if (!status) return ['shared tasks: no cached Awareness status yet — refresh queued; run /octocode-now again'];
   const lines = [
     `shared tasks: plans ${status.activePlans} · ready ${status.readyTasks} · doing ${status.inProgressTasks}`,
     `verify debt: ${status.verifyTasks} · locks ${status.lockCount} · work ${status.workCount}`,
@@ -978,8 +972,8 @@ export function formatOctocodeTasks(ctx?: PiContext): string {
     ...formatAwarenessLines(ctx),
     '',
     'Rule of thumb',
-    'Use plan(...) for your current solo breakdown; use Awareness Lite plan/task/work when state must survive sessions or coordinate agents.',
-    'Commands: /octocode-plan · npx -p @octocodeai/octocode-awareness octocode-awareness-lite status --workspace "$PWD"',
+    'Use plan(...) for your current solo breakdown; use Awareness plan/task/work when state must survive sessions or coordinate agents.',
+    'Commands: /octocode-plan · npx -p @octocodeai/octocode-awareness octocode-awareness status --workspace "$PWD"',
   ].join('\n');
 }
 
@@ -1301,7 +1295,7 @@ async function wireOctocodePiExtension(
   let frozenPlanSignature: string | undefined;
   // Unread count last surfaced via cron callback (proactive TUI notify; separate from per-turn LLM injection).
   let lastCronUnreadAlerted = -1;
-  // No pi.exec seam → the awareness-lite status job runs in-process (no child).
+  // No pi.exec seam → the awareness status job runs in-process (no child).
   const cronScheduler = createOctocodeCronScheduler({
     // Fires once per job run. Refresh the awareness panel immediately and show a
     // TUI notification when new peer messages arrive — closes the 30-min lag gap
@@ -1422,8 +1416,8 @@ async function wireOctocodePiExtension(
 
     hooks.on('tool_call', 'octocode-plan-mode-gate', async (event: { toolName?: string; input?: Record<string, unknown> }, ctx: PiContext | undefined) => planModeToolGate(event.toolName, ctx, event.input));
 
-    hooks.on('tool_call', 'awareness-lite-lock-gate', async (event: { toolName?: string; input?: Record<string, unknown> }, ctx: PiContext | undefined) => {
-      return runAwarenessLiteMutationGate(event, ctx);
+    hooks.on('tool_call', 'awareness-lock-gate', async (event: { toolName?: string; input?: Record<string, unknown> }, ctx: PiContext | undefined) => {
+      return runAwarenessMutationGate(event, ctx);
     });
 
     // Snapshot every plan mutation into a session CustomEntry (state channel —
@@ -1450,7 +1444,7 @@ async function wireOctocodePiExtension(
     const disposeSessionResources = async (reason: string, ctx: PiContext | undefined): Promise<void> => {
       const canUseShutdownContext = reason === 'quit';
       awarenessMutationGate.cleanup();
-      updateAwarenessLiteRegistry('leave', pi, undefined, latestSessionCwd);
+      updateAwarenessRegistry('leave', pi, undefined, latestSessionCwd);
       cronScheduler.stop();
       stopMcpConfigWatchers();
       stopMetricsTicker();
@@ -1678,10 +1672,10 @@ async function wireOctocodePiExtension(
         setManagedStatus(ctx, 'octocode-watch', 'watch: on');
       }
       cronScheduler.start(ctx);
-      // Announce this session in the shared Awareness Lite agent registry with
+      // Announce this session in the shared Awareness agent registry with
       // its generated host-tagged name (fire-and-forget; peers see it via
       // `agent list` and can `message send` to it).
-      updateAwarenessLiteRegistry('join', pi, ctx);
+      updateAwarenessRegistry('join', pi, ctx);
       // Full MCP discovery at init: connect every enabled configured server and
       // cache only enabled tools with descriptions and exact input schemas.
       // Fire-and-forget here; before_agent_start awaits it (bounded) so turn 1's
@@ -1927,7 +1921,7 @@ async function wireOctocodePiExtension(
       const unreadNow = getCachedAwarenessStatus(awarenessCwd)?.unreadInbox ?? 0;
       const unreadContent =
         unreadNow > 0 && unreadNow !== lastNotifiedUnread
-          ? `${unreadNow} unread peer message(s). Check inbox (message tool, action:inbox) before the next consequential decision — act on blockers/decisions, mark informational ones read, then continue.`
+          ? `${unreadNow} unread peer message(s). Use message tool (action:read) before the next consequential decision — act on blockers/decisions, then continue.`
           : undefined;
       if (unreadNow !== lastNotifiedUnread) lastNotifiedUnread = unreadNow;
 

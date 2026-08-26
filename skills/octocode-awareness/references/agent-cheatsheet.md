@@ -102,9 +102,9 @@ Noncompact dry-run/check shows settings + runtime health; compact = receipt only
 ## Code search (not bundled here)
 
 ```bash
-npx octocode search <dir> --tree --max-depth 2 --no-color
-npx octocode search "<term>" <path> --no-color
-npx octocode search <file> --content-view exact --no-color
+npx octocode tools localViewStructure localSearchCode localGetFileContent lspGetSemantics --scheme
+npx octocode tools localViewStructure --queries '{"path":"/absolute/workspace","maxDepth":2}'
+npx octocode tools localSearchCode --queries '{"path":"/absolute/workspace","searchText":"term","mode":"discovery"}'
 ```
 
 Use `npx octocode` for the native engine. Details: `references/octocode.md` · files: `references/files-awareness.md`.

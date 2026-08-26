@@ -7,7 +7,7 @@ cleared on `session_shutdown`, `/new`, reload, resume, fork, or quit.
 ## Safety model
 
 - Default jobs are report-first and non-mutating.
-- The built-in status job runs Awareness Lite read-only `status`.
+- The built-in status job runs Awareness read-only `status`.
 - No job calls a model.
 - Jobs never run when `OCTOCODE_CRON=0`.
 - Mutating cleanup such as `memory forget` or `wiki sync` remains manual.
@@ -22,7 +22,7 @@ cleared on `session_shutdown`, `/new`, reload, resume, fork, or quit.
 ```
 
 `list` shows every session job. Bare `check` runs the default job
-(`awareness-lite-status`); `check all` runs every registered job; `check <job>` runs
+(`awareness-status`); `check all` runs every registered job; `check <job>` runs
 one named job. `cancel` follows the same target rules and disables timers for the
 current session only.
 
@@ -30,7 +30,7 @@ current session only.
 
 | Job | Interval | Action |
 |---|---:|---|
-| `awareness-lite-status` | 30 min | installed `@octocodeai/octocode-awareness-lite` CLI: `status --workspace <cwd>` |
+| `awareness-status` | 30 min | `octocode-awareness` bin from installed `@octocodeai/octocode-awareness`: `status --workspace <cwd>` |
 
 ## Configuration
 

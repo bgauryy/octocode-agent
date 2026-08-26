@@ -4,148 +4,96 @@
   <img src="assets/logo.png" alt="Octocode Awareness" width="300" />
 </p>
 
-Shared situational awareness for coding agents working in one workspace.
-
-Awareness gives an agent four things that chat history cannot reliably provide:
-
-- a live Plan → Task queue with reasons, acceptance criteria, paths, and dependencies;
-- advisory visibility into which files every agent is working on and why;
-- optional exclusive protection for sensitive changes;
-- durable signals, verification receipts, lessons, and optional query exports.
-
-SQLite is canonical. `<workspace>/.octocode/` contains authored plan documents and
-requested query exports, never a second task database. There is no server or daemon.
-The **Homeostatic Awareness Loop** senses coordination, verification, memory,
-projection, token, and harness pressure, then recommends one bounded correction.
-“Living system” is an operational metaphor—not sentience or authority. See
-[docs/THESIS.md](docs/THESIS.md).
+One local communication and coordination layer for coding agents sharing a workspace. SQLite is canonical; there is no server or daemon.
 
 ## Install
 
-Requires Node 22.13.0 or newer. This is the first Node 22 release where
-`node:sqlite` is available without an experimental flag.
+Requires Node 22.13 or newer.
 
 ```bash
 npm install --global @octocodeai/octocode-awareness
-octocode-awareness maintenance init --compact
 npx octocode skill --add \
   --path "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness" \
   --platform common --dry-run
-# after reviewing destinations and approving the write:
+# after reviewing destinations:
 npx octocode skill --add \
   --path "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness" \
   --platform common --force
 ```
 
-`common` installs to `~/.agents/skills`. Use `claude`, `cursor`, `codex`, or `pi`
-when that host does not scan the shared directory. Verify the bundled runtime and
-get cwd-independent next commands:
+`common` installs to `~/.agents/skills`; use `claude`, `cursor`, `codex`, or `pi` for hosts that do not scan it. The package bundles only the `octocode-awareness` skill. Diagnose the installed runtime with:
 
 ```bash
 node "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness/scripts/install.mjs"
 ```
 
-The Awareness skill is required because it teaches agents when to use the CLI.
-This package now bundles only the `octocode-awareness` skill under `out/skills/`.
-Install other workflow skills separately with `npx octocode skill --name <skill>`
-when that work is needed.
+## One shared external-agent surface
 
-Published surfaces:
-
-- CLI: `npx @octocodeai/octocode-awareness` → `out/octocode-awareness.js`;
-- import-only library: `@octocodeai/octocode-awareness` → `out/index.js` plus declarations;
-- import-only schema API: `@octocodeai/octocode-awareness/schema` → `out/schema-api.js`;
-- portable Agent Skills under `out/skills/`.
-
-Imports never execute the CLI; Awareness never bundles or delegates to the
-Octocode research CLI. Install the required skill from
-`out/skills/octocode-awareness`, never through registry/name lookup.
-
-For one-off CLI use, prefer `npx @octocodeai/octocode-awareness`. In this monorepo
-after build, use the local package entry
-`node packages/octocode-awareness/out/octocode-awareness.js`.
-
-## Start and work
-
-Give each agent a stable identity and start from the bounded live packet:
+Pi imports `@octocodeai/octocode-awareness` in-process. External agents use the `octocode-awareness` bin from this same package:
 
 ```bash
-export OCTOCODE_AGENT_ID="my-agent-id"
-octocode-awareness attend --workspace "$PWD" --compact
+npx -p @octocodeai/octocode-awareness octocode-awareness status --workspace "$PWD"
+npx -p @octocodeai/octocode-awareness octocode-awareness guide
+npx -p @octocodeai/octocode-awareness octocode-awareness coordination schema commands
 ```
 
-The model is deliberately small:
+In-process hosts import the same contracts instead of recreating policy, flags, or JSON adapters:
 
-```text
-Plan (objective, lead, PLAN.md + docs/)
-  └─ Task (reasoning, acceptance, paths, dependencies)
-       └─ Run (one agent attempt + test plan)
-            └─ RunFile (advisory presence; optional exclusivity)
+```ts
+import {
+  EXTERNAL_AGENT_AWARENESS_PROMPT,
+  formatExternalAgentCoordinationContext,
+  readExternalAwarenessStatus,
+  executeExternalMemoryAction,
+  projectExternalPlan,
+} from '@octocodeai/octocode-awareness';
 ```
 
-Every edited path is declared. Ordinary overlap stays visible and allowed;
-exclusivity is reserved for sensitive or non-mergeable work. A small change needs
-no Plan or Task:
+Both use the workspace-scoped shared database at `~/.octocode/octocode.sqlite3`, overridden by `OCTOCODE_HOME` or `OCTOCODE_DB_PATH`. The workspace `.octocode/` directory is for authored plans, handoffs, and `.octocode/REFLECT.md`; it is not the database. `~/.octocode/` is global Octocode home state.
 
-```bash
-octocode-awareness work start --agent-id "$OCTOCODE_AGENT_ID" \
-  --workspace "$PWD" --file src/parser.ts \
-  --rationale "fix parser edge case" --test-plan "parser tests" --compact
-# edit, run the declared check, then use the returned run_id
-octocode-awareness work end --agent-id "$OCTOCODE_AGENT_ID" --run-id run_123 --compact
-octocode-awareness verify mark --agent-id "$OCTOCODE_AGENT_ID" \
-  --run-id run_123 --message "parser tests passed" --compact
-octocode-awareness verify audit --workspace "$PWD" \
-  --agent-id "$OCTOCODE_AGENT_ID" --compact
-```
+The same root binary also exposes reflection, query, session, digest, and maintenance workflows. Shared-ledger verbs use `coordination` when a name would otherwise be ambiguous.
 
-Shared plans live under `.octocode/plan/<timestamp-name>/`; their Tasks are the
-only durable work queue. “Today’s tasks” is a query, not another entity. See
-[docs/SKILLS.md](docs/SKILLS.md) for plan creation, task claim/heartbeat/submit,
-overlap decisions, sensitive locks, hooks, memory, and conditional closeout.
+## Feature inventory
 
-SQLite at `~/.octocode/memory/awareness.sqlite3` is canonical. Query exports are
-read-only `.octocode/` snapshots written only when requested; they are never live
-state. Command flags and payloads come from focused help and schema:
+| Family | Shared capability |
+|---|---|
+| Status | Read-only counts for active plans, ready/in-progress tasks, verification debt, active locks/work, agents, messages, handoffs, and memory. |
+| Plans | Create, list, inspect, complete, or abandon shared plans. |
+| Tasks | Acceptance criteria, paths, priority, dependencies, readiness, claim leases, heartbeat/release, completion, and reopen. |
+| Work presence | Advisory start/touch/list/show/end declarations for files being edited. |
+| Locks | Exclusive acquire/wait/list/release/prune for sensitive or non-mergeable state. |
+| Checks | Audit verification debt and attach exact success/failure receipts; task completion alone is not proof. |
+| Messages | Direct or broadcast inbox messages with topics, file references, read state, and explicit pruning. |
+| Agents | Join, heartbeat/status, list/staleness interpretation, and leave. |
+| Handoffs | Add, list, and clear concise continuation notes with related files. |
+| Memory | Store, lexical/optional semantic recall, list, reindex, forget, and dry-run-first pruning. Memory is a lead, not evidence. |
+| Hooks | Optional Claude/Codex/Cursor pre-edit lock gate; dry-run installation first. Pi integrates checks in-process. |
+| Schema | Machine-readable command and entity contracts so hosts do not guess flags or payloads. |
+| Pi composition | Native plan, lock, message, and memory tools plus automatic registry, presence, and mutation-time conflict checks over the same dispatcher and DB. |
+| Runtime workflows | Attend/workboard, signals, refinements, sessions, reflection, query exports, digests, and maintenance from the same root CLI. |
 
-```bash
-octocode-awareness <command> --help
-octocode-awareness schema commands --compact
-octocode-awareness schema json-schema memory_recall --compact
-```
+All CLI results are JSON. Mutation results preserve the entity and may add a typed `next` action. `status` filters expired leases without mutating stored rows; cleanup is explicit.
 
-`schema json-schema|example|validate <name>` serve every contract dynamically —
-no static schema files ship. Consumers can import Zod-backed contracts from
-`@octocodeai/octocode-awareness/schema`.
+## Database entities
 
-## Documentation
+The shared Pi/external database contains nine Awareness tables: `plans`, `tasks`, `locks`, `work_presence`, `handoffs`, `memories`, `agents`, `messages`, and `message_receipts`. It also co-locates Octocode control tables owned by `@octocodeai/octocode-shared`: `octocode_meta`, `agent_sessions`, `mcp_server_overrides`, `mcp_tool_overrides`, `skill_overrides`, and `mcp_catalog_state`.
 
-- [docs/README.md](docs/README.md) — concept-owner index
-- [docs/THESIS.md](docs/THESIS.md) — bounded homeostatic control thesis
-- [docs/SKILLS.md](docs/SKILLS.md) — installation and agent workflow
-- [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) — package/skill/hook architecture
-- [docs/DB.md](docs/DB.md) — entities, schema, migration, journal safety
-- [docs/LOCKS.md](docs/LOCKS.md) — advisory work and exclusivity
-- [docs/HOOKS.md](docs/HOOKS.md) — host integration
-- [docs/MEMORY_NAVIGATION.md](docs/MEMORY_NAVIGATION.md) — compact retrieval
-- [docs/REFLECTION.md](docs/REFLECTION.md) — supervised learning loop
-- [docs/HARNESS.md](docs/HARNESS.md) — maintainer invariants and verification matrix
-- [docs/VERIFY.md](docs/VERIFY.md) — any-agent end-to-end health and release check
-- [docs/REFERENCES.md](docs/REFERENCES.md) — evidence, prior art, and design limits
-- [skills/octocode-awareness/SKILL.md](https://github.com/bgauryy/octocode-mcp/blob/main/skills/octocode-awareness/SKILL.md) — agent lobby
+Runtime workflow entities include `sessions`, `memory_refs`, `plan_members`, `plan_docs`, `task_paths`, `task_dependencies`, `task_claims`, `task_events`, `task_runs`, `run_files`, `delivery_state`, `hook_receipts`, `run_log`, `refinements`, `signals`, `signal_reads`, `edit_log`, and `harness_log`.
+
+## Agent rules
+
+- Derive steps, decisions, and completion claims from repository or check evidence.
+- Ordinary overlap is visible and allowed; lock only genuinely unsafe overlap.
+- Keep presence/leases alive while working, run checks before teardown, and mark the receipt after `task done`.
+- Store only verified reusable memory. Keep workspace reflection concise in `<workspace>/.octocode/REFLECT.md`; never confuse it with global `~/.octocode` state.
+
+See [docs/SKILLS.md](docs/SKILLS.md) for the operating guide, [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) for architecture, [docs/VERIFY.md](docs/VERIFY.md) for end-to-end checks, and [docs/README.md](docs/README.md) for the complete documentation index including [docs/THESIS.md](docs/THESIS.md) and [docs/REFERENCES.md](docs/REFERENCES.md).
 
 ## Develop and verify
 
 ```bash
 yarn workspace @octocodeai/octocode-awareness build
-yarn workspace @octocodeai/octocode-awareness typecheck
-yarn workspace @octocodeai/octocode-awareness test:quiet
-yarn workspace @octocodeai/octocode-awareness test:smoke
-yarn workspace @octocodeai/octocode-awareness pack:check
 yarn workspace @octocodeai/octocode-awareness verify
 ```
 
-Edit the canonical skill only under repo-root `skills/octocode-awareness`; the
-package build refreshes its generated runtime/schema helpers, `out/`, and
-`.agents/skills/`. There is no repo-root `skills/` source tree. The Pi-extension
-build owns its packaged copy.
+Edit the canonical skill only under repo-root `skills/octocode-awareness`; the build refreshes package, `out/`, and `.agents/skills/` mirrors.

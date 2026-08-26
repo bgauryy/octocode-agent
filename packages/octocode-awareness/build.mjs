@@ -16,7 +16,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { baseOptions } from '../../build.config.mjs';
-import { coreEntryPoints, liteEntryPoints, skillScriptEntries } from './build.entries.mjs';
+import { coreEntryPoints, skillScriptEntries } from './build.entries.mjs';
 
 const packageRoot = dirname(fileURLToPath(import.meta.url));
 const repoRoot    = resolve(packageRoot, '../..');
@@ -103,17 +103,6 @@ await Promise.all(
   ),
 );
 
-// ── Awareness Lite (self-contained, no shared chunks) ─────────────────────────
-
-await esbuild.build({
-  ...baseOptions,
-  entryPoints: liteEntryPoints,
-  outdir:      join(outDir, 'lite'),
-  entryNames:  '[name]',
-  splitting:   false,
-  minify:      true,
-});
-
 // ── Type declarations (tsc --emitDeclarationOnly → out/types/) ────────────────
 
 execFileSync(
@@ -127,7 +116,6 @@ execFileSync(
 for (const name of ['octocode-awareness.js', 'hook-runner.js']) {
   makeExecutable(join(outDir, name), warningGuard);
 }
-makeExecutable(join(outDir, 'lite', 'cli.js'), warningGuard);
 for (const name of ['extract-hook-files.js']) {
   makeExecutable(join(outDir, name));
 }

@@ -1,19 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildWorkerRegistryArgs, withPeerCoordination } from '../src/tools/agent-tools.js';
-
-describe('buildWorkerRegistryArgs', () => {
-  it('builds a join with role worker + name', () => {
-    expect(buildWorkerRegistryArgs('join', { agentId: 'octo-lead:worker:abc123', name: 'Researcher', workspace: '/repo' }))
-      .toEqual(['agent', 'join', '--agent-id', 'octo-lead:worker:abc123', '--workspace', '/repo', '--role', 'worker', '--name', 'Researcher']);
-  });
-
-  it('omits --name on join when absent, and never adds role/name on leave', () => {
-    expect(buildWorkerRegistryArgs('join', { agentId: 'w1', workspace: '/repo' }))
-      .toEqual(['agent', 'join', '--agent-id', 'w1', '--workspace', '/repo', '--role', 'worker']);
-    expect(buildWorkerRegistryArgs('leave', { agentId: 'w1', name: 'X', workspace: '/repo' }))
-      .toEqual(['agent', 'leave', '--agent-id', 'w1', '--workspace', '/repo']);
-  });
-});
+import { withPeerCoordination } from '../src/tools/agent-tools.js';
 
 describe('withPeerCoordination', () => {
   it('appends self id and peer ids, excluding self and blanks', () => {
@@ -21,7 +7,8 @@ describe('withPeerCoordination', () => {
     expect(out).toContain('do work');
     expect(out).toContain('your agent id: me');
     expect(out).toContain('peers: peer-a, peer-b');
-    expect(out).toContain('message inbox --agent-id me');
+    expect(out).toContain('octocode-awareness guide');
+    expect(out).not.toContain('message send');
   });
 
   it('appends parent id and durable handback file when provided', () => {

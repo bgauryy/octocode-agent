@@ -26,7 +26,7 @@ owned by [`RUNTIME_STATE.md`](RUNTIME_STATE.md).
 | `/mcp` | Focused alias for `settings.html#connections`. |
 
 The consolidated terminal footer intentionally omits keyboard-help clutter and
-keeps a single `/settings configure` cue. Running `/settings` regenerates the
+shows `/settings` as a one-tap cue. Running `/settings` regenerates the
 HTML and snapshots the current live command registry before opening it.
 
 ## Page overview

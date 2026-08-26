@@ -6,7 +6,7 @@ import { cosineSimilarity } from '@octocodeai/octocode-shared/embed';
 
 // ─── Embedding storage + cosine search (ARCH-6) ─────────────────────────────
 
-// cosineSimilarity is shared with Awareness Lite (identical implementation) via
+// cosineSimilarity is shared with Awareness (identical implementation) via
 // @octocodeai/octocode-shared/embed. Re-exported so existing `./memory-embeddings.js`
 // importers keep reaching it here.
 export { cosineSimilarity };

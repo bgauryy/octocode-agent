@@ -1,8 +1,10 @@
-# Learning in Pi with Awareness Lite
+# Learning in Pi with Awareness
 
-Awareness Lite does not include the full `reflect` workflow. Use the published
+Awareness does not include the full `reflect` workflow. Use the published
 Lite CLI for small, explicit memory notes, and keep larger improvement proposals
-in normal docs, issues, or reviewed plans.
+in the workspace-root `.octocode/REFLECT.md`, normal docs, issues, or reviewed
+plans. This project file is distinct from global Octocode home state in
+`~/.octocode` (or `OCTOCODE_HOME`). Keep it concise and non-binding.
 
 ## When to record memory
 
@@ -19,7 +21,7 @@ authoritative in source/docs.
 ## Recall before risky work
 
 ```bash
-npx @octocodeai/octocode-awareness-lite memory recall \
+npx -p @octocodeai/octocode-awareness octocode-awareness memory recall \
   --workspace "$PWD" --query "tokenization"
 ```
 
@@ -29,7 +31,7 @@ the fact can affect a change.
 ## Store a verified learning
 
 ```bash
-npx @octocodeai/octocode-awareness-lite memory store \
+npx -p @octocodeai/octocode-awareness octocode-awareness memory store \
   --workspace "$PWD" --label DECISION \
   --text "parser validation: malformed escapes are rejected before tokenization"
 ```
@@ -40,11 +42,11 @@ continuation notes.
 
 ## Cleanup
 
-Awareness Lite cleanup is explicit and item-scoped:
+Awareness cleanup is explicit and item-scoped:
 
 ```bash
-npx @octocodeai/octocode-awareness-lite status --workspace "$PWD"
-npx @octocodeai/octocode-awareness-lite memory forget \
+npx -p @octocodeai/octocode-awareness octocode-awareness status --workspace "$PWD"
+npx -p @octocodeai/octocode-awareness octocode-awareness memory forget \
   --workspace "$PWD" --memory-id mem_123
 ```
 

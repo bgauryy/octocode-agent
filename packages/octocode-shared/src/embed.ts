@@ -1,6 +1,6 @@
 /**
  * embed.ts — optional host-owned semantic-embedding primitives, shared by the
- * full Awareness store and Awareness Lite.
+ * Awareness store.
  *
  * The model/API is owned by the host, not this package: set `OCTOCODE_EMBED_CMD`
  * to a shell command that reads UTF-8 text on stdin and prints JSON on stdout:

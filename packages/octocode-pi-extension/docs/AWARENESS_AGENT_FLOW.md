@@ -1,10 +1,10 @@
-# Awareness Lite Agent Flow in Pi
+# Awareness Agent Flow in Pi
 
-Pi exposes one coordinated task flow over the Awareness Lite ledger. The model uses
+Pi exposes one coordinated task flow over the Awareness ledger. The model uses
 `plan` for session and shared execution; it does not manually synchronize a local
 checklist with separate plan, task, work-presence, and verification tools.
 
-Awareness Lite remains the cross-host SQLite backend. Other agents use its canonical
+Awareness remains the cross-host SQLite backend. Other agents use its canonical
 CLI and library operations; Pi has one model-facing coordination surface.
 
 ## Pi surface
@@ -50,13 +50,13 @@ presence, or already-read messages alone do not require a coordination call.
 `plan` accepts `scope: auto | session | shared`.
 
 - `session` keeps the checklist local to the Pi session.
-- `shared` projects the stable plan and step identities onto existing Awareness Lite
+- `shared` projects the stable plan and step identities onto existing Awareness
   plans and tasks.
 - `auto` stays session-local unless Pi can safely adopt one currently claimed shared
   task owned by this agent. It does not adopt by title or path and does not manufacture
   a shared plan for routine solo work.
 
-Projection reuses Awareness Lite's transactional materialization and reconciliation.
+Projection reuses Awareness's transactional materialization and reconciliation.
 Repeated Start or projection is idempotent: stable source and step keys reconcile the
 same rows, dependencies, paths, acceptance criteria, and declared check commands.
 

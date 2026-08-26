@@ -115,7 +115,7 @@ Format: `{ "mcpServers": { "<name>": { "command": "...", "args": [], "env": {}, 
 
 ## Bundled Skills
 
-Served via the `resources_discover` hook. Installed at `dist/skills/` inside the extension. The `octocode-awareness-lite` package skill is intentionally **excluded** (`EXCLUDED_BUNDLED_SKILLS` in `scripts/build.mjs`) — it is not a loadable skill and bundling its `SKILL.md` causes duplicate skill-load UI noise.
+Served via the `resources_discover` hook. Installed at `dist/skills/` inside the extension. The `octocode-awareness` package skill is intentionally **excluded** (`EXCLUDED_BUNDLED_SKILLS` in `scripts/build.mjs`) — it is not a loadable skill and bundling its `SKILL.md` causes duplicate skill-load UI noise.
 
 | Skill | Source |
 |---|---|
@@ -212,9 +212,9 @@ Registered via `createHookComposer(pi, …)` (middleware composer that catches a
 | `session_before_compact` | Deterministic split-turn checkpoint on the overflow path only |
 | `session_compact` | Clears read-states; schedules the continuation for extension-triggered compaction only |
 
-### Awareness Lite
+### Awareness
 
-The harness depends on `@octocodeai/octocode-awareness-lite` and **imports it in-process as a library** for automatic registry membership, shared plan projection, mutation-time lock checks and presence, plus the first-class `lock`, `message`, and `memory` tools—no child process. Only an unread direct-message count reaches the model automatically; global ledger counts stay in the user dashboard instead of agent context. The package CLI (`$OCTOCODE_AWARENESS_CLI`, or `npx @octocodeai/octocode-awareness-lite`) remains available for diagnostics, recovery, host-installed hooks, and other coding agents. Its `SKILL.md` is deliberately not bundled here because Pi coordination is prompt-owned via the `<awareness>` section. Lite retains canonical SQLite-backed `status`, `plan`, `task`, `lock`, `work`, `handoff`, `check`, and `memory` operations; Pi does not expose those backend nouns as a second model-facing lifecycle.
+The harness imports `@octocodeai/octocode-awareness` from the package root for automatic registry membership, shared plan projection, mutation-time lock checks and presence, plus first-class `lock`, `message`, and `memory` tools—no child process and no duplicated dispatcher. External agents use the package's `octocode-awareness` binary and share the same workspace-scoped SQLite ledger. Only unread direct-message count reaches the model automatically; global counts stay in the user dashboard. `$OCTOCODE_AWARENESS_CLI` remains available for diagnostics, recovery, and host-installed hooks. Pi coordination is prompt-owned, so the external-agent skill is not added to Pi's model-facing catalog.
 
 ---
 
@@ -232,7 +232,7 @@ Set via `ctx.ui.setStatus(name, value)` and `ctx.ui.setWidget(name, value)`.
 | `chrome-debug` | Active CDP action label during `chromeDebug` calls |
 | `octocode-mcp` | MCP connection status label |
 
-Metrics (turns · durations · context %) live ONLY on the consolidated footer (`setFooter`), not a status line. The identity row contains `/commands — guide` and `/settings configure`; keyboard hints are intentionally omitted. A once-per-session, non-blocking `npx octocode auth status --json` probe adds `github ✓` in green when authenticated, `github ✗ login required` in red when credentials are missing, or `github check failed` in red on probe errors. `/commands` shows `npx octocode auth login` and `gh auth login` guidance without retaining or displaying token values. The unified below-editor widget is `octocode-status-panel` (complete Plan checklist → Awareness); model/context remain in Pi/footer chrome and agents remain in uncapped footer rows.
+Metrics (turns · durations · context %) live ONLY on the consolidated footer (`setFooter`), not a status line. The identity row contains `/settings` (opens the settings HTML page in the browser); keyboard hints are intentionally omitted. A once-per-session, non-blocking `npx octocode auth status --json` probe adds `github ✓` in green when authenticated, `github ✗ login required` in red when credentials are missing, or `github check failed` in red on probe errors. `/commands` shows `npx octocode auth login` and `gh auth login` guidance without retaining or displaying token values. The unified below-editor widget is `octocode-status-panel` (complete Plan checklist → Awareness); model/context remain in Pi/footer chrome and agents remain in uncapped footer rows.
 | `octocode-agents` (widget) | Rich agent panel with per-worker state, timestamps, and preview |
 
 ---
@@ -243,8 +243,8 @@ Set by the harness at load time.
 
 | Variable | Value |
 |---|---|
-| `OCTOCODE_AWARENESS_CLI` | Informational compatibility string: installed `@octocodeai/octocode-awareness-lite` CLI path |
-| `OCTOCODE_SKILL_ROOT` | Absolute path to `dist/skills/octocode-awareness-lite/` |
+| `OCTOCODE_AWARENESS_CLI` | Bare path to the `octocode-awareness` bin from `@octocodeai/octocode-awareness` |
+| `OCTOCODE_SKILL_ROOT` | Absolute path to `dist/skills/` |
 
 Read from env at runtime (not set by harness):
 
@@ -266,7 +266,7 @@ Resolved by `getAssetPaths()` in `src/assets.ts`.
 | Asset | Path |
 |---|---|
 | System prompt | `dist/system/SYSTEM_PROMPT.md` |
-| Awareness Lite runtime | Installed `@octocodeai/octocode-awareness-lite` dependency CLI invoked with the current Node runtime (not bundled under `dist/awareness`) |
+| Shared Awareness runtime | Imported from installed `@octocodeai/octocode-awareness`; its CLI subpath is invoked only for external/manual commands |
 | Skills dir | `dist/skills/` |
 | APPEND_SYSTEM template | `dist/system/APPEND_SYSTEM.md` |
 
@@ -283,7 +283,7 @@ Resolved by `getAssetPaths()` in `src/assets.ts`.
  1  flag                     (--no-context)
 12  lifecycle hooks          (hookComposer; session_start pre-warms MCP catalog)
  5  direct pi.on handlers    (turn_start, 2× turn_end, session_before_compact, session_compact)
-11  bundled skills           (octocode CLI skill set; awareness-lite excluded)
+11  bundled skills           (octocode CLI skill set; awareness excluded)
  5  worker profiles          (researcher, architect, planner, browser, custom)
  1  built-in MCP server      (octocode — cache-first npx, pre-warmed at session start)
  8  stable system-prompt sections

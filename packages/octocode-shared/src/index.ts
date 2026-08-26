@@ -1,7 +1,7 @@
 /**
  * @octocodeai/octocode-shared — canonical home/session paths, the low-level
  * `node:sqlite` runtime, and the single shared local store used across the
- * agent, harness, and coordination layers (full Awareness + Awareness Lite).
+ * agent, harness, and coordination layers (Awareness + Awareness).
  */
 export * from './entities.js';
 export * from './paths.js';

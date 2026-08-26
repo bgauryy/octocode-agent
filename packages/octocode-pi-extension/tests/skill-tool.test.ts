@@ -144,7 +144,7 @@ test('discoverSkills skips directories without SKILL.md and missing roots withou
 
 test('discoverSkills filters both Awareness aliases because coordination is prompt- and tool-owned in Pi', () => {
   const cwd = tmpWorkspace();
-  const names = ['octocode-awareness', 'octocode-awareness-lite'];
+  const names = ['octocode-awareness', 'octocode-awareness'];
   for (const name of names) makeSkillDir(path.join(cwd, '.agents', 'skills'), name, 'External-agent skill copy.');
   const piSkills: SkillInfo[] = names.map((name) => ({ name, description: 'Pi copy.', path: `/pi/${name}/SKILL.md` }));
   const skills = discoverSkills(cwd, piSkills);

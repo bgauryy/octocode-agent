@@ -274,7 +274,6 @@ export function parseInvocation(argv: string[] = []): ParsedInvocation {
   if (first === 'session') return { command: 'resume', rest: argv.slice(1) };
   if (first === 'serve') return { command: 'serve', rest: argv.slice(1) };
   if (first === 'resume') return { command: 'resume', rest: argv.slice(1) };
-  if (first === 'research') return { command: 'research', rest: argv.slice(1), json };
   if (first === 'memory') return { command: 'memory', rest: argv.slice(1), json };
   if (first === 'awareness') return { command: 'awareness', rest: argv.slice(1), json };
   if (first === 'tools') return { command: 'tools', rest: argv.slice(1), json };
@@ -372,7 +371,6 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
     '',
     section(p, 'Surfaces'),
     ...cmdRows(p, [
-      ['research "<q>"', 'one-shot research lane (no chat)'],
       ['memory ...', 'persistent memory (recall/record/forget)'],
       ['awareness ...', 'coordination dashboard (attend/status/verify)'],
       ['tools | skills', 'Octocode tools catalog / skills'],
@@ -968,7 +966,7 @@ export const COMPLETION_SHELLS = ['bash', 'zsh', 'fish'] as const;
 export type CompletionShell = (typeof COMPLETION_SHELLS)[number];
 
 /** Reserved subcommands, kept in sync with parseInvocation — single source for completion generation. */
-const SUBCOMMANDS = ['run', 'serve', 'resume', 'research', 'memory', 'awareness', 'tools', 'skills', 'update', 'config', 'setup', 'auth', 'models', 'sessions', 'doctor', 'completion'] as const;
+const SUBCOMMANDS = ['run', 'serve', 'resume', 'memory', 'awareness', 'tools', 'skills', 'update', 'config', 'setup', 'auth', 'models', 'sessions', 'doctor', 'completion'] as const;
 const UPDATE_TARGETS = ['core', 'platform'] as const;
 
 function bashCompletionScript(): string {
@@ -1001,7 +999,6 @@ function zshCompletionScript(): string {
     "    'run:Headless: run one task, print result, exit'",
     "    'serve:RPC over stdin/stdout for IDE/web embeds'",
     "    'resume:Resume a session by id/name or pick one'",
-    "    'research:One-shot research lane (octocode search)'",
     "    'memory:Persistent memory (recall/record/forget)'",
     "    'awareness:Coordination dashboard (attend/status/verify)'",
     "    'tools:Octocode tools catalog'",
@@ -1039,7 +1036,6 @@ function fishCompletionScript(): string {
     run: 'Headless: run one task, print result, exit',
     serve: 'RPC over stdin/stdout for IDE/web embeds',
     resume: 'Resume a session by id/name or pick one',
-    research: 'One-shot research lane (octocode search)',
     memory: 'Persistent memory (recall/record/forget)',
     awareness: 'Coordination dashboard (attend/status/verify)',
     tools: 'Octocode tools catalog',
@@ -1553,7 +1549,6 @@ export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<
     }
     case 'update':
       return runUpdate((target ?? 'platform') as 'core' | 'platform', deps);
-    case 'research':
     case 'memory':
     case 'awareness':
     case 'tools':

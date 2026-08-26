@@ -11,7 +11,7 @@
 `octocode-agent` is the **user-facing Octocode agent platform**. It bundles two things and wires them together:
 
 - **[Pi](https://github.com/earendil-works/pi)** — the coding-agent runtime (the shell, tool loop, providers). An internal detail.
-- **[`@octocodeai/pi-extension`](../octocode-pi-extension)** — **the core harness**. The Octocode system prompt, research engine, tools, memory, Awareness Lite wiring, skills, themes, and launch-profile policy.
+- **[`@octocodeai/pi-extension`](../octocode-pi-extension)** — **the core harness**. The Octocode system prompt, research engine, tools, memory, Awareness wiring, skills, themes, and launch-profile policy.
 
 Install **`octocode-agent`** when you want the Octocode agent. It launches Pi with the core loaded in **octocode-first mode**, owns the branded command/update/auth/doctor/session UX, and keeps Pi runtime details underneath.
 
