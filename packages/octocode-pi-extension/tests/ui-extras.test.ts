@@ -212,7 +212,7 @@ test('buildFooterSegments keeps tracked idle agents visible in the toolbar', () 
   assert.equal(seg.text, 'agents 2');
 });
 
-test('buildFooterSegments composes context %, tokens, turns, timing, workers, and git without plan duplication', () => {
+test('buildFooterSegments composes one actionable context gauge, timing, workers, and git without plan duplication', () => {
   const segs = buildFooterSegments({
     tokens: 16_000, contextWindow: 200_000,
     completedTurns: 3, activeTurnMs: 9000, lastTurnMs: undefined,
@@ -222,7 +222,7 @@ test('buildFooterSegments composes context %, tokens, turns, timing, workers, an
   const joined = segs.map((s) => s.text).join(' | ');
   const ctx = segs.find((s) => s.text.startsWith('context '))!;
   assert.match(joined, /8%/);          // 16000/200000
-  assert.match(joined, /16\.0k\/200k/);
+  assert.doesNotMatch(joined, /16\.0k\/200k/, 'default density does not repeat the percentage as an exact ratio');
   assert.match(joined, /context [▓░]{8} 8%/); // visual gauge precedes the percentage
   assert.equal(ctx.token, 'success');
   assert.match(joined, /turn 4 · 9s/); // live: current (4th) turn + elapsed, one segment
@@ -231,6 +231,25 @@ test('buildFooterSegments composes context %, tokens, turns, timing, workers, an
   assert.doesNotMatch(joined, /peer-edits 3/);
   assert.doesNotMatch(joined, /plan \d/);
   assert.match(joined, /main \(dirty\)/);      // dirty marker
+  const full = buildFooterSegments({
+    tokens: 16_000, contextWindow: 200_000,
+    completedTurns: 3, activeTurnMs: 9000, sessionMs: 120_000,
+    activeWorkers: 0, dirty: false,
+  }, 'full').map((segment) => segment.text).join(' | ');
+  assert.match(full, /16\.0k\/200k/, 'full density retains exact token inspection');
+});
+
+test('buildFooterSegments never turns unknown context usage into a fake zero-percent measurement', () => {
+  const segs = buildFooterSegments({
+    tokens: undefined,
+    contextWindow: 200_000,
+    completedTurns: 0,
+    sessionMs: 0,
+    activeWorkers: 0,
+    dirty: false,
+  });
+  const body = segs.map((segment) => segment.text).join(' | ');
+  assert.doesNotMatch(body, /context|0\/200k|0%/);
 });
 
 test('buildFooterSegments always renders labeled harness context total; breakdown only at full density', () => {
@@ -241,16 +260,16 @@ test('buildFooterSegments always renders labeled harness context total; breakdow
   };
   // default: labeled total estimate only (~48000/4 = 12000 → 12.0k)
   const def = buildFooterSegments(base, 'default').map((s) => s.text).join(' | ');
-  assert.match(def, /prompt ~12\.0k/);
+  assert.match(def, /initial ~12\.0k/);
   assert.doesNotMatch(def, /sys /);
   // full: adds the sys/mcp/skills breakdown
   const fullSegments = buildFooterSegments(base, 'full').map((s) => s.text);
   const full = fullSegments.join(' | ');
-  assert.match(full, /prompt ~12\.0k \(sys 8\.0k · mcp 2\/38 · skills 3\)/);
+  assert.match(full, /initial ~12\.0k \(sys 8\.0k · mcp 2\/38 · skills 3\)/);
   assert.equal(fullSegments.filter((text) => text.includes('mcp 2')).length, 1, 'full density renders MCP/skill counts only in the prompt breakdown');
   // compact: still shown (labeled total, no breakdown)
   const compact = buildFooterSegments(base, 'compact').map((s) => s.text).join(' | ');
-  assert.match(compact, /prompt ~12\.0k/);
+  assert.match(compact, /initial ~12\.0k/);
   assert.doesNotMatch(compact, /sys /);
 });
 
@@ -489,7 +508,7 @@ test('buildAgentFooterRows: one row per subagent, live first, state colour + ela
   const t0 = Date.parse('2026-08-22T10:00:00Z');
   const { rows, overflow } = buildAgentFooterRows([
     { agentId: 'abcdef123', name: 'researcher', status: 'done', startedAt: new Date(t0).toISOString(), updatedAt: new Date(t0 + 5000).toISOString() },
-    { agentId: '123456789', name: 'builder', status: 'running', startedAt: new Date(t0).toISOString(), updatedAt: new Date(t0 + 1000).toISOString(), deltaSummary: 'editing src/index.ts' },
+      { agentId: '123456789', name: 'builder', status: 'running', model: 'gpt-5.6', task: 'Build footer components', planStep: 'Render agent rows', startedAt: new Date(t0).toISOString(), updatedAt: new Date(t0 + 1000).toISOString(), deltaSummary: 'editing src/index.ts' },
     { agentId: 'fffff0000', name: 'tester', status: 'blocked', startedAt: new Date(t0).toISOString(), updatedAt: new Date(t0 + 2000).toISOString() },
   ], t0 + 14_000);
   assert.equal(overflow, 0);
@@ -499,7 +518,10 @@ test('buildAgentFooterRows: one row per subagent, live first, state colour + ela
   assert.deepEqual(rows.map((r) => r.attention), [true, false, false]);
   assert.equal(rows[1]!.elapsed, '14s', 'live worker elapsed runs against now');
   assert.equal(rows[2]!.elapsed, '5s', 'finished worker elapsed is frozen at its last update');
-  assert.equal(rows[1]!.doing, 'editing src/index.ts');
+    assert.equal(rows[1]!.doing, 'editing src/index.ts');
+    assert.equal(rows[1]!.model, 'gpt-5.6');
+    assert.equal(rows[1]!.task, 'Build footer components');
+    assert.equal(rows[1]!.planStep, 'Render agent rows');
   assert.equal(rows[2]!.doing, undefined, 'finished workers carry no live activity');
   const communicating = buildAgentFooterRows([
     {

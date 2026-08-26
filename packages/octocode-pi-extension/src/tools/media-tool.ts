@@ -26,7 +26,7 @@ import { resolveFilePath } from './file-state.js';
 import { formatBytes } from './image-render.js';
 import { detectFfmpeg, runFfmpeg, runFfprobeJson } from './ffmpeg-runtime.js';
 
-const MODES = ['probe', 'frame', 'contactSheet', 'waveform', 'gif', 'trim', 'audio', 'convert'] as const;
+const MODES = ['probe', 'frame', 'contactSheet', 'waveform', 'gif', 'trim', 'audio', 'convert', 'concat'] as const;
 type Mode = (typeof MODES)[number];
 const IMAGE_MODES = new Set<Mode>(['frame', 'contactSheet', 'waveform']);
 
@@ -178,12 +178,29 @@ export function gifArgs(input: string, out: string, opts: { fps: number; width: 
   return [...pre, '-filter_complex', filter, out];
 }
 
-export function trimArgs(input: string, out: string, from: string, to: string | undefined, duration: string | undefined, reencode: boolean): string[] {
+export function trimArgs(
+  input: string,
+  out: string,
+  from: string,
+  to: string | undefined,
+  duration: string | undefined,
+  reencode: boolean,
+  opts?: { videoCodec?: string; audioCodec?: string },
+): string[] {
+  const vcodec: Record<string, string> = { h264: 'libx264', hevc: 'libx265', vp9: 'libvpx-vp9', av1: 'libsvtav1' };
+  const acodec: Record<string, string> = { mp3: 'libmp3lame', aac: 'aac', wav: 'pcm_s16le', flac: 'flac', copy: 'copy' };
   const args = ['-y', '-ss', from, '-i', input];
   if (to) args.push('-to', to);
   else if (duration) args.push('-t', duration);
-  if (reencode) args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac');
-  else args.push('-c', 'copy');
+  if (reencode) {
+    const vc = opts?.videoCodec ?? 'h264';
+    const ac = opts?.audioCodec ?? 'aac';
+    args.push('-c:v', vcodec[vc] ?? 'libx264', '-pix_fmt', 'yuv420p');
+    if (ac === 'none') args.push('-an');
+    else args.push('-c:a', acodec[ac] ?? 'aac');
+  } else {
+    args.push('-c', 'copy');
+  }
   args.push(out);
   return args;
 }
@@ -196,22 +213,62 @@ export function audioArgs(input: string, out: string, format: string, bitrate?: 
   return args;
 }
 
-export function convertArgs(input: string, out: string, opts: { videoCodec?: string; audioCodec?: string; scale?: string; fps?: number; crf?: number }): string[] {
-  const vcodec: Record<string, string> = { h264: 'libx264', hevc: 'libx265', vp9: 'libvpx-vp9', av1: 'libsvtav1', copy: 'copy' };
+const HW_CODECS = new Set(['h264_videotoolbox', 'hevc_videotoolbox', 'prores_videotoolbox']);
+
+export function convertArgs(
+  input: string,
+  out: string,
+  opts: { videoCodec?: string; audioCodec?: string; scale?: string; fps?: number; crf?: number; bitrate?: string },
+): string[] {
+  const vcodec: Record<string, string> = {
+    h264: 'libx264', hevc: 'libx265', vp9: 'libvpx-vp9', av1: 'libsvtav1', copy: 'copy',
+    h264_videotoolbox: 'h264_videotoolbox',
+    hevc_videotoolbox: 'hevc_videotoolbox',
+    prores_videotoolbox: 'prores_videotoolbox',
+  };
   const acodec: Record<string, string> = { aac: 'aac', mp3: 'libmp3lame', copy: 'copy', none: '' };
+  const vc = opts.videoCodec ?? 'h264';
+  const isHw = HW_CODECS.has(vc);
+  const isCopy = vc === 'copy';
   const args = ['-y', '-i', input];
   const filters: string[] = [];
   if (opts.scale && /^\d+x-?\d+$/.test(opts.scale)) filters.push(`scale=${opts.scale.replace('x', ':')}`);
   if (opts.fps) filters.push(`fps=${opts.fps}`);
   if (filters.length) args.push('-vf', filters.join(','));
-  args.push('-c:v', vcodec[opts.videoCodec ?? 'h264'] ?? 'libx264');
-  if ((opts.videoCodec ?? 'h264') !== 'copy') {
+  args.push('-c:v', vcodec[vc] ?? 'libx264');
+  if (!isCopy && !isHw) {
     args.push('-pix_fmt', 'yuv420p');
-    if (opts.crf !== undefined) args.push('-crf', String(clampInt(opts.crf, 0, 51, 23)));
+    args.push('-crf', String(clampInt(opts.crf, 0, 51, 23)));
+  } else if (isHw && opts.bitrate) {
+    args.push('-b:v', opts.bitrate);
   }
   const ac = opts.audioCodec ?? 'aac';
   if (ac === 'none') args.push('-an');
   else args.push('-c:a', acodec[ac] || 'aac');
+  args.push(out);
+  return args;
+}
+
+/** Build argv for concat mode. `listFile` is a pre-written ffmpeg concat list file. */
+export function concatArgs(
+  listFile: string,
+  out: string,
+  reencode: boolean,
+  opts?: { videoCodec?: string; audioCodec?: string; crf?: number },
+): string[] {
+  const vcodec: Record<string, string> = { h264: 'libx264', hevc: 'libx265', vp9: 'libvpx-vp9', av1: 'libsvtav1' };
+  const acodec: Record<string, string> = { mp3: 'libmp3lame', aac: 'aac', copy: 'copy' };
+  const args = ['-y', '-f', 'concat', '-safe', '0', '-i', listFile];
+  if (reencode) {
+    const vc = opts?.videoCodec ?? 'h264';
+    const ac = opts?.audioCodec ?? 'aac';
+    args.push('-c:v', vcodec[vc] ?? 'libx264', '-pix_fmt', 'yuv420p');
+    if (opts?.crf !== undefined) args.push('-crf', String(clampInt(opts.crf, 0, 51, 23)));
+    if (ac === 'none') args.push('-an');
+    else args.push('-c:a', acodec[ac] ?? 'aac');
+  } else {
+    args.push('-c', 'copy');
+  }
   args.push(out);
   return args;
 }
@@ -242,9 +299,40 @@ export async function runMediaQuery(
 
   const mode = query['mode'] as Mode;
   if (!MODES.includes(mode)) throw new Error(`media: \`mode\` must be one of ${MODES.join(', ')}`);
-  const input = resolveInput(query['input'], cwd);
   const timeoutMs = clampInt(query['timeoutSec'], 1, 1800, 120)! * 1000;
   const overwrite = query['overwrite'] === true;
+
+  // --- Concat mode: multiple inputs — must branch before single-input resolution ---
+  if (mode === 'concat') {
+    const rawSources = Array.isArray(query['sources']) ? (query['sources'] as unknown[]) : [];
+    if (rawSources.length < 2) throw new Error('media concat: `sources` must have at least 2 entries.');
+    const sources = rawSources.map((s) => resolveInput(s, cwd));
+    const out = resolveOutput(query['output'], cwd, overwrite);
+    const reencode = query['reencode'] === true;
+    const listContent = sources.map((s) => `file '${s}'`).join('\n') + '\n';
+    const listFile = path.join(cwd, '.octocode', 'media-tmp', `concat-${process.pid}-${Date.now()}.txt`);
+    fs.mkdirSync(path.dirname(listFile), { recursive: true });
+    fs.writeFileSync(listFile, listContent, 'utf8');
+    const args = concatArgs(listFile, out, reencode, {
+      videoCodec: query['videoCodec'] as string | undefined,
+      audioCodec: query['audioCodec'] as string | undefined,
+      crf: clampInt(query['crf'], 0, 51),
+    });
+    try {
+      await runFfmpeg(args, { cwd, signal, timeoutMs, onProgress });
+    } finally {
+      try { fs.rmSync(listFile, { force: true }); } catch { /* best effort */ }
+    }
+    if (!fs.existsSync(out)) throw new Error('media concat: ffmpeg reported success but wrote no output file.');
+    const outProbe = summarizeProbe(await runFfprobeJson(out, { cwd, signal, timeoutMs }).catch(() => ({})));
+    const bytes = fs.statSync(out).size;
+    return {
+      ok: true, mode, savedPath: out, bytes, probe: outProbe,
+      message: `wrote ${path.basename(out)} — ${describeProbe(outProbe)} [${formatBytes(bytes)}] (${sources.length} sources)`,
+    };
+  }
+
+  const input = resolveInput(query['input'], cwd);
 
   // Probe is used both as its own mode and as a summary for produce-modes.
   const probeJson = await runFfprobeJson(input, { cwd, signal, timeoutMs });
@@ -307,6 +395,10 @@ export async function runMediaQuery(
       query['to'] ? requireTimestamp(query['to'], 'to') : undefined,
       query['duration'] ? requireTimestamp(query['duration'], 'duration') : undefined,
       query['reencode'] === true,
+      {
+        videoCodec: query['videoCodec'] as string | undefined,
+        audioCodec: query['audioCodec'] as string | undefined,
+      },
     );
   } else if (mode === 'audio') {
     const format = ['mp3', 'aac', 'wav', 'flac'].includes(query['format'] as string) ? (query['format'] as string) : 'mp3';
@@ -318,6 +410,7 @@ export async function runMediaQuery(
       scale: query['scale'] as string | undefined,
       fps: clampInt(query['fps'], 1, 240),
       crf: clampInt(query['crf'], 0, 51),
+      bitrate: query['bitrate'] as string | undefined,
     });
   }
   await runFfmpeg(args, { cwd, signal, timeoutMs, onProgress });

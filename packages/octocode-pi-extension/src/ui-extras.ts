@@ -84,7 +84,8 @@ export function buildWorkingMessage(theme?: PaintTheme): string {
 }
 
 export interface FooterInput {
-  tokens: number;
+  /** Unknown until Pi has measured a real request (not zero). */
+  tokens?: number;
   contextWindow: number;
   completedTurns: number;
   activeTurnMs?: number;
@@ -117,9 +118,9 @@ export interface FooterInput {
   /** GitHub credential health resolved through `npx octocode auth status --json`. */
   githubAuth?: 'checking' | 'authenticated' | 'missing' | 'error';
   /**
-   * Per-turn Octocode harness prompt overhead, for the context-breakdown segment.
-   * Estimated tokens use the ~4 chars/token heuristic. Distinct from the live `ctx`
-   * running-total gauge (which comes from Pi's getContextUsage).
+   * Initial provider subtotal (frozen system prompt + direct tool contracts),
+   * for the context-breakdown segment. Estimated tokens use the ~4 chars/token
+   * heuristic. Distinct from the live `ctx` running-total gauge.
    */
   overhead?: { totalChars: number; sysChars: number; mcpServers: number; mcpTools: number; skills: number };
   branch?: string;
@@ -184,10 +185,13 @@ export function buildFooterSegments(input: FooterInput, density: FooterDensity =
   const segs: FooterSegment[] = [];
   const compact = density === 'compact';
 
-  if (input.contextWindow > 0) {
+  if (input.contextWindow > 0 && input.tokens !== undefined && Number.isFinite(input.tokens)) {
     const gauge = contextGauge((input.tokens / input.contextWindow) * 100);
+    const exact = density === 'full'
+      ? `${SEP}${formatCompact(input.tokens)}/${formatCompact(input.contextWindow)}`
+      : '';
     segs.push({
-      text: `context ${gauge.bar} ${gauge.pct}%${SEP}${formatCompact(input.tokens)}/${formatCompact(input.contextWindow)}`,
+      text: `context ${gauge.bar} ${gauge.pct}%${exact}`,
       token: gauge.token,
       // Near-full context is emphasized — the one gauge state that demands action.
       attention: gauge.token === 'error',
@@ -260,8 +264,8 @@ export function buildFooterSegments(input: FooterInput, density: FooterDensity =
     segs.push({ text: 'github checking…', token: 'dim' });
   }
 
-  // Harness prompt overhead: total est. tokens injected as context, always shown
-  // (even in compact) and labeled 'prompt'. Default/full densities also expose
+  // Initial provider subtotal: frozen prompt plus direct tool contracts, always
+  // shown (even in compact). Default/full densities also expose
   // the live capability counts separately so users can see MCP connectivity and
   // skill discovery without decoding the prompt budget segment.
   if (input.overhead && input.overhead.totalChars > 0) {
@@ -270,7 +274,7 @@ export function buildFooterSegments(input: FooterInput, density: FooterDensity =
     const breakdown = density === 'full'
       ? ` (sys ${tok(o.sysChars)} · mcp ${o.mcpServers}/${o.mcpTools} · skills ${o.skills})`
       : '';
-    segs.push({ text: `prompt ~${tok(o.totalChars)}${breakdown}`, token: 'dim' });
+    segs.push({ text: `initial ~${tok(o.totalChars)}${breakdown}`, token: 'dim' });
     if (!compact && density !== 'full') {
       // One merged segment instead of two separate ones — /octocode-harness
       // shows the full breakdown with sources, tool names, and descriptions.
@@ -299,6 +303,9 @@ export interface AgentFooterEntry {
   agentId: string;
   name: string;
   status: string;
+  model?: string;
+  task?: string;
+  planStep?: string;
   /** Structured worker result status; overrides an idle RPC process when the turn is done/blocked/failed. */
   normalizedStatus?: string;
   startedAt: string;
@@ -322,6 +329,12 @@ export interface AgentFooterRow {
   attention: boolean;
   /** `14s` / `1m 3s` — live elapsed for active workers, total for finished ones. */
   elapsed: string;
+  /** Effective model selected for this worker. */
+  model?: string;
+  /** Stable assignment; unlike `doing`, this does not change with tool events. */
+  task?: string;
+  /** Parent-plan step associated with the assignment, when supplied. */
+  planStep?: string;
   /** What the worker is doing right now (ellipsized), if known. */
   doing?: string;
 }
@@ -400,6 +413,9 @@ export function buildAgentFooterRows(
       token,
       attention,
       elapsed: formatDurationShort(elapsedMs),
+      model: e.model,
+      task: e.task ? ellipsize(e.task.replace(/\s+/g, ' '), AGENT_DOING_MAX) : undefined,
+      planStep: e.planStep ? ellipsize(e.planStep.replace(/\s+/g, ' '), AGENT_DOING_MAX) : undefined,
       doing,
     };
   });

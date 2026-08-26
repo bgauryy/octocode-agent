@@ -87,8 +87,9 @@ test('schema only exposes queries at the top level with per-query reasoning', as
     required?: string[];
     additionalProperties?: boolean;
   };
-  // Top-level: only queries
-  assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries']);
+    // Top-level: operations plus their execution policy.
+    assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries', 'queryRunType']);
+    assert.deepEqual((schema.properties?.['queryRunType'] as { enum?: string[] })?.enum, ['sequential', 'parallel']);
   assert.ok((schema.required ?? []).includes('queries'));
   // Per-query items include reasoning and web fields
   const queriesSchema = schema.properties?.['queries'] as {

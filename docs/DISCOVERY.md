@@ -141,14 +141,20 @@ result rows stay hidden; errors remain visible.
 4. **Extension-bundled** skills (labeled `bundled`).
 
 A directory counts as a skill iff it contains `SKILL.md`; `name`/`description`
-come from its frontmatter (directory name fallback). Any skill from any of these
-locations is directly loadable by the agent.
+come from its frontmatter (directory name fallback). Source files remain owned
+by their host. `/settings` stores only normalized global/workspace enablement overrides
+in SQLite (`skill_overrides`); workspace overrides win over global overrides,
+then the default is enabled.
 
 ### Prompt integration
 
-- `<available_skills>` (re-injected every turn, compaction-proof, budgeted: 30
-  entries / 120-char descriptions, overflow points at `/octocode-skills`) teaches
-  loading via the `skill` tool.
+- `<available_skills>` is complete for enabled skills on the initial discovery pass (all enabled names,
+  120-character descriptions), then frozen with the rest of the session system
+  prompt. It teaches loading via the `skill` tool; `/octocode-skills` and
+  `settings.html` exposes the complete enabled/disabled inventory to the user.
+  A disabled skill is omitted from the prompt, autocomplete, discovery inventory,
+  `/octocode-skills`, and `skill` list/load execution. Changing enablement marks a
+  frozen context stale; `/new` rebuilds the prompt while execution blocks immediately.
 - The static prompt's `<skills>` section and `<ultimate_reminders>` name
   `skill({queries:[{reasoning:"load matching skill", type:"load", action:"load"…}]})` as THE loading mechanism.
 
@@ -200,22 +206,23 @@ Every existing MCP config file found in these project and user locations:
 | Host | Project locations | User locations | Activation |
 |---|---|---|---|
 | Octocode | `<ws>/.octocode/agent/mcp/servers.json` | `$OCTOCODE_HOME/agent/mcp/servers.json` | Active |
-| Claude Code | Official `<ws>/.mcp.json`; compatibility `<ws>/.claude/mcp.json` | Official `~/.claude.json`; compatibility `~/.claude/mcp.json` | Inventory-only |
-| Cursor | `<ws>/.cursor/mcp.json` | `~/.cursor/mcp.json` | Inventory-only |
-| Codex | `<ws>/.codex/config.toml` | `~/.codex/config.toml` | Inventory-only |
-| `.agents` compatibility | `<ws>/.agents/mcp.json` | `~/.agents/mcp.json` | Inventory-only; this is an Octocode discovery convention, not part of the AGENTS.md specification |
+| Claude Code/Desktop | Official `<ws>/.mcp.json`; compatibility `<ws>/.claude/mcp.json` | `~/.claude.json`, `~/.claude/mcp.json`, and Claude Desktop platform config | Discovered, disabled by default |
+| Cursor | `<ws>/.cursor/mcp.json` | `~/.cursor/mcp.json` | Discovered, disabled by default |
+| Codex | `<ws>/.codex/config.toml` | `~/.codex/config.toml` | Discovered, disabled by default |
+| Antigravity / Gemini | `<ws>/.agents/mcp_config.json` | `~/.gemini/config/mcp_config.json`, `~/.gemini/antigravity/mcp_config.json`, `~/.gemini/antigravity-cli/mcp_config.json` | Discovered, disabled by default |
+| Agent compatibility | `<ws>/.agents/mcp.json`, `<ws>/.agent/{mcp,mcp_config}.json` | Matching `~/.agents` and `~/.agent` files | Discovered, disabled by default; a compatibility convention, not part of AGENTS.md |
+| VS Code | `<ws>/.vscode/mcp.json` | `~/.vscode/mcp.json` | Discovered, disabled by default |
 
 The global canonical file loads first, followed by the trusted project's canonical file.
 The built-in `octocode` server is lower than both file-based entries.
 
-**Security boundary:** the harness loads only the two canonical Octocode paths marked active.
-Foreign configs are metadata-only because they can contain arbitrary local commands and
-remote credentials. Discovery emits only each server's name and optional local `command`;
-it never emits arguments, environment variables, headers, or URLs. To opt in to a trusted
-server, use `MCPTool({queries:[{reasoning:"Add the trusted server.", action:"add",
-server:"name", scope:"project", config:{command:"...", args:[]}}]})`. Streamable HTTP
-entries use `config:{url:"https://..."}`. Malformed files receive an
-`error` field instead of aborting discovery.
+**Security boundary:** foreign definitions are normalized under collision-safe names such as
+`cursor.docs`, but every discovered server and tool fails closed until the user explicitly
+enables it in `/mcp`. Project imports additionally require workspace trust. Their owning files
+remain read-only; canonical Octocode JSON owns managed definitions, SQLite owns only enablement,
+and the OS credential store owns OAuth tokens. The machine-readable discovery snapshot emits
+only server names and optional commands—never arguments, environment values, headers, or URLs.
+Malformed files receive an `error` field instead of aborting discovery.
 
 Host references: [Claude Code MCP](https://code.claude.com/docs/en/mcp),
 [Cursor MCP](https://cursor.com/docs/mcp),
@@ -231,11 +238,11 @@ Per-turn Octocode system-prompt addenda stay in stable-to-volatile order:
 | # | Block | Model-visible contents | Changes when |
 |---|---|---|---|
 | 1 | Static Octocode prompt | Harness policy | package release |
-| 2a | `<mcp_catalog>` in eager mode | Instructions, descriptions, and every exact schema | explicit catalog invalidation |
-| 2b | `<mcp_catalog_index>` in lazy mode | Instructions, names, and descriptions only | session boundary or explicit invalidation |
-| 3 | `<dynamic_capabilities>` | Created tool and workflow registries | registry change |
-| 4 | `<available_skills>` | Live skill names and descriptions | skill install or removal |
-| 5 | `<active_plan>` | Current durable checklist | plan progress |
+| 2a | `<mcp_catalog>` in eager mode | Instructions, descriptions, and every exact schema | next session after explicit catalog invalidation |
+| 2b | `<mcp_catalog_index>` in lazy mode | Instructions, names, and descriptions only | session boundary |
+| 3 | `<dynamic_capabilities>` | Initial created tool and workflow registries | session boundary |
+| 4 | `<available_skills>` | Complete initial skill names and bounded descriptions | session boundary |
+| 5 | `<active_plan>` | Initial durable checklist; later progress survives in transcript/tool results and compaction markers | session boundary |
 
 The accepted 12-tool large-schema fixture measures 202,888 eager catalog characters and
 752 lazy index characters: a 99.63% reduction. Character count is canonical; it is not a

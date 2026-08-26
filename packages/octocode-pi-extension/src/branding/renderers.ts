@@ -88,7 +88,12 @@ export function withOctocodeRender<T extends ToolDefinition>(
       if (!opts?.isPartial && context?.isError && !result?.isError) {
         return buildOctocodeRenderResult(displayName, result, opts, theme, context);
       }
-      if (extractQueryResultRows(result).length > 1) {
+      // Skip the shared query-row fallback when the tool's own renderer declares
+    // it handles multi-query output itself (marked via renderResult.multiQueryAware).
+    if (
+        extractQueryResultRows(result).length > 1 &&
+        !(own as { multiQueryAware?: boolean }).multiQueryAware
+      ) {
         return buildQueryResultRows(displayName, result, theme)!;
       }
       return own(result, opts, theme, context);

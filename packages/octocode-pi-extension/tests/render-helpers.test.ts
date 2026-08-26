@@ -7,6 +7,7 @@ import {
   buildResultStats,
   buildToolCallSummary,
   makeCachedRenderer,
+  makeComponentRenderer,
   makeRenderer,
   sanitizeLine,
   singleLineRenderer,
@@ -99,6 +100,18 @@ test('ANSI-aware rendering helpers keep visible width stable', () => {
   const renderer = makeRenderer(() => ['x'.repeat(20)]);
   assert.equal(visibleWidth(renderer.render(6)[0]!), 6);
   assert.equal(singleLineRenderer('single long line').render(8)[0], 'single \x1b[0m…\x1b[0m');
+});
+
+test('component renderer resolves live props and enforces the terminal width contract', () => {
+  let label = 'initial';
+  const renderer = makeComponentRenderer(
+    (props: { label: string }, context) => [`${props.label} @ ${context.width}`],
+    () => ({ label }),
+  );
+  assert.deepEqual(renderer.render(20), ['initial @ 20']);
+  label = 'updated state that is deliberately long';
+  assert.ok(visibleWidth(renderer.render(12)[0]!) <= 12);
+  assert.match(renderer.render(40)[0]!, /updated state/);
 });
 
 test('buildToolCallSummary formats each Octocode direct-tool family', () => {
@@ -213,6 +226,15 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   assert.match(callLines[1]!, /find x/);
   assert.doesNotMatch(callLines.join('\n'), /request:|reasoning:/);
 
+  const parallelCall = buildOctocodeRenderCall('ghSearchCode', {
+    queryRunType: 'parallel',
+    queries: [
+      { owner: 'o', repo: 'r', keywords: ['x'], reasoning: 'find x' },
+      { owner: 'o', repo: 'r', keywords: ['y'], reasoning: 'find y' },
+    ],
+  }, theme).render(160);
+  assert.match(parallelCall[0]!, /2 queries.*parallel/);
+
   const running = buildOctocodeRenderResult('localSearchCode', textResult('still running'), { isPartial: true }, theme).render(120)[0]!;
   assert.match(running, /<accent>⠋|<accent>⠙|<accent>⠹|<accent>⠸|<accent>⠼|<accent>⠴|<accent>⠦|<accent>⠧|<accent>⠇|<accent>⠏/);
   assert.match(running, /<toolTitle>localSearchCode<\/toolTitle>/);
@@ -257,6 +279,22 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   assert.match(providerRows[0]!, /✓.*\[0\].*a\.ts/);
   assert.match(providerRows[1]!, /✗.*\[1\].*permission denied/);
   assert.doesNotMatch(providerRows.join('\n'), /2 queries/);
+
+  const canonicalRows = buildOctocodeRenderResult(
+    'readMedia',
+    textResult('2 queries succeeded · parallel.', {
+      queryRunType: 'parallel',
+      results: [
+        { index: 0, status: 'success', summary: 'image a loaded' },
+        { index: 1, status: 'success', summary: 'image b loaded' },
+      ],
+    }),
+    { expanded: false },
+    theme,
+  ).render(180);
+  assert.match(canonicalRows[0]!, /2 queries.*parallel/);
+  assert.match(canonicalRows[1]!, /\[0\].*image a loaded/);
+  assert.match(canonicalRows[2]!, /\[1\].*image b loaded/);
 
   const expanded = buildOctocodeRenderResult(
     'ghGetFileContent',

@@ -72,6 +72,16 @@ test('parseTaskActivities returns doing before ready and de-duplicates task ids'
   assert.deepEqual(parseTaskActivities('bad', '[]'), []);
 });
 
+test('parseTaskActivities preserves every actionable task for the Awareness list', () => {
+  const ready = JSON.stringify(Array.from({ length: 9 }, (_, index) => ({
+    taskId: `task-${index + 1}`,
+    title: `Task ${index + 1}`,
+  })));
+  const activities = parseTaskActivities('[]', ready);
+  assert.equal(activities.length, 9);
+  assert.equal(activities.at(-1)?.title, 'Task 9');
+});
+
 test('hasAwarenessSignal is false only when everything is zero', () => {
   const zero: AwarenessStatus = {
     activePlans: 0, readyTasks: 0, inProgressTasks: 0, verifyTasks: 0,
@@ -287,16 +297,19 @@ test('formatAwarenessPanel leads with the unread-inbox indication', async () => 
   assert.match(only[0]!, /✉ 1 unread/);
 });
 
-test('formatAwarenessPanel clips at the source when a width is provided', () => {
+test('formatAwarenessPanel wraps semantic groups without losing attention state', () => {
   const long = formatAwarenessPanel({
     activePlans: 3, readyTasks: 9, inProgressTasks: 4, verifyTasks: 2,
     lockCount: 5, workCount: 7, agentCount: 2, messageCount: 6,
     lastMessage: { from: 'clawde-longNameAgent', to: 'octo-anotherLongName', preview: 'x'.repeat(120) },
     unreadInbox: 0,
   }, undefined, 40);
-  assert.equal(long.length, 1);
+  assert.ok(long.length > 1);
+  assert.match(long.join('\n'), /verify-debt 2/);
   // Measure VISIBLE length — pi-tui's truncateToWidth injects SGR resets
   // around the ellipsis, so raw string length overcounts.
-  const visible = long[0]!.replace(/\x1b\[[0-9;]*m/g, '');
-  assert.ok(visible.length <= 41, `line stays within width, got ${visible.length}`);
+  for (const line of long) {
+    const visible = line.replace(/\x1b\[[0-9;]*m/g, '');
+    assert.ok(visible.length <= 41, `line stays within width, got ${visible.length}`);
+  }
 });

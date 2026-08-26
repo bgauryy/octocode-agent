@@ -40,7 +40,7 @@ test('registers one discriminated file mutation contract', () => {
   const schema = tool.parameters as {
     properties: { queries: { items: { properties: Record<string, unknown>; oneOf?: Array<{ title?: string }> } } };
   };
-  assert.deepEqual(Object.keys(schema.properties), ['queries']);
+    assert.deepEqual(Object.keys(schema.properties), ['queries', 'queryRunType']);
   assert.ok(schema.properties.queries.items.properties['type']);
   assert.deepEqual(schema.properties.queries.items.oneOf?.map((item) => item.title), ['edit', 'write', 'delete']);
 });

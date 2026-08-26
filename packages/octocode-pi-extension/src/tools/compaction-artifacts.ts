@@ -30,6 +30,52 @@ function mdList(items: string[] | undefined): string {
   return items.map((item) => `- ${item}`).join('\n');
 }
 
+function mdValue(value: string | undefined): string {
+  return value?.trim() || '(none)';
+}
+
+function renderPlanContinuation(details: CompactionCheckpointDetails): string[] {
+  const plan = details.continuation?.plan;
+  if (!plan) return ['## Active plan', '', '(none)', ''];
+  const { review, coordination, steps } = plan;
+  const lines = [
+    '## Active plan',
+    '',
+    `Snapshot: ${review.branchSnapshotId} · generation ${review.generation}`,
+    `Phase: ${review.phase}`,
+    `RFC: ${mdValue(review.rfcPath)}`,
+    `Displayed revision: ${mdValue(review.revision)}`,
+    `Accepted revision: ${mdValue(review.acceptedRevision)}`,
+    `Coordination: ${coordination.mode}`,
+    `Awareness plan: ${mdValue(coordination.awarenessPlanId)}`,
+    `Materialized revision: ${mdValue(coordination.materializedRevision)}`,
+    '',
+  ];
+  if (review.decisions.length > 0) {
+    lines.push('### Decisions', '', ...review.decisions.map((decision) => `- **${decision.q}** — ${decision.a}`), '');
+  }
+  if (review.blockingQuestions.length > 0) {
+    lines.push('### Blocking questions', '', ...review.blockingQuestions.map((question) => `- [${question.answer ? 'x' : ' '}] ${question.prompt}${question.answer ? ` — ${question.answer}` : ''}`), '');
+  }
+  if (review.comments.length > 0) {
+    lines.push('### Review comments', '', ...review.comments.map((comment) => `- [${comment.resolved ? 'x' : ' '}] ${comment.body}${comment.section ? ` (${comment.section})` : ''}`), '');
+  }
+  lines.push('### Steps', '');
+  for (const step of steps) {
+    const mark = step.status === 'done' ? 'x' : step.status === 'doing' ? '~' : ' ';
+    lines.push(`- [${mark}] ${step.text} <!-- id:${step.id} -->`);
+    if (step.activeForm) lines.push(`  - Active form: ${step.activeForm}`);
+    if (step.dependsOnStepIds?.length) lines.push(`  - Depends on: ${step.dependsOnStepIds.join(', ')}`);
+    if (step.paths?.length) lines.push(`  - Paths: ${step.paths.join(', ')}`);
+    if (step.reasoning) lines.push(`  - Reasoning: ${step.reasoning}`);
+    if (step.acceptance) lines.push(`  - Acceptance: ${step.acceptance}`);
+    if (step.checkCommand) lines.push(`  - Check: \`${step.checkCommand}\``);
+    if (step.awarenessTaskId) lines.push(`  - Awareness task: ${step.awarenessTaskId}`);
+  }
+  lines.push('');
+  return lines;
+}
+
 export function buildCompactionMarkdown(details: CompactionCheckpointDetails, createdAt = new Date()): string {
   const source = details.fromExtension === undefined ? 'unknown' : details.fromExtension ? 'octocode' : 'pi';
   return [
@@ -52,6 +98,7 @@ export function buildCompactionMarkdown(details: CompactionCheckpointDetails, cr
     '',
     mdList(details.modifiedFiles),
     '',
+    ...renderPlanContinuation(details),
     '## Resume',
     '',
     'Re-orient from this checkpoint. Continue active work only if the compacted summary says work remains; otherwise stop and wait for the user.',

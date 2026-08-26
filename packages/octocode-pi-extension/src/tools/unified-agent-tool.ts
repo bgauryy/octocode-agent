@@ -10,8 +10,7 @@
  *   abort   → graceful interrupt (snapshot; full RPC abort via AgentMessage)
  *   kill    → terminate a worker process
  *
- * Peer-owned files never touched: agent-tools.ts, spawn-subagent-tool.ts,
- * index.ts, constants.ts.
+ * Agent state is projected from agent-tools.ts into this public facade.
  *
  * Browser profile delegates to routeTask + buildSpawnConfig (exported from
  * browser-agent-tool.ts) for CDP domain routing and system-prompt construction.
@@ -43,6 +42,7 @@ import {
   formatAgentLedger,
   formatAgentLedgerDetails,
   refreshAgentLedgerUi,
+  listWorkerLedgerEntries,
   type SpawnAgentParams,
 } from './agent-tools.js';
 import {
@@ -152,6 +152,7 @@ export async function executeSpawnQuery(
   const cwd = query['cwd'] as string | undefined;
   const isolation = query['isolation'] as SpawnAgentParams['isolation'];
   const includeUncommitted = query['includeUncommitted'] as boolean | undefined;
+  const planStep = (query['planStep'] as string | undefined)?.trim() || undefined;
 
   if (!task) {
     throw new Error('agent spawn requires a non-empty task.');
@@ -292,11 +293,14 @@ export async function executeSpawnQuery(
     };
   }
 
+  spawnParams.planStep = planStep;
+
   const approvedParams = await prepareSpawnAgentParams(spawnParams, ctx);
   const record = spawnRpcAgent(approvedParams, ctx);
   refreshAgentLedgerUi(ctx);
 
   const agentId: string = record.id;
+  const ledgerEntry = listWorkerLedgerEntries().find((entry) => entry.agentId === agentId);
   const policyLines =
     record.policyWarnings.length > 0
       ? ['', '[POLICY]', ...record.policyWarnings.map((w: string) => `  ${w}`)]
@@ -305,6 +309,9 @@ export async function executeSpawnQuery(
   const output = [
     `[SPAWNED] profile:${profile} · agentId:${agentId}`,
     `[SPAWNED] name: ${record.name}`,
+    `[SPAWNED] model: ${ledgerEntry?.provider ? `${ledgerEntry.provider}/` : ''}${ledgerEntry?.model ?? 'inherited'}`,
+    `[SPAWNED] task: ${ledgerEntry?.task ?? task}`,
+    ...(ledgerEntry?.planStep ? [`[SPAWNED] plan: ${ledgerEntry.planStep}`] : []),
     ...policyLines,
     '',
     `[USAGE] agent({queries:[{reasoning:"…", type:"wait", agentId:"${agentId}"}]})`,
@@ -312,7 +319,7 @@ export async function executeSpawnQuery(
 
   return {
     content: [{ type: 'text', text: output }],
-    details: { agentId, profile, name: record.name },
+    details: { agentId, profile, name: record.name, model: ledgerEntry?.model, provider: ledgerEntry?.provider, task: ledgerEntry?.task ?? task, planStep: ledgerEntry?.planStep },
   } as unknown as ToolCallResult;
 }
 
@@ -538,6 +545,7 @@ export function registerUnifiedAgentTool(
       task: Type.Optional(Type.String({ description: 'Worker assignment/instructions for spawn; not a plan task record.' })),
       context: Type.Optional(Type.String({ description: 'Evidence or constraints prepended to the worker assignment.' })),
       name: Type.Optional(Type.String({ description: 'Human label for the worker (spawn).' })),
+      planStep: Type.Optional(Type.String({ description: 'Parent plan step this worker is executing; shown in agent status UI.' })),
       model: Type.Optional(Type.String({ description: 'Model id from `pi -ne --list-models`.' })),
       provider: Type.Optional(Type.String({ description: 'Provider name (required when model id collides with a builtin namespace).' })),
       thinking: Type.Optional(Type.String({ description: 'Thinking level: off|minimal|low|medium|high|xhigh.' })),

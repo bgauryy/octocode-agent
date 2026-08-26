@@ -1308,6 +1308,31 @@ export function stepLabel(s: PlanStep): string {
   return s.status === 'doing' && s.activeForm ? s.activeForm : s.text;
 }
 
+function renderPlanContextMetadata(cwd: string): string[] {
+  const review = getPlanReviewState(cwd);
+  const coordination = getPlanCoordination(cwd);
+  const lines = [
+    `state: phase=${review.phase} snapshot=${escapePromptMetadata(review.branchSnapshotId)} generation=${review.generation}`,
+    review.rfcPath ? `rfc: ${escapePromptMetadata(review.rfcPath)}${review.revision ? ` displayed=${escapePromptMetadata(review.revision)}` : ''}${review.acceptedRevision ? ` accepted=${escapePromptMetadata(review.acceptedRevision)}` : ''}` : undefined,
+    `coordination: mode=${coordination.mode}${coordination.awarenessPlanId ? ` awareness-plan=${escapePromptMetadata(coordination.awarenessPlanId)}` : ''}${coordination.materializedRevision ? ` materialized=${escapePromptMetadata(coordination.materializedRevision)}` : ''}`,
+    ...review.decisions.map((decision) => `decision: ${escapePromptMetadata(decision.q)} => ${escapePromptMetadata(decision.a)}`),
+    ...review.blockingQuestions.map((question) => `question${question.answer ? '-answered' : '-blocking'}: ${escapePromptMetadata(question.prompt)}${question.answer ? ` => ${escapePromptMetadata(question.answer)}` : ''}`),
+    ...review.comments.filter((comment) => !comment.resolved).map((comment) => `review-blocker: ${escapePromptMetadata(comment.body)}${comment.section ? ` section=${escapePromptMetadata(comment.section)}` : ''}`),
+  ];
+  return lines.filter((line): line is string => Boolean(line));
+}
+
+function renderStepContract(step: PlanStep, index: number): string | undefined {
+  const fields = [
+    step.paths?.length ? `paths=${step.paths.map(escapePromptMetadata).join(',')}` : undefined,
+    step.reasoning ? `reason=${escapePromptMetadata(step.reasoning)}` : undefined,
+    step.acceptance ? `accept=${escapePromptMetadata(step.acceptance)}` : undefined,
+    step.checkCommand ? `check=${escapePromptMetadata(step.checkCommand)}` : undefined,
+    step.awarenessTaskId ? `awareness-task=${escapePromptMetadata(step.awarenessTaskId)}` : undefined,
+  ].filter((field): field is string => Boolean(field));
+  return fields.length > 0 ? `contract ${index}: ${fields.join(' | ')}` : undefined;
+}
+
 /**
  * Render the `<active_plan>` block for the system prompt, or `''` when there is no plan.
  * Re-emitted every turn so the breakdown survives compaction and reload-into-summary.
@@ -1322,10 +1347,12 @@ export function renderActivePlanAddendum(cwd: string): string {
     return [
       '<active_plan>',
       `This task breakdown is in ${phase.replace('_', ' ')} (0/${list.length} done). Implementation has not started; do not execute or start any step before the separate Start transition.`,
+      ...renderPlanContextMetadata(cwd),
       ...list.map((s, i) => {
         const dependencies = dependencyIndexes(s, list);
         return `${DISPLAY_MARK[displayStatus(s, list)]} ${i + 1}. ${promptText(s)}${dependencies.length ? ` (needs ${dependencies.join(',')})` : ''}`;
       }),
+      ...list.flatMap((step, index) => renderStepContract(step, index + 1) ?? []),
       'next: awaiting user approval',
       '</active_plan>',
     ].join('\n');
@@ -1355,10 +1382,12 @@ export function renderActivePlanAddendum(cwd: string): string {
   return [
     '<active_plan>',
     `Your current task breakdown (${done}/${list.length} done). Execute active steps; start independent parallel lanes with plan(start:N); advance and clear via plan(start/complete/add/remove/clear).`,
+    ...renderPlanContextMetadata(cwd),
     ...list.map((s, i) => {
       const dependencies = dependencyIndexes(s, list);
       return `${DISPLAY_MARK[displayStatus(s, list)]} ${i + 1}. ${promptText(s)}${dependencies.length ? ` (needs ${dependencies.join(',')})` : ''}`;
     }),
+    ...list.flatMap((step, index) => renderStepContract(step, index + 1) ?? []),
     nextLine,
     ...nudges,
     '</active_plan>',

@@ -76,6 +76,8 @@ export interface OctocodeCronSchedulerOptions {
   executor?: OctocodeCronExecutor;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
+  /** Called after each job run (success or failure). Use for proactive TUI notifications or cache refreshes. */
+  onJobComplete?: (result: OctocodeCronRunResult, ctx: PiContext | undefined) => void;
 }
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
@@ -216,6 +218,7 @@ export function createOctocodeCronScheduler(
     state.status = 'running';
     state.lastStartedAt = now();
     state.lastMessage = undefined;
+    let runResult: OctocodeCronRunResult | undefined;
     try {
       const args = state.definition.awarenessArgs(ctx);
       let result: PiExecResult;
@@ -230,21 +233,19 @@ export function createOctocodeCronScheduler(
       state.lastExitCode = result.code;
       state.status = result.code === 0 ? 'succeeded' : 'failed';
       state.lastMessage = output || (result.code === 0 ? 'completed' : `exited with ${result.code}`);
-      return {
-        job: jobName,
-        status: state.status,
-        exitCode: result.code,
-        message: state.lastMessage,
-      };
+      runResult = { job: jobName, status: state.status, exitCode: result.code, message: state.lastMessage };
+      return runResult;
     } catch (error) {
       state.lastExitCode = 1;
       state.status = 'failed';
       state.lastMessage = error instanceof Error ? error.message : String(error);
-      return { job: jobName, status: 'failed', exitCode: 1, message: state.lastMessage };
+      runResult = { job: jobName, status: 'failed', exitCode: 1, message: state.lastMessage };
+      return runResult;
     } finally {
       state.running = false;
       state.lastFinishedAt = now();
       if (rescheduleAfterRun) schedule(state);
+      if (runResult) options.onJobComplete?.(runResult, ctx);
     }
   };
 

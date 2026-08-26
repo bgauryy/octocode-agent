@@ -154,10 +154,9 @@ function progressBar(done: number, total: number): string {
 }
 
 /**
- * Compact plan projection for the persistent below-editor panel. The durable
- * checklist and phase detail remain available through the plan document/show
- * surfaces; the always-visible panel keeps only progress, active lanes, and
- * actionable counts. Every line is clipped at the source when width is given.
+ * Complete plan projection for the persistent below-editor panel. Every task is
+ * visible and the running lane is explicit; hiding tasks here caused the UI to
+ * disagree with durable plan storage and made resumed/compacted work look lost.
  */
 export function planPanelLines(steps: PlanStep[], theme?: PiTheme, width?: number): string[] {
   if (steps.length === 0) return [];
@@ -168,14 +167,17 @@ export function planPanelLines(steps: PlanStep[], theme?: PiTheme, width?: numbe
     ? `${SEP}now: ${doing.map(stepLabel).join(SEP)}`
     : current ? `${SEP}now: ${stepLabel(current)}` : '';
   const header = paint(theme, 'brand', `Plan  ${progressBar(done, steps.length)}  ${done}/${steps.length} done${currentLabel}`);
-  const blocked = steps.filter((step) => displayStatus(step, steps) === 'blocked').length;
-  const ready = steps.filter((step) => step.status === 'todo' && depsMet(step, steps)).length;
-  const counts = [
-    blocked > 0 ? `${blocked} blocked` : '',
-    ready > 0 ? `${ready} ready` : '',
-    doing.length > 1 ? `${doing.length} active lanes` : '',
-  ].filter(Boolean).join(SEP);
-  const lines = counts ? [header, paint(theme, blocked > 0 ? 'warning' : 'muted', counts)] : [header];
+  const rows = steps.map((step, index) => {
+    const status = displayStatus(step, steps);
+    const mark = status === 'done' ? '✓' : status === 'doing' ? '▶' : status === 'blocked' ? '!' : '○';
+    const token = status === 'done' ? 'dim' : status === 'doing' ? 'brand' : status === 'blocked' ? 'warning' : 'muted';
+    const label = status === 'doing' ? (step.activeForm ?? step.text) : step.text;
+    const text = `${mark} ${index + 1}. ${label}${status === 'doing' ? '  running' : ''}`;
+    return status === 'doing' && typeof theme?.bold === 'function'
+      ? paint(theme, token, theme.bold(text))
+      : paint(theme, token, text);
+  });
+  const lines = [header, ...rows];
   return width ? lines.map((line) => truncateToWidth(line, width)) : lines;
 }
 
@@ -937,7 +939,7 @@ export function registerPlanTool(
     label: 'Plan',
     description: [
       'Record and track the task breakdown from the think-first gate as a visible, compaction-durable checklist and reviewable plan document.',
-      'The plan is re-injected into your context every turn (<active_plan>), so it survives compaction — set it once, then start/complete steps as you go. Mutations also write plan.md/plan.html under the Octocode temp plan directory; when an RFC is linked (rfcPath), the plan.html renders that RFC document itself above the derived checklist and dependency diagram.',
+      'The plan is injected at session start (<active_plan>) and re-delivered as a context message when it changes mid-session, so it survives compaction — set it once, then start/complete steps as you go. Mutations also write plan.md/plan.html under the Octocode temp plan directory; when an RFC is linked (rfcPath), the plan.html renders that RFC document itself above the derived checklist and dependency diagram.',
       'Use for non-trivial multi-step work (multiple files/phases/risky edits). Skip for obvious single-step tasks. For consequential work, load octocode-rfc-generator, make the RFC reviewable, then call propose with consequential:true and rfcPath. Propose enters revision-bound review; explicit user Accept records the exact displayed bytes but keeps mutation blocked, and a separate user Start authorizes implementation. A consequential set/propose with no RFC is blocked. Set scope:"shared" for persistent multi-agent execution; Start projects stable steps and dependencies onto Awareness Lite automatically.',
       'Actions: clarify (record bounded material questions) · set (replace steps for already-authorized/obvious work) · propose (enter review; when an RFC is linked, user Accept and user Start are distinct interactions) · add · start (mark an execution-phase step doing; multiple independent steps may be doing in parallel, but this agent-callable action cannot accept an RFC or authorize implementation) · complete · remove · show · clear. The user command `/octocode-plan start` separately starts an accepted current RFC revision.',
       'index is optional for start/complete/remove: complete/remove default to the single current doing step; when multiple steps are doing, pass index. start defaults to the next runnable todo. Completing a mapped shared step requires receipt {command,status,message} from the declared check that actually ran.',

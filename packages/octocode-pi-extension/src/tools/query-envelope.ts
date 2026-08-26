@@ -5,10 +5,13 @@ type TSchema = import('typebox').TSchema;
 
 export const QUERY_REASONING_MAX_LENGTH = 240;
 export const QUERY_BATCH_MAX_ITEMS = 100;
+export type QueryRunType = 'sequential' | 'parallel';
 
 export interface QueryEnvelopeOptions {
   maxItems?: number;
   reasoningDescription?: string;
+  /** Opt in only when every query handled by the tool is safe to overlap. */
+  allowParallel?: boolean;
 }
 
 export type QueryRecord = Record<string, unknown> & { reasoning: string };
@@ -16,6 +19,8 @@ export type QueryRecord = Record<string, unknown> & { reasoning: string };
 export interface PreparedQueryBatchOptions {
   maxItems?: number;
   preflight?: (query: QueryRecord, index: number) => void | Promise<void>;
+  /** Runtime counterpart to the schema option; false keeps mutations one-by-one. */
+  allowParallel?: boolean;
 }
 
 export interface QueryBatchItemResult {
@@ -49,6 +54,8 @@ export interface ExecuteQueryBatchOptions extends PreparedQueryBatchOptions {
   summarize?: (result: ToolCallResult, query: QueryRecord, index: number) => string;
   /** Preserve the original result/detail shape when the envelope contains one query. */
   passthroughSingle?: boolean;
+  /** Return every child content block instead of replacing them with batch receipts. */
+  passthroughContent?: boolean;
 }
 
 /**
@@ -60,16 +67,22 @@ export class QueryBatchError extends Error {
   readonly completedCount: number;
   readonly originalError: unknown;
   readonly rows: QueryBatchResultRow[];
+  readonly queryRunType: QueryRunType;
 
-  constructor(failedIndex: number, completedCount: number, error: unknown, rows: QueryBatchResultRow[] = []) {
+  constructor(failedIndex: number, completedCount: number, error: unknown, rows: QueryBatchResultRow[] = [], queryRunType: QueryRunType = 'sequential') {
     const detail = error instanceof Error ? error.message : String(error);
-    const rowText = rows.length > 0 ? `\n${rows.map((row) => `[${row.index}] ${row.status}: ${row.summary}`).join('\n')}` : '';
-    super(`queries[${failedIndex}] failed after ${completedCount} prior queries succeeded: ${detail}${rowText}`);
+    const icon = (status: QueryBatchResultRow['status']): string => status === 'success' ? '✓' : status === 'failed' ? '✗' : '○';
+    const rowText = rows.length > 0 ? `\n${rows.map((row) => `${icon(row.status)} [${row.index}] ${row.status}: ${row.summary}`).join('\n')}` : '';
+    const prefix = queryRunType === 'parallel'
+      ? `queries[${failedIndex}] failed during parallel execution after ${completedCount} queries succeeded`
+      : `queries[${failedIndex}] failed after ${completedCount} prior queries succeeded`;
+    super(`${prefix}: ${detail}${rowText}`);
     this.name = 'QueryBatchError';
     this.failedIndex = failedIndex;
     this.completedCount = completedCount;
     this.originalError = error;
     this.rows = rows;
+    this.queryRunType = queryRunType;
   }
 }
 
@@ -111,9 +124,29 @@ export function buildQueryEnvelopeSchema(
     queries: Type.Array(querySchema, {
       minItems: 1,
       maxItems: options.maxItems ?? QUERY_BATCH_MAX_ITEMS,
-      description: 'Operations to preflight together and execute in source order.',
+      description: options.allowParallel
+        ? 'Queries return in source order; queryRunType selects sequential or parallel execution.'
+        : 'Queries run one-by-one in source order.',
     }),
+    queryRunType: Type.Optional(Type.String({
+      enum: options.allowParallel ? ['sequential', 'parallel'] : ['sequential'],
+      default: 'sequential',
+      description: options.allowParallel
+        ? 'Run policy: sequential is one-by-one; parallel overlaps independent queries.'
+        : 'Run policy; sequential executes one-by-one.',
+    })),
   }, { additionalProperties: false });
+}
+
+function resolveQueryRunType(raw: Record<string, unknown>, allowParallel = false): QueryRunType {
+  const value = raw['queryRunType'] ?? 'sequential';
+  if (value !== 'sequential' && value !== 'parallel') {
+    throw new Error('queryRunType must be "sequential" or "parallel".');
+  }
+  if (value === 'parallel' && !allowParallel) {
+    throw new Error('parallel query execution is not supported by this tool; use queryRunType:"sequential".');
+  }
+  return value;
 }
 
 function assertBatchShape(raw: Record<string, unknown>, maxItems: number): QueryRecord[] {
@@ -187,10 +220,10 @@ function defaultSummary(result: ToolCallResult): string {
   return textLines[0] ?? 'ok';
 }
 
-function progressResult(index: number, total: number, reasoning: string): ToolCallResult {
+function progressResult(index: number, total: number, reasoning: string, queryRunType: QueryRunType): ToolCallResult {
   return {
-    content: [{ type: 'text', text: `Running query ${index + 1}/${total}: ${reasoning}` }],
-    details: { index, total, reasoning },
+    content: [{ type: 'text', text: `${queryRunType === 'parallel' ? 'Starting' : 'Running'} query ${index + 1}/${total} · ${queryRunType}: ${reasoning}` }],
+    details: { index, total, reasoning, queryRunType },
   };
 }
 
@@ -199,6 +232,7 @@ function progressResult(index: number, total: number, reasoning: string): ToolCa
  * rollback: a runtime error stops the batch and reports how many effects remain.
  */
 export async function executeQueryBatch(options: ExecuteQueryBatchOptions): Promise<ToolCallResult> {
+  const queryRunType = resolveQueryRunType(options.raw, options.allowParallel);
   const queries = await prepareQueryBatch(options.raw, options);
   const results: QueryBatchItemResult[] = [];
   const summarize = options.summarize ?? ((result: ToolCallResult) => defaultSummary(result));
@@ -210,37 +244,64 @@ export async function executeQueryBatch(options: ExecuteQueryBatchOptions): Prom
     result: entry.result.details,
   }));
 
-  for (const [index, query] of queries.entries()) {
+  const runOne = async (query: QueryRecord, index: number): Promise<QueryBatchItemResult> => {
     if (options.signal?.aborted) {
-      throw new QueryBatchError(index, results.length, new Error('query batch aborted'), [
-        ...successRows(),
-        ...queries.slice(index).map((remaining, offset) => ({ index: index + offset, reasoning: remaining.reasoning, status: 'not-run' as const, summary: 'not run' })),
-      ]);
+      throw new Error('query batch aborted');
     }
-    options.onUpdate?.(progressResult(index, queries.length, query.reasoning));
+    options.onUpdate?.(progressResult(index, queries.length, query.reasoning, queryRunType));
 
-    let result: ToolCallResult;
-    try {
-      result = await options.execute(
-        query,
-        index,
-        `${options.toolCallId}:${index}`,
-        options.signal,
-        options.onUpdate,
-        options.ctx,
-      );
-      if (result.isError && !(options.passthroughSingle && queries.length === 1)) {
-        throw new Error(defaultSummary(result));
-      }
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new QueryBatchError(index, results.length, error, [
-        ...successRows(),
-        { index, reasoning: query.reasoning, status: 'failed', summary: detail },
-        ...queries.slice(index + 1).map((remaining, offset) => ({ index: index + 1 + offset, reasoning: remaining.reasoning, status: 'not-run' as const, summary: 'not run' })),
-      ]);
+    const result = await options.execute(
+      query,
+      index,
+      `${options.toolCallId}:${index}`,
+      options.signal,
+      options.onUpdate,
+      options.ctx,
+    );
+    if (result.isError && !(options.passthroughSingle && queries.length === 1)) {
+      throw new Error(defaultSummary(result));
     }
-    results.push({ index, reasoning: query.reasoning, result });
+    return { index, reasoning: query.reasoning, result };
+  };
+
+  if (queryRunType === 'parallel') {
+    if (options.signal?.aborted) {
+      throw new QueryBatchError(0, 0, new Error('query batch aborted'), queries.map((query, index) => ({ index, reasoning: query.reasoning, status: 'not-run', summary: 'not run' })), queryRunType);
+    }
+    const settled = await Promise.allSettled(queries.map(runOne));
+    const rows: QueryBatchResultRow[] = settled.map((entry, index) => entry.status === 'fulfilled'
+      ? {
+        index,
+        reasoning: queries[index]!.reasoning,
+        status: 'success',
+        summary: summarize(entry.value.result, queries[index]!, index),
+        result: entry.value.result.details,
+      }
+      : {
+        index,
+        reasoning: queries[index]!.reasoning,
+        status: 'failed',
+        summary: entry.reason instanceof Error ? entry.reason.message : String(entry.reason),
+      });
+    results.push(...settled.flatMap((entry) => entry.status === 'fulfilled' ? [entry.value] : []));
+    const failedIndex = rows.findIndex((row) => row.status === 'failed');
+    if (failedIndex >= 0) {
+      throw new QueryBatchError(failedIndex, results.length, settled[failedIndex]!.status === 'rejected' ? settled[failedIndex]!.reason : new Error(rows[failedIndex]!.summary), rows, queryRunType);
+    }
+    results.sort((a, b) => a.index - b.index);
+  } else {
+    for (const [index, query] of queries.entries()) {
+      try {
+        results.push(await runOne(query, index));
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new QueryBatchError(index, results.length, error, [
+          ...successRows(),
+          { index, reasoning: query.reasoning, status: 'failed', summary: detail },
+          ...queries.slice(index + 1).map((remaining, offset) => ({ index: index + 1 + offset, reasoning: remaining.reasoning, status: 'not-run' as const, summary: 'not run' })),
+        ], queryRunType);
+      }
+    }
   }
 
   if (options.passthroughSingle && results.length === 1) {
@@ -256,10 +317,12 @@ export async function executeQueryBatch(options: ExecuteQueryBatchOptions): Prom
   }));
 
   return {
-    content: [{
-      type: 'text',
-      text: `${results.length} quer${results.length === 1 ? 'y' : 'ies'} succeeded.\n${summaries.map((entry) => `[${entry.index}] ${entry.summary}`).join('\n')}`,
-    }],
-    details: { results: summaries },
+    content: options.passthroughContent
+      ? results.flatMap((entry) => entry.result.content)
+      : [{
+          type: 'text',
+          text: `${results.length} quer${results.length === 1 ? 'y' : 'ies'} succeeded · ${queryRunType}.\n${summaries.map((entry) => `✓ [${entry.index}] ${entry.summary}`).join('\n')}`,
+        }],
+    details: { queryRunType, results: summaries },
   };
 }

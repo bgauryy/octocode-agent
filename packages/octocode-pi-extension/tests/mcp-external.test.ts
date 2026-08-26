@@ -92,14 +92,15 @@ test('real external Node stdio MCP loads and calls through the canonical project
         ui: { setStatus: () => undefined },
       } as unknown as PiContext;
 
-      const listed = await invokeMcpTool(mcpTool, {
-        action: 'list',
+      const described = await invokeMcpTool(mcpTool, {
+        action: 'describe',
         server: serverName,
+        tool: 'probe',
       }, context);
-      assert.equal(listed.isError, false, `${label}: list must succeed: ${resultText(listed)}`);
-      assert.match(resultText(listed), /probe: Prove the external Node MCP process received its config\./);
-      assert.match(resultText(listed), /schema: message/);
-      assert.match(resultText(listed), /instructions: External Node stdio MCP integration fixture\./);
+      assert.equal(described.isError, false, `${label}: describe must succeed: ${resultText(described)}`);
+      assert.match(resultText(described), /Prove the external Node MCP process received its config\./);
+      assert.match(resultText(described), /"message"/);
+      assert.match(resultText(described), /External Node stdio MCP integration fixture\./);
 
       const called = await invokeMcpTool(mcpTool, {
         action: 'call',

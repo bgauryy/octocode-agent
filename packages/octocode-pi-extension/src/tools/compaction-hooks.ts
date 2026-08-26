@@ -1,7 +1,7 @@
 import type { PiContext, PiInstance, SessionBeforeCompactEvent, SessionCompactEvent, NotifyFn } from '../types.js';
 import { clearCompactionWorkingState, scheduleCompactionContinuation } from './compaction-resume.js';
 import { clearCompactionInFlight, consumeAutoCompactResumeRequest, consumeCompactionResumeRequest, markCompactionInFlight } from './compaction-state.js';
-import { activePlanScope, hasActivePlanWork } from './active-plan.js';
+import { activePlanScope, getPlan, getPlanCoordination, getPlanReviewState, hasActivePlanWork } from './active-plan.js';
 import { emitCompactionCheckpoint, type CompactionCheckpointDetails } from './custom-messages.js';
 import { writeCompactionArtifact } from './compaction-artifacts.js';
 import { clearAllReadStates } from './file-state.js';
@@ -226,7 +226,7 @@ function shouldEmitCheckpointCard(event: SessionCompactEvent): boolean {
   return true;
 }
 
-function buildCheckpointDetails(event: SessionCompactEvent): CompactionCheckpointDetails {
+function buildCheckpointDetails(event: SessionCompactEvent, ctx: PiContext): CompactionCheckpointDetails {
   const entry = isRecord(event.compactionEntry) ? event.compactionEntry : {};
   const entryDetails = isRecord(entry.details) ? entry.details : {};
   const tokensBefore = asNumber(entry.tokensBefore);
@@ -242,6 +242,20 @@ function buildCheckpointDetails(event: SessionCompactEvent): CompactionCheckpoin
   if (readFiles) details.readFiles = readFiles;
   if (modifiedFiles) details.modifiedFiles = modifiedFiles;
   if (summary) details.summary = summary;
+  const scope = activePlanScope(ctx);
+  const plan = getPlan(scope);
+  if (plan.length > 0) {
+    // Capture the canonical persisted plan contract once. Both the model-facing
+    // marker and durable latest.md serialize this exact versioned projection.
+    details.continuation = {
+      version: 1,
+      plan: {
+        review: getPlanReviewState(scope),
+        coordination: getPlanCoordination(scope),
+        steps: plan.map((step) => ({ ...step })),
+      },
+    };
+  }
   return details;
 }
 
@@ -313,7 +327,7 @@ export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void 
     // compaction event twice. Content is one terse line (it enters the LLM
     // context); rich data rides in details for the renderer only.
     if (shouldEmitCheckpointCard(event)) {
-      const details = buildCheckpointDetails(event);
+      const details = buildCheckpointDetails(event, ctx);
       const artifact = writeCompactionArtifact(details, ctx.sessionManager, ctx.cwd);
       if (artifact) {
         details.artifactPath = artifact.path;

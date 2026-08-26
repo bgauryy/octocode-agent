@@ -67,8 +67,8 @@ Detailed operational guidance remains in prompt guidelines and documentation, so
 
 ## Acceptance criteria
 
-- Exactly `readMedia` and `media` appear in the public media palette.
-- The complete direct palette contains 15 support tools plus one guarded override.
+- Exactly `readMedia`, `media`, and `runFfmpeg` appear in the public media palette.
+- The complete direct palette contains 16 support tools plus one guarded override.
 - Read-only media operations pass the plan-mode gate; media production is blocked.
 - Unit tests cover image perception, audio/video routing, authoring, transformation,
   registration, and contract budgets.

@@ -15,6 +15,7 @@ import {
   stopAllMcpServers,
   warmMcpCatalog,
 } from '../src/tools/mcp-tool.js';
+import { buildMcpCatalogSnapshot } from '../src/tools/mcp-catalog.js';
 
 const mcpCtx = { cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-cache-')) } as unknown as import('../src/types.js').PiContext;
 const originalOctocodeHome = process.env['OCTOCODE_HOME'];
@@ -37,6 +38,51 @@ test('compact MCP prompting is opt-in through OCTOCODE_COMPACT_MCP', () => {
   assert.equal(isCompactMcpEnabled({ OCTOCODE_COMPACT_MCP: '1' }), true);
   assert.equal(isCompactMcpEnabled({ OCTOCODE_COMPACT_MCP: 'true' }), true);
   assert.equal(isCompactMcpEnabled({ OCTOCODE_COMPACT_MCP: '0' }), false);
+});
+
+test('mode-aware artifact persistence never creates or overwrites mcp.md in exact mode', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-artifacts-exact-'));
+  const snapshot = buildMcpCatalogSnapshot({
+    cwd: mcpCtx.cwd!,
+    sources: [],
+    configSignatures: { demo: 'demo-v1' },
+    servers: [{
+      name: 'demo',
+      tools: [{ name: 'echo', description: 'Echo text.', inputSchema: { type: 'object', required: ['text'], properties: { text: { type: 'string' } } } }],
+    }],
+  });
+  const workspaceDir = path.join(home, 'agent', 'mcp', 'workspaces', snapshot.workspaceKey);
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  const guidePath = path.join(workspaceDir, 'mcp.md');
+  fs.writeFileSync(guidePath, 'existing compact guide\n');
+
+  await mcpTestHooks.persistMcpArtifacts(snapshot, { compactMcp: false, home });
+
+  assert.equal(fs.readFileSync(guidePath, 'utf8'), 'existing compact guide\n');
+  assert.ok(fs.existsSync(path.join(workspaceDir, 'catalog.json')));
+});
+
+test('mode-aware artifact persistence creates a validated compact guide only when enabled', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-artifacts-compact-'));
+  const snapshot = buildMcpCatalogSnapshot({
+    cwd: mcpCtx.cwd!,
+    sources: [],
+    configSignatures: { demo: 'demo-v1' },
+    servers: [{
+      name: 'demo',
+      instructions: 'Route echo requests.',
+      tools: [{ name: 'echo', description: 'Echo text.', inputSchema: { type: 'object', required: ['text'], properties: { text: { type: 'string' } } } }],
+    }],
+  });
+
+  const persisted = await mcpTestHooks.persistMcpArtifacts(snapshot, { compactMcp: true, home });
+  const guidePath = path.join(path.dirname(persisted.snapshotPath), 'mcp.md');
+  const guide = fs.readFileSync(guidePath, 'utf8');
+
+  assert.match(guide, /^<!-- octocode-mcp-guide:v1 /);
+  assert.match(guide, /<mcp_catalog_index>/);
+  assert.match(guide, /tool: echo/);
+  assert.match(guide, /text \(string, required\)/);
 });
 
 function tmpMcpJson(content: unknown): string {
@@ -346,7 +392,7 @@ test('catalog addendum is byte-stable: tools appear in the output sorted regardl
   assert.ok(getIdx < lspIdx, 'localGetFileContent before lspGetSemantics (alphabetical)');
 });
 
-test('catalog addendum caps oversized server entries with a truncation marker', () => {
+test('catalog addendum retains every reachable tool even for oversized server entries', () => {
   mcpTestHooks.setCachedMcpCatalog(mcpCtx, [{
     name: 'bigserver',
     text: 'bigserver: 300 tool(s)',
@@ -358,9 +404,9 @@ test('catalog addendum caps oversized server entries with a truncation marker', 
     })),
   }]);
   const addendum = getCachedMcpCatalogAddendum(mcpCtx);
-  const entry = addendum.slice(addendum.indexOf('server: bigserver'));
-  assert.ok(entry.length <= 81_000, `server entry must be char-capped, got ${entry.length}`);
-  assert.match(entry, /truncated .*MCPTool list/i, 'truncation is explicit and actionable, never silent');
+  assert.equal(addendum.match(/^tool: tool-/gm)?.length, 300);
+  assert.match(addendum, /tool: tool-299/);
+  assert.doesNotMatch(addendum, /catalog index truncated/i);
 });
 
 test('catalog addendum never exposes oversized schemas and keeps sibling routing metadata', () => {
@@ -956,12 +1002,11 @@ test('compiled call validates internally and invokes the server once for valid a
 
 // Live integration — gated (spawns the real octocode MCP server via npx). Run with RUN_MCP_LIVE=1.
 const liveTest = process.env.RUN_MCP_LIVE === '1' ? test : test.skip;
-liveTest('LIVE: connects to the built-in octocode MCP server via npx and lists tools', { timeout: 120_000 }, async () => {
-  const res = await handleMcpAction({ action: 'list', server: 'octocode' }, undefined, trustedCtx());
-  assert.equal(res.isError ?? false, false);
-  const details = res.details as { servers?: Array<{ name: string; tools: unknown[] }> };
-  const octo = details.servers?.find((srv) => srv.name === 'octocode');
-  assert.ok(octo && octo.tools.length > 0, 'octocode server returns a non-empty tool list');
+liveTest('LIVE: extension initialization connects to the built-in octocode MCP server and discovers tools', { timeout: 120_000 }, async () => {
+  const ctx = trustedCtx();
+  await warmMcpCatalog(ctx);
+  assert.ok(getCachedMcpCounts(ctx).tools > 0, 'startup discovery caches a non-empty tool catalog');
+  assert.match(getCachedMcpCatalogAddendum(ctx), /server: octocode/);
 });
 
 // ─── config watcher: reconcile + lifecycle ────────────────────────────────────
@@ -1044,20 +1089,21 @@ test('renderCall: nested MCP queries render independently with unlabeled reasons
     }],
   }, theme).render(120);
 
-  assert.equal(lines.length, 5);
-  assert.match(lines[0]!, /a\.ts/);
-  assert.match(lines[1]!, /read alpha/);
-  assert.match(lines[2]!, /b\.ts/);
-  assert.match(lines[3]!, /read beta/);
-  assert.match(lines[4]!, /read both source files/);
-  assert.doesNotMatch(lines.join('\n'), /2 queries|why:|reasoning:/);
+  assert.equal(lines.length, 6);
+  assert.match(lines[0]!, /2 queries.*sequential/);
+  assert.match(lines[1]!, /a\.ts/);
+  assert.match(lines[2]!, /read alpha/);
+  assert.match(lines[3]!, /b\.ts/);
+  assert.match(lines[4]!, /read beta/);
+  assert.match(lines[5]!, /read both source files/);
+  assert.doesNotMatch(lines.join('\n'), /why:|reasoning:/);
 });
 
 test('schema: top-level only exposes queries property', () => {
   const def = buildMcpToolDef();
   type S = { properties?: Record<string, unknown>; required?: string[] };
   const s = def.parameters as S;
-  assert.deepEqual(Object.keys(s.properties ?? {}), ['queries'], 'only queries at top level');
+    assert.deepEqual(Object.keys(s.properties ?? {}), ['queries', 'queryRunType'], 'queries and run policy at top level');
   assert.ok(s.required?.includes('queries'), 'queries is required');
 });
 
@@ -1067,6 +1113,14 @@ test('schema: per-query item requires reasoning', () => {
   const items = (def.parameters as S).properties?.queries?.items;
   assert.ok(items?.properties?.['reasoning'], 'reasoning must be in per-query schema');
   assert.ok(items?.required?.includes('reasoning'), 'reasoning must be required per query');
+});
+
+test('schema: action is required and public MCP tool listing is removed', () => {
+  const def = buildMcpToolDef();
+  type S = { properties?: { queries?: { items?: { properties?: Record<string, { enum?: string[] }>; required?: string[] } } } };
+  const items = (def.parameters as S).properties?.queries?.items;
+  assert.ok(items?.required?.includes('action'));
+  assert.ok(!items?.properties?.['action']?.enum?.includes('list'));
 });
 
 test('schema: per-query item exposes tool, resource, prompt, completion, and management fields', () => {
@@ -1118,8 +1172,9 @@ test('preflight: restart without server throws', () => {
   assert.throws(() => preflightMcpQuery({ reasoning: 'r', action: 'restart' }), /restart requires server/i);
 });
 
-test('preflight: list/status/config/stop with no server are valid', () => {
-  for (const action of ['list', 'status', 'config', 'stop'] as const) {
+test('preflight: status/config/stop with no server are valid while action is required', () => {
+  assert.throws(() => preflightMcpQuery({ reasoning: 'r' }), /action is required/i);
+  for (const action of ['status', 'config', 'stop'] as const) {
     assert.doesNotThrow(() => preflightMcpQuery({ reasoning: 'r', action }), `${action} must not require server`);
   }
 });
@@ -1155,17 +1210,24 @@ test('single-query passthrough: result is returned directly (not aggregate)', as
   assert.doesNotMatch(text, /quer(y|ies) succeeded/i, 'single-query must use passthroughSingle behavior');
 });
 
-test('multi-query: two independent status queries return aggregate', async () => {
-  const ctx = { cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-mq-')), isProjectTrusted: async () => true } as unknown as import('../src/types.js').PiInstance;
-  const def = buildMcpToolDef();
-  const params = {
-    queries: [
-      { reasoning: 'check mcp status', action: 'status' },
-      { reasoning: 'read mcp config', action: 'config' },
-    ],
-  };
-  const res = await def.execute('tc-3', params, undefined, undefined, ctx as unknown as import('../src/types.js').PiContext);
-  assert.equal(res.isError ?? false, false, 'multi-query must succeed when all actions are valid');
-  const text = (res.content[0] as { text: string }).text;
-  assert.match(text, /2 quer/i, 'aggregate result must report 2 queries executed');
+test('multi-query: every MCP result is returned directly to the agent', async () => {
+  const fixture = createCallGateMcpFixture();
+  try {
+    const def = buildMcpToolDef();
+    const res = await def.execute('tc-3', {
+      queries: [
+        { reasoning: 'echo first result', action: 'call', server: 'octocode', tool: 'echo', arguments: { value: 'alpha' } },
+        { reasoning: 'uppercase second result', action: 'call', server: 'octocode', tool: 'upper', arguments: { value: 'bravo' } },
+      ],
+    }, undefined, undefined, fixture.ctx);
+    assert.equal(res.isError ?? false, false, 'multi-query must succeed when all calls are valid');
+    assert.deepEqual(res.content, [
+      { type: 'text', text: 'echo:alpha' },
+      { type: 'text', text: 'BRAVO' },
+    ], 'MCP responses must remain in agent-visible content instead of host-only details');
+    assert.equal(fs.readFileSync(fixture.callMarker, 'utf8').trim().split('\n').length, 2);
+  } finally {
+    stopAllMcpServers();
+    fixture.cleanup();
+  }
 });

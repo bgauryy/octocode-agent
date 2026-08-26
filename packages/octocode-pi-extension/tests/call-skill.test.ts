@@ -70,7 +70,7 @@ test('registers unified skill call operations with the documented schema', () =>
   const props = (tool.parameters as {
     properties: { queries: { items: { properties: Record<string, unknown> } } };
   }).properties;
-  assert.deepEqual(Object.keys(props), ['queries']);
+    assert.deepEqual(Object.keys(props), ['queries', 'queryRunType']);
   const queryProps = props.queries.items.properties;
   assert.ok(queryProps.type && queryProps.skillType && queryProps.intent && queryProps.mode);
 });

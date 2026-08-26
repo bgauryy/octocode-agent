@@ -39,8 +39,30 @@ test('pre-Start policy allows planning/coordination/read and blocks workspace, e
   for (const allowed of ['plan', 'askUser', 'skill', 'claim', 'agent', 'readMedia', 'web', 'localSearchCode']) {
     assert.equal(planModeToolGate(allowed, session), undefined, `${allowed} remains available during review`);
   }
+  assert.equal(
+    planModeToolGate('skill', session, { queries: [{ reasoning: 'load RFC guidance', type: 'load', name: 'octocode-rfc-generator' }] }),
+    undefined,
+    'installed skill reads remain available during review',
+  );
+  for (const mode of ['auto', 'use', 'create', 'enhance', 'fix', 'list', 'delete']) {
+    assert.deepEqual(
+      planModeToolGate('skill', session, { queries: [{ reasoning: 'dynamic skill operation', type: 'call', skillType: 'release-flow', mode }] }),
+      { block: true, reason: PLAN_MODE_BLOCK_REASON },
+      `dynamic skill mode ${mode} is blocked because the orchestrator may mutate dynamic-skill storage`,
+    );
+  }
+  assert.deepEqual(
+    planModeToolGate('skill', session, {
+      queries: [
+        { reasoning: 'safe installed skill read', type: 'load', action: 'list' },
+        { reasoning: 'unsafe dynamic skill mutation', type: 'call', skillType: 'release-flow', mode: 'create' },
+      ],
+    }),
+    { block: true, reason: PLAN_MODE_BLOCK_REASON },
+    'one mutating query blocks the entire ordered batch before execution',
+  );
   assert.equal(planModeToolGate('MCPTool', session, { queries: [{ action: 'call', server: 'octocode' }] }), undefined);
-  assert.ok(planModeToolGate('MCPTool', session, { queries: [{ action: 'list' }, { action: 'add', server: 'other' }] }));
+  assert.ok(planModeToolGate('MCPTool', session, { queries: [{ action: 'status' }, { action: 'add', server: 'other' }] }));
   for (const blocked of ['file', 'edit', 'write', 'bash', 'createImage', 'chromeDebug', 'mysteryTool']) {
     assert.deepEqual(planModeToolGate(blocked, session), { block: true, reason: PLAN_MODE_BLOCK_REASON }, `${blocked} fails closed`);
   }

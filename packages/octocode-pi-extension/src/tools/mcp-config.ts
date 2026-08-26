@@ -6,6 +6,7 @@ import { getDefaultEnvironment } from '@modelcontextprotocol/client/stdio';
 import { getMcpEnablement, openOctocodeDb } from '@octocodeai/octocode-awareness/mcp-state';
 import type { PiContext } from '../types.js';
 import { getOctocodeHome } from '../env.js';
+import { discoverMcpSystem } from './mcp-discovery.js';
 
 export interface McpServerConfig {
   transport?: 'stdio' | 'http';
@@ -19,16 +20,28 @@ export interface McpServerConfig {
   headers?: Record<string, string>;
   /** HTTP header name -> source process environment key. */
   headerRefs?: Record<string, string>;
+  /** Environment variable containing an HTTP bearer token (used by discovered Codex configs). */
+  bearerTokenEnvVar?: string;
   auth?: 'none' | 'oauth';
   disabled?: boolean;
   description?: string;
   timeoutMs?: number;
+  /** Present only for definitions imported read-only from another MCP host. */
+  discovered?: {
+    host: string;
+    scope: 'project' | 'user';
+    path: string;
+    originalName: string;
+  };
 }
 
 export interface McpConfigSource {
-  scope: 'built-in' | 'project' | 'global';
+  scope: 'built-in' | 'project' | 'global' | 'discovered-project' | 'discovered-user';
   path: string;
   trusted: boolean;
+  host?: string;
+  /** Foreign files are definitions only; edit them in their owning host or copy to Octocode. */
+  readOnly?: boolean;
 }
 
 export interface McpLoadedConfig {
@@ -148,6 +161,11 @@ export function buildServerHeaders(config: McpServerConfig): Record<string, stri
     const value = process.env[source];
     if (value === undefined) throw new Error(`MCP header reference ${source} for ${header} is not set`);
     referenced[header] = value;
+  }
+  if (config.bearerTokenEnvVar) {
+    const value = process.env[config.bearerTokenEnvVar];
+    if (value === undefined) throw new Error(`MCP bearer token reference ${config.bearerTokenEnvVar} is not set`);
+    referenced['Authorization'] = `Bearer ${value}`;
   }
   return { ...(config.headers ?? {}), ...referenced };
 }
@@ -337,6 +355,34 @@ export async function loadMcpConfig(
   const serverSources = new Map<string, McpConfigSource>([[DEFAULT_OCTOCODE_MCP_SERVER_NAME, builtInSource]]);
   const warnings: string[] = [];
 
+  // Foreign host configurations are discoverable definitions, never implicit authority.
+  // They enter the effective catalog disabled and can only run after an explicit SQLite
+  // enablement override. Project definitions additionally require project trust.
+  const discovered = discoverMcpSystem(cwd, pathOptions);
+  const sourceByPath = new Map<string, McpConfigSource>();
+  for (const config of discovered.configs.filter((item) => !item.active)) {
+    const allowed = config.scope === 'user' || trusted;
+    const source: McpConfigSource = {
+      scope: config.scope === 'project' ? 'discovered-project' : 'discovered-user',
+      path: config.path,
+      trusted: allowed,
+      host: config.host,
+      readOnly: true,
+    };
+    sources.push(source);
+    sourceByPath.set(config.path, source);
+    if (config.error) warnings.push(`${config.path}: ${config.error}`);
+    if (!allowed) warnings.push(`${config.path}: discovered but disabled because the project is not trusted`);
+  }
+  for (const definition of discovered.definitions) {
+    const metadata = definition.config.discovered;
+    if (metadata.scope === 'project' && !trusted) continue;
+    const source = sourceByPath.get(metadata.path);
+    if (!source) continue;
+    servers.set(definition.name, definition.config);
+    serverSources.set(definition.name, source);
+  }
+
   for (const candidate of globalMcpConfigPaths(pathOptions)) {
     try {
       const globalServers = readConfigFile(candidate);
@@ -422,6 +468,7 @@ export function configSignature(config: McpServerConfig): string {
     url: config.url ?? null,
     headers: config.headers ?? {},
     headerRefs: config.headerRefs ?? {},
+    bearerTokenEnvVar: config.bearerTokenEnvVar ?? null,
     auth: config.auth ?? 'none',
   });
 }

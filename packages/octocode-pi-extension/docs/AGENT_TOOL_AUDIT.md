@@ -4,7 +4,7 @@ Status: **accepted and implemented** (2026-08-25)
 
 ## Outcome
 
-The direct Pi palette contains **16 tools**: 15 support tools plus the guarded `bash` override.
+The direct Pi palette contains **17 tools**: 16 support tools plus the guarded `bash` override.
 
 The palette has three deliberate routing boundaries:
 

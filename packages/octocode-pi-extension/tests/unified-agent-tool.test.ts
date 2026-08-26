@@ -234,7 +234,7 @@ describe('schema', () => {
       properties?: Record<string, unknown>;
       required?: string[];
     };
-    expect(Object.keys(schema.properties ?? {})).toEqual(['queries']);
+      expect(Object.keys(schema.properties ?? {})).toEqual(['queries', 'queryRunType']);
     expect(schema.required).toContain('queries');
   });
 

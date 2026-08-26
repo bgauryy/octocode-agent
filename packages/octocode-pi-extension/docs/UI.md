@@ -1,6 +1,6 @@
 # Octocode TUI design
 
-This page is the canonical design contract and widget inventory for the Octocode Pi terminal interface. Implementation details live under `src/tui/`, `src/tools/ui-overlays.ts`, `src/tools/ask-user-tool.ts`, `src/tools/status-panel.ts`, and `src/ui-extras.ts`.
+This page is the canonical design contract and widget inventory for the Octocode Pi terminal interface. `src/tui/` is the canonical rendering layer; tool modules supply state and event handlers but do not own layout primitives.
 
 The TUI is conversation-first: transcript content is durable, decisions appear inline at the point of interruption, persistent state has one owner, and detailed navigation uses temporary overlays or explicit commands.
 
@@ -14,6 +14,15 @@ The TUI is conversation-first: transcript content is durable, decisions appear i
 - Keep noninteractive and RPC use deterministic. A missing TTY must never leave an invisible prompt waiting for input.
 - Show progress quickly, but reserve motion for active work and stop it when the work stops.
 
+## Component and state architecture
+
+- `src/tui/components.ts` owns the pure functional component contract, responsive inline rows, stacks, and cell-perfect closed frames. `src/tui/index.ts` is the single public TUI barrel.
+- `src/tui/footer-view.ts` owns footer layout. `index.ts` collects branch, permission, worker, discovery, and model data, then passes props to the view.
+- Every historical `makeRenderer` call/result/message renderer is adapted through the same functional component contract, so width enforcement and invalidation behavior are uniform.
+- `runtime-store.ts` is the Zustand source of truth for initialization, statuses, notices, working state, context composition, MCP progress, and footer metrics. Renderers subscribe or read snapshots; they do not keep parallel UI state.
+- Plan, task, agent, and Awareness sections compose through one stack in `status-panel.ts`. Commands request a repaint instead of registering competing widgets.
+- Box drawing is centralized. New widgets must use `renderFrame`; legacy left-rail cards use `closeFrameLines` during migration. Both reserve the right edge before truncation and preserve the IME cursor marker.
+
 ## Surface hierarchy
 
 The visual order is also the attention order:
@@ -21,7 +30,7 @@ The visual order is also the attention order:
 1. Transcript: user messages, agent responses, tool rows, and durable completion cards.
 2. Inline decision: one focused `askUser` card at the bottom of the conversation.
 3. Editor: the normal input surface when no decision owns focus.
-4. Status panel: Model → Plan → Awareness, below the editor.
+4. Status panel: Plan → Tasks → Agents → Awareness, below the editor.
 5. Footer: compact session health and worker activity.
 6. Overlay: temporary navigation or management opened through an explicit action.
 7. Browser companion: optional rich review, opened only after an explicit choice.
@@ -44,14 +53,14 @@ Only one interactive surface owns keyboard focus. Closing or submitting that sur
 | Navigation | Shared select overlay (`ui-overlays.ts`) | Search visible labels and descriptions; preserve focus through filtering; cancel with Escape or Ctrl-C. |
 | Navigation | Shared multi-select overlay (`ui-overlays.ts`, `multi-select-list.ts`) | Use the same focus, selection, validation, and cancellation language as `askUser`. |
 | Navigation | Command palette (`command-palette.ts`) | Filter all public commands and direct actions; dispatch the selected command through the normal message path. |
-| Workers | Worker inbox and agent inspection (`agent-inbox.ts`, `agent-tools.ts`) | Pick → inspect → steer or stop. Worker state has one persistent owner in the footer. |
+| Workers | Worker inbox and agent inspection (`agent-inbox.ts`, `agent-tools.ts`) | Pick → inspect → steer or stop. All workers remain visible in the unified panel and footer, with the running/blocked/failed state named explicitly. |
 | Configuration | Effort dial (`effort-dial.ts`) | Show the current value, explain each choice, and persist the selected level. |
 | Safety | MCP consent and removal pickers (`mcp-tool.ts`) | Name the external process or server and make cancel the safe exit. Never mutate when interactive consent is unavailable. |
 | Recovery | Checkpoint picker (`rewind-command.ts`) | Identify snapshots by time and intent; distinguish file restoration from conversation rewind. |
 | Editor | Mention and plan-step autocomplete (`autocomplete-providers.ts`) | `@` selects workers or skills, `#` selects plan steps, and all other input delegates to file completion. |
 | Editor | Watch mode (`ai-watch.ts`) | Convert explicit `AI!` comments into steer or follow-up messages without stealing editor focus. |
-| Persistent state | Unified status panel (`status-panel.ts`) | Model → Plan → Awareness. Collapse long sections and never duplicate worker rows. |
-| Persistent state | Footer (`ui-extras.ts`, footer registration in `index.ts`) | Show compact health, context, task activity, permission level, and workers; warnings are bold and textual. |
+| Persistent state | Unified status panel (`status-panel.ts`) | Plan → Tasks → Agents → Awareness. Show the complete task and agent lists and mark the running item. |
+| Persistent state | Footer (`tui/footer-view.ts`, footer registration in `index.ts`) | Show compact health, precise context, task activity, permission level, skills/MCP overhead, and every worker; warnings are bold and textual. |
 | Discovery | Dashboard and command guide (`index.ts`, `commands-command.ts`) | Present health first, then the smallest useful next actions. The live command registry owns command inventory. |
 | Feedback | Inline validation and notifications (`ask-user-tool.ts`, `desktop-notify.ts`) | Keep recoverable validation next to the control; reserve desktop notifications for completion, failure, or blocked work. |
 | Export | Branded HTML export (`export-command.ts`) | Produce a sibling artifact without changing transcript state. |
@@ -155,7 +164,7 @@ The dashboard is scan-first:
 ◆ Octocode dashboard
 Status
 ✓ system prompt: found
-✓ tools: 0 native Pi tools + 15 support tools
+✓ tools: 0 native Pi tools + 16 support tools
 ✓ metrics: ctx ▓▓▓▓▓░░░░░ 50% (50k/100k)
 Agents
 Octocode agents: none
@@ -173,7 +182,7 @@ Run `/commands` for the live registry grouped into Octocode commands, Pi/extensi
 
 Always-on orientation and health commands: `/commands`, `/octocode`, `/octocode-now`, `/octocode-harness`.
 Work-state commands: `/octocode-plan` (`new <goal>` = plan mode: research → `plan(propose)` → approve/adjust/reject gate; write tools are **blocked by a `tool_call` hook** until approval — `off` lifts it; a `plan mode` status chip shows while on), `/octocode-tasks`, `/octocode-agents`, `/octocode-inbox`, `/octocode-cron`.
-Configuration and integration commands: `/mcp`, `/octocode-setup`, `/octocode-skills`, `/octocode-skills-update`, `/octocode-theme`, `/octocode-chrome`.
+Configuration and integration commands: `/settings` (complete local control center with the live `pi.getCommands()` public registry, skills, MCP servers/tools, prompt state, sources, and overrides; defaults to `#skills` and accepts section completions), `/octocode-settings` (compatibility alias), `/mcp` (opens MCP connections), `/octocode-setup`, `/octocode-skills`, `/octocode-skills-update`, `/octocode-theme`, `/octocode-chrome`.
 Modern TUI commands: `/octocode-palette`, `/octocode-dial`, `/octocode-footer` (`legend` explains every segment), `/octocode-permissions` (level cycle: `ctrl+shift+a`), `/octocode-profile` (apply `~/.octocode/profiles.json` live), `/octocode-plan html` (live local plan page), `/octocode-rewind`, `/octocode-watch`, `/octocode-export`.
 
 At session start, the footer probes `npx octocode auth status --json` asynchronously. It paints `github ✓` green and paints `github ✗ login required` or `github check failed` red. The probe retains only authenticated/source/expiry status, never token values. When the probe reports a missing login, `/commands` shows `npx octocode auth login` and `gh auth login`.

@@ -1,47 +1,9 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'vitest';
-import { collapseSection, composeStatusPanelLines, modelPanelLines, resetStatusPanelStateForTests } from '../src/tools/status-panel.js';
+import { composeStatusPanelLines, resetStatusPanelStateForTests, setStatusPanelAgentSource } from '../src/tools/status-panel.js';
 import { clearPlan, setPlan } from '../src/tools/active-plan.js';
 import { refreshPlanUi } from '../src/tools/plan-tool.js';
 import type { PiContext } from '../src/types.js';
-
-test('collapseSection keeps short sections unchanged', () => {
-  const s = ['Header', 'a', 'b', 'c'];
-  assert.deepEqual(collapseSection(s, 12, 'steps'), s);
-});
-
-test('collapseSection trims to header + maxRows + a "… N more" line', () => {
-  const rows = Array.from({ length: 15 }, (_, i) => `row ${i + 1}`);
-  const out = collapseSection(['Plan', ...rows], 12, 'steps');
-  assert.equal(out.length, 14, 'header + 12 rows + 1 more-line');
-  assert.equal(out[0], 'Plan');
-  assert.equal(out[12], 'row 12', 'last shown row');
-  assert.equal(out.at(-1), '… 3 more steps');
-});
-
-test('modelPanelLines shows only provider/id — pi already shows the bare id and thinking flag', () => {
-  const ctx = { model: { id: 'claude-haiku-4-5-20251001', provider: 'guy-provider-anthropic', reasoning: true } } as PiContext;
-  const lines = modelPanelLines(ctx);
-  assert.equal(lines.length, 1);
-  assert.match(lines[0]!, /model: guy-provider-anthropic\/claude-haiku-4-5-20251001/);
-  assert.doesNotMatch(lines[0]!, /thinking/, 'thinking lives in the octocode-thinking status, not here');
-});
-
-test('modelPanelLines is empty without a provider (pi already shows the bare id)', () => {
-  assert.deepEqual(modelPanelLines({ model: { id: 'grok-4.6' } } as PiContext), []);
-});
-
-test('modelPanelLines is empty when the model is unknown', () => {
-  assert.deepEqual(modelPanelLines(undefined), []);
-  assert.deepEqual(modelPanelLines({} as PiContext), []);
-});
-
-test('collapseSection boundary: exactly maxRows rows is not collapsed', () => {
-  const rows = Array.from({ length: 12 }, (_, i) => `r${i}`);
-  const out = collapseSection(['H', ...rows], 12, 'steps');
-  assert.equal(out.length, 13);
-  assert.doesNotMatch(out.at(-1)!, /more/);
-});
 
 const THEME = { fg: (_c: string, text: string) => text, bold: (text: string) => text };
 const STATUS_CWD = '/tmp/status-panel-test-ws';
@@ -49,6 +11,20 @@ const STATUS_CWD = '/tmp/status-panel-test-ws';
 afterEach(() => {
   clearPlan(STATUS_CWD);
   resetStatusPanelStateForTests();
+  setStatusPanelAgentSource(undefined);
+});
+
+test('status panel composes every agent through the shared component stack', () => {
+  const { ctx } = uiCtx();
+  setStatusPanelAgentSource((_theme, width) => [
+    `Agents · ${width}`,
+    ...Array.from({ length: 12 }, (_, index) => `  agent-${index + 1} · ${index === 3 ? 'running' : 'done'}`),
+  ]);
+  const body = composeStatusPanelLines(ctx, THEME, 72).lines.join('\n');
+  assert.match(body, /Agents · 72/);
+  assert.match(body, /agent-1/);
+  assert.match(body, /agent-12/);
+  assert.match(body, /agent-4 · running/);
 });
 
 function uiCtx(cwd = STATUS_CWD): { ctx: PiContext; calls: Array<{ name: string; cleared: boolean; isFn: boolean; content: unknown }> } {
@@ -82,7 +58,19 @@ test('status panel renderer shrinks with volatile sections instead of retaining 
 
   clearPlan(STATUS_CWD);
   const modelOnly = renderer.render(100);
-  assert.equal(modelOnly.length, 1, 'model-only baseline resets the remembered volatile height');
+  assert.deepEqual(modelOnly, [''], 'empty volatile state resets the renderer without duplicate model/context chrome');
+});
+
+test('status panel shows every task and highlights the running task without duplicate context/model lines', () => {
+  const { ctx } = uiCtx();
+  setPlan(STATUS_CWD, Array.from({ length: 40 }, (_, i) => `task ${i + 1}`));
+  const lines = composeStatusPanelLines(ctx, THEME, 120).lines;
+  const body = lines.join('\n');
+  assert.match(body, /task 1/);
+  assert.match(body, /task 40/);
+  assert.doesNotMatch(body, /… \d+ more/);
+  assert.doesNotMatch(body, /^model:/m);
+  assert.doesNotMatch(body, /^ctx:/m);
 });
 
 test('status panel composes the current branch plan at render time, not registration time', () => {

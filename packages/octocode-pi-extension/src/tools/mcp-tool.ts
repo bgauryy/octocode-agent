@@ -52,6 +52,7 @@ import {
   renderMcpCatalogExact,
   renderMcpCatalogIndex,
   sameMcpCatalogContent,
+  snapshotPathForWorkspace,
   stableSchemaDigest,
   writeMcpCatalogSnapshot,
   type McpCatalogServerInput,
@@ -73,7 +74,7 @@ export function isCompactMcpEnabled(env: NodeJS.ProcessEnv = process.env): boole
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 
-type McpAction = 'list' | 'describe' | 'call' | 'resources' | 'read-resource' | 'prompts' | 'get-prompt' | 'complete' | 'enable' | 'disable' | 'status' | 'restart' | 'stop' | 'config' | 'add' | 'remove';
+type McpAction = 'describe' | 'call' | 'resources' | 'read-resource' | 'prompts' | 'get-prompt' | 'complete' | 'enable' | 'disable' | 'status' | 'restart' | 'stop' | 'config' | 'add' | 'remove';
 
 interface McpConnection {
   name: string;
@@ -417,12 +418,13 @@ async function reconcileMcpConfig(ctx: PiContext | undefined, notify: NotifyFn):
       invalidateServerCache(name);
     }
     invalidateCwdCache(ctx);
+    markMcpPromptStale(ctx);
     void warmMcpCatalog(ctx);
     if (changed.length || removed.length) {
       const parts: string[] = [];
       if (changed.length) parts.push(`reloaded ${changed.join(', ')}`);
       if (removed.length) parts.push(`removed ${removed.join(', ')}`);
-      notify(ctx, `MCP config changed — ${parts.join('; ')}. The local catalog and agent guide are refreshing.`, 'info');
+      notify(ctx, `MCP config changed — ${parts.join('; ')}. Execution state is refreshing; start /new to expose the updated catalog to the model.`, 'info');
     }
   } catch {
     // Best-effort: a bad transient config write must not crash the watcher.
@@ -542,19 +544,24 @@ function snapshotFromListed(
   const scopeKey = path.resolve(ctx?.cwd ?? process.cwd());
   let db: ReturnType<typeof openOctocodeDb> | undefined;
   try { db = openOctocodeDb(); } catch { /* catalog stays available if the DB is unavailable */ }
-  const servers: McpCatalogServerInput[] = entries.map((entry) => ({
-    name: entry.name,
-    ...(entry.instructions ? { instructions: entry.instructions } : {}),
-    tools: entry.tools
-      .filter(isPlainRecord)
-      .filter((tool) => typeof tool['name'] === 'string' && Object.hasOwn(tool, 'inputSchema'))
-      .filter((tool) => !db || getMcpEnablement(db, scopeKey, entry.name, String(tool['name']), true))
-      .map((tool) => ({
-        name: String(tool['name']),
-        ...(typeof tool['description'] === 'string' ? { description: tool['description'] } : {}),
-        inputSchema: tool['inputSchema'],
-      })),
-  }));
+  const servers: McpCatalogServerInput[] = entries.map((entry) => {
+    const imported = Boolean(options.loaded?.configuredServers.get(entry.name)?.discovered);
+    return {
+      name: entry.name,
+      ...(entry.instructions ? { instructions: entry.instructions } : {}),
+      tools: entry.tools
+        .filter(isPlainRecord)
+        .filter((tool) => typeof tool['name'] === 'string' && Object.hasOwn(tool, 'inputSchema'))
+        .filter((tool) => db
+          ? getMcpEnablement(db, scopeKey, entry.name, String(tool['name']), !imported)
+          : !imported)
+        .map((tool) => ({
+          name: String(tool['name']),
+          ...(typeof tool['description'] === 'string' ? { description: tool['description'] } : {}),
+          inputSchema: tool['inputSchema'],
+        })),
+    };
+  });
   return buildMcpCatalogSnapshot({
     cwd: ctx?.cwd ?? process.cwd(),
     sources: (options.loaded?.sources ?? []).map((source) => ({ scope: source.scope, path: source.path })),
@@ -728,6 +735,42 @@ export async function generateMcpCatalogGuide(
   return { guide: renderMcpCatalogIndex(snapshot), generated: false };
 }
 
+interface PersistMcpArtifactsOptions {
+  compactMcp?: boolean;
+  ctx?: PiContext;
+  signal?: AbortSignal;
+  guide?: string;
+  home?: string;
+}
+
+/**
+ * Persist the exact catalog for every mode, but only create/update mcp.md when
+ * compact MCP prompting is explicitly enabled. Keeping this policy in one place
+ * prevents manual discovery paths from silently changing the prompt contract.
+ */
+async function persistMcpArtifacts(
+  snapshot: McpCatalogSnapshotV1,
+  options: PersistMcpArtifactsOptions = {},
+): Promise<{ snapshotPath: string; guide?: string; generated: boolean }> {
+  const compactMcp = options.compactMcp ?? isCompactMcpEnabled();
+  if (!compactMcp) {
+    const snapshotPath = await writeMcpCatalogSnapshot(snapshot, {
+      ...(options.home ? { home: options.home } : {}),
+      writeGuide: false,
+    });
+    return { snapshotPath, generated: false };
+  }
+  const compiled = options.guide
+    ? { guide: options.guide, generated: false }
+    : await generateMcpCatalogGuide(snapshot, options.ctx, options.signal);
+  const snapshotPath = await writeMcpCatalogSnapshot(snapshot, {
+    ...(options.home ? { home: options.home } : {}),
+    guide: compiled.guide,
+    writeGuide: true,
+  });
+  return { snapshotPath, guide: compiled.guide, generated: compiled.generated };
+}
+
 /**
  * Warm MCP discovery once per workspace. By default the prompt receives exact
  * enabled descriptions and input schemas from catalog.json. Setting
@@ -864,10 +907,12 @@ export function warmMcpCatalog(ctx?: PiContext, signal?: AbortSignal): Promise<v
             ? await generateMcpCatalogGuide(refreshed, ctx, signal)
             : { guide: renderMcpCatalogExact(refreshed), generated: false };
           promptGuide = generatedGuide.guide;
-          await writeMcpCatalogSnapshot(refreshed, {
+          await persistMcpArtifacts(refreshed, {
+            compactMcp,
+            ctx,
+            signal,
             ...(compactMcp ? { guide: generatedGuide.guide } : {}),
-            writeGuide: compactMcp,
-          }).then((snapshotPath) => {
+          }).then(({ snapshotPath }) => {
             notifyMcpWarm(
               ctx,
               compactMcp
@@ -972,6 +1017,50 @@ export function getCachedMcpCatalogAddendum(ctx?: PiContext): string {
   return cachedCatalogGuides.get(key) ?? '';
 }
 
+export interface McpPromptArtifactStatus {
+  mode: 'exact' | 'compact';
+  status: 'pending' | 'ready';
+  promptChars: number;
+  workspaceKey?: string;
+  configDigest?: string;
+  capturedAt?: string;
+  catalogPath?: string;
+  guidePath?: string;
+  guideState: 'active' | 'ignored' | 'missing';
+}
+
+export function getMcpPromptArtifactStatus(ctx?: PiContext): McpPromptArtifactStatus {
+  const mode = isCompactMcpEnabled() ? 'compact' : 'exact';
+  const key = cacheKey(ctx);
+  const snapshot = cachedSnapshots.get(key);
+  const promptChars = cachedCatalogGuides.get(key)?.length ?? 0;
+  if (!snapshot) return { mode, status: 'pending', promptChars, guideState: 'missing' };
+  const catalogPath = snapshotPathForWorkspace(snapshot.workspaceKey);
+  const guidePath = path.join(path.dirname(catalogPath), 'mcp.md');
+  const guideExists = fs.existsSync(guidePath);
+  return {
+    mode,
+    status: 'ready',
+    promptChars,
+    workspaceKey: snapshot.workspaceKey,
+    configDigest: snapshot.configDigest,
+    capturedAt: snapshot.capturedAt,
+    catalogPath,
+    guidePath,
+    guideState: mode === 'compact' ? (guideExists ? 'active' : 'missing') : (guideExists ? 'ignored' : 'missing'),
+  };
+}
+
+function markMcpPromptStale(ctx?: PiContext): void {
+  const store = runtimeStoreFor(ctx);
+  if (!store || store.getState().context.status !== 'frozen') return;
+  store.getState().setContext({ status: 'stale' });
+  store.getState().announce(
+    'MCP execution catalog is refreshing. This session keeps its frozen routing prompt; start /new to expose the updated MCP catalog to the model.',
+    'info',
+  );
+}
+
 export function getMcpSchemaMetrics(ctx?: PiContext): Record<string, number | string> {
   const snapshot = cachedSnapshots.get(cacheKey(ctx));
   const measurement = snapshot ? measureMcpCatalog(snapshot) : undefined;
@@ -1030,6 +1119,7 @@ export async function getMcpDiscoverySnapshot(ctx?: PiContext): Promise<McpDisco
 export const __test__ = {
   collectMcpPages,
   registerMcpClientHandlers,
+  persistMcpArtifacts,
   setCachedMcpCatalog(ctx: PiContext | undefined, entries: ListedMcpServer[]): void {
     cacheListedCatalog(ctx, entries);
   },
@@ -1051,11 +1141,14 @@ export const __test__ = {
  * the entire batch is validated before the first action executes.
  */
 export function preflightMcpQuery(query: QueryRecord): void {
-  const action = (query['action'] ?? 'list') as McpAction;
+  const action = query['action'] as McpAction | undefined;
   const server = typeof query['server'] === 'string' && query['server'].length > 0 ? query['server'] : undefined;
   const tool = typeof query['tool'] === 'string' && query['tool'].trim().length > 0 ? query['tool'] : undefined;
   const cfg = isPlainRecord(query['config']) ? query['config'] : undefined;
 
+  if (!action) {
+    throw new Error('MCP action is required; enabled tools are discovered automatically during extension initialization');
+  }
   if (action === 'describe') {
     if (!server) throw new Error('describe requires server');
     if (!tool) throw new Error('describe requires tool');
@@ -1193,6 +1286,7 @@ async function validateOneMcpTool(
   ctx: PiContext | undefined,
   signal: AbortSignal | undefined,
 ): Promise<ValidatedMcpTool> {
+  const imported = Boolean(loaded.configuredServers.get(target.server)?.discovered);
   const server = await ensureCurrentServerCatalog(target.server, loaded, ctx, signal);
   if (!server) throw new Error(`Unknown MCP server: ${target.server}`);
   const rawTool = server.tools.find((candidate) => isPlainRecord(candidate) && candidate['name'] === target.tool);
@@ -1205,12 +1299,13 @@ async function validateOneMcpTool(
       path.resolve(ctx?.cwd ?? process.cwd()),
       target.server,
       target.tool,
-      true,
+      !imported,
     );
     if (!enabled) throw new Error(`MCP tool is disabled: ${target.server}/${target.tool}`);
   } catch (error) {
     if ((error as Error).message.startsWith('MCP tool is disabled:')) throw error;
-    // DB availability must not break MCP execution; configuration defaults to enabled.
+    // Managed definitions remain available if the DB is down. Imported tools fail closed.
+    if (imported) throw new Error(`MCP tool is disabled: ${target.server}/${target.tool}`);
   }
   const inputSchema = rawTool['inputSchema'];
   const schemaDigest = stableSchemaDigest(inputSchema);
@@ -1231,7 +1326,8 @@ export async function handleMcpAction(
   ctx?: PiContext,
   options: { trustedBrowserAction?: boolean } = {},
 ): Promise<ToolCallResult> {
-  const action = (params['action'] ?? 'list') as McpAction;
+  const action = params['action'] as McpAction | undefined;
+  if (!action) return result('MCPTool action is required. Enabled MCP tools are discovered automatically during extension initialization.', undefined, true);
   const loaded = await loadMcpConfig(ctx);
   const serverName = typeof params['server'] === 'string' ? params['server'] : undefined;
 
@@ -1259,6 +1355,7 @@ export async function handleMcpAction(
     await stopConnection(serverName);
     invalidateServerCache(serverName);
     invalidateCwdCache(ctx);
+    markMcpPromptStale(ctx);
     void warmMcpCatalog(ctx);
     return result(`${serverName}${toolName ? `/${toolName}` : ''}: ${enabled ? 'enabled' : 'disabled'} (${scopeKey === '*' ? 'global' : 'workspace'})`);
   }
@@ -1320,6 +1417,7 @@ export async function handleMcpAction(
       await stopConnection(serverName);
       invalidateServerCache(serverName);
     invalidateCwdCache(ctx);
+    markMcpPromptStale(ctx);
     void warmMcpCatalog(ctx);
     const shadowNote = serverName === DEFAULT_OCTOCODE_MCP_SERVER_NAME
       ? ' (overrides the built-in octocode default — env defaults for full-text + npm cache are still merged in)'
@@ -1365,6 +1463,7 @@ export async function handleMcpAction(
     }
     invalidateServerCache(serverName);
     invalidateCwdCache(ctx);
+    markMcpPromptStale(ctx);
     void warmMcpCatalog(ctx);
     const note = serverName === DEFAULT_OCTOCODE_MCP_SERVER_NAME ? ' (note: the built-in octocode default re-appears unless overridden)' : '';
     return result(removed ? `${serverName}: removed from ${scope} mcp.json (${target}).${note}` : `${serverName}: not present in ${scope} mcp.json (${target}).${note}`, undefined, !removed);
@@ -1379,30 +1478,22 @@ export async function handleMcpAction(
     await stopConnection(serverName);
     invalidateServerCache(serverName);
     await ensureConnection(serverName, loaded.servers.get(serverName)!, ctx, signal);
-    return result(`${serverName}: restarted`);
+    markMcpPromptStale(ctx);
+    void warmMcpCatalog(ctx);
+    return result(`${serverName}: restarted; execution catalog is refreshing (start /new to refresh model routing)`);
   }
 
-  if (action === 'list' || action === 'describe') {
+  if (action === 'describe') {
     if (loaded.servers.size === 0) return result(formatConfig(loaded, ctx?.cwd ?? process.cwd()));
-    const names = serverName ? [serverName] : [...loaded.servers.keys()];
+    const names = [serverName!];
     const listed: ListedMcpServer[] = [];
     for (const name of names) listed.push(await listServerTools(name, loaded.servers.get(name)!, ctx, signal));
-    if (action === 'describe') {
-      if (!serverName) return result('MCPTool describe requires server', undefined, true);
-      const toolName = typeof params['tool'] === 'string' ? params['tool'] : undefined;
-      if (!toolName) return result('MCPTool describe requires tool', undefined, true);
-      const server = listed[0]!;
-      const tool = server.tools.find((candidate) => isPlainRecord(candidate) && candidate['name'] === toolName);
-      if (!tool) return result(`Unknown MCP tool: ${serverName}/${toolName}`, { server, warnings: loaded.warnings }, true);
-      cacheListedCatalog(ctx, listed, { loaded });
-      return result(stringify({ server: server.name, instructions: server.instructions, tool }), { server: server.name, instructions: server.instructions, tool, warnings: loaded.warnings });
-    }
-    const merged = cacheListedCatalog(ctx, listed, { loaded, updatePromptSnapshot: true });
-    const refreshed = snapshotFromListed(ctx, merged, { loaded });
-    await writeMcpCatalogSnapshot(refreshed).catch((error) => {
-      warnMcpWarmFailure(`catalog snapshot write failed: ${(error as Error).message}`);
-    });
-    return result(listed.map((entry) => entry.text).join('\n\n'), { servers: listed, warnings: loaded.warnings });
+    const toolName = typeof params['tool'] === 'string' ? params['tool'] : undefined;
+    const server = listed[0]!;
+    const tool = server.tools.find((candidate) => isPlainRecord(candidate) && candidate['name'] === toolName);
+    if (!tool) return result(`Unknown MCP tool: ${serverName}/${toolName}`, { server, warnings: loaded.warnings }, true);
+    cacheListedCatalog(ctx, listed, { loaded, updatePromptSnapshot: false });
+    return result(stringify({ server: server.name, instructions: server.instructions, tool }), { server: server.name, instructions: server.instructions, tool, warnings: loaded.warnings });
   }
 
   if (action === 'resources' || action === 'read-resource' || action === 'prompts' || action === 'get-prompt' || action === 'complete') {
@@ -1488,7 +1579,7 @@ export async function handleMcpAction(
 
 function formatMcpTarget(args: unknown): { action: string; target: string } {
   const p = isPlainRecord(args) ? args : {};
-  const action = String(p['action'] ?? 'list');
+  const action = String(p['action'] ?? 'operation');
   const target = [p['server'], p['tool']].filter(Boolean).join('/') || 'configured servers';
   return { action, target };
 }
@@ -1565,11 +1656,11 @@ export function registerMcpTool(
 ): void {
   // ── Per-query item schema: each queries[] entry carries one MCP action + fields. ──
   const itemSchema = Type.Object({
-    action: Type.Optional(stringEnumSchema(
+    action: stringEnumSchema(
       Type,
-      ['list', 'describe', 'call', 'resources', 'read-resource', 'prompts', 'get-prompt', 'complete', 'enable', 'disable', 'status', 'restart', 'stop', 'config', 'add', 'remove'],
-      'MCP action. Calls validate against cached exact schemas internally; resources and prompts expose the other core MCP primitives.',
-    ) as TSchema),
+      ['describe', 'call', 'resources', 'read-resource', 'prompts', 'get-prompt', 'complete', 'enable', 'disable', 'status', 'restart', 'stop', 'config', 'add', 'remove'],
+      'MCP action. Enabled tool discovery is automatic during extension initialization; calls validate against cached exact schemas internally.',
+    ) as TSchema,
     server: Type.Optional(Type.String({ description: 'MCP server name. For add/remove this is the key written to mcp.json.' })),
     tool: Type.Optional(Type.String({ description: 'MCP tool name for describe/call.' })),
     uri: Type.Optional(Type.String({ description: 'Resource URI for read-resource.' })),
@@ -1600,6 +1691,9 @@ export function registerMcpTool(
         onUpdate: typeof onUpdate === 'function' ? onUpdate as (u: ToolCallResult) => void : undefined,
         ctx,
         passthroughSingle: true,
+        // MCP payloads are model context, not execution receipts. Returning only
+        // summaries here hides successful server results in host-only details.
+        passthroughContent: true,
         preflight: preflightMcpQuery,
         async execute(query, _index, _itemId, batchSignal, _onItemUpdate, itemCtx) {
           return handleMcpAction(query, batchSignal, itemCtx);

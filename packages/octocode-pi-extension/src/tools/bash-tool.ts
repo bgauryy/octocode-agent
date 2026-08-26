@@ -3,10 +3,11 @@
  * Keeps full shell power for git/builds/sed, but blocks redirects / tee /
  * cp|mv destinations that escape Octocode path-guard roots.
  */
-/** Output lines shown under a collapsed bash result row. */
+/** Output lines shown per-query under a collapsed bash result row (tail of output). */
 const BASH_COLLAPSED_LINES = 3;
 
-import { constants } from 'node:fs';
+import { constants, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import { access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
@@ -25,8 +26,8 @@ import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
 
-const DEFAULT_MAX_LINES = 2000;
-const DEFAULT_MAX_BYTES = 50 * 1024;
+const DEFAULT_MAX_LINES = 10_000;
+const DEFAULT_MAX_BYTES = 400 * 1024; // 400 KB — keeps context lean while covering real build/test output
 const BASH_TOOL_DISPLAY_NAME = 'bash (Octocode)';
 
 const PLAN_MODE_MUTATING_BASH_RE = /(^|[;|&(`\n])\s*(?:sudo\s+)?(?:touch|mkdir|rm|rmdir|mv|cp|install|ln|chmod|chown|truncate|dd|sed\s+[^;|&\n]*\s-i\b|perl\s+[^;|&\n]*\s-i\b|node\s+(?:--[^\s]+\s+)*-[ep]\b|python3?\s+-c\b|ruby\s+-e\b)\b|>>?|\btee\b/i;
@@ -257,22 +258,46 @@ export function assertBashCommandAllowed(command: string, cwd: string): void {
   }
 }
 
+/**
+ * Trim oversized output for the model context.
+ * When truncation is needed the full text is saved to a temp file so the agent
+ * can paginate through it with a follow-up bash command (e.g. sed -n lines).
+ */
 function truncateOutput(text: string): string {
   const lines = text.split('\n');
+  const totalLines = lines.length;
+  const totalBytes = Buffer.byteLength(text, 'utf8');
   let out = text;
-  if (lines.length > DEFAULT_MAX_LINES) {
+  let didTruncate = false;
+
+  if (totalLines > DEFAULT_MAX_LINES) {
     out = lines.slice(-DEFAULT_MAX_LINES).join('\n');
-    out = `[truncated to last ${DEFAULT_MAX_LINES} lines]\n${out}`;
+    didTruncate = true;
   }
   if (Buffer.byteLength(out, 'utf8') > DEFAULT_MAX_BYTES) {
-    // Keep the tail.
+    // Keep the tail so the most recent (usually most relevant) output is visible.
     let end = out.length;
     while (end > 0 && Buffer.byteLength(out.slice(0, end), 'utf8') > DEFAULT_MAX_BYTES) {
       end = Math.floor(end * 0.9);
     }
-    out = `${out.slice(Math.max(0, out.length - end))}\n[truncated to last ${DEFAULT_MAX_BYTES} bytes]`;
+    out = out.slice(Math.max(0, out.length - end));
+    didTruncate = true;
   }
-  return out;
+
+  if (!didTruncate) return out;
+
+  // Save the full output so the agent can read any page without re-running the command.
+  let tmpNote = '';
+  try {
+    const tmpPath = path.join(os.tmpdir(), `octocode_bash_${Date.now().toString(36)}.txt`);
+    writeFileSync(tmpPath, text, 'utf8');
+    tmpNote = `\n  Full output saved to: ${tmpPath}\n  Paginate with e.g.: sed -n '<START>,<END>p' "${tmpPath}" | head -200`;
+  } catch {
+    // Non-fatal; agent will at least see the truncation notice.
+  }
+  const kb = Math.round(totalBytes / 1024);
+  const header = `[bash: showing last ${DEFAULT_MAX_LINES} of ${totalLines} lines (${kb} KB total)${tmpNote}]`;
+  return `${header}\n${out}`;
 }
 
 async function runBash(
@@ -386,17 +411,19 @@ export function registerBashTool(
   ) as TSchema;
   const parameters = buildQueryEnvelopeSchema(Type, querySchema, {
     reasoningDescription: 'Concise reason this shell command is necessary.',
+    allowParallel: false,
   });
 
   registerFn(pi, registeredToolNames, {
     name: 'bash',
     label: 'bash (Octocode)',
     description:
-      'Octocode custom bash tool. Pass one or more ordered operations in queries; every query requires concise reasoning. Replaces Pi built-in bash with the same shell execution plus Octocode path-guard on redirect/tee/cp/mv and sed -i / perl -i in-place write targets (cwd / home / OS temp / ALLOWED_PATHS), a small blocklist of catastrophic commands, and approval for obvious environment-variable exfiltration commands. Batches are preflighted, ordered, non-transactional, and stop on the first runtime failure. Note: opaque interpreters (node -e, python -c) can still write arbitrary paths and are not guarded — prefer edit/write for file mutations; use bash for git, builds, tests, and bulk mechanical edits.',
+      'Octocode custom bash tool. Pass one or more ordered operations in queries; every query requires concise reasoning. queryRunType is sequential-only: commands always run one-by-one in source order, never in parallel. Replaces Pi built-in bash with the same shell execution plus Octocode path-guard on redirect/tee/cp/mv and sed -i / perl -i in-place write targets (cwd / home / OS temp / ALLOWED_PATHS), a small blocklist of catastrophic commands, and approval for obvious environment-variable exfiltration commands. Batches are preflighted, non-transactional, and stop on the first runtime failure. Note: opaque interpreters (node -e, python -c) can still write arbitrary paths and are not guarded — prefer edit/write for file mutations; use bash for git, builds, tests, and bulk mechanical edits.',
     promptSnippet: 'Run shell commands with Octocode path-guard on write targets.',
     promptGuidelines: [
       'Octocode custom bash replaces Pi built-in bash; prefer file for ordinary creates, edits, and deletes.',
       'Use bash for git, builds, tests, package managers, and bulk mechanical edits (e.g. sed).',
+      'Bash query batches are always sequential: each command completes before the next starts.',
       'Commands that obviously print inherited environment variables or secret-like env vars require approval; bash otherwise keeps the inherited environment.',
       'Redirects (>, >>, tee) and cp/mv destinations must stay inside the working directory, home, OS temp, or ALLOWED_PATHS.',
       'Do not use bash to bypass the file path-guard.',
@@ -410,7 +437,7 @@ export function registerBashTool(
       ctx?: PiContext,
     ): Promise<ToolCallResult> {
       const cwd = ctx?.cwd ?? process.cwd();
-      return executeQueryBatch({
+      const batchResult = await executeQueryBatch({
         toolCallId,
         raw: params,
         signal,
@@ -463,6 +490,24 @@ export function registerBashTool(
           };
         },
       });
+      // Multi-query batches: the default content only has one-line per-query summaries.
+      // Reconstruct with full stdout/stderr so the model receives complete output.
+      const batchDetails = batchResult.details as {
+        queryRunType?: string;
+        results?: Array<{ index: number; status: string; result?: { code?: number | null; stdout?: string; stderr?: string } }>;
+      } | undefined;
+      if (Array.isArray(batchDetails?.results) && batchDetails!.results.length > 1) {
+        const rows = batchDetails!.results
+          .map((qr) => {
+            const combined = [qr.result?.stdout, qr.result?.stderr].filter(Boolean).join('\n');
+            return `\u2713 [${qr.index}] exit ${qr.result?.code ?? 'null'}:\n${truncateOutput(combined) || '(no output)'}`;
+          })
+          .join('\n\n');
+        const runType = batchDetails?.queryRunType ?? 'sequential';
+        const fullText = `${batchDetails!.results.length} queries succeeded · ${runType}.\n${rows}`;
+        return { ...batchResult, content: [{ type: 'text', text: fullText }] };
+      }
+      return batchResult;
     },
     renderCall(args: unknown, theme?: PiTheme) {
       const envelope = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
@@ -473,28 +518,74 @@ export function registerBashTool(
       const suffix = paint(theme, 'dim', command);
       return makeRenderer((width) => [truncateToWidth(`${title} ${suffix}`, width)]);
     },
-    renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
-      if (opts.isPartial) {
-        const prog = paint(theme, 'brand', `… running ${BASH_TOOL_DISPLAY_NAME}`);
-        return makeRenderer((width) => [truncateToWidth(prog, width)]);
-      }
-      const text = result.content.find((c) => c.type === 'text')?.text ?? '';
-      const allLines = text.split('\n').filter((l) => l.length > 0);
-      const ok = !result.isError;
-      const code = (result.details as { code?: number | null } | undefined)?.code;
-      // Every result row carries the result: status glyph, exit code, line
-      // count, then the output itself — a short head when collapsed, everything
-      // when expanded (ctrl+o). Paint per line, not the whole block: a single
-      // fg-wrap only colours the first row once the block is split.
-      const head = `${paint(theme, cliStatusToken(ok), cliStatusGlyph(ok))} ${cliToolTitle(theme, BASH_TOOL_DISPLAY_NAME)}${
-        paint(theme, 'dim', ` · exit ${code ?? 'null'} · ${allLines.length} line${allLines.length === 1 ? '' : 's'}`)}`;
-      const shown = opts.expanded ? allLines : allLines.slice(0, BASH_COLLAPSED_LINES);
-      const hidden = allLines.length - shown.length;
-      return makeRenderer((width) => [
-        truncateToWidth(head, width),
-        ...shown.map((line) => truncateToWidth(ok ? paint(theme, 'dim', `  ${line}`) : paint(theme, 'error', `  ${line}`), width)),
-        ...(hidden > 0 ? [truncateToWidth(paint(theme, 'muted', `  … ${hidden} more line${hidden === 1 ? '' : 's'} — ctrl+o expands`), width)] : []),
-      ]);
-    },
+    renderResult: Object.assign(
+      function renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
+        if (opts.isPartial) {
+          const prog = paint(theme, 'brand', `\u2026 running ${BASH_TOOL_DISPLAY_NAME}`);
+          return makeRenderer((width) => [truncateToWidth(prog, width)]);
+        }
+        const ok = !result.isError;
+        const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
+        const nameStr = cliToolTitle(theme, BASH_TOOL_DISPLAY_NAME);
+        const details = result.details as {
+          code?: number | null;
+          stdout?: string;
+          stderr?: string;
+          queryRunType?: string;
+          results?: Array<{ index: number; status: string; result?: { code?: number | null; stdout?: string; stderr?: string } }>;
+        } | undefined;
+
+        // Multi-query: render each query's output separately.
+        // Full stdout/stderr lives in details.results[N].result (set by execute above).
+        const queryResults =
+          Array.isArray(details?.results) && details!.results.length > 1
+            ? details!.results
+            : null;
+
+        if (queryResults) {
+          const qCount = queryResults.length;
+          const header = `${icon} ${nameStr}${paint(theme, 'dim', ` \u00b7 ${qCount} quer${qCount === 1 ? 'y' : 'ies'} \u00b7 ${details?.queryRunType ?? 'sequential'}`)}`;
+          return makeRenderer((width) => {
+            const lines: string[] = [truncateToWidth(header, width)];
+            for (const qr of queryResults) {
+              const qOk = qr.status === 'success';
+              const qCode = qr.result?.code;
+              const combined = [qr.result?.stdout, qr.result?.stderr].filter(Boolean).join('\n');
+              const qLines = combined.split('\n').filter((l) => l.length > 0);
+              const qHead = `  ${paint(theme, cliStatusToken(qOk), cliStatusGlyph(qOk))} ${paint(theme, 'dim', `[${qr.index}] exit ${qCode ?? 'null'} \u00b7 ${qLines.length} line${qLines.length === 1 ? '' : 's'}`)}`;
+              lines.push(truncateToWidth(qHead, width));
+              const shown = opts.expanded ? qLines : qLines.slice(-BASH_COLLAPSED_LINES);
+              const hidden = qLines.length - shown.length;
+              if (hidden > 0) {
+                lines.push(truncateToWidth(paint(theme, 'muted', `    \u2026 ${hidden} more line${hidden === 1 ? '' : 's'}`), width));
+              }
+              for (const line of shown) {
+                lines.push(truncateToWidth(qOk ? paint(theme, 'dim', `    ${line}`) : paint(theme, 'error', `    ${line}`), width));
+              }
+            }
+            if (!opts.expanded) {
+              lines.push(truncateToWidth(paint(theme, 'muted', '  ctrl+o to expand full output'), width));
+            }
+            return lines;
+          });
+        }
+
+        // Single query: status header + last N lines (tail is most useful for
+        // build/test \u2014 errors and final summary appear at the end).
+        const text = result.content.find((c) => c.type === 'text')?.text ?? '';
+        const allLines = text.split('\n').filter((l) => l.length > 0);
+        const code = details?.code;
+        const head = `${icon} ${nameStr}${paint(theme, 'dim', ` \u00b7 exit ${code ?? 'null'} \u00b7 ${allLines.length} line${allLines.length === 1 ? '' : 's'}`)}`;
+        const shown = opts.expanded ? allLines : allLines.slice(-BASH_COLLAPSED_LINES);
+        const hidden = allLines.length - shown.length;
+        return makeRenderer((width) => [
+          truncateToWidth(head, width),
+          ...shown.map((line) => truncateToWidth(ok ? paint(theme, 'dim', `  ${line}`) : paint(theme, 'error', `  ${line}`), width)),
+          ...(hidden > 0 ? [truncateToWidth(paint(theme, 'muted', `  \u2026 ${hidden} more line${hidden === 1 ? '' : 's'} hidden \u2014 ctrl+o expands`), width)] : []),
+        ]);
+      },
+      // Signal to guardedRenderResult that this renderer handles multi-query itself.
+      { multiQueryAware: true },
+    ),
   });
 }

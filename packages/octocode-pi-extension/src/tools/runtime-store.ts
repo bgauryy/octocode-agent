@@ -31,6 +31,33 @@ export interface RuntimeNotice {
   message: string;
 }
 
+export interface RuntimeContextState {
+  status: 'pending' | 'frozen' | 'stale';
+  mode: 'exact' | 'compact';
+  systemPromptChars: number;
+  mcpChars: number;
+  dynamicChars: number;
+  directToolChars: number;
+  providerSubtotalChars: number;
+  estimatedTokens: number;
+  mcpServers: number;
+  mcpTools: number;
+  skills: number;
+  promptDigest?: string;
+  liveDigest?: string;
+}
+
+export interface RuntimeFooterState {
+  sessionStartedAt: number;
+  activeTurnStartedAt?: number;
+  lastTurnMs?: number;
+  completedTurns: number;
+  gitDirty?: boolean;
+  gitDirtyFiles?: number;
+  usage?: { tokens?: number; contextWindow: number };
+  githubAuth: { status: 'checking' | 'authenticated' | 'missing' | 'error'; source?: string; message?: string };
+}
+
 export interface RuntimeState {
   generation: number;
   phase: RuntimePhase;
@@ -40,6 +67,8 @@ export interface RuntimeState {
   tasks: Record<string, RuntimeTaskState>;
   statuses: Record<string, string | undefined>;
   mcp: RuntimeMcpState;
+  context: RuntimeContextState;
+  footer: RuntimeFooterState;
   working: { visible: boolean; message?: string };
   notice?: RuntimeNotice;
   begin(stage?: string): number;
@@ -49,6 +78,8 @@ export interface RuntimeState {
   degradeTask(name: string, error: unknown, message?: string): void;
   failTask(name: string, error: unknown, message?: string): void;
   setMcp(patch: Partial<RuntimeMcpState>): void;
+  setContext(patch: Partial<RuntimeContextState>): void;
+  setFooter(patch: Partial<RuntimeFooterState>): void;
   setStatus(name: string, text: string | undefined): void;
   setWorking(visible: boolean, message?: string): void;
   announce(message: string, level?: RuntimeNoticeLevel): void;
@@ -65,7 +96,7 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function initialState(): Pick<RuntimeState, 'generation' | 'phase' | 'stage' | 'tasks' | 'statuses' | 'mcp' | 'working'> {
+function initialState(): Pick<RuntimeState, 'generation' | 'phase' | 'stage' | 'tasks' | 'statuses' | 'mcp' | 'context' | 'footer' | 'working'> {
   return {
     generation: 0,
     phase: 'idle',
@@ -79,6 +110,24 @@ function initialState(): Pick<RuntimeState, 'generation' | 'phase' | 'stage' | '
       totalServers: 0,
       completedServers: 0,
       failedServers: [],
+    },
+    context: {
+      status: 'pending',
+      mode: 'exact',
+      systemPromptChars: 0,
+      mcpChars: 0,
+      dynamicChars: 0,
+      directToolChars: 0,
+      providerSubtotalChars: 0,
+      estimatedTokens: 0,
+      mcpServers: 0,
+      mcpTools: 0,
+      skills: 0,
+    },
+    footer: {
+      sessionStartedAt: 0,
+      completedTurns: 0,
+      githubAuth: { status: 'checking' },
     },
     working: { visible: false },
   };
@@ -157,6 +206,8 @@ export function createRuntimeStore(now: () => number = Date.now): RuntimeStore {
       };
     }),
     setMcp: (patch) => set((state) => ({ mcp: { ...state.mcp, ...patch } })),
+    setContext: (patch) => set((state) => ({ context: { ...state.context, ...patch } })),
+    setFooter: (patch) => set((state) => ({ footer: { ...state.footer, ...patch } })),
     setStatus: (name, text) => set((state) => {
       if (state.statuses[name] === text) return state;
       return { statuses: { ...state.statuses, [name]: text } };

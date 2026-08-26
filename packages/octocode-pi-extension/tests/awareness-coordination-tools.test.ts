@@ -63,7 +63,7 @@ describe('first-class Awareness coordination tools', () => {
         properties?: { queries?: { minItems?: number; items?: { properties?: Record<string, unknown>; required?: string[] } } };
         required?: string[];
       };
-      expect(Object.keys(schema.properties ?? {})).toEqual(['queries']);
+        expect(Object.keys(schema.properties ?? {})).toEqual(['queries', 'queryRunType']);
       expect(schema.required).toContain('queries');
       expect(schema.properties?.queries?.minItems).toBe(1);
       expect(schema.properties?.queries?.items?.properties).toHaveProperty('reasoning');

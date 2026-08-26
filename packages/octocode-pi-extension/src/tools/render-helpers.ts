@@ -20,6 +20,7 @@ import {
   paint,
 } from '../tui/cli-design.js';
 import type { PiTheme, RenderCallReturn, RenderContext, ToolCallResult } from '../types.js';
+import type { TuiComponent, TuiRenderContext } from '../tui/components.js';
 
 // ─── ANSI-safe width helpers ──────────────────────────────────────────────────
 //
@@ -115,11 +116,24 @@ export function wrapText(text: string, maxWidth: number): string[] {
  * of whether the caller remembered to truncate individually.  Because
  * `truncateToWidth` is idempotent on already-short strings this has zero cost.
  */
-export function makeRenderer(lines: (width: number) => string[]): RenderCallReturn {
+export function makeComponentRenderer<Props>(
+  component: TuiComponent<Props>,
+  props: Props | (() => Props),
+  theme?: PiTheme,
+): RenderCallReturn {
   return {
-    render: (width = 80) => lines(width).map((line) => truncateToWidth(line, width)),
+    render: (width = 80) => {
+      const context: TuiRenderContext = { width, theme };
+      const resolved = typeof props === 'function' ? (props as () => Props)() : props;
+      return component(resolved, context).map((line) => truncateToWidth(line, width));
+    },
     invalidate() { /* no-op */ },
   };
+}
+
+/** Compatibility adapter: every historical line callback now runs as a TuiComponent. */
+export function makeRenderer(lines: (width: number) => string[]): RenderCallReturn {
+  return makeComponentRenderer((_props: undefined, context) => lines(context.width), undefined);
 }
 
 export function singleLineRenderer(rawLine: string): RenderCallReturn {
@@ -187,9 +201,15 @@ export function buildQueryCallBlocks(
   if (queries.length === 0) return renderSingle(args as Record<string, unknown>, 0);
   const stripKeys = new Set(options.stripReasonKeys ?? ['reasoning', 'reason']);
   const reasonFor = options.reason ?? ((query: QueryLike) => str(query['reason'] ?? query['reasoning']).trim());
+  const explicitRunType = envelope['queryRunType'] === 'parallel' || envelope['queryRunType'] === 'sequential'
+    ? envelope['queryRunType'] as 'parallel' | 'sequential'
+    : undefined;
+  const runType = explicitRunType ?? 'sequential';
 
   return makeCachedRenderer((width) => {
-    const lines: string[] = [];
+    const lines: string[] = queries.length > 1 || explicitRunType
+      ? [truncateToWidth(paint(theme, runType === 'parallel' ? 'link' : 'muted', `↳ ${queries.length} quer${queries.length === 1 ? 'y' : 'ies'} · ${runType}`), width)]
+      : [];
     for (const [index, query] of queries.entries()) {
       const clean = Object.fromEntries(Object.entries(query).filter(([key]) => !stripKeys.has(key)));
       const singleArgs = Array.isArray(envelope['queries'])
@@ -648,7 +668,7 @@ export function extractQueryResultRows(result: ToolCallResult): QueryResultRende
   const text = (result.content as Array<{ type?: string; text?: string }> | undefined)
     ?.find?.((part) => part?.type === 'text')?.text ?? '';
   return text.split('\n').flatMap((line): QueryResultRenderRow[] => {
-    const match = line.trim().match(/^\[(\d+)\]\s+(success|failed|not-run):\s*(.*)$/i);
+    const match = line.trim().match(/^(?:[✓✗○–]\s*)?\[(\d+)\]\s+(success|failed|not-run):\s*(.*)$/i);
     if (!match) return [];
     return [{
       index: Number(match[1]),
@@ -662,14 +682,20 @@ function renderQueryResultRows(
   toolName: string,
   rows: QueryResultRenderRow[],
   theme?: PiTheme,
+  queryRunType?: 'sequential' | 'parallel',
 ): RenderCallReturn {
   const title = cliToolTitle(theme, toolName);
-  return makeCachedRenderer((width) => rows.map((row) => {
-    const glyph = row.status === 'success' ? CLI_GLYPH.success : row.status === 'failed' ? CLI_GLYPH.error : '–';
-    const token = row.status === 'success' ? 'success' : row.status === 'failed' ? 'error' : 'muted';
-    const line = `${paint(theme, token, glyph)} ${title} ${paint(theme, 'dim', `[${row.index}] · `)}${paint(theme, token, row.summary)}`;
-    return truncateToWidth(line, width);
-  }));
+  return makeCachedRenderer((width) => [
+    ...(queryRunType
+      ? [truncateToWidth(`${paint(theme, 'brand', CLI_GLYPH.tool)} ${title} ${paint(theme, 'dim', `· ${rows.length} queries · ${queryRunType}`)}`, width)]
+      : []),
+    ...rows.map((row) => {
+      const glyph = row.status === 'success' ? CLI_GLYPH.success : row.status === 'failed' ? CLI_GLYPH.error : '–';
+      const token = row.status === 'success' ? 'success' : row.status === 'failed' ? 'error' : 'muted';
+      const line = `${paint(theme, token, glyph)} ${title} ${paint(theme, 'dim', `[${row.index}] · `)}${paint(theme, token, row.summary)}`;
+      return truncateToWidth(line, width);
+    }),
+  ]);
 }
 
 export function buildQueryResultRows(
@@ -678,7 +704,11 @@ export function buildQueryResultRows(
   theme?: PiTheme,
 ): RenderCallReturn | undefined {
   const rows = extractQueryResultRows(result);
-  return rows.length > 0 ? renderQueryResultRows(toolName, rows, theme) : undefined;
+  const details = result.details && typeof result.details === 'object' ? result.details as Record<string, unknown> : {};
+  const queryRunType = details['queryRunType'] === 'parallel' || details['queryRunType'] === 'sequential'
+    ? details['queryRunType'] as 'parallel' | 'sequential'
+    : undefined;
+  return rows.length > 0 ? renderQueryResultRows(toolName, rows, theme, queryRunType) : undefined;
 }
 
 function buildProviderQueryResultRows(

@@ -84,13 +84,14 @@ export function registerWriteTool(
   ) as TSchema;
   const parameters = buildQueryEnvelopeSchema(Type, querySchema, {
     reasoningDescription: 'Concise reason this file create or overwrite is necessary.',
+    allowParallel: false,
   });
 
   registerFn(pi, registeredToolNames, {
     name: 'write',
     label: 'write (Octocode)',
     description:
-      'Octocode custom write tool. Pass one or more ordered writes in queries; each query requires concise reasoning. Replaces Pi built-in write with the same create/overwrite semantics plus Octocode path-guard (working directory, home, OS temp, ALLOWED_PATHS) and post-write read-state recording for the edit stale-check. Batches are preflighted, ordered, non-transactional, and stop on the first runtime failure. Prefer edit for surgical changes to existing files.',
+      'Octocode custom write tool. Pass one or more ordered writes in queries; each query requires concise reasoning. queryRunType is sequential-only: writes always run one-by-one in source order, never in parallel. Replaces Pi built-in write with the same create/overwrite semantics plus Octocode path-guard (working directory, home, OS temp, ALLOWED_PATHS) and post-write read-state recording for the edit stale-check. Batches are preflighted, non-transactional, and stop on the first runtime failure. Prefer edit for surgical changes to existing files.',
     promptSnippet: 'Create or overwrite files with Octocode path-guard.',
     promptGuidelines: [
       'Octocode custom write replaces Pi built-in write; use write only for new files or intentional full rewrites.',

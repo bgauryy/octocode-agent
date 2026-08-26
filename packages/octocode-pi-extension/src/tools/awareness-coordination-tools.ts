@@ -14,6 +14,7 @@ import {
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
 import {
+  buildQueryEnvelopeSchema,
   executeQueryBatch,
   QUERY_BATCH_MAX_ITEMS,
   QUERY_REASONING_MAX_LENGTH,
@@ -85,13 +86,9 @@ function buildQuerySchema(Type: TypeBoxBuilder, group: CommandGroup): TSchema {
 }
 
 function buildParameters(Type: TypeBoxBuilder, group: CommandGroup): TSchema {
-  return Type.Object({
-    queries: Type.Array(buildQuerySchema(Type, group), {
-      minItems: 1,
-      maxItems: QUERY_BATCH_MAX_ITEMS,
-      description: 'Operations to validate together and run sequentially. Execution stops at the first runtime failure.',
-    }),
-  }, { additionalProperties: false });
+  return buildQueryEnvelopeSchema(Type, buildQuerySchema(Type, group), {
+    maxItems: QUERY_BATCH_MAX_ITEMS,
+  });
 }
 
 // ─── Request generation (from the same descriptor) ─────────────────────────────
@@ -164,15 +161,17 @@ function prepareQueries(
 
 function buildLockParameters(Type: TypeBoxBuilder): TSchema {
   const withFile = (title: string, actionConst: string) => ({ title, properties: { action: { const: actionConst } }, required: ['reasoning', 'action', 'file'] });
-  return Type.Object({ queries: Type.Array(Type.Object({
+  const itemSchema = Type.Object({
     reasoning: Type.String({ minLength: 1, maxLength: QUERY_REASONING_MAX_LENGTH, description: 'Why this lock operation is necessary.' }),
     action: Type.Unsafe({ type: 'string', enum: ['acquire', 'release', 'wait'], description: 'Exceptional lock action.' }),
     file: Type.Optional(Type.String({ description: 'Workspace-relative file path.' })),
     ttlSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 3600, description: 'Lease seconds (default 1800).' })),
     waitMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 60000, description: 'Max ms to wait for a peer-held lock.' })),
-  }, { additionalProperties: false, oneOf: [withFile('acquire', 'acquire'), withFile('release', 'release'), withFile('wait', 'wait')] }), {
-    minItems: 1, maxItems: QUERY_BATCH_MAX_ITEMS, description: 'Exceptional lock operations validated before ordered execution.',
-  }) }, { additionalProperties: false });
+  }, { additionalProperties: false, oneOf: [withFile('acquire', 'acquire'), withFile('release', 'release'), withFile('wait', 'wait')] });
+  return buildQueryEnvelopeSchema(Type, itemSchema, {
+    maxItems: QUERY_BATCH_MAX_ITEMS,
+    reasoningDescription: 'Why this lock operation is necessary.',
+  });
 }
 
 function summarizeLock(action: string, json: unknown, p: Params): string {
@@ -190,7 +189,7 @@ function buildLockTool(Type: TypeBoxBuilder): ToolDefinition {
   if (!group) throw new Error('Awareness lock command descriptor is unavailable');
   return {
     name: 'lock', label: 'Lock',
-    description: ['Exceptional exclusive file locks for sensitive or non-mergeable work.', 'Peer-held locks are checked automatically at mutation time; do not acquire a lock for ordinary mergeable edits.', 'Actions: acquire, wait, release.'].join('\n'),
+    description: ['Exceptional exclusive file lock for non-mergeable work: single-writer configs, migration scripts, shared counters, or files where concurrent edits cannot be merged.', 'Mutation-time conflict checks are automatic — do not lock for ordinary mergeable edits.', 'On peer conflict: inspect the holder (message inbox); use waitMs to wait briefly; release your lock when done (always release).', 'Actions: acquire, wait (blocks until free or waitMs exceeded), release.'].join('\n'),
     promptSnippet: 'Exceptional exclusive locks; mutation-time conflict checks are automatic', parameters: buildLockParameters(Type),
     async execute(toolCallId: string, raw: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: unknown, ctx?: PiContext): Promise<ToolCallResult> {
       const prepared = prepareQueries(group, raw, getAwarenessLiteAgentId(ctx));

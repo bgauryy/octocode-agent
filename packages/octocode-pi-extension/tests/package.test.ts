@@ -57,7 +57,8 @@ import { registerSpawnSubagentTool } from '../src/tools/spawn-subagent-tool.js';
 import { registerBrowserAgentTool } from '../src/tools/browser-agent-tool.js';
 import { registerEditTool } from '../src/tools/edit-tool.js';
 import { registerWriteTool } from '../src/tools/write-tool.js';
-import { DIRECT_TOOL_DESCRIPTIONS } from '../src/tools/octocode-tools.js';
+import { DIRECT_TOOL_DESCRIPTIONS, getDirectToolContractStats, registerUniqueTool } from '../src/tools/octocode-tools.js';
+import { warmMcpCatalog } from '../src/tools/mcp-tool.js';
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
 const distDir = path.join(packageRoot, 'dist');
@@ -668,6 +669,29 @@ test('worker processes do not receive the main Octocode prompt addendum', async 
   }
 });
 
+test('main-session system prompt is byte-stable after the initial complete discovery pass', async () => {
+  const { handlers } = await captureExtensions();
+  const beforeStart = handlers.get('before_agent_start')!.at(-1)!;
+  const ctx = { cwd: packageRoot, hasUI: false };
+  const first = (await beforeStart({
+    systemPrompt: 'Pi base prompt v1',
+    systemPromptOptions: {
+      skills: [{ name: 'initial-skill', description: 'Loaded at session initialization.', source: 'bundled' }],
+    },
+  }, ctx)) as { systemPrompt?: string } | undefined;
+  const second = (await beforeStart({
+    systemPrompt: 'Pi base prompt v2 must not replace frozen bytes',
+    systemPromptOptions: {
+      skills: [{ name: 'late-skill', description: 'Must wait for a new session.', source: 'dynamic' }],
+    },
+  }, ctx)) as { systemPrompt?: string } | undefined;
+
+  assert.ok(first?.systemPrompt);
+  assert.equal(second?.systemPrompt, first.systemPrompt);
+  assert.match(first.systemPrompt, /initial-skill/);
+  assert.doesNotMatch(second!.systemPrompt!, /late-skill|Pi base prompt v2/);
+});
+
 test('getInstallSource returns npm source for node_modules installs, local path otherwise', () => {
   const localSource = getInstallSource();
   assert.ok(
@@ -898,7 +922,7 @@ test('enum tool params use string-enum schemas (Google API compat), never litera
 
   const mcpAction = prop('MCPTool', 'action');
   assert.equal(mcpAction['type'], 'string');
-  assert.deepEqual(mcpAction['enum'], ['list', 'describe', 'call', 'resources', 'read-resource', 'prompts', 'get-prompt', 'complete', 'enable', 'disable', 'status', 'restart', 'stop', 'config', 'add', 'remove']);
+  assert.deepEqual(mcpAction['enum'], ['describe', 'call', 'resources', 'read-resource', 'prompts', 'get-prompt', 'complete', 'enable', 'disable', 'status', 'restart', 'stop', 'config', 'add', 'remove']);
   const mcpScope = prop('MCPTool', 'scope');
   assert.equal(mcpScope['type'], 'string');
   assert.deepEqual(mcpScope['enum'], ['project', 'global']);
@@ -1076,10 +1100,10 @@ test('disable built-in read in favor of localGetFileContent (records read state 
   );
 });
 
-test('public direct palette is exactly 16 queries-only tools with bounded per-query reasoning', async () => {
+test('public direct palette is exactly 17 queries-only tools with bounded per-query reasoning', async () => {
   const { tools } = await captureExtensions();
   const expected = [...OCTOCODE_SUPPORT_TOOL_NAMES, 'bash'];
-  assert.equal(expected.length, 16);
+  assert.equal(expected.length, 17);
   assert.deepEqual([...tools.keys()].sort(), [...expected].sort());
 
   for (const name of expected) {
@@ -1087,8 +1111,15 @@ test('public direct palette is exactly 16 queries-only tools with bounded per-qu
       required?: string[];
       properties?: Record<string, unknown>;
     };
-    assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries'], `${name} only exposes top-level queries`);
+    assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries', 'queryRunType'], `${name} exposes queries and its run policy`);
     assert.deepEqual(schema.required, ['queries'], `${name} requires queries`);
+    const runType = schema.properties?.['queryRunType'] as { default?: string; enum?: string[] };
+    assert.equal(runType.default, 'sequential', `${name} defaults to safe one-by-one execution`);
+    assert.deepEqual(
+      runType.enum,
+      name === 'readMedia' || name === 'web' ? ['sequential', 'parallel'] : ['sequential'],
+      `${name} advertises only execution modes its implementation supports`,
+    );
     const queries = schema.properties?.['queries'] as {
       maxItems?: number;
       items?: { required?: string[]; properties?: Record<string, unknown> };
@@ -1173,13 +1204,35 @@ test('every direct tool contract is concise enough for per-turn agent context', 
   assert.ok(totalContractChars <= 45_000, `direct tool contracts use ${totalContractChars} chars`);
 });
 
+test('direct tool registration exposes the exact provider-contract subtotal', () => {
+  const registered = new Set<string>();
+  const captured: Array<{ description?: string; parameters: unknown }> = [];
+  registerUniqueTool(
+    { registerTool: (definition) => captured.push(definition) },
+    registered,
+    {
+      name: 'demo',
+      label: 'Demo',
+      description: 'Demo direct tool.',
+      parameters: Type.Object({ value: Type.String({ description: 'Value to send.' }) }),
+      execute: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    },
+  );
+
+  const stats = getDirectToolContractStats(registered);
+  assert.equal(stats.tools, 1);
+  assert.equal(stats.descriptionChars, captured[0]!.description!.length);
+  assert.equal(stats.schemaChars, JSON.stringify(captured[0]!.parameters).length);
+  assert.equal(stats.totalChars, stats.descriptionChars + stats.schemaChars);
+});
+
 test('the removed unified-flow flag cannot restore retired tools', async () => {
   const previousFlag = process.env['OCTOCODE_UNIFIED_TASK_FLOW'];
   process.env['OCTOCODE_UNIFIED_TASK_FLOW'] = '0';
   try {
     const { tools } = await captureExtensions();
     const expected = [...OCTOCODE_SUPPORT_TOOL_NAMES, 'bash'];
-    assert.equal(expected.length, 16);
+    assert.equal(expected.length, 17);
     assert.deepEqual([...tools.keys()].sort(), [...expected].sort());
     for (const retired of ['awarenessPlan', 'claim', 'task', 'handoff', 'verify', 'awarenessAgents']) {
       assert.equal(tools.has(retired), false, `${retired} cannot be restored by an obsolete environment variable`);
@@ -2256,14 +2309,14 @@ test('research tools served via MCPTool — not registered as native Pi tools', 
   assert.equal(tools.has('MCPTool'), true, 'MCPTool is registered as the research gateway');
 });
 
-test('mcp tool reads canonical project config, lists tools, calls tools, and honors trust', async () => {
+test('mcp initialization reads canonical project config before the agent calls tools', async () => {
   const { tools } = await captureExtensions();
   const mcpTool = tools.get('MCPTool')!;
   assert.ok(mcpTool, 'MCPTool registered');
   assert.equal(tools.has('mcp'), false, 'mcp alias was removed to slim the tool surface');
   assert.match(mcpTool.promptSnippet!, /mcp_catalog_index/);
   assert.match(mcpTool.promptSnippet!, /Exact schemas are compiled and validated internally/i);
-  assert.match(mcpTool.description!, /call MCP tools directly/i);
+  assert.match(mcpTool.description!, /automatically discovered MCP tools/i);
   assert.match(mcpTool.description!, /stdio and Streamable HTTP/i);
   assert.doesNotMatch(mcpTool.description!, /prepare/i);
   const mcpGuidelines = mcpTool.promptGuidelines?.join('\n') ?? '';
@@ -2304,13 +2357,7 @@ test('mcp tool reads canonical project config, lists tools, calls tools, and hon
     // fallback (npx -y octocode-mcp@latest); both contain "octocode-mcp".
     assert.match((config.content[0] as { text: string }).text, /octocode-mcp/);
 
-    const listed = await invokeMcp({ action: 'list', server: 'fake' });
-    assert.match((listed.content[0] as { text: string }).text, /fake: 1 tool/);
-    assert.match((listed.content[0] as { text: string }).text, /instructions: Use echo only for MCP bridge smoke tests/);
-    assert.match((listed.content[0] as { text: string }).text, /echo: Echo text/);
-    assert.match((listed.content[0] as { text: string }).text, /schema: text/);
-    assert.equal((listed.details as { servers: Array<{ tools: unknown[]; instructions?: string }> }).servers[0]!.instructions, 'Use echo only for MCP bridge smoke tests.');
-    assert.deepEqual(Object.keys(((listed.details as { servers: Array<{ tools: Array<{ inputSchema: { properties: Record<string, unknown> } }> }> }).servers[0]!.tools[0]!.inputSchema.properties)), ['text']);
+    await warmMcpCatalog(trustedCtx);
 
     const beforeStartWithCachedMcp = await captureExtensions().then(({ handlers }) =>
       handlers.get('before_agent_start')!.at(-1)!({
@@ -2365,10 +2412,10 @@ test('mcp tool reads canonical project config, lists tools, calls tools, and hon
     const statusResult = await invokeMcp({ action: 'status' });
     assert.match((statusResult.content[0] as { text: string }).text, /Octocode MCP status/);
 
-    const renderedCall = mcpTool.renderCall!({ queries: [{ reasoning: 'list tools', action: 'list', server: 'fake' }] }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }).render(80).join('\n');
-    assert.match(renderedCall, /mcp list · fake/);
-    const renderedResult = (mcpTool.renderResult as unknown as (result: unknown, opts: unknown, theme: unknown, context: unknown) => { render(width?: number): string[] })(listed, {}, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, { args: { queries: [{ reasoning: 'list tools', action: 'list', server: 'fake' }] }, invalidate: () => undefined }).render(80).join('\n');
-    assert.match(renderedResult, /mcp list · fake · fake: 1 tool/);
+    const renderedCall = mcpTool.renderCall!({ queries: [{ reasoning: 'inspect echo', action: 'describe', server: 'fake', tool: 'echo' }] }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }).render(80).join('\n');
+    assert.match(renderedCall, /mcp describe · fake\/echo/);
+    const renderedResult = (mcpTool.renderResult as unknown as (result: unknown, opts: unknown, theme: unknown, context: unknown) => { render(width?: number): string[] })(described, {}, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, { args: { queries: [{ reasoning: 'inspect echo', action: 'describe', server: 'fake', tool: 'echo' }] }, invalidate: () => undefined }).render(80).join('\n');
+    assert.match(renderedResult, /mcp describe · fake\/echo/);
 
     const renderedOctocodeCall = mcpTool.renderCall!({ queries: [{ reasoning: 'read file', action: 'call', tool: 'localGetFileContent', arguments: { queries: [{ path: '/tmp/a.ts', startLine: 1 }] } }] }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }).render(120).join('\n');
     assert.match(renderedOctocodeCall, /localGetFileContent/);
@@ -2519,14 +2566,16 @@ test('Octocode metrics footer updates on session and turn lifecycle (single surf
     'session presence does not shell through pi.exec',
   );
   const initial = renderFooter();
-  assert.match(initial, /◆ Octocode/);
-  assert.match(initial, /context [▓░]{8} 50% · 50\.0k\/100k/);
+  assert.doesNotMatch(initial, /◆ Octocode/, 'footer does not repeat the app brand');
+  assert.match(initial, /context [▓░]{8} 50%/);
+  assert.doesNotMatch(initial, /50\.0k\/100k/, 'default footer density avoids repeating percent as an exact ratio');
   // Pre-first-turn footer carries no `turns 0` / `last —` placeholders.
   assert.doesNotMatch(initial, /turns 0/);
   assert.doesNotMatch(initial, /last —/);
   assert.match(initial, /update-awareness/);
-  assert.match(initial, /keys .*shift\+tab.*think.*ctrl\+shift\+a.*perm.*esc.*stop/);
-  assert.match(initial, /\/commands guide/); // moved to brand row — no 'cmds' prefix
+  assert.doesNotMatch(initial, /keys .*shift\+tab|ctrl\+shift\+a.*perm|esc.*stop/);
+  assert.match(initial, /\/settings configure/);
+  assert.match(initial, /\/commands guide/); // inline with identity — no redundant brand/cmds prefix
   assert.doesNotMatch(initial, /\/harness inspect|\/now snapshot|\/status dash/);
   assert.match(initial, /github ✓/);
   assert.ok(
@@ -2698,6 +2747,7 @@ test('CLI slash commands removed — extension commands are lean', async () => {
     'session jobs command is registered'
   );
   assert.equal(commands.has('cron'), false, 'duplicate /cron alias is removed');
+  assert.equal(commands.has('settings'), true, 'canonical extension settings command is registered');
   assert.equal(commands.has('mcp'), true, 'canonical MCP manager command is registered');
   assert.equal(commands.has('octocode-mcp'), false, 'retired MCP command is removed');
   assert.equal(
@@ -2707,7 +2757,7 @@ test('CLI slash commands removed — extension commands are lean', async () => {
   );
   assert.deepEqual(
     listExtensionHarness().extensionCommands,
-    ['/commands', '/octocode', '/octocode-harness', '/octocode-now', '/octocode-tasks', '/octocode-skills', '/octocode-agents', '/octocode-cron', '/mcp', '/octocode-setup', '/octocode-skills-update', '/octocode-plan', '/octocode-theme', '/octocode-chrome', '/octocode-footer', '/octocode-permissions', '/octocode-profile', '/octocode-inbox', '/octocode-palette', '/octocode-rewind', '/octocode-dial', '/octocode-watch', '/octocode-export'],
+    ['/commands', '/octocode', '/octocode-harness', '/octocode-now', '/octocode-tasks', '/octocode-skills', '/octocode-agents', '/octocode-cron', '/settings', '/octocode-settings', '/mcp', '/octocode-setup', '/octocode-skills-update', '/octocode-plan', '/octocode-theme', '/octocode-chrome', '/octocode-footer', '/octocode-permissions', '/octocode-profile', '/octocode-inbox', '/octocode-palette', '/octocode-rewind', '/octocode-dial', '/octocode-watch', '/octocode-export'],
     'harness inventory lists every public Octocode slash command'
   );
   for (const eventName of ['tool_execution_start', 'tool_execution_end', 'session_start', 'before_agent_start', 'agent_end', 'session_before_compact', 'session_compact', 'session_shutdown']) {
@@ -4076,7 +4126,7 @@ test('agent ledger UI refreshes live worker transitions only in the custom foote
     return proc;
   });
   try {
-    const { tools } = await captureExtensions();
+    const { tools, handlers } = await captureExtensions();
     const spawnTool = tools.get('spawnAgent')!;
     const messageTool = tools.get('AgentMessage')!;
     const statusCalls: Array<[string, string | undefined]> = [];
@@ -4094,6 +4144,10 @@ test('agent ledger UI refreshes live worker transitions only in the custom foote
         setFooter: (factory: unknown) => footerCalls.push(factory),
       },
     };
+
+    for (const handler of handlers.get('session_start')!) await handler(undefined, ctx);
+    statusCalls.length = 0;
+    widgetCalls.length = 0;
 
     const result = await invokeExecute(
       spawnTool,

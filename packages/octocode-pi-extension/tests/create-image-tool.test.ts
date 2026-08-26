@@ -89,7 +89,7 @@ describe('createImage schema', () => {
       properties?: Record<string, unknown>;
       required?: string[];
     };
-    expect(Object.keys(schema.properties ?? {})).toEqual(['queries']);
+      expect(Object.keys(schema.properties ?? {})).toEqual(['queries', 'queryRunType']);
     expect(schema.required ?? []).toContain('queries');
     const q = schema.properties?.['queries'] as {
       items?: { properties?: Record<string, unknown>; required?: string[] };

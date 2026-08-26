@@ -30,8 +30,14 @@ export interface OctocodePageOptions {
   refreshSeconds?: number;
   /** Stable state token used to reload only when generated content actually changes. */
   refreshToken?: string;
-  /** Load + initialize mermaid (dark theme) for `<pre class="mermaid">` blocks. */
+  /** Load + initialize mermaid for `<pre class="mermaid">` blocks. */
   mermaid?: boolean;
+  /** Small brand label displayed above the page title. */
+  eyebrow?: string;
+  /** Use the wider application shell for settings/control-center pages. */
+  wide?: boolean;
+  /** Optional pre-escaped footer content. */
+  footerHtml?: string;
 }
 
 /**
@@ -66,7 +72,7 @@ export function renderOctocodePage(opts: OctocodePageOptions): string {
   const mermaid = opts.mermaid
     ? `<script type="module">
       import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-      mermaid.initialize({ startOnLoad: true, theme: 'dark', themeVariables: { primaryColor: '#1c2128', primaryTextColor: '#C9D1D9', lineColor: '#8B949E' } });
+      mermaid.initialize({ startOnLoad: true, theme: 'base', themeVariables: { primaryColor: '#fffaf5', primaryTextColor: '#15263a', lineColor: '#718096', primaryBorderColor: '#e8d8ca', tertiaryColor: '#edf7ff' } });
     </script>`
     : '';
   const live = refreshSeconds ? ` · live (checks for updates every ${refreshSeconds}s)` : '';
@@ -78,15 +84,21 @@ export function renderOctocodePage(opts: OctocodePageOptions): string {
 ${refresh}
 <title>${escapeHtml(opts.title)}</title>
 <style>
-  :root { --bg:#0D1117; --panel:#161B22; --line:#30363D; --ink:#C9D1D9; --muted:#8B949E; --teal:#5EEAD4; --lav:#A5B4FC; --gold:#F2C14E; --red:#FF6B6B; }
+  :root { --bg:#F2F7FC; --panel:#FFFFFF; --panel-soft:#F8FBFE; --line:#DCE6F0; --line-strong:#C7D4E1; --ink:#14283D; --muted:#66788A; --orange:#FF8A3D; --orange-deep:#EC692C; --violet:#7957D5; --cyan:#16B8C9; --teal:var(--cyan); --lav:var(--violet); --gold:var(--orange); --red:#D94B55; --shadow:0 18px 50px rgba(31,65,96,.10); }
   * { box-sizing: border-box; }
-  body { margin:0; padding:2rem; background:var(--bg); color:var(--ink); font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
-  main { max-width: 860px; margin: 0 auto; }
-  h1 { font-size:1.2rem; color:var(--teal); margin:0 0 .25rem; }
-  h1 .mark { color:var(--lav); }
-  .sub { color:var(--muted); font-size:.85rem; margin-bottom:1.5rem; }
-  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:1rem 1.25rem; margin-bottom:1rem; }
-  h2 { font-size:.8rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 .75rem; }
+  html { scroll-behavior:smooth; }
+  body { margin:0; padding:clamp(1rem,3vw,2.4rem); background:var(--bg); color:var(--ink); font:15px/1.6 Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  body::before { content:""; position:fixed; inset:0; pointer-events:none; z-index:-1; background:radial-gradient(circle at 8% 4%,rgba(22,184,201,.13),transparent 25rem),radial-gradient(circle at 92% 8%,rgba(121,87,213,.11),transparent 28rem),linear-gradient(150deg,rgba(255,138,61,.06),transparent 38%); }
+  main { max-width: 920px; margin: 0 auto; }
+  main.wide { max-width:1280px; }
+  .brand-head { display:flex; align-items:center; gap:.9rem; margin:0 0 1.6rem; }
+  .brand-mark { width:46px; height:46px; display:grid; place-items:center; flex:0 0 auto; border-radius:14px 14px 18px 18px; color:white; background:linear-gradient(145deg,var(--orange),var(--orange-deep)); box-shadow:0 9px 24px rgba(236,105,44,.25); font:900 1.2rem/1 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .eyebrow { margin:0 0 .12rem; color:var(--violet); font:700 .7rem/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.14em; text-transform:uppercase; }
+  h1 { font-size:clamp(1.45rem,3vw,2.35rem); line-height:1.06; letter-spacing:-.035em; color:var(--ink); margin:0; font-weight:850; text-transform:uppercase; }
+  h1 .mark { color:var(--orange); }
+  .sub { color:var(--muted); font:500 .78rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; margin:.3rem 0 0; }
+  section { background:rgba(255,255,255,.94); border:1px solid var(--line); border-radius:18px; padding:clamp(1rem,2.4vw,1.45rem); margin-bottom:1rem; box-shadow:0 5px 22px rgba(31,65,96,.045); }
+  h2 { font-size:.76rem; letter-spacing:.12em; text-transform:uppercase; color:var(--violet); margin:0 0 .8rem; font-weight:800; }
   ul.steps { list-style:none; margin:0; padding:0; }
   ul.steps li { padding:.3rem 0; border-bottom:1px solid var(--line); }
   ul.steps li:last-child { border-bottom:none; }
@@ -137,33 +149,38 @@ ${refresh}
   .reply-actions button { cursor:pointer; border:1px solid var(--line); border-radius:7px; padding:.5rem .75rem;
     color:var(--ink); background:var(--bg); font:inherit; font-size:.82rem; }
   .reply-actions button:hover { border-color:var(--lav); }
-  .reply-actions button.primary { color:var(--bg); background:var(--teal); border-color:var(--teal); font-weight:700; }
+  .reply-actions button.primary { color:white; background:linear-gradient(135deg,var(--orange),var(--orange-deep)); border-color:var(--orange-deep); font-weight:800; }
   .reply-actions button:disabled { cursor:wait; opacity:.55; }
   .reply-status { min-height:1.4em; margin:.55rem 0 0; color:var(--teal); font-size:.82rem; }
   details pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:1rem; color:var(--muted); }
   summary { cursor:pointer; color:var(--lav); font-size:.85rem; }
-  code { background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:.05rem .3rem; }
+  code, pre { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  code { background:#F4F8FC; border:1px solid var(--line); border-radius:6px; padding:.08rem .34rem; }
   table { width:100%; border-collapse:collapse; }
   th, td { padding:.55rem; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
   th { color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.06em; }
-  button { cursor:pointer; border:1px solid var(--line); border-radius:7px; padding:.45rem .7rem; color:var(--ink); background:var(--bg); font:inherit; }
-  button:hover { border-color:var(--lav); }
-  button.primary { color:var(--bg); background:var(--teal); border-color:var(--teal); font-weight:700; }
+  button { cursor:pointer; border:1px solid var(--line-strong); border-radius:10px; padding:.5rem .76rem; color:var(--ink); background:var(--panel); font:inherit; font-size:.8rem; font-weight:700; transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease; }
+  button:hover { border-color:var(--violet); transform:translateY(-1px); box-shadow:0 6px 16px rgba(31,65,96,.10); }
+  button.primary { color:white; background:linear-gradient(135deg,var(--orange),var(--orange-deep)); border-color:var(--orange-deep); font-weight:800; }
   .badge { display:inline-block; padding:.08rem .42rem; border:1px solid var(--line); border-radius:999px; color:var(--muted); font-size:.75rem; }
-  .badge.on { color:var(--teal); border-color:var(--teal); }
+  .badge.on { color:#087F8C; border-color:rgba(22,184,201,.55); background:rgba(22,184,201,.08); }
   .stack { display:flex; flex-direction:column; gap:.55rem; }
   .row { display:flex; align-items:center; justify-content:space-between; gap:.8rem; }
   .muted { color:var(--muted); }
-  footer { color:var(--muted); font-size:.75rem; margin-top:1.5rem; }
+  input,select,textarea { width:100%; border:1px solid var(--line-strong); border-radius:10px; padding:.62rem .72rem; background:white; color:var(--ink); font:inherit; }
+  input:focus,select:focus,textarea:focus { outline:3px solid rgba(121,87,213,.16); border-color:var(--violet); }
+  label { display:grid; gap:.3rem; color:var(--muted); font-size:.8rem; font-weight:650; }
+  footer { color:var(--muted); font-size:.78rem; margin:1.6rem 0 .4rem; padding:1rem 1.15rem; border:1px solid var(--line); border-radius:14px; background:rgba(255,255,255,.72); }
+  footer code { color:var(--violet); }
+  @media (max-width:700px) { body{padding:.85rem}.brand-head{align-items:flex-start}.row{align-items:flex-start;flex-direction:column}section{border-radius:14px}table{display:block;overflow-x:auto} }
 </style>
 ${mermaid}
 </head>
 <body>
-<main>
-<h1><span class="mark">🔍🐙</span> ${escapeHtml(opts.title)}</h1>
-<div class="sub">generated by Octocode${live}</div>
+<main class="${opts.wide ? 'wide' : ''}">
+<header class="brand-head"><div class="brand-mark" aria-hidden="true">O</div><div><p class="eyebrow">${escapeHtml(opts.eyebrow ?? 'Octocode · local control')}</p><h1>${escapeHtml(opts.title)}</h1><div class="sub">private, loopback-only workspace surface${live}</div></div></header>
 ${opts.bodyHtml}
-<footer>Served locally by Octocode — safe to close; reopen with the same command any time.</footer>
+<footer>${opts.footerHtml ?? 'Configuration lives in <code>/settings</code> — your single place for MCP servers, tool enablement, skills, and prompt visibility.'}</footer>
 </main>
 </body>
 </html>

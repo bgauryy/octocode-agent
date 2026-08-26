@@ -39,9 +39,9 @@ The build bundles the Octocode workflow skills and invokes the installed Awarene
 | Surface | Count |
 |---|---:|
 | Octocode MCP research tools | 15 |
-| Pi support tools | 15 |
+| Pi support tools | 16 |
 | Guarded Pi builtin overrides | 1 (`bash`) |
-| Slash command entries | 23 |
+| Slash command entries | 25 |
 | Bundled main-agent skills | 11 |
 
 Awareness Lite is imported **in-process** (no child CLI). The unified Pi surface uses
@@ -67,7 +67,9 @@ policy stays here instead of drifting into launcher shims.
 /octocode-skills         discovered skills and load/install guidance
 /octocode-agents         live spawned-worker ledger and controls
 /octocode-harness        exact live tools, commands, and skills
-/mcp                     open the local MCP connections/tools/configuration manager
+/settings                live command catalog + complete extension control center; defaults to #skills
+/octocode-settings       compatibility alias for /settings
+/mcp                     focused alias that opens settings.html#connections
 /octocode-cron           list/check/cancel session-scoped Octocode jobs
 /octocode-setup          manage project .pi/APPEND_SYSTEM.md
 /octocode-skills-update  refresh bundled skill installs
@@ -124,7 +126,7 @@ load and session start. Octocode research replaces reads/search; one `file` tool
 **Why, and how to work with overrides:** [docs/OVERRIDES.md](docs/OVERRIDES.md)
 (users + developers). UI/status details: [docs/UI.md](docs/UI.md).
 
-## Support tools (15)
+## Support tools (16)
 
 | Tool | Purpose |
 |---|---|
@@ -143,6 +145,7 @@ load and session start. Octocode research replaces reads/search; one `file` tool
 | `message` | Send/read cross-agent messages when peer coordination is needed. |
 | `readMedia` | Perceive local images, video frames/contact sheets, and audio metadata/waveforms without creating user artifacts. |
 | `media` | Author images/PDFs or transform media into GIFs, clips, audio, and converted files. |
+| `runFfmpeg` | Run advanced ffmpeg/ffprobe argv directly with workspace path guards and progress reporting. |
 
 The Lite CLI remains available for backend diagnostics and recovery. It does not add
 aliases to the Pi tool palette.
@@ -151,9 +154,10 @@ aliases to the Pi tool palette.
 `$OCTOCODE_HOME/agent/mcp/servers.json` and, after workspace trust,
 `.octocode/agent/mcp/servers.json`; the project definition wins.
 
-Configured stdio or Streamable HTTP entries can override the built-in default. `MCPTool` query action `list`
-returns server instructions plus every tool name, description, and schema summary; query
-action `describe` returns the full selected tool schema before query action `call`. The
+Configured stdio or Streamable HTTP entries can override the built-in default. Enabled
+servers and tools are discovered automatically during extension initialization and injected
+into the first system prompt; the agent does not call a public list action. Query action
+`describe` returns one selected tool schema before query action `call`. The
 [external Node MCP integration test](tests/mcp-external.test.ts) proves list and call
 operations through the canonical project config. The gateway uses
 `@modelcontextprotocol/client` v2 with automatic protocol-version negotiation:
@@ -172,7 +176,7 @@ operations through the canonical project config. The gateway uses
 }
 ```
 
-## Slash command entries (23)
+## Slash command entries (25)
 
 | Command | Purpose |
 |---|---|
@@ -184,13 +188,15 @@ operations through the canonical project config. The gateway uses
 | `/octocode-harness` | Exact registered surface inventory. |
 | `/octocode-agents` | Live spawned-worker ledger with inspect, kill, prune, hide, and risk badges. |
 | `/octocode-cron` | List, check, or cancel session-scoped Octocode jobs. |
-| `/mcp` | Open the configured MCP servers/tools/configuration and enablement manager. |
+| `/settings` | Open the local control center with every live public slash command plus MCP servers/tools, skills, prompt state, sources, and overrides; defaults to `#skills`, with section completions for direct navigation. |
+| `/octocode-settings` | Compatibility alias for `/settings`. |
+| `/mcp` | Focused alias that opens `settings.html#connections`. |
 | `/octocode-setup` | Install/update the managed system-prompt block; `--global` targets user scope. |
 | `/octocode-skills-update` | Refresh bundled skill installs. |
 | `/octocode-plan` | `new <goal>` enters **plan mode**: the agent researches, proposes a dependency-ordered plan via `plan(propose)`, and write tools are blocked (tool-call gate, `plan mode` status chip) until you Approve (free-text = change request, Reject = stop, `/octocode-plan off` lifts the gate). Also show, start, complete, remove, or clear the active local plan. `html` writes `.octocode/plan.html` + `plan.md` (status checklist, mermaid dependency diagram) and keeps them live-updated on every plan change. The agent-side `plan` tool also supports `action:propose` — set the steps and ask you to Approve/Reject inline (a free-text reply is a change request). |
 | `/octocode-theme` | Switch the Octocode theme (`sync`, `dark`, or `light`). |
 | `/octocode-chrome` | List or close reused Chrome DevTools Protocol connections. |
-| `/octocode-footer` | Footer density: `compact`, `default`, or `full`. The command row contains only `/commands — guide`; metrics and keyboard hints are unchanged. A once-per-session Octocode CLI probe paints `github ✓` green or missing/error states red, and `/commands` provides login guidance without exposing tokens. `legend` prints every segment. |
+| `/octocode-footer` | Footer density: `compact`, `default`, or `full`. The identity row keeps `/commands — guide` and `/settings configure`; keyboard hints are intentionally omitted. A once-per-session Octocode CLI probe paints `github ✓` green or missing/error states red, and `/commands` provides login guidance without exposing tokens. `legend` prints every segment. |
 | `/octocode-permissions` | Session approval controls: show the permission level and always-allowed action classes, `level strict|default|relaxed`, or `revoke all|<class>`. Cycle the level from the keyboard (default `ctrl+shift+a`, override `OCTOCODE_PERMISSIONS_KEY`); pin a session's starting level with `OCTOCODE_PERMISSION_LEVEL`. The footer always shows the live mode (`perm <level> +N`). All state is session-scoped and resets on a new session. |
 | `/octocode-profile` | Apply a named profile from `~/.octocode/profiles.json` to the live Pi session: model, active tool include/exclude scope, and the closest approval mode (`always` → relaxed, `never` → strict, `ask` → default). |
 | `/octocode-inbox` | Worker inbox overlay: pick a spawned agent, then view its transcript, steer it, or kill it. Completions/failures also fire desktop (OSC 9) notifications. |

@@ -6,7 +6,10 @@ import { closeOctocodeDb, openOctocodeDb } from '../src/db.js';
 import { initOctocodeSchema, recordSession } from '../src/schema.js';
 import {
   getMcpEnablement,
+  getSkillEnablement,
   listMcpOverrides,
+  listSkillOverrides,
+  setSkillEnabled,
   setMcpServerEnabled,
   setMcpToolEnabled,
 } from '../src/mcp-state.js';
@@ -37,6 +40,7 @@ describe('openOctocodeDb', () => {
     expect(names).toContain('agent_sessions');
     expect(names).toContain('mcp_server_overrides');
     expect(names).toContain('mcp_tool_overrides');
+    expect(names).toContain('skill_overrides');
     closeOctocodeDb(path);
   });
 
@@ -71,6 +75,23 @@ describe('MCP enablement state', () => {
       servers: [{ scopeKey: '/repo', serverKey: 'docs', enabled: false }],
       tools: [{ scopeKey: '/repo', serverKey: 'docs', toolName: 'search', enabled: true }],
     });
+    closeOctocodeDb(dbPath);
+  });
+});
+
+describe('skill enablement state', () => {
+  it('normalizes names and resolves workspace override before global default', () => {
+    const dbPath = freshDbPath();
+    const db = openOctocodeDb(dbPath);
+    expect(getSkillEnablement(db, '/repo', 'Octocode Research')).toBe(true);
+    setSkillEnabled(db, '*', '  Octocode   Research ', false);
+    expect(getSkillEnablement(db, '/repo', 'octocode research')).toBe(false);
+    setSkillEnabled(db, '/repo', 'OCTOCODE RESEARCH', true);
+    expect(getSkillEnablement(db, '/repo', 'octocode research')).toBe(true);
+    expect(listSkillOverrides(db, '/repo')).toEqual([
+      { scopeKey: '/repo', skillKey: 'octocode research', enabled: true },
+      { scopeKey: '*', skillKey: 'octocode research', enabled: false },
+    ]);
     closeOctocodeDb(dbPath);
   });
 });

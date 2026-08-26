@@ -67,7 +67,8 @@ describe('readMedia tool', () => {
       properties?: Record<string, unknown>;
       required?: string[];
     };
-    expect(Object.keys(schema.properties ?? {})).toEqual(['queries']);
+    expect(Object.keys(schema.properties ?? {})).toEqual(['queries', 'queryRunType']);
+    expect((schema.properties?.['queryRunType'] as { enum?: string[] })?.enum).toEqual(['sequential', 'parallel']);
     expect(schema.required ?? []).toContain('queries');
     const q = schema.properties?.['queries'] as {
       items?: { properties?: Record<string, unknown>; required?: string[] };
@@ -110,7 +111,7 @@ describe('readMedia tool', () => {
     const hiddenDetails = hidden.details as { terminalSupportsImages?: boolean; effectiveInlineImages?: boolean };
     expect(hiddenDetails.terminalSupportsImages).toBe(true);
     expect(hiddenDetails.effectiveInlineImages).toBe(false);
-    expect((hidden.content.find((c) => c.type === 'text') as { text: string }).text).toMatch(/ask the user first/i);
+    expect((hidden.content.find((c) => c.type === 'text') as { text: string }).text).toMatch(/browser.*ask the user first/i);
 
     setImageVisibilityCheckForTests(() => true);
     const visible = await tool.execute!(
@@ -190,7 +191,7 @@ describe('readMedia tool', () => {
     expect(line).toMatch(/image\/png/);
   });
 
-  it('renderResult renders only the status line (pi renders the content image block natively)', async () => {
+  it('renderResult emits Ghostty/Kitty image rows when expanded and a browser fallback placeholder otherwise', async () => {
     const f = path.join(dir, 'shot.png');
     await writeFile(f, PNG_1x1);
     const tool = getTool();
@@ -200,6 +201,13 @@ describe('readMedia tool', () => {
       undefined, undefined, { cwd: dir },
     );
     expect(result.content.some((c) => c.type === 'image')).toBe(true);
-    expect(tool.renderResult!(result, { expanded: true }).render(120).length).toBe(1);
+    setCapabilityCheckForTests(() => true);
+    const renderContext = { showImages: true, state: {}, invalidate: () => {} };
+    const inline = tool.renderResult!(result, { expanded: true }, undefined, renderContext).render(120);
+    expect(inline.length).toBeGreaterThan(1);
+
+    setCapabilityCheckForTests(() => false);
+    const fallback = tool.renderResult!(result, { expanded: true }, undefined, renderContext).render(120);
+    expect(fallback.join('\n')).toMatch(/image: shot\.png/i);
   });
 });

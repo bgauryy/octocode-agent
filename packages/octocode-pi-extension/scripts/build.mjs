@@ -35,6 +35,9 @@ const SOURCE_PATHS = {
   // Optional in subset checkouts: if missing, the published `octocode` runtime dep is
   // resolved at runtime by getCLIPath() instead and bundleOctocodeCLI() skips gracefully.
   octocodeCLI: path.join(repoRoot, 'packages', 'octocode', 'out'),
+  // Developer docs bundled so agents can load them at runtime via the MCP localGetFileContent
+  // surface — no separate checkout or docs site needed.
+  docs: path.join(packageRoot, 'docs'),
 };
 
 const OUTPUT_PATHS = {
@@ -44,6 +47,8 @@ const OUTPUT_PATHS = {
   systemPrompt: path.join(distDir, 'system', 'SYSTEM_PROMPT.md'),
   // bundled octocode CLI — agent uses: node $OCTOCODE_CLI <command>
   cli: path.join(distDir, 'cli'),
+  // Developer / agent docs — readable at runtime from dist/docs/
+  docs: path.join(distDir, 'docs'),
 };
 
 const SKIPPED_DIRECTORIES = new Set([
@@ -330,6 +335,12 @@ async function build() {
   // Copy subagents/ to dist/subagents/ (SYSTEM_PROMPT.md files loaded at runtime),
   // then expand the shared {{OCTOCODE_COORDINATION}} placeholder so every typed
   // subagent inherits one canonical Awareness coordination block (no drift).
+  // Copy docs/ to dist/docs/ so agents and tools can read them at runtime.
+  if (fs.existsSync(SOURCE_PATHS.docs)) {
+    copyDirectory(SOURCE_PATHS.docs, OUTPUT_PATHS.docs);
+    console.log(`Docs bundled: ${OUTPUT_PATHS.docs}`);
+  }
+
   if (fs.existsSync(SOURCE_PATHS.subagents)) {
     copyDirectory(SOURCE_PATHS.subagents, OUTPUT_PATHS.subagents);
     const { expandSubagentPrompt, SUBAGENT_PLACEHOLDERS } = await import(

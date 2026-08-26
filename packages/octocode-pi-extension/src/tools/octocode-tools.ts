@@ -5,9 +5,9 @@
  * as individual Pi tools. They are served via the bundled octocode MCP server through
  * MCPTool. This removes 13 tool definitions from the Pi tool palette, cutting per-turn
  * token cost. Full MCP discovery runs at session_start via warmMcpCatalog() and
- * before_agent_start awaits it (mcpCatalogReady) so the generated/reused
- * <mcp_catalog_index> — tools plus concise schema-aware input guidance — is in the
- * system prompt from turn 1. Exact schemas stay private for validation.
+ * before_agent_start awaits it (mcpCatalogReady). By default the first system
+ * prompt receives the exact enabled descriptions and input schemas; setting
+ * OCTOCODE_COMPACT_MCP opts into the generated/reused <mcp_catalog_index> guide.
  */
 import { withOctocodeRender } from '../branding/renderers.js';
 import type { ToolDefinition } from '../types.js';
@@ -19,6 +19,7 @@ export const DIRECT_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = Object
   bash: 'Run builds, tests, Git, and mechanical shell tasks with guarded write targets and per-command reasoning. Prefer file for ordinary file mutations.',
   readMedia: 'Read local media into model context. image returns pixels; video returns metadata, a frame, or contact sheet; audio returns metadata, waveform, or spectrogram. Read-only—use media to create or transform files.',
   media: 'Create or transform media. Render image/PDF from SVG, HTML, Markdown, or images; make GIFs, trim clips, extract audio, or convert formats. Writes are path-guarded; use readMedia for inspection.',
+  runFfmpeg: 'Run advanced ffmpeg or ffprobe argv directly with workspace path guards, timeout, cancellation, and progress. Prefer readMedia and media for standard inspection and transforms.',
   web: 'Fetch a URL or search the current web for documentation, releases, errors, and other information outside the repository. Prefer repository/MCP tools for code evidence.',
   chromeDebug: 'Inspect or automate a live Chrome page through CDP: DOM, console, network, screenshots, performance, storage, security, coverage, or raw Domain.method calls. Use agent profile:browser for multi-turn browser work.',
   agent: 'Spawn researcher, planner, architect, browser, or custom workers; then inspect, wait, message, steer, abort, or kill them. Spawn first and use the returned agentId in later lifecycle calls.',
@@ -30,10 +31,36 @@ export const DIRECT_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = Object
   memory: 'Recall, record, review, suggest, or forget durable Awareness learning. Treat recall as a lead; record only verified reusable lessons, never secrets, routine status, or facts owned by code/docs.',
   lock: 'Acquire, wait for, or release an exceptional exclusive file lock. Ordinary mergeable edits rely on automatic peer checks and do not need a lock.',
   message: 'Send or read small cross-agent coordination messages for overlap, blockers, questions, or decisions. Do not use as routine status ceremony.',
-  MCPTool: 'Call MCP tools directly with internally validated schemas, or manage configured stdio and Streamable HTTP servers. Use server:octocode for repository research; external calls may have side effects.',
+  MCPTool: 'Call automatically discovered MCP tools with internally validated schemas, inspect one tool, or manage stdio and Streamable HTTP servers. Use server:octocode for repository research.',
 });
 
 export const SCHEMA_DESCRIPTION_MAX_CHARS = 180;
+
+export interface DirectToolContractStats {
+  tools: number;
+  descriptionChars: number;
+  schemaChars: number;
+  totalChars: number;
+}
+
+const directToolContracts = new WeakMap<Set<string>, Map<string, { descriptionChars: number; schemaChars: number }>>();
+
+export function getDirectToolContractStats(registeredToolNames: Set<string>): DirectToolContractStats {
+  const contracts = directToolContracts.get(registeredToolNames);
+  if (!contracts) return { tools: 0, descriptionChars: 0, schemaChars: 0, totalChars: 0 };
+  let descriptionChars = 0;
+  let schemaChars = 0;
+  for (const contract of contracts.values()) {
+    descriptionChars += contract.descriptionChars;
+    schemaChars += contract.schemaChars;
+  }
+  return {
+    tools: contracts.size,
+    descriptionChars,
+    schemaChars,
+    totalChars: descriptionChars + schemaChars,
+  };
+}
 
 function prepareQueryEnvelope(
   toolName: string,
@@ -81,6 +108,15 @@ export function registerUniqueTool(
   registeredToolNames.add(toolDefinition.name);
   const description = DIRECT_TOOL_DESCRIPTIONS[toolDefinition.name] ?? toolDefinition.description;
   const parameters = compactSchemaValue(toolDefinition.parameters) as ToolDefinition['parameters'];
+  let contracts = directToolContracts.get(registeredToolNames);
+  if (!contracts) {
+    contracts = new Map();
+    directToolContracts.set(registeredToolNames, contracts);
+  }
+  contracts.set(toolDefinition.name, {
+    descriptionChars: description.length,
+    schemaChars: JSON.stringify(parameters).length,
+  });
   pi.registerTool?.(withOctocodeRender({
     ...toolDefinition,
     description,

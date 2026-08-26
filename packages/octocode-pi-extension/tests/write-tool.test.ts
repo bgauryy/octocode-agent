@@ -55,12 +55,14 @@ test('registerWriteTool registers the "write" tool with correct metadata', () =>
   assert.equal(writeTool.name, 'write');
   assert.match(writeTool.description ?? '', /path-guard/);
   const schema = writeTool.parameters as {
-    properties?: { queries?: { items?: { properties?: Record<string, unknown> } } };
+    properties?: Record<string, unknown>;
   };
-  assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries']);
-  assert.ok(schema.properties?.queries?.items?.properties?.['path'], 'query must have a path property');
-  assert.ok(schema.properties?.queries?.items?.properties?.['content'], 'query must have a content property');
-  assert.ok(schema.properties?.queries?.items?.properties?.['reasoning'], 'query must have a reasoning property');
+  assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries', 'queryRunType']);
+  assert.deepEqual((schema.properties?.['queryRunType'] as { enum?: string[] })?.enum, ['sequential']);
+  const queries = schema.properties?.['queries'] as { items?: { properties?: Record<string, unknown> } };
+  assert.ok(queries.items?.properties?.['path'], 'query must have a path property');
+  assert.ok(queries.items?.properties?.['content'], 'query must have a content property');
+  assert.ok(queries.items?.properties?.['reasoning'], 'query must have a reasoning property');
 });
 
 // ─── Successful writes ────────────────────────────────────────────────────────

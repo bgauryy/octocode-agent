@@ -40,7 +40,7 @@ test('plan schema exposes only queries[] at the top level', () => {
     required?: string[];
     additionalProperties?: boolean;
   };
-  assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries'], 'only queries key present');
+      assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries', 'queryRunType'], 'queries and run policy present');
   assert.ok(schema.required?.includes('queries'), 'queries is required');
 });
 
@@ -589,12 +589,13 @@ test('renderCall shows every operation and its reasoning for multi-query calls',
     undefined,
   );
   const lines = rendered?.render(120) ?? [];
-  assert.equal(lines.length, 6);
-  assert.match(lines[0]!, /set/);
+  assert.equal(lines.length, 7);
+  assert.match(lines[0]!, /3 queries.*sequential/);
   assert.match(lines[1]!, /set/);
-  assert.match(lines[2]!, /start/);
+  assert.match(lines[2]!, /set/);
   assert.match(lines[3]!, /start/);
-  assert.match(lines[4]!, /complete/);
+  assert.match(lines[4]!, /start/);
   assert.match(lines[5]!, /complete/);
+  assert.match(lines[6]!, /complete/);
   assert.doesNotMatch(lines.join('\n'), /\+2|why:|reasoning:/i);
 });

@@ -231,7 +231,10 @@ test('worker ledger and transcript surface handback artifact status and [ARTIFAC
   try {
     const mock = makeMockAgentProcess({ stdinThrows: false });
     setAgentProcessFactoryForTests(() => mock as never);
-    const record = spawnRpcAgent({ task: 'write handback', cwd: tmpDir, resourceMode: 'lean' });
+    const record = spawnRpcAgent(
+      { task: 'write handback', name: 'Artifact Steward', planStep: '3. Verify artifacts', cwd: tmpDir, resourceMode: 'lean' },
+      { cwd: tmpDir, model: { id: 'gpt-5.6', provider: 'openai' } } as never,
+    );
 
     fs.writeFileSync(record.handbackPath, '# Worker handback\n\nVerified result.\n', 'utf8');
     mock._emit(
@@ -243,6 +246,11 @@ test('worker ledger and transcript surface handback artifact status and [ARTIFAC
     );
 
     const entry = listWorkerLedgerEntries().find((item) => item.agentId === record.id);
+    assert.equal(entry?.name, 'Artifact Steward');
+    assert.equal(entry?.model, 'gpt-5.6');
+    assert.equal(entry?.provider, 'openai');
+    assert.equal(entry?.task, 'write handback');
+    assert.equal(entry?.planStep, '3. Verify artifacts');
     assert.equal(entry?.artifact, record.handbackPath);
     assert.equal(entry?.handback?.exists, true);
     assert.equal(entry?.handback?.path, record.handbackPath);

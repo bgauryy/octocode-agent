@@ -70,6 +70,18 @@ test('tools-only and skills-only cases omit the empty section', () => {
   assert.doesNotMatch(toolsOnly, /skills:/);
 });
 
+test('installed skill names win over same-named dynamic skills', () => {
+  addTool('release-check');
+  addSkill('release-check', 'Dynamic duplicate.');
+  addSkill('dynamic-only', 'Unique dynamic workflow.');
+  const out = getDynamicCapabilitiesAddendum(['Release-Check']);
+
+  assert.match(out, /tools:[\s\S]*- release-check:/, 'a same-named dynamic tool remains independently callable');
+  assert.match(out, /skills:[\s\S]*- dynamic-only:/);
+  const skillSection = out.slice(out.indexOf('skills:'));
+  assert.doesNotMatch(skillSection, /- release-check:/, 'installed skill owns the unqualified skill name');
+});
+
 test('long descriptions are truncated to bound token cost', () => {
   addTool('big', 'x'.repeat(500));
   const out = getDynamicCapabilitiesAddendum();

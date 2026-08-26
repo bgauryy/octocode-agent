@@ -15,7 +15,7 @@ function textResult(text: string, details?: unknown, isError = false): ToolCallR
 }
 
 describe('query envelope', () => {
-  it('builds the one-field top-level contract and requires concise reasoning per query', () => {
+  it('builds the query contract with an explicit sequential execution policy', () => {
     const schema = buildQueryEnvelopeSchema(
       typeBuilder,
       Type.Object({ value: Type.String() }, { additionalProperties: false }),
@@ -29,12 +29,13 @@ describe('query envelope', () => {
             required?: string[];
           };
         };
+        queryRunType?: { default?: string; enum?: string[]; description?: string };
       };
       required?: string[];
       additionalProperties?: boolean;
     };
 
-    expect(Object.keys(schema.properties ?? {})).toEqual(['queries']);
+    expect(Object.keys(schema.properties ?? {})).toEqual(['queries', 'queryRunType']);
     expect(schema.required).toContain('queries');
     expect(schema.additionalProperties).toBe(false);
     expect(schema.properties?.queries?.minItems).toBe(1);
@@ -45,6 +46,21 @@ describe('query envelope', () => {
     });
     expect(schema.properties?.queries?.items?.required).toEqual(['reasoning', 'value']);
     expect(schema.properties?.queries?.items?.properties).toHaveProperty('value');
+    expect(schema.properties?.queryRunType).toMatchObject({
+      default: 'sequential',
+      enum: ['sequential'],
+    });
+    expect(schema.properties?.queryRunType?.description).toMatch(/one-by-one/i);
+  });
+
+  it('exposes parallel execution only when the tool opts in', () => {
+    const schema = buildQueryEnvelopeSchema(
+      typeBuilder,
+      Type.Object({ value: Type.String() }, { additionalProperties: false }),
+      { allowParallel: true },
+    ) as { properties?: { queryRunType?: { enum?: string[] } } };
+
+    expect(schema.properties?.queryRunType?.enum).toEqual(['sequential', 'parallel']);
   });
 
   it('preflights every query before execution and rejects invalid reasoning', async () => {
@@ -67,7 +83,7 @@ describe('query envelope', () => {
     )).rejects.toThrow(/at most 240/);
   });
 
-  it('executes prepared queries in order with indexed progress and aggregate results', async () => {
+  it('executes prepared queries in order and returns every result to the agent', async () => {
     const events: unknown[] = [];
     const execute = vi.fn(async (query: Record<string, unknown>, index: number, _itemId: string) => {
       return textResult(`done ${String(query.value)}`, { index });
@@ -83,6 +99,7 @@ describe('query envelope', () => {
       },
       execute,
       onUpdate: (update) => events.push(update),
+      passthroughContent: true,
     });
 
     expect(execute.mock.calls.map((call) => [call[0].value, call[1], call[2]])).toEqual([
@@ -94,7 +111,49 @@ describe('query envelope', () => {
       { index: 0, reasoning: 'run one', status: 'success', summary: 'done a' },
       { index: 1, reasoning: 'run two', status: 'success', summary: 'done b' },
     ]);
-    expect((result.content[0] as { text: string }).text).toMatch(/2 queries succeeded/);
+    expect(result.details).toMatchObject({ queryRunType: 'sequential' });
+    expect(result.content).toEqual([
+      { type: 'text', text: 'done a' },
+      { type: 'text', text: 'done b' },
+    ]);
+  });
+
+  it('runs opted-in parallel queries concurrently while returning source-ordered receipts', async () => {
+    const release: Array<() => void> = [];
+    const started: number[] = [];
+    const execution = executeQueryBatch({
+      toolCallId: 'call-parallel',
+      raw: {
+        queryRunType: 'parallel',
+        queries: [
+          { reasoning: 'read first', value: 'a' },
+          { reasoning: 'read second', value: 'b' },
+        ],
+      },
+      allowParallel: true,
+      execute: async (_query, index) => {
+        started.push(index);
+        await new Promise<void>((resolve) => release[index] = resolve);
+        return textResult(`done ${index}`);
+      },
+    });
+
+    await vi.waitFor(() => expect(started).toEqual([0, 1]));
+    release[1]!();
+    release[0]!();
+    const result = await execution;
+    expect(result.details).toMatchObject({
+      queryRunType: 'parallel',
+      results: [{ index: 0, summary: 'done 0' }, { index: 1, summary: 'done 1' }],
+    });
+  });
+
+  it('rejects parallel execution for tools whose schema is sequential-only', async () => {
+    await expect(executeQueryBatch({
+      toolCallId: 'call-unsafe-parallel',
+      raw: { queryRunType: 'parallel', queries: [{ reasoning: 'mutate', value: 'x' }] },
+      execute: async () => textResult('no'),
+    })).rejects.toThrow(/parallel.*not supported/i);
   });
 
   it('stops on the first runtime failure and retains success, failure, and not-run rows', async () => {

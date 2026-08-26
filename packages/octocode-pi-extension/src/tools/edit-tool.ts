@@ -677,8 +677,9 @@ function buildParameters(Type: TypeBoxBuilder): TSchema {
     },
     { additionalProperties: false },
   );
-  return buildQueryEnvelopeSchema(Type, queryItemSchema as TSchema, {
-    reasoningDescription: 'Concise reason this file edit is necessary. Must be a non-empty string.',
+    return buildQueryEnvelopeSchema(Type, queryItemSchema as TSchema, {
+      reasoningDescription: 'Concise reason this file edit is necessary. Must be a non-empty string.',
+      allowParallel: false,
   });
 }
 
@@ -953,7 +954,7 @@ export function registerEditTool(
     name: 'edit',
     label: 'edit (Octocode)',
     description:
-      'Octocode custom edit tool. Replaces Pi built-in edit with exact current-file text replacement, batched edits, optional multi-file queries, opt-in normalized/lineRange matching, stale-read checks, diff/patch details, optional replaceAll, and actionable mismatch diagnostics. Each edit MUST include a non-empty reasoning field. Output always shows a Reasoning list and Changes diff.',
+        'Octocode custom edit tool. Replaces Pi built-in edit with exact current-file text replacement, batched edits, optional multi-file queries, opt-in normalized/lineRange matching, stale-read checks, diff/patch details, optional replaceAll, and actionable mismatch diagnostics. queryRunType is sequential-only: files are edited one-by-one in source order, never in parallel. Each edit MUST include a non-empty reasoning field. Output always shows a Reasoning list and Changes diff.',
     promptSnippet: 'Make precise file edits with exact current-file text replacement and clearer mismatch diagnostics.',
     promptGuidelines: [
       'Octocode custom edit replaces Pi built-in edit; use this edit tool for file modifications.',

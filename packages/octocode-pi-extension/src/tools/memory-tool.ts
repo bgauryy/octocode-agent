@@ -267,8 +267,9 @@ export function registerMemoryTool(
     ].join('\n'),
     promptSnippet: 'Recall/record/review/suggest/forget durable Awareness memory (first-class wrapper over the memory CLI)',
     promptGuidelines: [
-      'Recall only when prior learning could change the approach; use review/suggest before cleanup or recording uncertain learnings; record only verified, reusable outcomes with source/evidence and useful tags.',
-      'Re-verify recalled facts before relying on them; never store secrets, logs, or routine status.',
+      'Recall at task start when prior learning could change the approach. Mode: lexical/tagged for known terms or package names; semantic for concepts or error patterns; recent for last-session context.',
+      'Record after confirming a fix or decision — not mid-session speculation. Labels: GOTCHA (trap/footgun), BUG (confirmed defect), DECISION (arch choice), ARCHITECTURE (system shape), EXPERIENCE (pattern/lesson). Importance: 8–10 = repo-wide gotcha or arch decision; 5–7 = package-level pattern; 1–4 = one-off. Always include source (file:line or check command) and taskContext.',
+      'Use suggest before record when uncertain; review/forget to prune stale entries. Never store secrets, logs, routine status, or facts git/docs already own.',
     ],
     parameters: buildQueryEnvelopeSchema(Type, Type.Object({
       action: Type.Unsafe({ type: 'string', enum: ['recall', 'record', 'forget', 'review', 'suggest'], description: 'recall|record|forget|review|suggest' }),

@@ -36,7 +36,7 @@ test('memory exposes only a required queries envelope with per-query reasoning',
     properties?: { queries?: { items?: { properties?: Record<string, unknown>; required?: string[] } } };
     required?: string[];
   };
-  assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries']);
+      assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries', 'queryRunType']);
   assert.ok(schema.required?.includes('queries'));
   assert.ok(schema.properties?.queries?.items?.properties?.['reasoning']);
   assert.ok(schema.properties?.queries?.items?.required?.includes('reasoning'));

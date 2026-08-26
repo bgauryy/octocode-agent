@@ -50,7 +50,8 @@ test('OAuth callback validates state, finishes PKCE auth, persists tokens, and r
   const response = await fetch(`${new URL(flow.provider.redirectUrl).href}?state=expected&code=accepted`);
   assert.equal(response.status, 200);
   const callbackPage = await response.text();
-  assert.match(callbackPage, /--teal:#5EEAD4/);
+    assert.match(callbackPage, /--orange:#FF8A3D/);
+    assert.match(callbackPage, /--violet:#7957D5/);
   assert.doesNotMatch(callbackPage, /super-secret/);
   await authorize;
   assert.equal(opened.length, 1);

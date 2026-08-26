@@ -38,18 +38,40 @@ function findExecutable(name: string): string | undefined {
   return undefined;
 }
 
+/** Try to resolve a binary from the optional ffmpeg-static / ffprobe-static npm packages. */
+function findStaticBinary(name: 'ffmpeg' | 'ffprobe'): string | undefined {
+  try {
+    if (name === 'ffmpeg') {
+      // ffmpeg-static exports the binary path as its default export
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const p = require('ffmpeg-static') as string | null;
+      if (typeof p === 'string' && p) return p;
+    } else {
+      // ffprobe-static exports { path: string }
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const pkg = require('ffprobe-static') as { path?: string } | null;
+      if (pkg && typeof pkg.path === 'string' && pkg.path) return pkg.path;
+    }
+  } catch {
+    // optional dep not installed — silently ignore
+  }
+  return undefined;
+}
+
 /** Detect ffmpeg + ffprobe once and cache. Never throws. */
 export function detectFfmpeg(): FfmpegAvailability {
   if (cachedAvailability) return cachedAvailability;
-  const ffmpeg = findExecutable('ffmpeg');
-  const ffprobe = findExecutable('ffprobe');
+  // 1. Prefer system PATH + well-known dirs
+  const ffmpeg = findExecutable('ffmpeg') ?? findStaticBinary('ffmpeg');
+  const ffprobe = findExecutable('ffprobe') ?? findStaticBinary('ffprobe');
   if (!ffmpeg || !ffprobe) {
     cachedAvailability = {
       ok: false,
       ffmpeg,
       ffprobe,
       reason:
-        'ffmpeg/ffprobe not found on PATH. Install with `brew install ffmpeg` (macOS), ' +
+        'ffmpeg/ffprobe not found on PATH or via ffmpeg-static. ' +
+        'Install with `brew install ffmpeg` (macOS), ' +
         '`apt install ffmpeg` (Debian/Ubuntu), or see https://ffmpeg.org/download.html',
     };
   } else {

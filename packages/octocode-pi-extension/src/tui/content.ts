@@ -78,8 +78,6 @@ export const PLAN_COMPLETE_QUESTION = 'Plan complete — what would you like to 
 
 // ─── Free-text escape labels ────────────────────────────────────────────────
 
-/** Default free-text escape label for generic askUser calls. */
-export const FREE_TEXT_DISCUSS = 'Discuss or type your own answer…';
 /** Plan-context free-text escape — signals the user wants to redirect rather than pick an option. */
 export const FREE_TEXT_TELL_DIFFERENTLY = 'No, and tell me what to do differently';
 

@@ -102,10 +102,11 @@ describe('registerUniqueTool with builtin overrides', () => {
 
     for (const [toolName, queries] of cases) {
       const lines = render(tools.get(toolName)!.renderCall!({ queries }, stubTheme), 160);
-      expect(lines, toolName).toHaveLength(4);
-      expect(lines[1], toolName).toContain(String(queries[0]!['reasoning']));
-      expect(lines[3], toolName).toContain(String(queries[1]!['reasoning']));
-      expect(lines.join('\n'), toolName).not.toMatch(/\+1|2 queries|why:|reasoning:/i);
+      expect(lines, toolName).toHaveLength(5);
+      expect(lines[0], toolName).toMatch(/2 queries.*sequential/);
+      expect(lines[2], toolName).toContain(String(queries[0]!['reasoning']));
+      expect(lines[4], toolName).toContain(String(queries[1]!['reasoning']));
+      expect(lines.join('\n'), toolName).not.toMatch(/\+1|why:|reasoning:/i);
     }
   });
 });
@@ -143,11 +144,12 @@ describe('withOctocodeRender', () => {
       ],
     }, stubTheme), 120);
 
-    expect(lines).toHaveLength(4);
-    expect(lines[0]).toContain('custom alpha');
-    expect(lines[1]).toContain('first reason');
-    expect(lines[2]).toContain('custom beta');
-    expect(lines[3]).toContain('second reason');
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toMatch(/2 queries.*sequential/);
+    expect(lines[1]).toContain('custom alpha');
+    expect(lines[2]).toContain('first reason');
+    expect(lines[3]).toContain('custom beta');
+    expect(lines[4]).toContain('second reason');
     expect(lines.join('\n')).not.toMatch(/why:|reasoning:/i);
     expect(customRenderCall).toHaveBeenCalledTimes(2);
     for (const [callArgs] of customRenderCall.mock.calls) {
@@ -372,12 +374,13 @@ describe('buildOctocodeRenderCall', () => {
       ],
     }, stubTheme);
     const lines = render(c, 120);
-    expect(lines).toHaveLength(4);
-    expect(lines[0]).toContain('a.ts');
-    expect(lines[1]).toContain('read alpha');
-    expect(lines[2]).toContain('b.ts');
-    expect(lines[3]).toContain('read beta');
-    expect(lines.join('\n')).not.toMatch(/\+1|2 queries|why:|reasoning:/i);
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toMatch(/2 queries.*sequential/);
+    expect(lines[1]).toContain('a.ts');
+    expect(lines[2]).toContain('read alpha');
+    expect(lines[3]).toContain('b.ts');
+    expect(lines[4]).toContain('read beta');
+    expect(lines.join('\n')).not.toMatch(/\+1|why:|reasoning:/i);
   });
 });
 
@@ -510,11 +513,12 @@ describe('file-tool renderResult', () => {
       ),
       120,
     );
-    expect(lines).toHaveLength(4);
-    expect(lines[0]).toMatch(/write.*a\.ts/);
-    expect(lines[1]).toContain('create alpha');
-    expect(lines[2]).toMatch(/delete.*b\.ts/);
-    expect(lines[3]).toContain('remove beta');
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toMatch(/2 queries.*sequential/);
+    expect(lines[1]).toMatch(/write.*a\.ts/);
+    expect(lines[2]).toContain('create alpha');
+    expect(lines[3]).toMatch(/delete.*b\.ts/);
+    expect(lines[4]).toContain('remove beta');
     expect(lines.join('\n')).not.toMatch(/\+1|why:|reasoning:/i);
   });
 });
@@ -655,4 +659,3 @@ describe('plan-tool renderCall + renderResult', () => {
     expect(joined).toContain('1/3');
   });
 });
-

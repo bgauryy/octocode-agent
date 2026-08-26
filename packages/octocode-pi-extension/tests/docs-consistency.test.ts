@@ -101,6 +101,47 @@ test('README command table lists every harness command entry', () => {
   }
 });
 
+test('settings control-center reference covers every implemented domain and is indexed', () => {
+  const settings = readPackageFile('docs/SETTINGS.md');
+  const docsIndex = readPackageFile('docs/README.md');
+  const harness = readPackageFile('HARNESS.md');
+  const rootMcp = readPackageFile('../../docs/MCP.md');
+
+  for (const heading of [
+    '## Commands',
+    '## MCP connections and tools',
+    '## Add or edit a managed MCP server',
+    '## Discovery sources',
+    '## Agent context and prompt artifacts',
+    '## Skills',
+    '## Overrides and persistence',
+    '## Security model',
+    '## Refresh and lifecycle behavior',
+    '## Current boundaries',
+  ]) {
+    assert.ok(settings.includes(heading), `${heading} missing from SETTINGS.md`);
+  }
+
+  for (const contract of [
+    '`pi.getCommands()`',
+    '`mcp_server_overrides`',
+    '`mcp_tool_overrides`',
+    '`skill_overrides`',
+    '`catalog.json`',
+    '`mcp.md`',
+    '`x-octocode-action-token`',
+    '`Cache-Control: no-store`',
+    '`X-Content-Type-Options: nosniff`',
+    '`/new`',
+  ]) {
+    assert.ok(settings.includes(contract), `${contract} missing from SETTINGS.md`);
+  }
+
+  assert.match(docsIndex, /\[SETTINGS\.md\]\(SETTINGS\.md\)/);
+  assert.match(harness, /docs\/SETTINGS\.md/);
+  assert.match(rootMcp, /packages\/octocode-pi-extension\/docs\/SETTINGS\.md/);
+});
+
 test('TOOLS browser guidance uses the unified agent facade', () => {
   const tools = readPackageFile('docs/TOOLS.md');
 
@@ -150,7 +191,7 @@ test('README bundled-skill count and names match the canonical bundle inventory'
 test('HARNESS summary counts match stable source contracts', () => {
   const harnessDoc = readPackageFile('HARNESS.md');
 
-  assert.match(harnessDoc, /\n15  support tools/);
+  assert.match(harnessDoc, new RegExp(`\n${OCTOCODE_SUPPORT_TOOL_NAMES.length}  support tools`));
   assert.match(harnessDoc, /\n 5  worker profiles/);
   assert.match(harnessDoc, /\n 8  stable system-prompt sections/);
   assert.match(harnessDoc, /stable eight-section decision kernel/);
@@ -176,4 +217,37 @@ test('HARNESS and UI inventories derive from the current extension harness', () 
 
   assert.match(uiDoc, new RegExp(`✓ tools: 0 native Pi tools \\+ ${OCTOCODE_SUPPORT_TOOL_NAMES.length} support tools`));
   assert.doesNotMatch(uiDoc, /13 native Pi tools \+ 7 support tools/);
+});
+
+test('TUI permutation contract preserves the complete interactive surface', () => {
+  const contract = readPackageFile('docs/TUI_PERMUTATION_CONTRACT.html');
+
+  for (const requiredCopy of [
+    'Octocode TUI permutation contract',
+    'Compact',
+    'Default',
+    'Full',
+    'Light',
+    'Dark',
+    'Agents',
+    'Plan and tasks',
+    'Awareness',
+    'Mutating tools',
+    'Independent reads',
+    'Tool results',
+    'Compaction checkpoint',
+    'Awareness handoff',
+    'Media · TUI protocol and browser fallback',
+    'Ghostty',
+    'browser; ask first',
+  ]) {
+    assert.ok(contract.includes(requiredCopy), `${requiredCopy} missing from TUI permutation contract`);
+  }
+
+  assert.match(contract, /queryRunType/);
+  assert.match(contract, /aria-(?:label|pressed)/);
+  assert.doesNotMatch(contract, /◆ Octocode/);
+
+  const ids = [...contract.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(new Set(ids).size, ids.length, 'TUI permutation contract contains duplicate element IDs');
 });

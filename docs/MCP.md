@@ -62,40 +62,42 @@ $OCTOCODE_HOME/agent/mcp/workspaces/<workspace-digest>/
 └── mcp.md
 ```
 
-On startup, a matching `catalog.json` plus `mcp.md` is consumed directly into the first agent system prompt. When either file is missing or the effective MCP configuration/tool catalog changed, the active model receives every enabled tool's exact name, description, and input schema and generates a concise routing description. The response must cover every exact server/tool name or it is rejected. Octocode then saves the compiled guide as `mcp.md`; a deterministic schema-aware generator is the fallback when model generation is unavailable or invalid.
+By default, the first agent system prompt receives every enabled server/tool name, description, and exact input schema from `catalog.json`; `mcp.md` is ignored. Setting `OCTOCODE_COMPACT_MCP=1` opts into the compact flow: a matching `catalog.json` plus validated `mcp.md` is consumed immediately, while a cold or changed catalog is discovered and compiled before the first turn. The generated response must cover every exact server/tool name or it is rejected; a deterministic schema-aware generator is the fallback.
 
-The generated guide keeps tool purpose and the invocation-critical parts of the input schema—required fields, types, enums, defaults, constraints, and parameter relationships—without exposing raw schemas on every turn. Exact schemas remain in `catalog.json` and are validated internally immediately before a call. Resources, templates, and prompts remain available through explicit `MCPTool` operations but are not added to this tool-focused startup guide.
+In compact mode the generated guide keeps tool purpose and the invocation-critical parts of the input schema—required fields, types, enums, defaults, constraints, and parameter relationships—without injecting raw schemas. Exact schemas remain in `catalog.json` and are validated internally immediately before a call. Resources, templates, and prompts remain available through explicit `MCPTool` operations but are not added to the tool-focused startup catalog.
 
-Interactive sessions report whether startup reused cached `mcp.md`, is discovering and generating it, or saved a new guide. A matching catalog is reused without another model call.
+Interactive sessions report discovery progress and whether the prompt uses the exact or compact catalog. `/mcp` shows the active mode, artifact paths, and whether a post-start mutation requires `/new` to refresh model routing.
 
 Configuration changes invalidate and refresh the catalog and guide automatically. Catalog and guide files use private permissions on POSIX systems.
 
-## Enablement state and `/mcp`
+## Enablement state and `/settings`
 
-Run `/mcp` to open the local MCP manager. It shows all configured servers, redacted transport configuration, connected tools, source files, overrides, and server/tool Enable or Disable controls.
+Run `/settings` to rebuild and open the loopback-only Octocode control center; it lists every live public slash command alongside skills, MCP servers/tools, prompt state, sources, and overrides. It opens the skills section by default and accepts section completions, including `commands`. `/mcp` remains the focused alias that opens MCP connections. The center shows managed definitions plus MCP configurations discovered from Claude, Cursor, Codex, Antigravity/Gemini, `.agents`, `.agent`, VS Code, and Claude Desktop locations. Foreign definitions are collision-safe, read-only imports; every imported server and tool is disabled by default.
+
+The complete section-by-section UI, persistence, security, refresh, and limitation reference is [`packages/octocode-pi-extension/docs/SETTINGS.md`](../packages/octocode-pi-extension/docs/SETTINGS.md).
 
 Enablement overrides are stored in Octocode's shared SQLite database, not copied into JSON definitions. Workspace overrides take precedence over global overrides, then the file's `disabled` default. A disabled tool remains visible in the manager so it can be re-enabled, but it is absent from agent guidance and blocked at execution.
 
-The page is served only on loopback, uses same-origin POST actions, and shares the common Octocode HTML theme used by other generated local pages.
+The shared-theme page provides search, source visibility, redacted configuration, health, OAuth/connect actions, server/tool/skill enablement, prompt mode, and overrides in one place. Skill files remain untouched; normalized global/workspace skill overrides share the SQLite state and precedence model used for MCP enablement. Mutation requests require the page's unguessable action token.
 
 ## MCPTool operations
 
-The agent uses one `MCPTool` gateway instead of registering every remote tool in the model prompt. It can list/describe/call tools; list/read resources and templates; list/get prompts and complete arguments; inspect status/config; toggle servers or tools; and restart, stop, add, or remove servers.
+The extension discovers enabled tools during initialization; there is no model-callable tool-list action. The agent uses `MCPTool` to describe one unfamiliar tool, call tools, list/read resources and templates, list/get prompts and complete arguments, inspect status/config, toggle servers or tools, and restart, stop, add, or remove servers.
 
 The client automatically follows paginated list responses and reacts to MCP list-change signals. Request cancellation and configured timeouts propagate through the client.
 
 ## Deliberate boundaries
 
-- OAuth authorization is not synthesized from static JSON. Streamable HTTP accepts explicit headers; a future interactive authorization provider must own OAuth redirect and token storage.
-- Elicitation is an optional MCP client feature and is not advertised until Octocode can route requests to a user interaction handler.
-- Deprecated roots, sampling, and logging client surfaces are not newly implemented. Current core server primitives—tools, resources, and prompts—are supported.
+- Stable Streamable HTTP OAuth uses browser authorization with PKCE and loopback callback handling; tokens stay in the OS credential store.
+- Roots expose only the trusted active workspace. Sampling and form/URL elicitation require explicit interactive approval and fail closed in headless sessions; logging/progress notices are sanitized.
+- Experimental draft capabilities and legacy SSE fallback are intentionally unsupported.
 
 ## Troubleshooting
 
 | Problem | Check |
 |---|---|
-| Server missing | Canonical path, JSON validity, project trust, and server enablement in `/mcp`. |
+| Server missing | Canonical path, JSON validity, project trust, and server enablement in `/settings`. |
 | Stdio server exits | Keep protocol messages on stdout and logs on stderr; confirm command, cwd, and env keys. |
 | HTTP connection fails | Confirm an HTTP(S) Streamable HTTP URL and required header values. |
-| Tool missing from agent guidance | Check its enablement in `/mcp`; the manager retains disabled tools. |
+| Tool missing from agent guidance | Check its enablement in `/settings`; the manager retains disabled tools. |
 | Schema validation fails | Inspect the current schema with `MCPTool` describe and correct the arguments. |

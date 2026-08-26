@@ -14,6 +14,7 @@ import {
   getPlanDecisions, addPlanDecision, setPlanDecisions, readPersistedDecisionsForTests,
   getPlanLifecycle, getPlanReviewState, activatePlan, readPersistedLifecycleForTests,
   currentRfcRevision, proposePlanReview, acceptPlanReview, requestPlanChanges, startAcceptedPlan,
+  setPlanAwarenessMappings,
   type PlanDecision, type PlanStep,
 } from '../src/tools/active-plan.js';
 import { registerPlanTool, refreshPlanUi, handleOctocodePlanCommand, inferConsequential, phaseStepperLine, planPanelLines, setPlanDirectoryServerForTests } from '../src/tools/plan-tool.js';
@@ -290,7 +291,7 @@ test('normal flow always keeps one step in progress (no invariant nudge)', () =>
   clearPlan(cwd);
 });
 
-test('plan panel renders compact progress and the running step activeForm', () => {
+test('plan panel renders complete progress and the running step activeForm', () => {
   const cwd = '/tmp/plan-widget-ws';
   const { ctx, calls } = uiCtx(cwd);
   setPlan(cwd, [{ text: 'Edit file', activeForm: 'Editing file' }, 'Run tests']);
@@ -306,7 +307,9 @@ test('plan panel renders compact progress and the running step activeForm', () =
   const lines = comp.render(80);
   const joined = lines.join('\n');
   assert.match(joined, /Plan\s+[\u2588\u2591]{8}\s+1\/2 done · now: Run tests/, 'header has progress and the current running step');
-  assert.doesNotMatch(joined, /Edit file|Research|RFC|Build/, 'persistent panel leaves completed rows and phase detail to on-demand surfaces');
+  assert.match(joined, /✓ 1\. Edit file/, 'completed tasks remain visible');
+  assert.match(joined, /▶ 2\. Run tests\s+running/, 'running task is explicit');
+  assert.doesNotMatch(joined, /Research|RFC|Build/, 'phase detail remains on-demand');
   clearPlan(cwd);
 });
 
@@ -347,6 +350,39 @@ test('addendum shows markers and a next-step line', () => {
   assert.match(out, /\[ \] 2\. second/);
   assert.match(out, /next: first/);
   assert.match(out, /<\/active_plan>$/);
+});
+
+test('addendum is a complete drift projection for RFC, decisions, task contracts, and Awareness mappings', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-plan-context-'));
+  const rfcDir = path.join(workspace, '.octocode', 'rfc', 'context');
+  fs.mkdirSync(rfcDir, { recursive: true });
+  const rfcPath = path.join(rfcDir, 'RFC.md');
+  fs.writeFileSync(rfcPath, '# Context RFC\n');
+  setPlan(workspace, [{
+    text: 'Implement context projection',
+    paths: ['src/context.ts'],
+    reasoning: 'Prevent stale plan context',
+    acceptance: 'Metadata-only updates reach the model',
+    checkCommand: 'yarn test context',
+  }], 'draft');
+  setPlanRfc(workspace, rfcPath);
+  setPlanDecisions(workspace, [{ q: 'Context source?', a: 'Canonical projection' }]);
+  setPlanAwarenessMappings(workspace, {
+    awarenessPlanId: 'plan-aware',
+    taskIdsByStepId: { [getPlan(workspace)[0]!.id]: 'task-aware' },
+    materializedRevision: 'materialized-v1',
+  });
+
+  const out = renderActivePlanAddendum(workspace);
+  assert.match(out, /phase=draft/);
+  assert.match(out, /rfc: .*RFC\.md/);
+  assert.match(out, /decision: Context source\? => Canonical projection/);
+  assert.match(out, /paths=src\/context\.ts/);
+  assert.match(out, /accept=Metadata-only updates reach the model/);
+  assert.match(out, /check=yarn test context/);
+  assert.match(out, /awareness-plan=plan-aware/);
+  assert.match(out, /awareness-task=task-aware/);
+  clearPlan(workspace);
 });
 
 test('clear removes the plan', () => {
@@ -1311,7 +1347,7 @@ test('phaseStepperLine marks the current phase from step state', () => {
   assert.match(phaseStepperLine([{ id: 'a', text: 'a', status: 'done' }]), /▸ Verify/);
 });
 
-test('planPanelLines is a compact progress and active-lane projection', () => {
+test('planPanelLines shows the complete checklist and marks the running lane', () => {
   const steps: PlanStep[] = [
     { id: 'setup', text: 'Completed setup', status: 'done' },
     { id: 'change', text: 'A long-ish step description here', activeForm: 'Implementing the focused change', status: 'doing' },
@@ -1319,13 +1355,13 @@ test('planPanelLines is a compact progress and active-lane projection', () => {
     { id: 'verify', text: 'Later verification', status: 'todo' },
   ];
   const clipped = planPanelLines(steps, undefined, 24);
-  assert.ok(clipped.length <= 3, 'default panel stays within progress + active + blocked summary');
+  assert.equal(clipped.length, steps.length + 1, 'header plus every stored task is visible');
   const full = planPanelLines(steps).join('\n');
   assert.match(full, /1\/4/, 'progress remains visible');
   assert.match(full, /Implementing the focused change/, 'activeForm is the active lane label');
-  assert.match(full, /1 blocked/, 'blocked work is summarized');
+  assert.match(full, /running/, 'the active lane is explicit');
   assert.doesNotMatch(full, /Research|RFC|Approve|Build|Verify/, 'phase stepper is reserved for on-demand detail');
-  assert.doesNotMatch(full, /Completed setup|Later verification/, 'default panel does not render the full checklist');
+  assert.match(full, /Completed setup|Later verification/, 'stored tasks remain visible');
 });
 
 // ─── Gate hardening: inferConsequential ───────────────────────────────────────

@@ -2,11 +2,9 @@
  * dynamic-catalog — a terse system-prompt projection of the agent's self-created
  * dynamic tools (callTool) and skills (skill type:"call").
  *
- * Why a projection and NOT a file watcher: both registries are read fresh from disk on
- * every access (no in-memory cache), and this addendum is rebuilt on every
- * `before_agent_start` (per turn). So any change — created via callTool or skill type:"call" or
- * edited out-of-band — is reflected on the next turn automatically, with no watcher,
- * no cache, and no invalidation logic. The projection subsumes what a watcher would do.
+ * Both registries are read from disk while the initial system prompt is assembled.
+ * That prompt is frozen for provider caching; in-session create/update results stay
+ * visible in the transcript and the next session receives the refreshed projection.
  *
  * Token discipline: emits `''` when both registries are empty (the common case),
  * truncates descriptions, and caps the number of entries so a large registry can never
@@ -49,10 +47,10 @@ function renderSection(label: string, entries: CatalogEntry[]): string[] {
 
 /**
  * Build the `<dynamic_capabilities>` block, or `''` when there are no dynamic tools or
- * skills. Reads both registries live so any change is reflected on the next call — this
- * correctness-first "no cache" contract is deliberate (the reads are small local JSON).
+ * skills. Reads both registries without an in-memory cache; the caller owns the
+ * session-level prompt freeze.
  */
-export function getDynamicCapabilitiesAddendum(): string {
+export function getDynamicCapabilitiesAddendum(installedSkillNames: Iterable<string> = []): string {
   let toolEntries: CatalogEntry[] = [];
   let skillEntries: CatalogEntry[] = [];
   try {
@@ -65,6 +63,8 @@ export function getDynamicCapabilitiesAddendum(): string {
   } catch {
     // Same for skills.
   }
+  const installed = new Set([...installedSkillNames].map((name) => name.trim().toLowerCase()).filter(Boolean));
+  skillEntries = skillEntries.filter((entry) => !installed.has(entry.name.trim().toLowerCase()));
   if (toolEntries.length === 0 && skillEntries.length === 0) return '';
 
   return [

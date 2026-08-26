@@ -785,6 +785,37 @@ export function sessionsReport(env: NodeJS.ProcessEnv = process.env): string {
   ].join('\n');
 }
 
+// ── Doctor helpers ──────────────────────────────────────────────────────────────
+
+/** Detect ffmpeg binary and return its path + version, or undefined if absent. */
+function detectFfmpegForDoctor(): { bin: string; version: string } | undefined {
+  const extraDirs = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
+  const pathDirs = (process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean);
+  for (const dir of [...pathDirs, ...extraDirs]) {
+    const candidate = path.join(dir, 'ffmpeg');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      const r = spawnSync(candidate, ['-version'], { encoding: 'utf8', timeout: 5000 });
+      const versionLine = (r.stdout ?? '').split('\n')[0] ?? '';
+      const m = versionLine.match(/ffmpeg version ([\S]+)/);
+      return { bin: candidate, version: m?.[1] ?? versionLine.trim() };
+    } catch {
+      // keep scanning
+    }
+  }
+  // Fallback: try optional ffmpeg-static package
+  try {
+    const staticBin = _require('ffmpeg-static') as string | null;
+    if (typeof staticBin === 'string' && staticBin) {
+      const r = spawnSync(staticBin, ['-version'], { encoding: 'utf8', timeout: 5000 });
+      const versionLine = (r.stdout ?? '').split('\n')[0] ?? '';
+      const m = versionLine.match(/ffmpeg version ([\S]+)/);
+      return { bin: staticBin, version: `${m?.[1] ?? 'unknown'} (ffmpeg-static)` };
+    }
+  } catch { /* optional dep absent */ }
+  return undefined;
+}
+
 // ── Doctor (health pane) ─────────────────────────────────────────────────────────
 
 export interface DoctorCheck {
@@ -845,6 +876,18 @@ export function doctorData(env: NodeJS.ProcessEnv = process.env): DoctorData {
         : 'CLI not resolved (set at core load; run inside the agent)',
     },
   ];
+
+  const ffmpeg = detectFfmpegForDoctor();
+  checks.push({
+    name: 'ffmpeg',
+    ok: Boolean(ffmpeg),
+    detail: ffmpeg
+      ? `${ffmpeg.version}  ${ffmpeg.bin}`
+      : 'not found — media/readMedia tools will be unavailable',
+    fix: ffmpeg
+      ? undefined
+      : 'brew install ffmpeg  # macOS\napt install ffmpeg   # Debian/Ubuntu\nhttps://ffmpeg.org/download.html',
+  });
 
   const healthy = checks.every((c) => c.ok || (c.name !== 'core' && c.name !== 'pi-host'));
   return { healthy, checks };

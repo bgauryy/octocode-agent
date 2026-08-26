@@ -11,13 +11,13 @@ mutations. See **[OVERRIDES.md](./OVERRIDES.md)** for the user contract and deve
 
 ## Tool inventory
 
-The direct palette contains 16 extension-owned tools: 15 support tools and the guarded `bash` override. GitHub, local, LSP, and npm research tools are provided indirectly through the built-in `octocode` MCP server.
+The direct palette contains 17 extension-owned tools: 16 support tools and the guarded `bash` override. GitHub, local, LSP, and npm research tools are provided indirectly through the built-in `octocode` MCP server.
 
 | Family | Direct tools |
 |---|---|
 | Core | `file`, `bash` |
 | Browser and workers | `chromeDebug`, `agent` |
-| Media and web | `readMedia`, `media`, `web` |
+| Media and web | `readMedia`, `media`, `runFfmpeg`, `web` |
 | MCP | `MCPTool` |
 | Dynamic capabilities | `callTool`, `skill` |
 | Planning and interaction | `plan`, `askUser`, `localServer` |

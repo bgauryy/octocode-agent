@@ -8,8 +8,9 @@ import { stringEnumSchema } from './schema-helpers.js';
 import { paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { isPromptOwnedSkill } from './skill-catalog.js';
-import { executeQueryBatch } from './query-envelope.js';
+import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 import { orchestrate } from './call-skill.js';
+import { getSkillEnablement, openOctocodeDb } from '@octocodeai/octocode-awareness/mcp-state';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -25,6 +26,10 @@ export interface DiscoveredSkill {
   source: string;
 }
 
+export interface DiscoveredSkillState extends DiscoveredSkill {
+  enabled: boolean;
+}
+
 const SKILL_CONTENT_CAP = 48_000;
 
 const SKILL_FILE_LIST_CAP = 30;
@@ -32,6 +37,10 @@ const SKILL_FILE_LIST_CAP = 30;
 function parseFrontmatterField(text: string, field: string): string {
   const match = text.match(new RegExp(`^${field}:\\s*["']?(.+?)["']?\\s*$`, 'm'));
   return match?.[1]?.trim() ?? '';
+}
+
+function skillKey(name: string): string {
+  return name.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 function scanSkillRoot(dir: string, source: string, out: Map<string, DiscoveredSkill>): void {
@@ -54,14 +63,26 @@ function scanSkillRoot(dir: string, source: string, out: Map<string, DiscoveredS
     }
     const name = parseFrontmatterField(text, 'name') || entry.name;
     if (isPromptOwnedSkill(name)) continue;
-    if (out.has(name)) continue;
-    out.set(name, {
-      name,
-      description: parseFrontmatterField(text, 'description'),
-      path: md,
-      dir: skillDir,
-      source,
-    });
+    const key = skillKey(name);
+    const existing = out.get(key);
+    // Pi is authoritative when it supplies a real SKILL.md path. When it only
+    // supplies prompt metadata, resolve the first concrete file from the shared
+    // precedence-ordered roots so the model-visible skill is actually loadable.
+    if (existing?.path) continue;
+    out.set(key, existing
+      ? {
+          ...existing,
+          description: existing.description || parseFrontmatterField(text, 'description'),
+          path: md,
+          dir: skillDir,
+        }
+      : {
+          name,
+          description: parseFrontmatterField(text, 'description'),
+          path: md,
+          dir: skillDir,
+          source,
+        });
   }
 }
 
@@ -87,14 +108,14 @@ export function skillDiscoveryRoots(cwd: string, home = os.homedir()): Array<{ d
   ];
 }
 
-export function discoverSkills(cwd: string, piSkills?: SkillInfo[], home = os.homedir()): DiscoveredSkill[] {
+export function discoverAllSkills(cwd: string, piSkills?: SkillInfo[], home = os.homedir()): DiscoveredSkill[] {
   const found = new Map<string, DiscoveredSkill>();
   for (const skill of piSkills ?? []) {
     const name = skill.name?.trim();
     if (!name || isPromptOwnedSkill(name)) continue;
     const md = (skill as { path?: string; filePath?: string }).path
       ?? (skill as { path?: string; filePath?: string }).filePath ?? '';
-    found.set(name, {
+    found.set(skillKey(name), {
       name,
       description: skill.description ?? '',
       path: md,
@@ -109,6 +130,22 @@ export function discoverSkills(cwd: string, piSkills?: SkillInfo[], home = os.ho
 
   }
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function discoverSkillStates(cwd: string, piSkills?: SkillInfo[], home = os.homedir()): DiscoveredSkillState[] {
+  const skills = discoverAllSkills(cwd, piSkills, home);
+  try {
+    const db = openOctocodeDb();
+    const scopeKey = path.resolve(cwd);
+    return skills.map((skill) => ({ ...skill, enabled: getSkillEnablement(db, scopeKey, skill.name, true) }));
+  } catch {
+    return skills.map((skill) => ({ ...skill, enabled: true }));
+  }
+}
+
+/** Effective loadable inventory. Disabled skills remain discoverable only in settings. */
+export function discoverSkills(cwd: string, piSkills?: SkillInfo[], home = os.homedir()): DiscoveredSkill[] {
+  return discoverSkillStates(cwd, piSkills, home).filter((skill) => skill.enabled);
 }
 
 export interface SkillUsageEntry {
@@ -318,13 +355,10 @@ export function registerSkillTool(
     force: Type.Optional(Type.Boolean({ description: 'Override the triviality decline gate (type:call).' })),
   }, { additionalProperties: false }) as TSchema;
 
-  const parameters = Type.Object({
-    queries: Type.Array(itemSchema, {
-      minItems: 1,
-      maxItems: 100,
-      description: 'Operations to preflight and execute in source order. Each item requires reasoning.',
-    }),
-  }, { additionalProperties: false }) as TSchema;
+  const parameters = buildQueryEnvelopeSchema(Type, itemSchema, {
+    maxItems: 100,
+    reasoningDescription: 'Concise reason this query is necessary.',
+  });
 
   const execute = async (
     toolCallId: string,

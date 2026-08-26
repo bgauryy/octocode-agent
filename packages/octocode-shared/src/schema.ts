@@ -57,6 +57,13 @@ export function initOctocodeSchema(db: SqliteLike): void {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (scope_key, server_key, tool_name)
     );
+    CREATE TABLE IF NOT EXISTS skill_overrides (
+      scope_key  TEXT NOT NULL,
+      skill_key  TEXT NOT NULL,
+      enabled    INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (scope_key, skill_key)
+    );
     CREATE TABLE IF NOT EXISTS mcp_catalog_state (
       scope_key     TEXT PRIMARY KEY,
       config_digest TEXT NOT NULL,

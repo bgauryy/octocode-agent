@@ -27,9 +27,9 @@ import type {
 import type { registerUniqueTool } from './octocode-tools.js';
 import { cliToolTitle, paint } from '../tui/cli-design.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
-import { resumeStatusPanel } from './status-panel.js';
+import { refreshStatusPanel, resumeStatusPanel, setStatusPanelAgentSource } from './status-panel.js';
 import { stringEnumSchema } from './schema-helpers.js';
-import { setManagedStatus, setManagedWidget } from './runtime-renderer.js';
+import { setManagedStatus } from './runtime-renderer.js';
 import { getRandomAgentName } from '../agentNames.js';
 import {
   assertWorktreeSpawnAllowed,
@@ -106,6 +106,8 @@ export interface SpawnAgentParams {
   name?: string;
   cwd?: string;
   model?: string;
+  /** Optional current plan step, shown in the parent agent ledger/footer. */
+  planStep?: string;
   provider?: string;
   thinking?: string;
   tools?: string[];
@@ -142,6 +144,8 @@ interface AgentRecord {
   cwd: string;
   command: string;
   args: string[];
+  task: string;
+  planStep?: string;
   process: AgentProcess;
   status: AgentStatus;
   startedAt: number;
@@ -1391,6 +1395,8 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
     cwd,
     command: invocation.command,
     args: invocation.args,
+    task: String(effectiveParams.task ?? effectiveParams.prompt ?? '').trim(),
+    planStep: effectiveParams.planStep?.trim() || undefined,
     process: proc,
     status: 'starting',
     startedAt: Date.now(),
@@ -1512,6 +1518,8 @@ function summarizeAgent(record: AgentRecord, opts: { full?: boolean } = {}) {
     cwd: record.cwd,
     model: getArgValue(record.args, '--model'),
     provider: getArgValue(record.args, '--provider'),
+    task: record.task,
+    planStep: record.planStep,
     thinking: getArgValue(record.args, '--thinking'),
     tools: getArgCsv(record.args, '--tools'),
     startedAt: new Date(record.startedAt).toISOString(),
@@ -1547,6 +1555,8 @@ function toWorkerLedgerEntry(record: AgentRecord): WorkerLedgerEntry {
     updatedAt: new Date(record.updatedAt).toISOString(),
     model: getArgValue(record.args, '--model'),
     provider: getArgValue(record.args, '--provider'),
+    task: record.task,
+    planStep: record.planStep,
     thinking: getArgValue(record.args, '--thinking'),
     tools: getArgCsv(record.args, '--tools'),
     normalizedStatus: normalized?.status,
@@ -1858,6 +1868,12 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme, width?: number): str
       ? ` · ${callCount} call${callCount === 1 ? '' : 's'}${toolNames.length ? ` [${toolNames.join(',')}${new Set(record.toolCalls.map((c) => c.toolName)).size > toolNames.length ? ',…' : ''}]` : ''}`
       : '';
     const modelInfo = ` · ${formatAgentModelLine(summary)}`;
+    const taskInfo = summary.task
+      ? ` · ${paint(theme, 'muted', `task ${summary.task.replace(/\s+/g, ' ').slice(0, 64)}`)}`
+      : '';
+    const planInfo = summary.planStep
+      ? ` · ${paint(theme, 'symbol', `plan ${summary.planStep.replace(/\s+/g, ' ').slice(0, 48)}`)}`
+      : '';
     // Stable queued indicator: reveal turns queued behind a running worker, or a
     // multi-deep queue. A single queued turn on a non-running worker already shows
     // via the 'queued' state label, so it is not duplicated here.
@@ -1874,7 +1890,7 @@ function buildAgentLedgerLines(limit = 10, theme?: PiTheme, width?: number): str
     const name = paint(theme, 'brand', summary.name);
     const id = paint(theme, 'dim', shortId(summary.agentId));
     const elapsed = formatElapsed(record.startedAt, isTerminal(record) ? record.updatedAt : undefined);
-    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${queuedInfo}${modelInfo}${active}${toolsInfo}${worktreeInfo} · ${elapsed}${paint(theme, 'dim', preview)}`);
+    lines.push(`${meta.icon} ${name} (${id}) · ${meta.label}${handback}${queuedInfo}${modelInfo}${taskInfo}${planInfo}${active}${toolsInfo}${worktreeInfo} · ${elapsed}${paint(theme, 'dim', preview)}`);
     // Phase 3: a dim reasoning sub-line for live workers, gated to a small ledger so
     // it never crowds the panel. Distinct from the output preview (deltaSummary).
     if (record.thinkingSummary && !isTerminal(record) && records.length <= 3) {
@@ -1898,6 +1914,8 @@ function hasVisibleAgentLedgerRecords(): boolean {
 export function agentPanelLines(theme?: PiTheme, limit = 6, width?: number): string[] {
   return hasVisibleAgentLedgerRecords() ? buildAgentLedgerLines(limit, theme, width) : [];
 }
+
+setStatusPanelAgentSource((theme, width) => agentPanelLines(theme, Number.MAX_SAFE_INTEGER, width));
 
 /** Register the host-level footer/metrics refresher used by refreshAgentLedgerUi. */
 export function setAgentLedgerMetricsRefreshForUi(cb: ((ctx?: PiContext) => void) | undefined): void {
@@ -1968,15 +1986,8 @@ function formatOctocodeAgentsHelp(): string {
 
 function showAgentInspectionPanel(ctx?: PiContext): void {
   if (!ctx?.hasUI) return;
-  setManagedWidget(
-    ctx,
-    'octocode-status-panel',
-    (_tui: unknown, theme: PiTheme) => makeRenderer((width) => {
-      const lines = agentPanelLines(theme, 10, width);
-      return lines.length > 0 ? lines : [''];
-    }),
-    { placement: 'belowEditor' },
-  );
+  resumeStatusPanel();
+  refreshStatusPanel(ctx);
 }
 
 export async function handleOctocodeAgentsCommand(args: string, ctx?: PiContext): Promise<void> {
@@ -2213,6 +2224,7 @@ export function registerAgentTools(
       'spawnAgent defaults to resourceMode:"lean". Use resourceMode:"octocode" only when the worker needs Octocode extension tools.',
       'Model routing (which configured model to pass, `pi -ne --list-models`) is defined once in the agents policy — follow it there rather than re-deriving it here.',
       'Spawned-agent registry and output previews live in the current Pi process and are visible in /octocode-agents plus the custom footer ledger; collect needed results before session shutdown or reload.',
+      'Pass planStep when the worker owns a parent-plan step; the footer and agent ledger show it with the stable task and effective model.',
       'Each worker packet includes an assigned durable handback file under .octocode/tmp/agents/<agentId>/handback.md; if the worker has write/bash capability, require important or long findings to be written there before terminal [DONE]/[BLOCKED]/[FAILED].',
       'spawnAgent prevents recursive subagents: workers never receive spawnAgent or AgentMessage, even in resourceMode:"octocode" or resourceMode:"default".',
     ],
@@ -2223,6 +2235,7 @@ export function registerAgentTools(
       name: Type.Optional(Type.String({ description: 'Human label for the worker/session.' })),
       cwd: Type.Optional(Type.String({ description: 'Working directory for the worker process. Defaults to current cwd.' })),
       model: Type.Optional(Type.String({ description: 'Pi model pattern or ID from `pi -ne --list-models [search]`. Choose from the live user-configured table; `--models` only sets model-cycling scope.' })),
+      planStep: Type.Optional(Type.String({ description: 'Parent plan step this worker is executing; displayed in the agent ledger/footer.' })),
       provider: Type.Optional(Type.String({ description: 'Pi provider name for the model. REQUIRED when the model lives on a custom provider defined in models.json (e.g. "guy-provider-anthropic") — without it, pi resolves --model against builtin providers and may fail with "No API key found" or a 400. Look up via `pi -ne --list-models [search]`.' })),
       thinking: Type.Optional(Type.String({ description: 'Pi thinking level: off|minimal|low|medium|high|xhigh.' })),
       tools: Type.Optional(Type.Array(Type.String(), { description: 'Optional allowlist of enabled tool names for the worker. spawnAgent and AgentMessage are always removed.' })),

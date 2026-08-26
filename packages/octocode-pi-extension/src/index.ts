@@ -6,7 +6,6 @@ import {
   OVERRIDDEN_BUILTIN_TOOL_NAMES,
   OCTOCODE_SUPPORT_TOOL_NAMES,
 } from './constants.js';
-import { keyText } from '@earendil-works/pi-coding-agent';
 import { checkForCoreUpdate, readOwnVersion } from './core-update-check.js';
 import {
   getAssetPaths,
@@ -43,14 +42,14 @@ import {
   stripProjectContext,
   stripPiSkillsSection,
 } from './prompt.js';
-import { registerSkillTool, discoverSkills, formatSkillUsageLines } from './tools/skill-tool.js';
+import { registerSkillTool, discoverSkills, formatSkillUsageLines, type DiscoveredSkill } from './tools/skill-tool.js';
 import { writeDiscoveryFile, getDiscoveryFilePath } from './tools/discovery-file.js';
 import {
   parseSetupScope,
   getAppendSystemTarget,
   estimateTokens,
 } from './utils.js';
-import { registerUniqueTool } from './tools/octocode-tools.js';
+import { getDirectToolContractStats, registerUniqueTool } from './tools/octocode-tools.js';
 import { registerContextTools } from './tools/context-tools.js';
 import { registerCompactionHooks, resetCompactionCheckpointDedupe } from './tools/compaction-hooks.js';
 import { clearCompactionInFlight, clearCompactionResumeRequest, clearAutoCompactResumeRequest, clearCompactionAbortSuppressionRequest } from './tools/compaction-state.js';
@@ -74,6 +73,7 @@ import { registerUnifiedAgentTool } from './tools/unified-agent-tool.js';
 import { registerCallTool } from './tools/call-tool.js';
 import { registerFileTool } from './tools/file-tool.js';
 import { registerReadMediaTool } from './tools/read-media-tool.js';
+import { registerRunFfmpegTool } from './tools/run-ffmpeg-tool.js';
 import { registerMediaTool } from './tools/create-media-tool.js';
 import { renderRuntimeCapabilitiesAddendum } from './tools/image-render.js';
 import { setPeerWipBaseline, peerWipCount, setPeerWipStatusPainter } from './tools/peer-wip.js';
@@ -81,7 +81,7 @@ import { registerBashTool } from './tools/bash-tool.js';
 import { createAwarenessMutationGate } from './tools/awareness-mutation-gate.js';
 import { APPROVAL_CLASSES, PERMISSION_LEVELS, applyStartupPermissionLevel, approvedClasses, cyclePermissionLevel, getPermissionLevel, parsePermissionLevel, resetApprovalStore, revokeAlways, setPermissionLevel, type ApprovalClass } from './tools/approval.js';
 import { recordSessionTitle } from './tools/desktop-notify.js';
-import { getCachedMcpCatalogAddendum, getCachedMcpCounts, getMcpDiscoverySnapshot, mcpCatalogReady, registerMcpTool, startMcpConfigWatcher, stopAllMcpServers, stopMcpConfigWatchers, warmMcpCatalog } from './tools/mcp-tool.js';
+import { getCachedMcpCatalogAddendum, getCachedMcpCounts, getMcpDiscoverySnapshot, isCompactMcpEnabled, mcpCatalogReady, registerMcpTool, startMcpConfigWatcher, stopAllMcpServers, stopMcpConfigWatchers, warmMcpCatalog } from './tools/mcp-tool.js';
 import { openMcpManager } from './tools/mcp-html.js';
 import { getDynamicCapabilitiesAddendum } from './tools/dynamic-catalog.js';
 import { renderAvailableSkillsAddendum, renderSkillsDashboard } from './tools/skill-catalog.js';
@@ -92,10 +92,11 @@ import { registerMemoryTool } from './tools/memory-tool.js';
 import { registerAwarenessCoordinationTools } from './tools/awareness-coordination-tools.js';
 import { getAwarenessLiteAgentId } from './tools/awareness-shared.js';
 import { activePlanScope, adoptPlanFromBranch, renderActivePlanAddendum, getPlan, getPlanReviewState, bumpPlanTurn, setPlanEntryAppender, PLAN_ENTRY_TYPE } from './tools/active-plan.js';
-import { getCachedAwarenessStatus, renderAwarenessSignalAddendum, refreshAwarenessPanel, suppressAwarenessPanel, resumeAwarenessPanel, clearAwarenessCacheEntry } from './tools/awareness-status.js';
+import { getCachedAwarenessStatus, refreshAwarenessPanel, suppressAwarenessPanel, resumeAwarenessPanel, clearAwarenessCacheEntry } from './tools/awareness-status.js';
 import { refreshStatusPanel, suppressStatusPanel, resumeStatusPanel } from './tools/status-panel.js';
-import { buildAgentFooterRows, buildCommandsRow, buildFooterSegments, buildShortcutHintsRow, formatBranchSegment, buildWorkingIndicator, buildWorkingMessage, formatCompact, getFooterDensity, parseFooterDensity, resolveSystemThemeName, setFooterDensity, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName, type ShortcutHint, type CommandEntry } from './ui-extras.js';
-import { BRAND_DIAMOND, contextGauge, paint, paintUi, SEP_WIDE } from './tui/palette.js';
+import { buildAgentFooterRows, buildCommandsRow, buildFooterSegments, formatBranchSegment, buildWorkingIndicator, buildWorkingMessage, formatCompact, getFooterDensity, parseFooterDensity, resolveSystemThemeName, setFooterDensity, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName, type CommandEntry } from './ui-extras.js';
+import { contextGauge, paint, paintUi } from './tui/palette.js';
+import { renderFooterView } from './tui/footer-view.js';
 import { setUiTickSubscriber } from './tui/ui-ticker.js';
 import { FOOTER_LEGEND, PERMISSION_LEVEL_SUMMARY } from './tui/content.js';
 import { listCDPSessions, closeAllChromeConnections } from './chrome-connection-cache.js';
@@ -104,8 +105,8 @@ import { adoptPlanModePolicy, exitPlanMode, planModeToolGate } from './tools/pla
 import { atomicWriteUtf8, clearAllReadStates, resolveFilePath } from './tools/file-state.js';
 import { registerAgentInbox, type AgentInboxRegistration } from './tools/agent-inbox.js';
 import { getPaletteShortcut, registerCommandPalette } from './tools/command-palette.js';
-import { registerCommandsCommand } from './tools/commands-command.js';
-import { probeGitHubAuth, type GitHubAuthState } from './tools/github-auth-status.js';
+import { collectPublicCommands, registerCommandsCommand } from './tools/commands-command.js';
+import { probeGitHubAuth } from './tools/github-auth-status.js';
 import { registerOctocodeAutocomplete } from './tools/autocomplete-providers.js';
 import { registerOctocodeMessageRenderers } from './tools/custom-messages.js';
 import { initCheckpointStore, type CheckpointEngine } from './tools/checkpoints.js';
@@ -113,11 +114,12 @@ import { createSessionArtifactContext, resolveSessionIdentity } from './tools/se
 import { createCheckpointInputHook, registerRewindCommand } from './tools/rewind-command.js';
 import { registerDialCommand, restoreDialOnStartup, getActiveDialLevel } from './tools/effort-dial.js';
 import { registerAiWatch, isWatchActive, markOwnWrite, markBashActivity, stopWatch } from './tools/ai-watch.js';
-import { setManagedFooter, setManagedStatus, setManagedWorking, setManagedWorkingIndicator, setManagedWorkingMessage } from './tools/runtime-renderer.js';
+import { runtimeStoreFor, setManagedFooter, setManagedStatus, setManagedWorking, setManagedWorkingIndicator, setManagedWorkingMessage } from './tools/runtime-renderer.js';
+import type { RuntimeFooterState } from './tools/runtime-store.js';
 import { SessionRuntime } from './session-runtime.js';
 import { registerExportCommand } from './tools/export-command.js';
 import { assertPathAllowed } from './tools/path-guard.js';
-import { makeRenderer, truncateToWidth } from './tools/render-helpers.js';
+import { makeRenderer } from './tools/render-helpers.js';
 import { renderBannerWithTagline, type BannerSessionInfo, type BannerTheme } from './branding/banner.js';
 import { pickProvider } from './web.js';
 import { createHookComposer } from './hook-composer.js';
@@ -261,26 +263,7 @@ export function getThinkingStatus(ctx: PiContext | undefined, level?: string): s
   return level ?? '';
 }
 
-export interface OctocodeMetricsState {
-  sessionStartedAt: number;
-  activeTurnStartedAt?: number;
-  lastTurnMs?: number;
-  completedTurns: number;
-  /** Whether the working tree was dirty at the last git refresh. Branch comes from Pi footerData. */
-  gitDirty?: boolean;
-  /** Changed-file count from the same porcelain probe (0 when clean). */
-  gitDirtyFiles?: number;
-  /** Safe, token-free GitHub authentication status for the footer and /commands. */
-  githubAuth: GitHubAuthState;
-  /**
-   * Context usage sampled by updateOctocodeMetricsUi (turn/tool events + the 1s
-   * ticker). The footer reads THIS, never ctx.getContextUsage() at render time:
-   * pi rebuilds the whole session branch per call (agent-session.js
-   * getContextUsage → sessionManager.getBranch()), and the footer renders on
-   * every streamed token — that was O(session) work per frame.
-   */
-  usage?: { tokens: number; contextWindow: number };
-}
+export type OctocodeMetricsState = RuntimeFooterState;
 
 function formatContextUsage(ctx: PiContext | undefined): { text: string; percent?: number } {
   const usage = ctx?.getContextUsage?.();
@@ -335,19 +318,6 @@ function workerFooterCounts(): WorkerFooterCounts {
  * (where the prompt parts are already assembled) and read by the module-scoped
  * footer refresher. Zero extra work — reuses strings already built each turn.
  */
-interface HarnessOverheadSnapshot { totalChars: number; sysChars: number; mcpChars: number; dynamicChars: number; mcpServers: number; mcpTools: number; skills: number }
-let harnessOverhead: HarnessOverheadSnapshot | undefined;
-export function setHarnessOverhead(snapshot: HarnessOverheadSnapshot | undefined): void {
-  harnessOverhead = snapshot;
-}
-
-/**
- * Resolve the highest-value keyboard shortcuts for the footer hint row. Keys
- * come from the live keybinding config via `keyText` (so remaps are honored),
- * falling back to pi's documented defaults when the host hasn't initialized or
- * bound an action. The permission-cycle key is the Octocode-registered shortcut
- * (`OCTOCODE_PERMISSIONS_KEY`, default ctrl+shift+a), not a pi keybinding id.
- */
 /**
  * All custom /octocode-* slash commands shown in the footer discovery row,
  * listed by their suffix (the "octocode-" prefix is stripped for brevity).
@@ -359,28 +329,6 @@ export function setHarnessOverhead(snapshot: HarnessOverheadSnapshot | undefined
 const OCTOCODE_FOOTER_COMMANDS: readonly CommandEntry[] = [
   { name: 'commands', desc: 'guide', token: 'link' },
 ];
-
-function octocodeShortcutHints(): ShortcutHint[] {
-  const kt = (id: string, fallback: string): string => {
-    try {
-      return keyText(id as Parameters<typeof keyText>[0]) || fallback;
-    } catch {
-      return fallback;
-    }
-  };
-  const permissionsKey = process.env['OCTOCODE_PERMISSIONS_KEY'] || 'ctrl+shift+a';
-  // All keys share the same dim token so they read as a uniform tier of
-  // "press this" chrome; label tokens are semantic per-action so the action
-  // words carry their own meaning at a glance.
-  return [
-    { key: kt('app.thinking.cycle', 'shift+tab'), label: 'think',   token: 'link',    keyToken: 'dim' },
-    { key: permissionsKey,                        label: 'perm',    token: 'warning', keyToken: 'dim' },
-    { key: kt('app.model.select', 'ctrl+l'),      label: 'model',   token: 'brand',   keyToken: 'dim' },
-    { key: kt('app.tools.expand', 'ctrl+o'),      label: 'tools',   token: 'symbol',  keyToken: 'dim' },
-    { key: getPaletteShortcut() ?? '',            label: 'palette', token: 'link',    keyToken: 'dim' },
-    { key: kt('app.interrupt', 'esc'),            label: 'stop',    token: 'error',   keyToken: 'dim' },
-  ];
-}
 
 // Footer registration is idempotent per session context. Pi's documented
 // contract (docs/tui.md "Custom Footer": setFooter ONCE + tui.requestRender for
@@ -405,44 +353,40 @@ function buildOctocodeFooterLines(
   // now is read at render time so the active-turn duration ticks live without
   // re-registering the footer.
   const now = Date.now();
-  const usage = state.usage ?? { tokens: 0, contextWindow: 0 };
+  const usage = state.usage ?? { tokens: undefined, contextWindow: 0 };
   const workers = workerFooterCounts();
   const cachedAwareness = getCachedAwarenessStatus(ctx.cwd ?? process.cwd());
-  const sep = paint(theme, 'dim', SEP_WIDE);
-
-  // ── Row 1: Brand + identity (branch · model · github · perm) + /commands ──
-  // Static brand mark — Pi repaints every streamed token; time-varying bytes
-  // here cause flicker + scroll churn, so no animation on this line.
-  const brand = paint(theme, 'brand', theme.bold(`${BRAND_DIAMOND} Octocode`));
+  // ── Row 1: Identity (branch · model · github · perm) + /commands ──
+  // The app already owns the Octocode brand; repeating it in every footer frame
+  // wastes width and creates duplicate chrome.
   const branch = footerData?.getGitBranch?.();
-  const identityParts: string[] = [];
+  const identityParts: Array<{ text: string; token?: 'dim' | 'muted' | 'success' | 'error' | 'warning' | 'link'; attention?: boolean }> = [];
   if (branch) {
-    identityParts.push(paint(theme, 'dim', formatBranchSegment(branch, state.gitDirty ?? false, state.gitDirtyFiles)));
+    identityParts.push({ text: formatBranchSegment(branch, state.gitDirty ?? false, state.gitDirtyFiles), token: 'dim' });
   }
   if (ctx.model?.id) {
     const modelLabel = ctx.model.provider ? `${ctx.model.provider}/${ctx.model.id}` : ctx.model.id;
-    identityParts.push(paint(theme, 'muted', `model ${modelLabel}`));
+    identityParts.push({ text: `model ${modelLabel}`, token: 'muted' });
   }
   if (state.githubAuth.status === 'authenticated') {
-    identityParts.push(paint(theme, 'success', 'github ✓'));
+    identityParts.push({ text: 'github ✓', token: 'success' });
   } else if (state.githubAuth.status === 'missing') {
-    identityParts.push(theme.bold(paint(theme, 'error', 'github ✗ login')));
+    identityParts.push({ text: 'github ✗ login', token: 'error', attention: true });
   } else if (state.githubAuth.status === 'error') {
-    identityParts.push(theme.bold(paint(theme, 'error', 'github ✗')));
+    identityParts.push({ text: 'github ✗', token: 'error', attention: true });
   } else if (state.githubAuth.status === 'checking') {
-    identityParts.push(paint(theme, 'dim', 'github …'));
+    identityParts.push({ text: 'github …', token: 'dim' });
   }
   const permLevel = getPermissionLevel();
   if (permLevel) {
     const grants = approvedClasses().length > 0 ? ` +${approvedClasses().length}` : '';
-    identityParts.push(paint(theme, permLevel === 'relaxed' ? 'warning' : 'dim', `perm ${permLevel}${grants}`));
+    identityParts.push({ text: `perm ${permLevel}${grants}`, token: permLevel === 'relaxed' ? 'warning' : 'dim' });
   }
   // /commands hint moved from separate cmds row onto the brand row so the
   // commands guide is always visible without wasting a dedicated footer line.
   const cmdsHint = buildCommandsRow(OCTOCODE_FOOTER_COMMANDS, theme);
-  const identityBody = identityParts.join(sep);
-  const row1 = cmdsHint ? `${brand}  ${identityBody}${sep}${cmdsHint}` : `${brand}  ${identityBody}`;
-  const lines: string[] = [truncateToWidth(row1, width)];
+  if (cmdsHint) identityParts.push({ text: cmdsHint, token: 'dim' });
+  identityParts.push({ text: '/settings configure', token: 'link' });
 
   // ── Row 2: Metrics (context · session · timing · overhead · agent counts) ──
   const metricsSegments = buildFooterSegments({
@@ -464,61 +408,38 @@ function buildOctocodeFooterLines(
     permissionLevel: undefined,    // shown in row 1
     approvedClassCount: undefined, // shown in row 1
     githubAuth: undefined,         // shown in row 1
-    overhead: harnessOverhead,
+    overhead: (() => {
+      const context = runtimeStoreFor(ctx)?.getState().context;
+      if (!context || context.status === 'pending') return undefined;
+      return {
+        totalChars: context.providerSubtotalChars,
+        sysChars: context.systemPromptChars,
+        mcpServers: context.mcpServers,
+        mcpTools: context.mcpTools,
+        skills: context.skills,
+      };
+    })(),
     branch: undefined,
     dirty: state.gitDirty ?? false,
     dirtyFiles: state.gitDirtyFiles,
   });
-  if (metricsSegments.length > 0) {
-    const metricsBody = metricsSegments
-      .map((s) => {
-        const painted = paint(theme, s.token ?? 'dim', s.text);
-        return s.attention ? theme.bold(painted) : painted;
-      })
-      .join(sep);
-    lines.push(truncateToWidth(metricsBody, width));
-  }
-
-  // ── Row 3: Plan/tasks summary (compact 1-line overview of active plan) ──
-  const plan = getPlan(activePlanScope(ctx));
-  if (plan.length > 0) {
-    const total = plan.length;
-    const done = plan.filter((s) => s.status === 'done').length;
-    const current = plan.find((s) => s.status === 'doing');
-    const planSummary = current
-      ? `${done}/${total} · ${current.activeForm ?? current.text}`
-      : `${done}/${total} done`;
-    lines.push(truncateToWidth(`${paint(theme, 'dim', '▸ plan')} ${paint(theme, 'muted', planSummary)}`, width));
-  }
-
-  // ── Row 4+: All agents (unlimited — operator requested no cap) ──
-  const { rows } = buildAgentFooterRows(listWorkerLedgerEntries(), now);
-  for (const r of rows) {
-    const stateWord = paint(theme, r.token, r.state);
-    const parts = [
-      `${paint(theme, 'dim', '  ')}${paint(theme, 'muted', r.label)}`,
-      r.attention ? theme.bold(stateWord) : stateWord,
-      paint(theme, 'dim', r.elapsed),
-      ...(r.doing ? [paint(theme, 'dim', `now: ${r.doing}`)] : []),
-    ];
-    lines.push(truncateToWidth(parts.join(sep), width));
-  }
-
-  // ── Last: Keyboard shortcuts (hidden at compact density) ──
-  if (getFooterDensity() !== 'compact') {
-    const hints = buildShortcutHintsRow(octocodeShortcutHints(), theme);
-    if (hints) lines.push(truncateToWidth(`${paint(theme, 'dim', 'keys')} ${hints}`, width));
-    // cmds row removed — /commands hint now lives inline on the brand row (row 1)
-  }
-  return lines;
+  const { rows: agentRows } = buildAgentFooterRows(listWorkerLedgerEntries(), now);
+  return renderFooterView({
+    identity: identityParts,
+    metrics: metricsSegments,
+    agents: agentRows,
+    shortcuts: [],
+  }, { width, theme });
 }
 
-function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetricsState, _now = Date.now()): void {
+function updateOctocodeMetricsUi(ctx: PiContext | undefined, _now = Date.now()): void {
   if (!ctx?.hasUI) return;
+  const store = runtimeStoreFor(ctx);
+  if (!store) return;
   // Sample once per update (event or 1s tick); the render closure only reads.
   try {
     const u = ctx.getContextUsage?.();
-    if (u) state.usage = { tokens: u.tokens ?? 0, contextWindow: u.contextWindow ?? 0 };
+    if (u) store.getState().setFooter({ usage: { tokens: u.tokens ?? undefined, contextWindow: u.contextWindow ?? 0 } });
   } catch { /* keep the last sample */ }
 
   // The consolidated branded footer is the SINGLE metrics surface — context /
@@ -527,7 +448,7 @@ function updateOctocodeMetricsUi(ctx: PiContext | undefined, state: OctocodeMetr
     footerRegisteredCtxs.add(ctx);
       setManagedFooter(ctx, (tui: unknown, theme, footerData) => {
       footerRequestRenderByCtx.set(ctx, () => (tui as { requestRender?: () => void } | undefined)?.requestRender?.());
-      const renderer = makeRenderer((width) => buildOctocodeFooterLines(ctx, state, width, theme, footerData));
+      const renderer = makeRenderer((width) => buildOctocodeFooterLines(ctx, store.getState().footer, width, theme, footerData));
       const unsubscribe = footerData?.onBranchChange?.(() => {
         renderer.invalidate();
         footerRequestRenderByCtx.get(ctx)?.();
@@ -610,10 +531,12 @@ function runAwarenessLiteMutationGate(event: { toolName?: string; input?: Record
  * provider owns branch detection/watching, so this keeps our extra `*` marker
  * without duplicating branch probes.
  */
-async function refreshFooterDirtyState(pi: PiInstance, state: OctocodeMetricsState): Promise<void> {
+async function refreshFooterDirtyState(pi: PiInstance, ctx: PiContext | undefined): Promise<void> {
   const porcelain = await execGitSummary(pi, ['status', '--porcelain'], 600);
-  state.gitDirty = porcelain !== '';
-  state.gitDirtyFiles = porcelain === '' ? 0 : porcelain.split('\n').filter((l) => l.trim()).length;
+  runtimeStoreFor(ctx)?.getState().setFooter({
+    gitDirty: porcelain !== '',
+    gitDirtyFiles: porcelain === '' ? 0 : porcelain.split('\n').filter((l) => l.trim()).length,
+  });
 }
 
 async function buildRepoStateHint(pi: PiInstance, event: { text: string; source?: string; streamingBehavior?: string }): Promise<string> {
@@ -919,6 +842,8 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
       '/octocode-skills',
       '/octocode-agents',
       '/octocode-cron',
+      '/settings',
+      '/octocode-settings',
       '/mcp',
       '/octocode-setup',
       '/octocode-skills-update',
@@ -1082,7 +1007,7 @@ export async function formatOctocodeNow(ctx: PiContext | undefined, pi: PiInstan
     ...compactRepoStatus(repoStatus),
     '',
     'Next actions',
-    '/octocode-tasks · /octocode-skills · /octocode-agents · /mcp · /octocode-cron',
+    '/octocode-tasks · /octocode-skills · /octocode-agents · /settings · /octocode-cron',
   ].join('\n');
 }
 
@@ -1254,6 +1179,7 @@ function registerSupportToolPhase({ pi, Type, registeredToolNames, notify, getLa
   registerBashTool(pi, Type, registeredToolNames, registerUniqueTool);
   registerReadMediaTool(pi, Type, registeredToolNames, registerUniqueTool);
   registerMediaTool(pi, Type, registeredToolNames, registerUniqueTool);
+  registerRunFfmpegTool(pi, Type, registeredToolNames, registerUniqueTool);
 
   registerWebTool(pi, Type, registeredToolNames, registerUniqueTool);
 
@@ -1308,17 +1234,16 @@ function registerRuntimeUiPhase({ pi, Type, registeredToolNames, notify }: Runti
 
 interface TurnMetricsRegistrationArgs {
   pi: PiInstance;
-  metricsState: OctocodeMetricsState;
   startMetricsTicker: (ctx: PiContext | undefined) => void;
   stopMetricsTicker: () => void;
   toolStartTimes: Map<string, number>;
 }
 
-function registerTurnMetricsPhase({ pi, metricsState, startMetricsTicker, stopMetricsTicker, toolStartTimes }: TurnMetricsRegistrationArgs): void {
+function registerTurnMetricsPhase({ pi, startMetricsTicker, stopMetricsTicker, toolStartTimes }: TurnMetricsRegistrationArgs): void {
   if (typeof pi.on !== 'function') return;
   pi.on('turn_start', async (_event: unknown, ctx: PiContext) => {
-    metricsState.activeTurnStartedAt = Date.now();
-    updateOctocodeMetricsUi(ctx, metricsState);
+    runtimeStoreFor(ctx)?.getState().setFooter({ activeTurnStartedAt: Date.now() });
+    updateOctocodeMetricsUi(ctx);
     startMetricsTicker(ctx); // live `active`/`session` durations during the turn
   });
   pi.on('turn_end', async (_event: unknown, ctx: PiContext) => {
@@ -1327,13 +1252,15 @@ function registerTurnMetricsPhase({ pi, metricsState, startMetricsTicker, stopMe
     // (aborted turns) — the map otherwise grows for the session lifetime.
     toolStartTimes.clear();
     const now = Date.now();
-    if (metricsState.activeTurnStartedAt !== undefined) {
-      metricsState.lastTurnMs = now - metricsState.activeTurnStartedAt;
-      metricsState.activeTurnStartedAt = undefined;
-    }
-    metricsState.completedTurns += 1;
-    await refreshFooterDirtyState(pi, metricsState); // dirty state may have changed this turn; branch comes from Pi footerData
-    updateOctocodeMetricsUi(ctx, metricsState);
+    const store = runtimeStoreFor(ctx);
+    const footer = store?.getState().footer;
+    store?.getState().setFooter({
+      lastTurnMs: footer?.activeTurnStartedAt !== undefined ? now - footer.activeTurnStartedAt : footer?.lastTurnMs,
+      activeTurnStartedAt: undefined,
+      completedTurns: (footer?.completedTurns ?? 0) + 1,
+    });
+    await refreshFooterDirtyState(pi, ctx); // dirty state may have changed this turn; branch comes from Pi footerData
+    updateOctocodeMetricsUi(ctx);
   });
 }
 
@@ -1342,11 +1269,10 @@ interface WorkerToolRegistrationArgs {
   Type: TypeBoxBuilder;
   registeredToolNames: Set<string>;
   notify: NotifyFn;
-  metricsState: OctocodeMetricsState;
 }
 
-function registerWorkerToolPhase({ pi, notify, metricsState }: WorkerToolRegistrationArgs): AgentInboxRegistration {
-  setAgentLedgerMetricsRefreshForUi((ctx) => updateOctocodeMetricsUi(ctx, metricsState));
+function registerWorkerToolPhase({ pi, notify }: WorkerToolRegistrationArgs): AgentInboxRegistration {
+  setAgentLedgerMetricsRefreshForUi((ctx) => updateOctocodeMetricsUi(ctx));
 
   // Worker inbox overlay (/octocode-inbox) + desktop notifications. The unified
   // agent facade initializes the shared ledger runtime during support-tool setup.
@@ -1364,15 +1290,34 @@ async function wireOctocodePiExtension(
   // Trade-off: if the system prompt file is updated mid-session (e.g. after
   // /octocode-skills-update), the stale cached text persists until session reload.
   // This is intentional — prompt updates take effect on the next Pi session.
-  let cachedSystemPromptText: string | null = null;
-  let latestAvailableSkills: SkillInfo[] | undefined;
+      let cachedSystemPromptText: string | null = null;
+      let latestAvailableSkills: DiscoveredSkill[] | undefined;
+      let latestPiSkills: SkillInfo[] | undefined;
+  // One active session per extension instance. Reset on session_start so /new,
+  // /resume, and /fork adopt refreshed MCP/skill/config state while every turn
+  // inside one session reuses byte-identical provider prompt content.
+  let frozenSystemPrompt: string | undefined;
+  // Signature of plan steps frozen into the system prompt; used for mid-session drift detection.
+  let frozenPlanSignature: string | undefined;
+  // Unread count last surfaced via cron callback (proactive TUI notify; separate from per-turn LLM injection).
+  let lastCronUnreadAlerted = -1;
   // No pi.exec seam → the awareness-lite status job runs in-process (no child).
-  const cronScheduler = createOctocodeCronScheduler({});
-  const metricsState: OctocodeMetricsState = {
-    sessionStartedAt: Date.now(),
-    completedTurns: 0,
-    githubAuth: { status: 'checking' },
-  };
+  const cronScheduler = createOctocodeCronScheduler({
+    // Fires once per job run. Refresh the awareness panel immediately and show a
+    // TUI notification when new peer messages arrive — closes the 30-min lag gap
+    // between message arrival and the next user turn.
+    onJobComplete: (result, ctx) => {
+      if (result.status !== 'succeeded') return;
+      refreshAwarenessPanel(ctx);
+      const unread = getCachedAwarenessStatus(ctx?.cwd ?? process.cwd())?.unreadInbox ?? 0;
+      if (unread > 0 && unread !== lastCronUnreadAlerted) {
+        lastCronUnreadAlerted = unread;
+        notify(ctx, `${unread} unread peer message(s) — check inbox at your next turn.`, 'info');
+      } else if (unread === 0 && lastCronUnreadAlerted > 0) {
+        lastCronUnreadAlerted = 0;
+      }
+    },
+  });
   // Live footer ticker: while a turn is active, re-render the footer every second
   // so `active`/`session` durations advance (they are otherwise only refreshed on
   // turn/session events). Reads are in-memory only (no git/disk per tick); git
@@ -1385,7 +1330,7 @@ async function wireOctocodePiExtension(
   // (turn_end, session_start, session_shutdown) also calls stopMetricsTicker, so
   // the ticker is never left subscribed against an inactive turn.
   const startMetricsTicker = (ctx: PiContext | undefined): void =>
-    setUiTickSubscriber(METRICS_TICK_KEY, () => updateOctocodeMetricsUi(ctx, metricsState));
+    setUiTickSubscriber(METRICS_TICK_KEY, () => updateOctocodeMetricsUi(ctx));
   const toolStartTimes = new Map<string, number>();
   let providerRequestStartedAt: number | undefined;
   // Agent inbox handle: assigned during tool registration, referenced by the
@@ -1496,6 +1441,12 @@ async function wireOctocodePiExtension(
       refreshStatusPanel(ctx);
     });
 
+    // Tracks the last unread peer-message count injected to the model this session.
+    // Declared inside the hooks if-block so it shares the same closure as the
+    // before_agent_start handler. Reset to -1 each session_start so the first
+    // turn of a new session re-notifies if messages are waiting.
+    let lastNotifiedUnread = -1;
+
     const disposeSessionResources = async (reason: string, ctx: PiContext | undefined): Promise<void> => {
       const canUseShutdownContext = reason === 'quit';
       awarenessMutationGate.cleanup();
@@ -1503,7 +1454,7 @@ async function wireOctocodePiExtension(
       cronScheduler.stop();
       stopMcpConfigWatchers();
       stopMetricsTicker();
-      metricsState.activeTurnStartedAt = undefined;
+      runtimeStoreFor(ctx)?.getState().setFooter({ activeTurnStartedAt: undefined });
       suppressStatusPanel();
       suppressAwarenessPanel();
       agentInbox?.shutdown({ restoreTitle: canUseShutdownContext });
@@ -1524,6 +1475,12 @@ async function wireOctocodePiExtension(
     };
 
     const initializeOctocodeSession = async (ctx: PiContext | undefined): Promise<void> => {
+      frozenSystemPrompt = undefined;
+      frozenPlanSignature = undefined;
+      latestAvailableSkills = undefined;
+      latestPiSkills = undefined;
+      lastCronUnreadAlerted = -1;
+      lastNotifiedUnread = -1;
       await sessionRuntime?.dispose('replace');
       const runtime = new SessionRuntime({ ctx, onDispose: (reason) => disposeSessionResources(reason ?? 'shutdown', ctx) });
       sessionRuntime = runtime;
@@ -1568,7 +1525,7 @@ async function wireOctocodePiExtension(
       // registration is keyed by ctx; deleting here forces exactly one
       // re-registration per session, e.g. after /new or a theme change).
       if (ctx) footerRegisteredCtxs.delete(ctx);
-      setAgentLedgerMetricsRefreshForUi((ctx) => updateOctocodeMetricsUi(ctx, metricsState));
+      setAgentLedgerMetricsRefreshForUi((ctx) => updateOctocodeMetricsUi(ctx));
       // Read-states recorded in a previous session must not satisfy the edit
       // tool's stale-read gate in this one, and the auto-compaction edge
       // trigger must not carry the old session's threshold crossing.
@@ -1634,11 +1591,16 @@ async function wireOctocodePiExtension(
       checkpointEnginePromise = undefined;
       // Drop dead worker records so the agent ledger reflects only this session.
       pruneDroppableAgentsForSession();
-      metricsState.sessionStartedAt = Date.now();
-      metricsState.activeTurnStartedAt = undefined;
-      metricsState.lastTurnMs = undefined;
-      metricsState.completedTurns = 0;
-      metricsState.githubAuth = { status: 'checking' };
+      runtimeStore.getState().setFooter({
+        sessionStartedAt: Date.now(),
+        activeTurnStartedAt: undefined,
+        lastTurnMs: undefined,
+        completedTurns: 0,
+        githubAuth: { status: 'checking' },
+        usage: undefined,
+        gitDirty: undefined,
+        gitDirtyFiles: undefined,
+      });
       stopMetricsTicker();
       latestSessionCwd = ctx?.cwd;
       latestSessionCtx = ctx;
@@ -1660,7 +1622,7 @@ async function wireOctocodePiExtension(
         registerOctocodeAutocomplete(ctx.ui, {
           listWorkers: () => listWorkerLedgerEntries(),
           getPlanSteps: () => getPlan(activePlanScope(ctx)),
-          listSkills: () => latestAvailableSkills ?? [],
+                    listSkills: () => discoverSkills(sessionCwd, latestAvailableSkills),
         });
       }
       // Trim shadow-git checkpoint history in the background (keeps 30).
@@ -1677,28 +1639,22 @@ async function wireOctocodePiExtension(
         name: 'dirty-state',
         message: 'checking workspace changes',
         readyMessage: 'workspace state checked',
-        run: () => refreshFooterDirtyState(pi, metricsState),
+        run: () => refreshFooterDirtyState(pi, ctx),
       }));
       applyOctocodeUi(ctx, pi.getThinkingLevel?.());
-      // Seed the footer's prompt-overhead segment before the first turn so the
-      // toolbar carries its full data from frame one; before_agent_start
-      // refreshes it with the exact per-turn parts (skills, active plan).
+      // Context is not measurable until before_agent_start provides Pi's base
+      // prompt and project context. Publish an explicit pending state instead of
+      // showing a misleading partial total during initialization.
       if (cachedSystemPromptText === null) {
         cachedSystemPromptText = readTextIfExists(getAssetPaths().systemPrompt);
       }
-      const startupMcpCatalog = getCachedMcpCatalogAddendum(ctx);
-      const startupDynamicCatalog = getDynamicCapabilitiesAddendum();
-      const startupMcpCounts = getCachedMcpCounts(ctx);
-      setHarnessOverhead({
-        totalChars: (cachedSystemPromptText?.length ?? 0) + startupMcpCatalog.length + startupDynamicCatalog.length,
-        sysChars: cachedSystemPromptText?.length ?? 0,
-        mcpChars: startupMcpCatalog.length,
-        dynamicChars: startupDynamicCatalog.length,
-        mcpServers: startupMcpCounts.servers,
-        mcpTools: startupMcpCounts.tools,
-        skills: latestAvailableSkills?.length ?? 0,
+      const directToolStats = getDirectToolContractStats(registeredToolNames);
+      runtimeStore.getState().setContext({
+        status: 'pending',
+        mode: isCompactMcpEnabled() ? 'compact' : 'exact',
+        directToolChars: directToolStats.totalChars,
       });
-      updateOctocodeMetricsUi(ctx, metricsState);
+      updateOctocodeMetricsUi(ctx);
       // Credential resolution belongs to Octocode (env → Octocode storage → gh CLI).
       // Probe once per session without delaying startup, and ignore stale results after
       // /new, /resume, /fork, reload, or shutdown.
@@ -1710,8 +1666,8 @@ async function wireOctocodePiExtension(
       }).then((authState) => {
         if (!authState) return;
         if (!runtime.isCurrent()) return;
-        metricsState.githubAuth = authState;
-        updateOctocodeMetricsUi(ctx, metricsState);
+        runtimeStore.getState().setFooter({ githubAuth: authState });
+        updateOctocodeMetricsUi(ctx);
       }));
       // Surface any disk-restored plan / live agents in the below-editor panel right at launch.
       refreshStatusPanel(ctx);
@@ -1754,9 +1710,6 @@ async function wireOctocodePiExtension(
         writeDiscoveryFile(ctx, {
           skills: discoverSkills(sessionCwd, latestAvailableSkills),
           nativeTools: [...registeredToolNames],
-          // harnessOverhead is already set by setHarnessOverhead() above (same
-          // session_start block) so it's always available when this .then() fires.
-          overhead: harnessOverhead ?? undefined,
         });
       });
       // Check for a newer @octocodeai/pi-extension on npm — fire-and-forget, never
@@ -1764,7 +1717,7 @@ async function wireOctocodePiExtension(
       // version and installed packages (interactive-mode.js#run). Interactive-only:
       // Pi's own checks never run in print/rpc mode either, and ctx.hasUI is false
       // there, so this also skips the npm-view subprocess entirely for scripted use.
-      if (ctx?.hasUI) {
+      if (ctx?.hasUI && process.env['NODE_ENV'] !== 'test' && !process.env['VITEST']) {
         initializationTasks.push(runtime.runTask({
           name: 'update-check',
           message: 'checking for updates',
@@ -1779,13 +1732,16 @@ async function wireOctocodePiExtension(
           );
         }));
       }
-      // Watch mcp.json (global + project) for external edits and hot-reload: drop stale
-      // connections + cache and notify the user — no agent restart needed.
-      try {
-        const watched = startMcpConfigWatcher(ctx, notify);
-        if (watched > 0) notify(ctx, `Octocode watching mcp.json for live changes (add/remove/edit apply without restart).`, 'info');
-      } catch (error) {
-        notify(ctx, `Octocode MCP config watcher failed to start: ${(error as Error)?.message ?? String(error)}`, 'warning');
+      // Interactive sessions watch mcp.json for connection/catalog invalidation. Headless
+      // sessions intentionally avoid long-lived filesystem resources; each MCP action still
+      // resolves the current configuration. Prompt changes take effect on the next session.
+      if (ctx?.hasUI && process.env['NODE_ENV'] !== 'test' && !process.env['VITEST']) {
+        try {
+          const watched = startMcpConfigWatcher(ctx, notify);
+          if (watched > 0) notify(ctx, `Octocode watching mcp.json for live changes; use /new after catalog changes to refresh the agent prompt.`, 'info');
+        } catch (error) {
+          notify(ctx, `Octocode MCP config watcher failed to start: ${(error as Error)?.message ?? String(error)}`, 'warning');
+        }
       }
       // Disable replaced built-ins: research uses Octocode MCP and mutations use file.
       try {
@@ -1845,7 +1801,7 @@ async function wireOctocodePiExtension(
 
     hooks.on('thinking_level_select', 'octocode-thinking-select', async (event: ThinkingLevelEvent, ctx: PiContext | undefined) => {
       applyOctocodeUi(ctx, event.level);
-      updateOctocodeMetricsUi(ctx, metricsState);
+      updateOctocodeMetricsUi(ctx);
     });
 
     let sessionAutoNamed = false;
@@ -1952,6 +1908,53 @@ async function wireOctocodePiExtension(
         return piPrompt !== event.systemPrompt ? { systemPrompt: piPrompt } : undefined;
       }
 
+      // Refresh TUI panels on every turn — previously skipped on frozen turns
+      // because they sat after the freeze early-return.
+      refreshAwarenessPanel(ctx);
+      refreshStatusPanel(ctx);
+
+      // Compute the canonical model-facing plan projection once; reuse it for
+      // drift detection, the freeze anchor, and the initial prompt.
+      const planScope = activePlanScope(ctx);
+      // catches lifecycle, RFC revision, decisions, dependencies, acceptance,
+      // verification, and Awareness mapping changes—not only status/id changes.
+      const planContext = renderActivePlanAddendum(planScope);
+      const planSig = planContext;
+
+      // Per-turn awareness nudge: injected as conversation message (not system prompt)
+      // so frozen bytes stay cache-stable. Fires only when unread count changes and > 0.
+      const awarenessCwd = ctx?.cwd ?? process.cwd();
+      const unreadNow = getCachedAwarenessStatus(awarenessCwd)?.unreadInbox ?? 0;
+      const unreadContent =
+        unreadNow > 0 && unreadNow !== lastNotifiedUnread
+          ? `${unreadNow} unread peer message(s). Check inbox (message tool, action:inbox) before the next consequential decision — act on blockers/decisions, mark informational ones read, then continue.`
+          : undefined;
+      if (unreadNow !== lastNotifiedUnread) lastNotifiedUnread = unreadNow;
+
+      // Plan-drift correction: when the frozen <active_plan> block is stale, send
+      // the current step list as a context message. Fires once per state change
+      // (frozenPlanSignature is updated on each diff) so the model gets one
+      // targeted correction rather than a repeated stream.
+      let planDriftContent: string | undefined;
+      if (frozenSystemPrompt !== undefined && frozenPlanSignature !== undefined && planSig !== frozenPlanSignature) {
+        frozenPlanSignature = planSig;
+        planDriftContent = planContext || 'Plan cleared; no active task breakdown remains.';
+      }
+
+      // Combine all per-turn context signals into one message (only one message
+      // per turn is supported by BeforeAgentStartEventResult). Plan drift first.
+      const contextParts = [planDriftContent, unreadContent].filter((p): p is string => Boolean(p));
+      const contextMessage =
+        contextParts.length > 0
+          ? { customType: 'octocode-context-update', content: contextParts.join('\n\n'), display: false }
+          : undefined;
+
+      if (frozenSystemPrompt !== undefined) {
+        return contextMessage
+          ? { systemPrompt: frozenSystemPrompt, message: contextMessage }
+          : { systemPrompt: frozenSystemPrompt };
+      }
+
       // Octocode owns the model-facing skill flow (the `skill` tool + the
       // <available_skills> addendum) — deterministically drop Pi's read-based
       // skills section so the model never sees two catalogs or a `read`
@@ -1971,53 +1974,80 @@ async function wireOctocodePiExtension(
       // <mcp_catalog_index>; subsequent turns reuse the same session bytes.
       await mcpCatalogReady(ctx);
       const mcpCatalog = getCachedMcpCatalogAddendum(ctx);
-      // Live projection of the agent's self-created dynamic tools/skills. Rebuilt every
-      // turn from the on-disk registries (no cache/watcher), so it always reflects the
-      // latest callTool and unified skill lifecycle state; empty string when there are none.
-      const dynamicCatalog = getDynamicCapabilitiesAddendum();
-      // Live projection of Pi-discovered skill names/descriptions. Rebuilt every
-      // turn from systemPromptOptions so it survives compaction and reflects
-      // skills added/removed by Pi discovery without a watcher.
-      latestAvailableSkills = event.systemPromptOptions?.skills;
+      // Resolve one effective, loadable skill inventory for the prompt, skill
+      // tool, dashboard, autocomplete, and discovery artifact. Pi metadata wins
+      // when it has a path; prompt-only entries resolve through shared roots.
+        latestPiSkills = event.systemPromptOptions?.skills;
+        latestAvailableSkills = discoverSkills(
+          ctx?.cwd ?? process.cwd(),
+          latestPiSkills,
+      );
+      // Dynamic skills with the same case-insensitive name are omitted: the
+      // installed skill owns the unqualified routing name.
+      const dynamicCatalog = getDynamicCapabilitiesAddendum(latestAvailableSkills.map((skill) => skill.name));
       const availableSkills = renderAvailableSkillsAddendum(latestAvailableSkills);
       const runtimeCapabilities = renderRuntimeCapabilitiesAddendum(ctx);
-      // Compaction-durable task breakdown: re-injected every turn so a plan survives compaction.
-      // Bump the staleness counter once per turn first so an idle plan surfaces a nudge.
-      const planScope = activePlanScope(ctx);
+      // Initial durable plan snapshot. The canonical projection was computed above.
+      // Later mutations are
+      // already present in tool results/session entries; compaction emits a bounded
+      // plan pointer and the drift mechanism re-delivers step state on change.
       bumpPlanTurn(planScope);
-      const activePlan = renderActivePlanAddendum(planScope);
-      // Live Awareness panel (shared plans/tasks/verify-debt) under the input; async+throttled, never blocks.
-      // The model addendum uses the previous successful cached snapshot, so prompt assembly never waits on SQLite.
-      const awarenessSignal = renderAwarenessSignalAddendum(getCachedAwarenessStatus(ctx?.cwd ?? process.cwd()), getAwarenessLiteAgentId(ctx));
-      refreshAwarenessPanel(ctx);
-      // Render the unified below-editor status panel every turn, independent of awareness, so a
-      // persisted plan (or active agents) is always visible under the input if it exists.
-      refreshStatusPanel(ctx);
-      const prompt = [cachedSystemPromptText, mcpCatalog, runtimeCapabilities, dynamicCatalog, availableSkills, activePlan, awarenessSignal].filter((part) => part.trim().length > 0).join('\n\n');
-      // Snapshot the per-turn harness overhead for the toolbar segment. Reuses the
-      // strings already built above plus the cached MCP counts — no extra work.
-      const mcpCounts = getCachedMcpCounts(ctx);
-      setHarnessOverhead({
-        totalChars: (cachedSystemPromptText?.length ?? 0) + mcpCatalog.length + runtimeCapabilities.length + dynamicCatalog.length + availableSkills.length + activePlan.length + awarenessSignal.length,
-        sysChars: cachedSystemPromptText?.length ?? 0,
-        mcpChars: mcpCatalog.length,
-        dynamicChars: runtimeCapabilities.length + dynamicCatalog.length + availableSkills.length + activePlan.length + awarenessSignal.length,
-        mcpServers: mcpCounts.servers,
-        mcpTools: mcpCounts.tools,
-        skills: latestAvailableSkills?.length ?? 0,
-      });
-      // Even with no Octocode addendum to append, a stripped prompt must still
-      // be returned or --no-context silently becomes a no-op.
-      if (prompt.trim().length === 0 || !shouldAppendSystemPrompt(piPrompt, prompt)) {
-        return stripped ? { systemPrompt: piPrompt } : undefined;
-      }
-      return {
-        systemPrompt: composeSystemPrompt({
+      const activePlan = planContext;
+      const prompt = [cachedSystemPromptText, mcpCatalog, runtimeCapabilities, dynamicCatalog, availableSkills, activePlan].filter((part) => part.trim().length > 0).join('\n\n');
+      // Build once, then freeze these exact bytes for the session. This complete
+      // value includes Pi's base system prompt, project context, Octocode policy,
+      // initial skills, MCP catalog, and the initial durable plan projection.
+      const resolvedPrompt = prompt.trim().length === 0 || !shouldAppendSystemPrompt(piPrompt, prompt)
+        ? piPrompt
+        : composeSystemPrompt({
           piSystemPrompt: piPrompt,
           octocodePrompt: prompt,
           promptMode,
-        }),
-      };
+        });
+      // Snapshot the complete initial provider context. Direct tool contracts
+      // are sent beside the system prompt, so count their descriptions + JSON
+      // schemas separately and expose the combined initial subtotal.
+      const mcpCounts = getCachedMcpCounts(ctx);
+      const directToolStats = getDirectToolContractStats(registeredToolNames);
+      const dynamicChars = runtimeCapabilities.length + dynamicCatalog.length + availableSkills.length + activePlan.length;
+      const providerSubtotalChars = resolvedPrompt.length + directToolStats.totalChars;
+      runtimeStoreFor(ctx)?.getState().setContext({
+        status: 'frozen',
+        mode: isCompactMcpEnabled() ? 'compact' : 'exact',
+        systemPromptChars: resolvedPrompt.length,
+        mcpChars: mcpCatalog.length,
+        dynamicChars,
+        directToolChars: directToolStats.totalChars,
+        providerSubtotalChars,
+        estimatedTokens: Math.round(providerSubtotalChars / 4),
+        mcpServers: mcpCounts.servers,
+        mcpTools: mcpCounts.tools,
+        skills: latestAvailableSkills.length,
+      });
+      void writeDiscoveryFile(ctx, {
+        skills: latestAvailableSkills,
+        nativeTools: [...registeredToolNames],
+        overhead: {
+          sysChars: piPrompt.length + (cachedSystemPromptText?.length ?? 0),
+          mcpChars: mcpCatalog.length,
+          dynamicChars,
+          totalChars: resolvedPrompt.length,
+          directToolChars: directToolStats.totalChars,
+          mcpServers: mcpCounts.servers,
+          mcpTools: mcpCounts.tools,
+          skills: latestAvailableSkills.length,
+          status: 'frozen',
+          mode: isCompactMcpEnabled() ? 'compact' : 'exact',
+        },
+      });
+      frozenSystemPrompt = resolvedPrompt;
+      frozenPlanSignature = planSig;  // anchor for mid-session drift detection
+      if (resolvedPrompt === event.systemPrompt && !stripped) {
+        return contextMessage ? { message: contextMessage } : undefined;
+      }
+      return contextMessage
+        ? { systemPrompt: resolvedPrompt, message: contextMessage }
+        : { systemPrompt: resolvedPrompt };
     });
   }
 
@@ -2032,8 +2062,8 @@ async function wireOctocodePiExtension(
       getLatestAvailableSkills: () => latestAvailableSkills,
     });
     registerRuntimeUiPhase({ pi, Type, registeredToolNames, notify });
-    registerTurnMetricsPhase({ pi, metricsState, startMetricsTicker, stopMetricsTicker, toolStartTimes });
-    agentInbox = registerWorkerToolPhase({ pi, Type, registeredToolNames, notify, metricsState });
+  registerTurnMetricsPhase({ pi, startMetricsTicker, stopMetricsTicker, toolStartTimes });
+  agentInbox = registerWorkerToolPhase({ pi, Type, registeredToolNames, notify });
 
     // ── Thinking indicator: bracket the full agent turn ──────────────────────────
     // Registered AFTER all phase hooks so these sit at the END of the turn_start
@@ -2095,7 +2125,7 @@ async function wireOctocodePiExtension(
   pi.registerCommand('octocode-harness', {
     description: 'Harness inventory: all skills and MCP servers (with sources and tool names), native tools, and prompt overhead breakdown.',
     handler: async (_args, ctx) => {
-      const overhead = harnessOverhead;
+      const contextState = runtimeStoreFor(ctx)?.getState().context;
       const skills = discoverSkills(ctx?.cwd ?? process.cwd(), latestAvailableSkills);
       const mcpSnap = await getMcpDiscoverySnapshot(ctx);
       const tools = [...registeredToolNames].sort((a, b) => a.localeCompare(b));
@@ -2117,15 +2147,21 @@ async function wireOctocodePiExtension(
         lines.push('', `Model    ${parts.join(' · ')}`);
       }
 
-      // Prompt overhead
-      if (overhead) {
+      // Initial provider context. Conversation messages and provider-specific
+      // framing are intentionally excluded because Pi does not expose their
+      // serialized bytes before the request.
+      if (contextState?.status === 'frozen') {
         lines.push(
           '',
-          `Prompt   ${ft(overhead.totalChars)} tokens  (${fc(overhead.totalChars)} chars)`,
-          `  system   ${fc(overhead.sysChars).padEnd(8)} chars   system prompt + Pi addendum`,
-          `  mcp      ${fc(overhead.mcpChars).padEnd(8)} chars   ${overhead.mcpServers} server${overhead.mcpServers !== 1 ? 's' : ''} · ${overhead.mcpTools} tool${overhead.mcpTools !== 1 ? 's' : ''}`,
-          `  dynamic  ${fc(overhead.dynamicChars).padEnd(8)} chars   ${overhead.skills} skills · plan · capabilities`,
+          `Initial provider subtotal   ${ft(contextState.providerSubtotalChars)} tokens  (${fc(contextState.providerSubtotalChars)} chars)`,
+          `  system prompt   ${fc(contextState.systemPromptChars).padEnd(8)} chars   Pi + project context + Octocode`,
+          `    mcp catalog   ${fc(contextState.mcpChars).padEnd(8)} chars   ${contextState.mode} · ${contextState.mcpServers} server${contextState.mcpServers !== 1 ? 's' : ''} · ${contextState.mcpTools} tool${contextState.mcpTools !== 1 ? 's' : ''}`,
+          `    dynamic       ${fc(contextState.dynamicChars).padEnd(8)} chars   ${contextState.skills} skills · initial plan · capabilities`,
+          `  direct tools    ${fc(contextState.directToolChars).padEnd(8)} chars   descriptions + input schemas`,
+          '  excludes conversation messages and provider-specific request framing',
         );
+      } else {
+        lines.push('', 'Initial provider subtotal   pending first agent start');
       }
 
       // Native tools
@@ -2231,7 +2267,7 @@ async function wireOctocodePiExtension(
     description: 'Show Pi-discovered skills and how to load or install them.',
     handler: async (_args, ctx) => {
       const discoveryPath = getDiscoveryFilePath(ctx?.cwd ?? process.cwd());
-      notify(ctx, renderSkillsDashboard(latestAvailableSkills, {
+                notify(ctx, renderSkillsDashboard(discoverSkills(ctx?.cwd ?? process.cwd(), latestAvailableSkills), {
         usageLines: formatSkillUsageLines(),
         discoveryPath: fs.existsSync(discoveryPath) ? discoveryPath : undefined,
       }), 'info');
@@ -2315,7 +2351,7 @@ async function wireOctocodePiExtension(
           return;
         }
         setFooterDensity(density);
-        updateOctocodeMetricsUi(ctx, metricsState);
+      updateOctocodeMetricsUi(ctx);
       }
       notify(ctx, `Footer density: ${getFooterDensity()} · /octocode-footer legend explains each segment`, 'info');
     },
@@ -2374,7 +2410,7 @@ async function wireOctocodePiExtension(
         description: 'Cycle the Octocode permission level (default → relaxed → strict)',
         handler: async (ctx: PiContext | undefined) => {
           const level = cyclePermissionLevel();
-          updateOctocodeMetricsUi(ctx, metricsState);
+        updateOctocodeMetricsUi(ctx);
           notify(ctx, `Permissions: ${level} — ${PERMISSION_LEVEL_SUMMARY[level]}`, level === 'relaxed' ? 'warning' : 'info');
         },
       });
@@ -2383,7 +2419,7 @@ async function wireOctocodePiExtension(
     // Restricted built-in on that key — the slash command still covers it.
   }
 
-  registerCommandsCommand(pi, () => metricsState.githubAuth);
+  registerCommandsCommand(pi, () => runtimeStoreFor(latestSessionCtx)?.getState().footer.githubAuth ?? { status: 'checking' });
 
   // octocode-harness is registered earlier with the full inventory view.
 
@@ -2424,11 +2460,29 @@ async function wireOctocodePiExtension(
   };
   pi.registerCommand('octocode-cron', cronCommand);
 
+  const settingsSections = ['commands', 'skills', 'connections', 'add-server', 'sources', 'agent-context', 'overrides'] as const;
+  const settingsCommand: CommandDefinition = {
+    description: 'Open settings.html with all discovered skills, MCP connections/tools, configuration, and enablement.',
+    getArgumentCompletions: (prefix: string) => settingsSections
+      .filter((section) => section.startsWith(prefix.trim().toLowerCase()))
+      .map((section) => ({ value: section, label: section, description: `Open settings.html#${section}` })),
+    handler: async (args, ctx) => {
+      const requested = args.trim().toLowerCase();
+      const section = settingsSections.includes(requested as (typeof settingsSections)[number])
+        ? requested as (typeof settingsSections)[number]
+        : 'skills';
+      const opened = await openMcpManager(ctx, latestPiSkills, section, collectPublicCommands(pi));
+      notify(ctx, opened.ok ? `Octocode settings opened${opened.url ? `: ${opened.url}` : ''}` : (opened.message ?? 'Could not open Octocode settings.'), opened.ok ? 'info' : 'error');
+    },
+  };
+  pi.registerCommand('settings', settingsCommand);
+  pi.registerCommand('octocode-settings', settingsCommand);
   pi.registerCommand('mcp', {
-    description: 'Open the local MCP connections, tools, configuration, and enablement manager.',
+    ...settingsCommand,
+    description: 'Open settings.html#connections for MCP servers and tools.',
     handler: async (_args, ctx) => {
-      const opened = await openMcpManager(ctx);
-      notify(ctx, opened.ok ? `MCP manager opened${opened.url ? `: ${opened.url}` : ''}` : (opened.message ?? 'Could not open MCP manager.'), opened.ok ? 'info' : 'error');
+      const opened = await openMcpManager(ctx, latestPiSkills, 'connections', collectPublicCommands(pi));
+      notify(ctx, opened.ok ? `Octocode MCP settings opened${opened.url ? `: ${opened.url}` : ''}` : (opened.message ?? 'Could not open Octocode MCP settings.'), opened.ok ? 'info' : 'error');
     },
   });
 

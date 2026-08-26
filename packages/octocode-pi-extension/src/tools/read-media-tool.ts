@@ -3,7 +3,7 @@ import { cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import { resolveFilePath } from './file-state.js';
-import { effectiveInlineImages, formatBytes, isTerminalImageCapable, loadImageForRender } from './image-render.js';
+import { buildImageLinesFromData, effectiveInlineImages, formatBytes, isTerminalImageCapable, loadImageForRender, terminalImageProtocol } from './image-render.js';
 import { runMediaQuery } from './media-tool.js';
 import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
@@ -95,6 +95,7 @@ export function registerReadMediaTool(
     ],
     parameters: buildQueryEnvelopeSchema(Type, buildParameters(Type), {
       reasoningDescription: 'Why this media must be inspected.',
+      allowParallel: true,
     }),
 
     async execute(toolCallId, params, signal, onUpdate, ctx): Promise<ToolCallResult> {
@@ -106,6 +107,7 @@ export function registerReadMediaTool(
         onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
         ctx,
         passthroughSingle: true,
+        allowParallel: true,
         async execute(query, _index, _callId, batchSignal) {
           if (batchSignal?.aborted) throw new Error('Operation aborted');
           const type = query['type'] as MediaType;
@@ -121,11 +123,12 @@ export function registerReadMediaTool(
             const res = readMediaImageFile(filePath, cwd);
             if (!res.ok) throw new Error(res.message);
             const protocolCapable = isTerminalImageCapable();
+            const protocol = terminalImageProtocol();
             const inlineEffective = effectiveInlineImages(ctx);
             const absPath = resolveFilePath(filePath, cwd);
             const note = inlineEffective
               ? res.message
-              : `${res.message} — inline display is unavailable. Offer to open ${absPath}; ask the user first.`;
+              : `${res.message} — inline display is unavailable in this TUI. Offer to open ${absPath} in the user's browser; ask the user first.`;
             return {
               content: [
                 { type: 'image', data: res.base64!, mimeType: res.mimeType! },
@@ -136,7 +139,9 @@ export function registerReadMediaTool(
                 type,
                 mimeType: res.mimeType,
                 bytes: res.bytes,
+                sourcePath: absPath,
                 terminalSupportsImages: protocolCapable,
+                terminalImageProtocol: protocol,
                 effectiveInlineImages: inlineEffective,
               },
             };
@@ -162,6 +167,7 @@ export function registerReadMediaTool(
               view,
               mimeType: res.mimeType,
               bytes: res.bytes,
+              sourcePath: resolveFilePath(filePath, cwd),
               probe: res.probe,
               ffprobe: res.ffprobe,
             },
@@ -181,15 +187,31 @@ export function registerReadMediaTool(
       ]);
     },
 
-    renderResult(result, opts, theme) {
+    renderResult(result, opts, theme, context) {
       if (opts.isPartial) return makeRenderer(() => [paint(theme, 'brand', '… reading media')]);
       const ok = !result.isError;
       const note = (result.content.find((c) => c.type === 'text') as { text?: string } | undefined)?.text
         ?? (ok ? 'media loaded' : 'read failed');
       const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
-      return makeRenderer((width) => [
+      const base = makeRenderer((width) => [
         truncateToWidth(`${icon} ${cliToolTitle(theme, 'readMedia')} · ${note}`, width),
       ]);
+      if (!opts.expanded) return base;
+      const image = result.content.find((part) => part.type === 'image') as { data?: string; mimeType?: string } | undefined;
+      if (!image?.data || !image.mimeType) return base;
+      const details = result.details && typeof result.details === 'object' ? result.details as Record<string, unknown> : {};
+      const sourcePath = typeof details['sourcePath'] === 'string' ? details['sourcePath'] : 'read-media-image';
+      const name = path.basename(sourcePath) || 'media-preview';
+      const bytes = typeof details['bytes'] === 'number' ? details['bytes'] : undefined;
+      return {
+        render(width = 80) {
+          return [
+            ...base.render(width),
+            ...buildImageLinesFromData(context, sourcePath, image.data!, image.mimeType!, width, { theme, name, bytes }),
+          ];
+        },
+        invalidate() { base.invalidate(); },
+      };
     },
   } satisfies ToolDefinition);
 }

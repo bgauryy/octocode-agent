@@ -1,14 +1,18 @@
-import type { SkillInfo } from '../types.js';
 import { truncatePlainToWidth } from './render-helpers.js';
 import { escapePromptMetadata } from './prompt-safety.js';
+
+export interface SkillCatalogEntry {
+  name: string;
+  description?: string;
+  source?: string;
+  scope?: string;
+}
 
 // Dashboard caps: on-demand output, so it can afford the full picture.
 const MAX_SKILLS = 80;
 const MAX_DESCRIPTION_CHARS = 180;
-// Prompt-block caps: the addendum is re-injected EVERY turn, so it is budgeted
-// harder — fewer entries, tighter descriptions, and an explicit pointer to the
-// /octocode-skills dashboard instead of a silent cut ("compaction is budget").
-const MAX_PROMPT_SKILLS = 30;
+// The prompt is frozen after the complete initial discovery pass. Keep every
+// skill name so routing is correct; descriptions alone are tightly bounded.
 const MAX_PROMPT_DESCRIPTION_CHARS = 120;
 
 const PROMPT_OWNED_SKILLS = new Set([
@@ -31,27 +35,30 @@ function truncate(text: string, limit = MAX_DESCRIPTION_CHARS): string {
   return truncatePlainToWidth(clean(text), limit);
 }
 
-function skillSortKey(skill: SkillInfo): string {
+function skillSortKey(skill: SkillCatalogEntry): string {
   return clean(skill.name).toLowerCase();
 }
 
 /**
- * Live projection of Pi-discovered skills into the Octocode prompt layer.
+ * Initial projection of effective loadable skills into the Octocode prompt layer.
  *
  * Pi already includes skills in its own prompt, but Octocode replaces/augments the
  * system prompt and also needs a compaction-durable reminder that every loaded
- * skill has a name + description and should be loaded when context matches. This
- * projection is rebuilt from `systemPromptOptions.skills` every turn, so skill
- * installs/removals are reflected without a watcher and the block survives
- * compaction through the normal before_agent_start prompt reinjection.
+ * skill has a name + description and should be loaded when context matches. The
+ * complete catalog is frozen with the first system prompt; installs/removals
+ * take effect in a new session, while in-session loads remain in tool results.
  */
-function validSkills(skills: SkillInfo[] | undefined): SkillInfo[] {
-  return (skills ?? [])
-    .filter((skill) => clean(skill.name).length > 0 && !isPromptOwnedSkill(skill.name))
-    .sort((a, b) => skillSortKey(a).localeCompare(skillSortKey(b)));
+export function canonicalizeSkillCatalog(skills: SkillCatalogEntry[] | undefined): SkillCatalogEntry[] {
+  const byName = new Map<string, SkillCatalogEntry>();
+  for (const skill of skills ?? []) {
+    const key = clean(skill.name).toLowerCase();
+    if (!key || isPromptOwnedSkill(skill.name) || byName.has(key)) continue;
+    byName.set(key, skill);
+  }
+  return [...byName.values()].sort((a, b) => skillSortKey(a).localeCompare(skillSortKey(b)));
 }
 
-function formatSkillLine(skill: SkillInfo, descriptionLimit = MAX_DESCRIPTION_CHARS): string {
+function formatSkillLine(skill: SkillCatalogEntry, descriptionLimit = MAX_DESCRIPTION_CHARS): string {
   const description = skill.description ? escapePromptMetadata(truncate(skill.description, descriptionLimit)) : '(no description)';
   const source = [skill.source, skill.scope].filter(Boolean).join('/');
   return `- ${escapePromptMetadata(skill.name)}: ${description}${source ? ` [${escapePromptMetadata(source)}]` : ''}`;
@@ -64,8 +71,8 @@ export interface SkillsDashboardExtras {
   discoveryPath?: string;
 }
 
-export function renderSkillsDashboard(skills: SkillInfo[] | undefined, extras: SkillsDashboardExtras = {}): string {
-  const valid = validSkills(skills);
+export function renderSkillsDashboard(skills: SkillCatalogEntry[] | undefined, extras: SkillsDashboardExtras = {}): string {
+  const valid = canonicalizeSkillCatalog(skills);
   const shown = valid.slice(0, MAX_SKILLS);
   const usageLines = extras.usageLines ?? [];
   return [
@@ -79,20 +86,19 @@ export function renderSkillsDashboard(skills: SkillInfo[] | undefined, extras: S
     ...(usageLines.length > 0 ? usageLines : ['(none yet — the agent loads them via the skill tool when a task matches)']),
     '',
     'How to use',
-    'The agent loads skills with skill({queries:[{reasoning:"load matching skill", type:"load", action:"load", name:"…", reason:"why it matches"}]}); force one with /skill:<name>.',
+    'The agent loads enabled skills with skill({queries:[{reasoning:"load matching skill", type:"load", action:"load", name:"…", reason:"why it matches"}]}). Manage enablement in /mcp.',
+    'Invoke a specific enabled skill with /skill:<name>.',
     'Install bundled skills with: npx octocode skill install <skill> --platform pi',
     'Refresh discovery with /reload after installs/removals.',
     ...(extras.discoveryPath ? [`Machine-readable inventory (skills + MCP config + tools): ${extras.discoveryPath}`] : []),
   ].join('\n');
 }
 
-export function renderAvailableSkillsAddendum(skills: SkillInfo[] | undefined): string {
-  const valid = validSkills(skills);
+export function renderAvailableSkillsAddendum(skills: SkillCatalogEntry[] | undefined): string {
+  const valid = canonicalizeSkillCatalog(skills);
   if (valid.length === 0) return '';
 
-  const shown = valid.slice(0, MAX_PROMPT_SKILLS);
-  const lines = shown.map((skill) => formatSkillLine(skill, MAX_PROMPT_DESCRIPTION_CHARS));
-  if (valid.length > shown.length) lines.push(`- …and ${valid.length - shown.length} more skill(s) — see /octocode-skills for the full catalog`);
+  const lines = valid.map((skill) => formatSkillLine(skill, MAX_PROMPT_DESCRIPTION_CHARS));
 
   return [
     '<available_skills>',

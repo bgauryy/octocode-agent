@@ -80,7 +80,7 @@ export function registerLocalServerTool(
         description: 'File served at the mount root for action:serve. Default index.html.',
       })),
       open: Type.Optional(Type.Boolean({
-        description: 'Open the mounted page. Defaults to true in the interactive TUI and false in headless modes.',
+        description: 'Open the mounted page only after the user explicitly asks or approves. Defaults to false in every mode.',
       })),
       browser: Type.Optional(Type.Unsafe({
         type: 'string',
@@ -101,7 +101,7 @@ export function registerLocalServerTool(
     description: [
       'Serve local, agent-authored static artifacts over a shared loopback-only HTTP server.',
       'Actions: serve (mount a directory), unmount (remove one mount), status (show base URL and mounts), stop (stop server and clear mounts).',
-      'Use for HTML plan/design/report artifacts when a browser view helps. Interactive TUI serves open automatically; pass open:false to keep the URL terminal-only.',
+      'Use for HTML plan/design/report artifacts when a browser view helps. Serving never opens a browser by default; pass open:true only after the user explicitly asks or approves.',
       'Browser routing: VS Code integrated browser when the extension-host API is available, otherwise Chrome, then the platform default browser.',
       'Security: static files only, bound to 127.0.0.1, mount names are a single URL segment, and served directories must pass the Octocode path guard (cwd/home/tmp/ALLOWED_PATHS).',
       'Pass one or more queries[] entries; each requires reasoning and an action.',
@@ -191,7 +191,7 @@ export function registerLocalServerTool(
           }
 
           const interactive = Boolean(ctx?.hasUI && ctx.mode === 'tui');
-          const shouldOpen = interactive && p.open !== false;
+          const shouldOpen = interactive && p.open === true;
           const preference = p.browser ?? 'auto';
           const opened = shouldOpen
             ? await openUrl(served.url, preference)
@@ -201,7 +201,7 @@ export function registerLocalServerTool(
               ? `Opened in ${opened.openedIn === 'vscode' ? 'VS Code' : opened.openedIn === 'chrome' ? 'Chrome' : 'the default browser'}.`
               : `Browser not opened: ${opened.message ?? 'unknown error'}`
             : interactive
-              ? 'Browser opening disabled for this mount.'
+              ? 'Browser remains closed; pass open:true only after explicit user approval.'
               : 'Browser not opened in headless mode.';
 
           return textResult(`[localServer] ${name}: ${served.url}\nServing ${dir} (${indexFile})\n${openLine}`, {

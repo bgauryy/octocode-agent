@@ -18,6 +18,7 @@ import { runAwarenessLiteInProcess } from '../assets.js';
 import type { PiContext, PiTheme } from '../types.js';
 import { paint } from '../tui/cli-design.js';
 import { SEP_WIDE } from '../tui/palette.js';
+import { renderInlineRows, type InlineSegment } from '../tui/components.js';
 import { truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel } from './status-panel.js';
 import { capMapSize } from '../utils.js';
@@ -38,7 +39,7 @@ export interface AwarenessStatus {
   workCount: number;
   agentCount: number;
   messageCount: number;
-  /** Concrete actionable tasks, ordered doing then ready and capped by the runner. */
+  /** Concrete actionable tasks, ordered doing then ready. */
   taskActivities?: AwarenessTaskActivity[];
   /** Compact summary of the most recent peer message (from→to: preview), when any. */
   lastMessage?: { from: string; to: string; preview: string };
@@ -71,8 +72,7 @@ function parseTaskList(json: string, state: AwarenessTaskActivity['state']): Awa
 export function parseTaskActivities(claimedJson: string, readyJson: string): AwarenessTaskActivity[] {
   const seen = new Set<string>();
   return [...parseTaskList(claimedJson, 'doing'), ...parseTaskList(readyJson, 'ready')]
-    .filter((task) => !seen.has(task.taskId) && Boolean(seen.add(task.taskId)))
-    .slice(0, 4);
+    .filter((task) => !seen.has(task.taskId) && Boolean(seen.add(task.taskId)));
 }
 
 /** Parse the Lite `message inbox` JSON for this agent: unread count + newest preview. */
@@ -164,9 +164,15 @@ export function hasAwarenessSignal(s: AwarenessStatus): boolean {
 }
 
 /**
- * Project cached shared state into a compact model-facing signal. Passive state
- * stays in the TUI; peer-authored titles and message bodies never enter the
- * system prompt. Empty output means no extra coordination call is warranted.
+ * Build the compact `<awareness_signal>` text block for the unread peer-message count.
+ *
+ * NOT injected into the frozen system prompt — the count varies between sessions and
+ * busts the provider prompt cache (~30k tokens re-billed per miss). The static
+ * `<awareness>` section in SYSTEM_PROMPT.md already instructs the model to check
+ * inbox when peer coordination may affect the next action; the TUI panel surfaces
+ * the live count visually via `formatAwarenessPanel`.
+ *
+ * Kept as an exported utility in case a future non-frozen injection surface is added.
  */
 export function renderAwarenessSignalAddendum(
   s: AwarenessStatus | null,
@@ -203,25 +209,32 @@ export function formatAwarenessPanel(s: AwarenessStatus, theme?: PiTheme, width?
       : `peer-msgs ${s.messageCount}`);
   }
 
-  const chunks: string[] = [];
+  const attention: InlineSegment[] = [];
   // Unread inbound messages lead the panel — they are the one awareness event
   // that demands the operator's/agent's attention (a peer is talking to YOU).
   if (s.unreadInbox && s.unreadInbox > 0) {
     const preview = s.lastInbound ? ` (from ${s.lastInbound.from}: ${s.lastInbound.preview})` : '';
-    chunks.push(paint(theme, 'warning', `✉ ${s.unreadInbox} unread${preview}`));
+    attention.push({ text: `✉ ${s.unreadInbox} unread${preview}`, token: 'warning', attention: true });
   }
-  if (segs.length) chunks.push(paint(theme, 'brand', segs.join(SEP_WIDE)));
-  if (tail.length) chunks.push(paint(theme, 'muted', tail.join(SEP_WIDE)));
-  if (debt > 0) chunks.push(paint(theme, 'warning', `verify-debt ${debt}`));
+  if (debt > 0) attention.push({ text: `verify-debt ${debt}`, token: 'warning', attention: true });
+  const chunks: InlineSegment[] = [
+    ...attention,
+    ...(segs.length ? [{ text: segs.join(SEP_WIDE), token: 'brand' as const }] : []),
+    ...(tail.length ? [{ text: tail.join(SEP_WIDE), token: 'muted' as const }] : []),
+  ];
   if (chunks.length === 0 && !(s.taskActivities?.length)) return [];
-  const summary = chunks.length > 0 ? `${paint(theme, 'title', 'Awareness')}  ${chunks.join(SEP_WIDE)}` : paint(theme, 'title', 'Awareness');
+  const summaryLines = width
+    ? renderInlineRows({ segments: [{ text: 'Awareness', token: 'title' }, ...chunks], separator: SEP_WIDE }, { width, theme })
+    : [chunks.length > 0
+      ? `${paint(theme, 'title', 'Awareness')}  ${chunks.map((chunk) => paint(theme, chunk.token ?? 'dim', chunk.text)).join(SEP_WIDE)}`
+      : paint(theme, 'title', 'Awareness')];
   const taskLines = (s.taskActivities ?? []).map((task) => {
     const state = paint(theme, task.state === 'doing' ? 'brand' : 'link', task.state.toUpperCase());
     const owner = task.agentId ? `${SEP_WIDE}${paint(theme, 'muted', task.agentId)}` : '';
     const id = paint(theme, 'dim', task.taskId.slice(0, 6));
     return `${paint(theme, 'dim', '  task')}${SEP_WIDE}${state}${SEP_WIDE}${task.title}${owner}${SEP_WIDE}${id}`;
   });
-  const lines = [summary, ...taskLines];
+  const lines = [...summaryLines, ...taskLines];
   return width ? lines.map((line) => truncateToWidth(line, width)) : lines;
 }
 
@@ -295,7 +308,7 @@ export type TaskActivityRunner = (cwd: string) => Promise<{ claimed: string | nu
 const defaultTaskActivityRunner: TaskActivityRunner = async (cwd) => {
   const [claimed, ready] = await Promise.all([
     runLiteCli(['task', 'list', '--status', 'CLAIMED', '--workspace', cwd]),
-    runLiteCli(['task', 'ready', '--limit', '4', '--workspace', cwd]),
+      runLiteCli(['task', 'ready', '--workspace', cwd]),
   ]);
   return { claimed, ready };
 };

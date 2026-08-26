@@ -35,10 +35,10 @@ const COMMON_SUPPORT_TOOL_NAMES = [
   'memory',
 ] as const;
 
-const MEDIA_SUPPORT_TOOL_NAMES = ['readMedia', 'media'] as const;
+const MEDIA_SUPPORT_TOOL_NAMES = ['readMedia', 'media', 'runFfmpeg'] as const;
 
-// Default model-callable support tools. Together with the three overridden
-// built-in, this is the 16-tool unified direct palette. MCP research tools and
+// Default model-callable support tools. Together with the overridden bash tool,
+// this is the 17-tool unified direct palette. MCP research tools and
 // slash commands are separate surfaces and are not counted here.
 export const OCTOCODE_SUPPORT_TOOL_NAMES = [
   ...COMMON_SUPPORT_TOOL_NAMES,

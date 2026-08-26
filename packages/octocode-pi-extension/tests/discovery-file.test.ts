@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'vitest';
 import { buildDiscoverySnapshot, discoverMcpConfigs, getDiscoveryFilePath, writeDiscoveryFile } from '../src/tools/discovery-file.js';
+import { discoverMcpSystem } from '../src/tools/mcp-discovery.js';
 import { __test__ as mcpTestHooks } from '../src/tools/mcp-tool.js';
 import type { DiscoveredSkill } from '../src/tools/skill-tool.js';
 import type { PiContext } from '../src/types.js';
@@ -41,6 +42,40 @@ test('discovery snapshot inventories skills, native tools (sorted), and full MCP
   assert.ok(snapshot.mcp.sources.some((s) => s.scope === 'built-in'));
 });
 
+test('discovery context accounting includes direct tool contracts in the provider subtotal', async () => {
+  const snapshot = await buildDiscoverySnapshot(tmpCtx(), {
+    skills: SKILLS,
+    nativeTools: ['file', 'MCPTool'],
+    overhead: {
+      sysChars: 10_000,
+      mcpChars: 6_000,
+      dynamicChars: 1_000,
+      totalChars: 17_000,
+      directToolChars: 40_000,
+      mcpServers: 1,
+      mcpTools: 14,
+      skills: 1,
+      status: 'frozen',
+      mode: 'exact',
+    },
+  });
+
+  assert.deepEqual(snapshot.systemPromptStats, {
+    sysChars: 10_000,
+    mcpChars: 6_000,
+    dynamicChars: 1_000,
+    totalChars: 17_000,
+    directToolChars: 40_000,
+    providerSubtotalChars: 57_000,
+    estimatedTokens: 14_250,
+    mcpServers: 1,
+    mcpTools: 14,
+    skills: 1,
+    status: 'frozen',
+    mode: 'exact',
+  });
+});
+
 test('writeDiscoveryFile writes .octocode/discovery.json atomically and returns the path', async () => {
   const ctx = tmpCtx();
   const filePath = await writeDiscoveryFile(ctx, { skills: SKILLS, nativeTools: ['skill'] });
@@ -69,6 +104,8 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   const projectCursor = path.join(cwd, '.cursor', 'mcp.json');
   const projectCodex = path.join(cwd, '.codex', 'config.toml');
   const projectAgents = path.join(cwd, '.agents', 'mcp.json');
+  const projectAntigravity = path.join(cwd, '.agents', 'mcp_config.json');
+  const projectAgent = path.join(cwd, '.agent', 'mcp.json');
   const projectOctocodeCompat = path.join(cwd, '.octocode', 'mcp.json');
   const projectOctocode = path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json');
   const userClaude = path.join(homeDir, '.claude.json');
@@ -76,6 +113,7 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   const userCursor = path.join(homeDir, '.cursor', 'mcp.json');
   const userCodex = path.join(homeDir, '.codex', 'config.toml');
   const userAgents = path.join(homeDir, '.agents', 'mcp.json');
+  const userAntigravity = path.join(homeDir, '.gemini', 'antigravity', 'mcp_config.json');
   const userOctocode = path.join(octocodeHome, 'agent', 'mcp', 'servers.json');
 
   write(projectClaude, JSON.stringify({ mcpServers: { linear: { command: 'npx', args: ['-y', 'linear-mcp'] } } }));
@@ -83,6 +121,8 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   write(projectCursor, JSON.stringify({ mcpServers: { figma: { url: 'https://example.invalid/mcp', headers: { Authorization: 'secret' } } } }));
   write(projectCodex, '[other]\nx = 1\n[mcp_servers.github]\ncommand = "gh-mcp"\n[mcp_servers.github.env]\nTOKEN = "x"\n[mcp_servers.jira]\n');
   write(projectAgents, JSON.stringify({ mcpServers: { sharedAgent: { command: 'agent-mcp' } } }));
+  write(projectAntigravity, JSON.stringify({ mcpServers: { drive: { serverUrl: 'https://example.invalid/mcp', oauth: {} } } }));
+  write(projectAgent, JSON.stringify({ mcpServers: { singularAgent: { command: 'singular-agent-mcp' } } }));
   write(projectOctocodeCompat, JSON.stringify({ servers: { oldOctocode: { command: 'old-octocode-mcp' } } }));
   write(projectOctocode, JSON.stringify({ mcpServers: { octocodeAgent: { command: 'octocode-agent' } } }));
   write(userClaude, JSON.stringify({ mcpServers: { memory: { command: 'mem-mcp', env: { TOKEN: 'never-report-me' } } } }));
@@ -90,6 +130,7 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   write(userCursor, JSON.stringify({ mcpServers: { browser: { command: 'browser-mcp' } } }));
   write(userCodex, '[mcp_servers.docs]\nurl = "https://example.invalid/mcp"\n');
   write(userAgents, JSON.stringify({ mcpServers: { globalAgent: { command: 'global-agent-mcp' } } }));
+  write(userAntigravity, JSON.stringify({ mcpServers: { calendar: { command: 'calendar-mcp' } } }));
   write(userOctocode, JSON.stringify({ mcpServers: { globalOctocode: { command: 'global-octocode' } } }));
 
   const configs = discoverMcpConfigs(cwd, { homeDir, octocodeHome });
@@ -98,9 +139,12 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   assert.deepEqual(byPath(projectClaude).servers, [{ name: 'linear', command: 'npx' }]);
   assert.equal(byPath(projectClaude).host, 'claude');
   assert.deepEqual(byPath(projectCursor).servers, [{ name: 'figma' }], 'remote URL and headers are not exposed');
-  assert.deepEqual(byPath(projectCodex).servers, [{ name: 'github', command: 'gh-mcp' }, { name: 'jira' }], 'TOML server names + commands extracted');
+  assert.deepEqual(byPath(projectCodex).servers, [{ name: 'github', command: 'gh-mcp' }], 'invalid TOML entries without command/url are skipped');
   assert.equal(byPath(projectCodex).format, 'toml');
   assert.equal(byPath(projectAgents).host, 'agents');
+  assert.equal(byPath(projectAntigravity).host, 'antigravity');
+  assert.equal(byPath(projectAgent).host, 'agent');
+  assert.equal(byPath(userAntigravity).host, 'antigravity');
   assert.equal(byPath(userClaude).scope, 'user');
   assert.deepEqual(byPath(userClaude).servers, [{ name: 'memory', command: 'mem-mcp' }]);
   assert.equal(JSON.stringify(configs).includes('never-report-me'), false, 'env secrets never enter discovery output');
@@ -115,6 +159,42 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   assert.equal(byPath(projectOctocodeCompat).active, false, 'retired .octocode/mcp.json remains inventory-only');
   assert.equal(byPath(projectClaudeCompat).active, false);
   assert.equal(byPath(userClaudeCompat).active, false);
+});
+
+test('foreign definitions are normalized, namespaced and disabled by default', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-import-cwd-'));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-import-home-'));
+  write(path.join(cwd, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: {
+    docs: { url: 'https://docs.example.test/mcp', headers: { Authorization: '${env:DOCS_AUTH}', 'X-Literal': 'literal' } },
+  } }));
+  write(path.join(homeDir, '.codex', 'config.toml'), [
+    '[mcp_servers.github]',
+    'command = "github-mcp"',
+    'args = ["stdio", "--safe"]',
+    'bearer_token_env_var = "GH_BEARER"',
+    'http_headers = { X_Client = "octocode" }',
+    '[mcp_servers.github.env]',
+    'GITHUB_TOKEN = "secret"',
+    '[mcp_servers.github.env_http_headers]',
+    'X_Account = "ACCOUNT_HEADER"',
+  ].join('\n'));
+
+  const result = discoverMcpSystem(cwd, { homeDir });
+  const cursor = result.definitions.find((entry) => entry.name === 'cursor.docs');
+  const codex = result.definitions.find((entry) => entry.name === 'codex.github');
+  assert.ok(cursor);
+  assert.equal(cursor!.config.disabled, true);
+  assert.equal(cursor!.config.url, 'https://docs.example.test/mcp');
+  assert.equal(cursor!.config.headerRefs?.['Authorization'], 'DOCS_AUTH');
+  assert.equal(cursor!.config.headers?.['X-Literal'], 'literal');
+  assert.equal(cursor!.config.discovered.originalName, 'docs');
+  assert.deepEqual(codex!.config.args, ['stdio', '--safe']);
+  assert.equal(codex!.config.env?.['GITHUB_TOKEN'], 'secret', 'runtime keeps values for an explicitly enabled server');
+  assert.equal(codex!.config.headerRefs?.['X_Account'], 'ACCOUNT_HEADER');
+  assert.equal(codex!.config.headers?.['X_Client'], 'octocode');
+  assert.equal(codex!.config.bearerTokenEnvVar, 'GH_BEARER');
+  assert.equal(JSON.stringify(result.configs).includes('Bearer secret'), false, 'inventory never exposes secrets');
+  assert.equal(JSON.stringify(result.configs).includes('GITHUB_TOKEN'), false, 'inventory exposes only server names and commands');
 });
 
 test('discoverMcpConfigs reports malformed configs as errors instead of throwing, and skips absent files', () => {

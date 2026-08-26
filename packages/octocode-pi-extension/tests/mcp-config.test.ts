@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'vitest';
+import { openOctocodeDb, setMcpServerEnabled } from '@octocodeai/octocode-awareness/mcp-state';
 import {
+  buildServerHeaders,
   globalMcpConfigPaths,
   loadMcpConfig,
   projectMcpConfigPaths,
@@ -69,6 +71,20 @@ test('HTTP MCP servers accept URL and headers without a command', async () => {
   assert.equal(loaded.servers.get('remote')?.url, 'https://mcp.example.test/api');
 });
 
+test('HTTP bearer credentials are resolved from an environment reference only at connection time', () => {
+  const previous = process.env['OCTOCODE_TEST_MCP_BEARER'];
+  process.env['OCTOCODE_TEST_MCP_BEARER'] = 'secret-token';
+  try {
+    assert.deepEqual(buildServerHeaders({
+      url: 'https://mcp.example.test',
+      bearerTokenEnvVar: 'OCTOCODE_TEST_MCP_BEARER',
+    }), { Authorization: 'Bearer secret-token' });
+  } finally {
+    if (previous === undefined) delete process.env['OCTOCODE_TEST_MCP_BEARER'];
+    else process.env['OCTOCODE_TEST_MCP_BEARER'] = previous;
+  }
+});
+
 test('untrusted projects skip every project alias but still load global aliases', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-config-untrusted-cwd-'));
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-config-untrusted-home-'));
@@ -89,4 +105,60 @@ test('untrusted projects skip every project alias but still load global aliases'
     projectPaths.map((filePath) => ({ path: filePath, trusted: false })),
   );
   assert.equal(loaded.warnings.filter((warning) => warning.includes('project is not trusted')).length, projectPaths.length);
+});
+
+test('foreign MCP definitions are discovered read-only and disabled by default', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-config-import-cwd-'));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-config-import-home-'));
+  const cursorPath = path.join(cwd, '.cursor', 'mcp.json');
+  writeServer(cursorPath, 'docs', 'docs-mcp');
+
+  const loaded = await loadMcpConfig(
+    { cwd, isProjectTrusted: async () => true } as unknown as PiContext,
+    { homeDir, octocodeHome: path.join(homeDir, '.octocode-custom') },
+  );
+
+  assert.equal(loaded.configuredServers.get('cursor.docs')?.command, 'docs-mcp');
+  assert.equal(loaded.configuredServers.get('cursor.docs')?.disabled, true);
+  assert.equal(loaded.servers.has('cursor.docs'), false, 'discovery never starts a server without an explicit override');
+  assert.deepEqual(loaded.serverSources.get('cursor.docs'), {
+    scope: 'discovered-project', path: cursorPath, trusted: true, host: 'cursor', readOnly: true,
+  });
+});
+
+test('an explicit SQLite override enables a discovered definition without copying it', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-config-import-enable-'));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-config-import-enable-home-'));
+  const octocodeHome = path.join(homeDir, '.octocode');
+  const previousHome = process.env['OCTOCODE_HOME'];
+  process.env['OCTOCODE_HOME'] = octocodeHome;
+  try {
+    const cursorPath = path.join(cwd, '.cursor', 'mcp.json');
+    writeServer(cursorPath, 'docs', 'docs-mcp');
+    setMcpServerEnabled(openOctocodeDb(), path.resolve(cwd), 'cursor.docs', true);
+
+    const loaded = await loadMcpConfig(
+      { cwd, isProjectTrusted: async () => true } as unknown as PiContext,
+      { homeDir, octocodeHome },
+    );
+    assert.equal(loaded.servers.get('cursor.docs')?.command, 'docs-mcp');
+    assert.equal(fs.existsSync(path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json')), false, 'definition was not duplicated');
+  } finally {
+    if (previousHome === undefined) delete process.env['OCTOCODE_HOME'];
+    else process.env['OCTOCODE_HOME'] = previousHome;
+  }
+});
+
+test('untrusted projects inventory but never import foreign project definitions', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-config-import-untrusted-'));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-config-import-untrusted-home-'));
+  const cursorPath = path.join(cwd, '.cursor', 'mcp.json');
+  writeServer(cursorPath, 'docs', 'docs-mcp');
+
+  const loaded = await loadMcpConfig(
+    { cwd, isProjectTrusted: async () => false } as unknown as PiContext,
+    { homeDir, octocodeHome: path.join(homeDir, '.octocode-custom') },
+  );
+  assert.equal(loaded.configuredServers.has('cursor.docs'), false);
+  assert.equal(loaded.sources.some((source) => source.path === cursorPath && !source.trusted), true);
 });

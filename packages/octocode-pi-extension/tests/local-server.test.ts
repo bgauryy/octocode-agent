@@ -253,7 +253,7 @@ test('localServer forwards browser messages into the running agent task', async 
   assert.deepEqual(delivered, [{ message: 'Approve the UI, but do not start yet.', deliverAs: 'followUp' }]);
 });
 
-test('localServer opens a new mount in the interactive TUI and allows opt-out', async () => {
+test('localServer keeps the browser closed by default and opens only with explicit opt-in', async () => {
   const opened: Array<{ url: string; preference: LocalUrlOpenPreference }> = [];
   const tool = loadLocalServerTool(async (url, preference) => {
     opened.push({ url, preference });
@@ -264,14 +264,22 @@ test('localServer opens a new mount in the interactive TUI and allows opt-out', 
   const ctx = { cwd: dir, hasUI: true, mode: 'tui' } as never;
 
   const result = await tool.execute(
-    'open',
+    'closed-by-default',
     { queries: [{ reasoning: 'show the design', action: 'serve', name: 'design', dir }] },
+    undefined, undefined, ctx,
+  );
+  assert.equal(opened.length, 0);
+  assert.match((result.content[0] as { text: string }).text, /browser remains closed/i);
+
+  const openedResult = await tool.execute(
+    'open-approved',
+    { queries: [{ reasoning: 'user approved browser review', action: 'serve', name: 'approved', dir, open: true }] },
     undefined, undefined, ctx,
   );
   assert.equal(opened.length, 1);
   assert.equal(opened[0]?.preference, 'auto');
-  assert.match((result.content[0] as { text: string }).text, /Opened in Chrome/i);
-  assert.equal((result.details as { openedIn: string }).openedIn, 'chrome');
+  assert.match((openedResult.content[0] as { text: string }).text, /Opened in Chrome/i);
+  assert.equal((openedResult.details as { openedIn: string }).openedIn, 'chrome');
 
   await tool.execute(
     'no-open',

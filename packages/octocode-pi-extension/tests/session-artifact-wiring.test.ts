@@ -229,6 +229,38 @@ test('writeCompactionArtifact: routes to session artifact dir when cwd + session
     turnCount: 5,
     toolCallCount: 10,
     reducedTokenCount: 1000,
+    continuation: {
+      version: 1 as const,
+      plan: {
+        review: {
+          phase: 'accepted' as const,
+          branchSnapshotId: 'snapshot-123',
+          generation: 7,
+          rfcPath: `${tmpRoot}/.octocode/rfc/feature/RFC.md`,
+          revision: 'displayed-revision',
+          acceptedRevision: 'accepted-revision',
+          decisions: [{ q: 'Storage?', a: 'SQLite' }],
+          blockingQuestions: [],
+          comments: [],
+        },
+        coordination: {
+          mode: 'required' as const,
+          sourcePlanKey: 'source-plan',
+          awarenessPlanId: 'plan-awareness',
+          coordinationWorkspace: tmpRoot,
+          materializedRevision: 'materialized-revision',
+        },
+        steps: [{
+          id: 'step-1',
+          text: 'Implement recovery snapshot',
+          status: 'doing' as const,
+          paths: ['src/recovery.ts'],
+          acceptance: 'Recovery test passes',
+          checkCommand: 'yarn test recovery',
+          awarenessTaskId: 'task-awareness',
+        }],
+      },
+    },
   };
 
   const result = writeCompactionArtifact(details, sessionManager, tmpRoot);
@@ -243,6 +275,12 @@ test('writeCompactionArtifact: routes to session artifact dir when cwd + session
   assert.ok(fs.existsSync(result!.latestPath), 'latest.md must exist on disk');
   const content = fs.readFileSync(result!.path, 'utf8');
   assert.ok(content.length > 0, 'snapshot must not be empty');
+  assert.match(content, /Phase: accepted/);
+  assert.match(content, /RFC: .*\.octocode\/rfc\/feature\/RFC\.md/);
+  assert.match(content, /Accepted revision: accepted-revision/);
+  assert.match(content, /\*\*Storage\?\*\* — SQLite/);
+  assert.match(content, /Implement recovery snapshot/);
+  assert.match(content, /Awareness task: task-awareness/);
 });
 
 test('writeCompactionArtifact: registers compaction producer in the session manifest', () => {

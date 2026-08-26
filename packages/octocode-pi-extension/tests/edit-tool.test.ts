@@ -49,9 +49,10 @@ function run(
 
 // ─── Schema: universal queries[] envelope ─────────────────────────────────────
 
-test('schema exposes only a top-level queries property', () => {
+test('schema exposes queries and a sequential-only run policy', () => {
   const schema = editTool.parameters as { properties?: Record<string, unknown>; required?: string[] };
-  assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries']);
+  assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries', 'queryRunType']);
+  assert.deepEqual((schema.properties?.['queryRunType'] as { enum?: string[] })?.enum, ['sequential']);
   assert.ok(schema.required?.includes('queries'), 'queries must be in required[]');
 });
 

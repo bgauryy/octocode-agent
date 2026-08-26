@@ -81,6 +81,7 @@ const TOOL_EFFECTS: Readonly<Record<string, ToolEffect>> = Object.freeze({
   file: 'workspace-write',
   bash: 'workspace-write',
   media: 'workspace-write',
+  runffmpeg: 'workspace-write',
 
   chromedebug: 'external-effect',
   browseragent: 'external-effect',
@@ -181,6 +182,20 @@ export function isPlanMode(ctx?: PiContext): boolean {
 export function getToolEffect(toolName: string | undefined, input?: Record<string, unknown>): ToolEffect | undefined {
   if (!toolName) return undefined;
   const normalized = toolName.toLowerCase();
+  if (normalized === 'skill') {
+    const queries = Array.isArray(input?.['queries'])
+      ? input['queries'].filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value))
+      : [input ?? {}];
+    // Installed-skill load/list is a pure read. Every type:"call" route enters
+    // the dynamic-skill orchestrator, which may create/update/delete files and
+    // prunes stored skills even for apparently read-like modes. Preflight the
+    // whole envelope so one nested call blocks before an earlier query runs.
+    const hasDynamicSkillEffect = queries.some((query) => {
+      const type = typeof query['type'] === 'string' ? query['type'].toLowerCase() : 'load';
+      return type !== 'load';
+    });
+    return hasDynamicSkillEffect ? 'workspace-write' : 'read';
+  }
   if (normalized === 'mcptool') {
     const queries = Array.isArray(input?.['queries'])
       ? input['queries'].filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value))

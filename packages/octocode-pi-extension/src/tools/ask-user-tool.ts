@@ -31,6 +31,7 @@ import type { registerUniqueTool } from './octocode-tools.js';
 import { makeRenderer, truncateToWidth, visibleWidth } from './render-helpers.js';
 import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 import { ASK_HEADER_LABEL } from '../tui/content.js';
+import { closeFrameLines } from '../tui/components.js';
 import { CURSOR_MARKER, Input, Key, matchesKey, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
@@ -213,10 +214,10 @@ function askFrameWidth(width: number): number {
   return askFrameLayout(width).width;
 }
 
-function positionAskLines(lines: string[], terminalWidth: number): string[] {
+function positionAskLines(lines: string[], terminalWidth: number, theme?: PiTheme): string[] {
   const layout = askFrameLayout(terminalWidth);
   const padding = ' '.repeat(layout.leftPadding);
-  return lines.map((line) => {
+  return closeFrameLines({ lines }, { width: layout.width, theme }).map((line) => {
     const bounded = line.includes(CURSOR_MARKER) ? line : truncateToWidth(line, layout.width);
     return `${padding}${bounded}`;
   });
@@ -610,12 +611,12 @@ async function runAskOverlay(
 
       const render = (width: number): string[] => {
         const w = width > 0 ? width : 80;
-        if (finalOutcome) return positionAskLines(renderAskFinalLines(theme, params.question, finalOutcome, w), w);
+        if (finalOutcome) return positionAskLines(renderAskFinalLines(theme, params.question, finalOutcome, w), w, theme);
         if (mode === 'text') {
           const help = askFrameWidth(w) < 56
             ? 'enter submit • esc cancel'
             : 'enter submit • esc cancel • paste supported';
-          return positionAskLines(renderTextPrompt(params.question, params.placeholder, help, w), w);
+          return positionAskLines(renderTextPrompt(params.question, params.placeholder, help, w), w, theme);
         }
         if (mode === 'form') {
           const field = fields[fieldIndex]!;
@@ -624,7 +625,7 @@ async function runAskOverlay(
           const help = askFrameWidth(w) < 56
             ? 'enter next • esc cancel'
             : 'enter next • esc cancel • paste supported';
-          return positionAskLines(renderTextPrompt(`${params.question} — ${label} (${step})`, field.placeholder, help, w), w);
+          return positionAskLines(renderTextPrompt(`${params.question} — ${label} (${step})`, field.placeholder, help, w), w, theme);
         }
         const rows = choiceRows();
         clampCursor();
@@ -653,7 +654,7 @@ async function runAskOverlay(
           warning,
           searchMode ? searchQuery : undefined,
           params.pagination,
-        ), w);
+        ), w, theme);
       };
 
       const move = (delta: number): void => {

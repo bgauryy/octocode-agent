@@ -98,15 +98,17 @@ export function registerWebTool(
     { additionalProperties: false },
   ) as TSchema;
 
-  const parameters = buildQueryEnvelopeSchema(Type, querySchema, {
-    reasoningDescription: 'Concise reason this web fetch or search is necessary.',
+    const parameters = buildQueryEnvelopeSchema(Type, querySchema, {
+      reasoningDescription: 'Concise reason this web fetch or search is necessary.',
+      allowParallel: true,
   });
 
   registerFn(pi, registeredToolNames, {
     name: 'web',
     label: 'Web',
     description:
-      'Browse the live web. Pass one or more queries[], each with reasoning plus either `url` (fetch page as text) or `query` (web search). ' +
+        'Browse the live web. Pass one or more queries[], each with reasoning plus either `url` (fetch page as text) or `query` (web search). ' +
+        'Use queryRunType:"parallel" for independent reads; sequential remains the default. ' +
       'Search returns ranked {title, url, snippet} results plus an AI answer when available. ' +
       'Search uses the best configured provider (Tavily \u2192 Serper \u2192 Exa \u2192 DuckDuckGo); set a key in ~/.octocode/.env to upgrade. Use engine:"exa" for AI-native neural/academic search. ' +
       'Use for docs, changelogs, error messages, and current info beyond the codebase and training data.',
@@ -128,7 +130,8 @@ export function registerWebTool(
         raw: params,
         signal,
         onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
-        passthroughSingle: true,
+          passthroughSingle: true,
+          allowParallel: true,
         async execute(query, _index, _callId, batchSignal) {
           ensureWebEnv();
           const out = await runWebTool(

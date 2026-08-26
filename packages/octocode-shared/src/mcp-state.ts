@@ -1,5 +1,9 @@
 import { utcNow, type SqliteLike } from './schema.js';
 
+// This module owns normalized capability overrides. It retains its published
+// mcp-state path for package compatibility while sharing the same precedence
+// contract with skill enablement.
+
 export const MCP_GLOBAL_SCOPE = '*';
 
 interface ReadableSqlite extends SqliteLike {
@@ -20,8 +24,54 @@ export interface McpToolOverride extends McpServerOverride {
   toolName: string;
 }
 
+export interface SkillOverride {
+  scopeKey: string;
+  skillKey: string;
+  enabled: boolean;
+}
+
 function assertKey(label: string, value: string): void {
   if (!value || value.length > 512 || value.includes('\0')) throw new Error(`Invalid ${label}`);
+}
+
+export function normalizeSkillKey(name: string): string {
+  const key = name.replace(/\s+/g, ' ').trim().toLowerCase();
+  assertKey('skill', key);
+  return key;
+}
+
+export function setSkillEnabled(db: SqliteLike, scopeKey: string, skillName: string, enabled: boolean): void {
+  assertKey('skill scope', scopeKey);
+  const skillKey = normalizeSkillKey(skillName);
+  db.prepare(`INSERT INTO skill_overrides (scope_key, skill_key, enabled, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(scope_key, skill_key) DO UPDATE SET enabled=excluded.enabled, updated_at=excluded.updated_at`)
+    .run(scopeKey, skillKey, enabled ? 1 : 0, utcNow());
+}
+
+export function getSkillEnablement(
+  db: ReadableSqlite,
+  scopeKey: string,
+  skillName: string,
+  configDefault = true,
+): boolean {
+  assertKey('skill scope', scopeKey);
+  const skillKey = normalizeSkillKey(skillName);
+  const workspace = db.prepare('SELECT enabled FROM skill_overrides WHERE scope_key=? AND skill_key=?').get(scopeKey, skillKey);
+  const global = db.prepare('SELECT enabled FROM skill_overrides WHERE scope_key=? AND skill_key=?').get(MCP_GLOBAL_SCOPE, skillKey);
+  for (const row of [workspace, global]) {
+    if (row && typeof row === 'object') return Number((row as { enabled: number }).enabled) === 1;
+  }
+  return configDefault;
+}
+
+export function listSkillOverrides(db: ReadableSqlite, scopeKey: string): SkillOverride[] {
+  return db.prepare('SELECT scope_key, skill_key, enabled FROM skill_overrides WHERE scope_key IN (?, ?) ORDER BY scope_key DESC, skill_key')
+    .all(scopeKey, MCP_GLOBAL_SCOPE)
+    .map((row) => {
+      const value = row as { scope_key: string; skill_key: string; enabled: number };
+      return { scopeKey: value.scope_key, skillKey: value.skill_key, enabled: value.enabled === 1 };
+    });
 }
 
 export function setMcpServerEnabled(db: SqliteLike, scopeKey: string, serverKey: string, enabled: boolean): void {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
-import { renderAvailableSkillsAddendum, renderSkillsDashboard } from '../src/tools/skill-catalog.js';
+import { canonicalizeSkillCatalog, renderAvailableSkillsAddendum, renderSkillsDashboard } from '../src/tools/skill-catalog.js';
 
 test('available skills addendum lists loadable skills and filters prompt-owned Awareness aliases', () => {
   const addendum = renderAvailableSkillsAddendum([
@@ -21,19 +21,29 @@ test('available skills addendum is empty when Pi reports no skills', () => {
   assert.equal(renderAvailableSkillsAddendum([]), '');
 });
 
-// Review follow-up: the every-turn prompt block is budgeted — fewer entries and
-// tighter descriptions than the on-demand /octocode-skills dashboard, with an
-// explicit pointer to the full catalog instead of a silent cut.
+test('skill catalog uses one case-insensitive first-wins identity', () => {
+  const catalog = canonicalizeSkillCatalog([
+    { name: 'Release-Check', description: 'Project authority.', source: 'project' },
+    { name: 'release-check', description: 'Duplicate user copy.', source: 'user' },
+  ]);
 
-test('available skills addendum is prompt-budgeted: caps entries and points to /octocode-skills', () => {
+  assert.deepEqual(catalog, [{ name: 'Release-Check', description: 'Project authority.', source: 'project' }]);
+  assert.equal(renderAvailableSkillsAddendum(catalog).match(/Release-Check/gi)?.length, 1);
+  assert.equal(renderSkillsDashboard(catalog).match(/Release-Check/gi)?.length, 1);
+});
+
+// The system prompt is frozen after the initial discovery pass, so the name
+// catalog must be complete. Descriptions remain compact to bound prompt size.
+
+test('initial available-skills addendum includes every discovered skill', () => {
   const many = Array.from({ length: 45 }, (_, i) => ({
     name: `skill-${String(i).padStart(2, '0')}`,
     description: 'Does a thing.',
   }));
   const addendum = renderAvailableSkillsAddendum(many);
   const promptLines = addendum.split('\n').filter((line) => line.startsWith('- skill-'));
-  assert.equal(promptLines.length, 30, 'prompt block caps at 30 skills');
-  assert.match(addendum, /…and 15 more skill\(s\) — see \/octocode-skills for the full catalog/);
+  assert.equal(promptLines.length, 45, 'the frozen initial catalog is complete');
+  assert.doesNotMatch(addendum, /…and .* more skill/);
 
   const dashboard = renderSkillsDashboard(many);
   const dashboardLines = dashboard.split('\n').filter((line) => line.startsWith('- skill-'));

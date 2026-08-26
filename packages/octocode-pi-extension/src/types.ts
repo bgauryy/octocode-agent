@@ -96,6 +96,10 @@ export interface WorkerLedgerEntry {
   updatedAt: string;
   model?: string;
   provider?: string;
+  /** Original worker assignment, kept separate from transient progress output. */
+  task?: string;
+  /** Optional parent-plan step this worker was spawned to execute. */
+  planStep?: string;
   thinking?: string;
   tools?: string[];
   normalizedStatus?: string;

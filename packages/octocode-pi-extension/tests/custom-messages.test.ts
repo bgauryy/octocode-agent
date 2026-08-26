@@ -3,8 +3,8 @@
  * awareness handoffs.
  *
  * Pins: (1) card builders' collapsed vs expanded output, (2) emitters send a
- * one-line `content` (it enters the LLM context) with rich data only in
- * `details`, display true, and NO trigger-turn options argument, (3) renderer
+ * bounded marked `content` (it enters the LLM context) plus renderer detail,
+ * display true, and NO trigger-turn options argument, (3) renderer
  * registration covers both custom types and yields width-safe components,
  * (4) the compaction-hooks wiring emits at most one checkpoint card per
  * compaction event.
@@ -21,6 +21,7 @@ import {
   buildHandoffCard,
   emitAwarenessHandoff,
   emitCompactionCheckpoint,
+  renderCompactionContextMarker,
   registerOctocodeMessageRenderers,
   type AwarenessHandoffDetails,
   type CompactionCheckpointDetails,
@@ -76,6 +77,17 @@ const compactionDetails: CompactionCheckpointDetails = {
   modifiedFiles: ['src/c.ts'],
   artifactPath: '/tmp/octocode/compaction/entry-42.md',
   summary: 'line one\nline two',
+  continuation: {
+    version: 1,
+    plan: {
+      review: {
+        phase: 'executing', branchSnapshotId: 'branch-42', generation: 3,
+        decisions: [], blockingQuestions: [], comments: [],
+      },
+      coordination: { mode: 'auto', sourcePlanKey: 'source-42', coordinationWorkspace: '/tmp/workspace' },
+      steps: [{ id: 'step-1', text: 'verify compaction flow', status: 'doing' }],
+    },
+  },
 };
 
 const handoffDetails: AwarenessHandoffDetails = {
@@ -178,7 +190,7 @@ test('card builders truncate every line to the given width', () => {
 
 // ─── Emitters ─────────────────────────────────────────────────────────────────
 
-test('emitCompactionCheckpoint: one-line content, details payload, display true, no triggerTurn', () => {
+test('emitCompactionCheckpoint: bounded explicit context marker preserves summary and active plan', () => {
   const { pi, sent } = makePi();
   emitCompactionCheckpoint(pi, compactionDetails);
   assert.equal(sent.length, 1);
@@ -186,10 +198,19 @@ test('emitCompactionCheckpoint: one-line content, details payload, display true,
   assert.equal(msg.customType, COMPACTION_CHECKPOINT_TYPE);
   assert.equal(msg.display, true);
   assert.equal(msg.details, compactionDetails);
-  assert.match(msg.content, /Compaction checkpoint saved: entry-42/);
-  assert.ok(!msg.content.includes('\n'), 'content enters the LLM context — must stay one line');
-  assert.ok(!msg.content.includes('src/a.ts'), 'rich data lives only in details');
+  assert.match(msg.content, /^<octocode_compaction_context>/);
+  assert.match(msg.content, /line one line two/);
+  assert.match(msg.content, /verify compaction flow/);
+  assert.match(msg.content, /<\/octocode_compaction_context>$/);
+  assert.ok(!msg.content.includes('\n'), 'context marker stays one bounded line');
+  assert.ok(!msg.content.includes('src/a.ts'), 'large file lists remain renderer-only');
   assert.equal(extraArgs.length, 0, 'no options argument → no triggerTurn');
+});
+
+test('renderCompactionContextMarker caps provider summary text', () => {
+  const marker = renderCompactionContextMarker({ label: 'bounded', summary: 'x'.repeat(10_000) });
+  assert.ok(marker.length < 2_200);
+  assert.match(marker, /^<octocode_compaction_context>/);
 });
 
 test('emitAwarenessHandoff: one-line content, details payload, display true, no triggerTurn', () => {
@@ -289,7 +310,8 @@ test('session_compact completion emits exactly one checkpoint card per compactio
   await fire('session_compact', event, ctx);
   const cards = checkpointCards(sent);
   assert.equal(cards.length, 1, 'two hook firings for the same compaction must emit one card');
-  assert.equal(cards[0]!.content, 'Compaction checkpoint saved: c-1');
+  assert.match(cards[0]!.content, /^<octocode_compaction_context>/);
+  assert.match(cards[0]!.content, /"checkpoint":"c-1"/);
   assert.ok(!cards[0]!.content.includes('\n'));
   const details = cards[0]!.details as CompactionCheckpointDetails;
   assert.equal(details.reason, 'threshold');
@@ -332,5 +354,5 @@ test('checkpoint card label falls back to the reason when the entry has no id', 
   await fire('session_compact', { compactionEntry: {}, fromExtension: false, reason: 'manual', willRetry: false }, { hasUI: false });
   const cards = checkpointCards(sent);
   assert.equal(cards.length, 1);
-  assert.equal(cards[0]!.content, 'Compaction checkpoint saved: manual compaction');
+  assert.match(cards[0]!.content, /"checkpoint":"manual compaction"/);
 });

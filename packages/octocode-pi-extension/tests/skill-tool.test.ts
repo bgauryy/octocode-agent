@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'vitest';
 import {
+  discoverSkillStates,
   discoverSkills,
   formatSkillUsageLines,
   getSkillUsage,
@@ -11,7 +12,9 @@ import {
   registerSkillTool,
   resetSkillUsageForTests,
 } from '../src/tools/skill-tool.js';
+import { openOctocodeDb, setSkillEnabled } from '@octocodeai/octocode-awareness/mcp-state';
 import { registerUniqueTool } from '../src/tools/octocode-tools.js';
+import { renderAvailableSkillsAddendum } from '../src/tools/skill-catalog.js';
 import type { ToolDefinition, ToolCallResult, PiContext, SkillInfo } from '../src/types.js';
 
 afterEach(() => {
@@ -48,6 +51,24 @@ test('discoverSkills finds project skills under .agents/skills with frontmatter 
   assert.equal(demo!.dir, path.dirname(demo!.path));
 });
 
+test('skill overrides keep disabled skills in settings inventory but remove them from the agent surface', () => {
+  const cwd = tmpWorkspace();
+  const previousHome = process.env['OCTOCODE_HOME'];
+  process.env['OCTOCODE_HOME'] = path.join(tmpWorkspace(), 'home');
+  try {
+    makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Demo workflow skill.');
+    setSkillEnabled(openOctocodeDb(), path.resolve(cwd), 'demo-flow', false);
+    assert.equal(discoverSkills(cwd).some((skill) => skill.name === 'demo-flow'), false);
+    assert.doesNotMatch(renderAvailableSkillsAddendum(discoverSkills(cwd)), /demo-flow/);
+    const state = discoverSkillStates(cwd).find((skill) => skill.name === 'demo-flow');
+    assert.equal(state?.enabled, false);
+    assert.equal(state?.path.endsWith('SKILL.md'), true);
+  } finally {
+    if (previousHome === undefined) delete process.env['OCTOCODE_HOME'];
+    else process.env['OCTOCODE_HOME'] = previousHome;
+  }
+});
+
 test('discoverSkills: Pi-provided entries take precedence over disk scan for the same name', () => {
   const cwd = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Disk description.');
@@ -56,6 +77,17 @@ test('discoverSkills: Pi-provided entries take precedence over disk scan for the
   const demo = skills.find((s) => s.name === 'demo-flow');
   assert.equal(demo!.description, 'Pi description.', 'Pi is the live session authority');
   assert.equal(demo!.source, 'user/global');
+});
+
+test('discoverSkills resolves Pi prompt metadata without a path to the loadable disk skill', () => {
+  const cwd = tmpWorkspace();
+  const dir = makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Disk description.');
+  const skills = discoverSkills(cwd, [{ name: 'demo-flow', description: 'Prompt-only metadata.' }]);
+  const demo = skills.find((skill) => skill.name === 'demo-flow')!;
+
+  assert.equal(demo.path, path.join(dir, 'SKILL.md'));
+  assert.equal(demo.source, 'pi');
+  assert.equal(demo.description, 'Prompt-only metadata.');
 });
 
 test('discoverSkills scans the common ecosystem roots (claude/cursor/codex/octocode/pi) in both scopes', () => {
@@ -89,6 +121,18 @@ test('discoverSkills dedupes by NAME across roots — most-authoritative root wi
   assert.equal(matches.length, 1, 'one entry per name');
   assert.equal(matches[0]!.description, 'Canonical .agents version.');
   assert.equal(matches[0]!.source, 'project');
+});
+
+test('discoverSkills dedupes names case-insensitively', () => {
+  const cwd = tmpWorkspace();
+  const home = tmpWorkspace();
+  makeSkillDir(path.join(cwd, '.agents', 'skills'), 'Release-Check', 'Project version.');
+  makeSkillDir(path.join(home, '.pi', 'skills'), 'release-check', 'User copy.');
+  const matches = discoverSkills(cwd, undefined, home)
+    .filter((skill) => skill.name.toLowerCase() === 'release-check');
+
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0]!.description, 'Project version.');
 });
 
 test('discoverSkills skips directories without SKILL.md and missing roots without throwing', () => {
@@ -486,12 +530,13 @@ test('skill render rows: multi-query renders each operation and unlabeled reason
     { reasoning: 'Load a.', type: 'load', name: 'a', reason: 'needs a' },
     { reasoning: 'Load b.', type: 'load', name: 'b', reason: 'needs b' },
   ]), theme).render(100);
-  assert.equal(callLines.length, 4);
-  assert.match(callLines[0]!, /◆ skill · a/);
-  assert.match(callLines[1]!, /needs a/);
-  assert.match(callLines[2]!, /◆ skill · b/);
-  assert.match(callLines[3]!, /needs b/);
-  assert.doesNotMatch(callLines.join('\n'), /2 queries|why:|reasoning:/);
+  assert.equal(callLines.length, 5);
+  assert.match(callLines[0]!, /2 queries.*sequential/);
+  assert.match(callLines[1]!, /◆ skill · a/);
+  assert.match(callLines[2]!, /needs a/);
+  assert.match(callLines[3]!, /◆ skill · b/);
+  assert.match(callLines[4]!, /needs b/);
+  assert.doesNotMatch(callLines.join('\n'), /why:|reasoning:/);
 });
 
 test('skill render rows: single type:call shows callSkill action', async () => {

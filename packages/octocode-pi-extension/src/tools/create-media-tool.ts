@@ -33,9 +33,9 @@ import { runMediaQuery, type MediaResult } from './media-tool.js';
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
 
-const MEDIA_OPERATIONS = ['image', 'pdf', 'gif', 'trim', 'audio', 'convert'] as const;
+const MEDIA_OPERATIONS = ['image', 'pdf', 'gif', 'trim', 'audio', 'convert', 'concat'] as const;
 type MediaOperation = (typeof MEDIA_OPERATIONS)[number];
-const FFMPEG_OPERATIONS = new Set<MediaOperation>(['gif', 'trim', 'audio', 'convert']);
+const FFMPEG_OPERATIONS = new Set<MediaOperation>(['gif', 'trim', 'audio', 'convert', 'concat']);
 
 interface UnifiedResult {
   ok: boolean;
@@ -186,7 +186,7 @@ function buildParameters(Type: TypeBoxBuilder): TSchema {
   return Type.Object(
     {
       type: Type.Union(MEDIA_OPERATIONS.map((operation) => Type.Literal(operation)), {
-        description: 'Operation: image, pdf, gif, trim, audio, or convert.',
+        description: 'Operation: image, pdf, gif, trim, audio, convert, or concat.',
       }),
       dest: Type.Optional(Type.String({ description: 'Output path. Required except for inline image.' })),
       overwrite: Type.Optional(Type.Boolean({ description: 'Allow overwriting an existing `dest`. Default false.' })),
@@ -203,16 +203,17 @@ function buildParameters(Type: TypeBoxBuilder): TSchema {
       pdfScale: Type.Optional(Type.Unsafe({ type: 'number', minimum: 0.1, maximum: 2, description: 'pdf scale; default 1.' })),
       // ffmpeg passthrough
       source: Type.Optional(Type.String({ description: 'Input path for gif/trim/audio/convert.' })),
+      sources: Type.Optional(Type.Array(Type.String(), { minItems: 2, description: 'concat: ordered list of input paths to join (minimum 2).' })),
       from: Type.Optional(Type.String({ description: 'gif/trim: start timestamp.' })),
       to: Type.Optional(Type.String({ description: 'gif/trim: end timestamp.' })),
       duration: Type.Optional(Type.String({ description: 'trim: clip length (alternative to `to`).' })),
-      reencode: Type.Optional(Type.Boolean({ description: 'trim: frame-accurate re-encode instead of fast stream-copy.' })),
+      reencode: Type.Optional(Type.Boolean({ description: 'trim/concat: frame-accurate re-encode instead of fast stream-copy.' })),
       fps: Type.Optional(Type.Integer({ minimum: 1, description: 'gif/convert: frames per second.' })),
       format: Type.Optional(Type.String({ description: 'audio: mp3 | aac | wav | flac.' })),
-      bitrate: Type.Optional(Type.String({ description: 'audio: e.g. "192k".' })),
+      bitrate: Type.Optional(Type.String({ description: 'audio: e.g. "192k". convert: target bitrate for hw codecs (h264_videotoolbox/hevc_videotoolbox), e.g. "4M".' })),
       scale: Type.Optional(Type.String({ description: 'convert: WxH, e.g. "1280x-1".' })),
-      videoCodec: Type.Optional(Type.String({ description: 'convert: h264 | hevc | vp9 | av1 | copy.' })),
-      audioCodec: Type.Optional(Type.String({ description: 'convert: aac | mp3 | copy | none.' })),
+      videoCodec: Type.Optional(Type.String({ description: 'convert/trim/concat: h264 | hevc | vp9 | av1 | copy | h264_videotoolbox | hevc_videotoolbox (hw, macOS).' })),
+      audioCodec: Type.Optional(Type.String({ description: 'convert/trim/concat: aac | mp3 | copy | none.' })),
       crf: Type.Optional(Type.Integer({ minimum: 0, maximum: 51, description: 'convert: quality (lower=better, 23 default).' })),
       timeoutSec: Type.Optional(Type.Integer({ minimum: 1, description: 'ffmpeg modes: max seconds before the process is killed. Default 120.' })),
       showToModel: Type.Optional(Type.Boolean({ description: 'image: also return pixels to model.' })),
@@ -230,10 +231,12 @@ export function registerMediaTool(
   registerFn(pi, registeredToolNames, {
     name: 'media',
     label: 'Media',
-    description: 'Create or transform media. Render image/PDF from SVG, HTML, Markdown, or images; make GIFs, trim clips, extract audio, or convert formats. Writes are path-guarded. Use readMedia for inspection.',
+    description: 'Create or transform media. Render image/PDF from SVG, HTML, Markdown, or images; make GIFs, trim clips, extract audio, convert formats, or concat sources[]. Writes are path-guarded; use readMedia for inspection.',
     promptSnippet: 'Create image/PDF artifacts or transform existing audio/video/image files.',
     promptGuidelines: [
       'Use type:image/pdf to author; type:gif/trim/audio/convert transforms `source` into `dest`.',
+      'type:concat joins sources[] — reencode:true for different codecs/resolutions.',
+      'convert videoCodec:"h264_videotoolbox"/"hevc_videotoolbox" for hardware encoding on macOS.',
       'Use readMedia for metadata, frames, contact sheets, waveforms, and spectrograms.',
     ],
     parameters: buildQueryEnvelopeSchema(Type, buildParameters(Type), {
