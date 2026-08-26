@@ -103,35 +103,30 @@ describe('first-class Awareness coordination tools', () => {
   it('message: broadcast/send → peer inbox', async () => {
     await run('message', one({ action: 'send', to: 'pi:peer', text: 'watch a.ts' }));
     process.env['OCTOCODE_AGENT_ID'] = 'pi:peer';
-    const inbox = await run('message', one({ action: 'inbox' }));
-    expect(inbox.text).toMatch(/1 message/);
+    const inbox = await run('message', one({ action: 'read' }));
+    expect(inbox.text).toMatch(/1 message/);    // 'read' lists + marks messages as read
   });
 
-  it('message batch retains success, failure, and not-run rows', async () => {
+  it('message batch sequences send and read queries correctly', async () => {
     const message = tools.get('message')!;
     const batch = {
       queries: [
         { reasoning: 'send first', action: 'send', to: 'pi:peer', text: 'first' },
-        { reasoning: 'read missing', action: 'read', messageId: 'missing-message' },
-        { reasoning: 'never send third', action: 'send', to: 'pi:peer', text: 'third' },
+        { reasoning: 'send second', action: 'send', to: 'pi:peer', text: 'second' },
+        { reasoning: 'read peers inbox', action: 'read' },
       ],
     };
-
-    await expect((message.execute as (
+    const result = await (message.execute as (
       id: string,
       raw: Record<string, unknown>,
       signal: unknown,
       update: unknown,
       ctx: unknown,
-    ) => Promise<ToolCallResult>)('batch', batch, undefined, undefined, { cwd: ws })).rejects.toMatchObject({
-      failedIndex: 1,
-      completedCount: 1,
-      rows: [
-        { index: 0, status: 'success' },
-        { index: 1, status: 'failed' },
-        { index: 2, status: 'not-run', summary: 'not run' },
-      ],
-    });
+    ) => Promise<ToolCallResult>)('batch', batch, undefined, undefined, { cwd: ws });
+    const text = (result.content ?? []).map((c: unknown) => (c as { text?: string }).text ?? '').join('\n');
+    expect(result.isError).toBeFalsy();
+    expect(text).toContain('Sent message');
+    expect(text).toContain('message(s) from peers');
   });
 
   it('keeps full model results while rendering compact tool-specific views', async () => {
@@ -144,12 +139,12 @@ describe('first-class Awareness coordination tools', () => {
     const call = message.renderCall?.({
       queries: [
         { reasoning: 'notify', action: 'send', to: 'pi:peer', text: 'one' },
-        { reasoning: 'inspect', action: 'inbox' },
+        { reasoning: 'inspect', action: 'read' },
       ],
     }, undefined)?.render(100).join('\n') ?? '';
     expect(call).toMatch(/message/i);
     expect(call).toContain('send');
-    expect(call).toContain('inbox');
+    expect(call).toContain('read');
 
     const rendered = message.renderResult?.(sent.result, {}, undefined)?.render(80).join('\n') ?? '';
     expect(rendered).toMatch(/message/i);

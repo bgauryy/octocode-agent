@@ -102,7 +102,9 @@ test('refresh caches one typed package snapshot and throttles repeated paints', 
   delete process.env.OCTOCODE_AGENT_ID;
   assert.equal(calls, 1);
   assert.equal(getCachedAwarenessStatus(ctx.cwd!), FULL);
-  assert.ok(widget.some((entry) => entry.isFn && !entry.cleared));
+  // Awareness data is cached but the panel is not registered unless there is an active
+  // plan or agent section — awareness-only state no longer drives panel visibility.
+  assert.ok(!widget.some((entry) => entry.isFn && !entry.cleared), 'panel is not registered for awareness-only state');
 });
 
 test('refresh clears stale cached status when the package reader fails', async () => {
