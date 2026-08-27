@@ -7,29 +7,29 @@ owns live state/contracts; package docs own architecture and feature depth.
 ## Enter
 
 Activate `octocode-awareness`, choose one stable identity, then inspect the shared
-shared ledger. Pi sets `$OCTOCODE_AWARENESS_CLI`; package development uses the local
-package build; installed external agents use the published binary. Missing local
-`out/` means build first.
+ledger. Every agent-facing CLI example uses the published package runner; host
+integrations may call the same package API in-process. Build before testing changed
+package code, then verify the public runner separately.
 
 ```bash
 export OCTOCODE_AGENT_ID="${OCTOCODE_AGENT_ID:-codex-awareness}"
-SHARED_CLI="${OCTOCODE_AWARENESS_CLI:-packages/octocode-awareness/out/octocode-awareness.js}"
-node "$SHARED_CLI" status --workspace "$PWD"
-node "$SHARED_CLI" schema commands --workspace "$PWD"
+npx @octocodeai/octocode-awareness status --workspace "$PWD"
+npx @octocodeai/octocode-awareness schema commands --all --compact
+npx @octocodeai/octocode-awareness coordination schema commands
 ```
 
-Never put `node ...` inside a shell variable and run it; shells treat that as one
-executable. Follow typed `next` results; use `schema command <noun>` for unclear
-flags. SQLite is canonical. Never hand-edit generated `.octocode/` state; only
+Follow typed `next` results; use `schema command <noun> [action]` for unclear flags.
+SQLite is canonical. Never hand-edit generated `.octocode/` state; only
 workspace-root `.octocode/REFLECT.md` is authored reflection.
 
 Shared fallback: `status`; task `claim`; work `start`; run the check while present;
 task `done`; check `mark`; work `end`. Overlap is advisory; use a lock only for
 unsafe, non-mergeable, or sensitive work and never bypass a conflict.
 
-The full `octocode-awareness` binary owns advanced sessions, reflection, projections,
-and maintenance in a separate database. Do not use it for Pi-visible coordination
-until the stores are migrated.
+The same package exposes two explicit planes: shared coordination uses direct
+shortcuts or `coordination …`; advanced sessions, reflection, projections, and
+maintenance use root nouns. Inspect each plane's live schema and do not substitute
+similarly named commands across them.
 
 ## Package Constraints
 

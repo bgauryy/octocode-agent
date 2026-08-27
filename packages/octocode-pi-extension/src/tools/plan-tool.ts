@@ -19,7 +19,8 @@ import { getCurrentPlanReadModel, renderPlanContext, type PlanReadModelV1 } from
 import { enablePlanHtmlSync, resetPlanHtmlSync, openPlanHtml, syncCurrentPlanHtmlIfEnabled, writeCurrentPlanArtifacts as writeCanonicalPlanArtifacts, writePlanReadModelArtifacts, planArtifactsDir, readRfcDoc } from './plan-html.js';
 import { serveDirectory, unmount } from './local-server.js';
 import { FREE_TEXT_TELL_DIFFERENTLY, PLAN_APPROVE_DESC, PLAN_APPROVE_LABEL, PLAN_APPROVED_REVIEW_QUESTION, PLAN_COMPLETE_QUESTION, PLAN_PROPOSE_HINT, PLAN_REJECT_DESC, PLAN_REJECT_LABEL, PLAN_SET_BROWSER_QUESTION } from '../tui/content.js';
-import { buildQueryCallBlocks, buildToolView, truncateToWidth } from './render-helpers.js';
+import { buildQueryCallBlocks, buildToolView } from './render-helpers.js';
+import { wrapTextWithAnsi } from '@earendil-works/pi-tui';
 import { refreshStatusPanel } from './status-panel.js';
 import { setManagedActivity } from './runtime-renderer.js';
 import { activePlanScope, setPlan, setPlanLifecycle, finishPlanVerification, activatePlan, proposePlanReview, acceptPlanReview, requestPlanChanges, startAcceptedPlan, rollbackAcceptedPlanStart, addStep, startStep, completeStep, removeStep, clearPlan, getPlan, getPlanReviewState, getPlanCoordination, updatePlanCoordination, setPlanAwarenessMappings, MARK, stepLabel, displayStatus, depsMet, dependencyIndexes, resolveRfcPath, setPlanRfc, getPlanRfc, addPlanDecision, getPlanDecisions, planPhaseIndex, PLAN_PHASES, type PlanPhase, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
@@ -178,7 +179,9 @@ export function planPanelModelLines(readModel: PlanReadModelV1, theme?: PiTheme,
       : paint(theme, token, text);
   });
   const lines = [header, phaseStepperLine(readModel.phase, theme), ...rows];
-  return width ? lines.map((line) => truncateToWidth(line, width)) : lines;
+  return width
+    ? lines.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)))
+    : lines;
 }
 
 /**
@@ -368,10 +371,16 @@ function publishPlanActivity(ctx: PiContext | undefined, scope: string, steps: P
         setManagedActivity(ctx, { kind: 'working', planScope: scope, stepId: active.id, label: stepLabel(active) });
         return;
       }
-      const runnable = steps.some((step) => step.status === 'todo' && depsMet(step, steps));
-      if (!runnable && steps.some((step) => step.status !== 'done')) {
-        setManagedActivity(ctx, { kind: 'blocked', label: 'No dependency-ready plan step' });
+      const runnable = steps.find((step) => step.status === 'todo' && depsMet(step, steps));
+      if (runnable) {
+        setManagedActivity(ctx, { kind: 'ready_to_work', planScope: scope, label: stepLabel(runnable) });
+        return;
       }
+      if (steps.some((step) => step.status !== 'done')) {
+        setManagedActivity(ctx, { kind: 'blocked', label: 'No dependency-ready plan step' });
+        return;
+      }
+      setManagedActivity(ctx, { kind: 'verifying', planScope: scope, label: 'Plan steps complete' });
       return;
     }
     case 'verifying':

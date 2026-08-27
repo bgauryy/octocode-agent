@@ -1700,7 +1700,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@octocodeai/octocode-awareness@npm:^1.2.1, @octocodeai/octocode-awareness@workspace:packages/octocode-awareness":
+"@octocodeai/octocode-awareness@npm:^1.3.0, @octocodeai/octocode-awareness@workspace:packages/octocode-awareness":
   version: 0.0.0-use.local
   resolution: "@octocodeai/octocode-awareness@workspace:packages/octocode-awareness"
   dependencies:
@@ -1845,7 +1845,7 @@ __metadata:
     "@modelcontextprotocol/server": "npm:^2.0.0"
     "@octocodeai/agent-testing": "npm:^0.1.0"
     "@octocodeai/config": "npm:^18.0.1"
-    "@octocodeai/octocode-awareness": "npm:^1.2.1"
+    "@octocodeai/octocode-awareness": "npm:^1.3.0"
     "@octocodeai/octocode-engine": "npm:^18.1.2"
     "@resvg/resvg-js": "npm:^2.6.2"
     "@types/node": "npm:^26.2.0"

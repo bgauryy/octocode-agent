@@ -19,41 +19,29 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(sessionId = 'rpc-session'): { ctx: PiContext; dbPath: string; capture: () => RegisteredInteractionBrokerAdapter } {
+function fixture(sessionId = 'rpc-session'): { ctx: PiContext } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'interaction-adapter-'));
   roots.push(root);
   const workspace = path.join(root, 'workspace');
   const dbPath = path.join(root, 'awareness.sqlite3');
   fs.mkdirSync(workspace, { recursive: true });
   setInteractionStoreFactoryForTests((storeWorkspace) => openAwareness({ workspace: storeWorkspace, dbPath }));
-  let adapter: RegisteredInteractionBrokerAdapter | undefined;
-  const registry: InteractionBrokerAdapterRegistry = {
-    registerInteractionBrokerAdapter(value): void { adapter = value; },
-  };
   return {
     ctx: {
       cwd: workspace,
       mode: 'rpc',
       sessionManager: { getSessionId: () => sessionId },
     } as PiContext,
-    dbPath,
-    capture: () => {
-      if (!adapter) throw new Error('adapter not registered');
-      return adapter;
-    },
   };
 }
 
 test('registered adapter lists, answers, resumes once, and remains drained after restart', async () => {
-  const { ctx, capture } = fixture();
+  const { ctx } = fixture();
   const delivered: Array<{ id: string; prompt: string }> = [];
-  const registry: InteractionBrokerAdapterRegistry = {
-    registerInteractionBrokerAdapter(adapter): void {
-      (capture as unknown as { adapter?: RegisteredInteractionBrokerAdapter }).adapter = adapter;
-    },
-  };
   let adapter: RegisteredInteractionBrokerAdapter | undefined;
-  registry.registerInteractionBrokerAdapter = (value) => { adapter = value; };
+  const registry: InteractionBrokerAdapterRegistry = {
+    registerInteractionBrokerAdapter(value): void { adapter = value; },
+  };
   registerInteractionBrokerAdapter(registry, {
     deliver: (continuation, prompt) => { delivered.push({ id: continuation.continuationId, prompt }); },
   });
@@ -105,6 +93,7 @@ test('host answer submission rejects wrong session, correlation, expiry, and dup
   const base = { version: 1 as const, interactionId: request.interactionId, correlationId: request.correlationId, sessionId: request.sessionId, outcome: { status: 'selected', value: 'safe' } };
   assert.throws(() => adapter!.submitAnswer(ctx, { ...base, sessionId: 'other-session' }), /session mismatch/);
   assert.throws(() => adapter!.submitAnswer(ctx, { ...base, correlationId: 'wrong' }), /correlation mismatch/);
+  assert.throws(() => adapter!.submitAnswer(ctx, { ...base, outcome: { status: 'invented' } }), /status is unsupported/);
   adapter!.submitAnswer(ctx, base);
   assert.throws(() => adapter!.submitAnswer(ctx, base), /answered/);
 

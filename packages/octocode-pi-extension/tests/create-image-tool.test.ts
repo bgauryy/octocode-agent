@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
@@ -11,13 +11,7 @@ import {
   registerCreateImageTool,
 } from '../src/tools/create-image-tool.js';
 import { setCapabilityCheckForTests, setImageVisibilityCheckForTests } from '../src/tools/image-render.js';
-import { findChromePath } from '../src/chrome-debug.js';
 import type { ImageContentPart, RenderContext, ToolDefinition } from '../src/types.js';
-
-function chromeLiveEnabled(): boolean {
-  if (process.env['RUN_CHROME_LIVE'] !== '1') return false;
-  try { return findChromePath(), true; } catch { return false; }
-}
 
 let dir: string;
 const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#0d1117"/><circle cx="20" cy="10" r="6" fill="#58a6ff"/></svg>';
@@ -250,16 +244,20 @@ describe('createImage tool', () => {
     expect(res.message).toMatch(/html/);
   });
 
-  it.skipIf(!chromeLiveEnabled())('renders HTML to a PNG via headless Chrome [RUN_CHROME_LIVE=1]', async () => {
+  it('renders HTML through an injected browser renderer', async () => {
+    const png = Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), Buffer.from('mock-image')]);
+    const renderHtml = vi.fn(async () => png);
     const res = await createImageFromHtml(
       '<div style="width:120px;height:60px;background:#58a6ff;color:#fff;font:16px sans-serif;display:flex;align-items:center;justify-content:center">hi</div>',
       dir,
       { name: 'card.png' },
+      { renderHtml },
     );
     expect(res.ok).toBe(true);
     expect(res.bytes).toBeGreaterThan(0);
     expect(Buffer.from(res.base64!, 'base64').subarray(0, 4).toString('latin1')).toBe('\x89PNG');
-  }, 30000);
+    expect(renderHtml).toHaveBeenCalledOnce();
+  });
 
   it('renderResult does NOT self-render when showToModel put an image in content (pi renders it)', async () => {
     setCapabilityCheckForTests(() => false);

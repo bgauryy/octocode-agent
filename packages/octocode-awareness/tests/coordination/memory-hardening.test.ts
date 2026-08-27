@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { evaluateMemoryRecall } from '../../src/memory-hardening.js';
+import { evaluateMemoryRecall, MEMORY_EVALUATION_CORPUS_V1 } from '../../src/memory-hardening.js';
 import { openAwarenessStore } from '../../src/coordination/index.js';
 
 const roots: string[] = [];
@@ -28,12 +28,51 @@ describe('verified memory hardening', () => {
     const aw = openAwarenessStore({ workspace, dbPath: join(workspace, 'awareness.sqlite3') });
     try {
       expect(() => aw.storeVerifiedMemory({ label: 'credential', text: 'api_key=supersecretvalue', sourceDigest: 'sha256:x' })).toThrow(/secret-like/);
+      expect(() => aw.storeMemory({ label: 'credential', text: 'access_token=supersecretvalue' })).toThrow(/secret-like/);
       expect(aw.recallVerifiedMemory()).toEqual([]);
+    } finally { aw.close(); }
+  });
+
+  it('never promotes an ordinary row to verified recall through labels or tags', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'memory-unverified-'));
+    roots.push(workspace);
+    const aw = openAwarenessStore({ workspace, dbPath: join(workspace, 'awareness.sqlite3') });
+    try {
+      aw.storeMemory({ label: 'VERIFIED', text: 'unverified assertion', tags: ['verified', 'source:fake'] });
+      expect(aw.recallMemory({ query: 'assertion' })).toHaveLength(1);
+      expect(aw.recallVerifiedMemory({ query: 'assertion' })).toEqual([]);
     } finally { aw.close(); }
   });
 
   it('measures precision, recall, stale recall, and false-recall cost', () => {
     expect(evaluateMemoryRecall([{ expectedIds: ['a', 'b'], returnedIds: ['a', 'wrong', 'stale'], staleIds: ['stale'], falseRecallWeight: 2 }]))
       .toEqual({ version: 1, precision: 1 / 3, recall: 1 / 2, staleRecallRate: 1 / 3, falseRecallCost: 4 });
+  });
+
+  it('runs the maintained lexical, semantic, hybrid, stale, scope, and secret corpus through the real store', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'memory-evaluate-'));
+    roots.push(workspace);
+    const previous = process.env['OCTOCODE_EMBED_CMD'];
+    delete process.env['OCTOCODE_EMBED_CMD'];
+    const aw = openAwarenessStore({ workspace, dbPath: join(workspace, 'awareness.sqlite3') });
+    try {
+      const common = { verifiedAt: '2026-08-26T00:00:00.000Z', validUntil: '2026-09-01T00:00:00.000Z' };
+      aw.storeVerifiedMemory({ label: 'migration', text: 'sqlite migration transaction', sourceDigest: 'eval:fresh:migration', ...common });
+      aw.storeVerifiedMemory({ label: 'authorization', text: 'single use permission race', sourceDigest: 'eval:fresh:authorization', ...common });
+      aw.storeVerifiedMemory({ label: 'recovery', text: 'resume after compact', sourceDigest: 'eval:fresh:recovery', ...common });
+      aw.storeVerifiedMemory({ label: 'release', text: 'release command current', sourceDigest: 'eval:fresh:release', ...common });
+      aw.storeVerifiedMemory({ label: 'release', text: 'release command obsolete', sourceDigest: 'eval:stale:release', verifiedAt: '2026-07-01T00:00:00.000Z', validUntil: '2026-08-01T00:00:00.000Z' });
+      aw.storeVerifiedMemory({ label: 'decision', text: 'artifact decision', sourceDigest: 'eval:artifact:decision', scope: 'artifact', ...common });
+      aw.storeVerifiedMemory({ label: 'decision', text: 'artifact decision', sourceDigest: 'eval:project:decision', scope: 'project', ...common });
+
+      const report = aw.evaluateVerifiedMemory({ corpus: MEMORY_EVALUATION_CORPUS_V1, now: '2026-08-26T00:00:00.000Z' });
+      expect(report.corpusId).toBe('octocode-memory-hardening-v1');
+      expect(report.cases.map((item) => item.mode)).toEqual(expect.arrayContaining(['lexical', 'semantic', 'hybrid']));
+      expect(report.aggregate).toMatchObject({ precision: 1, recall: 1, staleRecallRate: 0, falseRecallCost: 0 });
+      expect(report).toMatchObject({ staleRecallCost: 0, crossScopeRecallCost: 0, secretRecallCost: 0 });
+    } finally {
+      aw.close();
+      if (previous === undefined) delete process.env['OCTOCODE_EMBED_CMD']; else process.env['OCTOCODE_EMBED_CMD'] = previous;
+    }
   });
 });

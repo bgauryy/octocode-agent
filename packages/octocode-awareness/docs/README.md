@@ -1,7 +1,7 @@
 # Octocode Awareness Documentation
 
 Each concept has one owner. Command names and schemas come from
-`octocode-awareness schema commands --compact`; prose docs do not duplicate the
+`npx @octocodeai/octocode-awareness schema commands --compact`; prose docs do not duplicate the
 complete command inventory.
 
 | Document | Owns |
@@ -9,6 +9,7 @@ complete command inventory.
 | [THESIS.md](THESIS.md) | Homeostatic control model, metaphor boundary, pressures, and success measures |
 | [HOW_IT_WORKS.md](HOW_IT_WORKS.md) | Canonical complete bootstrap, operating, state, hook, memory, projection, and exit lifecycle |
 | [DB.md](DB.md) | SQLite schema, relationships, migration, scope |
+| [CONFIGURATION.md](CONFIGURATION.md) | Global feature defaults, onboarding questions, validation, and fixed safety boundaries |
 | [LOCKS.md](LOCKS.md) | Advisory file work, exclusive locks, verification |
 | [HOOKS.md](HOOKS.md) | Host installation and runtime behavior |
 | [MEMORY_NAVIGATION.md](MEMORY_NAVIGATION.md) | Compact attend, workboard, delivery budgets |
@@ -21,7 +22,7 @@ complete command inventory.
 | [REFERENCES.md](REFERENCES.md) | Evidence map, prior art, hypotheses, and design limits |
 
 Agent-facing procedures live under package-local `skills/octocode-awareness/references/` and
-are listed by `octocode-awareness docs list --compact`. Start with `flow-matrix`
+are listed by `npx @octocodeai/octocode-awareness docs list --compact`. Start with `flow-matrix`
 when choosing among lifecycle paths, then open exactly one deeper reference.
 
 Canonical data lives in the global Awareness SQLite database. On request, `query`

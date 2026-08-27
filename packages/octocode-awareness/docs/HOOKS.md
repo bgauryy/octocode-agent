@@ -2,7 +2,14 @@
 
 Hooks automate Awareness lifecycle edges after the skill/CLI has chosen work; they do
 not choose tasks, prove success, or replace `attend`/verify. The CLI works without
-them. All hosts call the same runtime and canonical SQLite database.
+them. Claude, Codex, and Cursor use the shared shell runner and advanced Awareness
+store. Pi uses package APIs, native extension events, and the shared coordination
+store; it does not install or spawn the shell hooks.
+
+Shell hooks remain inert until `<OCTOCODE_HOME>/awareness.json` exists and validates.
+Feature behavior follows [CONFIGURATION.md](CONFIGURATION.md). Before every real hook
+installation, show the dry-run target and obtain separate user approval immediately
+before changing host settings; configuration answers do not grant that approval.
 
 ## Lifecycle
 
@@ -24,9 +31,10 @@ entry is removed during install/repair to guarantee guard ordering.
 
 | Host | Surface | Notes |
 |---|---|---|
-| Claude Code | Skill frontmatter while active, or `.claude/settings.json` | Success/failure writes, subagent start/stop, PreCompact, SessionEnd, prompt briefing. Choose one surface. |
-| Codex | `.codex/hooks.json` | SessionStart, success writes, subagent start/stop, PreCompact, prompt/stop. No SessionEnd or distinct failure event; PostToolUse failure metadata is handled when present. |
-| Cursor | `.cursor/hooks.json` | Success/failure writes plus session/subagent/compact/end edges. Native output varies by local/cloud/version; child-context injection is not assumed. |
+| Claude Code | Skill frontmatter while active, or `.claude/settings.json` | Installed hooks add SessionStart; both cover success/failure writes, subagent start/stop, PreCompact, SessionEnd, prompt briefing. Choose one surface. |
+| Codex | `.codex/hooks.json` | SessionStart/SessionEnd, success writes, subagent start/stop, PreCompact, prompt/stop. No distinct failure event; PostToolUse failure metadata is handled when present. |
+| Cursor | `.cursor/hooks.json` | Success/failure writes plus session/subagent/compact/end edges. Cloud supports write/subagent/prompt/compact/stop hooks but not `sessionStart`/`sessionEnd`; child-context injection is not assumed. |
+| Pi | `@octocodeai/pi-extension` native events | `tool_call` lock/presence gate, session registry join/leave, durable event delivery, and compaction rehydration. No shell-hook install or advanced hook receipts. |
 | Custom | Library API or `hook run` payload | Must provide stable identity/path events. |
 
 ## Install And Verify
@@ -37,11 +45,11 @@ separate surface without pretending activation was observed.
 Preview writes, install after approval, then check exact host config:
 
 ```bash
-octocode-awareness hooks install --host <codex|cursor> \
+npx @octocodeai/octocode-awareness hooks install --host <codex|cursor> \
   --project-dir . --dry-run
-octocode-awareness hooks install --host <codex|cursor> \
+npx @octocodeai/octocode-awareness hooks install --host <codex|cursor> \
   --project-dir . --compact
-octocode-awareness hooks check --host <codex|cursor> \
+npx @octocodeai/octocode-awareness hooks check --host <codex|cursor> \
   --project-dir . --strict --compact
 ```
 
@@ -50,9 +58,9 @@ Use `--host claude` only when skill frontmatter is unsupported or disabled.
 Remove (preview first) when uninstalling host wiring:
 
 ```bash
-octocode-awareness hooks remove --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks remove --host <claude|codex|cursor> \
   --project-dir . --dry-run
-octocode-awareness hooks remove --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks remove --host <claude|codex|cursor> \
   --project-dir . --compact
 ```
 

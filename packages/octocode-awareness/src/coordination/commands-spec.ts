@@ -140,6 +140,38 @@ export const AWARENESS_COMMANDS: readonly CommandGroup[] = [
     ],
   },
   {
+    resource: 'memory', cli: 'memory', label: 'Memory',
+    summary: 'Durable workspace memory. Ordinary rows are unverified leads; verified routes require provenance, expiry and secret hardening. Recall remains evidence, never authority.',
+    actions: [
+      { action: 'store', summary: 'store an unverified memory lead', params: [{ name: 'label', flag: 'label', type: 'string', required: true, description: 'Memory label.' }, { name: 'text', flag: 'text', type: 'string', required: true, description: 'Memory text; secrets are rejected.' }, { name: 'tags', flag: 'tags', type: 'string[]', description: 'Comma-separated tags.' }] },
+      { action: 'store-verified', summary: 'store provenance-bound verified memory', params: [
+        { name: 'label', flag: 'label', type: 'string', required: true, description: 'Memory label.' },
+        { name: 'text', flag: 'text', type: 'string', required: true, description: 'Verified learning; secrets are rejected.' },
+        { name: 'sourceDigest', flag: 'source-digest', type: 'string', required: true, description: 'Digest or stable identity of the checked source.' },
+        { name: 'scope', flag: 'scope', type: 'string', enum: ['project', 'artifact'], description: 'Verification scope.' },
+        { name: 'verifiedAt', flag: 'verified-at', type: 'string', description: 'ISO verification time.' },
+        { name: 'validUntil', flag: 'valid-until', type: 'string', description: 'Optional ISO expiry.' },
+        { name: 'importance', flag: 'importance', type: 'integer', min: 1, max: 10, description: 'Importance 1-10.' },
+        { name: 'tags', flag: 'tags', type: 'string[]', description: 'Comma-separated tags.' },
+      ] },
+      { action: 'recall', summary: 'recall ordinary memory leads', params: [{ name: 'query', flag: 'query', type: 'string', description: 'Search text.' }, { name: 'label', flag: 'label', type: 'string', description: 'Exact label.' }, { name: 'limit', flag: 'limit', type: 'integer', min: 1, max: 50, description: 'Maximum rows.' }, { name: 'semantic', flag: 'semantic', type: 'boolean', description: 'Use semantic ranking with lexical fallback.' }, { name: 'minSimilarity', flag: 'min-similarity', type: 'string', description: 'Semantic score floor.' }] },
+      { action: 'recall-verified', summary: 'recall only current provenance-bound verified memories', params: [
+        { name: 'query', flag: 'query', type: 'string', description: 'Search text.' }, { name: 'label', flag: 'label', type: 'string', description: 'Exact label.' },
+        { name: 'sourceDigest', flag: 'source-digest', type: 'string', description: 'Exact source digest.' }, { name: 'scope', flag: 'scope', type: 'string', enum: ['project', 'artifact'], description: 'Scope filter.' },
+        { name: 'mode', flag: 'mode', type: 'string', enum: ['lexical', 'semantic', 'hybrid'], description: 'Recall mode.' }, { name: 'limit', flag: 'limit', type: 'integer', min: 1, max: 50, description: 'Maximum rows.' },
+        { name: 'now', flag: 'now', type: 'string', description: 'ISO evaluation time.' }, { name: 'minSimilarity', flag: 'min-similarity', type: 'string', description: 'Semantic score floor.' },
+      ] },
+      { action: 'evaluate', summary: 'run the maintained or supplied verified-memory corpus', params: [
+        { name: 'corpusJson', flag: 'corpus-json', type: 'string', description: 'Optional inline MemoryEvaluationCorpusV1 JSON.' }, { name: 'now', flag: 'now', type: 'string', description: 'ISO evaluation time.' },
+        { name: 'limit', flag: 'limit', type: 'integer', min: 1, max: 50, description: 'Per-case result limit.' }, { name: 'minSimilarity', flag: 'min-similarity', type: 'string', description: 'Semantic score floor.' },
+      ] },
+      { action: 'list', summary: 'list recent ordinary rows', params: [{ name: 'limit', flag: 'limit', type: 'integer', min: 1, max: 50, description: 'Maximum rows.' }] },
+      { action: 'reindex', summary: 'rebuild missing/incompatible embeddings', params: [{ name: 'force', flag: 'force', type: 'boolean', description: 'Rebuild every row.' }, { name: 'limit', flag: 'limit', type: 'integer', min: 1, max: 5000, description: 'Maximum rows.' }] },
+      { action: 'forget', summary: 'delete one memory', params: [{ name: 'memoryId', flag: 'memory-id', type: 'string', required: true, description: 'Memory id.' }] },
+      { action: 'prune', summary: 'delete old memories after confirmation', params: [{ name: 'olderThanMs', flag: 'older-than', type: 'integer', required: true, durationMs: true, description: 'Age threshold.' }, { name: 'label', flag: 'label', type: 'string', description: 'Optional label.' }, { name: 'confirm', flag: 'confirm', type: 'boolean', description: 'Perform deletion; otherwise dry-run.' }] },
+    ],
+  },
+  {
     resource: 'agent', cli: 'agent', label: 'Peers',
     summary: 'Peer registry for the shared repo. Peers may be other coding agents (host-tagged clawde-*, cursea-*, codex-*, octo-*). Distinct from spawnAgent/AgentMessage (worker orchestration). Combine lastSeenAt with real inspection before assuming a peer is live.',
     actions: [

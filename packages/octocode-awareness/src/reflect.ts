@@ -13,9 +13,9 @@ import { insertHarnessLog } from './audit.js';
 import type { ReflectParams, ReflectResult, ReflectionOutcome } from './types.js';
 
 const NEXT_MSG = [
-  'Next: inspect created fixes with octocode-awareness refinement get --state open.',
-  'After applying and verifying a fix, close it with octocode-awareness refinement set --refinement-id <id> --state done.',
-  'Use octocode-awareness reflect mine-weakness for recurring failures and octocode-awareness reflect export-harness for human-reviewed harness proposals.',
+  'Next: inspect created fixes with npx @octocodeai/octocode-awareness refinement get --state open.',
+  'After applying and verifying a fix, close it with npx @octocodeai/octocode-awareness refinement set --refinement-id <id> --state done.',
+  'Use npx @octocodeai/octocode-awareness reflect mine-weakness for recurring failures and npx @octocodeai/octocode-awareness reflect export-harness for human-reviewed harness proposals.',
 ].join(' ');
 
 function normalizeScopePaths(paths: string[] = [], prefix: 'file' | 'dir', baseCwd?: string): string[] {

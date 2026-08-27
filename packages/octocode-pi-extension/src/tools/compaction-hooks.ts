@@ -10,15 +10,31 @@ import { contentDigest, openAwareness, type ContextSegmentV1 } from '@octocodeai
 import { createSessionArtifactContext, writeRehydrationLedger } from './session-artifacts.js';
 import { listPendingInteractionIds } from './interaction-broker.js';
 import { runAndRecordRehydration } from './rehydration-orchestrator.js';
+import { captureCurrentContextSources, clearCurrentContextSources } from './context-source-registry.js';
 
 export interface CompactionRehydrationCapture {
   segments: ContextSegmentV1[];
   contents: Record<string, string>;
 }
 
-let rehydrationSegmentsProvider: (() => CompactionRehydrationCapture) | undefined;
-export function setCompactionRehydrationSegmentsProvider(provider?: () => CompactionRehydrationCapture): void {
+let rehydrationSegmentsProvider: ((ctx: PiContext) => CompactionRehydrationCapture) | undefined;
+export function setCompactionRehydrationSegmentsProvider(provider?: (ctx: PiContext) => CompactionRehydrationCapture): void {
   rehydrationSegmentsProvider = provider;
+}
+
+export function mergeCompactionRehydrationCaptures(
+  fixed: CompactionRehydrationCapture,
+  dynamic: CompactionRehydrationCapture,
+): CompactionRehydrationCapture {
+  const segments = new Map(fixed.segments.map((segment) => [segment.id, segment]));
+  const contents = { ...fixed.contents };
+  for (const segment of dynamic.segments) {
+    if (segments.has(segment.id)) continue;
+    segments.set(segment.id, segment);
+    const content = dynamic.contents[segment.id];
+    if (content !== undefined) contents[segment.id] = content;
+  }
+  return { segments: [...segments.values()], contents };
 }
 
 const SPLIT_TURN_COMPACTION_HEADER = '**Turn Context (split turn):**';
@@ -283,6 +299,12 @@ export function resetCompactionCheckpointDedupe(): void {
 export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void {
   if (!pi.on) return;
 
+  pi.on('session_shutdown', async () => {
+    // Replacement shutdown can deliberately provide a stale context proxy.
+    // The extension owns one active session, so cleanup must not dereference it.
+    clearCurrentContextSources();
+  });
+
   pi.on('session_before_compact', async (event: SessionBeforeCompactEvent, ctx: PiContext) => {
     // Every compaction path (pi's internal auto, user /compact, extension
     // ctx.compact) passes through this event — mark the shared arbiter FIRST,
@@ -353,7 +375,9 @@ export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void 
       const planScope = activePlanScope(ctx);
       const review = getPlanReviewState(planScope);
       const planContent = renderPlanContext(getCurrentPlanReadModel(ctx, planScope));
-      const capture = rehydrationSegmentsProvider?.() ?? { segments: [], contents: {} };
+      const fixedCapture = rehydrationSegmentsProvider?.(ctx) ?? { segments: [], contents: {} };
+      const registeredCapture = captureCurrentContextSources(ctx);
+      const capture = mergeCompactionRehydrationCaptures(fixedCapture, registeredCapture);
       const providedSegments = capture.segments;
       const segmentMap = new Map(providedSegments.map((segment) => [segment.id, segment]));
       segmentMap.set('active-plan', {

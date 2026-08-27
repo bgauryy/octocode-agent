@@ -76,6 +76,16 @@ describe('semantic memory recall', () => {
     expect(hits[0]!.similarity).toBeGreaterThan(hits[hits.length - 1]!.similarity ?? 0);
   });
 
+  it('ranks only current verified rows through the semantic verified-memory route', () => {
+    aw.storeVerifiedMemory({ label: 'DB', text: 'database migration transaction', sourceDigest: 'sha256:db', validUntil: '2027-01-01T00:00:00.000Z' });
+    aw.storeVerifiedMemory({ label: 'FOOD', text: 'apple pie cinnamon recipe', sourceDigest: 'sha256:food', validUntil: '2027-01-01T00:00:00.000Z' });
+    aw.storeMemory({ label: 'UNVERIFIED', text: 'database migration transaction extra' });
+    const hits = aw.recallVerifiedMemory({ query: 'database migration steps', mode: 'semantic', now: '2026-08-27T00:00:00.000Z' });
+    expect(hits[0]?.sourceDigest).toBe('sha256:db');
+    expect(hits[0]?.explanation).toContain('similarity=');
+    expect(hits.map((item) => item.label)).not.toContain('UNVERIFIED');
+  });
+
   it('reindex backfills embeddings for rows stored before the embedder was set', () => {
     delete process.env['OCTOCODE_EMBED_CMD'];
     aw.storeMemory({ label: 'DB', text: 'database migration notes' });
@@ -96,7 +106,7 @@ describe('semantic memory recall', () => {
     expect(aw.reindexMemories()).toEqual({ enabled: false, scanned: 0, embedded: 0 });
   });
 
-  it('does not rank vectors from a different embedding model (model-scoped recall)', async () => {
+  it('reindexes vectors after an embedding model change before semantic recall', async () => {
     // Store embedded under the default model ('test-bow').
     aw.storeMemory({ label: 'DB', text: 'database migration notes' });
     // Swap the embedder to a DIFFERENT model of the SAME dimension. The stored
@@ -105,10 +115,19 @@ describe('semantic memory recall', () => {
     await writeFile(v2, EMBED_SCRIPT.replace("model:'test-bow'", "model:'test-bow-v2'"), 'utf8');
     process.env['OCTOCODE_EMBED_CMD'] = `"${process.execPath}" "${v2}"`;
     const hits = aw.recallMemory({ query: 'database migration notes', semantic: true });
-    // Falls through to lexical recall — the match has no similarity score, proving
-    // it did not come from the cross-model semantic path.
     expect(hits.map((h) => h.label)).toContain('DB');
-    expect(hits[0]!.similarity).toBeUndefined();
+    expect(hits[0]!.similarity).toBeGreaterThan(0);
+    expect(aw.reindexMemories()).toEqual({ enabled: true, scanned: 0, embedded: 0 });
+  });
+
+  it('reindexes same-model vectors after an embedding dimension change', async () => {
+    aw.storeMemory({ label: 'DB', text: 'database migration notes' });
+    const resized = join(workspace, 'embed-resized.mjs');
+    await writeFile(resized, EMBED_SCRIPT.replace('const N=64', 'const N=32'), 'utf8');
+    process.env['OCTOCODE_EMBED_CMD'] = `"${process.execPath}" "${resized}"`;
+    const hits = aw.recallMemory({ query: 'database migration notes', semantic: true });
+    expect(hits[0]?.label).toBe('DB');
+    expect(hits[0]?.similarity).toBeGreaterThan(0);
   });
 
   it('an opt-in minSimilarity floor suppresses weak semantic matches', () => {

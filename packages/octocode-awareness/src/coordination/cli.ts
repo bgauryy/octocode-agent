@@ -4,7 +4,12 @@ import { dirname,resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AWARENESS_COMMANDS } from './commands-spec.js';
 import { dispatchAwarenessCommand,type AwarenessCommandRequest } from './dispatch.js';
-import { EXTERNAL_AGENT_AWARENESS_PROMPT,getExternalAgentAwarenessGuide } from './external-policy.js';
+import {
+  EXTERNAL_AGENT_AWARENESS_PROMPT,
+  EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS,
+  formatExternalAgentAwarenessInstructions,
+  getExternalAgentAwarenessGuide,
+} from './external-policy.js';
 import { runPreEditLockGate,type HookHost } from './hooks.js';
 import { isEmbeddingEnabled,openAwarenessStore } from './index.js';
 
@@ -78,7 +83,7 @@ function print(value: unknown): void {
 }
 
 function usage(): string {
-  return `octocode-awareness <command> [action]\n\nCommands:\n  guide                 print canonical external-agent usage policy\n  status [--stale-after]\n  schema [commands|list|command --name <noun>] entities and command shapes\n  plan create|list|show|done|abandon\n  task add|list|ready|show|depend|claim|heartbeat|release|done|reopen\n  lock acquire|wait|prune|release|list\n  work start|touch|list|show|end manual advisory file presence\n  handoff add|list|clear manual notes for later agents\n  agent join|touch|leave|list [--stale-after]\n  message send|inbox|list|read|prune\n  check audit|mark      verify-gate receipt flow\n  memory store|recall|list|reindex|forget|prune\n  memory recall --semantic  cosine recall via OCTOCODE_EMBED_CMD (falls back to lexical)\n  hooks pre-edit        JSON lock-conflict gate; exits 2 when another agent owns a lock\n  hooks install         writes the optional pre-edit hook for claude|codex|cursor; use --dry-run first\n\nHook install:\n  hooks install --host claude|cursor|codex --project-dir <repo> [--cli <path>] [--dry-run]\n  writes .claude/settings.json, .cursor/hooks.json, or .codex/hooks.json\n\nGlobal flags:\n  --workspace <path>  Workspace root, default cwd\n  --db <path>         SQLite database path`;
+  return `octocode-awareness <command> [action]\n\nCommands:\n  guide                 print canonical external-agent usage policy\n  instructions export   emit reusable prompt or AGENTS.md instructions\n  status [--stale-after]\n  schema [commands|list|command --name <noun>] entities and command shapes\n  plan create|list|show|done|abandon\n  task add|list|ready|show|depend|claim|heartbeat|release|done|reopen\n  lock acquire|wait|prune|release|list\n  work start|touch|list|show|end manual advisory file presence\n  handoff add|list|clear manual notes for later agents\n  agent join|touch|leave|list [--stale-after]\n  message send|list|read|prune\n  check audit|mark      verify-gate receipt flow\n  memory store|store-verified|recall|recall-verified|evaluate|list|reindex|forget|prune\n  memory recall --semantic  cosine recall via OCTOCODE_EMBED_CMD (falls back to lexical)\n  hooks pre-edit        JSON lock-conflict gate; exits 2 when another agent owns a lock\n  hooks install         writes the optional pre-edit hook for claude|codex|cursor; use --dry-run first\n\nInstruction export:\n  instructions export [--format prompt|agents-md|json]\n  agents-md includes stable markers for idempotent replacement; output is stdout only\n\nHook install:\n  hooks install --host claude|cursor|codex --project-dir <repo> [--cli <path>] [--dry-run]\n  writes .claude/settings.json, .cursor/hooks.json, or .codex/hooks.json\n\nGlobal flags:\n  --workspace <path>  Workspace root, default cwd\n  --db <path>         SQLite database path`;
 }
 function hasHelpFlag(parsed: ParsedArgs): boolean {
   return parsed.command === 'help' || parsed.command === '--help' || parsed.action === 'help' || parsed.action === '--help' || parsed.flags.has('help');
@@ -87,6 +92,7 @@ function hasHelpFlag(parsed: ParsedArgs): boolean {
 const GLOBAL_FLAGS = ['workspace', 'db', 'help'] as const;
 const CLI_ONLY_ACTION_FLAGS: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
   guide: { '': ['json'] },
+  instructions: { export: ['format'] },
   schema: { '': [], commands: [], list: [], command: ['name'] },
   hooks: {
     install: ['host', 'project-dir', 'cli', 'dry-run'],
@@ -94,7 +100,10 @@ const CLI_ONLY_ACTION_FLAGS: Readonly<Record<string, Readonly<Record<string, rea
   },
   memory: {
     store: ['label', 'text', 'tags'],
+    'store-verified': ['label', 'text', 'source-digest', 'scope', 'verified-at', 'valid-until', 'importance', 'tags'],
     recall: ['query', 'label', 'limit', 'semantic', 'min-similarity'],
+    'recall-verified': ['query', 'label', 'source-digest', 'scope', 'mode', 'limit', 'now', 'min-similarity'],
+    evaluate: ['corpus-json', 'now', 'limit', 'min-similarity'],
     list: ['limit'],
     reindex: ['force', 'limit'],
     forget: ['memory-id'],
@@ -203,6 +212,8 @@ function buildCommandParams(parsed: ParsedArgs): Record<string, unknown> {
       return {
         label: s('label'), text: s('text'), tags: s('tags'), query: s('query'), limit: s('limit'),
         semantic: has('semantic'), minSimilarity: s('min-similarity'),
+        sourceDigest: s('source-digest'), scope: s('scope'), verifiedAt: s('verified-at'), validUntil: s('valid-until'),
+        importance: s('importance'), mode: s('mode'), now: s('now'), corpusJson: s('corpus-json'),
         force: has('force'), memoryId: s('memory-id'),
         olderThanMs: isPrune ? requireDurationFlag(f, 'older-than') : undefined,
         dryRun: isPrune ? !has('confirm') : undefined,
@@ -262,6 +273,17 @@ function runCliInner(argv: string[], write: (chunk: string) => void): number {
     if (parsed.action) throw new Error('guide does not accept an action');
     if (parsed.flags.has('json')) print(getExternalAgentAwarenessGuide());
     else write(`${EXTERNAL_AGENT_AWARENESS_PROMPT}\n`);
+    return 0;
+  }
+
+  if (parsed.command === 'instructions') {
+    if (parsed.action !== 'export') throw new Error('instructions action must be export');
+    const format = getFlag(parsed.flags, 'format') ?? 'prompt';
+    if (!['prompt', 'agents-md', 'json'].includes(format)) {
+      throw new Error('instructions export --format must be prompt, agents-md, or json');
+    }
+    if (format === 'json') print({ format: 'prompt', instructions: EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS });
+    else write(`${formatExternalAgentAwarenessInstructions(format === 'agents-md' ? 'agents-md' : 'prompt')}\n`);
     return 0;
   }
 

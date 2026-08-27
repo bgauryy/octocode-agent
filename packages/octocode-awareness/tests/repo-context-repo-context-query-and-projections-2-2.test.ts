@@ -157,7 +157,7 @@ it('routes attend.next through owned Claimed, then FilesUnderWork, then Inbox', 
         query: 'claimed mid-loop',
         compact: true,
       });
-      expect(claimed.next).toBe("octocode-awareness task heartbeat --task-id 'task_next' --run-id 'run_next' --agent-id 'owner' --compact");
+      expect(claimed.next).toBe("npx @octocodeai/octocode-awareness task heartbeat --task-id 'task_next' --run-id 'run_next' --agent-id 'owner' --compact");
 
       const peer = attendAwareness(db, {
         agentId: 'peer',

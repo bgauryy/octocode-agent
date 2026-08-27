@@ -7,7 +7,7 @@ Read before planning, editing, recording, superseding, or trusting a remembered 
 `memory recall` reads canonical SQLite rows, not `.octocode/MEMORY.md`. Run when prior lessons may change the plan. Explicit recall updates bounded popularity metadata; startup `attend` opts out.
 
 ```bash
-octocode-awareness memory recall --query "<task>" --workspace "$PWD" --smart --compact
+npx @octocodeai/octocode-awareness memory recall --query "<task>" --workspace "$PWD" --smart --compact
 ```
 
 Useful filters:
@@ -34,11 +34,11 @@ Use `schema command memory recall` when payload fields matter. CLI flags and sch
 {"embedding":[0.1,0.2],"model":"host-model"}
 ```
 
-With the command set, `memory record` stores vectors and semantic recall ranks by cosine similarity. When unset/failing, CLI warns and falls back to lexical/salience mode. Pi needs the same host env/API; library callers may use `storeEmbedding` and `searchByEmbedding`. Inspect mode and `score_components` before trusting order. Increase `--limit` only when comparison needs more candidates; compact context is the default. Treat semantic similarity as retrieval help, not truth.
+With the command set, `memory record` stores vectors and semantic recall ranks by cosine similarity. When unset/failing, CLI warns and falls back to lexical/salience mode. Host integrations need the same environment/API; library callers may use `storeEmbedding` and `searchByEmbedding`. Inspect mode and `score_components` before trusting order. Increase `--limit` only when comparison needs more candidates; compact context is the default. Treat semantic similarity as retrieval help, not truth.
 
 ## Automatic Prompt-Time Lead
 
-`format=hook` searches the bounded normal 50-candidate pool, then requires two meaningful query-token matches. It emits at most one scoped `Memory lead — verify` or stays silent; signals and `OVERRIDE` items remain independent. The prompt is transient: no access-count update, memory row, or prompt text in delivery state; Pi clears empty, consumed, and shutdown state.
+`format=hook` searches the bounded normal 50-candidate pool, then requires two meaningful query-token matches. It emits at most one scoped `Memory lead — verify` or stays silent; signals and `OVERRIDE` items remain independent. The prompt is transient: no access-count update, memory row, or prompt text in delivery state; hosts should clear empty, consumed, and shutdown state.
 
 ## Trust And Recording
 

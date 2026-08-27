@@ -143,14 +143,14 @@ describe('runAwarenessToolOperation', () => {
         outcome: 'failed',
         instructions_feedback: true,
       });
-      expect(String((reflected.payload as { next: string }).next)).toContain('octocode-awareness refinement get');
+      expect(String((reflected.payload as { next: string }).next)).toContain('npx @octocodeai/octocode-awareness refinement get');
 
       const refinements = run(db, 'refine_get', { workspace_path: dir, include_handoffs: true }, dir);
       expect((refinements.payload as { count: number }).count).toBeGreaterThanOrEqual(1);
 
       const weakness = run(db, 'mine_weakness', { workspace_path: dir, min_count: 1 }, dir);
       expect((weakness.payload as { total_memories: number }).total_memories).toBeGreaterThanOrEqual(1);
-      expect(String((weakness.payload as { next: string }).next)).toContain('octocode-awareness reflect record');
+      expect(String((weakness.payload as { next: string }).next)).toContain('npx @octocodeai/octocode-awareness reflect record');
 
       const harness = run(db, 'export_harness', { workspace_path: dir, min_importance: 1, limit: 5 }, dir);
       expect(String((harness.payload as { markdown: string }).markdown)).toContain('auth');

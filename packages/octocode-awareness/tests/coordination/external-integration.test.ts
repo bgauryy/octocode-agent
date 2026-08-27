@@ -4,9 +4,13 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   EXTERNAL_AGENT_AWARENESS_PROMPT,
+  EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS,
+  EXTERNAL_AGENT_AWARENESS_MARKER_END,
+  EXTERNAL_AGENT_AWARENESS_MARKER_START,
   defaultDbPath,
   execCli,
   formatExternalAgentCoordinationContext,
+  formatExternalAgentAwarenessInstructions,
   executeExternalMemoryAction,
   completeExternalPlanTask,
   finalizeExternalPlan,
@@ -44,6 +48,29 @@ describe('external-agent integration boundary', () => {
     expect(dynamic.prompt).toBe(EXTERNAL_AGENT_AWARENESS_PROMPT);
     expect(dynamic.commands.find((entry) => entry.command === 'task')?.actions).toContain('claim');
     expect(JSON.parse(execCli(['guide', '--json']).stdout)).toEqual(dynamic);
+  });
+
+  it('exports reusable prompt and AGENTS.md instruction blocks without touching files', () => {
+    expect(execCli(['instructions', 'export'])).toEqual({
+      code: 0,
+      stdout: `${EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS}\n`,
+      stderr: '',
+    });
+
+    const agentsMd = formatExternalAgentAwarenessInstructions('agents-md');
+    expect(agentsMd).toContain(EXTERNAL_AGENT_AWARENESS_MARKER_START);
+    expect(agentsMd).toContain(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS);
+    expect(agentsMd).toContain(EXTERNAL_AGENT_AWARENESS_MARKER_END);
+    expect(execCli(['instructions', 'export', '--format', 'agents-md']).stdout).toBe(`${agentsMd}\n`);
+    expect(JSON.parse(execCli(['instructions', 'export', '--format', 'json']).stdout)).toEqual({
+      format: 'prompt',
+      instructions: EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS,
+    });
+    expect(execCli(['instructions', 'export', '--format', 'bad'])).toMatchObject({
+      code: 1,
+      stderr: 'instructions export --format must be prompt, agents-md, or json',
+    });
+    expect(execCli(['--help']).stdout).toContain('instructions export');
   });
 
   it('projects, completes, verifies, and finalizes a shared plan through package adapters', () => {
@@ -90,7 +117,7 @@ describe('external-agent integration boundary', () => {
     expect(context).toContain('your agent id: worker-a');
     expect(context).toContain('parent agent id: lead');
     expect(context).toContain('peers: worker-b');
-    expect(context).toContain('octocode-awareness guide');
+    expect(context).toContain('npx @octocodeai/octocode-awareness guide');
     expect(context).not.toContain('message send');
   });
 

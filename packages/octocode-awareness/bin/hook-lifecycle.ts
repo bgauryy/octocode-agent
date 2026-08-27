@@ -15,8 +15,12 @@ import { endSession } from '../src/sessions.js';
 import { agentId, artifact, completeHookControl, db, emitHookContext, hookBlockOutcome, hookEventName, hookReason, hookSessionCorrelation, isStopHookActive, promptQuery, sessionId, shellHookHost, workspace } from './hook-payload.js';
 import { registerHookAgent, scopeArgs } from './hook-peers.js';
 import { finalizeActiveFallbackHookRuns, withHookDbRetry } from './hook-run-state.js';
+import { AwarenessFeatureConfig, DEFAULT_AWARENESS_CONFIG } from '../src/awareness-config.js';
 
-export async function runStopVerify(payload: Record<string, unknown>): Promise<number> {
+export async function runStopVerify(
+  payload: Record<string, unknown>,
+  features: AwarenessFeatureConfig = DEFAULT_AWARENESS_CONFIG.features,
+): Promise<number> {
   try {
     const database = db();
     registerHookAgent(database, payload, 'hook:stop-verify');
@@ -25,7 +29,7 @@ export async function runStopVerify(payload: Record<string, unknown>): Promise<n
       payload,
       workspace(payload) ?? process.cwd(),
     ));
-    if (process.env.OCTOCODE_NO_VERIFY_GATE === '1') return 0;
+    if (!features.verificationGate || process.env.OCTOCODE_NO_VERIFY_GATE === '1') return 0;
     const report = auditUnverified(database, { agentId: agentId(payload), ...scopeArgs(payload) });
     if (report.count > 0) {
       // A recursive Stop with no newly finalized work already surfaced this
@@ -46,14 +50,17 @@ export async function runStopVerify(payload: Record<string, unknown>): Promise<n
       ));
     }
   } catch (error) {
-    console.error(`octocode-awareness verify warning (continuing): ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`npx @octocodeai/octocode-awareness verify warning (continuing): ${error instanceof Error ? error.message : String(error)}`);
   }
   return 0;
 }
 
-export function maybePreviewDigest(payload: Record<string, unknown>): string | null {
+export function maybePreviewDigest(
+  payload: Record<string, unknown>,
+  features: AwarenessFeatureConfig = DEFAULT_AWARENESS_CONFIG.features,
+): string | null {
+  if (!features.maintenanceReminders) return null;
   if (process.env.OCTOCODE_NO_DIGEST === '1') return null;
-  if (process.env.OCTOCODE_NOTIFY_RUN_DIGEST !== '1') return null;
   const intervalHours = Number(process.env.OCTOCODE_DIGEST_INTERVAL_HOURS ?? 4);
   const intervalMs = Number.isFinite(intervalHours) && intervalHours > 0 ? intervalHours * 3600_000 : 4 * 3600_000;
   const memoryHome = dirname(resolveDbPath(null));
@@ -84,7 +91,7 @@ export function maybePreviewDigest(payload: Record<string, unknown>): string | n
         refinements: preview.would_prune_refinements ?? 0,
       };
       if (Object.values(pressure).some((count) => count > 0)) {
-        return `Maintenance pressure: archive ${pressure.archive}, prune memories ${pressure.memories}, locks ${pressure.locks}, refinements ${pressure.refinements}. Review with octocode-awareness maintenance digest --dry-run --workspace "$PWD" --compact; apply only after review.`;
+        return `Maintenance pressure: archive ${pressure.archive}, prune memories ${pressure.memories}, locks ${pressure.locks}, refinements ${pressure.refinements}. Review with npx @octocodeai/octocode-awareness maintenance digest --dry-run --workspace "$PWD" --compact; apply only after review.`;
       }
     }
   } catch (error) {
@@ -93,9 +100,12 @@ export function maybePreviewDigest(payload: Record<string, unknown>): string | n
   return null;
 }
 
-export async function runNotifyDeliver(payload: Record<string, unknown>): Promise<number> {
+export async function runNotifyDeliver(
+  payload: Record<string, unknown>,
+  features: AwarenessFeatureConfig = DEFAULT_AWARENESS_CONFIG.features,
+): Promise<number> {
   if (process.env.OCTOCODE_NO_NOTIFY === '1') return 0;
-  const maintenanceContext = maybePreviewDigest(payload);
+  const maintenanceContext = maybePreviewDigest(payload, features);
   try {
     const database = db();
     registerHookAgent(database, payload, 'hook:notify-deliver');
@@ -104,14 +114,16 @@ export async function runNotifyDeliver(payload: Record<string, unknown>): Promis
       payload,
       workspace(payload) ?? process.cwd(),
     ));
-    const result = notifyGet(database, {
-      agent_id: agentId(payload),
-      session_id: hookSessionCorrelation(payload) ?? undefined,
-      workspace: workspace(payload) ?? undefined,
-      artifact: artifact(payload) ?? undefined,
-      query: promptQuery(payload) ?? undefined,
-      format: 'hook',
-    }) as { additionalContext?: string };
+    const result = features.notifications
+      ? notifyGet(database, {
+          agent_id: agentId(payload),
+          session_id: hookSessionCorrelation(payload) ?? undefined,
+          workspace: workspace(payload) ?? undefined,
+          artifact: artifact(payload) ?? undefined,
+          query: promptQuery(payload) ?? undefined,
+          format: 'hook',
+        }) as { additionalContext?: string }
+      : {};
     const additionalContext = [result.additionalContext, maintenanceContext].filter(Boolean).join('\n');
     if (additionalContext) {
       emitHookContext(
@@ -125,12 +137,15 @@ export async function runNotifyDeliver(payload: Record<string, unknown>): Promis
       );
     }
   } catch (error) {
-    console.error(`octocode-awareness session-capture warning (continuing): ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`npx @octocodeai/octocode-awareness session-capture warning (continuing): ${error instanceof Error ? error.message : String(error)}`);
   }
   return 0;
 }
 
-export async function runSessionEnd(payload: Record<string, unknown>): Promise<number> {
+export async function runSessionEnd(
+  payload: Record<string, unknown>,
+  features: AwarenessFeatureConfig = DEFAULT_AWARENESS_CONFIG.features,
+): Promise<number> {
   try {
     const database = db();
     registerHookAgent(database, payload, 'hook:session-end');
@@ -139,7 +154,7 @@ export async function runSessionEnd(payload: Record<string, unknown>): Promise<n
       payload,
       workspace(payload) ?? process.cwd(),
     ));
-    if (process.env.OCTOCODE_NO_SESSION_CAPTURE !== '1' && hookReason(payload) !== 'clear') {
+    if (features.sessionCapture && process.env.OCTOCODE_NO_SESSION_CAPTURE !== '1' && hookReason(payload) !== 'clear') {
       sessionCapture(database, {
         agent_id: agentId(payload),
         workspace: workspace(payload) ?? undefined,
@@ -162,7 +177,10 @@ export async function runSessionEnd(payload: Record<string, unknown>): Promise<n
   return 0;
 }
 
-export async function runSessionCompact(payload: Record<string, unknown>): Promise<number> {
+export async function runSessionCompact(
+  payload: Record<string, unknown>,
+  features: AwarenessFeatureConfig = DEFAULT_AWARENESS_CONFIG.features,
+): Promise<number> {
   try {
     const database = db();
     registerHookAgent(database, payload, 'hook:session-compact');
@@ -171,7 +189,7 @@ export async function runSessionCompact(payload: Record<string, unknown>): Promi
       payload,
       workspace(payload) ?? process.cwd(),
     ));
-    if (process.env.OCTOCODE_NO_SESSION_CAPTURE !== '1' && hookReason(payload) !== 'clear') {
+    if (features.sessionCapture && process.env.OCTOCODE_NO_SESSION_CAPTURE !== '1' && hookReason(payload) !== 'clear') {
       sessionCapture(database, {
         agent_id: agentId(payload),
         workspace: workspace(payload) ?? undefined,

@@ -1,6 +1,6 @@
 # Agent Cheat Sheet
 
-`<cli>`: local `node packages/octocode-awareness/out/octocode-awareness.js` · installed `npx @octocodeai/octocode-awareness` · fallback `node scripts/awareness.mjs`.
+`<cli>` means `npx @octocodeai/octocode-awareness`. This is the only documented runner.
 Export `OCTOCODE_AGENT_ID` (Claude frontmatter *or* host config, never both). SQLite is canonical — confirm live state with `attend`/`query`.
 
 ## BEFORE / READ
@@ -79,25 +79,28 @@ Compact `attend` for the next action; grouped `schema commands` or one exact `sc
 
 Unknown reference owner → `docs list` (routing) → `docs show <name>` → `docs staleness` for drift. None index package `docs/**`.
 
-## Skills (install / update / lint)
+## Initialize and inspect
 
-This package bundles only the Awareness skill; use `npx octocode` for other skills and research — gate every write.
+The host or package manager owns skill installation. Do not construct destination
+paths from the prompt. Use the Awareness CLI for deterministic runtime setup and
+the live contract:
 
 ```bash
-# platform: common = ~/.agents/skills; or claude/cursor/codex/pi
-npm install --global @octocodeai/octocode-awareness
-npx octocode skill --add --path "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness" --platform common --dry-run
-npx octocode skill --add --path "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness" --platform common --force   # after approving destinations
 export OCTOCODE_AGENT_ID="${OCTOCODE_AGENT_ID:-my-agent}"
-<cli> maintenance init --compact
+<cli> config show --compact
+# If missing: ask every returned question together, wait, then config init with all booleans.
+<cli> config validate --compact
+<cli> init --compact
+<cli> schema commands --all --compact
+<cli> coordination schema commands
 <cli> attend --workspace "$PWD" --query "smoke" --agent-id "$OCTOCODE_AGENT_ID" --compact
-# Codex/Cursor: preview → approve → verify wiring
+# Codex/Cursor: preview → ask user now → install only after explicit approval → verify
 <cli> hooks install --host <codex|cursor> --project-dir "$PWD" --dry-run
 <cli> hooks install --host <codex|cursor> --project-dir "$PWD" --compact
 <cli> hooks check --host <codex|cursor> --project-dir "$PWD" --strict
 ```
 
-Noncompact dry-run/check shows settings + runtime health; compact = receipt only. Claude frontmatter is already a hook surface — don't also install project settings (`--host claude` only if frontmatter is unsupported). Don't install `octocode-awareness` by registry name (the package bundles the canonical skill).
+Noncompact dry-run/check shows settings + runtime health; compact = receipt only. Claude frontmatter is already a hook surface — don't also install project settings (`--host claude` only if frontmatter is unsupported).
 
 ## Code search (not bundled here)
 

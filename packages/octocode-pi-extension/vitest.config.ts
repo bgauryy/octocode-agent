@@ -8,12 +8,16 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    setupFiles: ['../../test-utils/external-effects-guard.ts'],
     // Clear shell-inherited env vars that alter extension behaviour under test.
     // OCTOCODE_PI_SUBAGENT=1 causes registerAgentTools() to early-return,
     // so spawnAgent / AgentMessage would never be registered.
     env: {
       OCTOCODE_PI_SUBAGENT: '',
       OCTOCODE_HOME: TEST_OCTOCODE_HOME,
+      OCTOCODE_CHROME_DEBUG_E2E: '',
+      RUN_CHROME_LIVE: '',
+      RUN_MCP_LIVE: '',
     },
     coverage: {
       provider: 'v8',

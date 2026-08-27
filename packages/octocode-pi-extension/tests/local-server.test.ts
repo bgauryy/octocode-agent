@@ -195,6 +195,58 @@ test('a mounted page can send a same-origin JSON message to the agent', async ()
   assert.deepEqual(messages, ['Please revise step 2.']);
 });
 
+test('message bridge exposes health and reports every handler rejection without dropping the server', async () => {
+  const dir = tmpDir();
+  fs.writeFileSync(path.join(dir, 'index.html'), 'MESSAGE HEALTH');
+  const served = await serveDirectory('message-errors', dir, {
+    onMessage: async (message) => {
+      if (message === 'handler failure') throw new Error('mock agent unavailable');
+    },
+  });
+  const endpoint = `${served!.url}__octocode/message`;
+  const origin = new URL(served!.url).origin;
+
+  const health = await fetch(endpoint, { cache: 'no-store' });
+  assert.equal(health.status, 200);
+  assert.equal(health.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await health.json(), { ok: true, messageBridge: true });
+  assert.equal((await fetch(endpoint, { method: 'HEAD' })).status, 200);
+  assert.equal((await fetch(endpoint, { method: 'PUT' })).status, 405);
+
+  const post = (body: string, headers: Record<string, string> = { origin, 'content-type': 'application/json' }) => fetch(endpoint, {
+    method: 'POST',
+    headers,
+    body,
+  });
+  assert.equal((await post('{}', { 'content-type': 'application/json' })).status, 403, 'missing browser origin is refused');
+  assert.equal((await post('{}', { origin, 'content-type': 'text/plain' })).status, 415);
+  assert.equal((await post('{')).status, 400);
+  assert.equal((await post(JSON.stringify({ message: '   ' }))).status, 400);
+  assert.equal((await post(JSON.stringify({ message: 'x'.repeat(16_001) }))).status, 400);
+  const oversizedBody = await post(JSON.stringify({ message: 'x'.repeat(33_000) }));
+  assert.equal(oversizedBody.status, 413, 'oversized requests receive an HTTP error instead of a network-level fetch failure');
+  assert.equal((await post(JSON.stringify({ message: 'handler failure' }))).status, 500);
+
+  const recovered = await post(JSON.stringify({ message: 'retry works' }));
+  assert.equal(recovered.status, 202, 'a rejected delivery does not poison later browser actions');
+});
+
+test('message bridge health distinguishes a static-only mount', async () => {
+  const dir = tmpDir();
+  fs.writeFileSync(path.join(dir, 'index.html'), 'STATIC');
+  const served = await serveDirectory('static-health', dir);
+  const endpoint = `${served!.url}__octocode/message`;
+  const health = await fetch(endpoint);
+  assert.equal(health.status, 200);
+  assert.deepEqual(await health.json(), { ok: true, messageBridge: false });
+  const post = await fetch(endpoint, {
+    method: 'POST',
+    headers: { origin: new URL(served!.url).origin, 'content-type': 'application/json' },
+    body: JSON.stringify({ message: 'cannot deliver' }),
+  });
+  assert.equal(post.status, 404);
+});
+
 test('a mounted management page can send a same-origin typed action and receive JSON', async () => {
   const dir = tmpDir();
   fs.writeFileSync(path.join(dir, 'index.html'), 'manager');
@@ -210,6 +262,19 @@ test('a mounted management page can send a same-origin typed action and receive 
   assert.equal(response.status, 200);
   assert.deepEqual(actions, [{ action: 'disable', server: 'docs' }]);
   assert.deepEqual(await response.json(), { ok: true, value: { updated: true } });
+
+  const oversized = await fetch(`${served!.url}__octocode/action`, {
+    method: 'POST',
+    headers: { origin: new URL(served!.url).origin, 'content-type': 'application/json' },
+    body: JSON.stringify({ value: 'x'.repeat(33_000) }),
+  });
+  assert.equal(oversized.status, 413, 'management actions also return an HTTP error for oversized bodies');
+  const recovered = await fetch(`${served!.url}__octocode/action`, {
+    method: 'POST',
+    headers: { origin: new URL(served!.url).origin, 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'enable', server: 'docs' }),
+  });
+  assert.equal(recovered.status, 200);
 });
 
 test('a mounted management page can require an unguessable action token', async () => {

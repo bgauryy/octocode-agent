@@ -4,11 +4,12 @@ Hooks automate loop edges after the skill is used; they do not choose tasks or r
 
 | Host | Surface | Context / control |
 |---|---|---|
-| Claude | active skill frontmatter or `.claude/settings.json` | success/failure writes, subagent start/stop, PreCompact, SessionEnd; exit 2 blocks |
-| Codex | trusted `.codex/hooks.json` | SessionStart, successful writes, subagent start/stop, PreCompact, prompt/stop; no SessionEnd/failure event |
-| Cursor | `.cursor/hooks.json` | success/failure writes and lifecycle; native deny/follow-up output; subagent context delivery varies by surface/version |
+| Claude | active skill frontmatter or `.claude/settings.json` | installed hooks add SessionStart; both cover success/failure writes, subagent start/stop, PreCompact, SessionEnd; exit 2 blocks |
+| Codex | trusted `.codex/hooks.json` | SessionStart/SessionEnd, successful writes, subagent start/stop, PreCompact, prompt/stop; no distinct failure event |
+| Cursor | `.cursor/hooks.json` | success/failure writes and lifecycle; cloud lacks sessionStart/sessionEnd; native deny/follow-up output; child context varies |
+| Pi | `@octocodeai/pi-extension` native events | in-process tool gate, shared presence, registry/event delivery, shutdown cleanup, and compaction rehydration; no shell install |
 
-Choose one surface. With Claude frontmatter, preview/remove older project or global Awareness hooks; do not also install them. Preview, install after approval, then check:
+Choose one surface. With Claude frontmatter, preview/remove older project or global Awareness hooks; do not also install them. Before every install, show the noncompact dry-run and ask the user for just-in-time approval. Configuration answers are not installation approval. Without an explicit yes, stop after the preview. Then install and check:
 
 ```bash
 <cli> hooks install --host <codex|cursor> --project-dir . --dry-run
@@ -43,7 +44,7 @@ N edits in one scoped turn produce one PENDING HOOK with N files. TASK/WORK neve
 | After | PostToolUse | postToolUse |
 | Brief | UserPromptSubmit | sessionStart |
 | Verify | Stop/SubagentStop | stop/subagentStop |
-| Finalize | SessionEnd (Claude) / PreCompact (Codex) | sessionEnd/preCompact |
+| Finalize | SessionEnd; PreCompact also checkpoints | sessionEnd/preCompact |
 
 Claude/Codex context uses event-named `hookSpecificOutput`. Cursor uses `additional_context` at session start and `agent_message` around tool use; Cursor stop uses `followup_message`; Claude/Codex stop uses exit 2. Host delivery is best-effort and must be smoked. PreCompact finalizes/captures but keeps the host session reusable. SessionEnd marks the session ended; it does not delete explicit WORK or claim success. Presence/task claim TTLs are independent. Expiry removes stale coordination, never success, and never changes a live TASK run to PENDING.
 

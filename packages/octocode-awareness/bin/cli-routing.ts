@@ -24,6 +24,7 @@ export const KNOWN_FLAGS: Record<string, string[]> = {
   'release-file-lock': ['agent_id', 'run_id', 'target_file', 'file', 'status', 'workspace', 'artifact'],
   'status': ['workspace', 'artifact', 'limit'],
   'init': [],
+  'awareness-config': ['action', 'hooks', 'notifications', 'verification_gate', 'session_capture', 'maintenance_reminders'],
   'self-test': [],
   'prune-stale-locks': ['older_than_minutes', 'expired_only', 'agent_id', 'target_file', 'workspace', 'artifact', 'dry_run'],
   'audit-unverified': ['agent_id', 'workspace', 'artifact', 'older_than_days', 'origin', 'before'],
@@ -175,9 +176,12 @@ export const COMMAND_ROUTES: Record<string, CommandRoute> = {
   'maintenance digest': { command: 'digest' },
   'maintenance init': { command: 'init' },
   'maintenance self-test': { command: 'self-test' },
+  'config show': { command: 'awareness-config', prepend: ['--action', 'show'] },
+  'config init': { command: 'awareness-config', prepend: ['--action', 'init'] },
+  'config validate': { command: 'awareness-config', prepend: ['--action', 'validate'] },
 };
 
-export const SINGLE_COMMANDS = new Set(['query', 'attend', 'schema']);
+export const SINGLE_COMMANDS = new Set(['init', 'query', 'attend', 'schema']);
 export const UNKNOWN_COMMAND = '__unknown__';
 
 export function normalizeToken(value: string | undefined): string | undefined {
@@ -315,7 +319,7 @@ export function errorContext(): Record<string, unknown> {
   const display = COMMAND_DISPLAY[activeCommand];
   if (display) context['command'] = display;
   const schema = COMMAND_TO_SCHEMA[activeCommand];
-  if (schema) context['schema'] = `octocode-awareness schema json-schema ${schema} --compact`;
+  if (schema) context['schema'] = `npx @octocodeai/octocode-awareness schema json-schema ${schema} --compact`;
   const example = COMMAND_EXAMPLE[activeCommand];
   if (example) context['example'] = example;
   return context;

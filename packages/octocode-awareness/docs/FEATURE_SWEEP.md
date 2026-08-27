@@ -9,7 +9,7 @@ remain owned by [LOCKS.md](LOCKS.md) and [REFLECTION.md](REFLECTION.md).
 SWEEP_WS="$(mktemp -d)"
 SWEEP_DB="$SWEEP_WS/awareness.sqlite3"
 S="$AWARENESS --db $SWEEP_DB"
-$S maintenance init --compact
+$S init --compact
 ```
 
 | Surface | Proof commands | Pass signal |

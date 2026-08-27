@@ -304,7 +304,7 @@ export function exportHarness(
       harness_count: 0,
       markdown: '<!-- No harness or high-importance memories to export -->',
       memories: [],
-      next: 'No harness proposals yet. Use octocode-awareness reflect record --fix-harness "<proposal>" after evidence shows a reusable harness gap.',
+      next: 'No harness proposals yet. Use npx @octocodeai/octocode-awareness reflect record --fix-harness "<proposal>" after evidence shows a reusable harness gap.',
     };
   }
 
@@ -335,6 +335,6 @@ export function exportHarness(
     harness_count: harnessCount,
     markdown: lines.join('\n'),
     memories,
-    next: 'Human review required: apply approved guidance to its owning AGENTS.md, SKILL.md, or doc; run that surface\'s verification and skill review; then record the outcome with octocode-awareness reflect record.',
+    next: 'Human review required: apply approved guidance to its owning AGENTS.md, SKILL.md, or doc; run that surface\'s verification and skill review; then record the outcome with npx @octocodeai/octocode-awareness reflect record.',
   };
 }

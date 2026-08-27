@@ -58,8 +58,9 @@ describe('runCli', () => {
     expect(stdout).toContain('work start|touch|list|show|end');
     expect(stdout).toContain('handoff add|list|clear');
     expect(stdout).toContain('agent join|touch|leave|list');
-    expect(stdout).toContain('message send|inbox|list|read');
-    expect(stdout).toContain('memory store|recall|list|reindex|forget|prune');
+    expect(stdout).toContain('message send|list|read|prune');
+    expect(stdout).not.toContain('message send|inbox');
+    expect(stdout).toContain('memory store|store-verified|recall|recall-verified|evaluate|list|reindex|forget|prune');
     expect(stdout).toContain('hooks pre-edit');
     expect(stderr).toBe('');
   });
@@ -72,7 +73,7 @@ describe('runCli', () => {
 
   it('prints schema and runs local memory commands', () => {
     expect(runCli(['schema', '--workspace', workspace])).toBe(0);
-    const schema = jsonOut<{ entities: { memory: string[]; work: string[]; handoff: string[]; agent: string[]; message: string[] }; commands: { agent: string[]; message: string[]; hooks: string[] } }>();
+    const schema = jsonOut<{ entities: { memory: string[]; work: string[]; handoff: string[]; agent: string[]; message: string[] }; commands: { agent: string[]; message: string[]; memory: string[]; hooks: string[] } }>();
     expect(schema.entities.memory).toContain('memoryId');
     expect(schema.entities.work).toContain('filePath');
     expect(schema.entities.handoff).toContain('handoffId');
@@ -80,6 +81,7 @@ describe('runCli', () => {
     expect(schema.entities.message).toContain('messageId');
     expect(schema.commands.agent).toContain('join --agent-id [--name] [--role] [--meta]');
     expect(schema.commands.message).toContain('send --from --text [--to] [--topic] [--file]');
+    expect(schema.commands.memory).toContain('evaluate [--corpus-json] [--now] [--limit] [--min-similarity]');
     expect(schema.commands.hooks).toContain('pre-edit [--agent-id] [--host] < event.json');
     expect(schema.commands.hooks).toContain('install --host claude|codex|cursor [--project-dir] [--dry-run]');
 
@@ -104,6 +106,24 @@ describe('runCli', () => {
     stdout = '';
     expect(runCli(['memory', 'forget', '--workspace', workspace, '--memory-id', memory.memoryId])).toBe(0);
     expect(jsonOut<{ forgotten: boolean }>().forgotten).toBe(true);
+  });
+
+  it('exposes verified store, recall, and corpus evaluation through CLI and schema', () => {
+    expect(runCli(['memory', 'store-verified', '--workspace', workspace, '--label', 'AUTH', '--text', 'single use receipt race', '--source-digest', 'sha256:auth', '--scope', 'project', '--verified-at', '2026-08-26T00:00:00.000Z', '--valid-until', '2027-01-01T00:00:00.000Z', '--importance', '9'])).toBe(0);
+    expect(jsonOut<{ sourceDigest: string; scope: string }>() ).toMatchObject({ sourceDigest: 'sha256:auth', scope: 'project' });
+
+    stdout = '';
+    expect(runCli(['memory', 'recall-verified', '--workspace', workspace, '--query', 'receipt', '--mode', 'hybrid', '--now', '2026-08-27T00:00:00.000Z'])).toBe(0);
+    expect(jsonOut<Array<{ sourceDigest: string; explanation: string }>>()[0]).toMatchObject({ sourceDigest: 'sha256:auth' });
+
+    const corpus = JSON.stringify({ version: 1, corpusId: 'cli-eval', cases: [{ caseId: 'auth', query: 'receipt', mode: 'lexical', expectedSourceDigests: ['sha256:auth'] }] });
+    stdout = '';
+    expect(runCli(['memory', 'evaluate', '--workspace', workspace, '--corpus-json', corpus, '--now', '2026-08-27T00:00:00.000Z'])).toBe(0);
+    expect(jsonOut<{ corpusId: string; aggregate: { precision: number; recall: number } }>()).toMatchObject({ corpusId: 'cli-eval', aggregate: { precision: 1, recall: 1 } });
+
+    stdout = '';
+    expect(runCli(['schema', 'command', '--workspace', workspace, '--name', 'memory'])).toBe(0);
+    expect(jsonOut<{ actions: string[] }>().actions).toContain('store-verified --label --text --source-digest [--scope] [--verified-at] [--valid-until] [--importance] [--tags]');
   });
 
   it('extracts hook write targets from common host payloads', () => {
@@ -274,7 +294,7 @@ describe('runCli', () => {
     expect(() => runCli(['check', 'nope', '--workspace', workspace])).toThrow('check action must be audit or mark');
     expect(() => runCli(['hooks', 'install', '--workspace', workspace, '--host', 'pi', '--dry-run'])).toThrow('hooks install --host must be claude, codex, or cursor');
     expect(() => runCli(['hooks', 'nope', '--workspace', workspace])).toThrow('hooks action must be install or pre-edit');
-    expect(() => runCli(['memory', 'nope', '--workspace', workspace])).toThrow('memory action must be store, recall, list, reindex, forget, or prune');
+    expect(() => runCli(['memory', 'nope', '--workspace', workspace])).toThrow('memory action must be store, store-verified, recall, recall-verified, evaluate, list, reindex, forget, or prune');
     expect(() => runCli(['unknown', '--workspace', workspace])).toThrow('unknown command: unknown');
   });
 

@@ -12,6 +12,7 @@ export type ForegroundActivity =
   | { kind: 'planning'; since: number; planScope: string; detail?: string }
   | { kind: 'reviewing'; since: number; planScope: string; revision?: string }
   | { kind: 'awaiting_start'; since: number; planScope: string; revision: string }
+  | { kind: 'ready_to_work'; since: number; planScope: string; label: string }
   | { kind: 'working'; since: number; planScope?: string; stepId?: string; label: string }
   | { kind: 'verifying'; since: number; planScope: string; label?: string }
   | { kind: 'blocked'; since: number; label: string }

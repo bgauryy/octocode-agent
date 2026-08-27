@@ -193,44 +193,16 @@ describe('concatArgs — stream copy and reencode', () => {
 });
 
 // ---------------------------------------------------------------------------
-// TODO 3 — detectFfmpeg: ffmpeg-static optional fallback
+// detectFfmpeg cache contract — availability is injected, never host-detected
 // ---------------------------------------------------------------------------
-describe('detectFfmpeg — ffmpeg-static fallback', () => {
-  test('returns unavailable when PATH is empty and no static package', () => {
-    // Force a clean detection with a fake PATH that has no ffmpeg
-    resetFfmpegDetectionForTests(undefined);
-    const orig = process.env['PATH'];
-    process.env['PATH'] = '/nonexistent-path-xyz';
-    try {
-      const result = detectFfmpeg();
-      // Either finds real ffmpeg (system) or reports unavailable
-      // We just check the shape is correct
-      assert.ok(typeof result.ok === 'boolean', 'ok is boolean');
-      if (!result.ok) {
-        assert.ok(typeof result.reason === 'string', 'reason is string when unavailable');
-      }
-    } finally {
-      process.env['PATH'] = orig;
-      resetFfmpegDetectionForTests(undefined);
-    }
-  });
-
-  test('detectFfmpeg result has correct shape', () => {
-    resetFfmpegDetectionForTests(undefined);
-    const result = detectFfmpeg();
-    assert.ok('ok' in result, 'has ok field');
-    if (result.ok) {
-      assert.ok(typeof result.ffmpeg === 'string', 'ffmpeg is a string path');
-      assert.ok(typeof result.ffprobe === 'string', 'ffprobe is a string path');
-    }
-    resetFfmpegDetectionForTests(undefined);
-  });
-
-  test('detectFfmpeg is idempotent (caches result)', () => {
-    resetFfmpegDetectionForTests(undefined);
+describe('detectFfmpeg — mocked availability', () => {
+  test('detectFfmpeg caches an injected unavailable result', () => {
+    const unavailable = { ok: false as const, reason: 'mock ffmpeg unavailable' };
+    resetFfmpegDetectionForTests(unavailable);
     const r1 = detectFfmpeg();
     const r2 = detectFfmpeg();
     assert.deepEqual(r1, r2, 'same result on repeated calls');
+    assert.deepEqual(r1, unavailable);
     resetFfmpegDetectionForTests(undefined);
   });
 

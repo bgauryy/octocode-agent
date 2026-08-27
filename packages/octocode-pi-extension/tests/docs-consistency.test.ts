@@ -149,6 +149,20 @@ test('TOOLS browser guidance uses the unified agent facade', () => {
   assert.doesNotMatch(tools, /browserAgent\(\.\.\.\).*spawnAgent\(\.\.\.\).*AgentMessage\(\.\.\.\)/s);
 });
 
+test('browser skill uses the current host-neutral agent facade', () => {
+  const skill = readPackageFile('subagents/browser-agent/skills/browser-agent/SKILL.md');
+  const operations = [...skill.matchAll(/type:\s*"([^"]+)"/g)].map((match) => match[1]);
+
+  assert.match(skill, /agent\(\{queries:/);
+  assert.match(skill, /profile:\s*"browser"/);
+  assert.deepEqual(
+    [...new Set(operations)].sort(),
+    ['abort', 'inspect', 'kill', 'message', 'spawn', 'wait'].sort(),
+  );
+  assert.doesNotMatch(skill, /\b(?:browserAgent|spawnAgent|AgentMessage)\b/);
+  assert.doesNotMatch(skill, /\bPi\b|\bpi\s+-/);
+});
+
 test('agent-facing research inventories match the current 15-tool catalog', () => {
   const documents = [
     ['root AGENTS', readPackageFile('../../AGENTS.md')],

@@ -10,7 +10,7 @@ the CLI, hook semantics by [HOOKS.md](HOOKS.md), and invariants by
 |---|---|---|
 | Quick | Confirm an installed CLI/store can start | Self-test, schema, status, attend |
 | Installed | Validate the shipped skill bundle and coordination runtime | Quick + install diagnostic + multi-agent smoke + [full feature sweep](FEATURE_SWEEP.md) |
-| Host | Rely on Claude, Codex, Cursor, or Pi automation | Installed + config check + observed runtime event |
+| Host | Rely on supported host automation | Installed + config check + observed runtime event |
 | Monorepo | Change package source, docs, hooks, or skill | Full build/test/smoke/review matrix |
 | Release | Publish or validate an npm artifact | Monorepo + pack check |
 | Complete | All | [audit](COMPREHENSIVE_AUDIT.md) |
@@ -26,31 +26,25 @@ skipped or blocked.
   tests. Do not pollute a user’s real workboard.
 - Use `--dry-run` before any hook config write. Get user approval before changing a
   real project or global host config.
-- Claude skill frontmatter and Claude settings are alternative hook surfaces; do
-  not install both. Pi never uses shell hook installation.
+- Skill frontmatter and project settings may be alternative hook surfaces; do not
+  install duplicate definitions for the same host.
 - Preserve exact failing output and exit code. Do not convert unavailable tooling
   into a product failure.
 - Pass `--workspace` on path-resolution commands; a bare relative path can resolve
   against the wrong root and false-pass while a peer still holds the file.
 
-Choose the executable once:
-
 ```bash
 export OCTOCODE_AGENT_ID="${OCTOCODE_AGENT_ID:-awareness-check}"
-# Installed package:
-AWARENESS="octocode-awareness"
-# Monorepo after build:
-AWARENESS="node packages/octocode-awareness/out/octocode-awareness.js"
 ```
 ## Quick Check
 
 Run from the target repository:
 
 ```bash
-$AWARENESS maintenance self-test --compact
-$AWARENESS schema commands --compact
-$AWARENESS workspace status --workspace "$PWD" --compact
-$AWARENESS attend --workspace "$PWD" --query "verify Awareness health" \
+npx @octocodeai/octocode-awareness maintenance self-test --compact
+npx @octocodeai/octocode-awareness schema commands --compact
+npx @octocodeai/octocode-awareness workspace status --workspace "$PWD" --compact
+npx @octocodeai/octocode-awareness attend --workspace "$PWD" --query "verify Awareness health" \
   --agent-id "$OCTOCODE_AGENT_ID" --compact
 ```
 
@@ -60,18 +54,18 @@ actionable `next`. Follow `attend.next` only when it is relevant to the check; d
 drain unrelated inbox or maintenance work.
 ## Installed Bundle Check
 
-Set `SKILL_ROOT` to the installed `octocode-awareness` skill directory. Run the
-diagnostic from a directory outside the skill to catch cwd-dependent paths:
+Run the public package diagnostics without resolving or invoking package-internal
+scripts:
 
 ```bash
-node "$SKILL_ROOT/scripts/install.mjs"
-node "$SKILL_ROOT/scripts/smoke-multi-agent.mjs"
+npx @octocodeai/octocode-awareness maintenance self-test --compact
+npx @octocodeai/octocode-awareness coordination schema commands
+npx @octocodeai/octocode-awareness status --workspace "$PWD"
 ```
 
-The diagnostic must report `ok:true`, absolute runnable commands, a bundled or
-available runtime, and no dependency writes. The smoke uses temporary state and
-must prove advisory overlap, exclusive conflict, pending verification, verify
-clearance, signal delivery, stale-lock cleanup, and a zero-debt final audit.
+The diagnostics must report healthy stores and live catalogs. The feature sweep must
+prove advisory overlap, exclusive conflict, pending verification, verify clearance,
+message delivery, stale-lock cleanup, and a zero-debt final audit.
 ## Full Feature Sweep
 
 Run the isolated [full feature sweep](FEATURE_SWEEP.md) for planning, learning,
@@ -83,7 +77,7 @@ an errored, missing, or wrong-workspace step makes Installed scope FAIL.
 Config check is read-only:
 
 ```bash
-$AWARENESS hooks check --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks check --host <claude|codex|cursor> \
   --project-dir . --strict --compact
 ```
 
@@ -95,12 +89,12 @@ If config is missing and installation is in scope, preview first. Apply only aft
 approval for a real project:
 
 ```bash
-$AWARENESS hooks install --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks install --host <claude|codex|cursor> \
   --project-dir . --dry-run
 # after review and approval:
-$AWARENESS hooks install --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks install --host <claude|codex|cursor> \
   --project-dir . --compact
-$AWARENESS hooks check --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks check --host <claude|codex|cursor> \
   --project-dir . --strict --compact
 ```
 
@@ -126,8 +120,7 @@ yarn workspace @octocodeai/octocode-awareness lint
 yarn workspace @octocodeai/octocode-awareness typecheck
 yarn workspace @octocodeai/octocode-awareness test
 yarn workspace @octocodeai/octocode-awareness test:smoke
-node packages/octocode-awareness/out/octocode-awareness.js \
-  maintenance self-test --compact
+npx @octocodeai/octocode-awareness maintenance self-test --compact
 ```
 
 Pass when every command exits `0`, coverage thresholds pass, focused skill checks

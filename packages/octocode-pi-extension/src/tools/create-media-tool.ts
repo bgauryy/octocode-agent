@@ -108,6 +108,11 @@ export async function runMediaOperation(
   query: Record<string, unknown>,
   cwd: string,
   signal?: AbortSignal,
+  deps: {
+    createHtmlImage?: typeof createImageFromHtml;
+    renderPdf?: typeof renderHtmlToPdf;
+    runMedia?: typeof runMediaQuery;
+  } = {},
 ): Promise<UnifiedResult> {
   const type = query['type'] as MediaOperation;
   if (!MEDIA_OPERATIONS.includes(type)) throw new Error(`media: \`type\` must be one of ${MEDIA_OPERATIONS.join(', ')}`);
@@ -127,7 +132,7 @@ export async function runMediaOperation(
     };
     const res = svg
       ? createImageFromSvg(svg, cwd, shared)
-      : await createImageFromHtml(html!, cwd, { ...shared, height: typeof query['height'] === 'number' ? (query['height'] as number) : undefined, signal });
+      : await (deps.createHtmlImage ?? createImageFromHtml)(html!, cwd, { ...shared, height: typeof query['height'] === 'number' ? (query['height'] as number) : undefined, signal });
     if (!res.ok) throw new Error(res.message);
     return { ok: true, type, message: res.message, base64: res.base64, mimeType: 'image/png', bytes: res.bytes, savedPath: res.savedPath };
   }
@@ -147,7 +152,7 @@ export async function runMediaOperation(
     else if (markdown) doc = pdfDocumentFromMarkdown(markdown);
     else doc = pdfDocumentFromImages(images!.map((p) => imagePathToDataUri(p, cwd)));
 
-    const pdf = await renderHtmlToPdf(doc, cwd, {
+    const pdf = await (deps.renderPdf ?? renderHtmlToPdf)(doc, cwd, {
       landscape: query['landscape'] === true,
       scale: typeof query['pdfScale'] === 'number' ? (query['pdfScale'] as number) : undefined,
       signal,
@@ -167,7 +172,7 @@ export async function runMediaOperation(
     delete delegated['dest'];
     delete delegated['source'];
     delete delegated['type'];
-    const res = await runMediaQuery(delegated, cwd, signal);
+    const res = await (deps.runMedia ?? runMediaQuery)(delegated, cwd, signal);
     return {
       ok: res.ok, type, message: res.message, base64: res.base64, mimeType: res.mimeType,
       bytes: res.bytes, savedPath: res.savedPath, probe: res.probe, ffprobe: res.ffprobe,

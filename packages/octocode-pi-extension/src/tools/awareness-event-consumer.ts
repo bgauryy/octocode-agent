@@ -63,6 +63,7 @@ interface RegisterAwarenessEventConsumerOptions {
   onObservability?(stats: AwarenessEventObservability, ctx: PiContext): void;
   now?: () => number;
   maxEventsPerDrain?: number;
+  onDelivery?(message: AwarenessPeerDelivery, ctx: PiContext): void;
 }
 
 interface PeerMessagePayload {
@@ -258,6 +259,7 @@ export function registerAwarenessEventConsumer(pi: PiInstance, options: Register
         deliver: (message) => {
           if (!pi.sendMessage) throw new Error('Pi custom message delivery is unavailable');
           pi.sendMessage(message, { triggerTurn: false, deliverAs: 'nextTurn' });
+          options.onDelivery?.(message, ctx);
         },
         onObservability: (stats) => options.onObservability?.(stats, ctx),
       });

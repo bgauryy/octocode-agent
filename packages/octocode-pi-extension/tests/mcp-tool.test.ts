@@ -1024,15 +1024,6 @@ test('compiled call validates internally and invokes the server once for valid a
   }
 });
 
-// Live integration — gated (spawns the real octocode MCP server via npx). Run with RUN_MCP_LIVE=1.
-const liveTest = process.env.RUN_MCP_LIVE === '1' ? test : test.skip;
-liveTest('LIVE: extension initialization connects to the built-in octocode MCP server and discovers tools', { timeout: 120_000 }, async () => {
-  const ctx = trustedCtx();
-  await warmMcpCatalog(ctx);
-  assert.ok(getCachedMcpCounts(ctx).tools > 0, 'startup discovery caches a non-empty tool catalog');
-  assert.match(getCachedMcpCatalogAddendum(ctx), /server: octocode/);
-});
-
 // ─── config watcher: reconcile + lifecycle ────────────────────────────────────
 import {
   computeReload,

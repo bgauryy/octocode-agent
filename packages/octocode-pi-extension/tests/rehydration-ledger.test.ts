@@ -80,4 +80,27 @@ describe('compaction rehydration ledger', () => {
     expect(inspectRehydrationLedger(ctx).status).toBe('corrupt');
     expect(fs.existsSync(ledgerPath)).toBe(true);
   });
+
+  it('rejects authority escalation, duplicate IDs, invalid digests, and invalid budgets at the ledger boundary', () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'rehydration-segment-validation-'));
+    roots.push(workspace);
+    const ctx = createSessionArtifactContext({ cwd: workspace, sessionManager: { getSessionId: () => 'session-validation' } });
+    const base = {
+      version: 1 as const,
+      id: 'peer',
+      kind: 'peer-event' as const,
+      origin: 'peer:one',
+      authority: 'external-data' as const,
+      digest: contentDigest('peer bytes'),
+      scope: 'turn' as const,
+      visibility: 'inspectable' as const,
+      rehydrate: 'always' as const,
+      tokenBudget: 10,
+    };
+    const input = { capturedAt: new Date().toISOString(), pendingInteractionIds: [], consumerCursors: {} };
+    expect(() => writeRehydrationLedger(ctx, { ...input, segments: [{ ...base, authority: 'product' as const }] })).toThrow(/external-data/);
+    expect(() => writeRehydrationLedger(ctx, { ...input, segments: [base, base] })).toThrow(/Duplicate/);
+    expect(() => writeRehydrationLedger(ctx, { ...input, segments: [{ ...base, digest: 'sha256:not-a-digest' }] })).toThrow(/Invalid rehydration digest/);
+    expect(() => writeRehydrationLedger(ctx, { ...input, segments: [{ ...base, tokenBudget: 0 }] })).toThrow(/token budget/);
+  });
 });

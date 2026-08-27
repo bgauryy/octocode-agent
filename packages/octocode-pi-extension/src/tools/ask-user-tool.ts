@@ -217,6 +217,26 @@ function askFrameWidth(width: number): number {
   return askFrameLayout(width).width;
 }
 
+/**
+ * Wrap one semantic row inside the open decision-card rails. The final right
+ * rail consumes one cell, so callers must budget prefixes before wrapping the
+ * payload. Keeping this in one place prevents the later frame-closing safety
+ * net from silently clipping labels, descriptions, warnings, or summaries.
+ */
+function wrapAskPayload(
+  text: string,
+  firstPrefix: string,
+  continuationPrefix: string,
+  width: number,
+): string[] {
+  const payloadWidth = Math.max(
+    1,
+    askFrameWidth(width) - 1 - Math.max(visibleWidth(firstPrefix), visibleWidth(continuationPrefix)),
+  );
+  const wrapped = text.split('\n').flatMap((line) => wrapTextWithAnsi(line || ' ', payloadWidth));
+  return wrapped.map((line, index) => `${index === 0 ? firstPrefix : continuationPrefix}${line}`);
+}
+
 function positionAskLines(lines: string[], terminalWidth: number, theme?: PiTheme): string[] {
   const layout = askFrameLayout(terminalWidth);
   const padding = ' '.repeat(layout.leftPadding);
@@ -239,7 +259,7 @@ function askHeaderLines(theme: PiTheme | undefined, question: string, width: num
   const bar = paint(theme, 'dim', '│');
   // Wrap rather than truncate: the question is the one string the user must
   // read in full. wrapTextWithAnsi keeps any styling intact across lines.
-  const wrapped = wrapTextWithAnsi(question, Math.max(8, askFrameWidth(width) - 2));
+  const wrapped = wrapTextWithAnsi(question, Math.max(1, askFrameWidth(width) - 3));
   // Pagination badge: · 2 of 3 · shown in muted color between the header mark and the fill.
   const pageBadge = pagination
     ? paint(theme, 'muted', ` · ${pagination.current} of ${pagination.total} ·`)
@@ -252,19 +272,18 @@ function askHeaderLines(theme: PiTheme | undefined, question: string, width: num
   return [header, ...wrapped.map((line) => `${bar} ${line}`), bar];
 }
 
-function askFooterLine(theme: PiTheme | undefined, help: string, width: number, warning?: string): string {
-  return warning
-    ? ruleLine(theme, `╰─ ⚠ ${warning} `, width, 'warning')
-    : ruleLine(theme, `╰─ ${help} `, width, 'dim');
+function askFooterLines(theme: PiTheme | undefined, help: string, width: number, warning?: string): string[] {
+  const bar = paint(theme, 'dim', '│');
+  const footerText = warning ? `⚠ ${warning}` : help;
+  const token = warning ? 'warning' : 'muted';
+  return [
+    ...wrapAskPayload(paint(theme, token, footerText), `${bar} `, `${bar} `, width),
+    ruleLine(theme, '╰─ ', width, 'dim'),
+  ];
 }
 
 /** Max option rows painted at once; longer lists scroll in a window around the cursor. */
 const ASK_LIST_MAX_VISIBLE = 7;
-/** Max pros (and, separately, cons) detail lines painted under the focused row. */
-const ASK_LIST_DETAIL_CAP = 2;
-const ASK_LIST_DESCRIPTION_CAP = 2;
-/** Max description lines for non-focused rows (1 clipped line keeps the list scannable). */
-const ASK_LIST_DESCRIPTION_CAP_ALL = 1;
 /** Unicode circled digit glyphs for option badges ①–⑨ (U+2460–U+2468, 1-cell wide, East-Asian Narrow). */
 const CIRCLE_DIGITS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨'] as const;
 
@@ -283,16 +302,15 @@ function renderAskChoiceLines(
   const bar = paint(theme, 'dim', '│');
   // Scroll window: long lists would overflow the terminal height (pi clips the
   // component), so paint at most ASK_LIST_MAX_VISIBLE rows centered on the
-  // cursor with dim "N more" markers for the hidden remainder. The FOCUSED row
-  // also expands with its pros/cons/preview detail lines (each capped below), so
-  // count those against the budget — otherwise a rich option pushes the footer
-  // and help off-screen.
+  // cursor with dim "N more" markers for the hidden remainder. Hidden options
+  // remain reachable by navigation; the focused option itself is never clipped
+  // or capped, so its complete decision context remains readable.
   const focused = items[cursor];
   const focusedDetail = focused
     ? (focused.description ? 1 : 0) +
-      Math.min(ASK_LIST_DETAIL_CAP, (focused.pros?.length ?? 0)) +
-      Math.min(ASK_LIST_DETAIL_CAP, (focused.cons?.length ?? 0)) +
-      (focused.preview ? Math.min(3, focused.preview.split('\n').length) : 0)
+      (focused.pros?.length ?? 0) +
+      (focused.cons?.length ?? 0) +
+      (focused.preview ? focused.preview.split('\n').length : 0)
     : 0;
   const visibleRows = Math.max(3, ASK_LIST_MAX_VISIBLE - focusedDetail);
   let start = 0;
@@ -311,7 +329,14 @@ function renderAskChoiceLines(
     // The focused option's rows carry a brand-colored left rail so the whole
     // block (label + its pros/cons/preview) reads as one "you are here" unit.
     const rowBar = active ? paint(theme, 'brand', '│') : bar;
-    if (item.groupHeader) return [`${bar} ${paint(theme, 'dim', `┌ ${item.label}`)}`];
+    if (item.groupHeader) {
+      return wrapAskPayload(
+        paint(theme, 'dim', `┌ ${item.label}`),
+        `${bar} `,
+        `${bar}   `,
+        width,
+      );
+    }
     const disabled = disabledReason(item);
     // ASCII checkboxes match multi-select-list and keep the columns aligned —
     // ☑/☐ are East-Asian-ambiguous and render 2 cells on some terminals.
@@ -337,37 +362,66 @@ function renderAskChoiceLines(
       ? ` ${paint(theme, 'dim', '[')}${paint(theme, 'brand', 'recommended')}${paint(theme, 'dim', ']')}`
       : '';
     const disabledBadge = disabled ? ` ${paint(theme, 'muted', `(${disabled})`)}` : '';
-    const line = `${rowBar} ${marker} ${checked ? `${checked} ` : ''}${ordinal}${rawLabel}${badge}${disabledBadge}`;
+    const labelPrefix = `${rowBar} ${marker} ${checked ? `${checked} ` : ''}${ordinal}`;
+    const labelLines = wrapAskPayload(
+      `${rawLabel}${badge}${disabledBadge}`,
+      labelPrefix,
+      `${rowBar}     `,
+      width,
+    );
     // Expand the FOCUSED row with its trade-offs (pros ✓ / cons ✗) and any
     // preview — collapsed rows stay one line so the list stays scannable.
     const detail: string[] = [];
-    // Always show a single dim description line for non-focused selectable rows
+    // Always show the complete dim description for non-focused selectable rows
     // so the user can read every option's nuance without needing to navigate to it.
     if (!active && item.description && !item.freeText && !item.groupHeader && !item.empty) {
-      const descWidth = Math.max(8, askFrameWidth(width) - 6);
-      // Show at most ASK_LIST_DESCRIPTION_CAP_ALL lines (default 1) so the list
-      // stays scannable without the user needing to navigate to each option.
-      for (const d of wrapTextWithAnsi(item.description, descWidth).slice(0, ASK_LIST_DESCRIPTION_CAP_ALL)) {
-        detail.push(`${bar}     ${paint(theme, 'muted', d)}`);
-      }
+      detail.push(...wrapAskPayload(
+        paint(theme, 'muted', item.description),
+        `${bar}     `,
+        `${bar}     `,
+        width,
+      ));
     }
     if (active) {
       if (item.description) {
-        const detailWidth = Math.max(8, askFrameWidth(width) - 6);
-        for (const descriptionLine of wrapTextWithAnsi(item.description, detailWidth).slice(0, ASK_LIST_DESCRIPTION_CAP)) {
-          detail.push(`${rowBar}     ${paint(theme, 'dim', descriptionLine)}`);
-        }
+        detail.push(...wrapAskPayload(
+          paint(theme, 'dim', item.description),
+          `${rowBar}     `,
+          `${rowBar}     `,
+          width,
+        ));
       }
       // Pros/cons are descriptive trade-offs, not outcomes — green/red are reserved
       // for real outcomes. The ✓/✗ glyphs carry the polarity; pros read at default
       // fg (prominent) and cons muted (secondary), no status color misused.
-      for (const pro of (item.pros ?? []).slice(0, ASK_LIST_DETAIL_CAP)) detail.push(`${rowBar}     ${paint(theme, 'bright', `✓ ${pro}`)}`);
-      for (const con of (item.cons ?? []).slice(0, ASK_LIST_DETAIL_CAP)) detail.push(`${rowBar}     ${paint(theme, 'muted', `✗ ${con}`)}`);
+      for (const pro of item.pros ?? []) {
+        detail.push(...wrapAskPayload(
+          paint(theme, 'bright', `✓ ${pro}`),
+          `${rowBar}     `,
+          `${rowBar}       `,
+          width,
+        ));
+      }
+      for (const con of item.cons ?? []) {
+        detail.push(...wrapAskPayload(
+          paint(theme, 'muted', `✗ ${con}`),
+          `${rowBar}     `,
+          `${rowBar}       `,
+          width,
+        ));
+      }
       if (item.preview) {
-        for (const l of item.preview.split('\n').slice(0, 3)) detail.push(`${rowBar}     ${paint(theme, 'dim', l)}`);
+        for (const previewLine of item.preview.split('\n')) {
+          detail.push(...wrapAskPayload(
+            paint(theme, 'dim', previewLine || ' '),
+            `${rowBar}     `,
+            `${rowBar}     `,
+            width,
+          ));
+        }
       }
     }
-    return [line, ...detail];
+    return [...labelLines, ...detail];
   });
   if (start > 0) rows.unshift(`${bar} ${paint(theme, 'dim', `↑ ${start} more`)}`);
   if (end < items.length) rows.push(`${bar} ${paint(theme, 'dim', `↓ ${items.length - end} more`)}`);
@@ -376,8 +430,15 @@ function renderAskChoiceLines(
     ...rows,
     // Breathing room between the last row and the footer rule.
     paint(theme, 'dim', '│'),
-    searchQuery !== undefined ? `${bar} ${paint(theme, searchQuery ? 'brand' : 'dim', `/ ${searchQuery || 'type to filter…'}`)}` : undefined,
-    askFooterLine(theme, help, width, warning),
+    ...(searchQuery !== undefined
+      ? wrapAskPayload(
+        paint(theme, searchQuery ? 'brand' : 'dim', `/ ${searchQuery || 'type to filter…'}`),
+        `${bar} `,
+        `${bar}   `,
+        width,
+      )
+      : []),
+    ...askFooterLines(theme, help, width, warning),
   ].filter((line): line is string => typeof line === 'string');
 }
 
@@ -396,10 +457,15 @@ function renderAskTextLines(
   const label = placeholder ? `Answer · ${placeholder}` : 'Answer';
   return [
     ...askHeaderLines(theme, question, width),
-    `${bar} ${paint(theme, 'brand', label)}${isEmpty ? paint(theme, 'dim', ' · paste or type') : ''}`,
+    ...wrapAskPayload(
+      `${paint(theme, 'brand', label)}${isEmpty ? paint(theme, 'dim', ' · paste or type') : ''}`,
+      `${bar} `,
+      `${bar} `,
+      width,
+    ),
     `${bar} ${paint(theme, 'brand', '›')} ${inputBody}`,
     bar,
-    askFooterLine(theme, help, width, warning),
+    ...askFooterLines(theme, help, width, warning),
   ];
 }
 
@@ -427,8 +493,8 @@ function renderAskFinalLines(
   const token = outcome.status === 'back' || outcome.status === 'cancelled' || outcome.status === 'timed_out' || outcome.status === 'unavailable' ? 'muted' : 'success';
   return [
     ...askHeaderLines(theme, question, width),
-    `${bar} ${paint(theme, token, summary)}`,
-    askFooterLine(theme, 'submitted', width),
+    ...wrapAskPayload(paint(theme, token, summary), `${bar} `, `${bar} `, width),
+    ...askFooterLines(theme, 'submitted', width),
   ];
 }
 
@@ -1081,7 +1147,7 @@ export function registerAskUserTool(
           : ' (free text)';
       const title = cliToolTitle(theme, 'askUser');
       const body = paint(theme, 'dim', q + suffix);
-      return makeRenderer((w) => [truncateToWidth(`${title} ${body}`, w)]);
+      return makeRenderer((w) => wrapTextWithAnsi(`${title} ${body}`, Math.max(1, w)));
     },
 
     renderResult(result: ToolCallResult, opts: RenderResultOptions, theme?: PiTheme) {
@@ -1114,7 +1180,7 @@ export function registerAskUserTool(
       } else {
         line = paint(theme, 'dim', CLI_STATUS_TEXT.unavailable);
       }
-      return makeRenderer((w) => [truncateToWidth(line, w)]);
+      return makeRenderer((w) => wrapTextWithAnsi(line, Math.max(1, w)));
     },
   });
 }

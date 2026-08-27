@@ -43,6 +43,7 @@ export function activityPresentation(activity: ForegroundActivity): { visible: b
     case 'planning': return { visible: true, message: `Planning…${activity.detail ? ` ${activity.detail}` : ''}`, status: 'Planning…' };
     case 'reviewing': return { visible: false, status: 'RFC ready for review' };
     case 'awaiting_start': return { visible: false, status: 'Ready to start' };
+    case 'ready_to_work': return { visible: false, status: `Ready · ${activity.label}` };
     case 'working': return { visible: true, message: `Working… ${activity.label}`, status: 'Working…' };
     case 'verifying': return { visible: true, message: `Verifying…${activity.label ? ` ${activity.label}` : ''}`, status: 'Verifying…' };
     case 'blocked': return { visible: false, status: `Blocked · ${activity.label}` };

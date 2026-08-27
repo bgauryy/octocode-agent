@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
@@ -36,7 +36,7 @@ describe('skill routing boundaries', () => {
   it('routes awareness on actionable shared-state signals', () => {
     const text = skill('octocode-awareness');
     const desc = description(text);
-    expect(desc).toMatch(/^Coordinate agents through one shared workspace ledger\./);
+    expect(desc).toMatch(/^Coordinate agents through shared repository state\./);
     expect(desc).toContain('peers');
     expect(desc).toContain('shared plans');
     expect(desc).toContain('verification debt');
@@ -47,12 +47,16 @@ describe('skill routing boundaries', () => {
     expect(desc).not.toContain('packages/octocode-awareness');
     expect(text).toContain('One coordination layer');
     expect(text).toContain('@octocodeai/octocode-awareness');
-    expect(text).toContain('npx -p @octocodeai/octocode-awareness octocode-awareness');
-    expect(text).toContain('node packages/octocode-awareness/out/octocode-awareness.js');
+    expect(text).toContain('npx @octocodeai/octocode-awareness');
+    expect(text).not.toContain('npx -p @octocodeai/octocode-awareness octocode-awareness');
+    expect(text).not.toContain('node packages/octocode-awareness/out/octocode-awareness.js');
     expect(text).toContain('~/.octocode/octocode.sqlite3');
     expect(text).not.toMatch(/octocode-awareness-lite|\/lite\b|Awareness Lite/);
     expect(text).toContain('Bounded flow');
     expect(text).toContain('check mark');
+    expect(text).toMatch(/skill owns judgment.*CLI owns deterministic actions/is);
+    expect(text).toContain('npx @octocodeai/octocode-awareness init --compact');
+    expect(text).not.toContain('scripts/install.mjs');
     expect(text).toMatch(/ordinary overlap is advisory/i);
     expect(text).toContain('schema commands');
     expect(text).toContain('flow-matrix.md');
@@ -118,7 +122,7 @@ describe('skill routing boundaries', () => {
     const text = skill('octocode-awareness');
     const journeys = [
       ['Shared commands and outcomes', 'flow-matrix.md'],
-      ['Storage ownership and Pi composition', 'architecture.md'],
+      ['Storage ownership and host composition', 'architecture.md'],
       ['Runtime workflows', 'coordination-protocol.md'],
     ] as const;
     for (const [trigger, owner] of journeys) {
@@ -151,8 +155,27 @@ describe('skill routing boundaries', () => {
 
     expect(combined).not.toMatch(/<package>|<awareness-package>|default for this monorepo/);
     expect(combined).not.toContain('package migration truth: `docs/DB.md`');
-    expect(readme).toContain('$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness');
+    expect(readme).toContain('npx @octocodeai/octocode-awareness init --compact');
+    expect(readme).not.toContain('npm root --global');
     expect(tooling).not.toContain('out/skills/octocode-skills');
     expect(octocode).toContain('references/agent-cheatsheet.md');
+  });
+
+  it('uses one portable CLI runner while documenting every supported host', () => {
+    const referenceRoot = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/references');
+    const hooks = awarenessSkillFile('references/hooks.md');
+    const instructional = [
+      skill('octocode-awareness'),
+      awarenessSkillFile('README.md'),
+      awarenessSkillFile('agents/openai.yaml'),
+      ...readdirSync(referenceRoot)
+        .filter((name) => name.endsWith('.md'))
+        .map((name) => readFileSync(resolve(referenceRoot, name), 'utf8')),
+    ].join('\n');
+
+    expect(hooks).toMatch(/\bPi\b/);
+    expect(instructional).not.toMatch(/node\s+(?:packages\/octocode-awareness\/out\/octocode-awareness\.js|scripts\/awareness\.mjs)/);
+    expect(instructional).not.toContain('npx -p @octocodeai/octocode-awareness octocode-awareness');
+    expect(instructional).toContain('npx @octocodeai/octocode-awareness');
   });
 });

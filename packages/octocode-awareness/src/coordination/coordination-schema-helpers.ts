@@ -11,7 +11,7 @@ export abstract class AwarenessSchemaHelpers extends CoordinationMemoryAgents {
         lock: ['filePath', 'agentId', 'reason', 'acquiredAt', 'expiresAt'],
         work: ['filePath', 'agentId', 'reason', 'startedAt', 'updatedAt', 'expiresAt'],
         handoff: ['handoffId', 'agentId', 'summary', 'files', 'createdAt', 'clearedAt'],
-        memory: ['memoryId', 'label', 'text', 'tags', 'createdAt', 'similarity?'],
+        memory: ['memoryId', 'label', 'text', 'tags', 'createdAt', 'similarity?', 'verifiedAt?', 'validUntil?', 'scope?', 'sourceDigest?', 'explanation?'],
         agent: ['agentId', 'name', 'role', 'status', 'metadata', 'createdAt', 'lastSeenAt'],
         message: ['messageId', 'fromAgentId', 'toAgentId', 'topic', 'text', 'files', 'createdAt', 'readAt'],
       },
@@ -23,11 +23,11 @@ export abstract class AwarenessSchemaHelpers extends CoordinationMemoryAgents {
         work: ['start --file --agent-id [--reason] [--ttl]', 'touch --file --agent-id [--reason] [--ttl]', 'list [--file] [--agent-id]', 'show --file', 'end --file --agent-id'],
         handoff: ['add --agent-id --summary [--file]', 'list [--include-cleared]', 'clear --handoff-id'],
         check: ['audit [--agent-id] [--plan-id] [--min-age]', 'mark --task-id --agent-id --message [--status SUCCESS|FAILED]'],
-        memory: ['store --label --text [--tags]', 'recall [--query] [--label] [--limit] [--semantic] [--min-similarity]', 'list [--limit]', 'reindex [--force] [--limit]', 'forget --memory-id', 'prune --older-than [--label] [--confirm]'],
+        memory: ['store --label --text [--tags]', 'store-verified --label --text --source-digest [--scope] [--verified-at] [--valid-until] [--importance] [--tags]', 'recall [--query] [--label] [--limit] [--semantic] [--min-similarity]', 'recall-verified [--query] [--label] [--source-digest] [--scope] [--mode lexical|semantic|hybrid] [--limit] [--now] [--min-similarity]', 'evaluate [--corpus-json] [--now] [--limit] [--min-similarity]', 'list [--limit]', 'reindex [--force] [--limit]', 'forget --memory-id', 'prune --older-than [--label] [--confirm]'],
         agent: ['join --agent-id [--name] [--role] [--meta]', 'touch --agent-id', 'leave --agent-id', 'list [--include-left] [--stale-after]'],
         message: ['send --from --text [--to] [--topic] [--file]', 'read --agent-id [--topic] [--include-read] [--limit]', 'list [--agent-id] [--topic] [--include-read] [--limit]', 'prune --older-than [--read-only] [--confirm]'],
         hooks: ['pre-edit [--agent-id] [--host] < event.json', 'install --host claude|codex|cursor [--project-dir] [--dry-run]'],
-        schema: ['schema', 'schema commands', 'schema command <noun>', 'schema list'],
+        schema: ['schema', 'schema commands', 'schema command --name <noun>', 'schema list'],
       },
     };
   }

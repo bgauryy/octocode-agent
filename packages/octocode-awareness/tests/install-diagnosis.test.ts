@@ -17,7 +17,7 @@ describe('skill install diagnosis', () => {
     expect(parsed).toMatchObject({
       ok: true,
       required_skills: ['octocode-awareness'],
-      next: 'Run maintenance init once, then attend --compact.',
+      next: 'Run npx @octocodeai/octocode-awareness init --compact once, then attend --compact.',
     });
     expect(parsed.optional_skill_count).toEqual(expect.any(Number));
   });

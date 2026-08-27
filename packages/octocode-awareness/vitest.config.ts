@@ -4,7 +4,10 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
-    setupFiles: ['./tests/setup.ts'],
+    setupFiles: [
+      '../../test-utils/external-effects-guard.ts',
+      './tests/setup.ts',
+    ],
     // The suite intentionally exercises node:sqlite, subprocess CLI calls, and
     // generated skill scripts. Cap workers so coverage runs don't starve those
     // integration tests on high-core machines.

@@ -120,8 +120,8 @@ describe('reflect', () => {
   it('includes canonical next commands that close the reflection loop', () => {
     const result = ok(db, ['reflect', 'record', '--agent-id', 'a', '--task', 't', '--outcome', 'worked', '--lesson', 'durable lesson for next-commands']);
     expect(typeof result['next']).toBe('string');
-    expect(result['next']).toContain('octocode-awareness refinement get');
-    expect(result['next']).toContain('octocode-awareness reflect mine-weakness');
+    expect(result['next']).toContain('npx @octocodeai/octocode-awareness refinement get');
+    expect(result['next']).toContain('npx @octocodeai/octocode-awareness reflect mine-weakness');
     expect(result['next']).not.toContain('memory_refine_get');
   });
 

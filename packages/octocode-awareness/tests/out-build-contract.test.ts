@@ -67,7 +67,7 @@ describe('Awareness out build contract', () => {
     const bundledSkill = read('out/skills/octocode-awareness/SKILL.md');
     expect(bundledSkill).toContain('## One coordination layer');
     expect(bundledSkill).toContain('## Quick usage');
-    expect(bundledSkill).toContain('octocode-awareness coordination schema commands');
+    expect(bundledSkill).toContain('npx @octocodeai/octocode-awareness coordination schema commands');
     expect(bundledSkill).not.toMatch(/Haiku|Composer 2\.5/);
     expect(existsSync(resolve(PACKAGE_ROOT, 'dist'))).toBe(false);
 

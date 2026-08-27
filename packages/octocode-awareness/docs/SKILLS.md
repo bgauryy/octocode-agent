@@ -1,6 +1,6 @@
 # Octocode Awareness User Guide
 
-Awareness gives Codex, Claude Code, Cursor, Pi, and custom agents one local store for
+Awareness gives supported coding hosts and custom agents one local store for
 plans, tasks, active file work, exclusive locks, verification, memory, messages, and
 handoffs.
 
@@ -9,35 +9,25 @@ handoffs.
 Requires Node.js 22.13.0+ (`node:sqlite` without an experimental flag).
 
 ```bash
-npm install --global @octocodeai/octocode-awareness
-octocode-awareness maintenance init --compact
-npx octocode skill --add \
-  --path "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness" \
-  --platform common --dry-run
-# after reviewing destinations and approving the write:
-npx octocode skill --add \
-  --path "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness" \
-  --platform common --force
+npx @octocodeai/octocode-awareness init --compact
 ```
 
-`common` installs to `~/.agents/skills`; use `claude`, `cursor`, `codex`, or `pi`
-when the host does not scan that shared directory. Verify the bundled runtime with
-`node "$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness/scripts/install.mjs"`.
+The host or package manager owns installation of the bundled skill. Do not derive
+destination paths or copy package internals from an agent prompt. Initialization is
+deterministic and safe to repeat.
 
 The package bundles only the Awareness skill, which teaches the collaboration
 lifecycle. Install other workflow skills separately with
 `npx octocode skill --name <skill>` when that work is needed. Discover the
-package-bundled list via `octocode-awareness --help` or the `bundled_skills`
-field printed by `scripts/install.mjs` — do not hardcode a skill list from prose.
+package-bundled list via `npx @octocodeai/octocode-awareness --help` — do not hardcode a skill list
+from prose.
 
-The examples below use the globally installed binary. For a one-off command, use
-`npx @octocodeai/octocode-awareness`. In octocode monorepo after build, use
-`node packages/octocode-awareness/out/octocode-awareness.js`. Bundled skill
-`scripts/awareness.mjs` is a fallback when the package CLI is unavailable.
+Every agent-facing example below uses `npx @octocodeai/octocode-awareness`; local
+build paths are maintainer implementation details, not an alternative agent runner.
 
 ```bash
 export OCTOCODE_AGENT_ID="${OCTOCODE_AGENT_ID:-my-agent}"
-octocode-awareness attend --workspace "$PWD" --query "current task" --compact
+npx @octocodeai/octocode-awareness attend --workspace "$PWD" --query "current task" --compact
 ```
 
 Follow `attend.next`. Load inventories only when the next action needs them.
@@ -80,8 +70,8 @@ judgment, destructive approvals, conflicts, memory truth, and final verification
 ### 1. Attend and choose
 
 ```bash
-octocode-awareness attend --workspace "$PWD" --query "<task>" --compact
-octocode-awareness task ready --plan-id <plan> --compact
+npx @octocodeai/octocode-awareness attend --workspace "$PWD" --query "<task>" --compact
+npx @octocodeai/octocode-awareness task ready --plan-id <plan> --compact
 ```
 
 Claim a matching task. Do not create a Markdown “today” list. If no task fits, open
@@ -92,17 +82,17 @@ explicit WORK presence.
 Task-backed:
 
 ```bash
-octocode-awareness task claim --task-id <task> --agent-id "$OCTOCODE_AGENT_ID" --compact
-octocode-awareness task heartbeat --task-id <task> --run-id <run> \
+npx @octocodeai/octocode-awareness task claim --task-id <task> --agent-id "$OCTOCODE_AGENT_ID" --compact
+npx @octocodeai/octocode-awareness task heartbeat --task-id <task> --run-id <run> \
   --agent-id "$OCTOCODE_AGENT_ID" --compact  # repeat during long attempts
-octocode-awareness work start --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness work start --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" \
   --file src/a.ts --compact
 ```
 
 Standalone WORK:
 
 ```bash
-octocode-awareness work start --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" \
+npx @octocodeai/octocode-awareness work start --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" \
   --file src/a.ts --rationale "<why>" --test-plan "<exact check>" --compact
 ```
 
@@ -113,7 +103,7 @@ Ordinary overlap is allowed. Inspect peers only when notified or when the intera
 matters:
 
 ```bash
-octocode-awareness work show --workspace "$PWD" --file src/a.ts --compact
+npx @octocodeai/octocode-awareness work show --workspace "$PWD" --file src/a.ts --compact
 ```
 
 Sensitive work adds `--exclusive`. Exclusive acquisition fails while another agent
@@ -124,10 +114,10 @@ has active presence; an existing exclusive lock blocks later declarations.
 Use signals when another agent must act:
 
 ```bash
-octocode-awareness signal publish --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness signal publish --agent-id "$OCTOCODE_AGENT_ID" \
   --workspace "$PWD" --kind request --subject "Coordinate auth.ts" \
   --body "I am changing token refresh; are your edits compatible?" --file src/auth.ts --compact
-octocode-awareness signal list --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness signal list --agent-id "$OCTOCODE_AGENT_ID" \
   --workspace "$PWD" --limit 5 --compact
 ```
 
@@ -140,9 +130,9 @@ Task:
 
 ```bash
 # run acceptance checks while presence remains active
-octocode-awareness task submit --task-id <task> --run-id <run> \
+npx @octocodeai/octocode-awareness task submit --task-id <task> --run-id <run> \
   --agent-id "$OCTOCODE_AGENT_ID" --message "ready for verification" --compact
-octocode-awareness verify mark --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness verify mark --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" \
   --message "tests passed" --compact
 ```
 
@@ -150,8 +140,8 @@ Standalone WORK:
 
 ```bash
 # run the declared test plan while presence remains active
-octocode-awareness work end --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" --compact
-octocode-awareness verify mark --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness work end --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" --compact
+npx @octocodeai/octocode-awareness verify mark --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" \
   --message "check passed" --compact
 ```
 
@@ -164,7 +154,7 @@ with `--workspace`; an unscoped batch spans all workspaces for that agent.
 Record only future-useful, verified outcomes:
 
 ```bash
-octocode-awareness reflect record --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness reflect record --agent-id "$OCTOCODE_AGENT_ID" \
   --workspace "$PWD" --task "<task>" --outcome worked \
   --lesson "<reusable result>" --compact
 ```
@@ -176,16 +166,16 @@ For unfinished work, use a handoff signal, `refinement set`, or `session capture
 Preview cleanup before mutation:
 
 ```bash
-octocode-awareness maintenance digest --workspace "$PWD" --dry-run --compact
-octocode-awareness lock prune --workspace "$PWD" --expired-only --dry-run --compact
-octocode-awareness signal prune --workspace "$PWD" --resolved --dry-run --compact
+npx @octocodeai/octocode-awareness maintenance digest --workspace "$PWD" --dry-run --compact
+npx @octocodeai/octocode-awareness lock prune --workspace "$PWD" --expired-only --dry-run --compact
+npx @octocodeai/octocode-awareness signal prune --workspace "$PWD" --resolved --dry-run --compact
 ```
 
 ## Memory
 
 ```bash
-octocode-awareness memory recall --query "<task>" --workspace "$PWD" --smart --compact
-octocode-awareness memory record --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness memory recall --query "<task>" --workspace "$PWD" --smart --compact
+npx @octocodeai/octocode-awareness memory record --agent-id "$OCTOCODE_AGENT_ID" \
   --workspace "$PWD" --task-context "<context>" \
   --observation "<verified reusable fact>" --importance 7 --compact
 ```
@@ -214,10 +204,10 @@ surface; do not also install duplicate settings. Use `--host claude` only when
 frontmatter is unsupported or disabled.
 
 ```bash
-octocode-awareness hooks install --host <codex|cursor> --project-dir . --dry-run
+npx @octocodeai/octocode-awareness hooks install --host <codex|cursor> --project-dir . --dry-run
 # after reviewing the dry-run and obtaining approval:
-octocode-awareness hooks install --host <codex|cursor> --project-dir . --compact
-octocode-awareness hooks check --host <codex|cursor> --project-dir . --strict
+npx @octocodeai/octocode-awareness hooks install --host <codex|cursor> --project-dir . --compact
+npx @octocodeai/octocode-awareness hooks check --host <codex|cursor> --project-dir . --strict
 ```
 
 Use non-compact dry-run/check output to review settings and runtime details. Compact
@@ -236,8 +226,8 @@ See [HOOKS.md](HOOKS.md) for host differences.
 ## Live Queries And Repo Context
 
 ```bash
-octocode-awareness query workboard --workspace "$PWD" --format table --limit 3
-octocode-awareness query all --workspace "$PWD" --format html \
+npx @octocodeai/octocode-awareness query workboard --workspace "$PWD" --format table --limit 3
+npx @octocodeai/octocode-awareness query all --workspace "$PWD" --format html \
   --out .octocode/awareness/index.html
 ```
 
@@ -249,13 +239,13 @@ current state; `docs staleness` compares authored docs with source edit times.
 Do not copy a static CLI reference into prompts or docs:
 
 ```bash
-octocode-awareness schema commands --compact       # grouped core/advanced map
-octocode-awareness schema commands --all --compact # flat command map
-octocode-awareness schema command task create --compact # exact schema-backed route
-octocode-awareness <command> --help
-octocode-awareness schema json-schema <name> --compact
-octocode-awareness docs list --compact
-octocode-awareness docs show <name>
+npx @octocodeai/octocode-awareness schema commands --compact       # grouped core/advanced map
+npx @octocodeai/octocode-awareness schema commands --all --compact # flat command map
+npx @octocodeai/octocode-awareness schema command task create --compact # exact schema-backed route
+npx @octocodeai/octocode-awareness <command> --help
+npx @octocodeai/octocode-awareness schema json-schema <name> --compact
+npx @octocodeai/octocode-awareness docs list --compact
+npx @octocodeai/octocode-awareness docs show <name>
 ```
 
 Database details: [DB.md](DB.md). File semantics: [LOCKS.md](LOCKS.md). Architecture: [HOW_IT_WORKS.md](HOW_IT_WORKS.md).

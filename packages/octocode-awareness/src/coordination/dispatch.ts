@@ -6,6 +6,7 @@
 
 import type { AgentStatus,CheckStatus,TaskStatus } from '@octocodeai/octocode-shared/entities';
 import type { AwarenessStore } from './index.js';
+import type { MemoryEvaluationCorpusV1,MemoryRecallModeV1 } from '../memory-hardening.js';
 
 export interface AwarenessCommandRequest {
   command: string;
@@ -42,6 +43,13 @@ function num(value: unknown): number | undefined {
 
 function bool(value: unknown): boolean {
   return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+function corpus(value: unknown): MemoryEvaluationCorpusV1 | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const parsed = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+  if (!parsed || typeof parsed !== 'object') throw new Error('memory evaluate corpus-json must be a JSON object');
+  return parsed as MemoryEvaluationCorpusV1;
 }
 
 /** Accept a string[], a comma string, or a single string; the library splits either. */
@@ -332,6 +340,14 @@ export function dispatchAwarenessCommand(
             text: reqStr(p, 'text', 'memory store'),
             tags: list(p['tags']),
           }));
+        case 'store-verified':
+          return done(aw.storeVerifiedMemory({
+            label: reqStr(p, 'label', 'memory store-verified'), text: reqStr(p, 'text', 'memory store-verified'),
+            sourceDigest: reqStr(p, 'sourceDigest', 'memory store-verified'),
+            scope: str(p['scope']) as 'project' | 'artifact' | undefined,
+            verifiedAt: str(p['verifiedAt']), validUntil: str(p['validUntil']),
+            importance: num(p['importance']), tags: list(p['tags']),
+          }));
         case 'recall':
           return done(aw.recallMemory({
             query: str(p['query']),
@@ -339,6 +355,17 @@ export function dispatchAwarenessCommand(
             limit: num(p['limit']) ?? 10,
             semantic: bool(p['semantic']),
             minSimilarity: num(p['minSimilarity']),
+          }));
+        case 'recall-verified':
+          return done(aw.recallVerifiedMemory({
+            query: str(p['query']), label: str(p['label']), sourceDigest: str(p['sourceDigest']),
+            scope: str(p['scope']) as 'project' | 'artifact' | undefined,
+            mode: str(p['mode']) as MemoryRecallModeV1 | undefined,
+            limit: num(p['limit']), now: str(p['now']), minSimilarity: num(p['minSimilarity']),
+          }));
+        case 'evaluate':
+          return done(aw.evaluateVerifiedMemory({
+            corpus: corpus(p['corpusJson']), now: str(p['now']), limit: num(p['limit']), minSimilarity: num(p['minSimilarity']),
           }));
         case 'reindex':
           return done(aw.reindexMemories({ force: bool(p['force']), limit: num(p['limit']) }));
@@ -353,7 +380,7 @@ export function dispatchAwarenessCommand(
             dryRun: p['dryRun'] === undefined ? true : bool(p['dryRun']),
           }));
         default:
-          throw new Error('memory action must be store, recall, list, reindex, forget, or prune');
+          throw new Error('memory action must be store, store-verified, recall, recall-verified, evaluate, list, reindex, forget, or prune');
       }
     }
 

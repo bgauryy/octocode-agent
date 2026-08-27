@@ -68,6 +68,17 @@ describe('package entry separation', () => {
 // ─── maintenance init ─────────────────────────────────────────────────────────
 
 describe('maintenance init', () => {
+  it('exposes init as the canonical root command', () => {
+    const dir = mktemp();
+    const db = join(dir, 'test.sqlite3');
+    try {
+      const result = ok(db, ['init']);
+      expect(result['initialized']).toBe(true);
+      expect(result['memory_count']).toBe(0);
+      expect(existsSync(db)).toBe(true);
+    } finally { rmSync(dir, { recursive: true }); }
+  });
+
   it('creates DB and returns initialized=true', () => {
     const dir = mktemp();
     const db = join(dir, 'test.sqlite3');

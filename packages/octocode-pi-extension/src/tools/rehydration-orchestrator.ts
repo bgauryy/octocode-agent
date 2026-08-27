@@ -8,7 +8,8 @@ import {
 import { getCurrentPlanReadModel, renderPlanContext } from './plan-read-model.js';
 import { setManagedActivity } from './runtime-renderer.js';
 import { brokerSessionId } from './interaction-broker.js';
-import { promptLifecycleFor } from './prompt-lifecycle.js';
+import { canReprojectRehydratedSegment } from './prompt-lifecycle.js';
+import { resolveSessionCheckpointSources } from './context-source-registry.js';
 import {
   createSessionArtifactContext,
   inspectRehydrationLedger,
@@ -245,7 +246,8 @@ export function consumeValidatedRehydration(
   if (!pending) return undefined;
   pendingBySession.delete(sessionKey);
   const now = options.now ?? Date.now;
-  const currentById = new Map(currentSources.map((source) => [source.segment.id, source]));
+  const sessionSources = resolveSessionCheckpointSources(ctx, pending.ledger.segments);
+  const currentById = new Map([...sessionSources, ...currentSources].map((source) => [source.segment.id, source]));
   const validated: string[] = [];
   const reprojected: string[] = [];
   const stale = [...pending.baseReceipt.stale];
@@ -275,11 +277,8 @@ export function consumeValidatedRehydration(
       continue;
     }
     validated.push(checkpoint.id);
-    const lifecycle = promptLifecycleFor(checkpoint.kind);
     const mayProject = options.allowProjection === true
-      && lifecycle.placement === 'turn-context'
-      && checkpoint.visibility !== 'hidden-policy'
-      && checkpoint.rehydrate === 'always';
+      && canReprojectRehydratedSegment(checkpoint);
     if (!mayProject) {
       skipped.push(checkpoint.id);
       continue;

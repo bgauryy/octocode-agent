@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    setupFiles: ['../../test-utils/external-effects-guard.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text'],

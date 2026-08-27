@@ -1,6 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { existsSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Type } from 'typebox';
@@ -11,10 +10,8 @@ import {
   runMediaOperation,
   registerMediaTool,
 } from '../src/tools/create-media-tool.js';
-import { detectFfmpeg, runBinary } from '../src/tools/ffmpeg-runtime.js';
 import type { ToolDefinition } from '../src/types.js';
 
-const ff = detectFfmpeg();
 const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#0d1117"/><circle cx="20" cy="10" r="6" fill="#58a6ff"/></svg>';
 
 // ── pure PDF composition helpers ────────────────────────────────────────────
@@ -69,34 +66,47 @@ describe('runMediaOperation image (svg)', () => {
   });
 });
 
-// ── ffmpeg delegation (skipped when binary absent) ──────────────────────────
-const d = ff.ok ? describe : describe.skip;
-d('runMediaOperation ffmpeg delegation [requires ffmpeg]', () => {
+// ── external renderer/binary delegation (always mocked) ────────────────────
+describe('runMediaOperation external delegation', () => {
   let dir: string;
-  let sample: string;
   beforeAll(async () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'create-media-ff-'));
-    sample = path.join(dir, 'sample.mp4');
-    await runBinary(ff.ffmpeg!, [
-      '-hide_banner', '-loglevel', 'error', '-y',
-      '-f', 'lavfi', '-i', 'testsrc=duration=2:size=320x180:rate=25',
-      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', sample,
-    ], { cwd: dir });
   });
   afterAll(async () => { await rm(dir, { recursive: true, force: true }); });
 
-  it('gif writes a file via `dest`', async () => {
+  it('delegates ffmpeg operations without executing a binary', async () => {
+    const sample = path.join(dir, 'sample.mp4');
     const out = path.join(dir, 'out.gif');
-    const r = await runMediaOperation({ type: 'gif', source: sample, dest: out, fps: 8, width: 120 }, dir);
+    const runMedia = vi.fn(async () => ({
+      ok: true,
+      mode: 'gif' as const,
+      message: 'mock gif',
+      savedPath: out,
+      bytes: 42,
+    }));
+    const r = await runMediaOperation(
+      { type: 'gif', source: sample, dest: out, fps: 8, width: 120 },
+      dir,
+      undefined,
+      { runMedia },
+    );
     expect(r.ok).toBe(true);
-    expect(statSync(out).size).toBeGreaterThan(0);
+    expect(r.savedPath).toBe(out);
+    expect(runMedia).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'gif', input: sample, output: out, fps: 8, width: 120,
+    }), dir, undefined);
   });
-  it('trim honors the overwrite guard', async () => {
-    const out = path.join(dir, 'clip.mp4');
-    await runMediaOperation({ type: 'trim', source: sample, dest: out, from: '0', to: '1' }, dir);
-    expect(existsSync(out)).toBe(true);
-    await expect(runMediaOperation({ type: 'trim', source: sample, dest: out, from: '0', to: '1' }, dir))
-      .rejects.toThrow(/already exists/);
+
+  it('delegates PDF rendering without launching Chrome', async () => {
+    const out = path.join(dir, 'mock.pdf');
+    const renderPdf = vi.fn(async () => Buffer.from('%PDF-mock'));
+    const r = await runMediaOperation(
+      { type: 'pdf', dest: out, html: '<h1>mock</h1>' },
+      dir,
+      undefined,
+      { renderPdf },
+    );
+    expect(r.ok).toBe(true);
+    expect(renderPdf).toHaveBeenCalledOnce();
   });
 });

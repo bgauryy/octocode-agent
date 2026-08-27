@@ -9,7 +9,7 @@ it('publishes the complete shared feature and entity inventory', () => {
   const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8');
   for (const feature of [
     'Status', 'Plans', 'Tasks', 'Work presence', 'Locks', 'Checks', 'Messages',
-    'Agents', 'Handoffs', 'Memory', 'Hooks', 'Schema', 'Pi composition', 'Runtime workflows',
+    'Agents', 'Handoffs', 'Memory', 'Hooks', 'Schema', 'Host composition', 'Runtime workflows',
   ]) expect(readme).toContain(`| ${feature} |`);
   for (const table of [
     'plans', 'tasks', 'locks', 'work_presence', 'handoffs', 'memories', 'agents',

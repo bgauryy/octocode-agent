@@ -169,9 +169,13 @@ test('terminal plan widget keeps every task visible and width-safe throughout a 
       coordination: { mode: 'local', sourcePlanKey: 'widget-test', coordinationWorkspace: '' },
     });
     const lines = planPanelModelLines(model, undefined, width);
-    assert.equal(lines.length, steps.length + 2, `all stored tasks remain visible at width ${width}`);
     for (const line of lines) assert.ok(visibleWidth(line) <= width, `line fits width ${width}: ${line}`);
-    assert.match(lines.join('\n'), /▶/, 'the active lane remains identifiable even when its label is clipped');
+    const normalized = lines.join(' ').replace(/\s+/g, ' ');
+    for (const step of steps) {
+      const label = step.status === 'doing' ? step.activeForm : step.text;
+      assert.ok(normalized.includes(label), `complete task label remains visible at width ${width}: ${label}`);
+    }
+    assert.match(normalized, /▶/, 'the active lane remains identifiable at every width');
   }
 });
 

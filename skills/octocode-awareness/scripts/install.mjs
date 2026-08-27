@@ -16,9 +16,8 @@ const bundledSkillsDir = dirname(skillRoot);
 const args = new Set(process.argv.slice(2));
 const compact = args.delete("--compact");
 const nodeBin = process.execPath;
-const quote = (value) => JSON.stringify(value);
-const awarenessCommand = `${quote(nodeBin)} ${quote(join(scriptsDir, "awareness.mjs"))}`;
-const schemaCommand = `${quote(nodeBin)} ${quote(join(scriptsDir, "awareness.mjs"))} schema`;
+const awarenessCommand = "npx @octocodeai/octocode-awareness";
+const schemaCommand = `${awarenessCommand} schema`;
 
 // Discovered at runtime from this package's skill bundle so install receipts
 // cannot silently drift from what build.mjs actually bundled here.
@@ -37,21 +36,22 @@ function discoverBundledSkills(dir) {
 const bundledSkills = discoverBundledSkills(bundledSkillsDir);
 
 function printHelp() {
-  console.log(`Usage: node scripts/install.mjs [--compact] [--help]
+  console.log(`Internal packaged-runtime diagnostic. Agent CLI runner:
+  npx @octocodeai/octocode-awareness <command>
 
 Check the octocode-awareness standalone runtime and print the host hook init flow.
 The package bundles every runtime dependency. This script never installs packages
-or writes Codex/Cursor/Claude hook config; preview and install hooks with
-scripts/awareness.mjs after explicit user approval.
+or writes host hook config; preview and install hooks with the public CLI after
+explicit user approval.
 
 Options:
   --compact     Print one bounded agent receipt.
   --help, -h    Show this help.
 
-Examples:
-  node scripts/install.mjs
-  node scripts/awareness.mjs hooks install --host codex --project-dir . --dry-run --compact
-  node scripts/awareness.mjs hooks check --host codex --project-dir . --strict --compact`);
+Agent examples:
+  npx @octocodeai/octocode-awareness init --compact
+  npx @octocodeai/octocode-awareness hooks install --host codex --project-dir . --dry-run --compact
+  npx @octocodeai/octocode-awareness hooks check --host codex --project-dir . --strict --compact`);
 }
 
 if (args.has("--help") || args.has("-h")) {
@@ -141,7 +141,7 @@ if (compact) {
     ok: true,
     required_skills: bundledSkills.filter((skill) => skill.required).map((skill) => skill.name),
     optional_skill_count: bundledSkills.filter((skill) => !skill.required).length,
-    next: "Run maintenance init once, then attend --compact.",
+    next: "Run npx @octocodeai/octocode-awareness init --compact once, then attend --compact.",
   }));
   process.exit(0);
 }
@@ -158,7 +158,7 @@ console.log(
       commands: {
         schema: `${schemaCommand} list`,
         awareness: `${awarenessCommand} workspace status --workspace "$PWD" --compact`,
-        init: `${awarenessCommand} maintenance init --compact`,
+        init: `${awarenessCommand} init --compact`,
         attend: `${awarenessCommand} attend --workspace "$PWD" --agent-id "$OCTOCODE_AGENT_ID" --compact`,
         hooks_preview_codex: `${awarenessCommand} hooks install --host codex --project-dir "$PWD" --dry-run --compact`,
         hooks_install_codex: `${awarenessCommand} hooks install --host codex --project-dir "$PWD" --compact`,
@@ -166,16 +166,14 @@ console.log(
         hooks_preview_cursor: `${awarenessCommand} hooks install --host cursor --project-dir "$PWD" --dry-run --compact`,
         hooks_install_cursor: `${awarenessCommand} hooks install --host cursor --project-dir "$PWD" --compact`,
         hooks_check_cursor: `${awarenessCommand} hooks check --host cursor --project-dir "$PWD" --strict --compact`,
-        pi_bridge: "import { wirePiAwarenessHooks } from '@octocodeai/octocode-awareness'; wirePiAwarenessHooks(pi, { skillRoot })",
       },
       next_steps: [
         `This package bundles ${bundledSkills.length} skill(s) under bundled_skills above; octocode-awareness is the package skill to install from this path.`,
         "Use npx octocode for other workflow skill install/update/lint and research/search operations when needed.",
         "Export one stable OCTOCODE_AGENT_ID for the CLI and host hooks.",
-        "Run maintenance init once for the store, then workspace status and attend from each repo.",
+        "Run npx @octocodeai/octocode-awareness init --compact once, then workspace status and attend from each repo.",
         "When Claude skill frontmatter is active, use it as the hook surface and do not also install duplicate project settings; hooks check inspects settings files only.",
-        "For Codex and Cursor project hooks: preview with --dry-run, install after user approval, then run hooks check --strict for that host.",
-        "For Pi: do not run shell hook install; call wirePiAwarenessHooks(pi, { skillRoot }) or use @octocodeai/pi-extension, then smoke tool_call/tool_result and agent_end behavior.",
+        "For project hooks: preview with --dry-run, install after user approval, then run hooks check --strict for that host.",
       ],
     },
     null,

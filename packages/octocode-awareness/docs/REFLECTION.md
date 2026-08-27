@@ -10,7 +10,7 @@ verified outcome -> reflect -> route -> human/user-approved apply -> verify -> c
 ```
 
 ```bash
-octocode-awareness reflect record --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness reflect record --agent-id "$OCTOCODE_AGENT_ID" \
   --workspace "$PWD" --task "<task>" --outcome worked \
   --lesson "<reusable result>" --compact
 ```
@@ -36,7 +36,7 @@ another directory.
 Terminal closure is evidence-bearing:
 
 ```bash
-octocode-awareness refinement set --refinement-id <id> --state done \
+npx @octocodeai/octocode-awareness refinement set --refinement-id <id> --state done \
   --agent-id "$OCTOCODE_AGENT_ID" --check-receipt "<check and result>" --compact
 ```
 
@@ -46,7 +46,7 @@ timestamp, and receipt to the refinement reasoning before it appears as Resolved
 ## Weakness Mining
 
 ```bash
-octocode-awareness reflect mine-weakness --workspace "$PWD" --compact
+npx @octocodeai/octocode-awareness reflect mine-weakness --workspace "$PWD" --compact
 ```
 
 Mining groups repeated stable signatures. A cluster is evidence to inspect, not a
@@ -56,8 +56,8 @@ future review sees the result.
 ## Harness Proposals
 
 ```bash
-octocode-awareness reflect export-harness --workspace "$PWD" --compact
-octocode-awareness reflect developer-review --workspace "$PWD" --format markdown --compact
+npx @octocodeai/octocode-awareness reflect export-harness --workspace "$PWD" --compact
+npx @octocodeai/octocode-awareness reflect developer-review --workspace "$PWD" --format markdown --compact
 ```
 
 Exports are previews. They never patch `AGENTS.md`, `SKILL.md`, docs, hooks, or code.
@@ -88,7 +88,7 @@ dissent, and a concrete check.
 ## Documentation Drift
 
 ```bash
-octocode-awareness docs staleness \
+npx @octocodeai/octocode-awareness docs staleness \
   --targets-json '[{"docFile":"README.md","sourceDirs":["src"]}]' --compact
 ```
 

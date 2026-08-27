@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { removeStaleHookRunStateLock } from '../bin/hook-run-state.js';
+import { withEnabledAwarenessConfig } from './helpers/enabled-awareness-config.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(TEST_DIR, '..');
@@ -17,12 +18,12 @@ const SOURCE_LIFECYCLE = resolve(PACKAGE_ROOT, 'bin/hook-lifecycle.ts');
 const TSX_CLI = resolve(REPO_ROOT, 'node_modules/tsx/dist/cli.mjs');
 
 function hookEnv(memoryHome: string): NodeJS.ProcessEnv {
-  return {
+  return withEnabledAwarenessConfig({
     ...process.env,
     NODE_NO_WARNINGS: '1',
     OCTOCODE_MEMORY_HOME: memoryHome,
     OCTOCODE_AGENT_ID: 'correlation-agent',
-  };
+  });
 }
 
 function runHook(

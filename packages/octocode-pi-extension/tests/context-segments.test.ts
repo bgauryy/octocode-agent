@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assembleContextSegments } from '../src/tools/context-segments.js';
+import { assembleContextSegments, contextSegmentFromInput, estimateContextTokens } from '../src/tools/context-segments.js';
 
 const base = { scope: 'session', visibility: 'inspectable', rehydrate: 'always' } as const;
 
@@ -28,5 +28,11 @@ describe('typed context segment manifest', () => {
       { ...base, id: 'segment-one', content: '12345678', kind: 'plan', origin: 'plan-domain', authority: 'user', tokenBudget: 2 },
       { ...base, id: 'segment-two', content: 'abcdefgh', kind: 'plan', origin: 'plan-domain', authority: 'user', tokenBudget: 2 },
     ], { totalTokenBudget: 3 })).toThrow(/total token budget 3/);
+  });
+
+  it('builds the same digest-bound segment through the reusable owner boundary', () => {
+    const input = { ...base, id: 'request', content: 'exact request', kind: 'user-request', origin: 'session-entry:e1', authority: 'user' } as const;
+    expect(contextSegmentFromInput(input)).toEqual(assembleContextSegments([input]).manifest[0]);
+    expect(estimateContextTokens('12345')).toBe(2);
   });
 });

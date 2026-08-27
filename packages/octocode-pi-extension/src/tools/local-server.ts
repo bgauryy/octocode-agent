@@ -120,6 +120,16 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       && segments[0] === '__octocode'
       && segments[1] === 'message';
     if (isMessageEndpoint) {
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const body = JSON.stringify({ ok: true, messageBridge: Boolean(mount.onMessage) });
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+        });
+        res.end(req.method === 'HEAD' ? undefined : body);
+        return;
+      }
       if (req.method !== 'POST') {
         send(405, 'method not allowed');
         return;
@@ -138,17 +148,23 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         return;
       }
       let body = '';
+      let bodyTooLarge = false;
       req.setEncoding('utf8');
       req.on('data', (chunk: string) => {
+        if (bodyTooLarge) return;
         body += chunk;
-        if (body.length > 16_384) req.destroy();
+        if (body.length > 32_768) {
+          bodyTooLarge = true;
+          send(413, 'request body too large');
+        }
       });
       req.on('end', () => {
+        if (bodyTooLarge) return;
         try {
           const parsed = JSON.parse(body) as { message?: unknown };
           const message = typeof parsed.message === 'string' ? parsed.message.trim() : '';
-          if (!message || message.length > 8_000) {
-            send(400, 'message must contain 1-8000 characters');
+          if (!message || message.length > 16_000) {
+            send(400, 'message must contain 1-16000 characters');
             return;
           }
           void Promise.resolve(mount.onMessage?.(message)).then(
@@ -172,12 +188,18 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       if (mount.actionToken && req.headers['x-octocode-action-token'] !== mount.actionToken) return send(403, 'forbidden');
       if (!(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) return send(415, 'application/json required');
       let body = '';
+      let bodyTooLarge = false;
       req.setEncoding('utf8');
       req.on('data', (chunk: string) => {
+        if (bodyTooLarge) return;
         body += chunk;
-        if (body.length > 16_384) req.destroy();
+        if (body.length > 32_768) {
+          bodyTooLarge = true;
+          send(413, 'request body too large');
+        }
       });
       req.on('end', () => {
+        if (bodyTooLarge) return;
         try {
           const parsed: unknown = JSON.parse(body);
           void Promise.resolve(mount.onAction?.(parsed)).then((value) => {

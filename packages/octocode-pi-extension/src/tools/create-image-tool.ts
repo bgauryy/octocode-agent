@@ -301,13 +301,14 @@ export async function createImageFromHtml(
   html: string,
   cwd: string,
   opts: { width?: number; height?: number; background?: string; name?: string; saveTo?: string; signal?: AbortSignal } = {},
+  deps: { renderHtml?: typeof renderHtmlToPng } = {},
 ): Promise<CreateImageResult> {
   if (typeof html !== 'string' || html.trim().length === 0) {
     return { ok: false, message: 'createImage: `html` must be non-empty HTML markup.' };
   }
   let png: Buffer;
   try {
-    png = await renderHtmlToPng(html, cwd, opts);
+    png = await (deps.renderHtml ?? renderHtmlToPng)(html, cwd, opts);
   } catch (err) {
     return { ok: false, message: `createImage: failed to render HTML — ${(err as Error).message}` };
   }

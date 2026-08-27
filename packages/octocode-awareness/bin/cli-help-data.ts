@@ -2,32 +2,63 @@ import { BUNDLED_SKILLS, BUNDLED_SKILLS_DIR } from './cli-model.js';
 
 // ─── Help text ────────────────────────────────────────────────────────────────
 
-export const HELP = `usage: octocode-awareness <command> [options]
-common: --db <path> --compact; hook run uses OCTOCODE_MEMORY_HOME
-agent loop: attend -> work start -> work end -> verify mark -> verify audit
-start: attend; workspace status; plan list; task ready; memory recall; signal list
-work: plan; task; advisory work by default; locks only for unsafe/non-mergeable edits; verify; signal; refinement
-learn: memory record|recall; reflect; docs; query
-operate: agent; session; hooks; hook; maintenance; schema
-coordinate: coordination <command>; guide|status|message|handoff|check are direct shortcuts
-first: octocode-awareness attend --workspace "$PWD" --query "<task>" --compact; follow returned next
-map: octocode-awareness schema commands --compact
-flags: octocode-awareness <noun> [action] --help
-skills(${BUNDLED_SKILLS.length}): ${BUNDLED_SKILLS_DIR}; bundled skill: octocode-awareness
-policy: AGENTS.md = trigger/router; Agent Skill = operating policy; CLI/SQLite = canonical live state; hooks/Pi bridge = deterministic lifecycle automation
-output: use --compact for operational JSON; docs show emits Markdown
-exit: 0 ok; 1 validation/verify debt; 2 conflict/wait/strict hook health`;
+export const HELP = `  🐙 Octocode Awareness
 
-export const HELP_COMPACT = `octocode-awareness: canonical noun/verb CLI; AGENTS routes → skill decides → CLI/SQLite acts → hooks automate edges. Use --compact for JSON.
+  FIRST RUN  ask before enabling automation
+    config show --compact                 return config or all onboarding questions
+    config init <all five answers>        create ~/.octocode/awareness.json once
+    init --compact                        initialize the advanced workflow store
+
+  AGENT LOOP  follow attend.next; record only observed checks
+    attend  →  work start  →  work end  →  verify mark  →  verify audit
+
+  SURFACES  two stores, one CLI — do not mix similarly named commands
+    Shared     guide --json · status · message · handoff · check · coordination <command>
+    Advanced   attend · plan · task · work · verify · signal · memory record/recall · refinement
+    Inspect    workspace status · query · reflect · docs · maintenance · session
+
+  DISCOVER  never guess a command or flag
+    npx @octocodeai/octocode-awareness schema commands --compact
+                                             compact agent command map
+    schema command <noun> [action]         exact flags and required fields
+    schema json-schema <name> --compact    machine-readable payload contract
+    <noun> [action] --help                 focused usage and example
+
+  EVIDENCE & REFERENCES
+    npx octocode --help                    local, GitHub, and npm research CLI
+    npx octocode tools --json              live research-tool catalog
+    npx octocode tools <name> --scheme     exact research contract
+    docs list · docs show <name>            bundled Awareness references
+
+  HOST AUTOMATION
+    hooks install --host codex|claude|cursor --dry-run
+    Show the noncompact preview and ask the user immediately before every real install.
+    Pi uses @octocodeai/pi-extension native events; never use --host pi.
+
+  RUNNER  npx @octocodeai/octocode-awareness <command> [options]
+  FLAGS   --compact lean JSON · --db <path> advanced DB override
+  EXIT    0 ok · 1 input/verification debt · 2 conflict/wait/strict hook health
+  SKILL   bundled (${BUNDLED_SKILLS.length}) at ${BUNDLED_SKILLS_DIR}
+
+  <AGENT_INSTRUCTIONS>
+  AGENTS.md = trigger/router; Agent Skill = operating policy; CLI/SQLite = canonical live state.
+  Use the skill for judgment and this CLI for deterministic state changes.
+  Use npx octocode for local/external research; return grounded evidence to Awareness.
+  Start with config show, then attend; follow returned next commands and live schemas.
+  Ordinary overlap is advisory; lock only unsafe/non-mergeable work. Never claim success without check evidence.
+  Export maintained prompt guidance with: instructions export --format prompt|agents-md|json
+  </AGENT_INSTRUCTIONS>`;
+
+export const HELP_COMPACT = `octocode-awareness: canonical noun/verb CLI; runner: npx @octocodeai/octocode-awareness; AGENTS routes → skill decides → CLI/SQLite acts → hooks automate edges. Use --compact for JSON.
 bundled-skills(${BUNDLED_SKILLS.length}): ${BUNDLED_SKILLS_DIR} — octocode-awareness is bundled; install other workflow skills separately when needed
-loop: attend -> work start -> work end -> verify mark -> verify audit; follow attend.next and <command> --help
-coordinate: coordination <command>; guide|status|message|handoff|check are direct shortcuts
+setup: config show -> ask all questions if missing -> config init -> init; loop: attend -> work start -> work end -> verify mark -> verify audit; follow attend.next
+coordinate: coordination <command>; guide|instructions export|status|message|handoff|check are direct shortcuts
 start: attend; workspace status; plan create|list|show|join|doc|status; task create|list|ready|show|claim|heartbeat|submit|release|depend; memory recall; signal list; docs list
 edit: work start|touch|end|list|show (advisory default); lock acquire|wait|release|prune only for unsafe/non-mergeable edits; verify audit|mark
 msg: signal publish|list|reply|ack|resolve|prune; agent register|list
 learn: memory record|archive|restore|forget; refinement set|get|list|delete; reflect record|mine-weakness|export-harness|developer-review; maintenance digest
 views: query files|workboard|all|developer-review --format json|table|csv|markdown|html
-inspect: schema commands --compact; docs list|show; <command> --help; exits 0 ok / 1 validation|verify debt / 2 live claim|lock|wait|hooks --strict`;
+inspect: schema commands --compact; docs list|show; <command> --help; research: npx octocode tools --json; exits 0 ok / 1 validation|verify debt / 2 live claim|lock|wait|hooks --strict`;
 
 export const COMMAND_TO_SCHEMA: Record<string, string> = {
   'tell-memory': 'memory_record',
@@ -60,6 +91,7 @@ export const COMMAND_TO_SCHEMA: Record<string, string> = {
   'plan-command': 'plan',
   'task-command': 'task',
   'work-command': 'work',
+  'awareness-config': 'awareness_config',
 };
 
 export const COMMAND_DISPLAY: Record<string, string> = {
@@ -90,7 +122,7 @@ export const COMMAND_DISPLAY: Record<string, string> = {
   'doc-staleness': 'docs staleness',
   'docs-catalog': 'docs list|show',
   'digest': 'maintenance digest',
-  'init': 'maintenance init',
+  'init': 'init',
   'self-test': 'maintenance self-test',
   'reflect': 'reflect record',
   'plan-command': 'plan create|list|show|join|doc|status',
@@ -99,64 +131,70 @@ export const COMMAND_DISPLAY: Record<string, string> = {
   'hook-run': 'hook run',
   'hooks-install': 'hooks install|check|remove',
   'schema': 'schema',
+  'awareness-config': 'config show|init|validate',
 };
 
 export const COMMAND_EXAMPLE: Record<string, string> = {
-  'tell-memory': 'octocode-awareness memory record --agent-id agent --task-context "build failure" --observation "Run yarn build before tests" --importance 7 --label GOTCHA --workspace "$PWD" --compact',
-  'get-memory': 'octocode-awareness memory recall --query "current task" --workspace "$PWD" --smart --compact',
-  'memory-archive': 'octocode-awareness memory archive --memory-id mem_123 --dry-run --compact',
-  'memory-restore': 'octocode-awareness memory restore --memory-id mem_123 --dry-run --compact',
-  'forget': 'octocode-awareness memory forget --memory-id mem_123 --dry-run --compact',
-  'pre-flight-intent': 'octocode-awareness lock acquire --agent-id agent --target-file src/file.ts --rationale "edit file" --test-plan "yarn test" --compact',
-  'wait-for-lock': 'octocode-awareness lock wait --agent-id agent --target-file src/file.ts --wait-seconds 60 --compact',
-  'prune-stale-locks': 'octocode-awareness lock prune --workspace "$PWD" --expired-only --dry-run --compact',
-  'release-file-lock': 'octocode-awareness lock release --agent-id agent --run-id run_123 --status PENDING --compact',
-  'audit-unverified': 'octocode-awareness verify audit --agent-id agent --workspace "$PWD" --compact',
-  'verify': 'octocode-awareness verify mark --agent-id agent --all-pending --message "yarn test passed" --workspace "$PWD" --compact # use --adopt-verification only for one prior-session --run-id after verifying',
-  'refine-set': 'octocode-awareness refinement set --agent-id agent --reasoning "handoff" --remember "next step" --workspace "$PWD" --compact',
-  'refine-get': 'octocode-awareness refinement get --workspace "$PWD" --state open --limit 3 --compact',
-  'refine-delete': 'octocode-awareness refinement delete --refinement-id ref_123 --dry-run --compact',
-  'agent-registry': 'octocode-awareness agent register --agent-id agent --agent-name "Codex" --workspace "$PWD" --compact',
-  'agent-signal': 'octocode-awareness signal list --agent-id agent --workspace "$PWD" --limit 3 --compact',
-  'notify-prune': 'octocode-awareness signal prune --workspace "$PWD" --resolved --dry-run --compact',
-  'status': 'octocode-awareness workspace status --workspace "$PWD" --compact',
-  'attend': 'octocode-awareness attend --query "current task" --workspace "$PWD" --compact',
-  'export-harness': 'octocode-awareness reflect export-harness --workspace "$PWD" --compact',
-  'developer-review': 'octocode-awareness reflect developer-review --workspace "$PWD" --format markdown --compact',
-  'query': 'octocode-awareness query workboard --workspace "$PWD" --format json --limit 1 --compact',
-  'session-capture': 'octocode-awareness session capture --agent-id agent --workspace "$PWD" --reason handoff --compact',
-  'mine-weakness': 'octocode-awareness reflect mine-weakness --workspace "$PWD" --compact',
-  'doc-staleness': 'octocode-awareness docs staleness --targets-json \'[{"docFile":"README.md","sourceDirs":["src"]}]\' --compact',
-  'docs-catalog': 'octocode-awareness docs list --compact',
-  'digest': 'octocode-awareness maintenance digest --dry-run --workspace "$PWD" --compact',
-  'init': 'octocode-awareness maintenance init --compact',
-  'self-test': 'octocode-awareness maintenance self-test --compact',
-  'reflect': 'octocode-awareness reflect record --agent-id agent --task "fix CLI" --outcome worked --lesson "Keep commands canonical" --compact',
-  'plan-command': 'octocode-awareness plan create --name "Release" --objective "Ship safely" --lead-agent-id agent --workspace "$PWD" --compact',
-  'task-command': 'octocode-awareness task ready --plan-id plan_123 --compact',
-  'work-command': 'octocode-awareness work start --agent-id agent --workspace "$PWD" --file src/a.ts --rationale "edit parser" --test-plan "yarn test" --compact',
+  'tell-memory': 'npx @octocodeai/octocode-awareness memory record --agent-id agent --task-context "build failure" --observation "Run yarn build before tests" --importance 7 --label GOTCHA --workspace "$PWD" --compact',
+  'get-memory': 'npx @octocodeai/octocode-awareness memory recall --query "current task" --workspace "$PWD" --smart --compact',
+  'memory-archive': 'npx @octocodeai/octocode-awareness memory archive --memory-id mem_123 --dry-run --compact',
+  'memory-restore': 'npx @octocodeai/octocode-awareness memory restore --memory-id mem_123 --dry-run --compact',
+  'forget': 'npx @octocodeai/octocode-awareness memory forget --memory-id mem_123 --dry-run --compact',
+  'pre-flight-intent': 'npx @octocodeai/octocode-awareness lock acquire --agent-id agent --target-file src/file.ts --rationale "edit file" --test-plan "yarn test" --compact',
+  'wait-for-lock': 'npx @octocodeai/octocode-awareness lock wait --agent-id agent --target-file src/file.ts --wait-seconds 60 --compact',
+  'prune-stale-locks': 'npx @octocodeai/octocode-awareness lock prune --workspace "$PWD" --expired-only --dry-run --compact',
+  'release-file-lock': 'npx @octocodeai/octocode-awareness lock release --agent-id agent --run-id run_123 --status PENDING --compact',
+  'audit-unverified': 'npx @octocodeai/octocode-awareness verify audit --agent-id agent --workspace "$PWD" --compact',
+  'verify': 'npx @octocodeai/octocode-awareness verify mark --agent-id agent --all-pending --message "yarn test passed" --workspace "$PWD" --compact # use --adopt-verification only for one prior-session --run-id after verifying',
+  'refine-set': 'npx @octocodeai/octocode-awareness refinement set --agent-id agent --reasoning "handoff" --remember "next step" --workspace "$PWD" --compact',
+  'refine-get': 'npx @octocodeai/octocode-awareness refinement get --workspace "$PWD" --state open --limit 3 --compact',
+  'refine-delete': 'npx @octocodeai/octocode-awareness refinement delete --refinement-id ref_123 --dry-run --compact',
+  'agent-registry': 'npx @octocodeai/octocode-awareness agent register --agent-id agent --agent-name "Codex" --workspace "$PWD" --compact',
+  'agent-signal': 'npx @octocodeai/octocode-awareness signal list --agent-id agent --workspace "$PWD" --limit 3 --compact',
+  'notify-prune': 'npx @octocodeai/octocode-awareness signal prune --workspace "$PWD" --resolved --dry-run --compact',
+  'status': 'npx @octocodeai/octocode-awareness workspace status --workspace "$PWD" --compact',
+  'attend': 'npx @octocodeai/octocode-awareness attend --query "current task" --workspace "$PWD" --compact',
+  'export-harness': 'npx @octocodeai/octocode-awareness reflect export-harness --workspace "$PWD" --compact',
+  'developer-review': 'npx @octocodeai/octocode-awareness reflect developer-review --workspace "$PWD" --format markdown --compact',
+  'query': 'npx @octocodeai/octocode-awareness query workboard --workspace "$PWD" --format json --limit 1 --compact',
+  'session-capture': 'npx @octocodeai/octocode-awareness session capture --agent-id agent --workspace "$PWD" --reason handoff --compact',
+  'mine-weakness': 'npx @octocodeai/octocode-awareness reflect mine-weakness --workspace "$PWD" --compact',
+  'doc-staleness': 'npx @octocodeai/octocode-awareness docs staleness --targets-json \'[{"docFile":"README.md","sourceDirs":["src"]}]\' --compact',
+  'docs-catalog': 'npx @octocodeai/octocode-awareness docs list --compact',
+  'digest': 'npx @octocodeai/octocode-awareness maintenance digest --dry-run --workspace "$PWD" --compact',
+  'init': 'npx @octocodeai/octocode-awareness init --compact',
+  'self-test': 'npx @octocodeai/octocode-awareness maintenance self-test --compact',
+  'reflect': 'npx @octocodeai/octocode-awareness reflect record --agent-id agent --task "fix CLI" --outcome worked --lesson "Keep commands canonical" --compact',
+  'plan-command': 'npx @octocodeai/octocode-awareness plan create --name "Release" --objective "Ship safely" --lead-agent-id agent --workspace "$PWD" --compact',
+  'task-command': 'npx @octocodeai/octocode-awareness task ready --plan-id plan_123 --compact',
+  'work-command': 'npx @octocodeai/octocode-awareness work start --agent-id agent --workspace "$PWD" --file src/a.ts --rationale "edit parser" --test-plan "yarn test" --compact',
   'hook-run': 'octocode-awareness hook run pre-edit < hook-payload.json',
-  'hooks-install': 'octocode-awareness hooks install --host codex --dry-run',
-  'schema': 'octocode-awareness schema commands --compact',
+  'hooks-install': 'npx @octocodeai/octocode-awareness hooks install --host codex --dry-run',
+  'schema': 'npx @octocodeai/octocode-awareness schema commands --compact',
+  'awareness-config': 'npx @octocodeai/octocode-awareness config show --compact',
 };
 
 export const ROUTE_EXAMPLE: Record<string, string> = {
-  'signal publish': 'octocode-awareness signal publish --agent-id agent --kind blocker --subject "File locked" --workspace "$PWD" --compact',
-  'signal list': 'octocode-awareness signal list --agent-id agent --workspace "$PWD" --limit 3 --compact',
-  'signal reply': 'octocode-awareness signal reply --agent-id agent --in-reply-to ntf_123 --subject "Re: File locked" --body "done" --compact',
-  'signal ack': 'octocode-awareness signal ack --agent-id agent --signal-id ntf_123 --compact',
-  'signal resolve': 'octocode-awareness signal resolve --agent-id agent --thread-id ntf_123 --compact',
-  'agent register': 'octocode-awareness agent register --agent-id agent --agent-name "Codex" --workspace "$PWD" --compact',
-  'agent list': 'octocode-awareness agent list --workspace "$PWD" --limit 5 --compact',
-  'reflect developer-review': 'octocode-awareness reflect developer-review --workspace "$PWD" --format markdown --compact',
-  'docs list': 'octocode-awareness docs list --compact',
-  'docs show': 'octocode-awareness docs show agent-cheatsheet',
-  'hooks install': 'octocode-awareness hooks install --host codex --dry-run',
-  'hooks check': 'octocode-awareness hooks check --host codex --strict',
-  'hooks remove': 'octocode-awareness hooks remove --host codex --dry-run',
-  'schema commands': 'octocode-awareness schema commands --compact',
-  'schema list': 'octocode-awareness schema list --compact',
-  'schema json-schema': 'octocode-awareness schema json-schema memory_recall --compact',
-  'schema example': 'octocode-awareness schema example memory_recall --compact',
-  'schema validate': 'octocode-awareness schema validate memory_recall payload.json --compact',
+  'maintenance init': 'npx @octocodeai/octocode-awareness maintenance init --compact',
+  'config show': 'npx @octocodeai/octocode-awareness config show --compact',
+  'config init': 'npx @octocodeai/octocode-awareness config init --hooks true --notifications true --verification-gate true --session-capture true --maintenance-reminders false --compact',
+  'config validate': 'npx @octocodeai/octocode-awareness config validate --compact',
+  'signal publish': 'npx @octocodeai/octocode-awareness signal publish --agent-id agent --kind blocker --subject "File locked" --workspace "$PWD" --compact',
+  'signal list': 'npx @octocodeai/octocode-awareness signal list --agent-id agent --workspace "$PWD" --limit 3 --compact',
+  'signal reply': 'npx @octocodeai/octocode-awareness signal reply --agent-id agent --in-reply-to ntf_123 --subject "Re: File locked" --body "done" --compact',
+  'signal ack': 'npx @octocodeai/octocode-awareness signal ack --agent-id agent --signal-id ntf_123 --compact',
+  'signal resolve': 'npx @octocodeai/octocode-awareness signal resolve --agent-id agent --thread-id ntf_123 --compact',
+  'agent register': 'npx @octocodeai/octocode-awareness agent register --agent-id agent --agent-name "Codex" --workspace "$PWD" --compact',
+  'agent list': 'npx @octocodeai/octocode-awareness agent list --workspace "$PWD" --limit 5 --compact',
+  'reflect developer-review': 'npx @octocodeai/octocode-awareness reflect developer-review --workspace "$PWD" --format markdown --compact',
+  'docs list': 'npx @octocodeai/octocode-awareness docs list --compact',
+  'docs show': 'npx @octocodeai/octocode-awareness docs show agent-cheatsheet',
+  'hooks install': 'npx @octocodeai/octocode-awareness hooks install --host codex --dry-run',
+  'hooks check': 'npx @octocodeai/octocode-awareness hooks check --host codex --strict',
+  'hooks remove': 'npx @octocodeai/octocode-awareness hooks remove --host codex --dry-run',
+  'schema commands': 'npx @octocodeai/octocode-awareness schema commands --compact',
+  'schema list': 'npx @octocodeai/octocode-awareness schema list --compact',
+  'schema json-schema': 'npx @octocodeai/octocode-awareness schema json-schema memory_recall --compact',
+  'schema example': 'npx @octocodeai/octocode-awareness schema example memory_recall --compact',
+  'schema validate': 'npx @octocodeai/octocode-awareness schema validate memory_recall payload.json --compact',
 };

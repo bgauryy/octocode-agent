@@ -33,6 +33,25 @@ function runInstallHooksRaw(args: string[], script = SCRIPT) {
 }
 
 describe('install-hooks', () => {
+it('keeps Claude hooks in .claude/settings.json with SessionStart and SessionEnd', () => {
+    const projectDir = mkdtempSync(resolve(tmpdir(), 'octocode-claude-hooks-'));
+    try {
+      const result = runInstallHooks(['hooks', 'install', '--host', 'claude', '--project-dir', projectDir, '--dry-run']);
+
+      expect(result.host).toBe('claude');
+      expect(result.settingsPath).toBe(resolve(projectDir, '.claude/settings.json'));
+      expect(result.resultingSettings.hooks).toHaveProperty('SessionEnd');
+      expect(result.resultingSettings.hooks).toHaveProperty('SessionStart');
+      expect(result.resultingSettings.hooks).toHaveProperty('PreCompact');
+      expect(result.resultingSettings.hooks).toHaveProperty('PostToolUseFailure');
+      expect(result.resultingSettings.hooks).toHaveProperty('SubagentStart');
+      const preCompact = JSON.stringify(result.resultingSettings.hooks?.PreCompact);
+      expect(preCompact).toContain('hook-runner.mjs');
+      expect(preCompact).toContain(' session-compact --host claude --skill-root ');
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
 it('previews Cursor hooks in native .cursor/hooks.json shape', () => {
     const projectDir = mkdtempSync(resolve(tmpdir(), 'octocode-cursor-hooks-'));
     try {
@@ -170,7 +189,7 @@ it('strict check reports drifted hooks and install repairs them', () => {
         drifted: string[];
       };
       expect(parsed.ok).toBe(false);
-      expect(parsed.health).toMatchObject({ config: 'needs_repair', runtime: 'unverified', coverage: '0/8' });
+      expect(parsed.health).toMatchObject({ config: 'needs_repair', runtime: 'unverified', coverage: '0/9' });
       expect(parsed.drifted).toContain('PreToolUse:pre-edit.sh');
 
       const repaired = runInstallHooks(['hooks', 'install', '--host', 'codex', '--project-dir', projectDir, '--dry-run']);
@@ -245,7 +264,7 @@ it('strict check reports a stale awareness hook root as drifted', () => {
         drifted: string[];
       };
       expect(parsed.ok).toBe(false);
-      expect(parsed.health).toMatchObject({ config: 'needs_repair', runtime: 'unverified', coverage: '0/8' });
+      expect(parsed.health).toMatchObject({ config: 'needs_repair', runtime: 'unverified', coverage: '0/9' });
       expect(parsed.drifted).toContain('PreToolUse:pre-edit.sh');
     } finally {
       rmSync(projectDir, { recursive: true, force: true });

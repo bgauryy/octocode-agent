@@ -81,6 +81,16 @@ import { setPeerWipBaseline, peerWipCount, setPeerWipStatusPainter } from './too
 import { registerBashTool } from './tools/bash-tool.js';
 import { createAwarenessMutationGate } from './tools/awareness-mutation-gate.js';
 import { assembleContextSegments } from './tools/context-segments.js';
+import {
+  mergeCurrentContextSources,
+  readLatestSessionUserRequest,
+  readSessionPeerEvent,
+  readSessionToolResult,
+  registerCurrentContextSource,
+  sessionPeerEventOrigin,
+  sessionToolResultOrigin,
+  sessionUserRequestOrigin,
+} from './tools/context-source-registry.js';
 import { APPROVAL_CLASSES, PERMISSION_LEVELS, applyStartupPermissionLevel, approvedClasses, cyclePermissionLevel, getPermissionLevel, parsePermissionLevel, resetApprovalStore, revokeAlways, setPermissionLevel, type ApprovalClass } from './tools/approval.js';
 import { recordSessionTitle } from './tools/desktop-notify.js';
 import { getCachedMcpCatalogAddendum, getCachedMcpCounts, getMcpDiscoverySnapshot, isCompactMcpEnabled, mcpCatalogReady, registerMcpTool, startMcpConfigWatcher, stopAllMcpServers, stopMcpConfigWatchers, warmMcpCatalog } from './tools/mcp-tool.js';
@@ -90,6 +100,11 @@ import { renderAvailableSkillsAddendum, renderSkillsDashboard } from './tools/sk
 import { registerPlanTool } from './tools/plan-tool.js';
 import { registerLocalServerTool } from './tools/local-server-tool.js';
 import { registerAskUserTool } from './tools/ask-user-tool.js';
+import {
+  registerInteractionBrokerAdapter,
+  type InteractionBrokerAdapterRegistry,
+  type RegisteredInteractionBrokerAdapter,
+} from './tools/interaction-broker-adapter.js';
 import { registerMemoryTool } from './tools/memory-tool.js';
 import { registerAwarenessCoordinationTools } from './tools/awareness-coordination-tools.js';
 import { registerAwarenessEventConsumer } from './tools/awareness-event-consumer.js';
@@ -1213,6 +1228,20 @@ function registerRuntimeUiPhase({ pi, Type, registeredToolNames, notify }: Runti
   registerCompactionHooks(pi, notify);
   registerAwarenessEventConsumer(pi, {
     resolveExpectedAgentId: (ctx) => getAwarenessAgentId(ctx),
+    onDelivery: (message, ctx) => {
+      const eventId = message.details.eventId;
+      registerCurrentContextSource(ctx, {
+        version: 1,
+        id: `peer-event:${eventId}`,
+        kind: 'peer-event',
+        origin: sessionPeerEventOrigin(eventId),
+        authority: 'external-data',
+        scope: 'turn',
+        visibility: 'inspectable',
+        rehydrate: 'always',
+        readCurrent: (current) => readSessionPeerEvent(current, eventId),
+      });
+    },
     onObservability: (stats, ctx) => {
       const attention = stats.backlogDepth > 0 || stats.held > 0 || stats.refused > 0 || stats.errors > 0;
       runtimeStoreFor(ctx)?.getState().setStatus(
@@ -1249,9 +1278,10 @@ interface TurnMetricsRegistrationArgs {
   startMetricsTicker: (ctx: PiContext | undefined) => void;
   stopMetricsTicker: () => void;
   toolStartTimes: Map<string, number>;
+  toolInputs: Map<string, unknown>;
 }
 
-function registerTurnMetricsPhase({ pi, startMetricsTicker, stopMetricsTicker, toolStartTimes }: TurnMetricsRegistrationArgs): void {
+function registerTurnMetricsPhase({ pi, startMetricsTicker, stopMetricsTicker, toolStartTimes, toolInputs }: TurnMetricsRegistrationArgs): void {
   if (typeof pi.on !== 'function') return;
   pi.on('turn_start', async (_event: unknown, ctx: PiContext) => {
     runtimeStoreFor(ctx)?.getState().setFooter({ activeTurnStartedAt: Date.now() });
@@ -1263,6 +1293,7 @@ function registerTurnMetricsPhase({ pi, startMetricsTicker, stopMetricsTicker, t
     // Evict timing entries for tools whose tool_execution_end never fired
     // (aborted turns) — the map otherwise grows for the session lifetime.
     toolStartTimes.clear();
+    toolInputs.clear();
     const now = Date.now();
     const store = runtimeStoreFor(ctx);
     const footer = store?.getState().footer;
@@ -1344,13 +1375,45 @@ async function wireOctocodePiExtension(
   const startMetricsTicker = (ctx: PiContext | undefined): void =>
     setUiTickSubscriber(METRICS_TICK_KEY, () => updateOctocodeMetricsUi(ctx));
   const toolStartTimes = new Map<string, number>();
+  const toolInputs = new Map<string, unknown>();
   let providerRequestStartedAt: number | undefined;
+  const registerSkillContext = (ctx: PiContext, skill: DiscoveredSkill, capture: boolean): void => {
+    const name = skill.name.trim().toLowerCase();
+    registerCurrentContextSource(ctx, {
+      version: 1,
+      id: `selected-skill:${name}`,
+      kind: 'skill',
+      origin: `skill-file:${name}`,
+      authority: 'project',
+      scope: 'task',
+      visibility: 'inspectable',
+      rehydrate: 'always',
+      capture,
+      tokenBudget: 30_000,
+      readCurrent: () => readTextIfExists(skill.path),
+    });
+  };
   // Agent inbox handle: assigned during tool registration, referenced by the
   // session_shutdown hook — its suppress flag must flip BEFORE
   // cleanupSpawnedAgentsForShutdown() kills workers, or the teardown burst of
   // killed/exit ledger events would spam desktop notifications.
   let agentInbox: AgentInboxRegistration | undefined;
   let sessionRuntime: SessionRuntime | undefined;
+  let interactionBrokerAdapter: RegisteredInteractionBrokerAdapter | undefined;
+  const hostBrokerRegistry = pi as PiInstance & Partial<InteractionBrokerAdapterRegistry>;
+  registerInteractionBrokerAdapter({
+    registerInteractionBrokerAdapter: (adapter) => {
+      interactionBrokerAdapter = adapter;
+      // This is a host-only capability boundary. It is deliberately not
+      // registered as a model tool: only a trusted RPC/UI host may submit the
+      // user's answer, after which it calls adapter.drain(ctx).
+      hostBrokerRegistry.registerInteractionBrokerAdapter?.(adapter);
+    },
+  }, {
+    deliver: (_continuation, prompt) => {
+      pi.sendUserMessage(prompt, { deliverAs: 'followUp' });
+    },
+  });
   // Model-callable tool names, shared between registration (uniqueness check)
   // and the discovery-file inventory. Builtin overrides register through the
   // same helper as support tools, so no manual pre-seeding is needed.
@@ -1630,6 +1693,10 @@ async function wireOctocodePiExtension(
       if (adoptedPlan || getPlan(planScope).length > 0) adoptPlanModePolicy(ctx, getPlanReviewState(planScope));
       else exitPlanMode(ctx);
       if (ctx) runAndRecordRehydration(pi, ctx, reason ?? 'new');
+      // Answers accepted by a headless/RPC host survive process restarts in the
+      // broker outbox. Resume them at the first session boundary; failed sends
+      // remain unacknowledged and will be retried with the same continuationId.
+      if (ctx) await interactionBrokerAdapter?.drain(ctx);
       // Re-apply the persisted effort dial (thinking level + worker cap) before
       // the footer renders so `◉ <level>` is correct from the first frame.
       await restoreDialOnStartup(pi, ctx);
@@ -1838,6 +1905,22 @@ async function wireOctocodePiExtension(
       return { action: 'continue' as const };
     });
 
+    hooks.on('input', 'octocode-current-user-request', async (event: { text: string; source?: string }, ctx: PiContext | undefined) => {
+      if (!ctx || event.source === 'extension' || !event.text.trim()) return undefined;
+      registerCurrentContextSource(ctx, {
+        version: 1,
+        id: 'current-user-request',
+        kind: 'user-request',
+        origin: sessionUserRequestOrigin(),
+        authority: 'user',
+        scope: 'task',
+        visibility: 'transcript',
+        rehydrate: 'always',
+        readCurrent: readLatestSessionUserRequest,
+      });
+      return undefined;
+    });
+
     hooks.on('input', 'octocode-repo-state-hint', async (event: { text: string; images?: unknown[]; source?: string; streamingBehavior?: string }) => {
       const repoState = await buildRepoStateHint(pi, event);
       if (!repoState) return { action: 'continue' as const };
@@ -1861,7 +1944,10 @@ async function wireOctocodePiExtension(
 
     hooks.on('tool_execution_start', 'octocode-tool-error-timing', async (event: { toolCallId?: string; toolName?: string; args?: unknown }, ctx: PiContext | undefined) => {
       const key = event.toolCallId ?? event.toolName;
-      if (key) toolStartTimes.set(key, Date.now());
+      if (key) {
+        toolStartTimes.set(key, Date.now());
+        toolInputs.set(key, event.args);
+      }
       suppressWatchForTool(event, ctx);
     });
 
@@ -1869,9 +1955,37 @@ async function wireOctocodePiExtension(
       const key = event.toolCallId ?? event.toolName;
       const startedAt = key ? toolStartTimes.get(key) : undefined;
       if (key) toolStartTimes.delete(key);
+      const toolInput = key ? toolInputs.get(key) : undefined;
+      if (key) toolInputs.delete(key);
       // Re-open the bash suppression window at completion too: a long-running
       // bash command's fs churn lands at the end of the call, not the start.
       if (event.toolName === 'bash') markBashActivity();
+      if (!event.isError && ctx && event.toolCallId && event.toolName) {
+        const input = toolInput && typeof toolInput === 'object' ? toolInput as Record<string, unknown> : {};
+        const queries = Array.isArray(input['queries']) ? input['queries'] as Array<Record<string, unknown>> : [];
+        const memoryRecall = event.toolName === 'memory' && queries.some((query) => query['action'] === 'recall');
+        const resultKind = memoryRecall ? 'memory-lead' : 'tool-result';
+        const callId = event.toolCallId;
+        registerCurrentContextSource(ctx, {
+          version: 1,
+          id: `${resultKind}:${callId}`,
+          kind: resultKind,
+          origin: sessionToolResultOrigin(callId),
+          authority: 'external-data',
+          scope: 'task',
+          visibility: 'inspectable',
+          rehydrate: 'always',
+          readCurrent: (current) => readSessionToolResult(current, callId),
+        });
+        if (event.toolName === 'skill') {
+          const requested = queries.find((query) => query['type'] === 'load' || query['action'] === 'load')?.['name'];
+          if (typeof requested === 'string') {
+            const skill = latestAvailableSkills?.find((candidate) => candidate.name.toLowerCase() === requested.trim().toLowerCase());
+            if (skill) registerSkillContext(ctx, skill, true);
+          }
+        }
+        return;
+      }
       if (!event.isError) return;
       logInternalError('tool_execution_end', new Error(`Tool ${event.toolName ?? 'unknown'} failed`), {
         toolCallId: event.toolCallId,
@@ -1979,7 +2093,11 @@ async function wireOctocodePiExtension(
           { id: 'available-skills', content: currentSkills, kind: 'skill', origin: 'installed-skills', authority: 'project', scope: 'session', visibility: 'inspectable', rehydrate: 'on-trigger', tokenBudget: 20_000 },
           { id: 'active-plan', content: planContext, kind: 'plan', origin: 'plan-domain', authority: 'user', scope: 'task', visibility: 'transcript', rehydrate: 'always', tokenBudget: 15_000 },
         ]);
-        frozenRehydration = consumeValidatedRehydration(ctx, currentSourcesFrom(currentAssembly.manifest, currentContents), { allowProjection: true });
+        frozenRehydration = consumeValidatedRehydration(
+          ctx,
+          mergeCurrentContextSources(ctx, currentSourcesFrom(currentAssembly.manifest, currentContents), { totalTokenBudget: 250_000 }),
+          { allowProjection: true },
+        );
         if (frozenRehydration) pi.appendEntry?.(REHYDRATION_RECEIPT_ENTRY_TYPE, frozenRehydration.receipt);
       }
 
@@ -2026,6 +2144,7 @@ async function wireOctocodePiExtension(
           ctx?.cwd ?? process.cwd(),
           latestPiSkills,
       );
+      if (ctx) latestAvailableSkills.forEach((skill) => registerSkillContext(ctx, skill, false));
       // Dynamic skills with the same case-insensitive name are omitted: the
       // installed skill owns the unqualified routing name.
       const dynamicCatalog = getDynamicCapabilitiesAddendum(latestAvailableSkills.map((skill) => skill.name));
@@ -2054,7 +2173,11 @@ async function wireOctocodePiExtension(
         'active-plan': activePlan,
       };
       const initialRehydration = ctx
-        ? consumeValidatedRehydration(ctx, currentSourcesFrom(promptAssembly.manifest, initialContents), { allowProjection: false })
+        ? consumeValidatedRehydration(
+            ctx,
+            mergeCurrentContextSources(ctx, currentSourcesFrom(promptAssembly.manifest, initialContents), { totalTokenBudget: 250_000 }),
+            { allowProjection: false },
+          )
         : undefined;
       if (initialRehydration) pi.appendEntry?.(REHYDRATION_RECEIPT_ENTRY_TYPE, initialRehydration.receipt);
       const prompt = promptAssembly.content;
@@ -2132,7 +2255,7 @@ async function wireOctocodePiExtension(
       getLatestAvailableSkills: () => latestAvailableSkills,
     });
     registerRuntimeUiPhase({ pi, Type, registeredToolNames, notify });
-  registerTurnMetricsPhase({ pi, startMetricsTicker, stopMetricsTicker, toolStartTimes });
+  registerTurnMetricsPhase({ pi, startMetricsTicker, stopMetricsTicker, toolStartTimes, toolInputs });
   agentInbox = registerWorkerToolPhase({ pi, Type, registeredToolNames, notify });
 
     // ── Foreground activity fallback: bracket generic model reasoning ────────────

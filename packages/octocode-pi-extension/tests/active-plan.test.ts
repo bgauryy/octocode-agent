@@ -1440,8 +1440,10 @@ test('planPanelLines shows the complete checklist and marks the running lane', (
     { id: 'verify', text: 'Later verification', status: 'todo' },
   ];
   const model = panelModel(steps);
-  const clipped = planPanelModelLines(model, undefined, 24);
-  assert.equal(clipped.length, steps.length + 2, 'header, lifecycle stepper, and every stored task are visible');
+  const wrapped = planPanelModelLines(model, undefined, 24).join(' ').replace(/\s+/g, ' ');
+  for (const label of ['Completed setup', 'Implementing the focused change', 'Blocked follow-up', 'Later verification']) {
+    assert.ok(wrapped.includes(label), `narrow panel preserves the complete label: ${label}`);
+  }
   const full = planPanelModelLines(model).join('\n');
   assert.match(full, /1\/4/, 'progress remains visible');
   assert.match(full, /Implementing the focused change/, 'activeForm is the active lane label');

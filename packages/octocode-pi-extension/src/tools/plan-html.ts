@@ -229,6 +229,11 @@ function browserReplySectionHtml(model: PlanReadModelV1): string {
     ${contextualActions}
   </div>
   <p class="reply-status" role="status" aria-live="polite" aria-atomic="true"></p>
+  <style>
+    .reply-status[data-state="pending"] { color:var(--muted); }
+    .reply-status[data-state="success"] { color:var(--teal); }
+    .reply-status[data-state="error"] { color:var(--red); white-space:normal; overflow:visible; }
+  </style>
 </section>
 <script type="module">
 (() => {
@@ -236,35 +241,72 @@ function browserReplySectionHtml(model: PlanReadModelV1): string {
   if (!root) return;
   const input = root.querySelector('textarea');
   const status = root.querySelector('.reply-status');
+  const buttons = Array.from(root.querySelectorAll('button'));
   const storageKey = 'octocode-plan-reply';
+  const endpoint = new URL('__octocode/message', location.href);
+  const liveLoopback = location.protocol === 'http:'
+    && (location.hostname === '127.0.0.1' || location.hostname === 'localhost' || location.hostname === '::1');
+  const setStatus = (message, state = 'idle') => {
+    status.textContent = message;
+    status.dataset.state = state;
+  };
+  const setButtonsDisabled = (disabled) => {
+    buttons.forEach((button) => { button.disabled = disabled; });
+  };
   try { input.value = sessionStorage.getItem(storageKey) || ''; } catch {}
   input.addEventListener('input', () => { try { sessionStorage.setItem(storageKey, input.value); } catch {} });
+  if (!liveLoopback) {
+    setButtonsDisabled(true);
+    setStatus('Interactive actions need the live localhost page. Return to the terminal and run /octocode-plan html; your feedback remains saved here.', 'error');
+  } else {
+    setButtonsDisabled(true);
+    setStatus('Connecting to the running agent…', 'pending');
+    void fetch(endpoint, { method: 'GET', cache: 'no-store' }).then(async (response) => {
+      if (!response.ok) throw new Error(await response.text());
+      const health = await response.json();
+      if (!health.messageBridge) throw new Error('browser-to-agent bridge unavailable in this host');
+      setButtonsDisabled(false);
+      setStatus('Connected to the running agent.', 'success');
+    }).catch(() => {
+      setButtonsDisabled(true);
+      setStatus('The agent bridge is offline. Return to the terminal and run /octocode-plan html to reopen the live page; your feedback remains saved.', 'error');
+    });
+  }
   const send = async (button) => {
     const notes = input.value.trim();
     const command = button.dataset.replyCommand || '';
+    const consumesNotes = !command || command === '/octocode-plan changes';
     const message = command
       ? command === '/octocode-plan changes' && notes ? command + ' ' + notes : command
       : notes;
-    if (!message) { status.textContent = 'Write feedback before sending.'; input.focus(); return; }
-    root.querySelectorAll('button').forEach((button) => { button.disabled = true; });
-    status.textContent = 'Sending…';
+    if (!message) { setStatus('Write feedback before sending.', 'error'); input.focus(); return; }
+    setButtonsDisabled(true);
+    setStatus(command ? 'Sending the selected plan action…' : 'Sending feedback…', 'pending');
     try {
-      const response = await fetch('__octocode/message', {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ message }),
       });
       if (!response.ok) throw new Error(await response.text());
-      input.value = '';
-      try { sessionStorage.removeItem(storageKey); } catch {}
-      status.textContent = 'Sent to the agent.';
+      if (consumesNotes) {
+        input.value = '';
+        try { sessionStorage.removeItem(storageKey); } catch {}
+      }
+      setStatus(command
+        ? 'Plan action sent to the agent. The live page will update when it is applied.' + (!consumesNotes && notes ? ' Your unsent feedback is still in the box.' : '')
+        : 'Feedback sent to the agent.', 'success');
     } catch (error) {
-      status.textContent = 'Could not send: ' + (error instanceof Error ? error.message : String(error));
+      const detail = error instanceof Error ? error.message : String(error);
+      const networkHint = detail === 'Failed to fetch'
+        ? 'The agent bridge went offline. Return to the terminal and run /octocode-plan html to reopen the live page.'
+        : detail;
+      setStatus('Could not send: ' + networkHint + ' Your feedback remains saved.', 'error');
     } finally {
-      root.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+      if (liveLoopback) setButtonsDisabled(false);
     }
   };
-  root.querySelectorAll('button').forEach((button) => {
+  buttons.forEach((button) => {
     button.addEventListener('click', () => void send(button));
   });
 })();

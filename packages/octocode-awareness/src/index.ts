@@ -13,6 +13,17 @@ export {
   getDeliveryFingerprint, setDeliveryFingerprint,
 } from './db.js';
 export type { DeliveryFingerprintKey } from './db.js';
+export {
+  AWARENESS_CONFIG_QUESTIONS,
+  AWARENESS_CONFIG_VERSION,
+  DEFAULT_AWARENESS_CONFIG,
+  awarenessConfigPath,
+  awarenessFeatureEnabled,
+  loadAwarenessConfig,
+  parseAwarenessConfig,
+  writeAwarenessConfig,
+} from './awareness-config.js';
+export type { AwarenessConfig, AwarenessFeatureConfig } from './awareness-config.js';
 
 // Cross-boundary continuity contracts. These are dependency-free domain types
 // and validators; durable storage remains owned by Awareness adapters below.
@@ -47,8 +58,22 @@ export type {
   ContextSegmentV1,
   CapabilityDecisionReceiptV1,
 } from './continuity-contracts.js';
-export { containsSecretLikeText, evaluateMemoryRecall } from './memory-hardening.js';
-export type { MemoryEvaluationCaseV1, MemoryEvaluationResultV1 } from './memory-hardening.js';
+export {
+  containsSecretLikeText,
+  evaluateMemoryRecall,
+  MEMORY_EVALUATION_CORPUS_V1,
+  MEMORY_RECALL_MODES_V1,
+  runMemoryEvaluationCorpus,
+} from './memory-hardening.js';
+export type {
+  MemoryEvaluationCaseResultV1,
+  MemoryEvaluationCaseV1,
+  MemoryEvaluationCorpusV1,
+  MemoryEvaluationQueryV1,
+  MemoryEvaluationReportV1,
+  MemoryEvaluationResultV1,
+  MemoryRecallModeV1,
+} from './memory-hardening.js';
 export { STORE_OWNERSHIP_V1, inspectStoreConvergence } from './store-ownership.js';
 export type { StoreConvergenceReportV1 } from './store-ownership.js';
 
@@ -204,6 +229,10 @@ export {
   extractHookTargetPaths,
   installHostHooks,
   EXTERNAL_AGENT_AWARENESS_PROMPT,
+  EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS,
+  EXTERNAL_AGENT_AWARENESS_MARKER_START,
+  EXTERNAL_AGENT_AWARENESS_MARKER_END,
+  formatExternalAgentAwarenessInstructions,
   getExternalAgentAwarenessGuide,
   formatExternalAgentCoordinationContext,
   readExternalAwarenessStatus,

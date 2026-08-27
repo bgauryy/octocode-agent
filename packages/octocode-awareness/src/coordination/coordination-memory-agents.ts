@@ -3,7 +3,14 @@ import { generateAgentName } from './agent-naming.js';
 import { bytesToEmbedding,cosineSimilarity,embeddingToBytes,isEmbeddingEnabled,runHostEmbedder } from './embed.js';
 import { CoordinationState } from './coordination-state.js';
 import { agentFromRow,AgentRow,cutoffIso,DEFAULT_SEMANTIC_MIN_SIMILARITY,id,memoryFromRow,MemoryRow,messageFromRow,MessageRow,now,parseMetadata,required,splitFiles,splitTags } from './coordination-shared.js';
-import { containsSecretLikeText } from '../memory-hardening.js';
+import {
+  containsSecretLikeText,
+  MEMORY_EVALUATION_CORPUS_V1,
+  runMemoryEvaluationCorpus,
+  type MemoryEvaluationCorpusV1,
+  type MemoryEvaluationReportV1,
+  type MemoryRecallModeV1,
+} from '../memory-hardening.js';
 
 export interface VerifiedMemoryV1 {
   version: 1;
@@ -38,23 +45,64 @@ export abstract class CoordinationMemoryAgents extends CoordinationState {
     return { version: 1, memoryId, label, text, scope: params.scope ?? 'project', sourceDigest, verifiedAt, ...(params.validUntil ? { validUntil: params.validUntil } : {}), importance };
   }
 
-  recallVerifiedMemory(params: { query?: string; label?: string; sourceDigest?: string; scope?: 'project' | 'artifact'; limit?: number; now?: string } = {}): VerifiedMemoryV1[] {
+  recallVerifiedMemory(params: { query?: string; label?: string; sourceDigest?: string; scope?: 'project' | 'artifact'; limit?: number; now?: string; mode?: MemoryRecallModeV1; minSimilarity?: number } = {}): VerifiedMemoryV1[] {
     const stamp = params.now ?? now();
     const clauses = ["workspace_path = ?", "state = 'ACTIVE'", 'verified_at IS NOT NULL', "secret_scan_status = 'passed'", '(valid_to IS NULL OR valid_to > ?)'];
     const values: Array<string | number> = [this.workspace, stamp];
-    if (params.query?.trim()) { clauses.push('(text LIKE ? OR label LIKE ? OR tags_json LIKE ?)'); const like = `%${params.query.trim()}%`; values.push(like, like, like); }
     if (params.label?.trim()) { clauses.push('label = ?'); values.push(params.label.trim()); }
     if (params.sourceDigest?.trim()) { clauses.push('source_digest = ?'); values.push(params.sourceDigest.trim()); }
     if (params.scope) { clauses.push('scope_kind = ?'); values.push(params.scope); }
     const limit = Math.min(Math.max(params.limit ?? 10, 1), 50);
-    const rows = this.db.prepare(`SELECT * FROM memories WHERE ${clauses.join(' AND ')} ORDER BY importance DESC, verified_at DESC LIMIT ?`).all(...values, limit) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({
+    const query = params.query?.trim();
+    const lexicalClauses = [...clauses];
+    const lexicalValues: Array<string | number> = [...values];
+    if (query) { lexicalClauses.push('(text LIKE ? OR label LIKE ? OR tags_json LIKE ?)'); const like = `%${query}%`; lexicalValues.push(like, like, like); }
+    const readRows = (sqlClauses: string[], sqlValues: Array<string | number>, sqlLimit = limit) => this.db.prepare(`SELECT * FROM memories WHERE ${sqlClauses.join(' AND ')} ORDER BY importance DESC, verified_at DESC LIMIT ?`).all(...sqlValues, sqlLimit) as Array<Record<string, unknown>>;
+    const toMemory = (row: Record<string, unknown>, similarity?: number): VerifiedMemoryV1 => ({
       version: 1,
       memoryId: String(row['memory_id']), label: String(row['label']), text: String(row['text']),
       scope: row['scope_kind'] === 'artifact' ? 'artifact' : 'project', sourceDigest: String(row['source_digest']),
       verifiedAt: String(row['verified_at']), ...(row['valid_to'] ? { validUntil: String(row['valid_to']) } : {}),
       importance: Number(row['importance'] ?? 5),
-      explanation: `verified memory; scope=${String(row['scope_kind'] ?? 'project')}; source=${String(row['source_digest'])}`,
+      explanation: `verified memory; scope=${String(row['scope_kind'] ?? 'project')}; source=${String(row['source_digest'])}${similarity === undefined ? '' : `; similarity=${similarity.toFixed(4)}`}`,
+    });
+    const lexical = (): VerifiedMemoryV1[] => readRows(lexicalClauses, lexicalValues).map((row) => toMemory(row));
+    const mode = params.mode ?? 'lexical';
+    if (!query || mode === 'lexical') return lexical();
+    if (!isEmbeddingEnabled()) return lexical();
+    // Refresh missing, cross-model, or dimension-mismatched vectors before
+    // ranking. Any host failure leaves semantic empty and safely falls back.
+    this.reindexMemories();
+    let queryVec: Float32Array;
+    let queryModel: string;
+    try { const embedded = runHostEmbedder(query); queryVec = embedded.embedding; queryModel = embedded.model; } catch { return lexical(); }
+    const semanticClauses = [...clauses, 'embedding IS NOT NULL', 'embedding_model = ?'];
+    const semanticValues: Array<string | number> = [...values, queryModel];
+    const semantic = readRows(semanticClauses, semanticValues, 2000)
+      .flatMap((row) => {
+        try {
+          const sim = cosineSimilarity(queryVec, bytesToEmbedding(row['embedding'] as Uint8Array));
+          return sim > 0 && sim >= Math.min(Math.max(params.minSimilarity ?? DEFAULT_SEMANTIC_MIN_SIMILARITY, 0), 1) ? [{ row, sim }] : [];
+        } catch { return []; }
+      })
+      .sort((a, b) => b.sim - a.sim)
+      .slice(0, limit)
+      .map(({ row, sim }) => toMemory(row, sim));
+    if (mode === 'semantic') return semantic.length ? semantic : lexical();
+    const combined = [...semantic];
+    const seen = new Set(combined.map((item) => item.memoryId));
+    for (const item of lexical()) if (!seen.has(item.memoryId) && combined.length < limit) combined.push(item);
+    return combined;
+  }
+
+  evaluateVerifiedMemory(params: { corpus?: MemoryEvaluationCorpusV1; now?: string; limit?: number; minSimilarity?: number } = {}): MemoryEvaluationReportV1 {
+    return runMemoryEvaluationCorpus(params.corpus ?? MEMORY_EVALUATION_CORPUS_V1, (item) => this.recallVerifiedMemory({
+      query: item.query,
+      mode: item.mode,
+      scope: item.scope,
+      now: params.now,
+      limit: params.limit,
+      minSimilarity: params.minSimilarity,
     }));
   }
 
@@ -63,6 +111,7 @@ export abstract class CoordinationMemoryAgents extends CoordinationState {
     const memoryId = id('mem');
     const label = required(params.label, 'label');
     const text = required(params.text, 'text');
+    if (containsSecretLikeText(`${label}\n${text}`)) throw new Error('memory rejected: secret-like content must never enter durable memory');
     this.db.prepare('INSERT INTO memories(memory_id, workspace_path, label, text, tags_json, created_at) VALUES (?, ?, ?, ?, ?, ?)')
       .run(memoryId, this.workspace, label, text, JSON.stringify(splitTags(params.tags)), stamp);
     // Best-effort: embed on write when a host embedder is configured. Never blocks the store.
@@ -90,9 +139,14 @@ export abstract class CoordinationMemoryAgents extends CoordinationState {
   reindexMemories(params: { force?: boolean; limit?: number } = {}): { enabled: boolean; scanned: number; embedded: number } {
     if (!isEmbeddingEnabled()) return { enabled: false, scanned: 0, embedded: 0 };
     const limit = Math.min(Math.max(params.limit ?? 500, 1), 5000);
-    const where = params.force ? ' WHERE workspace_path = ?' : ' WHERE workspace_path = ? AND embedding IS NULL';
+    let model: string;
+    let bytes: number;
+    try { const probe = runHostEmbedder('octocode memory embedding compatibility probe'); model = probe.model; bytes = probe.embedding.byteLength; } catch { return { enabled: true, scanned: 0, embedded: 0 }; }
+    const where = params.force
+      ? ' WHERE workspace_path = ?'
+      : ' WHERE workspace_path = ? AND (embedding IS NULL OR embedding_model IS NULL OR embedding_model != ? OR length(embedding) != ?)';
     const rows = this.db.prepare(`SELECT memory_id, label, text FROM memories${where} ORDER BY created_at DESC LIMIT ?`)
-      .all(this.workspace, limit) as Array<{ memory_id: string; label: string; text: string }>;
+      .all(...(params.force ? [this.workspace, limit] : [this.workspace, model, bytes, limit])) as Array<{ memory_id: string; label: string; text: string }>;
     let embedded = 0;
     for (const row of rows) if (this.embedMemory(row.memory_id, `${row.label}\n${row.text}`)) embedded++;
     return { enabled: true, scanned: rows.length, embedded };
@@ -143,6 +197,7 @@ export abstract class CoordinationMemoryAgents extends CoordinationState {
    * semantic pool degrades to lexical recall instead of masking a better hit.
    */
   protected recallSemantic(query: string, label: string | undefined, limit: number, minSimilarity: number): MemoryItem[] {
+    this.reindexMemories();
     let queryVec: Float32Array;
     let queryModel: string;
     try {

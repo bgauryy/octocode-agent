@@ -10,7 +10,7 @@
  *   - isLocalhost() sandbox
  *   - Registration: chromeDebug in OCTOCODE_SUPPORT_TOOL_NAMES + tool schema
  *
- * E2E (real Chrome) tests are gated behind OCTOCODE_CHROME_DEBUG_E2E=1.
+ * Real Chrome is never used here; CDP transport and recipes use local fakes.
  */
 
 import assert from 'node:assert/strict';
@@ -1681,73 +1681,5 @@ describe('navigateAndWait load-event ordering and cleanup', () => {
       0,
       'no Page.loadEventFired listeners should remain after abort',
     );
-  });
-});
-
-// ─── E2E tests (gated) ────────────────────────────────────────────────────────
-
-const E2E = process.env['OCTOCODE_CHROME_DEBUG_E2E'] === '1';
-
-(E2E ? describe : describe.skip)('E2E: real Chrome', () => {
-  const port = 19222; // Use a non-standard port to avoid conflicts
-
-  test('console scheme captures console error from fixture page', async () => {
-    // This test requires Chrome running on port 19222 with a fixture page.
-    // Run: node -e "require('http').createServer((_,r)=>{r.writeHead(200,{'Content-Type':'text/html'});r.end('<script>console.error(\"fixture-error-token\")</script>')}).listen(19999)"
-    // And: google-chrome --remote-debugging-port=19222 --user-data-dir=/tmp/octocode-e2e-profile http://localhost:19999
-    const { connectToChrome } = await import('../src/chrome-debug.js');
-    const { SCHEME_REGISTRY } = await import('../src/chrome-debug-schemes.js');
-
-    const conn = await connectToChrome({
-      port,
-      workspaceCwd: os.tmpdir(),
-    });
-
-    try {
-      const result = await SCHEME_REGISTRY['console'].recipe({
-        session: conn.session,
-        params: { scheme: 'console' } as never,
-        screenshotDir: conn.screenshotDir,
-        signal: AbortSignal.timeout(10_000),
-      });
-
-      // The evidence lines should contain console output
-      assert.ok(Array.isArray(result.evidenceLines), 'Should return evidence lines');
-    } finally {
-      conn.session.close();
-    }
-  });
-
-  test('screenshot scheme writes a PNG file to .octocode/screenshots/', async () => {
-    const { connectToChrome } = await import('../src/chrome-debug.js');
-    const { SCHEME_REGISTRY } = await import('../src/chrome-debug-schemes.js');
-
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-e2e-'));
-    try {
-      const conn = await connectToChrome({
-        port,
-        workspaceCwd: tmpDir,
-      });
-
-      try {
-        const result = await SCHEME_REGISTRY['screenshot'].recipe({
-          session: conn.session,
-          params: { scheme: 'screenshot', format: 'png' } as never,
-          screenshotDir: conn.screenshotDir,
-          signal: AbortSignal.timeout(15_000),
-        });
-
-        const screenshotLine = result.evidenceLines.find((l) => l.startsWith('[SCREENSHOT]'));
-        assert.ok(screenshotLine, 'Should emit [SCREENSHOT] line');
-        const screenshotPath = screenshotLine!.replace('[SCREENSHOT] ', '').trim();
-        assert.ok(fs.existsSync(screenshotPath), `Screenshot file should exist: ${screenshotPath}`);
-        assert.ok(screenshotPath.endsWith('.png'), 'Should have .png extension');
-        assert.ok(screenshotPath.includes('.octocode/screenshots'), 'Should be in .octocode/screenshots/');
-      } finally {
-        conn.session.close();
-      }
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
   });
 });

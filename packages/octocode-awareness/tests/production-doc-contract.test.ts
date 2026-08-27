@@ -2,8 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const REPO_ROOT = resolve(PACKAGE_ROOT, '../..');
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..'); const REPO_ROOT = resolve(PACKAGE_ROOT, '../..');
 const SKILL_ROOT = resolve(PACKAGE_ROOT, 'skills/octocode-awareness');
 function read(path: string): string {
   return readFileSync(path, 'utf8');
@@ -52,6 +51,7 @@ describe('production guidance contract', () => {
     expect(helpData).toContain('AGENTS.md = trigger/router');
     expect(helpData).toContain('Agent Skill = operating policy');
     expect(helpData).toContain('CLI/SQLite = canonical live state');
+    expect([helpData, read(resolve(SKILL_ROOT, 'SKILL.md')), read(resolve(PACKAGE_ROOT, 'src/coordination/external-policy.ts'))]).toEqual(expect.arrayContaining([expect.stringContaining('npx octocode tools --json'), expect.stringContaining('references/octocode.md'), expect.stringContaining('`npx octocode` for local, GitHub, and npm research')]));
   });
   it('routes every skill reference explicitly and removes mutating compatibility setup', () => {
     const skill = read(resolve(SKILL_ROOT, 'SKILL.md'));
@@ -183,11 +183,9 @@ describe('production guidance contract', () => {
     expect(read(resolve(PACKAGE_ROOT, 'bin/awareness.ts'))).not.toContain('docs show full-flow');
 
     for (const installDoc of [readme, guide]) {
-      expect(installDoc).not.toContain('<package>');
-      expect(installDoc).toContain('npm install --global @octocodeai/octocode-awareness');
-      expect(installDoc).toContain('$(npm root --global)/@octocodeai/octocode-awareness');
+      expect(installDoc).toContain('npx @octocodeai/octocode-awareness init --compact');
       expect(installDoc).toContain('bundles only');
-      expect(installDoc).not.toContain('out/skills/octocode-skills');
+      expect(installDoc).not.toMatch(/<package>|npm install --global|npm root --global|node packages\/octocode-awareness\/out|node scripts\/awareness\.mjs|out\/skills\/octocode-skills/);
     }
 
     expect(readme).not.toContain('Installed skill: `node scripts/awareness.mjs`');
@@ -268,9 +266,9 @@ describe('production guidance contract', () => {
     expect(claude).not.toContain('Skiils');
 
     expect(packageAgents).toMatch(/AGENTS.*routes.*skill.*policy.*CLI.*live state.*hooks.*automat/is);
-    expect(packageAgents).toContain('out/octocode-awareness.js');
+    expect(packageAgents).toContain('npx @octocodeai/octocode-awareness');
     expect(packageAgents).toContain('Follow typed `next` results');
-    expect(packageAgents).toMatch(/full `octocode-awareness` binary.*separate database/is);
+    expect(packageAgents).toMatch(/two explicit planes[\s\S]*shared coordination[\s\S]*advanced sessions/is);
     expect(packageAgents).not.toMatch(/AWARENESS_CLI="packages\/octocode-awareness\/out\/octocode-awareness\.js"/);
     expect(packageAgents).not.toContain('## Lifecycle');
     expect(packageAgents).not.toContain('## Hooks');
@@ -297,8 +295,9 @@ describe('production guidance contract', () => {
     expect(verification).toContain('## Quick Check');
     expect(verification).toContain('## Full Monorepo Check');
     expect(verification).toContain('maintenance self-test --compact');
-    expect(verification).toContain('scripts/install.mjs');
-    expect(verification).toContain('scripts/smoke-multi-agent.mjs');
+    expect(verification).toContain('npx @octocodeai/octocode-awareness');
+    expect(verification).not.toMatch(/node .*octocode-awareness|scripts\/install\.mjs/);
+    expect(verification).toContain('yarn workspace @octocodeai/octocode-awareness test:smoke');
     expect(verification).toContain('hooks check --host <claude|codex|cursor>');
     expect(verification).toMatch(/config.*runtime.*unverified/is);
     expect(verification).toContain('yarn workspace @octocodeai/octocode-awareness lint');
@@ -340,9 +339,9 @@ describe('production guidance contract', () => {
 
     const taskFlow = read(resolve(PACKAGE_ROOT, 'docs/SKILLS.md'));
     expect(taskFlow.indexOf('# run acceptance checks while presence remains active'))
-      .toBeLessThan(taskFlow.indexOf('octocode-awareness task submit'));
-    expect(taskFlow.indexOf('octocode-awareness task submit'))
-      .toBeLessThan(taskFlow.indexOf('octocode-awareness verify mark'));
+      .toBeLessThan(taskFlow.indexOf('npx @octocodeai/octocode-awareness task submit'));
+    expect(taskFlow.indexOf('npx @octocodeai/octocode-awareness task submit'))
+      .toBeLessThan(taskFlow.indexOf('npx @octocodeai/octocode-awareness verify mark'));
   });
 
   it('makes fresh-agent install, activation, and hook ownership safe and executable', () => {
@@ -353,15 +352,19 @@ describe('production guidance contract', () => {
     const tooling = read(resolve(SKILL_ROOT, 'references/agent-cheatsheet.md'));
     const hooks = read(resolve(SKILL_ROOT, 'references/hooks.md'));
     const packageHooks = read(resolve(PACKAGE_ROOT, 'docs/HOOKS.md'));
-
-    for (const guide of [packageReadme, userGuide, skillReadme, tooling]) {
+    for (const guide of [packageReadme, userGuide]) {
       expect(guide).toContain('--dry-run');
-      expect(guide.indexOf('--dry-run')).toBeLessThan(guide.indexOf('--force'));
-      expect(guide).toMatch(/common[\s\S]{0,240}(?:claude|cursor|codex|pi)/i);
+      expect(guide.indexOf('--dry-run')).toBeLessThan(guide.indexOf('hooks check'));
+      expect(guide).toContain('npx @octocodeai/octocode-awareness');
+      expect(guide).not.toMatch(/npm root --global|node packages\/octocode-awareness\/out/);
+    }
+    for (const guide of [skillReadme, tooling]) {
+      expect(guide).toContain('npx @octocodeai/octocode-awareness');
+      expect(guide).not.toMatch(/npx octocode skill --add|npm root --global/);
     }
     expect(tooling).toContain('export OCTOCODE_AGENT_ID');
-    expect(skillLobby).toMatch(/first-time installation/i);
-    expect(skillLobby).toContain('scripts/install.mjs');
+    expect(skillLobby).toContain('npx @octocodeai/octocode-awareness init --compact');
+    expect(skillLobby).not.toContain('scripts/install.mjs');
     for (const guide of [hooks, packageHooks]) {
       expect(guide).toMatch(/Claude[\s\S]{0,240}frontmatter/i);
       expect(guide).toMatch(/do not (?:also )?install|do not duplicate/i);

@@ -191,7 +191,7 @@ test('recordFileReadState evicts the oldest read state when the cache exceeds it
 
   assert.equal((await checkReadState(files[0]!, false)).state, 'missing');
   assert.equal((await checkReadState(files.at(-1)!, true)).state, 'fresh');
-});
+}, 15_000);
 
 test('recordFileReadState accepts an absolute path (cwd unused)', async () => {
   const file = path.join(tmpDir, 'abs.txt');

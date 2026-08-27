@@ -7,6 +7,8 @@ import { dirname,resolve } from 'node:path';
 import { defaultDbPath,type AwarenessOptions,type AwarenessSchema } from './coordination-shared.js';
 import { parseAgentEventEnvelopeV1, type AgentEventEnvelopeV1 } from '../continuity-contracts.js';
 import { SCHEMA_DDL } from '../db-schema.js';
+import type { MemoryEvaluationCorpusV1,MemoryEvaluationReportV1,MemoryRecallModeV1 } from '../memory-hardening.js';
+import type { VerifiedMemoryV1 } from './coordination-memory-agents.js';
 
 export abstract class CoordinationBase {
   readonly workspace: string;
@@ -110,6 +112,9 @@ export abstract class CoordinationBase {
   abstract auditChecks(params: { agentId?: string | null; planId?: string | null; minAgeMs?: number | null }): CheckAudit;
   abstract markCheck(params: { taskId: string; agentId: string; message: string; status?: CheckStatus }): Task;
   abstract storeMemory(params: { label: string; text: string; tags?: string | string[] | null }): MemoryItem;
+  abstract storeVerifiedMemory(params: { label: string; text: string; scope?: 'project' | 'artifact'; sourceDigest: string; verifiedAt?: string; validUntil?: string; importance?: number; tags?: string | string[] | null }): VerifiedMemoryV1;
+  abstract recallVerifiedMemory(params?: { query?: string; label?: string; sourceDigest?: string; scope?: 'project' | 'artifact'; limit?: number; now?: string; mode?: MemoryRecallModeV1; minSimilarity?: number }): VerifiedMemoryV1[];
+  abstract evaluateVerifiedMemory(params?: { corpus?: MemoryEvaluationCorpusV1; now?: string; limit?: number; minSimilarity?: number }): MemoryEvaluationReportV1;
   protected abstract embedMemory(memoryId: string, text: string): boolean;
   abstract reindexMemories(params: { force?: boolean; limit?: number }): { enabled: boolean; scanned: number; embedded: number };
   abstract forgetMemory(params: { memoryId: string }): { forgotten: boolean };

@@ -23,7 +23,16 @@ getCommandGroup,type CommandAction,type CommandGroup,type CommandParam,
 type CommandParamType
 } from './commands-spec.js';
 export { defaultDbPath } from './coordination-shared.js';
-export { EXTERNAL_AGENT_AWARENESS_PROMPT, formatExternalAgentCoordinationContext, getExternalAgentAwarenessGuide } from './external-policy.js';
+export {
+  EXTERNAL_AGENT_AWARENESS_MARKER_END,
+  EXTERNAL_AGENT_AWARENESS_MARKER_START,
+  EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS,
+  EXTERNAL_AGENT_AWARENESS_PROMPT,
+  formatExternalAgentAwarenessInstructions,
+  formatExternalAgentCoordinationContext,
+  getExternalAgentAwarenessGuide,
+  type ExternalAgentInstructionFormat,
+} from './external-policy.js';
 export {
   readExternalAwarenessStatus,
   type ExternalAwarenessStatus,
@@ -61,3 +70,15 @@ export type { AwarenessOptions,AwarenessSchema } from './coordination-shared.js'
 export { AwarenessStore, openAwarenessStore } from './open.js';
 export type { OutboxEventV1, StoredInteractionV1 } from './coordination-continuity.js';
 export type { VerifiedMemoryV1 } from './coordination-memory-agents.js';
+export {
+  MEMORY_EVALUATION_CORPUS_V1,
+  MEMORY_RECALL_MODES_V1,
+  runMemoryEvaluationCorpus,
+} from '../memory-hardening.js';
+export type {
+  MemoryEvaluationCaseResultV1,
+  MemoryEvaluationCorpusV1,
+  MemoryEvaluationQueryV1,
+  MemoryEvaluationReportV1,
+  MemoryRecallModeV1,
+} from '../memory-hardening.js';

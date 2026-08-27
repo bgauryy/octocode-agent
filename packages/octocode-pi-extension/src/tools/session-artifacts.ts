@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ContextSegmentV1 } from '@octocodeai/octocode-awareness';
+import { assertContextSegmentAuthority, type ContextSegmentV1 } from '@octocodeai/octocode-awareness';
 
 export const SESSION_MANIFEST_VERSION = 1 as const;
 export const PLAN_SNAPSHOT_VERSION = 1 as const;
@@ -491,6 +491,35 @@ export interface RehydrationLedgerV1 {
 
 const REHYDRATION_LEDGER_PATH = 'compaction/rehydration-v1.json';
 const REHYDRATION_CONTENT_DIR = 'compaction/segments';
+const CONTEXT_KINDS = new Set<ContextSegmentV1['kind']>([
+  'product-policy', 'user-request', 'project-instruction', 'skill', 'plan',
+  'memory-lead', 'tool-contract', 'tool-result', 'peer-event',
+]);
+const CONTEXT_AUTHORITIES = new Set<ContextSegmentV1['authority']>(['product', 'user', 'project', 'external-data']);
+const CONTEXT_SCOPES = new Set<ContextSegmentV1['scope']>(['session', 'turn', 'task', 'path']);
+const CONTEXT_VISIBILITIES = new Set<ContextSegmentV1['visibility']>(['hidden-policy', 'inspectable', 'transcript']);
+const CONTEXT_REHYDRATION = new Set<ContextSegmentV1['rehydrate']>(['always', 'on-trigger', 'summary-only', 'never']);
+
+function validateRehydrationSegments(segments: ContextSegmentV1[]): ContextSegmentV1[] {
+  const ids = new Set<string>();
+  return segments.map((segment) => {
+    if (!segment || typeof segment !== 'object' || segment.version !== 1
+      || !CONTEXT_KINDS.has(segment.kind) || !CONTEXT_AUTHORITIES.has(segment.authority)
+      || !CONTEXT_SCOPES.has(segment.scope) || !CONTEXT_VISIBILITIES.has(segment.visibility)
+      || !CONTEXT_REHYDRATION.has(segment.rehydrate)) {
+      throw new Error('Invalid rehydration segment contract');
+    }
+    const validated = assertContextSegmentAuthority(segment);
+    if (ids.has(validated.id)) throw new Error(`Duplicate rehydration segment: ${validated.id}`);
+    ids.add(validated.id);
+    if (!/^sha256:[a-f0-9]{64}$/.test(validated.digest)) throw new Error(`Invalid rehydration digest: ${validated.id}`);
+    if (validated.tokenBudget !== undefined
+      && (!Number.isInteger(validated.tokenBudget) || validated.tokenBudget <= 0)) {
+      throw new Error(`Invalid rehydration token budget: ${validated.id}`);
+    }
+    return validated;
+  });
+}
 
 function rehydrationDigest(value: Omit<RehydrationLedgerV1, 'digest'>): string {
   return `sha256:${sha256(JSON.stringify(value))}`;
@@ -503,7 +532,8 @@ export function writeRehydrationLedger(
     segmentContents?: Record<string, string>;
   },
 ): RehydrationLedgerV1 {
-  const segmentsById = new Map(input.segments.map((segment) => [segment.id, segment]));
+  const segments = validateRehydrationSegments(input.segments);
+  const segmentsById = new Map(segments.map((segment) => [segment.id, segment]));
   const contentRefs: Record<string, string> = {};
   for (const [id, content] of Object.entries(input.segmentContents ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
     const segment = segmentsById.get(id);
@@ -520,7 +550,7 @@ export function writeRehydrationLedger(
     workspace: ctx.identity.workspace,
     capturedAt: input.capturedAt,
     expiresAt: input.expiresAt ?? new Date(Date.parse(input.capturedAt) + 24 * 60 * 60_000).toISOString(),
-    segments: input.segments,
+    segments,
     ...(Object.keys(contentRefs).length > 0 ? { contentRefs } : {}),
     ...(input.plan ? { plan: input.plan } : {}),
     pendingInteractionIds: [...new Set(input.pendingInteractionIds)],
@@ -548,6 +578,7 @@ export function inspectRehydrationLedger(ctx: SessionArtifactContext): Rehydrati
     if (parsed.version !== 1 || !Number.isFinite(Date.parse(parsed.capturedAt)) || !Number.isFinite(Date.parse(parsed.expiresAt))
       || !Array.isArray(parsed.segments) || !Array.isArray(parsed.pendingInteractionIds)
       || !parsed.consumerCursors || typeof parsed.consumerCursors !== 'object') return { status: 'corrupt' };
+    parsed.segments = validateRehydrationSegments(parsed.segments);
     const { digest, ...body } = parsed;
     return typeof digest === 'string' && digest === rehydrationDigest(body)
       ? { status: 'valid', ledger: parsed }

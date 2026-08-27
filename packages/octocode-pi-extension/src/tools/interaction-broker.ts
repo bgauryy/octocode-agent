@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { openAwareness, type AgentEventEnvelopeV1, type AuthorizationReceiptV1, type InteractionAnswerV1, type InteractionRequestV1, type OutboxEventV1, type StoredInteractionV1 } from '@octocodeai/octocode-awareness';
+import { openAwareness, type AuthorizationReceiptV1, type InteractionAnswerV1, type InteractionRequestV1, type OutboxEventV1, type StoredInteractionV1 } from '@octocodeai/octocode-awareness';
 import type { PiContext } from '../types.js';
 
 interface InteractionStore {
@@ -154,6 +154,7 @@ export function submitHostInteractionAnswer(ctx: PiContext, input: HostInteracti
   const sessionId = brokerSessionId(ctx);
   if (input.version !== 1) throw new Error('interaction answer version is unsupported');
   if (input.sessionId !== sessionId) throw new Error('interaction answer session mismatch');
+  validateHostOutcome(input.outcome);
   const store = storeFactory(workspace);
   let stored: StoredInteractionV1;
   try {
@@ -166,6 +167,30 @@ export function submitHostInteractionAnswer(ctx: PiContext, input: HostInteracti
   if (stored.request.sessionId !== sessionId) throw new Error('interaction answer session mismatch');
   if (stored.request.correlationId !== input.correlationId) throw new Error('interaction answer correlation mismatch');
   return answerPendingInteraction(stored.request, input.outcome);
+}
+
+function validateHostOutcome(outcome: HostInteractionAnswerV1['outcome']): void {
+  switch (outcome.status) {
+    case 'selected':
+      if (!outcome.value?.trim()) throw new Error('selected interaction answer requires a value');
+      return;
+    case 'text':
+      if (!outcome.value?.trim()) throw new Error('text interaction answer requires a value');
+      return;
+    case 'multiSelected':
+      if (!Array.isArray(outcome.values) || outcome.values.length === 0 || outcome.values.some((value) => !value.trim())) {
+        throw new Error('multiSelected interaction answer requires values');
+      }
+      return;
+    case 'form':
+      if (!outcome.values || Array.isArray(outcome.values)) throw new Error('form interaction answer requires fields');
+      return;
+    case 'back':
+    case 'cancelled':
+      return;
+    default:
+      throw new Error(`interaction answer status is unsupported: ${outcome.status}`);
+  }
 }
 
 export interface InteractionContinuationV1 {
@@ -226,7 +251,7 @@ export async function drainInteractionContinuations(
 function continuationFromEvent(event: OutboxEventV1, sessionId: string): InteractionContinuationV1 | undefined {
   if (event.sessionId !== sessionId || (event.type !== 'question.answered' && event.type !== 'question.cancelled')) return undefined;
   const answer = event.payload as InteractionAnswerV1;
-  if (!answer || answer.version !== 1 || answer.sessionId !== sessionId || answer.interactionId !== event.aggregate.id) return undefined;
+  if (!event.aggregate || !answer || answer.version !== 1 || answer.sessionId !== sessionId || answer.interactionId !== event.aggregate.id) return undefined;
   return {
     version: 1,
     continuationId: event.eventId,

@@ -265,7 +265,23 @@ test('plan HTML includes a direct, acceptance-aware browser reply widget', () =>
   assert.match(html, /__octocode\/message/);
   assert.match(html, /Send feedback/);
   assert.match(html, /role="status" aria-live="polite" aria-atomic="true"/);
+  assert.match(html, /Connecting to the running agent/);
+  assert.match(html, /messageBridge/);
+  assert.match(html, /run \/octocode-plan html to reopen the live page/);
+  assert.match(html, /Your feedback remains saved/);
+  assert.match(html, /const consumesNotes = !command \|\| command === '\/octocode-plan changes'/,
+    'Start/Accept never clear feedback text they did not send');
+  assert.match(html, /white-space:normal; overflow:visible/,
+    'handler errors wrap in full instead of being visually truncated');
   assert.doesNotMatch(html, /data-reply-command=/, 'no state-changing action is shown without persisted review state');
+});
+
+test('plan HTML preserves long widget content without clipping or source truncation', () => {
+  const longText = `Long task ${'0123456789'.repeat(1_200)}`;
+  const html = renderPage([{ id: 'long', text: longText, status: 'todo' }]);
+  assert.ok(html.includes(longText), 'the entire plan step is present in the UI bytes');
+  assert.doesNotMatch(html, /text-overflow\s*:\s*ellipsis|line-clamp|max-height\s*:/i);
+  assert.doesNotMatch(html, /\.slice\([^)]*\).*task|task.*\.slice\(/i);
 });
 
 test('canonical artifact adapters write html + md under the octocode home; live sync rewrites on change', () => {

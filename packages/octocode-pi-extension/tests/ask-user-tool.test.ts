@@ -243,13 +243,24 @@ test('askUser returns a structured pending interaction when no interactive UI is
 
     assert.equal(result.isError, undefined);
     assert.match((result.content[0] as { text: string }).text, /Structured interaction pending \(mode=rpc/);
-    assert.match((result.content[0] as { text: string }).text, /matching answer event/);
+    assert.match((result.content[0] as { text: string }).text, /submit one matching answer through the InteractionBroker adapter/);
+    assert.match((result.content[0] as { text: string }).text, /drain its durable continuation/);
     assert.match((result.content[0] as { text: string }).text, /Safe, Fast/);
-    const details = result.details as { status: string; mode: string; interaction: { correlationId: string; question: string } };
+    const details = result.details as {
+      status: string;
+      mode: string;
+      interaction: { correlationId: string; question: string };
+      continuation: { version: number; adapter: string; resumeOn: string[] };
+    };
     assert.equal(details.status, 'pending');
     assert.equal(details.mode, 'rpc');
     assert.equal(details.interaction.question, 'Choose a strategy?');
     assert.match(details.interaction.correlationId, /^correlation_/);
+    assert.deepEqual(details.continuation, {
+      version: 1,
+      adapter: 'interaction-broker',
+      resumeOn: ['answer', 'session_start'],
+    });
   } finally {
     setInteractionStoreFactoryForTests();
   }
@@ -488,6 +499,70 @@ test('askUser progressively discloses focused descriptions and trade-offs and la
   send('\r');
   const result = await pending;
   assert.deepEqual(result.details, { status: 'selected', value: 'safe', label: 'Leave it' });
+});
+
+test('askUser preserves complete decision content at narrow widths without clipping or detail caps', async () => {
+  const tool = loadTool();
+  const { ctx, render, send } = overlayCtx();
+  const question = 'Which complete rollout strategy should remain readable in a narrow terminal before implementation starts?';
+  const label = 'Keep the compatibility adapter until every persisted session has migrated safely';
+  const description = 'This deliberately long description explains the session, data, browser, and agent consequences without dropping its final words.';
+  const pros = [
+    'preserves restart safety for sessions created by earlier releases',
+    'keeps browser and terminal behavior aligned during rollout',
+    'allows deterministic rollback after a failed verification receipt',
+  ];
+  const cons = [
+    'requires one additional compatibility checkpoint before cleanup',
+    'keeps a temporary adapter visible for another release window',
+    'adds a final migration audit before deletion is authorized',
+  ];
+  const preview = [
+    'preview line one: read the durable session',
+    'preview line two: validate the accepted revision',
+    'preview line three: resume the exact continuation',
+    'preview line four: verify browser and terminal parity',
+    'preview line five: remove the adapter only after success',
+  ].join('\n');
+
+  const pending = tool.execute('id', {
+    question,
+    options: [{ value: 'safe', label, description, pros, cons, preview, recommended: true }],
+  }, undefined, undefined, ctx);
+
+  const lines = render(30);
+  const normalized = lines.join('\n')
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/[│╭╮╰╯─]/g, ' ')
+    .replace(/\s+/g, ' ');
+  assert.ok(lines.every((line) => visibleWidth(line) <= 30), 'every wrapped row remains terminal-width safe');
+  for (const completeText of [question, label, description, ...pros, ...cons, ...preview.split('\n')]) {
+    assert.ok(normalized.includes(completeText), `complete UI content remains visible: ${completeText}`);
+  }
+  assert.match(normalized, /recommended/);
+  assert.match(normalized, /← back • ↑↓ • enter • esc/);
+
+  send('\x1b');
+  await pending;
+});
+
+test('askUser transcript renderers wrap complete questions and selected labels instead of truncating them', () => {
+  const tool = loadTool();
+  const question = 'Should the complete narrow transcript preserve this entire question for later review?';
+  const label = 'Yes, preserve the complete selected option label across every wrapped transcript row';
+  const render = (component: unknown, width: number): string[] =>
+    (component as { render: (w: number) => string[] }).render(width);
+  const normalize = (lines: string[]): string => lines.join(' ')
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/\s+/g, ' ');
+
+  const callLines = render(tool.renderCall?.({ queries: [{ question, options: [{ value: 'yes', label }] }] }), 24);
+  assert.ok(callLines.every((line) => visibleWidth(line) <= 24));
+  assert.ok(normalize(callLines).includes(question));
+
+  const resultLines = render(tool.renderResult?.({ content: [], details: { status: 'selected', label } }, { isPartial: false }), 24);
+  assert.ok(resultLines.every((line) => visibleWidth(line) <= 24));
+  assert.ok(normalize(resultLines).includes(label));
 });
 
 test('askUser schema exposes pros, cons, and recommended on options', () => {
