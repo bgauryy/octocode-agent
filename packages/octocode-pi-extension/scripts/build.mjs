@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -10,6 +11,7 @@ const __dirname = path.dirname(__filename);
 const packageRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(packageRoot, '../..');
 const distDir = path.join(packageRoot, 'dist');
+const buildLockPath = path.join(packageRoot, '.octocode-build.lock');
 
 const require = createRequire(import.meta.url);
 
@@ -198,6 +200,27 @@ function clean() {
   fs.rmSync(distDir, { recursive: true, force: true });
 }
 
+async function acquireBuildLock() {
+  const deadline = Date.now() + 120_000;
+  for (;;) {
+    try {
+      return fs.openSync(buildLockPath, 'wx', 0o600);
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      try {
+        if (Date.now() - fs.statSync(buildLockPath).mtimeMs > 300_000) {
+          fs.rmSync(buildLockPath, { force: true });
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for build lock: ${buildLockPath}`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+}
+
 function copySkillDirectories(sourceRoot, targetRoot) {
   if (!fs.existsSync(sourceRoot)) return 0;
   let copied = 0;
@@ -213,28 +236,28 @@ function copySkillDirectories(sourceRoot, targetRoot) {
   return copied;
 }
 
-function refreshPackageSkills() {
-  fs.rmSync(SOURCE_PATHS.skills, { recursive: true, force: true });
-  fs.mkdirSync(SOURCE_PATHS.skills, { recursive: true });
+function refreshPackageSkills(targetRoot = SOURCE_PATHS.skills) {
+  fs.rmSync(targetRoot, { recursive: true, force: true });
+  fs.mkdirSync(targetRoot, { recursive: true });
   // Bundle workflow skills from dependencies, excluding prompt-owned flows such as
   // Awareness. Remaining skills become discoverable on init via the
   // resources_discover hook — no on-demand install step needed for a fresh checkout.
   // (If a user also installs the same skill globally with `octocode skill --add`,
   // Pi surfaces a [Skill conflicts] notice — expected with a self-contained bundle.)
-  const octocodeCopied = copySkillDirectories(SOURCE_PATHS.octocodeSkills, SOURCE_PATHS.skills);
-  const awarenessCopied = copySkillDirectories(SOURCE_PATHS.awarenessSkills, SOURCE_PATHS.skills);
-  assertNoHiddenLocalOnlyEntries(SOURCE_PATHS.skills);
+  const octocodeCopied = copySkillDirectories(SOURCE_PATHS.octocodeSkills, targetRoot);
+  const awarenessCopied = copySkillDirectories(SOURCE_PATHS.awarenessSkills, targetRoot);
+  assertNoHiddenLocalOnlyEntries(targetRoot);
   if (octocodeCopied + awarenessCopied === 0) {
     throw new Error(`No Awareness/Octocode skills found in ${SOURCE_PATHS.awarenessSkills} or ${SOURCE_PATHS.octocodeSkills}`);
   }
   return { octocodeCopied, awarenessCopied };
 }
 
-function syncPackageSkills() {
+function syncPackageSkills(targetRoot = SOURCE_PATHS.skills) {
   assertRequiredSources();
-  const { octocodeCopied, awarenessCopied } = refreshPackageSkills();
-  const skillNames = listSkillNames(SOURCE_PATHS.skills);
-  console.log(`Synced ${skillNames.length} skill(s) into ${SOURCE_PATHS.skills}`);
+  const { octocodeCopied, awarenessCopied } = refreshPackageSkills(targetRoot);
+  const skillNames = listSkillNames(targetRoot);
+  console.log(`Synced ${skillNames.length} skill(s) into ${targetRoot}`);
   if (skillNames.length > 0) console.log(`Skills: ${skillNames.join(', ')}`);
   console.log(`Sources: octocode skills/ (${octocodeCopied}), awareness skills/ (${awarenessCopied})`);
   return skillNames;
@@ -296,8 +319,12 @@ function compileTsc() {
 }
 
 async function build() {
-  syncPackageSkills();
+  const buildLock = await acquireBuildLock();
+  // Each build owns a private staging tree. Concurrent builds must never delete
+  // another process's input while it is copying skills into its own dist tree.
+  const stagedSkills = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-pi-skills-'));
   try {
+    syncPackageSkills(stagedSkills);
     // Deterministic failure point used by the cleanup regression test. It must
     // remain after staging and before any destructive output cleanup.
     if (process.env['OCTOCODE_TEST_FAIL_BUILD_AFTER_SKILL_SYNC'] === '1') {
@@ -331,7 +358,7 @@ async function build() {
   fs.mkdirSync(path.dirname(OUTPUT_PATHS.systemPrompt), { recursive: true });
   fs.writeFileSync(OUTPUT_PATHS.systemPrompt, SYSTEM_PROMPT, 'utf8');
   fs.rmSync(OUTPUT_PATHS.skills, { recursive: true, force: true });
-  copyDirectory(SOURCE_PATHS.skills, OUTPUT_PATHS.skills);
+  copyDirectory(stagedSkills, OUTPUT_PATHS.skills);
   // Copy subagents/ to dist/subagents/ (SYSTEM_PROMPT.md files loaded at runtime),
   // then expand the shared {{OCTOCODE_COORDINATION}} placeholder so every typed
   // subagent inherits one canonical Awareness coordination block (no drift).
@@ -377,9 +404,9 @@ async function build() {
       `Config loader: octocode-config.mjs injected into ${configInjected} skill script dir(s)`
     );
   } finally {
-    // Package-root skills are staging only. Never leave them behind after a
-    // failed normal build, or Pi may discover a second conflicting skill copy.
-    fs.rmSync(SOURCE_PATHS.skills, { recursive: true, force: true });
+    fs.rmSync(stagedSkills, { recursive: true, force: true });
+    fs.closeSync(buildLock);
+    fs.rmSync(buildLockPath, { force: true });
   }
 }
 

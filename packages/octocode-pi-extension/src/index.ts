@@ -138,6 +138,10 @@ import { registerAiWatch, isWatchActive, markOwnWrite, markBashActivity, stopWat
 import { runtimeStoreFor, setManagedActivity, setManagedFooter, setManagedStatus, setManagedWorkingIndicator, setManagedWorkingMessage } from './tools/runtime-renderer.js';
 import type { RuntimeFooterState } from './tools/runtime-store.js';
 import { SessionRuntime } from './session-runtime.js';
+import {
+  assertSupportedPiHostVersion,
+  resolvePiHostVersion,
+} from './adapters/pi-host-compatibility.js';
 import { registerExportCommand } from './tools/export-command.js';
 import { assertPathAllowed } from './tools/path-guard.js';
 import { makeRenderer } from './tools/render-helpers.js';
@@ -225,6 +229,24 @@ export {
   OctocodeHookComposer,
   runHookMiddleware,
 } from './hook-composer.js';
+export {
+  APPROVED_PI_HOST_VERSION,
+  PiHostCompatibilityError,
+  assertSupportedPiHostVersion,
+  resolveInstalledPiHostVersion,
+  resolvePiHostVersion,
+} from './adapters/pi-host-compatibility.js';
+export {
+  PI_LIFECYCLE_MAPPINGS,
+  bindPiLifecycleBus,
+  createPiEventEnvelope,
+  isPiLifecycleEvent,
+  mapPiHookResultToDecision,
+} from './adapters/pi-lifecycle-adapter.js';
+export { PiToolRegistryAdapter, PiCommandRegistryAdapter } from './adapters/pi-registry-adapters.js';
+export { PiSettingsAdapter } from './adapters/pi-settings-adapter.js';
+export { PiPluginEventAdapter } from './adapters/pi-plugin-adapter.js';
+export { discoverCodexHookSources } from './adapters/pi-hook-discovery.js';
 export {
   createOctocodeCronScheduler,
   formatOctocodeCronStatus,
@@ -2659,7 +2681,7 @@ async function wireOctocodePiExtension(
   };
   pi.registerCommand('octocode-cron', cronCommand);
 
-  const settingsSections = ['commands', 'skills', 'connections', 'add-server', 'sources', 'agent-context', 'overrides'] as const;
+  const settingsSections = ['overview', 'runtime', 'appearance', 'models', 'hooks', 'plugins', 'commands', 'skills', 'connections', 'add-server', 'sources', 'agent-context', 'overrides', 'diagnostics'] as const;
   const settingsCommand: CommandDefinition = {
     description: 'Open settings.html with all discovered skills, MCP connections/tools, configuration, and enablement.',
     getArgumentCompletions: (prefix: string) => settingsSections
@@ -2669,7 +2691,7 @@ async function wireOctocodePiExtension(
       const requested = args.trim().toLowerCase();
       const section = settingsSections.includes(requested as (typeof settingsSections)[number])
         ? requested as (typeof settingsSections)[number]
-        : 'skills';
+        : 'overview';
       const opened = await openMcpManager(ctx, latestPiSkills, section, collectPublicCommands(pi));
       notify(ctx, opened.ok ? `Octocode settings opened${opened.url ? `: ${opened.url}` : ''}` : (opened.message ?? 'Could not open Octocode settings.'), opened.ok ? 'info' : 'error');
     },
@@ -2764,6 +2786,8 @@ export function createOctocodePiExtension(
 ): (pi: PiInstance) => Promise<void> {
   const promptMode = resolvePromptMode(options.promptMode);
   return async function octocodePiExtension(pi: PiInstance): Promise<void> {
+    const piVersion = options.hostVersion ?? resolvePiHostVersion(pi);
+    assertSupportedPiHostVersion(piVersion);
     return wireOctocodePiExtension(pi, { promptMode });
   };
 }

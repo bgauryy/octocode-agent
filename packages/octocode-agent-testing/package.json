@@ -1,7 +1,7 @@
 {
   "name": "@octocodeai/agent-testing",
   "version": "0.1.0",
-  "description": "Deterministic Pi host, UI, session, agent, and browser mocks for Octocode end-to-end flow tests.",
+  "description": "Deterministic Pi/native host conformance, UI, session, agent, and browser test utilities.",
   "keywords": [
     "octocode",
     "pi",

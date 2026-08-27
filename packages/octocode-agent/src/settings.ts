@@ -1,41 +1,40 @@
 /**
- * settings.ts — write the Pi startup model the way Pi itself expects it.
- *
- * Pi's SettingsManager persists `defaultProvider` + `defaultModel` in
- * ~/.pi/agent/settings.json (settings-manager.js#455, model-resolver.js#451).
- * We mirror that exact contract — no extra files, no launcher-only state.
+ * Native Octocode settings filesystem adapter.
  */
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { getOctocodeHome } from './utils.js';
+import { FileSettingsStorage } from './native-settings.js';
 
-export function piAgentDir(): string {
-  return path.join(os.homedir(), '.pi', 'agent');
+export function agentDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(getOctocodeHome(env), 'agent');
 }
 
-export function readSettings(piDir: string): Record<string, unknown> {
+function writeSettings(dir: string, data: Record<string, unknown>): string {
+  const file = path.join(dir, 'settings.json');
+  const storage = new FileSettingsStorage(file);
+  storage.commit(storage.read().revision, data);
+  return file;
+}
+
+export function readSettings(dir: string): Record<string, unknown> {
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(piDir, 'settings.json'), 'utf8'));
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+    return new FileSettingsStorage(path.join(dir, 'settings.json')).read().values;
   } catch {
     return {};
   }
 }
 
 /** Persist defaultProvider+defaultModel without clobbering other settings. */
-export function setDefaultModelInSettings(piDir: string, provider: string, modelId: string): string {
-  fs.mkdirSync(piDir, { recursive: true });
-  const data = readSettings(piDir);
+export function setDefaultModelInSettings(dir: string, provider: string, modelId: string): string {
+  const data = readSettings(dir);
   data['defaultProvider'] = provider;
   data['defaultModel'] = modelId;
-  const file = path.join(piDir, 'settings.json');
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
-  return file;
+  return writeSettings(dir, data);
 }
 
 // ── Generic settings surface (config get|set|list) ──────────────────────────────
 
-/** Keys `config set` is allowed to write — Pi's own contract fields only. */
+/** Keys `config set` is allowed to write through the native settings adapter. */
 export const ALLOWED_CONFIG_KEYS = ['defaultProvider', 'defaultModel', 'theme'] as const;
 
 /** Theme name the launcher enforces for Octocode-branded sessions. */
@@ -52,57 +51,50 @@ export function isAllowedConfigKey(key: string): key is AllowedConfigKey {
   return (ALLOWED_CONFIG_KEYS as readonly string[]).includes(key);
 }
 
-/** Read one key from Pi's settings.json (undefined when unset). */
-export function getSetting(piDir: string, key: string): unknown {
-  return readSettings(piDir)[key];
+/** Read one key from settings.json (undefined when unset). */
+export function getSetting(dir: string, key: string): unknown {
+  return readSettings(dir)[key];
 }
 
 /** Write one allowlisted key without clobbering other settings. Returns the file. */
-export function setSetting(piDir: string, key: AllowedConfigKey, value: string): string {
-  fs.mkdirSync(piDir, { recursive: true });
-  const data = readSettings(piDir);
+export function setSetting(dir: string, key: AllowedConfigKey, value: string): string {
+  const data = readSettings(dir);
   data[key] = value;
-  const file = path.join(piDir, 'settings.json');
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
-  return file;
+  return writeSettings(dir, data);
 }
 
 /**
  * Write a settings default only when the key is absent. Returns true when the
  * value was written. Use narrower helpers when a key needs value validation.
  */
-export function ensureDefaultSetting(piDir: string, key: string, value: string): boolean {
-  const data = readSettings(piDir);
+export function ensureDefaultSetting(dir: string, key: string, value: string): boolean {
+  const data = readSettings(dir);
   if (data[key] !== undefined) return false;
-  fs.mkdirSync(piDir, { recursive: true });
   data[key] = value;
-  const file = path.join(piDir, 'settings.json');
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+  writeSettings(dir, data);
   return true;
 }
 
 /**
  * Octocode owns the agent theme: keep octocode-dark/light, replace every plain
- * Pi theme (including dark/light) with the branded default on launch.
+ * unbranded theme (including dark/light) with the branded default on launch.
  */
-export function ensureOctocodeThemeSetting(piDir: string): boolean {
-  const data = readSettings(piDir);
+export function ensureOctocodeThemeSetting(dir: string): boolean {
+  const data = readSettings(dir);
   if (isOctocodeTheme(data['theme'])) return false;
-  fs.mkdirSync(piDir, { recursive: true });
   data['theme'] = DEFAULT_OCTOCODE_THEME;
-  const file = path.join(piDir, 'settings.json');
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+  writeSettings(dir, data);
   return true;
 }
 
 /** Full settings doc for diagnostics / `config list`. */
-export function listSettings(piDir: string): Record<string, unknown> {
-  return readSettings(piDir);
+export function listSettings(dir: string): Record<string, unknown> {
+  return readSettings(dir);
 }
 
 /** Current default "provider/model" selection; null when unset. */
-export function readDefaultModel(piDir: string): string | null {
-  const data = readSettings(piDir);
+export function readDefaultModel(dir: string): string | null {
+  const data = readSettings(dir);
   const provider = data['defaultProvider'];
   const model = data['defaultModel'];
   return typeof provider === 'string' && typeof model === 'string' ? `${provider}/${model}` : null;

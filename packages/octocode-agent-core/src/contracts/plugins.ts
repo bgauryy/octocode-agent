@@ -1,0 +1,9 @@
+import type { PluginId, Revision } from './identity.js';
+export type PluginPermission = 'events.observe' | 'events.decide' | 'tools.register' | 'commands.register' | 'resources.register' | 'mcp.register' | 'settings.register' | 'prompts.register' | 'ui.register' | 'models.register' | 'process.execute' | 'network.access' | 'filesystem.read' | 'filesystem.write' | 'secrets.read';
+export type PluginContributionKind = 'hook' | 'tool' | 'command' | 'resource' | 'mcp' | 'setting' | 'prompt' | 'ui' | 'model';
+export interface PluginManifest { readonly schemaVersion: 1; readonly id: PluginId; readonly version: string; readonly apiVersion: '1'; readonly activationEvents: readonly string[]; readonly permissions: readonly PluginPermission[]; readonly contributions: readonly { readonly kind: PluginContributionKind; readonly path: string }[]; }
+export interface PluginCapabilityGrant { readonly requested: readonly PluginPermission[]; readonly granted: readonly PluginPermission[]; readonly denied: readonly PluginPermission[]; readonly revision: Revision; readonly expiresAt?: number; readonly reviewTrigger?: string; }
+export interface PluginContribution<T = unknown> { readonly kind: PluginContributionKind; readonly id: string; readonly owner: PluginId; readonly value: T; }
+export type PluginLifecycleState = 'discovered' | 'validated' | 'trust-required' | 'enabled' | 'activating' | 'contribution-registered' | 'ready' | 'deactivating' | 'contribution-removed' | 'stopped' | 'failed';
+export interface PluginLifecycleEvent { readonly pluginId: PluginId; readonly version: string; readonly state: PluginLifecycleState; readonly timestamp: number; readonly phase?: string; readonly diagnostic?: string; }
+export interface PluginLease { readonly pluginId: PluginId; readonly version: string; readonly hash: string; readonly contributionId: string; readonly operationId: string; readonly acquiredAt: number; readonly releasedAt?: number; readonly cancelled: boolean; }

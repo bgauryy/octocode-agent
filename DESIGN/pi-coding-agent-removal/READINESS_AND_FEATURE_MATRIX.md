@@ -1,0 +1,309 @@
+# Implementation readiness and feature matrix
+
+> Scope owner: `RFC.md`. Current progress: `STATUS.md`. Execution order: `STEPS.md`. Detailed implementation: `IMPLEMENTATION.md`. Hooks/plugins: `HOOKS_AND_PLUGINS.md`. Required tests and gates: `TEST_PLAN.md` and `KPI.md`.
+
+## Executive rating
+
+The project is **well specified but not yet implemented**. It is ready to begin the baseline and contract phases, not ready for native canary or dependency removal.
+
+| Rating | Score | Meaning |
+|---|---:|---|
+| RFC/design completeness | **9/10** | Boundaries, stages, schemas, risks, tests, measurements, rollback, OpenTUI, settings/models, hooks, and plugins are documented. |
+| Readiness to start Stage 0/1 | **7/10** | The work can begin after owners, canonical baseline commit, supported-version matrices, and several explicit decisions are signed. |
+| Target implementation completeness | **1.5/10** | Most target agent-core/native modules do not exist. Existing Pi behavior, settings HTML, test harness, and proof adapters are reusable starting points. |
+| Native canary readiness | **0/10** | No native composition root, session store, transports, production OpenTUI adapter, or complete host-conformance result exists. |
+| Dependency-removal readiness | **0/10** | Native launch still depends on Pi and no post-canary observation receipt exists. |
+| Weighted migration readiness | **3.5/10** | Evidence-weighted combination of specification, reusable seams, implementation, verification, and rollout readiness. This is not a schedule estimate. |
+
+The correct decision is **proceed to Stage 0**, not “start deleting Pi.” The earliest safe implementation work is the canonical baseline, package boundary, schemas, and Pi adapter.
+
+## Maturity scoring
+
+Each implementation area uses this maturity scale:
+
+| Level | Meaning | Required evidence |
+|---:|---|---|
+| 0 | Absent | No target code or executable proof |
+| 1 | Inventoried/specification only | Source anchors and approved contract or RFC |
+| 2 | Prototype or reusable current seam | Focused tests, but not wired as the target production path |
+| 3 | Implemented behind adapter/flag | Target module builds and passes unit/contract tests |
+| 4 | Host-conformant candidate | Shared Pi/native matrix, faults, security, and performance pass |
+| 5 | Release-proven | Canary, observation window, rollback rehearsal, and artifact checks pass |
+
+Scores come from repository evidence, not confidence language. A document cannot raise implementation maturity above Level 1. A proof adapter without a production caller cannot exceed Level 2. A feature cannot reach Level 4 without the mandatory shared suite.
+
+## Readiness by subsystem
+
+| Subsystem | Maturity | Existing evidence | Missing before next maturity level | Primary gate |
+|---|---:|---|---|---|
+| Canonical baseline | 1/5 | AST/LSP working-tree inventory and focused test receipts | Named clean commit, exact commands, raw/normalized hashes, approved incidental-field classification | `PREREQUISITES.md` baseline receipt |
+| Agent-core package boundary | 0/5 | Full package/module design | `packages/octocode-agent-core/` does not exist; manifest approval, dependency graph, contracts, build/test path | Step 3 |
+| Runtime contracts and schemas | 1/5 | Detailed discriminated types and ownership rules | Implemented source of truth, runtime validators, drift checks, public API review | Schema/type suite |
+| Pi compatibility adapter | 1/5 | Current Pi facade and mapping specification | Adapter over canonical contracts, supported Pi-version matrix, no duplicated domain types | Host-conformance suite |
+| Lifecycle/event bus | 2/5 | Existing hook composer, 17 central registrations, direct listener candidates | Canonical dispatcher, all used listener mappings, ordering/decision fixtures, no direct native Pi listeners | Event golden suite |
+| Tool/command registries | 2/5 | 26 command registrations and one tool-registration funnel | Canonical registries, duplicate/conflict rules, canonical policy metadata, Pi/native adapters | Registry snapshots |
+| Security/policy kernel | 2/5 | Existing trust, approval, plan, and Awareness gates | One kernel-owned chain across every transport plus negative matrix | Zero-bypass guardrail |
+| Native sessions/import | 0/5 | Compatibility requirements and current Pi session reader | Store decision, schemas, importer, projection, atomicity, corruption/restart corpus | Session migration suite |
+| Prompt/compaction | 1/5 | Current hooks and explicit target state machine | Pure assembler, semantic snapshot oracle, native compaction, retry/fault proofs | Prompt/compaction corpus |
+| Native model/tool loop | 0/5 | Adapter strategy retains narrower dependencies initially | Native composition, streaming normalization, retries, cancellation ownership | Deterministic turn suite |
+| Interactive OpenTUI | 2/5 | Four-test proof adapter/view model; no production `@opentui/core` import | Runtime/package spike, production adapter, full renderer/input/restoration/PTTY matrix | OpenTUI acceptance |
+| Print/JSON/RPC | 1/5 | Current Pi-backed modes and captured contract requirements | Native adapters, protocol schemas, malformed-input/cancellation suites | Mode matrix |
+| Unified settings HTML | 2/5 | Existing protected eight-section page and five focused tests | Canonical registry/service, all sections, native host, conflict/recovery/accessibility | Settings completeness suite |
+| Models/`models.json` | 0/5 | Design and legacy/default-model evidence | Catalog/store, precedence, source adapters, structured editor, atomic/revision-safe mutations | Models suite |
+| Codex hooks compatibility | 1/5 | Complete format/event/trust/handler design and official-source fixture plan | Parser, JSON/TOML sources, exact-hash trust, command/MCP handlers, official pinned corpus | Codex compatibility suite |
+| Event-driven plugins | 0/5 | Manifest, capabilities, lifecycle, contributions, and settings design | Catalog, activator, grants, transactional registry, leases, unload/update tests | Plugin lifecycle suite |
+| Shared test harness | 2/5 | `@octocodeai/agent-testing` candidate and focused tests | Approved package boundary, full real-Pi oracle, all native adapters, faults/performance | Complete shared corpus |
+| Observability/evidence | 1/5 | Receipt schemas and KPI definitions | Runtime trace implementation, privacy review, dashboards/queries, before/after raw receipts | KPI receipt |
+| Canary/rollback/release | 0/5 | Staged policy and rollback rules | Candidate artifact, cohort selector, thresholds, rollback rehearsal, observation window | Stages 6–7 |
+
+## Critical blockers
+
+These items block implementation maturity above Level 1 or 2:
+
+1. Select and record the canonical before commit; the inspected tree is dirty and cannot be the release baseline implicitly.
+2. Assign runtime, session, security, extensions, terminal, settings/models, testing, and release owners.
+3. Create the agent-core workspace through the approved manifest process and lock its public dependency direction.
+4. Decide the native session encoding/store after running the required prototype and corruption corpus.
+5. Pin the supported Pi versions and the Codex hook compatibility version/fixture snapshot.
+6. Approve the plugin capability/trust policy, especially process, filesystem, network, MCP, model, secret, and UI grants.
+7. Select and prove the OpenTUI runtime/native-package route on every supported release platform.
+8. Set quantitative canary thresholds and the observation window before native becomes default.
+
+None of these blockers justify bypassing Stage 0. They are the output of Stage 0 and early Stage 1.
+
+## Complete target feature inventory
+
+The IDs below are stable traceability identifiers for implementation issues and evidence receipts.
+
+### Runtime and architecture
+
+| ID | Feature | Required outcome |
+|---|---|---|
+| R-01 | Agent-core package | One owner for runtime contracts, schemas, kernel, sessions, events, settings, models, hooks, and plugins |
+| R-02 | One composition root | Native launcher composes explicit ports; no dynamic Pi SDK shape in native product code |
+| R-03 | Capability-focused APIs | Tools/events cannot access command-only or unrelated host privileges |
+| R-04 | Versioned commands/events | Discriminated, exhaustively handled contracts with runtime validation |
+| R-05 | Lifecycle state machine | Legal start/turn/tool/stop transitions and exactly one terminal state |
+| R-06 | Ordered middleware | Stable priority/source/declaration ordering, transforms, blocking, timeouts, and attribution |
+| R-07 | Structured cancellation | One `AbortSignal` ownership tree with child process/task cleanup |
+| R-08 | Typed errors | Stable categories, safe causes, adapter mapping, and protocol errors |
+| R-09 | Model port | Provider-neutral request, stream, usage, retry, stop, and failure normalization |
+| R-10 | Prompt pipeline | Pure ordered segments, provenance, token accounting, and snapshot comparison |
+| R-11 | Policy kernel | Trust, approval, plan mode, effect class, and peer-lock checks before effects |
+| R-12 | Observability | Correlated redacted event/effect/decision/session receipts and bounded metrics |
+
+### Tools, commands, resources, and transports
+
+| ID | Feature | Required outcome |
+|---|---|---|
+| T-01 | Tool registry | Canonical names, schemas, metadata, active defaults, duplicate detection, and deterministic inventory |
+| T-02 | Tool execution | Validated input, updates, results, cancellation, policy, and persistence ordering |
+| T-03 | Command registry | Names, descriptions, completion, context capabilities, shortcuts, and discovery |
+| T-04 | Resource registry | Skills, prompt resources, and assets with provenance and containment |
+| T-05 | MCP catalog/port | Connected-server inventory and validated tool execution independent of host |
+| T-06 | Interactive transport | Native runtime input, streaming, commands, sessions, approval, and cancellation |
+| T-07 | Print transport | Deterministic stdout/stderr and exit codes without terminal UI initialization |
+| T-08 | JSON transport | Versioned machine-readable commands/events and protocol-pure stdout |
+| T-09 | RPC transport | Correlated requests/responses/events, version rejection, bounds, and malformed-frame recovery |
+| T-10 | SDK/embed boundary | In-process typed composition without exposing private runtime implementation |
+| T-11 | Pure shadow mode | Compare deterministic behavior without duplicate model calls, writes, messages, or effects |
+| T-12 | Host selector | Per-session Pi/native identity during migration and explicit rollback |
+
+### Sessions, persistence, and context
+
+| ID | Feature | Required outcome |
+|---|---|---|
+| S-01 | Stable session identity | IDs, names, selected host, model metadata, and provenance |
+| S-02 | Append-only native store | Versioned events, optimistic revisions, atomic commits, and deterministic replay |
+| S-03 | Pi import | Read-only source, separate native destination, checksums, and explicit conversion |
+| S-04 | Resume/switch | Deterministic projection and host-safe continuation |
+| S-05 | Branch/fork/tree | Parent graph, selected leaf, labels where approved, and navigation |
+| S-06 | Rewind/checkpoints | Proven leaf lookup, filesystem checkpoint ownership, and explicit recovery |
+| S-07 | Durable custom entries | Persistence without accidental model-context inclusion |
+| S-08 | Compaction state machine | Manual, threshold, overflow, retry, failure, cancellation, and one terminal result |
+| S-09 | Crash/corruption recovery | Truncated, malformed, stale, duplicate, interrupted, and unknown-version handling |
+| S-10 | Export/diagnostics | Stable safe export without deep Pi imports or private-content leakage |
+
+### Hooks and events
+
+| ID | Feature | Required outcome |
+|---|---|---|
+| H-01 | Canonical event envelope | Version, identity, phase, session/turn, parent, mode, model, trust, and typed payload |
+| H-02 | Current Pi listener mapping | Every production-used composed/direct listener mapped with approved semantics |
+| H-03 | Codex event compatibility | Declared support for `PreToolUse`, `PermissionRequest`, `PostToolUse`, compaction, prompt, subagent, stop, and session events |
+| H-04 | Codex JSON discovery | User, trusted project, managed, and plugin `hooks.json` sources |
+| H-05 | Codex TOML discovery | Inline `[hooks]` configuration with source provenance |
+| H-06 | Source merge | Additive matching definitions and deterministic source/declaration order |
+| H-07 | Matchers | Exact/wildcard/regex-compatible event-specific subjects |
+| H-08 | Command handlers | JSON stdin/output, platform command, bounded environment/output, timeout, cancellation, and descendant cleanup |
+| H-09 | MCP-tool handlers | Connected server/tool, typed templates, validation, timeout, and no recursive hooks/approval |
+| H-10 | Decision aggregation | Deny wins, limited allow bypass, rewrite composition/revalidation, context, stop, and suppression |
+| H-11 | Asynchronous hooks | Nonblocking-only semantics, per-session cap, safe-point delivery, and shutdown cancellation |
+| H-12 | Exact-definition trust | Review hash, changed-definition invalidation, managed-only policy, and enablement separate from trust |
+| H-13 | Output safety | Schema validation, secret redaction, size limits, protected spill, and cleanup |
+| H-14 | Hook observability | Definition/event identity, order, decision digest, timing, failures, spills, and redactions |
+
+### Extensions and plugins
+
+| ID | Feature | Required outcome |
+|---|---|---|
+| P-01 | Compatible package entry | Discover `.codex-plugin/plugin.json` and hook paths without repackaging |
+| P-02 | Octocode manifest block | Versioned API, activation events, requested permissions, and contribution declarations |
+| P-03 | Plugin catalog | Discovery, identity/version/hash, validation, enablement, compatibility, and health |
+| P-04 | Capability grants | Deny-by-default process/filesystem/network/MCP/model/secret/UI/registry permissions |
+| P-05 | Activation lifecycle | Discovered, validated, trust-required, enabled, activating, ready, deactivating, stopped, and failed |
+| P-06 | Transactional activation | All contributions appear together or reverse-clean completely |
+| P-07 | Deterministic conflicts | Namespacing or explicit failure; no silent last-writer-wins override |
+| P-08 | Lazy activation | Allowlisted safe activation events and no mid-effect implementation swap |
+| P-09 | Leases and unload | Active-operation tracking, wait/cancel/refuse policy, reverse cleanup, and zero leaks |
+| P-10 | Update/resume provenance | Session records plugin version/hash and explains missing/changed behavior |
+| P-11 | Hook contributions | Trusted event definitions through the canonical hook catalog |
+| P-12 | Tool contributions | Namespaced schema/executor/policy registrations through `ToolRegistry` |
+| P-13 | Command contributions | Context-scoped registrations and headless behavior through `CommandRegistry` |
+| P-14 | Skill/resource contributions | Contained paths, provenance, validation, and size limits |
+| P-15 | MCP contributions | Explicit process/network grants, validated definitions, and connection ownership |
+| P-16 | Setting contributions | Schema, scope, provenance, redaction, owner, and required HTML rendering |
+| P-17 | Prompt contributions | Named placement, trust, provenance, size limits, and snapshot review |
+| P-18 | UI contributions | Semantic views/actions, accessibility metadata, and headless fallback without toolkit types |
+| P-19 | Model/provider contributions | Separately granted high-risk adapter capability and credential-boundary review |
+
+### Terminal and settings experience
+
+| ID | Feature | Required outcome |
+|---|---|---|
+| U-01 | OpenTUI adapter | `@opentui/core` only under the native terminal boundary |
+| U-02 | Immutable UI projection | Runtime/UI events reduce into testable presentation state |
+| U-03 | Streaming renderer | Coalesced presentation updates without dropping semantic events |
+| U-04 | Input/focus/resize | Keyboard navigation, focus, mouse where supported, resize, Unicode width, and narrow layouts |
+| U-05 | Interactions | Confirm, select, input, editor, notifications, status, widgets, and capability fallback |
+| U-06 | Accessibility | Visible focus, color-independent severity, keyboard-only use, and alternate output strategy |
+| U-07 | Terminal restoration | Normal, error, cancel, signal, crash, and failed-initialization cleanup exactly once |
+| U-08 | One settings page | `settings.html` is the only human-facing settings control center |
+| U-09 | Settings registry | Complete definitions, stored/effective values, provenance, scope, revision, owner, and timing |
+| U-10 | Models section | Effective catalog, default transaction, custom providers/models, compatibility, and unknown metadata |
+| U-11 | `models.json` management | Source precedence, structured/advanced editing, diff, atomic writes, backup, conflict, recovery, and secret safety |
+| U-12 | Hooks section | Sources, event/handler/matcher, review hash, trust, enablement, compatibility, test, and health |
+| U-13 | Plugins section | Identity/version, API, activation, permissions, contributions, leases, update/unload, and health |
+| U-14 | Protected local server | Loopback, origin/token/CSRF/body/path controls, CSP, no-store, and trust enforcement |
+| U-15 | Accessibility/responsiveness | Keyboard, focus, screen-size, semantic labels, and safe error/recovery flows |
+
+### Compatibility, verification, and release
+
+| ID | Feature | Required outcome |
+|---|---|---|
+| Q-01 | Supported Pi extension | Pi package remains supported as an adapter over agent-core contracts |
+| Q-02 | Pi-version matrix | Every declared version activates or fails with a typed compatibility error |
+| Q-03 | Shared conformance corpus | Same scenarios run against Pi and native implementations |
+| Q-04 | Static absence proof | Text, AST, LSP, manifest, lockfile, dependency tree, and built artifact show zero native Pi dependency |
+| Q-05 | Fault injection | Provider, process, tool, persistence, compaction, RPC, UI, settings, hook, and plugin failures |
+| Q-06 | Security matrix | Zero trust, approval, plan, lock, path, protocol, hook, plugin, and secret bypasses |
+| Q-07 | Performance matrix | Startup, first event, turn, append, import/replay, memory, frame, cancellation, and reliability |
+| Q-08 | Platform matrix | Supported OS, architecture, runtime, terminal, browser, and native artifact |
+| Q-09 | Before/after receipts | Named commits, normalized traces, raw hashes, differences, decisions, and owners |
+| Q-10 | Canary and rollback | Cohorts, per-session host identity, zero-tolerance triggers, tested rollback artifact, and observation window |
+
+## Current versus target product matrix
+
+| Capability | Current Octocode on Pi | Target native Octocode | Migration rule |
+|---|---|---|---|
+| Runtime owner | Pi coding-agent | Octocode agent core | Remove native Pi only after conformance |
+| Pi extension | Primary harness implementation | Supported adapter | Must remain supported and tested |
+| Terminal | Pi-host UI/shell | OpenTUI semantic adapter | Preserve behavior; keep toolkit outside core |
+| Interactive/print/JSON/RPC | Pi runners/protocol | Native adapters | Same approved modes and protocol semantics |
+| Sessions | Pi manager/JSONL | Native versioned store plus Pi importer | Never rewrite the Pi source in place |
+| Branch/fork/rewind | Pi host/session APIs | Native projection/controller | Equal ancestry and selected leaf |
+| Compaction | Pi callbacks/retry | Explicit state machine | Preserve durable state and one terminal result |
+| Tools | One Pi registration funnel | Canonical registry | Preserve names/schemas unless approved |
+| Commands | 26 registrations | Canonical registry | Preserve approved inventory/context privilege |
+| Policy | Extension gates around Pi calls | Kernel-owned pre-effect chain | Zero bypass across transports/plugins |
+| Hooks | Pi events, composer, direct listeners | Canonical bus plus Codex adapter | Every used listener must map |
+| Plugins | Static Pi TypeScript extension behavior | Versioned manifests and typed transactional contributions | No direct private-runtime mutation |
+| Settings | Protected Pi-extension page plus launcher writer | One registry-driven native/Pi page | Zero hidden supported settings |
+| Models | Default values and external sources | Full effective catalog and safe `models.json` management | Preserve/import sources with explicit precedence |
+| Tests | Pi-specific and candidate structural harness | Shared host corpus plus adapter suites | Same scenario, normalized trace, first divergence |
+| Rollback | SDK/subprocess fallback | Host selector, then release artifact | No hidden production fallback after removal |
+
+## Extensibility comparison with other systems
+
+This matrix compares documented extensibility surfaces, not model quality, product popularity, or undocumented behavior. “Not established” means the checked primary source does not make a sufficient claim; it does not mean the system lacks the feature.
+
+Legend: **Yes** = documented; **Partial** = narrower or materially different; **Planned** = required by this RFC but not implemented; **Not established** = no decision-grade support in the reviewed source.
+
+| Capability | Pi extensions | Codex hooks | Claude Code | OpenCode | Target Octocode |
+|---|---|---|---|---|---|
+| Primary customization form | TypeScript extension module | JSON/TOML hook definitions | Settings/plugin JSON plus command, HTTP, MCP, prompt, and agent handlers | JavaScript/TypeScript plugin | Canonical typed plugins plus Codex JSON/TOML compatibility |
+| Lifecycle/tool interception | Yes | Yes | Yes | Yes | Planned |
+| Block/modify tool calls | Yes | Yes | Yes | Yes | Planned with kernel revalidation |
+| Command hook handler | Extension code | Yes | Yes | Plugin code | Planned |
+| MCP-tool hook handler | Extension can call APIs; format differs | Yes | Yes | Plugin API; exact hook form differs | Planned, already-connected server only |
+| HTTP hook handler | Extension code can implement | Not in declared first compatibility scope | Yes | Plugin code can implement | Deferred unless separately specified |
+| Prompt/agent-evaluated hook | Extension code can call a model | Parsed but skipped by documented Codex behavior | Yes | Plugin can generate/model-call | Deferred; parsed and reported unsupported |
+| Async hook mode | Async extension handlers | Yes, observation-only constraints | Yes | Promise-based hooks | Planned with nonblocking-only authority |
+| JSON/TOML portable hook config | No; TypeScript-first | Yes | JSON settings/plugin hooks | No; TypeScript/JavaScript-first | Planned Codex-compatible |
+| Custom tools | Yes | Not established by reviewed hook source | Via MCP/plugin components; not direct hook definition | Yes | Planned typed contribution |
+| Custom commands/skills | Yes | Not established by reviewed hook source | Yes | Yes | Planned typed contribution |
+| Custom terminal UI | Yes, Pi TUI types | Not established by reviewed hook source | Not established by reviewed sources | Yes, including CLI/TUI plugins | Planned semantic UI contribution, OpenTUI adapter-private |
+| Session-persistent extension state | Yes through session entries | Not established by reviewed hook source | Not established by reviewed sources | Plugin session APIs exist; persistence contract differs | Planned version/hash provenance and plugin data boundary |
+| Package sources | Local, npm, and Git | Hook-bearing Codex plugin package | Local/plugins/marketplaces and packaged components | Local and npm/versioned packages | Planned compatible manifest; source policy remains implementation decision |
+| Source merge | Additive extension discovery/settings | Matching hook sources merge | Hook sources merge | Config/plugin arrays compose in order | Planned deterministic merge |
+| Exact-definition hash review | Not established | Yes | Not established by reviewed sources | Not established by reviewed sources | Planned |
+| Managed-only hook policy | Not established | Yes | Yes (`allowManagedHooksOnly`) | Not established by reviewed sources | Planned |
+| Capability-scoped plugin grants | Extensions run trusted code with broad host access | Hook types are bounded, command remains code execution | Handler and managed-policy controls; broad command/plugin code remains possible | Plugin receives powerful client/shell APIs | Planned deny-by-default grants |
+| Transactional contribution activation | Not established | Not established by reviewed hook source | Not established by reviewed sources | Not established by reviewed sources | Planned |
+| Deterministic reverse unload/leak proof | Reload supported; formal transaction not established | Async work is session-bounded; general plugin unload not established | File watching/plugin management documented; formal transaction not established | Watched reload and disposable registrations exist | Planned with leases and reverse cleanup |
+| Human settings/control center | Terminal/settings files | Codex configuration and hook review flows | `/hooks`, plugin commands, and settings | Config/CLI plugin management | Planned unified HTML for settings, models, hooks, and plugins |
+| Host-neutral conformance suite | No Octocode cross-host target | Not applicable | Not applicable | Not applicable | Planned across native and supported Pi hosts |
+| Pi-extension compatibility after native removal | Native system | Not applicable | Not applicable | Not applicable | Planned and mandatory |
+
+## Where the target is intentionally better
+
+The target does not try to win by exposing the broadest possible in-process object. It aims to improve five areas:
+
+1. **Portability:** Codex-format declarative hooks run without rewriting, while native typed plugins can add broader contributions.
+2. **Least privilege:** plugin code receives explicit capability grants instead of a broad runtime/SDK object by default.
+3. **Transactional lifecycle:** activation either publishes every validated contribution or removes all of them; unload has leases and leak proofs.
+4. **Explainability:** one HTML page shows sources, effective values, exact review hashes, permissions, contributions, compatibility, health, and redacted traces.
+5. **Migration proof:** the same semantic corpus runs on Pi and native hosts, so “better” must survive before/after, security, fault, and performance gates.
+
+These are planned advantages. The RFC must not market them as delivered until the implementation and release evidence reaches Level 5.
+
+## Competitive gaps and decisions
+
+| Gap against documented systems | Decision |
+|---|---|
+| Claude Code supports HTTP, prompt, and agent hook handlers beyond the first Codex-compatible scope | Keep first scope to command and MCP handlers; parse/report unsupported types. Add only through a separate security and determinism review. |
+| Pi provides deep in-process TUI customization | Offer semantic UI contributions with headless fallbacks; do not leak OpenTUI or runtime internals into plugins. |
+| Pi and OpenCode load arbitrary TypeScript/JavaScript plugins directly | Preserve a code-plugin path, but require manifest identity, trust, capabilities, containment, and auditable activation. |
+| Claude Code and OpenCode have broader published plugin component/package ecosystems | Prioritize compatibility import, stable schemas, CLI/HTML management, and package-source policy before marketplace scale. |
+| Existing systems already ship their extension runtime | Treat target advantages as hypotheses until shared conformance, adversarial security, unload, and canary receipts prove them. |
+
+## Minimum viable implementation slice
+
+The first reviewable vertical slice is deliberately smaller than the full product:
+
+1. Create agent core with canonical event/tool/command contracts and validators.
+2. Adapt the current Pi extension to those contracts without behavioral change.
+3. Run one deterministic session-start, prompt, tool-denial, tool-success, and shutdown scenario on Pi.
+4. Load one trusted Codex `PreToolUse` command hook and prove exact input/deny behavior.
+5. Load one synthetic plugin that contributes one namespaced command and unload it transactionally.
+6. Show both definitions and their redacted receipts in read-only Hooks/Plugins settings projections.
+7. Pass cancellation, timeout, changed-hash trust, duplicate registration, partial activation, and cleanup tests.
+
+This slice raises event/hooks/plugins and registries to Level 3. It does not justify a native runtime canary because sessions, model loop, transports, and terminal remain Pi-backed.
+
+## Measurement and refresh rules
+
+- Recalculate readiness only from linked receipts on a named commit.
+- Record a maturity increase beside the implementation issue and evidence path.
+- Do not average away a zero-tolerance failure. Security bypass, data loss, duplicate effect, protocol corruption, compaction loop, untrusted execution, partial activation, or resource leak forces hold/rollback.
+- Refresh external comparison claims when their pinned source changes or before implementation chooses a compatibility behavior based on them.
+- Keep “documented,” “observed,” “planned,” and “proven” labels distinct.
+
+## Sources checked on 2026-08-27
+
+- [Official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks) — lifecycle events, JSON/TOML sources, merge, matchers, command/MCP handlers, trust, managed policy, async behavior, and plugin hook packaging.
+- [Pi extension documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md) — TypeScript extensions, events, tools, commands, UI, state, discovery, and package behavior.
+- [Claude Code hooks reference](https://code.claude.com/docs/en/hooks) and [plugin reference](https://code.claude.com/docs/en/plugins-reference) — handler types, events, managed policy, merging, components, and packaging.
+- [OpenCode plugin loading](https://opencode.ai/v2/docs/plugins) and [plugin API](https://opencode.ai/v2/docs/build/plugins) — local/npm loading, ordering, hooks, tools, permissions, session APIs, and UI/plugin surfaces.
+
+External documentation is evidence for comparison only. `TEST_PLAN.md` and commit-addressed local receipts remain the oracle for Octocode implementation readiness.

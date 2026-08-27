@@ -154,7 +154,7 @@ describe('wrapText', () => {
   });
 
   it('never emits a line wider than the budget for multi-wrap prose', () => {
-    const lines = wrapText('The self-working coding agent: the Pi runtime driven by the Octocode harness.', 40);
+    const lines = wrapText('The self-working coding agent: the native runtime driven by the Octocode harness.', 40);
     for (const l of lines) expect(visibleLength(l)).toBeLessThanOrEqual(40);
   });
 });

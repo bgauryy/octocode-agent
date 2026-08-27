@@ -1,0 +1,13 @@
+import type { AgentEventType } from './events.js';
+import type { EventId, Revision, SessionId } from './identity.js';
+export type HookScope = 'managed' | 'user' | 'workspace' | 'plugin';
+export interface HookSourceDescriptor { readonly id: string; readonly scope: HookScope; readonly provenance: string; readonly managed: boolean; readonly pluginId?: string; readonly rawHash: string; readonly normalizedHash: string; readonly trust: 'trusted' | 'review-required' | 'denied'; readonly revision: Revision; readonly discoveryOrder: number; }
+export type HookHandlerDefinition =
+  | { readonly type: 'command'; readonly command: string; readonly commandWindows?: string; readonly timeoutSeconds: number; readonly statusMessage?: string; readonly additionalContextLimit?: number; readonly async: boolean }
+  | { readonly type: 'mcp_tool'; readonly server: string; readonly tool: string; readonly input?: unknown; readonly timeoutSeconds: number; readonly statusMessage?: string; readonly async: boolean }
+  | { readonly type: 'unsupported'; readonly originalType: string; readonly reason: string; readonly definition: unknown };
+export interface HookMatcherGroup { readonly matcher?: string; readonly handlers: readonly HookHandlerDefinition[]; readonly declarationOrder: number; }
+export interface CodexHookConfiguration { readonly schemaVersion: 1; readonly hooks: Readonly<Partial<Record<'PreToolUse' | 'PermissionRequest' | 'PostToolUse' | 'PreCompact' | 'PostCompact' | 'UserPromptSubmit' | 'SubagentStart' | 'SubagentStop' | 'Stop' | 'SessionStart' | 'SessionEnd', readonly HookMatcherGroup[]>>>; readonly unsupported: readonly { readonly event: string; readonly definition: unknown }[]; }
+export interface HookInvocation<T = unknown> { readonly eventId: EventId; readonly eventType: AgentEventType; readonly sourceId: string; readonly handlerIndex: number; readonly sessionId: SessionId; readonly input: Readonly<T>; readonly deadline: number; readonly signal: AbortSignal; }
+export type HookDecision = { readonly kind: 'continue' } | { readonly kind: 'stop'; readonly reason: string } | { readonly kind: 'allow' } | { readonly kind: 'deny'; readonly reason: string } | { readonly kind: 'no-decision' } | { readonly kind: 'rewrite'; readonly payload: unknown } | { readonly kind: 'context'; readonly text: string } | { readonly kind: 'suppress' };
+export interface HookExecutionReceipt { readonly eventId: EventId; readonly sourceHash: string; readonly handlerHash: string; readonly order: number; readonly startedAt: number; readonly endedAt: number; readonly outcome: 'success' | 'timeout' | 'cancelled' | 'failed' | 'skipped'; readonly decisionDigest?: string; readonly spillBytes: number; readonly redactions: number; readonly diagnostic?: string; }

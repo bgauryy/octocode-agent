@@ -1,6 +1,6 @@
 # AGENTS.md — Octocode Monorepo
 
-Default agent guide for this repo (the agent-focused slice of the Octocode monorepo: harness + coordination + the branded launcher). Package exception: work in `packages/octocode-awareness` also reads [`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md). Internals: each package's `ARCHITECTURE.md` when present.
+Default agent guide for this repo (the agent-focused slice of the Octocode monorepo: native agent core + launcher + supported Pi adapter + coordination). Package exception: work in `packages/octocode-awareness` also reads [`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md). Internals: each package's `ARCHITECTURE.md` when present.
 
 ## Dogfood
 
@@ -25,25 +25,28 @@ Access: `packages/*/src/`, `tests/`, `docs/` ✅ · `*.json`, `*.config.*`, `Car
 ## Architecture
 
 ```
- AGENT     octocode-agent  ──launches──▶  Pi + @octocodeai/pi-extension (harness)
- HARNESS   @octocodeai/pi-extension  ── bundles ▶ native tools, CLIs, skills, system prompt, Awareness wiring
+ AGENT     octocode-agent  ──composes──▶  @octocodeai/agent-core + native transports/OpenTUI
+ CORE      @octocodeai/agent-core  ── owns ▶ host-neutral runtime, lifecycle, policy, session, settings, hooks/plugins contracts
+ PI        @octocodeai/pi-extension  ── adapts ▶ supported Pi 0.84.2 host + bundles tools, CLIs, skills, prompt, Awareness wiring
  COORD     @octocodeai/octocode-awareness  (SQLite, zero npm runtime deps) ── used by ▶ harness + repo skill
  CONFIG    @octocodeai/config  (env/config loader, zero deps) ── consumed/bundled by ▶ harness and skills
  EXTERNAL  (npm, not in this workspace)  @octocodeai/config · @octocodeai/octocode-tools-core · @octocodeai/octocode-engine
                                        @octocodeai/octocode-core · @octocodeai/mcp · octocode-mcp-vscode
 ```
 
-This repo ships the agent, harness, and coordination layers. The config loader (`@octocodeai/config`), tool-execution brain (`octocode-tools-core`, `octocode-engine`, `octocode-core`), and the MCP / VS-Code interfaces are published from sibling repos and consumed by `@octocodeai/pi-extension` as npm deps. Never duplicate `getOctocodeHome` or `.env` parsing — use `@octocodeai/config`.
+This repo ships the native agent core, launcher, supported Pi adapter, test harness, and coordination layers. The config loader (`@octocodeai/config`), tool-execution brain (`octocode-tools-core`, `octocode-engine`, `octocode-core`), and the MCP / VS-Code interfaces are published from sibling repos. Never duplicate `getOctocodeHome` or `.env` parsing — use `@octocodeai/config`.
 
 ## Packages
 
-Three workspace packages (plus one vendored CLI build when present). Prefer each package's `AGENTS.md` / `docs/` over guessing.
+Five workspace packages (plus one vendored CLI build when present). Prefer each package's `AGENTS.md` / `docs/` over guessing.
 
 | Package | npm name | What it does | Dig deeper |
 |---|---|---|---|
+| [`packages/octocode-agent-core`](packages/octocode-agent-core) | `@octocodeai/agent-core` | Host-neutral contracts and runtime kernel: tools/commands, lifecycle/policy, sessions/compaction, settings/models, hooks/plugins, RPC/UI ports, and conformance boundaries. It imports no Pi, OpenTUI, launcher, browser, or filesystem implementation types. | [architecture](packages/octocode-agent-core/ARCHITECTURE.md) · [README](packages/octocode-agent-core/README.md) |
+| [`packages/octocode-agent-testing`](packages/octocode-agent-testing) | `@octocodeai/agent-testing` | Deterministic Pi/native host mocks, normalized trace comparison, effect ledger, and shared conformance utilities. | [README](packages/octocode-agent-testing/README.md) |
 | [`packages/octocode-pi-extension`](packages/octocode-pi-extension) | `@octocodeai/pi-extension` | The Pi harness extension. Bundles the native tool set (from the external brain packages), the `octocode` + `octocode-awareness` CLIs, the system prompt, Awareness wiring, and launcher-consumed Octocode surface/profile helpers; sets `$OCTOCODE_CLI` and `$OCTOCODE_AWARENESS_CLI` at load. This is where the agent gets its tools, skills, prompt, and core runtime policy. | [docs index](packages/octocode-pi-extension/docs/README.md) · [TOOLS](packages/octocode-pi-extension/docs/TOOLS.md) · [AWARENESS flow](packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) · [REFLECT](packages/octocode-pi-extension/docs/REFLECT.md) · [OVERRIDES](packages/octocode-pi-extension/docs/OVERRIDES.md) |
 | [`packages/octocode-awareness`](packages/octocode-awareness) | `@octocodeai/octocode-awareness` | Shared-repo coordination + memory/hooks/reflection (SQLite, zero npm runtime deps). Owns plans/tasks/WORK, file locks, signals, verification, and reflection. Canonical skill source: repo-root `skills/octocode-awareness`. Local build lives in `packages/octocode-awareness/out/`: `out/index.js` (programmatic/library entry) + `out/octocode-awareness.js` (CLI binary). | [AGENTS](packages/octocode-awareness/AGENTS.md) · [docs index](packages/octocode-awareness/docs/README.md) · [HOW_IT_WORKS](packages/octocode-awareness/docs/HOW_IT_WORKS.md) |
-| [`packages/octocode-agent`](packages/octocode-agent) | `octocode-agent` | Branded self-working agent CLI — launches Pi with `@octocodeai/pi-extension` as the harness. Owns launch/update/setup/auth/doctor/session UX and process execution only; imports core policy directly from the extension rather than keeping shims. One command (`octocode-agent`), one update path. | [docs index](packages/octocode-agent/docs/README.md) · [PI_INTEGRATION](packages/octocode-agent/docs/PI_INTEGRATION.md) |
+| [`packages/octocode-agent`](packages/octocode-agent) | `octocode-agent` | Branded native agent CLI. Composes agent core with OpenAI-compatible model transport, live Octocode tool schemas, transactional sessions/settings, print/JSON/RPC modes, and an OpenTUI terminal. It has no native Pi dependency. | [docs index](packages/octocode-agent/docs/README.md) |
 
 Config: `@octocodeai/config` is external to this checkout. `packages/octocode-pi-extension/src/env.ts` re-exports it for repo-time use; the extension build inlines it into `dist/env.js` and injects `octocode-config.mjs` into skill script directories.
 

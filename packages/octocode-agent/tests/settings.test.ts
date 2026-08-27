@@ -45,7 +45,7 @@ describe('ensureOctocodeThemeSetting', () => {
     expect(readSettings(dir)['theme']).toBe(DEFAULT_OCTOCODE_THEME);
   });
 
-  it('replaces plain Pi themes with octocode-dark', () => {
+  it('replaces plain themes with octocode-dark', () => {
     const dir = tmpDir();
     fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ theme: 'dark', defaultModel: 'x' }));
     expect(ensureOctocodeThemeSetting(dir)).toBe(true);
@@ -67,7 +67,7 @@ describe('ensureOctocodeThemeSetting', () => {
 });
 
 describe('config key allowlist', () => {
-  it('allows theme writes (Pi theme contract key)', () => {
+  it('allows native theme writes', () => {
     expect(ALLOWED_CONFIG_KEYS).toContain('theme');
     expect(isAllowedConfigKey('theme')).toBe(true);
   });

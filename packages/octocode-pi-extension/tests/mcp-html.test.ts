@@ -32,6 +32,42 @@ test('settings actions apply typed session runtime controls', async () => {
   assert.throws(() => parseMcpManagerAction({ action: 'set-permission-level', level: 'unsafe' }), /Invalid permission level/);
 });
 
+test('settings actions use canonical optimistic revisions and redacted provenance', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-canonical-settings-'));
+  roots.push(root);
+  const ctx = { cwd: root } as unknown as PiContext;
+  await applyMcpManagerAction(parseMcpManagerAction({ action: 'set-footer-density', density: 'compact', expectedRevision: '0' }), ctx);
+  await assert.rejects(
+    applyMcpManagerAction(parseMcpManagerAction({ action: 'set-footer-density', density: 'full', expectedRevision: '0' }), ctx),
+    /changed since snapshot/i,
+  );
+  const html = await renderMcpManagerPage(ctx);
+  assert.match(html, /data-settings-revision="1"/);
+  assert.match(html, /runtime\.footer-density/);
+  assert.match(html, /effective provenance runtime/);
+});
+
+test('hook review actions bind settings.html to the canonical exact-hash catalog', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-hook-settings-'));
+  roots.push(root);
+  const hookDir = path.join(root, '.codex');
+  fs.mkdirSync(hookDir, { recursive: true });
+  fs.writeFileSync(path.join(hookDir, 'hooks.json'), JSON.stringify({ hooks: {
+    PreToolUse: [{ matcher: '^write$', hooks: [{ type: 'command', command: './check.sh' }] }],
+  } }));
+  const ctx = { cwd: root, isProjectTrusted: () => true } as unknown as PiContext;
+  const before = await renderMcpManagerPage(ctx);
+  const review = before.match(/data-action="review-hook" data-source="([^"]+)" data-hash="([a-f0-9]{64})"/);
+  const hookRevision = before.match(/id="hooks"[\s\S]*?<span>revision ([^<]+)<\/span>/)?.[1];
+  assert.ok(review);
+  assert.ok(hookRevision);
+  await applyMcpManagerAction(parseMcpManagerAction({ action: 'review-hook', source: review[1], hash: review[2], expectedRevision: hookRevision }), ctx);
+  const after = await renderMcpManagerPage(ctx);
+  assert.match(after, /badge on">trusted/);
+  assert.equal(after.includes(`data-action="review-hook" data-source="${review[1]}" data-hash="${review[2]}"`), false);
+  assert.throws(() => parseMcpManagerAction({ action: 'review-hook', source: review[1], hash: 'bad' }), /Invalid hook review hash/);
+});
+
 test('MCP manager action schema accepts references and rejects raw secret fields', () => {
   const action = parseMcpManagerAction({
     action: 'add',
@@ -104,6 +140,14 @@ test('settings.html shows live commands plus the complete skill/MCP surface and 
   assert.equal(SETTINGS_HTML_FILE, 'settings.html');
   assert.match(html, /Octocode · extension control center/);
   assert.match(html, /One extension control center/);
+  for (const section of ['overview', 'appearance', 'models', 'hooks', 'plugins', 'diagnostics']) {
+    assert.match(html, new RegExp(`id="${section}"`));
+    assert.match(html, new RegExp(`href="#${section}"`));
+  }
+  assert.match(html, /Pi host adapter/);
+  assert.match(html, /canonical agent-core settings service/);
+  assert.match(html, /exact-definition trust/);
+  assert.match(html, /transactional contribution registry/);
   assert.match(html, /Runtime controls/);
   assert.match(html, /data-action="set-footer-density"/);
   assert.match(html, /data-action="set-permission-level"/);

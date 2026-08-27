@@ -1,12 +1,12 @@
 {
   "name": "octocode-agent",
   "version": "1.1.0",
-  "description": "Self-working coding agent platform: launches Pi with the Octocode harness (@octocodeai/pi-extension) as its core — one branded command, one update path.",
+  "description": "Native Octocode coding-agent runtime, transports, OpenTUI terminal, sessions, and settings — one branded command and no native Pi dependency.",
   "keywords": [
     "ai-coding",
     "coding-agent",
     "octocode",
-    "pi",
+    "native-agent",
     "agent",
     "cli"
   ],
@@ -24,17 +24,21 @@
   "files": [
     "out/**",
     "docs/**",
+    "!docs/PI_INTEGRATION.md",
+    "!docs/pi-fork.md",
     "README.md",
     "LICENSE"
   ],
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=26.4.0"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@octocodeai/agent-core": "0.1.0",
     "@octocodeai/config": "18.0.1",
     "@octocodeai/octocode-awareness": "1.4.0",
-    "@octocodeai/pi-extension": "^1.5.0"
+    "@opentui/core": "0.5.8",
+    "octocode": "18.3.0",
+    "web-tree-sitter": "0.25.10"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
@@ -52,9 +56,10 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "verify": "yarn typecheck && yarn test",
+    "check:no-native-pi": "node scripts/check-no-native-pi.mjs",
     "check:no-workspace": "node scripts/check-no-workspace-protocol.mjs",
     "sync:version:publish": "node scripts/sync-version.mjs",
-    "prepack": "node scripts/check-no-workspace-protocol.mjs && yarn build",
+    "prepack": "node scripts/check-no-workspace-protocol.mjs && yarn build && yarn check:no-native-pi",
     "prepublishOnly": "node scripts/check-no-workspace-protocol.mjs"
   },
   "publishConfig": {

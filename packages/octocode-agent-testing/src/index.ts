@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+export * from './host-conformance.js';
+
 export type MockPiMode = 'tui' | 'rpc' | 'json' | 'print';
 
 export interface MockToolResult {

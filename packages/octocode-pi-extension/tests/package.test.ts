@@ -122,7 +122,7 @@ test('failed normal build removes package-root skill staging', () => {
     false,
     'normal build failure must not leave a second discoverable skill tree'
   );
-});
+}, 60_000);
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 

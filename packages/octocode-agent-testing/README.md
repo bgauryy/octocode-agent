@@ -1,6 +1,6 @@
 # @octocodeai/agent-testing
 
-Deterministic mocks for complete Octocode/Pi flows. The package replaces ad-hoc test doubles for Pi tool and command registration, lifecycle events, terminal UI calls, scripted user dialogs, agent turns, browser callbacks, cancellation, and session restart/fork continuity.
+Deterministic mocks and host-conformance utilities for complete Octocode flows. The package replaces ad-hoc test doubles for Pi tool and command registration, lifecycle events, terminal UI calls, scripted user dialogs, agent turns, browser callbacks, cancellation, and session restart/fork continuity. It also runs the same scenarios against Pi-backed and native hosts, hashes normalized traces, and reports their first semantic divergence.
 
 ```ts
 import { createPiFlowHarness } from '@octocodeai/agent-testing';
@@ -47,3 +47,11 @@ The harness intentionally uses structural host types instead of importing the Pi
 For interactive widgets, a `customs` script may be either a final outcome or `{ inputs: [...] }`. The latter instantiates the registered component and sends real key/input bytes, so recommended selection, Back, free text, cancellation, and timeout can be tested without bypassing the widget.
 
 Script queues fail when exhausted. Tool/command names fail on duplicate registration. Unknown, blocked, and pre-aborted tool calls fail explicitly, so an incomplete mock cannot silently make a flow pass.
+
+## Cross-host conformance
+
+`CANONICAL_HOST_SCENARIOS` freezes the RFC's 14 shared scenarios: lifecycle, deterministic turns, streaming tools, policy denial, tool failures, cancellation, steering/follow-up, sessions, compaction, UI, transports, persistence recovery, Codex hooks, and plugin lifecycle.
+
+`createCanonicalHostAdapter()` maps structural Pi or native scenario handlers without importing either production package. `runCanonicalHostConformance()` executes every scenario against both adapters. The lower-level `runHostConformance()` accepts an explicit scenario subset.
+
+The runner normalizes sequence numbers, timestamps, request/session IDs, workspace paths, ANSI styling, errors, maps, and sets. Each scenario result includes separate SHA-256 trace and effect-ledger comparisons plus the first semantic divergence. `EffectLedger` rejects duplicate effect IDs and prevents model, tool, process, network, write, or message effects during shadow execution.

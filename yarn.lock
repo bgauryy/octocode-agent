@@ -632,7 +632,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@earendil-works/pi-tui@npm:^0.84.2":
+"@earendil-works/pi-tui@npm:0.84.2, @earendil-works/pi-tui@npm:^0.84.2":
   version: 0.84.2
   resolution: "@earendil-works/pi-tui@npm:0.84.2"
   dependencies:
@@ -1680,6 +1680,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@octocodeai/agent-core@npm:0.1.0, @octocodeai/agent-core@workspace:packages/octocode-agent-core":
+  version: 0.0.0-use.local
+  resolution: "@octocodeai/agent-core@workspace:packages/octocode-agent-core"
+  dependencies:
+    "@types/node": "npm:^26.2.0"
+    typescript: "npm:^5.9.3"
+    vitest: "npm:^4.1.11"
+  languageName: unknown
+  linkType: soft
+
 "@octocodeai/agent-testing@npm:^0.1.0, @octocodeai/agent-testing@workspace:packages/octocode-agent-testing":
   version: 0.0.0-use.local
   resolution: "@octocodeai/agent-testing@workspace:packages/octocode-agent-testing"
@@ -1834,15 +1844,16 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@octocodeai/pi-extension@npm:^1.5.0, @octocodeai/pi-extension@workspace:packages/octocode-pi-extension":
+"@octocodeai/pi-extension@workspace:packages/octocode-pi-extension":
   version: 0.0.0-use.local
   resolution: "@octocodeai/pi-extension@workspace:packages/octocode-pi-extension"
   dependencies:
     "@earendil-works/pi-coding-agent": "npm:0.84.2"
-    "@earendil-works/pi-tui": "npm:^0.84.2"
+    "@earendil-works/pi-tui": "npm:0.84.2"
     "@modelcontextprotocol/client": "npm:^2.0.0"
     "@modelcontextprotocol/core": "npm:^2.0.0"
     "@modelcontextprotocol/server": "npm:^2.0.0"
+    "@octocodeai/agent-core": "npm:0.1.0"
     "@octocodeai/agent-testing": "npm:^0.1.0"
     "@octocodeai/config": "npm:^18.0.1"
     "@octocodeai/octocode-awareness": "npm:^1.3.0"
@@ -1856,13 +1867,14 @@ __metadata:
     marked: "npm:^18.0.5"
     octocode: "npm:^18.3.0"
     octocode-mcp: "npm:^18.2.2"
+    smol-toml: "npm:^1.8.0"
     typebox: "npm:^1.3.16"
     typescript: "npm:^5.9.3"
     vitest: "npm:^4.1.11"
     zod: "npm:^4.4.3"
     zustand: "npm:^5.0.15"
   peerDependencies:
-    "@earendil-works/pi-coding-agent": ^0.84.2
+    "@earendil-works/pi-coding-agent": 0.84.2
   dependenciesMeta:
     ffmpeg-static:
       optional: true
@@ -2319,6 +2331,102 @@ __metadata:
   version: 1.43.0
   resolution: "@opentelemetry/semantic-conventions@npm:1.43.0"
   checksum: 10c0/ea4b4b07c9414b0c5e7ce7349f608cb2572d16922d96077fb0882b59f173ec9b94aada74896bd5dd4aeb1759924503bd5a34b6dc2847a84c36f71626a0578ec4
+  languageName: node
+  linkType: hard
+
+"@opentui/core-darwin-arm64@npm:0.5.8":
+  version: 0.5.8
+  resolution: "@opentui/core-darwin-arm64@npm:0.5.8"
+  conditions: os=darwin & cpu=arm64
+  languageName: node
+  linkType: hard
+
+"@opentui/core-darwin-x64@npm:0.5.8":
+  version: 0.5.8
+  resolution: "@opentui/core-darwin-x64@npm:0.5.8"
+  conditions: os=darwin & cpu=x64
+  languageName: node
+  linkType: hard
+
+"@opentui/core-linux-arm64-musl@npm:0.5.8":
+  version: 0.5.8
+  resolution: "@opentui/core-linux-arm64-musl@npm:0.5.8"
+  conditions: os=linux & cpu=arm64 & libc=musl
+  languageName: node
+  linkType: hard
+
+"@opentui/core-linux-arm64@npm:0.5.8":
+  version: 0.5.8
+  resolution: "@opentui/core-linux-arm64@npm:0.5.8"
+  conditions: os=linux & cpu=arm64
+  languageName: node
+  linkType: hard
+
+"@opentui/core-linux-x64-musl@npm:0.5.8":
+  version: 0.5.8
+  resolution: "@opentui/core-linux-x64-musl@npm:0.5.8"
+  conditions: os=linux & cpu=x64 & libc=musl
+  languageName: node
+  linkType: hard
+
+"@opentui/core-linux-x64@npm:0.5.8":
+  version: 0.5.8
+  resolution: "@opentui/core-linux-x64@npm:0.5.8"
+  conditions: os=linux & cpu=x64
+  languageName: node
+  linkType: hard
+
+"@opentui/core-win32-arm64@npm:0.5.8":
+  version: 0.5.8
+  resolution: "@opentui/core-win32-arm64@npm:0.5.8"
+  conditions: os=win32 & cpu=arm64
+  languageName: node
+  linkType: hard
+
+"@opentui/core-win32-x64@npm:0.5.8":
+  version: 0.5.8
+  resolution: "@opentui/core-win32-x64@npm:0.5.8"
+  conditions: os=win32 & cpu=x64
+  languageName: node
+  linkType: hard
+
+"@opentui/core@npm:0.5.8":
+  version: 0.5.8
+  resolution: "@opentui/core@npm:0.5.8"
+  dependencies:
+    "@opentui/core-darwin-arm64": "npm:0.5.8"
+    "@opentui/core-darwin-x64": "npm:0.5.8"
+    "@opentui/core-linux-arm64": "npm:0.5.8"
+    "@opentui/core-linux-arm64-musl": "npm:0.5.8"
+    "@opentui/core-linux-x64": "npm:0.5.8"
+    "@opentui/core-linux-x64-musl": "npm:0.5.8"
+    "@opentui/core-win32-arm64": "npm:0.5.8"
+    "@opentui/core-win32-x64": "npm:0.5.8"
+    bun-ffi-structs: "npm:0.3.1"
+    diff: "npm:9.0.0"
+    marked: "npm:17.0.1"
+    string-width: "npm:7.2.0"
+    strip-ansi: "npm:7.1.2"
+  peerDependencies:
+    web-tree-sitter: 0.25.10
+  dependenciesMeta:
+    "@opentui/core-darwin-arm64":
+      optional: true
+    "@opentui/core-darwin-x64":
+      optional: true
+    "@opentui/core-linux-arm64":
+      optional: true
+    "@opentui/core-linux-arm64-musl":
+      optional: true
+    "@opentui/core-linux-x64":
+      optional: true
+    "@opentui/core-linux-x64-musl":
+      optional: true
+    "@opentui/core-win32-arm64":
+      optional: true
+    "@opentui/core-win32-x64":
+      optional: true
+  checksum: 10c0/99193baecbc64ea0c2a0d6e86d636b10ab23b2cc9df973ee664c7a0f04f41fc585154d5252e21ec6e75713a9a8f835ca276e185e28cbbb95d993b912aa299355
   languageName: node
   linkType: hard
 
@@ -3262,6 +3370,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"ansi-regex@npm:^6.0.1, ansi-regex@npm:^6.2.2":
+  version: 6.3.0
+  resolution: "ansi-regex@npm:6.3.0"
+  checksum: 10c0/bc047786d0531f1f22d1e22e9863e8554488a399f1ee5270b753efa6de938a788d27456f2b256770f11fdd8b1e847483bc1b55ddc2b3ffe82ec45c875292c651
+  languageName: node
+  linkType: hard
+
 "applicationinsights@npm:2.9.8":
   version: 2.9.8
   resolution: "applicationinsights@npm:2.9.8"
@@ -3493,6 +3608,15 @@ __metadata:
   version: 1.1.2
   resolution: "buffer-from@npm:1.1.2"
   checksum: 10c0/124fff9d66d691a86d3b062eff4663fe437a9d9ee4b47b1b9e97f5a5d14f6d5399345db80f796827be7c95e70a8e765dd404b7c3ff3b3324f98e9b0c8826cc34
+  languageName: node
+  linkType: hard
+
+"bun-ffi-structs@npm:0.3.1":
+  version: 0.3.1
+  resolution: "bun-ffi-structs@npm:0.3.1"
+  peerDependencies:
+    typescript: ^5
+  checksum: 10c0/b1b30c7d5aaf58baa1ecc986ab7d1166eee45bf12e519f3133ecd8ae81460600fdffbcf82d71cd9dfded6b5ab54b11dd832eedc0ebddfd1367798f60ae5e3d79
   languageName: node
   linkType: hard
 
@@ -3846,6 +3970,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"diff@npm:9.0.0":
+  version: 9.0.0
+  resolution: "diff@npm:9.0.0"
+  checksum: 10c0/a971cc88f66071a33bd3942db2f51b57d484e9856265ae45cf44fb28ab2fde91f132d9c26d8be0fb6082d2be94d29e1295c1adb251b7461935d6a2dd304cd161
+  languageName: node
+  linkType: hard
+
 "dom-serializer@npm:^2.0.0":
   version: 2.0.0
   resolution: "dom-serializer@npm:2.0.0"
@@ -3931,6 +4062,13 @@ __metadata:
   dependencies:
     shimmer: "npm:^1.2.0"
   checksum: 10c0/d16f4f2da4b46cee09c900260d8527c58b32b6e1288c734a561f867dac8bf4da7f6aa429b6db1e5a90f688d754d86456bd22ee99f2fac4d9d955ef6ef8c19e55
+  languageName: node
+  linkType: hard
+
+"emoji-regex@npm:^10.3.0":
+  version: 10.6.0
+  resolution: "emoji-regex@npm:10.6.0"
+  checksum: 10c0/1e4aa097bb007301c3b4b1913879ae27327fdc48e93eeefefe3b87e495eb33c5af155300be951b4349ff6ac084f4403dc9eff970acba7c1c572d89396a9a32d7
   languageName: node
   linkType: hard
 
@@ -4728,7 +4866,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"get-east-asian-width@npm:1.6.0":
+"get-east-asian-width@npm:1.6.0, get-east-asian-width@npm:^1.0.0":
   version: 1.6.0
   resolution: "get-east-asian-width@npm:1.6.0"
   checksum: 10c0/7e72e9550fd49ca5b246f9af6bb2afc129c96412845ff6556b3274fd44817a381702ca17028efe9866b261a3d44254cbf21e6c90cf05b4b61675630af776d431
@@ -5563,6 +5701,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"marked@npm:17.0.1":
+  version: 17.0.1
+  resolution: "marked@npm:17.0.1"
+  bin:
+    marked: bin/marked.js
+  checksum: 10c0/0197337aad33882308cea52d2c86d7b830a89be729a4010a26a488ae1c224cdc7520b8cce056832a81a127fc39a3827f45e3865c1ff257324cb553cb06ce0e57
+  languageName: node
+  linkType: hard
+
 "marked@npm:18.0.5":
   version: 18.0.5
   resolution: "marked@npm:18.0.5"
@@ -5867,15 +6014,17 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "octocode-agent@workspace:packages/octocode-agent"
   dependencies:
-    "@earendil-works/pi-coding-agent": "npm:0.84.2"
+    "@octocodeai/agent-core": "npm:0.1.0"
     "@octocodeai/config": "npm:18.0.1"
     "@octocodeai/octocode-awareness": "npm:1.4.0"
-    "@octocodeai/pi-extension": "npm:^1.5.0"
+    "@opentui/core": "npm:0.5.8"
     "@types/node": "npm:^26.2.0"
     "@vitest/coverage-v8": "npm:^4.1.11"
     esbuild: "npm:^0.28.2"
+    octocode: "npm:18.3.0"
     typescript: "npm:^5.9.3"
     vitest: "npm:^4.1.11"
+    web-tree-sitter: "npm:0.25.10"
   bin:
     octocode-agent: ./out/octocode-agent.mjs
   languageName: unknown
@@ -5896,7 +6045,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"octocode@npm:^18.3.0":
+"octocode@npm:18.3.0, octocode@npm:^18.3.0":
   version: 18.3.0
   resolution: "octocode@npm:18.3.0"
   dependencies:
@@ -6702,6 +6851,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"smol-toml@npm:^1.8.0":
+  version: 1.8.0
+  resolution: "smol-toml@npm:1.8.0"
+  checksum: 10c0/4e01dbfb7c7af142176b037ebedaccccafb8229cc873feaa47c184ee31073d86e30b4b1b0fe9a5a6d083ed3ce21615eda9e81d1f5d779ad8b2e2e9459b900aea
+  languageName: node
+  linkType: hard
+
 "socks-proxy-agent@npm:^8.0.5":
   version: 8.0.5
   resolution: "socks-proxy-agent@npm:8.0.5"
@@ -6765,12 +6921,41 @@ __metadata:
   languageName: node
   linkType: hard
 
+"string-width@npm:7.2.0":
+  version: 7.2.0
+  resolution: "string-width@npm:7.2.0"
+  dependencies:
+    emoji-regex: "npm:^10.3.0"
+    get-east-asian-width: "npm:^1.0.0"
+    strip-ansi: "npm:^7.1.0"
+  checksum: 10c0/eb0430dd43f3199c7a46dcbf7a0b34539c76fe3aa62763d0b0655acdcbdf360b3f66f3d58ca25ba0205f42ea3491fa00f09426d3b7d3040e506878fc7664c9b9
+  languageName: node
+  linkType: hard
+
 "string_decoder@npm:^1.1.1":
   version: 1.3.0
   resolution: "string_decoder@npm:1.3.0"
   dependencies:
     safe-buffer: "npm:~5.2.0"
   checksum: 10c0/810614ddb030e271cd591935dcd5956b2410dd079d64ff92a1844d6b7588bf992b3e1b69b0f4d34a3e06e0bd73046ac646b5264c1987b20d0601f81ef35d731d
+  languageName: node
+  linkType: hard
+
+"strip-ansi@npm:7.1.2":
+  version: 7.1.2
+  resolution: "strip-ansi@npm:7.1.2"
+  dependencies:
+    ansi-regex: "npm:^6.0.1"
+  checksum: 10c0/0d6d7a023de33368fd042aab0bf48f4f4077abdfd60e5393e73c7c411e85e1b3a83507c11af2e656188511475776215df9ca589b4da2295c9455cc399ce1858b
+  languageName: node
+  linkType: hard
+
+"strip-ansi@npm:^7.1.0":
+  version: 7.2.0
+  resolution: "strip-ansi@npm:7.2.0"
+  dependencies:
+    ansi-regex: "npm:^6.2.2"
+  checksum: 10c0/544d13b7582f8254811ea97db202f519e189e59d35740c46095897e254e4f1aa9fe1524a83ad6bc5ad67d4dd6c0281d2e0219ed62b880a6238a16a17d375f221
   languageName: node
   linkType: hard
 
@@ -7463,6 +7648,18 @@ __metadata:
   version: 0.24.5
   resolution: "web-tree-sitter@npm:0.24.5"
   checksum: 10c0/e6b88e4967227ab4272fb20a063882fe877c6a948a0367e6fae324807a31f082151f5110f1f2beeddba98714af20bc13cb6b62aac6aad986e24da31796ba1ce1
+  languageName: node
+  linkType: hard
+
+"web-tree-sitter@npm:0.25.10":
+  version: 0.25.10
+  resolution: "web-tree-sitter@npm:0.25.10"
+  peerDependencies:
+    "@types/emscripten": ^1.40.0
+  peerDependenciesMeta:
+    "@types/emscripten":
+      optional: true
+  checksum: 10c0/8056263c75f59c8f992584386f85675fdce94f67eec506970f49d203a7d25effa96a4736eee5b06f06dc4d8f01339f68d9d4e97d713a6517d19db1f1c0954e06
   languageName: node
   linkType: hard
 

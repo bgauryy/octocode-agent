@@ -1,5 +1,7 @@
 # octocode-agent × Pi — integration research & design
 
+> Historical migration reference. The native `octocode-agent` no longer imports or launches Pi. Current Pi support is isolated in `@octocodeai/pi-extension`; current native architecture is documented in the package README and `@octocodeai/agent-core` architecture.
+
 How the `octocode-agent` platform drives the Pi host, and how the Octocode harness
 (`@octocodeai/pi-extension`, **the core**) plugs in. All Pi facts below are verified
 against the live docs of `@earendil-works/pi-coding-agent` and the launcher package

@@ -605,6 +605,11 @@ export type PromptMode = 'append' | 'octocode-first';
 
 export interface OctocodePiExtensionOptions {
   promptMode?: PromptMode;
+  /**
+   * Explicit Pi host version for embedders that isolate peer package metadata.
+   * Normal Pi activation resolves the installed host package version instead.
+   */
+  hostVersion?: string;
 }
 
 /**

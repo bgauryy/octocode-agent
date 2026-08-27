@@ -1,58 +1,56 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { listSessions } from '../src/sessions.js';
 
-let tmps: string[] = [];
-function tmpRoot(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-sessions-'));
-  tmps.push(dir);
-  return dir;
+import { listProjectSessions, listSessions, nativeSessionsDir } from '../src/sessions.js';
+
+const temporaryDirectories: string[] = [];
+function temporaryRoot(): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-sessions-'));
+  temporaryDirectories.push(directory);
+  return directory;
 }
 afterEach(() => {
-  for (const d of tmps) fs.rmSync(d, { recursive: true, force: true });
-  tmps = [];
+  for (const directory of temporaryDirectories) fs.rmSync(directory, { recursive: true, force: true });
+  temporaryDirectories.length = 0;
 });
 
-// This test pins the exact Pi session-header contract that sessions.ts depends
-// on. The fixture below is a VERBATIM first JSONL line as written by Pi
-// (`~/.pi/agent/sessions/<bucket>/<ts>_<uuid>.jsonl`), key order and all:
-//   keys = type,version,id,timestamp,cwd  (confirmed against a live 0.80.3 file)
-// If a future Pi release renames/moves `type`, `id`, or `cwd`, this breaks
-// loudly instead of the launcher silently listing nothing.
-const REAL_PI_HEADER =
-  '{"type":"session","version":3,"id":"019f4767-328d-7402-a0e3-4f57a6ebc73a",' +
-  '"timestamp":"2026-07-09T15:02:53.325Z","cwd":"/Users/bgaryy/code/octocode-server"}';
+function writeSession(root: string, id: string, cwd: string, timestamp: number): string {
+  const file = path.join(root, `${encodeURIComponent(id)}.json`);
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    schemaVersion: 1,
+    sessionId: id,
+    revision: '2',
+    events: [
+      { schemaVersion: 1, sessionId: id, eventId: `${id}:1`, revision: '1', sequence: 1, timestamp, visibility: 'internal', event: { type: 'session.created' } },
+      { schemaVersion: 1, sessionId: id, eventId: `${id}:2`, revision: '2', sequence: 2, timestamp, visibility: 'internal', event: { type: 'custom.appended', kind: 'session.cwd', value: cwd } },
+    ],
+  }));
+  fs.utimesSync(file, new Date(timestamp), new Date(timestamp));
+  return file;
+}
 
-describe('sessions header contract (real Pi bytes)', () => {
-  it('extracts id + cwd from a verbatim Pi session header line', () => {
-    const root = tmpRoot();
-    const bucket = path.join(root, '--Users-bgaryy-code-octocode-server--');
-    fs.mkdirSync(bucket, { recursive: true });
-    const file = path.join(bucket, '2026-07-09T15-02-53-325Z_019f4767-328d-7402-a0e3-4f57a6ebc73a.jsonl');
-    // Header line + a following event line, as a real session file has.
-    fs.writeFileSync(file, REAL_PI_HEADER + '\n{"type":"message","role":"user"}\n');
-
-    const all = listSessions(root);
-    expect(all).toHaveLength(1);
-    expect(all[0].uuid).toBe('019f4767-328d-7402-a0e3-4f57a6ebc73a');
-    expect(all[0].cwd).toBe('/Users/bgaryy/code/octocode-server');
+describe('native session inventory', () => {
+  it('uses the canonical agent sessions directory', () => {
+    expect(nativeSessionsDir({ OCTOCODE_HOME: '/tmp/octocode-home' })).toBe('/tmp/octocode-home/agent/sessions');
   });
 
-  it('ignores a first line whose type is not "session" (schema drift guard)', () => {
-    const root = tmpRoot();
-    const bucket = path.join(root, '--p--');
-    fs.mkdirSync(bucket, { recursive: true });
-    // type renamed → header treated as absent → cwd falls back to decoded bucket,
-    // uuid falls back to the filename segment. Proves we never trust a wrong shape.
-    fs.writeFileSync(
-      path.join(bucket, 'ts_019f0000-0000-7000-8000-000000000000.jsonl'),
-      '{"type":"session-header","id":"x","cwd":"/should/not/be/used"}\n',
-    );
-    const all = listSessions(root);
-    expect(all).toHaveLength(1);
-    expect(all[0].uuid).toBe('019f0000-0000-7000-8000-000000000000');
-    expect(all[0].cwd).toBe('/p');
+  it('lists native transactional records newest-first and filters by cwd', () => {
+    const root = temporaryRoot();
+    writeSession(root, 'native:older', '/workspace/a', 1_000);
+    writeSession(root, 'native:newer', '/workspace/a', 2_000);
+    writeSession(root, 'native:other', '/workspace/b', 3_000);
+
+    expect(listSessions(root).map((session) => session.uuid)).toEqual(['native:other', 'native:newer', 'native:older']);
+    expect(listProjectSessions('/workspace/a', root).map((session) => session.uuid)).toEqual(['native:newer', 'native:older']);
+  });
+
+  it('skips corrupt and mismatched records', () => {
+    const root = temporaryRoot();
+    fs.writeFileSync(path.join(root, 'corrupt.json'), '{bad json');
+    fs.writeFileSync(path.join(root, 'wrong.json'), JSON.stringify({ schemaVersion: 1, sessionId: 'different', revision: '0', events: [] }));
+    expect(listSessions(root)).toEqual([]);
   });
 });

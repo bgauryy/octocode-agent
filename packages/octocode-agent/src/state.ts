@@ -1,7 +1,7 @@
 /**
  * state.ts — tiny launcher-owned state under the Octocode home.
  *
- * Two things Pi does NOT track for us:
+ * Two launcher-owned concerns:
  *   1. setupVersion   — which onboarding flow the user last completed. Bump
  *      AGENT_STATE_VERSION when the flow changes and configured users get a
  *      one-line refresh nudge at launch (OMP's CURRENT_SETUP_VERSION idea).

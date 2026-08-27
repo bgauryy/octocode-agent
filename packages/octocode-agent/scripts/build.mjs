@@ -18,12 +18,7 @@ await build({
   ...baseOptions,
   entryPoints: [join(packageRoot, 'src', 'cli.ts')],
   outfile,
-  // pi + extension are runtime deps resolved from node_modules, not bundled.
-  external: [
-    ...baseOptions.external,
-    '@earendil-works/pi-coding-agent',
-    '@octocodeai/pi-extension',
-  ],
+  external: [...baseOptions.external],
   banner: { js: '#!/usr/bin/env node' },
   minify: false,
 });
