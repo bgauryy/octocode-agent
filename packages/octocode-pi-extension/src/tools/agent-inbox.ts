@@ -10,11 +10,9 @@
  *   // in the session_shutdown hook (before/alongside cleanupSpawnedAgentsForShutdown):
  *   agentInbox.shutdown();
  *
- * registerAgentInbox also self-registers a pi.on('session_shutdown') guard, so
- * the explicit shutdown() call is a belt-and-braces ordering guarantee: the
- * suppress flag MUST be set before cleanupSpawnedAgentsForShutdown() kills the
- * workers, otherwise the burst of killed/exit ledger events would spam desktop
- * notifications during teardown.
+ * The extension lifecycle owns the single session_shutdown hook and MUST call
+ * shutdown() before cleanupSpawnedAgentsForShutdown(). A second hook here would
+ * receive Pi's already-invalid replacement context and duplicate teardown.
  *
  * Surfaces:
  *  - '/octocode-inbox' command → stage 1 pick a worker (select overlay), stage 2
@@ -27,6 +25,8 @@
 import type { PiContext, PiInstance, WorkerLedgerEntry, WorkerLedgerEventType, NotifyFn } from '../types.js';
 import type { SelectOverlayItem, SelectOverlayOptions } from './ui-overlays.js';
 import { runSelectOverlay } from './ui-overlays.js';
+import { truncatePlainToWidth } from './render-helpers.js';
+import { shortId } from './ids.js';
 import {
   formatElapsed,
   getWorkerTranscript,
@@ -42,6 +42,7 @@ import {
   flashTerminalTitle,
   notificationsEnabled,
   suppressDesktopNotifications,
+  resumeDesktopNotifications,
 } from './desktop-notify.js';
 
 export const OCTOCODE_INBOX_COMMAND = 'octocode-inbox';
@@ -61,6 +62,10 @@ const STATE_GLYPHS: Record<InboxDisplayState, string> = {
   done: '✓', //     ✓
   blocked: '!',
   failed: '✗', //   ✗
+  // The inbox is COLORLESS (glyph + spelled-out state word, no paint), so killed
+  // keeps its own ⊘ rather than reusing failed's ✗ — a distinct glyph is the only
+  // visual signal here. (⊘ also means 'blocked' in the plan surfaces, but that is a
+  // separate, colored domain, so the reuse doesn't confuse in practice.)
   killed: '⊘', //   ⊘
 };
 
@@ -69,8 +74,11 @@ export function inboxDisplayState(entry: Pick<WorkerLedgerEntry, 'status' | 'nor
   if (entry.status === 'killed') return 'killed';
   if (entry.status === 'failed' || entry.normalizedStatus === 'failed') return 'failed';
   if (entry.status === 'running') return 'running';
+  // Exited beats blocked (mirrors agent-tools): a dead [BLOCKED] worker is not
+  // actionable, so the inbox must not offer it as steerable.
+  if (entry.status === 'exited') return 'done';
   if (entry.normalizedStatus === 'blocked') return 'blocked';
-  if (entry.normalizedStatus === 'done' || entry.status === 'exited') return 'done';
+  if (entry.normalizedStatus === 'done') return 'done';
   if (entry.status === 'idle') return 'idle';
   return 'starting';
 }
@@ -86,7 +94,8 @@ function isLiveEntry(entry: Pick<WorkerLedgerEntry, 'status'>): boolean {
 
 function oneLine(text: string, maxChars = SUMMARY_MAX_CHARS): string {
   const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > maxChars ? `${flat.slice(0, maxChars - 1)}…` : flat;
+  // Cell-width aware: emoji/CJK summaries must not be sliced mid-surrogate.
+  return truncatePlainToWidth(flat, maxChars);
 }
 
 /** Last-result summary line: live delta note, else handback result/next, else the latest ledger message. */
@@ -111,7 +120,7 @@ export function buildInboxItems(entries: WorkerLedgerEntry[], now: number = Date
     const summary = inboxSummaryLine(entry);
     return {
       value: entry.agentId,
-      label: `${STATE_GLYPHS[state]} ${entry.name} (${entry.agentId.slice(0, 8)}) · ${state} · ${age}`,
+      label: `${STATE_GLYPHS[state]} ${entry.name} (${shortId(entry.agentId)}) · ${state} · ${age}`,
       description: summary || undefined,
     };
   });
@@ -153,7 +162,7 @@ export async function runAgentInboxOverlay(deps: AgentInboxDeps): Promise<void> 
   const { ctx, notify } = deps;
   const entries = deps.listEntries();
   if (entries.length === 0) {
-    notify(ctx, 'Octocode inbox: no spawned workers this session. Use spawnAgent to delegate work.', 'info');
+    notify(ctx, 'Octocode inbox: no spawned workers this session. Use agent with type:"spawn" to delegate work.', 'info');
     return;
   }
 
@@ -167,7 +176,7 @@ export async function runAgentInboxOverlay(deps: AgentInboxDeps): Promise<void> 
   if (!entry) return;
 
   const action = await deps.runOverlay(ctx, {
-    title: `${entry.name} (${entry.agentId.slice(0, 8)})`,
+    title: `${entry.name} (${shortId(entry.agentId)})`,
     items: buildInboxActionItems(entry),
     filter: false,
   });
@@ -194,7 +203,7 @@ export async function runAgentInboxOverlay(deps: AgentInboxDeps): Promise<void> 
     notify(
       ctx,
       ok
-        ? `Steer sent to ${entry.name} (${entry.agentId.slice(0, 8)}).`
+        ? `Steer sent to ${entry.name} (${shortId(entry.agentId)}).`
         : `Could not steer ${entry.name} — the worker process is no longer accepting messages.`,
       ok ? 'info' : 'warning',
     );
@@ -205,7 +214,7 @@ export async function runAgentInboxOverlay(deps: AgentInboxDeps): Promise<void> 
     const ok = deps.kill(entry.agentId);
     notify(
       ctx,
-      ok ? `Killed worker ${entry.name} (${entry.agentId.slice(0, 8)}).` : `No worker found for ${entry.agentId.slice(0, 8)}.`,
+      ok ? `Killed worker ${entry.name} (${shortId(entry.agentId)}).` : `No worker found for ${shortId(entry.agentId)}.`,
       ok ? 'warning' : 'error',
     );
   }
@@ -240,6 +249,11 @@ export function shouldNotifyWorkerEvent(
 ): boolean {
   if (opts.suppressed) return false;
   if (opts.alreadyNotified) return false;
+  // Enforce the documented "'killed' never notifies" rule by STATUS, not just
+  // event type: killAgent sets status 'killed' but the process close handler
+  // still emits a type:'exit' ledger event, which would otherwise flash a
+  // misleading "finished" notification for a worker the operator just killed.
+  if (entry.status === 'killed') return false;
   const failedError = type === 'error' && entry.status === 'failed';
   if (type !== 'exit' && !failedError) return false;
   if (!opts.turnActive) return true;
@@ -266,7 +280,14 @@ export interface AgentInboxRegistration {
   /** Detach the ledger listener (idempotent). */
   unsubscribe(): void;
   /** Full shutdown: set the suppress flag FIRST, then detach. Call before killing workers. */
-  shutdown(): void;
+  shutdown(options?: { restoreTitle?: boolean }): void;
+  /**
+   * Undo shutdown()'s suppression + detach so a following session can notify
+   * again (idempotent). Must be called on session_start — the registration is
+   * once-per-process, so without this a single shutdown kills notifications
+   * permanently. Mirrors resumeStatusPanel/resumeAwarenessPanel.
+   */
+  resume(): void;
 }
 
 /**
@@ -322,31 +343,39 @@ export function registerAgentInbox(
     notifier(lastCtx, summary ? `${message} — ${summary}` : message, failed ? 'warning' : 'info');
   };
 
-  const unsubscribeLedger = registerListener(onLedgerEvent);
+  let unsubscribeLedger = registerListener(onLedgerEvent);
   let detached = false;
   const unsubscribe = (): void => {
     if (detached) return;
     detached = true;
     unsubscribeLedger();
   };
-  const shutdown = (): void => {
+  const shutdown = (options: { restoreTitle?: boolean } = {}): void => {
     // Order matters: suppress BEFORE detaching so any event already in flight is ignored,
     // and BEFORE workers are killed so teardown killed/exit events never notify.
     localSuppressed = true;
-    suppressDesktopNotifications();
+    suppressDesktopNotifications(options);
     clearTitleFlashTimer();
     unsubscribe();
+  };
+  const resume = (): void => {
+    // session_start counterpart to shutdown(): clear both suppress flags and
+    // re-attach the ledger listener that shutdown() detached. Without this a
+    // single /new or /resume leaves the once-per-process registration muted +
+    // detached forever, so no later worker ever notifies. Idempotent: on the
+    // first session (never shut down) this is a harmless re-arm.
+    localSuppressed = false;
+    resumeDesktopNotifications();
+    if (detached) {
+      unsubscribeLedger = registerListener(onLedgerEvent);
+      detached = false;
+    }
   };
 
   // Track whether a turn is active + capture the freshest ctx for notifications.
   pi.on('agent_start', async (_event, ctx) => { turnActive = true; lastCtx = ctx ?? lastCtx; });
   pi.on('agent_end', async (_event, ctx) => { turnActive = false; lastCtx = ctx ?? lastCtx; });
   pi.on('session_start', async (_event, ctx) => { lastCtx = ctx ?? lastCtx; });
-  // Belt-and-braces: even if index.ts forgets to call shutdown(), suppress on session_shutdown.
-  // NOTE: pi hook ordering between extensions is not guaranteed, which is why index.ts should
-  // ALSO call shutdown() at the top of its own session_shutdown handler (see file header).
-  pi.on('session_shutdown', async (_event, ctx) => { lastCtx = ctx ?? lastCtx; shutdown(); });
-
   pi.registerCommand?.(OCTOCODE_INBOX_COMMAND, {
     description: 'Open the Octocode worker inbox (view transcript / steer / kill spawned workers)',
     handler: async (_args, ctx) => {
@@ -368,5 +397,5 @@ export function registerAgentInbox(
     },
   });
 
-  return { unsubscribe, shutdown };
+  return { unsubscribe, shutdown, resume };
 }

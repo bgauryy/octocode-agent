@@ -16,24 +16,35 @@ export const MANAGED_BLOCK_END = '<!-- OCTOCODE_PI_EXTENSION_APPEND_SYSTEM_END -
 // They are NOT registered as native Pi tools. See mcp-tool.ts DEFAULT_OCTOCODE_MCP_SERVER.
 
 // Replaced by Octocode MCPTool-backed equivalents: localGetFileContent, localSearchCode, localFindFiles, localViewStructure
-export const DISABLED_BUILTIN_TOOL_NAMES = ['read', 'grep', 'find', 'ls'] as const;
+export const DISABLED_BUILTIN_TOOL_NAMES = ['read', 'edit', 'write', 'grep', 'find', 'ls'] as const;
 
 // Same-name registerTool overrides (Pi keeps the name; Octocode owns the implementation).
-export const OVERRIDDEN_BUILTIN_TOOL_NAMES = ['edit', 'write', 'bash'] as const;
+export const OVERRIDDEN_BUILTIN_TOOL_NAMES = ['bash'] as const;
 
-// Support tools: typed subagent orchestration, web, and browser surfaces.
-export const OCTOCODE_SUPPORT_TOOL_NAMES = [
+const COMMON_SUPPORT_TOOL_NAMES = [
+  'file',
   'web',
   'chromeDebug',
-  'browserAgent',
-  'spawnSubagent',
+  'agent',
+  'callTool',
+  'skill',
+  'plan',
+  'localServer',
   'MCPTool',
-  'mcp',
   'askUser',
   'memory',
-  'manage_context',
-  'spawnAgent',
-  'AgentMessage',
+] as const;
+
+const MEDIA_SUPPORT_TOOL_NAMES = ['readMedia', 'media', 'runFfmpeg'] as const;
+
+// Default model-callable support tools. Together with the overridden bash tool,
+// this is the 17-tool unified direct palette. MCP research tools and
+// slash commands are separate surfaces and are not counted here.
+export const OCTOCODE_SUPPORT_TOOL_NAMES = [
+  ...COMMON_SUPPORT_TOOL_NAMES,
+  'lock',
+  'message',
+  ...MEDIA_SUPPORT_TOOL_NAMES,
 ] as const;
 
 /**

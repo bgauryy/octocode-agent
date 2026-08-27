@@ -12,7 +12,7 @@ function freshDb(): DatabaseSync {
 describe('repo context query and projections', () => {
 it('rejects unknown views, formats, and repo injection modes', () => {
     const db = freshDb();
-    expect(() => queryAwareness(db, { view: 'unknown' })).toThrow('unknown octocode-awareness query view');
+    expect(() => queryAwareness(db, { view: 'unknown' })).toThrow('unknown npx @octocodeai/octocode-awareness query view');
     expect(() => formatAwarenessQueryResult(queryAwareness(db, { view: 'all' }), 'bad')).toThrow('--format must be');
   });
 

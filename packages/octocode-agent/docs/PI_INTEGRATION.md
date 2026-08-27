@@ -2,9 +2,9 @@
 
 How the `octocode-agent` platform drives the Pi host, and how the Octocode harness
 (`@octocodeai/pi-extension`, **the core**) plugs in. All Pi facts below are verified
-against the live docs of `@earendil-works/pi-coding-agent` (npm `0.80.3`, repo
-`earendil-works/pi`, `packages/coding-agent/docs/*`). The launcher pins Pi to `0.80.3`
-so the documented SDK/extension behavior and runtime dependency stay aligned.
+against the live docs of `@earendil-works/pi-coding-agent` and the launcher package
+manifest. The launcher currently pins Pi to `0.84.2`, so SDK/extension behavior and
+runtime dependency stay aligned with `packages/octocode-agent/package.json`.
 
 ---
 
@@ -22,9 +22,9 @@ harness (prompt + skills + tools + memory) is a Pi *package*, and octocode-agent
 launcher that boots Pi with that package as the authoritative core.
 
 **Layers:**
-- `octocode-agent` — platform/launcher (this package). Depends on Pi + the core; owns the branded launch, update path, setup/auth/doctor/session UX, and process execution.
-- `@octocodeai/pi-extension` — **the core**. A Pi package: `pi.extensions` (the harness wiring) + bundled research skills + bundled system prompt + Octocode surface/profile specs. Launcher code imports these helpers directly; it does not duplicate or shim core policy.
-- `@earendil-works/pi-coding-agent` — the Pi host runtime. An internal detail of the platform.
+- `octocode-agent` — platform/launcher (this package). This is the primary user install for the Octocode agent. It depends on Pi + the core; owns the branded launch, update path, setup/auth/doctor/session UX, and process execution.
+- `@octocodeai/pi-extension` — **the core harness**. A Pi package: `pi.extensions` (the harness wiring) + bundled research skills + bundled system prompt + Octocode surface/profile specs. Launcher code imports these helpers directly; it does not duplicate or shim core policy. Existing Pi users may install it directly with `pi install npm:@octocodeai/pi-extension` to add the harness to Pi, but that path does not include the `octocode-agent` launcher UX.
+- `@earendil-works/pi-coding-agent` — the Pi host runtime. An internal detail of the platform when launched through `octocode-agent`.
 
 ---
 
@@ -61,7 +61,7 @@ await new InteractiveMode(runtime, { /* initialMessage, … */ }).run();
 ```
 
 The launcher sets `OCTOCODE_PROMPT_MODE=octocode-first` + `OCTOCODE_AGENT=1`; the core
-reads the mode with no divergent harness code path. Legacy `replace` is accepted as an alias.
+reads the mode with no divergent harness code path.
 Supported SDK-level args include `--print`, `--mode rpc`, `--continue`, `--session`,
 `--no-session`, `--name`, and an initial message. `OCTOCODE_AGENT_CLEAN=1` and
 `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` remain honored by the subprocess fallback.
@@ -79,7 +79,7 @@ pi --no-extensions -e <coreRoot> [--no-skills] [passthrough…]
   bundled skills** (`packages.md` §Local Paths). We point it at the resolved package root
   of `@octocodeai/pi-extension`.
 - `OCTOCODE_AGENT_EXTENSION_SPEC` overrides the fallback spec (`npm:…@ver`, `git:…`, path).
-- Project `AGENTS.md`/`CLAUDE.md` context files load by default so repository rules remain authoritative.
+- Project context files load by default so repository rules remain authoritative.
   `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` or `OCTOCODE_AGENT_CLEAN=1` adds `--no-context-files`.
 - `OCTOCODE_AGENT_CLEAN=1` adds `--no-skills --no-context-files` → deterministic harness-only mode.
 
@@ -90,7 +90,7 @@ required trust. Pi bin resolution is still data-driven from `@earendil-works/pi-
 **Why this is the platform path:** `extensionFactories` takes `(pi) => …` functions — exactly
 what `createOctocodePiExtension({promptMode:'octocode-first'})` returns. We get in-process
 startup, direct runtime control, and the same core package that still works under plain
-`pi install npm:@octocodeai/pi-extension` in append mode.
+`pi install npm:@octocodeai/pi-extension` in append mode for advanced Pi users.
 
 ---
 
@@ -139,9 +139,17 @@ extension commands. On 0.80.x, `registerCommand` **keeps all** same-named comman
 assigns numeric suffixes in load order (`/review:1`, `/review:2`) (`extensions.md`
 §registerCommand). Implication: name collisions no longer silently drop our command — but
 the `/octocode` umbrella is still the right UX (one discoverable namespace) and avoids
-`:1` suffixes. `/new` (not `/clear`) remains Pi's native wipe; Octocode exposes reset/compaction through the guarded `manage_context` tool and the private `_octocode-clear-context-impl` command.
+`:1` suffixes. `/new` (not `/clear`) remains Pi's native wipe; Octocode keeps reset and
+compaction behind its private command/UI implementation rather than adding another public
+model tool.
 
-The core registers: `/octocode`, `/octocode-status`, `/octocode-harness`, `/octocode-agents`, `/octocode-cron` (`/cron` alias), `/octocode-mcp` (`/mcp` alias), `/octocode-setup`, and `/octocode-skills-update`. Model-facing support tools include `web`, `chromeDebug`, `browserAgent`, `spawnSubagent`, `MCPTool` (`mcp` alias), `manage_context`, `spawnAgent`, and `AgentMessage`. Awareness is driven through the bundled `octocode-awareness` CLI and skill hooks, not legacy memory tools.
+The core owns the `/octocode*` command namespace (dashboard, status, harness, agents, cron,
+MCP, setup, skills, tasks, plan, palette, theme, permissions, inbox, export, and related
+aliases). Its 16-tool direct palette is guarded `bash` plus `file`, `web`, `chromeDebug`,
+`agent`, `callTool`, `skill`, `plan`, `localServer`, `MCPTool`, `askUser`, `memory`, `lock`,
+`message`, `readMedia`, and `media`; `/mcp` is a slash-command alias, not a model-callable
+tool. Awareness diagnostics/recovery remain available through the bundled CLI without
+expanding the direct palette.
 
 ---
 
@@ -150,7 +158,7 @@ The core registers: `/octocode`, `/octocode-status`, `/octocode-harness`, `/octo
 Pi assembles the system prompt from (`usage.md` §Context Files / System Prompt Files):
 - **Replace:** `.pi/SYSTEM.md` (project) or `~/.pi/agent/SYSTEM.md` (global), or `--system-prompt <text>`.
 - **Append:** `APPEND_SYSTEM.md` (either location) or `--append-system-prompt <text>`.
-- Context files: `AGENTS.md`/`CLAUDE.md` walking up from cwd + `~/.pi/agent/AGENTS.md`.
+- Context files: project and global instruction files discovered by Pi.
 - Skills are injected as an `<available_skills>` block; context files + skills are appended **even when the prompt is replaced**.
 
 Our core injects via the `before_agent_start` event, which on 0.80.x hands the extension
@@ -158,9 +166,8 @@ Our core injects via the `before_agent_start` event, which on 0.80.x hands the e
 `.appendSystemPrompt`, `.contextFiles`, `.skills`, `.selectedTools`, `.toolSnippets`
 (`extensions.md` §before_agent_start). Returning `{ systemPrompt }` replaces it for the turn.
 
-- **append mode (default):** Pi prompt first, harness addendum after. Unchanged legacy behavior.
+- **append mode (default):** Pi prompt first, harness addendum after.
 - **octocode-first mode (launcher):** harness leads as authority, Pi's prompt is preserved below.
-  `replace` remains a legacy alias, but the behavior is intentionally prepend-not-drop.
   A true full replacement can be implemented later with the SDK `systemPromptOverride` /
   `systemPromptOptions` path if product branding needs it.
 
@@ -172,9 +179,13 @@ Built-ins: `read, bash, edit, write, grep, find, ls`; **default active** = `read
 edit, write` (`sdk.md`/`usage.md`). Pruning options:
 - CLI: `--tools/-t <allowlist>`, `--exclude-tools/-xt`, `--no-builtin-tools/-nbt`, `--no-tools`.
   Caveat: a `-t` allowlist must also list every custom/extension tool name to keep it enabled — brittle, so the launcher does **not** set `-t` by default.
-- Extension: `pi.setActiveTools([...])` at `session_start` (RFC G2/Phase 3). This is the
-  preferred lean-tools mechanism because it can keep our registered tools while dropping
-  `grep`/`find`/`ls`.
+- Launcher guarantee: the subprocess path always passes `--no-builtin-tools`, and the
+  default SDK path always creates the session with `noTools:"builtin"`. Pi then enables
+  extension tools, retaining Octocode's guarded same-name `bash` while native
+  `read`/`edit`/`write`/`grep`/`find`/`ls` never enter the initial model palette. The
+  branded launcher has no native-tool opt-out.
+- Extension backstop: `pi.setActiveTools([...])` removes the same native names after
+  registration and again at `session_start`, covering non-launcher hosts and later resets.
 - **Web access is not a Pi built-in** — the core registers a single `web` tool via
   `pi.registerTool` (RFC G3, **implemented**; `src/web.js`). `web({url})` fetches and reads
   a page as clean text; `web({query})` searches via a **provider ladder — Tavily → Serper →
@@ -215,12 +226,12 @@ is a launcher, not a Pi package).
 - **Install freshness.** After changing dependency pins, run `yarn install` so `node_modules`
   matches `package.json`; launcher smoke tests verify real Pi/core package resolution without
   running an interactive Pi session.
-- **Full SDK embed (§2)** remains designed-not-built. It is the path for deeper branding,
-  direct session control, and a true `systemPromptOverride` if octocode-first prepend is not enough.
+- **SDK embed (§2)** is the default launch path. Keep subprocess fallback healthy for recovery,
+  local overrides, and environments where SDK imports fail.
 - **Shell parity (Phase C):** grow `src/shell/` per `docs/SHELL.md` (slash dispatch, dialogs,
   autocomplete, session pickers) until `OCTOCODE_SHELL` can become the default; `quietStartup`
   (SDK overrides) stays the header-suppression story meanwhile.
 
 ## Sources
-`earendil-works/pi` `packages/coding-agent/docs/{usage,packages,sdk,extensions}.md` (branch `main`, npm `0.80.3`);
+`earendil-works/pi` `packages/coding-agent/docs/{usage,packages,sdk,extensions}.md` (branch `main`, launcher package pin `0.84.2`);
 RFC `.octocode/rfc/octocode-pi-harness/{RFC,IMPLEMENTATION}.md`.

@@ -3,17 +3,20 @@
  *
  * One tool that gives agents control over Chrome DevTools Protocol (CDP) through
  * a declarative scheme registry. A `raw` action exposes any Domain.method.
- * Screenshots/PDFs are written to <workspace>/.octocode/screenshots/.
+ * Screenshots are written to `<workspace>/.octocode/agent/<session-key>/browser/screenshots/`
+ * (session-scoped). Session metadata lands at `browser/port-<N>/session.json` inside the
+ * same session tree. A deterministic session identity is derived when the host does not provide one.
  *
  * Mirrors the web-tool.ts + agent-tools.ts patterns:
  *   - in-process execution with AbortSignal
- *   - ctx.ui.setStatus() feedback
+ *   - renderer-managed status feedback
  *   - redaction at the return boundary
  *   - renderCall + renderResult for TUI
  */
 
 import path from 'node:path';
 import { connectToChrome, cleanupConnection, redactObject } from '../chrome-debug.js';
+import { resolveSessionIdentity } from './session-artifacts.js';
 import { connectionKey, getLiveConnection, cacheConnection, evictConnection } from '../chrome-connection-cache.js';
 import { SCHEME_REGISTRY, SCHEMES, ACTIONS, STEALTH_SCRIPT } from '../chrome-debug-schemes.js';
 import type { ChromeDebugParams, Scheme } from '../chrome-debug-schemes.js';
@@ -21,7 +24,9 @@ import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } 
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext, RenderContext } from '../types.js';
 import { appendImageLines } from './image-render.js';
 import type { registerUniqueTool } from './octocode-tools.js';
+import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { setManagedStatus } from './runtime-renderer.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -31,7 +36,7 @@ type RegisterFn = typeof registerUniqueTool;
 const STATUS_NAME = 'chrome-debug';
 
 function setStatus(ctx: PiContext | undefined, msg: string | undefined): void {
-  ctx?.ui?.setStatus?.(STATUS_NAME, msg);
+  setManagedStatus(ctx, STATUS_NAME, msg);
 }
 
 // ─── Tool description ─────────────────────────────────────────────────────────
@@ -67,7 +72,8 @@ export function registerChromeDebugTool(
       'Pass launch:true to start a fresh Chrome on the given port; each port gets its own profile dir.',
       'Screenshots → <workspace>/.octocode/screenshots/. Set OCTOCODE_CDP_DEBUG=1 for cdp-events.jsonl log.',
     ],
-    parameters: Type.Object({
+    parameters: (() => {
+      const itemSchema = Type.Object({
       scheme: Type.Unsafe({
         type: 'string',
         enum: [...SCHEMES],
@@ -233,28 +239,40 @@ export function registerChromeDebugTool(
           description: 'Close tabs opened by this call and, if the tool launched Chrome, terminate it.',
         }),
       ),
-    }),
+      });
+      return buildQueryEnvelopeSchema(Type, itemSchema, {
+        reasoningDescription: 'Concise reason this Chrome DevTools Protocol operation is necessary.',
+      });
+    })(),
 
     async execute(
-      _toolCallId: string,
+      toolCallId: string,
       rawParams: Record<string, unknown>,
       signal?: AbortSignal,
-      _onUpdate?: unknown,
+      onUpdate?: unknown,
       ctx?: PiContext,
     ): Promise<ToolCallResult> {
-      const params = rawParams as unknown as ChromeDebugParams;
+      return executeQueryBatch({
+        toolCallId,
+        raw: rawParams,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? (onUpdate as (update: ToolCallResult) => void) : undefined,
+        ctx,
+        passthroughSingle: true,
+        async execute(query, _index, _itemToolCallId, itemSignal, _itemOnUpdate, itemCtx) {
+      const params = query as unknown as ChromeDebugParams;
       const scheme = params.scheme as Scheme;
       const action = params.action ?? 'observe';
       const port = params.port ?? 9222;
       const keepTab = params.keepTab !== false; // default true
-      const workspaceCwd = ctx?.cwd;
+      const workspaceCwd = itemCtx?.cwd;
 
       const schemeEntry = SCHEME_REGISTRY[scheme];
       if (!schemeEntry) {
         throw new Error(`Unknown scheme: "${scheme}". Valid schemes: ${SCHEMES.join(', ')}`);
       }
 
-      setStatus(ctx, `⧗ chromeDebug · ${scheme}/${action} · connecting on :${port}`);
+      setStatus(itemCtx, `⧗ chromeDebug · ${scheme}/${action} · connecting on :${port}`);
 
       // Reuse a live CDP connection across calls (keyed by port+target) so stateful
       // flows and injected state survive; a fresh tab (newTab) always connects anew.
@@ -267,6 +285,10 @@ export function registerChromeDebugTool(
         reused = true;
       } else {
         try {
+          const sessionKey = resolveSessionIdentity({
+            cwd: workspaceCwd,
+            sessionManager: itemCtx?.sessionManager,
+          }).sessionKey;
           connection = await connectToChrome({
             port,
             targetId: params.targetId,
@@ -276,11 +298,12 @@ export function registerChromeDebugTool(
             launch: params.launch,
             headless: params.headless,
             timeoutMs: params.timeoutMs,
-            signal,
+            signal: itemSignal,
             workspaceCwd,
+            sessionKey,
           });
         } catch (err) {
-          setStatus(ctx, undefined);
+          setStatus(itemCtx, undefined);
           throw new Error(`[CHROME_DEBUG_ERROR] ${(err as Error).message ?? String(err)}`);
         }
         // Cache non-ephemeral connections for reuse and so shutdown can close them
@@ -298,7 +321,7 @@ export function registerChromeDebugTool(
         `cookies=${(identity?.cookieNames ?? []).length} names`;
 
       setStatus(
-        ctx,
+        itemCtx,
         `⧗ chromeDebug · ${scheme}/${action} · target ${session.targetInfo.id.slice(0, 8)}`,
       );
 
@@ -307,7 +330,7 @@ export function registerChromeDebugTool(
         try {
           await session.send('Page.enable', {});
           await session.send('Page.addScriptToEvaluateOnNewDocument', { source: STEALTH_SCRIPT });
-          setStatus(ctx, `⧗ chromeDebug · ${scheme}/${action} · stealth injected`);
+          setStatus(itemCtx, `⧗ chromeDebug · ${scheme}/${action} · stealth injected`);
         } catch {
           // Non-fatal — page may not need it
         }
@@ -319,12 +342,12 @@ export function registerChromeDebugTool(
           session,
           params,
           screenshotDir,
-          signal,
-          setStatus: (msg) => setStatus(ctx, `⧗ chromeDebug · ${msg}`),
+          signal: itemSignal,
+          setStatus: (msg) => setStatus(itemCtx, `⧗ chromeDebug · ${msg}`),
         });
       } catch (err) {
         const e = err as Error;
-        setStatus(ctx, undefined);
+        setStatus(itemCtx, undefined);
 
         if (!keepTab || params.cleanup) {
           await cleanupConnection(session, keepTab, params.cleanup === true).catch(() => undefined);
@@ -350,7 +373,7 @@ export function registerChromeDebugTool(
         // the cache is LRU-capped + prunes closed sessions.
       }
 
-      setStatus(ctx, undefined);
+      setStatus(itemCtx, undefined);
 
       // Build final text — session line first, then evidence
       const allLines = [sessionLine, ...result.evidenceLines];
@@ -383,14 +406,19 @@ export function registerChromeDebugTool(
         content: [{ type: 'text', text }],
         details: safeDetails,
       };
+        }, // end inner execute
+      }); // end executeQueryBatch
     },
 
     renderCall(args: unknown, theme?: PiTheme) {
-      const a = (args ?? {}) as Record<string, unknown>;
+      const envelope = (args ?? {}) as Record<string, unknown>;
+      const queryList = Array.isArray(envelope['queries']) ? envelope['queries'] as Record<string, unknown>[] : [];
+      const a = queryList[0] ?? {};
       const scheme = typeof a['scheme'] === 'string' ? a['scheme'] : '?';
       const action = typeof a['action'] === 'string' ? a['action'] : '';
       const port = typeof a['port'] === 'number' ? a['port'] : 9222;
       const url = typeof a['url'] === 'string' ? a['url'] : typeof a['targetUrl'] === 'string' ? a['targetUrl'] : '';
+      const more = queryList.length > 1 ? paint(theme, 'dim', ` +${queryList.length - 1}`) : '';
 
       const nameStr = cliToolTitle(theme, 'chromeDebug', { bold: true });
       const schemeStr = paint(theme, 'link', scheme);
@@ -401,13 +429,13 @@ export function registerChromeDebugTool(
         ? paint(theme, 'dim', ` · ${displayUrl}`)
         : '';
 
-      const rawLine = `${nameStr} ${schemeStr}${actionStr}${portStr}${urlStr}`;
+      const rawLine = `${nameStr} ${schemeStr}${actionStr}${portStr}${urlStr}${more}`;
       return makeRenderer((w) => [truncateToWidth(rawLine, w)]);
     },
 
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme, context?: RenderContext) {
       if (opts.isPartial) {
-        const msg = paint(theme, 'warning', CLI_STATUS_TEXT.connectingChrome);
+        const msg = paint(theme, 'brand', CLI_STATUS_TEXT.connectingChrome);
         return makeRenderer((w) => [truncateToWidth(msg, w)]);
       }
 
@@ -427,7 +455,7 @@ export function registerChromeDebugTool(
 
       let stat = '';
       if (findingCount > 0) {
-        stat = paint(theme, 'warning', ` · ${findingCount} finding${findingCount === 1 ? '' : 's'}`);
+        stat = paint(theme, 'count', ` · ${findingCount} finding${findingCount === 1 ? '' : 's'}`);
       } else if (screenshotPath) {
         const fname = path.basename(screenshotPath);
         stat = paint(theme, 'dim', ` · ${fname}`);
@@ -436,7 +464,11 @@ export function registerChromeDebugTool(
       const header = `${icon} ${nameStr}${schemeStr}${stat}`;
 
       if (!opts.expanded) {
-        const hint = paint(theme, 'dim', ' · expand for evidence');
+        // Errors have no evidence to expand into — show the first error line
+        // inline instead of a misleading "expand for evidence" hint.
+        const hint = !ok
+          ? paint(theme, 'error', ` · ${text.split('\n').find(Boolean) ?? 'failed'}`)
+          : paint(theme, 'dim', ' · expand for evidence');
         return makeRenderer((w) => [truncateToWidth(`${header}${hint}`, w)]);
       }
 
@@ -448,12 +480,12 @@ export function registerChromeDebugTool(
         truncateToWidth(header, w),
         ...lines.map((l) =>
           truncateToWidth(
-            l.startsWith('[FINDING]')
+            !ok
+              ? paint(theme, 'error', l)
+              : l.startsWith('[FINDING]')
               ? paint(theme, 'warning', l)
               : l.startsWith('[ACTION]')
               ? paint(theme, 'link', l)
-              : l.startsWith('[SESSION]')
-              ? paint(theme, 'dim', l)
               : paint(theme, 'dim', l),
             w,
           ),

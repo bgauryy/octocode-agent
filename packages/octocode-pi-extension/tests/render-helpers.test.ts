@@ -6,6 +6,8 @@ import {
   buildOctocodeRenderResult,
   buildResultStats,
   buildToolCallSummary,
+  makeCachedRenderer,
+  makeComponentRenderer,
   makeRenderer,
   sanitizeLine,
   singleLineRenderer,
@@ -35,13 +37,18 @@ test('CLI design contract centralizes glyphs, spinners, and transcript rows', ()
   assert.equal(cliSpinnerFrame(120), '⠙');
   assert.equal(summarizeInlineValue({ command: 'echo ok' }), '{"command":"echo ok"}');
 
+  // Wide explicit width: the stub theme's <token> markers count as visible
+  // cells, so the row must not be truncated for the exact-equality assertion.
   assert.equal(
-    formatCliToolRow('running', 'bash', { command: 'echo ok' }, theme),
+    formatCliToolRow('running', 'bash', { command: 'echo ok' }, theme, 500),
     '<toolTitle>╭─ ⚙</toolTitle> <toolTitle>bash</toolTitle> <dim>running…</dim><dim> · {"command":"echo ok"}</dim>',
   );
+  // Narrow terminals clip the row to width so the ╭─ frame never wraps.
+  const clipped = formatCliToolRow('running', 'bash', { command: 'echo ok'.repeat(30) }, undefined, 40);
+  assert.ok(visibleWidth(clipped) <= 40, `row must clip to width, got ${visibleWidth(clipped)} cells`);
   assert.equal(
     formatThinkingRow('start', theme),
-    '<warning>╭─ 🧠 thinking</warning> <dim>model reasoning</dim>',
+    '<mdLink>╭─ 🧠 thinking</mdLink> <dim>model reasoning</dim>',
   );
 });
 
@@ -95,22 +102,36 @@ test('ANSI-aware rendering helpers keep visible width stable', () => {
   assert.equal(singleLineRenderer('single long line').render(8)[0], 'single \x1b[0m…\x1b[0m');
 });
 
+test('component renderer resolves live props and enforces the terminal width contract', () => {
+  let label = 'initial';
+  const renderer = makeComponentRenderer(
+    (props: { label: string }, context) => [`${props.label} @ ${context.width}`],
+    () => ({ label }),
+  );
+  assert.deepEqual(renderer.render(20), ['initial @ 20']);
+  label = 'updated state that is deliberately long';
+  assert.ok(visibleWidth(renderer.render(12)[0]!) <= 12);
+  assert.match(renderer.render(40)[0]!, /updated state/);
+});
+
 test('buildToolCallSummary formats each Octocode direct-tool family', () => {
   const cases: Array<[string, unknown, RegExp]> = [
-    ['ghSearchCode', { queries: [{ owner: 'octo', repo: 'repo', keywords: ['foo', 'bar'], language: 'ts', filename: 'a.ts' }, { keywords: ['more'] }] }, /"foo bar".*file:a\.ts.*lang:ts.*in octo\/repo.*\+1/],
+    ['ghSearchCode', { queries: [{ owner: 'octo', repo: 'repo', keywords: ['foo', 'bar'], language: 'ts', filename: 'a.ts' }, { keywords: ['more'] }] }, /"foo bar".*file:a\.ts.*lang:ts.*in octo\/repo/],
     ['ghSearchRepos', { queries: [{ keywords: ['agent'], language: 'Rust' }] }, /"agent".*lang:Rust/],
     ['ghGetFileContent', { queries: [{ owner: 'octo', repo: 'repo', path: 'src/a.ts', matchString: 'needle in haystack' }] }, /octo\/repo:src\/a\.ts \/needle in haystack\//],
     ['ghGetFileContent', { queries: [{ owner: 'octo', repo: 'repo', path: 'src/a.ts', startLine: 3, endLine: 8 }] }, /:src\/a\.ts:3-8/],
     ['ghViewRepoStructure', { queries: [{ owner: 'octo', repo: 'repo', path: 'packages/pi' }] }, /octo\/repo\/packages\/pi/],
-    ['ghHistoryResearch', { queries: [{ owner: 'octo', repo: 'repo', type: 'commits', prNumber: 17 }] }, /octo\/repo commits#17/],
+    ['ghSearchPullRequests', { queries: [{ owner: 'octo', repo: 'repo', prNumber: 17 }] }, /octo\/repo PR #17/],
+    ['ghSearchIssues', { queries: [{ owner: 'octo', repo: 'repo', keywordsToSearch: ['memory', 'leak'] }] }, /octo\/repo "memory leak"/],
+    ['ghSearchCommits', { queries: [{ owner: 'octo', repo: 'repo', path: 'src', base: 'main', head: 'next' }] }, /octo\/repo path:src main\.\.next/],
     ['ghCloneRepo', { queries: [{ owner: 'octo', repo: 'repo', sparsePath: 'src' }] }, /octo\/repo\/src/],
     ['ghUnknown', { queries: [{ owner: 'octo', repo: 'repo' }] }, /octo\/repo/],
-    ['localSearchCode', { queries: [{ searchText: 'class Foo', path: '/very/long/path/to/project/src', mode: 'ast' }, { searchText: 'next' }] }, /\[ast\] "class Foo".*project\/src.*\+1/],
+    ['localSearchCode', { queries: [{ searchText: 'class Foo', path: '/very/long/path/to/project/src', mode: 'ast' }, { searchText: 'next' }] }, /\[ast\] "class Foo".*project\/src/],
     ['localGetFileContent', { queries: [{ path: '/tmp/src/file.ts', startLine: 10, endLine: 12 }] }, /file\.ts:10-12/],
     ['localGetFileContent', { queries: [{ path: '/tmp/src/file.ts', matchString: 'export function longName' }] }, /file\.ts \/export function long/],
     ['localViewStructure', { queries: [{ path: '/tmp/workspace', maxDepth: 4 }] }, /workspace depth:4/],
     ['localFindFiles', { queries: [{ path: '/tmp/workspace', names: ['a.ts', 'b.ts'], pathPattern: 'src/**' }] }, /workspace \[a\.ts, b\.ts\] src\/\*\*/],
-    ['localBinaryInspect', { queries: [{ path: '/tmp/archive.zip', mode: 'list' }] }, /archive\.zip \(list\)/],
+    ['localFindDeadCode', { queries: [{ path: '/tmp/workspace', entrypoints: ['src/index.ts'] }] }, /workspace entries:\[src\/index\.ts\]/],
     ['lspGetSemantics', { queries: [{ type: 'references', symbolName: 'run', uri: 'file:///tmp/src/main.ts?x=1', lineHint: 42 }] }, /references "run" in main\.ts:42/],
     ['npmSearch', { queries: [{ packageName: 'vitest' }] }, /vitest/],
     ['customTool', { queries: [{ id: 'skip', reasoning: 'skip', alpha: 'one', beta: 'two', gamma: 'three', delta: 'four' }] }, /one two three/],
@@ -179,9 +200,17 @@ test('buildResultStats extracts meaningful per-tool result summaries', () => {
     queryCount: 2,
     paths: ['pkg@1.2.3', 'other'],
   });
-  assert.deepEqual(buildResultStats('ghHistoryResearch', { results: [result({ items: [{}, {}] }), result({ prs: [{}] }), result({ commits: [{}, {}, {}] })] }), {
-    queryCount: 3,
-    summary: '6 items',
+  assert.deepEqual(buildResultStats('ghSearchPullRequests', { results: [result({ items: [{}, {}] }), result({ prs: [{}] })] }), {
+    queryCount: 2,
+    summary: '3 items',
+  });
+  assert.deepEqual(buildResultStats('ghSearchIssues', { results: [result({ issues: [{}, {}] })] }), {
+    queryCount: 1,
+    summary: '2 items',
+  });
+  assert.deepEqual(buildResultStats('ghSearchCommits', { results: [result({ commits: [{}, {}, {}] })] }), {
+    queryCount: 1,
+    summary: '3 items',
   });
   assert.deepEqual(buildResultStats('unknown', { results: [result({})] }), { queryCount: 1 });
   assert.deepEqual(buildResultStats('unknown', null), {});
@@ -192,9 +221,22 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   assert.match(call, /<accent>◇<\/accent>/);
   assert.match(call, /<toolTitle><b>ghSearchCode<\/b><\/toolTitle>/);
   assert.match(call, /<dim> · <\/dim><dim>"x" in o\/r<\/dim>/);
+  const callLines = buildOctocodeRenderCall('ghSearchCode', { queries: [{ owner: 'o', repo: 'r', keywords: ['x'], reasoning: 'find x' }] }, theme).render(120);
+  assert.equal(callLines.length, 2);
+  assert.match(callLines[1]!, /find x/);
+  assert.doesNotMatch(callLines.join('\n'), /request:|reasoning:/);
+
+  const parallelCall = buildOctocodeRenderCall('ghSearchCode', {
+    queryRunType: 'parallel',
+    queries: [
+      { owner: 'o', repo: 'r', keywords: ['x'], reasoning: 'find x' },
+      { owner: 'o', repo: 'r', keywords: ['y'], reasoning: 'find y' },
+    ],
+  }, theme).render(160);
+  assert.match(parallelCall[0]!, /2 queries.*parallel/);
 
   const running = buildOctocodeRenderResult('localSearchCode', textResult('still running'), { isPartial: true }, theme).render(120)[0]!;
-  assert.match(running, /<warning>⠋|<warning>⠙|<warning>⠹|<warning>⠸|<warning>⠼|<warning>⠴|<warning>⠦|<warning>⠧|<warning>⠇|<warning>⠏/);
+  assert.match(running, /<accent>⠋|<accent>⠙|<accent>⠹|<accent>⠸|<accent>⠼|<accent>⠴|<accent>⠦|<accent>⠧|<accent>⠇|<accent>⠏/);
   assert.match(running, /<toolTitle>localSearchCode<\/toolTitle>/);
   assert.match(running, /<dim>running…<\/dim>/);
 
@@ -206,6 +248,11 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   ).render(180)[0]!;
   assert.match(collapsed, /<success>✓<\/success>/);
   assert.match(collapsed, /4 matches, 2 files/);
+  assert.match(collapsed, /→ ok/, 'collapsed rows carry the first line of the result');
+
+  const bare = buildOctocodeRenderResult('npmSearch', textResult('found 3 packages\nsecond line'), { expanded: false }, theme).render(180)[0]!;
+  assert.match(bare, /<dim>→ found 3 packages<\/dim>/, 'no stats → the response text is the result');
+  assert.doesNotMatch(bare, /second line/);
 
   const withPreview = buildOctocodeRenderResult(
     'localGetFileContent',
@@ -215,6 +262,39 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   ).render(180)[0]!;
   assert.match(withPreview, /a\.ts/);
   assert.match(withPreview, /“const answer = 42;”/);
+  assert.doesNotMatch(withPreview, /→ ok/, 'a structured preview replaces the raw-text fallback');
+
+  const providerRows = buildOctocodeRenderResult(
+    'localGetFileContent',
+    textResult('batch complete', {
+      results: [
+        { data: { resolvedPath: '/tmp/a.ts', totalLines: 2 } },
+        { status: 'error', error: 'permission denied' },
+      ],
+    }),
+    { expanded: false },
+    theme,
+  ).render(180);
+  assert.equal(providerRows.length, 2);
+  assert.match(providerRows[0]!, /✓.*\[0\].*a\.ts/);
+  assert.match(providerRows[1]!, /✗.*\[1\].*permission denied/);
+  assert.doesNotMatch(providerRows.join('\n'), /2 queries/);
+
+  const canonicalRows = buildOctocodeRenderResult(
+    'readMedia',
+    textResult('2 queries succeeded · parallel.', {
+      queryRunType: 'parallel',
+      results: [
+        { index: 0, status: 'success', summary: 'image a loaded' },
+        { index: 1, status: 'success', summary: 'image b loaded' },
+      ],
+    }),
+    { expanded: false },
+    theme,
+  ).render(180);
+  assert.match(canonicalRows[0]!, /2 queries.*parallel/);
+  assert.match(canonicalRows[1]!, /\[0\].*image a loaded/);
+  assert.match(canonicalRows[2]!, /\[1\].*image b loaded/);
 
   const expanded = buildOctocodeRenderResult(
     'ghGetFileContent',
@@ -222,9 +302,60 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
     { expanded: true },
     theme,
   ).render(80);
-  assert.equal(expanded.length, 27);
+  assert.equal(expanded.length, 28);
+  assert.match(expanded.join('\n'), /response:/);
   assert.match(expanded.at(-1)!, /5 more lines hidden/);
 
   const error = buildOctocodeRenderResult('npmSearch', textResult('bad', {}, true), { expanded: false }, theme).render(120)[0]!;
   assert.match(error, /<error>✗<\/error>/);
+});
+
+test('error result rows surface the failure text and honor system-level context.isError', () => {
+  // result.isError path now shows the message text, not just the glyph.
+  const r1 = buildOctocodeRenderResult('npmSearch', textResult('boom: it failed', {}, true), { expanded: false }, theme).render(200)[0]!;
+  assert.match(r1, /<error>✗<\/error>/);
+  assert.match(r1, /<error>boom: it failed<\/error>/);
+
+  // context.isError (system-level) marks the row as an error even when the
+  // returned result.isError is false — Pi ignores the returned flag.
+  const r2 = buildOctocodeRenderResult(
+    'localGetFileContent',
+    textResult('arguments: must be object', {}, false),
+    { expanded: false },
+    theme,
+    { isError: true, invalidate() {} },
+  ).render(200)[0]!;
+  assert.match(r2, /<error>✗<\/error>/);
+  assert.match(r2, /arguments: must be object/);
+
+  // A success result with no error stays a success row (no regression).
+  const okRow = buildOctocodeRenderResult(
+    'localGetFileContent',
+    textResult('ok', { results: [{ data: { path: 'a.ts', totalLines: 1 } }] }, false),
+    { expanded: false },
+    theme,
+    { isError: false, invalidate() {} },
+  ).render(200)[0]!;
+  assert.match(okRow, /<success>✓<\/success>/);
+
+  // Expanded error dumps the message body under the header.
+  const r3 = buildOctocodeRenderResult('MCPTool', textResult('line A\nline B', {}, true), { expanded: true }, theme).render(200);
+  assert.match(r3[0]!, /<error>✗<\/error>/);
+  assert.ok(r3.some((l) => /line B/.test(l)));
+});
+
+test('makeCachedRenderer memoizes lines per width and clears on invalidate', () => {
+  let calls = 0;
+  const r = makeCachedRenderer((w) => {
+    calls += 1;
+    return [`w=${w}`];
+  });
+  assert.deepEqual(r.render(80), ['w=80']);
+  assert.deepEqual(r.render(80), ['w=80']);
+  assert.equal(calls, 1, 'same width is served from cache');
+  assert.deepEqual(r.render(40), ['w=40']);
+  assert.equal(calls, 2, 'a new width recomputes');
+  r.invalidate();
+  assert.deepEqual(r.render(80), ['w=80']);
+  assert.equal(calls, 3, 'invalidate() clears the cache');
 });

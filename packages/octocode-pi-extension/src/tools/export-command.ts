@@ -28,6 +28,7 @@ import path from 'node:path';
 import type { PiCommandContext, PiInstance } from '../types.js';
 import { atomicWriteUtf8 } from './file-state.js';
 import { assertPathAllowed } from './path-guard.js';
+import { createSessionArtifactContext } from './session-artifacts.js';
 
 // ─── Branding ─────────────────────────────────────────────────────────────────
 
@@ -242,6 +243,14 @@ export function registerExportCommand(pi: PiInstance, deps: ExportCommandDeps = 
         const html = fs.readFileSync(sourcePath, 'utf8');
         const branded = brandExportHtml(html);
         await atomicWriteUtf8(outputPath, branded);
+        // Register the exported file in the session artifact manifest (best-effort).
+        if (ctx?.sessionManager) {
+          try {
+            const artifactCtx = createSessionArtifactContext({ cwd, sessionManager: ctx.sessionManager });
+            artifactCtx.writeJson('export/latest-ref.json', { outputPath, writtenAt: new Date().toISOString() });
+            artifactCtx.registerProducer('export', 'export/latest-ref.json');
+          } catch { /* best-effort */ }
+        }
         ctx?.ui?.notify?.(`octocode export written: ${outputPath}`, 'info');
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

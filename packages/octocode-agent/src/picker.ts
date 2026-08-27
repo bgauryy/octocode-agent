@@ -7,7 +7,7 @@
  * back to their non-interactive path.
  */
 import readline from 'node:readline';
-import { type Painter } from './ui.js';
+import { ellipsizeEnd, terminalWidth, type Painter } from './ui.js';
 
 export interface PickerRow {
   id: string;
@@ -24,10 +24,15 @@ export interface SelectOneOpts {
 const ESC = '\u001b[';
 
 function renderRows(p: Painter, rows: PickerRow[], cursor: number): string[] {
+  // Fit each row to the terminal BEFORE painting — long session paths would
+  // otherwise wrap and shred the in-place cursor redraws.
+  const width = terminalWidth();
   return rows.map((row, i) => {
     const pointer = i === cursor ? p.brand('›') : ' ';
-    const label = i === cursor ? p.bold(row.label) : row.label;
-    const meta = row.meta ? p.dim(` · ${row.meta}`) : '';
+    const metaText = row.meta ? ` · ${row.meta}` : '';
+    const labelFit = ellipsizeEnd(row.label, Math.max(8, width - 3 - metaText.length));
+    const label = i === cursor ? p.bold(labelFit) : labelFit;
+    const meta = metaText ? p.dim(metaText) : '';
     return ` ${pointer} ${label}${meta}`;
   });
 }

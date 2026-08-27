@@ -6,6 +6,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { normalizeArtifact, utcNow } from './helpers.js';
 import { canonicalizePath, normalizeWorkspacePath } from './git.js';
+import { tableColumns } from './db-introspection.js';
 
 export type PlanStatus = 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'CANCELLED';
 export type PlanMemberRole = 'LEAD' | 'CONTRIBUTOR';
@@ -56,6 +57,12 @@ export interface CreatePlanParams {
    */
   docsPath?: string | null;
   artifact?: string | null;
+}
+
+function ledgerPlanPredicate(db: DatabaseSync): string {
+  return tableColumns(db, 'plans').has('source_kind')
+    ? "(source_kind = 'awareness-ledger' OR name IS NOT NULL)"
+    : '1 = 1';
 }
 
 export interface JoinPlanParams {
@@ -156,10 +163,17 @@ export function createPlan(
 
     db.exec('BEGIN IMMEDIATE');
     try {
-      db.prepare(`INSERT INTO plans
-        (plan_id, name, objective, lead_agent_id, status, workspace_path, artifact, doc_dir, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?)`)
-        .run(planId, name, objective, leadAgentId, workspacePath, plan.artifact, docDir, now, now);
+      if (tableColumns(db, 'plans').has('title')) {
+        db.prepare(`INSERT INTO plans
+          (plan_id, name, objective, lead_agent_id, title, goal, status, workspace_path, artifact, doc_dir, source_kind, source_key, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, 'awareness-ledger', ?, ?, ?)`)
+          .run(planId, name, objective, leadAgentId, name, objective, workspacePath, plan.artifact, docDir, planId, now, now);
+      } else {
+        db.prepare(`INSERT INTO plans
+          (plan_id, name, objective, lead_agent_id, status, workspace_path, artifact, doc_dir, created_at, updated_at)
+          VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?)`)
+          .run(planId, name, objective, leadAgentId, workspacePath, plan.artifact, docDir, now, now);
+      }
       db.prepare(`INSERT INTO plan_members(plan_id, agent_id, role, joined_at)
         VALUES (?, ?, 'LEAD', ?)`)
         .run(planId, leadAgentId, now);
@@ -180,7 +194,7 @@ export function createPlan(
 }
 
 export function getPlan(db: DatabaseSync, planId: string): PlanDetail | null {
-  const row = db.prepare('SELECT * FROM plans WHERE plan_id = ?').get(planId) as Record<string, unknown> | undefined;
+  const row = db.prepare(`SELECT * FROM plans WHERE plan_id = ? AND ${ledgerPlanPredicate(db)}`).get(planId) as Record<string, unknown> | undefined;
   if (!row) return null;
   const members = db.prepare(
     'SELECT agent_id, role, joined_at FROM plan_members WHERE plan_id = ? ORDER BY role, joined_at, agent_id',
@@ -195,7 +209,7 @@ export function listPlans(
   db: DatabaseSync,
   params: { workspacePath?: string | null; artifact?: string | null; status?: PlanStatus | null; limit?: number | null } = {},
 ): PlanRecord[] {
-  const where: string[] = ['1 = 1'];
+  const where: string[] = [ledgerPlanPredicate(db)];
   const binds: string[] = [];
   if (params.workspacePath) {
     where.push('workspace_path = ?');

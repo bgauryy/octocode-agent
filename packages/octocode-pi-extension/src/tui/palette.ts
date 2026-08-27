@@ -37,17 +37,19 @@ export function sanitizeLine(str: string): string {
  * defined in themes/octocode-*.json. Change a mapping here, not in every caller.
  */
 export const TOKEN = {
-  /** Brand accent (teal). */
+  /** Brand accent (purple). */
   brand: 'accent',
-  /** File / directory paths. */
-  path: 'accent',
+  /** Secondary brand glint (teal) used as a cool counterpoint to purple. */
+  brandAlt: 'syntaxOperator',
+  /** File / directory paths (sky — distinct from the purple brand/title). */
+  path: 'mdCode',
   /** Clickable URLs / links (lavender, matches markdown links). */
   link: 'mdLink',
   /** The raw URL tail shown after a link. */
   linkUrl: 'mdLinkUrl',
-  /** Numeric counts / totals (gold). */
-  count: 'syntaxNumber',
-  /** Symbol / identifier names (cyan). */
+  /** Numeric counts / totals — default foreground so values pop against dim labels. */
+  count: 'text',
+  /** Symbol / identifier names (sky, same family as paths). */
   symbol: 'syntaxType',
   /** Tool title. */
   title: 'toolTitle',
@@ -61,6 +63,8 @@ export const TOKEN = {
   muted: 'muted',
   /** Tertiary / faint text. */
   dim: 'dim',
+  /** Brightest foreground — gloss / highlight moments. */
+  bright: 'text',
   /** Added diff line. */
   diffAdd: 'toolDiffAdded',
   /** Removed diff line. */
@@ -85,6 +89,23 @@ export function paint(theme: PaintTheme | undefined, token: SemanticToken, text:
   return theme?.fg(TOKEN[token], text) ?? text;
 }
 
+/**
+ * Paint through a Pi UI object without assuming its lazy theme getter has been
+ * initialized. RPC and plain-output sessions may expose `ui` while that getter
+ * still throws; status text must remain functional and unstyled in those modes.
+ */
+export function paintUi(
+  ui: { readonly theme?: PaintTheme } | undefined,
+  token: SemanticToken,
+  text: string,
+): string {
+  try {
+    return paint(ui?.theme, token, text);
+  } catch {
+    return text;
+  }
+}
+
 // ─── Terminal capability gates ─────────────────────────────────────────────────
 
 function envFlag(value: string | undefined): boolean {
@@ -100,8 +121,13 @@ function envFlag(value: string | undefined): boolean {
  * ourselves (e.g. diff text in a tool result string).
  */
 export function colorEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  if (envFlag(env['NO_COLOR'])) return false;
+  // Spec-faithful no-color.org: ANY non-empty NO_COLOR disables — including
+  // "0"/"false" (the launcher's gate already did this; the envFlag treatment
+  // here silently ignored NO_COLOR=0, drifting from both).
+  const noColor = env['NO_COLOR'];
+  if (noColor !== undefined && noColor !== '') return false;
   if (envFlag(env['FORCE_COLOR'])) return true;
+  if (env['TERM'] === 'dumb') return false;
   // Raw SGR codes must not leak into piped/redirected output (logs, files).
   return process.stdout?.isTTY === true;
 }
@@ -139,6 +165,15 @@ export function isHttpUrl(value: string): boolean {
   return /^https?:\/\/\S+$/i.test(value.trim());
 }
 
+// ─── Design constants (single source — do not inline these elsewhere) ─────────
+
+/** Separator for dense data rows (ledger lines, tool summaries, previews). */
+export const SEP = ' · ';
+/** Separator for the toolbar and stacked below-editor panels. */
+export const SEP_WIDE = '  ·  ';
+/** The brand diamond used by headers, footer, and message cards. */
+export const BRAND_DIAMOND = '◆';
+
 // ─── Context-window gauge ───────────────────────────────────────────────────────
 
 export interface ContextGauge {
@@ -159,7 +194,9 @@ const GAUGE_EMPTY = '░';
  * Build a fixed-width unicode gauge for context-window usage.
  *
  * Severity token: <75% success, <90% warning, ≥90% error — so a filling
- * context window visibly shifts colour before it runs out.
+ * context window visibly shifts colour before it runs out. (A green→gold→red
+ * health gauge is a deliberate, conventional exception to the "green = outcomes
+ * only" rule — the intent is codified in palette.test.ts.)
  *
  * @param pct    Usage percentage (clamped to 0–100).
  * @param cells  Bar width in cells (default 8, min 1).

@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ResourceMode } from './tools/agent-tools.js';
-import { PI_CONFIG_DIR } from './constants.js';
+import { getPiUserSkillsDir } from './utils.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -95,9 +95,9 @@ const SKILLS_DIR = resolveSkillsDir();
  * Returns external skill search roots, re-evaluated on every call so skills
  * installed after process start are discovered without a restart.
  *
- * `npx octocode skill --name <skill> --platform pi` lands in ~/.pi/agent/skills/;
+ * `npx octocode skill install <skill> --platform pi` lands in ~/.pi/agent/skills/;
  * monorepo / standalone workspaces often stage skills at <cwd>/.agents/skills/ via
- * `octocode skill --add --path`. No existsSync filter here — bundledSkillPath checks
+ * direct placement. No existsSync filter here — bundledSkillPath checks
  * for SKILL.md presence in each root, so absent dirs are handled gracefully.
  *
  * Exported for testing dynamic cwd behaviour.
@@ -105,14 +105,13 @@ const SKILLS_DIR = resolveSkillsDir();
 export function getExternalSkillDirs(): string[] {
   const dirs: string[] = [];
   const home = process.env.HOME;
-  if (home) dirs.push(path.join(home, PI_CONFIG_DIR, 'agent', 'skills'));
+  if (home) dirs.push(getPiUserSkillsDir(home));
   const cwdAgentsSkills = path.resolve(process.cwd(), '.agents', 'skills');
   if (!dirs.includes(cwdAgentsSkills)) dirs.push(cwdAgentsSkills);
   return dirs;
 }
 
 export const OCTOCODE_SKILL_NAMES = [
-  'octocode-awareness-lite',
   'octocode-brainstorming',
   'octocode-prompt-optimizer',
   'octocode-research',
@@ -130,9 +129,9 @@ function bundledSkillPath(
   skillName: (typeof OCTOCODE_SKILL_NAMES)[number]
 ): string | null {
   // Preferred: a skill staged in the package's dist/skills/ (what build.mjs composes).
-  // Fallbacks: skills installed outside the package — `npx octocode skill --name <skill>
+  // Fallbacks: skills installed outside the package — `npx octocode skill install <skill>
   // --platform pi` lands in ~/.pi/agent/skills/, and monorepo layouts often stage skills
-  // at <cwd>/.agents/skills/ via `octocode skill --add --path ...`. Surfacing them lets
+  // at <cwd>/.agents/skills/ via direct placement. Surfacing them lets
   // typed subagents load skills the package itself doesn't ship; install them via
   // `npx octocode skill ... --platform pi` as needed. First hit wins — the bundled
   // copy wins over an external install when both exist, keeping tests deterministic.
@@ -205,6 +204,7 @@ export const SUBAGENT_REGISTRY = {
       'chromeDebug', // CDP execution — primary tool
       'web',         // CDP docs + web research
       'MCPTool',     // octocode MCP server: localGetFileContent, localSearchCode, localViewStructure, etc.
+      'write',       // durable handback artifacts assigned by the parent
     ],
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'low',
@@ -220,6 +220,7 @@ export const SUBAGENT_REGISTRY = {
     tools: [
       'web',
       'MCPTool', // octocode MCP server: all GitHub, local, LSP, npm research tools
+      'write',   // durable handback artifacts assigned by the parent
     ],
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'low',
@@ -234,6 +235,7 @@ export const SUBAGENT_REGISTRY = {
     tools: [
       'web',
       'MCPTool', // octocode MCP server: all GitHub, local, LSP, npm research tools
+      'write',   // durable handback artifacts assigned by the parent
     ],
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'low',
@@ -249,6 +251,7 @@ export const SUBAGENT_REGISTRY = {
       'bash',
       'web',
       'MCPTool', // octocode MCP server: all GitHub, local, LSP, npm research tools
+      'write',   // durable handback artifacts assigned by the parent
     ],
     resourceMode: 'octocode' as ResourceMode,
     thinking: 'medium',

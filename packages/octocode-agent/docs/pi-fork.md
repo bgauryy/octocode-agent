@@ -97,18 +97,16 @@ npm run check && ./test.sh   # fork's CI gate
 |---|---|
 | `OCTOCODE_PI_BIN` | Absolute path to a locally-built Pi binary (takes priority) |
 | `OCTOCODE_PI_PACKAGE` | npm package name override (e.g. `@octocodeai/pi-coding-agent`) |
-| `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` | Suppress `AGENTS.md`/`CLAUDE.md` loading (on by default) |
-| `OCTOCODE_AGENT_NO_BANNER=1` | Suppress the interactive launch banner |
+| `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` | Suppress project context file loading (enabled by default) |
 | `OCTOCODE_AGENT_EXTENSION_SPEC` | Override the core extension spec (npm:/git:/path) |
 | `OCTOCODE_AGENT_CLEAN=1` | Suppress user skills (fully deterministic agent) |
-| `OCTOCODE_AGENT_FULL_TOOLS=1` | Keep grep/find/ls (opt out of lean tool set) |
 
 ## What `--no-context-files` Does (opt-in)
 
 Project context files stay **enabled** by default so repository rules remain
 authoritative. Pass `--no-context-files` to Pi only when needed:
 
-- `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` — suppress `AGENTS.md`/`CLAUDE.md` for every launch
+- `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` — suppress project context files for every launch
 - `OCTOCODE_AGENT_CLEAN=1` — also adds `--no-skills` (fully deterministic branded agent)
 
 (See `buildPiArgs` in `src/launcher.ts`.)

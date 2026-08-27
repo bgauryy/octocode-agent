@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    setupFiles: ['../../test-utils/external-effects-guard.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

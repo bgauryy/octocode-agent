@@ -1,108 +1,75 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'vitest';
 import {
-  parseAwarenessStatus,
-  parseLastMessage,
-  hasAwarenessSignal,
-  formatAwarenessPanel,
-  refreshAwarenessPanel,
-  setAwarenessStatusRunnerForTests,
-  resetAwarenessStatusStateForTests,
   forceAwarenessStatusRefreshForTests,
+  formatAwarenessPanel,
+  getCachedAwarenessStatus,
+  hasAwarenessSignal,
+  refreshAwarenessPanel,
+  renderAwarenessSignalAddendum,
+  resetAwarenessStatusStateForTests,
+  setAwarenessStatusRunnerForTests,
   type AwarenessStatus,
 } from '../src/tools/awareness-status.js';
 import type { PiContext } from '../src/types.js';
 
-afterEach(() => resetAwarenessStatusStateForTests());
+const ZERO: AwarenessStatus = {
+  activePlans: 0,
+  readyTasks: 0,
+  inProgressTasks: 0,
+  verifyTasks: 0,
+  lockCount: 0,
+  workCount: 0,
+  agentCount: 0,
+  messageCount: 0,
+  taskActivities: [],
+};
 
-const FULL = JSON.stringify({
-  plans: 3,
+const FULL: AwarenessStatus = {
   activePlans: 1,
-  tasks: 7,
   readyTasks: 2,
   inProgressTasks: 1,
-  locks: 2,
-  work: 1,
-  pendingChecks: 4,
   verifyTasks: 4,
-  agents: 2,
-  messages: 5,
+  lockCount: 2,
+  workCount: 1,
+  agentCount: 2,
+  messageCount: 5,
+  unreadInbox: 1,
+  taskActivities: [
+    { taskId: 'task-doing', title: 'Implement lifecycle', state: 'doing', agentId: 'octo-worker' },
+    { taskId: 'task-ready', title: 'Verify CLI', state: 'ready' },
+  ],
+  lastMessage: { from: 'planner', to: 'worker', preview: 'take lane' },
+  lastInbound: { from: 'planner', preview: 'take lane' },
+};
+
+afterEach(() => resetAwarenessStatusStateForTests());
+
+test('signal detection and bounded prompt addendum use typed status', () => {
+  assert.equal(hasAwarenessSignal(ZERO), false);
+  assert.equal(hasAwarenessSignal(FULL), true);
+  assert.equal(renderAwarenessSignalAddendum(ZERO), '');
+  const addendum = renderAwarenessSignalAddendum(FULL);
+  assert.match(addendum, /unread/i);
+  assert.doesNotMatch(addendum, /take lane/);
+  assert.ok(addendum.length < 300);
 });
 
-test('parseAwarenessStatus maps the Lite status JSON fields', () => {
-  const s = parseAwarenessStatus(FULL)!;
-  assert.equal(s.activePlans, 1);
-  assert.equal(s.readyTasks, 2);
-  assert.equal(s.inProgressTasks, 1);
-  assert.equal(s.verifyTasks, 4);
-  assert.equal(s.lockCount, 2);
-  assert.equal(s.workCount, 1);
-  assert.equal(s.agentCount, 2);
-  assert.equal(s.messageCount, 5);
+test('panel composition preserves counts, debt, tasks, messages, and attention state', () => {
+  const lines = formatAwarenessPanel(FULL, undefined, 120);
+  const text = lines.join('\n');
+  assert.match(text, /verify/);
+  assert.match(text, /Implement lifecycle/);
+  assert.match(text, /Verify CLI/);
+  assert.match(text, /planner/);
+  assert.match(text, /take lane/);
+  assert.deepEqual(formatAwarenessPanel(ZERO), []);
 });
 
-test('parseAwarenessStatus falls back to legacy Lite status totals', () => {
-  const s = parseAwarenessStatus(JSON.stringify({ plans: 1, tasks: 3, pendingChecks: 2 }))!;
-  assert.equal(s.activePlans, 1);
-  assert.equal(s.readyTasks, 3);
-  assert.equal(s.inProgressTasks, 0);
-  assert.equal(s.verifyTasks, 2);
-});
-
-test('parseAwarenessStatus returns null on bad JSON', () => {
-  assert.equal(parseAwarenessStatus('not json'), null);
-});
-
-test('hasAwarenessSignal is false only when everything is zero', () => {
-  const zero: AwarenessStatus = {
-    activePlans: 0, readyTasks: 0, inProgressTasks: 0, verifyTasks: 0,
-    lockCount: 0, workCount: 0, agentCount: 0, messageCount: 0,
-  };
-  assert.equal(hasAwarenessSignal(zero), false);
-  assert.equal(hasAwarenessSignal({ ...zero, readyTasks: 1 }), true);
-});
-
-test('formatAwarenessPanel renders counts and surfaces verify-debt', () => {
-  const s = parseAwarenessStatus(FULL)!;
-  const lines = formatAwarenessPanel(s); // no theme → plain text
-  assert.equal(lines.length, 1);
-  assert.match(lines[0]!, /Awareness/);
-  assert.match(lines[0]!, /plans 1/);
-  assert.match(lines[0]!, /ready 2/);
-  assert.match(lines[0]!, /doing 1/);
-  assert.doesNotMatch(lines[0]!, /tasks 7/); // total task count is not mislabeled as actionable ready work
-  assert.match(lines[0]!, /locks 2/);
-  assert.match(lines[0]!, /work 1/);
-  assert.doesNotMatch(lines[0]!, /agents 2/); // shown in the lower toolbar, not the below-editor panel
-  assert.match(lines[0]!, /peer-msgs 5/);
-  assert.match(lines[0]!, /verify-debt 4/);
-});
-
-test('parseLastMessage summarizes the newest peer message', () => {
-  const json = JSON.stringify([
-    { fromAgentId: 'a1', toAgentId: 'b2', text: 'older note', createdAt: 100 },
-    { fromAgentId: 'planner', toAgentId: 'worker', text: 'take the parser lane', createdAt: 200 },
-  ]);
-  const last = parseLastMessage(json)!;
-  assert.equal(last.from, 'planner');
-  assert.equal(last.to, 'worker');
-  assert.match(last.preview, /take the parser lane/);
-});
-
-test('parseLastMessage returns undefined for empty or bad input', () => {
-  assert.equal(parseLastMessage('[]'), undefined);
-  assert.equal(parseLastMessage('not json'), undefined);
-});
-
-test('formatAwarenessPanel renders the last peer message when present', () => {
-  const s = { ...parseAwarenessStatus(FULL)!, lastMessage: { from: 'planner', to: 'worker', preview: 'take lane' } };
-  const line = formatAwarenessPanel(s)[0]!;
-  assert.match(line, /peer-msgs 5 \(last planner→worker: take lane\)/);
-});
-
-test('formatAwarenessPanel is empty when there is no signal', () => {
-  const zero = parseAwarenessStatus(JSON.stringify({}))!;
-  assert.deepEqual(formatAwarenessPanel(zero), []);
+test('panel remains width-bounded without losing semantic groups', () => {
+  const lines = formatAwarenessPanel(FULL, undefined, 44);
+  assert.ok(lines.length > 1);
+  assert.match(lines.join('\n'), /verify|inbox|peer/);
 });
 
 function uiCtx() {
@@ -111,59 +78,44 @@ function uiCtx() {
     cwd: '/tmp/aware-ws',
     hasUI: true,
     ui: {
-      setWidget: (_name: string, content: unknown) =>
-        widget.push({ cleared: content === undefined, isFn: typeof content === 'function' }),
+      setWidget: (_name: string, content: unknown) => widget.push({ cleared: content === undefined, isFn: typeof content === 'function' }),
       setStatus: () => {},
     },
   } as unknown as PiContext;
   return { ctx, widget };
 }
 
-test('refreshAwarenessPanel renders a widget from the async runner result', async () => {
-  delete process.env.OCTOCODE_AWARENESS_CLI;
+test('refresh caches one typed package snapshot and throttles repeated paints', async () => {
   let calls = 0;
-  setAwarenessStatusRunnerForTests(async () => { calls++; return FULL; });
+  setAwarenessStatusRunnerForTests(async (cwd, agentId) => {
+    calls++;
+    assert.equal(cwd, '/tmp/aware-ws');
+    assert.equal(agentId, 'agent-current');
+    return FULL;
+  });
+  process.env.OCTOCODE_AGENT_ID = 'agent-current';
   const { ctx, widget } = uiCtx();
   refreshAwarenessPanel(ctx);
-  await new Promise((r) => setTimeout(r, 5));
-  assert.equal(calls, 1, 'runner invoked once');
-  assert.ok(widget.some((w) => w.isFn && !w.cleared), 'a below-editor widget was rendered');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  refreshAwarenessPanel(ctx);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  delete process.env.OCTOCODE_AGENT_ID;
+  assert.equal(calls, 1);
+  assert.equal(getCachedAwarenessStatus(ctx.cwd!), FULL);
+  // Awareness data is cached but the panel is not registered unless there is an active
+  // plan or agent section — awareness-only state no longer drives panel visibility.
+  assert.ok(!widget.some((entry) => entry.isFn && !entry.cleared), 'panel is not registered for awareness-only state');
 });
 
-test('refreshAwarenessPanel throttles repeated calls within the window', async () => {
-  delete process.env.OCTOCODE_AWARENESS_CLI;
+test('refresh clears stale cached status when the package reader fails', async () => {
   let calls = 0;
-  setAwarenessStatusRunnerForTests(async () => { calls++; return FULL; });
-  const { ctx } = uiCtx();
-  refreshAwarenessPanel(ctx);
-  await new Promise((r) => setTimeout(r, 5));
-  refreshAwarenessPanel(ctx); // within 8s window
-  refreshAwarenessPanel(ctx);
-  await new Promise((r) => setTimeout(r, 5));
-  assert.equal(calls, 1, 'subsequent calls within the window do not re-run the CLI');
-});
-
-test('refreshAwarenessPanel clears stale cached status when the async runner fails', async () => {
-  delete process.env.OCTOCODE_AWARENESS_CLI;
-  let calls = 0;
-  setAwarenessStatusRunnerForTests(async () => (calls++ === 0 ? FULL : null));
+  setAwarenessStatusRunnerForTests(async () => calls++ === 0 ? FULL : null);
   const { ctx, widget } = uiCtx();
   refreshAwarenessPanel(ctx);
-  await new Promise((r) => setTimeout(r, 5));
-  assert.ok(widget.some((w) => w.isFn && !w.cleared), 'first successful refresh renders a widget');
-
+  await new Promise((resolve) => setTimeout(resolve, 5));
   forceAwarenessStatusRefreshForTests(ctx.cwd!);
   refreshAwarenessPanel(ctx);
-  await new Promise((r) => setTimeout(r, 5));
-  assert.ok(widget.some((w) => w.cleared), 'failed refresh clears the unified widget instead of keeping stale Awareness status');
-});
-
-test('refreshAwarenessPanel still runs without the CLI env var', async () => {
-  delete process.env.OCTOCODE_AWARENESS_CLI;
-  let calls = 0;
-  setAwarenessStatusRunnerForTests(async () => { calls++; return FULL; });
-  const { ctx } = uiCtx();
-  refreshAwarenessPanel(ctx);
-  await new Promise((r) => setTimeout(r, 5));
-  assert.equal(calls, 1, 'local package runner is invoked without OCTOCODE_AWARENESS_CLI');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(getCachedAwarenessStatus(ctx.cwd!), null);
+  assert.ok(widget.some((entry) => entry.cleared));
 });

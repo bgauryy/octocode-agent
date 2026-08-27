@@ -107,15 +107,26 @@ export type RunResult =
     };
 
 // In-memory memoization for deterministic tools. Process-scoped (safe: keyed by tool
-// version, so re-registration busts it) and bounded FIFO so it can't grow unbounded.
+// version, so re-registration busts it) and bounded LRU so it can't grow unbounded
+// and a hot entry is not evicted before colder recent ones.
 const RESULT_CACHE_MAX = 256;
 const resultCache = new Map<string, unknown>();
 function storeInCache(key: string, value: unknown): void {
-  if (resultCache.size >= RESULT_CACHE_MAX) {
-    const oldest = resultCache.keys().next().value;
-    if (oldest !== undefined) resultCache.delete(oldest);
-  }
+  // delete-then-set moves the key to the most-recently-used position.
+  resultCache.delete(key);
   resultCache.set(key, value);
+  while (resultCache.size > RESULT_CACHE_MAX) {
+    const oldest = resultCache.keys().next().value;
+    if (oldest === undefined) break;
+    resultCache.delete(oldest);
+  }
+}
+/** Read a cached result, refreshing its LRU recency on hit. */
+function readFromCache(key: string): unknown {
+  const value = resultCache.get(key);
+  resultCache.delete(key);
+  resultCache.set(key, value);
+  return value;
 }
 
 const DEFAULT_RUN_TIMEOUT_MS = 5_000;
@@ -369,7 +380,7 @@ export function runDynamicTool(
     ? `${entry.name}@${entry.version}:${sha256(JSON.stringify(metadata ?? {}))}`
     : '';
   if (cacheable && resultCache.has(cacheKey)) {
-    return { ok: true, result: resultCache.get(cacheKey), cached: true };
+    return { ok: true, result: readFromCache(cacheKey), cached: true };
   }
 
   // Isolate the runner in its own mkdtemp dir so the sandbox fs-read grant
@@ -451,23 +462,14 @@ function buildTestInvocation(
   testRealPath: string,
   entry: { name: string; capabilities: Capability[]; sandboxed: boolean },
 ): { args: string[]; env: NodeJS.ProcessEnv } {
-  if (!entry.sandboxed) {
-    return { args: [testRealPath], env: process.env };
-  }
-  const caps = new Set(entry.capabilities);
-  const flags = ['--permission', '--disallow-code-generation-from-strings'];
-  const dirGlob = readSubtree(testRealPath);
-  if (caps.has('fs')) {
-    flags.push('--allow-fs-read=*', '--allow-fs-write=*');
-  } else {
-    // Scope reads/writes to the tool's own directory: enough to import tool.mjs
-    // and let the test use scratch files beside it, nothing else.
-    flags.push(`--allow-fs-read=${dirGlob}`, `--allow-fs-write=${dirGlob}`);
-  }
-  if (caps.has('net')) flags.push('--allow-net');
-  if (caps.has('exec')) flags.push('--allow-child-process');
-  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? '' };
-  return { args: [...flags, testRealPath], env };
+  return buildSandboxedNodeInvocation({
+    entryFile: testRealPath,
+    sandboxed: entry.sandboxed,
+    capabilities: entry.capabilities,
+    allowedCapabilities: entry.capabilities,
+    readScopes: [testRealPath],
+    writeScopes: [testRealPath],
+  });
 }
 
 /**
@@ -491,28 +493,48 @@ function buildRunInvocation(
   entry: ToolManifestEntry,
   allow: Capability[],
 ): { args: string[]; env: NodeJS.ProcessEnv } {
-  if (entry.sandboxed === false) {
-    return { args: [runnerRealPath], env: process.env };
+  return buildSandboxedNodeInvocation({
+    entryFile: runnerRealPath,
+    sandboxed: entry.sandboxed,
+    capabilities: entry.capabilities,
+    allowedCapabilities: allow,
+    readScopes: [runnerRealPath, toolRealPath],
+    writeScopes: [],
+  });
+}
+
+interface SandboxInvocationPolicy {
+  entryFile: string;
+  sandboxed: boolean;
+  capabilities: Capability[];
+  allowedCapabilities: Capability[];
+  readScopes: string[];
+  writeScopes: string[];
+}
+
+function buildSandboxedNodeInvocation(policy: SandboxInvocationPolicy): { args: string[]; env: NodeJS.ProcessEnv } {
+  if (!policy.sandboxed) {
+    return { args: [policy.entryFile], env: process.env };
   }
 
-  const caps = new Set(entry.capabilities.filter((c) => allow.includes(c)));
-  // --disallow-code-generation-from-strings blocks eval / new Function in the tool,
-  // shrinking the attack surface of generated code beyond the capability grants.
+  const caps = new Set(policy.capabilities.filter((c) => policy.allowedCapabilities.includes(c)));
+  // --disallow-code-generation-from-strings blocks eval / new Function in generated code,
+  // shrinking the attack surface beyond the explicit capability grants.
   const flags = ['--permission', '--disallow-code-generation-from-strings'];
 
   if (caps.has('fs')) {
     flags.push('--allow-fs-read=*', '--allow-fs-write=*');
   } else {
-    // Minimum needed to import the tool module + runner; nothing else is readable.
-    flags.push(`--allow-fs-read=${readSubtree(runnerRealPath)}`, `--allow-fs-read=${readSubtree(toolRealPath)}`);
+    for (const scope of policy.readScopes) flags.push(`--allow-fs-read=${readSubtree(scope)}`);
+    for (const scope of policy.writeScopes) flags.push(`--allow-fs-write=${readSubtree(scope)}`);
   }
   if (caps.has('net')) flags.push('--allow-net');
   if (caps.has('exec')) flags.push('--allow-child-process');
 
-  // Scrub the environment: expose only PATH so the tool can locate binaries it is
-  // explicitly allowed to spawn, but never inherits API keys / tokens from process.env.
+  // Scrub the environment: expose only PATH so explicitly approved exec tools can
+  // locate binaries, but never inherit API keys / tokens from process.env.
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? '' };
-  return { args: [...flags, runnerRealPath], env };
+  return { args: [...flags, policy.entryFile], env };
 }
 
 function pathToFileUrl(p: string): string {

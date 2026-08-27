@@ -11,6 +11,7 @@ import { createPlan } from '../src/plans.js';
 import { claimTask, createTask as createTaskBase } from '../src/tasks.js';
 import type { CreateTaskParams } from '../src/tasks.js';
 import { startWork } from '../src/work.js';
+import { withEnabledAwarenessConfig } from './helpers/enabled-awareness-config.js';
 const DIST_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../out');
 const HOOK_RUNNER = resolve(DIST_DIR, 'hook-runner.js');
 const AWARENESS = resolve(DIST_DIR, 'octocode-awareness.js');
@@ -27,7 +28,7 @@ function runScript(script: string, args: string[], payload: unknown, env: Record
         encoding: 'utf8',
         timeout: 5000,
         cwd,
-        env: { ...process.env, ...env },
+        env: { ...process.env, ...withEnabledAwarenessConfig(env) },
     });
 }
 

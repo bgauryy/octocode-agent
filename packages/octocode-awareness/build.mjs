@@ -1,116 +1,117 @@
 #!/usr/bin/env node
-
+/**
+ * @octocodeai/octocode-awareness build script.
+ *
+ * Builds directly to out/ (no atomic staging).
+ * Shared esbuild config from repo-root build.config.mjs.
+ * Run `yarn typecheck` for a type-only check without rebuilding.
+ */
 import * as esbuild from 'esbuild';
 import { execFileSync } from 'node:child_process';
 import {
-  chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync,
-  renameSync, rmSync, writeFileSync,
+  chmodSync, cpSync, existsSync, mkdirSync,
+  readFileSync, readdirSync, rmSync, writeFileSync,
 } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { sharedBuildOptions, coreEntryPoints, skillScriptEntries } from './buildConfig.mjs';
+import { baseOptions } from '../../build.config.mjs';
+import { coreEntryPoints, skillScriptEntries } from './build.entries.mjs';
 
 const packageRoot = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(packageRoot, '../..');
-const publishedOutDir = join(packageRoot, 'out');
-const outDir = join(packageRoot, `.out-build-${process.pid}-${randomUUID()}`);
-const legacyDistDir = join(packageRoot, 'dist');
-// Staged home for standalone skill bundles. The completed tree is atomically
-// promoted to out/, and every other copy derives from these generated files.
+const repoRoot    = resolve(packageRoot, '../..');
+const outDir      = join(packageRoot, 'out');
 const skillScriptsOutDir = join(outDir, 'skill-scripts');
-// Canonical skill source lives at the repo root so the skill is usable and
-// editable independently of any package; the package-local skills/ tree is a
-// generated sync target so npm consumers get the skill alongside the CLI.
-const canonicalSkillsRoot = join(repoRoot, 'skills');
-const packageSkillsRoot = join(packageRoot, 'skills');
-const canonicalAwarenessSkill = join(canonicalSkillsRoot, 'octocode-awareness');
-const canonicalAwarenessScripts = join(canonicalAwarenessSkill, 'scripts');
-const agentSkillsRoot = join(repoRoot, '.agents', 'skills');
-const tscBin = resolve(packageRoot, '../../node_modules/.bin/tsc');
+
+// Canonical repo-root skill source (synced to package-local at build time).
+const canonicalSkillsRoot       = join(repoRoot, 'skills');
+const packageSkillsRoot         = join(packageRoot, 'skills');
+const canonicalAwarenessScripts = join(canonicalSkillsRoot, 'octocode-awareness', 'scripts');
+const agentSkillsRoot           = join(repoRoot, '.agents', 'skills');
+
+const tscBin  = resolve(packageRoot, '../../node_modules/.bin/tsc');
 const require = createRequire(import.meta.url);
+
+// ── Skill helpers ─────────────────────────────────────────────────────────────
 
 function hasSkillDirectories(root) {
   if (!existsSync(root)) return false;
-  return readdirSync(root, { withFileTypes: true }).some((entry) =>
-    entry.isDirectory() && existsSync(join(root, entry.name, 'SKILL.md'))
-  );
+  return readdirSync(root, { withFileTypes: true })
+    .some((e) => e.isDirectory() && existsSync(join(root, e.name, 'SKILL.md')));
 }
 
 function resolveSkillSourceRoot() {
   if (hasSkillDirectories(canonicalSkillsRoot)) return canonicalSkillsRoot;
-  // Published tarball / subset checkout: the synced package-local copy ships
-  // with the package and stands in for the repo-root source.
-  if (hasSkillDirectories(packageSkillsRoot)) return packageSkillsRoot;
+  if (hasSkillDirectories(packageSkillsRoot))   return packageSkillsRoot;
   try {
-    const installedSkillsRoot = join(dirname(require.resolve('octocode/package.json')), 'skills');
-    if (hasSkillDirectories(installedSkillsRoot)) return installedSkillsRoot;
-  } catch {
-    // Fall through to the canonical path so the later error reports the expected location.
-  }
+    const p = join(dirname(require.resolve('octocode/package.json')), 'skills');
+    if (hasSkillDirectories(p)) return p;
+  } catch { /* fall through */ }
   return canonicalSkillsRoot;
 }
 
-process.chdir(packageRoot);
-rmSync(outDir, { recursive: true, force: true });
-rmSync(legacyDistDir, { recursive: true, force: true });
-
-const shared = sharedBuildOptions;
-let published = false;
-
-try {
-
-// One Awareness-owned output graph. Shared domain modules become chunks; the
-// schema lane stays lazy from the main CLI and carries the bundled Zod runtime.
-await esbuild.build({
-  ...shared,
-  entryPoints: coreEntryPoints,
-  outdir: outDir,
-  entryNames: '[name]',
-  chunkNames: 'chunks/[name]-[hash]',
-  splitting: true,
-  minify: true,
-  logLevel: 'info',
-});
-
-// The installed Agent Skill must remain runnable after it is copied away from
-// the npm package. Build standalone Awareness helpers from the same TS sources;
-// no octocode CLI or tools-core source participates in these bundles. These
-// land permanently under out/ — the canonical skill folder below only copies
-// from here, it never generates its own copy.
-rmSync(skillScriptsOutDir, { recursive: true, force: true });
-mkdirSync(skillScriptsOutDir, { recursive: true });
-await Promise.all(
-  skillScriptEntries.map((entry) =>
-    esbuild.build({
-      ...shared,
-      entryPoints: entry.entryPoints,
-      outfile: join(skillScriptsOutDir, entry.outfileName),
-      minify: true,
-    })
-  )
-);
-
-execFileSync(tscBin, ['--emitDeclarationOnly', '--outDir', join(outDir, 'types'), '-p', 'tsconfig.build.json'], {
-  cwd: packageRoot,
-  stdio: 'inherit',
-});
+// ── Shebang + chmod helpers ───────────────────────────────────────────────────
 
 const warningGuard = [
   '#!/usr/bin/env node',
   "process.removeAllListeners('warning');",
-  "process.on('warning', (warning) => {",
-  "  if (warning?.name === 'ExperimentalWarning' && String(warning?.message).includes('SQLite')) return;",
-  '  console.error(warning?.stack ?? String(warning));',
+  "process.on('warning', (w) => {",
+  "  if (w?.name === 'ExperimentalWarning' && String(w?.message).includes('SQLite')) return;",
+  '  console.error(w?.stack ?? String(w));',
   '});',
 ].join('\n');
 
-function makeExecutable(path, banner = '#!/usr/bin/env node') {
-  const source = readFileSync(path, 'utf8');
-  writeFileSync(path, `${banner}\n${source.replace(/^#![^\n]*\n?/, '')}`);
-  chmodSync(path, 0o755);
+const generatedNote =
+  '// @generated by packages/octocode-awareness/build.mjs — do not edit; run `yarn build` to refresh.';
+
+function makeExecutable(filePath, banner = '#!/usr/bin/env node') {
+  const src = readFileSync(filePath, 'utf8');
+  writeFileSync(filePath, `${banner}\n${src.replace(/^#![^\n]*\n?/, '')}`);
+  chmodSync(filePath, 0o755);
 }
+
+// ── Clean ─────────────────────────────────────────────────────────────────────
+
+process.chdir(packageRoot);
+rmSync(outDir, { recursive: true, force: true });
+rmSync(join(packageRoot, 'dist'), { recursive: true, force: true });
+mkdirSync(outDir, { recursive: true });
+
+// ── Core bundle (code-split) ──────────────────────────────────────────────────
+
+await esbuild.build({
+  ...baseOptions,
+  entryPoints:  coreEntryPoints,
+  outdir:       outDir,
+  entryNames:   '[name]',
+  chunkNames:   'chunks/[name]-[hash]',
+  splitting:    true,
+  minify:       true,
+});
+
+// ── Skill-script standalone bundles (no shared chunks) ────────────────────────
+
+mkdirSync(skillScriptsOutDir, { recursive: true });
+await Promise.all(
+  skillScriptEntries.map(({ entryPoints, outfileName }) =>
+    esbuild.build({
+      ...baseOptions,
+      entryPoints,
+      outfile: join(skillScriptsOutDir, outfileName),
+      minify:  true,
+    }),
+  ),
+);
+
+// ── Type declarations (tsc --emitDeclarationOnly → out/types/) ────────────────
+
+execFileSync(
+  tscBin,
+  ['--emitDeclarationOnly', '--outDir', join(outDir, 'types'), '-p', 'tsconfig.build.json'],
+  { cwd: packageRoot, stdio: 'inherit' },
+);
+
+// ── Shebangs + chmod ──────────────────────────────────────────────────────────
 
 for (const name of ['octocode-awareness.js', 'hook-runner.js']) {
   makeExecutable(join(outDir, name), warningGuard);
@@ -118,58 +119,31 @@ for (const name of ['octocode-awareness.js', 'hook-runner.js']) {
 for (const name of ['extract-hook-files.js']) {
   makeExecutable(join(outDir, name));
 }
-
-// These four land in the package-local canonical skill (below) so an editor
-// could mistake them for the hand-authored install.mjs/smoke-multi-agent.mjs
-// next to them. Mark them so stray edits are not silently lost on rebuild.
-const generatedNote = "// @generated by packages/octocode-awareness/build.mjs — do not edit; run `yarn build` in packages/octocode-awareness to refresh.";
 for (const name of ['awareness.mjs', 'hook-runner.mjs']) {
   makeExecutable(join(skillScriptsOutDir, name), `${warningGuard}\n${generatedNote}`);
 }
-for (const name of ['extract-hook-files.mjs']) {
-  makeExecutable(join(skillScriptsOutDir, name), `#!/usr/bin/env node\n${generatedNote}`);
-}
+makeExecutable(join(skillScriptsOutDir, 'extract-hook-files.mjs'), `#!/usr/bin/env node\n${generatedNote}`);
 
-// Schemas are served dynamically by the CLI (`schema list|json-schema|example|
-// validate`); no static schema files are generated or shipped.
+// ── Static assets ─────────────────────────────────────────────────────────────
 
-const skillSourceRoot = resolveSkillSourceRoot();
-const usingCanonicalSkillSource = skillSourceRoot === canonicalSkillsRoot;
-
-// Refresh only generated artifacts inside the package-local canonical Awareness
-// skill when that source exists in this checkout. Subset checkouts fall back to
-// installed skill sources for packaging and must not create repo-root skills.
-if (usingCanonicalSkillSource) {
-  mkdirSync(canonicalAwarenessScripts, { recursive: true });
-  for (const name of [
-    'awareness.mjs', 'hook-runner.mjs', 'extract-hook-files.mjs',
-  ]) {
-    cpSync(join(skillScriptsOutDir, name), join(canonicalAwarenessScripts, name));
-  }
-  rmSync(join(canonicalAwarenessScripts, 'runtime'), { recursive: true, force: true });
-  rmSync(join(canonicalAwarenessScripts, 'schemas'), { recursive: true, force: true });
-  rmSync(join(canonicalAwarenessScripts, 'schema.mjs'), { force: true });
-}
-
-// Publish surface: everything ships nested under out/ — only the npm-mandated
-// root files (package.json, README.md, LICENSE) live outside it.
-rmSync(join(outDir, 'docs'), { recursive: true, force: true });
-cpSync(join(packageRoot, 'docs'), join(outDir, 'docs'), { recursive: true });
-rmSync(join(outDir, 'assets'), { recursive: true, force: true });
+cpSync(join(packageRoot, 'docs'),   join(outDir, 'docs'),   { recursive: true });
 cpSync(join(packageRoot, 'assets'), join(outDir, 'assets'), { recursive: true });
 
-const retiredSkills = new Set(['octocode-agent-communication', 'octocode-reflection']);
-const shouldCopySkillFile = (sourceRoot, filePath) => {
-  const relative = filePath.slice(sourceRoot.length).split(/[\\/]+/).filter(Boolean);
-  return !relative.includes('node_modules') && !filePath.endsWith('octocode-config.mjs');
-};
+// ── Skills ────────────────────────────────────────────────────────────────────
+
+const skillSourceRoot  = resolveSkillSourceRoot();
+const usingCanonical   = skillSourceRoot === canonicalSkillsRoot;
+const retiredSkills    = new Set(['octocode-agent-communication', 'octocode-reflection']);
+const shouldCopyFile   = (_src, p) =>
+  !p.split(/[\\/]/).includes('node_modules') && !p.endsWith('octocode-config.mjs');
+
 if (!existsSync(skillSourceRoot)) {
   throw new Error(`Missing skill source root: ${skillSourceRoot}`);
 }
+
 const bundledSkills = readdirSync(skillSourceRoot, { withFileTypes: true })
-  .filter((entry) => entry.isDirectory() && !retiredSkills.has(entry.name))
-  .filter((entry) => existsSync(join(skillSourceRoot, entry.name, 'SKILL.md')))
-  .map((entry) => entry.name)
+  .filter((e) => e.isDirectory() && !retiredSkills.has(e.name) && existsSync(join(skillSourceRoot, e.name, 'SKILL.md')))
+  .map((e) => e.name)
   .sort();
 
 if (bundledSkills.length === 0) {
@@ -179,77 +153,59 @@ if (bundledSkills.length === 0) {
 const packagedSkillsRoot = join(outDir, 'skills');
 rmSync(packagedSkillsRoot, { recursive: true, force: true });
 mkdirSync(packagedSkillsRoot, { recursive: true });
-if (usingCanonicalSkillSource) mkdirSync(agentSkillsRoot, { recursive: true });
 
-if (usingCanonicalSkillSource) for (const skillName of retiredSkills) {
-  rmSync(join(agentSkillsRoot, skillName), { recursive: true, force: true });
-}
-for (const skillName of bundledSkills) {
-  const source = join(skillSourceRoot, skillName);
-  const packaged = join(packagedSkillsRoot, skillName);
-  const mirrored = join(agentSkillsRoot, skillName);
-  if (usingCanonicalSkillSource) rmSync(mirrored, { recursive: true, force: true });
-  cpSync(source, packaged, {
-    recursive: true,
-    filter: (path) => shouldCopySkillFile(source, path),
-  });
-  if (usingCanonicalSkillSource) {
-    cpSync(source, mirrored, {
-      recursive: true,
-      filter: (path) => shouldCopySkillFile(source, path),
-    });
-    // Sync the repo-root source into the package-local skills/ tree so the
-    // published package (and the pi-extension build) carry the skill without
-    // depending on the monorepo layout.
-    const packageCopy = join(packageSkillsRoot, skillName);
-    rmSync(packageCopy, { recursive: true, force: true });
-    cpSync(source, packageCopy, {
-      recursive: true,
-      filter: (path) => shouldCopySkillFile(source, path),
-    });
+if (usingCanonical) {
+  mkdirSync(agentSkillsRoot, { recursive: true });
+  for (const s of retiredSkills) {
+    rmSync(join(agentSkillsRoot, s), { recursive: true, force: true });
   }
 }
 
+for (const skillName of bundledSkills) {
+  const source = join(skillSourceRoot, skillName);
+  const filter = (p) => shouldCopyFile(source, p);
+
+  cpSync(source, join(packagedSkillsRoot, skillName), { recursive: true, filter });
+
+  if (usingCanonical) {
+    const mirrored = join(agentSkillsRoot, skillName);
+    rmSync(mirrored, { recursive: true, force: true });
+    cpSync(source, mirrored, { recursive: true, filter });
+
+    // Keep package-local skills/ in sync for npm consumers / subset checkouts.
+    const pkgCopy = join(packageSkillsRoot, skillName);
+    rmSync(pkgCopy, { recursive: true, force: true });
+    cpSync(source, pkgCopy, { recursive: true, filter });
+  }
+}
+
+// Inject generated scripts into the canonical Awareness skill (repo-root source).
+if (usingCanonical) {
+  mkdirSync(canonicalAwarenessScripts, { recursive: true });
+  for (const name of ['awareness.mjs', 'hook-runner.mjs', 'extract-hook-files.mjs']) {
+    cpSync(join(skillScriptsOutDir, name), join(canonicalAwarenessScripts, name));
+  }
+  // Remove stale generated artefacts from older builds.
+  for (const stale of ['runtime', 'schemas']) {
+    rmSync(join(canonicalAwarenessScripts, stale), { recursive: true, force: true });
+  }
+  rmSync(join(canonicalAwarenessScripts, 'schema.mjs'), { force: true });
+}
+
+// Inject scripts into the packaged copy of the Awareness skill.
 const packagedAwarenessScripts = join(packagedSkillsRoot, 'octocode-awareness', 'scripts');
 if (existsSync(packagedAwarenessScripts)) {
-  for (const name of [
-    'awareness.mjs', 'hook-runner.mjs', 'extract-hook-files.mjs',
-  ]) {
+  for (const name of ['awareness.mjs', 'hook-runner.mjs', 'extract-hook-files.mjs']) {
     cpSync(join(skillScriptsOutDir, name), join(packagedAwarenessScripts, name));
   }
   rmSync(join(packagedAwarenessScripts, 'schemas'), { recursive: true, force: true });
   rmSync(join(packagedAwarenessScripts, 'schema.mjs'), { force: true });
 }
 
-// Keep the previous published tree usable until the complete replacement has
-// been generated. Node does not expose rename-exchange, so publication uses a
-// rollback-capable two-rename handoff with only the final filesystem swap at
-// risk rather than deleting out/ at build start.
-const backupOutDir = join(packageRoot, `.out-backup-${process.pid}-${randomUUID()}`);
-let movedExisting = false;
-try {
-  if (existsSync(publishedOutDir)) {
-    renameSync(publishedOutDir, backupOutDir);
-    movedExisting = true;
-  }
-  renameSync(outDir, publishedOutDir);
-  published = true;
-} catch (error) {
-  if (movedExisting && existsSync(backupOutDir) && !existsSync(publishedOutDir)) {
-    renameSync(backupOutDir, publishedOutDir);
-    movedExisting = false;
-  }
-  throw error;
-} finally {
-  if (published && movedExisting) {
-    rmSync(backupOutDir, { recursive: true, force: true });
-  }
-}
+// ── Summary ───────────────────────────────────────────────────────────────────
 
+const chunkCount = readdirSync(join(outDir, 'chunks')).length;
 console.log('✓ @octocodeai/octocode-awareness built → out/');
-console.log(`✓ Awareness CLI → out/octocode-awareness.js (${readdirSync(join(publishedOutDir, 'chunks')).length} shared chunks)`);
+console.log(`✓ Awareness CLI → out/octocode-awareness.js (${chunkCount} shared chunks)`);
 console.log('✓ schemas served dynamically by the CLI (no static schema files)');
 console.log(`✓ bundled skills → out/skills/ (${bundledSkills.join(', ')}) from ${skillSourceRoot}`);
-} finally {
-  if (!published) rmSync(outDir, { recursive: true, force: true });
-}

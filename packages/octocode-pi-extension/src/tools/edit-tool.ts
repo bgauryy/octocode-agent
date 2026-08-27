@@ -1,50 +1,32 @@
 import { constants } from 'node:fs';
 import { access, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
-import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
+import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint, ansiForToken, ANSI_RESET_SEQ } from '../tui/cli-design.js';
+import type { TSchema, ToolCallResult, ToolDefinition, PiTheme, RenderCallReturn } from '../types.js';
 import { makeRenderer, truncateToWidth, wrapText } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
-import {
-  atomicWriteUtf8,
-  withFileMutationQueue,
-  recordFileReadState,
-  checkReadState,
-  clearReadStatesForTests,
-  resolveFilePath,
-  type ReadStateCheck,
-} from './file-state.js';
+import { atomicWriteUtf8, withFileMutationQueue, recordFileReadState, checkReadState, resolveFilePath, type ReadStateCheck } from './file-state.js';
+import { peerWipNotice, markOwnWrite } from './peer-wip.js';
+import type { registerUniqueTool } from './octocode-tools.js';
+import { buildQueryEnvelopeSchema, executeQueryBatch, QUERY_BATCH_MAX_ITEMS } from './query-envelope.js';
 
-// ─── Backward-compat re-exports ───────────────────────────────────────────────
-// Tests (package.test.ts) and historical callers import these from edit-tool.
-// write-tool.ts and octocode-tools.ts now import directly from file-state.ts.
-export { withFileMutationQueue, recordFileReadState } from './file-state.js';
-export function clearEditReadStateForTests(): void {
-  clearReadStatesForTests();
-}
 
 const require = createRequire(import.meta.url);
 
 // ─── TypeBox (dynamic import — Pi runtime dep) ────────────────────────────────
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
+type RegisterFn = typeof registerUniqueTool;
 
 type MatchMode = 'exact' | 'normalized' | 'lineRange';
 
-interface EditRequest {
-  path?: string;
-  edits?: EditOperation[];
-  queries?: EditQuery[];
-  requireRecentRead?: boolean;
-}
-
-interface EditQuery {
+export interface EditQuery {
   path: string;
   edits: EditOperation[];
   requireRecentRead?: boolean;
 }
 
-interface EditOperation {
+export interface EditOperation {
   oldText?: string;
   newText: string;
   replaceAll?: boolean;
@@ -84,7 +66,7 @@ interface AppliedEditEvidence {
   addedLines: string[];
 }
 
-interface PreparedEdit {
+export interface PreparedEdit {
   requestPath: string;
   absolutePath: string;
   edits: EditOperation[];
@@ -102,17 +84,25 @@ interface EditReasoningEntry {
   reasoning: string;
 }
 
+interface RenderableEditFile {
+  path: string;
+  edits?: Array<AppliedEditEvidence>;
+}
+
 // ReadStateCheck is imported from file-state.ts above (type re-used in PreparedEdit).
-const ANSI_GREEN = '\x1b[32m';
-const ANSI_RED = '\x1b[31m';
-const ANSI_RESET = '\x1b[0m';
 
 function normalizeToLF(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
 
 function detectLineEnding(text: string): '\n' | '\r\n' {
-  return text.includes('\r\n') ? '\r\n' : '\n';
+  // Only report CRLF when the file is UNIFORMLY CRLF (every LF is part of a CRLF).
+  // A mixed file (some bare LF, some CRLF) reports '\n' so restoreLineEndings leaves
+  // it untouched — otherwise editing one line would rewrite every originally-LF line
+  // to CRLF (spurious whole-file churn).
+  if (!text.includes('\r\n')) return '\n';
+  // Strip CRLF pairs; if any bare LF remains, the file is mixed → treat as LF.
+  return text.replace(/\r\n/g, '').includes('\n') ? '\n' : '\r\n';
 }
 
 function restoreLineEndings(text: string, ending: '\n' | '\r\n'): string {
@@ -149,13 +139,13 @@ function firstChangedLine(oldContent: string, newContent: string): number | unde
 function normalizeForFuzzyMatch(text: string): string {
   return text
     .normalize('NFKC')
-    .split('\n')
-    .map((line) => line.trim())
-    .join('\n')
     .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
     .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
     .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
-    .replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, ' ');
+    .replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, ' ')
+    .split('\n')
+    .map((line) => line.trim().replace(/[ \t]+/g, ' '))
+    .join('\n');
 }
 
 function lineSpans(content: string): Array<{ start: number; end: number; line: string }> {
@@ -282,41 +272,17 @@ function validateOperation(edit: unknown, index: number): EditOperation {
   return operation;
 }
 
-function validateRequest(input: Record<string, unknown>): EditRequest {
-  const hasQueries = input['queries'] !== undefined;
-  const hasSingle = input['path'] !== undefined || input['edits'] !== undefined;
-  if (hasQueries && hasSingle) {
-    throw new Error('Edit tool input is invalid. Use either path+edits or queries, not both.');
+export function validateEditQuery(item: Record<string, unknown>, index: number): EditQuery {
+  if (typeof item['path'] !== 'string' || item['path'].trim().length === 0) {
+    throw new Error(`Edit tool input is invalid. queries[${index}].path must be a non-empty string.`);
   }
-  if (hasQueries) {
-    if (!Array.isArray(input['queries']) || input['queries'].length === 0) {
-      throw new Error('Edit tool input is invalid. queries must be a non-empty array.');
-    }
-    return {
-      requireRecentRead: input['requireRecentRead'] === true,
-      queries: input['queries'].map((query, queryIndex) => {
-        if (!query || typeof query !== 'object') throw new Error(`Edit tool input is invalid. queries[${queryIndex}] must be an object.`);
-        const item = query as Record<string, unknown>;
-        if (typeof item['path'] !== 'string' || item['path'].trim().length === 0) throw new Error(`Edit tool input is invalid. queries[${queryIndex}].path must be a non-empty string.`);
-        if (!Array.isArray(item['edits']) || item['edits'].length === 0) throw new Error(`Edit tool input is invalid. queries[${queryIndex}].edits must contain at least one replacement.`);
-        return {
-          path: item['path'],
-          requireRecentRead: item['requireRecentRead'] === true,
-          edits: item['edits'].map(validateOperation),
-        };
-      }),
-    };
-  }
-  if (typeof input['path'] !== 'string' || input['path'].trim().length === 0) {
-    throw new Error('Edit tool input is invalid. path must be a non-empty string.');
-  }
-  if (!Array.isArray(input['edits']) || input['edits'].length === 0) {
-    throw new Error('Edit tool input is invalid. edits must contain at least one replacement.');
+  if (!Array.isArray(item['edits']) || (item['edits'] as unknown[]).length === 0) {
+    throw new Error(`Edit tool input is invalid. queries[${index}].edits must contain at least one replacement.`);
   }
   return {
-    path: input['path'],
-    requireRecentRead: input['requireRecentRead'] === true,
-    edits: input['edits'].map(validateOperation),
+    path: item['path'],
+    requireRecentRead: item['requireRecentRead'] === true,
+    edits: (item['edits'] as unknown[]).map(validateOperation),
   };
 }
 
@@ -341,12 +307,17 @@ function normalizedReplacements(content: string, edit: EditOperation, editIndex:
   const oldLineCount = oldText.split('\n').length;
   const matches: MatchedReplacement[] = [];
   for (let i = 0; i <= spans.length - oldLineCount; i++) {
-    const candidate = spans.slice(i, i + oldLineCount).map((span) => span.line).join('');
+    const candidateWithEnding = spans.slice(i, i + oldLineCount).map((span) => span.line).join('');
+    const keepsTrailingNewline = oldText.endsWith('\n');
+    const candidate = !keepsTrailingNewline && candidateWithEnding.endsWith('\n')
+      ? candidateWithEnding.slice(0, -1)
+      : candidateWithEnding;
     if (normalizeForFuzzyMatch(candidate) === normalizedOld) {
+      const spanEnd = spans[i + oldLineCount - 1]!.end;
       matches.push({
         editIndex,
         start: spans[i]!.start,
-        end: spans[i + oldLineCount - 1]!.end,
+        end: !keepsTrailingNewline && candidateWithEnding.endsWith('\n') ? spanEnd - 1 : spanEnd,
         newText: normalizeToLF(edit.newText),
         mode: 'normalized',
       });
@@ -617,19 +588,22 @@ export function diffOpsJs(oldContent: string, newContent: string): DiffOp[] {
   return opsRev;
 }
 
-export function generateDiffString(oldContent: string, newContent: string): string {
-  if (diffTooLarge(oldContent, newContent)) {
-    return '(diff omitted: file too large — see the per-edit changes in details)';
-  }
-  return diffOps(oldContent, newContent)
-    .filter((op) => op.type !== 'same')
-    .map((op) => `${op.type === 'add' ? '+' : '-'} ${op.line}`)
-    .join('\n');
+/**
+ * NO_COLOR (https://no-color.org) opt-out for the raw diff SGR codes. Only the
+ * explicit env flag disables them — not TTY detection — because `coloredDiff`
+ * and the Changes: block are deliberately colored even when the session is
+ * piped (details.diff carries the plain twin for uncolored consumers).
+ */
+function diffColorsDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const flag = env['NO_COLOR'];
+  return flag !== undefined && flag !== '' && flag !== '0' && flag.toLowerCase() !== 'false';
 }
 
 function colorDiffLine(line: string): string {
-  if (line.startsWith('+ ')) return `${ANSI_GREEN}${line}${ANSI_RESET}`;
-  if (line.startsWith('- ')) return `${ANSI_RED}${line}${ANSI_RESET}`;
+  if (diffColorsDisabled()) return line;
+  // Raw SGR twin of TOKEN.diffAdd / diffRemove (cli-design owns the fallback map).
+  if (line.startsWith('+ ')) return `${ansiForToken('diffAdd')}${line}${ANSI_RESET_SEQ}`;
+  if (line.startsWith('- ')) return `${ansiForToken('diffRemove')}${line}${ANSI_RESET_SEQ}`;
   return line;
 }
 
@@ -692,31 +666,40 @@ function buildParameters(Type: TypeBoxBuilder): TSchema {
     },
     { additionalProperties: false },
   );
-  return Type.Object(
+  const queryItemSchema = Type.Object(
     {
-      path: Type.Optional(Type.String({ minLength: 1, description: 'Path to the file to edit (relative or absolute). Provide with `edits`; mutually exclusive with `queries`.' })),
-      edits: Type.Optional(Type.Array(editOperation, {
+      path: Type.String({ minLength: 1, description: 'Path to the file to edit (relative or absolute).' }),
+      edits: Type.Array(editOperation, {
         minItems: 1,
-        description: 'One or more targeted replacements. Edits are matched against the original file content, not after earlier replacements. Use with `path`.',
-      })),
-      queries: Type.Optional(Type.Array(Type.Object({
-        path: Type.String({ minLength: 1, description: 'Path to the file to edit (relative or absolute)' }),
-        edits: Type.Array(editOperation, { minItems: 1 }),
-        requireRecentRead: Type.Optional(Type.Boolean({ description: 'Require a fresh recorded localGetFileContent read before editing this file.' })),
-      }, { additionalProperties: false }), { minItems: 1, description: 'Multi-file edit requests. All replacements are computed before any file is written. Mutually exclusive with `path`+`edits`.' })),
-      requireRecentRead: Type.Optional(Type.Boolean({ description: 'Require a fresh recorded localGetFileContent read before editing.' })),
+        description: 'One or more targeted replacements. Edits are matched against the original file content, not after earlier replacements.',
+      }),
+      requireRecentRead: Type.Optional(Type.Boolean({ description: 'Require a fresh recorded localGetFileContent read before editing this file.' })),
     },
     { additionalProperties: false },
   );
+    return buildQueryEnvelopeSchema(Type, queryItemSchema as TSchema, {
+      reasoningDescription: 'Concise reason this file edit is necessary. Must be a non-empty string.',
+      allowParallel: false,
+  });
 }
+
+const EDIT_TOOL_DISPLAY_NAME = 'edit (Octocode)';
 
 function renderCallLine(args: unknown, theme?: PiTheme): string {
   const input = args && typeof args === 'object' ? args as Record<string, unknown> : {};
-  const queries = Array.isArray(input['queries']) ? input['queries'].length : 0;
-  const filePath = queries > 0 ? `${queries} file${queries === 1 ? '' : 's'}` : typeof input['path'] === 'string' ? input['path'] : '(missing path)';
-  const edits = Array.isArray(input['edits']) ? input['edits'].length : queries;
-  const title = cliToolTitle(theme, 'edit');
-  const suffix = paint(theme, 'dim', `${filePath} · ${edits} edit${edits === 1 ? '' : 's'}`);
+  const queriesArr = Array.isArray(input['queries']) ? input['queries'] as Record<string, unknown>[] : [];
+  const fileCount = queriesArr.length;
+  const filePath = fileCount === 1
+    ? (typeof queriesArr[0]?.['path'] === 'string' ? queriesArr[0]['path'] as string : '(missing path)')
+      : fileCount > 1
+        ? `${fileCount} files`
+        : '(missing path)';
+  const editCount = queriesArr.reduce(
+    (sum, q) => sum + (Array.isArray(q['edits']) ? (q['edits'] as unknown[]).length : 0),
+    0,
+  );
+  const title = cliToolTitle(theme, EDIT_TOOL_DISPLAY_NAME);
+  const suffix = paint(theme, 'dim', `${filePath} · ${editCount} edit${editCount === 1 ? '' : 's'}`);
   return `${title} ${suffix}`;
 }
 
@@ -726,7 +709,7 @@ function editReasoningEntries(edits: EditOperation[]): EditReasoningEntry[] {
 
 function reasoningSuffix(editsByFile: Array<{ path: string; edits: EditOperation[] }>): string {
   const lines = editsByFile.flatMap((file) => editReasoningEntries(file.edits)
-    .map((entry) => `${file.path} edits[${entry.editIndex}]: ${entry.reasoning}`));
+    .map((entry) => entry.reasoning));
   return lines.length > 0 ? `\nReasoning:\n${lines.map((line) => `- ${line}`).join('\n')}` : '';
 }
 
@@ -735,12 +718,74 @@ function changesSuffix(prepared: PreparedEdit[]): string {
   return `\nChanges:\n${blocks.join('\n')}`;
 }
 
-async function prepareEdit(query: EditQuery, cwd: string, inheritedRequireRecentRead: boolean): Promise<PreparedEdit> {
+function renderEditReasoningItems(files: RenderableEditFile[], theme?: PiTheme): Array<{ text: string; truncate: boolean }> {
+  const items: Array<{ text: string; truncate: boolean }> = [];
+  for (const file of files) {
+    for (const edit of file.edits ?? []) {
+      const reasonText = edit.reasoning.trim();
+      if (!reasonText) continue;
+      items.push({
+        text: paint(theme, 'muted', `  Reasoning: ${reasonText}`),
+        truncate: true,
+      });
+    }
+  }
+  return items;
+}
+
+function renderEditDiffItems(files: RenderableEditFile[], theme?: PiTheme): Array<{ text: string; truncate: boolean }> {
+  const items: Array<{ text: string; truncate: boolean }> = [];
+  for (const file of files) {
+    items.push({ text: paint(theme, 'path', `  ${file.path}`), truncate: true });
+    for (const edit of file.edits ?? []) {
+      const ops = diffOps(edit.removedLines.join('\n'), edit.addedLines.join('\n'));
+      for (const op of ops) {
+        if (op.type === 'same') continue;
+        const label = op.type === 'remove' ? '- ' : '+ ';
+        const color = op.type === 'remove' ? 'diffRemove' : 'diffAdd';
+        // 4-space indent is OUTSIDE theme.fg so the coloured substring
+        // `<color>- text</color>` is preserved for test assertions and renderers
+        // that match on the coloured part only.
+        items.push({ text: `    ${paint(theme, color, `${label}${op.line}`)}`, truncate: true });
+      }
+    }
+  }
+  return items;
+}
+
+function renderCollapsedEditDiffLines(header: string, files: RenderableEditFile[], theme?: PiTheme): RenderCallReturn {
+  const reasoningItems = renderEditReasoningItems(files, theme);
+  const diffItems = renderEditDiffItems(files, theme);
+  const maxPreviewLines = 10;
+  const previewItems = [...reasoningItems, ...diffItems];
+  const shown = previewItems.slice(0, maxPreviewLines);
+  const omitted = previewItems.length - shown.length;
+  return makeRenderer((width) => [
+    truncateToWidth(header, width),
+    ...shown.map((item) => truncateToWidth(item.text, width)),
+    ...(omitted > 0 ? [truncateToWidth(paint(theme, 'muted', `  … ${omitted} more reasoning/diff line${omitted === 1 ? '' : 's'} hidden; expand for full details`), width)] : []),
+  ]);
+}
+
+export async function prepareEdit(query: EditQuery, cwd: string, inheritedRequireRecentRead: boolean): Promise<PreparedEdit> {
   const absolutePath = resolveFilePath(query.path, cwd);
   // Bound writes to home + ALLOWED_PATHS + cwd/tmp (same model as the native tools).
   assertPathAllowed(absolutePath, cwd, 'edit');
   await access(absolutePath, constants.R_OK | constants.W_OK);
-  const readState = await checkReadState(absolutePath, inheritedRequireRecentRead || query.requireRecentRead === true);
+  // Content-anchored when every edit matches by exact/normalized oldText (self-
+  // verifying); a lineRange edit is position-anchored and needs strict freshness.
+  // An edit is content-anchored when exact/normalized oldText matching is used, OR when
+  // lineRange is used with an explicit oldText — lineRangeReplacement validates oldText
+  // against the actual lines, so the edit is self-verifying even if the read is stale.
+  const contentAnchored = query.edits.every((e) => {
+    const mode = e.matchMode ?? 'exact';
+    return mode !== 'lineRange' || e.oldText !== undefined;
+  });
+  const readState = await checkReadState(
+    absolutePath,
+    inheritedRequireRecentRead || query.requireRecentRead === true,
+    { contentAnchored },
+  );
   const rawContent = await readFile(absolutePath, 'utf8');
   const { bom, text } = stripBom(rawContent);
   const lineEnding = detectLineEnding(text);
@@ -762,20 +807,154 @@ async function prepareEdit(query: EditQuery, cwd: string, inheritedRequireRecent
   };
 }
 
-function queriesFromRequest(request: EditRequest): EditQuery[] {
-  if (request.queries) return request.queries;
-  return [{ path: request.path!, edits: request.edits!, requireRecentRead: request.requireRecentRead }];
+/** Commit one fully preflighted edit while preserving the lost-update guard. */
+export async function commitPreparedEdit(prepared: PreparedEdit, signal?: AbortSignal): Promise<ToolCallResult> {
+  if (signal?.aborted) throw new Error('Operation aborted');
+  const peerNotice = peerWipNotice(prepared.absolutePath, prepared.requestPath);
+  await withFileMutationQueue(prepared.absolutePath, async () => {
+    if (signal?.aborted) throw new Error('Operation aborted');
+    const currentRaw = await readFile(prepared.absolutePath, 'utf8');
+    if (currentRaw !== prepared.rawContent) {
+      throw new Error(
+        `${prepared.requestPath} changed on disk after it was read for editing ` +
+          `(concurrent edit or external write). Re-read the file and retry.`,
+      );
+    }
+    if (signal?.aborted) throw new Error('Operation aborted');
+    await atomicWriteUtf8(prepared.absolutePath, prepared.finalContent);
+    await recordFileReadState(prepared.absolutePath);
+    markOwnWrite(prepared.absolutePath);
+  });
+  if (signal?.aborted) throw new Error('Operation aborted');
+  const replacements = prepared.result.replacements;
+  const editCount = prepared.edits.length;
+  const firstChangedLine = prepared.result.firstChangedLine;
+  const lineSuffix = firstChangedLine ? ` First changed line: ${firstChangedLine}.` : '';
+  const readStates = prepared.readState.state;
+  const reasoning = reasoningSuffix([{ path: prepared.requestPath, edits: prepared.edits }]);
+  const changes = changesSuffix([prepared]);
+  return {
+    content: [{
+      type: 'text',
+      text: `Successfully replaced ${replacements} occurrence(s) across ${editCount} edit(s) in 1 file(s).${lineSuffix} Read state: ${readStates}.${peerNotice}${reasoning}${changes}`,
+    }],
+    details: {
+      operation: 'edit',
+      path: prepared.requestPath,
+      replacements,
+      firstChangedLine,
+      files: [{
+        path: prepared.requestPath,
+        replacements: prepared.result.replacements,
+        firstChangedLine: prepared.result.firstChangedLine,
+        usedModes: prepared.result.usedModes,
+        readState: prepared.readState,
+        reasoning: editReasoningEntries(prepared.edits),
+        edits: prepared.result.edits,
+        diff: prepared.diff,
+        coloredDiff: colorDiffString(prepared.diff),
+        patch: prepared.patch,
+      }],
+      diff: `# ${prepared.requestPath}\n${prepared.diff}`,
+      patch: prepared.patch,
+    },
+  };
+}
+
+
+/**
+ * Shared renderer for edit results — used by both the `edit` tool and the `file` tool
+ * (which wraps edit operations). Accepts a `displayName` so callers can substitute
+ * their own tool label (e.g. 'file (Octocode)') without changing the rendering logic.
+ */
+export function renderEditResult(
+  result: ToolCallResult,
+  opts: { expanded?: boolean; isPartial?: boolean },
+  theme: PiTheme | undefined,
+  displayName: string = EDIT_TOOL_DISPLAY_NAME,
+): RenderCallReturn {
+  if (opts.isPartial) {
+    const prog = paint(theme, 'brand', `${CLI_STATUS_TEXT.editing} ${displayName}`);
+    return makeRenderer((width) => [truncateToWidth(prog, width)]);
+  }
+  const ok = !result.isError;
+  const details = result.details as {
+    replacements?: number;
+    firstChangedLine?: number;
+    files?: RenderableEditFile[];
+  } | undefined;
+  const count = typeof details?.replacements === 'number'
+    ? ` \xb7 ${details.replacements} replacement${details.replacements === 1 ? '' : 's'}`
+    : '';
+  const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
+  const titleStr = cliToolTitle(theme, displayName);
+  const header = `${icon} ${titleStr}${count}`;
+
+  if (!opts.expanded) {
+    const files = details?.files ?? [];
+    const fileCount = files.length;
+    const filesNote = fileCount > 0
+      ? paint(theme, 'dim', ` \xb7 ${fileCount} file${fileCount === 1 ? '' : 's'}`)
+      : '';
+    return fileCount > 0
+      ? renderCollapsedEditDiffLines(`${header}${filesNote}`, files, theme)
+      : makeRenderer((width) => [truncateToWidth(`${header}${filesNote}`, width)]);
+  }
+
+  // Per file → per edit:
+  //   meta line  (truncatable — always short)
+  //   reasoning  (word-wrapped so full text is visible without exceeding terminal width)
+  //   diff lines (Myers: only genuinely changed lines)
+  type StaticItem = { text: string; truncate: boolean };
+  type DynamicItem = { fn: (width: number) => string[] };
+  type Item = StaticItem | DynamicItem;
+  const items: Item[] = [{ text: header, truncate: true }];
+  for (const file of details?.files ?? []) {
+    items.push({
+      text: paint(theme, 'path', `  ${file.path}`),
+      truncate: true,
+    });
+    for (const edit of file.edits ?? []) {
+      const range = edit.startLine === edit.endLine
+        ? `line ${edit.startLine}`
+        : `lines ${edit.startLine}–${edit.endLine}`;
+      const metaStr = `    edit #${edit.editIndex + 1} \xb7 ${range} \xb7 ${edit.mode}`;
+      items.push({ text: paint(theme, 'dim', metaStr), truncate: true });
+
+      const reasonText = edit.reasoning.trim();
+      if (reasonText) {
+        const indent = '      ';
+        items.push({
+          fn: (w) => {
+            const availWidth = Math.max(w - indent.length, 10);
+            return wrapText(reasonText, availWidth).map((line) =>
+              truncateToWidth(`${indent}${paint(theme, 'muted', line)}`, w),
+            );
+          },
+        });
+      }
+
+      items.push(...renderEditDiffItems([{ path: file.path, edits: [edit] }], theme).slice(1));
+    }
+  }
+  return makeRenderer((width) => items.flatMap((item) =>
+    'fn' in item
+      ? item.fn(width)
+      : [item.truncate ? truncateToWidth(item.text, width) : item.text],
+  ));
 }
 
 export function registerEditTool(
   pi: { registerTool?(def: ToolDefinition): void },
   Type: TypeBoxBuilder,
+  registeredToolNames: Set<string>,
+  registerFn: RegisterFn,
 ): void {
-  pi.registerTool?.({
+  registerFn(pi, registeredToolNames, {
     name: 'edit',
     label: 'edit (Octocode)',
     description:
-      'Octocode custom edit tool. Replaces Pi built-in edit with exact current-file text replacement, batched edits, optional multi-file queries, opt-in normalized/lineRange matching, stale-read checks, diff/patch details, optional replaceAll, and actionable mismatch diagnostics. Each edit MUST include a non-empty reasoning field. Output always shows a Reasoning list and Changes diff.',
+        'Octocode custom edit tool. Replaces Pi built-in edit with exact current-file text replacement, batched edits, optional multi-file queries, opt-in normalized/lineRange matching, stale-read checks, diff/patch details, optional replaceAll, and actionable mismatch diagnostics. queryRunType is sequential-only: files are edited one-by-one in source order, never in parallel. Each edit MUST include a non-empty reasoning field. Output always shows a Reasoning list and Changes diff.',
     promptSnippet: 'Make precise file edits with exact current-file text replacement and clearer mismatch diagnostics.',
     promptGuidelines: [
       'Octocode custom edit replaces Pi built-in edit; use this edit tool for file modifications.',
@@ -791,162 +970,56 @@ export function registerEditTool(
       'GOTCHA: For multiple repetitive or mechanical changes across a file (e.g. renaming a symbol everywhere, bulk formatting), prefer shell commands like sed instead of many individual edit calls.',
     ],
     parameters: buildParameters(Type),
-    async execute(_toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal, _onUpdate?: unknown, ctx?: { cwd?: string }): Promise<ToolCallResult> {
-      const request = validateRequest(params);
+    async execute(_toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal, onUpdate?: unknown, ctx?: { cwd?: string }): Promise<ToolCallResult> {
       const cwd = ctx?.cwd ?? process.cwd();
       if (signal?.aborted) throw new Error('Operation aborted');
-      const queries = queriesFromRequest(request);
-      const absolutePaths = queries.map((query) => resolveFilePath(query.path, cwd));
-      if (new Set(absolutePaths).size !== absolutePaths.length) {
-        throw new Error('Edit tool input is invalid. queries must not contain duplicate target paths.');
+      // Duplicate-path check before handing off to executeQueryBatch.
+      const rawQueries = Array.isArray(params['queries']) ? params['queries'] as unknown[] : [];
+      if (rawQueries.length > 1) {
+        const resolvedPaths = rawQueries.map((q) => {
+          const item = q as Record<string, unknown>;
+          return typeof item['path'] === 'string' ? resolveFilePath(item['path'], cwd) : '';
+        });
+        const nonEmpty = resolvedPaths.filter(Boolean);
+        if (new Set(nonEmpty).size !== nonEmpty.length) {
+          throw new Error('Edit tool input is invalid. queries must not contain duplicate target paths.');
+        }
       }
-      // Phase 1: prepare all files (read-only, parallel).
-      // If any prepare fails (bad oldText, missing file, etc.) no writes happen → all-or-nothing.
-      const prepared = await Promise.all(queries.map((query) => prepareEdit(query, cwd, request.requireRecentRead === true)));
-      if (signal?.aborted) throw new Error('Operation aborted');
-      // Phase 2: write each file through its per-file mutex queue.
-      // Serializes concurrent writes from parallel tool calls on the same file.
-      await Promise.all(
-        prepared.map((item) =>
-          withFileMutationQueue(item.absolutePath, async () => {
-            if (signal?.aborted) throw new Error('Operation aborted');
-            // Lost-update guard: prepareEdit computed finalContent from item.rawContent
-            // OUTSIDE this mutex. If a concurrent edit call (or external writer) changed
-            // the file since then, writing finalContent would silently clobber it. Re-read
-            // under the lock and fail loudly instead of losing the intervening change.
-            const currentRaw = await readFile(item.absolutePath, 'utf8');
-            if (currentRaw !== item.rawContent) {
-              throw new Error(
-                `${item.requestPath} changed on disk after it was read for editing ` +
-                  `(concurrent edit or external write). Re-read the file and retry.`,
-              );
-            }
-            await atomicWriteUtf8(item.absolutePath, item.finalContent);
-            await recordFileReadState(item.absolutePath);
-          }),
-        ),
-      );
-      if (signal?.aborted) throw new Error('Operation aborted');
-      const replacements = prepared.reduce((sum, item) => sum + item.result.replacements, 0);
-      const editCount = prepared.reduce((sum, item) => sum + item.edits.length, 0);
-      const firstChangedLine = prepared.find((item) => item.result.firstChangedLine !== undefined)?.result.firstChangedLine;
-      const lineSuffix = firstChangedLine ? ` First changed line: ${firstChangedLine}.` : '';
-      const readStates = [...new Set(prepared.map((item) => item.readState.state))].join(',');
-      const reasoning = reasoningSuffix(prepared.map((item) => ({ path: item.requestPath, edits: item.edits })));
-      const changes = changesSuffix(prepared);
-      return {
-        content: [{
-          type: 'text',
-          text: `Successfully replaced ${replacements} occurrence(s) across ${editCount} edit(s) in ${prepared.length} file(s).${lineSuffix} Read state: ${readStates}.${reasoning}${changes}`,
-        }],
-        details: {
-          replacements,
-          firstChangedLine,
-          files: prepared.map((item) => ({
-            path: item.requestPath,
-            replacements: item.result.replacements,
-            firstChangedLine: item.result.firstChangedLine,
-            usedModes: item.result.usedModes,
-            readState: item.readState,
-            reasoning: editReasoningEntries(item.edits),
-            edits: item.result.edits,
-            diff: item.diff,
-            coloredDiff: colorDiffString(item.diff),
-            patch: item.patch,
-          })),
-          diff: prepared.map((item) => `# ${item.requestPath}\n${item.diff}`).join('\n'),
-          patch: prepared.map((item) => item.patch).join('\n'),
+      // preparedMap is populated in preflight (for all queries) before execute runs for any.
+      // This preserves the all-validate-before-any-write guarantee.
+      const preparedMap = new Map<number, PreparedEdit>();
+      const inheritedRequireRecentRead = params['requireRecentRead'] === true;
+      return executeQueryBatch({
+        toolCallId: _toolCallId,
+        raw: params,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
+        ctx: ctx as never,
+        passthroughSingle: true,
+        maxItems: QUERY_BATCH_MAX_ITEMS,
+        // Preflight: validate + read + compute replacements for every query before writing any.
+        async preflight(query, index) {
+          const item = query as Record<string, unknown>;
+          const editQuery = validateEditQuery(item, index);
+          const prepared = await prepareEdit(editQuery, cwd, inheritedRequireRecentRead);
+          preparedMap.set(index, prepared);
         },
-      };
+        // Execute: write the pre-computed edit under the per-file mutex.
+        async execute(_query, index) {
+          const prepared = preparedMap.get(index)!;
+          return commitPreparedEdit(prepared, signal);
+        },
+        summarize(result) {
+          const d = result.details as { replacements?: number } | undefined;
+          return `${d?.replacements ?? 0} replacement(s)`;
+        },
+      });
     },
     renderCall(args: unknown, theme?: PiTheme) {
       return makeRenderer((width) => [truncateToWidth(renderCallLine(args, theme), width)]);
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
-      if (opts.isPartial) {
-        const prog = paint(theme, 'warning', CLI_STATUS_TEXT.editing);
-        return makeRenderer(() => [prog]);
-      }
-      const ok = !result.isError;
-      const details = result.details as {
-        replacements?: number;
-        firstChangedLine?: number;
-        files?: Array<{
-          path: string;
-          edits?: Array<AppliedEditEvidence>;
-        }>;
-      } | undefined;
-      const count = typeof details?.replacements === 'number'
-        ? ` · ${details.replacements} replacement${details.replacements === 1 ? '' : 's'}`
-        : '';
-      const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
-      const titleStr = cliToolTitle(theme, 'edit');
-      const header = `${icon} ${titleStr}${count}`;
-
-      // Per file → per edit:
-      //   meta line  (truncatable — always short)
-      //   reasoning  (word-wrapped so full text is visible without exceeding terminal width)
-      //   diff lines (Myers: only genuinely changed lines)
-      //
-      // Items are either a static { text, truncate } pair or a width-function that
-      // emits multiple lines (used for word-wrapped reasoning).
-      type StaticItem = { text: string; truncate: boolean };
-      type DynamicItem = { fn: (width: number) => string[] };
-      type Item = StaticItem | DynamicItem;
-      const items: Item[] = [{ text: header, truncate: true }];
-      for (const file of details?.files ?? []) {
-        items.push({
-          text: paint(theme, 'path', `  ${file.path}`),
-          truncate: true,
-        });
-        for (const edit of file.edits ?? []) {
-          const range = edit.startLine === edit.endLine
-            ? `line ${edit.startLine}`
-            : `lines ${edit.startLine}–${edit.endLine}`;
-          // Meta: short summary line, safe to truncate
-          const metaStr = `    edit #${edit.editIndex + 1} · ${range} · ${edit.mode}`;
-          items.push({ text: paint(theme, 'dim', metaStr), truncate: true });
-
-          // Reasoning: word-wrapped across multiple lines so the full text is
-          // always visible without any single line exceeding the terminal width
-          // (pi crashes with uncaughtException if a rendered line is too wide).
-          const reasonText = edit.reasoning.trim();
-          if (reasonText) {
-            const indent = '      '; // 6 spaces
-            items.push({
-              fn: (w) => {
-                const availWidth = Math.max(w - indent.length, 10);
-                return wrapText(reasonText, availWidth).map((line) =>
-                  truncateToWidth(`${indent}${paint(theme, 'muted', line)}`, w),
-                );
-              },
-            });
-          }
-
-          // Diff: Myers line diff between old and new so unchanged lines are skipped.
-          // Verbatim removedLines/addedLines showed identical -/+ pairs when new
-          // content was appended after an unchanged anchor block (confusing UX).
-          const ops = diffOps(
-            edit.removedLines.join('\n'),
-            edit.addedLines.join('\n'),
-          );
-          for (const op of ops) {
-            if (op.type === 'same') continue;
-            const label = op.type === 'remove' ? '- ' : '+ ';
-            const color = op.type === 'remove' ? 'error' : 'success';
-            // 4-space indent is OUTSIDE theme.fg so the coloured substring
-            // `<color>- text</color>` is preserved for test assertions and renderers
-            // that match on the coloured part only.
-            const colored = paint(theme, color, `${label}${op.line}`);
-            items.push({ text: `    ${colored}`, truncate: true });
-          }
-        }
-      }
-      return makeRenderer((width) => items.flatMap((item) =>
-        'fn' in item
-          ? item.fn(width)
-          : [item.truncate ? truncateToWidth(item.text, width) : item.text],
-      ));
+      return renderEditResult(result, opts, theme);
     },
   });
 }

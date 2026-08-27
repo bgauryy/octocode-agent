@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,8 +11,27 @@ import {
 import { agentId } from '../bin/hook-payload.js';
 import { connectDb, resolveDbPath } from '../src/db.js';
 import { runHooksInstall } from '../src/hooks-install.js';
-import { wirePiAwarenessHooks } from '../src/pi-hooks.js';
 import { auditUnverified, markVerified } from '../src/verify.js';
+import { DEFAULT_AWARENESS_CONFIG, writeAwarenessConfig } from '../src/awareness-config.js';
+
+let configHome = '';
+const previousOctocodeHome = process.env.OCTOCODE_HOME;
+const previousAgentDir = process.env.OCTOCODE_AGENT_DIR;
+
+beforeAll(() => {
+  configHome = mkdtempSync(join(tmpdir(), 'awareness-hook-config-'));
+  process.env.OCTOCODE_HOME = configHome;
+  process.env.OCTOCODE_AGENT_DIR = configHome;
+  writeAwarenessConfig(DEFAULT_AWARENESS_CONFIG, { path: join(configHome, 'awareness.json') });
+});
+
+afterAll(() => {
+  if (previousOctocodeHome === undefined) delete process.env.OCTOCODE_HOME;
+  else process.env.OCTOCODE_HOME = previousOctocodeHome;
+  if (previousAgentDir === undefined) delete process.env.OCTOCODE_AGENT_DIR;
+  else process.env.OCTOCODE_AGENT_DIR = previousAgentDir;
+  rmSync(configHome, { recursive: true, force: true });
+});
 
 function runPreEditChild(payload: Record<string, unknown>, env: NodeJS.ProcessEnv): Promise<void> {
   const hookRunnerUrl = new URL('../bin/hook-runner.ts', import.meta.url).href;
@@ -146,22 +165,6 @@ describe('full-loop host hook contracts', () => {
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }
-  });
-
-  it('keeps Pi lifecycle context and continuation in process', () => {
-    const events: string[] = [];
-    const bridge = wirePiAwarenessHooks({
-      on: (eventName: string) => { events.push(eventName); },
-    });
-    expect(bridge).toBeTruthy();
-    expect(events).toEqual(expect.arrayContaining([
-      'tool_call',
-      'tool_result',
-      'before_agent_start',
-      'agent_end',
-      'session_before_compact',
-      'session_shutdown',
-    ]));
   });
 
   it('aggregates one session turn into one pending fallback HOOK run', async () => {

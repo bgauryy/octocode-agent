@@ -1,9 +1,8 @@
 /**
  * compaction-state — shared arbiter for every compaction trigger.
  *
- * Four independent triggers can start a compaction: pi's built-in threshold
- * auto-compaction, the extension's turn_end watcher, the model-called
- * manage_context tool, and a user /compact. Pi neither serializes
+ * Multiple independent triggers can start a compaction: Pi's built-in threshold
+ * auto-compaction, the extension's turn_end watcher, and a user /compact. Pi neither serializes
  * ctx.compact() calls nor exposes an is-compacting flag, and its
  * session.compact() throws "Already compacted" when it lands right after a
  * finished compaction (branch tip is already a compaction entry). This module
@@ -19,9 +18,14 @@
 
 const COMPACTION_IN_FLIGHT_TTL_MS = 120_000;
 const COMPACTION_RESUME_REQUEST_TTL_MS = COMPACTION_IN_FLIGHT_TTL_MS;
+const COMPACTION_ABORT_SUPPRESSION_TTL_MS = 30_000;
 
 let inFlightSince: number | null = null;
 let resumeRequestedSince: number | null = null;
+let abortSuppressionRequestedSince: number | null = null;
+// Auto-compact resume (turn_end watcher, plan-verified):
+// session_compact re-checks plan state before scheduling the continuation.
+let autoCompactResumeSince: number | null = null;
 
 export function markCompactionInFlight(now = Date.now()): void {
   inFlightSince = now;
@@ -62,6 +66,47 @@ export function consumeCompactionResumeRequest(now = Date.now()): boolean {
 }
 
 /**
+ * Mark that the turn_end auto-compact watcher triggered ctx.compact() while
+ * plan work was active. Unlike an explicitly marked resume,
+ * session_compact will re-verify plan state before scheduling the continuation
+ * — if work completed while compaction was in flight the follow-up is skipped.
+ */
+export function markAutoCompactResumeRequested(now = Date.now()): void {
+  autoCompactResumeSince = now;
+}
+
+export function clearAutoCompactResumeRequest(): void {
+  autoCompactResumeSince = null;
+}
+
+export function consumeAutoCompactResumeRequest(now = Date.now()): boolean {
+  if (autoCompactResumeSince === null) return false;
+  const requestedAt = autoCompactResumeSince;
+  autoCompactResumeSince = null;
+  return now - requestedAt <= COMPACTION_RESUME_REQUEST_TTL_MS;
+}
+
+/**
+ * Mark the single assistant message abort that Pi produces when Octocode calls
+ * ctx.compact() mid-turn. That abort is control flow, not a user-visible model
+ * failure, so the message_end hook can downgrade it once and then forget it.
+ */
+export function markCompactionAbortSuppressionRequested(now = Date.now()): void {
+  abortSuppressionRequestedSince = now;
+}
+
+export function clearCompactionAbortSuppressionRequest(): void {
+  abortSuppressionRequestedSince = null;
+}
+
+export function consumeCompactionAbortSuppressionRequest(now = Date.now()): boolean {
+  if (abortSuppressionRequestedSince === null) return false;
+  const requestedAt = abortSuppressionRequestedSince;
+  abortSuppressionRequestedSince = null;
+  return now - requestedAt <= COMPACTION_ABORT_SUPPRESSION_TTL_MS;
+}
+
+/**
  * Whether the session branch tip is already a compaction entry — the exact
  * condition under which pi's compact() throws "Already compacted". Checking it
  * up front turns a guaranteed error into a clean skip. Fail-open when the host
@@ -81,4 +126,6 @@ export function branchTipIsCompaction(ctx?: {
 export function resetCompactionArbiterForTests(): void {
   inFlightSince = null;
   resumeRequestedSince = null;
+  abortSuppressionRequestedSince = null;
+  autoCompactResumeSince = null;
 }

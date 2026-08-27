@@ -4,7 +4,7 @@ Docs in this directory belong to the branded launcher package. Keep launcher, Pi
 
 | Document | Owns |
 |---|---|
-| [PI_INTEGRATION.md](PI_INTEGRATION.md) | How `octocode-agent` launches Pi with `@octocodeai/pi-extension`, user-facing commands, packaging, and integration risks. |
+| [PI_INTEGRATION.md](PI_INTEGRATION.md) | How `octocode-agent` launches Pi with `@octocodeai/pi-extension`, suppresses native Pi tools, exposes the Octocode palette, and owns user-facing commands and packaging. |
 | [pi-fork.md](pi-fork.md) | Pi fork development and override workflow. |
 | [coding-agent-failure-modes.md](coding-agent-failure-modes.md) | Research inventory of common coding-agent failures. |
 | [coding-agent-mistakes-prevention.md](coding-agent-mistakes-prevention.md) | Prevention checklist mapped to agent/harness behavior. |

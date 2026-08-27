@@ -30,11 +30,18 @@ export function mergeManagedAppendSystem(
   const endIndex = existingContent.indexOf(MANAGED_BLOCK_END);
 
   if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+    // Well-formed block → replace it in place.
     const afterEnd = endIndex + MANAGED_BLOCK_END.length;
     return `${existingContent.slice(0, startIndex)}${block}${existingContent.slice(afterEnd).replace(/^\n+/, '')}`;
   }
 
-  const prefix = existingContent.trimEnd();
+  // A dangling/corrupted managed block (START without a valid END after it, or an
+  // orphaned END) must not accumulate: drop everything from the first marker of a
+  // broken pair onward, then append one fresh block. Without this, every write
+  // would leave the old half-block and stack a new one below it.
+  const brokenAt = startIndex !== -1 ? startIndex : endIndex;
+  const base = brokenAt !== -1 ? existingContent.slice(0, brokenAt) : existingContent;
+  const prefix = base.trimEnd();
   return prefix.length > 0 ? `${prefix}\n\n${block}` : block;
 }
 
@@ -63,6 +70,22 @@ export function resolvePromptMode(option?: string): PromptMode {
  */
 export function stripProjectContext(piSystemPrompt: string): string {
   return piSystemPrompt.replace(/\n*<project_context>[\s\S]*?<\/project_context>\n?/g, '\n');
+}
+
+/**
+ * Remove Pi's own skills section from an already-built Pi system prompt.
+ * Octocode owns the model-facing skill flow (the `skill` tool + the
+ * `<available_skills>` addendum): Pi's section instructs the model to use the
+ * `read` builtin (removed by Octocode) and duplicates the same
+ * `<available_skills>` tag. Pi normally omits it when `read` is inactive, but
+ * that is a side effect of tool selection — stripping here makes the disable
+ * deterministic regardless of tool-set timing.
+ */
+export function stripPiSkillsSection(piSystemPrompt: string): string {
+  return piSystemPrompt.replace(
+    /\n*The following skills provide specialized instructions for specific tasks\.[\s\S]*?<\/available_skills>\n?/g,
+    '\n',
+  );
 }
 
 export function composeSystemPrompt(opts: {

@@ -18,8 +18,8 @@
  * Pure functions only (no side effects at import) so the launcher stays testable.
  *
  * Composition rules for every surface:
- *   - `header` opens a report scene; `banner` is the compact one-liner;
- *   - `section` groups; `kv` aligns facts; `checkLine` reports health;
+ *   - `header` opens a report scene;
+ *   - `section` groups; `kv` aligns facts; `checkLines` reports health;
  *   - `cmdRows` aligns command/desc pairs; `hint` points at the next action.
  * Alignment is computed on VISIBLE width (see padEndVisible) so paint never
  * breaks the columns.
@@ -35,12 +35,11 @@ const CODES = {
   red: '\x1b[31m',
   green: '\x1b[32m',
   yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
   cyan: '\x1b[36m',
   gray: '\x1b[90m',
   brand: '\x1b[38;5;86m',
   accent: '\x1b[38;5;214m',
+  purple: '\x1b[38;5;147m',
 } as const;
 
 export type ColorName = keyof Omit<typeof CODES, 'reset'>;
@@ -77,6 +76,7 @@ export interface Painter {
   gray: (s: string) => string;
   brand: (s: string) => string;
   accent: (s: string) => string;
+  purple: (s: string) => string;
 }
 
 export function makePainter(enabled: boolean): Painter {
@@ -94,6 +94,7 @@ export function makePainter(enabled: boolean): Painter {
     gray: (s) => wrap('gray', s),
     brand: (s) => wrap('brand', s),
     accent: (s) => wrap('accent', s),
+    purple: (s) => wrap('purple', s),
   };
 }
 
@@ -179,12 +180,9 @@ export function wrapText(text: string, width: number, indent = ''): string[] {
 /** OSC-8 hyperlink when enabled (interactive TTY); falls back to `text (url)`. */
 export function link(p: Painter, url: string, text: string, interactive = false): string {
   if (!interactive || !p.enabled) return `${text} (${url})`;
-  return `\x1b]8;;${url}\x1b\\${p.cyan(text)}\x1b]8;;\x1b\\`;
-}
-
-/** Compact branded one-line banner: `◆ octocode-agent · <subtitle>`. */
-export function banner(p: Painter, subtitle: string): string {
-  return `${p.brand(BRAND_MARK)} ${p.bold(BRAND_NAME)} ${p.dim('· ' + subtitle)}`;
+  // Brand teal, matching every other accent surface — cyan was off-brand for
+  // the only hyperlink color in the launcher.
+  return `\x1b]8;;${url}\x1b\\${p.brand(text)}\x1b]8;;\x1b\\`;
 }
 
 /** Report scene opener: blank line, branded title, thin rule. */
@@ -258,25 +256,6 @@ export function cmdRows(
 /** A dimmed next-action pointer: `→ <text>`. */
 export function hint(p: Painter, text: string): string {
   return p.gray(`→ ${text}`);
-}
-
-/** Version trail for the launch banner: `v1.0.2 · core 1.4.0 · pi 0.80.3 · model X` (skips unknowns). */
-export function launchBanner(
-  p: Painter,
-  versions: {
-    launcher: string | null;
-    core: string | null;
-    pi: string | null;
-    model?: string | null;
-  },
-): string {
-  const parts = [
-    versions.launcher ? `v${versions.launcher}` : null,
-    versions.core ? `core ${versions.core}` : null,
-    versions.pi ? `pi ${versions.pi}` : null,
-    versions.model ? `model ${versions.model}` : null,
-  ].filter(Boolean) as string[];
-  return `${p.brand(BRAND_MARK)} ${p.bold(BRAND_NAME)}${parts.length ? p.dim('  ' + parts.join(' · ')) : ''}`;
 }
 
 /** Style a diagnostic line destined for stderr: dim brand prefix preserved. */

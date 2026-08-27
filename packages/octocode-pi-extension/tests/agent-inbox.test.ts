@@ -86,6 +86,9 @@ test('inboxDisplayState: normalizedStatus refines the raw process status', () =>
   assert.equal(inboxDisplayState({ status: 'idle', normalizedStatus: 'failed' }), 'failed');
   assert.equal(inboxDisplayState({ status: 'killed', normalizedStatus: 'done' }), 'killed');
   assert.equal(inboxDisplayState({ status: 'starting' }), 'starting');
+  // Exited beats blocked: a dead process that last said [BLOCKED] cannot be
+  // steered, so it must not present as an actionable blocked worker.
+  assert.equal(inboxDisplayState({ status: 'exited', normalizedStatus: 'blocked' }), 'done');
 });
 
 test('inboxSummaryLine: flattens newlines, caps length, and falls back to the last ledger event', () => {
@@ -242,6 +245,11 @@ test('shouldNotifyWorkerEvent: killed events never notify', () => {
   const entry = makeEntry({ status: 'killed' });
   assert.equal(shouldNotifyWorkerEvent(entry, 'killed', base), false);
   assert.equal(shouldNotifyWorkerEvent(entry, 'killed', { ...base, turnActive: true }), false);
+  // The process close handler emits a type:'exit' ledger event even for a
+  // killed worker — the STATUS must suppress it, or a manual kill flashes a
+  // misleading "worker finished" desktop notification.
+  assert.equal(shouldNotifyWorkerEvent(entry, 'exit', base), false);
+  assert.equal(shouldNotifyWorkerEvent(entry, 'error', base), false);
 });
 
 test('shouldNotifyWorkerEvent: error only counts once the worker is failed', () => {
@@ -389,9 +397,36 @@ test('registerAgentInbox shutdown race: post-suppress killed/exit ledger events 
   assert.equal(h.unsubCalls.length, 1);
 });
 
-test('registerAgentInbox: pi session_shutdown event also triggers the suppress path', async () => {
+test('registerAgentInbox resume: re-arms notifications and re-subscribes after shutdown (session_start counterpart)', () => {
   const h = makeHarness();
-  await h.fakePi.handlers['session_shutdown']?.({ reason: 'quit' }, undefined);
+  h.registration.shutdown();
+  assert.equal(h.unsubCalls.length, 1, 'shutdown detached the ledger listener');
+
+  // A following session (/new, /resume, /fork) fires session_start → resume():
+  // it must lift both suppress flags AND re-attach the ledger listener so a
+  // worker completing in this new session notifies again. Without the fix the
+  // once-per-process registration stayed muted+detached forever.
+  h.registration.resume();
+  h.emit(makeEntry({ agentId: 'a'.repeat(36), status: 'exited', normalizedStatus: 'done' }), 'exit');
+  assert.equal(h.notifications.length, 1, 'worker completion notifies again after resume');
+  assert.equal(h.oscMessages.length, 1, 'OSC re-armed');
+  assert.equal(h.flashes.length, 1, 'title flash re-armed');
+
+  // resume() is idempotent: a second call while already attached must not
+  // re-subscribe (a duplicate listener would be torn down separately, so the
+  // final shutdown would report more than one unsubscribe).
+  h.registration.resume();
+  h.emit(makeEntry({ agentId: 'b'.repeat(36), status: 'exited' }), 'exit');
+  assert.equal(h.notifications.length, 2, 'exactly one notify per event — no duplicate listener');
+
+  h.registration.shutdown();
+  assert.equal(h.unsubCalls.length, 2, 'resume re-subscribed exactly one live listener');
+});
+
+test('registerAgentInbox leaves session_shutdown ownership to the extension lifecycle', () => {
+  const h = makeHarness();
+  assert.equal(h.fakePi.handlers['session_shutdown'], undefined);
+  h.registration.shutdown();
   assert.equal(h.unsubCalls.length, 1);
   h.emit(makeEntry({ status: 'exited' }), 'exit');
   assert.deepEqual(h.notifications, []);

@@ -43,7 +43,17 @@ export function isUpdateCheckDisabled(env: NodeJS.ProcessEnv = process.env): boo
 }
 
 /** Reads this extension's own version from its package.json (one level above baseDir/dist). */
+const ownVersionCache = new Map<string, string | undefined>();
+
+/** Memoized: the banner entry renderer calls this per frame; the file never changes mid-process. */
 export function readOwnVersion(baseDir: string): string | undefined {
+  if (ownVersionCache.has(baseDir)) return ownVersionCache.get(baseDir);
+  const v = readOwnVersionUncached(baseDir);
+  ownVersionCache.set(baseDir, v);
+  return v;
+}
+
+function readOwnVersionUncached(baseDir: string): string | undefined {
   try {
     const pkgPath = path.join(path.dirname(baseDir), 'package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };

@@ -36,7 +36,6 @@ export type Command =
   | 'run'
   | 'serve'
   | 'resume'
-  | 'research'
   | 'memory'
   | 'awareness'
   | 'tools'

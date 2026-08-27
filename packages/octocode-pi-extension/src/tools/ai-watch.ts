@@ -164,6 +164,12 @@ export interface AiWatchDeps {
   isTurnActive?: () => boolean;
   /** Env for the OCTOCODE_WATCH auto-start check. Defaults to process.env. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Called after every watch-state transition (startWatch / stopWatch).
+   * Receives `'watch: fs'` / `'watch: poll'` when active, `undefined` when off.
+   * Used by the host to paint / clear a persistent status chip.
+   */
+  setStatus?: (text: string | undefined) => void;
 }
 
 let piRef: PiInstance | undefined;
@@ -383,6 +389,7 @@ export function startWatch(): WatchMode | undefined {
     watchMode = 'poll';
     startPoll(cwd);
   }
+  depsRef.setStatus?.(watchMode !== undefined ? `watch: ${watchMode}` : undefined);
   return watchMode;
 }
 
@@ -404,9 +411,11 @@ export function stopWatch(): void {
   pollInFlight = false;
   for (const timer of debounceTimers.values()) clearTimeout(timer);
   debounceTimers.clear();
+  depsRef.setStatus?.(undefined);
 }
 
-export function isWatching(): boolean {
+/** Whether the watcher is currently running (fs.watch or poll). */
+export function isWatchActive(): boolean {
   return watchMode !== undefined;
 }
 

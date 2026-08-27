@@ -26,14 +26,15 @@
  *   shortcut is dead inside overlays/custom components. The '/octocode-palette'
  *   command is the always-available path.
  * - Built-in shortcuts marked restrictOverride:true cannot be overridden; pi skips
- *   the registration with a warning (and hosts may throw). The default 'ctrl+o'
+ *   the registration with a warning (and hosts may throw). The default key
  *   may collide with a host binding on some pi versions — registration is wrapped
  *   in try/catch and degrades to command-only. Override via OCTOCODE_PALETTE_KEY.
- * - runSelectOverlay's type-to-filter is a case-insensitive PREFIX match on the
- *   item `value` (pi-tui SelectList.setFilter), not true fuzzy matching — so
- *   values keep the stable `cmd:<name>` / `action:<id>` scheme and items are
+ * - runSelectOverlay's type-to-filter is a case-insensitive SUBSTRING match over
+ *   label/value/description (its own filtering — NOT pi-tui SelectList.setFilter,
+ *   which prefix-matches item `value` and would be useless for `cmd:<name>` ids).
+ *   Items keep the stable `cmd:<name>` / `action:<id>` value scheme and are
  *   pre-sorted (actions first, then commands, each alphabetically) so the list
- *   is scannable even when the filter buffer is empty.
+ *   is scannable even when the filter buffer is empty. Do NOT reintroduce setFilter.
  */
 
 import type { PiCommandContext, PiContext, PiInstance } from '../types.js';
@@ -187,16 +188,24 @@ export async function openCommandPalette(
 
 /**
  * Register the '/octocode-palette' command and (best-effort) a keyboard shortcut.
- * Shortcut key: OCTOCODE_PALETTE_KEY env override, default 'ctrl+o'. If shortcut
+ * Shortcut key: OCTOCODE_PALETTE_KEY env override, default 'ctrl+shift+k'. If shortcut
  * registration throws (host conflict / restrictOverride built-in), the palette
  * degrades gracefully to command-only.
  */
+/** The shortcut the palette actually registered this process, for UI hints. */
+let registeredPaletteShortcut: string | undefined;
+export function getPaletteShortcut(): string | undefined {
+  return registeredPaletteShortcut;
+}
+
 export function registerCommandPalette(
   pi: PiInstance,
   deps: CommandPaletteDeps = {},
 ): CommandPaletteRegistration {
   const env = deps.env ?? process.env;
-  const key = env['OCTOCODE_PALETTE_KEY'] || 'ctrl+o';
+  // ctrl+o is pi's RESERVED app.tools.expand — an extension shortcut on it is
+  // silently skipped at resolution, so the default must be an unbound key.
+  const key = env['OCTOCODE_PALETTE_KEY'] || 'ctrl+shift+k';
 
   pi.registerCommand?.('octocode-palette', {
     description: 'Open the Octocode command palette (commands + actions picker)',
@@ -221,5 +230,6 @@ export function registerCommandPalette(
     // degrade to command-only ('/octocode-palette' still works).
     shortcut = undefined;
   }
+  registeredPaletteShortcut = shortcut;
   return { shortcut };
 }

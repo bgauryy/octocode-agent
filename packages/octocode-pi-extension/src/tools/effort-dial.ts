@@ -1,17 +1,10 @@
 /**
  * effort-dial — Amp-style one-knob effort control (F8).
  *
- * One dial level drives three things at once:
+ * One dial level drives two things at once:
  *   1. Thinking level  — pi.setThinkingLevel (low / medium / high / xhigh).
  *   2. Worker parallelism — sets the exact process.env var agent-tools.ts's
  *      resolveSpawnPolicy reads (OCTOCODE_AGENT_MAX_ACTIVE) to 1 / 2 / 4 / 8.
- *   3. Optional model override — ONLY when the user configured it via env:
- *      OCTOCODE_DIAL_<LEVEL>_MODEL + OCTOCODE_DIAL_<LEVEL>_PROVIDER
- *      (e.g. OCTOCODE_DIAL_ULTRA_MODEL / OCTOCODE_DIAL_ULTRA_PROVIDER).
- *      Resolved via ctx.modelRegistry.find(provider, modelId) → pi.setModel.
- *      pi.setModel resolving false means "no API key" — the dial stays applied
- *      otherwise and the failure is surfaced as a warning. No env → the dial
- *      NEVER touches the model.
  *
  * The chosen level persists as { "level": "<level>" } in <octocodeHome>/dial.json
  * (atomicWriteUtf8) and is re-applied quietly at session start.
@@ -141,26 +134,21 @@ export interface ApplyDialDeps {
   persist?: boolean;
 }
 
-export type DialModelOutcome = 'skipped' | 'applied' | 'no-api-key' | 'not-found';
-
 export interface ApplyDialResult {
   level: EffortLevel;
   thinking: DialPreset['thinking'];
   maxActiveWorkers: number;
-  /** What happened to the optional model override ('skipped' = no env configured). */
-  model: DialModelOutcome;
   warnings: string[];
 }
 
 /**
- * Apply an effort level: thinking level + spawn-policy env cap + optional
- * env-configured model override, then persist { level } to <home>/dial.json.
- * Never throws for host/model shortfalls — degradations become `warnings` and
- * the rest of the dial stays applied.
+ * Apply an effort level: thinking level + spawn-policy env cap, then persist
+ * { level } to <home>/dial.json. Never throws — persist failures surface as
+ * `warnings`.
  */
 export async function applyDialLevel(
   pi: PiInstance,
-  ctx: PiContext | undefined,
+  _ctx: PiContext | undefined,
   level: EffortLevel,
   deps?: ApplyDialDeps,
 ): Promise<ApplyDialResult> {
@@ -170,33 +158,6 @@ export async function applyDialLevel(
 
   pi.setThinkingLevel?.(preset.thinking);
   env[DIAL_MAX_ACTIVE_ENV] = String(preset.maxActiveWorkers);
-
-  // Optional model override — ONLY when the user configured env for this level.
-  let model: DialModelOutcome = 'skipped';
-  const key = level.toUpperCase();
-  const modelId = env[`OCTOCODE_DIAL_${key}_MODEL`]?.trim();
-  const provider = env[`OCTOCODE_DIAL_${key}_PROVIDER`]?.trim();
-  if (modelId) {
-    if (!provider) {
-      model = 'not-found';
-      warnings.push(`OCTOCODE_DIAL_${key}_MODEL is set but OCTOCODE_DIAL_${key}_PROVIDER is missing — model unchanged.`);
-    } else {
-      const resolved = ctx?.modelRegistry?.find(provider, modelId);
-      if (!resolved) {
-        model = 'not-found';
-        warnings.push(`Model ${provider}/${modelId} not found in the model registry — model unchanged.`);
-      } else if (typeof pi.setModel !== 'function') {
-        model = 'not-found';
-        warnings.push('Host does not support setModel — model unchanged.');
-      } else if (await pi.setModel(resolved)) {
-        model = 'applied';
-      } else {
-        // pi.setModel contract: resolves false when the provider API key is missing.
-        model = 'no-api-key';
-        warnings.push(`No API key for ${provider}/${modelId} — model unchanged; dial otherwise applied.`);
-      }
-    }
-  }
 
   currentLevel = level;
   dialApplied = true;
@@ -209,7 +170,7 @@ export async function applyDialLevel(
     }
   }
 
-  return { level, thinking: preset.thinking, maxActiveWorkers: preset.maxActiveWorkers, model, warnings };
+  return { level, thinking: preset.thinking, maxActiveWorkers: preset.maxActiveWorkers, warnings };
 }
 
 /**
@@ -277,9 +238,8 @@ export function registerDialCommand(pi: PiInstance, deps?: ApplyDialDeps): void 
       }
 
       const result = await applyDialLevel(pi, ctx, level, deps);
-      const modelNote = result.model === 'applied' ? ', model overridden' : '';
       ctx.ui?.notify?.(
-        `Effort dial: ${result.level} — thinking ${result.thinking}, ≤${result.maxActiveWorkers} active worker${result.maxActiveWorkers === 1 ? '' : 's'}${modelNote}.`,
+        `Effort dial: ${result.level} — thinking ${result.thinking}, ≤${result.maxActiveWorkers} active worker${result.maxActiveWorkers === 1 ? '' : 's'}.`,
         'info',
       );
       for (const warning of result.warnings) ctx.ui?.notify?.(warning, 'warning');

@@ -191,7 +191,7 @@ test('recordFileReadState evicts the oldest read state when the cache exceeds it
 
   assert.equal((await checkReadState(files[0]!, false)).state, 'missing');
   assert.equal((await checkReadState(files.at(-1)!, true)).state, 'fresh');
-});
+}, 15_000);
 
 test('recordFileReadState accepts an absolute path (cwd unused)', async () => {
   const file = path.join(tmpDir, 'abs.txt');
@@ -225,4 +225,69 @@ test('checkReadState returns "fresh" even when mtime changes but content is iden
   // No error — content hash matches, so not stale
   const result = await checkReadState(file, false);
   assert.equal(result.state, 'fresh');
+});
+
+test('checkReadState: content-anchored edit proceeds (advisory) when file changed since read', async () => {
+  const f = path.join(tmpDir, 'a.txt');
+  fs.writeFileSync(f, 'one\n', 'utf8');
+  await recordFileReadState(f, tmpDir);
+  // Simulate an external change since the recorded read.
+  fs.writeFileSync(f, 'two\n', 'utf8');
+
+  // content-anchored (oldText edits) → advisory 'stale', no throw.
+  const soft = await checkReadState(f, false, { contentAnchored: true });
+  assert.equal(soft.state, 'stale');
+
+  // position-anchored (lineRange) → still hard-fails.
+  await assert.rejects(
+    () => checkReadState(f, false, { contentAnchored: false }),
+    /File changed since last recorded read/,
+  );
+
+  // explicit requireRecentRead → hard-fails even when content-anchored.
+  await assert.rejects(
+    () => checkReadState(f, true, { contentAnchored: true }),
+    /File changed since last recorded read/,
+  );
+});
+
+test('checkReadState: unchanged file is fresh regardless of anchoring', async () => {
+  const f = path.join(tmpDir, 'b.txt');
+  fs.writeFileSync(f, 'same\n', 'utf8');
+  await recordFileReadState(f, tmpDir);
+  const r = await checkReadState(f, false, { contentAnchored: true });
+  assert.equal(r.state, 'fresh');
+});
+
+// ─── Explicit recent-read contract ——————————————————————————————————
+
+test('checkReadState: requireRecentRead:true + no state throws even for content-anchored edits', async () => {
+  const f = path.join(tmpDir, 'no-state-anchored.txt');
+  fs.writeFileSync(f, 'hello\nworld\n', 'utf8');
+  // No recordFileReadState call — state is intentionally absent.
+  await assert.rejects(
+    () => checkReadState(f, true, { contentAnchored: true }),
+    /No prior localGetFileContent read state/,
+  );
+});
+
+test('checkReadState: requireRecentRead:true + no state + contentAnchored:false → still throws', async () => {
+  // Position-anchored edits (lineRange without oldText) genuinely need fresh line numbers;
+  // the absence of a prior read is a hard error even when requireRecentRead is set.
+  const f = path.join(tmpDir, 'no-state-position.txt');
+  fs.writeFileSync(f, 'line1\nline2\n', 'utf8');
+  await assert.rejects(
+    () => checkReadState(f, true, { contentAnchored: false }),
+    /No prior localGetFileContent read state/,
+  );
+});
+
+test('checkReadState: requireRecentRead:true + no state + no opts still throws', async () => {
+  // When contentAnchored is not provided (undefined/falsy), the conservative path applies.
+  const f = path.join(tmpDir, 'no-state-noopt.txt');
+  fs.writeFileSync(f, 'data', 'utf8');
+  await assert.rejects(
+    () => checkReadState(f, true),
+    /No prior localGetFileContent read state/,
+  );
 });

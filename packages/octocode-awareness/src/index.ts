@@ -13,6 +13,69 @@ export {
   getDeliveryFingerprint, setDeliveryFingerprint,
 } from './db.js';
 export type { DeliveryFingerprintKey } from './db.js';
+export {
+  AWARENESS_CONFIG_QUESTIONS,
+  AWARENESS_CONFIG_VERSION,
+  DEFAULT_AWARENESS_CONFIG,
+  awarenessConfigPath,
+  awarenessFeatureEnabled,
+  loadAwarenessConfig,
+  parseAwarenessConfig,
+  writeAwarenessConfig,
+} from './awareness-config.js';
+export type { AwarenessConfig, AwarenessFeatureConfig } from './awareness-config.js';
+
+// Cross-boundary continuity contracts. These are dependency-free domain types
+// and validators; durable storage remains owned by Awareness adapters below.
+export {
+  ACTOR_KINDS,
+  PROVENANCE_SOURCES,
+  TRUST_CLASSES,
+  INBOUND_DECISIONS,
+  parseAgentEventEnvelopeV1,
+  parseAuthorizationReceiptV1,
+  parseInteractionRequestV1,
+  parseInteractionAnswerV1,
+  assertContextSegmentAuthority,
+  contentDigest,
+  effectiveCapabilityDecision,
+  classifyPeerMessage,
+  evaluatePeerInbound,
+} from './continuity-contracts.js';
+export type {
+  ActorKind,
+  ProvenanceSource,
+  TrustClass,
+  InboundDecision,
+  PeerMessageClass,
+  PeerInboundPolicyResultV1,
+  ActorIdentityV1,
+  EventProvenanceV1,
+  AgentEventEnvelopeV1,
+  AuthorizationReceiptV1,
+  InteractionRequestV1,
+  InteractionAnswerV1,
+  ContextSegmentV1,
+  CapabilityDecisionReceiptV1,
+} from './continuity-contracts.js';
+export {
+  containsSecretLikeText,
+  evaluateMemoryRecall,
+  MEMORY_EVALUATION_CORPUS_V1,
+  MEMORY_RECALL_MODES_V1,
+  runMemoryEvaluationCorpus,
+} from './memory-hardening.js';
+export type {
+  MemoryEvaluationCaseResultV1,
+  MemoryEvaluationCaseV1,
+  MemoryEvaluationCorpusV1,
+  MemoryEvaluationQueryV1,
+  MemoryEvaluationReportV1,
+  MemoryEvaluationResultV1,
+  MemoryRecallModeV1,
+} from './memory-hardening.js';
+export { STORE_OWNERSHIP_V1, inspectStoreConvergence } from './store-ownership.js';
+export type { StoreConvergenceReportV1 } from './store-ownership.js';
 
 // Memory operations
 export { insertMemory, insertMemoryWithSimilarityGate, getMemory, bumpAccess, lexicalSearch, decayScore, findSimilarMemories, mineWeakness, forgetMemory, storeEmbedding, searchByEmbedding, loadMemoriesByIds } from './memory.js';
@@ -72,23 +135,6 @@ export type { AttendEvidence, AttendParams, AttendResult } from './attend.js';
 
 // Notifications
 export { insertNotification, getNotifications, resolveNotification, pruneNotifications, agentSignal } from './notifications.js';
-
-// Pi native hook adapter
-export {
-  createPiAwarenessBridge,
-  extractPiWriteTargetPaths,
-  getPiAwarenessAgentId,
-  getPiAwarenessSessionId,
-  wirePiAwarenessHooks,
-} from './pi-hooks.js';
-export type {
-  PiAwarenessBridgeOptions,
-  PiLikeApi,
-  PiLikeContext,
-  PiLikeSessionManager,
-  PiLikeUi,
-  PiToolEvent,
-} from './pi-hooks.js';
 
 // Verify gate
 export { auditUnverified, markVerified } from './verify.js';
@@ -166,3 +212,66 @@ export type {
   ProposeDocRefreshParams,
   InsertSessionParams, EndSessionParams, SessionRow,
 } from './types.js';
+
+// Agent-neutral shared coordination surface. Public consumers import the package
+// root; the implementation directory is not a separate product or API tier.
+export {
+  AwarenessStore,
+  openAwarenessStore as openAwareness,
+  execCli,
+  runCli,
+  dispatchAwarenessCommand,
+  AWARENESS_COMMANDS,
+  getCommandGroup,
+  defaultDbPath,
+  runPreEditLockGate,
+  checkLockConflicts,
+  extractHookTargetPaths,
+  installHostHooks,
+  EXTERNAL_AGENT_AWARENESS_PROMPT,
+  EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS,
+  EXTERNAL_AGENT_AWARENESS_MARKER_START,
+  EXTERNAL_AGENT_AWARENESS_MARKER_END,
+  formatExternalAgentAwarenessInstructions,
+  getExternalAgentAwarenessGuide,
+  formatExternalAgentCoordinationContext,
+  readExternalAwarenessStatus,
+  executeExternalMemoryAction,
+  EXTERNAL_MEMORY_ACTIONS,
+  EXTERNAL_MEMORY_RECALL_MODES,
+  validateExternalMemoryParams,
+  completeExternalPlanTask,
+  finalizeExternalPlan,
+  projectExternalPlan,
+  detectAgentHost,
+  generateAgentName,
+} from './coordination/index.js';
+export type {
+  AwarenessCommandOutcome,
+  AwarenessCommandRequest,
+  CommandAction,
+  CommandGroup,
+  CommandParam,
+  CommandParamType,
+  HookHost,
+  InstallHost,
+  LockConflict,
+  PreEditHookOptions,
+  PreEditHookResult,
+  ExternalAwarenessStatus,
+  ExternalAwarenessTaskActivity,
+  ExternalMemoryAction,
+  ExternalMemoryParams,
+  ExternalMemoryRecallMode,
+  ExternalMemoryResult,
+  ExternalMemoryReviewCandidate,
+  ObservedCheckReceipt,
+  ExternalPlanCompletionResult,
+  ExternalPlanProjectionInput,
+  ExternalPlanProjectionResult,
+  ExternalPlanProjectionStep,
+  ExternalPlanScope,
+  AgentHost,
+  OutboxEventV1,
+  StoredInteractionV1,
+} from './coordination/index.js';

@@ -269,6 +269,33 @@ export async function initCheckpointStore(
         const targets = paths && paths.length > 0 ? paths : ['.'];
         // Writes only the work tree + the PRIVATE shadow index; user .git untouched.
         await git(['checkout', id, '--', ...targets]);
+        // `git checkout <id> -- .` reverts tracked paths but NEVER deletes files
+        // created after the checkpoint, so the work tree would not actually match
+        // the snapshot the user rewound to. Remove the paths that are tracked-added
+        // relative to <id> (untracked scratch files are not in the shadow index, so
+        // this leaves them alone) to complete a true restore.
+        try {
+          const added = await git(['diff', '--name-only', '-z', '--diff-filter=A', id, '--', ...targets]);
+          // -z output is raw/unquoted precisely so paths with spaces survive; do
+          // NOT .trim() — a filename with a legal leading/trailing space would be
+          // mangled and the wrong path (or none) removed. filter(Boolean) only
+          // drops the empty element after the final NUL.
+          const rels = added.split('\0').filter(Boolean);
+          for (const rel of rels) {
+            try {
+              fs.rmSync(path.join(resolvedCwd, rel), { force: true });
+            } catch {
+              // best-effort: a path we cannot remove is left as-is
+            }
+          }
+          // Keep the shadow index consistent with the reverted work tree.
+          if (rels.length > 0) {
+            await git(['rm', '--cached', '--force', '--quiet', '--ignore-unmatch', '--', ...rels]).catch(() => undefined);
+          }
+        } catch {
+          // If listing added paths fails, the checkout above still applied — do not
+          // fail the whole restore over the post-checkpoint cleanup.
+        }
       }),
 
     diffStat: async (id) => {

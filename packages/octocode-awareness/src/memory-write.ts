@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { normalizeArtifact, utcNow, normalizeTags, normalizeReferences, normalizeLabel } from './helpers.js';
 import { fillScope } from './git.js';
-import { hasFts, ftsTermsForRow, replaceMemoryReferences } from './db.js';
+import { hasFts, ftsTermsForRow, replaceMemoryReferences, tableColumns } from './db.js';
 import type { InsertMemoryParams, InsertMemoryResult } from './types.js';
 import { canonicalMemoryInstant, findSimilarMemories, LABEL_HALF_LIFE_DAYS } from './memory-scoring.js';
 
@@ -120,20 +120,21 @@ export function insertMemory(db: DatabaseSync, params: InsertMemoryParams): Inse
     noveltyScore = Math.max(0, Math.min(1, 1 - (similar[0]?.similarity ?? 0)));
     similarMemoryIds = similar.map(m => m.memory_id);
 
-    db.prepare(`
-      INSERT INTO memories (
-        memory_id, agent_id, task_context, observation, importance,
-        label, tags_json, workspace_path, artifact, repo, ref,
-        file_tree_fingerprint, novelty_score, created_at, updated_at,
-        last_accessed_at, access_count, failure_signature, valid_from, valid_to, decay_half_life_days
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
-    `).run(
-      memoryId, agentId, taskContext, observation, imp,
-      normalizedLabel, JSON.stringify(tagList),
-      scope.workspace_path, scope.artifact, scope.repo, scope.ref,
-      fileTreeFingerprint, noveltyScore, createdAt, createdAt,
-      createdAt, failureSignature ?? null, validFromVal, normalizedValidTo, halfLifeDefault
-    );
+    const compatibilityText = tableColumns(db, 'memories').has('text');
+    const columns = `memory_id, agent_id, task_context, observation, ${compatibilityText ? 'text, ' : ''}importance,
+      label, tags_json, workspace_path, artifact, repo, ref,
+      file_tree_fingerprint, novelty_score, created_at, updated_at,
+      last_accessed_at, access_count, failure_signature, valid_from, valid_to, decay_half_life_days`;
+    const placeholders = compatibilityText
+      ? '?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?'
+      : '?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?';
+    const values = [
+      memoryId, agentId, taskContext, observation, ...(compatibilityText ? [observation] : []), imp,
+      normalizedLabel, JSON.stringify(tagList), scope.workspace_path, scope.artifact, scope.repo, scope.ref,
+      fileTreeFingerprint, noveltyScore, createdAt, createdAt, createdAt,
+      failureSignature ?? null, validFromVal, normalizedValidTo, halfLifeDefault,
+    ];
+    db.prepare(`INSERT INTO memories (${columns}) VALUES (${placeholders})`).run(...values);
 
     // Populate structured reference index (memory_refs table)
     if (refList.length > 0) {

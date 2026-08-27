@@ -100,7 +100,7 @@ export function listSettings(piDir: string): Record<string, unknown> {
   return readSettings(piDir);
 }
 
-/** Current default "provider/model" for the banner; null when unset. */
+/** Current default "provider/model" selection; null when unset. */
 export function readDefaultModel(piDir: string): string | null {
   const data = readSettings(piDir);
   const provider = data['defaultProvider'];

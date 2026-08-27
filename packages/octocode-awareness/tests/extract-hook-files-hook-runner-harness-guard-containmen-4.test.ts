@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withEnabledAwarenessConfig } from './helpers/enabled-awareness-config.js';
 const DIST_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../out');
 const HOOK_RUNNER = resolve(DIST_DIR, 'hook-runner.js');
 const NODE = process.execPath;
@@ -13,7 +14,7 @@ function runScript(script: string, args: string[], payload: unknown, env: Record
         encoding: 'utf8',
         timeout: 5000,
         cwd,
-        env: { ...process.env, ...env },
+        env: { ...process.env, ...withEnabledAwarenessConfig(env) },
     });
 }
 

@@ -68,7 +68,7 @@ describe('exportHarness — tag matching', () => {
     expect(res.count).toBeGreaterThanOrEqual(1);
     expect(res.memories.some(m => m.tier === 'harness')).toBe(true);
     expect(res.next).toContain('Human review required');
-    expect(res.next).toContain('octocode-awareness reflect record');
+    expect(res.next).toContain('npx @octocodeai/octocode-awareness reflect record');
   });
 
   it('does not include non-harness memories in tier-1', () => {
@@ -104,7 +104,7 @@ describe('exportHarness — tag matching', () => {
     const res = exportHarness(db, {});
     expect(res.count).toBe(0);
     expect(res.markdown).toContain('No harness');
-    expect(res.next).toContain('octocode-awareness reflect record --fix-harness');
+    expect(res.next).toContain('npx @octocodeai/octocode-awareness reflect record --fix-harness');
   });
 });
 

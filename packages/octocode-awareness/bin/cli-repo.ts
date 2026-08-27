@@ -106,7 +106,7 @@ export function cmdDocsCatalog(_db: DatabaseSync, args: ParsedArgs, _dbPath: str
         ok: true,
         count: result.count,
         docs: result.docs,
-        next: 'octocode-awareness docs show <name>',
+        next: 'npx @octocodeai/octocode-awareness docs show <name>',
       }, 0, opts);
     }
     const result = listSkillDocs();
@@ -121,7 +121,7 @@ export function cmdDocsCatalog(_db: DatabaseSync, args: ParsedArgs, _dbPath: str
         kind: doc.kind,
         path: doc.path,
       })),
-      next: 'octocode-awareness docs show <name>',
+      next: 'npx @octocodeai/octocode-awareness docs show <name>',
     }, 0, opts);
   }
   if (action === 'show') {

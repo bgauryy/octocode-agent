@@ -8,17 +8,33 @@
 
 ## What this is
 
-`octocode-agent` is the **platform**. It bundles two things and wires them together:
+`octocode-agent` is the **user-facing Octocode agent platform**. It bundles two things and wires them together:
 
 - **[Pi](https://github.com/earendil-works/pi)** — the coding-agent runtime (the shell, tool loop, providers). An internal detail.
-- **[`@octocodeai/pi-extension`](../octocode-pi-extension)** — **the core**. The Octocode harness: the authored system prompt, the research engine, persistent memory, the awareness file-lock bridge, and the research skills.
+- **[`@octocodeai/pi-extension`](../octocode-pi-extension)** — **the core harness**. The Octocode system prompt, research engine, tools, memory, Awareness wiring, skills, themes, and launch-profile policy.
 
-The agent is the core. `octocode-agent` just launches Pi with that core loaded in **octocode-first mode** so the Octocode harness leads while Pi's runtime invariants remain underneath.
+Install **`octocode-agent`** when you want the Octocode agent. It launches Pi with the core loaded in **octocode-first mode**, owns the branded command/update/auth/doctor/session UX, and keeps Pi runtime details underneath.
 
 ```bash
 npm install -g octocode-agent
 octocode-agent
 ```
+
+Install `@octocodeai/pi-extension` directly only when you are already a Pi user and want to add the Octocode harness to your own Pi install (`pi install npm:@octocodeai/pi-extension`). That is an advanced/integration path, not the primary Octocode-agent install path.
+
+### One tool palette
+
+The launcher does not expose Pi's native `read`, `bash`, `edit`, `write`, `grep`, `find`, or
+`ls` tools. Both the default SDK path and subprocess fallback suppress all Pi built-ins before
+the session starts; there is no environment opt-out. The core supplies the full palette:
+
+- local reads/search use Octocode research through `MCPTool`;
+- `file` owns `edit`, `write`, and `delete` effects;
+- the core registers its guarded same-name `bash` implementation;
+- `readMedia` perceives local media, while `media` creates or transforms artifacts.
+
+Direct extension installs also remove the replaced built-ins on load/session start as a
+defensive backstop. See the core's [override contract](../octocode-pi-extension/docs/OVERRIDES.md).
 
 ## The core is the agent — one update path
 
@@ -27,7 +43,7 @@ octocode-agent
 - **Automatically** — a platform release pins a newer core; `octocode-agent update` self-updates the platform and pulls it in.
 - **By the user** — `octocode-agent update core` runs npm with this launcher install as `--prefix`, refreshing only `@octocodeai/pi-extension` in place. This works for global installs, local dev installs, and npm/npx cache installs.
 
-Because the harness — prompt, skills, tools, memory, surface command specs, and launch-profile policy — all lives in the core package, none of it is duplicated here. This launcher stays thin on purpose: it imports core helpers directly from `@octocodeai/pi-extension` and only launches/updates/executes the returned specs.
+Because the harness — prompt, skills, tools, memory, surface command specs, and launch-profile policy — all lives in the core package, none of it is duplicated here. This launcher stays thin on purpose: it imports core helpers directly from `@octocodeai/pi-extension` and only launches/updates/executes the returned specs. Users normally update through `octocode-agent`; direct Pi installs are managed by Pi's own extension/package commands and do not get the launcher UX.
 
 ## Usage
 
@@ -61,16 +77,15 @@ On launch the platform:
 
 1. Imports Pi's SDK from its installed package and imports the bundled core factory (`createOctocodePiExtension`) from `@octocodeai/pi-extension`.
 2. Sets the launch environment: `OCTOCODE_PROMPT_MODE=octocode-first` (harness leads; Pi prompt is preserved below), `OCTOCODE_AGENT=1`, and long Pi cache retention. It never overrides an `OCTOCODE_PROMPT_MODE` you set yourself.
-3. Starts Pi in-process with `extensionFactories: [createOctocodePiExtension({ promptMode: 'octocode-first' })]`, so the Octocode core loads without global Pi settings mutation.
-4. Falls back to resolving the Pi executable and running `pi --no-extensions -e <core>` when the SDK path is unavailable. The fallback loads the extension **and its packaged skills** for that run only — no global settings mutation, no trust prompt for our own package.
+3. Starts Pi in-process with `noTools: "builtin"` and `extensionFactories: [createOctocodePiExtension({ promptMode: 'octocode-first' })]`, so the Octocode core owns the tool palette without global Pi settings mutation.
+4. Falls back to resolving the Pi executable and running `pi --no-builtin-tools --no-extensions -e <core>` when the SDK path is unavailable. The fallback loads the extension **and its packaged skills** for that run only — no global settings mutation, no trust prompt for our own package.
 
-The core's default export stays append-mode and single-arg-callable, so the same package also works as a plain `pi install npm:@octocodeai/pi-extension`. Octocode-first mode is selected purely by the launcher/core contract — no divergent harness code path. The legacy value `OCTOCODE_PROMPT_MODE=replace` remains accepted as an alias.
+The core's default export stays append-mode and single-arg-callable, so the same package also works as a plain `pi install npm:@octocodeai/pi-extension`. Octocode-first mode is selected purely by the launcher/core contract — no divergent harness code path.
 
 **Tunables (env):**
 - `OCTOCODE_AGENT_EXTENSION_SPEC` — override the core spec Pi loads (`npm:…`, `git:…`, or a path). Default: the bundled package.
 - `OCTOCODE_AGENT_CLEAN=1` — also pass `--no-skills --no-context-files`, so only the Octocode harness package loads (deterministic branded agent).
-- `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` — suppress `AGENTS.md` / `CLAUDE.md`; by default project context files stay enabled so repository rules remain authoritative.
-- `OCTOCODE_AGENT_NO_BANNER=1` — suppress the interactive launch banner (never shown for `run`/`serve`/print/json modes or non-TTY runs anyway).
+- `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` — suppress project context files; by default they stay enabled so repository rules remain authoritative.
 
 See [`docs/PI_INTEGRATION.md`](docs/PI_INTEGRATION.md) for how Pi works, the launch/UX/commands/instructions model, and the SDK-embed evolution path.
 

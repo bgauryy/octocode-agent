@@ -9,7 +9,7 @@ File awareness and file exclusion are different operations:
 ## Ordinary Work
 
 ```bash
-octocode-awareness work start --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness work start --agent-id "$OCTOCODE_AGENT_ID" \
   --workspace "$PWD" --file src/auth.ts \
   --rationale "refactor token refresh" --test-plan "yarn test auth" --compact
 ```
@@ -18,9 +18,9 @@ This creates an explicit `origin=WORK` run when `--run-id` is absent, then upser
 `run_files`. Add files to the same explicit run:
 
 ```bash
-octocode-awareness work start --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness work start --agent-id "$OCTOCODE_AGENT_ID" \
   --run-id run_abc --file src/session.ts --compact
-octocode-awareness work touch --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness work touch --agent-id "$OCTOCODE_AGENT_ID" \
   --run-id run_abc --compact
 ```
 
@@ -31,8 +31,8 @@ Ordinary overlap succeeds. `work start`/pre-edit returns bounded peer changes wi
 agent, task/run, short reason, and exclusive state. Use full detail only when needed:
 
 ```bash
-octocode-awareness work show --workspace "$PWD" --file src/auth.ts --compact
-octocode-awareness work list --workspace "$PWD" --compact
+npx @octocodeai/octocode-awareness work show --workspace "$PWD" --file src/auth.ts --compact
+npx @octocodeai/octocode-awareness work list --workspace "$PWD" --compact
 ```
 
 ## Sensitive Exclusive Work
@@ -40,7 +40,7 @@ octocode-awareness work list --workspace "$PWD" --compact
 Open explicit work with `--exclusive`:
 
 ```bash
-octocode-awareness work start --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness work start --agent-id "$OCTOCODE_AGENT_ID" \
   --workspace "$PWD" --file migrations/001.sql \
   --rationale "change account schema" --test-plan "yarn test migrations" \
   --exclusive --compact
@@ -62,7 +62,7 @@ Exit `2` means a real conflict or bounded wait timeout. Read the holder/reason, 
 signal, wait, switch work, or prune only after expiry. Never steal live exclusivity.
 
 ```bash
-octocode-awareness lock wait --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness lock wait --agent-id "$OCTOCODE_AGENT_ID" \
   --target-file migrations/001.sql --wait-seconds 120 --compact
 ```
 
@@ -74,9 +74,9 @@ Explicit work:
 
 ```bash
 # run the declared check
-octocode-awareness work end --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness work end --agent-id "$OCTOCODE_AGENT_ID" \
   --run-id run_abc --compact
-octocode-awareness verify mark --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness verify mark --agent-id "$OCTOCODE_AGENT_ID" \
   --run-id run_abc --message "auth tests passed" --compact
 ```
 
@@ -85,9 +85,9 @@ standalone WORK run to `PENDING`. A TASK run must use `task submit` or `task rel
 
 ```bash
 # run the acceptance check while presence remains active
-octocode-awareness task submit --task-id task_abc --run-id run_abc \
+npx @octocodeai/octocode-awareness task submit --task-id task_abc --run-id run_abc \
   --agent-id "$OCTOCODE_AGENT_ID" --message "ready for verification" --compact
-octocode-awareness verify mark --run-id run_abc \
+npx @octocodeai/octocode-awareness verify mark --run-id run_abc \
   --agent-id "$OCTOCODE_AGENT_ID" --message "acceptance checks passed" --compact
 ```
 
@@ -118,7 +118,7 @@ the run's presence/locks, fails that attempt, and returns the task to `OPEN`.
 Preview cleanup:
 
 ```bash
-octocode-awareness lock prune --workspace "$PWD" --expired-only --dry-run --compact
+npx @octocodeai/octocode-awareness lock prune --workspace "$PWD" --expired-only --dry-run --compact
 ```
 
 ## Path Coverage

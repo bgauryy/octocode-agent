@@ -11,7 +11,7 @@ This monorepo is the platform. Use what we ship — do not reinvent with host de
 | Local code search / structure / files / content / binary / LSP | Octocode MCP **or** `npx octocode tools …` — all local tools below | bare `find` / `grep` / `rg` / `cat` / `ls` |
 | GitHub code, repos, PRs/commits, clone | same — all GitHub tools below | ad-hoc `gh` / raw API (except when Octocode is unavailable) |
 | npm lookup | `npmSearch` | ad-hoc registry curls |
-| Unified research / OQL | CLI `search` (and `oqlSearch` when `ENABLE_OQL`) | hand-rolled multi-tool scripts |
+| Unified research workflow | `octocode-research` skill + the live tool catalog | hand-rolled multi-tool scripts |
 | Research / review / change flows | `octocode-research` skill | inventing search loops |
 | Shared-repo + cross-run memory | Awareness (`attend` / `work` / `memory` / `reflect`) | silent parallel edits |
 | After a package change | rebuild → real CLI / MCP / skill path | claim done from compile alone |
@@ -47,7 +47,7 @@ Three workspace packages (plus one vendored CLI build when present). Prefer each
 
 Config: `@octocodeai/config` is external to this checkout. `packages/octocode-pi-extension/src/env.ts` re-exports it for repo-time use; the extension build inlines it into `dist/env.js` and injects `octocode-config.mjs` into skill script directories.
 
-Octocode CLI: this checkout does not vendor the external `octocode` CLI. Wherever `$OCTO` appears below, use `OCTO='npx octocode'` (or a local build of the sibling `octocode` monorepo when you have one). Prefer the Octocode MCP tools for research; use the CLI only for management tasks (`skill`, `lsp-server`, `auth`) and `search`/`tools` introspection.
+Octocode CLI: this checkout does not vendor the external `octocode` CLI. Wherever `$OCTO` appears below, use `OCTO='npx octocode'` (or a local build of the sibling `octocode` monorepo when you have one). Prefer the Octocode MCP tools for research; use the CLI for management tasks (`skill`, `lsp-server`, `auth`) and `context`/`tools` introspection.
 
 External (not in this workspace): `@octocodeai/octocode-tools-core` (tool runners / Octokit / security / providers), `@octocodeai/octocode-engine` (Rust/napi: search, minify, AST, LSP, secrets), `@octocodeai/octocode-core` (schemas, tool descriptions, system prompt text), `@octocodeai/mcp` (stdio MCP server), `octocode-mcp-vscode` (VS Code / multi-editor extension). Published from sibling repos, pulled in as npm deps by `@octocodeai/pi-extension`. Never hand-write tool guidance in interface packages.
 
@@ -55,21 +55,21 @@ External (not in this workspace): `@octocodeai/octocode-tools-core` (tool runner
 
 Full field-level reference: run `$OCTO tools <name> --scheme` for exact schemas. Live catalog: `$OCTO tools --json`.
 
-**Always-on (13)** — dogfood these via MCP or local CLI:
+**Research catalog (15)** — dogfood these via MCP or local CLI:
 
 | Family | Tools | Role |
 |---|---|---|
-| GitHub | `ghSearchCode` · `ghGetFileContent` · `ghViewRepoStructure` · `ghSearchRepos` · `ghHistoryResearch` · `ghCloneRepo` | Remote code/path search, file read, tree, repo discovery, PR/commit history, clone (`ENABLE_CLONE` for clone) |
+| GitHub | `ghSearchCode` · `ghSearchRepos` · `ghSearchPullRequests` · `ghSearchIssues` · `ghSearchCommits` · `ghGetFileContent` · `ghViewRepoStructure` · `ghCloneRepo` | Remote code/path search, repo discovery, PR/issue/commit research, file read, tree, clone (`ENABLE_CLONE` for clone) |
 | Package | `npmSearch` | npm package lookup + source repo |
-| Local | `localSearchCode` · `localViewStructure` · `localFindFiles` · `localGetFileContent` · `localBinaryInspect` | Text (text/regex/AST), tree, find-by-meta, file read, archives/binaries (`ENABLE_LOCAL=false` disables the family) |
+| Local | `localSearchCode` · `localViewStructure` · `localFindFiles` · `localFindDeadCode` · `localGetFileContent` | Text/regex/AST search, tree, find-by-meta, dead-code candidates, file read (`ENABLE_LOCAL=false` disables the family) |
 | LSP | `lspGetSemantics` | definition, references, callers/callees, symbols, types, diagnostics, … |
 
-**OQL / unified research**
+**Research flow**
 
-- CLI: `$OCTO search` (read-only research lanes; see `$OCTO context --compact`)
-- Tool: `oqlSearch` when `ENABLE_OQL` is on (targets: code, content, structure, files, semantics, repos, packages, PRs, commits, artifacts, diff, research, graph) — details: `$OCTO search --help`
+- Use the `octocode-research` skill for research/review/change workflows, then call the catalog tools above with live schemas from `$OCTO tools <name> --scheme`.
+- The current CLI has no unified search subcommand and the current catalog has no unified query tool; do not invent either route. Use `$OCTO context --compact` for the live protocol.
 
-Evidence: research analyze packets are **candidates** — upgrade with `target:graph` + `proof:"lsp"` before delete claims. Do not treat `sort:relevance` as proof.
+Evidence: search hits and `localFindDeadCode` results are **candidates**. Prove identity, references, callers, and reachability with `lspGetSemantics` before delete claims; relevance ordering is not proof.
 
 ## Build and local run
 
@@ -99,16 +99,13 @@ After editing a local package, rebuild it (`yarn workspace <pkg> build`) before 
 
 ## Awareness
 
-For non-trivial repo work, activate `octocode-awareness` and run
-`node "$OCTOCODE_AWARENESS_CLI" attend --query "<task>" --compact`. This file routes;
-the skill owns judgment, the CLI owns live state, and hooks automate lifecycle edges.
-Package work also reads [`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md).
+In Pi, use `plan` for session/shared execution; stable shared steps, ownership, dependencies, and observed check receipts are projected onto Awareness internally. Advisory file presence, agent registry lifecycle, and mutation-time peer-lock checks are automatic. Do not add manual status, presence, submit, or audit calls to routine solo work.
 
-Loop: claim a ready task or open WORK; declare edited paths; use `--exclusive` only for sensitive work; check while present; submit/end → `verify mark` → `verify audit`. Use `memory recall --smart` only when prior learning may change the approach; record only verified reusable outcomes.
+Activate `octocode-awareness` only when live shared state can change the next action: peers/overlap, shared execution, unread messages, locks, verification debt, recovery, or relevant memory. No public status tool exists; use the Lite CLI for targeted diagnostics/recovery. Use `lock` only for exceptional non-mergeable state, `message` for needed peer coordination, and `memory` when verified learning may change the approach.
 
-SQLite is canonical. `.octocode/` holds authored plan docs and optional query exports; never hand-edit generated files. Exact flags: `schema command <noun> [action]`. Full lifecycle: [`docs/HOW_IT_WORKS.md`](packages/octocode-awareness/docs/HOW_IT_WORKS.md).
+`$OCTOCODE_AWARENESS_CLI` points to the bundled Lite diagnostics/recovery CLI; inspect its schema before using backend commands the reduced Pi tools do not expose. The full `octocode-awareness` package (attend / reflect / hooks) applies only when installed. Package work also reads [`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md).
 
-Skill source: repo-root `skills/octocode-awareness` (build syncs it into `packages/octocode-awareness/skills/` for publishing); use local build `packages/octocode-awareness/out/octocode-awareness.js` or installed `npx @octocodeai/octocode-awareness`. Rebuild after changes; never edit `.agents/skills/` or `out/skills/`. Generated `scripts/awareness.mjs` comes from `bin/awareness.ts`, uses built-in `node:sqlite`, and stays zero npm runtime deps.
+SQLite is canonical; never hand-edit generated files under `.octocode/` or `out/skills/`. Full lifecycle: [`docs/HOW_IT_WORKS.md`](packages/octocode-awareness/docs/HOW_IT_WORKS.md).
 
 ## Docs and references
 
@@ -118,7 +115,7 @@ Skill source: repo-root `skills/octocode-awareness` (build syncs it into `packag
 | Awareness | [`packages/octocode-awareness/docs/README.md`](packages/octocode-awareness/docs/README.md) — [HOW_IT_WORKS](packages/octocode-awareness/docs/HOW_IT_WORKS.md) · [HOOKS](packages/octocode-awareness/docs/HOOKS.md) · [VERIFY](packages/octocode-awareness/docs/VERIFY.md) · [LOCKS](packages/octocode-awareness/docs/LOCKS.md) · [MEMORY_NAVIGATION](packages/octocode-awareness/docs/MEMORY_NAVIGATION.md) · [WIKI](packages/octocode-awareness/docs/WIKI.md) · [REFERENCES](packages/octocode-awareness/docs/REFERENCES.md) |
 | Skills | Repo skill source: [`skills/octocode-awareness`](skills/octocode-awareness) (synced into `packages/octocode-awareness/skills/` at build). Other Octocode skills (research, brainstorming, eval, prompt-optimizer, rfc-generator, roast, skills, subagent) are installed via `node $OCTOCODE_CLI skill --add`. |
 
-No root `docs/` shelf is maintained in this slice. Keep durable docs package-local (`packages/*/docs`) or under Awareness docs; command inventories belong to `package.json`, binary help, and `$OCTO tools --json/--scheme`. Global docs (`OCTOCODE_MCP`, `CONFIGURATION`, `SECURITY`, `OCTOCODE_TOOLS`, `OCTOCODE_CLI`, `OQL_*`) and `release/RELEASE_GUIDE.md` live in the sibling `octocode` monorepo, not this repo. Run `$OCTO context` for the live agent protocol + tool playbook.
+Root `docs/` holds harness-wide topics only ([`docs/DISCOVERY.md`](docs/DISCOVERY.md): MCP catalog, skill tool, discovery inventory, context composition). Keep package internals package-local (`packages/*/docs`) or under Awareness docs; command inventories belong to `package.json`, binary help, and `$OCTO tools --json/--scheme`. Global docs (`OCTOCODE_MCP`, `CONFIGURATION`, `SECURITY`, `OCTOCODE_TOOLS`, `OCTOCODE_CLI`, `OQL_*`) and `release/RELEASE_GUIDE.md` live in the sibling `octocode` monorepo, not this repo. Run `$OCTO context` for the live agent protocol + tool playbook.
 
 ## Config / env — single source
 

@@ -144,8 +144,12 @@ it('routes attend.next through owned Claimed, then FilesUnderWork, then Inbox', 
         .run(dir, now, now);
       db.prepare(`INSERT INTO task_claims
         (task_id, run_id, agent_id, claimed_at, heartbeat_at, expires_at)
-        VALUES ('task_next', 'run_next', 'owner', ?, ?, ?)`)
+        VALUES ('task_next', 'run_next', 'owner', ?, ?, ?)`) 
         .run(now, now, future);
+      db.prepare(`INSERT INTO tasks
+        (task_id, plan_id, title, reasoning, acceptance_criteria, status, priority, created_by, created_at, updated_at)
+        VALUES ('task_unrelated', 'plan_next', 'Unrelated ready work', 'different request', 'tests pass', 'OPEN', 99, 'other', ?, ?)`) 
+        .run(now, now);
 
       const claimed = attendAwareness(db, {
         agentId: 'owner',
@@ -153,7 +157,7 @@ it('routes attend.next through owned Claimed, then FilesUnderWork, then Inbox', 
         query: 'claimed mid-loop',
         compact: true,
       });
-      expect(claimed.next).toBe("octocode-awareness task heartbeat --task-id 'task_next' --run-id 'run_next' --agent-id 'owner' --compact");
+      expect(claimed.next).toBe("npx @octocodeai/octocode-awareness task heartbeat --task-id 'task_next' --run-id 'run_next' --agent-id 'owner' --compact");
 
       const peer = attendAwareness(db, {
         agentId: 'peer',
@@ -162,6 +166,7 @@ it('routes attend.next through owned Claimed, then FilesUnderWork, then Inbox', 
         compact: true,
       });
       expect(peer.next).not.toContain('task heartbeat');
+      expect(peer.next).not.toContain('task claim');
 
       db.prepare(`INSERT INTO run_files
         (run_id, file_path, source, started_at, heartbeat_at, expires_at)

@@ -29,7 +29,7 @@ Cluster errors: `reflect record --outcome failed --failure-signature "<stable ke
 When instructions caused time loss, guessing, or a wrong turn — name the source, cost, and proposed replacement; attach files with `--fix-file`; one concern per call:
 
 ```bash
-octocode-awareness reflect record --agent-id "$OCTOCODE_AGENT_ID" \
+npx @octocodeai/octocode-awareness reflect record --agent-id "$OCTOCODE_AGENT_ID" \
   --workspace "$PWD" --task "add lock retry" --outcome partial \
   --fix-instructions "AGENTS.md omits the lock TTL; document the limit and extension path." \
   --fix-file AGENTS.md --compact
@@ -64,7 +64,7 @@ Treat the skill folder as the **trainable external state** of a frozen agent. Ac
 - **Research**: inspect real `SKILL.md` folders; use `references/self-reflection-dialogue.md` for hard judgment.
 - **Improve/update**: READ→PLAN→EDIT→VERIFY; prefer patch-mode (one concept per round); smoke on a task outside the failure that motivated the edit; no write without user approval when skill is shared.
 - **Reject path**: revert, record why it hurt (`memory record`/`reflect record --fix-harness`), propose a smaller edit.
-- **Ship**: prune orphans; `npx octocode skill --add --path <skill-dir> --platform <host> --force`.
+- **Ship**: prune orphans and release through the owning package/host workflow. Do not invent local skill-copy commands from a prompt; inspect `npx octocode skill --help` when installing a named official skill.
 
 Hard rules:
 - Do **not** one-shot regenerate a working skill from a summary — read every behavior-affecting file first.

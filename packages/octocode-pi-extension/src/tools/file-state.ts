@@ -15,7 +15,7 @@
  *
  * SCOPE — this guard is PROCESS-LOCAL. The read-state map and mutation queue only
  * serialise edits issued within *this* Pi process. They do NOT protect against a
- * second process (e.g. a parallel spawnAgent worker) editing the same file
+ * second process (for example, a parallel agent worker) editing the same file
  * concurrently. Cross-process safety is a separate layer: declare edited paths
  * via Awareness (`work start`) and take an exclusive lease (`lock acquire`) for
  * non-mergeable or risky shared files — the Awareness pre-edit `tool_call` gate
@@ -43,6 +43,16 @@ export interface ReadStateCheck {
 // ─── Module-level state ───────────────────────────────────────────────────────
 
 export const MAX_RECORDED_READ_STATES = 1_000;
+
+/**
+ * Upper size bound for the mtime+size "fast path" to still fall through to a
+ * content-hash comparison. On coarse-mtime filesystems an external same-size
+ * rewrite within one mtime tick slips past an mtime+size-only check, so for
+ * files at or under this size we always hash-verify (an unchanged file still
+ * hash-matches and reports fresh). Above it, hashing is costly and an exact
+ * same-size in-tick overwrite is unlikely, so the fast path is preserved.
+ */
+export const FAST_PATH_HASH_MAX_BYTES = 5 * 1024 * 1024; // 5MB
 
 const readStates = new Map<string, ReadState>();
 
@@ -145,6 +155,11 @@ export async function recordFileReadState(filePath: string, cwd = process.cwd())
   pruneOldReadStates();
 }
 
+/** Drop stale-read metadata after a file is deleted. */
+export function forgetFileReadState(filePath: string, cwd = process.cwd()): void {
+  readStates.delete(resolveFilePath(filePath, cwd));
+}
+
 /**
  * Check whether `absolutePath` has changed since the last recorded read.
  *
@@ -157,6 +172,7 @@ export async function recordFileReadState(filePath: string, cwd = process.cwd())
 export async function checkReadState(
   absolutePath: string,
   requireRecentRead: boolean,
+  opts: { contentAnchored?: boolean } = {},
 ): Promise<ReadStateCheck> {
   const state = readStates.get(absolutePath);
   if (!state) {
@@ -172,12 +188,34 @@ export async function checkReadState(
   const stats = await stat(absolutePath);
   let stale: boolean;
   if (stats.mtimeMs === state.mtimeMs && stats.size === state.size) {
-    stale = false;
+    // mtime+size match. On coarse-mtime filesystems a same-size external rewrite
+    // within one mtime tick can slip past an mtime+size-only check, so fall
+    // through to a content-hash comparison for reasonably-sized files (an
+    // unchanged file still hash-matches and reports fresh). For very large files
+    // hashing is expensive and an exact same-size in-tick overwrite is unlikely,
+    // so keep the fast path.
+    if (stats.size <= FAST_PATH_HASH_MAX_BYTES) {
+      const current = await readFile(absolutePath, 'utf8');
+      stale = contentHash(current) !== state.contentHash;
+    } else {
+      stale = false;
+    }
   } else {
     const current = await readFile(absolutePath, 'utf8');
     stale = contentHash(current) !== state.contentHash;
   }
   if (stale) {
+    // Content-anchored edits (exact/normalized oldText) are self-verifying: the
+    // replacement only applies if oldText still matches the CURRENT bytes, so a
+    // stale recorded hash is not a lost-update risk — surface it as advisory
+    // rather than blocking. Position-anchored edits (lineRange) and explicit
+    // requireRecentRead still hard-fail, since line numbers can silently shift.
+    if (opts.contentAnchored && !requireRecentRead) {
+      return {
+        state: 'stale',
+        message: 'File changed since last recorded read; proceeding because the edit is anchored to exact oldText.',
+      };
+    }
     throw new Error('File changed since last recorded read. Re-read the target range before editing.');
   }
   return {

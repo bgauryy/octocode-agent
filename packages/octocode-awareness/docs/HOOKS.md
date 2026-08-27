@@ -2,7 +2,14 @@
 
 Hooks automate Awareness lifecycle edges after the skill/CLI has chosen work; they do
 not choose tasks, prove success, or replace `attend`/verify. The CLI works without
-them. All hosts call the same runtime and canonical SQLite database.
+them. Claude, Codex, and Cursor use the shared shell runner and advanced Awareness
+store. Pi uses package APIs, native extension events, and the shared coordination
+store; it does not install or spawn the shell hooks.
+
+Shell hooks remain inert until `<OCTOCODE_HOME>/awareness.json` exists and validates.
+Feature behavior follows [CONFIGURATION.md](CONFIGURATION.md). Before every real hook
+installation, show the dry-run target and obtain separate user approval immediately
+before changing host settings; configuration answers do not grant that approval.
 
 ## Lifecycle
 
@@ -24,10 +31,10 @@ entry is removed during install/repair to guarantee guard ordering.
 
 | Host | Surface | Notes |
 |---|---|---|
-| Claude Code | Skill frontmatter while active, or `.claude/settings.json` | Success/failure writes, subagent start/stop, PreCompact, SessionEnd, prompt briefing. Choose one surface. |
-| Codex | `.codex/hooks.json` | SessionStart, success writes, subagent start/stop, PreCompact, prompt/stop. No SessionEnd or distinct failure event; PostToolUse failure metadata is handled when present. |
-| Cursor | `.cursor/hooks.json` | Success/failure writes plus session/subagent/compact/end edges. Native output varies by local/cloud/version; child-context injection is not assumed. |
-| Pi | `wirePiAwarenessHooks(pi)` / Pi extension | Native `session_start`, tool start/end with `isError`, before-agent, compact, agent-end, shutdown; never shell install. |
+| Claude Code | Skill frontmatter while active, or `.claude/settings.json` | Installed hooks add SessionStart; both cover success/failure writes, subagent start/stop, PreCompact, SessionEnd, prompt briefing. Choose one surface. |
+| Codex | `.codex/hooks.json` | SessionStart/SessionEnd, success writes, subagent start/stop, PreCompact, prompt/stop. No distinct failure event; PostToolUse failure metadata is handled when present. |
+| Cursor | `.cursor/hooks.json` | Success/failure writes plus session/subagent/compact/end edges. Cloud supports write/subagent/prompt/compact/stop hooks but not `sessionStart`/`sessionEnd`; child-context injection is not assumed. |
+| Pi | `@octocodeai/pi-extension` native events | `tool_call` lock/presence gate, session registry join/leave, durable event delivery, and compaction rehydration. No shell-hook install or advanced hook receipts. |
 | Custom | Library API or `hook run` payload | Must provide stable identity/path events. |
 
 ## Install And Verify
@@ -38,11 +45,11 @@ separate surface without pretending activation was observed.
 Preview writes, install after approval, then check exact host config:
 
 ```bash
-octocode-awareness hooks install --host <codex|cursor> \
+npx @octocodeai/octocode-awareness hooks install --host <codex|cursor> \
   --project-dir . --dry-run
-octocode-awareness hooks install --host <codex|cursor> \
+npx @octocodeai/octocode-awareness hooks install --host <codex|cursor> \
   --project-dir . --compact
-octocode-awareness hooks check --host <codex|cursor> \
+npx @octocodeai/octocode-awareness hooks check --host <codex|cursor> \
   --project-dir . --strict --compact
 ```
 
@@ -51,9 +58,9 @@ Use `--host claude` only when skill frontmatter is unsupported or disabled.
 Remove (preview first) when uninstalling host wiring:
 
 ```bash
-octocode-awareness hooks remove --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks remove --host <claude|codex|cursor> \
   --project-dir . --dry-run
-octocode-awareness hooks remove --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks remove --host <claude|codex|cursor> \
   --project-dir . --compact
 ```
 
@@ -105,9 +112,8 @@ Post-edit keeps that fallback active and attaches further files. Stop/agent-end 
 PreCompact finalizes it once to PENDING, so N edits produce one item with N files.
 TASK and explicit WORK are never merged. Without stable session/transcript identity,
 post-edit uses the isolated per-event lifecycle rather than guessing across sessions.
-Shell get-or-create is cross-process locked; Pi coalesces its synchronous in-process
-tool callbacks. PreCompact keeps the session reusable; SessionEnd/shutdown safely
-finalizes any remaining aggregate and marks the session ended.
+Shell get-or-create is cross-process locked. PreCompact keeps the session reusable;
+SessionEnd safely finalizes any remaining aggregate and marks the session ended.
 
 Fallback verification plans name up to three files plus an omitted count and require
 the smallest relevant test/typecheck, diff inspection, and a recorded result. Recursive
@@ -134,8 +140,8 @@ A denied guard leaves no false file presence.
 briefings and peer sets emit nothing. This does not acknowledge signals; `signal ack`
 remains explicit.
 
-For Claude/Codex prompt hooks and Pi `input`, the current prompt is held only as a
-bounded transient query; it is not written to SQLite. The selector searches the
+For Claude and Codex prompt hooks, the current prompt is held only as a bounded
+transient query; it is not written to SQLite. The selector searches the
 existing scoped memory bank, requires at least two meaningful prompt/memory token
 matches across the bounded normal recall pool, emits at most one
 `Memory lead — verify` item, and otherwise stays silent.
@@ -154,17 +160,16 @@ omitted counts.
 
 ## Failure Behavior
 
-- Real exclusive conflict and harness denial use exit 2 on Claude/Codex,
-  `permission: deny` on Cursor, and `{ block: true }` on Pi.
-- Stop debt uses exit 2 on Claude/Codex, Cursor `followup_message`, and Pi follow-up.
+- Real exclusive conflict and harness denial use exit 2 on Claude/Codex and
+  `permission: deny` on Cursor.
+- Stop debt uses exit 2 on Claude/Codex and Cursor `followup_message`.
 - Infrastructure, extraction, post-edit, briefing, and session failures warn and fail
   open so the editor remains usable.
 - A failed write rolls back hook-created file presence without an edit audit; TASK or
   explicit WORK ownership is preserved because the user may retry or investigate.
 - A missing correlation never marks success; TTL and verification audit expose debt.
 
-Environment controls, read identically by every host (shell hooks and Pi share
-`bin/hook-payload.ts` / `src/pi-hooks-inputs.ts`):
+Environment controls read by the Claude, Codex, and Cursor hook runners:
 
 | Variable | Effect |
 |---|---|
@@ -179,7 +184,7 @@ Environment controls, read identically by every host (shell hooks and Pi share
 | `OCTOCODE_NO_DIGEST=1` | Force-disable the digest preview even when `OCTOCODE_NOTIFY_RUN_DIGEST=1` is set. |
 | `OCTOCODE_DIGEST_INTERVAL_HOURS` | Minimum hours between digest previews (default 4). |
 | `OCTOCODE_ALLOW_HARNESS_APPLY=1` | Open harness edit gate; branch rule still applies. |
-| `OCTOCODE_SKILL_ROOT` | Skill root the pre-edit guard checks edits against; exported by the shell wrapper, or passed to `wirePiAwarenessHooks`/`createPiAwarenessBridge` for Pi. Guard is a no-op when unset. |
+| `OCTOCODE_SKILL_ROOT` | Skill root the pre-edit guard checks edits against; exported by the shell wrapper. Guard is a no-op when unset. |
 | `OCTOCODE_HARNESS_BRANCH_OK=1` | Acknowledge a detached/non-repo skill root when the branch cannot be confirmed. |
 
 Invocation plumbing, not ordinary agent configuration: project hooks pass `--host`
@@ -187,5 +192,5 @@ and invoke the resolved Node executable directly. Claude skill wrappers instead 
 `OCTOCODE_NODE_BIN` when the host environment must override `node`; host payloads or
 the runner's Claude default identify that surface.
 
-Shell/Pi parity, wrapper extraction, installer repair, peer dedupe, guard order, and
+Claude/Codex/Cursor wrappers, installer repair, peer dedupe, guard order, and
 verification caps are covered by focused tests.

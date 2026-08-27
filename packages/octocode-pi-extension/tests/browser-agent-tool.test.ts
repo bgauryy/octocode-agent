@@ -120,7 +120,7 @@ test('browserAgent runNow navigates, runs routed schemes, builds spawn config, a
   assert.equal(cleanupCalls[0]![1], false);
   assert.equal(cleanupCalls[0]![2], true);
 
-  const text = result.content?.[0]?.text ?? '';
+  const text = (result.content?.[0] as { text?: string } | undefined)?.text ?? '';
   assert.match(text, /schemes run: security, network/);
   assert.match(text, /\[AGENT\] navigated to https:\/\/example\.com\/app/);
   assert.match(text, /findings: 2  actions: 1/);
@@ -151,7 +151,7 @@ test('browserAgent records connection errors and still returns a usable spawn co
     runNow: true,
   });
 
-  const text = result.content?.[0]?.text ?? '';
+  const text = (result.content?.[0] as { text?: string } | undefined)?.text ?? '';
   assert.match(text, /\[AGENT\] connect error: Chrome down/);
   assert.match(text, /schemes run: \(none\)/);
   assert.match(text, /Runtime, Log/);

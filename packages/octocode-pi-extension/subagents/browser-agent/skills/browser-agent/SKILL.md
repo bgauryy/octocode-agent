@@ -1,166 +1,125 @@
 ---
 name: browser-agent
-description: "Use when browser work needs multiple turns of Chrome DevTools Protocol interaction: security/cookie/storage audits, network analysis, DOM inspection, coverage, workers/service-workers, device emulation, or multi-step automation. Spawns a dedicated browser subagent via spawnSubagent that stays alive for follow-up instructions via AgentMessage. For single-shot tasks (one screenshot, one network pass), call chromeDebug directly instead."
+description: "Use when browser work needs multiple Chrome DevTools Protocol phases: security/cookie/storage audits, network analysis, DOM inspection, coverage, workers, device emulation, or multi-step automation. Spawn the browser profile through the unified agent tool and manage follow-ups through the same facade. For one CDP operation, call chromeDebug directly."
 ---
 
 # Browser Agent
 
-Spawn a dedicated Chrome DevTools Protocol subagent for multi-turn browser work.
-The subagent has `chromeDebug` + `web` + local read tools and emits structured output.
+Choose the smallest workflow that can produce the required evidence. The skill owns that judgment; `agent` and `chromeDebug` own deterministic execution.
 
-## Single-shot vs multi-turn
+## Choose the execution path
 
-| Use `chromeDebug` directly | Use `spawnSubagent(browser-agent)` |
+| Need | Action |
 |---|---|
-| One screenshot | Security + storage + network audit in sequence |
-| One-pass network log | Watch network while user interacts |
-| Quick console check | Iterative debugging with follow-ups |
-| Single DOM query | Coverage → interact → re-measure |
-| Any single scheme call | Any task needing 2+ separate CDP operations |
+| One screenshot, console check, DOM query, or scheme call | Call `chromeDebug` directly |
+| Multiple dependent CDP phases or user-driven follow-ups | Spawn `agent` with `profile:"browser"` |
+
+Do not spawn a worker merely to wrap one deterministic browser operation.
 
 ## Spawn
 
+Give the browser worker a bounded packet with explicit scope, acceptance, and return requirements. The profile routes the task to relevant CDP domains, runs the configured initial analysis, and starts the worker.
+
 ```
-spawnSubagent({
-  agent: "browser-agent",
-  task:  "<what to do — be specific>",
-  url:   "https://example.com",    // optional: target URL
-  port:  9222,                     // optional: Chrome debug port (default 9222)
-  launch: false,                   // optional: start Chrome if not running
-})
+agent({queries:[{
+  reasoning: "The audit needs dependent security, storage, and network phases.",
+  type: "spawn",
+  profile: "browser",
+  name: "browser-audit",
+  task: "Goal: audit the login flow\nContext: inspect https://example.com\nScope: security headers, cookies, storage, and login traffic\nOwnership: browser inspection only; do not modify repository files\nAcceptance: report evidence for every requested surface\nReturn: emit [FINDING], [ACTION], and terminal [DONE], [BLOCKED], or [FAILED] lines",
+  url: "https://example.com",
+  port: 9222,
+  launch: false,
+  runNow: true
+}]})
 → { agentId: "abc123…" }
 ```
 
-The subagent receives the pre-built system prompt (CDP reference + chromeDebug guide + protocol).
-It stays alive and waits for follow-up instructions via AgentMessage.
+Use `launch:true` only when the tool should start Chrome. `runNow:true` performs the routed initial analysis before the worker starts; use `runNow:false` when an existing authenticated or interactive state must be preserved for the worker.
 
-## Multi-turn coordination
+Spawn first. Lifecycle operations that reference the returned `agentId` must be separate calls.
+
+## Multi-turn lifecycle
 
 ```
-// Spawn
-agentId = spawnSubagent({agent:"browser-agent", task:"audit https://example.com security", url:"https://example.com"})
-
-// Wait for first pass
-AgentMessage({action:"wait", agentId, timeoutMs:60000})
-
-// Steer (interrupt current turn) or send (queue after current turn)
-AgentMessage({action:"send", agentId, message:"now check the /api/login endpoint too"})
-AgentMessage({action:"wait", agentId, timeoutMs:30000})
-
-// Done — collect and kill
-AgentMessage({action:"status", agentId})   // read full output
-AgentMessage({action:"kill",   agentId, remove:true})
+agent({queries:[{reasoning:"Collect the current browser-worker snapshot.", type:"wait", agentId:"abc123…"}]})
+agent({queries:[{reasoning:"Queue the next audit phase.", type:"message", agentId:"abc123…", delivery:"followUp", message:"Now inspect /api/login and compare its cookie behavior."}]})
+agent({queries:[{reasoning:"Inspect the complete retained result.", type:"inspect", agentId:"abc123…", full:true}]})
+agent({queries:[{reasoning:"Release the completed browser worker.", type:"kill", agentId:"abc123…", remove:true}]})
 ```
+
+Use `inspect` without `agentId` to list all workers. `wait` returns the current transcript snapshot; repeat it only when fresh output is expected. Use `steer` when the current direction must change before the worker's next model step. Use `message` with `delivery:"followUp"` to queue the next phase.
 
 ## Output protocol
 
-The subagent prefixes every line:
+The browser worker prefixes evidence lines:
 
 | Prefix | Meaning |
 |---|---|
-| `[STATUS] …` | Progress — what it's doing |
-| `[FINDING] …` | Issue or discovery with specifics |
+| `[STATUS] …` | Current activity |
+| `[FINDING] …` | Specific issue or discovery |
 | `[ACTION] …` | Recommended next step |
-| `[METRIC] …` | Measurement (size, count, %, ms) |
-| `[SCREENSHOT] path` | Absolute path to screenshot |
-| `[BLOCKED] reason` | Needs input before continuing |
-| `[FAILED] reason` | Objective cannot be completed — with partial findings |
-| `[DONE] summary` | Task complete |
+| `[METRIC] …` | Measurement such as size, count, percentage, or duration |
+| `[SCREENSHOT] path` | Absolute screenshot path |
+| `[BLOCKED] reason` | Input or external state is required |
+| `[FAILED] reason` | Objective cannot be completed; partial findings should follow |
+| `[DONE] summary` | The bounded objective is complete |
 
-Parse `AgentMessage(status).lastOutput` for these prefixes.
-Relay `[FINDING]` and `[ACTION]` lines to the user.
-Pass `[BLOCKED]` reason back via `AgentMessage(send, message: answer)`.
+Relay findings and actions with their evidence. A terminal prefix is a worker claim, not proof: compare it with the acceptance criteria and inspect full output when the result matters.
 
-## Async polling (long tasks)
+If the worker emits `[BLOCKED]`, resolve the missing input and send it through `agent` with `type:"message"`. Always kill and remove the worker after collecting the final result.
 
-For tasks that take > 30s, poll instead of blocking:
+## Long-running work
+
+For monitors or user-interaction flows, use short snapshot checks while other useful work continues:
+
 ```
-agentId = spawnSubagent({agent:"browser-agent", task:"run 30s monitor", url:"...", port:9222})
-// Poll every 10s while working on something else
-while True:
-  status = AgentMessage({action:"status", agentId})
-  if status.status == "idle":  // [DONE] emitted, waiting
-    break
-  // optionally: print status.lastOutput preview
-  wait 10s
-AgentMessage({action:"kill", agentId, remove:true})
+agent({queries:[{reasoning:"Check browser-monitor progress.", type:"inspect", agentId:"abc123…"}]})
 ```
 
-## Kill discipline (always)
+If a worker is stuck well beyond the expected duration, interrupt its current turn without destroying the process, inspect the result, then either redirect or remove it:
 
-**Always kill the agent after the last [DONE].** Agents do not self-terminate.
 ```
-AgentMessage({action:"kill", agentId, remove:true})
-```
-If the agent is stuck > 2× expected time:
-```
-AgentMessage({action:"abort", agentId})  // graceful interrupt
-// wait 5s, then send next instruction or kill
-AgentMessage({action:"kill", agentId, remove:true})
+agent({queries:[{reasoning:"Interrupt the unresponsive browser turn.", type:"abort", agentId:"abc123…", full:true}]})
+agent({queries:[{reasoning:"Inspect the interrupted browser worker.", type:"inspect", agentId:"abc123…", full:true}]})
+agent({queries:[{reasoning:"Release the interrupted browser worker.", type:"kill", agentId:"abc123…", remove:true}]})
 ```
 
-## Parallel browsers
+## Parallel browser lanes
 
-Spawn multiple simultaneously for independent audits:
+Parallelize only independent inspections. Use separate debugging ports and give each worker disjoint scope. Multiple spawn queries may share one call; collect and reconcile every result before finalizing.
+
 ```
-secId = spawnSubagent({agent:"browser-agent", task:"security audit",     url:"https://example.com"})
-perfId = spawnSubagent({agent:"browser-agent", task:"performance audit", url:"https://example.com", port:9223})
-AgentMessage({action:"wait", agentId:secId,  timeoutMs:90000})
-AgentMessage({action:"wait", agentId:perfId, timeoutMs:90000})
+agent({queries:[
+  {reasoning:"Run the independent security lane.", type:"spawn", profile:"browser", name:"security-lane", task:"Goal: audit browser security\nContext: inspect https://example.com\nScope: headers, cookies, and storage\nOwnership: read-only browser inspection on port 9222\nAcceptance: evidence for each security surface\nReturn: findings and terminal status", url:"https://example.com", port:9222},
+  {reasoning:"Run the independent performance lane.", type:"spawn", profile:"browser", name:"performance-lane", task:"Goal: audit browser performance\nContext: inspect https://example.com\nScope: web vitals, heap, layout, and script metrics\nOwnership: read-only browser inspection on port 9223\nAcceptance: measured evidence for each metric family\nReturn: metrics, actions, and terminal status", url:"https://example.com", port:9223}
+]})
 ```
 
-## chromeDebug scheme quick reference
+## `chromeDebug` scheme guide
 
-The subagent uses these schemes internally — you can also request them explicitly:
-
-| Scheme | What it covers |
+| Scheme | Use it for |
 |---|---|
-| `debug` | Exceptions + HTTP errors + blocked + DOM state + screenshot |
-| `network` | Requests/responses + cookie flags |
-| `security` | CSP/HSTS/X-Frame + cookie flags + localStorage sensitive keys |
-| `storage` | Cookies + localStorage + sessionStorage + IndexedDB + Cache + quota |
-| `accessibility` | AX tree: unlabeled elements, missing alt, heading levels |
-| `workers` | Web workers + service workers (lifecycle + scriptURL) |
-| `performance` | Core Web Vitals, JS heap, layout counts |
-| `css-coverage` / `js-coverage` | CSS rule usage + JS function/block coverage |
-| `emulate` | Device viewport, network throttle, geolocation |
-| `intercept` | Request capture/mock (Fetch domain) |
-| `screenshot` | PNG/JPEG/PDF capture |
-| `raw` | Any `Domain.Method` — full CDP access |
+| `debug` | Exceptions, HTTP errors, blocked requests, DOM state, and screenshot |
+| `network` | Requests, responses, and cookie flags |
+| `security` | Security headers, cookie flags, and sensitive storage keys |
+| `storage` | Cookies, web storage, IndexedDB, Cache Storage, and quota |
+| `accessibility` | Accessibility tree and common labeling/structure gaps |
+| `workers` | Web workers and service-worker lifecycle |
+| `performance` | Web vitals, heap, layout, and script metrics |
+| `css-coverage` / `js-coverage` | CSS and JavaScript usage coverage |
+| `emulate` | Viewport, network, geolocation, and media emulation |
+| `intercept` | Request capture or mocking |
+| `screenshot` | PNG, JPEG, WebP, or PDF capture |
+| `raw` | A specific `Domain.Method` call |
 
-## Terminal visibility — see what the agent is doing
+Inspect the live `chromeDebug` tool schema before constructing a low-level call. For protocol details, use [references/CDP_QUICK_REF.md](references/CDP_QUICK_REF.md).
 
-**Option 1 — CDP event log** (raw CDP traffic):
-```bash
-# Enable before spawning:
-OCTOCODE_CDP_DEBUG=1 pi ...
+## Recovery
 
-# Tail in another terminal:
-tail -f ~/.octocode/chrome-debug/port-9222/cdp-events.jsonl
-# Pretty-print:
-tail -f ~/.octocode/chrome-debug/port-9222/cdp-events.jsonl | python3 -c "import sys,json; [print(json.dumps(json.loads(l), indent=None)) for l in sys.stdin]"
-```
-
-**Option 2 — Pi TUI** shows every chromeDebug tool call the subagent makes in real-time (tool name + params).
-
-**Option 3 — poll subagent output**:
-```
-AgentMessage({action:"status", agentId})  // read lastOutput field (up to 12KB)
-```
-Call every 5–10s during long tasks to see [STATUS]/[FINDING] lines as they arrive.
-
-**Option 4 — Chrome DevTools Protocol Monitor** (visible Chrome only):
-Open DevTools → Settings → Experiments → “Protocol Monitor” → More Tools → Protocol Monitor.
-
-## Error recovery
-
-| Signal | What to send |
+| Signal | Response |
 |---|---|
-| `[BLOCKED] Chrome not running` | `AgentMessage(send: "use launch:true or start Chrome manually")` |
-| `[BLOCKED] auth required` | Tell user to log in, then `AgentMessage(send: "continue")` |
-| Agent `failed` status | `AgentMessage(status)` → read error → `kill` → re-spawn with fix |
-| Agent stuck > 2× expected time | `AgentMessage(abort)` → wait 5s → `AgentMessage(send, new instruction)` |
-
-## Reference
-
-- `references/CDP_QUICK_REF.md` — all 57 CDP domains with key methods/events
+| Chrome is not running | Spawn with `launch:true`, or ask the user to start Chrome |
+| Authentication is required | Ask the user to log in, then send `continue` to the worker |
+| Worker reports failure | Inspect full history, remove it, correct the packet, and spawn a replacement only if needed |
+| Worker is unresponsive | `abort` → `inspect` → redirect or `kill` |

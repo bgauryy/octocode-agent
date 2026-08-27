@@ -13,10 +13,27 @@ import { cmdGetMemory, cmdRefineGet, cmdRefineSet, cmdReflect, cmdTellMemory } f
 import { cmdAuditUnverified, cmdPreFlightIntent, cmdReleaseFileLock, cmdVerify, cmdWork } from './cli-work.js';
 import { cmdExportHarness, cmdForget, cmdMemoryLifecycle, cmdPlan, cmdRefineDelete, cmdTask } from './cli-plans.js';
 import { cmdAttend, cmdDeveloperReview, cmdDocStaleness, cmdDocsCatalog, cmdQuery } from './cli-repo.js';
+import { cmdAwarenessConfig } from './cli-config.js';
+import { runCli as runCoordinationCli } from '../src/coordination/cli.js';
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 export const rawArgv = process.argv.slice(2);
+
+// The root binary owns every Awareness capability. Shared-repository commands
+// are available under `coordination` to avoid ambiguity with the richer legacy
+// plan/task/memory verbs, while the signal/status and peer channels keep their
+// concise direct forms for host integrations.
+const directCoordinationCommands = new Set(['guide', 'instructions', 'status', 'message', 'handoff', 'check']);
+if (rawArgv[0] === 'coordination' || directCoordinationCommands.has(rawArgv[0] ?? '')) {
+  const coordinationArgv = rawArgv[0] === 'coordination' ? rawArgv.slice(1) : rawArgv;
+  try {
+    process.exit(runCoordinationCli(coordinationArgv));
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  }
+}
 
 if (rawArgv.length === 0 || rawArgv.includes('--help') || rawArgv.includes('-h')) {
   const compactHelp = rawArgv.includes('--compact') || process.env['OCTOCODE_AWARENESS_COMPACT'] === '1';
@@ -67,10 +84,10 @@ if (command === UNKNOWN_COMMAND) {
     error: `unknown command: ${requested}`,
     hint: 'Use canonical noun/verb commands only; run "octocode-awareness --help" for the command map.',
     examples: [
-      'octocode-awareness memory recall --query "current task" --workspace "$PWD" --compact',
-      'octocode-awareness lock acquire --agent-id agent --target-file src/file.ts --rationale "edit" --compact',
-      'octocode-awareness signal list --agent-id agent --workspace "$PWD" --limit 3 --compact',
-      'octocode-awareness query gotchas --workspace "$PWD" --format json --limit 20 --compact',
+      'npx @octocodeai/octocode-awareness memory recall --query "current task" --workspace "$PWD" --compact',
+      'npx @octocodeai/octocode-awareness lock acquire --agent-id agent --target-file src/file.ts --rationale "edit" --compact',
+      'npx @octocodeai/octocode-awareness signal list --agent-id agent --workspace "$PWD" --limit 3 --compact',
+      'npx @octocodeai/octocode-awareness query gotchas --workspace "$PWD" --format json --limit 20 --compact',
     ],
   };
   process.stdout.write(JSON.stringify(payload, null, compact ? 0 : 2) + '\n');
@@ -85,6 +102,8 @@ if (command === 'schema') {
   const { runSchemaCli } = await import('../src/schema/cli.js');
   process.exit(await runSchemaCli(rest));
 }
+
+if (command === 'awareness-config') process.exit(cmdAwarenessConfig(args, opts));
 
 if (command === 'hook-run') {
   // Hooks always write to the canonical store; a `--db` here was silently

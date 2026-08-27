@@ -1,116 +1,18 @@
-const AGENT_NAMES = [
-  // Octopuses
-  'octoTuring',
-  'jeffBezopus',
-  'elonTentacle',
-  'octoNewton',
-  'markSuckerberg',
-  'inkstein',
-  'octoDarwin',
-  'linusTorvaldsOpus',
-  'octoMusk',
-  'stephenInking',
-  // Squids
-  'squidViciousGates',
-  'calamariCurie',
-  'squidJobs',
-  'nilsBoringSquid',
-  'inklaTesla',
-  'squidmundFreud',
-  'adaLovelacsquid',
-  'squidFeynman',
-  'calaMariKondo',
-  'richardStallsquid',
-  // Jellyfish
-  'jellyTorvalds',
-  'medusaZuckerberg',
-  'jellyfishTuring',
-  'stingyHawking',
-  'jellyWozniak',
-  'carlSajelligan',
-  'blobGates',
-  'jellyfishBezos',
-  'jellyDarwin',
-  'stingingLovelace',
-  // Seahorses
-  'sealonMusk',
-  'seahorseHopper',
-  'poseidonKnuth',
-  'seabiscuitBernersLee',
-  'neptuneNewton',
-  'seahorseDijkstra',
-  'sirSeymoreCrayfish',
-  'seahorseNoether',
-  'poseidonPage',
-  'seaBrin',
-  // Crabs
-  'crabOppenheimer',
-  'crustyTorvalds',
-  'crabbyTuring',
-  'scuttlesVonNeumann',
-  'clawDarwin',
-  'cancerner',
-  'hermitHopper',
-  'crabBohr',
-  'pinchyPauli',
-  'scuttlesworthJobs',
-  // Lobsters
-  'lobsterLeibniz',
-  'clawdiusPtolemy',
-  'sirClawNewton',
-  'lobsterDijkstra',
-  'shelldonCooper',
-  'crustyCurie',
-  'redShellberg',
-  'clawedShannon',
-  'lobsterLovelace',
-  'thermidorTuring',
-  // Sea Turtles
-  'tortleTesla',
-  'shellKnuth',
-  'darwinSlowpoke',
-  'shelldonHawking',
-  'turtlesworthBabbage',
-  'slowpokeSagan',
-  'snappyCopernicus',
-  'turtBernersLee',
-  'slooowVonNeumann',
-  'shellNoether',
-  // Eels
-  'electricEelstein',
-  'slipperyStallman',
-  'eelMusk',
-  'zappyTesla',
-  'morayTuring',
-  'slickDijkstra',
-  'eelCerf',
-  'wrigglyWozniak',
-  'eelyHopper',
-  'joltJobs',
-  // Stingrays
-  'stingraySagan',
-  'zappyZuckerberg',
-  'rayKurzweilfish',
-  'flatDarwin',
-  'stingyStallman',
-  'raymondFeynman',
-  'mantaGates',
-  'stingTorvalds',
-  'voltNewton',
-  'flatOppenheimer',
-  // Misc weirdos
-  'blobfishBabbage',
-  'mantisShrimpShannon',
-  'seaCucumberCurie',
-  'anglerfishTuring',
-  'nautilusVonNeumann',
-  'cuttlefishCook',
-  'starfishStallman',
-  'seaUrchinTuring',
-  'pufferPauli',
-  'narwhalKnuth',
-] as const;
+/** Pi-specific naming defaults over the package-owned external-host detector/pool. */
+import {
+  detectAgentHost as detectExternalAgentHost,
+  generateAgentName,
+  type AgentHost as ExternalAgentHost,
+} from '@octocodeai/octocode-awareness';
 
-export function getRandomAgentName(): string {
-  return AGENT_NAMES[Math.floor(Math.random() * AGENT_NAMES.length)];
+export type AgentHost = Exclude<ExternalAgentHost, 'agent'>;
+
+/** Pi falls back to its own `octo` host when no stronger runner signal exists. */
+export function detectAgentHost(env: NodeJS.ProcessEnv = process.env): AgentHost {
+  const detected = detectExternalAgentHost(env);
+  return detected === 'agent' ? 'octo' : detected;
+}
+
+export function getRandomAgentName(host: AgentHost = detectAgentHost()): string {
+  return generateAgentName({ OCTOCODE_AGENT_HOST: host });
 }

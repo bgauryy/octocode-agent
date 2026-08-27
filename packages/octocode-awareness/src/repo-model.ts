@@ -178,7 +178,7 @@ export function utcNow(): string {
 export function normalizeView(view: string | null | undefined): AwarenessQueryView {
   const normalized = (view ?? 'all').trim().toLowerCase().replace(/_/g, '-');
   if (VIEW_SET.has(normalized)) return normalized as AwarenessQueryView;
-  throw new Error(`unknown octocode-awareness query view "${view}". Expected one of: ${AWARENESS_QUERY_VIEWS.join(', ')}`);
+  throw new Error(`unknown npx @octocodeai/octocode-awareness query view "${view}". Expected one of: ${AWARENESS_QUERY_VIEWS.join(', ')}`);
 }
 
 export function normalizeFormat(format: string | null | undefined): AwarenessQueryFormat {

@@ -219,11 +219,7 @@ export async function launchWithSdk(
   const env = deps.env ?? process.env;
   const home = (deps.resolveHome ?? getOctocodeHome)(env);
 
-  // Mirror PI_CACHE_RETENTION into process.env — the in-process Pi SDK reads it directly.
-  if (env.PI_CACHE_RETENTION && !process.env.PI_CACHE_RETENTION) {
-    process.env.PI_CACHE_RETENTION = env.PI_CACHE_RETENTION;
-  }
-  // Same in-process mirror for the version-check kill switch: Pi's
+  // In-process mirror for the version-check kill switch: Pi's
   // checkForNewPiVersion reads process.env directly (the built launch env is
   // otherwise only forwarded to the subprocess path).
   if (env.PI_SKIP_VERSION_CHECK !== undefined && process.env.PI_SKIP_VERSION_CHECK === undefined) {
@@ -272,14 +268,24 @@ export async function launchWithSdk(
 
   // Settings: read from Pi's default dir, then apply octocode-specific defaults.
   // keep in sync: re-applied after service creation (see [OVERRIDE-REAPPLY]).
+  // Runtime-only product GUARANTEES — applyOverrides never persists to disk.
+  // Applied twice: before createAgentSessionServices (initial) and after
+  // (re-apply because Pi rebuilds settings on project-trust; see [OVERRIDE-REAPPLY]).
+  // Deep-merges on top of global+project settings — only include values that
+  // MUST be forced regardless of user preference. Everything else lives in
+  // ~/.pi/agent/settings.json where users can tune it.
   const octocodeSessionOverrides = {
+    // Always compact — agent sessions depend on it.
     compaction: { enabled: true },
-    retry: { enabled: true, maxRetries: 3 },
-    // Hide Pi's own startup header for octocode-agent runs. Runtime-only
-    // (applyOverrides never persists) — plain `pi` keeps its header; ours is
-    // the branded banner printed by printLaunchBanner. Subprocess fallback
-    // can't inject this; acceptable for the fork-dev path.
-    quietStartup: true,
+    retry: {
+      // Always retry on transient errors.
+      enabled: true,
+      // Prevent double-retry: Pi handles retries; disable provider-level retries.
+      // Pi default is undefined (no cap), so this MUST be forced here.
+      provider: { maxRetries: 0 },
+    },
+    // Keep Pi's startup summary visible — extension appends its own branded banner.
+    quietStartup: false,
   } as const;
   let settingsManager: unknown;
   try {
@@ -360,8 +366,9 @@ export async function launchWithSdk(
           services: unknown;
           sessionManager: unknown;
           sessionStartEvent: unknown;
+          noTools: 'builtin';
         }) => Promise<unknown>
-      )({ services, sessionManager: sm, sessionStartEvent })) as object),
+      )({ services, sessionManager: sm, sessionStartEvent, noTools: 'builtin' })) as object),
       services,
       diagnostics: (services as Record<string, unknown>)['diagnostics'],
     };
@@ -401,9 +408,11 @@ export async function launchWithSdk(
       return 0;
     }
 
-    // Own TUI shell (Phase C alpha): OCTOCODE_SHELL=1 swaps Pi's InteractiveMode
-    // for the Octocode shell shipped by the core. Any failure → InteractiveMode.
-    if (env.OCTOCODE_SHELL === '1' || env.OCTOCODE_SHELL === 'true') {
+    // Own TUI shell: the Octocode shell shipped by the core is now the DEFAULT
+    // interactive surface (fully branded, no Pi indications). Opt out with
+    // OCTOCODE_SHELL=0/false. Any failure → Pi's InteractiveMode (safe fallback).
+    const shellOptOut = env.OCTOCODE_SHELL === '0' || env.OCTOCODE_SHELL === 'false';
+    if (!shellOptOut) {
       try {
         const shellFn = deps.createOctocodeShell ?? (await loadOctocodeShell());
         if (typeof shellFn === 'function') {

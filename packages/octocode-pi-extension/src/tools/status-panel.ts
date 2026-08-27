@@ -1,13 +1,15 @@
 /**
  * status-panel — the single unified below-editor "Octocode" panel.
  *
- * Rather than three separate widgets (plan / awareness / agents) stacking under
- * the editor, this composes them into ONE widget with blank-line-separated
- * sections, so the live status reads as a cohesive block. Each source module
+ * Rather than separate plan and Awareness widgets stacking under the editor,
+ * this composes them into ONE compact widget. Spawned agents use the same canonical
+ * ledger projection as the footer: the panel is the complete list, while the footer
+ * keeps the live glanceable state. Each source module
  * exposes a pure `*PanelLines(theme)` builder and delegates its widget rendering
  * here; this module owns the sole `octocode-status-panel` widget.
  *
- * Sections (in order): Model → Plan → Awareness → Agents. Empty sections are
+ * Sections (in order): Plan → Agents → Awareness. Model and context already live in
+ * Pi's status/footer rows and must not be duplicated below the editor. Empty sections are
  * omitted; when all are empty the widget is cleared entirely.
  *
  * Uses runtime-only imports of the section builders (called inside the renderer,
@@ -15,58 +17,52 @@
  */
 
 import type { PiContext, PiTheme } from '../types.js';
-import { paint } from '../tui/cli-design.js';
+import { setManagedWidget } from './runtime-renderer.js';
 import { makeRenderer } from './render-helpers.js';
-import { activePlanScope, getPlan } from './active-plan.js';
-import { planPanelLines } from './plan-tool.js';
-import { agentPanelLines } from './agent-tools.js';
-import { awarenessPanelLines, hasCachedAwarenessSignal } from './awareness-status.js';
+import { renderStack } from '../tui/components.js';
+import { activePlanScope } from './active-plan.js';
+import { getCurrentPlanReadModel } from './plan-read-model.js';
+import { planPanelModelLines } from './plan-tool.js';
+
 
 const WIDGET_NAME = 'octocode-status-panel';
 
-// Height budgets so the panel never crowds the editor.
-const PLAN_MAX_ROWS = 12; // step rows shown before collapsing (header excluded)
-const PANEL_MAX_LINES = 24; // hard cap on total panel lines
+type AgentPanelSource = (theme: PiTheme | undefined, width?: number) => string[];
+let agentPanelSource: AgentPanelSource | undefined;
+
+/** Agent runtime injects its pure list builder here to avoid a module cycle. */
+export function setStatusPanelAgentSource(source: AgentPanelSource | undefined): void {
+  agentPanelSource = source;
+}
+
+interface BuiltPanel {
+  lines: string[];
+}
 
 /**
  * Collapse a header+rows section to at most maxRows rows, appending a muted
  * "… N more" line when trimmed. `section[0]` is treated as the header.
  */
-export function collapseSection(section: string[], maxRows: number, noun: string): string[] {
-  if (section.length <= maxRows + 1) return section;
-  const [header, ...rows] = section;
-  const shown = rows.slice(0, maxRows);
-  return [header!, ...shown, `… ${rows.length - maxRows} more ${noun}`];
-}
-
-/**
- * The current main-agent model line (top of the panel) so the operator always sees
- * which model/provider is driving this session. Empty when the model is unknown.
- */
-export function modelPanelLines(ctx: PiContext | undefined, theme?: PiTheme): string[] {
-  const id = ctx?.model?.id;
-  if (!id) return [];
-  const provider = ctx?.model?.provider;
-  const label = provider ? `${provider}/${id}` : id;
-  const think = ctx?.model?.reasoning ? '  ·  thinking' : '';
-  return [paint(theme, 'muted', `model: ${label}${think}`)];
-}
-
-/** Join non-empty sections with a single blank-line separator, within the total budget. */
+/** Join non-empty sections densely, within the total budget. */
 function composeSections(sections: string[][]): string[] {
-  const lines: string[] = [];
-  for (const section of sections) {
-    if (section.length === 0) continue;
-    if (lines.length > 0) lines.push('');
-    lines.push(...section);
-  }
-  if (lines.length <= PANEL_MAX_LINES) return lines;
-  return [...lines.slice(0, PANEL_MAX_LINES - 1), `… ${lines.length - (PANEL_MAX_LINES - 1)} more`];
+  return renderStack({ sections }, { width: Number.MAX_SAFE_INTEGER });
+}
+
+export function composeStatusPanelLines(ctx: PiContext, theme: PiTheme | undefined, width?: number): BuiltPanel {
+  // Resolve the plan scope at render time, not registration time: /tree, /fork,
+  // resume, and compaction can move the active branch while the widget remains
+  // registered exactly once.
+  const scope = activePlanScope(ctx);
+  const planSection = planPanelModelLines(getCurrentPlanReadModel(ctx, scope), theme, width);
+  const agentSection = agentPanelSource?.(theme, width) ?? [];
+  return {
+    lines: composeSections([planSection, agentSection]),
+  };
 }
 
 /**
- * Re-render the unified below-editor status panel from live state (plan +
- * awareness + agents). Clears the widget when every section is empty. Safe to
+ * Re-render the unified below-editor status panel from live plan and Awareness
+ * state. Clears the widget when every section is empty. Safe to
  * call from any refresh trigger; never throws.
  */
 // Set during session_shutdown so late async callbacks (worker close events,
@@ -79,35 +75,53 @@ export function resumeStatusPanel(): void {
   panelSuppressed = false;
 }
 
+// Register-once per session ctx (pi docs: set a widget/footer ONCE and repaint
+// via tui.requestRender). Re-calling setWidget with a fresh factory on every
+// refresh — every 1s ledger tick, every plan mutation — rebuilt the component
+// each time, which showed up as below-editor flicker and scroll jumps mid-turn.
+// Keyed by ctx so a new session re-registers; cleared when the panel empties.
+const panelRegisteredCtxs = new WeakSet<object>();
+const panelRequestRenderByCtx = new WeakMap<object, () => void>();
+export function resetStatusPanelStateForTests(): void {
+  panelSuppressed = false;
+}
+
+function clearPanel(ctx: PiContext): void {
+  setManagedWidget(ctx, WIDGET_NAME, undefined);
+  panelRegisteredCtxs.delete(ctx);
+  panelRequestRenderByCtx.delete(ctx);
+}
+
 export function refreshStatusPanel(ctx?: PiContext): void {
   if (!ctx?.hasUI) return;
   if (panelSuppressed) {
-    ctx.ui?.setWidget?.(WIDGET_NAME, undefined);
+    clearPanel(ctx);
     return;
   }
-  const cwd = ctx.cwd ?? process.cwd();
-  const planScope = activePlanScope(ctx);
-  const hasPlan = getPlan(planScope).length > 0;
-  const hasAgents = agentPanelLines().length > 0;
-  const hasAwareness = hasCachedAwarenessSignal(cwd);
-  const hasModel = !!ctx.model?.id;
-  if (!hasPlan && !hasAgents && !hasAwareness && !hasModel) {
-    ctx.ui?.setWidget?.(WIDGET_NAME, undefined);
+  const hasPlan = getCurrentPlanReadModel(ctx, activePlanScope(ctx)).tasks.length > 0;
+  const hasAgents = (agentPanelSource?.(undefined, 80).length ?? 0) > 0;
+  if (!hasPlan && !hasAgents) {
+    clearPanel(ctx);
     return;
   }
-  ctx.ui?.setWidget?.(
+  if (panelRegisteredCtxs.has(ctx)) {
+    // Live update: the registered renderer reads state at render time — just repaint.
+    panelRequestRenderByCtx.get(ctx)?.();
+    return;
+  }
+  panelRegisteredCtxs.add(ctx);
+  setManagedWidget(
+    ctx,
     WIDGET_NAME,
-    (_tui: unknown, theme: PiTheme) =>
-      makeRenderer(() => {
-        const lines = composeSections([
-          modelPanelLines(ctx, theme),
-          collapseSection(planPanelLines(getPlan(planScope), theme), PLAN_MAX_ROWS, 'steps'),
-          awarenessPanelLines(cwd, theme),
-          agentPanelLines(theme),
-        ]);
-        // makeRenderer already truncates every emitted line to width, so no inner pass.
+    (tui: unknown, theme: PiTheme) => {
+      panelRequestRenderByCtx.set(ctx, () => (tui as { requestRender?: () => void } | undefined)?.requestRender?.());
+      return makeRenderer((width) => {
+        // Width flows into every section builder so lines are clipped at the
+        // source (pi errors on over-wide lines); makeRenderer stays the net.
+        const lines = composeStatusPanelLines(ctx, theme, width).lines;
         return lines.length > 0 ? lines : [''];
-      }),
+      });
+    },
     { placement: 'belowEditor' },
   );
 }

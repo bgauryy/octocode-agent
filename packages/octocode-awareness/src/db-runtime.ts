@@ -6,10 +6,9 @@
  *   workspace_path is the primary isolation key.
  *   artifact is the optional workspace-local package/service/component slice.
  */
-import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
-import { homedir, platform } from 'node:os';
+import { getOctocodeHome } from '@octocodeai/octocode-shared/paths';
 import { utcNow } from './helpers.js';
 import { journalModeForSqliteVersion } from './sqlite-runtime.js';
 import {
@@ -20,22 +19,26 @@ import {
 } from './db-introspection.js';
 import { initializeDb } from './db-init.js';
 
-export type DatabaseSync = NodeDatabaseSync;
-
-// Node 24 can emit the node:sqlite ExperimentalWarning after a static import has
-// already bypassed executable banners. Load it after installing a one-tick,
-// precise filter; forward every unrelated warning and restore host listeners.
-export const previousWarningListeners = process.listeners('warning');
-process.removeAllListeners('warning');
-export const sqliteWarningFilter = (warning: Error & { name?: string }) => {
-  if (warning?.name === 'ExperimentalWarning' && String(warning?.message).includes('SQLite')) return;
-  for (const listener of previousWarningListeners) listener.call(process, warning);
-};
-process.on('warning', sqliteWarningFilter);
-export const { DatabaseSync } = await import('node:sqlite');
-await new Promise<void>((resolveTick) => setImmediate(resolveTick));
-process.removeAllListeners('warning');
-for (const listener of previousWarningListeners) process.on('warning', listener);
+// The low-level `node:sqlite` runtime — warning-filtered `DatabaseSync`, the
+// bounded BUSY retry, and the WAL checkpoint — is shared with Awareness.
+// Re-exported here so every existing `./db-runtime.js` / `./db.js` importer and
+// test keeps its symbols. The shared module has no npm runtime deps.
+export {
+  DatabaseSync,
+  SQLITE_BUSY_RETRY_MS,
+  SQLITE_BUSY_DEADLINE_MS,
+  SQLITE_WAIT,
+  previousWarningListeners,
+  sqliteWarningFilter,
+  isSqliteBusy,
+  withSqliteBusyRetry,
+  checkpointWal,
+} from '@octocodeai/octocode-shared/sqlite';
+import {
+  DatabaseSync,
+  SQLITE_BUSY_DEADLINE_MS,
+  withSqliteBusyRetry,
+} from '@octocodeai/octocode-shared/sqlite';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -43,9 +46,6 @@ export const DEFAULT_DB_NAME = 'awareness.sqlite3';
 export const MEMORY_HOME_ENV = 'OCTOCODE_MEMORY_HOME';
 /** ASCII "OCT1". Canonical Awareness has one executable schema contract. */
 export const AWARENESS_APPLICATION_ID = 0x4f435431;
-export const SQLITE_BUSY_RETRY_MS = 25;
-export const SQLITE_BUSY_DEADLINE_MS = 10_000;
-export const SQLITE_WAIT = new Int32Array(new SharedArrayBuffer(4));
 
 // ─── Module-level singleton ───────────────────────────────────────────────────
 
@@ -56,18 +56,13 @@ export const _dbCache = new Map<string, DatabaseSync>();
 
 /** Resolve the memory home directory from env or platform defaults. */
 export function memoryHome(): string {
+  // Explicit override wins (used by tests and split-store deployments).
   const configured = process.env[MEMORY_HOME_ENV];
   if (configured?.trim()) return resolve(configured.trim());
-
-  const h = homedir();
-  const p = platform();
-  if (p === 'win32') {
-    const appData = process.env['APPDATA'] ?? join(h, 'AppData', 'Roaming');
-    return join(appData, '.octocode', 'memory');
-  }
-  if (p === 'darwin') return join(h, '.octocode', 'memory');
-  const xdg = process.env['XDG_CONFIG_HOME'] ?? join(h, '.config');
-  return join(xdg, '.octocode', 'memory');
+  // Otherwise home resolution flows through @octocodeai/config — never
+  // reimplemented here: OCTOCODE_AGENT_DIR › OCTOCODE_HOME › platform default
+  // (~/.octocode). The Awareness store lives under it, in `memory/`.
+  return join(getOctocodeHome(), 'memory');
 }
 
 /** Resolve a DB path from an override arg or the default location. */
@@ -161,36 +156,6 @@ export function assertDatabaseIntegrity(db: DatabaseSync): void {
   const foreignKeys = db.prepare('PRAGMA foreign_key_check').all();
   if (foreignKeys.length > 0) {
     throw new Error(`canonical foreign_key_check failed with ${foreignKeys.length} row(s)`);
-  }
-}
-
-export function isSqliteBusy(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const sqlite = error as Error & { errcode?: number; errstr?: string };
-  return sqlite.errcode === 5 || /database is (?:locked|busy)/i.test(`${sqlite.errstr ?? ''} ${error.message}`);
-}
-
-export function withSqliteBusyRetry<T>(operation: () => T): T {
-  const deadline = Date.now() + SQLITE_BUSY_DEADLINE_MS;
-  for (;;) {
-    try {
-      return operation();
-    } catch (error) {
-      if (!isSqliteBusy(error) || Date.now() >= deadline) throw error;
-      Atomics.wait(SQLITE_WAIT, 0, 0, SQLITE_BUSY_RETRY_MS);
-    }
-  }
-}
-
-/**
- * Checkpoint the WAL so the main DB file absorbs pending pages.
- * Non-fatal on :memory: stores or when a concurrent reader blocks TRUNCATE.
- */
-export function checkpointWal(db: DatabaseSync): void {
-  try {
-    db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-  } catch {
-    /* non-fatal */
   }
 }
 

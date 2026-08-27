@@ -22,10 +22,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { SettingsManager } from '@earendil-works/pi-coding-agent';
 import { Image, detectCapabilities } from '@earendil-works/pi-tui';
 
 import { paint } from '../tui/palette.js';
-import type { PiTheme, RenderCallReturn, RenderContext } from '../types.js';
+import type { PiContext, PiTheme, RenderCallReturn, RenderContext } from '../types.js';
 import { truncateToWidth } from './render-helpers.js';
 
 // ─── Limits / constants ───────────────────────────────────────────────────────
@@ -89,6 +90,7 @@ export function loadImageForRender(filePath: string): { base64: string; mimeType
 // ─── Capability gate (injectable for tests) ───────────────────────────────────
 
 type CapabilityCheck = () => boolean;
+type ImageVisibilityCheck = (cwd: string) => boolean;
 
 const defaultCapabilityCheck: CapabilityCheck = () => {
   try {
@@ -99,16 +101,81 @@ const defaultCapabilityCheck: CapabilityCheck = () => {
   }
 };
 
+const defaultImageVisibilityCheck: ImageVisibilityCheck = (cwd) => {
+  try {
+    return SettingsManager.create(cwd).getShowImages();
+  } catch {
+    // Pi defaults terminal.showImages to true. A settings read failure should not
+    // silently disable a capability that renderContext will still enforce.
+    return true;
+  }
+};
+
 let capabilityCheck: CapabilityCheck = defaultCapabilityCheck;
+let imageVisibilityCheck: ImageVisibilityCheck = defaultImageVisibilityCheck;
 
 /** Test seam: override (or pass undefined to restore) the terminal-image capability check. */
 export function setCapabilityCheckForTests(check?: CapabilityCheck): void {
   capabilityCheck = check ?? defaultCapabilityCheck;
 }
 
+/** Test seam for Pi's persisted terminal.showImages setting. */
+export function setImageVisibilityCheckForTests(check?: ImageVisibilityCheck): void {
+  imageVisibilityCheck = check ?? defaultImageVisibilityCheck;
+}
+
+/**
+ * Behavioral inline-image capability used by prompt composition and image tools.
+ * Pi exposes showImages only to renderers, so non-render phases read the same
+ * persisted setting through its public SettingsManager API.
+ */
+export function effectiveInlineImages(ctx?: Pick<PiContext, 'cwd' | 'hasUI' | 'mode'>): boolean {
+  if (ctx?.hasUI !== true || ctx.mode !== 'tui') return false;
+  const cwd = ctx.cwd ?? process.cwd();
+  return capabilityCheck() && imageVisibilityCheck(cwd);
+}
+
+/** Bounded per-turn capability projection for model routing decisions. */
+export function renderRuntimeCapabilitiesAddendum(ctx?: Pick<PiContext, 'cwd' | 'hasUI' | 'mode'>): string {
+  const protocolSupported = capabilityCheck();
+  const effective = ctx?.hasUI === true
+    && ctx.mode === 'tui'
+    && protocolSupported
+    && imageVisibilityCheck(ctx.cwd ?? process.cwd());
+  return [
+    '<runtime_capabilities>',
+    `effective_inline_images: ${effective}`,
+    `terminal_image_protocol_supported: ${protocolSupported}`,
+    'image_browser_fallback_requires_consent: true',
+    '</runtime_capabilities>',
+  ].join('\n');
+}
+
+/**
+ * True when the current terminal can display inline images (Kitty graphics or
+ * iTerm2 protocol — Kitty/Ghostty/WezTerm/Warp/iTerm2). Respects the same test
+ * seam as buildImageLines. Tools use this to decide whether to fall back to a
+ * "saved to disk, offer to open" flow on terminals like VS Code/tmux/plain xterm.
+ */
+export function isTerminalImageCapable(): boolean {
+  return capabilityCheck();
+}
+
+/**
+ * The detected inline-image protocol name ("kitty" | "iterm2") or null when the
+ * terminal has no image support. Used only for human-facing messages.
+ */
+export function terminalImageProtocol(): string | null {
+  try {
+    return detectCapabilities().images ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Rendering ────────────────────────────────────────────────────────────────
 
-function formatBytes(n: number): string {
+export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
@@ -142,24 +209,51 @@ export function buildImageLines(
 ): string[] {
   const loaded = loadImageForRender(filePath);
   if (!loaded) return [];
+  const bytes = fileSize(filePath, loaded.base64);
+  return buildImageLinesFromData(ctx, filePath, loaded.base64, loaded.mimeType, width, {
+    theme,
+    name: path.basename(filePath),
+    bytes,
+  });
+}
 
-  const name = path.basename(filePath);
+/**
+ * Data-based variant of buildImageLines: render already-in-memory base64 image
+ * data (no disk read) using the same capability gate, placeholder fallback, and
+ * ctx.state cache. Used by tools that already hold the bytes (`readMedia`,
+ * `media`) so they don't re-read the file.
+ *
+ * `cacheKey` must be a stable per-slot identifier (e.g. the file path). The same
+ * RAW-lines invariant applies: callers MUST NOT run the output through
+ * truncateToWidth.
+ */
+export function buildImageLinesFromData(
+  ctx: RenderContext | undefined,
+  cacheKey: string,
+  base64: string,
+  mimeType: string,
+  width: number,
+  opts?: { theme?: PiTheme; name?: string; bytes?: number },
+): string[] {
+  if (!base64) return [];
+  const theme = opts?.theme;
+  const name = (opts?.name ?? path.basename(cacheKey)) || 'image';
   const supported = capabilityCheck() && ctx?.showImages !== false;
 
   if (!supported) {
-    const size = formatBytes(fileSize(filePath, loaded.base64));
-    const placeholder = paint(theme, 'dim', `🖼 image: ${name} (${size})`);
+    const bytes = opts?.bytes ?? Math.floor((base64.length * 3) / 4);
+    const placeholder = paint(theme, 'dim', `🖼 image: ${name} (${formatBytes(bytes)})`);
     // Placeholder is plain themed text — truncating it here keeps the contract
-    // that everything buildImageLines returns is already final.
+    // that everything this returns is already final.
     return [truncateToWidth(placeholder, Math.max(4, width))];
   }
 
-  const key = `${STATE_KEY_PREFIX}${filePath}`;
+  const key = `${STATE_KEY_PREFIX}${cacheKey}`;
   let img = ctx?.state?.[key] as Image | undefined;
   if (!(img instanceof Image)) {
     img = new Image(
-      loaded.base64,
-      loaded.mimeType,
+      base64,
+      mimeType,
       { fallbackColor: (s: string) => paint(theme, 'dim', s) },
       { maxWidthCells: MAX_WIDTH_CELLS, filename: name },
     );

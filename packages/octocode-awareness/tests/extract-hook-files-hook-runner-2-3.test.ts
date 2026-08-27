@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { connectDb } from '../src/db.js';
 import { insertMemory } from '../src/memory.js';
+import { withEnabledAwarenessConfig } from './helpers/enabled-awareness-config.js';
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST_DIR = resolve(PACKAGE_ROOT, 'out');
 const HOOK_RUNNER = resolve(DIST_DIR, 'hook-runner.js');
@@ -19,7 +20,7 @@ function runScript(script: string, args: string[], payload: unknown, env: Record
         encoding: 'utf8',
         timeout: 5000,
         cwd,
-        env: { ...process.env, ...env },
+        env: { ...process.env, ...withEnabledAwarenessConfig(env) },
     });
 }
 function runHookWrapper(name: string, payload: unknown, env: Record<string, string | undefined> = {}, cwd?: string) {
@@ -28,7 +29,7 @@ function runHookWrapper(name: string, payload: unknown, env: Record<string, stri
         encoding: 'utf8',
         timeout: 5000,
         cwd,
-        env: { ...process.env, ...env },
+        env: { ...process.env, ...withEnabledAwarenessConfig(env) },
     });
 }
 

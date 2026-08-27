@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { shortId } from './ids.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,7 +32,7 @@ export type WorktreeGitRunner = (cwd: string, args: string[]) => GitResult;
 const DEFAULT_GIT_TIMEOUT_MS = 15_000;
 const META_SUFFIX = '.json';
 
-let gitRunner: WorktreeGitRunner = (cwd, args) => {
+const defaultGitRunner: WorktreeGitRunner = (cwd, args) => {
   const result = spawnSync('git', args, {
     cwd,
     encoding: 'utf8',
@@ -47,22 +48,10 @@ let gitRunner: WorktreeGitRunner = (cwd, args) => {
   return { stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
 };
 
+let gitRunner: WorktreeGitRunner = defaultGitRunner;
+
 export function setWorktreeGitRunnerForTests(runner: WorktreeGitRunner | null): void {
-  gitRunner = runner ?? ((cwd, args) => {
-    const result = spawnSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      timeout: DEFAULT_GIT_TIMEOUT_MS,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      const stderr = String(result.stderr ?? '').trim();
-      const stdout = String(result.stdout ?? '').trim();
-      throw new Error(`git ${args.join(' ')} failed${stderr || stdout ? `: ${stderr || stdout}` : ''}`);
-    }
-    return { stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
-  });
+  gitRunner = runner ?? defaultGitRunner;
 }
 
 function git(cwd: string, args: string[]): string {
@@ -119,7 +108,7 @@ export function createAgentWorktree(opts: CreateWorktreeOptions): InternalWorktr
   const baseCommit = git(parentCwd, ['rev-parse', 'HEAD']);
   const commonDir = git(parentCwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
   const repoKey = hashRepoKey(commonDir);
-  const id8 = opts.agentId.slice(0, 8);
+  const id8 = shortId(opts.agentId);
   const branch = `octocode/agents/${safeBranchName(opts.name)}-${id8}`;
   const worktreeRoot = path.join(opts.home ?? getOctocodeHome(), 'worktrees', repoKey);
   const worktreePath = path.join(worktreeRoot, id8);
@@ -175,8 +164,17 @@ export function refreshWorktreeState(state: InternalWorktreeState): InternalWork
 
 export function removeAgentWorktree(state: InternalWorktreeState, opts: { force?: boolean } = {}): void {
   const removeArgs = ['worktree', 'remove', opts.force ? '--force' : undefined, state.path].filter(Boolean) as string[];
-  try { git(state.parentCwd, removeArgs); } catch {
-    if (!opts.force) throw new Error(`worktree ${state.path} has unmerged work; refusing to remove without force.`);
+  try { git(state.parentCwd, removeArgs); } catch (err) {
+    if (!opts.force) {
+      const message = err instanceof Error ? err.message : String(err);
+      // git refuses to remove a worktree with local changes; only then is
+      // "unmerged work" the accurate diagnosis. Any other failure (missing
+      // worktree, locked, unexpected git error) should surface as-is.
+      if (/contains modified or untracked|unmerged|not empty|use --force/i.test(message)) {
+        throw new Error(`worktree ${state.path} has unmerged work; refusing to remove without force.`);
+      }
+      throw new Error(`failed to remove worktree ${state.path}: ${message}`);
+    }
     try { fs.rmSync(state.path, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
   try { git(state.parentCwd, ['branch', '-D', state.branch]); } catch { /* best-effort */ }
@@ -224,8 +222,15 @@ export function sweepAgentWorktrees(parentCwd: string, liveWorktreePaths: Iterab
   let removed = 0;
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith(META_SUFFIX)) continue;
-    const meta = readMeta(path.join(root, entry.name));
+    const metaFile = path.join(root, entry.name);
+    const meta = readMeta(metaFile);
     if (!meta || live.has(path.resolve(meta.path))) continue;
+    // The worktree directory is gone (pruned/deleted out from under us); the
+    // sidecar meta json would otherwise linger forever. Drop it best-effort.
+    if (!fs.existsSync(meta.path)) {
+      try { fs.rmSync(metaFile, { force: true }); } catch { /* best-effort */ }
+      continue;
+    }
     try {
       if (cleanupWorktreeIfNoWork(meta) === 'removed') removed += 1;
     } catch {

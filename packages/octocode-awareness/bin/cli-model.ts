@@ -4,7 +4,7 @@
  * Thin wrapper: parse args → call domain functions → emit JSON.
  * Compiled to out/octocode-awareness.js by build.mjs.
  */
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,7 +12,10 @@ import { fileURLToPath } from 'node:url';
 // Computed once at startup so help text shows real, copy-pasteable paths.
 
 export const __bin = dirname(fileURLToPath(import.meta.url));
-const invokedDir = process.argv[1] ? dirname(resolve(process.argv[1])) : __bin;
+const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;
+const invokedDir = invokedPath
+  ? dirname(existsSync(invokedPath) ? realpathSync(invokedPath) : invokedPath)
+  : __bin;
 // out/octocode-awareness.js -> out/skills/; standalone skill scripts/awareness.mjs
 // -> the sibling skills/ directory that contains packaged skills. Prefer
 // the invoked package/script layout over ambient harness env so local package

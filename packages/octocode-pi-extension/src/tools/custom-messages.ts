@@ -7,21 +7,24 @@
  *  - awareness handoffs (emitted when session awareness is handed to a
  *    successor context/agent)
  *
- * Contract discipline: `content` on a custom message ENTERS THE LLM CONTEXT,
- * so emitters keep it to one terse line; every rich field lives in `details`,
- * which only the renderer reads. Cards follow the box/rule visual language of
+ * Contract discipline: `content` on a custom message ENTERS THE LLM CONTEXT.
+ * Compaction therefore emits one bounded, explicit marker containing the
+ * summary checkpoint and active-plan pointer; renderer-only detail stays in
+ * `details`. Cards follow the box/rule visual language of
  * cli-design (`╭─ ◆ … │ … ╰─`) so transcript cards and tool rows read as one
  * system.
  */
 
 import { paint } from '../tui/cli-design.js';
+import { BRAND_DIAMOND, SEP } from '../tui/palette.js';
 import type { PiInstance, PiTheme } from '../types.js';
+import type { PlanCoordination, PlanStep, ReviewState } from './active-plan.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { renderFrame } from '../tui/components.js';
 
 export const COMPACTION_CHECKPOINT_TYPE = 'octocode-compaction-checkpoint';
 export const AWARENESS_HANDOFF_TYPE = 'octocode-awareness-handoff';
 
-const BRAND_GLYPH = '◆';
 const MAX_SUMMARY_LINES = 8;
 const MAX_LIST_ITEMS = 6;
 
@@ -36,8 +39,28 @@ export interface CompactionCheckpointDetails {
   fromExtension?: boolean;
   readFiles?: string[];
   modifiedFiles?: string[];
+  /** Markdown artifact written under Octocode home for reopening after compaction. */
+  artifactPath?: string;
+  /** Stable pointer to the most recent compaction artifact. */
+  latestArtifactPath?: string;
+  rehydrationLedgerPath?: string;
   /** Compaction summary text (shown truncated when expanded). */
   summary?: string;
+  /** Snapshot of the active plan state at compaction time. */
+  activePlan?: {
+    total: number;
+    done: number;
+    running?: string;
+  };
+  /** One versioned recovery projection shared by the LLM marker and markdown artifact. */
+  continuation?: {
+    version: 1;
+    plan?: {
+      review: ReviewState;
+      coordination: PlanCoordination;
+      steps: PlanStep[];
+    };
+  };
 }
 
 export interface AwarenessHandoffDetails {
@@ -58,19 +81,7 @@ function fit(line: string, width: number): string {
 }
 
 function cardHeader(title: string, label: string, theme: PiTheme | undefined): string {
-  return `${paint(theme, 'brand', BRAND_GLYPH)} ${paint(theme, 'title', title)}${paint(theme, 'dim', ' · ')}${paint(theme, 'brand', label)}`;
-}
-
-function boxTop(title: string, label: string, theme: PiTheme | undefined): string {
-  return `${paint(theme, 'brand', '╭─')} ${cardHeader(title, label, theme)}`;
-}
-
-function boxBody(text: string, theme: PiTheme | undefined): string {
-  return `${paint(theme, 'brand', '│')}  ${text}`;
-}
-
-function boxBottom(text: string, theme: PiTheme | undefined): string {
-  return `${paint(theme, 'brand', '╰─')} ${paint(theme, 'muted', text)}`;
+  return `${paint(theme, 'brand', BRAND_DIAMOND)} ${paint(theme, 'title', title)}${paint(theme, 'dim', SEP)}${paint(theme, 'brand', label)}`;
 }
 
 function listLine(title: string, items: string[], theme: PiTheme | undefined): string | undefined {
@@ -85,9 +96,12 @@ function compactionStatLine(details: CompactionCheckpointDetails, theme: PiTheme
     details.reason ? `reason: ${details.reason}` : '',
     details.tokensBefore !== undefined ? `tokens before: ${details.tokensBefore}` : '',
     details.fromExtension === undefined ? '' : `source: ${details.fromExtension ? 'octocode' : 'pi'}`,
+    details.activePlan
+      ? `plan: ${details.activePlan.done}/${details.activePlan.total}${details.activePlan.running ? ` · ${details.activePlan.running}` : ''}`
+      : '',
   ].filter(Boolean);
   if (parts.length === 0) return undefined;
-  return paint(theme, 'dim', parts.join(' · '));
+  return paint(theme, 'dim', parts.join(SEP));
 }
 
 /**
@@ -109,24 +123,31 @@ export function buildCompactionCard(
     return lines.map((line) => fit(line, width));
   }
 
-  const lines: (string | undefined)[] = [boxTop('Compaction checkpoint', label, theme)];
-  if (stat) lines.push(boxBody(stat, theme));
+  const body: (string | undefined)[] = [];
+  if (stat) body.push(stat);
   const read = listLine('read files', details.readFiles ?? [], theme);
-  if (read) lines.push(boxBody(read, theme));
+  if (read) body.push(read);
   const modified = listLine('modified files', details.modifiedFiles ?? [], theme);
-  if (modified) lines.push(boxBody(modified, theme));
+  if (modified) body.push(modified);
+  if (details.artifactPath) {
+    body.push(`${paint(theme, 'muted', 'doc:')} ${paint(theme, 'path', details.artifactPath)}`);
+  }
   if (details.summary) {
     const summaryLines = details.summary.split('\n');
     for (const line of summaryLines.slice(0, MAX_SUMMARY_LINES)) {
-      lines.push(boxBody(paint(theme, 'dim', line), theme));
+      body.push(paint(theme, 'dim', line));
     }
     const omitted = summaryLines.length - MAX_SUMMARY_LINES;
     if (omitted > 0) {
-      lines.push(boxBody(paint(theme, 'muted', `… ${omitted} more summary line${omitted === 1 ? '' : 's'}`), theme));
+      body.push(paint(theme, 'muted', `… ${omitted} more summary line${omitted === 1 ? '' : 's'}`));
     }
   }
-  lines.push(boxBottom('context compacted — resuming from checkpoint', theme));
-  return lines.filter((line): line is string => Boolean(line)).map((line) => fit(line, width));
+  return renderFrame({
+    title: cardHeader('Compaction checkpoint', label, theme),
+    body: body.filter((line): line is string => Boolean(line)),
+    footer: 'context compacted — resuming from checkpoint',
+    borderToken: 'brand',
+  }, { width, theme });
 }
 
 /**
@@ -144,7 +165,7 @@ export function buildHandoffCard(
     details.from || details.to ? `${details.from ?? '?'} → ${details.to ?? '?'}` : '',
     details.status ? `status: ${details.status}` : '',
   ].filter(Boolean);
-  const route = routeParts.length > 0 ? paint(theme, 'dim', routeParts.join(' · ')) : undefined;
+  const route = routeParts.length > 0 ? paint(theme, 'dim', routeParts.join(SEP)) : undefined;
 
   if (!expanded) {
     const lines = [cardHeader('Awareness handoff', label, theme)];
@@ -152,22 +173,26 @@ export function buildHandoffCard(
     return lines.map((line) => fit(line, width));
   }
 
-  const lines: string[] = [boxTop('Awareness handoff', label, theme)];
-  if (route) lines.push(boxBody(route, theme));
+  const body: string[] = [];
+  if (route) body.push(route);
   if (details.goal) {
-    lines.push(boxBody(`${paint(theme, 'muted', 'goal:')} ${paint(theme, 'dim', details.goal)}`, theme));
+    body.push(`${paint(theme, 'muted', 'goal:')} ${paint(theme, 'dim', details.goal)}`);
   }
   for (const note of (details.notes ?? []).slice(0, MAX_LIST_ITEMS)) {
-    lines.push(boxBody(paint(theme, 'dim', `- ${note}`), theme));
+    body.push(paint(theme, 'dim', `- ${note}`));
   }
   const omittedNotes = (details.notes?.length ?? 0) - MAX_LIST_ITEMS;
   if (omittedNotes > 0) {
-    lines.push(boxBody(paint(theme, 'muted', `… ${omittedNotes} more note${omittedNotes === 1 ? '' : 's'}`), theme));
+    body.push(paint(theme, 'muted', `… ${omittedNotes} more note${omittedNotes === 1 ? '' : 's'}`));
   }
   const artifacts = listLine('artifacts', details.artifacts ?? [], theme);
-  if (artifacts) lines.push(boxBody(artifacts, theme));
-  lines.push(boxBottom('awareness handed off', theme));
-  return lines.map((line) => fit(line, width));
+  if (artifacts) body.push(artifacts);
+  return renderFrame({
+    title: cardHeader('Awareness handoff', label, theme),
+    body,
+    footer: 'awareness handed off',
+    borderToken: 'brand',
+  }, { width, theme });
 }
 
 // ─── Renderer registration ────────────────────────────────────────────────────
@@ -215,10 +240,23 @@ export function registerOctocodeMessageRenderers(pi: PiInstance): void {
 // All rich data rides in `details`, which only the renderer sees. No
 // triggerTurn: these are passive transcript records, never turn starters.
 
+export function renderCompactionContextMarker(details: CompactionCheckpointDetails): string {
+  const summary = details.summary?.replace(/\s+/g, ' ').trim().slice(0, 2_000);
+  const payload = {
+    checkpoint: details.label,
+    ...(details.reason ? { reason: details.reason } : {}),
+    ...(details.tokensBefore !== undefined ? { tokensBefore: details.tokensBefore } : {}),
+    ...(details.latestArtifactPath ? { artifact: details.latestArtifactPath } : {}),
+    ...(details.continuation ? { continuation: details.continuation } : {}),
+    ...(summary ? { summary } : {}),
+  };
+  return `<octocode_compaction_context>${JSON.stringify(payload)}</octocode_compaction_context>`;
+}
+
 export function emitCompactionCheckpoint(pi: PiInstance, details: CompactionCheckpointDetails): void {
   pi.sendMessage?.({
     customType: COMPACTION_CHECKPOINT_TYPE,
-    content: `Compaction checkpoint saved: ${details.label}`,
+    content: renderCompactionContextMarker(details),
     display: true,
     details,
   });

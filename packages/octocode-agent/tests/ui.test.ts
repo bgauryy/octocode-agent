@@ -1,6 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
-  banner,
   BRAND_MARK,
   BRAND_NAME,
   checkLines,
@@ -13,7 +12,6 @@ import {
   header,
   hint,
   kv,
-  launchBanner,
   link,
   makePainter,
   padEndVisible,
@@ -60,12 +58,6 @@ describe('makePainter', () => {
   it('paints brand and accent with distinct codes', () => {
     const p = makePainter(true);
     expect(p.brand('x')).not.toBe(p.accent('x'));
-  });
-});
-
-describe('banner', () => {
-  it('mentions the brand', () => {
-    expect(stripAnsi(banner(makePainter(false), 'doctor'))).toContain('octocode-agent');
   });
 });
 
@@ -164,21 +156,6 @@ describe('wrapText', () => {
   it('never emits a line wider than the budget for multi-wrap prose', () => {
     const lines = wrapText('The self-working coding agent: the Pi runtime driven by the Octocode harness.', 40);
     for (const l of lines) expect(visibleLength(l)).toBeLessThanOrEqual(40);
-  });
-});
-
-describe('launchBanner', () => {
-  it('shows the brand and the known version parts', () => {
-    const text = stripAnsi(
-      launchBanner(makePainter(false), { launcher: '1.0.2', core: '1.3.0', pi: '0.80.3' }),
-    );
-    expect(text).toBe(`${BRAND_MARK} ${BRAND_NAME}  v1.0.2 · core 1.3.0 · pi 0.80.3`);
-  });
-  it('skips unknown parts without dangling separators', () => {
-    const text = stripAnsi(
-      launchBanner(makePainter(false), { launcher: null, core: '1.3.0', pi: null }),
-    );
-    expect(text).toBe(`${BRAND_MARK} ${BRAND_NAME}  core 1.3.0`);
   });
 });
 

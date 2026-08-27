@@ -25,6 +25,7 @@
  */
 
 import type { PiAutocompleteItem, PiAutocompleteProvider, PiAutocompleteResult } from '../types.js';
+import { truncatePlainToWidth } from './render-helpers.js';
 
 // ─── Injected data sources ───────────────────────────────────────────────────
 
@@ -70,7 +71,8 @@ const MAX_ITEMS = 20;
 const MAX_LABEL_TEXT = 64;
 
 function truncate(text: string, max = MAX_LABEL_TEXT): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  // Cell-width aware (CJK/emoji count 2) — a code-unit slice under-counts them.
+  return truncatePlainToWidth(text, max);
 }
 
 function safeList<T>(fn: (() => ReadonlyArray<T>) | undefined): ReadonlyArray<T> {
@@ -148,7 +150,9 @@ export function createOctocodeAutocompleteProvider(
     applyCompletion(lines, line, col, item, prefix) {
       const token = extractTokenPrefix(lines, line, col);
       const ours = token && typeof item?.value === 'string' && item.value.startsWith(token.trigger);
-      if (!token || !ours) return current.applyCompletion(lines, line, col, item, prefix);
+      // Guarded like every other delegation here: a base provider without
+      // applyCompletion must degrade (no-op), not throw mid-keystroke.
+      if (!token || !ours) return current?.applyCompletion?.(lines, line, col, item, prefix) ?? undefined;
       const source = lines[line] ?? '';
       const col2 = Math.min(Math.max(col, 0), source.length);
       const next = [...lines];

@@ -4,11 +4,13 @@
  * Deliberately free of pi-coding-agent and Node APIs so the whole state machine
  * — cursor, toggles, min/max gating, rendering — is unit-testable standalone.
  * Keyboard decoding uses pi-tui's matchesKey/Key helpers so Kitty keyboard
- * protocol and legacy terminal byte sequences share one host-compatible path.
+ * protocol and traditional terminal byte sequences share one host input path.
  */
 
 import { Key, matchesKey } from '@earendil-works/pi-tui';
 import { truncatePlainToWidth, visibleWidth } from './render-helpers.js';
+import { TOKEN, type SemanticToken } from '../tui/palette.js';
+import { SEP } from '../tui/palette.js';
 
 export interface MultiSelectItem {
   value: string;
@@ -18,7 +20,7 @@ export interface MultiSelectItem {
   preview?: string;
 }
 
-/** Minimal theme surface, structurally compatible with PiTheme (method syntax → bivariant). */
+/** Minimal theme surface matching the PiTheme method shape. */
 export interface MultiSelectTheme {
   fg?(color: string, text: string): string;
   bold?(text: string): string;
@@ -129,7 +131,7 @@ export class MultiSelectList {
     if (this.min > 0) parts.push(`min ${this.min}`);
     if (Number.isFinite(this.max)) parts.push(`max ${this.max}`);
     parts.push(n < this.min ? `select ${this.min - n} more` : 'enter to confirm');
-    return parts.join(' · ');
+    return parts.join(SEP);
   }
 
   /**
@@ -137,15 +139,30 @@ export class MultiSelectList {
    *   `› [x] Label — description` rows (cursor marker + checkbox glyphs),
    *   an indented preview block under the focused item, and a footer line
    *   (dim when confirmable, warning while below `min`).
+   *
+   * Long lists render a scroll window of `maxVisible` rows centered on the
+   * cursor, with dim `↑/↓ N more` markers for the hidden remainder, so the
+   * overlay never overflows the terminal height.
    */
-  render(width: number, theme?: MultiSelectTheme): string[] {
-    const fg = (color: string, text: string) => theme?.fg?.(color, text) ?? text;
+  render(width: number, theme?: MultiSelectTheme, maxVisible = 10): string[] {
+    // Semantic tokens via the TOKEN map (with defensive chaining — the minimal
+    // MultiSelectTheme may lack fg in tests), so a palette remap reaches this list.
+    const fg = (token: SemanticToken, text: string) => theme?.fg?.(TOKEN[token], text) ?? text;
     const lines: string[] = [];
-    this.items.forEach((item, i) => {
+    const cap = Math.max(1, Math.floor(maxVisible));
+    let start = 0;
+    let end = this.items.length;
+    if (this.items.length > cap) {
+      start = Math.min(Math.max(0, this.cursor - Math.floor(cap / 2)), this.items.length - cap);
+      end = start + cap;
+    }
+    if (start > 0) lines.push(fg('dim', clip(`  ↑ ${start} more`, width)));
+    this.items.slice(start, end).forEach((item, offset) => {
+      const i = start + offset;
       const focused = i === this.cursor;
       const head = `${focused ? '›' : ' '} ${this.toggled.has(i) ? '[x]' : '[ ]'} ${item.label ?? item.value}`;
       const clippedHead = clip(head, width);
-      let line = focused ? fg('accent', clippedHead) : clippedHead;
+      let line = focused ? fg('brand', clippedHead) : clippedHead;
       if (item.description && visibleWidth(clippedHead) < width) {
         line += fg('muted', clip(` — ${item.description}`, width - visibleWidth(clippedHead)));
       }
@@ -156,7 +173,8 @@ export class MultiSelectList {
         }
       }
     });
-    lines.push(fg(this.canConfirm() ? 'dim' : 'warning', clip(this.footerText(), width)));
+    if (end < this.items.length) lines.push(fg('dim', clip(`  ↓ ${this.items.length - end} more`, width)));
+    lines.push(fg('dim', clip(this.footerText(), width)));
     return lines;
   }
 }

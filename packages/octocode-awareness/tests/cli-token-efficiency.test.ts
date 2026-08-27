@@ -189,7 +189,7 @@ describe('CLI token efficiency', () => {
 
       const hooks = run(db, ['hooks', 'install', '--host', 'claude', '--project-dir', workspace, '--dry-run', '--compact']);
       expect(hooks.status).toBe(0);
-      expect(hooks.parsed).toMatchObject({ ok: true, action: 'dry-run', host: 'claude', hook_count: 9 });
+      expect(hooks.parsed).toMatchObject({ ok: true, action: 'dry-run', host: 'claude', hook_count: 10 });
       expect(hooks.parsed).not.toHaveProperty('resultingSettings');
       expect(Buffer.byteLength(hooks.stdout, 'utf8')).toBeLessThanOrEqual(512);
 

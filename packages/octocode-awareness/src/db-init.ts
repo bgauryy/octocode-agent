@@ -21,6 +21,7 @@ export function initializeDb(db: DatabaseSync, knownState?: SchemaState): void {
   const state = knownState ?? inspectSchemaState(db);
   if (state === 'canonical') {
     if (!db.isTransaction) db.exec('PRAGMA foreign_keys = ON');
+    assertDatabaseIntegrity(db);
     return;
   }
   if (state === 'prior-hook-receipts') {

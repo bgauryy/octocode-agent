@@ -38,10 +38,12 @@ export function specsFor(host: HookHost, params: {
       spec('Stop', 'stop-verify.sh'),
       spec('SubagentStop', 'stop-verify.sh'),
       spec('PreCompact', 'session-compact.sh'),
+      spec('SessionEnd', 'session-end.sh'),
       spec('UserPromptSubmit', 'notify-deliver.sh'),
     ];
   }
   return [
+    spec('SessionStart', 'notify-deliver.sh'),
     spec('PreToolUse', 'pre-edit.sh', WRITE_MATCHERS.claude),
     spec('PostToolUse', 'post-edit.sh', WRITE_MATCHERS.claude),
     spec('PostToolUseFailure', 'post-edit.sh', WRITE_MATCHERS.claude),

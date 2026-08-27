@@ -58,7 +58,7 @@ export const CONFIG_LOCK_TIMEOUT_MS = 10_000;
 export const CONFIG_LOCK_STALE_MS = 30_000;
 
 export function hooksInstallUsage(): string {
-  return `usage: octocode-awareness hooks install|check|remove [options]
+  return `usage: npx @octocodeai/octocode-awareness hooks install|check|remove [options]
 
 Install, check, dry-run, or remove octocode-awareness lifecycle hooks.
 
@@ -66,7 +66,6 @@ Targets:
   --host claude         Write Claude Code hooks to .claude/settings.json (install default).
   --host codex         Write Codex hooks to .codex/hooks.json.
   --host cursor        Write Cursor hooks to .cursor/hooks.json.
-  Pi                   No shell install target; use wirePiAwarenessHooks(pi) or @octocodeai/pi-extension.
 
 Options:
   --project-dir <path>  Target a project hook file under <path> (default: cwd).
@@ -76,7 +75,7 @@ Options:
                         Runtime execution, host trust, and enablement remain unprobed.
   --dry-run             Print the resulting settings without writing.
   --compact             Minify JSON output when supported.
-  --remove              Remove only octocode-awareness hooks.`;
+  --remove              Remove only npx @octocodeai/octocode-awareness hooks.`;
 }
 
 export function flag(argv: string[], value: string): boolean {

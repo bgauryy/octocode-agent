@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
@@ -21,50 +21,46 @@ function description(markdown: string): string {
 }
 
 // Deterministic held-out proxy for the description boundary. This does not claim
-// a model trigger rate; it ensures unseen cases remain separable by repository
-// work intent rather than exact training-prompt strings.
-function routesRepositoryWork(prompt: string): boolean {
+// a model trigger rate; it ensures unseen cases remain separable by actionable
+// shared-state signals rather than ordinary repository intent.
+function routesAwarenessSignal(prompt: string): boolean {
   const text = prompt.toLowerCase();
   const explicitNearMiss = /(outside (?:a )?repo|conceptually|personal|phone screen|career|favorite restaurant|logo image|email|meeting|slide|blog post|uploaded csv|browse|search the web)/;
   if (explicitNearMiss.test(text)) return false;
-  const repositoryContext = /(repo|repository|checkout|package\.json|package tests?|packages?|dependency|parser test|pr diff|migration|auth schema|pre-edit hook|verification|coding session|\.octocode|gotcha|workers?|subagents?|agnets|same fiel|selectable tasks?)/;
-  const workIntent = /(fix|review|update|implement|continue|plan|editing|rotate|block|check|save|refresh|bump|make|resume|touch|install|smoke|mean|split)/;
-  return repositoryContext.test(text) && workIntent.test(text);
+  const repositoryContext = /(repo|repository|checkout|package\.json|packages?|migration|pre-edit hook|verification|coding session|\.octocode|gotcha|workers?|subagents?|agnets|same fiel|selectable tasks?)/;
+  const actionableSignal = /(another agent|workers?|subagents?|same fiel|selectable tasks?|migration|pre-edit hook|pending verification|verification debt|gotcha|current tasks and memory|last host|resume|awareness hooks?|\.octocode)/;
+  return repositoryContext.test(text) && actionableSignal.test(text);
 }
 
 describe('skill routing boundaries', () => {
-  it('makes awareness the primary workflow skill', () => {
+  it('routes awareness on actionable shared-state signals', () => {
     const text = skill('octocode-awareness');
     const desc = description(text);
-    expect(desc).toMatch(/^Use before starting and before finishing any repo task/);
-    expect(desc).toContain('planning, edits, reviews, tests, handoffs');
-    expect(desc).toContain('multi-agent/file overlap');
+    expect(desc).toMatch(/^Coordinate agents through shared repository state\./);
+    expect(desc).toContain('peers');
+    expect(desc).toContain('shared plans');
     expect(desc).toContain('verification debt');
-    expect(desc).toContain('memory, locks, signals');
-    expect(desc).toContain('hooks');
-    expect(desc).toContain('even solo');
+    expect(desc).toContain('handoffs');
+    expect(desc).toContain('Skip routine solo work');
     expect(desc.length).toBeLessThanOrEqual(1024);
     expect(desc).not.toContain('dogfood');
     expect(desc).not.toContain('packages/octocode-awareness');
-    expect(text).toContain('Use at repo task start and finish');
-    expect(text).toMatch(/run live-state actions through the CLI/i);
+    expect(text).toContain('One coordination layer');
+    expect(text).toContain('@octocodeai/octocode-awareness');
     expect(text).toContain('npx @octocodeai/octocode-awareness');
-    expect(text).toContain('node packages/octocode-awareness/out/octocode-awareness.js');
-    expect(text).toContain('Core loop:');
-    expect(text).toContain('BEFORE:');
-    expect(text).toContain('DURING:');
-    expect(text).toContain('AFTER:');
-    expect(text).toContain('OPTIONAL:');
-    expect(text).toContain('goal, acceptance, scope, evidence');
-    expect(text).toContain('work start');
-    expect(text).toMatch(/ordinary overlap is allowed/i);
-    expect(text).toMatch(/schema command|schema commands/);
-    expect(text).toContain('first activation');
-    expect(text).toContain('agent-cheatsheet.md');
+    expect(text).not.toContain('npx -p @octocodeai/octocode-awareness octocode-awareness');
+    expect(text).not.toContain('node packages/octocode-awareness/out/octocode-awareness.js');
+    expect(text).toContain('~/.octocode/octocode.sqlite3');
+    expect(text).not.toMatch(/octocode-awareness-lite|\/lite\b|Awareness Lite/);
+    expect(text).toContain('Bounded flow');
+    expect(text).toContain('check mark');
+    expect(text).toMatch(/skill owns judgment.*CLI owns deterministic actions/is);
+    expect(text).toContain('npx @octocodeai/octocode-awareness init --compact');
+    expect(text).not.toContain('scripts/install.mjs');
+    expect(text).toMatch(/ordinary overlap is advisory/i);
+    expect(text).toContain('schema commands');
     expect(text).toContain('flow-matrix.md');
-    expect(text).toContain('Feature map — when to use what');
-    expect(text).toContain('cleanup only under real pressure');
-    expect(text).toContain('docs list --compact');
+    expect(text).toContain('Detail routes');
     expect(text).toContain('yarn workspace @octocodeai/octocode-awareness build');
     expect(awarenessSkillFile('references/hooks.md')).toContain('Smoke:');
     expect(existsSync(resolve(PACKAGE_ROOT, 'skills/octocode-awareness/SKILL.md'))).toBe(true);
@@ -73,46 +69,28 @@ describe('skill routing boundaries', () => {
 
   it('teaches the complete agent lifecycle without assigning judgment to hooks', () => {
     const text = skill('octocode-awareness');
-    const ordered = [
-      'BEFORE:',
-      'DURING:',
-      'AFTER:',
-      'OPTIONAL:',
-    ];
-    for (let index = 1; index < ordered.length; index += 1) {
-      expect(text.indexOf(ordered[index - 1]!)).toBeLessThan(text.indexOf(ordered[index]!));
+    for (const step of ['Inspect relevant shared state', 'claim scoped work', 'keep leases alive', 'run the declared check', 'Leave a handoff']) {
+      expect(text).toContain(step);
     }
-
-    expect(text).toContain('AGENTS routes; skill decides; CLI/SQLite acts; hooks automate deterministic edges');
-    expect(text).toMatch(/Plan vs task vs WORK/i);
-    expect(text).toContain('work start');
-    expect(text).toContain('work start --exclusive');
-    expect(text).toContain('lock wait/prune');
-    expect(text).toContain('verify mark');
-    expect(text).toContain('verify audit');
-    expect(text).toContain('Recall memory only if it can change the plan');
-    expect(text).toContain('reflect record --lesson');
-    expect(text).toContain('query');
-    expect(text).toContain('Query views & docs output');
-    expect(text).toMatch(/Hooks automate deterministic edges, not judgment[\s\S]*never choose plans, locks, success, learning, or cleanup/i);
-    expect(text).toMatch(/expiry.*never.*success/i);
+    expect(text).toMatch(/derive reasoning, actions, and completion claims from observed/i);
+    expect(text).toMatch(/Hooks automate presence and conflict gates; they do not choose tasks, assert success, or create truth/i);
+    expect(text).toMatch(/Memory, .*search hits, expiry, and peer notes are leads—not proof/i);
   });
 
   it('shows a lean overview of every Awareness feature family', () => {
     const text = skill('octocode-awareness');
-    expect(text).toContain('Feature map — when to use what');
+    expect(text).toContain('Detail routes');
     for (const feature of [
-      'attend', 'plan', 'task', 'WORK', 'lock', 'verify', 'signal', 'refinement',
-      'query', 'memory', 'Reflection', 'hooks', 'schema',
+      'plan', 'task', 'work', 'lock', 'verification', 'Messages', 'handoffs',
+      'Memory', 'reflection', 'hooks', 'schema',
     ]) {
-      expect(text, `missing lean feature route: ${feature}`).toContain(feature);
+      expect(text.toLowerCase(), `missing lean feature route: ${feature}`).toContain(feature.toLowerCase());
     }
-    expect(text).toMatch(/Plan vs task vs WORK/i);
-    expect(text).toMatch(/Recall\/record durable lessons/i);
-    expect(text).toMatch(/Hooks \+ hosts \(Pi\/Codex\/Cursor\/Claude\)/i);
+    expect(text).toMatch(/query|queries/i);
+    expect(text).toMatch(/plan\/run/i);
     expect(awarenessSkillFile('references/hooks.md')).toMatch(/do not choose tasks or replace\s+`attend`\/verify/i);
-    expect(text).toMatch(/schema command|schema commands/);
-    expect(text).toContain('not `attend run`');
+    expect(text).toContain('schema commands');
+    expect(text).toContain('getExternalAgentAwarenessGuide');
   });
 
   it('keeps held-out repository intent behavior distinct from near misses', () => {
@@ -128,14 +106,14 @@ describe('skill routing boundaries', () => {
     expect(heldOut.map((entry) => ({
       prompt: entry.prompt,
       expected: entry.expect,
-      actual: routesRepositoryWork(entry.prompt),
+      actual: routesAwarenessSignal(entry.prompt),
     }))).toEqual(heldOut.map((entry) => ({
       prompt: entry.prompt,
       expected: entry.expect,
       actual: entry.expect,
     })));
-    expect(heldOut.filter((entry) => entry.expect).map((entry) => entry.prompt).join('\n')).toMatch(/only agent/i);
-    expect(heldOut.filter((entry) => entry.expect).map((entry) => entry.prompt).join('\n')).toMatch(/read-only security review/i);
+    expect(heldOut.filter((entry) => !entry.expect).map((entry) => entry.prompt).join('\n')).toMatch(/only agent/i);
+    expect(heldOut.filter((entry) => !entry.expect).map((entry) => entry.prompt).join('\n')).toMatch(/read-only security review/i);
     expect(heldOut.filter((entry) => entry.expect).map((entry) => entry.prompt).join('\n')).toMatch(/resume/i);
     expect(heldOut.filter((entry) => !entry.expect).map((entry) => entry.prompt).join('\n')).toMatch(/outside a repo/i);
   });
@@ -143,16 +121,9 @@ describe('skill routing boundaries', () => {
   it('routes each fresh-agent feature question to one direct owner', () => {
     const text = skill('octocode-awareness');
     const journeys = [
-      ['Orient / next action:', 'agent-cheatsheet.md'],
-      ['Plan vs task vs WORK', 'plan-task-workflow.md'],
-      ['File presence & overlap', 'files-awareness.md'],
-      ['Exclusivity for unsafe', 'lock-protocol.md'],
-      ['Communicate with other agents', 'coordination-protocol.md'],
-      ['Hooks + hosts', 'hooks.md'],
-      ['Query views & docs output', 'output-routing.md'],
-      ['Recall/record durable lessons', 'memory-recall.md'],
-      ['Architecture / session / storage', 'architecture.md'],
-      ['Reflection / skill changes / cleanup', 'learning-loop.md'],
+      ['Shared commands and outcomes', 'flow-matrix.md'],
+      ['Storage ownership and host composition', 'architecture.md'],
+      ['Runtime workflows', 'coordination-protocol.md'],
     ] as const;
     for (const [trigger, owner] of journeys) {
       expect(text).toContain(trigger);
@@ -184,8 +155,27 @@ describe('skill routing boundaries', () => {
 
     expect(combined).not.toMatch(/<package>|<awareness-package>|default for this monorepo/);
     expect(combined).not.toContain('package migration truth: `docs/DB.md`');
-    expect(readme).toContain('$(npm root --global)/@octocodeai/octocode-awareness/out/skills/octocode-awareness');
+    expect(readme).toContain('npx @octocodeai/octocode-awareness init --compact');
+    expect(readme).not.toContain('npm root --global');
     expect(tooling).not.toContain('out/skills/octocode-skills');
     expect(octocode).toContain('references/agent-cheatsheet.md');
+  });
+
+  it('uses one portable CLI runner while documenting every supported host', () => {
+    const referenceRoot = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/references');
+    const hooks = awarenessSkillFile('references/hooks.md');
+    const instructional = [
+      skill('octocode-awareness'),
+      awarenessSkillFile('README.md'),
+      awarenessSkillFile('agents/openai.yaml'),
+      ...readdirSync(referenceRoot)
+        .filter((name) => name.endsWith('.md'))
+        .map((name) => readFileSync(resolve(referenceRoot, name), 'utf8')),
+    ].join('\n');
+
+    expect(hooks).toMatch(/\bPi\b/);
+    expect(instructional).not.toMatch(/node\s+(?:packages\/octocode-awareness\/out\/octocode-awareness\.js|scripts\/awareness\.mjs)/);
+    expect(instructional).not.toContain('npx -p @octocodeai/octocode-awareness octocode-awareness');
+    expect(instructional).toContain('npx @octocodeai/octocode-awareness');
   });
 });

@@ -1,4 +1,5 @@
 import type { PiContext, PiInstance, NotifyFn } from '../types.js';
+import { setManagedWorking } from './runtime-renderer.js';
 
 const RESUME_DEDUPE_WINDOW_MS = 1500;
 const DEFAULT_RESUME_RETRY_DELAY_MS = 400;
@@ -16,8 +17,7 @@ export function clearCompactionWorkingState(ctx: PiContext | undefined): void {
   // Pi owns the compaction spinner/message, but extension-triggered compaction
   // queues a follow-up turn. Clear stale working UI first so the resumed agent
   // cannot leave users staring at "Compacting context…" after callbacks fire.
-  ctx.ui?.setWorkingMessage?.(undefined);
-  ctx.ui?.setWorkingVisible?.(false);
+  setManagedWorking(ctx, false);
 }
 
 export function scheduleCompactionContinuation(

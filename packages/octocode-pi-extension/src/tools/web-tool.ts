@@ -2,13 +2,15 @@
  * Web tool — Pi tool wrapper around runWebTool from src/web.ts.
  * One tool for both web search and page fetch, no API key required.
  * SSRF-hardened: private/loopback/link-local/metadata IPs blocked.
+ * Migrated to universal queries[] envelope with per-query reasoning.
  */
 import { runWebTool, renderWebResult } from '../web.js';
 import { propagateOctocodeEnv, getOctocodeHome } from '../env.js';
-import { CLI_STATUS_TEXT, cliStatusGlyph, cliStatusToken, cliToolTitle, paint } from '../tui/cli-design.js';
-import type { ToolDefinition, PiTheme, ToolCallResult } from '../types.js';
+import { CLI_STATUS_TEXT } from '../tui/cli-design.js';
+import type { TSchema, ToolDefinition, PiTheme, ToolCallResult } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildToolView } from './render-helpers.js';
+import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -16,9 +18,6 @@ type RegisterFn = typeof registerUniqueTool;
 // Lazy env-refresh: propagateOctocodeEnv runs once at activation, but if Pi
 // started before all keys existed in ~/.octocode/.env, this ensures they land
 // in process.env on the first web-tool call instead of failing silently.
-// applyOctocodeEnv is idempotent (skips existing non-empty keys), so this is
-// always safe to run. Subagents spawned after this call inherit the populated
-// process.env automatically via Node.js process inheritance — no extra passing.
 let _webEnvEnsured = false;
 function ensureWebEnv(): void {
   if (_webEnvEnsured) return;
@@ -36,21 +35,8 @@ export function registerWebTool(
   registeredToolNames: Set<string>,
   registerFn: RegisterFn,
 ): void {
-  registerFn(pi, registeredToolNames, {
-    name: 'web',
-    label: 'Web',
-    description:
-      'Browse the live web. Pass `url` to fetch and read a page as clean text (like visiting it), ' +
-      'or `query` to run a web search and get ranked {title, url, snippet} results (plus an AI answer when available). ' +
-      'Search uses the best configured provider (Tavily → Serper → Exa → DuckDuckGo); set a key in ~/.octocode/.env to upgrade. Use engine:"exa" for AI-native neural/academic search. ' +
-      'Use for docs, changelogs, error messages, and current info beyond the codebase and training data. ' +
-      'One of `url` or `query` is required.',
-    promptSnippet: 'Search the web or fetch and read a page',
-    promptGuidelines: [
-      'Prefer Octocode/local tools for code and packages; use web for external docs, news, and live info. ' +
-        'Search with `query` to discover, then read the best hit with `url`.',
-    ],
-    parameters: Type.Object({
+  const querySchema = Type.Object(
+    {
       url: Type.Optional(
         Type.String({ description: 'Absolute http(s) URL to fetch and read as text.' }),
       ),
@@ -58,18 +44,13 @@ export function registerWebTool(
         Type.String({ description: 'Web search query (used when no url is given).' }),
       ),
       maxResults: Type.Optional(
-        Type.Integer({
-          minimum: 1,
-          maximum: 20,
-          description: 'Search: max results (default 5).',
-        }),
+        Type.Integer({ minimum: 1, maximum: 20, description: 'Search: max results (default 5).' }),
       ),
       maxChars: Type.Optional(
         Type.Integer({
           minimum: 500,
           maximum: 50000,
-          description:
-            'Fetch: max characters of page text to return per page (default 15000).',
+          description: 'Fetch: max characters of page text to return per page (default 15000).',
         }),
       ),
       page: Type.Optional(
@@ -77,18 +58,18 @@ export function registerWebTool(
           minimum: 1,
           maximum: 20,
           description:
-            'Fetch: page number for long documents (default 1). Each page is maxChars chars. Pass page: 2, 3… when the result shows truncated: true.',
+            'Fetch: page number for long documents (default 1). Each page is maxChars chars. Pass page: 2, 3\u2026 when the result shows truncated: true.',
         }),
       ),
       engine: Type.Optional(
         Type.String({
           description:
-            'Search: force a provider — "tavily", "serper", "exa", or "duckduckgo" (default: auto by available key).',
+            'Search: force a provider \u2014 "tavily", "serper", "exa", or "duckduckgo" (default: auto by available key).',
         }),
       ),
       timeRange: Type.Optional(
         Type.String({
-          description: 'Search: recency filter — "day", "week", "month", or "year".',
+          description: 'Search: recency filter \u2014 "day", "week", "month", or "year".',
         }),
       ),
       includeDomains: Type.Optional(
@@ -104,97 +85,121 @@ export function registerWebTool(
       exaType: Type.Optional(
         Type.String({
           description:
-            'Search (Exa): result type — "auto" (default), "neural", or "keyword". "neural" for semantic/AI-native queries; "keyword" for exact-match.',
+            'Search (Exa): result type \u2014 "auto" (default), "neural", or "keyword". "neural" for semantic/AI-native queries; "keyword" for exact-match.',
         }),
       ),
       exaCategory: Type.Optional(
         Type.String({
           description:
-            'Search (Exa): category filter — "research paper", "news", "github", "company", "pdf". Narrows Exa results to a specific content type.',
+            'Search (Exa): category filter \u2014 "research paper", "news", "github", "company", "pdf". Narrows Exa results to a specific content type.',
         }),
       ),
-    }),
+    },
+    { additionalProperties: false },
+  ) as TSchema;
+
+    const parameters = buildQueryEnvelopeSchema(Type, querySchema, {
+      reasoningDescription: 'Concise reason this web fetch or search is necessary.',
+      allowParallel: true,
+  });
+
+  registerFn(pi, registeredToolNames, {
+    name: 'web',
+    label: 'Web',
+    description:
+        'Browse the live web. Pass one or more queries[], each with reasoning plus either `url` (fetch page as text) or `query` (web search). ' +
+        'Use queryRunType:"parallel" for independent reads; sequential remains the default. ' +
+      'Search returns ranked {title, url, snippet} results plus an AI answer when available. ' +
+      'Search uses the best configured provider (Tavily \u2192 Serper \u2192 Exa \u2192 DuckDuckGo); set a key in ~/.octocode/.env to upgrade. Use engine:"exa" for AI-native neural/academic search. ' +
+      'Use for docs, changelogs, error messages, and current info beyond the codebase and training data.',
+    promptSnippet: 'Search the web or fetch and read a page',
+    promptGuidelines: [
+      'Prefer Octocode/local tools for code and packages; use web for external docs, news, and live info. ' +
+        'Search with `query` to discover, then read the best hit with `url`.',
+    ],
+    parameters,
 
     async execute(
-      _toolCallId: string,
+      toolCallId: string,
       params: Record<string, unknown>,
       signal?: AbortSignal,
-    ) {
-      // Refresh API keys from ~/.octocode/.env on first call (idempotent after that).
-      // Subagents spawned by the agent AFTER this point will inherit process.env and
-      // therefore get all loaded keys — no explicit env-passing to spawnAgent needed.
-      ensureWebEnv();
-      const out = await runWebTool(
-        params as Parameters<typeof runWebTool>[0],
-        { signal, env: process.env },
-      );
-      const errorMsg = (out as { error?: string }).error;
-      if (errorMsg) {
-        // Throw so Pi sets isError:true in the session and the LLM sees tool failure.
-        // Returning isError:true in the result object has no effect per Pi docs:
-        // "Returning a value never sets the error flag regardless of what properties
-        // you include in the return object." (extensions.md)
-        throw new Error(errorMsg);
-      }
-      return {
-        content: [{ type: 'text' as const, text: renderWebResult(out) }],
-        details: out,
-      };
+      onUpdate?: unknown,
+    ): Promise<ToolCallResult> {
+      return executeQueryBatch({
+        toolCallId,
+        raw: params,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
+          passthroughSingle: true,
+          allowParallel: true,
+        async execute(query, _index, _callId, batchSignal) {
+          ensureWebEnv();
+          const out = await runWebTool(
+            query as Parameters<typeof runWebTool>[0],
+            { signal: batchSignal, env: process.env },
+          );
+          const errorMsg = (out as { error?: string }).error;
+          if (errorMsg) throw new Error(errorMsg);
+          return {
+            content: [{ type: 'text' as const, text: renderWebResult(out) }],
+            details: out,
+          };
+        },
+      });
     },
 
     renderCall(args: unknown, theme?: PiTheme) {
-      const a = (args ?? {}) as Record<string, unknown>;
-      const url = typeof a.url === 'string' && a.url ? a.url : '';
-      const query = typeof a.query === 'string' && a.query ? a.query : '';
-      const nameStr = cliToolTitle(theme, 'web', { bold: true });
-      const displayUrl = url.length > 70 ? `${url.slice(0, 67)}…` : url;
-      const displayQuery = query.length > 70 ? `${query.slice(0, 67)}…` : query;
-      const detail = url
-        ? paint(theme, 'link', displayUrl)
-        : query
-        ? paint(theme, 'dim', `"${displayQuery}"`)
-        : '';
-      const rawLine = detail ? `${nameStr} ${detail}` : nameStr;
-      return makeRenderer((w) => [truncateToWidth(rawLine, w)]);
+      const envelope = (args ?? {}) as Record<string, unknown>;
+      const queries = Array.isArray(envelope['queries'])
+        ? (envelope['queries'] as Record<string, unknown>[])
+        : [];
+      const a = queries[0] ?? envelope;
+      const url = typeof a['url'] === 'string' && a['url'] ? (a['url'] as string) : '';
+      const query = typeof a['query'] === 'string' && a['query'] ? (a['query'] as string) : '';
+      const displayUrl = url.length > 70 ? `${url.slice(0, 67)}\u2026` : url;
+      const displayQuery = query.length > 70 ? `${query.slice(0, 67)}\u2026` : query;
+      return buildToolView({
+        name: 'web',
+        state: 'request',
+        segments: url
+          ? [{ text: 'fetch', token: 'bright' }, { text: displayUrl, token: 'link' }]
+          : query
+            ? [{ text: 'search', token: 'bright' }, { text: `"${displayQuery}"`, token: 'dim' }]
+            : [],
+      }, theme);
     },
 
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        const msg = paint(theme, 'warning', CLI_STATUS_TEXT.fetching);
-        return makeRenderer((w) => [truncateToWidth(msg, w)]);
+        return buildToolView(() => ({ name: 'web', state: 'running', status: CLI_STATUS_TEXT.fetching }), theme);
       }
       const ok = !result.isError;
-      const icon = paint(theme, cliStatusToken(ok), cliStatusGlyph(ok));
-      const nameStr = cliToolTitle(theme, 'web');
-      // Extract meaningful stats from details
       const det = result.details as Record<string, unknown> | null;
-      let stat = '';
+      const segments: Array<{ text: string; token: 'count' | 'warning' | 'dim' }> = [];
       if (Array.isArray((det as Record<string, unknown> | null)?.results)) {
         const n = ((det as Record<string, unknown>).results as unknown[]).length;
-        stat = paint(theme, 'dim', ` · ${n} result${n === 1 ? '' : 's'}`);
+        segments.push({ text: `${n} result${n === 1 ? '' : 's'}`, token: 'count' });
       } else if (det?.url) {
         const truncated = det.truncated === true;
         const pg = typeof det.page === 'number' && det.page > 1 ? ` p${det.page}` : '';
-        stat = truncated
-          ? paint(theme, 'dim', ` · page${pg} (more pages available)`)
-          : paint(theme, 'dim', ` · page${pg}`);
+        segments.push({ text: `page${pg}`, token: 'count' });
+        if (truncated) segments.push({ text: 'more pages available', token: 'warning' });
       }
-      const header = `${icon} ${nameStr}${stat}`;
       if (!opts.expanded) {
-        return makeRenderer((w) => [truncateToWidth(header, w)]);
+        return buildToolView({ name: 'web', state: ok ? 'success' : 'error', segments }, theme);
       }
       const text = (result.content as Array<{ type: string; text: string }>)
         ?.find?.((p) => p.type === 'text')?.text ?? '';
       const allLines = text.split('\n');
       const lines = allLines.slice(0, 20);
       const omitted = allLines.length - lines.length;
-      return makeRenderer((w) => [
-        truncateToWidth(header, w),
-        ...lines.map((l) => truncateToWidth(paint(theme, 'dim', l), w)),
-        ...(omitted > 0
-          ? [truncateToWidth(paint(theme, 'muted', `… ${omitted} more lines`), w)]
-          : []),
-      ]);
+      return buildToolView({
+        name: 'web',
+        state: ok ? 'success' : 'error',
+        segments,
+        body: lines.map((text) => ({ text, token: ok ? 'dim' : 'error' })),
+        hint: omitted > 0 ? `${omitted} more lines hidden in this view` : undefined,
+      }, theme);
     },
   } satisfies ToolDefinition);
 }

@@ -6,7 +6,18 @@ import {
 } from './common.js';
 
 export const operationSchemas = {
-refinement: z
+  awareness_config: z
+    .object({
+      action: z.enum(['show', 'init', 'validate']).default('show'),
+      hooks: z.boolean().optional().describe('Enable all installed host-hook automation.'),
+      notifications: z.boolean().optional().describe('Deliver peer, handoff, and relevant memory context from hooks.'),
+      verification_gate: z.boolean().optional().describe('Surface unverified work during stop hooks.'),
+      session_capture: z.boolean().optional().describe('Capture resumable context at compact/session end.'),
+      maintenance_reminders: z.boolean().optional().describe('Emit bounded maintenance-pressure reminders from hooks.'),
+    })
+    .strict()
+    .describe('Inspect, create, or validate the global awareness.json feature configuration.'),
+  refinement: z
     .object({
       agent_id: agentId,
       refinement_id: z.string().trim().min(1).max(128).optional()

@@ -93,15 +93,23 @@ class FakeUi implements ShellUi {
 test('emits the branded banner on startup', async () => {
   const runtime = new FakeRuntime();
   const ui = new FakeUi();
-  const shell = createOctocodeShell(runtime, { ui, version: '1.4.0' });
+  const shell = createOctocodeShell(runtime, { ui, version: '1.4.0', width: 120 });
 
   const done = shell.run();
   // Banner is printed synchronously during run() before it awaits quit.
   assert.ok(ui.started, 'ui.start() must be called');
+  // Strip ANSI escape codes before checking: the wordmark art applies
+  // per-character 24-bit true-colour codes, so naive includes('██████╗')
+  // fails because each █ glyph is wrapped in its own SGR reset sequence.
+  const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
+  // The banner's brand identity is the OCTOCODE block art (the redundant
+  // text wordmark line was removed) — assert the art, version, and tagline.
   assert.ok(
-    ui.lines.some((l) => l.includes('Octocode')),
-    `banner should mention Octocode, got: ${JSON.stringify(ui.lines)}`,
+    ui.lines.some((l) => stripAnsi(l).includes('██████╗')),
+    `banner should render the OCTOCODE block art, got: ${JSON.stringify(ui.lines)}`,
   );
+  assert.ok(ui.lines.some((l) => l.includes('v1.4.0')), 'banner shows the version');
+  assert.ok(ui.lines.some((l) => l.includes('Your AI coding agent')), 'banner shows the tagline');
 
   await ui.submit('/quit');
   assert.equal(await done, 0);

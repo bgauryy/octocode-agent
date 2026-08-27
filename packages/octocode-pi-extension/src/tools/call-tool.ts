@@ -15,10 +15,12 @@
  */
 
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
+import { sliceBetween } from '../utils.js';
 import type { registerUniqueTool } from './octocode-tools.js';
-import { paint } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
-import { spawnRpcAgent, waitForAgent, isSubagentProcess } from './agent-tools.js';
+import { buildToolView } from './render-helpers.js';
+import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
+import { spawnRpcAgent, waitForAgentTurn, isSubagentProcess, killWorkerById } from './agent-tools.js';
+import { requestApproval } from './approval.js';
 import {
   resolveTool,
   registerGeneratedTool,
@@ -200,14 +202,6 @@ function buildToolSmithPrompt(a: GenerateArgs): string {
   return lines.join('\n');
 }
 
-function sliceBetween(text: string, start: string, end: string): string {
-  const i = text.indexOf(start);
-  if (i < 0) return '';
-  const from = i + start.length;
-  const j = text.indexOf(end, from);
-  return (j < 0 ? text.slice(from) : text.slice(from, j)).trim();
-}
-
 /** Parse a tool-smith worker's output into a GeneratedTool. Throws on malformed output. */
 export function parseGeneratedTool(output: string, fallbackName: string): GeneratedTool {
   const manifestRaw = sliceBetween(output, SENTINELS.manifest, SENTINELS.source);
@@ -260,9 +254,19 @@ const defaultGenerator: ToolGenerator = async (a) => {
     },
     a.ctx,
   );
-  await waitForAgent(record, 120_000);
-  const output = record.lastOutput || record.stderr || '';
-  return parseGeneratedTool(output, a.toolType);
+  try {
+    // Progress-aware: reset on every event and probe on quiet gaps so a long-but-
+    // active tool-smith turn runs to completion, with an absolute backstop against
+    // a genuinely hung worker wedging the main process.
+    await waitForAgentTurn(record, { maxSilenceMs: 120_000, absoluteCapMs: 600_000 });
+    const output = record.lastOutput || record.stderr || '';
+    return parseGeneratedTool(output, a.toolType);
+  } finally {
+    // On timeout/error the spawned smith worker is still alive — kill it so it
+    // does not orphan, and its record becomes droppable (reclaimable slot).
+    // On success the process has already exited, so this is a harmless no-op.
+    killWorkerById(record.id);
+  }
 };
 
 // ─── orchestration ─────────────────────────────────────────────────────────────
@@ -286,6 +290,14 @@ function stripReservedKeys(metadata: Record<string, unknown>): Record<string, un
   void intent;
   void reason;
   return rest;
+}
+
+async function approveSandboxOptOut(ctx: PiContext | undefined, toolType: string, intent: string) {
+  return await requestApproval(ctx, {
+    actionClass: 'system',
+    title: 'Create non-sandboxed dynamic tool',
+    detail: [`toolType: ${toolType}`, intent ? `intent: ${intent}` : undefined].filter(Boolean).join('\n'),
+  });
 }
 
 interface OrchestrateOutcome {
@@ -412,9 +424,23 @@ async function orchestrate(params: CallToolParams, ctx?: PiContext): Promise<Orc
     } catch (err) {
       return { status: 'error', pruned, message: `Tool generation failed: ${(err as Error).message}` };
     }
-    // A tool may only opt OUT of the sandbox when the caller explicitly approves it via
-    // metadata._sandboxed:false; otherwise isolation is enforced regardless of the manifest.
+    // A tool may only opt OUT of the sandbox after the shared approval gate says yes.
+    // Non-interactive hosts fail closed through requestApproval().
     const sandboxed = metadata['_sandboxed'] !== false;
+    if (!sandboxed) {
+      const approval = await approveSandboxOptOut(ctx, params.toolType, intent);
+      if (!approval.approved) {
+        const why = approval.interactive
+          ? 'The user declined this action.'
+          : 'This host is non-interactive, so approval could not be collected.';
+        return {
+          status: 'blocked',
+          toolName: params.toolType,
+          pruned,
+          message: `Non-sandboxed dynamic tool creation requires explicit user approval. ${why}`,
+        };
+      }
+    }
     const reg = registerGeneratedTool({ ...generated, reason: generated.reason || reason, sandboxed, deterministic: generated.deterministic });
     if (!reg.ok) {
       return {
@@ -503,7 +529,7 @@ export function registerCallTool(
       '',
       'Use ONLY for small, reusable, deterministic capabilities. A tool must optimize the agent, not bloat it: if a one-line shell command already does the job, callTool declines and points you to it — do not create a tool for trivial one-offs.',
       '',
-      'metadata carries runtime args AND reserved keys: `intent` (what a new tool should do), `reason` (REQUIRED to create), `_allow` (approve net/fs/exec), `_force` (override the triviality decline), `_approveCreate` (approve creation in auto mode), `_sandboxed:false` (approve creating a NON-sandboxed trusted tool — rare).',
+      'metadata carries runtime args AND reserved keys: `intent` (what a new tool should do), `reason` (REQUIRED to create), `_allow` (approve net/fs/exec), `_force` (override the triviality decline), `_approveCreate` (approve creation in auto mode), `_sandboxed:false` (request explicit approval for creating a NON-sandboxed trusted tool — rare).',
       'Generated code runs OS-sandboxed by default (Node permission model: denied-by-default fs/net/child_process, scrubbed env), plus hard timeout and checksum tamper-check. Declared capabilities are ENFORCED, not just advisory.',
     ].join('\n'),
     promptSnippet: 'Reuse, propose, or maintain a verified dynamic tool for a requested capability',
@@ -513,7 +539,7 @@ export function registerCallTool(
       'Maintain the library: it auto-prunes junk each call; use mode:"list" to review and mode:"delete" to remove obsolete or superseded tools.',
       'Generated tools are verification-gated (their test must pass) and sandboxed; approve net/fs/exec explicitly via metadata._allow only when required.',
     ],
-    parameters: Type.Object({
+    parameters: buildQueryEnvelopeSchema(Type, Type.Object({
       toolType: Type.String({
         description: 'Logical name of the capability, e.g. "getCurrentTime", "toSlug", "uuidV4". Used as the O(1) registry key.',
       }),
@@ -522,7 +548,7 @@ export function registerCallTool(
           type: 'object',
           additionalProperties: true,
           description:
-            'Runtime input args for the tool. Reserved keys: `intent` (natural-language description used to generate a missing tool) and `_allow` (array approving capabilities like ["net"]).',
+            'Runtime input args for the tool. Reserved keys: `intent` (natural-language description used to generate a missing tool), `_allow` (array approving capabilities like ["net"]), and `_sandboxed:false` (request explicit approval for a rare non-sandboxed trusted tool).',
         }),
       ),
       mode: Type.Optional(
@@ -533,48 +559,81 @@ export function registerCallTool(
             'auto (default): reuse or create. run: reuse only, error on miss. create: force (re)generate. enhance/fix: regenerate an existing tool (version bump). list: inventory. delete: remove a tool.',
         }),
       ),
+    }, { additionalProperties: false }), {
+      reasoningDescription: 'Concise reason this dynamic tool operation is necessary.',
     }),
 
-    async execute(_id: string, rawParams: Record<string, unknown>, _signal, _onUpdate, ctx?: PiContext) {
-      const params = rawParams as unknown as CallToolParams;
-      const outcome = await orchestrate(params, ctx);
-
-      const header = renderHeader(outcome);
-      const parts: string[] = [header];
-      if (outcome.status === 'ran' || outcome.status === 'created-and-ran') {
-        parts.push(JSON.stringify(outcome.result, null, 2));
-      }
-      if (outcome.status === 'listed') {
-        parts.push(
-          (outcome.tools ?? [])
-            .map((t) => `  ${t.name} v${t.version} — ${t.description} (calls ${t.calls}, fails ${t.failures})`)
-            .join('\n') || '  (no dynamic tools)',
-        );
-      }
-      if (outcome.pruned && outcome.pruned.length > 0) {
-        parts.push(`[MAINTAINED] pruned junk: ${outcome.pruned.join(', ')}`);
-      }
-
-      return {
-        content: [{ type: 'text', text: parts.join('\n') }],
-        isError: outcome.status === 'error',
-        details: outcome,
-      } as unknown as ToolCallResult;
+    async execute(id: string, rawParams: Record<string, unknown>, signal, onUpdate, ctx?: PiContext) {
+      const queryCount = Array.isArray(rawParams.queries) ? rawParams.queries.length : 0;
+      return executeQueryBatch({
+        toolCallId: id,
+        raw: rawParams,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
+        ctx,
+        passthroughSingle: true,
+        preflight: queryCount > 1
+          ? (query) => {
+              const params = query as unknown as CallToolParams;
+              if (!params.toolType?.trim()) throw new Error('toolType must be a non-empty string.');
+              const mode = params.mode ?? 'auto';
+              if ((mode === 'create' || mode === 'enhance' || mode === 'fix') && !String(params.metadata?.['reason'] ?? '').trim()) {
+                throw new Error(`mode:"${mode}" requires metadata.reason.`);
+              }
+            }
+          : undefined,
+        async execute(query) {
+          const outcome = await orchestrate(query as unknown as CallToolParams, ctx);
+          const header = renderHeader(outcome);
+          const parts: string[] = [header];
+          if (outcome.status === 'ran' || outcome.status === 'created-and-ran') {
+            parts.push(JSON.stringify(outcome.result, null, 2));
+          }
+          if (outcome.status === 'listed') {
+            parts.push(
+              (outcome.tools ?? [])
+                .map((t) => `  ${t.name} v${t.version} — ${t.description} (calls ${t.calls}, fails ${t.failures})`)
+                .join('\n') || '  (no dynamic tools)',
+            );
+          }
+          if (outcome.pruned && outcome.pruned.length > 0) {
+            parts.push(`[MAINTAINED] pruned junk: ${outcome.pruned.join(', ')}`);
+          }
+          return {
+            content: [{ type: 'text', text: parts.join('\n') }],
+            isError: outcome.status === 'error',
+            details: outcome,
+          } as unknown as ToolCallResult;
+        },
+      });
     },
 
-    renderCall(rawParams: unknown) {
-      const p = rawParams as CallToolParams;
-      const raw = `callTool(${p.toolType}${p.mode && p.mode !== 'auto' ? `, ${p.mode}` : ''})`;
-      return makeRenderer((w) => [truncateToWidth(raw, w)]);
+    renderCall(rawParams: unknown, theme?: PiTheme) {
+      const envelope = rawParams && typeof rawParams === 'object' ? rawParams as Record<string, unknown> : {};
+      const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as CallToolParams[] : [];
+      const p = queries[0] ?? {} as CallToolParams;
+      // Brand title + dim args, matching the other tool-call rows.
+      return buildToolView({
+        name: 'callTool',
+        state: 'request',
+        segments: [
+          { text: String(p.toolType ?? 'capability'), token: 'symbol' },
+          ...(p.mode && p.mode !== 'auto' ? [{ text: p.mode, token: 'dim' as const }] : []),
+        ],
+      }, theme);
     },
 
     renderResult(result: unknown, _opts: unknown, theme?: PiTheme) {
       const r = result as { content?: Array<{ text?: string }> };
       const first = (r?.content?.[0]?.text ?? '').split('\n')[0] || 'callTool';
-      const colored = first.startsWith('[ERROR]') || first.startsWith('[BLOCKED]')
-        ? paint(theme, 'warning', first)
-        : paint(theme, 'success', first);
-      return makeRenderer((w) => [truncateToWidth(colored, w)]);
+      // Match the codebase color contract: red=error, gold=act-on-me (blocked/
+      // declined/proposal awaiting your decision), green=only a positive outcome.
+      const state = first.startsWith('[ERROR]')
+        ? 'error'
+        : first.startsWith('[BLOCKED]') || first.startsWith('[DECLINED]') || first.startsWith('[PROPOSAL]')
+          ? 'warning'
+          : 'success';
+      return buildToolView({ name: 'callTool', state, segments: [{ text: first, token: state === 'success' ? 'dim' : state }] }, theme);
     },
   });
 }

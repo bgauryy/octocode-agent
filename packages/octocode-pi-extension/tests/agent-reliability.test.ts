@@ -8,13 +8,16 @@
  * - M7: MAX_AGENT_RECORDS is not exported and no hard-cap guard exists.
  */
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { test, beforeEach, afterEach } from 'vitest';
 import { Type } from 'typebox';
 import {
   spawnRpcAgent,
+  registerAgentTools,
   setAgentProcessFactoryForTests,
   isSubagentProcess,
-  MAX_AGENT_LAST_OUTPUT_CHARS,
   MAX_AGENT_RECORDS,
   DEFAULT_SPAWN_POLICY,
   DEFAULT_IDLE_REAP_MS,
@@ -22,6 +25,8 @@ import {
   findReapableIdleAgents,
   formatElapsed,
   formatAgentLedgerDetails,
+  getWorkerTranscript,
+  listWorkerLedgerEntries,
   refreshAgentLedgerUi,
   isLedgerTickerActiveForTests,
   stopLedgerTickerForTests,
@@ -31,6 +36,7 @@ import {
 } from '../src/tools/agent-tools.js';
 import { registerSpawnSubagentTool } from '../src/tools/spawn-subagent-tool.js';
 import type { ToolDefinition } from '../src/types.js';
+import { makeMockAgentProcess } from './helpers/mock-process.js';
 
 test('extractDeltaSummary prefers the latest structured worker line', () => {
   const out = '[STATUS] booting\nsome noise\n[ACTION] editing src/foo.ts\ntrailing chatter';
@@ -84,68 +90,6 @@ test('findReapableIdleAgents: terminal always reapable, idle only past TTL', () 
   assert.deepEqual(idle, ['idle-stale']); // fresh idle + running excluded
 });
 
-// ─── Mock process factory ─────────────────────────────────────────────────────
-
-type MockHandlers = Record<string, Array<(...args: unknown[]) => void>>;
-
-interface MockProcess {
-  stdin: { write(d: string): void; end(): void };
-  stdout: { on(e: string, cb: (b: Buffer) => void): void };
-  stderr: { on(e: string, cb: (b: Buffer) => void): void };
-  on(e: string, cb: (...a: unknown[]) => void): void;
-  kill(): boolean;
-  exitCode: null | number;
-  signalCode: null | string;
-  _emit(event: string, ...args: unknown[]): void;
-}
-
-function makeMockProcess(opts: { stdinThrows?: boolean; exitImmediately?: boolean } = {}): MockProcess {
-  const handlers: MockHandlers = {};
-
-  const proc: MockProcess = {
-    stdin: {
-      write(d: string) {
-        if (opts.stdinThrows) {
-          const err = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
-          throw err;
-        }
-        void d; // consume
-      },
-      end() {},
-    },
-    stdout: {
-      on(e, cb) {
-        (handlers[`stdout:${e}`] ??= []).push(cb as never);
-      },
-    },
-    stderr: {
-      on(e, cb) {
-        (handlers[`stderr:${e}`] ??= []).push(cb as never);
-      },
-    },
-    on(e, cb) {
-      (handlers[e] ??= []).push(cb);
-    },
-    kill() {
-      return true;
-    },
-    exitCode: null,
-    signalCode: null,
-    _emit(event, ...args) {
-      for (const cb of handlers[event] ?? []) cb(...args);
-    },
-  };
-
-  if (opts.exitImmediately) {
-    setTimeout(() => {
-      proc.exitCode = 0;
-      proc._emit('close', 0, null);
-    }, 0);
-  }
-
-  return proc;
-}
-
 // ─── Setup / teardown ─────────────────────────────────────────────────────────
 
 beforeEach(() => {
@@ -163,7 +107,7 @@ afterEach(() => {
 test('H4: sendRpc EPIPE marks agent status as "failed"', () => {
   if (isSubagentProcess()) return; // skip inside RPC subprocess environments
 
-  const mock = makeMockProcess({ stdinThrows: true });
+  const mock = makeMockAgentProcess({ stdinThrows: true });
   setAgentProcessFactoryForTests(() => mock as never);
 
   const record = spawnRpcAgent({ task: 'test task', resourceMode: 'lean' });
@@ -177,7 +121,7 @@ test('H4: sendRpc EPIPE marks agent status as "failed"', () => {
 test('H4: waiters are resolved immediately when EPIPE transitions agent to failed', async () => {
   if (isSubagentProcess()) return;
 
-  const mock = makeMockProcess({ stdinThrows: true });
+  const mock = makeMockAgentProcess({ stdinThrows: true });
   setAgentProcessFactoryForTests(() => mock as never);
 
   const record = spawnRpcAgent({ task: 'test task', resourceMode: 'lean' });
@@ -211,13 +155,13 @@ test('M7: MAX_AGENT_RECORDS is exported and has the expected value', () => {
   assert.ok(MAX_AGENT_RECORDS > 0);
 });
 
-test('worker lastOutput is capped to a recent tail to bound memory use', () => {
+test('worker lastOutput preserves the complete agent result without truncation', () => {
   if (isSubagentProcess()) return;
 
-  const mock = makeMockProcess({ stdinThrows: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false });
   setAgentProcessFactoryForTests(() => mock as never);
   const record = spawnRpcAgent({ task: 'large output', resourceMode: 'lean' });
-  const hugeText = `${'x'.repeat(MAX_AGENT_LAST_OUTPUT_CHARS + 500)}\n[DONE] tail`;
+  const hugeText = `${'x'.repeat(80_000)}\n[DONE] tail`;
 
   mock._emit(
     'stdout:data',
@@ -227,15 +171,101 @@ test('worker lastOutput is capped to a recent tail to bound memory use', () => {
     })}\n`),
   );
 
-  assert.equal(record.lastOutput.length, MAX_AGENT_LAST_OUTPUT_CHARS);
-  assert.match(record.lastOutput, /\[DONE\] tail$/);
+  assert.equal(record.lastOutput, hugeText);
   assert.equal(record.normalizedResult?.status, 'done');
+});
+
+test('spawnRpcAgent assigns a durable handback file in the parent workspace and injects it into the worker packet', () => {
+  if (isSubagentProcess()) return;
+
+  const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-handback-test-')));
+  try {
+    const mock = makeMockAgentProcess({ stdinThrows: false });
+    setAgentProcessFactoryForTests(() => mock as never);
+
+    const record = spawnRpcAgent({ task: 'Goal: test\nContext: ctx\nScope: scope\nOwnership: read\nAcceptance: done\nReturn: result', cwd: tmpDir, resourceMode: 'lean' });
+    const initialPrompt = String(mock.writes[0]?.['message'] ?? '');
+
+    assert.match(record.handbackPath, new RegExp(`${tmpDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.octocode/tmp/agents/${record.id}/handback\\.md`));
+    assert.equal(fs.existsSync(path.dirname(record.handbackPath)), true, 'handback directory should be created before the worker starts');
+    assert.match(initialPrompt, /durable handback file:/);
+    assert.match(initialPrompt, new RegExp(record.handbackPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(initialPrompt, /parent agent id:/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('spawnRpcAgent falls back visibly when the parent workspace cannot hold a handback', () => {
+  if (isSubagentProcess()) return;
+
+  const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-handback-fallback-test-')));
+  const invalidWorkspace = path.join(tmpDir, 'workspace-is-a-file');
+  fs.writeFileSync(invalidWorkspace, 'not a directory', 'utf8');
+  let fallbackAgentDir: string | undefined;
+  try {
+    const mock = makeMockAgentProcess({ stdinThrows: false });
+    setAgentProcessFactoryForTests(() => mock as never);
+
+    const record = spawnRpcAgent({ task: 'Goal: test fallback\nContext: ctx\nScope: scope\nOwnership: read\nAcceptance: done\nReturn: result', cwd: invalidWorkspace, resourceMode: 'lean' });
+    fallbackAgentDir = path.dirname(record.handbackPath);
+    const initialPrompt = String(mock.writes[0]?.['message'] ?? '');
+
+    assert.ok(record.handbackPath.startsWith(path.join(os.tmpdir(), 'octocode-agent-handbacks', record.id)));
+    assert.match(record.handbackPath, /handback\.md$/);
+    assert.equal(fs.existsSync(fallbackAgentDir), true);
+    assert.ok(record.policyWarnings.some(warning => /temporary fallback/.test(warning)));
+    assert.ok(initialPrompt.includes(record.handbackPath));
+  } finally {
+    if (fallbackAgentDir) fs.rmSync(fallbackAgentDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('worker ledger and transcript surface handback artifact status and [ARTIFACT] output', () => {
+  if (isSubagentProcess()) return;
+
+  const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-handback-test-')));
+  try {
+    const mock = makeMockAgentProcess({ stdinThrows: false });
+    setAgentProcessFactoryForTests(() => mock as never);
+    const record = spawnRpcAgent(
+      { task: 'write handback', name: 'Artifact Steward', planStep: '3. Verify artifacts', cwd: tmpDir, resourceMode: 'lean' },
+      { cwd: tmpDir, model: { id: 'gpt-5.6', provider: 'openai' } } as never,
+    );
+
+    fs.writeFileSync(record.handbackPath, '# Worker handback\n\nVerified result.\n', 'utf8');
+    mock._emit(
+      'stdout:data',
+      Buffer.from(`${JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text: `[RESULT] stored handback\n[ARTIFACT] ${record.handbackPath}\n[DONE] complete` }] },
+      })}\n`),
+    );
+
+    const entry = listWorkerLedgerEntries().find((item) => item.agentId === record.id);
+    assert.equal(entry?.name, 'Artifact Steward');
+    assert.equal(entry?.model, 'gpt-5.6');
+    assert.equal(entry?.provider, 'openai');
+    assert.equal(entry?.task, 'write handback');
+    assert.equal(entry?.planStep, '3. Verify artifacts');
+    assert.equal(entry?.artifact, record.handbackPath);
+    assert.equal(entry?.handback?.exists, true);
+    assert.equal(entry?.handback?.path, record.handbackPath);
+    assert.ok((entry?.handback?.bytes ?? 0) > 0);
+    const transcript = getWorkerTranscript(record.id) ?? '';
+    assert.match(transcript, /artifact:/);
+    assert.match(transcript, /handback file:/);
+    assert.match(transcript, /bytes/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test('agent_end user prompt echoes do not overwrite assistant worker output', () => {
   if (isSubagentProcess()) return;
 
-  const mock = makeMockProcess({ stdinThrows: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false });
   setAgentProcessFactoryForTests(() => mock as never);
   const record = spawnRpcAgent({ task: 'review code', resourceMode: 'lean' });
 
@@ -275,7 +305,7 @@ test('spawnRpcAgent forces OCTOCODE_LAUNCHER_MODE=subprocess so worker --tools/-
   let capturedEnv: NodeJS.ProcessEnv | undefined;
   setAgentProcessFactoryForTests((_command, _args, options) => {
     capturedEnv = (options as { env?: NodeJS.ProcessEnv }).env;
-    return makeMockProcess() as never;
+    return makeMockAgentProcess() as never;
   });
 
   spawnRpcAgent({ task: 'research something', resourceMode: 'octocode', tools: ['web', 'MCPTool'] });
@@ -307,7 +337,7 @@ test('L1: formatElapsed freezes at endedAt instead of drifting against Date.now(
 test('L1: ledger elapsed time is frozen for a terminal agent, not growing with wall-clock time', async () => {
   if (isSubagentProcess()) return;
 
-  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => mock as never);
   spawnRpcAgent({ task: 'finishes quickly', resourceMode: 'lean' });
 
@@ -326,7 +356,7 @@ test('M7: spawning beyond MAX_AGENT_RECORDS non-droppable agents throws', functi
   if (isSubagentProcess()) return;
 
   // Create a mock that keeps agents alive in 'running' state (non-droppable).
-  const makePersistentMock = () => makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  const makePersistentMock = () => makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => makePersistentMock() as never);
 
   // Fill the registry to the limit — all agents remain 'running' (non-droppable).
@@ -344,6 +374,77 @@ test('M7: spawning beyond MAX_AGENT_RECORDS non-droppable agents throws', functi
 
 // ─── L2/L3: live ledger ticker (Wave 3 live-progress) ─────────────────────────
 
+test('SEV-1: late worker process events ignore a stale session context', () => {
+  if (isSubagentProcess()) return;
+
+  let stale = false;
+  const ui = { setStatus: () => {}, setWidget: () => {} };
+  const ctx = {
+    get hasUI() {
+      if (stale) throw new Error('stale context sentinel');
+      return true;
+    },
+    get ui() {
+      if (stale) throw new Error('stale context sentinel');
+      return ui;
+    },
+  } as never;
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  spawnRpcAgent({ task: 'outlives its session', resourceMode: 'lean' }, ctx);
+
+  stale = true;
+  assert.doesNotThrow(() => mock._emit('stdout:data', Buffer.from(`${JSON.stringify({ type: 'agent_end', messages: [] })}\n`)));
+  assert.doesNotThrow(() => mock._emit('stderr:data', Buffer.from('late stderr')));
+  assert.doesNotThrow(() => mock._emit('error', new Error('late process error')));
+  assert.doesNotThrow(() => mock._emit('close', 0, null));
+  assert.doesNotThrow(() => refreshAgentLedgerUi(ctx), 'queued ledger ticks must also ignore the stale context');
+});
+
+test('SEV-1: AgentMessage wait cleanup ignores a context invalidated while waiting', async () => {
+  if (isSubagentProcess()) return;
+
+  let stale = false;
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const ui = { setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]) };
+  const ctx = {
+    get hasUI() {
+      if (stale) throw new Error('stale context sentinel');
+      return true;
+    },
+    get ui() {
+      if (stale) throw new Error('stale context sentinel');
+      return ui;
+    },
+  } as never;
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
+  setAgentProcessFactoryForTests(() => mock as never);
+  const record = spawnRpcAgent({ task: 'wait across replacement', resourceMode: 'lean' }, ctx);
+  const tools = new Map<string, ToolDefinition>();
+  registerAgentTools(
+    { registerTool: (definition: ToolDefinition) => tools.set(definition.name, definition) } as never,
+    Type,
+    new Set<string>(),
+    (pi, names, definition) => {
+      names.add(definition.name);
+      pi.registerTool?.(definition);
+    },
+  );
+
+  const waiting = tools.get('AgentMessage')!.execute(
+    'wait-stale-context',
+    { action: 'wait', agentId: record.id, timeoutMs: 1_000 },
+    undefined,
+    undefined,
+    ctx,
+  );
+  stale = true;
+  mock._emit('stdout:data', Buffer.from(`${JSON.stringify({ type: 'agent_end', messages: [] })}\n`));
+
+  await assert.doesNotReject(waiting);
+  assert.deepEqual(statusCalls, [['agent-wait', `\u29D7 Waiting for \u201C${record.name}\u201D\u2026`]]);
+});
+
 test('L2: live ledger ticker runs while a worker is active and stops when it finishes', () => {
   if (isSubagentProcess()) return;
   const ctx = {
@@ -351,7 +452,7 @@ test('L2: live ledger ticker runs while a worker is active and stops when it fin
     ui: { setStatus: () => {}, setWidget: () => {} },
   } as never;
 
-  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => mock as never);
   spawnRpcAgent({ task: 'long job', resourceMode: 'lean' }, ctx);
 
@@ -366,43 +467,50 @@ test('L2: live ledger ticker runs while a worker is active and stops when it fin
   stopLedgerTickerForTests();
 });
 
-test('L3: refreshAgentLedgerUi with no agents clears the widget and stops the ticker', () => {
+test('L3: refreshAgentLedgerUi with no agents stops the ticker without creating duplicate status/widget surfaces', () => {
   if (isSubagentProcess()) return;
-  const widgetVals: unknown[] = [];
+  const statusCalls: unknown[] = [];
+  const widgetCalls: unknown[] = [];
   const ctx = {
     hasUI: true,
-    ui: { setStatus: () => {}, setWidget: (_k: string, v: unknown) => widgetVals.push(v) },
+    ui: {
+      setStatus: (...args: unknown[]) => statusCalls.push(args),
+      setWidget: (...args: unknown[]) => widgetCalls.push(args),
+    },
   } as never;
 
   refreshAgentLedgerUi(ctx); // registry cleared by beforeEach
   assert.equal(isLedgerTickerActiveForTests(), false, 'no ticker without active workers');
-  assert.ok(widgetVals.includes(undefined), 'widget cleared to undefined when no agents');
+  assert.deepEqual(statusCalls, [], 'agent state no longer duplicates into a compact status chip');
+  assert.deepEqual(widgetCalls, [], 'agent state no longer duplicates into the below-editor widget');
 
   stopLedgerTickerForTests();
 });
 
-test('/octocode-agents hide removes the agent section from the unified status panel until list/status shows it again', async () => {
+test('/octocode-agents hide suppresses footer ledger rows until list/status shows them again', async () => {
   if (isSubagentProcess()) return;
-  const widgetCalls: Array<{ name: string; cleared: boolean }> = [];
+  const statusCalls: unknown[] = [];
+  const widgetCalls: unknown[] = [];
   const ctx = {
     hasUI: true,
     ui: {
-      setStatus: () => {},
-      setWidget: (name: string, content: unknown) => widgetCalls.push({ name, cleared: content === undefined }),
+      setStatus: (...args: unknown[]) => statusCalls.push(args),
+      setWidget: (...args: unknown[]) => widgetCalls.push(args),
       notify: () => {},
     },
   } as never;
-  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => mock as never);
   spawnRpcAgent({ task: 'visible worker', resourceMode: 'lean' }, ctx);
   assert.ok(agentPanelLines().length > 0, 'agent panel starts visible');
 
   await handleOctocodeAgentsCommand('hide', ctx);
-  assert.equal(agentPanelLines().length, 0, 'hide suppresses unified agent panel lines');
-  assert.ok(widgetCalls.some((call) => call.name === 'octocode-status-panel' && call.cleared), 'unified panel is refreshed/cleared');
+  assert.equal(agentPanelLines().length, 0, 'hide suppresses the shared visible-ledger row builder');
+  assert.deepEqual(statusCalls, [], 'hide does not create a duplicate status surface');
+  assert.deepEqual(widgetCalls, [], 'hide does not mutate the below-editor Plan/Awareness panel');
 
   await handleOctocodeAgentsCommand('list', ctx);
-  assert.ok(agentPanelLines().length > 0, 'list shows the ledger again');
+  assert.ok(agentPanelLines().length > 0, 'list shows the footer ledger rows again');
 
   stopLedgerTickerForTests();
 });
@@ -410,7 +518,7 @@ test('/octocode-agents hide removes the agent section from the unified status pa
 test('L4: no ticker is started when the UI is absent (headless)', () => {
   if (isSubagentProcess()) return;
   const ctx = { hasUI: false, ui: { setStatus: () => {}, setWidget: () => {} } } as never;
-  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => mock as never);
   spawnRpcAgent({ task: 'headless job', resourceMode: 'lean' }, ctx);
   refreshAgentLedgerUi(ctx);
@@ -422,7 +530,7 @@ test('L4: no ticker is started when the UI is absent (headless)', () => {
 
 test('SEV-1: spawnRpcAgent defaults worker --model/--provider to the parent ctx.model', () => {
   if (isSubagentProcess()) return;
-  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => mock as never);
   const ctx = {
     hasUI: false,
@@ -440,7 +548,7 @@ test('SEV-1: spawnRpcAgent defaults worker --model/--provider to the parent ctx.
 
 test('SEV-1: an explicit model/provider still wins over the parent default', () => {
   if (isSubagentProcess()) return;
-  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => mock as never);
   const ctx = { hasUI: false, model: { id: 'parent-model', provider: 'parent-prov' }, ui: { setStatus: () => {}, setWidget: () => {} } } as never;
   const record = spawnRpcAgent({ task: 't', resourceMode: 'lean', model: 'chosen-model', provider: 'chosen-prov' }, ctx);
@@ -450,7 +558,7 @@ test('SEV-1: an explicit model/provider still wins over the parent default', () 
 
 test('SEV-1: an explicit model without provider does not inherit an unrelated parent provider', () => {
   if (isSubagentProcess()) return;
-  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => mock as never);
   const ctx = { hasUI: false, model: { id: 'parent-model', provider: 'parent-prov' }, ui: { setStatus: () => {}, setWidget: () => {} } } as never;
   assert.throws(
@@ -459,9 +567,9 @@ test('SEV-1: an explicit model without provider does not inherit an unrelated pa
   );
 });
 
-test('SEV-1: OpenAI GPT-5 tool-calling workers omit --thinking to avoid reasoning_effort 400s', () => {
+test('SEV-1: OpenAI GPT-5 tool-calling workers force --thinking off to override inherited defaults', () => {
   if (isSubagentProcess()) return;
-  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => mock as never);
   const record = spawnRpcAgent({
     task: 'Goal: test\nContext: test\nScope: test\nOwnership: test\nAcceptance: test\nReturn: test',
@@ -472,17 +580,19 @@ test('SEV-1: OpenAI GPT-5 tool-calling workers omit --thinking to avoid reasonin
     tools: ['web', 'MCPTool'],
   }, { hasUI: false, ui: { setStatus: () => {}, setWidget: () => {} } } as never);
 
-  assert.equal(record.args.includes('--thinking'), false, 'tool-calling OpenAI GPT-5 worker must not pass --thinking');
+  const thinkingIdx = record.args.indexOf('--thinking');
+  assert.ok(thinkingIdx >= 0, 'tool-calling OpenAI GPT-5 worker must override inherited thinking');
+  assert.equal(record.args[thinkingIdx + 1], 'off', 'the explicit override prevents reasoning_effort from reaching Chat Completions');
   assert.ok(record.args.includes('--tools'), 'worker still receives its tool allowlist');
   assert.ok(
-    record.policyWarnings.some((warning) => /Omitted --thinking for OpenAI GPT-5 tool-calling worker/.test(warning)),
-    'spawn policy explains the compatibility omission',
+    record.policyWarnings.some((warning) => /Forced --thinking off for OpenAI GPT-5 tool-calling worker/.test(warning)),
+    'spawn policy explains the compatibility override',
   );
 });
 
 test('SEV-1: modelRegistry rejects mismatched model/provider pairs before spawning', () => {
   if (isSubagentProcess()) return;
-  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => mock as never);
   const ctx = {
     hasUI: false,
@@ -497,7 +607,7 @@ test('SEV-1: modelRegistry rejects mismatched model/provider pairs before spawni
 
 test('SEV-1: spawnSubagent inherits the parent provider when the caller does not pass one', async () => {
   if (isSubagentProcess()) return;
-  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   let capturedArgs: string[] = [];
   setAgentProcessFactoryForTests((_command, args) => {
     capturedArgs = args;
@@ -531,7 +641,7 @@ test('SEV-1: spawnSubagent inherits the parent provider when the caller does not
 
 test('SEV-2: an errored agent_end message surfaces the model error on record.error', () => {
   if (isSubagentProcess()) return;
-  const mock = makeMockProcess({ stdinThrows: false, exitImmediately: false });
+  const mock = makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => mock as never);
   const ctx = { hasUI: false, ui: { setStatus: () => {}, setWidget: () => {} } } as never;
   const record = spawnRpcAgent({ task: 'boom', resourceMode: 'lean' }, ctx);

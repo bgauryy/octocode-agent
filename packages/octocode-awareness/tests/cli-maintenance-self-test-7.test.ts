@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -83,10 +83,19 @@ it('--help exits 0', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('memory record');
     expect(r.stdout).toContain('octocode-awareness');
+    expect(r.stdout).toContain('FIRST RUN');
+    expect(r.stdout).toContain('AGENT LOOP');
+    expect(r.stdout).toContain('DISCOVER');
+    expect(r.stdout).toContain('EVIDENCE & REFERENCES');
+    expect(r.stdout).toContain('npx octocode --help');
+    expect(r.stdout).toContain('npx octocode tools --json');
+    expect(r.stdout).toContain('<AGENT_INSTRUCTIONS>');
+    expect(r.stdout).toContain('ask the user immediately before every real install');
+    expect(r.stdout).toContain('never use --host pi');
     expect(r.stdout).not.toContain('octocode-skills');
     expect(r.stdout).toContain('out/skills');
-    expect(r.stdout).toContain('octocode-awareness schema commands --compact');
-    expect(Buffer.byteLength(r.stdout, 'utf8')).toBeLessThanOrEqual(1536);
+    expect(r.stdout).toContain('npx @octocodeai/octocode-awareness schema commands --compact');
+    expect(Buffer.byteLength(r.stdout, 'utf8')).toBeLessThanOrEqual(3072);
     expect(r.stdout).not.toContain('tell-memory');
     expect(r.stdout).not.toContain('get-memory');
     expect(r.stdout).not.toContain('<awareness-package>');
@@ -101,8 +110,9 @@ it('installed skill help resolves sibling bundled skills from the skill root', (
 it('no command prints the agent-instructions discovery guide', () => {
     const r = spawnSync(NODE, [SCRIPT], { encoding: 'utf8', timeout: 5000 });
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('start:');
-    expect(Buffer.byteLength(r.stdout, 'utf8')).toBeLessThanOrEqual(1536);
+    expect(r.stdout).toContain('FIRST RUN');
+    expect(r.stdout).toContain('AGENT LOOP');
+    expect(Buffer.byteLength(r.stdout, 'utf8')).toBeLessThanOrEqual(3072);
     expect(r.stdout).not.toContain('<awareness-package>');
   });
 it('--help --compact returns a short agent guide', () => {
@@ -117,7 +127,18 @@ it('--help --compact returns a short agent guide', () => {
     expect(r.stdout).toContain('refinement set|get|list|delete');
     expect(r.stdout).toMatch(/exits 0 ok/);
     expect(r.stdout).not.toContain('<awareness-package>');
-    expect(r.stdout.split('\n').filter(Boolean).length).toBeLessThanOrEqual(9);
+    expect(r.stdout.split('\n').filter(Boolean).length).toBeLessThanOrEqual(10);
+  });
+it('resolves bundled skills when the CLI is invoked through an npx-style symlink', () => {
+    const dir = mktemp();
+    const linkedScript = join(dir, 'octocode-awareness');
+    try {
+      symlinkSync(SCRIPT, linkedScript);
+      const r = spawnSync(NODE, [linkedScript, '--help', '--compact'], { encoding: 'utf8', timeout: 5000 });
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain('bundled-skills(1):');
+      expect(r.stdout).toContain('out/skills');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 it('no command with --compact prints compact discovery instead of unknown-command JSON', () => {
     const r = spawnSync(NODE, [SCRIPT, '--compact'], { encoding: 'utf8', timeout: 5000 });
@@ -215,6 +236,7 @@ it('schema list maps to canonical CLI commands', () => {
       plan: 'plan create',
       task: 'task create',
       work: 'work start',
+      awareness_config: 'config show',
     };
     const unsupported = ['stats', 'embed_index', 'harness_apply', 'memory_export', 'memory_import', 'memory_index', 'view', 'notify', 'notify_query', 'notify_resolve', 'notify_prune', 'status'];
     expect(listed).not.toEqual(expect.arrayContaining(unsupported));

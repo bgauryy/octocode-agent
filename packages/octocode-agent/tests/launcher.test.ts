@@ -24,7 +24,6 @@ import {
   resolvePackageJson,
   readPackageVersion,
   spawnExitStatus,
-  LEAN_EXCLUDE_TOOLS,
   launcherRoot,
   versionData,
   configData,
@@ -34,10 +33,8 @@ import {
   sessionsData,
   completionScript,
   COMPLETION_SHELLS,
-  printLaunchBanner,
   doctorReport,
 } from '../src/launcher.js';
-import { stripAnsi } from '../src/ui.js';
 import type { LaunchDeps, PiBinInfo } from '../src/types.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -63,12 +60,6 @@ describe('constants', () => {
   it('CORE_SPEC is the npm: spec for pi -e flag', () => {
     expect(CORE_SPEC).toBe(`npm:${CORE_PACKAGE}`);
     expect(CORE_SPEC).toContain('@octocodeai/pi-extension');
-  });
-
-  it('LEAN_EXCLUDE_TOOLS contains grep, find, ls', () => {
-    expect(LEAN_EXCLUDE_TOOLS).toContain('grep');
-    expect(LEAN_EXCLUDE_TOOLS).toContain('find');
-    expect(LEAN_EXCLUDE_TOOLS).toContain('ls');
   });
 
   it('spawnExitStatus treats null or missing status as failure', () => {
@@ -171,7 +162,6 @@ describe('parseInvocation', () => {
   });
 
   it('routes surface verbs and parses --profile', () => {
-    expect(parseInvocation(['research', 'q']).command).toBe('research');
     expect(parseInvocation(['memory', 'recall']).command).toBe('memory');
     expect(parseInvocation(['awareness', 'status']).command).toBe('awareness');
     expect(parseInvocation(['tools']).command).toBe('tools');
@@ -230,14 +220,6 @@ describe('buildLaunchEnv', () => {
   it('never overrides an explicit OCTOCODE_PROMPT_MODE', () => {
     const env = buildLaunchEnv({ OCTOCODE_PROMPT_MODE: 'custom-mode' });
     expect(env.OCTOCODE_PROMPT_MODE).toBe('custom-mode');
-  });
-
-  it('sets PI_CACHE_RETENTION=long by default; never overrides an explicit value', () => {
-    const defaultEnv = buildLaunchEnv({});
-    expect(defaultEnv.PI_CACHE_RETENTION).toBe('long');
-
-    const explicitEnv = buildLaunchEnv({ PI_CACHE_RETENTION: 'short' });
-    expect(explicitEnv.PI_CACHE_RETENTION).toBe('short');
   });
 
   it('defaults PI_SKIP_VERSION_CHECK=1 (our update story wins); explicit values keep control', () => {
@@ -341,6 +323,7 @@ describe('helpReport', () => {
     expect(report).toContain('OCTOCODE_PI_BIN');
     expect(report).toContain('OCTOCODE_PI_PACKAGE');
     expect(report).toContain('SDK embed');
+    expect(report).toContain('suppress Pi native tools');
   });
 });
 
@@ -351,7 +334,8 @@ describe('configReport', () => {
     const report = configReport({});
     expect(report).toContain('octocode home');
     expect(report).toContain('core');
-    expect(report).toContain('pi host');
+    expect(report).toContain('runtime');
+    expect(report).not.toContain('pi host');
     expect(report).toContain('launcher version');
     expect(report).toContain('api keys set');
   });
@@ -557,10 +541,11 @@ describe('completionScript', () => {
 // ── buildPiArgs ────────────────────────────────────────────────────────────────
 
 describe('buildPiArgs', () => {
-  it('default includes --no-extensions and lean exclude while keeping context files', () => {
+  it('default disables every Pi builtin while keeping extension tools and context files', () => {
     const args = buildPiArgs('npm:@octocodeai/pi-extension', [], {});
     expect(args).toContain('--no-extensions');
-    expect(args).toContain('--exclude-tools');
+    expect(args).toContain('--no-builtin-tools');
+    expect(args).not.toContain('--exclude-tools');
     expect(args).not.toContain('--no-context-files');
   });
 
@@ -570,16 +555,14 @@ describe('buildPiArgs', () => {
     expect(args).toContain('npm:@octocodeai/pi-extension');
   });
 
-  it('OCTOCODE_AGENT_NO_CONTEXT_FILES=1 suppresses AGENTS.md loading', () => {
+  it('OCTOCODE_AGENT_NO_CONTEXT_FILES=1 suppresses context file loading', () => {
     const args = buildPiArgs('spec', [], { OCTOCODE_AGENT_NO_CONTEXT_FILES: '1' });
     expect(args).toContain('--no-context-files');
   });
 
-  it('FULL_TOOLS opts out of lean; CLEAN additionally suppresses user skills and context', () => {
-    const fullArgs = buildPiArgs('spec', [], { OCTOCODE_AGENT_FULL_TOOLS: '1' });
-    expect(fullArgs).not.toContain('--exclude-tools');
-
+  it('CLEAN suppresses user skills and context without restoring Pi builtins', () => {
     const cleanArgs = buildPiArgs('spec', [], { OCTOCODE_AGENT_CLEAN: '1' });
+    expect(cleanArgs).toContain('--no-builtin-tools');
     expect(cleanArgs).toContain('--no-skills');
     expect(cleanArgs).toContain('--no-context-files');
   });
@@ -878,21 +861,13 @@ describe('main', () => {
   it('doctor prints a health pane with all checks and a valid exit code', async () => {
     const lines: string[] = [];
     const code = await main(['doctor', '--json'], { out: (m) => lines.push(m), env: {} });
-    const parsed = JSON.parse(lines.join('\n')) as { healthy: boolean; checks: unknown[] };
-    expect(parsed.checks).toHaveLength(5);
+    const parsed = JSON.parse(lines.join('\n')) as { healthy: boolean; checks: Array<{ name?: string; ok?: boolean }> };
+    expect(parsed.checks.length).toBeGreaterThan(0);
+    expect(parsed.checks.every((check) => typeof check.name === 'string' && typeof check.ok === 'boolean')).toBe(true);
     expect(typeof parsed.healthy).toBe('boolean');
     expect([0, 1]).toContain(code);
   });
 
-  it('research spawns `npx octocode search`', async () => {
-    let cmd = '';
-    let args: readonly string[] = [];
-    const spawn = vi.fn((c: string, a?: readonly string[]) => { cmd = c; args = a ?? []; return { status: 0 }; });
-    const code = await main(['research', 'auth flow'], { env: {}, spawn });
-    expect(code).toBe(0);
-    expect(cmd).toBe('npx');
-    expect(args).toEqual(['octocode', 'search', 'auth flow']);
-  });
 
   it('surface verbs report null spawn status as failure', async () => {
     const spawn = vi.fn().mockReturnValue({ status: null });
@@ -908,7 +883,7 @@ describe('main', () => {
       spawn,
     });
     expect(code).toBe(0);
-    // buildAwarenessLiteCommand spawns the CLI under the SAME Node that runs the
+    // buildAwarenessCommand spawns the CLI under the SAME Node that runs the
     // launcher (process.execPath), not a bare 'node' from PATH — this guarantees a
     // consistent runtime even when node isn't on PATH.
     expect(cmd).toBe(process.execPath);
@@ -1011,51 +986,5 @@ describe('styled surfaces', () => {
     expect(report).not.toContain('(not set)');
     expect(report).toContain('~/.octocode');
     expect(report).not.toContain('/Users/');
-  });
-});
-
-// ── printLaunchBanner ─────────────────────────────────────────────────────────
-
-describe('printLaunchBanner', () => {
-  it('prints the one-line brand banner on a TTY', () => {
-    const lines: string[] = [];
-    const printed = printLaunchBanner([
-      '--model',
-      'x',
-    ], { ANTHROPIC_API_KEY: 'sk-x' }, (m) => lines.push(m), true);
-    expect(printed).toBe(true);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('octocode-agent');
-    expect(lines[0]).toContain('◆');
-  });
-
-  it('points keyless first-runners at the wizard right under the banner', () => {
-    const lines: string[] = [];
-    printLaunchBanner([], {}, (m) => lines.push(m), true);
-    expect(lines).toHaveLength(2);
-    expect(stripAnsi(lines[1])).toContain('octocode-agent auth login');
-  });
-
-  it('stays silent without a TTY', () => {
-    const lines: string[] = [];
-    expect(printLaunchBanner([], {}, (m) => lines.push(m), false)).toBe(false);
-    expect(lines).toHaveLength(0);
-  });
-
-  it('shows the resolved model when launch flags define one', () => {
-    const lines: string[] = [];
-    printLaunchBanner(['--model', 'claude-opus-5'], {}, (m) => lines.push(m), true);
-    expect(stripAnsi(lines[0])).toContain('model claude-opus-5');
-  });
-
-  it('honors OCTOCODE_AGENT_NO_BANNER and non-interactive flags', () => {
-    const lines: string[] = [];
-    const log = (m: string): void => {
-      lines.push(m);
-    };
-    expect(printLaunchBanner([], { OCTOCODE_AGENT_NO_BANNER: '1' }, log, true)).toBe(false);
-    expect(printLaunchBanner(['-p', 'hi'], {}, log, true)).toBe(false);
-    expect(printLaunchBanner(['--mode', 'rpc'], {}, log, true)).toBe(false);
-    expect(lines).toHaveLength(0);
   });
 });

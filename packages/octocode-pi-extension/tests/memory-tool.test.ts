@@ -1,100 +1,98 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'vitest';
 import { Type } from 'typebox';
+import type { ExternalMemoryParams, ExternalMemoryResult } from '@octocodeai/octocode-awareness';
 import type { ToolDefinition, PiContext, PiTheme } from '../src/types.js';
-import { registerMemoryTool, setMemoryCliRunnerForTests, type MemoryCliResult } from '../src/tools/memory-tool.js';
+import { registerMemoryTool, setMemoryActionRunnerForTests } from '../src/tools/memory-tool.js';
 
 function loadTool(): ToolDefinition {
   let captured: ToolDefinition | undefined;
-  const pi = { registerTool: (def: ToolDefinition) => { captured = def; } };
-  registerMemoryTool(pi, Type, new Set<string>(), (_pi, _names, def) => { captured = def; });
+  registerMemoryTool({ registerTool: (def) => { captured = def; } }, Type, new Set(), (_pi, _names, def) => { captured = def; });
   if (!captured) throw new Error('memory tool not registered');
   return captured;
 }
 
 const ctx = { cwd: '/tmp/mem-ws' } as unknown as PiContext;
-const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t } as unknown as PiTheme;
+const theme = { fg: (_c: string, text: string) => text, bold: (text: string) => text } as unknown as PiTheme;
 
-afterEach(() => setMemoryCliRunnerForTests(null));
+afterEach(() => setMemoryActionRunnerForTests(null));
 
-function stubRunner(result: MemoryCliResult) {
-  const calls: string[][] = [];
-  setMemoryCliRunnerForTests((args) => { calls.push(args); return result; });
-  return calls;
+function envelope(...queries: Array<Partial<ExternalMemoryParams> & Pick<ExternalMemoryParams, 'action'>>) {
+  return { queries: queries.map((query) => ({ reasoning: 'exercise memory behavior', ...query })) };
 }
 
-test('memory recall builds the CLI args and returns the recalled count', async () => {
-  const calls = stubRunner({ code: 0, stdout: JSON.stringify([{ memoryId: 'mem_a' }, { memoryId: 'mem_b' }]), stderr: '' });
-  const tool = loadTool();
-  const res = await tool.execute('id', { action: 'recall', query: 'lock gate', smart: true }, undefined, undefined, ctx);
-  const args = calls[0]!;
-  assert.deepEqual([args[0], args[1]], ['memory', 'recall']);
-  assert.ok(args.includes('--query') && args[args.indexOf('--query') + 1] === 'lock gate');
-  assert.equal(args.includes('--smart'), false, 'Lite CLI does not support smart recall');
-  assert.ok(args.includes('--workspace') && args[args.indexOf('--workspace') + 1] === '/tmp/mem-ws');
-  assert.equal(args.includes('--compact'), false);
-  assert.match(res.content[0]!.text, /2/);
+test('memory exposes one query envelope derived from the package action contract', () => {
+  const schema = loadTool().parameters as {
+    properties?: { queries?: { items?: { properties?: Record<string, { enum?: string[] }>; required?: string[] } } };
+    required?: string[];
+  };
+  assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries', 'queryRunType']);
+  assert.ok(schema.required?.includes('queries'));
+  assert.deepEqual(schema.properties?.queries?.items?.properties?.['action']?.enum, ['recall', 'record', 'forget', 'review', 'suggest']);
+  assert.ok(schema.properties?.queries?.items?.required?.includes('reasoning'));
 });
 
-test('memory record maps to Lite store text and returns the new id', async () => {
-  const calls = stubRunner({ code: 0, stdout: JSON.stringify({ memoryId: 'mem_new' }), stderr: '' });
-  const tool = loadTool();
-  const res = await tool.execute('id', {
-    action: 'record', label: 'GOTCHA', observation: 'x self-heals', importance: 6, taskContext: 'build',
-  }, undefined, undefined, ctx);
-  const args = calls[0]!;
-  assert.deepEqual([args[0], args[1]], ['memory', 'store']);
-  assert.equal(args[args.indexOf('--label') + 1], 'GOTCHA');
-  assert.equal(args[args.indexOf('--text') + 1], 'build: x self-heals');
-  // Lite has no importance column; the validated value is persisted as a tag.
-  assert.equal(args.includes('--importance'), false);
-  assert.equal(args[args.indexOf('--tags') + 1], 'importance:6');
-  assert.equal(args.includes('--task-context'), false);
-  assert.equal(args.includes('--agent-id'), false);
-  assert.match(res.content[0]!.text, /mem_new/);
+test('memory forwards typed requests and composes host-visible results', async () => {
+  const calls: Array<{ workspace: string; params: ExternalMemoryParams }> = [];
+  setMemoryActionRunnerForTests((input) => {
+    calls.push(input);
+    return { action: 'recall', summary: 'Recalled 1 memory.', result: [{ memoryId: 'mem_1' }], count: 1 };
+  });
+  const result = await loadTool().execute('m1', envelope({ action: 'recall', query: 'adapter' }), undefined, undefined, ctx);
+  assert.deepEqual(calls, [{ workspace: '/tmp/mem-ws', params: { action: 'recall', query: 'adapter', reasoning: 'exercise memory behavior' } }]);
+  assert.match((result.content[0] as { text: string }).text, /Recalled 1 memory/);
+  assert.equal((result.details as { count: number }).count, 1);
 });
 
-test('memory forget forwards the memory id', async () => {
-  const calls = stubRunner({ code: 0, stdout: JSON.stringify({ forgotten: true }), stderr: '' });
+test('memory preflights a batch before any mutation and preserves source order', async () => {
+  const calls: string[] = [];
+  setMemoryActionRunnerForTests(({ params }) => {
+    calls.push(params.action);
+    return { action: params.action, summary: params.action } as ExternalMemoryResult;
+  });
   const tool = loadTool();
-  await tool.execute('id', { action: 'forget', memoryId: 'mem_x' }, undefined, undefined, ctx);
-  const args = calls[0]!;
-  assert.deepEqual([args[0], args[1]], ['memory', 'forget']);
-  assert.equal(args[args.indexOf('--memory-id') + 1], 'mem_x');
-  assert.ok(args.includes('--workspace') && args[args.indexOf('--workspace') + 1] === '/tmp/mem-ws');
+  await assert.rejects(tool.execute('m2', envelope(
+    { action: 'record', label: 'GOTCHA', observation: 'A verified reusable observation.', importance: 8 },
+    { action: 'forget' },
+  ), undefined, undefined, ctx), /queries\[1\].*memoryId/);
+  assert.deepEqual(calls, []);
+
+  await tool.execute('m3', envelope(
+    { action: 'recall', query: 'one' },
+    { action: 'recall', query: 'two' },
+  ), undefined, undefined, ctx);
+  assert.deepEqual(calls, ['recall', 'recall']);
 });
 
-test('memory recall without a query errors before invoking the CLI', async () => {
-  const calls = stubRunner({ code: 0, stdout: '{}', stderr: '' });
+test('memory renders suggest/review payloads and runner failures consistently', async () => {
   const tool = loadTool();
-  const res = await tool.execute('id', { action: 'recall' }, undefined, undefined, ctx);
-  assert.equal(res.isError, true);
-  assert.equal(calls.length, 0, 'CLI must not run on invalid input');
+  const results: ExternalMemoryResult[] = [
+    { action: 'suggest', summary: 'Suggested memory candidate (not recorded).', candidate: { action: 'record', label: 'EXPERIENCE' } },
+    { action: 'review', summary: 'Reviewed 1 memory; found 1 candidate.', result: [{ memoryId: 'mem_1' }], candidates: [{ memoryId: 'mem_1', label: 'GOTCHA', issues: ['missing-source'], preview: 'x' }] },
+  ];
+  setMemoryActionRunnerForTests(() => results.shift()!);
+  const suggested = await tool.execute('m4', envelope({ action: 'suggest', observation: 'A durable candidate learning.' }), undefined, undefined, ctx);
+  assert.match((suggested.content[0] as { text: string }).text, /not recorded/);
+  const reviewed = await tool.execute('m5', envelope({ action: 'review' }), undefined, undefined, ctx);
+  assert.match((reviewed.content[0] as { text: string }).text, /missing-source/);
+
+  setMemoryActionRunnerForTests(() => { throw new Error('database unavailable'); });
+  const failed = await tool.execute('m6', envelope({ action: 'recall', query: 'x' }), undefined, undefined, ctx);
+  assert.equal(failed.isError, true);
+  assert.match((failed.content[0] as { text: string }).text, /database unavailable/);
 });
 
-test('memory record with out-of-range importance errors before invoking the CLI', async () => {
-  const calls = stubRunner({ code: 0, stdout: '{}', stderr: '' });
+test('memory validates single calls before execution and renders semantic UI states', async () => {
+  let called = false;
+  setMemoryActionRunnerForTests(() => { called = true; return { action: 'record', summary: 'recorded' }; });
   const tool = loadTool();
-  const res = await tool.execute('id', { action: 'record', label: 'BUG', observation: 'y', importance: 99 }, undefined, undefined, ctx);
-  assert.equal(res.isError, true);
-  assert.equal(calls.length, 0);
-});
-
-test('memory surfaces a CLI failure as an error result', async () => {
-  stubRunner({ code: 1, stdout: JSON.stringify({ ok: false, error: 'boom' }), stderr: '' });
-  const tool = loadTool();
-  const res = await tool.execute('id', { action: 'forget', memoryId: 'mem_x' }, undefined, undefined, ctx);
-  assert.equal(res.isError, true);
-  assert.match(res.content[0]!.text, /boom/);
-});
-
-test('renderCall and renderResult produce concise themed lines', async () => {
-  stubRunner({ code: 0, stdout: JSON.stringify([{ memoryId: 'a' }, { memoryId: 'b' }, { memoryId: 'c' }]), stderr: '' });
-  const tool = loadTool();
-  const callLine = tool.renderCall!({ action: 'recall', query: 'abc' }, theme).render(80)[0]!;
-  assert.match(callLine, /memory/);
-  assert.match(callLine, /recall/);
-  const res = await tool.execute('id', { action: 'recall', query: 'abc' }, undefined, undefined, ctx);
-  const resultLine = tool.renderResult!(res, { expanded: false }, theme).render(80)[0]!;
-  assert.match(resultLine, /3/);
+  const invalid = await tool.execute('m7', envelope({ action: 'record', label: 'GOTCHA', observation: 'short', importance: 8 }), undefined, undefined, ctx);
+  assert.equal(invalid.isError, true);
+  assert.equal(called, false);
+  const call = tool.renderCall?.(envelope({ action: 'recall', query: 'locks' }), theme) as { render(width?: number): string[] };
+  const success = tool.renderResult?.({ content: [{ type: 'text', text: 'Recalled 1 memory.' }] }, {}, theme) as { render(width?: number): string[] };
+  const failure = tool.renderResult?.({ content: [{ type: 'text', text: 'failed' }], isError: true }, {}, theme) as { render(width?: number): string[] };
+  assert.match(call.render(80).join('\n'), /recall.*locks/);
+  assert.match(success.render(80).join('\n'), /Recalled 1 memory/);
+  assert.match(failure.render(80).join('\n'), /failed/);
 });

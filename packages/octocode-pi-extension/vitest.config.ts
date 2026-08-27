@@ -8,12 +8,16 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    setupFiles: ['../../test-utils/external-effects-guard.ts'],
     // Clear shell-inherited env vars that alter extension behaviour under test.
     // OCTOCODE_PI_SUBAGENT=1 causes registerAgentTools() to early-return,
     // so spawnAgent / AgentMessage would never be registered.
     env: {
       OCTOCODE_PI_SUBAGENT: '',
       OCTOCODE_HOME: TEST_OCTOCODE_HOME,
+      OCTOCODE_CHROME_DEBUG_E2E: '',
+      RUN_CHROME_LIVE: '',
+      RUN_MCP_LIVE: '',
     },
     coverage: {
       provider: 'v8',
@@ -23,7 +27,7 @@ export default defineConfig({
         'src/ambient.d.ts',
         'src/types.ts',
         // Pure re-export shims — coverage is attributed to the upstream packages
-        // they forward (@octocodeai/config and @octocodeai/octocode-awareness-lite).
+      // they forward (@octocodeai/config and @octocodeai/octocode-awareness).
         // Including them produces misleading 0% rows with no signal.
         'src/env.ts',
         'src/awareness.ts',

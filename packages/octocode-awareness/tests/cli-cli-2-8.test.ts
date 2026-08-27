@@ -140,7 +140,7 @@ it('every command in schema commands has focused help or is schema/hook utility'
       const help = spawnSync(NODE, [SCRIPT, ...row.command.split(' '), '--help'], { encoding: 'utf8', timeout: 5000 });
       expect(help.status, `${row.command} --help failed`).toBe(0);
       expect(help.stdout, `${row.command} help should mention its command`).toContain(row.command.split(' ')[0]);
-      expect(help.stdout, `${row.command} help should not fall back to top-level help`).not.toContain('agent map: octocode-awareness schema commands --compact');
+      expect(help.stdout, `${row.command} help should not fall back to top-level help`).not.toContain('agent map: npx @octocodeai/octocode-awareness schema commands --compact');
       expect(help.stdout, `${row.command} help should show schema or example`).toMatch(/schema:|example:/);
     }
   });

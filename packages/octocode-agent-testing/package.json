@@ -1,0 +1,55 @@
+{
+  "name": "@octocodeai/agent-testing",
+  "version": "0.1.0",
+  "description": "Deterministic Pi host, UI, session, agent, and browser mocks for Octocode end-to-end flow tests.",
+  "keywords": [
+    "octocode",
+    "pi",
+    "testing",
+    "mock",
+    "agent"
+  ],
+  "author": "Guy Bary <bgauryy@octocodeai.com>",
+  "homepage": "https://octocode.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bgauryy/octocode-agent.git",
+    "directory": "packages/octocode-agent-testing"
+  },
+  "bugs": "https://github.com/bgauryy/octocode-agent/issues",
+  "license": "MIT",
+  "type": "module",
+  "main": "./out/index.js",
+  "types": "./out/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./out/index.d.ts",
+      "import": "./out/index.js",
+      "default": "./out/index.js"
+    }
+  },
+  "files": [
+    "out/**",
+    "README.md"
+  ],
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf out/",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "node ../../node_modules/vitest/vitest.mjs run",
+    "test:quiet": "node ../../node_modules/vitest/vitest.mjs run --silent",
+    "test:coverage": "node ../../node_modules/vitest/vitest.mjs run --coverage",
+    "verify": "yarn typecheck && yarn test:coverage && yarn build"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}

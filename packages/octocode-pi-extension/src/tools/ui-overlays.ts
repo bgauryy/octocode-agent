@@ -9,16 +9,39 @@
  * against the pi-tui primitives so the overlay works on any Pi that ships pi-tui.
  */
 
-import { Box, Container, SelectList, Text } from "@earendil-works/pi-tui";
+import { SelectList } from "@earendil-works/pi-tui";
 import type { PiTheme, PiContext } from "../types.js";
 import { MultiSelectList, multiSelectKeyAction, type MultiSelectTheme } from "./multi-select-list.js";
 import { truncateToWidth } from "./render-helpers.js";
 import { CLI_GLYPH } from "../tui/cli-design.js";
+import { TOKEN, type SemanticToken } from "../tui/palette.js";
+import { OVERLAY_HELP_MULTI, OVERLAY_HELP_SELECT, OVERLAY_HELP_SELECT_FILTER } from "../tui/content.js";
+
+/**
+ * Semantic paint with defensive chaining (overlay themes may lack fg in tests).
+ * Routes every overlay color through the TOKEN map so a palette remap reaches
+ * the overlays too.
+ */
+function fgTok(theme: PiTheme | undefined, token: SemanticToken, text: string): string {
+  return theme?.fg?.(TOKEN[token], text) ?? text;
+}
+
+/**
+ * Shared responsive geometry for Octocode overlays: cap the height and let pi
+ * hide the overlay entirely on terminals too narrow to render it legibly.
+ */
+export const OCTOCODE_OVERLAY_OPTIONS = {
+  width: 88,
+  minWidth: 40,
+  maxHeight: "80%",
+  margin: 1,
+  visible: (termWidth: number) => termWidth >= 40,
+} as const;
 
 /** Branded overlay title line, consistent across select / multi-select overlays. */
 function overlayHeading(theme: PiTheme | undefined, title: string): string {
   const text = `${CLI_GLYPH.brand} ${title}`;
-  return theme?.fg?.("accent", theme?.bold?.(text) ?? text) ?? text;
+  return fgTok(theme, "brand", theme?.bold?.(text) ?? text);
 }
 
 /** pi-tui SelectList theme shape (5 colorizer fns). */
@@ -32,15 +55,15 @@ export interface SelectListThemeFns {
 
 const id = (t: string) => t;
 
-/** Map the Octocode/Pi theme to a pi-tui SelectList theme (accent/muted/dim/warning). */
+/** Map the Octocode/Pi theme to a pi-tui SelectList theme via the semantic TOKEN map. */
 export function octocodeSelectListTheme(theme?: PiTheme): SelectListThemeFns {
-  const fg = (color: Parameters<PiTheme['fg']>[0]) => (t: string) => theme?.fg?.(color, t) ?? id(t);
+  const fg = (token: SemanticToken) => (t: string) => fgTok(theme, token, t) || id(t);
   return {
-    selectedPrefix: fg("accent"),
-    selectedText: fg("accent"),
+    selectedPrefix: fg("brand"),
+    selectedText: fg("brand"),
     description: fg("muted"),
     scrollInfo: fg("dim"),
-    noMatch: fg("warning"),
+    noMatch: fg("muted"),
   };
 }
 
@@ -92,6 +115,17 @@ export interface SelectOverlayOptions {
  * (or null on cancel). Type-to-filter is wired through the pure `applyFilterKey` buffer.
  * Returns undefined when the host has no interactive UI.
  */
+/** Case-insensitive substring match on everything the user can SEE (label,
+ * description) plus the value — not a value-prefix match, because values are
+ * often internal (`cmd:…`, commit SHAs) and never what the user types. */
+export function selectItemMatchesFilter(item: SelectOverlayItem, filter: string): boolean {
+  const f = filter.trim().toLowerCase();
+  if (!f) return true;
+  return [item.label, item.value, item.description ?? ""].some((s) =>
+    s.toLowerCase().includes(f),
+  );
+}
+
 export async function runSelectOverlay(
   ctx: PiContext | undefined,
   opts: SelectOverlayOptions,
@@ -99,6 +133,14 @@ export async function runSelectOverlay(
   if (ctx?.mode !== "tui" || !ctx?.hasUI || typeof ctx.ui?.custom !== "function") return undefined;
   const enableFilter = opts.filter ?? opts.items.length > 8;
 
+  // TODO(abort): the awaited custom() promise settles only on a user keypress
+  // (done() in onSelect/onCancel/empty-esc). If the surrounding tool turn is
+  // aborted while the overlay is open, this can hang. There is currently no safe
+  // wiring to force-dismiss it: PiContext exposes no AbortSignal or abort event
+  // (see PiContext in types.ts), and the custom() `onHandle` callback yields an
+  // untyped `handle: unknown` with no documented dismiss method — calling one
+  // would fabricate an API. Wiring a real abort path needs either a signal on
+  // PiContext or a typed dismiss handle, plus threading a signal from callers.
   return ctx.ui.custom<string | null>(
     (
       tui: any,
@@ -106,59 +148,78 @@ export async function runSelectOverlay(
       _kb: unknown,
       done: (v: string | null) => void,
     ) => {
-      const container = new Container();
-      container.addChild(new Text(overlayHeading(theme, opts.title), 1, 0));
-
+      const heading = overlayHeading(theme, opts.title);
       let filter = "";
-      const filterLine = enableFilter
-        ? new Text(theme?.fg?.("dim", "filter: ") ?? "filter: ", 1, 0)
-        : undefined;
-      if (filterLine) container.addChild(filterLine);
 
-      const list = new SelectList(
-        opts.items.map((o) => ({
-          value: o.value,
-          label: o.label,
-          description: o.description,
-        })) as any,
-        Math.min(opts.maxVisible ?? 10, Math.max(1, opts.items.length)),
-        octocodeSelectListTheme(theme) as any,
-      );
-      (list as any).onSelect = (item: { value: string }) => done(item.value);
-      (list as any).onCancel = () => done(null);
+      // The list is rebuilt when the filter changes: pi-tui's own setFilter
+      // prefix-matches on item.value (internal ids like `cmd:…` / SHAs), which
+      // made typing what you see filter everything out. We filter on the
+      // visible label/description ourselves instead.
+      const makeList = (keepValue?: string): { list: any; empty: boolean } => {
+        const visible = opts.items.filter((o) => selectItemMatchesFilter(o, filter));
+        if (visible.length === 0) return { list: undefined, empty: true };
+        const list = new SelectList(
+          visible.map((o) => ({
+            value: o.value,
+            label: o.label,
+            description: o.description,
+          })) as any,
+          Math.min(opts.maxVisible ?? 10, Math.max(1, visible.length)),
+          octocodeSelectListTheme(theme) as any,
+        );
+        (list as any).onSelect = (item: { value: string }) => done(item.value);
+        (list as any).onCancel = () => done(null);
+        // Rebuilds must not lose the user's place: re-select the previously
+        // highlighted item when it survives the filter (SelectList exposes
+        // setSelectedIndex/getSelectedItem for exactly this).
+        if (keepValue) {
+          const keepIndex = visible.findIndex((o) => o.value === keepValue);
+          if (keepIndex > 0) (list as any).setSelectedIndex?.(keepIndex);
+        }
+        return { list, empty: false };
+      };
+      let { list, empty } = makeList();
 
-      // Frame the list body with a padded Box for a native, distinct look.
-      const body = new Box(1, 0);
-      body.addChild(list);
-      container.addChild(body);
-
-      const help = enableFilter
-        ? "↑↓ navigate • type to filter • enter select • esc cancel"
-        : "↑↓ navigate • enter select • esc cancel";
-      container.addChild(new Text(theme?.fg?.("dim", help) ?? help, 1, 0));
+      const help = enableFilter ? OVERLAY_HELP_SELECT_FILTER : OVERLAY_HELP_SELECT;
+      const helpLine = fgTok(theme, "dim", help);
 
       return {
-        render: (w: number) => container.render(w),
-        invalidate: () => container.invalidate(),
+        render: (w: number) => {
+          const lines: string[] = [heading];
+          if (enableFilter) {
+            lines.push(fgTok(theme, "dim", `filter: ${filter}`));
+          }
+          if (empty) {
+            lines.push(fgTok(theme, "muted", "  no matches — backspace to clear"));
+          } else {
+            lines.push(...(list.render(w) as string[]).map((l: string) => ` ${l}`));
+          }
+          lines.push(helpLine);
+          return lines.map((line) => truncateToWidth(line, w));
+        },
+        invalidate: () => list?.invalidate?.(),
         handleInput: (data: string) => {
           if (enableFilter) {
             const next = applyFilterKey(filter, data);
             if (next.changed) {
               filter = next.buffer;
-              (list as any).setFilter?.(filter);
-              filterLine?.setText?.(
-                theme?.fg?.("dim", `filter: ${filter}`) ?? `filter: ${filter}`,
-              );
+              const keepValue = (list as any)?.getSelectedItem?.()?.value as string | undefined;
+              ({ list, empty } = makeList(keepValue));
               tui?.requestRender?.();
               return;
             }
+          }
+          if (empty) {
+            // Only esc/ctrl-c can act while nothing matches.
+            if (data === "\x1b" || data === "\x03") done(null);
+            return;
           }
           (list as any).handleInput(data);
           tui?.requestRender?.();
         },
       };
     },
-    { overlay: true },
+    { overlay: true, overlayOptions: OCTOCODE_OVERLAY_OPTIONS },
   );
 }
 
@@ -188,6 +249,11 @@ export async function runMultiSelectOverlay(
 ): Promise<string[] | undefined> {
   if (ctx?.mode !== "tui" || !ctx?.hasUI || typeof ctx.ui?.custom !== "function") return undefined;
 
+  // TODO(abort): same gap as runSelectOverlay — this awaited custom() promise
+  // settles only on a user keypress (done() in the confirm/cancel handlers), so
+  // an aborted tool turn can hang with the overlay open. No safe programmatic
+  // dismiss exists: PiContext carries no AbortSignal/abort event and custom()'s
+  // `onHandle` handle is untyped (`unknown`) with no documented dismiss API.
   const result = await ctx.ui.custom<string[] | null>(
     (
       tui: any,
@@ -196,8 +262,8 @@ export async function runMultiSelectOverlay(
       done: (v: string[] | null) => void,
     ) => {
       const heading = overlayHeading(theme, opts.title);
-      const help = "↑↓ navigate • space toggle • enter confirm • esc cancel";
-      const helpLine = theme?.fg?.("dim", help) ?? help;
+      const help = OVERLAY_HELP_MULTI;
+      const helpLine = fgTok(theme, "dim", help);
 
       const list = new MultiSelectList(
         opts.items.map((o) => ({
@@ -234,10 +300,7 @@ export async function runMultiSelectOverlay(
         },
       };
     },
-    { overlay: true },
+    { overlay: true, overlayOptions: OCTOCODE_OVERLAY_OPTIONS },
   );
   return result ?? undefined;
 }
-
-// Re-export for callers that only need width-safe truncation alongside overlays.
-export { truncateToWidth };

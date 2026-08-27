@@ -122,19 +122,25 @@ export function runHooksInstallUnlocked(argv: string[], options: HooksInstallOpt
   if (flag(argv, '--check')) {
     const strict = flag(argv, '--strict');
     const settingsPresent = checks.some((check) => check.present) || obsolete.length > 0;
+    // Skill hooks activate after invocation, so SessionStart is available only
+    // through installed Claude settings and is not part of frontmatter parity.
+    const definitionSpecs = host === 'claude'
+      ? specs.filter((spec) => spec.event !== 'SessionStart')
+      : specs;
     const definition = host === 'claude' && !globalMode
-      ? frontmatterHookDefinition(projectDir, specs)
+      ? frontmatterHookDefinition(projectDir, definitionSpecs)
       : { exists: false, complete: false, path: null };
     const frontmatterSurface = !settingsPresent && definition.exists;
     const configReady = frontmatterSurface
       ? definition.complete
       : status.installed_all && status.drifted.length === 0;
-    let receiptHealth = hookRuntimeReceiptHealth([], specs.map((spec) => spec.event));
+    const receiptEvents = (frontmatterSurface ? definitionSpecs : specs).map((spec) => spec.event);
+    let receiptHealth = hookRuntimeReceiptHealth([], receiptEvents);
     if (options.dbPath) {
       let database: ReturnType<typeof connectDb> | undefined;
       try {
         database = connectDb(options.dbPath);
-        receiptHealth = hookRuntimeReceiptHealth(hookReceipts(database, projectDir, host), specs.map((spec) => spec.event));
+        receiptHealth = hookRuntimeReceiptHealth(hookReceipts(database, projectDir, host), receiptEvents);
       } catch {
         // A missing/unreadable receipt store is unverified, never inferred healthy.
       } finally {

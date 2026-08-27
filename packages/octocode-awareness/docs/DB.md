@@ -1,18 +1,43 @@
-# Awareness database
+# Awareness databases
 
-Awareness stores runtime coordination state in one SQLite database. The default
-path is `$OCTOCODE_MEMORY_HOME/awareness.sqlite3`; without that environment
-variable it uses the platform memory-home directory resolved by
-`src/db-runtime.ts`.
+Awareness currently exposes two explicit local SQLite planes. Shared coordination
+uses the workspace-scoped `octocode.sqlite3` resolved by
+`@octocodeai/octocode-shared/paths` (`OCTOCODE_HOME` / `OCTOCODE_DB_PATH`). Advanced
+workflow commands use `$OCTOCODE_MEMORY_HOME/awareness.sqlite3`, or the platform
+memory-home path resolved by `src/db-runtime.ts`; `--db` overrides that path.
+
+Do not substitute similarly named commands or database overrides across the planes.
+The shared store deliberately co-locates coordination, continuity, control, and
+advanced-compatible auxiliary relations. The advanced OCT1 store remains the strict
+contract for `attend`, runs, signals, reflection, maintenance, and query exports.
 
 `<workspace>/.octocode/` is not the database. It holds optional read-only query
 exports written on request for readers that cannot query Awareness directly, plus
 authored plan narrative. SQLite remains authoritative.
 
-## One executable contract
+## Shared-store contract
 
-`src/db-schema.ts` owns all table, index, and optional FTS DDL. There is one
-current contract and one application identity:
+`src/coordination/coordination-migration.ts` owns the shared coordination and
+continuity DDL. Its fifteen primary entities are:
+
+- coordination: `plans`, `tasks`, `locks`, `work_presence`, `handoffs`, `memories`,
+  `agents`, `messages`, `message_receipts`;
+- continuity: `event_outbox`, `event_consumers`, `event_acknowledgements`,
+  `pending_interactions`, `authorization_receipts`, `capability_receipts`.
+
+The store also initializes eighteen advanced-compatible auxiliary relations and six
+Octocode control relations. `tests/database-shared-contract.test.ts` asserts the exact
+39-table application set, hot-path indexes, integrity, and foreign keys.
+
+Entity operations are split by domain under `src/coordination/`: plans/tasks and plan
+graphs; lock/work/handoff/check state; memory/agent/message operations; continuity;
+schema/dispatch; and host adapters. This domain split avoids both one giant store file
+and one tiny file per SQL statement.
+
+## Advanced OCT1 contract
+
+`src/db-schema.ts` owns all advanced table, index, and optional FTS DDL. There is one
+current OCT1 contract and one application identity:
 
 ```text
 application_id = 0x4f435431  # ASCII OCT1
@@ -22,7 +47,7 @@ The application ID distinguishes Awareness from unrelated SQLite files. The
 normalized schema fingerprint distinguishes the exact executable contract.
 There is no second initializer or parallel numeric contract field.
 
-The public database layer is split by responsibility:
+The advanced database layer is split by responsibility:
 
 - `db-runtime.ts` opens connections, classifies stores, chooses journal mode,
   applies retry bounds, and exposes cached connections.
@@ -33,6 +58,27 @@ The public database layer is split by responsibility:
   expired-lock eviction. It is not the query/filter layer — that's `repo-scope.ts`
   (shared parameterized scoping helpers) and the `repo-*.ts` row builders.
 - `db.ts` is the public barrel.
+
+Its 23 application tables are validated exactly by
+`tests/database-advanced-contract.test.ts`; optional `memories_fts` and its SQLite
+shadow tables are validated separately.
+
+## Query ownership
+
+The 16 live views are enumerated once by `AWARENESS_QUERY_VIEWS` in `repo-model.ts`.
+`repo-query.ts` dispatches them to focused row-builder modules:
+
+| Views | Owner |
+|---|---|
+| `repo-profile`, `files`, `activity` | `repo-files.ts` |
+| `memories`, `gotchas`, `lessons`, `plans`, `tasks`, `runs` | `repo-plans.ts` |
+| `locks`, `agents`, `signals`, `refinements`, `developer-review` | `repo-coordination.ts` |
+| `workboard` | `repo-workboard.ts` |
+| `all` | `repo-query.ts` fan-out with bounded section completeness |
+
+Formatting is isolated in `repo-formats.ts`, scoping in `repo-scope.ts`, and writes in
+`repo-projection.ts`. `tests/query-contract-matrix.test.ts` executes every view through
+JSON, table, CSV, Markdown, and HTML—80 view/format combinations.
 
 ## Startup contract
 

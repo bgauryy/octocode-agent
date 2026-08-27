@@ -39,16 +39,20 @@ describe('Awareness out build contract', () => {
 
   it('builds only Awareness-owned entries and never imports the octocode CLI', () => {
     const build = read('build.mjs');
-    const buildConfig = read('buildConfig.mjs');
+    const entries = read('build.entries.mjs'); // replaces buildConfig.mjs
     const source = `${read('src/index.ts')}\n${read('bin/awareness.ts')}`;
 
-    expect(build).toContain('entryPoints: coreEntryPoints');
-    expect(buildConfig).toContain("'octocode-awareness': 'bin/awareness.ts'");
-    expect(build).toContain('outdir: outDir');
-    expect(build).toContain('.out-build-');
-    expect(build).toContain('renameSync(outDir, publishedOutDir)');
-    expect(build).not.toContain('rmSync(publishedOutDir');
-    expect(build).not.toContain("packages/octocode/out");
+    // build.mjs delegates entry-point declarations to build.entries.mjs
+    expect(build).toContain("from './build.entries.mjs'");
+    expect(build).toMatch(/entryPoints:\s+coreEntryPoints/);
+    expect(build).toMatch(/outdir:\s+outDir/);
+    // New: builds directly to out/ — no temp staging directories
+    expect(build).not.toContain('.out-build-');
+    expect(build).not.toContain('renameSync');
+    // Entry point declarations live in build.entries.mjs
+    expect(entries).toContain("'octocode-awareness': 'bin/awareness.ts'");
+    // Neither file bundles the external octocode CLI
+    expect(build).not.toContain('packages/octocode/out');
     expect(source).not.toMatch(/from ['"]octocode(?:\/|['"])/);
     expect(source).not.toContain('@octocodeai/octocode-tools-core');
   });
@@ -61,7 +65,9 @@ describe('Awareness out build contract', () => {
     expect(existsSync(resolve(PACKAGE_ROOT, 'out/types/src/index.d.ts'))).toBe(true);
     expect(existsSync(resolve(PACKAGE_ROOT, 'out/skills/octocode-awareness/SKILL.md'))).toBe(true);
     const bundledSkill = read('out/skills/octocode-awareness/SKILL.md');
-    expect(bundledSkill).toContain('smallest capable configured low-cost agent');
+    expect(bundledSkill).toContain('## One coordination layer');
+    expect(bundledSkill).toContain('## Quick usage');
+    expect(bundledSkill).toContain('npx @octocodeai/octocode-awareness coordination schema commands');
     expect(bundledSkill).not.toMatch(/Haiku|Composer 2\.5/);
     expect(existsSync(resolve(PACKAGE_ROOT, 'dist'))).toBe(false);
 

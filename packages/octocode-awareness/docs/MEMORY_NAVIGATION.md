@@ -4,7 +4,7 @@
 agent to one next action; it does not create another memory store.
 
 ```bash
-octocode-awareness attend --workspace "$PWD" --query "current task" --compact
+npx @octocodeai/octocode-awareness attend --workspace "$PWD" --query "current task" --compact
 ```
 
 ## Compact Contract
@@ -79,8 +79,8 @@ consumer, channel, and scope.
 - Peer/signal/briefing changes: emit the new bounded state.
 - Signal delivery does not mark read; `signal ack` is separate.
 
-Pi also fingerprints unchanged verification sets so repeated agent-end events do not
-repeat the same reminder. Pi captures the latest `input` text only in process until
+In-process hosts also fingerprint unchanged verification sets so repeated agent-end
+events do not repeat the same reminder. They retain the latest `input` text only until
 `before_agent_start`; shell prompt hooks pass the same bounded query directly. Neither
 path stores the prompt.
 

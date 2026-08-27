@@ -9,7 +9,6 @@ import { insertHarnessLog, queryHarnessLog, sha256Hex } from '../src/audit.js';
 import { preFlightIntent, releaseFileLock } from '../src/intents.js';
 import { insertMemory, searchByEmbedding, storeEmbedding } from '../src/memory.js';
 import { insertNotification, pruneNotifications } from '../src/notifications.js';
-import { getPiAwarenessAgentId, getPiAwarenessSessionId } from '../src/pi-hooks.js';
 import { deleteRefinement, getRefinements, insertRefinement, updateRefinement } from '../src/refinements.js';
 import { endSession, getOrCreateSession, insertSession, listSessions } from '../src/sessions.js';
 import { auditUnverified, markVerified } from '../src/verify.js';
@@ -223,24 +222,4 @@ describe('core branch coverage helpers', () => {
     expect(pruneNotifications(db, { agentId: 'agent-b', notificationIds: [signal.signal_id], resolvedOnly: true, olderThanDays: 1, workspacePath: '/repo' })).toMatchObject({ deleted: 1 });
   });
 
-
-  it('derives Pi awareness ids from env, session files, and fallbacks', () => {
-    const previous = process.env.OCTOCODE_AGENT_ID;
-    delete process.env.OCTOCODE_AGENT_ID;
-    const dir = mkdtempSync(join(tmpdir(), 'oc-pi-id-'));
-    try {
-      const ctx = { sessionManager: { getSessionFile: () => join(dir, 'session.jsonl') } };
-      expect(getPiAwarenessSessionId(ctx)).toBe('pi-session:session');
-      expect(getPiAwarenessAgentId(ctx)).toBe('pi:session');
-      process.env.OCTOCODE_AGENT_ID = 'agent-env';
-      expect(getPiAwarenessAgentId()).toBe('agent-env');
-      delete process.env.OCTOCODE_AGENT_ID;
-      expect(getPiAwarenessSessionId()).toContain(`pi-session:${process.pid}-`);
-      expect(getPiAwarenessAgentId()).toContain(`pi:${process.pid}-`);
-    } finally {
-      if (previous === undefined) delete process.env.OCTOCODE_AGENT_ID;
-      else process.env.OCTOCODE_AGENT_ID = previous;
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
 });

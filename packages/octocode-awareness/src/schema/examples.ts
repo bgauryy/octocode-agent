@@ -1,5 +1,13 @@
 /* v8 ignore file -- exercised through built CLI and isolated-package subprocess tests */
 export const examples = {
+  awareness_config: {
+    action: "init",
+    hooks: true,
+    notifications: true,
+    verification_gate: true,
+    session_capture: true,
+    maintenance_reminders: false,
+  },
   memory_record: {
     agent_id: "agent",
     task_context: "task",

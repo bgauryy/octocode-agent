@@ -176,14 +176,41 @@ async function navigateAndWait(
   await session.send('Debugger.enable', {}).catch(() => {});
   await session.send('Debugger.setSkipAllPauses', { skip: true }).catch(() => {});
 
-  await session.send('Page.navigate', { url });
+  // Register the load listener BEFORE Page.navigate to avoid the race where the
+  // load event fires between navigate() and on(), causing the promise to hang forever.
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    // Declare timer before cleanup() so the early-abort branch never hits TDZ.
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
-  // Wait for load event or timeout
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, waitMs);
-    const handler = () => { clearTimeout(timer); resolve(); };
-    session.on('Page.loadEventFired', handler);
-    signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+    // cleanup() is the single exit point: clears timer, removes CDP listener and abort
+    // listener. The `settled` guard prevents double-cleanup on concurrent exits.
+    const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      session.off('Page.loadEventFired', loadHandler);
+      signal?.removeEventListener('abort', abortHandler);
+    };
+
+    const loadHandler = () => { cleanup(); resolve(); };
+    const abortHandler = () => { cleanup(); resolve(); };
+
+    // Subscribe BEFORE navigate so we cannot miss the load event.
+    session.on('Page.loadEventFired', loadHandler);
+
+    // Handle already-aborted signal synchronously.
+    if (signal?.aborted) {
+      cleanup();
+      resolve();
+      return;
+    }
+    signal?.addEventListener('abort', abortHandler, { once: true });
+
+    timer = setTimeout(() => { cleanup(); resolve(); }, waitMs);
+
+    // Navigate AFTER the listener is in place.
+    session.send('Page.navigate', { url }).catch((err: unknown) => { cleanup(); reject(err as Error); });
   });
 }
 

@@ -2,24 +2,14 @@ import type { DatabaseSync } from 'node:sqlite';
 import { utcNow, rowToMemory } from './helpers.js';
 import type { MemoryRow, MemoryRecord } from './types.js';
 import { attachMemoryReferences } from './memory-search.js';
+import { cosineSimilarity } from '@octocodeai/octocode-shared/embed';
 
 // ─── Embedding storage + cosine search (ARCH-6) ─────────────────────────────
 
-/**
- * Compute cosine similarity between two Float32 vectors.
- * Returns 0 if either vector has zero magnitude.
- */
-export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-  if (a.length !== b.length || a.length === 0) return 0;
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot  += a[i]! * b[i]!;
-    normA += a[i]! * a[i]!;
-    normB += b[i]! * b[i]!;
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
-}
+// cosineSimilarity is shared with Awareness (identical implementation) via
+// @octocodeai/octocode-shared/embed. Re-exported so existing `./memory-embeddings.js`
+// importers keep reaching it here.
+export { cosineSimilarity };
 
 /**
  * Store a dense embedding for a memory.

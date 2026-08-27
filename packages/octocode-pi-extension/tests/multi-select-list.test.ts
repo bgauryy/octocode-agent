@@ -97,7 +97,7 @@ test('render shows cursor marker, checkboxes, focused preview, descriptions and 
 test('render footer warns while below min and shows max constraint', () => {
   const list = new MultiSelectList([{ value: 'a' }, { value: 'b' }, { value: 'c' }], { min: 2, max: 3 });
   const lines = list.render(60, theme);
-  assert.equal(lines.at(-1), '<warning>0 selected · min 2 · max 3 · select 2 more</warning>');
+  assert.equal(lines.at(-1), '<dim>0 selected · min 2 · max 3 · select 2 more</dim>');
 
   list.toggle(0);
   list.toggle(1);
@@ -130,4 +130,23 @@ test('multiSelectKeyAction maps the overlay keymap and ignores everything else',
   assert.equal(multiSelectKeyAction('\x03'), 'cancel');
   assert.equal(multiSelectKeyAction('x'), undefined);
   assert.equal(multiSelectKeyAction('\x1b[C'), undefined);
+});
+
+test('render windows long lists around the cursor with more-markers', () => {
+  const list = new MultiSelectList(
+    Array.from({ length: 25 }, (_, i) => ({ value: `v${i + 1}`, label: `item-${String(i + 1).padStart(2, '0')}` })),
+  );
+  const first = list.render(80, undefined, 10).join('\n');
+  assert.match(first, /item-01/);
+  assert.match(first, /↓ 15 more/, 'hidden tail advertised');
+  assert.doesNotMatch(first, /item-25/, 'rows beyond the window are not painted');
+
+  for (let i = 0; i < 20; i++) list.moveCursor(1);
+  const scrolled = list.render(80, undefined, 10).join('\n');
+  assert.match(scrolled, /↑ \d+ more/, 'hidden head advertised after scrolling');
+  assert.match(scrolled, /item-21/);
+
+  // Small lists render fully with no markers.
+  const small = new MultiSelectList([{ value: 'a' }, { value: 'b' }]);
+  assert.doesNotMatch(small.render(80).join('\n'), /more/);
 });

@@ -5,46 +5,92 @@
  */
 import path from 'node:path';
 import type { TSchema, ToolCallResult, ToolDefinition, PiTheme } from '../types.js';
-import { cliToolTitle, paint } from '../tui/cli-design.js';
-import { makeRenderer, truncateToWidth } from './render-helpers.js';
+import { buildToolView } from './render-helpers.js';
 import { assertPathAllowed } from './path-guard.js';
 import { atomicWriteUtf8, recordFileReadState, withFileMutationQueue } from './file-state.js';
+import { peerWipNotice, markOwnWrite } from './peer-wip.js';
+import type { registerUniqueTool } from './octocode-tools.js';
+import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
+type RegisterFn = typeof registerUniqueTool;
 
-function resolveWritePath(filePath: string, cwd = process.cwd()): string {
+const WRITE_TOOL_DISPLAY_NAME = 'write (Octocode)';
+
+export function resolveWritePath(filePath: string, cwd = process.cwd()): string {
   return path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
 }
 
-function validateWriteParams(params: Record<string, unknown>): { path: string; content: string } {
-  // Pi render path accepts file_path; fold it for compatibility.
-  const rawPath = params['path'] ?? params['file_path'];
+export function validateWriteParams(params: Record<string, unknown>): { path: string; content: string; reasoning: string } {
+  const rawPath = params['path'];
   if (typeof rawPath !== 'string' || rawPath.trim().length === 0) {
     throw new Error('Write tool input is invalid. path must be a non-empty string.');
   }
   if (typeof params['content'] !== 'string') {
     throw new Error('Write tool input is invalid. content must be a string.');
   }
-  return { path: rawPath, content: params['content'] };
+  if (typeof params['reasoning'] !== 'string' || params['reasoning'].trim().length === 0) {
+    throw new Error('Write tool input is invalid. reasoning is required — provide a non-empty string explaining why this write is necessary.');
+  }
+  return { path: rawPath, content: params['content'], reasoning: params['reasoning'] };
+}
+
+/** Execute one path-guarded write after the caller has preflighted the batch. */
+export async function commitWrite(
+  requestPath: string,
+  content: string,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<ToolCallResult> {
+  const absolutePath = resolveWritePath(requestPath, cwd);
+  if (signal?.aborted) throw new Error('Operation aborted');
+  const peerNotice = peerWipNotice(absolutePath, requestPath);
+
+  await withFileMutationQueue(absolutePath, async () => {
+    if (signal?.aborted) throw new Error('Operation aborted');
+    await atomicWriteUtf8(absolutePath, content);
+    if (signal?.aborted) throw new Error('Operation aborted');
+    await recordFileReadState(absolutePath, cwd);
+    markOwnWrite(absolutePath);
+  });
+
+  return {
+    content: [{
+      type: 'text',
+      text: `Successfully wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${requestPath}${peerNotice}`,
+    }],
+    details: {
+      operation: 'write',
+      path: requestPath,
+      absolutePath,
+      bytes: Buffer.byteLength(content, 'utf8'),
+    },
+  };
 }
 
 export function registerWriteTool(
   pi: { registerTool?(def: ToolDefinition): void },
   Type: TypeBoxBuilder,
+  registeredToolNames: Set<string>,
+  registerFn: RegisterFn,
 ): void {
-  const parameters = Type.Object(
+  const querySchema = Type.Object(
     {
       path: Type.String({ description: 'Path to the file to write (relative or absolute).' }),
       content: Type.String({ description: 'Content to write to the file.' }),
     },
     { additionalProperties: false },
   ) as TSchema;
+  const parameters = buildQueryEnvelopeSchema(Type, querySchema, {
+    reasoningDescription: 'Concise reason this file create or overwrite is necessary.',
+    allowParallel: false,
+  });
 
-  pi.registerTool?.({
+  registerFn(pi, registeredToolNames, {
     name: 'write',
     label: 'write (Octocode)',
     description:
-      'Octocode custom write tool. Replaces Pi built-in write with the same create/overwrite semantics plus Octocode path-guard (working directory, home, OS temp, ALLOWED_PATHS) and post-write read-state recording for the edit stale-check. Prefer edit for surgical changes to existing files.',
+      'Octocode custom write tool. Pass one or more ordered writes in queries; each query requires concise reasoning. queryRunType is sequential-only: writes always run one-by-one in source order, never in parallel. Replaces Pi built-in write with the same create/overwrite semantics plus Octocode path-guard (working directory, home, OS temp, ALLOWED_PATHS) and post-write read-state recording for the edit stale-check. Batches are preflighted, non-transactional, and stop on the first runtime failure. Prefer edit for surgical changes to existing files.',
     promptSnippet: 'Create or overwrite files with Octocode path-guard.',
     promptGuidelines: [
       'Octocode custom write replaces Pi built-in write; use write only for new files or intentional full rewrites.',
@@ -53,76 +99,67 @@ export function registerWriteTool(
       'Do not use bash/cat redirection for ordinary file creates when write is available.',
     ],
     parameters,
-    prepareArguments(args: unknown) {
-      if (!args || typeof args !== 'object') return args;
-      const input = args as Record<string, unknown>;
-      if (typeof input['path'] !== 'string' && typeof input['file_path'] === 'string') {
-        // Drop the legacy key: schema validation runs AFTER prepareArguments and
-        // additionalProperties:false rejects any retained extra key.
-        const { file_path: legacyPath, ...rest } = input;
-        return { ...rest, path: legacyPath };
-      }
-      return args;
-    },
     async execute(
-      _toolCallId: string,
+      toolCallId: string,
       params: Record<string, unknown>,
       signal?: AbortSignal,
-      _onUpdate?: unknown,
+      onUpdate?: unknown,
       ctx?: { cwd?: string },
     ): Promise<ToolCallResult> {
-      const { path: requestPath, content } = validateWriteParams(params);
       const cwd = ctx?.cwd ?? process.cwd();
-      const absolutePath = resolveWritePath(requestPath, cwd);
-      assertPathAllowed(absolutePath, cwd, 'write');
-      if (signal?.aborted) throw new Error('Operation aborted');
-
-      await withFileMutationQueue(absolutePath, async () => {
-        if (signal?.aborted) throw new Error('Operation aborted');
-        await atomicWriteUtf8(absolutePath, content);
-        if (signal?.aborted) throw new Error('Operation aborted');
-        await recordFileReadState(absolutePath, cwd);
-      });
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Successfully wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${requestPath}`,
-          },
-        ],
-        details: {
-          path: requestPath,
-          absolutePath,
-          bytes: Buffer.byteLength(content, 'utf8'),
+      return executeQueryBatch({
+        toolCallId,
+        raw: params,
+        signal,
+        onUpdate: typeof onUpdate === 'function' ? onUpdate as (update: ToolCallResult) => void : undefined,
+        ctx,
+        passthroughSingle: true,
+        preflight(query) {
+          const { path: requestPath } = validateWriteParams(query);
+          assertPathAllowed(resolveWritePath(requestPath, cwd), cwd, 'write');
         },
-      };
+        async execute(query) {
+          const { path: requestPath, content } = validateWriteParams(query);
+          return commitWrite(requestPath, content, cwd, signal);
+        },
+      });
     },
     renderCall(args: unknown, theme?: PiTheme) {
-      const input = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
-      const filePath =
-        typeof input['path'] === 'string'
-          ? input['path']
-          : typeof input['file_path'] === 'string'
-            ? input['file_path']
-            : '(missing path)';
+      const envelope = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
+      const queries = Array.isArray(envelope['queries']) ? envelope['queries'] as Record<string, unknown>[] : [];
+      const input = queries[0] ?? {};
+      const filePath = typeof input['path'] === 'string' ? input['path'] : '(missing path)';
       const content = typeof input['content'] === 'string' ? input['content'] : '';
       const lines = content.length === 0 ? 0 : content.split('\n').length;
-      const title = cliToolTitle(theme, 'write');
-      const suffix = paint(theme, 'dim', `${filePath} · ${lines} line${lines === 1 ? '' : 's'}`);
-      return makeRenderer((width) => [truncateToWidth(`${title} ${suffix}`, width)]);
+      return buildToolView({
+        name: WRITE_TOOL_DISPLAY_NAME,
+        state: 'request',
+        segments: [{ text: filePath, token: 'path' }, { text: `${lines} line${lines === 1 ? '' : 's'}`, token: 'count' }],
+      }, theme);
     },
     renderResult(result: ToolCallResult, opts: { expanded?: boolean; isPartial?: boolean }, theme?: PiTheme) {
       if (opts.isPartial) {
-        const prog = paint(theme, 'warning', '… writing');
-        return makeRenderer(() => [prog]);
+        return buildToolView(() => ({ name: WRITE_TOOL_DISPLAY_NAME, state: 'running', status: 'writing…' }), theme);
       }
       if (!result.isError) {
-        return makeRenderer(() => ['']);
+        const batch = (result.details ?? {}) as { results?: unknown[] };
+        if (Array.isArray(batch.results)) {
+          return buildToolView({ name: WRITE_TOOL_DISPLAY_NAME, state: 'success', segments: [{ text: `${batch.results.length} writes`, token: 'count' }] }, theme);
+        }
+        // Result row shows WHAT was written: path + size (the model's text line
+        // says the same thing; the user should not have to expand to see it).
+        const d = (result.details ?? {}) as { path?: string; bytes?: number };
+        return buildToolView({
+          name: WRITE_TOOL_DISPLAY_NAME,
+          state: 'success',
+          segments: [
+            ...(d.path ? [{ text: d.path, token: 'path' as const }] : []),
+            ...(typeof d.bytes === 'number' ? [{ text: `${d.bytes} bytes`, token: 'count' as const }] : []),
+          ],
+        }, theme);
       }
       const text = result.content.find((c) => c.type === 'text')?.text ?? 'write failed';
-      const err = paint(theme, 'error', text);
-      return makeRenderer((width) => [truncateToWidth(err, width)]);
+      return buildToolView({ name: WRITE_TOOL_DISPLAY_NAME, state: 'error', segments: [{ text, token: 'error' }] }, theme);
     },
   });
 }

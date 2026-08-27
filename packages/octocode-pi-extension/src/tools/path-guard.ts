@@ -44,20 +44,48 @@ function expandHome(p: string): string {
 function realpathBounded(p: string): string {
   let cur = path.resolve(p);
   const tail: string[] = [];
-  // Walk up until we hit a path that exists.
-  while (!fs.existsSync(cur)) {
+  // Walk up to the deepest entry that EXISTS on disk. Use lstat (does NOT follow
+  // links), not existsSync (which follows and reports false for a BROKEN symlink)
+  // — otherwise a dangling `~/allowed/link -> /etc/x` is treated as a nonexistent
+  // tail, only its in-bounds parent gets validated, and a symlink-following write
+  // escapes the allowed roots. lstat sees the link itself, so we resolve its real
+  // target and validate THAT.
+  for (;;) {
+    let st: fs.Stats | undefined;
+    try {
+      st = fs.lstatSync(cur);
+    } catch {
+      st = undefined;
+    }
+    if (st) {
+      if (st.isSymbolicLink()) {
+        // Validate where a following write actually lands: resolve the link
+        // chain, or (broken link) its literal target relative to the link's dir.
+        let target: string;
+        try {
+          target = fs.realpathSync.native(cur);
+        } catch {
+          try {
+            target = path.resolve(path.dirname(cur), fs.readlinkSync(cur));
+          } catch {
+            target = cur;
+          }
+        }
+        return tail.length > 0 ? path.join(target, ...tail) : target;
+      }
+      let realBase: string;
+      try {
+        realBase = fs.realpathSync.native(cur); // canonicalize any symlinked ancestors
+      } catch {
+        realBase = cur; // best-effort if realpath fails (e.g. permissions)
+      }
+      return tail.length > 0 ? path.join(realBase, ...tail) : realBase;
+    }
     tail.unshift(path.basename(cur));
     const parent = path.dirname(cur);
-    if (parent === cur) break; // reached filesystem root
+    if (parent === cur) return tail.length > 0 ? path.join(cur, ...tail) : cur; // filesystem root
     cur = parent;
   }
-  let realBase: string;
-  try {
-    realBase = fs.realpathSync.native(cur);
-  } catch {
-    realBase = cur; // best-effort if realpath fails (e.g. permissions)
-  }
-  return tail.length > 0 ? path.join(realBase, ...tail) : realBase;
 }
 
 function isWithin(child: string, root: string): boolean {

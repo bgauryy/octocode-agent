@@ -53,9 +53,7 @@ import {
 } from './settings.js';
 import { listSessions, newestProjectSession, type SessionFile } from './sessions.js';
 import {
-  AGENT_STATE_VERSION,
   markSetupDone,
-  readAgentState,
   readBreadcrumb,
   terminalId,
   writeBreadcrumb,
@@ -76,7 +74,6 @@ import {
   header,
   hint,
   kv,
-  launchBanner,
   link,
   makePainter,
   section,
@@ -101,9 +98,6 @@ const _require = createRequire(import.meta.url);
 export const CORE_PACKAGE = '@octocodeai/pi-extension';
 export const CORE_SPEC = `npm:${CORE_PACKAGE}`;
 export const PI_PACKAGE = '@earendil-works/pi-coding-agent';
-
-/** Lean tool exclusions — drop OS builtins in favour of Octocode-native tools. */
-export const LEAN_EXCLUDE_TOOLS = ['grep', 'find', 'ls'];
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
 
@@ -225,7 +219,6 @@ export function resolvePiBin(env: NodeJS.ProcessEnv = process.env): PiBinInfo | 
 /**
  * Build the environment Pi launches with.
  * Sets OCTOCODE_PROMPT_MODE=octocode-first and OCTOCODE_AGENT=1.
- * Defaults PI_CACHE_RETENTION=long (never clobbers an explicit user value).
  */
 export function buildLaunchEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
@@ -233,7 +226,6 @@ export function buildLaunchEnv(
   const env = { ...baseEnv };
   if (!env.OCTOCODE_PROMPT_MODE) env.OCTOCODE_PROMPT_MODE = OCTOCODE_PROMPT_MODE;
   env.OCTOCODE_AGENT = '1';
-  if (!env.PI_CACHE_RETENTION) env.PI_CACHE_RETENTION = 'long';
   // Octocode owns its update story (`octocode-agent update`) — Pi's own
   // "New version … Run pi update (pi.dev)" widget is the single most visible
   // Pi-branded surface in a branded session; suppress it by default.
@@ -282,7 +274,6 @@ export function parseInvocation(argv: string[] = []): ParsedInvocation {
   if (first === 'session') return { command: 'resume', rest: argv.slice(1) };
   if (first === 'serve') return { command: 'serve', rest: argv.slice(1) };
   if (first === 'resume') return { command: 'resume', rest: argv.slice(1) };
-  if (first === 'research') return { command: 'research', rest: argv.slice(1), json };
   if (first === 'memory') return { command: 'memory', rest: argv.slice(1), json };
   if (first === 'awareness') return { command: 'awareness', rest: argv.slice(1), json };
   if (first === 'tools') return { command: 'tools', rest: argv.slice(1), json };
@@ -294,7 +285,7 @@ export function parseInvocation(argv: string[] = []): ParsedInvocation {
  * Build Pi argv for the subprocess path.
  * Fixed:  --no-extensions (prevents global extension conflicts)
  * Opt-in: OCTOCODE_AGENT_CLEAN=1 → --no-skills --no-context-files
- * Opt-out: OCTOCODE_AGENT_FULL_TOOLS=1 keeps grep/find/ls
+ * Fixed:  --no-builtin-tools; the extension supplies the complete public palette.
  */
 export function buildPiArgs(
   spec: string,
@@ -304,8 +295,9 @@ export function buildPiArgs(
   const args: string[] = ['--no-extensions'];
   const clean = env.OCTOCODE_AGENT_CLEAN === '1';
   if (clean) args.push('--no-skills');
-  if (env.OCTOCODE_AGENT_FULL_TOOLS !== '1')
-    args.push('--exclude-tools', LEAN_EXCLUDE_TOOLS.join(','));
+  // Pi then enables extension/custom tools, including Octocode's guarded `bash`,
+  // without activating any native read/edit/write/search implementation.
+  args.push('--no-builtin-tools');
   if (clean || env.OCTOCODE_AGENT_NO_CONTEXT_FILES === '1') args.push('--no-context-files');
   args.push('-e', spec);
   return [...args, ...argv];
@@ -331,9 +323,9 @@ export function versionReport(env: NodeJS.ProcessEnv = process.env): string {
   return [
     header(p, ''),
     '',
-    kv(p, 'launcher', launcherVersion() ?? '?'),
+    kv(p, 'launcher', launcherVersion() ?? 'unknown'),
     kv(p, 'core', `${coreStatus} ${p.dim(`(${CORE_PACKAGE})`)}`),
-    kv(p, 'pi host', `${piVersion} ${p.dim(`(${effectivePkg})`)}`),
+    kv(p, 'runtime', `${piVersion} ${p.dim(`(${effectivePkg})`)}`),
     kv(p, 'launch mode', launchMode),
   ].join('\n');
 }
@@ -365,7 +357,7 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
   return [
     header(p, ''),
     '',
-    ...wrapText('The self-working coding agent: the Pi runtime driven by the Octocode harness.', terminalWidth()).map((l) => p.dim(l)),
+    ...wrapText('Your AI coding agent.', terminalWidth()).map((l) => p.dim(l)),
     '',
     section(p, 'Get started'),
     ...cmdRows(p, [
@@ -373,13 +365,12 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
       ['octocode-agent "<prompt>"', 'launch with an initial message'],
       ['run "<task>" [--json]', 'headless: run once, print result, exit'],
       ['serve [--stdio]', 'Octocode thin-client envelope over stdin/stdout for IDE/web embeds'],
-      ['serve --raw-rpc', 'compat: raw Pi RPC stdin/stdout'],
+      ['serve --raw-rpc', 'compat: raw runtime RPC stdin/stdout'],
       ['resume|session [<id>]', 'resume: pick, or fuzzy id; -c resumes THIS terminal'],
     ]),
     '',
     section(p, 'Surfaces'),
     ...cmdRows(p, [
-      ['research "<q>"', 'one-shot research lane (no chat)'],
       ['memory ...', 'persistent memory (recall/record/forget)'],
       ['awareness ...', 'coordination dashboard (attend/status/verify)'],
       ['tools | skills', 'Octocode tools catalog / skills'],
@@ -387,7 +378,7 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
     '',
     section(p, 'Setup & health'),
     ...cmdRows(p, [
-      ['doctor', 'one health pane: Pi host, core, auth, awareness'],
+      ['doctor', 'one health pane: runtime, core, auth, awareness'],
       ['setup', 'first-run setup checks'],
       ['auth [login|logout|status]', 'credentials (env keys or /login)'],
       ['models [--set id]', 'pick or pin the default model'],
@@ -401,7 +392,7 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
       ['update', 'self-update the platform'],
       ['update core', 'refresh the bundled core in this install'],
       ['completion <bash|zsh|fish>', 'print a shell completion script'],
-      ['--version [--json]', 'launcher, core, and Pi host versions'],
+      ['--version [--json]', 'launcher, core, and runtime versions'],
     ]),
     '',
     section(p, 'Options'),
@@ -411,8 +402,9 @@ export function helpReport(env: NodeJS.ProcessEnv = process.env): string {
     ]),
     '',
     section(p, 'Launch modes'),
-    ...wrapText('SDK embed (default)   — in-process Pi session with direct API access', terminalWidth() - 2).map((l) => `  ${p.dim(l)}`),
-    ...wrapText('Subprocess fallback   — spawns the Pi binary via the -e flag.', terminalWidth() - 2).map((l) => `  ${p.dim(l)}`),
+    ...wrapText('SDK embed (default)   — in-process runtime session with direct API access', terminalWidth() - 2).map((l) => `  ${p.dim(l)}`),
+    ...wrapText('Subprocess fallback   — spawns the runtime binary via the -e flag.', terminalWidth() - 2).map((l) => `  ${p.dim(l)}`),
+    ...wrapText('Both modes suppress Pi native tools; the Octocode core supplies the complete palette.', terminalWidth() - 2).map((l) => `  ${p.dim(l)}`),
     ...wrapText('Force with OCTOCODE_LAUNCHER_MODE=subprocess.', terminalWidth()).map((l) => `  ${p.dim(l)}`),
     '',
     section(p, 'Fork dev'),
@@ -467,7 +459,7 @@ export function configReport(env: NodeJS.ProcessEnv = process.env): string {
     section(p, 'Runtime'),
     kv(p, 'launch mode', launchMode),
     kv(p, 'octocode home', `${tildePath(home)}${authInHome ? p.dim(' (auth.json ✓)') : ''}`),
-    kv(p, 'pi agent dir', `${tildePath(piAgentDir)}${authInPi ? p.dim(' (auth.json ✓)') : ''}`),
+    kv(p, 'agent dir', `${tildePath(piAgentDir)}${authInPi ? p.dim(' (auth.json ✓)') : ''}`),
     '',
     section(p, 'Packages'),
     kv(
@@ -477,13 +469,13 @@ export function configReport(env: NodeJS.ProcessEnv = process.env): string {
     ),
     kv(
       p,
-      'pi host',
+      'runtime',
       piInfo
         ? `${tildePath(piInfo.bin)} ${p.dim(`(${piInfo.source})`)}`
         : p.red('not found — run: octocode-agent update'),
     ),
-    kv(p, 'pi version', readPackageVersion(getEffectivePiPackage(env)) ?? 'unknown'),
-    kv(p, 'launcher version', launcherVersion() ?? '?'),
+    kv(p, 'runtime version', readPackageVersion(getEffectivePiPackage(env)) ?? 'unknown'),
+    kv(p, 'launcher version', launcherVersion() ?? 'unknown'),
     '',
     section(p, 'Keys'),
     kv(
@@ -563,7 +555,7 @@ export function setupReport(env: NodeJS.ProcessEnv = process.env): string {
     ...checkLines(
       p,
       piOk ? 'ok' : 'fail',
-      'Pi host',
+      'runtime',
       piVersion ? `installed (${piVersion})` : 'not found',
       piOk ? undefined : 'octocode-agent update',
     ),
@@ -572,7 +564,7 @@ export function setupReport(env: NodeJS.ProcessEnv = process.env): string {
     ...checkLines(
       p,
       coreOk ? 'ok' : 'fail',
-      'Core',
+      'core',
       coreVersion ? `installed (${coreVersion})` : 'not found',
       coreOk ? undefined : 'octocode-agent update core',
     ),
@@ -791,6 +783,37 @@ export function sessionsReport(env: NodeJS.ProcessEnv = process.env): string {
   ].join('\n');
 }
 
+// ── Doctor helpers ──────────────────────────────────────────────────────────────
+
+/** Detect ffmpeg binary and return its path + version, or undefined if absent. */
+function detectFfmpegForDoctor(): { bin: string; version: string } | undefined {
+  const extraDirs = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
+  const pathDirs = (process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean);
+  for (const dir of [...pathDirs, ...extraDirs]) {
+    const candidate = path.join(dir, 'ffmpeg');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      const r = spawnSync(candidate, ['-version'], { encoding: 'utf8', timeout: 5000 });
+      const versionLine = (r.stdout ?? '').split('\n')[0] ?? '';
+      const m = versionLine.match(/ffmpeg version ([\S]+)/);
+      return { bin: candidate, version: m?.[1] ?? versionLine.trim() };
+    } catch {
+      // keep scanning
+    }
+  }
+  // Fallback: try optional ffmpeg-static package
+  try {
+    const staticBin = _require('ffmpeg-static') as string | null;
+    if (typeof staticBin === 'string' && staticBin) {
+      const r = spawnSync(staticBin, ['-version'], { encoding: 'utf8', timeout: 5000 });
+      const versionLine = (r.stdout ?? '').split('\n')[0] ?? '';
+      const m = versionLine.match(/ffmpeg version ([\S]+)/);
+      return { bin: staticBin, version: `${m?.[1] ?? 'unknown'} (ffmpeg-static)` };
+    }
+  } catch { /* optional dep absent */ }
+  return undefined;
+}
+
 // ── Doctor (health pane) ─────────────────────────────────────────────────────────
 
 export interface DoctorCheck {
@@ -831,7 +854,8 @@ export function doctorData(env: NodeJS.ProcessEnv = process.env): DoctorData {
       fix: coreVersion ? undefined : 'octocode-agent update core',
     },
     {
-      name: 'pi-host',
+      // Same label as the config report — one name per subsystem across surfaces.
+      name: 'runtime',
       ok: Boolean(piVersion),
       detail: piVersion ?? 'not found',
       fix: piVersion ? undefined : 'octocode-agent update',
@@ -850,6 +874,18 @@ export function doctorData(env: NodeJS.ProcessEnv = process.env): DoctorData {
         : 'CLI not resolved (set at core load; run inside the agent)',
     },
   ];
+
+  const ffmpeg = detectFfmpegForDoctor();
+  checks.push({
+    name: 'ffmpeg',
+    ok: Boolean(ffmpeg),
+    detail: ffmpeg
+      ? `${ffmpeg.version}  ${ffmpeg.bin}`
+      : 'not found — media/readMedia tools will be unavailable',
+    fix: ffmpeg
+      ? undefined
+      : 'brew install ffmpeg  # macOS\napt install ffmpeg   # Debian/Ubuntu\nhttps://ffmpeg.org/download.html',
+  });
 
   const healthy = checks.every((c) => c.ok || (c.name !== 'core' && c.name !== 'pi-host'));
   return { healthy, checks };
@@ -930,7 +966,7 @@ export const COMPLETION_SHELLS = ['bash', 'zsh', 'fish'] as const;
 export type CompletionShell = (typeof COMPLETION_SHELLS)[number];
 
 /** Reserved subcommands, kept in sync with parseInvocation — single source for completion generation. */
-const SUBCOMMANDS = ['run', 'serve', 'resume', 'research', 'memory', 'awareness', 'tools', 'skills', 'update', 'config', 'setup', 'auth', 'models', 'sessions', 'doctor', 'completion'] as const;
+const SUBCOMMANDS = ['run', 'serve', 'resume', 'memory', 'awareness', 'tools', 'skills', 'update', 'config', 'setup', 'auth', 'models', 'sessions', 'doctor', 'completion'] as const;
 const UPDATE_TARGETS = ['core', 'platform'] as const;
 
 function bashCompletionScript(): string {
@@ -963,7 +999,6 @@ function zshCompletionScript(): string {
     "    'run:Headless: run one task, print result, exit'",
     "    'serve:RPC over stdin/stdout for IDE/web embeds'",
     "    'resume:Resume a session by id/name or pick one'",
-    "    'research:One-shot research lane (octocode search)'",
     "    'memory:Persistent memory (recall/record/forget)'",
     "    'awareness:Coordination dashboard (attend/status/verify)'",
     "    'tools:Octocode tools catalog'",
@@ -974,7 +1009,7 @@ function zshCompletionScript(): string {
     "    'auth:Show API key configuration instructions'",
     "    'models:Show model configuration instructions'",
     "    'sessions:Show session storage location and tips'",
-    "    'doctor:One health pane: Pi host, core, auth, awareness'",
+    "    'doctor:One health pane: runtime, core, auth, awareness'",
     "    'completion:Print a shell completion script'",
     '  )',
     '  if (( CURRENT == 3 )); then',
@@ -994,14 +1029,13 @@ function zshCompletionScript(): string {
 function fishCompletionScript(): string {
   const lines = [
     'complete -c octocode-agent -f',
-    'complete -c octocode-agent -n "__fish_use_subcommand" -l version -d "Print launcher, core, and Pi host versions"',
+    'complete -c octocode-agent -n "__fish_use_subcommand" -l version -d "Print launcher, core, and runtime versions"',
     'complete -c octocode-agent -n "__fish_use_subcommand" -l help -d "Show help"',
   ];
   const descriptions: Record<(typeof SUBCOMMANDS)[number], string> = {
     run: 'Headless: run one task, print result, exit',
     serve: 'RPC over stdin/stdout for IDE/web embeds',
     resume: 'Resume a session by id/name or pick one',
-    research: 'One-shot research lane (octocode search)',
     memory: 'Persistent memory (recall/record/forget)',
     awareness: 'Coordination dashboard (attend/status/verify)',
     tools: 'Octocode tools catalog',
@@ -1012,7 +1046,7 @@ function fishCompletionScript(): string {
     auth: 'Show API key configuration instructions',
     models: 'Show model configuration instructions',
     sessions: 'Show session storage location and tips',
-    doctor: 'One health pane: Pi host, core, auth, awareness',
+    doctor: 'One health pane: runtime, core, auth, awareness',
     completion: 'Print a shell completion script',
   };
   for (const name of SUBCOMMANDS) {
@@ -1108,7 +1142,7 @@ export async function launchAgent(
     const effectivePkg = getEffectivePiPackage(env);
     const message = env.OCTOCODE_PI_BIN
       ? `OCTOCODE_PI_BIN path not found: ${env.OCTOCODE_PI_BIN}`
-      : `Pi host (${effectivePkg}) is not installed. Run: octocode-agent update`;
+      : `Runtime (${effectivePkg}) is not installed. Run: octocode-agent update`;
     log(`octocode-agent: ${message}`);
     log(`octocode-agent: diagnose with: octocode-agent doctor`);
     return 1;
@@ -1144,68 +1178,6 @@ export async function runUpdate(
     log(`octocode-agent: ${p.red('✗')} update failed (exit ${status}) — see npm output above`);
   }
   return status;
-}
-
-/** Flags that make a launch non-interactive — they suppress the brand banner. */
-const NON_INTERACTIVE_FLAGS = new Set(['-p', '--print', '--mode', '--json']);
-
-/**
- * Resolve the model to show in the launch banner: explicit --model flag/env wins,
- * else the persisted defaultModel from ~/.pi/agent/settings.json.
- */
-export function resolveLaunchModel(
-  argv: string[] = [],
-  piAgentDir: string = path.join(os.homedir(), '.pi', 'agent'),
-): string | null {
-  const eqArg = argv.find((a) => a.startsWith('--model='));
-  if (eqArg) return eqArg.slice('--model='.length) || null;
-  const flagIdx = argv.indexOf('--model');
-  if (flagIdx !== -1 && argv[flagIdx + 1]) return argv[flagIdx + 1];
-  try {
-    const settings = JSON.parse(fs.readFileSync(path.join(piAgentDir, 'settings.json'), 'utf8'));
-    const model = settings?.defaultModel;
-    return typeof model === 'string' && model ? model : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Print the one-line brand banner before an interactive launch.
- * TTY-stderr only; honors OCTOCODE_AGENT_NO_BANNER=1 and skips print/rpc runs.
- */
-export function printLaunchBanner(
-  argv: string[] = [],
-  env: NodeJS.ProcessEnv = process.env,
-  log: (msg: string) => void = (m) => console.error(m),
-  isTTY: boolean = Boolean((process.stderr as { isTTY?: boolean }).isTTY),
-): boolean {
-  if (!isTTY) return false;
-  if (env.OCTOCODE_AGENT_NO_BANNER === '1') return false;
-  if (argv.some((a) => NON_INTERACTIVE_FLAGS.has(a))) return false;
-  const p = makePainter(colorEnabled(env, true));
-  log(
-    launchBanner(p, {
-      launcher: launcherVersion(),
-      core: readPackageVersion(CORE_PACKAGE),
-      pi: env.OCTOCODE_PI_BIN ? null : readPackageVersion(getEffectivePiPackage(env)),
-      model: resolveLaunchModel(argv),
-    }),
-  );
-  if (presentApiKeys(env).length === 0) {
-    log(p.gray('no API keys detected — run `octocode-agent auth login` to set up'));
-  }
-  // Versioned onboarding nudge: the setup flow changed since the user last
-  // completed it — one muted refresh line, never blocking (OMP's setup-version idea).
-  const state = readAgentState(getOctocodeHome(env));
-  if (state.setupVersion !== undefined && state.setupVersion < AGENT_STATE_VERSION) {
-    log(
-      p.gray(
-        `setup flow updated (v${state.setupVersion} → v${AGENT_STATE_VERSION}) — run \`octocode-agent setup --fix\` to refresh`,
-      ),
-    );
-  }
-  return true;
 }
 
 /**
@@ -1298,7 +1270,7 @@ export async function runResumePicker(
     title: 'resume session',
     rows: sessions.map((s) => ({
       id: s.file,
-      label: `${s.uuid.slice(0, 8)}…  ${p.dim(tildePath(s.cwd ?? '?'))}`,
+      label: `${s.uuid.slice(0, 8)}…  ${p.dim(tildePath(s.cwd ?? 'unknown'))}`,
       meta: formatAge(Date.now() - s.mtimeMs),
     })),
   });
@@ -1382,7 +1354,7 @@ export function runConfigSet(
   }
   if (!isAllowedConfigKey(key)) {
     out(`${p.red('✗')} cannot write "${key}"`);
-    out(hint(p, `writable keys: defaultProvider, defaultModel (Pi's own contract)`));
+    out(hint(p, `writable keys: defaultProvider, defaultModel (runtime settings contract)`));
     return 2;
   }
   const file = setSetting(piDir, key, value);
@@ -1429,7 +1401,7 @@ export function runSmokeTest(deps: LaunchDeps = {}): number {
   const ok = Boolean(launcher && core && pi);
   out(
     ok
-      ? `smoke-test: ok ${p.dim(`(launcher ${launcher} · core ${core} · pi ${pi})`)}`
+      ? `smoke-test: ok ${p.dim(`(launcher ${launcher} · core ${core} · runtime ${pi})`)}`
       : `smoke-test: FAIL ${p.dim('run: octocode-agent doctor')}`,
   );
   return ok ? 0 : 1;
@@ -1577,7 +1549,6 @@ export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<
     }
     case 'update':
       return runUpdate((target ?? 'platform') as 'core' | 'platform', deps);
-    case 'research':
     case 'memory':
     case 'awareness':
     case 'tools':
@@ -1612,7 +1583,6 @@ export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<
             });
           return launchAgent(['--session', picked.file], deps);
         }
-        printLaunchBanner(r, env, deps.log);
       }
       // Fuzzy/global/re-root resolution of `id` is Pi's (main.js resolveSessionPath).
       const rc = await launchAgent(id ? ['--session', id, ...r.slice(1)] : ['-r', ...r], deps);
@@ -1628,7 +1598,6 @@ export async function main(argv: string[] = [], deps: LaunchDeps = {}): Promise<
         out(hint(p, `did you mean: octocode-agent ${suggestion}`));
         return 2;
       }
-      printLaunchBanner(rest ?? [], env, deps.log);
       const rc = await launchAgent(
         applyProfile(rewriteContinueFlag(rest ?? [], env), profile, env),
         deps,

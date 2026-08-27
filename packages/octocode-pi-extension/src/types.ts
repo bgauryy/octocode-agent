@@ -39,10 +39,23 @@ export type TSchema = Record<string, unknown>;
 
 // ─── Tool result ─────────────────────────────────────────────────────────────
 
-export interface ContentPart {
+export interface TextContentPart {
   type: 'text';
   text: string;
 }
+
+/**
+ * Image block for tool results. Pi forwards these to a vision-capable model
+ * (shape matches pi-ai's ImageContent: { type:"image", data:<base64>, mimeType }).
+ * Pi normalizes/auto-resizes oversized images as they enter history.
+ */
+export interface ImageContentPart {
+  type: 'image';
+  data: string;
+  mimeType: string;
+}
+
+export type ContentPart = TextContentPart | ImageContentPart;
 
 export interface ToolCallResult {
   content: ContentPart[];
@@ -68,6 +81,13 @@ export interface WorkerLedgerEvent {
   details?: unknown;
 }
 
+export interface WorkerMessageActivity {
+  direction: 'to-agent' | 'from-agent';
+  action: 'send' | 'steer' | 'follow-up' | 'reply';
+  preview: string;
+  timestamp: number;
+}
+
 export interface WorkerLedgerEntry {
   agentId: string;
   name: string;
@@ -76,6 +96,10 @@ export interface WorkerLedgerEntry {
   updatedAt: string;
   model?: string;
   provider?: string;
+  /** Original worker assignment, kept separate from transient progress output. */
+  task?: string;
+  /** Optional parent-plan step this worker was spawned to execute. */
+  planStep?: string;
   thinking?: string;
   tools?: string[];
   normalizedStatus?: string;
@@ -84,8 +108,22 @@ export interface WorkerLedgerEntry {
   evidence?: string[];
   verification?: string;
   next?: string;
+  /** Artifact path explicitly reported by the worker in structured output. */
+  artifact?: string;
+  /** Parent-assigned durable markdown handback file under .octocode/tmp/agents/<agentId>/. */
+  handback?: { path: string; exists: boolean; bytes?: number; modifiedAt?: string };
   /** Rolling 1-line progress note for a running worker (what it is doing now). */
   deltaSummary?: string;
+  /** Number of follow-up/steer/send messages queued for the worker but not yet started. */
+  pendingMessages?: number;
+  /** Latest parent↔worker message, used for a directional footer indicator. */
+  lastMessage?: WorkerMessageActivity;
+  /** Current running tool, when the worker is inside a tool call. */
+  activeTool?: string;
+  /** Total tool calls observed for this worker. */
+  toolCallCount?: number;
+  /** Distinct recent tool names observed for this worker. */
+  toolNames?: string[];
   worktree?: WorkerWorktreeState;
   recentEvents: WorkerLedgerEvent[];
 }
@@ -266,6 +304,13 @@ export interface NewSessionOptions {
 export interface PiModel {
   id?: string;
   reasoning?: boolean;
+  /** Provider transport used by Pi's model adapter. */
+  api?: string;
+  /** Provider-specific request compatibility controls. */
+  compat?: {
+    forceAdaptiveThinking?: boolean;
+    [key: string]: unknown;
+  };
   /** Provider name for this model (e.g. "anthropic", "guy-provider-anthropic"). Present on the active model. */
   provider?: string;
 }
@@ -290,6 +335,11 @@ export interface PiContext {
   sessionManager?: PiSessionManager;
   modelRegistry?: {
     find(provider: string, id: string): PiModel | undefined;
+    complete?(
+      model: PiModel,
+      context: { systemPrompt?: string; messages: Array<{ role: 'user'; content: string; timestamp: number }> },
+      options?: { signal?: AbortSignal },
+    ): Promise<unknown>;
   };
 }
 
@@ -326,7 +376,7 @@ export interface ToolDefinition extends Partial<Omit<PiToolDefinition<any, unkno
   promptSnippet?: string;
   promptGuidelines?: string[];
   parameters: TSchema;
-  /** Optional compatibility shim. Runs before schema validation. */
+  /** Optional pre-validation argument normalizer. */
   prepareArguments?(args: unknown): unknown;
   execute(
     toolCallId: string,
@@ -528,8 +578,14 @@ export interface PiInstance {
   // ─── Session / labels ───────────────────────────────────────────────────────
   setSessionName?(name: string): void;
   getSessionName?(): string | undefined;
-  /** Persist a CustomEntry for state only — never rendered, never in LLM context (mirrors Pi's appendEntry). */
+  /**
+   * Persist a CustomEntry — never in LLM context. Renders in the transcript
+   * when paired with registerEntryRenderer (pi docs §appendEntry); otherwise
+   * state-only.
+   */
   appendEntry?(customType: string, data?: unknown): void;
+  /** Render a CustomEntry type in the transcript (durable, TUI-only, zero prompt cost). */
+  registerEntryRenderer?(customType: string, renderer: (entry: { data?: unknown }, options: { expanded: boolean }, theme: PiTheme) => unknown): void;
   setLabel?(entryId: string, label: string | undefined): void;
   // ─── Providers ──────────────────────────────────────────────────────────────
   registerProvider?(name: string, config: Record<string, unknown>): void;

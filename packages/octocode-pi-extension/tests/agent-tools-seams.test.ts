@@ -19,62 +19,7 @@ import {
   listWorkerLedgerEntries,
 } from '../src/tools/agent-tools.js';
 import type { WorkerLedgerEntry, WorkerLedgerEventType } from '../src/types.js';
-
-// ─── Mock process factory (records stdin writes so RPC types are assertable) ──
-
-type MockHandlers = Record<string, Array<(...args: unknown[]) => void>>;
-
-interface MockProcess {
-  stdin: { write(d: string): void; end(): void };
-  stdout: { on(e: string, cb: (b: Buffer) => void): void };
-  stderr: { on(e: string, cb: (b: Buffer) => void): void };
-  on(e: string, cb: (...a: unknown[]) => void): void;
-  kill(): boolean;
-  exitCode: null | number;
-  signalCode: null | string;
-  writes: Array<Record<string, unknown>>;
-  _emit(event: string, ...args: unknown[]): void;
-}
-
-function makeMockProcess(): MockProcess {
-  const handlers: MockHandlers = {};
-  const proc: MockProcess = {
-    writes: [],
-    stdin: {
-      write(d: string) {
-        proc.writes.push(JSON.parse(d) as Record<string, unknown>);
-      },
-      end() {},
-    },
-    stdout: {
-      on(e, cb) {
-        (handlers[`stdout:${e}`] ??= []).push(cb as never);
-      },
-    },
-    stderr: {
-      on(e, cb) {
-        (handlers[`stderr:${e}`] ??= []).push(cb as never);
-      },
-    },
-    on(e, cb) {
-      (handlers[e] ??= []).push(cb);
-    },
-    kill() {
-      return true;
-    },
-    exitCode: null,
-    signalCode: null,
-    _emit(event, ...args) {
-      for (const cb of handlers[event] ?? []) cb(...args);
-    },
-  };
-  return proc;
-}
-
-/** Drive the worker to 'idle' via a normal agent_end RPC event. */
-function emitAgentEnd(mock: MockProcess): void {
-  mock._emit('stdout:data', Buffer.from(`${JSON.stringify({ type: 'agent_end', messages: [] })}\n`));
-}
+import { emitAgentEnd, makeMockAgentProcess } from './helpers/mock-process.js';
 
 // ─── Setup / teardown ─────────────────────────────────────────────────────────
 
@@ -91,7 +36,7 @@ afterEach(() => {
 
 test('session prune drops killed workers but keeps live ones', () => {
   if (isSubagentProcess()) return;
-  const mock = makeMockProcess();
+  const mock = makeMockAgentProcess();
   setAgentProcessFactoryForTests(() => mock as never);
   const record = spawnRpcAgent({ task: 'to be killed', resourceMode: 'lean' });
   killWorkerById(record.id);
@@ -115,7 +60,7 @@ test('ledger listener receives entries and event types for worker transitions', 
     seen.push({ type, entry });
   });
   try {
-    const mock = makeMockProcess();
+    const mock = makeMockAgentProcess();
     setAgentProcessFactoryForTests(() => mock as never);
     const record = spawnRpcAgent({ task: 'listen to me', resourceMode: 'lean' });
 
@@ -139,7 +84,7 @@ test('ledger listener sees normalized-status flips (handback) via pushLedgerEven
     seen.push({ type, normalizedStatus: entry.normalizedStatus });
   });
   try {
-    const mock = makeMockProcess();
+    const mock = makeMockAgentProcess();
     setAgentProcessFactoryForTests(() => mock as never);
     spawnRpcAgent({ task: 'flip status', resourceMode: 'lean' });
 
@@ -164,7 +109,7 @@ test('unsubscribed ledger listener stops receiving events', () => {
   });
   unsubscribe();
 
-  const mock = makeMockProcess();
+  const mock = makeMockAgentProcess();
   setAgentProcessFactoryForTests(() => mock as never);
   spawnRpcAgent({ task: 'nobody listening', resourceMode: 'lean' });
 
@@ -182,7 +127,7 @@ test('a throwing ledger listener never breaks pushLedgerEvent or other listeners
     seen.push(type);
   });
   try {
-    const mock = makeMockProcess();
+    const mock = makeMockAgentProcess();
     setAgentProcessFactoryForTests(() => mock as never);
     const record = spawnRpcAgent({ task: 'resilient ledger', resourceMode: 'lean' });
 
@@ -201,7 +146,7 @@ test('a throwing ledger listener never breaks pushLedgerEvent or other listeners
 test('agentPanelLines shows a branded running row while a worker is active', () => {
   if (isSubagentProcess()) return;
 
-  const mock = makeMockProcess();
+  const mock = makeMockAgentProcess();
   setAgentProcessFactoryForTests(() => mock as never);
   spawnRpcAgent({ task: 'animate me', name: 'spark', resourceMode: 'lean' });
 
@@ -216,7 +161,7 @@ test('agentPanelLines shows a branded running row while a worker is active', () 
 test('steerWorkerById sends a steer RPC to a running worker', () => {
   if (isSubagentProcess()) return;
 
-  const mock = makeMockProcess();
+  const mock = makeMockAgentProcess();
   setAgentProcessFactoryForTests(() => mock as never);
   const record = spawnRpcAgent({ task: 'busy work', resourceMode: 'lean' });
   assert.equal(record.status, 'running');
@@ -226,12 +171,33 @@ test('steerWorkerById sends a steer RPC to a running worker', () => {
   assert.ok(steer, 'a steer RPC must be written to worker stdin');
   assert.equal(steer!['message'], 'change course');
   assert.equal(record.ledgerEvents.at(-1)?.message, 'steer sent: change course');
+  const outbound = listWorkerLedgerEntries().find((entry) => entry.agentId === record.id)?.lastMessage;
+  assert.equal(outbound?.direction, 'to-agent');
+  assert.equal(outbound?.action, 'steer');
+  assert.equal(outbound?.preview, 'change course');
+});
+
+test('worker assistant output records an inbound reply for footer visibility', () => {
+  if (isSubagentProcess()) return;
+
+  const mock = makeMockAgentProcess();
+  setAgentProcessFactoryForTests(() => mock as never);
+  const record = spawnRpcAgent({ task: 'report back', resourceMode: 'lean' });
+  mock._emit('stdout:data', Buffer.from(`${JSON.stringify({
+    type: 'message_end',
+    message: { role: 'assistant', content: [{ type: 'text', text: '[DONE] review complete' }] },
+  })}\n`));
+
+  const inbound = listWorkerLedgerEntries().find((entry) => entry.agentId === record.id)?.lastMessage;
+  assert.equal(inbound?.direction, 'from-agent');
+  assert.equal(inbound?.action, 'reply');
+  assert.equal(inbound?.preview, '[DONE] review complete');
 });
 
 test('steerWorkerById queues via follow_up when the worker is idle', () => {
   if (isSubagentProcess()) return;
 
-  const mock = makeMockProcess();
+  const mock = makeMockAgentProcess();
   setAgentProcessFactoryForTests(() => mock as never);
   const record = spawnRpcAgent({ task: 'quick task', resourceMode: 'lean' });
   emitAgentEnd(mock);
@@ -242,7 +208,8 @@ test('steerWorkerById queues via follow_up when the worker is idle', () => {
   assert.ok(followUp, 'idle worker must receive follow_up, not steer');
   assert.equal(followUp!['message'], 'next task please');
   assert.equal(mock.writes.find((w) => w['type'] === 'steer'), undefined);
-  assert.equal(record.status, 'running', 'follow_up starts the next turn');
+  assert.equal(record.status, 'idle', 'queued follow_up does not fake a running turn before agent_start');
+  assert.equal(record.pendingMessages, 1, 'queued follow_up is tracked until agent_start');
   assert.equal(record.ledgerEvents.at(-1)?.message, 'follow-up queued: next task please');
 });
 
@@ -251,7 +218,7 @@ test('steerWorkerById returns false for unknown ids and empty messages', () => {
 
   assert.equal(steerWorkerById('no-such-agent', 'hello'), false);
 
-  const mock = makeMockProcess();
+  const mock = makeMockAgentProcess();
   setAgentProcessFactoryForTests(() => mock as never);
   const record = spawnRpcAgent({ task: 'still here', resourceMode: 'lean' });
   assert.equal(steerWorkerById(record.id, '   '), false, 'blank message is rejected');
@@ -260,7 +227,7 @@ test('steerWorkerById returns false for unknown ids and empty messages', () => {
 test('steerWorkerById returns false when the worker process is dead', () => {
   if (isSubagentProcess()) return;
 
-  const mock = makeMockProcess();
+  const mock = makeMockAgentProcess();
   setAgentProcessFactoryForTests(() => mock as never);
   const record = spawnRpcAgent({ task: 'dies early', resourceMode: 'lean' });
   mock.exitCode = 0;
@@ -274,7 +241,7 @@ test('steerWorkerById returns false when the worker process is dead', () => {
 test('killWorkerById kills a live worker by prefix and returns true', () => {
   if (isSubagentProcess()) return;
 
-  const mock = makeMockProcess();
+  const mock = makeMockAgentProcess();
   setAgentProcessFactoryForTests(() => mock as never);
   const record = spawnRpcAgent({ task: 'doomed worker', resourceMode: 'lean' });
 
@@ -293,7 +260,7 @@ test('killWorkerById returns false for unknown ids', () => {
 test('getWorkerTranscript renders the single-agent status view', () => {
   if (isSubagentProcess()) return;
 
-  const mock = makeMockProcess();
+  const mock = makeMockAgentProcess();
   setAgentProcessFactoryForTests(() => mock as never);
   const record = spawnRpcAgent({ task: 'talkative', name: 'transcripty', resourceMode: 'lean' });
   mock._emit('stdout:data', Buffer.from(`${JSON.stringify({
@@ -310,7 +277,7 @@ test('getWorkerTranscript renders the single-agent status view', () => {
 test('getWorkerTranscript caps to the last maxLines lines', () => {
   if (isSubagentProcess()) return;
 
-  const mock = makeMockProcess();
+  const mock = makeMockAgentProcess();
   setAgentProcessFactoryForTests(() => mock as never);
   const record = spawnRpcAgent({ task: 'chatty', resourceMode: 'lean' });
   const output = Array.from({ length: 20 }, (_v, i) => `line ${i + 1}`).join('\n');

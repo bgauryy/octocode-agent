@@ -3,6 +3,7 @@ import { test } from 'vitest';
 import {
   TOKEN,
   paint,
+  paintUi,
   colorEnabled,
   hyperlinksEnabled,
   hyperlink,
@@ -13,15 +14,23 @@ import {
 const theme = { fg: (c: string, t: string) => `<${c}>${t}</${c}>`, bold: (t: string) => `<b>${t}</b>` };
 
 test('semantic tokens map to shipped theme color keys', () => {
-  assert.equal(TOKEN.path, 'accent');
+  assert.equal(TOKEN.brand, 'accent');
+  assert.equal(TOKEN.brandAlt, 'syntaxOperator');
+  assert.equal(TOKEN.path, 'mdCode');
   assert.equal(TOKEN.link, 'mdLink');
-  assert.equal(TOKEN.count, 'syntaxNumber');
+  assert.equal(TOKEN.count, 'text');
   assert.equal(TOKEN.diffAdd, 'toolDiffAdded');
 });
 
 test('paint uses theme token and falls back to raw text', () => {
-  assert.equal(paint(theme, 'path', 'src/a.ts'), '<accent>src/a.ts</accent>');
+  assert.equal(paint(theme, 'path', 'src/a.ts'), '<mdCode>src/a.ts</mdCode>');
   assert.equal(paint(undefined, 'path', 'src/a.ts'), 'src/a.ts');
+});
+
+test('paintUi tolerates an uninitialized noninteractive theme getter', () => {
+  const ui = { get theme(): never { throw new Error('Theme not initialized'); } };
+  assert.equal(paintUi(ui, 'warning', 'plain status'), 'plain status');
+  assert.equal(paintUi({ theme }, 'path', 'src/a.ts'), '<mdCode>src/a.ts</mdCode>');
 });
 
 test('colorEnabled honors NO_COLOR, FORCE_COLOR, and requires a TTY by default', () => {

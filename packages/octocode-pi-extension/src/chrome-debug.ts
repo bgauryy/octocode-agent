@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import { execSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { getOctocodeHome } from './env.js';
+import { resolveSessionIdentity } from './tools/session-artifacts.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -94,6 +94,10 @@ export interface ChromeDebugConnectOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   workspaceCwd?: string;
+  /** Resolved session key from resolveSessionIdentity — when present, screenshots and
+   *  session metadata land under `<workspace>/.octocode/agent/<sessionKey>/browser/`
+   *  instead of the shared `.octocode/screenshots/` and `.octocode/chrome-debug/` dirs. */
+  sessionKey?: string;
 }
 
 export interface ChromeConnection {
@@ -493,15 +497,12 @@ export async function launchChrome(opts: {
 
 // ─── Session metadata ─────────────────────────────────────────────────────────
 
-export function getSessionDir(workspaceCwd: string, port: number): string {
-  return path.join(workspaceCwd, '.octocode', 'chrome-debug', `port-${port}`);
+export function getSessionDir(workspaceCwd: string, port: number, sessionKey: string): string {
+  return path.join(workspaceCwd, '.octocode', 'agent', sessionKey, 'browser', `port-${port}`);
 }
 
-export function getScreenshotDir(workspaceCwd?: string): string {
-  if (workspaceCwd) {
-    return path.join(workspaceCwd, '.octocode', 'screenshots');
-  }
-  return path.join(getOctocodeHome(), 'screenshots');
+export function getScreenshotDir(workspaceCwd: string, sessionKey: string): string {
+  return path.join(workspaceCwd, '.octocode', 'agent', sessionKey, 'browser', 'screenshots');
 }
 
 export function readSessionMeta(sessionFile: string): SessionMetadata | null {
@@ -721,6 +722,7 @@ export async function connectToChrome(opts: ChromeDebugConnectOptions): Promise<
     timeoutMs = 60_000,
     signal,
     workspaceCwd,
+    sessionKey,
   } = opts;
 
   // When launching, use a port-specific profile so parallel instances don't conflict.
@@ -792,9 +794,11 @@ export async function connectToChrome(opts: ChromeDebugConnectOptions): Promise<
 
   // ── Step 5: Open WebSocket session ────────────────────────────────────────
   // CDP event log — write NDJSON for terminal visibility: tail -f <logPath>
+  const artifactWorkspace = workspaceCwd ?? process.cwd();
+  const artifactSessionKey = sessionKey ?? resolveSessionIdentity({ cwd: artifactWorkspace }).sessionKey;
   const cdpLogPath = process.env['OCTOCODE_CDP_DEBUG'] === '1'
     ? path.join(
-        getSessionDir(workspaceCwd ?? path.join(os.homedir(), '.octocode'), port),
+        getSessionDir(artifactWorkspace, port, artifactSessionKey),
         'cdp-events.jsonl',
       )
     : undefined;
@@ -807,9 +811,9 @@ export async function connectToChrome(opts: ChromeDebugConnectOptions): Promise<
   // ── Step 6: Infer identity + session metadata ─────────────────────────────
   const identity = await inferIdentity(session, mode, version, mode === 'launched' ? userDataDir : undefined);
 
-  const sessionDir = getSessionDir(workspaceCwd ?? process.cwd(), port);
+  const sessionDir = getSessionDir(artifactWorkspace, port, artifactSessionKey);
   const sessionFile = path.join(sessionDir, 'session.json');
-  const screenshotDir = getScreenshotDir(workspaceCwd);
+  const screenshotDir = getScreenshotDir(artifactWorkspace, artifactSessionKey);
 
   const metadata: SessionMetadata = {
     port,

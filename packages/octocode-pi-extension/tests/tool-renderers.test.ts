@@ -5,11 +5,23 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { Type } from 'typebox';
 import { withOctocodeRender } from '../src/branding/renderers.js';
 import {
   buildOctocodeRenderCall,
   buildToolCallSummary,
 } from '../src/tools/render-helpers.js';
+import { registerUniqueTool } from '../src/tools/octocode-tools.js';
+import { registerEditTool } from '../src/tools/edit-tool.js';
+import { registerWriteTool } from '../src/tools/write-tool.js';
+import { registerBashTool } from '../src/tools/bash-tool.js';
+import { registerFileTool } from '../src/tools/file-tool.js';
+import { registerAskUserTool } from '../src/tools/ask-user-tool.js';
+import { registerPlanTool } from '../src/tools/plan-tool.js';
+import { registerWebTool } from '../src/tools/web-tool.js';
+import { registerReadMediaTool } from '../src/tools/read-media-tool.js';
+import { registerMediaTool } from '../src/tools/create-media-tool.js';
+import { registerUnifiedAgentTool } from '../src/tools/unified-agent-tool.js';
 import type { ToolDefinition, PiTheme, ToolCallResult, RenderResultOptions } from '../src/types.js';
 // ─── Stub theme ───────────────────────────────────────────────────────────────
 
@@ -46,6 +58,59 @@ function makeResult(overrides: Partial<ToolCallResult> = {}): ToolCallResult {
   };
 }
 
+// ─── Shared registration helper ───────────────────────────────────────────────
+
+describe('registerUniqueTool with builtin overrides', () => {
+  it('wraps edit/write/bash renderers and rejects duplicate names through the shared helper', () => {
+    const tools = new Map<string, ToolDefinition>();
+    const pi = { registerTool: (def: ToolDefinition) => tools.set(def.name, def) };
+    const names = new Set<string>();
+
+    registerEditTool(pi, Type, names, registerUniqueTool);
+    registerWriteTool(pi, Type, names, registerUniqueTool);
+    registerBashTool(pi, Type, names, registerUniqueTool);
+
+    expect([...tools.keys()]).toEqual(['edit', 'write', 'bash']);
+    for (const name of ['edit', 'write', 'bash']) {
+      expect(tools.get(name)?.renderCall).toBeTypeOf('function');
+      expect(tools.get(name)?.renderResult).toBeTypeOf('function');
+    }
+    expect(() => registerWriteTool(pi, Type, names, registerUniqueTool)).toThrow(/tool name collision: write/);
+  });
+
+  it('renders Bash, file, plan, web, media, and agent queries as operation/reason pairs', () => {
+    const tools = new Map<string, ToolDefinition>();
+    const pi = { registerTool: (def: ToolDefinition) => tools.set(def.name, def) };
+    const names = new Set<string>();
+    registerBashTool(pi, Type, names, registerUniqueTool);
+    registerFileTool(pi, Type, names, registerUniqueTool);
+    registerPlanTool(pi, Type, names, registerUniqueTool);
+    registerWebTool(pi, Type, names, registerUniqueTool);
+    registerReadMediaTool(pi, Type, names, registerUniqueTool);
+    registerMediaTool(pi, Type, names, registerUniqueTool);
+    registerUnifiedAgentTool(pi, Type, names, registerUniqueTool);
+
+    const cases: Array<[string, Array<Record<string, unknown>>]> = [
+      ['bash', [{ reasoning: 'run alpha', command: 'echo alpha' }, { reasoning: 'run beta', command: 'echo beta' }]],
+      ['file', [{ reasoning: 'write alpha', type: 'write', path: '/a.ts' }, { reasoning: 'delete beta', type: 'delete', path: '/b.ts' }]],
+      ['plan', [{ reasoning: 'show plan', action: 'show' }, { reasoning: 'clear plan', action: 'clear' }]],
+      ['web', [{ reasoning: 'search alpha', query: 'alpha' }, { reasoning: 'fetch beta', url: 'https://example.com/beta' }]],
+      ['readMedia', [{ reasoning: 'inspect alpha', type: 'image', path: '/a.png', view: 'metadata' }, { reasoning: 'inspect beta', type: 'image', path: '/b.png', view: 'metadata' }]],
+      ['media', [{ reasoning: 'render alpha', type: 'image', dest: '/a.png' }, { reasoning: 'render beta', type: 'image', dest: '/b.png' }]],
+      ['agent', [{ reasoning: 'inspect alpha', type: 'inspect', agentId: 'alpha' }, { reasoning: 'inspect beta', type: 'inspect', agentId: 'beta' }]],
+    ];
+
+    for (const [toolName, queries] of cases) {
+      const lines = render(tools.get(toolName)!.renderCall!({ queries }, stubTheme), 160);
+      expect(lines, toolName).toHaveLength(5);
+      expect(lines[0], toolName).toMatch(/2 queries.*sequential/);
+      expect(lines[2], toolName).toContain(String(queries[0]!['reasoning']));
+      expect(lines[4], toolName).toContain(String(queries[1]!['reasoning']));
+      expect(lines.join('\n'), toolName).not.toMatch(/\+1|why:|reasoning:/i);
+    }
+  });
+});
+
 // ─── withOctocodeRender — basic decoration ────────────────────────────────────
 
 describe('withOctocodeRender', () => {
@@ -62,19 +127,85 @@ describe('withOctocodeRender', () => {
     expect(typeof def.renderResult).toBe('function');
   });
 
-  it('preserves existing renderCall', () => {
-    const customRenderCall = vi.fn().mockReturnValue({ render: () => ['custom'], invalidate: () => {} });
+  it('wraps an existing renderCall into ordered operation/reasoning blocks', () => {
+    const customRenderCall = vi.fn((args: unknown) => {
+      const envelope = args as { queries?: Array<Record<string, unknown>> };
+      const query = envelope.queries?.[0] ?? {};
+      return { render: () => [`custom ${String(query['value'] ?? '?')}`], invalidate: () => {} };
+    });
     const def = makeDef({ renderCall: customRenderCall });
     withOctocodeRender(def);
-    // same reference preserved
-    expect(def.renderCall).toBe(customRenderCall);
+
+    expect(def.renderCall).not.toBe(customRenderCall);
+    const lines = render(def.renderCall!({
+      queries: [
+        { value: 'alpha', reasoning: 'first reason' },
+        { value: 'beta', reasoning: 'second reason' },
+      ],
+    }, stubTheme), 120);
+
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toMatch(/2 queries.*sequential/);
+    expect(lines[1]).toContain('custom alpha');
+    expect(lines[2]).toContain('first reason');
+    expect(lines[3]).toContain('custom beta');
+    expect(lines[4]).toContain('second reason');
+    expect(lines.join('\n')).not.toMatch(/why:|reasoning:/i);
+    expect(customRenderCall).toHaveBeenCalledTimes(2);
+    for (const [callArgs] of customRenderCall.mock.calls) {
+      expect(JSON.stringify(callArgs)).not.toContain('reasoning');
+    }
   });
 
-  it('preserves existing renderResult', () => {
+  it('delegates single-query results and renders multi-query results one row per query', () => {
     const customRenderResult = vi.fn().mockReturnValue({ render: () => ['custom'], invalidate: () => {} });
     const def = makeDef({ renderResult: customRenderResult });
     withOctocodeRender(def);
-    expect(def.renderResult).toBe(customRenderResult);
+
+    const single = def.renderResult!(makeResult(), {} as RenderResultOptions, stubTheme);
+    expect(customRenderResult).toHaveBeenCalledOnce();
+    expect(single.render(80)).toEqual(['custom']);
+
+    customRenderResult.mockClear();
+    const batch = makeResult({
+      details: {
+        results: [
+          { index: 0, reasoning: 'first', status: 'success', summary: 'alpha ok', result: {} },
+          { index: 1, reasoning: 'second', status: 'failed', summary: 'beta failed', result: {} },
+          { index: 2, reasoning: 'third', status: 'not-run', summary: 'not run', result: undefined },
+        ],
+      },
+    });
+    const output = def.renderResult!(
+      batch,
+      {} as RenderResultOptions,
+      stubTheme,
+      { args: { queries: [{ reasoning: 'first' }, { reasoning: 'second' }, { reasoning: 'third' }] } } as never,
+    );
+    const lines = output.render(120);
+    expect(customRenderResult).not.toHaveBeenCalled();
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(/✓.*\[0\].*alpha ok/);
+    expect(lines[1]).toMatch(/✗.*\[1\].*beta failed/);
+    expect(lines[2]).toMatch(/[–-].*\[2\].*not run/);
+  });
+
+  it('overrides an existing renderResult on a system error (context.isError)', () => {
+    const customRenderResult = vi.fn().mockReturnValue({ render: () => ['custom'], invalidate: () => {} });
+    const def = makeDef({ name: 'boomTool', renderResult: customRenderResult });
+    withOctocodeRender(def);
+    // Pi sets context.isError when execute() threw / the call was rejected; the
+    // tool's own renderer (keyed off result.isError) must NOT paint a success row.
+    const out = def.renderResult!(
+      makeResult({ isError: false, content: [{ type: 'text', text: 'arguments: must be object' }] }),
+      { isPartial: false } as RenderResultOptions,
+      stubTheme,
+      { isError: true, invalidate() {} } as never,
+    );
+    expect(customRenderResult).not.toHaveBeenCalled();
+    const line = out.render(200).join('');
+    expect(line).toContain('boomTool');
+    expect(line).toContain('arguments: must be object');
   });
 
   it('preserves execute and parameters', async () => {
@@ -234,6 +365,23 @@ describe('buildOctocodeRenderCall', () => {
     const lines = render(c);
     expect(lines[0]).toContain('localViewStructure');
   });
+
+  it('renders every nested Octocode query with its unlabeled reason on the next line', () => {
+    const c = buildOctocodeRenderCall('localGetFileContent', {
+      queries: [
+        { path: '/src/a.ts', reasoning: 'read alpha' },
+        { path: '/src/b.ts', reasoning: 'read beta' },
+      ],
+    }, stubTheme);
+    const lines = render(c, 120);
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toMatch(/2 queries.*sequential/);
+    expect(lines[1]).toContain('a.ts');
+    expect(lines[2]).toContain('read alpha');
+    expect(lines[3]).toContain('b.ts');
+    expect(lines[4]).toContain('read beta');
+    expect(lines.join('\n')).not.toMatch(/\+1|why:|reasoning:/i);
+  });
 });
 
 // ─── buildToolCallSummary spot checks ────────────────────────────────────────
@@ -259,7 +407,7 @@ describe('buildToolCallSummary', () => {
     expect(typeof summary).toBe('string');
   });
 
-  it('appends +N for multiple queries', () => {
+  it('does not collapse multiple queries into a +N summary', () => {
     const summary = buildToolCallSummary('localGetFileContent', {
       queries: [
         { path: '/a.ts' },
@@ -267,6 +415,247 @@ describe('buildToolCallSummary', () => {
         { path: '/c.ts' },
       ],
     });
-    expect(summary).toContain('+2');
+    expect(summary).not.toMatch(/\+2|3 queries/);
+  });
+});
+
+// ─── Shared load helper ───────────────────────────────────────────────────────
+
+function loadTool(
+  registerFn: (pi: { registerTool?: (d: ToolDefinition) => void }, T: unknown, names: Set<string>, reg: unknown) => void,
+  toolName: string,
+): ToolDefinition {
+  const tools = new Map<string, ToolDefinition>();
+  const pi = { registerTool: (d: ToolDefinition) => tools.set(d.name, d) };
+  registerFn(pi, Type, new Set(), registerUniqueTool);
+  return tools.get(toolName)!;
+}
+
+// ─── file-tool custom renderer ────────────────────────────────────────────────
+
+describe('file-tool renderResult', () => {
+  it('write + path: renders op \u00b7 path with no dangling separator', () => {
+    const tool = loadTool(registerFileTool as never, 'file');
+    const result: ToolCallResult = {
+      content: [{ type: 'text', text: 'written' }],
+      details: { operation: 'write', path: '/src/foo.ts', bytes: 42 },
+      isError: false,
+    };
+    const lines = render(tool.renderResult!(result, { isPartial: false }, stubTheme), 160);
+    const joined = lines.join('\n');
+    expect(joined).toContain('write');
+    expect(joined).toContain('/src/foo.ts');
+    // The separator appears between op and path, not at the end.
+    expect(lines[0]).not.toMatch(/\u00b7\s*$/);
+  });
+
+  it('write without path: no dangling \u00b7 separator', () => {
+    const tool = loadTool(registerFileTool as never, 'file');
+    const result: ToolCallResult = {
+      content: [{ type: 'text', text: 'written' }],
+      details: { operation: 'write' }, // deliberately no path key
+      isError: false,
+    };
+    const lines = render(tool.renderResult!(result, { isPartial: false }, stubTheme));
+    expect(lines[0]).toContain('write');
+    // Must NOT produce a dangling «·» at the end of the line.
+    expect(lines[0]).not.toMatch(/\u00b7\s*$/);
+  });
+
+  it('isPartial: shows spinner (not static \u2026 prefix)', () => {
+    const tool = loadTool(registerFileTool as never, 'file');
+    const result: ToolCallResult = { content: [], details: undefined, isError: false };
+    const lines = render(tool.renderResult!(result, { isPartial: true }, stubTheme));
+    expect(lines).toHaveLength(1);
+    // The old output was the static string «… file (Octocode)» — now it uses the
+    // spinner frame (a rotating character), so the line must NOT start with the
+    // literal … glyph that the old code produced.
+    const stripped = lines[0].replace(/\x1b\[[0-9;]*m/g, '');
+    expect(stripped).not.toMatch(/^…/);
+    // The tool name must still be present.
+    expect(stripped).toContain('file (Octocode)');
+  });
+
+  it('renderCall: reasoning appears on a second line', () => {
+    const tool = loadTool(registerFileTool as never, 'file');
+    const lines = render(
+      tool.renderCall!(
+        { queries: [{ type: 'write', path: '/src/x.ts', reasoning: 'create fixture for test' }] },
+        stubTheme,
+      ),
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain('create fixture for test');
+  });
+
+  it('renderCall: no second line when reasoning is absent', () => {
+    const tool = loadTool(registerFileTool as never, 'file');
+    const lines = render(
+      tool.renderCall!(
+        { queries: [{ type: 'write', path: '/src/x.ts' }] },
+        stubTheme,
+      ),
+    );
+    expect(lines).toHaveLength(1);
+  });
+
+  it('renderCall: renders every file query and its unlabeled reasoning one by one', () => {
+    const tool = loadTool(registerFileTool as never, 'file');
+    const lines = render(
+      tool.renderCall!(
+        {
+          queries: [
+            { type: 'write', path: '/src/a.ts', reasoning: 'create alpha' },
+            { type: 'delete', path: '/src/b.ts', reasoning: 'remove beta' },
+          ],
+        },
+        stubTheme,
+      ),
+      120,
+    );
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toMatch(/2 queries.*sequential/);
+    expect(lines[1]).toMatch(/write.*a\.ts/);
+    expect(lines[2]).toContain('create alpha');
+    expect(lines[3]).toMatch(/delete.*b\.ts/);
+    expect(lines[4]).toContain('remove beta');
+    expect(lines.join('\n')).not.toMatch(/\+1|why:|reasoning:/i);
+  });
+});
+
+// ─── askUser custom renderer ──────────────────────────────────────────────────
+
+describe('askUser renderCall + renderResult', () => {
+  it('renderCall: reasoning appears on second line when provided', () => {
+    const tool = loadTool(registerAskUserTool as never, 'askUser');
+    const lines = render(
+      tool.renderCall!(
+        {
+          queries: [{
+            question: 'Which approach?',
+            options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }],
+            reasoning: 'need user preference before committing',
+          }],
+        },
+        stubTheme,
+      ),
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('Which approach?');
+    expect(lines[1]).toContain('need user preference before committing');
+  });
+
+  it('renderCall: only one line when reasoning is absent', () => {
+    const tool = loadTool(registerAskUserTool as never, 'askUser');
+    const lines = render(
+      tool.renderCall!(
+        { queries: [{ question: 'Confirm?', options: [{ value: 'y', label: 'Yes' }] }] },
+        stubTheme,
+      ),
+    );
+    expect(lines).toHaveLength(1);
+  });
+
+  it('renderResult isPartial: shows spinner not silent blank', () => {
+    const tool = loadTool(registerAskUserTool as never, 'askUser');
+    const result: ToolCallResult = { content: [], details: undefined, isError: false };
+    const lines = render(tool.renderResult!(result, { isPartial: true }, stubTheme));
+    expect(lines).toHaveLength(1);
+    // Should show the tool name while waiting for input.
+    const stripped = lines[0].replace(/\x1b\[[0-9;]*m/g, '');
+    expect(stripped).toContain('askUser');
+  });
+
+  it('renderResult final: selected status shows \u2713 and label', () => {
+    const tool = loadTool(registerAskUserTool as never, 'askUser');
+    const result: ToolCallResult = {
+      content: [{ type: 'text', text: 'selected' }],
+      details: { status: 'selected', value: 'a', label: 'Option A' },
+      isError: false,
+    };
+    const lines = render(tool.renderResult!(result, { isPartial: false }, stubTheme));
+    const joined = lines.join('\n');
+    expect(joined).toContain('\u2713'); // success glyph
+    expect(joined).toContain('Option A');
+  });
+
+  it('renderResult final: cancelled shows cancel indicator', () => {
+    const tool = loadTool(registerAskUserTool as never, 'askUser');
+    const result: ToolCallResult = {
+      content: [{ type: 'text', text: 'cancelled' }],
+      details: { status: 'cancelled' },
+      isError: false,
+    };
+    const lines = render(tool.renderResult!(result, { isPartial: false }, stubTheme));
+    const stripped = lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+    expect(stripped).toContain('cancelled');
+  });
+});
+
+// ─── plan-tool custom renderer ────────────────────────────────────────────────
+
+describe('plan-tool renderCall + renderResult', () => {
+  it('renderCall: space between title and action parenthetical', () => {
+    const tool = loadTool(registerPlanTool as never, 'plan');
+    const lines = render(
+      tool.renderCall!(
+        { queries: [{ action: 'start', index: 2 }] },
+        stubTheme,
+      ),
+    );
+    // Must not produce 'plan(start)' without a space — should be 'plan (start #2)'
+    expect(lines[0]).not.toMatch(/plan\(/);
+    expect(lines[0]).toContain('start');
+  });
+
+  it('renderCall: reasoning on second line when provided', () => {
+    const tool = loadTool(registerPlanTool as never, 'plan');
+    const lines = render(
+      tool.renderCall!(
+        { queries: [{ action: 'complete', reasoning: 'all acceptance criteria met' }] },
+        stubTheme,
+      ),
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain('all acceptance criteria met');
+  });
+
+  it('renderCall: only one line when reasoning is absent', () => {
+    const tool = loadTool(registerPlanTool as never, 'plan');
+    const lines = render(
+      tool.renderCall!(
+        { queries: [{ action: 'show' }] },
+        stubTheme,
+      ),
+    );
+    expect(lines).toHaveLength(1);
+  });
+
+  it('renderResult isPartial: shows spinner', () => {
+    const tool = loadTool(registerPlanTool as never, 'plan');
+    const result: ToolCallResult = { content: [], details: undefined, isError: false };
+    const lines = render(tool.renderResult!(result, { isPartial: true }, stubTheme));
+    expect(lines).toHaveLength(1);
+    const stripped = lines[0].replace(/\x1b\[[0-9;]*m/g, '');
+    expect(stripped).toContain('plan');
+  });
+
+  it('renderResult step summary: shows done/total counts', () => {
+    const tool = loadTool(registerPlanTool as never, 'plan');
+    const result: ToolCallResult = {
+      content: [{ type: 'text', text: '\u25c6 plan 1/3' }],
+      details: {
+        action: 'complete',
+        steps: [
+          { id: '1', text: 'step one', status: 'done' },
+          { id: '2', text: 'step two', status: 'todo' },
+          { id: '3', text: 'step three', status: 'todo' },
+        ],
+      },
+      isError: false,
+    };
+    const lines = render(tool.renderResult!(result, { isPartial: false }, stubTheme));
+    const joined = lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+    expect(joined).toContain('1/3');
   });
 });

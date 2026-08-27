@@ -1,6 +1,6 @@
 ---
 name: octocode-awareness
-description: "Use before starting and before finishing any repo task; also for planning, edits, reviews, tests, handoffs, multi-agent/file overlap, verification debt, memory, locks, signals, hooks, or repo learning — even solo."
+description: "Coordinate agents through shared repository state. Use when peers, shared plans, overlap, locks, messages, verification debt, handoffs, or reusable memory can change the next action. Skip routine solo work with no shared-state signal."
 hooks:
   PreToolUse: [{ matcher: "^(?:Write|Edit|MultiEdit|NotebookEdit)$", hooks: [{ type: command, command: "${CLAUDE_SKILL_DIR}/scripts/hooks/pre-edit.sh", timeout: 20 }] }]
   PostToolUse: [{ matcher: "^(?:Write|Edit|MultiEdit|NotebookEdit)$", hooks: [{ type: command, command: "${CLAUDE_SKILL_DIR}/scripts/hooks/post-edit.sh", timeout: 20 }] }]
@@ -13,39 +13,60 @@ hooks:
   UserPromptSubmit: [{ hooks: [{ type: command, command: "${CLAUDE_SKILL_DIR}/scripts/hooks/notify-deliver.sh", timeout: 20 }] }]
 ---
 # Octocode Awareness
-Use at repo task start and finish. AGENTS routes; skill decides; CLI/SQLite acts; hooks automate deterministic edges. SQLite is canonical; memory rows are leads, not proof — verify before trust.
 
-Choose the runnable CLI before acting:
-| Context | Use |
-|---|---|
-| Pi / Octocode harness | `node "$OCTOCODE_AWARENESS_CLI"` |
-| Package development after build | `node packages/octocode-awareness/out/octocode-awareness.js` |
-| Installed/global smoke | `npx @octocodeai/octocode-awareness` |
-| Missing local `out/` | run `yarn workspace @octocodeai/octocode-awareness build` first |
+Use Awareness only when shared state can change the decision. The skill owns judgment; the CLI owns deterministic actions and live contracts. Derive reasoning, actions, and completion claims from observed current repository state or check evidence. Memory, file locks, search hits, expiry, and peer notes are leads—not proof.
 
-Set `OCTOCODE_AGENT_ID` per agent/session. Run live-state actions through the CLI you chose. Do not put `node ...` inside a shell variable and run it; use `node "$AWARENESS_CLI" ...`.
+## One coordination layer
 
-Core loop: `attend -> work start -> edit/check -> work end -> verify mark -> verify audit`.
-1. BEFORE: `attend --query "<task>" --compact`; follow `next`; state goal, acceptance, scope, evidence. Recall memory only if it can change the plan.
-2. DURING: open WORK (default) or claim a plan task (shared backlogs); declare paths by hooks or `work start`; read peers. Ordinary overlap is allowed; reserve exclusivity for unsafe/non-mergeable edits and never bypass conflict.
-3. AFTER: check while present; `task submit`/`work end`; `verify mark`; `verify audit`. Expiry never means success.
-4. OPTIONAL: `reflect record --lesson` only for verified reusable outcomes; run `maintenance digest` cleanup only under real pressure.
+One `octocode-awareness` binary exposes two explicit planes; do not mix their similarly named commands:
 
-Hooks automate deterministic edges, not judgment: pre-edit declares file presence + peer awareness and blocks only on a real exclusive-lock conflict; post-edit logs the edit and advances the run lifecycle; Stop/SubagentStop gate on unverified work; SessionEnd/PreCompact capture a handoff signal. Hooks never choose plans, locks, success, learning, or cleanup. Use `work start --exclusive` only for sensitive/non-mergeable files; `lock wait/prune` are recovery, and wait-clear still needs a `work show` presence check before acquire.
+| Plane | Use | Live catalog | Store |
+|---|---|---|---|
+| Shared coordination | Cross-host plans/tasks, peers, messages, handoffs, locks, checks, verified memory | `guide --json`; `coordination schema commands` | `~/.octocode/octocode.sqlite3` (or Octocode home/DB override) |
+| Advanced workflow | `attend`, explicit WORK/runs, signals, refinements, reflection, queries, maintenance | `schema commands --compact` | `~/.octocode/memory/awareness.sqlite3` (or `OCTOCODE_MEMORY_HOME`/`--db`) |
 
-Delegate only routine deterministic Awareness CLI reads/writes/maintenance when cheaper. Use the smallest capable configured low-cost agent, require `--compact`, cap receipt at 512 bytes. Lead keeps destructive approval, conflict handling, memory truth, and verification.
+Shared commands use `coordination …`; `guide`, `status`, `message`, `handoff`, and `check` have shortcuts. Advanced commands use root nouns. Direct `status` is shared; `workspace status` is advanced. Follow `next` and exact schemas.
 
-Feature map — when to use what, then load one reference for exact flags (`<cli> schema command <noun> [action]` or `<command> --help`; direct nouns use `schema command attend`, not `attend run`):
-- Unsure which flow applies: trigger → command → verify/close matrix — `references/flow-matrix.md`.
-- Orient / next action: `attend` (start every task) — `references/agent-cheatsheet.md`.
-- Plan vs task vs WORK (shared backlog vs solo edit): `references/plan-task-workflow.md`.
-- File presence & overlap (advisory, mergeable edits): `work start|touch|list|show` — `references/files-awareness.md`.
-- Exclusivity for unsafe/non-mergeable edits + verify debt: `work start --exclusive`, `lock acquire|wait|release|prune`, `verify mark|audit` — `references/lock-protocol.md`.
-- Communicate with other agents (blocker/question/handoff/decision/fyi) and durable follow-up: `signal publish|list|reply|ack|resolve` and `refinement set|get` — `references/coordination-protocol.md`.
-- Recall/record durable lessons: `memory recall --smart` / `memory record` — `references/memory-recall.md`.
-- Hooks + hosts (Pi/Codex/Cursor/Claude): `references/hooks.md`.
-- Architecture / session / storage: `references/architecture.md`.
-- Query views & docs output: `references/output-routing.md`; unknown owner: `docs list --compact`, then `docs show <name>`.
-- Reflection / skill changes / cleanup: `references/learning-loop.md`.
+The only documented runner is `npx @octocodeai/octocode-awareness …`. Code hosts import `getExternalAgentAwarenessGuide`; do not copy policy or teach host-specific command paths.
 
-first activation: load `README.md`; if the SQLite store may not exist, run `maintenance init --compact` once; then run `attend`. Claude uses frontmatter; do not install duplicate project hooks. Codex/Cursor use `references/hooks.md`; Pi uses its bridge. Diagnose with `node skills/octocode-awareness/scripts/install.mjs`. Rebuild with `yarn workspace @octocodeai/octocode-awareness build`; never edit mirrors.
+In references, `<cli>` means that runner.
+
+## First run
+
+Run `npx @octocodeai/octocode-awareness config show --compact`. If the file is missing, read [configuration](references/configuration.md), show its five questions together, wait, and create it only from all answers; never infer defaults. Run `config validate` and operate from the file. Creating it is not hook-install approval: immediately before every real `hooks install`, show the dry-run target and ask separately; without an explicit yes, do not install.
+
+Then run `npx @octocodeai/octocode-awareness init --compact` once for the advanced store. Shared commands create/check their store on use. Inspect only the needed plane:
+
+```bash
+npx @octocodeai/octocode-awareness guide --json
+npx @octocodeai/octocode-awareness status --workspace "$PWD"
+npx @octocodeai/octocode-awareness attend --workspace "$PWD" --query "<task>" --compact
+```
+
+## Quick usage
+
+- Orient with shared `status` or advanced `attend`.
+- Choose owned/ready tasks or start bounded WORK; expose edited paths.
+- Inspect/message ordinary overlap; lock only unsafe overlap.
+- Run the check, then shared `check mark` or advanced `verify mark`.
+- Store only verified reusable memory; re-check recall.
+- Leave a named task/signal/handoff/refinement only when work remains.
+
+## Bounded flow
+
+Inspect relevant shared state; claim scoped work; expose edited paths; keep leases alive; message consequential overlap; run the declared check; record its observed receipt with `check mark`; then close work. Ordinary overlap is advisory. Lock only unsafe overlap. Leave a handoff only for continuation and store only verified reusable memory.
+
+Hooks automate presence and conflict gates; they do not choose tasks, assert success, or create truth. Never bypass a peer lock. Destructive cleanup remains dry-run-first and requires normal authorization.
+
+`hooks install|check|remove --host` supports `claude|codex|cursor`. Pi uses `@octocodeai/pi-extension` native events and must never be passed as an install host.
+
+## Detail routes
+
+- Shared commands and outcomes: [flow matrix](references/flow-matrix.md); live truth: `npx @octocodeai/octocode-awareness coordination schema commands`.
+- Prompt/`AGENTS.md` export: `instructions export --format prompt|agents-md|json`
+- Configuration, defaults, supported toggles, and JSON contract: [configuration](references/configuration.md) and [schema](references/awareness-config.schema.json).
+- Storage ownership and host composition: [architecture](references/architecture.md).
+- Research evidence: [Octocode](references/octocode.md) via MCP or `npx octocode`.
+- Runtime workflows: [setup](references/agent-cheatsheet.md), [plan/run](references/plan-task-workflow.md), [locks/verify](references/lock-protocol.md), [signals](references/coordination-protocol.md), [memory](references/memory-recall.md), [hooks](references/hooks.md), and [queries](references/output-routing.md).
+
+For package/host installation, read `README.md`; initialization and runtime diagnosis start with the CLI, not prompt-authored shell logic. Edit only this repo-root skill source; rebuild mirrors with `yarn workspace @octocodeai/octocode-awareness build`.

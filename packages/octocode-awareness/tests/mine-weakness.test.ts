@@ -40,7 +40,7 @@ describe('mineWeakness', () => {
     expect(result.clusters).toEqual([]);
     expect(result.total_signatures).toBe(1);
     expect(result.total_memories).toBe(1);
-    expect(result.next).toContain('octocode-awareness reflect record');
+    expect(result.next).toContain('npx @octocodeai/octocode-awareness reflect record');
   });
 
   it('clusters repeated signatures and reports count/avg_importance', () => {
@@ -55,7 +55,7 @@ describe('mineWeakness', () => {
     expect(cluster.avg_importance).toBe(6);
     expect(cluster.memory_ids).toHaveLength(3);
     expect(result.next).toContain('implement one scoped fix');
-    expect(result.next).toContain('octocode-awareness reflect record');
+    expect(result.next).toContain('npx @octocodeai/octocode-awareness reflect record');
     expect(result.next).not.toContain('memory_reflect');
   });
 

@@ -269,7 +269,7 @@ export const SCHEMA_DDL = `
       agent_name     TEXT NOT NULL DEFAULT '',
       workspace_path TEXT,
       artifact       TEXT,
-      context        TEXT,   -- 'pi' | 'cursor' | 'claude-code' | etc
+      context        TEXT,   -- host or execution-context identifier
       registered_at  TEXT NOT NULL,
       last_seen_at   TEXT NOT NULL
     );

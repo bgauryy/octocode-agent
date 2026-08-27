@@ -7,8 +7,7 @@ Chrome DevTools Protocol (CDP) browser subagent for the Pi coding agent.
 ```
 Main agent
   ├─ chromeDebug          ← direct single-shot CDP calls (1 scheme per call)
-  ├─ spawnSubagent        ← spawn browser-agent for multi-turn sessions
-  └─ browserAgent         ← generate spawn config for manual spawnAgent calls
+  └─ agent                ← spawn a browser-profile worker and manage its lifecycle
 
 browser-agent (subagent)
   ├─ chromeDebug          ← 28 CDP schemes, full CDP via scheme:"raw"
@@ -32,33 +31,35 @@ subagents/browser-agent/
 ### Single-shot (no subagent needed)
 
 ```
-chromeDebug scheme:"debug" url:"https://example.com" port:9222 launch:true
-chromeDebug scheme:"network" url:"https://example.com" port:9222
-chromeDebug scheme:"screenshot" port:9222
+chromeDebug({queries:[{reasoning:"Inspect page failures.", scheme:"debug", url:"https://example.com", port:9222, launch:true}]})
+chromeDebug({queries:[{reasoning:"Capture request evidence.", scheme:"network", url:"https://example.com", port:9222}]})
+chromeDebug({queries:[{reasoning:"Capture the current page.", scheme:"screenshot", port:9222}]})
 ```
 
 ### Multi-turn session
 
 ```
 // 1. Spawn
-spawnSubagent({
-  agent: "browser-agent",
+agent({queries:[{
+  reasoning: "The security audit needs multiple CDP phases.",
+  type: "spawn",
+  profile: "browser",
   task: "audit security of https://example.com",
   url: "https://example.com",
   port: 9222,
   launch: true
-})
+}]})
 → agentId: "abc123"
 
 // 2. Wait for Phase 1 to complete
-AgentMessage({action:"wait", agentId:"abc123", timeoutMs:60000})
+agent({queries:[{reasoning:"Collect the first audit phase.", type:"wait", agentId:"abc123", timeoutMs:60000}]})
 
 // 3. Send Phase 2 instruction
-AgentMessage({action:"send", agentId:"abc123", message:"now check cookies and storage"})
-AgentMessage({action:"wait", agentId:"abc123", timeoutMs:30000})
+agent({queries:[{reasoning:"Queue the next audit phase.", type:"message", delivery:"followUp", agentId:"abc123", message:"now check cookies and storage"}]})
+agent({queries:[{reasoning:"Collect the follow-up phase.", type:"wait", agentId:"abc123", timeoutMs:30000}]})
 
 // 4. Always kill when done
-AgentMessage({action:"kill", agentId:"abc123", remove:true})
+agent({queries:[{reasoning:"Release the completed browser worker.", type:"kill", agentId:"abc123", remove:true}]})
 ```
 
 ---
@@ -251,27 +252,27 @@ Returns: `{score:N, total:14, verdict:"CLEAN"|"MOSTLY_CLEAN"|"DETECTED"}`
 
 ```
 // Basic
-agentId = spawnSubagent(...)
-AgentMessage({action:"wait", agentId, timeoutMs:60000})
-AgentMessage({action:"kill", agentId, remove:true})
+agentId = agent({queries:[{reasoning:"Run multi-turn browser work.", type:"spawn", profile:"browser", task:"..."}]})
+agent({queries:[{reasoning:"Collect browser results.", type:"wait", agentId, timeoutMs:60000}]})
+agent({queries:[{reasoning:"Release the browser worker.", type:"kill", agentId, remove:true}]})
 
 // Async polling (long tasks > 30s)
 while (status !== "idle") {
-  AgentMessage({action:"status", agentId})
+  agent({queries:[{reasoning:"Check browser progress.", type:"inspect", agentId}]})
   sleep 10s
 }
 
 // Parallel browsers
-a = spawnSubagent({..., port:9222})
-b = spawnSubagent({..., port:9223})
-AgentMessage({action:"wait", agentId:a, timeoutMs:90000})
-AgentMessage({action:"wait", agentId:b, timeoutMs:90000})
+a = agent({queries:[{reasoning:"Run browser lane A.", type:"spawn", profile:"browser", task:"...", port:9222}]})
+b = agent({queries:[{reasoning:"Run browser lane B.", type:"spawn", profile:"browser", task:"...", port:9223}]})
+agent({queries:[{reasoning:"Collect browser lane A.", type:"wait", agentId:a, timeoutMs:90000}]})
+agent({queries:[{reasoning:"Collect browser lane B.", type:"wait", agentId:b, timeoutMs:90000}]})
 
 // Steer (interrupt wrong direction)
-AgentMessage({action:"steer", agentId, message:"focus on cookies only"})
+agent({queries:[{reasoning:"Redirect the active browser worker.", type:"steer", agentId, message:"focus on cookies only"}]})
 
 // Always kill after last [DONE]
-AgentMessage({action:"kill", agentId, remove:true})
+agent({queries:[{reasoning:"Release the completed browser worker.", type:"kill", agentId, remove:true}]})
 ```
 
 ---
@@ -350,7 +351,7 @@ vs playwright-mcp: ~114,000 chars (~28,500 tokens) for equivalent analysis — *
 
 See `.octocode/plans/pi-improvements/PI_IMPROVEMENTS.md` for open proposals:
 
-1. **Extension hot-reload** — `spawnSubagent` tool requires session restart after build
+1. **Extension hot-reload** — the unified `agent` tool requires session restart after build
 2. **Agent idle callback** — no `onAgentIdle` hook for auto-cleanup
-3. **AgentMessage cross-process** — sub-orchestrator agent IDs not visible to parent
+3. **Worker lifecycle cross-process** — sub-orchestrator agent IDs not visible to parent
 4. **`--skill` in SpawnAgentParams** — ✅ implemented (`skills?: string[]`)

@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process';
-import { buildAwarenessLiteCommand } from './assets.js';
+import { buildAwarenessCommand, runAwarenessInProcess } from './assets.js';
 import type { PiContext, PiExecResult, PiInstance } from './types.js';
 
 const DEFAULT_JOB_TIMEOUT_MS = 60_000;
-const DEFAULT_CRON_JOB_NAME = 'awareness-lite-status';
-export const DEFAULT_AWARENESS_LITE_STATUS_INTERVAL_MS = 30 * 60 * 1000;
+const DEFAULT_CRON_JOB_NAME = 'awareness-status';
+export const DEFAULT_AWARENESS_STATUS_INTERVAL_MS = 30 * 60 * 1000;
 
 export type OctocodeCronJobStatus =
   | 'idle'
@@ -76,6 +76,8 @@ export interface OctocodeCronSchedulerOptions {
   executor?: OctocodeCronExecutor;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
+  /** Called after each job run (success or failure). Use for proactive TUI notifications or cache refreshes. */
+  onJobComplete?: (result: OctocodeCronRunResult, ctx: PiContext | undefined) => void;
 }
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
@@ -91,12 +93,12 @@ function workspaceOf(ctx: PiContext | undefined): string {
 function defaultJobs(env: NodeJS.ProcessEnv): OctocodeCronJobDefinition[] {
   return [
     {
-      name: 'awareness-lite-status',
-      label: 'Awareness Lite status',
-      description: 'Report-first Awareness Lite status summary; never mutates data.',
+      name: 'awareness-status',
+      label: 'Awareness status',
+      description: 'Report-first Awareness status summary (status prunes expired locks/work rows as a side effect).',
       intervalMs: parsePositiveInt(
         env['OCTOCODE_CRON_STATUS_INTERVAL_MS'],
-        DEFAULT_AWARENESS_LITE_STATUS_INTERVAL_MS,
+        DEFAULT_AWARENESS_STATUS_INTERVAL_MS,
       ),
       enabledByDefault: env['OCTOCODE_CRON_STATUS'] !== '0',
       awarenessArgs: (ctx) => [
@@ -162,6 +164,10 @@ export function createOctocodeCronScheduler(
 ): OctocodeCronScheduler {
   const env = options.env ?? process.env;
   const now = options.now ?? Date.now;
+  // Default execution is IN-PROCESS (no child process). An explicit executor or a
+  // pi.exec seam (tests, foreign hosts) opts back into subprocess spawning and
+  // preserves the `node cli.js …` spec assertions those callers make.
+  const useSubprocess = Boolean(options.executor || options.pi?.exec);
   const executor = options.executor ?? makeExecutor(options.pi);
   const states = new Map<string, MutableJobState>();
   let active = false;
@@ -212,32 +218,34 @@ export function createOctocodeCronScheduler(
     state.status = 'running';
     state.lastStartedAt = now();
     state.lastMessage = undefined;
+    let runResult: OctocodeCronRunResult | undefined;
     try {
-      const spec = buildAwarenessLiteCommand(state.definition.awarenessArgs(ctx));
-      const result = await executor(
-        spec.cmd,
-        spec.args,
-        { timeout: DEFAULT_JOB_TIMEOUT_MS },
-      );
+      const args = state.definition.awarenessArgs(ctx);
+      let result: PiExecResult;
+      if (useSubprocess) {
+        const spec = buildAwarenessCommand(args);
+        result = await executor(spec.cmd, spec.args, { timeout: DEFAULT_JOB_TIMEOUT_MS });
+      } else {
+        const r = runAwarenessInProcess(args);
+        result = { stdout: r.stdout, stderr: r.stderr, code: r.code };
+      }
       const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join('\n'));
       state.lastExitCode = result.code;
       state.status = result.code === 0 ? 'succeeded' : 'failed';
       state.lastMessage = output || (result.code === 0 ? 'completed' : `exited with ${result.code}`);
-      return {
-        job: jobName,
-        status: state.status,
-        exitCode: result.code,
-        message: state.lastMessage,
-      };
+      runResult = { job: jobName, status: state.status, exitCode: result.code, message: state.lastMessage };
+      return runResult;
     } catch (error) {
       state.lastExitCode = 1;
       state.status = 'failed';
       state.lastMessage = error instanceof Error ? error.message : String(error);
-      return { job: jobName, status: 'failed', exitCode: 1, message: state.lastMessage };
+      runResult = { job: jobName, status: 'failed', exitCode: 1, message: state.lastMessage };
+      return runResult;
     } finally {
       state.running = false;
       state.lastFinishedAt = now();
       if (rescheduleAfterRun) schedule(state);
+      if (runResult) options.onJobComplete?.(runResult, ctx);
     }
   };
 

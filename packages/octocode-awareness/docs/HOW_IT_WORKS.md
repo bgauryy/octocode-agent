@@ -6,8 +6,9 @@ receives hook automation, verifies work, records learning,
 and exits or hands off. Command recipes live in [SKILLS.md](SKILLS.md); host wiring
 lives in [HOOKS.md](HOOKS.md); schema detail lives in [DB.md](DB.md).
 
-Awareness is a coordination runtime over one local SQLite database. Every host and
-surface uses the same state; no server or broker is required.
+Awareness is a coordination runtime over local SQLite. Every host shares the same
+coordination store; advanced workflow commands use a separately named OCT1 store.
+No server or broker is required, and command families never guess between stores.
 
 ## Starting Point And Authority Chain
 
@@ -16,13 +17,14 @@ Host starts
   -> AGENTS.md / CLAUDE.md        (entry + router; short and always loaded)
   -> Agent Skills                (policy + judgment; loaded when task matches)
   -> Awareness CLI / library     (control plane + executable contracts)
-  -> awareness.sqlite3           (canonical live state)
+  |-> octocode.sqlite3           (shared coordination + continuity)
+  |    `-> plans, tasks, peers, messages, handoffs, locks, checks, verified memory
+  `-> awareness.sqlite3          (advanced OCT1 workflow)
        |-> attend / targeted query / workboard
-       |-> plans, tasks, runs, files, locks, verification
-       |-> signals, refinements, sessions, memory
+       |-> runs, files, verification, signals, refinements, sessions, memory
        `-> optional .octocode/ query exports (read-only, on request)
 
-Hooks / Pi bridge --------------> same library and SQLite (edge automation)
+Host hooks ---------------------> same package contracts and selected store (edge automation)
 ```
 
 Each layer has one job:
@@ -38,8 +40,8 @@ Each layer has one job:
    It creates and changes plans, tasks, runs, file presence, locks, verification,
    signals, refinements, sessions, memory, maintenance, and queries (with optional
    read-only exports). CLI help and JSON schemas own exact flags and payloads.
-4. **Hooks and the Pi bridge automate deterministic edges.** They call the same
-   library used by the CLI. They can register sessions, declare writes, heartbeat,
+4. **Host hooks automate deterministic edges.** They call the same library used by
+   the CLI. They can register sessions, declare writes, heartbeat,
    roll back failed writes, finalize fallback runs, deliver changed context, and
    surface verification debt. They never choose goals, create a plan, decide a lock
    is warranted, mark tests successful, or turn memory into authority.
@@ -68,12 +70,12 @@ INSTALL PACKAGE -> INSTALL SKILL -> INIT STORE -> SET IDENTITY
 ```
 
 1. Install the package and the `octocode-awareness` skill for the host.
-2. Run `maintenance init` once. It creates/checks the canonical SQLite store; it does
+2. Run `init` once. It creates/checks the advanced workflow SQLite store; it does
    not create repository work.
 3. Set one stable `OCTOCODE_AGENT_ID` for the main agent. Host-provided child IDs keep
    subagents distinct while the parent CLI and hooks share one identity.
-4. Choose one hook surface: Claude skill frontmatter or Claude settings, Codex/Cursor
-   project settings, or the Pi bridge. Never install both Claude surfaces.
+4. Choose one hook surface: Claude skill frontmatter or Claude settings, or
+   Codex/Cursor project settings. Never install both Claude surfaces.
 5. Preview configuration writes, install after approval, then run strict config
    health. Strict success proves exact entries and existing script targets, not that
    the host executed them or delivered context.
@@ -200,7 +202,7 @@ silent; signals and overrides remain independent. Stop output is capped.
 
 ### Manual CLI And Hook Parity
 
-| Need | Hook/Pi automation | Manual control-plane equivalent |
+| Need | Hook/host automation | Manual control-plane equivalent |
 |---|---|---|
 | Enter/orient | session/prompt registration and changed briefing | `attend`, `agent register`, targeted reads |
 | Declare write | pre-edit presence and exclusivity check | `work start|touch`; add `--exclusive` when required |

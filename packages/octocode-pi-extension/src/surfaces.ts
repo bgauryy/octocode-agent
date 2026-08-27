@@ -1,12 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildAwarenessLiteCommand } from './assets.js';
+import { buildAwarenessCommand } from './assets.js';
 
 /** A command to spawn, or an actionable error explaining why it could not be built. */
 export type SurfaceSpec = { cmd: string; args: string[] } | { error: string };
 
 /** Octocode launcher surface verbs owned by the core extension. */
-export type SurfaceVerb = 'research' | 'memory' | 'awareness' | 'tools' | 'skills';
+export type SurfaceVerb = 'memory' | 'awareness' | 'tools' | 'skills';
 
 /**
  * Build the spawn spec for an Octocode surface verb.
@@ -21,10 +21,8 @@ export function buildSurfaceSpec(
     case 'memory':
     case 'awareness': {
       const prefix = verb === 'memory' ? ['memory'] : [];
-      return buildAwarenessLiteCommand([...prefix, ...rest]);
+      return buildAwarenessCommand([...prefix, ...rest]);
     }
-    case 'research':
-      return { cmd: 'npx', args: ['octocode', 'search', ...rest] };
     case 'tools':
       return { cmd: 'npx', args: ['octocode', 'tools', ...rest] };
     case 'skills':

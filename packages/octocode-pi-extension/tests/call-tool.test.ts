@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { afterEach, beforeEach, test } from 'vitest';
 import { Type } from 'typebox';
-import type { ToolDefinition } from '../src/types.js';
+import type { PiContext, ToolDefinition } from '../src/types.js';
 import {
   registerCallTool,
   setToolGeneratorForTests,
@@ -53,8 +53,11 @@ const timeTool: GeneratedTool = {
 // triviality-declined name.
 const createMeta = { intent: 'parse a duration string', reason: 'reusable, non-trivial' };
 
-async function run(tool: ToolDefinition, params: Record<string, unknown>) {
-  const res = (await tool.execute('id', params)) as {
+async function run(tool: ToolDefinition, params: Record<string, unknown>, ctx?: PiContext) {
+  const envelope = Array.isArray(params['queries'])
+    ? params
+    : { queries: [{ reasoning: 'exercise dynamic tool behavior', ...params }] };
+  const res = (await tool.execute('id', envelope, undefined, undefined, ctx)) as {
     content: Array<{ text: string }>;
     isError?: boolean;
     details: { status: string; result?: unknown; toolName?: string };
@@ -65,8 +68,43 @@ async function run(tool: ToolDefinition, params: Record<string, unknown>) {
 test('registerCallTool registers a callTool with the documented schema', () => {
   const tool = loadTool();
   assert.equal(tool.name, 'callTool');
-  const props = (tool.parameters as { properties: Record<string, unknown> }).properties;
-  assert.ok(props.toolType && props.metadata && props.mode);
+  const schema = tool.parameters as {
+    properties: { queries?: { items?: { properties?: Record<string, unknown>; required?: string[] } } };
+    required?: string[];
+  };
+    assert.deepEqual(Object.keys(schema.properties), ['queries', 'queryRunType']);
+  assert.ok(schema.required?.includes('queries'));
+  assert.ok(schema.properties.queries?.items?.properties?.['reasoning']);
+  assert.ok(schema.properties.queries?.items?.required?.includes('reasoning'));
+  assert.ok(schema.properties.queries?.items?.properties?.['toolType']);
+});
+
+test('callTool executes multiple validated operations in source order', async () => {
+  const tool = loadTool();
+  const res = await run(tool, {
+    queries: [
+      { reasoning: 'list dynamic tools first', toolType: 'inventory', mode: 'list' },
+      { reasoning: 'list dynamic tools second', toolType: 'inventory', mode: 'list' },
+    ],
+  });
+  assert.match(res.content[0]!.text, /2 queries succeeded/);
+  assert.equal((res.details as unknown as { results: unknown[] }).results.length, 2);
+});
+
+test('callTool preflights a whole batch before an earlier delete', async () => {
+  setToolGeneratorForTests(async () => timeTool);
+  const tool = loadTool();
+  await run(tool, { toolType: 'parseDuration', mode: 'create', metadata: createMeta });
+
+  await assert.rejects(run(tool, {
+    queries: [
+      { reasoning: 'delete existing dynamic tool', toolType: 'parseDuration', mode: 'delete' },
+      { reasoning: 'invalid creation without rationale', toolType: 'anotherTool', mode: 'create', metadata: { intent: 'x' } },
+    ],
+  }), /queries\[1\] failed preflight/);
+
+  const listed = await run(tool, { toolType: 'inventory', mode: 'list' });
+  assert.match(listed.content[0]!.text, /parseDuration/);
 });
 
 test('auto mode on a miss PROPOSES creation instead of silently generating', async () => {
@@ -187,6 +225,32 @@ test('a tool needing capabilities is blocked until approved via _allow', async (
   assert.equal(blocked.details.status, 'blocked');
   const approved = await run(tool, { toolType: 'fetchThing', metadata: { _allow: ['net'] } });
   assert.equal(approved.details.status, 'ran');
+});
+
+test('metadata._sandboxed:false requires explicit interactive approval and fails closed without UI', async () => {
+  setToolGeneratorForTests(async () => timeTool);
+  const tool = loadTool();
+  const blocked = await run(tool, { toolType: 'parseDuration', mode: 'create', metadata: { ...createMeta, _sandboxed: false } });
+  assert.equal(blocked.details.status, 'blocked');
+  assert.match(blocked.content[0].text, /Non-sandboxed dynamic tool creation requires explicit user approval/i);
+});
+
+test('metadata._sandboxed:false proceeds only after user approval', async () => {
+  setToolGeneratorForTests(async () => timeTool);
+  const tool = loadTool();
+  const prompts: string[] = [];
+  const ctx = {
+    hasUI: true,
+    ui: {
+      select: async (prompt: string) => {
+        prompts.push(prompt);
+        return 'Yes (run once)';
+      },
+    },
+  } as unknown as PiContext;
+  const res = await run(tool, { toolType: 'parseDuration', mode: 'create', metadata: { ...createMeta, _sandboxed: false } }, ctx);
+  assert.equal(res.details.status, 'created-and-ran');
+  assert.match(prompts[0]!, /Create non-sandboxed dynamic tool/);
 });
 
 test('a generator failure surfaces as an error outcome', async () => {

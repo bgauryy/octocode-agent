@@ -1,6 +1,6 @@
 {
   "name": "@octocodeai/octocode-awareness",
-  "version": "1.2.1",
+  "version": "1.4.0",
   "description": "Octocode Awareness: always-on workspace coordination — awareness, collaboration, learning, memory/wiki, bookkeeping, housekeeping, reflection — zero npm runtime deps.",
   "keywords": [
     "octocode",
@@ -33,7 +33,12 @@
     "./bin/awareness": "./out/octocode-awareness.js",
     "./bin/octocode-awareness": "./out/octocode-awareness.js",
     "./bin/extract-hook-files": "./out/extract-hook-files.js",
-    "./schema": "./out/schema-api.js"
+    "./schema": "./out/schema-api.js",
+    "./mcp-state": {
+      "types": "./out/types/src/mcp-state.d.ts",
+      "import": "./out/mcp-state.js",
+      "default": "./out/mcp-state.js"
+    }
   },
   "bin": "./out/octocode-awareness.js",
   "files": [
@@ -48,7 +53,6 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "build:dev": "node build.mjs",
     "clean": "rm -rf out/ dist/",
     "lint": "node ../../node_modules/eslint/bin/eslint.js . --config eslint.config.mjs --no-warn-ignored && tsc --noEmit -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -62,11 +66,12 @@
     "verify": "yarn lint && yarn test"
   },
   "devDependencies": {
-    "@types/node": "^25.9.3",
-    "@vitest/coverage-v8": "^4.1.9",
-    "esbuild": "^0.28.1",
+    "@octocodeai/octocode-shared": "workspace:^",
+    "@types/node": "^26.2.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.9",
+    "vitest": "^4.1.11",
     "zod": "^4.4.3"
   },
   "publishConfig": {
