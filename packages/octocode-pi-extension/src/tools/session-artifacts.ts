@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { ContextSegmentV1 } from '@octocodeai/octocode-awareness';
 
 export const SESSION_MANIFEST_VERSION = 1 as const;
 export const PLAN_SNAPSHOT_VERSION = 1 as const;
@@ -472,4 +473,153 @@ export function compareAndSwapPlanProjection<T>(
     ctx.registerProducer('plan', 'plan/state.json');
     return { ok: true, value: next };
   });
+}
+
+export interface RehydrationLedgerV1 {
+  version: 1;
+  sessionKey: string;
+  workspace: string;
+  capturedAt: string;
+  expiresAt: string;
+  digest: string;
+  segments: ContextSegmentV1[];
+  contentRefs?: Record<string, string>;
+  plan?: { scope: string; branchSnapshotId: string; generation: number; revision?: string };
+  pendingInteractionIds: string[];
+  consumerCursors: Record<string, number>;
+}
+
+const REHYDRATION_LEDGER_PATH = 'compaction/rehydration-v1.json';
+const REHYDRATION_CONTENT_DIR = 'compaction/segments';
+
+function rehydrationDigest(value: Omit<RehydrationLedgerV1, 'digest'>): string {
+  return `sha256:${sha256(JSON.stringify(value))}`;
+}
+
+export function writeRehydrationLedger(
+  ctx: SessionArtifactContext,
+  input: Omit<RehydrationLedgerV1, 'version' | 'sessionKey' | 'workspace' | 'digest' | 'contentRefs' | 'expiresAt'> & {
+    expiresAt?: string;
+    segmentContents?: Record<string, string>;
+  },
+): RehydrationLedgerV1 {
+  const segmentsById = new Map(input.segments.map((segment) => [segment.id, segment]));
+  const contentRefs: Record<string, string> = {};
+  for (const [id, content] of Object.entries(input.segmentContents ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
+    const segment = segmentsById.get(id);
+    if (!segment) throw new Error(`Rehydration content has no segment manifest: ${id}`);
+    if (contentDigestForRehydration(content) !== segment.digest) throw new Error(`Rehydration content digest mismatch: ${id}`);
+    const relative = `${REHYDRATION_CONTENT_DIR}/${sha256(id).slice(0, 24)}.txt`;
+    ctx.writeText(relative, content);
+    ctx.registerProducer('compaction', relative);
+    contentRefs[id] = relative;
+  }
+  const body: Omit<RehydrationLedgerV1, 'digest'> = {
+    version: 1,
+    sessionKey: ctx.identity.sessionKey,
+    workspace: ctx.identity.workspace,
+    capturedAt: input.capturedAt,
+    expiresAt: input.expiresAt ?? new Date(Date.parse(input.capturedAt) + 24 * 60 * 60_000).toISOString(),
+    segments: input.segments,
+    ...(Object.keys(contentRefs).length > 0 ? { contentRefs } : {}),
+    ...(input.plan ? { plan: input.plan } : {}),
+    pendingInteractionIds: [...new Set(input.pendingInteractionIds)],
+    consumerCursors: Object.fromEntries(Object.entries(input.consumerCursors).sort(([a], [b]) => a.localeCompare(b))),
+  };
+  const ledger = { ...body, digest: rehydrationDigest(body) };
+  ctx.writeJson(REHYDRATION_LEDGER_PATH, ledger);
+  ctx.registerProducer('compaction', REHYDRATION_LEDGER_PATH);
+  return ledger;
+}
+
+export type RehydrationLedgerInspection =
+  | { status: 'valid'; ledger: RehydrationLedgerV1 }
+  | { status: 'missing' | 'corrupt' | 'identity-mismatch' };
+
+export function inspectRehydrationLedger(ctx: SessionArtifactContext): RehydrationLedgerInspection {
+  const file = ctx.resolve(REHYDRATION_LEDGER_PATH);
+  if (!fs.existsSync(file)) return { status: 'missing' };
+  try {
+    assertNoSymlinkEscape(ctx.root, file);
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as RehydrationLedgerV1;
+    if (parsed?.sessionKey !== ctx.identity.sessionKey || parsed?.workspace !== ctx.identity.workspace) {
+      return { status: 'identity-mismatch' };
+    }
+    if (parsed.version !== 1 || !Number.isFinite(Date.parse(parsed.capturedAt)) || !Number.isFinite(Date.parse(parsed.expiresAt))
+      || !Array.isArray(parsed.segments) || !Array.isArray(parsed.pendingInteractionIds)
+      || !parsed.consumerCursors || typeof parsed.consumerCursors !== 'object') return { status: 'corrupt' };
+    const { digest, ...body } = parsed;
+    return typeof digest === 'string' && digest === rehydrationDigest(body)
+      ? { status: 'valid', ledger: parsed }
+      : { status: 'corrupt' };
+  } catch {
+    return { status: 'corrupt' };
+  }
+}
+
+export function readRehydrationLedger(ctx: SessionArtifactContext): RehydrationLedgerV1 | undefined {
+  const result = inspectRehydrationLedger(ctx);
+  return result.status === 'valid' ? result.ledger : undefined;
+}
+
+function contentDigestForRehydration(content: string): string {
+  return `sha256:${sha256(content)}`;
+}
+
+export function resolveRehydrationContentRefs(
+  ctx: SessionArtifactContext,
+  ledger: RehydrationLedgerV1,
+): { contents: Record<string, string>; corrupt: string[] } {
+  const contents: Record<string, string> = {};
+  const corrupt: string[] = [];
+  const segmentIds = new Set(ledger.segments.map((segment) => segment.id));
+  for (const [id, relative] of Object.entries(ledger.contentRefs ?? {})) {
+    try {
+      if (!segmentIds.has(id) || typeof relative !== 'string' || !relative.startsWith(`${REHYDRATION_CONTENT_DIR}/`)) throw new Error('invalid content ref');
+      const file = ctx.resolve(relative);
+      assertNoSymlinkEscape(ctx.root, file);
+      const stat = fs.lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('content ref is not a regular file');
+      contents[id] = fs.readFileSync(file, 'utf8');
+    } catch {
+      corrupt.push(id);
+    }
+  }
+  return { contents, corrupt: corrupt.sort() };
+}
+
+export function readRehydrationSegmentContents(ctx: SessionArtifactContext, ledger: RehydrationLedgerV1): Record<string, string> {
+  const resolved = resolveRehydrationContentRefs(ctx, ledger);
+  if (resolved.corrupt.length > 0) throw new Error(`Corrupt rehydration content reference(s): ${resolved.corrupt.join(', ')}`);
+  return resolved.contents;
+}
+
+export function resolveRehydrationSegments(
+  ledger: RehydrationLedgerV1,
+  contentById: Record<string, string>,
+  options: { totalTokenBudget?: number } = {},
+): { restored: string[]; stale: string[]; skipped: string[]; overBudget: string[]; estimatedTokens: number } {
+  const restored: string[] = [];
+  const stale: string[] = [];
+  const skipped: string[] = [];
+  const overBudget: string[] = [];
+  let estimatedTokens = 0;
+  for (const segment of ledger.segments) {
+    const content = contentById[segment.id];
+    if (segment.rehydrate === 'never' || content === undefined) { skipped.push(segment.id); continue; }
+    const digest = contentDigestForRehydration(content);
+    const tokens = Math.ceil(content.length / 4);
+    if (digest !== segment.digest) {
+      stale.push(segment.id);
+      continue;
+    }
+    if ((segment.tokenBudget !== undefined && tokens > segment.tokenBudget)
+      || (options.totalTokenBudget !== undefined && estimatedTokens + tokens > options.totalTokenBudget)) {
+      overBudget.push(segment.id);
+      continue;
+    }
+    restored.push(segment.id);
+    estimatedTokens += tokens;
+  }
+  return { restored, stale, skipped, overBudget, estimatedTokens };
 }

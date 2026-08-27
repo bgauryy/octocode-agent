@@ -251,7 +251,7 @@ test('plan mode keeps its no-mutation and explicit approval gate', () => {
   assert.match(prompt, /separate.*start/i);
   assert.match(prompt, /rejected|rejection/i);
   assert.match(prompt, /plan\(propose\)|action:\s*["']propose["']/i);
-  assert.match(prompt, /browser review.*local RFC file.*chat TL;DR/i);
+  assert.match(prompt, /terminal Summary first.*open the full browser review/i);
   assert.match(prompt, /Do not change code before.*Start/i);
 });
 

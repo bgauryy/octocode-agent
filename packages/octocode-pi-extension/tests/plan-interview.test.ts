@@ -24,6 +24,8 @@ vi.mock('../src/tools/ask-user-tool.js', () => ({
 
 import { registerPlanTool } from '../src/tools/plan-tool.js';
 import { getPlanDecisions, clearPlan } from '../src/tools/active-plan.js';
+import { runtimeStoreFor } from '../src/tools/runtime-renderer.js';
+import type { ForegroundActivity } from '../src/tools/runtime-store.js';
 
 function loadTool(): ToolDefinition {
   const tools = new Map<string, ToolDefinition>();
@@ -35,12 +37,13 @@ function loadTool(): ToolDefinition {
 const CWD = '/tmp/plan-interview-ws';
 afterEach(() => { outcomes.length = 0; asked.length = 0; paginations.length = 0; clearPlan(CWD); });
 
-async function clarify(questions: unknown): Promise<{ content: Array<{ text: string }>; isError?: boolean }> {
+async function clarify(questions: unknown): Promise<{ content: Array<{ text: string }>; isError?: boolean; activity?: ForegroundActivity }> {
   const tool = loadTool();
   const ctx = { cwd: CWD } as unknown as PiContext; // hasUI falsy → skip panel; runAskPrompt is mocked
-  return (await tool.execute('id', {
+  const result = (await tool.execute('id', {
     queries: [{ action: 'clarify', questions, reasoning: 'collect plan decisions in this test' }],
   }, undefined, undefined, ctx)) as { content: Array<{ text: string }>; isError?: boolean };
+  return { ...result, activity: runtimeStoreFor(ctx)?.getState().activity };
 }
 
 test('plan(clarify) records selected (label) and free-text answers into the decision log', async () => {
@@ -57,6 +60,7 @@ test('plan(clarify) records selected (label) and free-text answers into the deci
   ]);
   assert.match(res.content[0]!.text, /recorded 2 decision/);
   assert.match(res.content[0]!.text, /decision-complete/);
+  assert.equal(res.activity?.kind, 'planning', 'the foreground returns to Planning immediately after the final answer');
 });
 
 test('plan(clarify) passes pagination metadata for multi-question interviews and keeps the clean prompt in both the overlay and the log', async () => {

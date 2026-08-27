@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import { renderFooterView } from '../src/tui/footer-view.js';
-import { planPanelLines } from '../src/tools/plan-tool.js';
+import { planPanelModelLines } from '../src/tools/plan-tool.js';
+import { buildPlanReadModel } from '../src/tools/plan-read-model.js';
 import { formatAwarenessPanel } from '../src/tools/awareness-status.js';
 import { buildCompactionCard, buildHandoffCard } from '../src/tools/custom-messages.js';
 import { buildOctocodeRenderResult, visibleWidth } from '../src/tools/render-helpers.js';
@@ -13,6 +14,11 @@ const PLAN: PlanStep[] = [
   { id: 'two', text: 'Unify state projections', activeForm: 'Unifying state projections', status: 'doing' },
   { id: 'three', text: 'Run visual checks', status: 'todo', dependsOnStepIds: ['two'] },
 ];
+const PLAN_MODEL = buildPlanReadModel({
+  steps: PLAN,
+  review: { phase: 'executing', branchSnapshotId: 'tui-test', generation: 0, decisions: [], blockingQuestions: [], comments: [] },
+  coordination: { mode: 'local', sourcePlanKey: 'tui-test', coordinationWorkspace: '' },
+});
 
 function assertWidthSafe(lines: readonly string[], width: number): void {
   for (const line of lines) assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
@@ -20,7 +26,7 @@ function assertWidthSafe(lines: readonly string[], width: number): void {
 
 test('plan, task, agent, footer, and Awareness projections stay complete and width-safe', () => {
   for (const width of [24, 40, 80, 120]) {
-    const plan = planPanelLines(PLAN, undefined, width);
+    const plan = planPanelModelLines(PLAN_MODEL, undefined, width);
     const awareness = formatAwarenessPanel({
       activePlans: 1,
       readyTasks: 2,

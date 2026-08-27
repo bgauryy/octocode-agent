@@ -1127,8 +1127,17 @@ test('schema: top-level only exposes queries property', () => {
   const def = buildMcpToolDef();
   type S = { properties?: Record<string, unknown>; required?: string[] };
   const s = def.parameters as S;
-    assert.deepEqual(Object.keys(s.properties ?? {}), ['queries', 'queryRunType'], 'queries and run policy at top level');
+  assert.deepEqual(Object.keys(s.properties ?? {}), ['queries', 'queryRunType'], 'queries and run policy at top level');
   assert.ok(s.required?.includes('queries'), 'queries is required');
+});
+
+test('prompt guidance distinguishes the MCP envelope from nested server arguments', () => {
+  const def = buildMcpToolDef();
+  const guidance = [def.promptSnippet, ...(def.promptGuidelines ?? [])].join('\n');
+
+  assert.match(guidance, /MCPTool\.queries\[\]/);
+  assert.match(guidance, /arguments\.queries\[\]/);
+  assert.match(guidance, /never.*inner.*MCPTool\.queries\[\]/i);
 });
 
 test('schema: per-query item requires reasoning', () => {

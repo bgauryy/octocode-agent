@@ -2,9 +2,24 @@ import type { PiContext, PiInstance, SessionBeforeCompactEvent, SessionCompactEv
 import { clearCompactionWorkingState, scheduleCompactionContinuation } from './compaction-resume.js';
 import { clearCompactionInFlight, consumeAutoCompactResumeRequest, consumeCompactionResumeRequest, markCompactionInFlight } from './compaction-state.js';
 import { activePlanScope, getPlan, getPlanCoordination, getPlanReviewState, hasActivePlanWork } from './active-plan.js';
+import { getCurrentPlanReadModel, renderPlanContext } from './plan-read-model.js';
 import { emitCompactionCheckpoint, type CompactionCheckpointDetails } from './custom-messages.js';
 import { writeCompactionArtifact } from './compaction-artifacts.js';
 import { clearAllReadStates } from './file-state.js';
+import { contentDigest, openAwareness, type ContextSegmentV1 } from '@octocodeai/octocode-awareness';
+import { createSessionArtifactContext, writeRehydrationLedger } from './session-artifacts.js';
+import { listPendingInteractionIds } from './interaction-broker.js';
+import { runAndRecordRehydration } from './rehydration-orchestrator.js';
+
+export interface CompactionRehydrationCapture {
+  segments: ContextSegmentV1[];
+  contents: Record<string, string>;
+}
+
+let rehydrationSegmentsProvider: (() => CompactionRehydrationCapture) | undefined;
+export function setCompactionRehydrationSegmentsProvider(provider?: () => CompactionRehydrationCapture): void {
+  rehydrationSegmentsProvider = provider;
+}
 
 const SPLIT_TURN_COMPACTION_HEADER = '**Turn Context (split turn):**';
 const CUSTOM_COMPACTION_SUMMARY_LIMIT = 12_000;
@@ -334,7 +349,42 @@ export function registerCompactionHooks(pi: PiInstance, notify: NotifyFn): void 
         details.latestArtifactPath = artifact.latestPath;
         artifactLatestPath = artifact.latestPath;
       }
+      const artifactContext = createSessionArtifactContext(ctx);
+      const planScope = activePlanScope(ctx);
+      const review = getPlanReviewState(planScope);
+      const planContent = renderPlanContext(getCurrentPlanReadModel(ctx, planScope));
+      const capture = rehydrationSegmentsProvider?.() ?? { segments: [], contents: {} };
+      const providedSegments = capture.segments;
+      const segmentMap = new Map(providedSegments.map((segment) => [segment.id, segment]));
+      segmentMap.set('active-plan', {
+        version: 1,
+        id: 'active-plan',
+        kind: 'plan',
+        origin: 'plan-domain',
+        authority: 'user',
+        digest: contentDigest(planContent),
+        scope: 'task',
+        visibility: 'transcript',
+        rehydrate: 'always',
+        tokenBudget: 15_000,
+      });
+      let consumerCursors: Record<string, number> = {};
+      try {
+        const awareness = openAwareness({ workspace: ctx.cwd ?? process.cwd() });
+        try { consumerCursors = { tui: awareness.getConsumerCursor('tui'), rpc: awareness.getConsumerCursor('rpc') }; }
+        finally { awareness.close(); }
+      } catch { /* continuity metadata is best-effort; plan checkpoint still persists */ }
+      writeRehydrationLedger(artifactContext, {
+        capturedAt: new Date().toISOString(),
+        segments: [...segmentMap.values()],
+        segmentContents: { ...capture.contents, 'active-plan': planContent },
+        plan: { scope: planScope, branchSnapshotId: review.branchSnapshotId, generation: review.generation, ...(review.revision ? { revision: review.revision } : {}) },
+        pendingInteractionIds: listPendingInteractionIds(ctx),
+        consumerCursors,
+      });
+      details.rehydrationLedgerPath = artifactContext.resolve('compaction/rehydration-v1.json');
       emitCompactionCheckpoint(pi, details);
+      runAndRecordRehydration(pi, ctx, 'compaction');
     }
     // Auto-resume ONLY compactions Octocode requested via ctx.compact: that
     // aborts the in-flight agent run, so a queued follow-up is needed to

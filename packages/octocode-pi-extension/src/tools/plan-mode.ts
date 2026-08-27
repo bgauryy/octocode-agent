@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { contentDigest, effectiveCapabilityDecision, type CapabilityDecisionReceiptV1 } from '@octocodeai/octocode-awareness';
 import { paintUi } from '../tui/palette.js';
 import type { PiContext } from '../types.js';
 import { resolveSessionIdentity, type SessionIdentityInput } from './session-artifacts.js';
@@ -25,6 +26,8 @@ export type PlanPolicyPhase =
   | 'executing'
   | 'verifying'
   | 'complete'
+  | 'blocked'
+  | 'failed'
   | 'abandoned';
 
 export type ToolEffect = 'read' | 'planning-write' | 'coordination-write' | 'workspace-write' | 'external-effect';
@@ -42,9 +45,11 @@ interface StoredPlanModePolicy extends PlanModePolicyInput {
 
 const policies = new Map<string, StoredPlanModePolicy>();
 const visibleStatusSlots = new Set<string>();
+type ToolEffectResolver = (input?: Record<string, unknown>) => ToolEffect | undefined;
+let agentToolEffectResolver: ToolEffectResolver | undefined;
 
 /** Explicit effect metadata for every shipped support/override tool. */
-const TOOL_EFFECTS: Readonly<Record<string, ToolEffect>> = Object.freeze({
+export const TOOL_EFFECTS: Readonly<Record<string, ToolEffect>> = Object.freeze({
   askuser: 'read',
   skill: 'read',
   readmedia: 'read',
@@ -182,6 +187,9 @@ export function isPlanMode(ctx?: PiContext): boolean {
 export function getToolEffect(toolName: string | undefined, input?: Record<string, unknown>): ToolEffect | undefined {
   if (!toolName) return undefined;
   const normalized = toolName.toLowerCase();
+  if (normalized === 'agent') {
+    return agentToolEffectResolver?.(input);
+  }
   if (normalized === 'skill') {
     const queries = Array.isArray(input?.['queries'])
       ? input['queries'].filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value))
@@ -212,7 +220,53 @@ export function getToolEffect(toolName: string | undefined, input?: Record<strin
 }
 
 export function unclassifiedToolNames(toolNames: Iterable<string>): string[] {
-  return [...toolNames].filter((name) => !getToolEffect(name)).sort();
+  return [...toolNames].filter((name) => {
+    const normalized = name.toLowerCase();
+    return normalized === 'agent'
+      ? !TOOL_EFFECTS[normalized]
+      : !getToolEffect(name);
+  }).sort();
+}
+
+/** Install the unified-agent batch resolver into the one session policy authority. */
+export function registerAgentToolEffectResolver(resolver: ToolEffectResolver): void {
+  agentToolEffectResolver = resolver;
+}
+
+export function evaluateToolCapability(input: {
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  phase?: PlanPolicyPhase;
+  actorId?: string;
+  createdAt?: string;
+}): CapabilityDecisionReceiptV1 {
+  const action = input.toolName?.trim() || '(unknown)';
+  const effect = getToolEffect(input.toolName, input.toolInput);
+  const preStart = input.phase ? phaseBlocksEffects(input.phase) : false;
+  const guards: CapabilityDecisionReceiptV1['guards'] = [
+    { name: 'tool-effect-classified', decision: effect ? 'allow' : 'block', ...(!effect ? { reason: 'unclassified tool effect' } : {}) },
+    {
+      name: 'plan-phase-effect-policy',
+      decision: preStart && effect !== 'read' && effect !== 'planning-write' && effect !== 'coordination-write' ? 'block' : 'allow',
+      ...(preStart && effect !== 'read' && effect !== 'planning-write' && effect !== 'coordination-write'
+        ? { reason: PLAN_MODE_BLOCK_REASON }
+        : {}),
+    },
+  ];
+  const createdAt = input.createdAt ?? new Date().toISOString();
+  const stable = JSON.stringify({ action: action.toLowerCase(), effect: effect ?? 'unknown', phase: input.phase ?? 'none', guards, createdAt });
+  return {
+    version: 1,
+    receiptId: `cap_${contentDigest(stable).slice('sha256:'.length, 'sha256:'.length + 24)}`,
+    action,
+    resource: effect ?? 'unclassified',
+    actor: { kind: 'tool', id: input.actorId?.trim() || 'pi-tool-gate' },
+    provenance: { source: 'harness', trust: 'authority' },
+    guards,
+    effectiveDecision: effectiveCapabilityDecision(guards),
+    createdAt,
+    outputReview: { status: effect === 'external-effect' ? 'not-required' : 'passed' },
+  };
 }
 
 /** Block broad/unknown effects before Start; allow read/planning/coordination effects. */

@@ -43,6 +43,7 @@ export interface CompactionCheckpointDetails {
   artifactPath?: string;
   /** Stable pointer to the most recent compaction artifact. */
   latestArtifactPath?: string;
+  rehydrationLedgerPath?: string;
   /** Compaction summary text (shown truncated when expanded). */
   summary?: string;
   /** Snapshot of the active plan state at compaction time. */

@@ -1,5 +1,5 @@
 import type { PiContext, PiFooterData, PiTheme, PiWorkingIndicator } from '../types.js';
-import { createRuntimeStore, type RuntimeMcpState, type RuntimeState, type RuntimeStore } from './runtime-store.js';
+import { createRuntimeStore, type ForegroundActivity, type ForegroundActivityInput, type RuntimeMcpState, type RuntimeState, type RuntimeStore } from './runtime-store.js';
 
 interface RuntimeBinding {
   store: RuntimeStore;
@@ -34,11 +34,30 @@ function mcpStageText(mcp: RuntimeMcpState): string | undefined {
   return `MCP · ready${counts}${mcp.source === 'cache' ? ' · cached' : ''}`;
 }
 
+export function activityPresentation(activity: ForegroundActivity): { visible: boolean; message?: string; status?: string } {
+  switch (activity.kind) {
+    case 'idle': return { visible: false };
+    case 'thinking': return { visible: true, message: 'Thinking…', status: 'Thinking…' };
+    case 'researching': return { visible: true, message: `Researching…${activity.detail ? ` ${activity.detail}` : ''}`, status: 'Researching…' };
+    case 'awaiting_input': return { visible: false, status: 'Input needed' };
+    case 'planning': return { visible: true, message: `Planning…${activity.detail ? ` ${activity.detail}` : ''}`, status: 'Planning…' };
+    case 'reviewing': return { visible: false, status: 'RFC ready for review' };
+    case 'awaiting_start': return { visible: false, status: 'Ready to start' };
+    case 'working': return { visible: true, message: `Working… ${activity.label}`, status: 'Working…' };
+    case 'verifying': return { visible: true, message: `Verifying…${activity.label ? ` ${activity.label}` : ''}`, status: 'Verifying…' };
+    case 'blocked': return { visible: false, status: `Blocked · ${activity.label}` };
+    case 'complete': return { visible: false, status: activity.label ? `Complete · ${activity.label}` : 'Complete' };
+    case 'failed': return { visible: false, status: `Failed · ${activity.label}` };
+  }
+}
+
 function renderRuntime(ctx: PiContext, state: RuntimeState, rendered: RenderedRuntimeState): void {
   if (!ctx.hasUI || !ctx.ui) return;
   const statuses = { ...state.statuses };
   statuses['octocode-init'] = isLoading(state) ? `Octocode · ${state.stage}` : undefined;
   statuses['octocode-mcp-init'] = mcpStageText(state.mcp);
+  const activity = activityPresentation(state.activity);
+  statuses['octocode-activity'] = activity.status;
   const keys = new Set([...rendered.statuses.keys(), ...Object.keys(statuses)]);
   for (const key of keys) {
     const next = statuses[key];
@@ -48,8 +67,10 @@ function renderRuntime(ctx: PiContext, state: RuntimeState, rendered: RenderedRu
     else rendered.statuses.set(key, next);
   }
   const loading = isLoading(state);
-  const workingVisible = loading || state.working.visible;
-  const workingMessage = loading ? `Octocode · ${state.stage}` : state.working.message;
+  const workingVisible = loading || activity.visible || (state.activity.kind === 'idle' && state.working.visible);
+  const workingMessage = loading
+    ? `Octocode · ${state.stage}`
+    : activity.message ?? (state.activity.kind === 'idle' ? state.working.message : undefined);
   if (rendered.workingMessage !== workingMessage) {
     ctx.ui.setWorkingMessage?.(workingMessage);
     rendered.workingMessage = workingMessage;
@@ -138,6 +159,11 @@ export function setManagedStatus(ctx: PiContext | undefined, name: string, text:
 export function setManagedWorking(ctx: PiContext | undefined, visible: boolean, message?: string): void {
   const store = ensureRuntimeBinding(ctx)?.store;
   if (store) store.getState().setWorking(visible, message);
+}
+
+export function setManagedActivity(ctx: PiContext | undefined, activity: ForegroundActivityInput): void {
+  const store = ensureRuntimeBinding(ctx)?.store;
+  if (store) store.getState().setActivity(activity);
 }
 
 export function setManagedWorkingMessage(ctx: PiContext | undefined, message?: string): void {

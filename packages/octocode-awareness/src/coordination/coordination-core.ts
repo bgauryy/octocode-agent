@@ -5,6 +5,8 @@ import { journalModeForSqliteVersion } from '@octocodeai/octocode-shared/sqlite-
 import { mkdirSync } from 'node:fs';
 import { dirname,resolve } from 'node:path';
 import { defaultDbPath,type AwarenessOptions,type AwarenessSchema } from './coordination-shared.js';
+import { parseAgentEventEnvelopeV1, type AgentEventEnvelopeV1 } from '../continuity-contracts.js';
+import { SCHEMA_DDL } from '../db-schema.js';
 
 export abstract class CoordinationBase {
   readonly workspace: string;
@@ -30,12 +32,44 @@ export abstract class CoordinationBase {
     this.migrate();
     // The store is shared (~/.octocode/octocode.sqlite3): ensure the agent/session
     // tables exist alongside Awareness's own, so opening the store in-process
-    // also initialises "our DB" for the agent. Idempotent; distinct table names.
+    // also initialises "our DB" for the agent.
     initOctocodeSchema(this.db);
+    // Install auxiliary full-runtime relations (memory_refs, plan_members,
+    // task_runs, signals, …) after the coordination migration has established
+    // the unified collision-prone core tables. CREATE IF NOT EXISTS preserves
+    // those canonical plans/tasks/memories shapes.
+    this.db.exec(SCHEMA_DDL);
   }
 
   close(): void {
     this.db.close();
+  }
+
+  protected insertOutboxEvent(input: AgentEventEnvelopeV1): number {
+    const event = parseAgentEventEnvelopeV1(input);
+    const result = this.db.prepare(`INSERT INTO event_outbox(
+      event_id, workspace_path, event_type, aggregate_kind, aggregate_id, aggregate_revision,
+      actor_json, provenance_json, payload_json, session_id, correlation_id, created_at, expires_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(event_id) DO NOTHING`).run(
+      event.eventId,
+      event.workspace,
+      event.type,
+      event.aggregate?.kind ?? null,
+      event.aggregate?.id ?? null,
+      event.aggregate?.revision ?? null,
+      JSON.stringify(event.actor),
+      JSON.stringify(event.provenance),
+      JSON.stringify(event.payload),
+      event.sessionId ?? null,
+      event.correlationId ?? null,
+      event.createdAt,
+      event.expiresAt ?? null,
+    ) as { changes: number; lastInsertRowid: number | bigint };
+    if (result.changes > 0) return Number(result.lastInsertRowid);
+    const existing = this.db.prepare('SELECT sequence FROM event_outbox WHERE event_id = ?').get(event.eventId) as { sequence: number } | undefined;
+    if (!existing) throw new Error(`outbox insert failed for ${event.eventId}`);
+    return existing.sequence;
   }
   abstract createPlan(params: { title: string; goal?: string | null }): Plan;
   abstract listPlans(status?: PlanStatus): Plan[];

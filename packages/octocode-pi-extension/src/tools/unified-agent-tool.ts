@@ -65,6 +65,12 @@ import { stringEnumSchema } from './schema-helpers.js';
 import { getRandomAgentName } from '../agentNames.js';
 import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { paint, CLI_GLYPH } from '../tui/cli-design.js';
+import {
+  getToolEffect,
+  planModeToolGate,
+  registerAgentToolEffectResolver,
+  type ToolEffect,
+} from './plan-mode.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -104,6 +110,66 @@ const PROFILE_TO_SUBAGENT: Record<
   planner: 'planner',
   architect: 'architect',
 };
+
+const DYNAMIC_CHILD_TOOLS = new Set([
+  'agent',
+  'browseragent',
+  'callskill',
+  'calltool',
+  'mcptool',
+  'skill',
+  'spawnagent',
+  'spawnsubagent',
+]);
+
+function isQueryRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function resolveTypedProfileEffect(profile: (typeof TYPED_REGISTRY_PROFILES)[number]): ToolEffect | undefined {
+  const config = SUBAGENT_REGISTRY[PROFILE_TO_SUBAGENT[profile]] as SubagentConfig | undefined;
+  if (!config || !Array.isArray(config.tools)) return undefined;
+
+  let resolved: ToolEffect = 'coordination-write';
+  for (const rawName of config.tools) {
+    if (typeof rawName !== 'string' || !rawName.trim()) return undefined;
+    const name = rawName.trim();
+    const effect = DYNAMIC_CHILD_TOOLS.has(name.toLowerCase())
+      ? 'external-effect'
+      : getToolEffect(name);
+    if (!effect) return undefined;
+    if (effect === 'external-effect') return effect;
+    if (effect === 'workspace-write') resolved = effect;
+  }
+  return resolved;
+}
+
+/** Resolve the effect of the complete ordered agent batch before any item runs. */
+export function resolveAgentBatchEffect(input?: Record<string, unknown>): ToolEffect | undefined {
+  const values = input?.['queries'];
+  if (!Array.isArray(values) || values.length === 0) return undefined;
+
+  let resolved: ToolEffect = 'coordination-write';
+  for (const value of values) {
+    if (!isQueryRecord(value)) return undefined;
+    const operation = typeof value['type'] === 'string' ? value['type'] : undefined;
+    if (!operation || !(AGENT_OPERATIONS as readonly string[]).includes(operation)) return undefined;
+    if (operation !== 'spawn') continue;
+
+    if (!String(value['task'] ?? '').trim()) return undefined;
+    const profile = typeof value['profile'] === 'string' ? value['profile'] : 'custom';
+    if (!(AGENT_PROFILES as readonly string[]).includes(profile)) return undefined;
+    if (profile === 'custom' || profile === 'browser') return 'external-effect';
+
+    const profileEffect = resolveTypedProfileEffect(profile as (typeof TYPED_REGISTRY_PROFILES)[number]);
+    if (!profileEffect) return undefined;
+    if (profileEffect === 'external-effect') return profileEffect;
+    if (profileEffect === 'workspace-write') resolved = profileEffect;
+  }
+  return resolved;
+}
+
+registerAgentToolEffectResolver(resolveAgentBatchEffect);
 
 // ─── Same-batch cross-reference guard ────────────────────────────────────────
 
@@ -626,6 +692,9 @@ export function registerUnifiedAgentTool(
       onUpdate?: unknown,
       ctx?: PiContext,
     ): Promise<ToolCallResult> {
+      const policyBlock = planModeToolGate('agent', ctx, rawParams);
+      if (policyBlock) throw new Error(policyBlock.reason);
+
       // Cross-batch reference guard: checked before any item executes.
       const queriesRaw = Array.isArray(rawParams['queries'])
         ? (rawParams['queries'] as QueryRecord[])

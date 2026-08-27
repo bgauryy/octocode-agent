@@ -8,6 +8,7 @@ import {
   exitPlanMode,
   getPlanModePolicy,
   getToolEffect,
+  evaluateToolCapability,
   isPlanMode,
   planModeToolGate,
   PLAN_MODE_BLOCK_REASON,
@@ -32,13 +33,26 @@ test('every shipped support/override tool has declared effect metadata', () => {
   assert.equal(getToolEffect('web'), 'read');
 });
 
+test('capability receipts are deterministic and deny precedence is fail-closed', () => {
+  const input = { toolName: 'unknown-plugin-tool', phase: 'in_review' as const, createdAt: '2026-08-26T00:00:00.000Z' };
+  const first = evaluateToolCapability(input);
+  assert.deepEqual(evaluateToolCapability(input), first);
+  assert.equal(first.effectiveDecision, 'block');
+  assert.ok(first.guards.some((guard) => guard.name === 'tool-effect-classified' && guard.decision === 'block'));
+});
+
 test('pre-Start policy allows planning/coordination/read and blocks workspace, external, shell, and unknown effects', () => {
   const session = ctx('review-session');
   enterPlanMode(session);
   assert.equal(isPlanMode(session), true);
-  for (const allowed of ['plan', 'askUser', 'skill', 'claim', 'agent', 'readMedia', 'web', 'localSearchCode']) {
+  for (const allowed of ['plan', 'askUser', 'skill', 'claim', 'readMedia', 'web', 'localSearchCode']) {
     assert.equal(planModeToolGate(allowed, session), undefined, `${allowed} remains available during review`);
   }
+  assert.deepEqual(
+    planModeToolGate('agent', session),
+    { block: true, reason: PLAN_MODE_BLOCK_REASON },
+    'an agent call without a resolved batch fails closed',
+  );
   assert.equal(
     planModeToolGate('skill', session, { queries: [{ reasoning: 'load RFC guidance', type: 'load', name: 'octocode-rfc-generator' }] }),
     undefined,

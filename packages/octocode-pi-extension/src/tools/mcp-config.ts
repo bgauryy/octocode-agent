@@ -76,12 +76,15 @@ const DEFAULT_OCTOCODE_MCP_NPX_CACHE = path.join(os.homedir(), '.cache', 'octoco
  * - ENABLE_LOCAL: turns on the local* tool family (localSearchCode etc). Force
  *   it rather than trusting octocode-mcp's own internal default — if that
  *   upstream default ever flips, local tools must not silently disappear here.
+ * - ENABLE_CLONE: enables ghCloneRepo so the agent can clone a repo once and
+ *   use local tools for deep research instead of many ghGetFileContent calls.
  * - npm_config_*: ensure npx resolves the local cache with the native addon.
  * User-supplied env values always take precedence over these defaults.
  */
 export const OCTOCODE_MCP_ENV_DEFAULTS: Record<string, string> = {
   OCTOCODE_MCP_FULL_TEXT: 'true',
   ENABLE_LOCAL: 'true',
+  ENABLE_CLONE: 'true',
   npm_config_include: 'optional',
   npm_config_cache: DEFAULT_OCTOCODE_MCP_NPX_CACHE,
 };

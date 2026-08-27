@@ -17,7 +17,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getOctocodeHome } from '../env.js';
-import { dependencyIndexes, displayStatus, getPlanRfc, getPlanDecisions, getPlanReviewState, planPhaseIndex, PLAN_PHASES, artifactContextForScope, type DisplayStatus, type PlanStep, type PlanDecision, type PlanPhase, type ReviewState } from './active-plan.js';
+import { getPlanRfc, planPhaseIndex, artifactContextForScope, type DisplayStatus, type PlanDecision, type PlanPhase } from './active-plan.js';
+import { getCurrentPlanReadModel, type PlanReadModelV1 } from './plan-read-model.js';
+import type { PiContext } from '../types.js';
 import { escapeHtml, renderOctocodePage } from '../tui/html-page.js';
 import { renderMarkdown } from '../tui/markdown.js';
 import { openLocalUrl } from './local-url-opener.js';
@@ -79,39 +81,12 @@ function mermaidLabel(text: string): string {
   return text.replace(/"/g, '#quot;').replace(/[\n\r]+/g, ' ');
 }
 
-/** Mermaid flowchart of the plan: one node per step, edges from dependsOn. */
-export function buildPlanMermaid(steps: PlanStep[]): string {
-  const lines = ['flowchart TD'];
-  steps.forEach((step, i) => {
-    const id = `S${i + 1}`;
-    lines.push(`  ${id}["${i + 1}. ${mermaidLabel(step.text)}"]:::${displayStatus(step, steps)}`);
-  });
-  steps.forEach((step, i) => {
-    for (const dep of dependencyIndexes(step, steps)) {
-      lines.push(`  S${dep} --> S${i + 1}`);
-    }
-  });
-  // Mirror the TUI panel's color meaning so the browser diagram and terminal agree:
-  // doing = teal (active/in-flight), todo = neutral, blocked = GOLD act-on-me (dashed),
-  // done = muted. Previously doing was gold and blocked was gray — which inverted the
-  // panel, where gold means "blocked, act on me".
-  lines.push('  classDef done fill:#161B22,stroke:#30363D,color:#8B949E');
-  lines.push('  classDef doing fill:#161B22,stroke:#5EEAD4,color:#5EEAD4');
-  lines.push('  classDef todo fill:#161B22,stroke:#30363D,color:#C9D1D9');
-  lines.push('  classDef blocked fill:#161B22,stroke:#F2C14E,color:#F2C14E,stroke-dasharray:4');
-  return lines.join('\n');
-}
-
 export interface PlanMarkdownOptions {
   workspace?: string;
   status?: 'draft' | 'approved' | 'active';
   generatedAt?: Date;
   /** The accepted RFC this plan derives from — linked (not duplicated) in plan.md. */
   rfc?: RfcDoc;
-  /** The clarify-phase decision log, rendered as a Decisions section. */
-  decisions?: PlanDecision[];
-  /** Persisted lifecycle phase; distinguishes Review, Accepted, and Execute. */
-  phase?: PlanPhase;
 }
 
 /** A one-line RFC pointer for plan.md meta (link + status, or a not-found note). */
@@ -120,31 +95,31 @@ function rfcMdMeta(rfc: RfcDoc): string {
   return `RFC: ${rfc.path}${rfc.status ? ` (Status: ${rfc.status})` : ''}`;
 }
 
-/** Shareable markdown: checklist + the mermaid source in a fence. */
-export function buildPlanMarkdown(steps: PlanStep[], opts: PlanMarkdownOptions = {}): string {
-  const done = steps.filter((s) => s.status === 'done').length;
-  const rows = steps.map((step, i) => {
-    const ds = displayStatus(step, steps);
-    const dependencies = dependencyIndexes(step, steps);
-    const deps = ds === 'blocked' && dependencies.length ? ` _(needs ${dependencies.join(', ')})_` : '';
-    const doing = ds === 'doing' ? ' _(in progress)_' : '';
-    return `${MD_MARK[ds]} ${i + 1}. ${step.text}${doing}${deps}`;
+/** Pure Markdown projection of the canonical model. */
+export function buildPlanMarkdownFromModel(model: PlanReadModelV1, opts: PlanMarkdownOptions = {}): string {
+  const rows = model.tasks.map((task) => {
+    const label = task.status === 'doing' && task.activeText ? task.activeText : task.text;
+    const deps = task.status === 'blocked' && task.dependsOn.length ? ` _(needs ${task.dependsOn.join(', ')})_` : '';
+    const doing = task.status === 'doing' ? ' _(in progress)_' : '';
+    return `${MD_MARK[task.status]} ${task.index}. ${label}${doing}${deps}`;
   });
   const meta = [
     `Status: ${opts.status ?? 'active'}`,
     opts.workspace ? `Workspace: ${opts.workspace}` : undefined,
     opts.rfc ? rfcMdMeta(opts.rfc) : undefined,
-    opts.phase ? `Phase: ${opts.phase}` : undefined,
+    `Read model: v${model.version}`,
+    `Phase: ${model.phase}`,
+    model.revision ? `Revision: ${model.revision}` : undefined,
     `Generated: ${(opts.generatedAt ?? new Date()).toISOString()}`,
   ].filter(Boolean) as string[];
-  const decisionsBlock = opts.decisions && opts.decisions.length
-    ? ['## Decisions', ...opts.decisions.map((d) => `- **${d.q}** — ${d.a}`), '']
+  const decisionsBlock = model.review.decisions.length
+    ? ['## Decisions', ...model.review.decisions.map((d) => `- **${d.q}** — ${d.a}`), '']
     : [];
   return [
     '# Octocode plan',
     '',
     ...meta,
-    `Progress: ${done}/${steps.length} done`,
+    `Progress: ${model.summary.done}/${model.summary.total} done`,
     '',
     '## Flow gates',
     ...FLOW_GATES.map((gate, i) => `${i + 1}. ${gate}`),
@@ -155,10 +130,23 @@ export function buildPlanMarkdown(steps: PlanStep[], opts: PlanMarkdownOptions =
     '<!-- OCTOCODE_PLAN_CHECKLIST_END -->',
     '',
     '```mermaid',
-    buildPlanMermaid(steps),
+    buildPlanMermaidFromModel(model),
     '```',
     '',
   ].join('\n');
+}
+
+export function buildPlanMermaidFromModel(model: PlanReadModelV1): string {
+  const lines = ['flowchart TD'];
+  for (const task of model.tasks) {
+    lines.push(`  S${task.index}["${task.index}. ${mermaidLabel(task.text)}"]:::${task.status}`);
+  }
+  for (const task of model.tasks) for (const dep of task.dependsOn) lines.push(`  S${dep} --> S${task.index}`);
+  lines.push('  classDef done fill:#1B4332,stroke:#2EA043,color:#E6EDF3');
+  lines.push('  classDef doing fill:#1F3A5F,stroke:#58A6FF,color:#E6EDF3');
+  lines.push('  classDef todo fill:#161B22,stroke:#30363D,color:#C9D1D9');
+  lines.push('  classDef blocked fill:#161B22,stroke:#F2C14E,color:#F2C14E,stroke-dasharray:4');
+  return lines.join('\n');
 }
 
 /**
@@ -192,23 +180,21 @@ const REVIEW_PHASE_TIMELINE: ReadonlyArray<{ phase: Exclude<PlanPhase, 'abandone
   { phase: 'complete', label: 'Complete' },
 ];
 
-function phaseTimelineHtml(steps: PlanStep[], review?: ReviewState): string {
-  const labels = review ? REVIEW_PHASE_TIMELINE.map((item) => item.label) : [...PLAN_PHASES];
-  const cur = review
-    ? review.phase === 'abandoned'
+function phaseTimelineHtml(phase: PlanPhase, outcomeReason?: string): string {
+  const labels = REVIEW_PHASE_TIMELINE.map((item) => item.label);
+  const cur = phase === 'abandoned'
       ? -1
-      : Math.max(0, REVIEW_PHASE_TIMELINE.findIndex((item) => item.phase === review.phase))
-    : planPhaseIndex(steps);
+      : planPhaseIndex(phase);
   const items = labels.map((label, i) => {
     const cls = i < cur ? 'done' : i === cur ? 'now' : 'todo';
     const glyph = i < cur ? '✓' : i === cur ? '▸' : '○';
     return `<li class="ph ${cls}"><span class="ph-g">${glyph}</span>${escapeHtml(label)}</li>`;
   });
-  const note = review?.phase === 'abandoned'
+  const note = phase === 'abandoned'
     ? '<p class="phase-note abandoned">This plan was abandoned.</p>'
-    : review
-      ? `<p class="phase-note">Current state: <strong>${escapeHtml(review.phase.replace(/_/g, ' '))}</strong></p>`
-      : '';
+    : phase === 'blocked' || phase === 'failed'
+      ? `<p class="phase-note abandoned">${escapeHtml(outcomeReason ?? `Plan ${phase}.`)}</p>`
+      : `<p class="phase-note">Current state: <strong>${escapeHtml(phase.replace(/_/g, ' '))}</strong></p>`;
   return `<section class="timeline"><h2>Flow</h2><ol class="phase-timeline">${items.join('')}</ol>${note}</section>`;
 }
 
@@ -220,17 +206,17 @@ function decisionsSectionHtml(decisions: PlanDecision[] | undefined): string {
 }
 
 /** Same-origin browser controls that feed review decisions back into the active agent task. */
-function browserReplySectionHtml(review?: ReviewState): string {
-  const revision = review?.revision ?? review?.acceptedRevision;
-  const contextualActions = review?.phase === 'in_review' && revision
+function browserReplySectionHtml(model: PlanReadModelV1): string {
+  const revision = model.revision ?? model.acceptedRevision;
+  const contextualActions = model.phase === 'in_review' && revision
     ? `<button type="button" data-reply-command="/octocode-plan accept ${escapeHtml(revision)}" class="primary">Approve revision · ${escapeHtml(revision.slice(0, 8))}</button>
     <button type="button" data-reply-command="/octocode-plan changes">Request changes</button>`
-    : review?.phase === 'accepted'
-      ? '<button type="button" data-reply-command="/octocode-plan start" class="primary">Start implementation</button>\n    <button type="button" data-reply-command="/octocode-plan changes">Reopen review</button>'
+    : model.phase === 'accepted' && revision
+      ? `<button type="button" data-reply-command="/octocode-plan start ${escapeHtml(revision)}" class="primary">Start implementation</button>\n    <button type="button" data-reply-command="/octocode-plan changes">Reopen review</button>`
       : '';
-  const help = review?.phase === 'in_review'
+  const help = model.phase === 'in_review'
     ? 'Approve the exact displayed revision, request changes, or send a note. Approval keeps implementation blocked.'
-    : review?.phase === 'accepted'
+    : model.phase === 'accepted'
       ? 'The design is accepted. Start is the separate action that enables implementation.'
       : 'Send a note directly to the running agent task.';
   return `<section class="browser-reply" data-browser-reply>
@@ -285,40 +271,40 @@ function browserReplySectionHtml(review?: ReviewState): string {
 </script>`;
 }
 
-/** The plan page body (phase timeline + RFC + decisions + checklist + diagram + raw markdown). */
-export function buildPlanPageHtml(steps: PlanStep[], rfc?: RfcDoc, decisions?: PlanDecision[], review?: ReviewState): string {
-  const done = steps.filter((s) => s.status === 'done').length;
+/** Pure browser projection of the canonical model. */
+export function buildPlanPageHtmlFromModel(model: PlanReadModelV1, rfc?: RfcDoc): string {
   const glyph: Record<DisplayStatus, string> = { done: '✓', doing: '▸', todo: '○', blocked: '⊘' };
-  const items = steps.map((step, i) => {
-    const ds = displayStatus(step, steps);
-    const dependencies = dependencyIndexes(step, steps);
-    const deps = ds === 'blocked' && dependencies.length
-      ? ` <span class="deps">(needs ${dependencies.map(String).map(escapeHtml).join(', ')})</span>`
+  const items = model.tasks.map((task) => {
+    const label = task.status === 'doing' && task.activeText ? task.activeText : task.text;
+    const deps = task.status === 'blocked' && task.dependsOn.length
+      ? ` <span class="deps">(needs ${task.dependsOn.map(String).map(escapeHtml).join(', ')})</span>`
       : '';
-    return `<li class="${ds}"><span class="glyph">${glyph[ds]}</span>${i + 1}. ${escapeHtml(step.text)}${deps}</li>`;
+    return `<li data-task-id="${escapeHtml(task.id)}" class="${task.status}"><span class="glyph">${glyph[task.status]}</span>${task.index}. ${escapeHtml(label)}${deps}</li>`;
   });
   const gates = FLOW_GATES.map((gate, i) => `<li>${i + 1}. ${escapeHtml(gate)}</li>`);
   return [
     // Phase timeline up top: where the plan sits in the flow at a glance.
-    phaseTimelineHtml(steps, review),
+    `<section data-plan-read-model="${model.version}" data-revision="${escapeHtml(model.revision ?? '')}">`,
+    phaseTimelineHtml(model.phase, model.review.outcomeReason),
     // RFC next: the plan the user reviews leads with the accepted decision doc,
     // then the interview decisions, the derived checklist, and dependency flow.
     rfcSectionHtml(rfc),
-    decisionsSectionHtml(decisions),
-    browserReplySectionHtml(review),
+    decisionsSectionHtml(model.review.decisions),
+    browserReplySectionHtml(model),
     // ul.steps (not ol): the stylesheet only resets list-style on ul.steps, so an
     // ol here would stack a browser decimal marker on top of the manual "1." prefix.
     '<section><h2>Flow gates</h2><ul class="steps gates">',
     ...gates,
     '</ul></section>',
-    `<section><h2>Steps · ${done}/${steps.length} done</h2><ul class="steps">`,
+    `<section><h2>Steps · ${model.summary.done}/${model.summary.total} done</h2><ul class="steps">`,
     ...items,
     '</ul></section>',
     '<section><h2>Dependency flow</h2>',
-    `<pre class="mermaid">${escapeHtml(buildPlanMermaid(steps))}</pre>`,
+    `<pre class="mermaid">${escapeHtml(buildPlanMermaidFromModel(model))}</pre>`,
     '<div class="sub">Diagram needs network once (mermaid CDN); the checklist above always renders.</div>',
     '</section>',
-    `<details><summary>Raw markdown (.octocode/plan.md)</summary><pre>${escapeHtml(buildPlanMarkdown(steps, { ...(rfc ? { rfc } : {}), ...(review ? { phase: review.phase } : {}) }))}</pre></details>`,
+    `<details><summary>Raw markdown (.octocode/plan.md)</summary><pre>${escapeHtml(buildPlanMarkdownFromModel(model, { ...(rfc ? { rfc } : {}) }))}</pre></details>`,
+    '</section>',
   ].filter(Boolean).join('\n');
 }
 
@@ -347,14 +333,22 @@ export function planArtifactsDir(scope: string): string {
   }
 }
 
-/** Write plan.html + plan.md under the session artifact dir (fallback: `~/.octocode/tmp/plan/<hash>/`). Never throws. */
-export function writePlanArtifacts(scope: string, steps: PlanStep[], opts: PlanArtifactOptions = {}): PlanArtifacts | undefined {
+/** Stateful artifact entry point: load once, then pass immutable bytes to pure renderers. */
+export function writeCurrentPlanArtifacts(ctx: PiContext | undefined, scope: string, opts: PlanArtifactOptions = {}): PlanArtifacts | undefined {
   try {
-    // Read the linked RFC + decision log fresh each write so an open plan page
-    // tracks RFC/decision edits too (via the same meta-refresh as step changes).
-    const rfc = readRfcDoc(scope);
-    const decisions = getPlanDecisions(scope);
-    const review = getPlanReviewState(scope);
+    return writePlanReadModelArtifacts(scope, getCurrentPlanReadModel(ctx, scope), opts);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Write an already-loaded canonical snapshot; browser controls stay bound to these exact bytes. */
+export function writePlanReadModelArtifacts(scope: string, model: PlanReadModelV1, opts: PlanArtifactOptions = {}): PlanArtifacts | undefined {
+  return writeProjectedPlanArtifacts(scope, model, opts, readRfcDoc(scope));
+}
+
+function writeProjectedPlanArtifacts(scope: string, model: PlanReadModelV1, opts: PlanArtifactOptions, rfc?: RfcDoc): PlanArtifacts | undefined {
+  try {
     // Create the artifact context ONCE — used for both dir resolution and manifest
     // registration so we pay the dir-walk + manifest lock overhead only one time.
     let artifactCtx: ReturnType<typeof artifactContextForScope> | undefined;
@@ -372,12 +366,12 @@ export function writePlanArtifacts(scope: string, steps: PlanStep[], opts: PlanA
     const mdPath = path.join(dir, 'plan.md');
     const html = renderOctocodePage({
       title: 'Octocode plan',
-      bodyHtml: buildPlanPageHtml(steps, rfc, decisions, review),
+      bodyHtml: buildPlanPageHtmlFromModel(model, rfc),
       refreshSeconds: REFRESH_SECONDS,
-      refreshToken: `${review.branchSnapshotId}:${review.generation}`,
+      refreshToken: `${model.review.branchSnapshotId}:${model.review.generation}:${model.revision ?? ''}`,
       mermaid: true,
     });
-    const markdown = buildPlanMarkdown(steps, { ...opts, phase: review.phase, ...(rfc ? { rfc } : {}), ...(decisions.length ? { decisions } : {}) });
+    const markdown = buildPlanMarkdownFromModel(model, { ...opts, ...(rfc ? { rfc } : {}) });
     if (artifactCtx) {
       // Session artifacts use the shared atomic/private writer. The fallback
       // remains a best-effort global-home projection for pre-session hosts.
@@ -418,14 +412,11 @@ export function resetPlanHtmlSync(): void {
   liveSyncScope = undefined;
 }
 
-/** Rewrite the artifacts when live sync is armed (called on every plan refresh). */
-export function syncPlanHtmlIfEnabled(steps: PlanStep[]): void {
+/** Production live-sync path; canonical state is loaded exactly once. */
+export function syncCurrentPlanHtmlIfEnabled(ctx: PiContext | undefined, scope: string): void {
   if (liveSyncScope === undefined) return;
-  // Preserve the metadata the served page was written with (status 'active' +
-  // workspace) — passing no opts would regenerate plan.md with the default status
-  // and DROP the Workspace line on every mutation, diverging from the served doc.
   const workspace = liveSyncScope.split('\0')[0] || liveSyncScope;
-  writePlanArtifacts(liveSyncScope, steps, { status: 'active', workspace });
+  writeCurrentPlanArtifacts(ctx, scope, { status: 'active', workspace });
 }
 
 // ─── Opening ──────────────────────────────────────────────────────────────────

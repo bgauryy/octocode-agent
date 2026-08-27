@@ -90,6 +90,31 @@ describe('Phase 1: source identities, ABANDONED/CANCELLED, and graph primitives'
     expect(second.tasks.get('b')!.dependencies).toEqual([]);
   });
 
+  it('binds a source projection to one RFC revision and emits one transactional event', () => {
+    const input = {
+      sourcePlanKey: 'revision-bound-plan', sourceKind: 'rfc', title: 'Revision bound', rfcRevision: 'sha256:one',
+      steps: [{ sourceStepKey: 's1', title: 'One' }],
+    };
+    const first = aw.materializePlanGraph(input);
+    aw.materializePlanGraph(input);
+    expect(aw.listEvents({ consumerId: 'projection-test', limit: 20 })
+      .filter((event) => event.type === 'plan.projected' && event.aggregate?.id === first.plan.planId)).toHaveLength(1);
+    expect(() => aw.materializePlanGraph({ ...input, rfcRevision: 'sha256:two' }))
+      .toThrow(/projection revision conflict/);
+    expect(aw.getPlan(first.plan.planId).rfcRevision).toBe('sha256:one');
+  });
+
+  it('fails closed when an existing source graph has a different revision presence', () => {
+    aw.materializePlanGraph({
+      sourcePlanKey: 'revision-presence', title: 'Unversioned',
+      steps: [{ sourceStepKey: 's1', title: 'One' }],
+    });
+    expect(() => aw.materializePlanGraph({
+      sourcePlanKey: 'revision-presence', title: 'Now versioned', rfcRevision: 'sha256:one',
+      steps: [{ sourceStepKey: 's1', title: 'One' }],
+    })).toThrow(/projection revision conflict/);
+  });
+
   it('materializePlanGraph rejects duplicate step identities and terminal source plans', () => {
     expect(() => aw.materializePlanGraph({
       sourcePlanKey: 'duplicate-steps',

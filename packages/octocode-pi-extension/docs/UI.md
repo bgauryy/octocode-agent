@@ -42,14 +42,14 @@ Only one interactive surface owns keyboard focus. Closing or submitting that sur
 | Family | Widget and owner | Contract |
 |---|---|---|
 | Session chrome | Terminal title and session banner (`branding/`, `index.ts`) | Identify the session once. Never animate or repaint above the transcript. |
-| Activity | Working indicator (`ui-extras.ts`) | Show one spinner and a short factual activity label; stop immediately when idle. |
+| Activity | Foreground projection (`runtime-store.ts`, `runtime-renderer.ts`) | Show Thinking, Researching, Input needed, Planning, Reviewing, Ready to start, Working, Verifying, Blocked, Complete, or Failed from one Zustand slice; motion only for active work. |
 | Transcript | Thinking blocks and tool rows (`tui/cli-design.ts`, render helpers) | Call → running/update → outcome. Expanded detail stays behind the standard expand action. |
 | Transcript | Inline images (browser and Chrome tool renderers) | Render only when expanded; provide a text placeholder when the terminal cannot display images. |
 | Transcript | Conversation cards (compaction and handoff renderers) | Keep the summary durable and the payload collapsible. |
 | Decision | Single-select `askUser` (`ask-user-tool.ts`) | Recommended choice receives initial focus. The widget supports arrow keys, number keys, Enter, filtering, disabled reasons, and free text. |
 | Decision | Multi-select `askUser` (`ask-user-tool.ts`) | Space toggles, Enter confirms, min/max validation stays inline, and selected count remains visible. |
 | Decision | Text and form `askUser` (`ask-user-tool.ts`) | Use Pi's input component for cursor movement, paste, graphemes, validation, and IME positioning. |
-| Decision | Plan/RFC review (`plan-tool.ts`) | Ask for Browser, Local RFC, or Chat TL;DR; acceptance binds an exact revision and never starts implementation. |
+| Decision | Plan/RFC review (`plan-tool.ts`) | Always show the terminal Summary, then ask whether to open the browser; acceptance binds an exact revision and never starts implementation. |
 | Navigation | Shared select overlay (`ui-overlays.ts`) | Search visible labels and descriptions; preserve focus through filtering; cancel with Escape or Ctrl-C. |
 | Navigation | Shared multi-select overlay (`ui-overlays.ts`, `multi-select-list.ts`) | Use the same focus, selection, validation, and cancellation language as `askUser`. |
 | Navigation | Command palette (`command-palette.ts`) | Filter all public commands and direct actions; dispatch the selected command through the normal message path. |
@@ -116,7 +116,7 @@ Outcome words and glyphs accompany color: `✓ done`, `⚠ blocked`, `✗ failed
 
 ### Consequential plan
 
-`RFC revision ready → choose Browser, Local RFC, or Chat TL;DR → request changes or accept exact bytes → separate Start decision → one executable step begins`
+`RFC revision ready → terminal Summary with revision, paths, and actions → optional browser review → request changes or accept exact bytes → separate Start decision → shared graph materializes and one executable step is claimed`
 
 ### Long-running work
 

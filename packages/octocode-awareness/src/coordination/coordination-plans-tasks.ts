@@ -52,13 +52,13 @@ export abstract class CoordinationPlansTasks extends CoordinationBase {
 
   listPlans(status?: PlanStatus): Plan[] {
     const rows = status
-      ? this.db.prepare('SELECT * FROM plans WHERE workspace_path = ? AND status = ? ORDER BY created_at ASC').all(this.workspace, status)
-      : this.db.prepare('SELECT * FROM plans WHERE workspace_path = ? ORDER BY created_at ASC').all(this.workspace);
+      ? this.db.prepare("SELECT * FROM plans WHERE workspace_path = ? AND status = ? AND COALESCE(source_kind, '') != 'awareness-ledger' ORDER BY created_at ASC").all(this.workspace, status)
+      : this.db.prepare("SELECT * FROM plans WHERE workspace_path = ? AND COALESCE(source_kind, '') != 'awareness-ledger' ORDER BY created_at ASC").all(this.workspace);
     return (rows as unknown as PlanRow[]).map(planFromRow);
   }
 
   getPlan(planId: string): Plan {
-    const row = this.db.prepare('SELECT * FROM plans WHERE workspace_path = ? AND plan_id = ?').get(this.workspace, planId) as unknown as PlanRow | undefined;
+    const row = this.db.prepare("SELECT * FROM plans WHERE workspace_path = ? AND plan_id = ? AND COALESCE(source_kind, '') != 'awareness-ledger'").get(this.workspace, planId) as unknown as PlanRow | undefined;
     if (!row) throw new Error(`plan not found: ${planId}`);
     return planFromRow(row);
   }

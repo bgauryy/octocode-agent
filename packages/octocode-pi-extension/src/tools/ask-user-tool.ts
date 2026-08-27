@@ -33,6 +33,7 @@ import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js
 import { ASK_HEADER_LABEL } from '../tui/content.js';
 import { closeFrameLines } from '../tui/components.js';
 import { CURSOR_MARKER, Input, Key, matchesKey, wrapTextWithAnsi } from '@earendil-works/pi-tui';
+import { answerPendingInteraction, createPendingInteraction, shouldBrokerInteraction } from './interaction-broker.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -73,10 +74,12 @@ interface AskParams {
   min?: number;
   max?: number;
   fields?: AskField[];
+  /** Optional bounded wait; expiry never selects a default. */
+  timeoutMs?: number;
 }
 
 export interface AskOutcome {
-  status: 'selected' | 'text' | 'cancelled' | 'unavailable' | 'multiSelected' | 'form';
+  status: 'selected' | 'text' | 'back' | 'cancelled' | 'timed_out' | 'unavailable' | 'multiSelected' | 'form';
   value?: string;
   label?: string;
   /** multiSelected → string[] of chosen values; form → Record<fieldName, answer>. */
@@ -415,11 +418,13 @@ function renderAskFinalLines(
       return `${CLI_GLYPH.success} ${n} selected`;
     }
     if (outcome.status === 'form') return `${CLI_GLYPH.success} form submitted`;
+    if (outcome.status === 'back') return '← back';
     if (outcome.status === 'cancelled') return `⨯ ${CLI_STATUS_TEXT.cancelled}`;
+    if (outcome.status === 'timed_out') return '⏱ timed out';
     return CLI_STATUS_TEXT.unavailable;
   })();
   // success (green) is an OUTCOME color; cancelled/unavailable are neutral, not wins.
-  const token = outcome.status === 'cancelled' || outcome.status === 'unavailable' ? 'muted' : 'success';
+  const token = outcome.status === 'back' || outcome.status === 'cancelled' || outcome.status === 'timed_out' || outcome.status === 'unavailable' ? 'muted' : 'success';
   return [
     ...askHeaderLines(theme, question, width),
     `${bar} ${paint(theme, token, summary)}`,
@@ -444,7 +449,21 @@ export async function runAskPrompt(
     pagination?: { current: number; total: number };
   },
 ): Promise<AskOutcome | undefined> {
-  return runAskOverlay(ctx, params);
+  const request = shouldBrokerInteraction(ctx)
+    ? createPendingInteraction(ctx, {
+        question: params.question,
+        options: params.options.map((option) => ({
+          id: option.value,
+          label: option.label ?? option.value,
+          ...(option.description ? { description: option.description } : {}),
+          ...(option.recommended ? { recommended: true } : {}),
+          ...(disabledReason(option) ? { disabledReason: disabledReason(option)! } : {}),
+        })),
+      })
+    : undefined;
+  const outcome = await runAskOverlay(ctx, params);
+  if (request && outcome && outcome.status !== 'timed_out') answerPendingInteraction(request, outcome);
+  return outcome;
 }
 
 async function runAskOverlay(
@@ -459,6 +478,7 @@ async function runAskOverlay(
     fields?: AskField[];
     freeTextLabel?: string;
     pagination?: { current: number; total: number };
+    timeoutMs?: number;
   },
 ): Promise<AskOutcome | undefined> {
   if (!supportsAskOverlay(ctx)) return undefined;
@@ -497,8 +517,10 @@ async function runAskOverlay(
             : 'single'
           : 'text';
 
+      let timeout: ReturnType<typeof setTimeout> | undefined;
       const finish = (outcome: AskOutcome): void => {
         if (finished) return;
+        if (timeout) clearTimeout(timeout);
         finalOutcome = outcome;
         finished = true;
         rerender();
@@ -641,8 +663,8 @@ async function runAskOverlay(
             ? `${multiCount}↑↓ • space • a/i • enter ✓ • esc`
             : `${multiCount}↑↓ navigate • / filter • space toggle • a all • i invert • enter confirm • esc cancel`
           : narrow
-            ? '↑↓ • / filter • enter • esc'
-            : '↑↓ navigate • / filter • 1-9 select • enter select • esc cancel';
+            ? '← back • ↑↓ • enter • esc'
+            : '← back • ↑↓ navigate • / filter • 1-9 select • enter select • esc cancel';
         return positionAskLines(renderAskChoiceLines(
           theme,
           params.question,
@@ -690,6 +712,7 @@ async function runAskOverlay(
         if (isCancelKey(data)) { finish({ status: 'cancelled' }); return; }
 
         if (mode === 'single' || mode === 'multi') {
+          if (matchesKey(data, Key.left)) { finish({ status: 'back' }); return; }
           if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl('p'))) { move(-1); return; }
           if (matchesKey(data, Key.down) || matchesKey(data, Key.ctrl('n'))) { move(1); return; }
           if (data === '/') { setSearch(''); return; }
@@ -792,6 +815,10 @@ async function runAskOverlay(
         invalidate: () => textInput.invalidate(),
         handleInput: (data: string) => handle(data),
       };
+      if (params.timeoutMs !== undefined) {
+        timeout = setTimeout(() => finish({ status: 'timed_out' }), params.timeoutMs);
+        timeout.unref?.();
+      }
       return comp;
     },
     // No overlay options: a non-overlay component renders inline in the message
@@ -816,7 +843,7 @@ export function registerAskUserTool(
       'Provide options[] to show a keyboard-navigable list the user arrows through and selects — never make the user type a token that matches a prose list.',
       'Give each option pros[] and cons[] (short trade-off bullets, shown under the focused row) and set recommended:true on the safe default — the widget badges it and lands the cursor there so one Enter accepts it.',
       'Omit options to collect a free-text reply; when options[] is present, a "Discuss or type your own answer" row is always included so the user can push back or ask a question instead of being boxed into the choices.',
-      'Returns the selected value/label or the typed text. On cancel (esc) it reports the cancellation; on non-interactive hosts (rpc/json/print) it tells you to ask inline instead.',
+      'Returns the selected value/label or the typed text. Left-arrow returns Back from a choice card, esc cancels, and timeoutMs returns timed_out without selecting a default; non-interactive hosts return a durable pending interaction and tell you to ask inline instead.',
       'Use for genuine decision points (pick a branch, choose an approach, confirm a target). Do not use it to replace normal conversation or to ask trivial yes/no — for yes/no prefer a two-option list.',
       'Set multiSelect (with optional min/max) to let the user toggle several options with space, `a` all/clear, `i` invert, and confirm with enter — returns the chosen values[]. Options may carry a preview block shown while focused.',
       'Options may be disabled with disabled:true or disabled:"reason"; disabled choices stay visible but cannot be selected.',
@@ -828,6 +855,7 @@ export function registerAskUserTool(
       'Keep option labels short; add pros[]/cons[] so the user can weigh each choice, and mark the safe default recommended:true (do not also reorder — the badge + preselected cursor already signal it).',
       'The UI always includes a "Discuss or type your own answer" row; when the user replies there, treat it as discussion — answer or adjust the options, do not force a listed choice.',
       'If askUser reports the host is non-interactive or the user cancelled, fall back to asking the question directly in your reply.',
+      'If the user chooses Back, return to the previous decision step and do not infer an answer; timed_out likewise never authorizes a default.',
       'Use multiSelect when several answers can be true at once (pick files, pick checks to run); set min/max only when the task genuinely constrains the count.',
       'Use disabled options to show unavailable choices with a reason instead of hiding them when that helps the user understand constraints.',
       'Use fields[] to gather a few related short answers in one call instead of a chain of separate free-text questions; add required/minLength/maxLength/pattern only when the answer has a real format constraint.',
@@ -873,6 +901,7 @@ export function registerAskUserTool(
           { description: 'Simple sequential form: one text input per field, answers returned keyed by name. Takes precedence over options[].' },
         ),
       ),
+      timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 86_400_000, description: 'Interactive wait limit in milliseconds. Expiry returns timed_out and never selects a default.' })),
     }, { additionalProperties: false }), {
       reasoningDescription: 'Concise reason this question is necessary to decide the next action.',
     }),
@@ -899,17 +928,46 @@ export function registerAskUserTool(
         const fieldHint = fields.length
           ? ` Collect these fields inline: ${fields.map((f) => f.label || f.name).join(', ')}.`
           : '';
+        const interaction = ctx ? createPendingInteraction(ctx, {
+          question,
+          options: options.map((option) => ({
+            id: option.value,
+            label: option.label ?? option.value,
+            ...(option.description ? { description: option.description } : {}),
+            ...(option.recommended ? { recommended: true } : {}),
+            ...(disabledReason(option) ? { disabledReason: disabledReason(option)! } : {}),
+          })),
+          ...(p.timeoutMs !== undefined ? { expiresInMs: p.timeoutMs } : {}),
+        }) : undefined;
         return {
           content: [{
             type: 'text',
-            text: `[askUser] No interactive UI available (mode=${mode}). Ask the user this question directly in your next message.${listHint}${multiHint}${fieldHint}`,
+            text: `[askUser] Structured interaction pending (mode=${mode}, correlation=${interaction?.correlationId ?? 'unavailable'}). The host must submit one matching answer through the InteractionBroker adapter, then drain its durable continuation; do not infer a default.${listHint}${multiHint}${fieldHint}`,
           }],
-          details: { status: 'unavailable', mode },
+          details: {
+            status: interaction ? 'pending' : 'unavailable',
+            mode,
+            ...(interaction ? {
+              interaction,
+              continuation: { version: 1, adapter: 'interaction-broker', resumeOn: ['answer', 'session_start'] },
+            } : {}),
+          },
         } as unknown as ToolCallResult;
       }
 
       let outcome: AskOutcome;
       try {
+        const interaction = shouldBrokerInteraction(ctx) ? createPendingInteraction(ctx, {
+          question,
+          options: options.map((option) => ({
+            id: option.value,
+            label: option.label ?? option.value,
+            ...(option.description ? { description: option.description } : {}),
+            ...(option.recommended ? { recommended: true } : {}),
+            ...(disabledReason(option) ? { disabledReason: disabledReason(option)! } : {}),
+          })),
+          ...(p.timeoutMs !== undefined ? { expiresInMs: p.timeoutMs } : {}),
+        }) : undefined;
         outcome = (await runAskOverlay(ctx!, {
           question,
           options,
@@ -918,7 +976,9 @@ export function registerAskUserTool(
           min: p.min,
           max: p.max,
           fields,
+          timeoutMs: p.timeoutMs,
         })) ?? { status: 'cancelled' };
+        if (interaction && outcome.status !== 'timed_out') answerPendingInteraction(interaction, outcome);
       } catch (err) {
         return {
           content: [{ type: 'text', text: `[askUser] UI error: ${err instanceof Error ? err.message : String(err)}. Ask the user inline instead.` }],
@@ -959,6 +1019,16 @@ export function registerAskUserTool(
             details: outcome,
           } as unknown as ToolCallResult;
         }
+        case 'back':
+          return {
+            content: [{ type: 'text', text: `[askUser] User chose Back from: "${question}". Return to the previous decision step; do not infer an answer for this question.` }],
+            details: outcome,
+          } as unknown as ToolCallResult;
+        case 'timed_out':
+          return {
+            content: [{ type: 'text', text: `[askUser] Timed out waiting for the user to answer: "${question}". No default was selected; ask again or continue only if the answer is optional.` }],
+            details: outcome,
+          } as unknown as ToolCallResult;
         case 'cancelled': {
           const requiredNote = outcome.label ? ` Required field "${outcome.label}" was left empty.` : '';
           return {
@@ -1035,8 +1105,12 @@ export function registerAskUserTool(
       } else if (d.status === 'form') {
         const n = d.values && !Array.isArray(d.values) ? Object.keys(d.values).length : 0;
         line = paint(theme, 'success', `${CLI_GLYPH.success} form submitted (${n} field${n === 1 ? '' : 's'})`);
+      } else if (d.status === 'back') {
+        line = paint(theme, 'muted', '← back');
       } else if (d.status === 'cancelled') {
         line = paint(theme, 'muted', `⨯ ${CLI_STATUS_TEXT.cancelled}`);
+      } else if (d.status === 'timed_out') {
+        line = paint(theme, 'muted', '⏱ timed out');
       } else {
         line = paint(theme, 'dim', CLI_STATUS_TEXT.unavailable);
       }

@@ -20,8 +20,9 @@ import type { PiContext, PiTheme } from '../types.js';
 import { setManagedWidget } from './runtime-renderer.js';
 import { makeRenderer } from './render-helpers.js';
 import { renderStack } from '../tui/components.js';
-import { activePlanScope, getPlan } from './active-plan.js';
-import { planPanelLines } from './plan-tool.js';
+import { activePlanScope } from './active-plan.js';
+import { getCurrentPlanReadModel } from './plan-read-model.js';
+import { planPanelModelLines } from './plan-tool.js';
 
 
 const WIDGET_NAME = 'octocode-status-panel';
@@ -51,7 +52,8 @@ export function composeStatusPanelLines(ctx: PiContext, theme: PiTheme | undefin
   // Resolve the plan scope at render time, not registration time: /tree, /fork,
   // resume, and compaction can move the active branch while the widget remains
   // registered exactly once.
-  const planSection = planPanelLines(getPlan(activePlanScope(ctx)), theme, width);
+  const scope = activePlanScope(ctx);
+  const planSection = planPanelModelLines(getCurrentPlanReadModel(ctx, scope), theme, width);
   const agentSection = agentPanelSource?.(theme, width) ?? [];
   return {
     lines: composeSections([planSection, agentSection]),
@@ -96,7 +98,7 @@ export function refreshStatusPanel(ctx?: PiContext): void {
     clearPanel(ctx);
     return;
   }
-  const hasPlan = getPlan(activePlanScope(ctx)).length > 0;
+  const hasPlan = getCurrentPlanReadModel(ctx, activePlanScope(ctx)).tasks.length > 0;
   const hasAgents = (agentPanelSource?.(undefined, 80).length ?? 0) > 0;
   if (!hasPlan && !hasAgents) {
     clearPanel(ctx);

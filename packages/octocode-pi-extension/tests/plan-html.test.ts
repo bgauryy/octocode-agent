@@ -8,18 +8,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'vitest';
 import {
-  buildPlanMermaid,
-  buildPlanMarkdown,
-  buildPlanPageHtml,
-  writePlanArtifacts,
+  buildPlanMermaidFromModel,
+  buildPlanMarkdownFromModel,
+  buildPlanPageHtmlFromModel,
+  writeCurrentPlanArtifacts,
+  writePlanReadModelArtifacts,
   enablePlanHtmlSync,
   resetPlanHtmlSync,
-  syncPlanHtmlIfEnabled,
+  syncCurrentPlanHtmlIfEnabled,
   openPlanHtml,
   setPlanOpenerForTests,
   type RfcDoc,
 } from '../src/tools/plan-html.js';
-import { setPlan, setPlanRfc, setPlanDecisions, getPlan, clearPlan, type PlanStep, type ReviewState } from '../src/tools/active-plan.js';
+import { setPlan, setPlanRfc, setPlanDecisions, getPlan, completeStep, clearPlan, type PlanStep, type ReviewState } from '../src/tools/active-plan.js';
+import { buildPlanReadModel } from '../src/tools/plan-read-model.js';
 
 const ORIGINAL_HOME = process.env['OCTOCODE_HOME'];
 afterEach(() => {
@@ -35,8 +37,25 @@ const STEPS: PlanStep[] = [
   { id: 'ship', text: 'Ship it', status: 'todo', dependsOnStepIds: ['schema', 'core'] },
 ];
 
-test('buildPlanMermaid draws status-classed nodes and dependency edges', () => {
-  const m = buildPlanMermaid(STEPS);
+function modelFor(steps: PlanStep[], review?: ReviewState, decisions: ReviewState['decisions'] = []) {
+  return buildPlanReadModel({
+    steps,
+    review: review ?? { phase: 'executing', branchSnapshotId: 'html-test', generation: 0, decisions, blockingQuestions: [], comments: [] },
+    coordination: { mode: 'local', sourcePlanKey: 'html-test', coordinationWorkspace: '' },
+  });
+}
+
+const renderMermaid = (steps: PlanStep[]) => buildPlanMermaidFromModel(modelFor(steps));
+const renderMarkdown = (steps: PlanStep[], opts: Parameters<typeof buildPlanMarkdownFromModel>[1] = {}, decisions: ReviewState['decisions'] = []) => buildPlanMarkdownFromModel(modelFor(steps, undefined, decisions), opts);
+const renderPage = (steps: PlanStep[], rfc?: RfcDoc, decisions: ReviewState['decisions'] = [], review?: ReviewState) => buildPlanPageHtmlFromModel(modelFor(steps, review, decisions), rfc);
+const writeModelArtifacts = (scope: string, steps: PlanStep[], opts: Parameters<typeof writePlanReadModelArtifacts>[2] = {}) => {
+  const persisted = getPlan(scope).length > 0;
+  if (persisted) return writeCurrentPlanArtifacts(undefined, scope, opts);
+  return writePlanReadModelArtifacts(scope, modelFor(steps), opts);
+};
+
+test('buildPlanMermaidFromModel draws status-classed nodes and dependency edges', () => {
+  const m = renderMermaid(STEPS);
   assert.match(m, /^flowchart TD/);
   assert.match(m, /S1\["1\. Design schema"\]:::done/);
   assert.match(m, /S2\[.*:::doing/);
@@ -46,8 +65,8 @@ test('buildPlanMermaid draws status-classed nodes and dependency edges', () => {
   assert.match(m, /#quot;core#quot;/, 'quotes escaped for mermaid labels');
 });
 
-test('buildPlanMarkdown renders flow gates, progress, checkboxes, and the mermaid fence', () => {
-  const md = buildPlanMarkdown(STEPS);
+test('buildPlanMarkdownFromModel renders flow gates, progress, checkboxes, and the mermaid fence', () => {
+  const md = renderMarkdown(STEPS);
   assert.match(md, /Status: active/);
   assert.match(md, /Generated: \d{4}-\d{2}-\d{2}T/);
   assert.match(md, /Progress: 1\/3 done/);
@@ -62,8 +81,8 @@ test('buildPlanMarkdown renders flow gates, progress, checkboxes, and the mermai
   assert.match(md, /```mermaid\nflowchart TD/);
 });
 
-test('buildPlanPageHtml escapes dynamic checklist text and embeds the diagram', () => {
-  const html = buildPlanPageHtml([
+test('buildPlanPageHtmlFromModel escapes dynamic checklist text and embeds the diagram', () => {
+  const html = renderPage([
     { id: 'lead', text: 'Design schema', status: 'todo', dependsOnStepIds: ['ship', '<script>'] },
     ...STEPS,
   ]);
@@ -93,9 +112,9 @@ const RFC_MD = [
   '',
 ].join('\n');
 
-test('buildPlanPageHtml renders a linked RFC as the lead section, sanitized, with a status badge', () => {
+test('buildPlanPageHtmlFromModel renders a linked RFC as the lead section, sanitized, with a status badge', () => {
   const rfc: RfcDoc = { path: '/ws/.octocode/rfc/unify/RFC.md', markdown: RFC_MD, status: 'Accepted' };
-  const html = buildPlanPageHtml(STEPS, rfc);
+  const html = renderPage(STEPS, rfc);
   // RFC section leads the page (before Flow gates).
   assert.ok(html.indexOf('section class="rfc"') < html.indexOf('<h2>Flow gates</h2>'), 'RFC section comes first');
   assert.match(html, /rfc-status">Accepted</, 'status badge shown');
@@ -107,22 +126,22 @@ test('buildPlanPageHtml renders a linked RFC as the lead section, sanitized, wit
   assert.match(html, /Source: \/ws\/\.octocode\/rfc\/unify\/RFC\.md/);
 });
 
-test('buildPlanPageHtml notes a missing linked RFC instead of failing', () => {
-  const html = buildPlanPageHtml(STEPS, { path: '/ws/.octocode/rfc/x/RFC.md', markdown: '', missing: true });
+test('buildPlanPageHtmlFromModel notes a missing linked RFC instead of failing', () => {
+  const html = renderPage(STEPS, { path: '/ws/.octocode/rfc/x/RFC.md', markdown: '', missing: true });
   assert.match(html, /Linked RFC not found: \/ws\/\.octocode\/rfc\/x\/RFC\.md/);
 });
 
-test('buildPlanPageHtml without an RFC is unchanged (no rfc section)', () => {
-  const html = buildPlanPageHtml(STEPS);
+test('buildPlanPageHtmlFromModel without an RFC is unchanged (no rfc section)', () => {
+  const html = renderPage(STEPS);
   assert.doesNotMatch(html, /section class="rfc"/);
 });
 
-test('buildPlanMarkdown adds an RFC pointer line (link + status), not a duplicate of the RFC', () => {
-  const md = buildPlanMarkdown(STEPS, { rfc: { path: '/p/.octocode/rfc/x/RFC.md', markdown: RFC_MD, status: 'Accepted' } });
+test('buildPlanMarkdownFromModel adds an RFC pointer line (link + status), not a duplicate of the RFC', () => {
+  const md = renderMarkdown(STEPS, { rfc: { path: '/p/.octocode/rfc/x/RFC.md', markdown: RFC_MD, status: 'Accepted' } });
   assert.match(md, /RFC: \/p\/\.octocode\/rfc\/x\/RFC\.md \(Status: Accepted\)/);
 });
 
-test('writePlanArtifacts embeds the linked RFC and live-sync re-reads it fresh', () => {
+test('writeCurrentPlanArtifacts embeds the linked RFC and live-sync re-reads it fresh', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-home-'));
   process.env['OCTOCODE_HOME'] = home;
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'rfc-embed-ws-'));
@@ -134,7 +153,7 @@ test('writePlanArtifacts embeds the linked RFC and live-sync re-reads it fresh',
   try {
     setPlan(scope, ['do the work']);
     setPlanRfc(scope, rfcFile);
-    const art = writePlanArtifacts(scope, getPlan(scope), { status: 'active', workspace: ws })!;
+    const art = writeModelArtifacts(scope, getPlan(scope), { status: 'active', workspace: ws })!;
     const page = fs.readFileSync(art.htmlPath, 'utf8');
     assert.match(page, /section class="rfc"/, 'linked RFC is embedded in the page');
     assert.match(page, /Embed the RFC in the plan page/, 'RFC summary text is rendered');
@@ -144,7 +163,7 @@ test('writePlanArtifacts embeds the linked RFC and live-sync re-reads it fresh',
     // Live sync: edit the RFC on disk, then a plan mutation refresh must pick it up.
     fs.writeFileSync(rfcFile, RFC_MD + '\n\nUPDATED_RFC_MARKER\n');
     enablePlanHtmlSync(scope);
-    syncPlanHtmlIfEnabled(getPlan(scope));
+    syncCurrentPlanHtmlIfEnabled(undefined, scope);
     assert.match(fs.readFileSync(art.htmlPath, 'utf8'), /UPDATED_RFC_MARKER/, 'the open page reflects fresh RFC edits');
   } finally {
     clearPlan(scope);
@@ -155,16 +174,16 @@ test('writePlanArtifacts embeds the linked RFC and live-sync re-reads it fresh',
 
 // ─── Phase timeline + decisions ───────────────────────────────────────────────
 
-test('buildPlanPageHtml renders the phase timeline with the current phase marked', () => {
+test('buildPlanPageHtmlFromModel renders the phase timeline with the current phase marked', () => {
   // A step in flight → Build is current; Research/RFC/Approve read as done.
-  const html = buildPlanPageHtml([{ id: 'a', text: 'a', status: 'doing' }, { id: 'b', text: 'b', status: 'todo' }]);
+  const html = renderPage([{ id: 'a', text: 'a', status: 'doing' }, { id: 'b', text: 'b', status: 'todo' }]);
   assert.match(html, /class="phase-timeline"/);
-  assert.match(html, /class="ph now"><span class="ph-g">▸<\/span>Build/);
+  assert.match(html, /class="ph now"><span class="ph-g">▸<\/span>Execute/);
   assert.match(html, /class="ph done"><span class="ph-g">✓<\/span>Research/);
   assert.match(html, /class="ph todo"><span class="ph-g">○<\/span>Verify/);
 });
 
-test('buildPlanPageHtml uses the persisted review phase and revision for smart actions', () => {
+test('buildPlanPageHtmlFromModel uses the persisted review phase and revision for smart actions', () => {
   const review: ReviewState = {
     phase: 'in_review',
     branchSnapshotId: 'snapshot',
@@ -174,7 +193,7 @@ test('buildPlanPageHtml uses the persisted review phase and revision for smart a
     blockingQuestions: [],
     comments: [],
   };
-  const html = buildPlanPageHtml(STEPS, undefined, [], review);
+  const html = renderPage(STEPS, undefined, [], review);
   assert.match(html, /class="ph now"><span class="ph-g">▸<\/span>Review/);
   assert.match(html, /data-reply-command="\/octocode-plan accept abcdef1234567890"/);
   assert.match(html, /Approve revision/);
@@ -194,35 +213,35 @@ test('accepted plan HTML offers Start as a separate action', () => {
     blockingQuestions: [],
     comments: [],
   };
-  const html = buildPlanPageHtml(STEPS, undefined, [], review);
+  const html = renderPage(STEPS, undefined, [], review);
   assert.match(html, /class="ph now"><span class="ph-g">▸<\/span>Accepted/);
-  assert.match(html, /data-reply-command="\/octocode-plan start"/);
+  assert.match(html, /data-reply-command="\/octocode-plan start abcdef1234567890"/);
   assert.match(html, /Start implementation/);
   assert.doesNotMatch(html, /Approve revision/);
 });
 
-test('buildPlanPageHtml renders a Decisions section only when decisions are present', () => {
-  const none = buildPlanPageHtml(STEPS);
+test('buildPlanPageHtmlFromModel renders a Decisions section only when decisions are present', () => {
+  const none = renderPage(STEPS);
   assert.doesNotMatch(none, /<h2>Decisions<\/h2>/);
-  const withD = buildPlanPageHtml(STEPS, undefined, [{ q: 'Storage?', a: 'SQLite' }, { q: 'Auth?', a: 'Reuse' }]);
+  const withD = renderPage(STEPS, undefined, [{ q: 'Storage?', a: 'SQLite' }, { q: 'Auth?', a: 'Reuse' }]);
   assert.match(withD, /<h2>Decisions<\/h2>/);
   assert.match(withD, /class="dq">Storage\?<\/span><span class="da">SQLite/);
 });
 
-test('buildPlanMarkdown renders a ## Decisions block when present', () => {
-  const md = buildPlanMarkdown(STEPS, { decisions: [{ q: 'Storage?', a: 'SQLite' }] });
+test('buildPlanMarkdownFromModel renders a ## Decisions block when present', () => {
+  const md = renderMarkdown(STEPS, {}, [{ q: 'Storage?', a: 'SQLite' }]);
   assert.match(md, /## Decisions/);
   assert.match(md, /- \*\*Storage\?\*\* — SQLite/);
 });
 
-test('writePlanArtifacts embeds the plan decision log', () => {
+test('writeCurrentPlanArtifacts embeds the plan decision log', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-home-'));
   process.env['OCTOCODE_HOME'] = home;
   const scope = '/dec/workspace';
   try {
     setPlan(scope, ['do it']);
     setPlanDecisions(scope, [{ q: 'Which backend?', a: 'SQLite (chosen)' }]);
-    const art = writePlanArtifacts(scope, getPlan(scope), { status: 'active' })!;
+    const art = writeModelArtifacts(scope, getPlan(scope), { status: 'active' })!;
     assert.match(fs.readFileSync(art.htmlPath, 'utf8'), /<h2>Decisions<\/h2>/);
     assert.match(fs.readFileSync(art.htmlPath, 'utf8'), /Which backend\?/);
     assert.match(fs.readFileSync(art.mdPath, 'utf8'), /## Decisions/);
@@ -241,7 +260,7 @@ test('openPlanHtml returns a user-visible fallback when the browser opener fails
 });
 
 test('plan HTML includes a direct, acceptance-aware browser reply widget', () => {
-  const html = buildPlanPageHtml(STEPS);
+  const html = renderPage(STEPS);
   assert.match(html, /Reply to the agent/);
   assert.match(html, /__octocode\/message/);
   assert.match(html, /Send feedback/);
@@ -249,11 +268,11 @@ test('plan HTML includes a direct, acceptance-aware browser reply widget', () =>
   assert.doesNotMatch(html, /data-reply-command=/, 'no state-changing action is shown without persisted review state');
 });
 
-test('writePlanArtifacts writes html + md under the octocode home; live sync rewrites on change', () => {
+test('canonical artifact adapters write html + md under the octocode home; live sync rewrites on change', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-home-'));
   process.env['OCTOCODE_HOME'] = home;
   const scope = '/some/workspace\0/tmp/session-abc';
-  const artifacts = writePlanArtifacts(scope, STEPS, { status: 'draft', workspace: '/some/workspace', generatedAt: new Date('2026-01-02T03:04:05.000Z') })!;
+  const artifacts = writeModelArtifacts(scope, STEPS, { status: 'draft', workspace: '/some/workspace', generatedAt: new Date('2026-01-02T03:04:05.000Z') })!;
   assert.ok(fs.existsSync(artifacts.htmlPath));
   assert.ok(fs.existsSync(artifacts.mdPath));
   // Artifacts live under ~/.octocode/tmp/plan/<scope-hash>/, not the cwd.
@@ -271,22 +290,25 @@ test('writePlanArtifacts writes html + md under the octocode home; live sync rew
   assert.match(md, /Generated: 2026-01-02T03:04:05\.000Z/);
 
   // Distinct scopes never share a file.
-  const other = writePlanArtifacts('/other/scope', STEPS)!;
+  const other = writeModelArtifacts('/other/scope', STEPS)!;
   assert.notEqual(path.dirname(other.htmlPath), path.dirname(artifacts.htmlPath));
 
   // Live sync: disabled → no rewrite; enabled → rewrite reflects new state.
   fs.rmSync(artifacts.htmlPath);
-  syncPlanHtmlIfEnabled(STEPS);
+  syncCurrentPlanHtmlIfEnabled(undefined, scope);
   assert.equal(fs.existsSync(artifacts.htmlPath), false, 'sync is a no-op until armed');
+  setPlan(scope, ['Only step']);
+  completeStep(scope, 1);
   enablePlanHtmlSync(scope);
-  syncPlanHtmlIfEnabled([{ id: 'only', text: 'Only step', status: 'done' }]);
+  syncCurrentPlanHtmlIfEnabled(undefined, scope);
   assert.match(fs.readFileSync(artifacts.htmlPath, 'utf8'), /1\/1 done/);
+  clearPlan(scope);
 });
 
-test('writePlanArtifacts saves session review files privately under the workspace manifest', () => {
+test('writePlanReadModelArtifacts saves session review files privately under the workspace manifest', () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-plan-session-'));
   try {
-    const artifacts = writePlanArtifacts(workspace, STEPS, { status: 'draft', workspace })!;
+    const artifacts = writeModelArtifacts(workspace, STEPS, { status: 'draft', workspace })!;
     const sessionRoot = path.join(workspace, '.octocode', 'agent');
     assert.ok(artifacts.htmlPath.startsWith(sessionRoot));
     assert.ok(artifacts.mdPath.startsWith(sessionRoot));

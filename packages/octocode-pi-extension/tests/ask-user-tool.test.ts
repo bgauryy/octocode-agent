@@ -3,6 +3,7 @@ import { test } from 'vitest';
 import { Type } from 'typebox';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { registerAskUserTool } from '../src/tools/ask-user-tool.js';
+import { setInteractionStoreFactoryForTests } from '../src/tools/interaction-broker.js';
 import type { PiContext, ToolDefinition } from '../src/types.js';
 
 function loadTool(): ToolDefinition {
@@ -80,6 +81,7 @@ test('askUser registration teaches option lists, concise labels, and inline fall
       assert.deepEqual(Object.keys(schema.properties ?? {}), ['queries', 'queryRunType']);
   assert.ok(schema.required?.includes('queries'));
   assert.ok(schema.properties?.queries?.items?.properties?.['reasoning']);
+  assert.ok(schema.properties?.queries?.items?.properties?.['timeoutMs']);
   assert.ok(schema.properties?.queries?.items?.required?.includes('reasoning'));
 });
 
@@ -112,7 +114,7 @@ test('askUser preflights every question before opening an earlier prompt', async
   assert.equal(customCalled, false);
 });
 
-test('askUser falls back to inline in RPC mode even though hasUI is true and custom exists', async () => {
+test('askUser creates a pending RPC interaction even though hasUI is true and custom exists', async () => {
   const tool = loadTool();
   let customCalled = false;
   const ctx = {
@@ -128,8 +130,8 @@ test('askUser falls back to inline in RPC mode even though hasUI is true and cus
   const result = await tool.execute('id', { question: 'Ship it?', options: ['yes', 'no'] }, undefined, undefined, ctx);
 
   assert.equal(customCalled, false, 'custom() must not be called outside tui mode');
-  assert.match((result.content[0] as { text: string }).text, /No interactive UI available \(mode=rpc\)/);
-  assert.deepEqual(result.details, { status: 'unavailable', mode: 'rpc' });
+  assert.match((result.content[0] as { text: string }).text, /Structured interaction pending \(mode=rpc/);
+  assert.equal((result.details as { status: string }).status, 'pending');
 });
 
 test('askUser emits CURSOR_MARKER at the caret in text mode when focused (IME positioning)', async () => {
@@ -221,9 +223,11 @@ test('askUser validates that a non-empty question is required', async () => {
   assert.match((result.content[0] as { text: string }).text, /question is required/);
 });
 
-test('askUser returns an inline-question instruction when no interactive UI is available', async () => {
+test('askUser returns a structured pending interaction when no interactive UI is available', async () => {
   const tool = loadTool();
-  const result = await tool.execute(
+  setInteractionStoreFactoryForTests(() => ({ createInteraction: () => undefined, answerInteraction: () => undefined, close: () => undefined }));
+  try {
+    const result = await tool.execute(
     'id',
     {
       question: 'Choose a strategy?',
@@ -235,13 +239,20 @@ test('askUser returns an inline-question instruction when no interactive UI is a
     undefined,
     undefined,
     { mode: 'rpc', hasUI: false } as PiContext,
-  );
+    );
 
-  assert.equal(result.isError, undefined);
-  assert.match((result.content[0] as { text: string }).text, /No interactive UI available \(mode=rpc\)/);
-  assert.match((result.content[0] as { text: string }).text, /Ask the user this question directly/);
-  assert.match((result.content[0] as { text: string }).text, /Safe, Fast/);
-  assert.deepEqual(result.details, { status: 'unavailable', mode: 'rpc' });
+    assert.equal(result.isError, undefined);
+    assert.match((result.content[0] as { text: string }).text, /Structured interaction pending \(mode=rpc/);
+    assert.match((result.content[0] as { text: string }).text, /matching answer event/);
+    assert.match((result.content[0] as { text: string }).text, /Safe, Fast/);
+    const details = result.details as { status: string; mode: string; interaction: { correlationId: string; question: string } };
+    assert.equal(details.status, 'pending');
+    assert.equal(details.mode, 'rpc');
+    assert.equal(details.interaction.question, 'Choose a strategy?');
+    assert.match(details.interaction.correlationId, /^correlation_/);
+  } finally {
+    setInteractionStoreFactoryForTests();
+  }
 });
 
 test('askUser uses the custom overlay and never Pi native select', async () => {
@@ -868,10 +879,10 @@ test('askUser multiSelect and form degrade to inline hints without an interactiv
     undefined,
     { mode: 'print', hasUI: false } as PiContext,
   );
-  assert.match((multi.content[0] as { text: string }).text, /No interactive UI available \(mode=print\)/);
+  assert.match((multi.content[0] as { text: string }).text, /Structured interaction pending \(mode=print/);
   assert.match((multi.content[0] as { text: string }).text, /Safe, Fast/);
   assert.match((multi.content[0] as { text: string }).text, /may choose more than one/);
-  assert.deepEqual(multi.details, { status: 'unavailable', mode: 'print' });
+  assert.equal((multi.details as { status: string }).status, 'pending');
 
   const form = await tool.execute(
     'id',
@@ -881,5 +892,5 @@ test('askUser multiSelect and form degrade to inline hints without an interactiv
     { mode: 'rpc', hasUI: false } as PiContext,
   );
   assert.match((form.content[0] as { text: string }).text, /Collect these fields inline: Full name, email/);
-  assert.deepEqual(form.details, { status: 'unavailable', mode: 'rpc' });
+  assert.equal((form.details as { status: string }).status, 'pending');
 });

@@ -77,3 +77,18 @@ test('runtime store owns footer metrics as one Zustand state slice', () => {
     githubAuth: { status: 'authenticated' },
   });
 });
+
+test('foreground activity is timestamped independently from runtime initialization', () => {
+  let now = 200;
+  const store = createRuntimeStore(() => ++now);
+
+  store.getState().setActivity({ kind: 'planning', planScope: '/workspace', detail: 'Drafting RFC' });
+
+  assert.deepEqual(store.getState().activity, {
+    kind: 'planning',
+    since: 201,
+    planScope: '/workspace',
+    detail: 'Drafting RFC',
+  });
+  assert.equal(store.getState().phase, 'idle');
+});

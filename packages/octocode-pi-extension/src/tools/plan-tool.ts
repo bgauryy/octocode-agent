@@ -1,6 +1,6 @@
 /**
  * plan — the session and shared task-breakdown facade for the think-first gate.
- * The plan is projected into the system prompt every turn (`renderActivePlanAddendum`),
+ * The plan is projected into the system prompt every turn from `getCurrentPlanReadModel`,
  * so it survives compaction and stays visible. Shared scope reconciles stable steps
  * onto Awareness internally; callers never synchronize a second mutable graph.
  */
@@ -14,12 +14,15 @@ import { SEP } from '../tui/palette.js';
 import { buildPlanPrompt } from '../prompts/plan-prompt.js';
 import { adoptPlanModePolicy, enterPlanMode, exitPlanMode, isPlanMode } from './plan-mode.js';
 import { runAskPrompt } from './ask-user-tool.js';
-import { enablePlanHtmlSync, resetPlanHtmlSync, openPlanHtml, syncPlanHtmlIfEnabled, writePlanArtifacts, planArtifactsDir, readRfcDoc } from './plan-html.js';
+import { consumeHumanAuthorizationReceipt, createHumanAuthorizationReceipt } from './interaction-broker.js';
+import { getCurrentPlanReadModel, renderPlanContext, type PlanReadModelV1 } from './plan-read-model.js';
+import { enablePlanHtmlSync, resetPlanHtmlSync, openPlanHtml, syncCurrentPlanHtmlIfEnabled, writeCurrentPlanArtifacts as writeCanonicalPlanArtifacts, writePlanReadModelArtifacts, planArtifactsDir, readRfcDoc } from './plan-html.js';
 import { serveDirectory, unmount } from './local-server.js';
 import { FREE_TEXT_TELL_DIFFERENTLY, PLAN_APPROVE_DESC, PLAN_APPROVE_LABEL, PLAN_APPROVED_REVIEW_QUESTION, PLAN_COMPLETE_QUESTION, PLAN_PROPOSE_HINT, PLAN_REJECT_DESC, PLAN_REJECT_LABEL, PLAN_SET_BROWSER_QUESTION } from '../tui/content.js';
 import { buildQueryCallBlocks, buildToolView, truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel } from './status-panel.js';
-import { activePlanScope, setPlan, activatePlan, proposePlanReview, acceptPlanReview, requestPlanChanges, startAcceptedPlan, addStep, startStep, completeStep, removeStep, clearPlan, getPlan, getPlanReviewState, getPlanCoordination, updatePlanCoordination, setPlanAwarenessMappings, renderActivePlanAddendum, MARK, stepLabel, displayStatus, depsMet, dependencyIndexes, resolveRfcPath, setPlanRfc, getPlanRfc, addPlanDecision, getPlanDecisions, planPhaseIndex, PLAN_PHASES, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
+import { setManagedActivity } from './runtime-renderer.js';
+import { activePlanScope, setPlan, setPlanLifecycle, finishPlanVerification, activatePlan, proposePlanReview, acceptPlanReview, requestPlanChanges, startAcceptedPlan, rollbackAcceptedPlanStart, addStep, startStep, completeStep, removeStep, clearPlan, getPlan, getPlanReviewState, getPlanCoordination, updatePlanCoordination, setPlanAwarenessMappings, MARK, stepLabel, displayStatus, depsMet, dependencyIndexes, resolveRfcPath, setPlanRfc, getPlanRfc, addPlanDecision, getPlanDecisions, planPhaseIndex, PLAN_PHASES, type PlanPhase, type PlanStep, type DisplayStatus, type StepInput } from './active-plan.js';
 import { completeUnifiedPlanTask, finalizeUnifiedPlan, getAwarenessAgentId, projectUnifiedPlan, type ObservedCheckReceipt, type UnifiedPlanScope } from './awareness-shared.js';
 import { buildQueryEnvelopeSchema, executeQueryBatch, type QueryRecord } from './query-envelope.js';
 
@@ -120,12 +123,9 @@ function renderList(steps: PlanStep[]): string {
   }).join('\n');
 }
 
-/** Public result shape keeps the tool's 1-based dependency contract while storage uses stable IDs. */
-function planResultSteps(steps: PlanStep[]): Array<PlanStep & { dependsOn?: number[] }> {
-  return steps.map((step) => {
-    const dependsOn = dependencyIndexes(step, steps);
-    return { ...step, ...(dependsOn.length ? { dependsOn } : {}) };
-  });
+function planPresentation(ctx: PiContext | undefined, scope: string) {
+  const plan = getCurrentPlanReadModel(ctx, scope);
+  return { plan, steps: plan.tasks, addendum: renderPlanContext(plan) };
 }
 
 const BAR_WIDTH = 8;
@@ -135,8 +135,8 @@ const BAR_WIDTH = 8;
  * always shows where in the flow the plan is. Done phases fade, the current one
  * is brand-bold, upcoming ones are muted. Same color contract as the checklist.
  */
-export function phaseStepperLine(steps: PlanStep[], theme?: PiTheme): string {
-  const cur = planPhaseIndex(steps);
+export function phaseStepperLine(phase: PlanPhase, theme?: PiTheme): string {
+  const cur = planPhaseIndex(phase);
   const bold = (t: string) => (typeof theme?.bold === 'function' ? theme.bold(t) : t);
   const parts = PLAN_PHASES.map((label, i) => {
     if (i < cur) return paint(theme, 'dim', `✓ ${label}`);
@@ -158,26 +158,26 @@ function progressBar(done: number, total: number): string {
  * visible and the running lane is explicit; hiding tasks here caused the UI to
  * disagree with durable plan storage and made resumed/compacted work look lost.
  */
-export function planPanelLines(steps: PlanStep[], theme?: PiTheme, width?: number): string[] {
-  if (steps.length === 0) return [];
-  const done = steps.filter((step) => step.status === 'done').length;
-  const doing = steps.filter((step) => step.status === 'doing');
-  const current = doing[0] ?? steps.find((step) => step.status === 'todo');
+/** Pure terminal projection of the canonical model. */
+export function planPanelModelLines(readModel: PlanReadModelV1, theme?: PiTheme, width?: number): string[] {
+  if (readModel.tasks.length === 0) return [];
+  const done = readModel.summary.done;
+  const doing = readModel.tasks.filter((step) => step.status === 'doing');
   const currentLabel = doing.length > 1
-    ? `${SEP}now: ${doing.map(stepLabel).join(SEP)}`
-    : current ? `${SEP}now: ${stepLabel(current)}` : '';
-  const header = paint(theme, 'brand', `Plan  ${progressBar(done, steps.length)}  ${done}/${steps.length} done${currentLabel}`);
-  const rows = steps.map((step, index) => {
-    const status = displayStatus(step, steps);
+    ? `${SEP}now: ${doing.map((task) => task.activeText ?? task.text).join(SEP)}`
+    : doing[0] ? `${SEP}now: ${doing[0].activeText ?? doing[0].text}` : '';
+  const header = paint(theme, 'brand', `Plan  ${progressBar(done, readModel.summary.total)}  ${done}/${readModel.summary.total} done${currentLabel}`);
+  const rows = readModel.tasks.map((task) => {
+    const status = task.status;
     const mark = status === 'done' ? '✓' : status === 'doing' ? '▶' : status === 'blocked' ? '!' : '○';
     const token = status === 'done' ? 'dim' : status === 'doing' ? 'brand' : status === 'blocked' ? 'warning' : 'muted';
-    const label = status === 'doing' ? (step.activeForm ?? step.text) : step.text;
-    const text = `${mark} ${index + 1}. ${label}${status === 'doing' ? '  running' : ''}`;
+    const label = status === 'doing' ? (task.activeText ?? task.text) : task.text;
+    const text = `${mark} ${task.index}. ${label}${status === 'doing' ? '  running' : ''}`;
     return status === 'doing' && typeof theme?.bold === 'function'
       ? paint(theme, token, theme.bold(text))
       : paint(theme, token, text);
   });
-  const lines = [header, ...rows];
+  const lines = [header, phaseStepperLine(readModel.phase, theme), ...rows];
   return width ? lines.map((line) => truncateToWidth(line, width)) : lines;
 }
 
@@ -245,8 +245,21 @@ function ensureUnifiedProjection(scope: string, explicit: UnifiedPlanScope | und
   return projection.scope;
 }
 
-function writeCurrentPlanArtifacts(scope: string, steps: PlanStep[], status: 'draft' | 'approved' | 'active' = 'active') {
-  return writePlanArtifacts(scope, steps, { status, workspace: planWorkspace(scope) });
+function sharedStartContractError(steps: PlanStep[]): string | undefined {
+  const knownIds = new Set(steps.map((step) => step.id));
+  for (const [index, step] of steps.entries()) {
+    const missingDependency = step.dependsOnStepIds?.find((id) => !knownIds.has(id));
+    if (missingDependency) return `step ${index + 1} references missing dependency ${missingDependency}`;
+    if (!step.paths?.length && !step.reasoning?.trim()) {
+      return `step ${index + 1} must declare paths or explain why it has no path scope`;
+    }
+    if (!step.acceptance?.trim()) return `step ${index + 1} must declare acceptance criteria`;
+  }
+  return undefined;
+}
+
+function writeCurrentPlanArtifacts(ctx: PiContext | undefined, scope: string, status: 'draft' | 'approved' | 'active' = 'active') {
+  return writeCanonicalPlanArtifacts(ctx, scope, { status, workspace: planWorkspace(scope) });
 }
 
 /** Compact, review-safe handoff for local-file, chat, and headless surfaces. */
@@ -266,7 +279,7 @@ export function buildRfcReviewTldr(
   return [
     `[PLAN] RFC ready for review · rev ${revision.slice(0, 8)} · implementation not started`,
     '',
-    'TL;DR',
+    'Summary',
     `- ${title} · ${status}`,
     `- ${steps.length} dependency-ordered step${steps.length === 1 ? '' : 's'}; Accept binds these RFC bytes but does not Start implementation.`,
     ...stepLines,
@@ -292,13 +305,14 @@ function tearDownPlanHtml(scope: string): void {
 async function servePlanPage(ctx: PiContext | undefined, scope: string): Promise<string | undefined> {
   // servePlanPage is the sole writer for the browser path (callers must not
   // pre-write) so the doc and the served bytes never diverge.
-  const phase = getPlanReviewState(scope).phase;
+  const model = getCurrentPlanReadModel(ctx, scope);
+  const phase = model.phase;
   const artifactStatus = phase === 'accepted'
     ? 'approved'
     : phase === 'executing' || phase === 'verifying' || phase === 'complete'
       ? 'active'
       : 'draft';
-  const artifacts = writeCurrentPlanArtifacts(scope, getPlan(scope), artifactStatus);
+  const artifacts = writePlanReadModelArtifacts(scope, model, { status: artifactStatus, workspace: planWorkspace(scope) });
   if (!artifacts) return undefined;
   // Host the plan's artifact dir under /plan-<hash>/ on the shared CLI server.
   const served = await planDirectoryServer(planMountName(scope), planArtifactsDir(scope), {
@@ -322,16 +336,65 @@ export function refreshPlanUi(ctx?: PiContext): void {
   // an opened plan page fresh.
   const scope = activePlanScope(ctx);
   const steps = getPlan(scope);
-  syncPlanHtmlIfEnabled(steps);
+  publishPlanActivity(ctx, scope, steps);
+  syncCurrentPlanHtmlIfEnabled(ctx, scope);
   if (steps.length > 0) adoptPlanModePolicy(ctx, getPlanReviewState(scope));
   else exitPlanMode(ctx);
   if (!ctx?.hasUI) return;
   refreshStatusPanel(ctx);
 }
 
+function publishPlanActivity(ctx: PiContext | undefined, scope: string, steps: PlanStep[]): void {
+  const review = getPlanReviewState(scope);
+  switch (review.phase) {
+    case 'researching':
+      setManagedActivity(ctx, { kind: 'researching', planScope: scope });
+      return;
+    case 'needs_answers':
+      setManagedActivity(ctx, { kind: 'awaiting_input', planScope: scope, question: 'Planning input required' });
+      return;
+    case 'draft':
+      setManagedActivity(ctx, { kind: 'planning', planScope: scope });
+      return;
+    case 'in_review':
+      setManagedActivity(ctx, { kind: 'reviewing', planScope: scope, revision: review.revision });
+      return;
+    case 'accepted':
+      if (review.acceptedRevision) setManagedActivity(ctx, { kind: 'awaiting_start', planScope: scope, revision: review.acceptedRevision });
+      return;
+    case 'executing': {
+      const active = steps.find((step) => step.status === 'doing');
+      if (active) {
+        setManagedActivity(ctx, { kind: 'working', planScope: scope, stepId: active.id, label: stepLabel(active) });
+        return;
+      }
+      const runnable = steps.some((step) => step.status === 'todo' && depsMet(step, steps));
+      if (!runnable && steps.some((step) => step.status !== 'done')) {
+        setManagedActivity(ctx, { kind: 'blocked', label: 'No dependency-ready plan step' });
+      }
+      return;
+    }
+    case 'verifying':
+      setManagedActivity(ctx, { kind: 'verifying', planScope: scope });
+      return;
+    case 'complete':
+      setManagedActivity(ctx, { kind: 'complete', label: 'Plan complete' });
+      return;
+    case 'blocked':
+      setManagedActivity(ctx, { kind: 'blocked', label: review.outcomeReason ?? 'Plan blocked' });
+      return;
+    case 'failed':
+      setManagedActivity(ctx, { kind: 'failed', label: review.outcomeReason ?? 'Plan failed' });
+      return;
+    case 'abandoned':
+      setManagedActivity(ctx, { kind: 'idle' });
+      return;
+  }
+}
+
 // ─── /octocode-plan command (user can view / complete / delete tasks) ────────
 
-export const OCTOCODE_PLAN_COMMAND_USAGE = '/octocode-plan [new <goal>|off|show|html|accept <revision>|changes [feedback]|complete <n>|start [n]|remove <n>|clear]';
+export const OCTOCODE_PLAN_COMMAND_USAGE = '/octocode-plan [new <goal>|off|show|html|accept <revision>|changes [feedback]|complete <n>|start <displayed-revision|n>|remove <n>|clear]';
 export const OCTOCODE_PLAN_COMMAND_COMPLETIONS = ['new ', 'off', 'show', 'html', 'accept ', 'changes ', 'complete ', 'start ', 'remove ', 'clear'] as const;
 
 /** Host hook for `/octocode-plan new`: sends the plan-mode prompt to the agent as the next user turn. */
@@ -358,6 +421,8 @@ export async function handleOctocodePlanCommand(args: string, ctx: PiContext | u
       return;
     }
     enterPlanMode(ctx);
+    setPlanLifecycle(scope, 'researching');
+    setManagedActivity(ctx, { kind: 'researching', planScope: scope, detail: goal || undefined });
     await sendPrompt(buildPlanPrompt(goal));
     notify(ctx, goal ? `Plan mode on (write tools blocked until the required authorization gate): planning “${goal.slice(0, 80)}”.` : 'Plan mode on (write tools blocked until the required authorization gate): the agent will ask for the goal.', 'info');
     return;
@@ -406,13 +471,21 @@ export async function handleOctocodePlanCommand(args: string, ctx: PiContext | u
         notify(ctx, 'Usage: /octocode-plan accept <displayed-revision>', 'warning');
         return;
       }
-      const accepted = acceptPlanReview(scope, arg);
+      const planId = getPlanCoordination(scope).sourcePlanKey;
+      const receipt = createHumanAuthorizationReceipt(ctx, {
+        planId,
+        revision: arg,
+        scope: 'plan.accept',
+        question: `Accept RFC revision ${arg} for this plan?`,
+      });
+      const accepted = acceptPlanReview(scope, arg, receipt.receiptId);
       if (!accepted.ok) {
         notify(ctx, `RFC acceptance failed: ${accepted.message}`, 'warning');
         refreshPlanUi(ctx);
         return;
       }
-      writeCurrentPlanArtifacts(scope, accepted.steps, 'approved');
+      consumeHumanAuthorizationReceipt(scope, { receiptId: receipt.receiptId, planId, revision: arg, scope: 'plan.accept' });
+      writeCurrentPlanArtifacts(ctx, scope, 'approved');
       refreshPlanUi(ctx);
       notify(ctx, `RFC accepted · rev ${accepted.state.acceptedRevision?.slice(0, 8) ?? 'unknown'} — mutation remains blocked until Start.`, 'info');
       return;
@@ -425,7 +498,7 @@ export async function handleOctocodePlanCommand(args: string, ctx: PiContext | u
         return;
       }
       if (remainder) addPlanDecision(scope, 'Requested plan changes', remainder);
-      writeCurrentPlanArtifacts(scope, changed.steps, 'draft');
+      writeCurrentPlanArtifacts(ctx, scope, 'draft');
       refreshPlanUi(ctx);
       notify(ctx, `Changes requested${remainder ? `: ${remainder}` : ''}. Revise the RFC and re-propose.`, 'info');
       return;
@@ -437,12 +510,41 @@ export async function handleOctocodePlanCommand(args: string, ctx: PiContext | u
           notify(ctx, 'Shared completion requires an observed receipt; use plan.complete with receipt {command,status,message}.', 'warning');
           return;
         }
-        completeStep(scope, n);
+        const completed = completeStep(scope, n);
+        if (completed.length > 0 && completed.every((step) => step.status === 'done')) {
+          refreshPlanUi(ctx);
+          finishPlanVerification(scope, true, 'All local plan steps completed');
+        }
       }
       break;
     case 'start': {
-      if (arg === undefined && getPlanReviewState(scope).phase === 'accepted') {
-        const started = startAcceptedPlan(scope);
+      if (getPlanReviewState(scope).phase === 'accepted') {
+        const contractError = sharedStartContractError(getPlan(scope));
+        if (contractError) {
+          notify(ctx, `Implementation did not start: invalid shared step contract — ${contractError}.`, 'warning');
+          refreshPlanUi(ctx);
+          return;
+        }
+        const state = getPlanReviewState(scope);
+        const revision = state.acceptedRevision!;
+        if (!arg) {
+          notify(ctx, 'Usage: /octocode-plan start <displayed-revision>. Start is bound to the revision shown by the browser or terminal.', 'warning');
+          return;
+        }
+        if (arg !== revision) {
+          notify(ctx, `Implementation did not start: displayed revision is stale (expected ${revision.slice(0, 8)}). Refresh the plan and Start again.`, 'warning');
+          refreshPlanUi(ctx);
+          return;
+        }
+        const planId = getPlanCoordination(scope).sourcePlanKey;
+        const receipt = createHumanAuthorizationReceipt(ctx, {
+          planId,
+          revision,
+          scope: 'plan.start',
+          question: `Start implementation of accepted RFC revision ${revision}?`,
+        });
+        consumeHumanAuthorizationReceipt(scope, { receiptId: receipt.receiptId, planId, revision, scope: 'plan.start' });
+        const started = startAcceptedPlan(scope, receipt.receiptId);
         if (!started.ok) {
           notify(ctx, `Implementation did not start: ${started.message}`, 'warning');
           refreshPlanUi(ctx);
@@ -451,11 +553,13 @@ export async function handleOctocodePlanCommand(args: string, ctx: PiContext | u
         try {
           ensureUnifiedProjection(scope, undefined, ctx);
         } catch (error) {
-          notify(ctx, `Implementation started locally, but shared projection failed: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+          const reason = error instanceof Error ? error.message : String(error);
+          rollbackAcceptedPlanStart(scope, `Shared Start failed: ${reason}`);
+          notify(ctx, `Implementation did not start; RFC acceptance was preserved: ${reason}`, 'warning');
           refreshPlanUi(ctx);
           return;
         }
-        writeCurrentPlanArtifacts(scope, getPlan(scope), 'active');
+        writeCurrentPlanArtifacts(ctx, scope, 'active');
         refreshPlanUi(ctx);
         notify(ctx, `Implementation started from accepted revision ${started.state.acceptedRevision?.slice(0, 8) ?? 'unknown'}.`, 'info');
         return;
@@ -526,6 +630,8 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
         .filter((o) => o.value);
       // Prepend a back-navigation option for questions after the first.
       const backOption = qi > 0 ? [{ value: '__back__', label: '← Previous question', description: 'go back and change your last answer' }] : [];
+      setPlanLifecycle(scope, 'needs_answers');
+      setManagedActivity(ctx, { kind: 'awaiting_input', planScope: scope, question: prompt });
       const outcome = await runAskPrompt(ctx, {
         question: prompt,
         options: [...backOption, ...options],
@@ -551,9 +657,14 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
       }
       const answer = outcome.status === 'text' ? String(outcome.value ?? '').trim() : String(outcome.label ?? outcome.value ?? '').trim();
       if (answer) { addPlanDecision(scope, prompt, answer); recorded.push(`${prompt} → ${answer}`); }
+      setPlanLifecycle(scope, 'draft');
+      setManagedActivity(ctx, { kind: 'planning', planScope: scope, detail: 'Applying your answer' });
       qi += 1;
     }
     refreshPlanUi(ctx);
+    if (recorded.length > 0 && !halted) {
+      setManagedActivity(ctx, { kind: 'planning', planScope: scope, detail: 'Applying your answers' });
+    }
     const head = recorded.length ? `[PLAN] recorded ${recorded.length} decision(s):\n${recorded.map((r, i) => `${i + 1}. ${r}`).join('\n')}` : '[PLAN] no decisions recorded';
     const tail = halted ? `\n${halted}` : '\nWhen intent + approach are decision-complete, call plan(propose) — the decisions travel with the plan and render on its page.';
     return clarifyResult(`${head}${tail}`);
@@ -609,10 +720,11 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
       if (gate.hasNewRfc) setPlanRfc(scope, gate.rfc);
       ensureUnifiedProjection(scope, p.scope, ctx);
       steps = getPlan(scope);
-      writeCurrentPlanArtifacts(scope, steps, 'active');
+      writeCurrentPlanArtifacts(ctx, scope, 'active');
       break;
     }
     case 'propose': {
+      setManagedActivity(ctx, { kind: 'planning', planScope: scope, detail: 'Preparing RFC review' });
       const gate = resolveGate();
       if (gate.error) return gate.error;
       steps = setPlan(scope, Array.isArray(p.steps) ? p.steps : [], 'draft');
@@ -620,6 +732,7 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
       if (gate.hasNewRfc) setPlanRfc(scope, gate.rfc);
 
       if (gate.rfc) {
+        updatePlanCoordination(scope, { mode: 'required', localReason: null });
         const proposed = proposePlanReview(scope);
         if (!proposed.ok) {
           return {
@@ -630,21 +743,22 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
         }
         steps = proposed.steps;
         const revision = proposed.state.revision!;
-        const artifacts = writeCurrentPlanArtifacts(scope, steps, 'draft');
+        const artifacts = writeCurrentPlanArtifacts(ctx, scope, 'draft');
         refreshPlanUi(ctx);
+        setManagedActivity(ctx, { kind: 'reviewing', planScope: scope, revision });
+        const summary = buildRfcReviewTldr(scope, steps, revision, artifacts);
         const reviewSurface = ctx
           ? await runAskPrompt(ctx, {
-              question: `How would you like to review RFC revision ${revision.slice(0, 8)}?`,
+              question: `${summary}\n\nOpen the full plan in your browser?`,
               options: [
                 {
                   value: 'browser',
-                  label: 'Open browser review',
+                  label: 'Open in browser',
                   description: 'interactive localhost page with feedback and exact-revision actions',
                   recommended: true,
                   disabled: planBrowserMessageSender ? false : 'browser-to-agent bridge unavailable in this host',
                 },
-                { value: 'local', label: 'Review local RFC file', description: 'show the RFC path, file URI, and generated Markdown/HTML paths without opening a browser' },
-                { value: 'chat', label: 'Show TL;DR in chat', description: 'keep the browser closed and summarize scope, steps, safety, and follow-up commands here' },
+                { value: 'terminal', label: 'Keep in terminal', description: 'keep the browser closed; the Summary and exact follow-up commands remain here' },
               ],
             })
           : undefined;
@@ -655,33 +769,29 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
             const pageNote = artifacts ? `\nPlan doc: ${artifacts.mdPath}` : '\nPlan doc could not be written.';
             return {
               content: [{ type: 'text', text: `${verdict}\n${renderList(steps)}${pageNote}\nInteractive review: ${reviewUrl}` }],
-              details: { action: p.action, steps: planResultSteps(steps), addendum: renderActivePlanAddendum(scope), verdict, revision, reviewUrl, reviewSurface: 'browser' },
+              details: { action: p.action, ...planPresentation(ctx, scope), verdict, revision, reviewUrl, reviewSurface: 'browser' },
             } as unknown as ToolCallResult;
           }
         }
 
-        const tldr = buildRfcReviewTldr(scope, steps, revision, artifacts);
-        const selectedSurface = reviewSurface?.status === 'selected' ? reviewSurface.value : 'chat';
-        const verdict = selectedSurface === 'local'
-          ? '[PLAN] local RFC review selected — browser remains closed.'
-          : selectedSurface === 'browser'
-            ? '[PLAN] browser could not be opened — falling back to local files and chat TL;DR.'
-            : '[PLAN] chat TL;DR selected — browser remains closed.';
+        const selectedSurface = reviewSurface?.status === 'selected' ? reviewSurface.value : 'terminal';
+        const verdict = selectedSurface === 'browser'
+            ? '[PLAN] browser could not be opened — falling back to the terminal Summary and local files.'
+            : '[PLAN] terminal review selected — browser remains closed.';
         return {
-          content: [{ type: 'text', text: `${verdict}\n\n${tldr}` }],
+          content: [{ type: 'text', text: `${verdict}\n\n${summary}` }],
           details: {
             action: p.action,
-            steps: planResultSteps(steps),
-            addendum: renderActivePlanAddendum(scope),
+            ...planPresentation(ctx, scope),
             verdict,
             revision,
-            reviewSurface: selectedSurface === 'local' ? 'local' : 'chat',
+            reviewSurface: 'terminal',
             ...(artifacts ? { artifacts } : {}),
           },
         } as unknown as ToolCallResult;
       }
 
-      const artifacts = writeCurrentPlanArtifacts(scope, steps, 'draft');
+      const artifacts = writeCurrentPlanArtifacts(ctx, scope, 'draft');
       refreshPlanUi(ctx);
       const outcome = ctx
         ? await runAskPrompt(ctx, {
@@ -716,7 +826,7 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
         ? `\nPlan doc: ${artifacts.mdPath}`
         : '\nPlan doc could not be written — continuing with the in-terminal plan.';
       if (approved) {
-        const approvedArtifacts = writeCurrentPlanArtifacts(scope, steps, 'approved');
+        const approvedArtifacts = writeCurrentPlanArtifacts(ctx, scope, 'approved');
         if (approvedArtifacts) pageNote = `\nPlan doc: ${approvedArtifacts.mdPath}`;
         // 3-way surface choice: consistent with the RFC-backed propose flow.
         const reviewSurfaceApproved = ctx?.hasUI && ctx.mode === 'tui'
@@ -750,7 +860,7 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
       }
       return {
         content: [{ type: 'text', text: `${verdict}\n${renderList(steps)}${pageNote}` }],
-        details: { action: p.action, steps: planResultSteps(steps), addendum: renderActivePlanAddendum(scope), verdict },
+        details: { action: p.action, ...planPresentation(ctx, scope), verdict },
       } as unknown as ToolCallResult;
     }
     case 'add':
@@ -767,7 +877,7 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
         ensureUnifiedProjection(scope, p.scope, ctx);
         steps = getPlan(scope);
       }
-      writeCurrentPlanArtifacts(scope, steps, 'active');
+      writeCurrentPlanArtifacts(ctx, scope, 'active');
       break;
     case 'start':
     case 'complete':
@@ -776,10 +886,13 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
       const planError = (msg: string, error: string) => ({
         content: [{ type: 'text' as const, text: `${msg}\n${renderList(current)}` }],
         isError: true,
-        details: { action: p.action, steps: planResultSteps(current), addendum: renderActivePlanAddendum(scope), error },
+        details: { action: p.action, ...planPresentation(ctx, scope), error },
       }) as unknown as ToolCallResult;
       if (current.length === 0) {
         return planError(`[PLAN] no active plan — nothing to ${p.action}. Use plan set first.`, 'invalid-index');
+      }
+      if (p.action === 'start' && p.index === undefined && getPlanReviewState(scope).phase === 'accepted') {
+        return planError('[PLAN] implementation start requires the operator command /octocode-plan start; a model tool call cannot mint human authorization.', 'authorization-required');
       }
       let idx: number;
       if (p.index === undefined || p.index === null) {
@@ -833,15 +946,20 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
         steps = getPlan(scope);
       }
       if (p.action === 'complete' && steps.every((step) => step.status === 'done')) {
+        refreshPlanUi(ctx);
         const coordination = getPlanCoordination(scope);
+        let verified = true;
         if (coordination.awarenessPlanId) {
-          finalizeUnifiedPlan({
+          verified = finalizeUnifiedPlan({
             workspace: coordination.coordinationWorkspace || planWorkspace(scope),
             planId: coordination.awarenessPlanId,
           });
         }
+        if (verified) finishPlanVerification(scope, true, 'All declared task checks passed');
+        else setPlanLifecycle(scope, 'blocked', 'Shared tasks still have verification debt');
+        steps = getPlan(scope);
       }
-      writeCurrentPlanArtifacts(scope, steps, 'active');
+      writeCurrentPlanArtifacts(ctx, scope, 'active');
       break;
     }
     case 'clear': {
@@ -850,7 +968,7 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
         return {
           content: [{ type: 'text' as const, text: '[PLAN] mapped shared plans cannot be cleared while work is unfinished; complete or abandon the shared work first.' }],
           isError: true,
-          details: { action: p.action, error: 'shared-clear', steps: planResultSteps(current) },
+          details: { action: p.action, error: 'shared-clear', ...planPresentation(ctx, scope) },
         } as unknown as ToolCallResult;
       }
       clearPlan(scope);
@@ -915,7 +1033,7 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
   const baseNote = lifecycleNote || (p.action !== 'set' ? artifactHint : '');
   return {
     content: [{ type: 'text', text: `${header}\n${renderList(steps)}${baseNote}` }],
-    details: { action: p.action, steps: planResultSteps(steps), addendum: renderActivePlanAddendum(scope) },
+    details: { action: p.action, ...planPresentation(ctx, scope) },
   } as unknown as ToolCallResult;
 }
 

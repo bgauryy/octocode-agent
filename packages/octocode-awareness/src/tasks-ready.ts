@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { utcNow } from './helpers.js';
 import { CreateTaskParams, event, evictExpiredTaskClaims, getTask, hydrateTask, normalizeTaskPaths, PlanTaskRecord, PlanTaskStatus, required } from './tasks-catalog.js';
+import { tableColumns } from './db-introspection.js';
 
 export function createTask(
   db: DatabaseSync,
@@ -24,10 +25,17 @@ export function createTask(
 
   db.exec('BEGIN IMMEDIATE');
   try {
-    db.prepare(`INSERT INTO tasks
-      (task_id, plan_id, title, reasoning, acceptance_criteria, status, priority, created_by, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?)`)
-      .run(taskId, params.planId, title, reasoning, acceptance, params.priority ?? 0, createdBy, now, now);
+    if (tableColumns(db, 'tasks').has('acceptance')) {
+      db.prepare(`INSERT INTO tasks
+        (task_id, plan_id, title, reasoning, acceptance_criteria, acceptance, workspace_path, paths_json, status, priority, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?)`)
+        .run(taskId, params.planId, title, reasoning, acceptance, acceptance, plan.workspace_path, JSON.stringify(paths), params.priority ?? 0, createdBy, now, now);
+    } else {
+      db.prepare(`INSERT INTO tasks
+        (task_id, plan_id, title, reasoning, acceptance_criteria, status, priority, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?)`)
+        .run(taskId, params.planId, title, reasoning, acceptance, params.priority ?? 0, createdBy, now, now);
+    }
     const insertPath = db.prepare('INSERT INTO task_paths(task_id, path, ordinal) VALUES (?, ?, ?)');
     paths.forEach((path, ordinal) => insertPath.run(taskId, path, ordinal));
     event(db, taskId, null, createdBy, 'CREATED', reasoning, now);

@@ -4,6 +4,26 @@ export type RuntimePhase = 'idle' | 'initializing' | 'ready' | 'degraded' | 'fai
 export type RuntimeTaskStatus = 'idle' | 'running' | 'ready' | 'degraded' | 'failed';
 export type RuntimeNoticeLevel = 'info' | 'warning' | 'error';
 
+export type ForegroundActivity =
+  | { kind: 'idle' }
+  | { kind: 'thinking'; since: number }
+  | { kind: 'researching'; since: number; planScope: string; detail?: string }
+  | { kind: 'awaiting_input'; since: number; planScope: string; question: string }
+  | { kind: 'planning'; since: number; planScope: string; detail?: string }
+  | { kind: 'reviewing'; since: number; planScope: string; revision?: string }
+  | { kind: 'awaiting_start'; since: number; planScope: string; revision: string }
+  | { kind: 'working'; since: number; planScope?: string; stepId?: string; label: string }
+  | { kind: 'verifying'; since: number; planScope: string; label?: string }
+  | { kind: 'blocked'; since: number; label: string }
+  | { kind: 'complete'; since: number; label?: string }
+  | { kind: 'failed'; since: number; label: string };
+
+export type ForegroundActivityInput = ForegroundActivity extends infer Activity
+  ? Activity extends { since: number }
+    ? Omit<Activity, 'since'>
+    : Activity
+  : never;
+
 export interface RuntimeTaskState {
   status: RuntimeTaskStatus;
   critical?: boolean;
@@ -69,6 +89,7 @@ export interface RuntimeState {
   mcp: RuntimeMcpState;
   context: RuntimeContextState;
   footer: RuntimeFooterState;
+  activity: ForegroundActivity;
   working: { visible: boolean; message?: string };
   notice?: RuntimeNotice;
   begin(stage?: string): number;
@@ -80,6 +101,7 @@ export interface RuntimeState {
   setMcp(patch: Partial<RuntimeMcpState>): void;
   setContext(patch: Partial<RuntimeContextState>): void;
   setFooter(patch: Partial<RuntimeFooterState>): void;
+  setActivity(activity: ForegroundActivityInput): void;
   setStatus(name: string, text: string | undefined): void;
   setWorking(visible: boolean, message?: string): void;
   announce(message: string, level?: RuntimeNoticeLevel): void;
@@ -96,7 +118,7 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function initialState(): Pick<RuntimeState, 'generation' | 'phase' | 'stage' | 'tasks' | 'statuses' | 'mcp' | 'context' | 'footer' | 'working'> {
+function initialState(): Pick<RuntimeState, 'generation' | 'phase' | 'stage' | 'tasks' | 'statuses' | 'mcp' | 'context' | 'footer' | 'activity' | 'working'> {
   return {
     generation: 0,
     phase: 'idle',
@@ -129,6 +151,7 @@ function initialState(): Pick<RuntimeState, 'generation' | 'phase' | 'stage' | '
       completedTurns: 0,
       githubAuth: { status: 'checking' },
     },
+    activity: { kind: 'idle' },
     working: { visible: false },
   };
 }
@@ -208,6 +231,11 @@ export function createRuntimeStore(now: () => number = Date.now): RuntimeStore {
     setMcp: (patch) => set((state) => ({ mcp: { ...state.mcp, ...patch } })),
     setContext: (patch) => set((state) => ({ context: { ...state.context, ...patch } })),
     setFooter: (patch) => set((state) => ({ footer: { ...state.footer, ...patch } })),
+    setActivity: (activity) => set({
+      activity: activity.kind === 'idle'
+        ? activity
+        : { ...activity, since: now() } as ForegroundActivity,
+    }),
     setStatus: (name, text) => set((state) => {
       if (state.statuses[name] === text) return state;
       return { statuses: { ...state.statuses, [name]: text } };

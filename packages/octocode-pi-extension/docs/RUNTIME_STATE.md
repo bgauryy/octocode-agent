@@ -14,6 +14,13 @@ subscribes once per session context, diffs rendered values, and is the only impl
 that mutates Pi status or working-message APIs. Tool and resource modules publish state
 through `setManagedStatus`, `setManagedWorking`, or `publishMcpRuntimeState`.
 
+Foreground work is a separate discriminated Zustand slice: `idle`, `thinking`,
+`researching`, `awaiting_input`, `planning`, `reviewing`, `awaiting_start`, `working`,
+`verifying`, `blocked`, `complete`, or `failed`. Durable plan state remains authoritative;
+the runtime slice is rebuilt from it. Generic turn-level `thinking` is only a fallback and
+cannot overwrite a plan lifecycle state. `awaiting_input` hides motion so the decision card
+is the sole focus owner.
+
 Resource lifetime stays local to the owning manager. MCP clients, Chrome connections,
 worker processes, file queues, timers, schema validators, and filesystem watchers do not
 belong in Zustand. Their observable state may be projected into the runtime store.

@@ -8,6 +8,7 @@ import {
   OCTOCODE_SUPPORT_TOOL_NAMES,
 } from './constants.js';
 import { checkForCoreUpdate, readOwnVersion } from './core-update-check.js';
+import { ensureAdaptiveThinkingCompatibility } from './model-compat.js';
 import {
   getAssetPaths,
   readTextIfExists,
@@ -51,7 +52,7 @@ import {
 } from './utils.js';
 import { getDirectToolContractStats, registerUniqueTool } from './tools/octocode-tools.js';
 import { registerContextTools } from './tools/context-tools.js';
-import { registerCompactionHooks, resetCompactionCheckpointDedupe } from './tools/compaction-hooks.js';
+import { registerCompactionHooks, resetCompactionCheckpointDedupe, setCompactionRehydrationSegmentsProvider } from './tools/compaction-hooks.js';
 import { clearCompactionInFlight, clearCompactionResumeRequest, clearAutoCompactResumeRequest, clearCompactionAbortSuppressionRequest } from './tools/compaction-state.js';
 import { resetCompactionResumeSchedule } from './tools/compaction-resume.js';
 import {
@@ -79,6 +80,7 @@ import { renderRuntimeCapabilitiesAddendum } from './tools/image-render.js';
 import { setPeerWipBaseline, peerWipCount, setPeerWipStatusPainter } from './tools/peer-wip.js';
 import { registerBashTool } from './tools/bash-tool.js';
 import { createAwarenessMutationGate } from './tools/awareness-mutation-gate.js';
+import { assembleContextSegments } from './tools/context-segments.js';
 import { APPROVAL_CLASSES, PERMISSION_LEVELS, applyStartupPermissionLevel, approvedClasses, cyclePermissionLevel, getPermissionLevel, parsePermissionLevel, resetApprovalStore, revokeAlways, setPermissionLevel, type ApprovalClass } from './tools/approval.js';
 import { recordSessionTitle } from './tools/desktop-notify.js';
 import { getCachedMcpCatalogAddendum, getCachedMcpCounts, getMcpDiscoverySnapshot, isCompactMcpEnabled, mcpCatalogReady, registerMcpTool, startMcpConfigWatcher, stopAllMcpServers, stopMcpConfigWatchers, warmMcpCatalog } from './tools/mcp-tool.js';
@@ -90,8 +92,10 @@ import { registerLocalServerTool } from './tools/local-server-tool.js';
 import { registerAskUserTool } from './tools/ask-user-tool.js';
 import { registerMemoryTool } from './tools/memory-tool.js';
 import { registerAwarenessCoordinationTools } from './tools/awareness-coordination-tools.js';
+import { registerAwarenessEventConsumer } from './tools/awareness-event-consumer.js';
 import { getAwarenessAgentId } from './tools/awareness-shared.js';
-import { activePlanScope, adoptPlanFromBranch, renderActivePlanAddendum, getPlan, getPlanReviewState, bumpPlanTurn, setPlanEntryAppender, PLAN_ENTRY_TYPE } from './tools/active-plan.js';
+import { activePlanScope, adoptPlanFromBranch, getPlan, getPlanReviewState, bumpPlanTurn, setPlanEntryAppender, PLAN_ENTRY_TYPE } from './tools/active-plan.js';
+import { getCurrentPlanReadModel, renderPlanContext } from './tools/plan-read-model.js';
 import { getCachedAwarenessStatus, refreshAwarenessPanel, suppressAwarenessPanel, resumeAwarenessPanel, clearAwarenessCacheEntry } from './tools/awareness-status.js';
 import { refreshStatusPanel, suppressStatusPanel, resumeStatusPanel } from './tools/status-panel.js';
 import { buildAgentFooterRows, buildFooterSegments, formatBranchSegment, buildWorkingIndicator, buildWorkingMessage, formatCompact, getFooterDensity, parseFooterDensity, resolveSystemThemeName, setFooterDensity, deriveSessionName, OCTOCODE_THEME_DARK, OCTOCODE_THEME_LIGHT, type OctocodeThemeName } from './ui-extras.js';
@@ -101,20 +105,22 @@ import { setUiTickSubscriber } from './tui/ui-ticker.js';
 import { FOOTER_LEGEND, PERMISSION_LEVEL_SUMMARY } from './tui/content.js';
 import { listCDPSessions, closeAllChromeConnections } from './chrome-connection-cache.js';
 import { handleOctocodePlanCommand, OCTOCODE_PLAN_COMMAND_USAGE, OCTOCODE_PLAN_COMMAND_COMPLETIONS } from './tools/plan-tool.js';
-import { adoptPlanModePolicy, exitPlanMode, planModeToolGate } from './tools/plan-mode.js';
+import { adoptPlanModePolicy, evaluateToolCapability, exitPlanMode, getPlanModePolicy, planModeToolGate } from './tools/plan-mode.js';
 import { atomicWriteUtf8, clearAllReadStates, resolveFilePath } from './tools/file-state.js';
 import { registerAgentInbox, type AgentInboxRegistration } from './tools/agent-inbox.js';
 import { getPaletteShortcut, registerCommandPalette } from './tools/command-palette.js';
 import { collectPublicCommands, registerCommandsCommand } from './tools/commands-command.js';
+import { registerCleanupCommand, runCleanupOnInit } from './tools/cleanup-command.js';
 import { probeGitHubAuth } from './tools/github-auth-status.js';
 import { registerOctocodeAutocomplete } from './tools/autocomplete-providers.js';
 import { registerOctocodeMessageRenderers } from './tools/custom-messages.js';
 import { initCheckpointStore, type CheckpointEngine } from './tools/checkpoints.js';
 import { createSessionArtifactContext, resolveSessionIdentity } from './tools/session-artifacts.js';
+import { consumeValidatedRehydration, runAndRecordRehydration, REHYDRATION_RECEIPT_ENTRY_TYPE, type CurrentRehydrationSource } from './tools/rehydration-orchestrator.js';
 import { createCheckpointInputHook, registerRewindCommand } from './tools/rewind-command.js';
 import { registerDialCommand, restoreDialOnStartup, getActiveDialLevel } from './tools/effort-dial.js';
 import { registerAiWatch, isWatchActive, markOwnWrite, markBashActivity, stopWatch } from './tools/ai-watch.js';
-import { runtimeStoreFor, setManagedFooter, setManagedStatus, setManagedWorking, setManagedWorkingIndicator, setManagedWorkingMessage } from './tools/runtime-renderer.js';
+import { runtimeStoreFor, setManagedActivity, setManagedFooter, setManagedStatus, setManagedWorkingIndicator, setManagedWorkingMessage } from './tools/runtime-renderer.js';
 import type { RuntimeFooterState } from './tools/runtime-store.js';
 import { SessionRuntime } from './session-runtime.js';
 import { registerExportCommand } from './tools/export-command.js';
@@ -1205,6 +1211,18 @@ interface RuntimeUiRegistrationArgs {
 
 function registerRuntimeUiPhase({ pi, Type, registeredToolNames, notify }: RuntimeUiRegistrationArgs): void {
   registerCompactionHooks(pi, notify);
+  registerAwarenessEventConsumer(pi, {
+    resolveExpectedAgentId: (ctx) => getAwarenessAgentId(ctx),
+    onObservability: (stats, ctx) => {
+      const attention = stats.backlogDepth > 0 || stats.held > 0 || stats.refused > 0 || stats.errors > 0;
+      runtimeStoreFor(ctx)?.getState().setStatus(
+        'octocode-awareness-events',
+        attention
+          ? `events q ${stats.backlogDepth}${stats.backlogCapped ? '+' : ''} · ack ${stats.lastAcknowledgedSequence} · accepted ${stats.accepted} · held ${stats.held} · refused ${stats.refused} · errors ${stats.errors}`
+          : undefined,
+      );
+    },
+  });
   // Branded conversation cards (compaction checkpoints / awareness handoffs)
   // — must be registered before compaction-hooks emits the first card.
   registerOctocodeMessageRenderers(pi);
@@ -1414,7 +1432,17 @@ async function wireOctocodePiExtension(
       return skillPath ? { skillPaths: [skillPath] } : {};
     });
 
-    hooks.on('tool_call', 'octocode-plan-mode-gate', async (event: { toolName?: string; input?: Record<string, unknown> }, ctx: PiContext | undefined) => planModeToolGate(event.toolName, ctx, event.input));
+    hooks.on('tool_call', 'octocode-plan-mode-gate', async (event: { toolName?: string; input?: Record<string, unknown> }, ctx: PiContext | undefined) => {
+      const policy = getPlanModePolicy(ctx);
+      const receipt = evaluateToolCapability({ toolName: event.toolName, toolInput: event.input, ...(policy ? { phase: policy.phase } : {}) });
+      if (!process.env['VITEST']) {
+        try {
+          const awareness = openAwareness({ workspace: ctx?.cwd ?? process.cwd() });
+          try { awareness.recordCapabilityReceipt(receipt); } finally { awareness.close(); }
+        } catch { /* audit persistence cannot weaken the synchronous deny decision */ }
+      }
+      return planModeToolGate(event.toolName, ctx, event.input);
+    });
 
     hooks.on('tool_call', 'awareness-lock-gate', async (event: { toolName?: string; input?: Record<string, unknown> }, ctx: PiContext | undefined) => {
       return runAwarenessMutationGate(event, ctx);
@@ -1423,7 +1451,7 @@ async function wireOctocodePiExtension(
     // Snapshot every plan mutation into a session CustomEntry (state channel —
     // never rendered, never in LLM context) so /fork and /tree roll plan state
     // back with the conversation instead of leaking the forked-from plan.
-    setPlanEntryAppender((steps, rfcPath, decisions, lifecycle, review, coordination, meta) => pi.appendEntry?.(PLAN_ENTRY_TYPE, { version: 3, ...review, snapshotId: meta.snapshotId, branchSnapshotId: meta.snapshotId, generation: meta.generation, capturedAt: meta.capturedAt, updatedAt: meta.capturedAt, steps, phase: lifecycle, coordination, ...(rfcPath ? { rfcPath } : {}), ...(decisions && decisions.length ? { decisions } : {}) }));
+    setPlanEntryAppender((steps, rfcPath, decisions, lifecycle, review, coordination, meta, cleared) => pi.appendEntry?.(PLAN_ENTRY_TYPE, { version: 4, cleared, ...review, snapshotId: meta.snapshotId, branchSnapshotId: meta.snapshotId, generation: meta.generation, capturedAt: meta.capturedAt, updatedAt: meta.capturedAt, steps, phase: lifecycle, coordination, ...(rfcPath ? { rfcPath } : {}), ...(decisions && decisions.length ? { decisions } : {}) }));
 
     hooks.on('session_tree', 'octocode-plan-tree-sync', async (_event: unknown, ctx: PiContext | undefined) => {
       // /tree navigation moved the leaf — re-adopt the plan snapshot that was
@@ -1432,14 +1460,9 @@ async function wireOctocodePiExtension(
       const adopted = adoptPlanFromBranch(scope, ctx?.sessionManager?.getBranch?.() ?? [], { clearWhenMissing: true });
       if (adopted) adoptPlanModePolicy(ctx, getPlanReviewState(scope));
       else exitPlanMode(ctx);
+      if (ctx) runAndRecordRehydration(pi, ctx, 'tree');
       refreshStatusPanel(ctx);
     });
-
-    // Tracks the last unread peer-message count injected to the model this session.
-    // Declared inside the hooks if-block so it shares the same closure as the
-    // before_agent_start handler. Reset to -1 each session_start so the first
-    // turn of a new session re-notifies if messages are waiting.
-    let lastNotifiedUnread = -1;
 
     const disposeSessionResources = async (reason: string, ctx: PiContext | undefined): Promise<void> => {
       const canUseShutdownContext = reason === 'quit';
@@ -1468,13 +1491,12 @@ async function wireOctocodePiExtension(
       }
     };
 
-    const initializeOctocodeSession = async (ctx: PiContext | undefined): Promise<void> => {
+    const initializeOctocodeSession = async (ctx: PiContext | undefined, reason?: string): Promise<void> => {
       frozenSystemPrompt = undefined;
       frozenPlanSignature = undefined;
       latestAvailableSkills = undefined;
       latestPiSkills = undefined;
       lastCronUnreadAlerted = -1;
-      lastNotifiedUnread = -1;
       await sessionRuntime?.dispose('replace');
       const runtime = new SessionRuntime({ ctx, onDispose: (reason) => disposeSessionResources(reason ?? 'shutdown', ctx) });
       sessionRuntime = runtime;
@@ -1604,9 +1626,10 @@ async function wireOctocodePiExtension(
       // ensures branches without a snapshot clear any stale fallback-scoped
       // plan from a prior session rather than leaving orphaned state.
       const planScope = activePlanScope(ctx);
-      const adoptedPlan = adoptPlanFromBranch(planScope, ctx?.sessionManager?.getBranch?.() ?? [], { clearWhenMissing: true });
+      const adoptedPlan = adoptPlanFromBranch(planScope, ctx?.sessionManager?.getBranch?.() ?? [], { clearWhenMissing: true, fork: reason === 'fork' });
       if (adoptedPlan || getPlan(planScope).length > 0) adoptPlanModePolicy(ctx, getPlanReviewState(planScope));
       else exitPlanMode(ctx);
+      if (ctx) runAndRecordRehydration(pi, ctx, reason ?? 'new');
       // Re-apply the persisted effort dial (thinking level + worker cap) before
       // the footer renders so `◉ <level>` is correct from the first frame.
       await restoreDialOnStartup(pi, ctx);
@@ -1765,11 +1788,13 @@ async function wireOctocodePiExtension(
         readyMessage: `Octocode ready${mcpSummary}`,
         degradedMessage: `Octocode ready with ${degradedTasks} warning${degradedTasks === 1 ? '' : 's'}${mcpSummary}`,
       });
+      // Once per process: prompt the user to clean stale clones / tmp dirs if any exist.
+      runCleanupOnInit(ctx);
     };
 
-    hooks.on('session_start', 'octocode-session-start', async (_event: unknown, ctx: PiContext | undefined) => {
+    hooks.on('session_start', 'octocode-session-start', async (event: { reason?: string }, ctx: PiContext | undefined) => {
       try {
-        await initializeOctocodeSession(ctx);
+        await initializeOctocodeSession(ctx, event?.reason);
       } catch (error) {
         sessionRuntime?.store.getState().failed(error);
         throw error;
@@ -1879,6 +1904,11 @@ async function wireOctocodePiExtension(
     let warnedContextDrift = false;
     let warnedSkillsDrift = false;
     hooks.on('before_agent_start', 'octocode-system-prompt', async (event: BeforeAgentStartEvent, ctx: PiContext | undefined) => {
+      // Custom Anthropic-compatible providers do not inherit Pi's built-in model
+      // compatibility metadata. Normalize known adaptive models before Pi builds
+      // the provider request, while preserving an explicit provider override.
+      ensureAdaptiveThinkingCompatibility(ctx?.model);
+
       // Suppress AGENTS.md / CLAUDE.md when --no-context flag is set. Pi builds
       // the prompt BEFORE this hook fires and systemPromptOptions is
       // inspection-only, so the block must be stripped from the assembled
@@ -1912,18 +1942,8 @@ async function wireOctocodePiExtension(
       const planScope = activePlanScope(ctx);
       // catches lifecycle, RFC revision, decisions, dependencies, acceptance,
       // verification, and Awareness mapping changes—not only status/id changes.
-      const planContext = renderActivePlanAddendum(planScope);
+      const planContext = renderPlanContext(getCurrentPlanReadModel(ctx, planScope));
       const planSig = planContext;
-
-      // Per-turn awareness nudge: injected as conversation message (not system prompt)
-      // so frozen bytes stay cache-stable. Fires only when unread count changes and > 0.
-      const awarenessCwd = ctx?.cwd ?? process.cwd();
-      const unreadNow = getCachedAwarenessStatus(awarenessCwd)?.unreadInbox ?? 0;
-      const unreadContent =
-        unreadNow > 0 && unreadNow !== lastNotifiedUnread
-          ? `${unreadNow} unread peer message(s). Use message tool (action:read) before the next consequential decision — act on blockers/decisions, then continue.`
-          : undefined;
-      if (unreadNow !== lastNotifiedUnread) lastNotifiedUnread = unreadNow;
 
       // Plan-drift correction: when the frozen <active_plan> block is stale, send
       // the current step list as a context message. Fires once per state change
@@ -1935,12 +1955,42 @@ async function wireOctocodePiExtension(
         planDriftContent = planContext || 'Plan cleared; no active task breakdown remains.';
       }
 
+      const currentSourcesFrom = (manifest: ReturnType<typeof assembleContextSegments>['manifest'], contents: Record<string, string>): CurrentRehydrationSource[] =>
+        manifest.map((segment) => ({ segment, content: contents[segment.id] ?? '' }));
+      let frozenRehydration: ReturnType<typeof consumeValidatedRehydration>;
+      if (ctx && frozenSystemPrompt !== undefined) {
+        const currentMcpCatalog = getCachedMcpCatalogAddendum(ctx);
+        const currentRuntimeCapabilities = renderRuntimeCapabilitiesAddendum(ctx);
+        const currentSkills = renderAvailableSkillsAddendum(latestAvailableSkills);
+        const currentDynamic = getDynamicCapabilitiesAddendum(latestAvailableSkills?.map((skill) => skill.name));
+        const currentContents: Record<string, string> = {
+          'octocode-product-policy': cachedSystemPromptText ?? '',
+          'mcp-tool-contracts': currentMcpCatalog,
+          'runtime-tool-contracts': currentRuntimeCapabilities,
+          'dynamic-tool-contracts': currentDynamic,
+          'available-skills': currentSkills,
+          'active-plan': planContext,
+        };
+        const currentAssembly = assembleContextSegments([
+          { id: 'octocode-product-policy', content: currentContents['octocode-product-policy']!, kind: 'product-policy', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'hidden-policy', rehydrate: 'always', tokenBudget: 20_000 },
+          { id: 'mcp-tool-contracts', content: currentMcpCatalog, kind: 'tool-contract', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'inspectable', rehydrate: 'always', tokenBudget: 30_000 },
+          { id: 'runtime-tool-contracts', content: currentRuntimeCapabilities, kind: 'tool-contract', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'inspectable', rehydrate: 'always', tokenBudget: 10_000 },
+          { id: 'dynamic-tool-contracts', content: currentDynamic, kind: 'tool-contract', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'inspectable', rehydrate: 'always', tokenBudget: 20_000 },
+          { id: 'available-skills', content: currentSkills, kind: 'skill', origin: 'installed-skills', authority: 'project', scope: 'session', visibility: 'inspectable', rehydrate: 'on-trigger', tokenBudget: 20_000 },
+          { id: 'active-plan', content: planContext, kind: 'plan', origin: 'plan-domain', authority: 'user', scope: 'task', visibility: 'transcript', rehydrate: 'always', tokenBudget: 15_000 },
+        ]);
+        frozenRehydration = consumeValidatedRehydration(ctx, currentSourcesFrom(currentAssembly.manifest, currentContents), { allowProjection: true });
+        if (frozenRehydration) pi.appendEntry?.(REHYDRATION_RECEIPT_ENTRY_TYPE, frozenRehydration.receipt);
+      }
+
       // Combine all per-turn context signals into one message (only one message
       // per turn is supported by BeforeAgentStartEventResult). Plan drift first.
-      const contextParts = [planDriftContent, unreadContent].filter((p): p is string => Boolean(p));
+      const contextAssembly = assembleContextSegments([
+        { id: 'active-plan', content: planDriftContent ?? '', kind: 'plan', origin: 'plan-domain', authority: 'user', scope: 'task', visibility: 'transcript', rehydrate: 'always', tokenBudget: 15_000 },
+      ]);
       const contextMessage =
-        contextParts.length > 0
-          ? { customType: 'octocode-context-update', content: contextParts.join('\n\n'), display: false }
+        contextAssembly.manifest.length > 0 || frozenRehydration?.content
+          ? { customType: 'octocode-context-update', content: [contextAssembly.content, frozenRehydration?.content].filter(Boolean).join('\n\n'), display: false, details: { version: 1, segments: [...contextAssembly.manifest, ...(frozenRehydration?.segments ?? [])], ...(frozenRehydration ? { rehydration: frozenRehydration.receipt } : {}) } }
           : undefined;
 
       if (frozenSystemPrompt !== undefined) {
@@ -1987,7 +2037,33 @@ async function wireOctocodePiExtension(
       // plan pointer and the drift mechanism re-delivers step state on change.
       bumpPlanTurn(planScope);
       const activePlan = planContext;
-      const prompt = [cachedSystemPromptText, mcpCatalog, runtimeCapabilities, dynamicCatalog, availableSkills, activePlan].filter((part) => part.trim().length > 0).join('\n\n');
+      const promptAssembly = assembleContextSegments([
+        { id: 'octocode-product-policy', content: cachedSystemPromptText, kind: 'product-policy', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'hidden-policy', rehydrate: 'always', tokenBudget: 20_000 },
+        { id: 'mcp-tool-contracts', content: mcpCatalog, kind: 'tool-contract', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'inspectable', rehydrate: 'always', tokenBudget: 30_000 },
+        { id: 'runtime-tool-contracts', content: runtimeCapabilities, kind: 'tool-contract', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'inspectable', rehydrate: 'always', tokenBudget: 10_000 },
+        { id: 'dynamic-tool-contracts', content: dynamicCatalog, kind: 'tool-contract', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'inspectable', rehydrate: 'always', tokenBudget: 20_000 },
+        { id: 'available-skills', content: availableSkills, kind: 'skill', origin: 'installed-skills', authority: 'project', scope: 'session', visibility: 'inspectable', rehydrate: 'on-trigger', tokenBudget: 20_000 },
+        { id: 'active-plan', content: activePlan, kind: 'plan', origin: 'plan-domain', authority: 'user', scope: 'task', visibility: 'transcript', rehydrate: 'always', tokenBudget: 15_000 },
+      ]);
+      const initialContents: Record<string, string> = {
+        'octocode-product-policy': cachedSystemPromptText,
+        'mcp-tool-contracts': mcpCatalog,
+        'runtime-tool-contracts': runtimeCapabilities,
+        'dynamic-tool-contracts': dynamicCatalog,
+        'available-skills': availableSkills,
+        'active-plan': activePlan,
+      };
+      const initialRehydration = ctx
+        ? consumeValidatedRehydration(ctx, currentSourcesFrom(promptAssembly.manifest, initialContents), { allowProjection: false })
+        : undefined;
+      if (initialRehydration) pi.appendEntry?.(REHYDRATION_RECEIPT_ENTRY_TYPE, initialRehydration.receipt);
+      const prompt = promptAssembly.content;
+      setCompactionRehydrationSegmentsProvider(() => {
+        return {
+          segments: promptAssembly.manifest,
+          contents: Object.fromEntries(promptAssembly.manifest.map((segment) => [segment.id, initialContents[segment.id] ?? ''])),
+        };
+      });
       // Build once, then freeze these exact bytes for the session. This complete
       // value includes Pi's base system prompt, project context, Octocode policy,
       // initial skills, MCP catalog, and the initial durable plan projection.
@@ -2059,7 +2135,7 @@ async function wireOctocodePiExtension(
   registerTurnMetricsPhase({ pi, startMetricsTicker, stopMetricsTicker, toolStartTimes });
   agentInbox = registerWorkerToolPhase({ pi, Type, registeredToolNames, notify });
 
-    // ── Thinking indicator: bracket the full agent turn ──────────────────────────
+    // ── Foreground activity fallback: bracket generic model reasoning ────────────
     // Registered AFTER all phase hooks so these sit at the END of the turn_start
     // and turn_end handler arrays, never displacing earlier handlers (e.g. the
     // auto-compact handler that tests access via handlers.get('turn_end')![0]).
@@ -2072,17 +2148,22 @@ async function wireOctocodePiExtension(
         if (!ctx?.hasUI) return;
         const ui = ctx.ui;
         if (!ui) return;
-        // Keep the working row visible for the full turn, not just during streaming.
-        setManagedWorking(ctx, true, buildWorkingMessage(ui.theme));
-        // Swap the status chip to an active indicator so it's clear the agent is busy.
-        setManagedStatus(ctx, 'octocode-thinking', paint(ui.theme, 'brand', 'thinking…'));
+        // A specific plan/work lifecycle always outranks generic model reasoning.
+        if (runtimeStoreFor(ctx)?.getState().activity.kind === 'idle') {
+          setManagedActivity(ctx, { kind: 'thinking' });
+          setManagedStatus(ctx, 'octocode-thinking', paint(ui.theme, 'brand', 'thinking…'));
+        } else {
+          setManagedStatus(ctx, 'octocode-thinking', undefined);
+        }
       });
       pi.on('turn_end', (_event: unknown, ctx: PiContext | undefined) => {
         if (!ctx?.hasUI) return;
         const ui = ctx.ui;
         if (!ui) return;
-        // Hide the working row when the turn (including all tool calls) is complete.
-        setManagedWorking(ctx, false);
+        // Clear only the fallback we own; review/start/work states survive the turn.
+        if (runtimeStoreFor(ctx)?.getState().activity.kind === 'thinking') {
+          setManagedActivity(ctx, { kind: 'idle' });
+        }
         // Restore the quiet thinking-level chip (or clear it if unsupported).
         const level = pi.getThinkingLevel?.();
         const status = getThinkingStatus(ctx, level);
@@ -2414,6 +2495,7 @@ async function wireOctocodePiExtension(
   }
 
   registerCommandsCommand(pi, () => runtimeStoreFor(latestSessionCtx)?.getState().footer.githubAuth ?? { status: 'checking' });
+  registerCleanupCommand(pi);
 
   // octocode-harness is registered earlier with the full inventory view.
 

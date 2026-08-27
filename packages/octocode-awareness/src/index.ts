@@ -14,6 +14,44 @@ export {
 } from './db.js';
 export type { DeliveryFingerprintKey } from './db.js';
 
+// Cross-boundary continuity contracts. These are dependency-free domain types
+// and validators; durable storage remains owned by Awareness adapters below.
+export {
+  ACTOR_KINDS,
+  PROVENANCE_SOURCES,
+  TRUST_CLASSES,
+  INBOUND_DECISIONS,
+  parseAgentEventEnvelopeV1,
+  parseAuthorizationReceiptV1,
+  parseInteractionRequestV1,
+  parseInteractionAnswerV1,
+  assertContextSegmentAuthority,
+  contentDigest,
+  effectiveCapabilityDecision,
+  classifyPeerMessage,
+  evaluatePeerInbound,
+} from './continuity-contracts.js';
+export type {
+  ActorKind,
+  ProvenanceSource,
+  TrustClass,
+  InboundDecision,
+  PeerMessageClass,
+  PeerInboundPolicyResultV1,
+  ActorIdentityV1,
+  EventProvenanceV1,
+  AgentEventEnvelopeV1,
+  AuthorizationReceiptV1,
+  InteractionRequestV1,
+  InteractionAnswerV1,
+  ContextSegmentV1,
+  CapabilityDecisionReceiptV1,
+} from './continuity-contracts.js';
+export { containsSecretLikeText, evaluateMemoryRecall } from './memory-hardening.js';
+export type { MemoryEvaluationCaseV1, MemoryEvaluationResultV1 } from './memory-hardening.js';
+export { STORE_OWNERSHIP_V1, inspectStoreConvergence } from './store-ownership.js';
+export type { StoreConvergenceReportV1 } from './store-ownership.js';
+
 // Memory operations
 export { insertMemory, insertMemoryWithSimilarityGate, getMemory, bumpAccess, lexicalSearch, decayScore, findSimilarMemories, mineWeakness, forgetMemory, storeEmbedding, searchByEmbedding, loadMemoriesByIds } from './memory.js';
 export type { GuardedMemoryInsertResult, MineWeaknessResult, MineWeaknessParams, WeaknessCluster } from './memory.js';
@@ -205,4 +243,6 @@ export type {
   ExternalPlanProjectionStep,
   ExternalPlanScope,
   AgentHost,
+  OutboxEventV1,
+  StoredInteractionV1,
 } from './coordination/index.js';

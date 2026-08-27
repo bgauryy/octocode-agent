@@ -7,26 +7,34 @@ import { afterEach, beforeEach, test } from 'vitest';
 import { Type } from 'typebox';
 import type { ToolDefinition } from '../src/types.js';
 import {
-  setPlan, addStep, startStep, completeStep, clearPlan, getPlan, renderActivePlanAddendum,
+  setPlan, addStep, startStep, completeStep, clearPlan, getPlan,
   bumpPlanTurn, STALE_PLAN_TURNS, readPersistedPlanForTests, depsMet, displayStatus,
   activePlanScope, adoptPlanFromBranch, setPlanEntryAppender, PLAN_ENTRY_TYPE,
   getPlanRfc, setPlanRfc, resolveRfcPath, readPersistedRfcForTests,
   getPlanDecisions, addPlanDecision, setPlanDecisions, readPersistedDecisionsForTests,
-  getPlanLifecycle, getPlanReviewState, activatePlan, readPersistedLifecycleForTests,
+  getPlanLifecycle, setPlanLifecycle, finishPlanVerification, getPlanReviewState, activatePlan, readPersistedLifecycleForTests,
   currentRfcRevision, proposePlanReview, acceptPlanReview, requestPlanChanges, startAcceptedPlan,
-  setPlanAwarenessMappings,
+  setPlanAwarenessMappings, getPlanCoordination,
   type PlanDecision, type PlanStep,
 } from '../src/tools/active-plan.js';
-import { registerPlanTool, refreshPlanUi, handleOctocodePlanCommand, inferConsequential, phaseStepperLine, planPanelLines, setPlanDirectoryServerForTests } from '../src/tools/plan-tool.js';
+import { registerPlanTool, refreshPlanUi, handleOctocodePlanCommand, inferConsequential, phaseStepperLine, planPanelModelLines, setPlanDirectoryServerForTests } from '../src/tools/plan-tool.js';
 import { planArtifactsDir, setPlanOpenerForTests } from '../src/tools/plan-html.js';
 import { isPlanMode, enterPlanMode, exitPlanMode, planModeToolGate, PLAN_MODE_BLOCK_REASON } from '../src/tools/plan-mode.js';
 import { createSessionArtifactContext, readPlanProjection } from '../src/tools/session-artifacts.js';
 import type { PiContext } from '../src/types.js';
+import { buildPlanReadModel, getCurrentPlanReadModel, renderPlanContext } from '../src/tools/plan-read-model.js';
 import {
   FORKED_SESSION_FIXTURE,
   RETRY_AFTER_SHARED_COMMIT_FIXTURE,
   TASK_LINKED_WORKER_TERMINAL_FIXTURES,
 } from './fixtures/unified-orchestration.js';
+
+const renderActivePlanAddendum = (scope: string) => renderPlanContext(getCurrentPlanReadModel(undefined, scope));
+const panelModel = (steps: PlanStep[]) => buildPlanReadModel({
+  steps,
+  review: { phase: 'executing', branchSnapshotId: 'test-panel', generation: 0, decisions: [], blockingQuestions: [], comments: [] },
+  coordination: { mode: 'local', sourcePlanKey: 'test-panel', coordinationWorkspace: '' },
+});
 
 // Minimal UI spy for widget/status/notify assertions.
 function uiCtx(cwd: string) {
@@ -71,6 +79,58 @@ test('draft plans persist without active work and inject an explicit approval ga
   assert.doesNotMatch(addendum, /Execute active steps|mark the next runnable step/i);
 });
 
+test('V4 persistence preserves meaningful zero-step lifecycle and an explicit clear tombstone', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-v4-zero-step-'));
+  try {
+    setPlanLifecycle(workspace, 'researching');
+    assert.deepEqual(getPlan(workspace), []);
+    assert.equal(readPersistedLifecycleForTests(workspace), 'researching');
+
+    clearPlan(workspace);
+    assert.deepEqual(readPersistedPlanForTests(workspace), []);
+    assert.equal(readPersistedLifecycleForTests(workspace), 'abandoned');
+  } finally {
+    clearPlan(workspace);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('last execution step enters verifying before an explicit terminal outcome', () => {
+  setPlan(CWD, ['Implement'], 'executing');
+  completeStep(CWD, 1);
+  assert.equal(getPlanLifecycle(CWD), 'verifying');
+  assert.equal(finishPlanVerification(CWD, true, 'checks passed').phase, 'complete');
+});
+
+test('fork recovery demotes executing work and clears inherited Awareness ownership', () => {
+  const cwd = '/tmp/plan-fork-demote';
+  const adopted = adoptPlanFromBranch(cwd, [{
+    type: 'custom',
+    customType: PLAN_ENTRY_TYPE,
+    data: {
+      version: 4,
+      cleared: false,
+      branchSnapshotId: 'fork-source',
+      generation: 2,
+      capturedAt: '2026-08-26T00:00:00.000Z',
+      phase: 'executing',
+      acceptedRevision: 'abc',
+      acceptAuthorizationReceiptId: 'consumed-parent-accept',
+      startAuthorizationReceiptId: 'consumed-parent-start',
+      coordination: { mode: 'required', sourcePlanKey: 'parent', awarenessPlanId: 'plan-parent', coordinationWorkspace: cwd },
+      steps: [{ id: 'step-a', text: 'Implement', status: 'doing', awarenessTaskId: 'task-parent' }],
+    },
+  }], { fork: true });
+  assert.equal(adopted, true);
+  assert.equal(getPlanLifecycle(cwd), 'accepted');
+  assert.equal(getPlan(cwd)[0]?.status, 'todo');
+  assert.equal(getPlan(cwd)[0]?.awarenessTaskId, undefined);
+  assert.equal(getPlanCoordination(cwd).awarenessPlanId, undefined);
+  assert.equal(getPlanReviewState(cwd).startAuthorizationReceiptId, undefined, 'a fork cannot inherit consumed Start authority');
+  assert.equal(getPlanReviewState(cwd).acceptAuthorizationReceiptId, undefined, 'a fork cannot inherit consumed Accept authority');
+  clearPlan(cwd);
+});
+
 test('activatePlan enters executing and starts exactly one runnable step', () => {
   setPlan(CWD, ['First', { text: 'Second', dependsOn: [1] }], 'draft');
   const active = activatePlan(CWD);
@@ -109,12 +169,13 @@ test('Accept binds the exact displayed RFC bytes without starting work, then Sta
     assert.deepEqual(getPlan(workspace).map((step) => step.status), ['todo', 'todo'], 'Accept never starts implementation');
     assert.deepEqual(fs.readFileSync(rfcPath), exactBytes, 'acceptance is sidecar-only and never edits RFC.md');
 
-    const started = startAcceptedPlan(workspace);
+    const started = startAcceptedPlan(workspace, 'start-receipt');
     assert.equal(started.ok, true);
     const startedState = getPlanReviewState(workspace);
     assert.equal(startedState.phase, 'executing');
     assert.equal(startedState.acceptedRevision, expectedRevision);
     assert.ok(startedState.startedAt);
+    assert.equal(startedState.startAuthorizationReceiptId, 'start-receipt');
     assert.deepEqual(getPlan(workspace).map((step) => step.status), ['doing', 'todo'], 'Start activates exactly one dependency-ready step');
     assert.deepEqual(appendedPhases.slice(-3), ['in_review', 'accepted', 'executing'], 'each transition is appended to branch authority');
   } finally {
@@ -166,7 +227,7 @@ test('stale RFC bytes reject Accept and invalidate an already accepted revision 
     fs.writeFileSync(rfcPath, 'revision A\n');
     assert.equal(acceptPlanReview(workspace, revisionA).ok, true);
     fs.writeFileSync(rfcPath, 'revision B\n');
-    const staleStart = startAcceptedPlan(workspace);
+    const staleStart = startAcceptedPlan(workspace, 'start-receipt');
     assert.deepEqual({ ok: staleStart.ok, code: staleStart.ok ? undefined : staleStart.code }, { ok: false, code: 'revision_changed' });
     const invalidated = getPlanReviewState(workspace);
     assert.equal(invalidated.phase, 'draft');
@@ -309,7 +370,7 @@ test('plan panel renders complete progress and the running step activeForm', () 
   assert.match(joined, /Plan\s+[\u2588\u2591]{8}\s+1\/2 done · now: Run tests/, 'header has progress and the current running step');
   assert.match(joined, /✓ 1\. Edit file/, 'completed tasks remain visible');
   assert.match(joined, /▶ 2\. Run tests\s+running/, 'running task is explicit');
-  assert.doesNotMatch(joined, /Research|RFC|Build/, 'phase detail remains on-demand');
+  assert.match(joined, /Research.*Work.*Verify/, 'durable lifecycle phase is visible');
   clearPlan(cwd);
 });
 
@@ -416,7 +477,7 @@ function loadTool(sendUserMessage?: (message: string, options?: { deliverAs?: 's
   };
 }
 
-test('refreshPlanUi renders a live below-editor checklist without compact footer duplication', () => {
+test('refreshPlanUi renders a live checklist plus the lifecycle activity status', () => {
   const { ctx, calls } = uiCtx('/tmp/plan-ui-ws');
   setPlan('/tmp/plan-ui-ws', ['a', 'b']);
   refreshPlanUi(ctx);
@@ -426,7 +487,7 @@ test('refreshPlanUi renders a live below-editor checklist without compact footer
   assert.ok(rendered && !rendered.cleared, 'below-editor plan widget is rendered while a plan is active');
   assert.equal(rendered!.isFn, true, 'widget content is a renderer fn (not a static string[])');
   assert.equal(rendered!.opts?.placement, 'belowEditor', 'plan checklist sits below the input field');
-  assert.equal(calls.status.length, 0, 'plan UI does not write a duplicate compact status line');
+  assert.deepEqual(calls.status, [{ name: 'octocode-activity', text: 'Working…' }], 'the only compact status is the lifecycle projection');
   clearPlan('/tmp/plan-ui-ws');
   refreshPlanUi(ctx);
   assert.ok(calls.widget.some((w) => (w as { cleared: boolean }).cleared === true), 'widget cleared when the plan is empty');
@@ -443,20 +504,26 @@ test('/octocode-plan command completes a step and clears the plan', async () => 
   assert.ok(calls.notify.some((m) => /cleared/i.test(m)));
 });
 
-test('/octocode-plan start without an index separately starts an accepted RFC revision', async () => {
+test('/octocode-plan start binds the displayed revision and separately starts an accepted RFC', async () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-command-start-'));
   const rfcPath = path.join(workspace, '.octocode', 'rfc', 'demo', 'RFC.md');
   fs.mkdirSync(path.dirname(rfcPath), { recursive: true });
   fs.writeFileSync(rfcPath, '# Accepted design\n');
   const { ctx, calls } = uiCtx(workspace);
   try {
-    setPlan(workspace, ['Implement', 'Verify'], 'draft');
+    setPlan(workspace, [
+      { text: 'Implement', paths: ['src/feature.ts'], acceptance: 'Feature behavior is implemented' },
+      { text: 'Verify', reasoning: 'Runs repository checks without changing a source path', acceptance: 'Declared checks pass', checkCommand: 'yarn test' },
+    ], 'draft');
     setPlanRfc(workspace, rfcPath);
     const proposed = proposePlanReview(workspace);
     assert.equal(proposed.ok, true);
     assert.equal(acceptPlanReview(workspace, getPlanReviewState(workspace).revision!).ok, true);
 
-    await handleOctocodePlanCommand('start', ctx, (_c, message) => calls.notify.push(message));
+    const revision = getPlanReviewState(workspace).acceptedRevision!;
+    await handleOctocodePlanCommand('start stale-revision', ctx, (_c, message) => calls.notify.push(message));
+    assert.equal(getPlanReviewState(workspace).phase, 'accepted', 'stale browser callback is rejected');
+    await handleOctocodePlanCommand(`start ${revision}`, ctx, (_c, message) => calls.notify.push(message));
     assert.equal(getPlanReviewState(workspace).phase, 'executing');
     assert.deepEqual(getPlan(workspace).map((step) => step.status), ['doing', 'todo']);
     assert.ok(calls.notify.some((message) => /implementation started/i.test(message)));
@@ -483,6 +550,29 @@ test('/octocode-plan accept binds the displayed revision without starting implem
     assert.equal(getPlanReviewState(workspace).phase, 'accepted');
     assert.deepEqual(getPlan(workspace).map((step) => step.status), ['todo', 'todo']);
     assert.ok(calls.notify.some((message) => /accepted.*mutation remains blocked/i.test(message)));
+  } finally {
+    clearPlan(workspace);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('/octocode-plan Start rejects incomplete shared execution contracts without losing acceptance', async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-command-contract-'));
+  const rfcPath = path.join(workspace, '.octocode', 'rfc', 'demo', 'RFC.md');
+  fs.mkdirSync(path.dirname(rfcPath), { recursive: true });
+  fs.writeFileSync(rfcPath, '# Contract validation\n');
+  const { ctx, calls } = uiCtx(workspace);
+  try {
+    setPlan(workspace, ['Missing path and acceptance'], 'draft');
+    setPlanRfc(workspace, rfcPath);
+    assert.equal(proposePlanReview(workspace).ok, true);
+    assert.equal(acceptPlanReview(workspace, getPlanReviewState(workspace).revision!).ok, true);
+
+    await handleOctocodePlanCommand('start', ctx, (_c, message) => calls.notify.push(message));
+
+    assert.equal(getPlanReviewState(workspace).phase, 'accepted');
+    assert.deepEqual(getPlan(workspace).map((step) => step.status), ['todo']);
+    assert.ok(calls.notify.some((message) => /invalid shared step contract.*paths/i.test(message)));
   } finally {
     clearPlan(workspace);
     fs.rmSync(workspace, { recursive: true, force: true });
@@ -1291,60 +1381,55 @@ test('an interactive consequential proposal opens browser review only after the 
   });
 });
 
-test('local RFC and chat TLDR review choices keep the browser closed and expose exact follow-ups', async () => {
+test('terminal RFC review keeps the browser closed and exposes the Summary plus exact follow-ups', async () => {
   await withTempHome(async () => {
-    for (const surface of ['local', 'chat'] as const) {
-      const { ws, rfcDir } = makeRfcWorkspace();
-      const opened: string[] = [];
-      setPlanOpenerForTests(async (target) => { opened.push(target); return { ok: true }; });
-      try {
-        const tool = loadTool(async () => undefined);
-        const { ctx: baseCtx } = uiCtx(ws);
-        const ctx = {
-          ...baseCtx,
-          mode: 'tui',
-          ui: { ...baseCtx.ui, custom: async () => ({ status: 'selected', value: surface }) },
-        } as unknown as PiContext;
-        const res = (await tool.execute(
-          'id',
-          { action: 'propose', steps: ['Implement', 'Verify'], consequential: true, rfcPath: rfcDir },
-          undefined,
-          undefined,
-          ctx,
-        )) as { content: Array<{ text: string }>; details?: { reviewSurface?: string } };
+    const { ws, rfcDir } = makeRfcWorkspace();
+    const opened: string[] = [];
+    setPlanOpenerForTests(async (target) => { opened.push(target); return { ok: true }; });
+    try {
+      const tool = loadTool(async () => undefined);
+      const { ctx: baseCtx } = uiCtx(ws);
+      const ctx = {
+        ...baseCtx,
+        mode: 'tui',
+        ui: { ...baseCtx.ui, custom: async () => ({ status: 'selected', value: 'terminal' }) },
+      } as unknown as PiContext;
+      const res = (await tool.execute(
+        'id',
+        { action: 'propose', steps: ['Implement', 'Verify'], consequential: true, rfcPath: rfcDir },
+        undefined,
+        undefined,
+        ctx,
+      )) as { content: Array<{ text: string }>; details?: { reviewSurface?: string } };
 
-        assert.deepEqual(opened, [], `${surface} review never opens a browser`);
-        assert.equal(getPlanReviewState(ws).phase, 'in_review');
-        assert.equal(res.details?.reviewSurface, surface);
-        assert.match(res.content[0]!.text, /browser remains closed/i);
-        assert.match(res.content[0]!.text, /TL;DR/);
-        assert.match(res.content[0]!.text, /RFC URI: file:\/\//);
-        assert.match(res.content[0]!.text, /\/octocode-plan accept [a-f0-9]{64}/);
-        assert.match(res.content[0]!.text, /\/octocode-plan changes <feedback>/);
-        assert.match(res.content[0]!.text, /\/octocode-plan html/);
-      } finally {
-        setPlanOpenerForTests(undefined);
-        clearPlan(ws);
-        fs.rmSync(ws, { recursive: true, force: true });
-      }
+      assert.deepEqual(opened, [], 'terminal review never opens a browser');
+      assert.equal(getPlanReviewState(ws).phase, 'in_review');
+      assert.equal(res.details?.reviewSurface, 'terminal');
+      assert.match(res.content[0]!.text, /browser remains closed/i);
+      assert.match(res.content[0]!.text, /^\[PLAN\].*\n\nSummary\n/m);
+      assert.match(res.content[0]!.text, /RFC URI: file:\/\//);
+      assert.match(res.content[0]!.text, /\/octocode-plan accept [a-f0-9]{64}/);
+      assert.match(res.content[0]!.text, /\/octocode-plan changes <feedback>/);
+      assert.match(res.content[0]!.text, /\/octocode-plan html/);
+    } finally {
+      setPlanOpenerForTests(undefined);
+      clearPlan(ws);
+      fs.rmSync(ws, { recursive: true, force: true });
     }
   });
 });
 
 // ─── Phase stepper (below-editor panel) ───────────────────────────────────────
 
-test('phaseStepperLine marks the current phase from step state', () => {
-  // Steps exist, none started → Approve is current; Research/RFC read as done.
-  const approve = phaseStepperLine([{ id: 'a', text: 'a', status: 'todo' }, { id: 'b', text: 'b', status: 'todo' }]);
+test('phaseStepperLine marks the current phase from durable lifecycle state', () => {
+  const approve = phaseStepperLine('accepted');
   assert.match(approve, /✓ Research/);
-  assert.match(approve, /✓ RFC/);
-  assert.match(approve, /▸ Approve/);
-  assert.match(approve, /○ Build/);
+  assert.match(approve, /✓ Review/);
+  assert.match(approve, /▸ Start/);
+  assert.match(approve, /○ Work/);
   assert.match(approve, /○ Verify/);
-  // A step in flight → Build.
-  assert.match(phaseStepperLine([{ id: 'a', text: 'a', status: 'doing' }]), /▸ Build/);
-  // All done → Verify.
-  assert.match(phaseStepperLine([{ id: 'a', text: 'a', status: 'done' }]), /▸ Verify/);
+  assert.match(phaseStepperLine('executing'), /▸ Work/);
+  assert.match(phaseStepperLine('verifying'), /▸ Verify/);
 });
 
 test('planPanelLines shows the complete checklist and marks the running lane', () => {
@@ -1354,13 +1439,14 @@ test('planPanelLines shows the complete checklist and marks the running lane', (
     { id: 'follow-up', text: 'Blocked follow-up', status: 'todo', dependsOnStepIds: ['change'] },
     { id: 'verify', text: 'Later verification', status: 'todo' },
   ];
-  const clipped = planPanelLines(steps, undefined, 24);
-  assert.equal(clipped.length, steps.length + 1, 'header plus every stored task is visible');
-  const full = planPanelLines(steps).join('\n');
+  const model = panelModel(steps);
+  const clipped = planPanelModelLines(model, undefined, 24);
+  assert.equal(clipped.length, steps.length + 2, 'header, lifecycle stepper, and every stored task are visible');
+  const full = planPanelModelLines(model).join('\n');
   assert.match(full, /1\/4/, 'progress remains visible');
   assert.match(full, /Implementing the focused change/, 'activeForm is the active lane label');
   assert.match(full, /running/, 'the active lane is explicit');
-  assert.doesNotMatch(full, /Research|RFC|Approve|Build|Verify/, 'phase stepper is reserved for on-demand detail');
+  assert.match(full, /Research.*Work.*Verify/, 'durable lifecycle phase stepper is visible');
   assert.match(full, /Completed setup|Later verification/, 'stored tasks remain visible');
 });
 

@@ -40,9 +40,7 @@
       "default": "./out/mcp-state.js"
     }
   },
-  "bin": {
-    "octocode-awareness": "./out/octocode-awareness.js"
-  },
+  "bin": "./out/octocode-awareness.js",
   "files": [
     "out/**",
     "!docs/**",

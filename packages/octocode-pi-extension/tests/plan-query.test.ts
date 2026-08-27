@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, test } from 'vitest';
 import { Type } from 'typebox';
 import { openAwareness } from '@octocodeai/octocode-awareness';
@@ -16,7 +17,8 @@ import type { ToolDefinition, PiContext } from '../src/types.js';
 import { handleOctocodePlanCommand, registerPlanTool } from '../src/tools/plan-tool.js';
 import { registerUniqueTool } from '../src/tools/octocode-tools.js';
 import { completeUnifiedPlanTask } from '../src/tools/awareness-shared.js';
-import { acceptPlanReview, clearPlan, getPlan, getPlanReviewState, proposePlanReview, setPlan, setPlanRfc, updatePlanCoordination } from '../src/tools/active-plan.js';
+import { acceptPlanReview, clearPlan, getPlan, getPlanCoordination, getPlanReviewState, proposePlanReview, setPlan, setPlanRfc, updatePlanCoordination } from '../src/tools/active-plan.js';
+import { setInteractionStoreFactoryForTests } from '../src/tools/interaction-broker.js';
 
 const CWD = '/tmp/plan-query-test-ws';
 
@@ -108,13 +110,17 @@ test('single set query returns original detail shape (steps, action) passthrough
   assert.equal(d?.steps?.length, 2, 'details.steps passthrough');
 });
 
-test('single show query returns step details', async () => {
+test('single show query returns the canonical versioned RPC read model', async () => {
   const tool = loadTool();
   // First set up a plan
   await tool.execute('id', { queries: [{ reasoning: 'setup', action: 'set', steps: ['Alpha'] }] }, undefined, undefined, ctx);
   const result = await tool.execute('id', { queries: [{ reasoning: 'checking plan', action: 'show' }] }, undefined, undefined, ctx);
-  const d = result.details as { steps?: unknown[] };
+  const d = result.details as { steps?: unknown[]; plan?: { version?: number; phase?: string; tasks?: Array<{ id: string; status: string }> }; addendum?: string };
   assert.equal(d?.steps?.length, 1);
+  assert.equal(d.plan?.version, 1);
+  assert.equal(d.plan?.phase, 'executing');
+  assert.deepEqual(d.plan?.tasks, d.steps);
+  assert.match(d.addendum ?? '', /<active_plan>/);
 });
 
 test('unified auto and explicit session scopes keep solo plans out of Awareness', async () => {
@@ -363,7 +369,7 @@ test('accepted RFC shared scope creates no Awareness rows until the separate Sta
       lite.close();
     }
 
-    await handleOctocodePlanCommand('start', localCtx, (_ctx, message) => notices.push(message));
+    await handleOctocodePlanCommand(`start ${getPlanReviewState(workspace).acceptedRevision!}`, localCtx, (_ctx, message) => notices.push(message));
     lite = openAwareness({ workspace });
     try {
       assert.equal(lite.listPlans().length, 1, 'Start creates the shared plan');
@@ -375,6 +381,98 @@ test('accepted RFC shared scope creates no Awareness rows until the separate Sta
     }
     assert.match(notices.join('\n'), /Implementation started/);
   } finally {
+    clearPlan(workspace);
+    rmSync(workspace, { recursive: true, force: true });
+    if (previousAgent === undefined) delete process.env['OCTOCODE_AGENT_ID'];
+    else process.env['OCTOCODE_AGENT_ID'] = previousAgent;
+  }
+});
+
+test('failed shared Start consumes authority, restores acceptance, and retries with a fresh receipt over stable graph rows', async () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'plan-start-compensation-'));
+  const previousAgent = process.env['OCTOCODE_AGENT_ID'];
+  process.env['OCTOCODE_AGENT_ID'] = 'pi:plan-start-compensation';
+  const rfcPath = join(workspace, '.octocode', 'rfc', 'demo', 'RFC.md');
+  mkdirSync(join(workspace, '.octocode', 'rfc', 'demo'), { recursive: true });
+  writeFileSync(rfcPath, '# Accepted design\n');
+  const localCtx = { cwd: workspace, mode: 'rpc' } as unknown as PiContext;
+  const notices: string[] = [];
+  try {
+    setPlan(workspace, [{ text: 'Implement accepted design', paths: ['src/a.ts'], acceptance: 'implemented', checkCommand: 'test' }], 'draft');
+    updatePlanCoordination(workspace, { mode: 'required' });
+    setPlanRfc(workspace, rfcPath);
+    assert.equal(proposePlanReview(workspace).ok, true);
+    assert.equal(acceptPlanReview(workspace, getPlanReviewState(workspace).revision!).ok, true);
+
+    const review = getPlanReviewState(workspace);
+    assert.equal(getPlanReviewState(workspace).phase, 'accepted');
+    const coordination = getPlanCoordination(workspace);
+    const localStep = getPlan(workspace)[0]!;
+    let lite = openAwareness({ workspace });
+    const preexisting = lite.materializePlanGraph({
+      sourceKind: 'pi',
+      sourcePlanKey: coordination.sourcePlanKey,
+      title: `Plan: ${localStep.text}`,
+      goal: localStep.text,
+      rfcPath,
+      rfcRevision: review.acceptedRevision,
+      steps: [{
+        sourceStepKey: localStep.id,
+        title: localStep.text,
+        paths: localStep.paths,
+        acceptance: localStep.acceptance,
+        checkCommand: localStep.checkCommand,
+        priority: 1,
+      }],
+    });
+    const stablePlanId = preexisting.plan.planId;
+    const stableTaskId = preexisting.tasks.get(localStep.id)!.taskId;
+    lite.claimTask({ taskId: stableTaskId, agentId: 'peer-agent' });
+    lite.close();
+
+    setInteractionStoreFactoryForTests((storeWorkspace) => openAwareness({ workspace: storeWorkspace }));
+    await handleOctocodePlanCommand(`start ${review.acceptedRevision!}`, localCtx, (_ctx, message) => notices.push(message));
+    assert.equal(getPlanReviewState(workspace).phase, 'accepted', 'failed projection compensation restores accepted state');
+    assert.deepEqual(getPlan(workspace).map((step) => step.status), ['todo']);
+    assert.equal(getPlan(workspace)[0]?.awarenessTaskId, undefined, 'failed Start does not retain a local shared mapping');
+
+    lite = openAwareness({ workspace });
+    let db = new DatabaseSync(lite.dbPath);
+    let consumed = db.prepare('SELECT receipt_id FROM authorization_receipts WHERE workspace_path = ? AND consumed_at IS NOT NULL ORDER BY created_at')
+      .all(workspace) as Array<{ receipt_id: string }>;
+    db.close();
+    assert.equal(consumed.length, 1, `the failed Start authority remains consumed; notices=${notices.join(' | ')}`);
+    const firstReceiptId = consumed[0]!.receipt_id;
+    assert.throws(() => lite.consumeAuthorizationReceipt({
+      receiptId: firstReceiptId,
+      planId: coordination.sourcePlanKey,
+      revision: review.acceptedRevision!,
+      scope: 'plan.start',
+    }), /already consumed/);
+    assert.equal(lite.listPlans().length, 1);
+    assert.equal(lite.listTasks().length, 1);
+    assert.equal(lite.listPlans()[0]!.planId, stablePlanId);
+    assert.equal(lite.listTasks()[0]!.taskId, stableTaskId);
+    lite.releaseTask({ taskId: stableTaskId, agentId: 'peer-agent', blockedReason: 'allow authorized retry' });
+    lite.close();
+
+    await handleOctocodePlanCommand(`start ${review.acceptedRevision!}`, localCtx, (_ctx, message) => notices.push(message));
+    assert.equal(getPlanReviewState(workspace).phase, 'executing');
+    assert.equal(getPlan(workspace)[0]?.awarenessTaskId, stableTaskId, 'fresh Start reuses the stable graph task');
+    lite = openAwareness({ workspace });
+    db = new DatabaseSync(lite.dbPath);
+    consumed = db.prepare('SELECT receipt_id FROM authorization_receipts WHERE workspace_path = ? AND consumed_at IS NOT NULL ORDER BY created_at')
+      .all(workspace) as Array<{ receipt_id: string }>;
+    db.close();
+    assert.equal(consumed.length, 2);
+    assert.equal(new Set(consumed.map((receipt) => receipt.receipt_id)).size, 2, 'retry consumes a fresh receipt');
+    assert.equal(lite.listPlans()[0]!.planId, stablePlanId);
+    assert.equal(lite.listTasks()[0]!.taskId, stableTaskId);
+    lite.close();
+    assert.match(notices.join('\n'), /acceptance was preserved/i);
+    assert.match(notices.join('\n'), /Implementation started/i);
+  } finally {
+    setInteractionStoreFactoryForTests();
     clearPlan(workspace);
     rmSync(workspace, { recursive: true, force: true });
     if (previousAgent === undefined) delete process.env['OCTOCODE_AGENT_ID'];

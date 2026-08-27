@@ -43,6 +43,12 @@ combined with a SHA-256 fingerprint of the session + workspace, so:
 | Export HTML reference | `export/latest-ref.json` | `/octocode-export` command |
 | Session manifest | `manifest.json` | All producers (auto-updated) |
 
+Plan state writes use V4. Unlike V3, V4 preserves lifecycle and review metadata when no
+execution steps exist and records an explicit `cleared` tombstone. V3 snapshots remain
+readable. Resume and tree navigation restore the selected branch snapshot; a fork demotes
+inherited executing/verifying/blocked work to accepted (or draft), removes shared task
+mappings, and requires a new Start and claim in the fork.
+
 ---
 
 ## The manifest

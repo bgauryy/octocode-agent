@@ -3,8 +3,61 @@ import { generateAgentName } from './agent-naming.js';
 import { bytesToEmbedding,cosineSimilarity,embeddingToBytes,isEmbeddingEnabled,runHostEmbedder } from './embed.js';
 import { CoordinationState } from './coordination-state.js';
 import { agentFromRow,AgentRow,cutoffIso,DEFAULT_SEMANTIC_MIN_SIMILARITY,id,memoryFromRow,MemoryRow,messageFromRow,MessageRow,now,parseMetadata,required,splitFiles,splitTags } from './coordination-shared.js';
+import { containsSecretLikeText } from '../memory-hardening.js';
+
+export interface VerifiedMemoryV1 {
+  version: 1;
+  memoryId: string;
+  label: string;
+  text: string;
+  scope: 'project' | 'artifact';
+  sourceDigest: string;
+  verifiedAt: string;
+  validUntil?: string;
+  importance: number;
+  explanation?: string;
+}
 
 export abstract class CoordinationMemoryAgents extends CoordinationState {
+  storeVerifiedMemory(params: { label: string; text: string; scope?: 'project' | 'artifact'; sourceDigest: string; verifiedAt?: string; validUntil?: string; importance?: number; tags?: string | string[] | null }): VerifiedMemoryV1 {
+    const label = required(params.label, 'label');
+    const text = required(params.text, 'text');
+    const sourceDigest = required(params.sourceDigest, 'sourceDigest');
+    if (containsSecretLikeText(`${label}\n${text}`)) throw new Error('memory rejected: secret-like content must never enter durable memory');
+    const verifiedAt = params.verifiedAt ?? now();
+    if (!Number.isFinite(Date.parse(verifiedAt))) throw new Error('verifiedAt must be an ISO timestamp');
+    if (params.validUntil && !Number.isFinite(Date.parse(params.validUntil))) throw new Error('validUntil must be an ISO timestamp');
+    const importance = Math.min(Math.max(Math.trunc(params.importance ?? 5), 1), 10);
+    const memoryId = id('mem');
+    this.db.prepare(`INSERT INTO memories(
+      memory_id, workspace_path, label, text, tags_json, agent_id, task_context, observation, importance,
+      state, valid_from, valid_to, scope_kind, source_digest, verified_at, secret_scan_status, created_at
+    ) VALUES (?, ?, ?, ?, ?, 'awareness', ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, 'passed', ?)`)
+      .run(memoryId, this.workspace, label, text, JSON.stringify(splitTags(params.tags)), label, text, importance, verifiedAt, params.validUntil ?? null, params.scope ?? 'project', sourceDigest, verifiedAt, verifiedAt);
+    this.embedMemory(memoryId, `${label}\n${text}`);
+    return { version: 1, memoryId, label, text, scope: params.scope ?? 'project', sourceDigest, verifiedAt, ...(params.validUntil ? { validUntil: params.validUntil } : {}), importance };
+  }
+
+  recallVerifiedMemory(params: { query?: string; label?: string; sourceDigest?: string; scope?: 'project' | 'artifact'; limit?: number; now?: string } = {}): VerifiedMemoryV1[] {
+    const stamp = params.now ?? now();
+    const clauses = ["workspace_path = ?", "state = 'ACTIVE'", 'verified_at IS NOT NULL', "secret_scan_status = 'passed'", '(valid_to IS NULL OR valid_to > ?)'];
+    const values: Array<string | number> = [this.workspace, stamp];
+    if (params.query?.trim()) { clauses.push('(text LIKE ? OR label LIKE ? OR tags_json LIKE ?)'); const like = `%${params.query.trim()}%`; values.push(like, like, like); }
+    if (params.label?.trim()) { clauses.push('label = ?'); values.push(params.label.trim()); }
+    if (params.sourceDigest?.trim()) { clauses.push('source_digest = ?'); values.push(params.sourceDigest.trim()); }
+    if (params.scope) { clauses.push('scope_kind = ?'); values.push(params.scope); }
+    const limit = Math.min(Math.max(params.limit ?? 10, 1), 50);
+    const rows = this.db.prepare(`SELECT * FROM memories WHERE ${clauses.join(' AND ')} ORDER BY importance DESC, verified_at DESC LIMIT ?`).all(...values, limit) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      version: 1,
+      memoryId: String(row['memory_id']), label: String(row['label']), text: String(row['text']),
+      scope: row['scope_kind'] === 'artifact' ? 'artifact' : 'project', sourceDigest: String(row['source_digest']),
+      verifiedAt: String(row['verified_at']), ...(row['valid_to'] ? { validUntil: String(row['valid_to']) } : {}),
+      importance: Number(row['importance'] ?? 5),
+      explanation: `verified memory; scope=${String(row['scope_kind'] ?? 'project')}; source=${String(row['source_digest'])}`,
+    }));
+  }
+
   storeMemory(params: { label: string; text: string; tags?: string | string[] | null }): MemoryItem {
     const stamp = now();
     const memoryId = id('mem');
@@ -196,17 +249,39 @@ export abstract class CoordinationMemoryAgents extends CoordinationState {
     const messageId = id('msg');
     const fromAgentId = required(params.fromAgentId, 'from-agent-id');
     this.touchAgent({ agentId: fromAgentId });
-    this.db.prepare(`INSERT INTO messages(message_id, workspace_path, from_agent_id, to_agent_id, topic, text, files_json, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        messageId,
-        this.workspace,
-        fromAgentId,
-        params.toAgentId?.trim() || null,
-        params.topic?.trim() || null,
-        required(params.text, 'text'),
-        JSON.stringify(splitFiles(params.files)),
-        stamp,
-      );
+    const toAgentId = params.toAgentId?.trim() || null;
+    const topic = params.topic?.trim() || null;
+    const messageText = required(params.text, 'text');
+    const files = splitFiles(params.files);
+    this.db.exec('BEGIN');
+    try {
+      this.db.prepare(`INSERT INTO messages(message_id, workspace_path, from_agent_id, to_agent_id, topic, text, files_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          messageId,
+          this.workspace,
+          fromAgentId,
+          toAgentId,
+          topic,
+          messageText,
+          JSON.stringify(files),
+          stamp,
+        );
+      this.insertOutboxEvent({
+        version: 1,
+        eventId: `evt_${messageId}`,
+        workspace: this.workspace,
+        type: 'peer.message',
+        actor: { kind: 'agent', id: fromAgentId },
+        provenance: { source: 'peer', trust: 'attributed-data' },
+        aggregate: { kind: 'message', id: messageId },
+        createdAt: stamp,
+        payload: { messageId, fromAgentId, toAgentId, topic, text: messageText, files },
+      });
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* best effort */ }
+      throw error;
+    }
     return this.getMessage(messageId);
   }
 

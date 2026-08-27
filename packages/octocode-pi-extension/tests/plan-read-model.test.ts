@@ -1,0 +1,80 @@
+import { describe, expect, it } from 'vitest';
+import { buildPlanReadModel, renderPlanContext, renderPlanReadModel } from '../src/tools/plan-read-model.js';
+import { buildPlanMarkdownFromModel, buildPlanPageHtmlFromModel } from '../src/tools/plan-html.js';
+import { planPanelModelLines } from '../src/tools/plan-tool.js';
+
+describe('plan presentation read model', () => {
+  it('keeps terminal, browser, and RPC projections on one versioned source', () => {
+    const model = buildPlanReadModel({
+      steps: [
+        { id: 's1', text: 'Inspect', status: 'done' },
+        { id: 's2', text: 'Implement', activeForm: 'Implementing', status: 'doing', dependsOnStepIds: ['s1'] },
+      ],
+      review: { phase: 'executing', branchSnapshotId: 'b1', generation: 2, revision: 'rev-1', acceptedRevision: 'rev-1', decisions: [], blockingQuestions: [], comments: [] },
+      coordination: { mode: 'required', sourcePlanKey: 'p1', coordinationWorkspace: '/repo', awarenessPlanId: 'shared-1', materializedRevision: 'rev-1' },
+    });
+    expect(model).toMatchObject({ version: 1, revision: 'rev-1', summary: { total: 2, done: 1, running: 1 } });
+    const terminal = renderPlanReadModel(model, 'terminal') as string;
+    const browser = renderPlanReadModel(model, 'browser') as string;
+    const rpc = renderPlanReadModel(model, 'rpc');
+    for (const output of [terminal, browser, JSON.stringify(rpc)]) {
+      expect(output).toContain('Inspect');
+      expect(output).toContain('Implement');
+    }
+    expect(browser).toContain('data-plan-read-model="1"');
+  });
+
+  it('keeps terminal, browser, Markdown, RPC, and prompt semantics aligned for complex states without renderer mutation', () => {
+    const model = buildPlanReadModel({
+      steps: [
+        { id: 'research', text: 'Research API', status: 'done', paths: ['src/api.ts'], awarenessTaskId: 'task-a' },
+        { id: 'build', text: 'Build API', activeForm: 'Building API', status: 'doing', dependsOnStepIds: ['research'], acceptance: 'API passes contract tests', checkCommand: 'yarn test' },
+        { id: 'ship', text: 'Ship API', status: 'todo', dependsOnStepIds: ['build'] },
+      ],
+      review: {
+        phase: 'executing', branchSnapshotId: 'snapshot-7', generation: 7,
+        rfcPath: '/repo/.octocode/rfc/api/RFC.md', revision: 'rev-7', acceptedRevision: 'rev-7',
+        acceptAuthorizationReceiptId: 'accept-7', startAuthorizationReceiptId: 'start-7',
+        decisions: [{ q: 'Transport?', a: 'HTTP' }],
+        blockingQuestions: [{ id: 'answered', prompt: 'Port?', answer: '443', blocking: true }],
+        comments: [{ id: 'resolved', body: 'Add auth', blocking: true, resolved: true }],
+      },
+      coordination: { mode: 'required', sourcePlanKey: 'source-7', coordinationWorkspace: '/repo', awarenessPlanId: 'plan-7', materializedRevision: 'rev-7' },
+      pendingInteractionIds: ['question-2', 'question-1', 'question-1'],
+    });
+    const before = JSON.stringify(model);
+    const terminal = planPanelModelLines(model).join('\n');
+    const browser = buildPlanPageHtmlFromModel(model);
+    const markdown = buildPlanMarkdownFromModel(model, { generatedAt: new Date('2026-08-26T00:00:00.000Z') });
+    const prompt = renderPlanContext(model);
+    const rpc = JSON.parse(JSON.stringify(model));
+
+    expect(JSON.stringify(model)).toBe(before);
+    expect(rpc).toEqual(model);
+    expect(model).toMatchObject({
+      version: 1, phase: 'executing', revision: 'rev-7', acceptedRevision: 'rev-7',
+      authorization: { acceptReceiptId: 'accept-7', startReceiptId: 'start-7' },
+      coordination: { mode: 'required', awarenessPlanId: 'plan-7', materializedRevision: 'rev-7' },
+      pendingInteractionIds: ['question-1', 'question-2'],
+      tasks: [
+        { id: 'research', status: 'done' },
+        { id: 'build', status: 'doing' },
+        { id: 'ship', status: 'blocked' },
+      ],
+    });
+    for (const output of [terminal, browser, markdown, prompt]) {
+      expect(output).toContain('Research API');
+      expect(output).toMatch(/Build(?:ing)? API/);
+      expect(output).toContain('Ship API');
+    }
+    expect(browser).toContain('data-plan-read-model="1"');
+    expect(browser).toContain('data-revision="rev-7"');
+    expect(browser).toContain('data-task-id="ship" class="blocked"');
+    expect(markdown).toContain('Read model: v1');
+    expect(markdown).toContain('Phase: executing');
+    expect(markdown).toContain('Revision: rev-7');
+    expect(prompt).toContain('state: phase=executing snapshot=snapshot-7 generation=7');
+    expect(prompt).toContain('coordination: mode=required awareness-plan=plan-7 materialized=rev-7');
+    expect(prompt).toContain('contract 2: accept=API passes contract tests | check=yarn test');
+  });
+});

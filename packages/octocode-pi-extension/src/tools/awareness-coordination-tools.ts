@@ -10,6 +10,7 @@ import {
   type CommandGroup,
   type CommandParam,
   type AwarenessCommandRequest,
+  evaluatePeerInbound,
 } from '@octocodeai/octocode-awareness';
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext } from '../types.js';
 import type { registerUniqueTool } from './octocode-tools.js';
@@ -239,6 +240,25 @@ const SUMMARIES: Record<string, Summarize> = {
 
 const HINT_FIELDS = ['to', 'topic', 'messageId'] as const;
 
+export function applyPeerInboundPolicy(value: unknown, expectedAgentId: string): unknown {
+  if (!Array.isArray(value)) return value;
+  return value.map((candidate) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return candidate;
+    const message = candidate as Record<string, unknown>;
+    const policy = evaluatePeerInbound({
+      fromAgentId: str(message['fromAgentId']),
+      toAgentId: str(message['toAgentId']) || null,
+      expectedAgentId,
+      topic: str(message['topic']) || null,
+      text: str(message['text']),
+    });
+    const safeText = policy.decision === 'accept'
+      ? policy.attributedText
+      : `[peer message ${policy.decision}: ${policy.reason}; class:${policy.messageClass}]`;
+    return { ...message, text: safeText, inboundPolicy: policy };
+  });
+}
+
 function makeTool(group: CommandGroup, Type: TypeBoxBuilder): ToolDefinition {
   const operations = group.singleton
     ? group.actions[0]!.summary
@@ -272,10 +292,13 @@ function makeTool(group: CommandGroup, Type: TypeBoxBuilder): ToolDefinition {
           const operation = prepared[index]!;
           const response = runAwarenessCommand(operation.request, cwd);
           if (!response.ok) return awarenessError(`[${group.resource}] ${response.error ?? 'unknown error'}`);
+          const safeJson = group.resource === 'message' && operation.action === 'read'
+            ? applyPeerInboundPolicy(response.json, getAwarenessAgentId(ctx))
+            : response.json;
           return awarenessOk(
-            summarize(operation.action, response.json, operation.params),
+            summarize(operation.action, safeJson, operation.params),
             operation.action,
-            response.json,
+            safeJson,
           );
         },
       });

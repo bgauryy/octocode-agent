@@ -67,8 +67,18 @@ export abstract class CoordinationPlanGraph extends AwarenessSchemaHelpers {
     let planId = '';
     const taskIdByStepKey = new Map<string, string>();
 
-    this.db.exec('BEGIN');
+    // Acquire the write reservation before reading the source identity. A
+    // deferred transaction lets competing Start attempts both observe an
+    // absent graph and then race on the first INSERT; BEGIN IMMEDIATE makes
+    // every independent store serialize onto the same stable upsert result.
+    this.db.exec('BEGIN IMMEDIATE');
     try {
+      const existing = this.db.prepare('SELECT plan_id, rfc_revision FROM plans WHERE workspace_path = ? AND source_kind = ? AND source_key = ?')
+        .get(this.workspace, kind, key) as { plan_id: string; rfc_revision: string | null } | undefined;
+      const requestedRevision = params.rfcRevision?.trim() || null;
+      if (existing && existing.rfc_revision !== requestedRevision) {
+        throw new Error(`materializePlanGraph: projection revision conflict for ${key}: stored ${existing.rfc_revision}, requested ${requestedRevision ?? '(none)'}`);
+      }
       // Upsert plan by (workspace_path, source_kind, source_key)
       const newPlanId = id('plan');
       this.db.prepare(`
@@ -151,6 +161,18 @@ export abstract class CoordinationPlanGraph extends AwarenessSchemaHelpers {
         this.db.prepare('UPDATE tasks SET dependencies_json = ?, updated_at = ? WHERE task_id = ?')
           .run(JSON.stringify(depIds), stamp, taskId);
       }
+
+      this.insertOutboxEvent({
+        version: 1,
+        eventId: `evt_projection_${planId}_${params.rfcRevision?.trim() || 'unversioned'}`,
+        workspace: this.workspace,
+        type: 'plan.projected',
+        actor: { kind: 'system', id: 'awareness-plan-projector' },
+        provenance: { source: 'harness', trust: 'authority' },
+        aggregate: { kind: 'plan', id: planId, ...(params.rfcRevision?.trim() ? { revision: params.rfcRevision.trim() } : {}) },
+        createdAt: stamp,
+        payload: { sourceKind: kind, sourcePlanKey: key, stepKeys: [...sourceStepKeys] },
+      });
 
       this.db.exec('COMMIT');
     } catch (err) {

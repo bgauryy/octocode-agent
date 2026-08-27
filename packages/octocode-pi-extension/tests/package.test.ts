@@ -58,6 +58,7 @@ import { registerBrowserAgentTool } from '../src/tools/browser-agent-tool.js';
 import { registerEditTool } from '../src/tools/edit-tool.js';
 import { registerWriteTool } from '../src/tools/write-tool.js';
 import { DIRECT_TOOL_DESCRIPTIONS, getDirectToolContractStats, registerUniqueTool } from '../src/tools/octocode-tools.js';
+import { runtimeStoreFor, setManagedActivity } from '../src/tools/runtime-renderer.js';
 import { warmMcpCatalog } from '../src/tools/mcp-tool.js';
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
@@ -742,7 +743,7 @@ test('plan state is branch-correct: mutations append session entries; session_st
     const snapshots = appendedEntries.filter((entry) => entry.customType === 'octocode-plan');
     assert.equal(snapshots.length, 1, 'plan set appends one snapshot entry');
     const stepsData = (snapshots[0]!.data as { version: number; phase: string; branchSnapshotId: string; generation: number; steps: Array<{ text: string; status: string }> });
-    assert.equal(stepsData.version, 3);
+    assert.equal(stepsData.version, 4);
     assert.equal(stepsData.phase, 'executing');
     assert.match(stepsData.branchSnapshotId, /^plan-/);
     assert.equal(stepsData.generation, 1);
@@ -784,6 +785,7 @@ test('plan state is branch-correct: mutations append session entries; session_st
       ['forked step'],
       'session_start adopts the plan snapshot from the forked branch'
     );
+    assert.equal(getPlan(activePlanScope(forkCtx))[0]?.status, 'todo', 'forks never inherit active execution ownership');
 
     const treeHandler = handlers.get('session_tree')![0]!;
     const toolGate = handlers.get('tool_call')![0]!;
@@ -2976,6 +2978,43 @@ test('extension commands and lifecycle handlers execute user-visible wiring path
     assert.equal(statuses.length, statusesBeforeReplacement);
   } finally {
     fs.rmSync(ctx.cwd, { recursive: true, force: true });
+  }
+});
+
+test('generic turn activity never overwrites a specific plan lifecycle', async () => {
+  const { handlers } = await captureExtensions();
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-activity-priority-'));
+  const ctx = {
+    cwd: workspace,
+    hasUI: true,
+    ui: {
+      theme: { fg: (_color: string, text: string) => text },
+      setStatus: () => undefined,
+      setWorkingMessage: () => undefined,
+      setWorkingVisible: () => undefined,
+    },
+  } as unknown as PiContext;
+
+  try {
+    for (const handler of handlers.get('session_start') ?? []) await handler(undefined, ctx);
+    const activities = [
+      { kind: 'planning', planScope: workspace },
+      { kind: 'awaiting_input', planScope: workspace, question: 'Choose rollout' },
+      { kind: 'awaiting_start', planScope: workspace, revision: 'abc123' },
+      { kind: 'working', planScope: workspace, label: 'Implementing plan state' },
+      { kind: 'blocked', label: 'Waiting for a required receipt' },
+    ] as const;
+
+    for (const activity of activities) {
+      setManagedActivity(ctx, activity);
+      for (const handler of handlers.get('turn_start') ?? []) await handler(undefined, ctx);
+      assert.equal(runtimeStoreFor(ctx)?.getState().activity.kind, activity.kind);
+      for (const handler of handlers.get('turn_end') ?? []) await handler(undefined, ctx);
+      assert.equal(runtimeStoreFor(ctx)?.getState().activity.kind, activity.kind);
+    }
+  } finally {
+    for (const handler of handlers.get('session_shutdown') ?? []) await handler({ reason: 'quit' }, ctx);
+    fs.rmSync(workspace, { recursive: true, force: true });
   }
 });
 
@@ -5444,7 +5483,15 @@ test('plan propose: approval card outcomes drive machine-legible [PLAN] verdicts
     let rfcCtx = askCtx({ status: 'selected', value: 'browser' }) as unknown as PiContext;
     res = await invokeExecute(
       planTool,
-      { action: 'propose', steps: ['RFC step A', 'RFC step B'], consequential: true, rfcPath },
+      {
+        action: 'propose',
+        steps: [
+          { text: 'RFC step A', paths: ['src/a.ts'], acceptance: 'A is implemented' },
+          { text: 'RFC step B', paths: ['src/b.ts'], acceptance: 'B is implemented', dependsOn: [1] },
+        ],
+        consequential: true,
+        rfcPath,
+      },
       rfcCtx,
     );
     text = (res.content[0] as { text: string }).text;
@@ -5474,12 +5521,21 @@ test('plan propose: approval card outcomes drive machine-legible [PLAN] verdicts
     rfcCtx = askCtx({ status: 'selected', value: 'browser' }) as unknown as PiContext;
     res = await invokeExecute(
       planTool,
-      { action: 'propose', steps: ['RFC step A', 'RFC step B'], consequential: true, rfcPath },
+      {
+        action: 'propose',
+        steps: [
+          { text: 'RFC step A', paths: ['src/a.ts'], acceptance: 'A is implemented' },
+          { text: 'RFC step B', paths: ['src/b.ts'], acceptance: 'B is implemented', dependsOn: [1] },
+        ],
+        consequential: true,
+        rfcPath,
+      },
       rfcCtx,
     );
     review = getPlanReviewState(activePlanScope({ cwd }));
     await handleOctocodePlanCommand(`accept ${review.revision}`, rfcCtx, () => undefined);
-    await handleOctocodePlanCommand('start', rfcCtx, () => undefined);
+    review = getPlanReviewState(activePlanScope({ cwd }));
+    await handleOctocodePlanCommand(`start ${review.acceptedRevision}`, rfcCtx, () => undefined);
     review = getPlanReviewState(activePlanScope({ cwd }));
     assert.equal(review.phase, 'executing');
     assert.ok(review.startedAt);

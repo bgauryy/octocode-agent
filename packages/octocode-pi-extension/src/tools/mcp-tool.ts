@@ -1748,7 +1748,7 @@ export function registerMcpTool(
     name: Type.Optional(Type.String({ description: 'Prompt name for get-prompt.' })),
     ref: Type.Optional(Type.Object({}, { description: 'Prompt or resource-template reference for complete.', additionalProperties: true })),
     argument: Type.Optional(Type.Object({}, { description: 'Partial argument for complete.', additionalProperties: true })),
-    arguments: Type.Optional(Type.Object({}, { description: 'Arguments object validated locally before action:call reaches the MCP server.', additionalProperties: true })),
+    arguments: Type.Optional(Type.Object({}, { description: 'Complete selected-server tool input. For Octocode tools, arguments.queries[] is nested inside the outer MCPTool.queries[] envelope.', additionalProperties: true })),
     config: Type.Optional(Type.Object({}, { description: 'Server config for add: stdio {command,args?,env?,cwd?} or HTTP {url,headers?}.', additionalProperties: true })),
     scope: Type.Optional(stringEnumSchema(
       Type,
@@ -1834,6 +1834,7 @@ export function registerMcpTool(
     description: 'MCP 2026-07-28 client for stdio and Streamable HTTP servers, with automatic era negotiation, internal schema validation, tools, resources, prompts, and runtime management.',
     promptSnippet: 'Use the injected enabled MCP catalog to select a tool and call it directly. When OCTOCODE_COMPACT_MCP is enabled it is a concise <mcp_catalog_index>; otherwise <mcp_catalog> includes exact descriptions and input schemas. Exact schemas are compiled and validated internally; there is no prepare or schema-lease round trip.',
     promptGuidelines: [
+      'MCPTool has two schema layers: put MCP actions in outer MCPTool.queries[]; put the selected server-tool input only in queries[].arguments (for Octocode tools, commonly arguments.queries[]). Never place inner server-tool fields directly in MCPTool.queries[].',
       'MCPTool default server: octocode = pinned local octocode-mcp binary (npx -y octocode-mcp@latest fallback) — the default research surface for code/file/structure/history/package lookups.',
       'Canonical config is $OCTOCODE_HOME/agent/mcp/servers.json plus trusted <workspace>/.octocode/agent/mcp/servers.json.',
       'Local servers use stdio; remote servers use Streamable HTTP. Only those transports are supported.',

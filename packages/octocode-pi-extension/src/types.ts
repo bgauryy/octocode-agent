@@ -304,6 +304,13 @@ export interface NewSessionOptions {
 export interface PiModel {
   id?: string;
   reasoning?: boolean;
+  /** Provider transport used by Pi's model adapter. */
+  api?: string;
+  /** Provider-specific request compatibility controls. */
+  compat?: {
+    forceAdaptiveThinking?: boolean;
+    [key: string]: unknown;
+  };
   /** Provider name for this model (e.g. "anthropic", "guy-provider-anthropic"). Present on the active model. */
   provider?: string;
 }

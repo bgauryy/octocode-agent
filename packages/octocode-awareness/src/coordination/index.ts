@@ -59,3 +59,5 @@ export type { AgentRecord,AgentStatus,CheckAudit,CheckStatus,HandoffNote,LiteMes
 export { detectAgentHost,generateAgentName,type AgentHost } from './agent-naming.js';
 export type { AwarenessOptions,AwarenessSchema } from './coordination-shared.js';
 export { AwarenessStore, openAwarenessStore } from './open.js';
+export type { OutboxEventV1, StoredInteractionV1 } from './coordination-continuity.js';
+export type { VerifiedMemoryV1 } from './coordination-memory-agents.js';
