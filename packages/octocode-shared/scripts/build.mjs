@@ -20,7 +20,7 @@ await rm(outDir, { recursive: true, force: true });
 await build({
   ...baseOptions,
   // node:sqlite is a native built-in; must stay external.
-  external: [...baseOptions.external, 'node:sqlite'],
+  external: [...baseOptions.external, 'node:sqlite', 'yaml'],
   entryPoints: [
     'src/index.ts',
     'src/paths.ts',
@@ -31,6 +31,10 @@ await build({
     'src/sqlite-version.ts',
     'src/embed.ts',
     'src/entities.ts',
+    'src/permissions.ts',
+    'src/protocols.ts',
+    'src/agent-skills.ts',
+    'src/prompts/index.ts',
   ].map((p) => join(packageRoot, p)),
   outdir: outDir,
   minify: false,

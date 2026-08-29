@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeOctocodeDb, openOctocodeDb } from '../src/db.js';
@@ -41,6 +41,37 @@ describe('openOctocodeDb', () => {
     expect(names).toContain('mcp_server_overrides');
     expect(names).toContain('mcp_tool_overrides');
     expect(names).toContain('skill_overrides');
+    closeOctocodeDb(path);
+  });
+
+  it('hardens the database and its existing parent directory', () => {
+    const path = freshDbPath();
+    const parent = join(path, '..');
+    mkdirSync(parent, { recursive: true });
+    chmodSync(parent, 0o755);
+    openOctocodeDb(path).exec('CREATE TABLE permission_probe (id INTEGER)');
+    expect(statSync(parent).mode & 0o777).toBe(0o700);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    closeOctocodeDb(path);
+  });
+
+  it('migrates legacy home entities while preserving owner execute bits', () => {
+    const path = freshDbPath();
+    const home = join(path, '..');
+    const legacyDir = join(home, 'plans');
+    const legacyFile = join(legacyDir, 'old.json');
+    const executable = join(home, 'tool.mjs');
+    mkdirSync(legacyDir, { recursive: true, mode: 0o755 });
+    writeFileSync(legacyFile, '{}', { mode: 0o644 });
+    writeFileSync(executable, '#!/usr/bin/env node\n', { mode: 0o755 });
+
+    openOctocodeDb(path);
+
+    if (process.platform !== 'win32') {
+      expect(statSync(legacyDir).mode & 0o777).toBe(0o700);
+      expect(statSync(legacyFile).mode & 0o777).toBe(0o600);
+      expect(statSync(executable).mode & 0o777).toBe(0o700);
+    }
     closeOctocodeDb(path);
   });
 

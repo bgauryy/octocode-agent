@@ -1,13 +1,15 @@
 {
   "name": "@octocodeai/octocode-shared",
   "version": "0.1.0",
-  "description": "Shared Octocode plumbing: canonical home/session path resolution and the single local SQLite store used across the agent, harness, and coordination layers.",
+  "description": "Canonical Octocode prompts, protocol types, entities, paths, permissions, and local SQLite plumbing shared across hosts.",
   "keywords": [
     "octocode",
     "shared",
     "paths",
     "sqlite",
     "sessions",
+    "prompts",
+    "protocols",
     "agent"
   ],
   "author": "Guy Bary <bgauryy@octocodeai.com>",
@@ -67,6 +69,26 @@
       "types": "./out/entities.d.ts",
       "import": "./out/entities.js",
       "default": "./out/entities.js"
+    },
+    "./permissions": {
+      "types": "./out/permissions.d.ts",
+      "import": "./out/permissions.js",
+      "default": "./out/permissions.js"
+    },
+    "./protocols": {
+      "types": "./out/protocols.d.ts",
+      "import": "./out/protocols.js",
+      "default": "./out/protocols.js"
+    },
+    "./agent-skills": {
+      "types": "./out/agent-skills.d.ts",
+      "import": "./out/agent-skills.js",
+      "default": "./out/agent-skills.js"
+    },
+    "./prompts": {
+      "types": "./out/prompts/index.d.ts",
+      "import": "./out/prompts/index.js",
+      "default": "./out/prompts/index.js"
     }
   },
   "files": [
@@ -74,7 +96,9 @@
     "README.md",
     "LICENSE"
   ],
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22.13.0"
   },
@@ -88,7 +112,8 @@
     "verify": "yarn typecheck && yarn test && yarn build"
   },
   "dependencies": {
-    "@octocodeai/config": "18.0.1"
+    "@octocodeai/config": "18.0.1",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

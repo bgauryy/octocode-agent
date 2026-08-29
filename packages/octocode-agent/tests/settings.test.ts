@@ -9,6 +9,7 @@ import {
   ensureOctocodeThemeSetting,
   isAllowedConfigKey,
   isOctocodeTheme,
+  listSettings,
   readSettings,
 } from '../src/settings.js';
 
@@ -75,5 +76,18 @@ describe('config key allowlist', () => {
   it('still rejects non-contract keys', () => {
     expect(isAllowedConfigKey('quietStartup')).toBe(false);
     expect(isAllowedConfigKey('anything')).toBe(false);
+  });
+
+  it('projects only public allowlisted keys for config diagnostics', () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({
+      theme: 'octocode-dark',
+      defaultModel: 'gpt-5.6',
+      apiKey: 'must-never-render',
+      arbitrary: { nested: true },
+    }));
+
+    expect(listSettings(dir)).toEqual({ theme: 'octocode-dark', defaultModel: 'gpt-5.6' });
+    expect(readSettings(dir)).toMatchObject({ apiKey: 'must-never-render', arbitrary: { nested: true } });
   });
 });

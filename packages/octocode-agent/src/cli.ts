@@ -1,3 +1,8 @@
-import { main } from './launcher.js';
+import { fatalErrorReport, main } from './launcher.js';
 
-process.exitCode = await main(process.argv.slice(2));
+try {
+  process.exitCode = await main(process.argv.slice(2));
+} catch (error) {
+  process.stderr.write(`${fatalErrorReport(error)}\n`);
+  process.exitCode = 1;
+}

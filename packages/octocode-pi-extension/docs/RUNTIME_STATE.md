@@ -1,5 +1,9 @@
 # Runtime state and initialization
 
+> Scope: supported Pi adapter and temporary parity oracle. The native `octocode-agent`
+> runtime doesn't use this state. The final cutover deletes it with the Pi package after
+> all gates pass.
+
 The Pi extension has one ephemeral session/view store, created with `zustand/vanilla` at
 every `session_start`. It is not a second configuration database. SQLite remains canonical
 for durable MCP server/tool enablement, server definition files remain canonical for

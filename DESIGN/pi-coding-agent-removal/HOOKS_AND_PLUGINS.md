@@ -6,7 +6,7 @@
 
 The native runtime supports lifecycle hooks and installable extensions/plugins through one versioned event and contribution system owned by `packages/octocode-agent-core/`. It accepts the Codex hook format as a compatibility input, including Codex event names, `hooks.json`, inline `[hooks]` configuration, command handlers, MCP-tool handlers, matchers, blocking decisions, asynchronous handlers, discovery, merge, and trust behavior. Octocode-native manifests can add broader typed contributions, but hooks and plugins cannot bypass policy, workspace trust, settings validation, or runtime ownership boundaries.
 
-The supported Pi extension remains an adapter: Pi events enter the canonical bus and canonical decisions translate back to Pi results. Plugins target Octocode contracts, not Pi APIs. Host-only presentation contributions remain adapter-scoped and must have a documented headless fallback.
+During the migration window, the frozen Pi oracle remains an adapter: Pi events enter the canonical bus and canonical decisions translate back to Pi results. Plugins target Octocode contracts, not Pi APIs. Host-only presentation contributions remain adapter-scoped, require a documented headless fallback, and disappear with the oracle at retirement.
 
 ## Current-state evidence
 
@@ -24,6 +24,21 @@ AST/text discovery and LSP checks on the 2026-08-27 working tree found:
 
 Phase 0 reruns the checked-in Octocode queries and records exact counts against the named baseline commit. Text hits are candidates; LSP references and runtime traces prove production use.
 
+### 2026-08-28 native implementation increment
+
+The latest dirty-tree candidate advances this specification beyond the 2026-08-27 baseline:
+
+- user and workspace hook discovery is contained, and default plugin discovery includes immediate `.codex/plugins` entries;
+- review identity uses an exact normalized content hash, and changed or unreviewed code cannot execute;
+- missing policy grants nothing; activation requires explicit capabilities;
+- command hooks execute through the native lifecycle dispatcher and return blocking decisions;
+- MCP hooks execute through the production registry-owned session manager, while asynchronous hook work is bounded, owned, drained, and cancelled on shutdown;
+- eligible plugins activate transactionally, failed activation rolls back, contributions remain owner-scoped, and unload respects active leases;
+- a real filesystem plugin fixture verifies discovery, activation, contribution ownership, unload, and cleanup;
+- the protected settings page exposes revision-safe plugin review plus capability grant/revoke actions.
+
+This is a production-composed partial implementation, not compatibility completion. Pinned Codex fixtures, formal capability-policy approval, the clean adversarial security matrix, and cross-host conformance remain release blockers. See [the integrated runtime closure receipt](evidence/integrated-runtime-closure-2026-08-28.md).
+
 ## Goals and non-goals
 
 Goals:
@@ -33,7 +48,7 @@ Goals:
 - allow trusted plugins to declare hooks and typed contributions;
 - make activation, ordering, decisions, failures, and unload deterministic and observable;
 - render all hook/plugin configuration, trust, health, and diagnostics in `settings.html`;
-- preserve the supported Pi extension through event and decision adapters.
+- preserve oracle comparison behavior through temporary event and decision adapters, then delete them at retirement.
 
 Non-goals:
 
@@ -302,7 +317,7 @@ Mandatory tests include:
 5. Add plugin catalog, transactional contributions, settings sections, and diagnostics.
 6. Run Pi/native shadow comparison only for pure event decisions; never duplicate handler effects.
 7. Enable reviewed hooks/plugins for a canary cohort, then native default after gates pass.
-8. Remove Pi-specific hook composition from native code while retaining the supported Pi adapter.
+8. Freeze Pi-specific hook composition as oracle-only behavior, then delete it with the Pi package after native conformance and rollback gates pass.
 
 Before native default, rollback disables the new loader and selects the Pi adapter without rewriting hook/plugin files or trust records. After dependency removal, rollback uses the prior release artifact. A failed plugin is disabled independently; the runtime continues only if the failing event contract permits failure isolation.
 

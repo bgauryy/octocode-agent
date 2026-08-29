@@ -7,74 +7,32 @@ import type { DatabaseSync } from 'node:sqlite';
 import { normalizeArtifact, utcNow } from './helpers.js';
 import { canonicalizePath, normalizeWorkspacePath } from './git.js';
 import { tableColumns } from './db-introspection.js';
-
-export type PlanStatus = 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'CANCELLED';
-export type PlanMemberRole = 'LEAD' | 'CONTRIBUTOR';
-
-export interface PlanRecord {
-  plan_id: string;
-  name: string;
-  objective: string;
-  lead_agent_id: string;
-  status: PlanStatus;
-  workspace_path: string;
-  artifact: string | null;
-  doc_dir: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface PlanMemberRecord {
-  agent_id: string;
-  role: PlanMemberRole;
-  joined_at: string;
-}
-
-export interface PlanDocRecord {
-  relative_path: string;
-  title: string;
-  kind: 'PRIMARY' | 'SUPPORTING';
-  ordinal: number;
-}
-
-export interface PlanDetail extends PlanRecord {
-  members: PlanMemberRecord[];
-  docs: PlanDocRecord[];
-}
-
-export interface CreatePlanParams {
-  name: string;
-  objective: string;
-  leadAgentId: string;
-  workspacePath: string;
-  /**
-   * Where to write the `.octocode/plan/**` scaffolding. Plan rows are always
-   * scoped to the normalized workspace root so discovery works from any
-   * subdirectory, but the filesystem side-effect must land under the path the
-   * caller actually asked for — an explicit subdir (or isolated scratch dir)
-   * must not silently receive its docs at the shared repo root. Must resolve
-   * inside the workspace root; defaults to the root when omitted.
-   */
-  docsPath?: string | null;
-  artifact?: string | null;
-}
+import type {
+  AwarenessPlanStatus as PlanStatus,
+  CreatePlanParams,
+  JoinPlanParams,
+  PlanDetail,
+  PlanDocRecord,
+  PlanMemberRecord,
+  PlanRecord,
+  RegisterPlanDocParams,
+} from '@octocodeai/octocode-shared/entities';
+export type {
+  AwarenessPlanStatus as PlanStatus,
+  CreatePlanParams,
+  JoinPlanParams,
+  PlanDetail,
+  PlanDocRecord,
+  PlanMemberRecord,
+  PlanMemberRole,
+  PlanRecord,
+  RegisterPlanDocParams,
+} from '@octocodeai/octocode-shared/entities';
 
 function ledgerPlanPredicate(db: DatabaseSync): string {
   return tableColumns(db, 'plans').has('source_kind')
     ? "(source_kind = 'awareness-ledger' OR name IS NOT NULL)"
     : '1 = 1';
-}
-
-export interface JoinPlanParams {
-  planId: string;
-  agentId: string;
-}
-
-export interface RegisterPlanDocParams {
-  planId: string;
-  agentId: string;
-  relativePath: string;
-  title: string;
 }
 
 function required(value: string, field: string): string {

@@ -1,52 +1,43 @@
-# Current-State Audit
+# Current-state audit
 
-## Verdict
+Snapshot: 2026-08-28. Release decision: `HOLD`.
 
-The RFC is not fully executed. The repository contains useful contracts and partial primitives, but the native production composition does not yet provide the required agentic loop, session continuity, interactive TUI, settings control plane, executable hooks, plugin lifecycle, or real-host conformance.
+The native launcher now has a credible production-composed agent path. The latest dirty-tree evaluation passes 3,484 root tests with 16 expected native skips and includes production session routing and automatic compaction, MCP/Skill lifecycle, real multi-process worker recovery, dynamic session-bound RPC/ACP projection, provider adapters, command/MCP/asynchronous hooks, trust-gated plugin activation, browser settings controls, and one exact PTY restoration smoke test. These are implementation increments, not cutover approval.
 
-| Area               | Status  | Release blocker                                                                                             |
-| ------------------ | ------- | ----------------------------------------------------------------------------------------------------------- |
-| Runtime and policy | Blocked | Effects can bypass trust, approval, plan, and peer-lock decisions.                                          |
-| Models and tools   | Blocked | Prompt history, schema validation, thinking controls, typed streaming failures, and retries are incomplete. |
-| Sessions           | Blocked | Resume selects a record but does not restore model-visible history.                                         |
-| TUI                | Blocked | The OpenTUI implementation is a text sink; canonical interactions are unsupported.                          |
-| Settings           | Blocked | Native settings is not production-reachable and native/Pi settings are not one service.                     |
-| Hooks              | Blocked | Discovery/parsing exists without executable pre-effect dispatch.                                            |
-| Plugins            | Blocked | Activation is not production-wired and grants do not fully constrain contributions.                         |
-| Transports         | Blocked | Lifecycle ordering, concurrency, validation, correlation, and exit semantics are incomplete.                |
-| Conformance        | Blocked | Existing scenarios use synthetic handlers rather than the real Pi and native hosts.                         |
-| Pi removal         | Blocked | Native parity and rollback gates are not satisfied.                                                         |
+Use the [traceability ledger](08-TRACEABILITY-CHECKLIST.md), [remaining-work plan](10-REMAINING-WORK-PLAN.md), and [RFC status](pi-coding-agent-removal/STATUS.md) for live state. The [real runtime surface evaluation](pi-coding-agent-removal/evidence/real-runtime-surface-eval-2026-08-28.md) is the latest integrated receipt.
 
-## Highest-risk implementation facts
+## Current maturity
 
-- The kernel evaluates tools with a hard-coded unknown workspace trust context, while the native production policy allows all read and network effects.
-- Lifecycle observation happens after runtime events; it cannot gate or rewrite the effect that already occurred.
-- Interactive and RPC loops await the active command, preventing steer, follow-up, and cancellation from arriving while streaming.
-- Runtime shutdown can race an active turn and produce events after `runtime.stopped`.
-- Every model request is built from only the latest user message; resumed transcript context is discarded.
-- `--no-session` still creates and writes a filesystem session.
-- Session CAS is not atomic across processes, migration can mutate its destination before source stability is confirmed, and compaction is not production-wired.
-- OpenTUI owns only a text renderable while Node readline separately consumes stdin.
-- Native `/settings` has no launcher path, and raw stored values can reach CLI output.
-- Hooks have schemas and catalogs but no command/MCP execution engine.
-- Plugin leases and production activation are disconnected.
-- The conformance harness can pass without invoking either real host.
+| Area | Maturity | What is verified | What still blocks release |
+| --- | --- | --- | --- |
+| Runtime and policy | Partial | Immutable prompt/tool prefixes, validation-before-persistence, plan and approval gates, cancellation bounds, and public event projection | Complete durable effect ledger, ambient-capability closure, real-provider fault matrix, and release receipts |
+| Providers and tools | Composed | OpenAI Chat, Responses, and Anthropic protocol adapters; session-owned MCP reuse with elicitation/tasks/provenance; contained Skill lifecycle and settings controls | Credentialed external-provider runs, authentication/provider breadth, complete fault/restart corpus, and clean cross-host proof |
+| Sessions | Partial | Production create/resume/switch/fork/name/export/navigation, locking, CAS, backup recovery, atomic writes, no-session isolation, and manual/threshold compaction | Parent/child graph navigation, import, overflow/corruption/crash corpus, and retained-reference proof |
+| Workers and messaging | Verified dirty-tree increment | Owned-orphan recovery, dynamic approval/session-bound RPC/ACP projection, addressed event-bus messaging, and real multi-process tests | Scheduler and complete worktree lifecycle, clean candidate, independent-client, and cross-platform recovery evidence |
+| Hooks and plugins | Partial | Filesystem discovery, normalized-hash review, explicit grants, command/MCP hook execution, bounded asynchronous ownership, lifecycle dispatch, transactional activation, rollback, ownership, and lease-safe unload | Pinned compatibility fixtures, formal capability/security approval, and clean cross-host adversarial proof |
+| Settings | Partial | One loopback service and browser page, revision-safe writes, redaction, provider/MCP/Skill/plugin controls, portable export/import/reset, and browser save/focus/ARIA/mobile checks | Remaining configuration writers, recovery, cross-host conformance, and packaged-browser evidence |
+| OpenTUI | Partial | Semantic widget controller, native input, accessible output, ask/plan/progress/task flows, and one real PTY exact-restoration run | Canonical package/assets, Node 26 FFI decision, alternate/masked/mouse paths, supported-platform and accessibility matrices |
+| Conformance and release | Missing | Focused and dirty-tree integration evidence exists | Frozen clean before/after pair, real Pi/native oracle comparison, canary, rollback rehearsal, observation window, and zero-reference package proof |
 
-## Positive controls worth retaining
+## Highest-risk open facts
 
-- The Pi local settings server binds loopback, validates host/origin/token/body size, applies realpath containment for static files, disables caching, and rotates its action token per open.
-- Native mode branching avoids constructing the terminal in print and RPC modes, though static OpenTUI loading still violates strict dependency isolation.
-- Session storage uses temporary files, rename, backups, and file/directory sync attempts; these are a sound base once concurrency and recovery semantics are corrected.
-- Contracts already name many required capabilities and provide a useful vocabulary for production composition.
+- The production session router and compaction path exist; the complete graph/import/overflow/corruption/crash corpus remains incomplete.
+- Current provider proof is protocol-level and local; it is not a credentialed external-service matrix.
+- Command/MCP hooks and bounded asynchronous execution are composed, but pinned compatibility and clean adversarial conformance are incomplete.
+- Plugin execution fails closed, but the formal capability policy and user-facing grant workflow are not release-approved.
+- One macOS PTY run is evidence for that host only. It does not satisfy the supported-platform gate.
+- The conformance harness still needs two genuinely independent production adapters and a frozen Pi oracle.
+- No canary, rollback rehearsal, observation window, or native-only closure receipt exists.
 
-## Status policy
+## Status vocabulary
 
-Planning, readiness, and release documents must distinguish:
+| State | Meaning |
+| --- | --- |
+| Declared | A requirement, schema, or contract exists. |
+| Isolated | A primitive exists but production does not reach it. |
+| Partial | A production path exists but required behavior or evidence is incomplete. |
+| Composed | The complete behavior is production-reachable; verification remains. |
+| Verified | Focused and production-path checks pass for the named scope. |
+| Cutover-ready | Real-host, security, platform, packaging, rollout, and rollback gates pass. |
 
-- **Declared** — represented in a contract or schema.
-- **Implemented** — concrete behavior exists.
-- **Composed** — the production launcher reaches it.
-- **Verified** — production-path tests and manual checks pass.
-- **Cutover-ready** — real-host conformance, security gates, rollback, and packaging all pass.
-
-Only the last state permits Pi removal.
+Only `Cutover-ready` permits Pi removal.

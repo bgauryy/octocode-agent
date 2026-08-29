@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Client, StreamableHTTPClientTransport, type Transport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { getMcpEnablement, listMcpOverrides, openOctocodeDb, setMcpServerEnabled, setMcpToolEnabled } from '@octocodeai/octocode-awareness/mcp-state';
+import { ensurePrivateDirectory, getMcpEnablement, listMcpOverrides, openOctocodeDb, setMcpServerEnabled, setMcpToolEnabled } from '@octocodeai/octocode-awareness/mcp-state';
 import type { ContentPart, NotifyFn, PiContext, PiInstance, PiTheme, RenderCallReturn, RenderContext, ToolCallResult, ToolDefinition, TSchema } from '../types.js';
 import { capMapSize } from '../utils.js';
 import {
@@ -447,7 +447,7 @@ export function startMcpConfigWatcher(ctx: PiContext | undefined, notify: Notify
     try {
       // Keep the existing management target available. Alias and project dirs
       // are watched only when present; watcher setup must not create them.
-      if (dir === canonicalGlobalDir) fs.mkdirSync(dir, { recursive: true });
+      if (dir === canonicalGlobalDir) ensurePrivateDirectory(dir);
       else if (!fs.existsSync(dir)) continue;
       const watcher = fs.watch(dir, { persistent: false }, (_event: string, filename: string | Buffer | null) => {
         // Match mcp.json and our atomic temp writes (mcp.json.<pid>.<ts>.tmp).

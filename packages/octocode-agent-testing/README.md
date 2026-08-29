@@ -1,6 +1,6 @@
 # @octocodeai/agent-testing
 
-Deterministic mocks and host-conformance utilities for complete Octocode flows. The package replaces ad-hoc test doubles for Pi tool and command registration, lifecycle events, terminal UI calls, scripted user dialogs, agent turns, browser callbacks, cancellation, and session restart/fork continuity. It also runs the same scenarios against Pi-backed and native hosts, hashes normalized traces, and reports their first semantic divergence.
+Deterministic mocks and host-conformance utilities for Octocode flows. The package replaces ad-hoc test doubles for Pi tool and command registration, lifecycle events, terminal UI calls, scripted user dialogs, agent turns, browser callbacks, cancellation, and session restart/fork continuity. It also provides a runner for comparing production-host evidence, hashes normalized traces, and reports the first semantic divergence.
 
 ```ts
 import { createPiFlowHarness } from '@octocodeai/agent-testing';
@@ -52,6 +52,10 @@ Script queues fail when exhausted. Tool/command names fail on duplicate registra
 
 `CANONICAL_HOST_SCENARIOS` freezes the RFC's 14 shared scenarios: lifecycle, deterministic turns, streaming tools, policy denial, tool failures, cancellation, steering/follow-up, sessions, compaction, UI, transports, persistence recovery, Codex hooks, and plugin lifecycle.
 
-`createCanonicalHostAdapter()` maps structural Pi or native scenario handlers without importing either production package. `runCanonicalHostConformance()` executes every scenario against both adapters. The lower-level `runHostConformance()` accepts an explicit scenario subset.
+`createCanonicalHostAdapter()` creates synthetic handlers for testing the comparison runner. A green result from two canonical handler tables is a runner self-test, not Pi/native parity evidence.
+
+`createProductionPiHostAdapter()` and `createProductionNativeHostAdapter()` invoke caller-supplied production entrypoints. The production suite covers lifecycle and registry projection first. It marks the other canonical scenarios as unsupported failures until each adapter invokes that scenario through both production compositions. `runCanonicalHostConformance()` always returns one result per canonical scenario; `runHostConformance()` accepts an explicit bounded subset.
+
+Each report identifies whether its baseline and candidate evidence is `synthetic` or `production`. Each scenario is `matched`, `diverged`, or `unsupported`. Unsupported coverage sets the report result to false and includes a reason for each host, so an incomplete adapter can't appear cutover-ready.
 
 The runner normalizes sequence numbers, timestamps, request/session IDs, workspace paths, ANSI styling, errors, maps, and sets. Each scenario result includes separate SHA-256 trace and effect-ledger comparisons plus the first semantic divergence. `EffectLedger` rejects duplicate effect IDs and prevents model, tool, process, network, write, or message effects during shadow execution.

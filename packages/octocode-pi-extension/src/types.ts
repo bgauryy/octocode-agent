@@ -6,6 +6,9 @@
  * extension can still run against older Pi hosts that may omit newer fields.
  */
 
+import type { PromptMode } from '@octocodeai/octocode-shared/protocols';
+export type { PromptMode } from '@octocodeai/octocode-shared/protocols';
+
 import type {
   BuildSystemPromptOptions as PiBuildSystemPromptOptions,
   ContextUsage as PiContextUsage,
@@ -595,13 +598,6 @@ export interface PiInstance {
 }
 
 // ─── Extension options ───────────────────────────────────────────────────────
-
-/**
- * How the Octocode system prompt is merged with Pi's own system prompt.
- * - `append` (default): Pi's prompt first, Octocode addendum appended.
- * - `octocode-first`: Octocode prompt leads; Pi's prompt follows.
- */
-export type PromptMode = 'append' | 'octocode-first';
 
 export interface OctocodePiExtensionOptions {
   promptMode?: PromptMode;

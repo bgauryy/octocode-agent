@@ -6,16 +6,136 @@
  * ONCE and imported by every consumer (Awareness today; open to others).
  * Pure type declarations — no runtime, no dependencies.
  *
- * Note: the full `@octocodeai/octocode-awareness` package intentionally models a
- * richer, different lifecycle (e.g. task states OPEN|IN_PROGRESS|BLOCKED|VERIFY|
- * DONE|FAILED|CANCELLED, plan states DRAFT|ACTIVE|PAUSED|COMPLETED|CANCELLED).
- * Those are a distinct model and are NOT re-expressed here.
+ * The shared database hosts both coordination shortcuts and the advanced
+ * Awareness workflow. These unions therefore cover every state that can appear
+ * in the canonical plans/tasks tables; individual commands may expose subsets.
  */
 
-export type PlanStatus = 'OPEN' | 'DONE' | 'ABANDONED';
-export type TaskStatus = 'OPEN' | 'CLAIMED' | 'DONE' | 'CANCELLED';
+export const PLAN_STATUSES = ['OPEN', 'DONE', 'ABANDONED', 'DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED'] as const;
+export const TASK_STATUSES = ['OPEN', 'CLAIMED', 'IN_PROGRESS', 'BLOCKED', 'VERIFY', 'DONE', 'FAILED', 'CANCELLED'] as const;
+export type PlanStatus = (typeof PLAN_STATUSES)[number];
+export type TaskStatus = (typeof TASK_STATUSES)[number];
 export type CheckStatus = 'SUCCESS' | 'FAILED';
 export type AgentStatus = 'ACTIVE' | 'IDLE' | 'LEFT';
+
+export const AWARENESS_PLAN_STATUSES = ['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED'] as const;
+export const AWARENESS_TASK_STATUSES = ['OPEN', 'IN_PROGRESS', 'BLOCKED', 'VERIFY', 'DONE', 'FAILED', 'CANCELLED'] as const;
+export type AwarenessPlanStatus = (typeof AWARENESS_PLAN_STATUSES)[number];
+export type PlanTaskStatus = (typeof AWARENESS_TASK_STATUSES)[number];
+export type PlanMemberRole = 'LEAD' | 'CONTRIBUTOR';
+
+export interface PlanRecord {
+  plan_id: string;
+  name: string;
+  objective: string;
+  lead_agent_id: string;
+  status: AwarenessPlanStatus;
+  workspace_path: string;
+  artifact: string | null;
+  doc_dir: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlanMemberRecord {
+  agent_id: string;
+  role: PlanMemberRole;
+  joined_at: string;
+}
+
+export interface PlanDocRecord {
+  relative_path: string;
+  title: string;
+  kind: 'PRIMARY' | 'SUPPORTING';
+  ordinal: number;
+}
+
+export interface PlanDetail extends PlanRecord {
+  members: PlanMemberRecord[];
+  docs: PlanDocRecord[];
+}
+
+export interface CreatePlanParams {
+  name: string;
+  objective: string;
+  leadAgentId: string;
+  workspacePath: string;
+  docsPath?: string | null;
+  artifact?: string | null;
+}
+
+export interface JoinPlanParams {
+  planId: string;
+  agentId: string;
+}
+
+export interface RegisterPlanDocParams {
+  planId: string;
+  agentId: string;
+  relativePath: string;
+  title: string;
+}
+
+export interface TaskClaimRecord {
+  task_id: string;
+  run_id: string;
+  agent_id: string;
+  claimed_at: string;
+  heartbeat_at: string;
+  expires_at: string;
+}
+
+export interface PlanTaskRecord {
+  task_id: string;
+  plan_id: string;
+  title: string;
+  reasoning: string;
+  acceptance_criteria: string;
+  status: PlanTaskStatus;
+  priority: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  paths: string[];
+  dependencies: string[];
+  claim: TaskClaimRecord | null;
+}
+
+export interface TaskRunRecord {
+  run_id: string;
+  task_id: string | null;
+  origin: 'TASK' | 'WORK' | 'HOOK';
+  agent_id: string;
+  session_id: string | null;
+  rationale: string;
+  test_plan: string;
+  context_ref: string | null;
+  status: 'PENDING' | 'ACTIVE' | 'SUCCESS' | 'FAILED';
+  workspace_path: string | null;
+  artifact: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateTaskParams {
+  planId: string;
+  title: string;
+  reasoning: string;
+  acceptanceCriteria: string;
+  paths: string[];
+  createdBy: string;
+  priority?: number;
+  dependsOn?: string[];
+}
+
+export function isPlanStatus(value: unknown): value is PlanStatus {
+  return typeof value === 'string' && (PLAN_STATUSES as readonly string[]).includes(value);
+}
+
+export function isTaskStatus(value: unknown): value is TaskStatus {
+  return typeof value === 'string' && (TASK_STATUSES as readonly string[]).includes(value);
+}
 
 export interface PruneResult {
   dryRun: boolean;

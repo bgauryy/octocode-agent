@@ -37,12 +37,12 @@ function loadTool(): ToolDefinition {
 const CWD = '/tmp/plan-interview-ws';
 afterEach(() => { outcomes.length = 0; asked.length = 0; paginations.length = 0; clearPlan(CWD); });
 
-async function clarify(questions: unknown): Promise<{ content: Array<{ text: string }>; isError?: boolean; activity?: ForegroundActivity }> {
+async function clarify(questions: unknown): Promise<{ content: Array<{ text: string }>; details?: Record<string, unknown>; isError?: boolean; activity?: ForegroundActivity }> {
   const tool = loadTool();
   const ctx = { cwd: CWD } as unknown as PiContext; // hasUI falsy → skip panel; runAskPrompt is mocked
   const result = (await tool.execute('id', {
     queries: [{ action: 'clarify', questions, reasoning: 'collect plan decisions in this test' }],
-  }, undefined, undefined, ctx)) as { content: Array<{ text: string }>; isError?: boolean };
+  }, undefined, undefined, ctx)) as { content: Array<{ text: string }>; details?: Record<string, unknown>; isError?: boolean };
   return { ...result, activity: runtimeStoreFor(ctx)?.getState().activity };
 }
 
@@ -99,6 +99,60 @@ test('plan(clarify) halts on cancel and keeps only prior answers', async () => {
   const res = await clarify([{ prompt: 'First?' }, { prompt: 'Second?' }, { prompt: 'Third?' }]);
   assert.deepEqual(getPlanDecisions(CWD), [{ q: 'First?', a: 'Yes' }], 'only the answered question is recorded');
   assert.match(res.content[0]!.text, /cancelled/i);
+});
+
+test('plan(clarify) exposes a durable pending interaction instead of losing RPC correlation', async () => {
+  outcomes.push({
+    status: 'pending',
+    interaction: {
+      version: 1,
+      interactionId: 'interaction-1',
+      correlationId: 'correlation-1',
+      sessionId: 'session-1',
+    },
+  });
+  const res = await clarify([{ prompt: 'Which database?' }]);
+
+  assert.match(res.content[0]!.text, /pending/i);
+  assert.match(res.content[0]!.text, /correlation-1/);
+  assert.deepEqual(res.details?.pendingInteraction, {
+    version: 1,
+    interactionId: 'interaction-1',
+    correlationId: 'correlation-1',
+    sessionId: 'session-1',
+  });
+  assert.deepEqual(getPlanDecisions(CWD), []);
+});
+
+test('plan(propose) remains draft and exposes durable approval correlation', async () => {
+  outcomes.push({
+    status: 'pending',
+    interaction: {
+      version: 1,
+      interactionId: 'approval-1',
+      correlationId: 'approval-correlation-1',
+      sessionId: 'session-1',
+    },
+  });
+  const tool = loadTool();
+  const ctx = { cwd: CWD } as unknown as PiContext;
+  const res = await tool.execute('id', {
+    queries: [{
+      action: 'propose',
+      steps: [{ text: 'Implement the small change' }],
+      consequential: false,
+      reason: 'single local test change',
+      reasoning: 'request explicit plan approval',
+    }],
+  }, undefined, undefined, ctx) as { content: Array<{ text: string }>; details?: Record<string, unknown> };
+
+  assert.match(res.content[0]!.text, /approval pending/i);
+  assert.deepEqual(res.details?.pendingInteraction, {
+    version: 1,
+    interactionId: 'approval-1',
+    correlationId: 'approval-correlation-1',
+    sessionId: 'session-1',
+  });
 });
 
 test('plan(clarify) with no interactive host lists the questions to ask inline', async () => {

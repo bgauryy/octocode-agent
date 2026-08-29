@@ -7,13 +7,14 @@
  */
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { registerAgent } from '../src/agents.js';
 import { resolveDbPath } from '../src/db.js';
-import { canonicalizePath, normalizeWorkspacePath } from '../src/git.js';
+import { normalizeWorkspacePath } from '../src/git.js';
 import type { WorkPeer } from '../src/types.js';
 import { INTERNAL_HOOK_HOST, agentId, agentName, artifact, resolveHookPath, workspace } from './hook-payload.js';
+import { overlapChangeSignal } from './hook-signals.js';
 
 export function peerStateDir(): string {
   const stateDir = join(dirname(resolveDbPath(null)), 'hook-state', 'peers');
@@ -41,12 +42,6 @@ export function peerFingerprint(peers: WorkPeer[]): string {
   })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))))).digest('hex');
 }
 
-export function peerLabel(peer: WorkPeer): string {
-  const work = peer.task_id ?? peer.origin;
-  const reason = peer.rationale.replace(/\s+/g, ' ').trim().slice(0, 40);
-  return `${peer.agent_id}:${work}${reason ? `(${reason})` : ''}`;
-}
-
 export function emitPeerDelta(
   payload: Record<string, unknown>,
   files: string[],
@@ -64,11 +59,7 @@ export function emitPeerDelta(
   writeFileSync(stateFile, fingerprint, 'utf8');
   if (peers.length === 0) return null;
 
-  const shown = peers.slice(0, 3).map(peerLabel).join('; ');
-  const omitted = peers.length > 3 ? ` +${peers.length - 3}` : '';
-  const canonicalWorkspace = canonicalizePath(cwd);
-  const targets = files.slice(0, 2).map(file => relative(canonicalWorkspace, resolveHookPath(file, cwd)) || basename(file)).join(',');
-  return `AWARE ${targets} | peers ${shown}${omitted}`;
+  return overlapChangeSignal(targetSet.size);
 }
 
 export function hookAgentContext(payload: Record<string, unknown>, hookName: string): string {

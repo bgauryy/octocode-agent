@@ -133,7 +133,6 @@ cpSync(join(packageRoot, 'assets'), join(outDir, 'assets'), { recursive: true })
 
 const skillSourceRoot  = resolveSkillSourceRoot();
 const usingCanonical   = skillSourceRoot === canonicalSkillsRoot;
-const retiredSkills    = new Set(['octocode-agent-communication', 'octocode-reflection']);
 const shouldCopyFile   = (_src, p) =>
   !p.split(/[\\/]/).includes('node_modules') && !p.endsWith('octocode-config.mjs');
 
@@ -142,7 +141,7 @@ if (!existsSync(skillSourceRoot)) {
 }
 
 const bundledSkills = readdirSync(skillSourceRoot, { withFileTypes: true })
-  .filter((e) => e.isDirectory() && !retiredSkills.has(e.name) && existsSync(join(skillSourceRoot, e.name, 'SKILL.md')))
+  .filter((e) => e.isDirectory() && existsSync(join(skillSourceRoot, e.name, 'SKILL.md')))
   .map((e) => e.name)
   .sort();
 
@@ -154,12 +153,7 @@ const packagedSkillsRoot = join(outDir, 'skills');
 rmSync(packagedSkillsRoot, { recursive: true, force: true });
 mkdirSync(packagedSkillsRoot, { recursive: true });
 
-if (usingCanonical) {
-  mkdirSync(agentSkillsRoot, { recursive: true });
-  for (const s of retiredSkills) {
-    rmSync(join(agentSkillsRoot, s), { recursive: true, force: true });
-  }
-}
+if (usingCanonical) mkdirSync(agentSkillsRoot, { recursive: true });
 
 for (const skillName of bundledSkills) {
   const source = join(skillSourceRoot, skillName);
@@ -190,6 +184,23 @@ if (usingCanonical) {
     rmSync(join(canonicalAwarenessScripts, stale), { recursive: true, force: true });
   }
   rmSync(join(canonicalAwarenessScripts, 'schema.mjs'), { force: true });
+
+  // The mirrors were copied before the generated bundles were refreshed above.
+  // Refresh their generated scripts too so every advertised install source is
+  // byte-current after a single build.
+  for (const mirroredScripts of [
+    join(agentSkillsRoot, 'octocode-awareness', 'scripts'),
+    join(packageSkillsRoot, 'octocode-awareness', 'scripts'),
+  ]) {
+    if (!existsSync(mirroredScripts)) continue;
+    for (const name of ['awareness.mjs', 'hook-runner.mjs', 'extract-hook-files.mjs']) {
+      cpSync(join(skillScriptsOutDir, name), join(mirroredScripts, name));
+    }
+    for (const stale of ['runtime', 'schemas']) {
+      rmSync(join(mirroredScripts, stale), { recursive: true, force: true });
+    }
+    rmSync(join(mirroredScripts, 'schema.mjs'), { force: true });
+  }
 }
 
 // Inject scripts into the packaged copy of the Awareness skill.

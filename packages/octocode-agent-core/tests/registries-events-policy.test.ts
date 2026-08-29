@@ -19,7 +19,7 @@ const tool = (name: string): ToolDefinition => ({
   inputSchema: { type: 'object' },
   outputSchema: { type: 'object' },
   outputVersion: 1,
-  policy: { effect: 'read', trust: 'none', approval: 'never', plan: 'allowed' },
+  policy: { effects: ['read'], trust: 'none', approval: 'never', plan: 'allowed' },
   execute: async ({ input }) => ({ ok: true, content: input, detailsVersion: 1 }),
 });
 
@@ -72,7 +72,7 @@ describe('PolicyChain', () => {
     chain.use('trust', async () => ({ effect: 'allow' }));
     chain.use('peer-lock', async () => ({ effect: 'deny', reason: 'locked', category: 'peer-lock' }));
     chain.use('approval', async () => ({ effect: 'allow' }));
-    const result = await chain.evaluate({ operation: 'tool.execute', trust: { workspace: 'trusted', managedOnly: false }, effect: 'write', metadata: { call: toolCallId('c') } });
+    const result = await chain.evaluate({ operation: 'tool.execute', trust: { workspace: 'trusted', managedOnly: false }, effects: ['write'], metadata: { call: toolCallId('c') } });
     expect(result.effect).toBe('deny');
     expect(result.receipts.map((receipt) => receipt.policy)).toEqual(['trust', 'peer-lock']);
   });

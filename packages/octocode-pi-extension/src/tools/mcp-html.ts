@@ -9,6 +9,9 @@ import {
   normalizeSkillKey,
   openOctocodeDb,
   setSkillEnabled,
+  ensurePrivateDirectory,
+  hardenPrivateFile,
+  PRIVATE_FILE_MODE,
 } from '@octocodeai/octocode-awareness/mcp-state';
 import type { PiCommand, PiContext, SkillInfo } from '../types.js';
 import { getOctocodeHome } from '../env.js';
@@ -450,9 +453,13 @@ export type SettingsSection = 'overview' | 'runtime' | 'appearance' | 'models' |
 export async function openMcpManager(ctx?: PiContext, piSkills?: SkillInfo[], section?: SettingsSection, commands: readonly PiCommand[] = []): Promise<{ ok: boolean; url?: string; message?: string }> {
   const cwd = ctx?.cwd ?? process.cwd();
   const dir = managerDir(cwd);
-  fs.mkdirSync(dir, { recursive: true });
+  ensurePrivateDirectory(dir);
   const actionToken = randomBytes(32).toString('hex');
-  const write = async (): Promise<void> => fs.writeFileSync(path.join(dir, SETTINGS_HTML_FILE), await renderMcpManagerPage(ctx, actionToken, piSkills, commands), 'utf8');
+  const settingsFile = path.join(dir, SETTINGS_HTML_FILE);
+  const write = async (): Promise<void> => {
+    fs.writeFileSync(settingsFile, await renderMcpManagerPage(ctx, actionToken, piSkills, commands), { encoding: 'utf8', mode: PRIVATE_FILE_MODE });
+    hardenPrivateFile(settingsFile);
+  };
   await write();
   const served = await serveDirectory('settings', dir, {
     indexFile: SETTINGS_HTML_FILE,

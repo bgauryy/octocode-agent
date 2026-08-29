@@ -1,5 +1,7 @@
 # Awareness Output Routing
 
+Load when deciding whether output belongs in live response, SQLite, or an export. This reference step ends here; return to the main skill flow.
+
 Use live output for current work and durable SQLite rows for cross-run state. SQLite is canonical; no generated wiki projection — only optional read-only query exports.
 
 | Need | Output |
@@ -18,4 +20,4 @@ Empty results stay empty. Lean rows omit absent optional fields and cap repeated
 
 `query all --format html` (and JSON/CSV) writes a read-only view under `.octocode/` only when explicitly requested; it is an export, never a canonical store, and may contain local paths. There is no automatic `.octocode/` generation.
 
-Close the owning row: verify work, ack/resolve signals, complete refinements, supersede stale memory, or re-run cleanup/query.
+Return to `SKILL.md` after closing the owning row: verify work, resolve signals, complete refinements, or supersede stale memory.

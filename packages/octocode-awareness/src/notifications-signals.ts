@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { normalizeArtifact, utcNow } from './helpers.js';
 import { fillScope } from './git.js';
-import { SIGNALS_DELETE_BY_IDS, SIGNAL_READS_INSERT_IGNORE, SIGNAL_READS_DELETE_BY_SIGNAL_IDS } from './sql/index.js';
+import { SIGNALS_DELETE_BY_IDS, SIGNAL_READS_INSERT_IGNORE, SIGNAL_READS_DELETE_BY_SIGNAL_IDS } from './sql/signals.js';
 import type { PruneNotificationsParams, PruneNotificationsResult, NotificationRecord, AgentSignalParams, AgentSignalResult, AgentSignalRecord } from './types.js';
 import { appendSignalScope, inferReplyTargets, insertNotification, isThreadParticipant } from './notifications-core.js';
 import { getNotifications, resolveNotification } from './notifications-inbox.js';

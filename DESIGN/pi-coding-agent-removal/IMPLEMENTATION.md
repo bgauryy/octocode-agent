@@ -6,19 +6,22 @@
 
 | RFC question | Resolution or explicit deferral | Evidence | Confidence |
 |---|---|---|---|
-| Q1: Package ownership | Create `packages/octocode-agent-core/` as the single production owner of contracts, kernel, sessions, prompt assembly, lifecycle/registries, and runtime adapters. The launcher composes it; the Pi extension remains a temporary inbound adapter. | User decision on 2026-08-26; local package inspection confirms the path does not exist | Confirmed |
+| Q1: Package ownership | `packages/octocode-agent-core/` is the single production owner of host-neutral contracts, kernel, sessions, prompt assembly, lifecycle/registries, and runtime adapters. The launcher composes it; the Pi extension is a temporary inbound oracle. | User decision on 2026-08-26; current package boundary and focused tests | Implemented candidate |
 | Q2: Native session encoding | Defer to Phase 3. Compare append-only JSONL, SQLite, and SQLite plus export log; select only after corruption/replay/migration prototypes. | Current Pi JSONL consumer in `packages/octocode-agent/src/sessions.ts`; Awareness proves local SQLite operation | Deferred with trigger |
 | Q3: Public event fields | Resolve in Phase 0 from refreshed Pi RPC fixtures, shell events, composed hooks, and flow-harness traces. | `pi-custom-tui-protocol/RESOLUTION.md`; current event interfaces in `src/types.ts` | High-confidence route |
 | Q4: Compatibility window | Release owner sets this before Phase 6. Until then, the Pi adapter cannot be deleted. | RFC rollback requirement | Explicitly deferred |
 | Q5: Retain `pi-agent-core` | Retain by default for the first `pi-coding-agent`-free composition. Reassess at Phase 4 entry only if the contract suite exposes a blocker. | Scope isolation in `RFC.md` §Guide-level explanation | Confirmed decision |
 | Q6: Native terminal | Use `@opentui/core` directly behind `UiPort`; keep the custom TUI protocol as a compatibility/transport fixture unless separately shipped. Stage 1 must prove an upstream-supported Bun or Node runtime/package route. | User decision on 2026-08-27; `OPENTUI_TERMINAL_CORE.md` and official upstream runtime/testing docs | Confirmed decision with compatibility gate |
 | Q7: Settings surface | Use the existing loopback `settings.html` as the single human-facing control center. Add schema-driven agent-core settings/model contracts and a complete Models/`models.json` section; keep HTML/browser code outside core. | User decision on 2026-08-27; current `mcp-html.ts`, `SETTINGS.md`, launcher `settings.ts`, AST/LSP inventory | Confirmed decision |
+| Q8: Pi product end state | Treat `@octocodeai/pi-extension` as a temporary executable oracle. Delete it and all live Pi paths after native-only parity, observation, rollback, migration, packaging, clean-install, and upgrade gates pass. | User decision on 2026-08-28; reassessment audit in `RFC.md` | Confirmed decision |
 
-No phase may start when its trigger-row remains unresolved.
+No phase may start when its trigger-row remains unresolved. Checkboxes below describe release-evidenced completion; current dirty-tree code may be implemented or composed out of sequence and is rated in `READINESS_AND_FEATURE_MATRIX.md` and root `08-TRACEABILITY-CHECKLIST.md`.
+
+The latest integrated candidate receipt is [the 2026-08-28 real runtime surface evaluation](evidence/real-runtime-surface-eval-2026-08-28.md). It verifies bounded worker recovery/projection, provider adapters, command hooks, plugin activation, browser settings, and one host-specific PTY run. It does not check a phase or relax any clean-baseline, real-host, platform, canary, rollback, or removal gate.
 
 ## Approach
 
-Introduce host-neutral contracts around existing behavior, make the Pi-backed implementation conform, and replace one capability at a time. Preserve one public runtime composition root and one conformance suite. Delete compatibility code after its phase exit gate passes.
+Introduce host-neutral contracts around existing behavior, freeze the Pi-backed implementation as a temporary oracle, and replace one capability at a time in the native editor. Preserve one public runtime composition root and one conformance suite. Delete the Pi package and compatibility code only after native-only rollback and the final phase exit gate pass.
 
 ## Phase 0: Freeze evidence and behavior
 
@@ -32,6 +35,7 @@ Introduce host-neutral contracts around existing behavior, make the Pi-backed im
 - [ ] Add negative fixtures for policy denial, untrusted workspace, peer lock, invalid RPC, stale session revision, and aborted child work.
 - [ ] Run the OpenTUI runtime/packaging spike in `OPENTUI_TERMINAL_CORE.md` and record the selected Bun or Node route, exact version, platform matrix, native artifact behavior, startup, memory, and restoration.
 - [ ] Freeze the existing OpenTUI proof adapter/view-model and four focused tests as observed fixtures; record its AST calls and LSP references before moving or renaming the boundary.
+- [ ] Specify the migration-only `pi|shadow|native` selector at the release composition boundary, including precedence, per-session host/oracle identity, one-writer enforcement, observability, and deletion criteria. The current native launcher is hard-wired to `native`; do not add this selector to agent core.
 
 **Proceed gate:** all baseline checks are reproducible and every used Pi capability maps to a fixture or an explicitly approved non-fixture invariant.
 
@@ -48,7 +52,7 @@ Introduce host-neutral contracts around existing behavior, make the Pi-backed im
 - [ ] Define middleware order, transformation, blocking, timeout, and error semantics.
 - [ ] Define a versioned RPC/JSON schema from the same event contracts.
 - [ ] Implement a Pi compatibility adapter that satisfies the contracts without changing product behavior.
-- [ ] Preserve `@octocodeai/pi-extension` as a supported adapter package that imports agent core and owns every Pi-specific translation.
+- [ ] Preserve `@octocodeai/pi-extension` as a frozen temporary oracle adapter that imports agent core and owns every Pi-specific translation until the retirement gate.
 - [ ] Move the deterministic test harness from Pi-named public types to host-neutral contract fixtures while retaining a Pi adapter suite.
 
 **Proceed gate:** the existing Pi-backed product runs through the new contracts, all baseline fixtures match, the Pi extension passes its declared Pi-version matrix, and no product module outside the adapter needs a Pi host type.
@@ -71,7 +75,7 @@ Introduce host-neutral contracts around existing behavior, make the Pi-backed im
 
 **Proceed gate:** registry and lifecycle dual-host suites pass; standalone helper imports are gone; policy negative tests are identical.
 
-**Rollback:** select the Pi adapter; retained session data remains untouched.
+**Rollback:** after the migration selector is implemented and verified, select the frozen Pi adapter; retained session data remains untouched. Before that proof exists, this phase has no deployable host-switch rollback and cannot enter canary.
 
 ## Phase 3: Implement native sessions, prompt assembly, and compaction
 
@@ -93,77 +97,101 @@ Introduce host-neutral contracts around existing behavior, make the Pi-backed im
 - [ ] Compose the runtime kernel using the retained `pi-agent-core` and `pi-ai` adapters unless Q5 is reopened with evidence.
 - [ ] Implement structured execution scopes and cancellation ownership for model turns, tools, child processes, and background work.
 - [ ] Normalize model deltas into `RuntimeEvent` without exposing provider-specific payloads to product modules.
+- [ ] Make Responses the canonical OpenAI transport, including reasoning items, hosted and MCP tools, approvals, tool search, persisted response state, background status, usage, and typed errors.
+- [ ] Implement or explicitly retire every provider protocol in the approved model matrix.
+- [ ] Port the complete file/edit, shell, web/search, browser/CDP, media/PDF/ffmpeg, local-server, call-tool, memory, and coordination palette with truthful composite effects.
+- [ ] Replace per-operation MCP connections with a persistent catalog and complete auth, sampling, elicitation, roots, progress, subscription, and approval flows.
+- [ ] Complete native Skills discovery, provenance, budgets, refresh, usage, context registration, and explicitly authorized lifecycle operations.
 - [ ] Implement retry classification, usage accounting, model selection, and thinking-level control.
 - [ ] Run Pi and native implementations through the same mocked-provider scenarios.
 - [ ] Add shadow comparison only for pure snapshots and normalized events; prohibit duplicate external effects.
 
 **Proceed gate:** native runtime passes every deterministic scenario and stress/fault suite; no duplicated-effect receipt exists.
 
-**Rollback:** set host selection to `pi`; native sessions remain isolated and readable for diagnosis.
+**Rollback:** during the bounded comparison window, use the verified release selector to choose `pi`; native sessions remain isolated and readable for diagnosis. The current native launcher does not yet provide this selector, so this rollback is a release gate rather than a present capability.
+
+## Phase 4A: Compose sessions, workers, messaging, and flow control
+
+- [ ] Compose every session command and compaction transition into interactive, print, JSON, RPC, and embed paths.
+- [ ] Add an agent-core coordination port and native Awareness adapter. Reuse Awareness plans, tasks, agents, work presence, locks, checks, messages, handoffs, outbox, and verified memory rather than creating a second authority.
+- [ ] Add durable addressed session/worker mailboxes with correlation, unread/read/ack, broadcast, handoff acceptance, provenance, redaction, expiry, and restart delivery.
+- [ ] Implement a native structured worker supervisor with typed spawn packets, capability limits, durable ledgers/handbacks, active caps, crash cleanup, and joined shutdown.
+- [ ] Port list/status/send/steer/follow-up/wait/abort/kill semantics with queue depth, liveness probes, graceful unwind, escalation, and reliable waiter resolution.
+- [ ] Replace single-active plan execution with bounded dependency-ready scheduling, atomic Awareness claims/leases, path ownership, and safe native worktree lifecycle.
+
+**Proceed gate:** all `A-*` and `S-*` scenarios pass against production native composition; two-process messaging survives restart; no duplicate Awareness authority, orphan process, lost queue item, invalid session graph, or discarded unmerged work exists.
 
 ## Phase 5: Deliver transport and UI parity
 
+Progress: the native launcher shares a core settings service between runtime model
+selection and `/settings`; the protected page edits theme and default model. A
+trust-gated extension controller also owns review, activation transactions,
+contributions, and leases. The unchecked items below remain the phase-completion
+contract.
+
 - [ ] Implement native interactive, print, JSON, and RPC adapters over `AgentRuntime`.
 - [ ] Add Hooks and Plugins to `settings.html`, including source provenance, exact-hash review, enablement, compatibility, health, permissions, contributions, semantic diff, and redacted traces.
-- [ ] Run native and supported Pi-extension hook/plugin conformance across interactive, print, JSON, RPC, and headless adapters.
+- [ ] Run native and temporary Pi-oracle hook/plugin conformance across interactive, print, JSON, RPC, and headless adapters.
 - [ ] Generalize the existing `settings.html` implementation into the registry-driven all-settings control center specified by `SETTINGS_WEB_UI.md`.
 - [ ] Add `/settings models`, the effective model catalog/default selection, structured provider/model editing, and validated revision-safe `models.json` management.
-- [ ] Route launcher config commands and the supported Pi extension through the same `SettingsService`; remove duplicate direct writers only after AST/LSP callers migrate.
+- [ ] Route launcher config commands through the same `SettingsService`; expose temporary Pi projections only for parity comparison and remove duplicate direct writers after AST/LSP callers migrate.
 - [ ] Preserve shell submit/subscribe/abort/streaming behavior.
 - [ ] Preserve semantic notifications, dialogs, status, widgets, title, editor, autocomplete, footer/header, working indicator, and headless degradation.
 - [ ] Implement `packages/octocode-agent/src/terminal/opentui/` with `@opentui/core` directly, following `OPENTUI_TERMINAL_CORE.md`.
 - [ ] Use `@opentui/core/testing` for deterministic frames, input, mouse, resize, focus, clock, capability, and renderer-destruction tests.
-- [ ] Remove native `pi-tui` use after OpenTUI parity passes; do not change the supported Pi extension's host UI mapping.
+- [ ] Remove native `pi-tui` use after OpenTUI parity passes; keep the frozen Pi UI mapping unchanged only until the oracle retirement gate.
 - [ ] Version RPC and provide a compatibility adapter for the accepted fixture corpus.
 - [ ] Verify exit codes, stdout/stderr separation, signals, terminal restoration, and malformed-client behavior.
 
-**Proceed gate:** the mode matrix in `KPI.md` passes on supported platforms, the accepted OpenTUI runtime/package route passes its matrix, native `pi-tui` references are zero, every supported setting appears in `settings.html`, Models/`models.json` mutations pass security/data-integrity gates, Codex hook fixtures and plugin lifecycle/security suites pass on native and supported Pi hosts, and no critical accessibility or terminal-restoration regression remains.
+**Proceed gate:** the mode matrix in `KPI.md` passes on supported platforms, the accepted OpenTUI runtime/package route passes its matrix, native `pi-tui` references are zero, every supported setting appears in `settings.html`, Models/`models.json` mutations pass security/data-integrity gates, Codex hook fixtures and plugin lifecycle/security suites pass on native and the temporary Pi oracle, and no critical accessibility or terminal-restoration regression remains.
 
-## Phase 6: Make native default and remove `pi-coding-agent`
+## Phase 6: Make the native editor the sole default
 
 - [ ] Resolve Q4 and publish the observation-window rule.
-- [ ] Make native host the default while retaining explicit Pi rollback selection.
+- [ ] Make the native editor the default while retaining explicit Pi comparison rollback only during the observation window.
 - [ ] Observe success, error, abort, compaction, session import, and policy guardrails for the approved window.
 - [ ] Capture `evidence/after-<commit>.md` and the exact before/after comparison.
 - [ ] Remove native SDK loading, Pi package resolution, SDK/subprocess fallback, and Pi RPC type imports.
-- [ ] Replace unsupported/deep Pi-extension imports with supported public Pi APIs or local adapter utilities; retain the public Pi imports required by the supported extension.
-- [ ] Remove the `pi-coding-agent` dependency from native agent/core manifests using the repository's approved manifest-change process; retain the supported Pi-extension host relationship.
+- [ ] Replace unsupported/deep Pi-extension imports with native contracts and adapters; do not create a new permanent Pi facade.
+- [ ] Remove Pi dependencies from native agent/core manifests using the repository's approved manifest-change process.
 - [ ] Run AST/LSP absence proofs and dependency-tree checks.
 - [ ] Rebuild awareness, extension/runtime, testing, and agent packages; run real CLI, print, and RPC paths.
 
-**Proceed gate:** every target and guardrail in `KPI.md` passes; native agent/core references are zero; Pi references are confined to the supported extension adapter; release owner signs the evidence comparison.
+**Proceed gate:** every target and guardrail in `KPI.md` passes; native agent/core references are zero; the observation window passes; prior-native-artifact rollback succeeds; release owner signs the evidence comparison.
 
 **Rollback:** while the adapter remains installed, restore `pi` selection. If the package has been removed from a release artifact, roll back the artifact rather than hot-patching user session data.
 
-## Phase 7: Close the native-runtime compatibility window
+## Phase 7: Retire the Pi oracle and close the compatibility window
 
 - [ ] Remove the Pi host selector from native `octocode-agent` after the approved window.
-- [ ] Retain `@octocodeai/pi-extension` as the supported external Pi-host adapter unless a separate accepted RFC changes that product decision.
-- [ ] Archive redacted compatibility fixtures that remain useful as regression cases.
+- [ ] Migrate or explicitly retire every Pi-only setting, command, tool, asset, fixture, installer, updater, and document.
+- [ ] Delete `packages/octocode-pi-extension`, its workspace/release wiring, live adapters, dependencies, and active product documentation in one reviewed cutover change.
+- [ ] Archive redacted compatibility fixtures and historical receipts that remain useful as regression evidence without keeping the live package.
 - [ ] Update package/docs ownership from “Pi extension” to “Octocode runtime/harness.”
 - [ ] Audit related RFCs and re-point Pi-facing references without deleting their unique semantic requirements.
-- [ ] Open separate RFCs for removing `pi-agent-core` or `pi-ai` only if evidence supports them.
+- [ ] Prove zero Pi text, AST/LSP reachability, manifest, lockfile, dependency-tree, built-JS, packed-artifact, installer, updater, and release references.
+- [ ] Run clean install, previous-release upgrade, every native mode, and CLI/MCP/skill/browser/media/editor/session smokes before signing the irreversible deletion receipt.
 
 ## Files, APIs, and contracts
 
 | Surface | Change | Blast-radius evidence | Compatibility |
 |---|---|---|---|
-| `packages/octocode-agent-core/` | New owner for contracts, kernel, sessions, prompt assembly, lifecycle/registries, and runtime adapters | Package is absent from the inspected tree; Phase 1 creates it | Pi adapter supplies current behavior until Phase 6 |
-| `packages/octocode-agent/src/sdk-launcher.ts` | Replace Pi SDK composition with Octocode runtime composition | Nine SDK exports are destructured | Adapter until Phase 6 |
-| `packages/octocode-agent/src/launcher.ts` | Remove Pi package resolution and subprocess fallback | Current fallback path spans SDK and process launch | Release-artifact rollback |
-| `packages/octocode-agent/src/serve.ts` | Use local versioned RPC contracts | Imports Pi RPC types | Wire compatibility tests |
+| `packages/octocode-agent-core/` | Owner for contracts, kernel, sessions, prompt assembly, lifecycle/registries, and runtime adapters | Package exists as a partially implemented dirty-tree candidate | Temporary Pi oracle supplies comparison behavior through the observation window |
+| Historical `packages/octocode-agent/src/sdk-launcher.ts` | Replaced by native runtime composition | Removed; nine SDK exports defined the baseline extraction surface | Immutable baseline evidence only |
+| `packages/octocode-agent/src/native-launcher.ts` | Compose the Octocode runtime directly | Current production candidate | Release-artifact rollback |
+| `packages/octocode-agent/src/native-transports.ts` | Use local versioned print/JSON/RPC contracts | Current production candidate; concurrent control remains open | Wire compatibility tests |
 | `packages/octocode-agent/src/sessions.ts` | Read native store; retain Pi importer | Reads Pi session buckets | Read-only import window |
-| `packages/octocode-agent/src/settings.ts` | Replace Pi-specific direct file writes with native adapters behind `SettingsService` | Three allowlisted keys; `setSetting` has three LSP sites across two files | Compatibility adapter until caller migration and source import proof |
+| `packages/octocode-agent/src/settings.ts` | Replace direct CLI file writes with the canonical `SettingsService` | Three public allowlisted keys; `config list` is redacted, but `setSetting` remains a direct writer | Compatibility adapter until caller migration and source import proof |
 | `packages/octocode-pi-extension/src/tools/mcp-html.ts` | Generalize into unified settings HTML adapter and section contributors | Eight sections, 11 actions; `openMcpManager` has four LSP references | Deep-link/output-path compatibility window |
-| `packages/octocode-agent/src/settings/html/` | New native settings page composition | Planned boundary | Same settings conformance suite as Pi extension |
-| `packages/octocode-agent/src/terminal/opentui/` | New native interactive terminal adapter using `@opentui/core` | Planned boundary; runtime/package spike required | Pi host rollback before removal; release-artifact rollback afterward |
-| `packages/octocode-pi-extension/src/types.ts` | Replace duplicated domain contracts with agent-core imports plus Pi-only adapter types | LSP: 64/172/54 key references | Supported Pi adapter with declared version matrix |
+| `packages/octocode-agent/src/native-settings-service.ts` and `native-settings-page.ts` | Native core-service persistence bridge and protected settings page | Production-composed bounded slice | Expand through the same settings conformance suite as the Pi extension |
+| `packages/octocode-agent/src/terminal/opentui/` | Native interactive terminal adapter using `@opentui/core` | Production-composed semantic widgets/input; PTY/platform evidence required | Pi-oracle rollback before removal; native release-artifact rollback afterward |
+| `packages/octocode-pi-extension/src/types.ts` | Replace duplicated domain contracts with agent-core imports plus temporary Pi-only oracle types | LSP: 64/172/54 key references | Frozen oracle mapping until final package deletion |
 | `packages/octocode-pi-extension/src/index.ts` | Compose host-neutral registries/lifecycle | 17 middleware in the inspected 2026-08-27 tree, 18 core commands | Golden ordering/inventory |
 | `packages/octocode-pi-extension/src/tools/octocode-tools.ts` | Point one registration funnel at `ToolRegistry` | One host registration call | Tool contract suite |
 | Shell and UI modules | Consume semantic runtime/UI contracts and migrate native rendering to OpenTUI | Structural runtime and nine `pi-tui` importing files | OpenTUI parity suite; Pi extension retains host UI mapping |
 | Session/compaction modules | Use `SessionStore` and `SessionController` | Broad identity, branch, artifact, retry use | Migration/replay/fault suite |
 | `packages/octocode-agent-testing` | Become shared conformance fixture package | Existing ordered fail-closed flow harness | Run against Pi and native adapters |
-| Hook/plugin compatibility sources | Add Codex fixtures, exact-hash trust records, event adapters, and manifest/contribution validation | Current composed and direct Pi listeners | Same canonical decisions on native and supported Pi hosts |
+| Hook/plugin compatibility sources | Add Codex fixtures, exact-hash trust records, event adapters, and manifest/contribution validation | Current composed and direct Pi listeners | Same canonical decisions on native and temporary Pi-oracle hosts |
 
 ## Risk mitigations
 
@@ -222,4 +250,4 @@ Any security bypass, unrecoverable session mismatch, duplicate effect, compactio
 - `OPENTUI_TERMINAL_CORE.md` — owns native terminal boundaries, runtime/package gate, lifecycle, and testing.
 - `SETTINGS_WEB_UI.md` — owns settings registry/page behavior, Models/`models.json`, mutations, security, migration, and tests.
 - `packages/octocode-agent-testing/src/index.ts` — candidate shared deterministic host harness.
-- `.octocode/rfc/pi-custom-tui-protocol/RESOLUTION.md` — captured RPC behavior and import-free type boundary.
+- Immutable historical receipts — capture the prior custom-TUI RPC behavior and import-free type boundary; the original `.octocode/rfc/...` path is no longer present.

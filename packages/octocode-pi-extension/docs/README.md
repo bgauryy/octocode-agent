@@ -40,7 +40,6 @@ use `node $OCTOCODE_CLI tools <name> --scheme`.
 | [RUNTIME_STATE.md](RUNTIME_STATE.md) | Session initialization, Zustand state ownership, MCP readiness, and disposal. |
 | [SESSION_ARTIFACTS.md](SESSION_ARTIFACTS.md) | Where session files live (plans, screenshots, logs, compaction snapshots), manifest, and cleanup. |
 | [CRON.md](CRON.md) | Session job safety model, default jobs, and cron-style maintenance commands. |
-| [SHELL.md](SHELL.md) | OctocodeShell RFC — TUI shell replacing Pi’s InteractiveMode (Phase C alpha). |
 
 ### Audit & decisions
 

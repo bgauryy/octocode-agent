@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { normalizeArtifact, utcNow } from './helpers.js';
 import { fillScope } from './git.js';
-import { SIGNALS_SELECT_BASE, SIGNALS_SELECT_LEFT_JOIN_READS, SIGNALS_SELECT_ORDER_LIMIT, SIGNAL_READS_INSERT_IGNORE } from './sql/index.js';
+import { SIGNALS_SELECT_BASE, SIGNALS_SELECT_LEFT_JOIN_READS, SIGNALS_SELECT_ORDER_LIMIT, SIGNAL_READS_INSERT_IGNORE } from './sql/signals.js';
 import type { GetNotificationsParams, GetNotificationsResult, ResolveNotificationParams, ResolveNotificationResult } from './types.js';
 import { appendSignalScope, canReadOrJoinThread, isThreadParticipant, NotificationRow, rowToNotification } from './notifications-core.js';
 import { assertSignalsExist } from './notifications-signals.js';

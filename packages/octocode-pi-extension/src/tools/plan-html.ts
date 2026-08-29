@@ -23,6 +23,7 @@ import type { PiContext } from '../types.js';
 import { escapeHtml, renderOctocodePage } from '../tui/html-page.js';
 import { renderMarkdown } from '../tui/markdown.js';
 import { openLocalUrl } from './local-url-opener.js';
+import { ensurePrivateDirectory, hardenPrivateFile, PRIVATE_FILE_MODE } from '@octocodeai/octocode-awareness/mcp-state';
 
 const REFRESH_SECONDS = 3;
 
@@ -403,7 +404,7 @@ function writeProjectedPlanArtifacts(scope: string, model: PlanReadModelV1, opts
       const hash = createHash('sha256').update(scope || 'default').digest('hex').slice(0, 16);
       dir = path.join(getOctocodeHome(), 'tmp', 'plan', hash);
     }
-    fs.mkdirSync(dir, { recursive: true });
+    ensurePrivateDirectory(dir);
     const htmlPath = path.join(dir, 'plan.html');
     const mdPath = path.join(dir, 'plan.md');
     const html = renderOctocodePage({
@@ -420,8 +421,10 @@ function writeProjectedPlanArtifacts(scope: string, model: PlanReadModelV1, opts
       artifactCtx.writeText('plan/plan.html', html);
       artifactCtx.writeText('plan/plan.md', markdown);
     } else {
-      fs.writeFileSync(htmlPath, html, 'utf8');
-      fs.writeFileSync(mdPath, markdown, 'utf8');
+      fs.writeFileSync(htmlPath, html, { encoding: 'utf8', mode: PRIVATE_FILE_MODE });
+      fs.writeFileSync(mdPath, markdown, { encoding: 'utf8', mode: PRIVATE_FILE_MODE });
+      hardenPrivateFile(htmlPath);
+      hardenPrivateFile(mdPath);
     }
     // Register both files in the session artifact manifest using the already-open context.
     if (artifactCtx) {

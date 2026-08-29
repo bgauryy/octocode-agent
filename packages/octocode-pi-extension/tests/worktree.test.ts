@@ -95,6 +95,10 @@ test('createAgentWorktree creates an isolated branch under Octocode home', () =>
   assert.ok(state.path.startsWith(path.join(home, 'worktrees')));
   assert.equal(git(state.path, ['branch', '--show-current']), state.branch);
   assert.equal(fs.existsSync(path.join(state.path, 'README.md')), true);
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(path.dirname(state.metaPath)).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(state.metaPath).mode & 0o777, 0o600);
+  }
 });
 
 test('spawnRpcAgent runs approved worktree workers in the worktree cwd and cleans no-work exits', () => {

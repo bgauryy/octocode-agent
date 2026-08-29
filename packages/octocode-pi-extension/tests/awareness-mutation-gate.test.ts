@@ -72,4 +72,63 @@ describe('awareness mutation gate', () => {
     gate.cleanup();
     expect(endWork.mock.calls).toEqual([['/repo/a.ts', '/repo', 'me'], ['/repo/b.ts', '/repo', 'me']]);
   });
+
+  it('records successful mutations and releases only presence owned by the completed call', () => {
+    const recordEdit = vi.fn();
+    const endWork = vi.fn();
+    const gate = createAwarenessMutationGate({
+      storeExists: () => false,
+      queryTarget: vi.fn(),
+      startWork: vi.fn(),
+      endWork,
+      recordEdit,
+    });
+    const write = event('write', { path: 'a.ts' });
+
+    gate.preflight(write, cwd, 'me');
+    gate.complete(write, cwd, 'me', true);
+
+    expect(recordEdit).toHaveBeenCalledWith('/repo/a.ts', '/repo', 'me');
+    expect(endWork).toHaveBeenCalledWith('/repo/a.ts', '/repo', 'me');
+    gate.cleanup();
+    expect(endWork).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases failed mutations without writing a success receipt', () => {
+    const recordEdit = vi.fn();
+    const endWork = vi.fn();
+    const gate = createAwarenessMutationGate({
+      storeExists: () => false,
+      queryTarget: vi.fn(),
+      startWork: vi.fn(),
+      endWork,
+      recordEdit,
+    });
+    const write = event('write', { path: 'a.ts' });
+
+    gate.preflight(write, cwd, 'me');
+    gate.complete(write, cwd, 'me', false);
+
+    expect(recordEdit).not.toHaveBeenCalled();
+    expect(endWork).toHaveBeenCalledWith('/repo/a.ts', '/repo', 'me');
+  });
+
+  it('keeps advisory presence until concurrent mutations of the same target settle', () => {
+    const endWork = vi.fn();
+    const gate = createAwarenessMutationGate({
+      storeExists: () => false,
+      queryTarget: vi.fn(),
+      startWork: vi.fn(),
+      endWork,
+      recordEdit: vi.fn(),
+    });
+    const write = event('write', { path: 'a.ts' });
+
+    gate.preflight(write, cwd, 'me');
+    gate.preflight(write, cwd, 'me');
+    gate.complete(write, cwd, 'me', true);
+    expect(endWork).not.toHaveBeenCalled();
+    gate.complete(write, cwd, 'me', true);
+    expect(endWork).toHaveBeenCalledOnce();
+  });
 });

@@ -1,5 +1,7 @@
 # Shared Awareness Flow
 
+Load when choosing between shared coordination outcomes. This reference step ends here; return to the main skill flow.
+
 Use `npx @octocodeai/octocode-awareness`. Host tools and hooks may perform the same operations through the package API. The table below is the shared plane: prefix families with `coordination` unless a direct shortcut is shown. Run `coordination schema commands` for exact flags.
 
 | Trigger | Action | Expected output / close |
@@ -13,4 +15,4 @@ Use `npx @octocodeai/octocode-awareness`. Host tools and hooks may perform the s
 | Reuse learning | `coordination memory recall`; after verification, `coordination memory store-verified` | Ranked leads or stored memory entity; recheck current source/tests. |
 | Cleanup | `coordination lock/message/memory prune` | Dry-run counts first; delete only with explicit confirmation. |
 
-All reads are observational. Expired leases are filtered or projected as available; explicit mutation commands reclaim or prune stored rows.
+Return to `SKILL.md` after choosing the shared outcome. Reads are observational; explicit mutation commands reclaim or prune stored rows.

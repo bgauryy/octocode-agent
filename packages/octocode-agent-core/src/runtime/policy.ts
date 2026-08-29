@@ -1,7 +1,7 @@
 import type { TrustSnapshot } from '../contracts/events.js';
-import type { ToolEffect } from '../contracts/tools.js';
+import type { EffectSet } from '../contracts/tools.js';
 
-export interface PolicyRequest { readonly operation: string; readonly trust: TrustSnapshot; readonly effect: ToolEffect; readonly metadata: Readonly<Record<string, unknown>>; }
+export interface PolicyRequest { readonly operation: string; readonly trust: TrustSnapshot; readonly effects: EffectSet; readonly metadata: Readonly<Record<string, unknown>>; }
 export type PolicyDecision = { readonly effect: 'allow' } | { readonly effect: 'deny'; readonly reason: string; readonly category: 'trust' | 'approval' | 'plan-policy' | 'peer-lock' | 'policy' };
 export interface PolicyReceipt { readonly policy: string; readonly decision: PolicyDecision; readonly order: number; }
 export type PolicyResult = PolicyDecision & { readonly receipts: readonly PolicyReceipt[] };

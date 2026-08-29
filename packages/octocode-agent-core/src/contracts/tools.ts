@@ -1,9 +1,58 @@
 import type { SessionId, ToolCallId, TurnId } from './identity.js';
 import type { TrustSnapshot } from './events.js';
+import { RuntimeFailure } from './errors.js';
 
-export interface JsonSchema { readonly type?: string; readonly properties?: Readonly<Record<string, JsonSchema>>; readonly required?: readonly string[]; readonly items?: JsonSchema; readonly enum?: readonly unknown[]; readonly additionalProperties?: boolean | JsonSchema; readonly [key: string]: unknown; }
-export type ToolEffect = 'read' | 'write' | 'network' | 'process' | 'destructive';
-export interface ToolPolicyMetadata { readonly effect: ToolEffect; readonly trust: 'none' | 'workspace' | 'managed'; readonly approval: 'never' | 'on-request' | 'always'; readonly plan: 'allowed' | 'forbidden' | 'required'; readonly lockTarget?: (input: unknown) => readonly string[]; }
+export interface JsonSchema {
+  readonly $ref?: string;
+  readonly $defs?: Readonly<Record<string, JsonSchema>>;
+  readonly type?: string | readonly string[];
+  readonly properties?: Readonly<Record<string, JsonSchema>>;
+  readonly patternProperties?: Readonly<Record<string, JsonSchema>>;
+  readonly required?: readonly string[];
+  readonly dependentRequired?: Readonly<Record<string, readonly string[]>>;
+  readonly propertyNames?: JsonSchema;
+  readonly items?: JsonSchema;
+  readonly prefixItems?: readonly JsonSchema[];
+  readonly contains?: JsonSchema;
+  readonly enum?: readonly unknown[];
+  readonly const?: unknown;
+  readonly additionalProperties?: boolean | JsonSchema;
+  readonly allOf?: readonly JsonSchema[];
+  readonly anyOf?: readonly JsonSchema[];
+  readonly oneOf?: readonly JsonSchema[];
+  readonly not?: JsonSchema;
+  readonly if?: JsonSchema;
+  readonly then?: JsonSchema;
+  readonly else?: JsonSchema;
+  readonly minimum?: number;
+  readonly maximum?: number;
+  readonly exclusiveMinimum?: number;
+  readonly exclusiveMaximum?: number;
+  readonly multipleOf?: number;
+  readonly minLength?: number;
+  readonly maxLength?: number;
+  readonly pattern?: string;
+  readonly minItems?: number;
+  readonly maxItems?: number;
+  readonly uniqueItems?: boolean;
+  readonly minContains?: number;
+  readonly maxContains?: number;
+  readonly minProperties?: number;
+  readonly maxProperties?: number;
+  readonly [key: string]: unknown;
+}
+export type ToolEffect = 'read' | 'network' | 'process' | 'write' | 'destructive';
+export type EffectSet = readonly [ToolEffect, ...ToolEffect[]];
+const TOOL_EFFECT_ORDER: readonly ToolEffect[] = ['read', 'network', 'process', 'write', 'destructive'];
+export function createEffectSet(...effects: readonly ToolEffect[]): EffectSet {
+  const invalid = effects.find((effect) => !TOOL_EFFECT_ORDER.includes(effect));
+  if (invalid !== undefined) throw new RuntimeFailure('validation', `Unknown tool effect: ${String(invalid)}`);
+  const unique = new Set(effects);
+  const canonical = TOOL_EFFECT_ORDER.filter((effect) => unique.has(effect));
+  if (canonical.length === 0) throw new RuntimeFailure('validation', 'Tool effects require at least one capability');
+  return Object.freeze(canonical) as unknown as EffectSet;
+}
+export interface ToolPolicyMetadata { readonly effects: EffectSet; readonly trust: 'none' | 'workspace' | 'managed'; readonly approval: 'never' | 'on-request' | 'always'; readonly plan: 'allowed' | 'forbidden' | 'required'; readonly lockTarget?: (input: unknown) => readonly string[]; }
 export interface ToolExecutionUpdate { readonly version: 1; readonly kind: 'progress' | 'status' | 'details'; readonly message?: string; readonly value?: unknown; }
 export interface ExecutionContext { readonly sessionId: SessionId; readonly turnId?: TurnId; readonly cwd: string; readonly mode: 'interactive' | 'print' | 'json' | 'rpc' | 'headless'; readonly trust: TrustSnapshot; readonly signal: AbortSignal; }
 export interface ToolExecutionInput { readonly input: unknown; readonly callId: ToolCallId; readonly context: ExecutionContext; readonly signal: AbortSignal; readonly update: (update: ToolExecutionUpdate) => Promise<void>; }

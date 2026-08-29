@@ -51,6 +51,7 @@
     "@octocodeai/agent-core": "0.1.0",
     "@octocodeai/octocode-awareness": "^1.3.0",
     "@octocodeai/octocode-engine": "^18.1.2",
+    "@octocodeai/octocode-shared": "0.1.0",
     "@resvg/resvg-js": "^2.6.2",
     "chrome-launcher": "^1.2.1",
     "marked": "^18.0.5",

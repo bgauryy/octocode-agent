@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getOctocodeHome } from '../env.js';
 import type { WorkerWorktreeState } from '../types.js';
+import { ensurePrivateDirectory, hardenPrivateFile, PRIVATE_FILE_MODE } from '@octocodeai/octocode-awareness/mcp-state';
 
 export type WorktreeIsolation = 'shared' | 'worktree';
 
@@ -85,8 +86,9 @@ function writeMeta(state: InternalWorktreeState): void {
       parentCwd: state.parentCwd,
       repoKey: state.repoKey,
     }, null, 2),
-    'utf8',
+    { encoding: 'utf8', mode: PRIVATE_FILE_MODE },
   );
+  hardenPrivateFile(state.metaPath);
 }
 
 function removeMeta(state: InternalWorktreeState): void {
@@ -112,7 +114,7 @@ export function createAgentWorktree(opts: CreateWorktreeOptions): InternalWorktr
   const branch = `octocode/agents/${safeBranchName(opts.name)}-${id8}`;
   const worktreeRoot = path.join(opts.home ?? getOctocodeHome(), 'worktrees', repoKey);
   const worktreePath = path.join(worktreeRoot, id8);
-  fs.mkdirSync(worktreeRoot, { recursive: true });
+  ensurePrivateDirectory(worktreeRoot);
 
   let state: InternalWorktreeState | undefined;
   try {

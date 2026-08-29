@@ -13,6 +13,7 @@ import { connectDb, resolveDbPath } from '../src/db.js';
 import { runHooksInstall } from '../src/hooks-install.js';
 import { auditUnverified, markVerified } from '../src/verify.js';
 import { DEFAULT_AWARENESS_CONFIG, writeAwarenessConfig } from '../src/awareness-config.js';
+import { writeWorkspacePolicy } from '../src/workspace-policy.js';
 
 let configHome = '';
 const previousOctocodeHome = process.env.OCTOCODE_HOME;
@@ -169,8 +170,9 @@ describe('full-loop host hook contracts', () => {
 
   it('aggregates one session turn into one pending fallback HOOK run', async () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'awareness hook aggregation '));
-    const workspace = join(memoryDir, 'workspace');
-    mkdirSync(workspace, { recursive: true });
+      const workspace = join(memoryDir, 'workspace');
+      mkdirSync(workspace, { recursive: true });
+      writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
     const priorMemoryHome = process.env.OCTOCODE_MEMORY_HOME;
     const priorAgentId = process.env.OCTOCODE_AGENT_ID;
     process.env.OCTOCODE_MEMORY_HOME = memoryDir;
@@ -280,8 +282,9 @@ describe('full-loop host hook contracts', () => {
 
   it('discards a failed shell write instead of creating verification debt', async () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'awareness failed hook '));
-    const workspace = join(memoryDir, 'workspace');
-    mkdirSync(workspace, { recursive: true });
+      const workspace = join(memoryDir, 'workspace');
+      mkdirSync(workspace, { recursive: true });
+      writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
     const priorMemoryHome = process.env.OCTOCODE_MEMORY_HOME;
     const priorAgentId = process.env.OCTOCODE_AGENT_ID;
     process.env.OCTOCODE_MEMORY_HOME = memoryDir;
@@ -318,8 +321,9 @@ describe('full-loop host hook contracts', () => {
 
   it('coalesces concurrent shell pre-edit processes into one aggregate', async () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'awareness hook race '));
-    const workspace = join(memoryDir, 'workspace');
-    mkdirSync(workspace, { recursive: true });
+      const workspace = join(memoryDir, 'workspace');
+      mkdirSync(workspace, { recursive: true });
+      writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
     const priorMemoryHome = process.env.OCTOCODE_MEMORY_HOME;
     const priorAgentId = process.env.OCTOCODE_AGENT_ID;
     process.env.OCTOCODE_MEMORY_HOME = memoryDir;
@@ -361,8 +365,9 @@ describe('full-loop host hook contracts', () => {
 
   it('re-audits recursive Stop only when continuation edits add new debt', async () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'awareness recursive stop '));
-    const workspace = join(memoryDir, 'workspace');
-    mkdirSync(workspace, { recursive: true });
+      const workspace = join(memoryDir, 'workspace');
+      mkdirSync(workspace, { recursive: true });
+      writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
     const priorMemoryHome = process.env.OCTOCODE_MEMORY_HOME;
     const priorAgentId = process.env.OCTOCODE_AGENT_ID;
     process.env.OCTOCODE_MEMORY_HOME = memoryDir;

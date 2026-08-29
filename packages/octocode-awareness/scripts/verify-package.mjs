@@ -16,7 +16,6 @@ if (process.env.OCTOCODE_VERIFY_PACKAGE_INNER === '1') process.exit(0);
 // Same discovery rule as build.mjs — kept independent (not imported) so this
 // verification catches a real build-vs-source mismatch instead of trivially
 // agreeing with whatever build.mjs produced.
-const RETIRED_PACKAGE_SKILLS = ['octocode-agent-communication', 'octocode-reflection'];
 function discoverPackageSkills() {
   const candidateRoots = [join(packageRoot, 'skills'), join(packageRoot, 'out', 'skills')];
   const skillsRoot = candidateRoots.find((root) => existsSync(root));
@@ -24,7 +23,7 @@ function discoverPackageSkills() {
   return readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
-    .filter((name) => name !== 'scripts' && !RETIRED_PACKAGE_SKILLS.includes(name))
+    .filter((name) => name !== 'scripts')
     .filter((name) => existsSync(join(skillsRoot, name, 'SKILL.md')))
     .sort();
 }

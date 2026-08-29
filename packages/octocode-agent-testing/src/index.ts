@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 export * from './host-conformance.js';
+export * from './production-host-adapters.js';
 
 export type MockPiMode = 'tui' | 'rpc' | 'json' | 'print';
 

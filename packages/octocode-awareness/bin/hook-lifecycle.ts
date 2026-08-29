@@ -16,13 +16,14 @@ import { agentId, artifact, completeHookControl, db, emitHookContext, hookBlockO
 import { registerHookAgent, scopeArgs } from './hook-peers.js';
 import { finalizeActiveFallbackHookRuns, withHookDbRetry } from './hook-run-state.js';
 import { AwarenessFeatureConfig, DEFAULT_AWARENESS_CONFIG } from '../src/awareness-config.js';
+import { briefingChangeSignal, verificationDebtSignal, type HookSignalItem } from './hook-signals.js';
 
 export async function runStopVerify(
   payload: Record<string, unknown>,
   features: AwarenessFeatureConfig = DEFAULT_AWARENESS_CONFIG.features,
 ): Promise<number> {
   try {
-    const database = db();
+    const database = db(payload);
     registerHookAgent(database, payload, 'hook:stop-verify');
     const finalizedRunIds = withHookDbRetry(() => finalizeActiveFallbackHookRuns(
       database,
@@ -37,16 +38,10 @@ export async function runStopVerify(
       // New continuation edits create/finalize a new aggregate and must surface
       // one fresh continuation before the following unchanged recursive Stop.
       if (isStopHookActive(payload) && finalizedRunIds.length === 0) return 0;
-      const details = [
-        ...report.unverified.map((run) => `${run.status}:${run.run_id}: ${run.test_plan}`),
-        ...report.stale_active.map((run) => `STALE:${run.run_id}: ${run.rationale}`),
-      ];
-      const shown = details.slice(0, 3);
-      const omitted = details.length > 3 ? `; +${details.length - 3} omitted` : '';
       return completeHookControl(hookBlockOutcome(
         shellHookHost(payload),
         'stop',
-        `octocode-awareness: concluding with unverified work. ${shown.join('; ')}${omitted}`,
+        verificationDebtSignal(report.count),
       ));
     }
   } catch (error) {
@@ -68,7 +63,7 @@ export function maybePreviewDigest(
   const scopeHash = createHash('sha256').update(digestScope).digest('hex').slice(0, 12);
   const markerPath = join(memoryHome, `.last-digest-preview-${scopeHash}-epoch-ms`);
   try {
-    const database = db();
+    const database = db(payload, 'digest');
     let last = 0;
     try {
       last = Number(readFileSync(markerPath, 'utf8').trim() || 0);
@@ -107,7 +102,7 @@ export async function runNotifyDeliver(
   if (process.env.OCTOCODE_NO_NOTIFY === '1') return 0;
   const maintenanceContext = maybePreviewDigest(payload, features);
   try {
-    const database = db();
+    const database = db(payload, 'get-memory');
     registerHookAgent(database, payload, 'hook:notify-deliver');
     withHookDbRetry(() => finalizeActiveFallbackHookRuns(
       database,
@@ -122,10 +117,10 @@ export async function runNotifyDeliver(
           artifact: artifact(payload) ?? undefined,
           query: promptQuery(payload) ?? undefined,
           format: 'hook',
-        }) as { additionalContext?: string }
+        }) as { additionalContext?: string; notifications?: HookSignalItem[] }
       : {};
-    const additionalContext = [result.additionalContext, maintenanceContext].filter(Boolean).join('\n');
-    if (additionalContext) {
+    const changed = Boolean(result.additionalContext || maintenanceContext);
+    if (changed) {
       emitHookContext(
         payload,
         shellHookHost(payload) === 'cursor'
@@ -133,7 +128,7 @@ export async function runNotifyDeliver(
           : hookEventName(payload) === 'SubagentStart'
             ? 'SubagentStart'
             : hookEventName(payload) === 'SessionStart' ? 'SessionStart' : 'UserPromptSubmit',
-        additionalContext,
+        briefingChangeSignal(result.notifications ?? [], Boolean(maintenanceContext)),
       );
     }
   } catch (error) {
@@ -147,7 +142,7 @@ export async function runSessionEnd(
   features: AwarenessFeatureConfig = DEFAULT_AWARENESS_CONFIG.features,
 ): Promise<number> {
   try {
-    const database = db();
+    const database = db(payload);
     registerHookAgent(database, payload, 'hook:session-end');
     withHookDbRetry(() => finalizeActiveFallbackHookRuns(
       database,
@@ -182,7 +177,7 @@ export async function runSessionCompact(
   features: AwarenessFeatureConfig = DEFAULT_AWARENESS_CONFIG.features,
 ): Promise<number> {
   try {
-    const database = db();
+    const database = db(payload);
     registerHookAgent(database, payload, 'hook:session-compact');
     withHookDbRetry(() => finalizeActiveFallbackHookRuns(
       database,

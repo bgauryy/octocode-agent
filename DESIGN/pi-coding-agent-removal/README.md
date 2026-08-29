@@ -2,9 +2,9 @@
 
 > The canonical entry point for implementation is [`../README.md`](../README.md). This folder preserves the complete source RFC, planning system, decisions, and evidence archive.
 
-This folder is the complete planning and evidence system for replacing the native `pi-coding-agent` dependency with an Octocode-owned runtime contract under the planned `packages/octocode-agent-core/` package. It also preserves `@octocodeai/pi-extension` as a supported adapter, moves the native terminal to OpenTUI, unifies settings in `settings.html`, and adds Codex-compatible hooks plus event-driven plugins.
+This folder is the complete planning and evidence system for replacing Pi with an Octocode-owned runtime and native editor. The 2026-08-28 product decision makes `@octocodeai/pi-extension` a temporary parity oracle that is deleted after native-only conformance, observation, rollback, migration, packaging, install, and upgrade gates pass. Earlier active wording that promises permanent Pi support is superseded and tracked for reconciliation by `../10-REMAINING-WORK-PLAN.md` `DOC-005`; dated files under `evidence/` remain immutable.
 
-The RFC is a validated planning baseline. Partial implementation exists, but the production-path audit shows that the native cutover gates are not satisfied. The current release decision remains **do not begin dependency removal**. Read [`../01-CURRENT-STATE-AUDIT.md`](../01-CURRENT-STATE-AUDIT.md), [`../08-TRACEABILITY-CHECKLIST.md`](../08-TRACEABILITY-CHECKLIST.md), and [STATUS.md](STATUS.md) before doing any work.
+The RFC is a validated planning baseline. Partial implementation exists, but the production-path audit shows that the native cutover gates are not satisfied. The current release decision remains **do not begin final Pi deletion or canary rollout**. Continue only dependency-ordered native implementation, oracle freeze, selector construction, and verification permitted by the active gates. Read [`../01-CURRENT-STATE-AUDIT.md`](../01-CURRENT-STATE-AUDIT.md), [`../08-TRACEABILITY-CHECKLIST.md`](../08-TRACEABILITY-CHECKLIST.md), and [STATUS.md](STATUS.md) before doing any work.
 
 ## Target shape
 
@@ -21,10 +21,10 @@ packages/octocode-agent-core
         +--> host-conformance suite
         |
         +--> native Octocode host
-        +--> supported Pi host adapter --> @octocodeai/pi-extension
+        +--> temporary Pi oracle --> @octocodeai/pi-extension
 ```
 
-Agent core must not import Pi or OpenTUI types. The Stage 7 candidate requires zero native agent/core `pi-coding-agent` references and dependency paths. Pi-specific translation stays in the supported extension adapter. OpenTUI stays in the terminal adapter.
+Agent core must not import Pi or OpenTUI types. The final candidate requires zero live Pi references and dependency paths across source, manifests, lockfiles, built/packed artifacts, installers, update paths, and releases. Pi-specific translation stays in the temporary oracle until deletion. OpenTUI stays in the terminal adapter.
 
 ## Non-negotiable rules
 
@@ -34,7 +34,7 @@ Agent core must not import Pi or OpenTUI types. The Stage 7 candidate requires z
 4. Do not weaken a requirement by editing a checklist or status table. Update the owning specification first and obtain the required approval.
 5. Run the same host-conformance scenarios against Pi-backed and native implementations.
 6. Keep external effects out of shadow execution. Security bypasses, duplicate effects, data loss, compaction loops, and owned-child leaks have zero tolerance.
-7. Preserve `@octocodeai/pi-extension` as a supported product surface.
+7. Preserve the frozen Pi oracle until the deletion gates pass; then remove the extension package and every live Pi product path.
 8. Use Octocode search, AST, and LSP tools for code evidence. Search results are candidates; semantic identity and reachability require LSP proof.
 9. Follow the repository `AGENTS.md`, package architecture documents, build order, TDD workflow, and real-path verification rules.
 10. Never hand-edit generated Awareness state or claim implementation readiness from documentation validation.
@@ -53,7 +53,7 @@ Each subject has one owning document. Other files link to it and must not redefi
 | [PREREQUISITES.md](PREREQUISITES.md)                               | Required people, decisions, environments, baseline inputs, and blockers                            | Preparing Stage 0 or resolving a prerequisite                     |
 | [IMPLEMENTATION.md](IMPLEMENTATION.md)                             | Dependency-ordered construction plan and package-level work                                        | Designing or implementing a migration slice                       |
 | [SCHEMAS_AND_TYPES.md](SCHEMAS_AND_TYPES.md)                       | Canonical contracts, schemas, versions, compatibility rules, and Pi mappings                       | Adding or changing an API, interface, event, or persisted shape   |
-| [READINESS_AND_FEATURE_MATRIX.md](READINESS_AND_FEATURE_MATRIX.md) | Maturity definitions, all 92 feature IDs, readiness ratings, and sourced competitor comparison     | Scoping a feature, recalculating readiness, or comparing coverage |
+| [READINESS_AND_FEATURE_MATRIX.md](READINESS_AND_FEATURE_MATRIX.md) | Maturity definitions, all 108 feature IDs, readiness ratings, and sourced competitor comparison    | Scoping a feature, recalculating readiness, or comparing coverage |
 | [TEST_PLAN.md](TEST_PLAN.md)                                       | Mandatory unit, contract, integration, E2E, security, fault, performance, and release tests        | Writing tests, accepting a slice, or preparing release evidence   |
 | [KPI.md](KPI.md)                                                   | Baselines, targets, guardrails, decision rules, traceability, and RFC validation receipts          | Measuring before/after impact or deciding proceed/hold/rollback   |
 | [BEFORE_AFTER.md](BEFORE_AFTER.md)                                 | Required before/after evidence and behavior comparison                                             | Capturing a baseline or evaluating the candidate                  |
@@ -181,9 +181,7 @@ For RFC-only edits:
 
 The current style command is:
 
-```text
-node /Users/bgaryy/.octocode/skills/octocode-documentation/scripts/style-lint.mjs DESIGN/pi-coding-agent-removal/*.md
-```
+Run the `style-lint.mjs` script from the installed `octocode-documentation` skill against `DESIGN/pi-coding-agent-removal/*.md`. Do not put a developer-machine skill path in this repository.
 
 For production changes, run the full build and command matrix in `TEST_PLAN.md`. Replace template workspace names only after the new package manifest establishes the verified name.
 

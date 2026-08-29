@@ -14,8 +14,8 @@ Each stage is a shippable decision gate, not a time estimate. A stage starts onl
 | 3. Sessions | Pi runtime with native session path in tests/opt-in | Developer opt-in | Prove import, persistence, projection, and compaction |
 | 4. Runtime | Pi and native implementations | Developer opt-in and pure shadow | Prove native turn/tool execution |
 | 5. Transports/UI/settings | Native runtime behind every mode; OpenTUI terminal; unified settings HTML | Controlled canary | Prove OpenTUI, settings/models, print, JSON, and RPC parity |
-| 6. Native default | Native default; Pi rollback adapter installed | Expanding release cohorts | Meet observation-window gates |
-| 7. Dependency removal | Native runtime without Pi; separately supported Pi extension remains | General availability | Delete native-runtime `pi-coding-agent` dependency and retain tested extension compatibility |
+| 6. Native default | Native default; explicit temporary Pi rollback selector installed | Expanding release cohorts | Meet observation-window and prior-native rollback gates |
+| 7. Complete Pi retirement | Native runtime without Pi; extension, selector, and live Pi wiring deleted | General availability | Delete all Pi product/dependency paths after native-only rollback, install, and upgrade proof |
 
 ## Stage 0: Establish the canonical before state
 

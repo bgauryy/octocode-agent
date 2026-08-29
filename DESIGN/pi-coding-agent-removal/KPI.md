@@ -42,13 +42,14 @@ Feature: Runtime host conformance
     Given the Phase 6 candidate artifact
     When native agent/core imports, package resolution, subprocesses, and dependency graph are inspected
     Then no native agent/core path references @earendil-works/pi-coding-agent
-    And remaining Pi references are confined to the supported Pi-extension adapter
+    And any remaining live Pi references are confined to the frozen oracle before retirement
 
-  Scenario: Pi extension remains supported
-    Given a declared supported Pi host version
+  Scenario: Pi oracle is bounded and retired
+    Given a pinned Pi host version during the comparison window
     When @octocodeai/pi-extension activates through agent-core contracts
     Then its semantic conformance suite passes
     And agent core has no dependency on Pi or the extension
+    And after the signed retirement gate no live Pi package, selector, workflow, or product path remains
 
   Scenario: Native terminal uses OpenTUI safely
     Given the accepted OpenTUI runtime and native artifact route
@@ -58,7 +59,7 @@ Feature: Runtime host conformance
     And no OpenTUI type crosses into agent core or a noninteractive transport
 
   Scenario: All settings and models use one HTML control center
-    Given the native agent or a declared supported Pi-extension host
+    Given the native agent or the frozen Pi oracle during comparison
     When the user opens /settings models and changes a default or models.json source
     Then settings.html shows the stored and effective values with provenance
     And the mutation is schema-valid, revision-safe, atomic, and redacted
@@ -217,8 +218,8 @@ Performance thresholds must be filled from the clean baseline and approved befor
 - Stop rollout immediately for an untrusted hook/plugin execution, partial plugin activation, contribution conflict that resolves silently, or hook/plugin-owned resource leak.
 - Roll back the host selector when the Pi adapter remains installed; roll back the release artifact after package removal.
 - Investigate ordinary reliability or performance misses before expansion. Accept a difference only with an owner, rationale, fixture update, and user-impact assessment.
-- Delete the native Pi host selector/rollback adapter only after the Q4 observation window and adoption threshold pass; retain the supported Pi-extension adapter.
-- Declare RFC success only when the dependency is absent from native agent/core, remaining Pi references match the approved extension inventory, native is stable for the approved window, and the evidence comparison is signed.
+- Delete the migration Pi host selector/rollback adapter only after the Q4 observation window, adoption threshold, and prior-native rollback pass; delete the Pi extension in the same final retirement program.
+- Declare RFC success only when Pi is absent from native agent/core, the extension package and live product wiring are deleted, native is stable for the approved window, clean install and upgrade pass, and the evidence comparison is signed.
 
 ## Traceability
 
@@ -233,7 +234,7 @@ Performance thresholds must be filled from the clean baseline and approved befor
 | Goal 7: native OpenTUI terminal | Terminal user/UI maintainer | OpenTUI parity, isolation, accessibility, performance, and restoration | Core test renderer plus real PTY/platform matrix | Pending |
 | Goal 8: unified settings HTML and Models | User/config maintainer/security reviewer | Complete registry/page, safe model/source mutations, host parity | Completeness, schema, fault, security, browser, and E2E suites | Pending |
 | Goal 9: Codex hooks and event-driven plugins | Extension author/security reviewer | Exact fixtures, mapped events, trust, transactional contributions, host parity | Schema, conformance, security, settings, lifecycle, leak suites | Pending |
-| Non-goals 10-14 | Reviewers | Scope audit, including retained Pi-extension support | Dependency, adapter matrix, and diff review | Pending |
+| Non-goals 10-14 | Reviewers | Scope audit, including bounded Pi-oracle use and final deletion | Dependency, adapter matrix, and diff review | Pending |
 
 ## RFC document validation
 
@@ -250,7 +251,7 @@ Before acceptance, validate this seventeen-file set:
 - [x] Markdown style lint has zero errors and zero warnings; informational suggestions were reviewed.
 - [x] The RFC evaluator passes; the residual check is recorded later in this section.
 - [x] `BEFORE_AFTER.md`, `IMPACT.md`, `MIGRATION_STAGES.md`, and `TEST_PLAN.md` link to the owning RFC requirements instead of redefining scope.
-- [x] `SCHEMAS_AND_TYPES.md` assigns canonical contracts to agent core and Pi-only translation to the supported extension adapter.
+- [x] `SCHEMAS_AND_TYPES.md` assigns canonical contracts to agent core, bounds Pi-only translation to the temporary oracle, and requires final deletion.
 - [x] Every execution step in `STEPS.md` cites its governing documents, output, and stop condition.
 - [x] `OPENTUI_TERMINAL_CORE.md` keeps OpenTUI adapter-private and defines runtime, packaging, lifecycle, test, performance, accessibility, and rollback gates.
 - [x] `SETTINGS_WEB_UI.md` defines registry completeness, the Models/`models.json` section, revision-safe mutations, source provenance, secret safety, host conformance, migration, and rollback.

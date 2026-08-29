@@ -3,7 +3,7 @@
 <div align="center">
   <img src="https://github.com/bgauryy/octocode/raw/main/packages/octocode-mcp/assets/logo_white.png" width="360px" alt="Octocode Logo">
 
-  **A self-working coding agent — the [Pi](https://github.com/earendil-works/pi) runtime driven by the Octocode harness, with always-on multi-agent coordination.**
+  **A native coding-agent editor with Octocode research, tools, and multi-agent coordination.**
 
   [![Website](https://img.shields.io/badge/Website-007ACC?style=for-the-badge&logo=link&logoColor=white)](https://octocode.ai)
   ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)
@@ -12,13 +12,14 @@
 
 ---
 
-`octocode-agent` is the **agent slice** of the Octocode platform. It packages three layers that turn Pi into an evidence-first, coordinated coding agent:
+`octocode-agent` is the **agent slice** of the Octocode platform. It packages three layers around one native product runtime:
 
-1. **[`octocode-agent`](packages/octocode-agent)** — the branded launcher CLI. One command, one update path.
-2. **[`@octocodeai/pi-extension`](packages/octocode-pi-extension)** — the **harness**: system prompt, MCP research bridge, support tools, skills, and Awareness wiring.
-3. **[`@octocodeai/octocode-awareness`](packages/octocode-awareness)** — the **coordination layer**: one package exposing the shared root library + `octocode-awareness` bin for Pi/external interoperability, and the advanced full runtime.
+1. **[`octocode-agent`](packages/octocode-agent)** — the native editor and launcher. It composes `@octocodeai/agent-core`, native transports, sessions, settings, and OpenTUI.
+2. **[`@octocodeai/pi-extension`](packages/octocode-pi-extension)** — the supported Pi adapter and temporary parity oracle. It remains available during migration; the final cutover removes it only after its gates pass.
+3. **[`@octocodeai/octocode-awareness`](packages/octocode-awareness)** — the shared coordination, hooks, and memory runtime used by supported coding hosts.
 
-> **Pi runs the loop, Octocode owns the tools, Awareness coordinates.** The launcher is thin on purpose — all behavior lives in the harness and coordination packages.
+> **The native editor runs the product loop.** The migration keeps Pi as a supported
+> comparison toggle instead of a dependency or fallback of `octocode-agent`.
 
 ---
 
@@ -27,12 +28,13 @@
 - [Quick Start](#quick-start)
 - [The Three Layers](#the-three-layers)
   - [1. octocode-agent — the launcher](#1-octocode-agent--the-launcher)
-  - [2. Pi Extension — the harness](#2-pi-extension--the-harness)
+  - [2. Pi Extension — the parity oracle](#2-pi-extension--the-parity-oracle)
   - [3. Awareness — CLI + Skill](#3-awareness--cli--skill)
 - [Tool Ownership](#tool-ownership)
 - [Terminal Experience](#terminal-experience)
 - [Extending with MCP Servers and Skills](#extending-with-mcp-servers-and-skills)
 - [Architecture](#architecture)
+- [Architecture Audit Prompt](#architecture-audit-prompt)
 - [Repository Layout](#repository-layout)
 - [Developing](#developing)
 - [How the Pieces Wire Together](#how-the-pieces-wire-together)
@@ -47,13 +49,13 @@ Run the agent — no clone required:
 
 ```bash
 npm install -g octocode-agent
-octocode-agent                 # launch the agent (Pi + Octocode harness)
-octocode-agent --version       # launcher, core, and Pi host versions
-octocode-agent update          # self-update the platform (pulls newest core)
-octocode-agent update core     # update @octocodeai/pi-extension in place
+octocode-agent                 # launch the native editor
+octocode-agent --version       # launcher and native core version
+octocode-agent update          # self-update the native product
+octocode-agent update core     # update @octocodeai/agent-core
 ```
 
-Or use the harness inside an existing Pi install:
+Use the supported parity oracle inside an existing Pi install:
 
 ```bash
 pi install npm:@octocodeai/pi-extension
@@ -73,26 +75,25 @@ npx octocode status
 
 ### 1. `octocode-agent` — the launcher
 
-The branded entry point. It has a real dependency on `@octocodeai/pi-extension`, so
-`npm install -g` and `npx` always resolve the pinned harness. It launches Pi in
-**octocode-first mode** — the Octocode harness leads while Pi's runtime invariants
-stay underneath.
+The branded entry point composes the native `@octocodeai/agent-core` runtime directly.
+It has no Pi dependency and does not embed, spawn, or fall back to Pi.
 
 ```bash
-octocode-agent [agent args...]   # launch; Pi-compatible args are mapped by the launcher
+octocode-agent [agent args...]   # launch the native editor
 octocode-agent update            # self-update the platform
-octocode-agent update core       # refresh only @octocodeai/pi-extension in this install
-octocode-agent --agent-help      # launcher help (reserved subcommands only)
+octocode-agent update core       # refresh @octocodeai/agent-core
+octocode-agent --help            # native launcher help
 ```
 
-Because the prompt, skills, tools, and memory all live in the core package, nothing is
-duplicated here — updating the core updates what the agent launches.
+The launcher composes the shared prompt, tool catalog, MCP and Skill facades, sessions,
+settings, and Awareness adapter through native package boundaries.
 
-➡️ [`packages/octocode-agent`](packages/octocode-agent) · [PI_INTEGRATION.md](packages/octocode-agent/docs/PI_INTEGRATION.md)
+➡️ [`packages/octocode-agent`](packages/octocode-agent) · [historical Pi comparison](packages/octocode-agent/docs/PI_INTEGRATION.md)
 
-### 2. Pi Extension — the harness
+### 2. Pi Extension — the parity oracle
 
-`@octocodeai/pi-extension` is where the agent gets its brain. Installing it into Pi loads:
+`@octocodeai/pi-extension` is the supported Pi-host adapter used for compatibility and
+native-parity comparisons during migration. Installing it into Pi loads:
 
 | Surface | Count | What it is |
 |---|---:|---|
@@ -160,10 +161,9 @@ and maintenance in a separate advanced store; it is not the Pi-visible coordinat
 
 ## Tool Ownership
 
-The branded launcher starts Pi with **all native Pi built-ins suppressed** in both launch
-paths: the SDK session uses `noTools: "builtin"`, and the subprocess uses
-`--no-builtin-tools`. There is no environment opt-out. The harness then supplies the complete
-public palette, including its guarded same-name `bash` implementation.
+The native launcher obtains live Octocode tool schemas and applies native runtime policy.
+The Pi parity table documents the oracle's replacement routes; it is not the native
+launcher's tool-registration path.
 
 | Pi native tool | Octocode route |
 |---|---|
@@ -172,7 +172,7 @@ public palette, including its guarded same-name `bash` implementation.
 | `grep`, `find`, `ls` | `MCPTool` → `localSearchCode`, `localFindFiles`, or `localViewStructure` |
 | `bash` | Octocode's guarded same-name `bash` tool |
 
-Direct Pi users who install only the extension get the same effective palette: the extension
+Pi users who install the extension get the effective palette below: the extension
 removes replaced native names on load and again at session start as a defensive backstop.
 See [OVERRIDES.md](packages/octocode-pi-extension/docs/OVERRIDES.md) for the exact contract.
 
@@ -180,7 +180,10 @@ See [OVERRIDES.md](packages/octocode-pi-extension/docs/OVERRIDES.md) for the exa
 
 ## Terminal Experience
 
-The harness ships a deliberate TUI design system — one palette, one copy source, and motion
+The following surfaces describe the Pi parity oracle. The native product uses the OpenTUI
+adapter under `packages/octocode-agent/src/terminal/`.
+
+The Pi adapter ships a deliberate TUI design system — one palette, one copy source, and motion
 that always *means* something:
 
 | Surface | What you get |
@@ -262,21 +265,24 @@ More detail: [`packages/octocode-pi-extension/docs/TOOLS.md#MCP-Servers`](packag
 
 ```mermaid
 graph TD
-    AGENT["octocode-agent<br/>branded launcher CLI"]
-    PI["Pi runtime<br/>(shell, tool loop, providers)"]
-    EXT["@octocodeai/pi-extension<br/>HARNESS: prompt · MCP research · support tools · skills · hooks"]
+    AGENT["octocode-agent<br/>native product runtime"]
+    CORE["@octocodeai/agent-core<br/>runtime · lifecycle · policy · sessions"]
+    PI["Pi runtime<br/>supported parity host"]
+    EXT["@octocodeai/pi-extension<br/>temporary parity oracle"]
     AW["@octocodeai/octocode-awareness<br/>SHARED COORDINATION: plans/tasks · locks · memory · checks (SQLite)"]
     SKILL["octocode-awareness skill<br/>external-agent router"]
     BRAIN["External npm brain (sibling repos)<br/>octocode-tools-core · octocode-engine · @octocodeai/config"]
 
-    AGENT -- launches --> PI
+    AGENT -- composes --> CORE
+    AGENT -- uses --> AW
     PI -- loads --> EXT
     EXT -- bundles CLI + skill --> AW
     EXT -- injects --> SKILL
     SKILL -- drives --> AW
     EXT -- consumes --> BRAIN
 
-    style EXT fill:#1a1a2e,stroke:#e75d2a,color:#fff
+    style CORE fill:#1a1a2e,stroke:#e75d2a,color:#fff
+    style EXT fill:#2a2333,stroke:#b87850,color:#fff
     style AW fill:#12233b,stroke:#4a9,color:#fff
 ```
 
@@ -288,14 +294,27 @@ sibling repos and consumed here as npm dependencies. Never duplicate `getOctocod
 
 ---
 
+## Architecture Audit Prompt
+
+Use [`prompts/architecture.md`](prompts/architecture.md) when asking a coding agent to review
+the native `octocode-agent` CLI implementation end-to-end. The prompt requires the reviewer
+to reconcile documented design with runtime behavior, trace every supported execution mode,
+prove findings with Octocode AST/LSP evidence, follow TDD for changes, and verify the rebuilt
+CLI rather than treating compilation alone as completion.
+
+The prompt supplements the repository and package agent guides; [`AGENTS.md`](AGENTS.md) and
+any applicable package-specific instructions remain authoritative.
+
+---
+
 ## Repository Layout
 
 Yarn 4 workspaces monorepo (`packages/*`), Node ≥ 22 (Awareness runtime needs ≥ 22.13).
 
 | Package | npm name | Role | Deep dive |
 |---|---|---|---|
-| [`packages/octocode-agent`](packages/octocode-agent) | `octocode-agent` | Branded launcher — one command, one update path. | [docs](packages/octocode-agent/docs/README.md) |
-| [`packages/octocode-pi-extension`](packages/octocode-pi-extension) | `@octocodeai/pi-extension` | The Pi harness: native tools, CLIs, system prompt, skills, Awareness wiring. | [docs](packages/octocode-pi-extension/docs/README.md) |
+| [`packages/octocode-agent`](packages/octocode-agent) | `octocode-agent` | Native editor and launcher — one command, one update path. | [docs](packages/octocode-agent/docs/README.md) |
+| [`packages/octocode-pi-extension`](packages/octocode-pi-extension) | `@octocodeai/pi-extension` | Supported Pi adapter and temporary parity oracle. | [docs](packages/octocode-pi-extension/docs/README.md) |
 | [`packages/octocode-awareness`](packages/octocode-awareness) | `@octocodeai/octocode-awareness` | Shared root coordination used by Pi/external agents plus advanced reflection/query/session runtime. Canonical skill source. | [docs](packages/octocode-awareness/docs/README.md) |
 
 Agent guides: [`AGENTS.md`](AGENTS.md) (repo) · [`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md) (package). Internals: each package's `ARCHITECTURE.md` where present.
@@ -338,14 +357,16 @@ only when asked.
 **Build outputs (do not hand-edit):** `packages/octocode-awareness/out/**` (separate CLI +
 import-only library/schema API + bundled skills), extension `dist/**`, and any
 `.agents/skills/**` / `out/skills/**` mirrors. Edit source in `src/**`, `bin/**`, and the
-canonical skill under `packages/octocode-awareness/skills/octocode-awareness/**`, then rebuild.
+    canonical skill under `skills/octocode-awareness/**`, then rebuild.
 
 ---
 
 ## How the Pieces Wire Together
 
-1. `octocode-agent` launches **Pi** with `@octocodeai/pi-extension` loaded as the harness.
-2. On load the extension sets `$OCTOCODE_CLI` + `$OCTOCODE_AWARENESS_CLI`, registers support
+1. `octocode-agent` composes `@octocodeai/agent-core`, native model/tool adapters, sessions,
+   transports, and OpenTUI without importing Pi.
+2. The separate Pi parity path loads `@octocodeai/pi-extension`. On load, the extension sets
+   `$OCTOCODE_CLI` + `$OCTOCODE_AWARENESS_CLI`, registers support
    tools, injects the operating-model system prompt, and installs edit-safety + Awareness
    lifecycle hooks.
 3. For non-trivial repository work the agent activates the **`octocode-awareness` skill**
@@ -363,7 +384,10 @@ re-export.
 
 ## Verified Capabilities
 
-Every surface below is exercised end-to-end (live smoke runs + the package test suites), not just compiled.
+The surfaces below are the retained Pi-oracle baseline exercised by its package tests and
+smoke paths. They are comparison inputs, not evidence that the native cutover gates pass.
+Native headless behavior and remaining limits are documented in
+[`HEADLESS.md`](packages/octocode-agent/docs/HEADLESS.md).
 
 ### Tools
 
@@ -380,7 +404,11 @@ Every surface below is exercised end-to-end (live smoke runs + the package test 
 
 ### Skills
 
-Pi owns Awareness instructions in its prompt. External agents can install `octocode-awareness` from the canonical repo-root source [`skills/octocode-awareness`](skills/octocode-awareness). Other workflow skills remain installable with `npx octocode skill --add`.
+The native prompt includes the canonical Awareness coordination fragment. The Pi adapter
+injects equivalent host-specific instructions for parity. External agents can install
+`octocode-awareness` from the canonical repo-root source
+[`skills/octocode-awareness`](skills/octocode-awareness). Other workflow skills remain
+installable with `npx octocode skill --add`.
 
 ### Test surface
 
@@ -396,6 +424,7 @@ Pi owns Awareness instructions in its prompt. External agents can install `octoc
 | Area | Links |
 |---|---|
 | Agent / launcher | [`octocode-agent` docs](packages/octocode-agent/docs/README.md) · [PI_INTEGRATION](packages/octocode-agent/docs/PI_INTEGRATION.md) |
+| Architecture audit | [Native CLI implementation review prompt](prompts/architecture.md) |
 | Harness (Pi extension) | [docs index](packages/octocode-pi-extension/docs/README.md) · [TOOLS](packages/octocode-pi-extension/docs/TOOLS.md) · [AWARENESS flow](packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) · [REFLECT](packages/octocode-pi-extension/docs/REFLECT.md) · [OVERRIDES](packages/octocode-pi-extension/docs/OVERRIDES.md) |
 | Awareness | [docs index](packages/octocode-awareness/docs/README.md) · [HOW_IT_WORKS](packages/octocode-awareness/docs/HOW_IT_WORKS.md) · [HOOKS](packages/octocode-awareness/docs/HOOKS.md) · [VERIFY](packages/octocode-awareness/docs/VERIFY.md) · [LOCKS](packages/octocode-awareness/docs/LOCKS.md) · [MEMORY_NAVIGATION](packages/octocode-awareness/docs/MEMORY_NAVIGATION.md) |
 | Platform | Website **[octocode.ai](https://octocode.ai)** · [Pi](https://github.com/earendil-works/pi) |

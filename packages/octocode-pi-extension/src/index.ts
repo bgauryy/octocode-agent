@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { propagateOctocodeEnv, getOctocodeHome } from './env.js';
-import { defaultDbPath, openAwareness } from '@octocodeai/octocode-awareness';
+import { connectDb, defaultDbPath, insertEditLog, openAwareness } from '@octocodeai/octocode-awareness';
+import { ensurePrivateDirectory, hardenPrivateFile, PRIVATE_FILE_MODE } from '@octocodeai/octocode-awareness/mcp-state';
 import {
   DISABLED_BUILTIN_TOOL_NAMES,
   OVERRIDDEN_BUILTIN_TOOL_NAMES,
@@ -17,6 +18,7 @@ import {
   getAwarenessCLIPath,
   resolveAwarenessCliPath,
   runAwarenessPreEdit,
+  resolveAwarenessCoordinationScope,
 } from './assets.js';
 
 // Expose the Awareness CLI for agents. The env var holds the SCRIPT PATH
@@ -36,14 +38,13 @@ try {
 // env vars are inherited. Respect an explicit override.
 process.env.OCTOCODE_AGENT_HOST ||= 'octo';
 import {
-  shouldAppendSystemPrompt,
   mergeManagedAppendSystem,
   resolvePromptMode,
   composeSystemPrompt,
   stripProjectContext,
   stripPiSkillsSection,
 } from './prompt.js';
-import { registerSkillTool, discoverSkills, formatSkillUsageLines, type DiscoveredSkill } from './tools/skill-tool.js';
+import { registerSkillTool, discoverSkills, discoverSkillStates, formatSkillUsageLines, type DiscoveredSkill } from './tools/skill-tool.js';
 import { writeDiscoveryFile, getDiscoveryFilePath } from './tools/discovery-file.js';
 import {
   parseSetupScope,
@@ -80,7 +81,12 @@ import { renderRuntimeCapabilitiesAddendum } from './tools/image-render.js';
 import { setPeerWipBaseline, peerWipCount, setPeerWipStatusPainter } from './tools/peer-wip.js';
 import { registerBashTool } from './tools/bash-tool.js';
 import { createAwarenessMutationGate } from './tools/awareness-mutation-gate.js';
-import { assembleContextSegments } from './tools/context-segments.js';
+import {
+  INITIAL_CONTEXT_TOKEN_BUDGET,
+  PROVIDER_CONTEXT_TOKEN_BUDGET,
+  assembleContextSegments,
+  assertContextTokenBudget,
+} from './tools/context-segments.js';
 import {
   mergeCurrentContextSources,
   readLatestSessionUserRequest,
@@ -105,6 +111,7 @@ import {
   type InteractionBrokerAdapterRegistry,
   type RegisteredInteractionBrokerAdapter,
 } from './tools/interaction-broker-adapter.js';
+import { configureInteractionBrokerRoute } from './tools/interaction-broker.js';
 import { registerMemoryTool } from './tools/memory-tool.js';
 import { registerAwarenessCoordinationTools } from './tools/awareness-coordination-tools.js';
 import { registerAwarenessEventConsumer } from './tools/awareness-event-consumer.js';
@@ -171,24 +178,6 @@ import type {
   NotifyFn,
 } from './types.js';
 
-// ─── Re-exports (stable public API) ──────────────────────────────────────────
-
-import type { OctocodeShell, OctocodeShellDeps, ShellRuntime } from './shell/index.js';
-export type { OctocodeShell, OctocodeShellDeps, ShellRuntime } from './shell/index.js';
-
-/**
- * Octocode shell entry (Phase C alpha). Lazy: the shell pulls
- * `@earendil-works/pi-tui` at import time, so it must only load when the
- * launcher actually runs the shell (OCTOCODE_SHELL=1).
- */
-export async function createOctocodeShell(
-  runtime: ShellRuntime,
-  deps?: OctocodeShellDeps,
-): Promise<OctocodeShell> {
-  const m = await import('./shell/index.js');
-  return m.createOctocodeShell(runtime, deps);
-}
-
 export {
   DISABLED_BUILTIN_TOOL_NAMES,
   OVERRIDDEN_BUILTIN_TOOL_NAMES,
@@ -208,7 +197,6 @@ export {
 } from './surfaces.js';
 export type { Profile, SurfaceSpec, SurfaceVerb } from './surfaces.js';
 export {
-  shouldAppendSystemPrompt,
   renderSystemPromptAddendum,
   renderManagedAppendSystem,
   mergeManagedAppendSystem,
@@ -508,10 +496,15 @@ async function execGitSummary(pi: PiInstance, args: string[], timeout = 1200): P
 // with the first-class coordination tools) and imported above.
 
 const awarenessMutationGate = createAwarenessMutationGate({
-  storeExists: () => fs.existsSync(defaultDbPath(process.cwd())),
+  storeExists: (workspace) => {
+    const scope = resolveAwarenessCoordinationScope(workspace);
+    return fs.existsSync(defaultDbPath(workspace, scope));
+  },
   queryTarget: (target, workspace, agentId) => {
+    const scope = resolveAwarenessCoordinationScope(workspace);
     const result = runAwarenessPreEdit({
       workspace,
+      scope,
       agentId,
       host: 'pi',
       event: { toolName: 'write', input: { path: target } },
@@ -519,7 +512,7 @@ const awarenessMutationGate = createAwarenessMutationGate({
     return { blocked: result.blocked, message: result.message };
   },
   startWork: (target, workspace, agentId) => {
-    const aw = openAwareness({ workspace });
+    const aw = openAwareness({ workspace, scope: resolveAwarenessCoordinationScope(workspace) });
     try {
       aw.startWork({ filePath: target, agentId, reason: 'Automatic Pi mutation presence' });
     } finally {
@@ -527,11 +520,26 @@ const awarenessMutationGate = createAwarenessMutationGate({
     }
   },
   endWork: (target, workspace, agentId) => {
-    const aw = openAwareness({ workspace });
+    const aw = openAwareness({ workspace, scope: resolveAwarenessCoordinationScope(workspace) });
     try {
       aw.endWork({ filePath: target, agentId });
     } finally {
       aw.close();
+    }
+  },
+  recordEdit: (target, workspace, agentId) => {
+    const scope = resolveAwarenessCoordinationScope(workspace);
+    const database = connectDb(defaultDbPath(workspace, scope));
+    try {
+      insertEditLog(database, {
+        agentId,
+        filePath: target,
+        operation: 'update',
+        workspacePath: workspace,
+        artifact: 'pi-native-hook',
+      });
+    } finally {
+      database.close();
     }
   },
   warn: (message) => console.warn(`[octocode] ${message}`),
@@ -740,7 +748,8 @@ export function logInternalError(
     const normalized = normalizeError(error);
     const durationMs = typeof details['durationMs'] === 'number' ? details['durationMs'] : undefined;
     const redactedDetails = Object.keys(details).length > 0 ? safeJson(details) : '';
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    ensurePrivateDirectory(path.dirname(logPath));
+    hardenPrivateFile(logPath);
     fs.appendFileSync(
       logPath,
       [
@@ -758,7 +767,9 @@ export function logInternalError(
         includeStack && normalized.stack ? `stack:\n${normalized.stack}` : '',
         '---',
       ].filter(Boolean).join('\n') + '\n',
+      { encoding: 'utf8', mode: PRIVATE_FILE_MODE },
     );
+    hardenPrivateFile(logPath);
   } catch {
     // Logging must never become the reason the extension fails.
   }
@@ -880,7 +891,6 @@ export function listExtensionHarness(baseDir?: string): ExtensionHarness {
       '/octocode-agents',
       '/octocode-cron',
       '/settings',
-      '/octocode-settings',
       '/mcp',
       '/octocode-setup',
       '/octocode-skills-update',
@@ -1362,8 +1372,8 @@ async function wireOctocodePiExtension(
   // /resume, and /fork adopt refreshed MCP/skill/config state while every turn
   // inside one session reuses byte-identical provider prompt content.
   let frozenSystemPrompt: string | undefined;
-  // Signature of plan steps frozen into the system prompt; used for mid-session drift detection.
-  let frozenPlanSignature: string | undefined;
+  // Signature of the last plan projection delivered through attributed turn context.
+  let deliveredPlanSignature: string | undefined;
   // Unread count last surfaced via cron callback (proactive TUI notify; separate from per-turn LLM injection).
   let lastCronUnreadAlerted = -1;
   // No pi.exec seam → the awareness status job runs in-process (no child).
@@ -1423,6 +1433,7 @@ async function wireOctocodePiExtension(
   let sessionRuntime: SessionRuntime | undefined;
   let interactionBrokerAdapter: RegisteredInteractionBrokerAdapter | undefined;
   const hostBrokerRegistry = pi as PiInstance & Partial<InteractionBrokerAdapterRegistry>;
+  const hasHostInteractionAnswerRoute = typeof hostBrokerRegistry.registerInteractionBrokerAdapter === 'function';
   registerInteractionBrokerAdapter({
     registerInteractionBrokerAdapter: (adapter) => {
       interactionBrokerAdapter = adapter;
@@ -1577,8 +1588,9 @@ async function wireOctocodePiExtension(
     };
 
     const initializeOctocodeSession = async (ctx: PiContext | undefined, reason?: string): Promise<void> => {
+      if (ctx) configureInteractionBrokerRoute(ctx, hasHostInteractionAnswerRoute);
       frozenSystemPrompt = undefined;
-      frozenPlanSignature = undefined;
+      deliveredPlanSignature = undefined;
       latestAvailableSkills = undefined;
       latestPiSkills = undefined;
       lastCronUnreadAlerted = -1;
@@ -1814,7 +1826,7 @@ async function wireOctocodePiExtension(
           runtimeStore.getState().degradeTask('mcp', liveMcpState.message ?? 'MCP live refresh failed');
         }
         writeDiscoveryFile(ctx, {
-          skills: discoverSkills(sessionCwd, latestAvailableSkills),
+          skills: discoverSkillStates(sessionCwd, latestAvailableSkills),
           nativeTools: [...registeredToolNames],
         });
       });
@@ -1979,6 +1991,17 @@ async function wireOctocodePiExtension(
       if (key) toolStartTimes.delete(key);
       const toolInput = key ? toolInputs.get(key) : undefined;
       if (key) toolInputs.delete(key);
+      awarenessMutationGate.complete(
+        {
+          toolName: event.toolName,
+          input: toolInput && typeof toolInput === 'object'
+            ? toolInput as Record<string, unknown>
+            : {},
+        },
+        ctx?.cwd ?? process.cwd(),
+        getAwarenessAgentId(ctx),
+        !event.isError,
+      );
       // Re-open the bash suppression window at completion too: a long-running
       // bash command's fs churn lands at the end of the call, not the start.
       if (event.toolName === 'bash') markBashActivity();
@@ -2073,23 +2096,22 @@ async function wireOctocodePiExtension(
       refreshAwarenessPanel(ctx);
       refreshStatusPanel(ctx);
 
-      // Compute the canonical model-facing plan projection once; reuse it for
-      // drift detection, the freeze anchor, and the initial prompt.
+      // Compute the canonical model-facing plan projection once. Plans are mutable
+      // task state, so they are delivered through attributed turn context and are
+      // never embedded in the frozen system prompt.
       const planScope = activePlanScope(ctx);
       // catches lifecycle, RFC revision, decisions, dependencies, acceptance,
       // verification, and Awareness mapping changes—not only status/id changes.
       const planContext = renderPlanContext(getCurrentPlanReadModel(ctx, planScope));
       const planSig = planContext;
-
-      // Plan-drift correction: when the frozen <active_plan> block is stale, send
-      // the current step list as a context message. Fires once per state change
-      // (frozenPlanSignature is updated on each diff) so the model gets one
-      // targeted correction rather than a repeated stream.
-      let planDriftContent: string | undefined;
-      if (frozenSystemPrompt !== undefined && frozenPlanSignature !== undefined && planSig !== frozenPlanSignature) {
-        frozenPlanSignature = planSig;
-        planDriftContent = planContext || 'Plan cleared; no active task breakdown remains.';
-      }
+      const planChanged = planSig !== deliveredPlanSignature;
+      const planDeliveryContent = planChanged
+        ? planContext || (deliveredPlanSignature === undefined ? '' : 'Plan cleared; no active task breakdown remains.')
+        : '';
+      const livePlanContents: Record<string, string> = { 'active-plan': planContext };
+      const livePlanAssembly = assembleContextSegments([
+        { id: 'active-plan', content: planContext, kind: 'plan', origin: 'plan-domain', authority: 'user', scope: 'task', visibility: 'transcript', rehydrate: 'always', tokenBudget: 15_000 },
+      ]);
 
       const currentSourcesFrom = (manifest: ReturnType<typeof assembleContextSegments>['manifest'], contents: Record<string, string>): CurrentRehydrationSource[] =>
         manifest.map((segment) => ({ segment, content: contents[segment.id] ?? '' }));
@@ -2105,7 +2127,6 @@ async function wireOctocodePiExtension(
           'runtime-tool-contracts': currentRuntimeCapabilities,
           'dynamic-tool-contracts': currentDynamic,
           'available-skills': currentSkills,
-          'active-plan': planContext,
         };
         const currentAssembly = assembleContextSegments([
           { id: 'octocode-product-policy', content: currentContents['octocode-product-policy']!, kind: 'product-policy', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'hidden-policy', rehydrate: 'always', tokenBudget: 20_000 },
@@ -2113,20 +2134,23 @@ async function wireOctocodePiExtension(
           { id: 'runtime-tool-contracts', content: currentRuntimeCapabilities, kind: 'tool-contract', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'inspectable', rehydrate: 'always', tokenBudget: 10_000 },
           { id: 'dynamic-tool-contracts', content: currentDynamic, kind: 'tool-contract', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'inspectable', rehydrate: 'always', tokenBudget: 20_000 },
           { id: 'available-skills', content: currentSkills, kind: 'skill', origin: 'installed-skills', authority: 'project', scope: 'session', visibility: 'inspectable', rehydrate: 'on-trigger', tokenBudget: 20_000 },
-          { id: 'active-plan', content: planContext, kind: 'plan', origin: 'plan-domain', authority: 'user', scope: 'task', visibility: 'transcript', rehydrate: 'always', tokenBudget: 15_000 },
-        ]);
+        ], { totalTokenBudget: INITIAL_CONTEXT_TOKEN_BUDGET });
         frozenRehydration = consumeValidatedRehydration(
           ctx,
-          mergeCurrentContextSources(ctx, currentSourcesFrom(currentAssembly.manifest, currentContents), { totalTokenBudget: 250_000 }),
+          mergeCurrentContextSources(ctx, [
+            ...currentSourcesFrom(currentAssembly.manifest, currentContents),
+            ...currentSourcesFrom(livePlanAssembly.manifest, livePlanContents),
+          ], { totalTokenBudget: INITIAL_CONTEXT_TOKEN_BUDGET }),
           { allowProjection: true },
         );
         if (frozenRehydration) pi.appendEntry?.(REHYDRATION_RECEIPT_ENTRY_TYPE, frozenRehydration.receipt);
       }
 
       // Combine all per-turn context signals into one message (only one message
-      // per turn is supported by BeforeAgentStartEventResult). Plan drift first.
+      // per turn is supported by BeforeAgentStartEventResult). The plan appears
+      // only when first delivered, changed, or cleared.
       const contextAssembly = assembleContextSegments([
-        { id: 'active-plan', content: planDriftContent ?? '', kind: 'plan', origin: 'plan-domain', authority: 'user', scope: 'task', visibility: 'transcript', rehydrate: 'always', tokenBudget: 15_000 },
+        { id: 'active-plan', content: planDeliveryContent, kind: 'plan', origin: 'plan-domain', authority: 'user', scope: 'task', visibility: 'transcript', rehydrate: 'always', tokenBudget: 15_000 },
       ]);
       const contextMessage =
         contextAssembly.manifest.length > 0 || frozenRehydration?.content
@@ -2134,6 +2158,7 @@ async function wireOctocodePiExtension(
           : undefined;
 
       if (frozenSystemPrompt !== undefined) {
+        deliveredPlanSignature = planSig;
         return contextMessage
           ? { systemPrompt: frozenSystemPrompt, message: contextMessage }
           : { systemPrompt: frozenSystemPrompt };
@@ -2172,32 +2197,31 @@ async function wireOctocodePiExtension(
       const dynamicCatalog = getDynamicCapabilitiesAddendum(latestAvailableSkills.map((skill) => skill.name));
       const availableSkills = renderAvailableSkillsAddendum(latestAvailableSkills);
       const runtimeCapabilities = renderRuntimeCapabilitiesAddendum(ctx);
-      // Initial durable plan snapshot. The canonical projection was computed above.
-      // Later mutations are
-      // already present in tool results/session entries; compaction emits a bounded
-      // plan pointer and the drift mechanism re-delivers step state on change.
+      // The initial live plan is delivered through contextAssembly above. Stable
+      // policy/catalog fragments alone are frozen; compaction captures the live
+      // plan independently through its attributed plan segment.
       bumpPlanTurn(planScope);
-      const activePlan = planContext;
       const promptAssembly = assembleContextSegments([
         { id: 'octocode-product-policy', content: cachedSystemPromptText, kind: 'product-policy', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'hidden-policy', rehydrate: 'always', tokenBudget: 20_000 },
         { id: 'mcp-tool-contracts', content: mcpCatalog, kind: 'tool-contract', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'inspectable', rehydrate: 'always', tokenBudget: 30_000 },
         { id: 'runtime-tool-contracts', content: runtimeCapabilities, kind: 'tool-contract', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'inspectable', rehydrate: 'always', tokenBudget: 10_000 },
         { id: 'dynamic-tool-contracts', content: dynamicCatalog, kind: 'tool-contract', origin: 'octocode-harness', authority: 'product', scope: 'session', visibility: 'inspectable', rehydrate: 'always', tokenBudget: 20_000 },
         { id: 'available-skills', content: availableSkills, kind: 'skill', origin: 'installed-skills', authority: 'project', scope: 'session', visibility: 'inspectable', rehydrate: 'on-trigger', tokenBudget: 20_000 },
-        { id: 'active-plan', content: activePlan, kind: 'plan', origin: 'plan-domain', authority: 'user', scope: 'task', visibility: 'transcript', rehydrate: 'always', tokenBudget: 15_000 },
-      ]);
+      ], { totalTokenBudget: INITIAL_CONTEXT_TOKEN_BUDGET });
       const initialContents: Record<string, string> = {
         'octocode-product-policy': cachedSystemPromptText,
         'mcp-tool-contracts': mcpCatalog,
         'runtime-tool-contracts': runtimeCapabilities,
         'dynamic-tool-contracts': dynamicCatalog,
         'available-skills': availableSkills,
-        'active-plan': activePlan,
       };
       const initialRehydration = ctx
         ? consumeValidatedRehydration(
             ctx,
-            mergeCurrentContextSources(ctx, currentSourcesFrom(promptAssembly.manifest, initialContents), { totalTokenBudget: 250_000 }),
+            mergeCurrentContextSources(ctx, [
+              ...currentSourcesFrom(promptAssembly.manifest, initialContents),
+              ...currentSourcesFrom(livePlanAssembly.manifest, livePlanContents),
+            ], { totalTokenBudget: INITIAL_CONTEXT_TOKEN_BUDGET }),
             { allowProjection: false },
           )
         : undefined;
@@ -2209,10 +2233,9 @@ async function wireOctocodePiExtension(
           contents: Object.fromEntries(promptAssembly.manifest.map((segment) => [segment.id, initialContents[segment.id] ?? ''])),
         };
       });
-      // Build once, then freeze these exact bytes for the session. This complete
-      // value includes Pi's base system prompt, project context, Octocode policy,
-      // initial skills, MCP catalog, and the initial durable plan projection.
-      const resolvedPrompt = prompt.trim().length === 0 || !shouldAppendSystemPrompt(piPrompt, prompt)
+      // Build once, then freeze these exact stable bytes for the session. Mutable
+      // plan state remains outside the system prompt in attributed turn context.
+      const resolvedPrompt = prompt.trim().length === 0
         ? piPrompt
         : composeSystemPrompt({
           piSystemPrompt: piPrompt,
@@ -2224,8 +2247,14 @@ async function wireOctocodePiExtension(
       // schemas separately and expose the combined initial subtotal.
       const mcpCounts = getCachedMcpCounts(ctx);
       const directToolStats = getDirectToolContractStats(registeredToolNames);
-      const dynamicChars = runtimeCapabilities.length + dynamicCatalog.length + availableSkills.length + activePlan.length;
-      const providerSubtotalChars = resolvedPrompt.length + directToolStats.totalChars;
+      const turnContextChars = contextMessage?.content.length ?? 0;
+      const dynamicChars = runtimeCapabilities.length + dynamicCatalog.length + availableSkills.length + turnContextChars;
+      const providerSubtotalChars = resolvedPrompt.length + directToolStats.totalChars + turnContextChars;
+      const estimatedProviderTokens = assertContextTokenBudget(
+        'initial provider context',
+        providerSubtotalChars,
+        PROVIDER_CONTEXT_TOKEN_BUDGET,
+      );
       runtimeStoreFor(ctx)?.getState().setContext({
         status: 'frozen',
         mode: isCompactMcpEnabled() ? 'compact' : 'exact',
@@ -2234,19 +2263,19 @@ async function wireOctocodePiExtension(
         dynamicChars,
         directToolChars: directToolStats.totalChars,
         providerSubtotalChars,
-        estimatedTokens: Math.round(providerSubtotalChars / 4),
+        estimatedTokens: estimatedProviderTokens,
         mcpServers: mcpCounts.servers,
         mcpTools: mcpCounts.tools,
         skills: latestAvailableSkills.length,
       });
       void writeDiscoveryFile(ctx, {
-        skills: latestAvailableSkills,
+        skills: discoverSkillStates(ctx?.cwd ?? process.cwd(), latestAvailableSkills),
         nativeTools: [...registeredToolNames],
         overhead: {
           sysChars: piPrompt.length + (cachedSystemPromptText?.length ?? 0),
           mcpChars: mcpCatalog.length,
           dynamicChars,
-          totalChars: resolvedPrompt.length,
+          totalChars: resolvedPrompt.length + turnContextChars,
           directToolChars: directToolStats.totalChars,
           mcpServers: mcpCounts.servers,
           mcpTools: mcpCounts.tools,
@@ -2256,7 +2285,7 @@ async function wireOctocodePiExtension(
         },
       });
       frozenSystemPrompt = resolvedPrompt;
-      frozenPlanSignature = planSig;  // anchor for mid-session drift detection
+      deliveredPlanSignature = planSig;
       if (resolvedPrompt === event.systemPrompt && !stripped) {
         return contextMessage ? { message: contextMessage } : undefined;
       }
@@ -2697,7 +2726,6 @@ async function wireOctocodePiExtension(
     },
   };
   pi.registerCommand('settings', settingsCommand);
-  pi.registerCommand('octocode-settings', settingsCommand);
   pi.registerCommand('mcp', {
     ...settingsCommand,
     description: 'Open settings.html#connections for MCP servers and tools.',

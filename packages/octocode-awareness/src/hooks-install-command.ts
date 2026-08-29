@@ -2,9 +2,66 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { connectDb } from './db.js';
 import { hookReceipts, hookRuntimeReceiptHealth } from './hook-receipts.js';
-import { acquireConfigLock, fail, flag, HookHost, HookSettings, HooksInstallOptions, HooksInstallResult, hooksInstallUsage, HOSTS, loadSettings, opt, projectHookDir, requestedHost, targetConfig, writeSettingsAtomic } from './hooks-install-specs.js';
+import { acquireConfigLock, fail, flag, HookSettings, HooksInstallOptions, HooksInstallResult, hooksInstallUsage, HOSTS, InstallableHookHost, loadSettings, opt, projectHookDir, requestedHost, targetConfig, writeSettingsAtomic } from './hooks-install-specs.js';
 import { awarenessHookName, entry, frontmatterHookDefinition, hasCommand, hasDriftedCommand, hasExactCommand, hookStatusKey, hookTargetExists, matchingCommandCount, obsoleteSpecsFor, removeCommand, removeUnexpectedAwarenessCommands, runtimeHealth, specsFor } from './hooks-install-health.js';
-
+import { loadWorkspacePolicy, type AwarenessHookProfile } from './workspace-policy.js';
+import { inspectOpenCodeAwarenessPlugin, installOpenCodeAwarenessPlugin, removeOpenCodeAwarenessPlugin } from './opencode-plugin-adapter.js';
+function runOpenCodeHooks(argv: string[], options: HooksInstallOptions): HooksInstallResult {
+  if (flag(argv, '--global')) return fail('OpenCode hook installation currently supports --project-dir only');
+  const projectDir = resolve(opt(argv, '--project-dir', options.cwd ?? process.cwd()));
+  const adapterOptions = {
+    projectDir,
+    hookRunnerPath: resolve(options.hookDir, '..', 'hook-runner.mjs'),
+    skillRoot: resolve(options.hookDir, '..', '..'),
+    nodePath: process.execPath,
+  };
+  try {
+    const status = inspectOpenCodeAwarenessPlugin(adapterOptions);
+    if (flag(argv, '--check')) {
+      const ok = status.exact;
+      return {
+        exitCode: flag(argv, '--strict') && !ok ? 2 : 0,
+        payload: {
+          ok,
+          action: 'check',
+          host: 'opencode',
+          surface: 'project_plugin',
+          plugin_path: status.pluginPath,
+          health: { config: ok ? 'ready' : 'needs_repair', runtime: 'unverified' },
+        },
+      };
+    }
+    const removing = flag(argv, '--remove');
+    if (flag(argv, '--dry-run')) {
+      return {
+        exitCode: 0,
+        payload: {
+          ok: true,
+          action: 'dry-run',
+          host: 'opencode',
+          changed: removing ? status.exists && status.owned : !status.exact,
+          plugin_path: status.pluginPath,
+          ...(flag(argv, '--compact') ? {} : { resultingSource: removing ? null : status.source }),
+        },
+      };
+    }
+    const result = removing
+      ? removeOpenCodeAwarenessPlugin(adapterOptions)
+      : installOpenCodeAwarenessPlugin(adapterOptions);
+    return {
+      exitCode: 0,
+      payload: {
+        ok: true,
+        action: removing ? 'remove' : 'install',
+        host: 'opencode',
+        changed: result.changed,
+        plugin_path: result.pluginPath,
+      },
+    };
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error), { host: 'opencode' });
+  }
+}
 export function runHooksInstall(argv: string[], options: HooksInstallOptions): HooksInstallResult {
   const hostValue = requestedHost(argv);
   const writes = !flag(argv, '--help')
@@ -12,17 +69,16 @@ export function runHooksInstall(argv: string[], options: HooksInstallOptions): H
     && !flag(argv, '--check')
     && !flag(argv, '--dry-run')
     && !(flag(argv, '--global') && argv.includes('--project-dir'))
-    && HOSTS.has(hostValue as HookHost);
+    && !(hostValue === 'copilot' && flag(argv, '--global'))
+    && HOSTS.has(hostValue as InstallableHookHost);
   if (!writes) return runHooksInstallUnlocked(argv, options);
-
-  const host = hostValue as HookHost;
+  const host = hostValue as InstallableHookHost;
   const cwd = options.cwd ?? process.cwd();
   const home = options.homeDir ?? homedir();
   const config = targetConfig(host);
   const settingsPath = flag(argv, '--global')
     ? join(home, config.dir, config.file)
     : join(resolve(opt(argv, '--project-dir', cwd)), config.dir, config.file);
-
   let release: (() => void) | undefined;
   try {
     release = acquireConfigLock(settingsPath);
@@ -41,20 +97,29 @@ export function runHooksInstallUnlocked(argv: string[], options: HooksInstallOpt
   if (flag(argv, '--global') && argv.includes('--project-dir')) {
     return fail('use either --global or --project-dir, not both');
   }
+  if (requestedHost(argv) === 'opencode') return runOpenCodeHooks(argv, options);
+  if (requestedHost(argv) === 'copilot' && flag(argv, '--global')) {
+    return fail('GitHub Copilot hook installation currently supports --project-dir only');
+  }
   if (flag(argv, '--check') && !argv.includes('--host')) {
-    return fail('hooks check requires --host claude, --host codex, or --host cursor');
+    return fail('hooks check requires --host claude, codex, copilot, cursor, gemini, or opencode');
   }
 
   const hostValue = requestedHost(argv);
-  if (!HOSTS.has(hostValue as HookHost)) {
-    return fail('invalid --host; expected claude, codex, or cursor', { host: hostValue });
+  if (!HOSTS.has(hostValue as InstallableHookHost)) {
+    return fail('invalid --host; expected claude, codex, copilot, cursor, gemini, or opencode', { host: hostValue });
   }
 
-  const host = hostValue as HookHost;
+  const host = hostValue as InstallableHookHost;
   const cwd = options.cwd ?? process.cwd();
   const home = options.homeDir ?? homedir();
   const globalMode = flag(argv, '--global');
   const projectDir = resolve(opt(argv, '--project-dir', cwd));
+  const configuredProfile = opt(argv, '--profile', loadWorkspacePolicy(projectDir).policy.hooks.profile);
+  if (!['guard', 'coordination', 'full'].includes(configuredProfile)) {
+    return fail('invalid --profile; expected guard, coordination, or full');
+  }
+  const profile = configuredProfile as AwarenessHookProfile;
   const config = targetConfig(host);
   const settingsPath = globalMode
     ? join(home, config.dir, config.file)
@@ -66,11 +131,15 @@ export function runHooksInstallUnlocked(argv: string[], options: HooksInstallOpt
   } catch (error) {
     return fail(`cannot parse ${settingsPath}: ${(error as Error).message}`);
   }
+  if (host === 'copilot' && settings.version !== undefined && settings.version !== 1) {
+    return fail(`cannot update ${settingsPath}: GitHub Copilot hook files require version 1`);
+  }
 
   const specs = specsFor(host, {
     globalMode,
     projectDir,
     hookDir: projectHookDir(host, globalMode, projectDir, options.hookDir),
+    profile,
   });
   const obsoleteSpecs = obsoleteSpecsFor(host, {
     globalMode,
@@ -100,8 +169,8 @@ export function runHooksInstallUnlocked(argv: string[], options: HooksInstallOpt
         matcher: spec.matcher ?? null,
         command: spec.command,
         command_windows: spec.commandWindows ?? null,
-        timeout: 20,
-        shape: host === 'cursor' ? 'flat' : 'nested',
+        timeout: host === 'gemini' ? 20_000 : 20,
+        shape: host === 'cursor' || host === 'copilot' ? 'flat' : 'nested',
       },
     };
   });
@@ -111,6 +180,7 @@ export function runHooksInstallUnlocked(argv: string[], options: HooksInstallOpt
     .map(hookStatusKey);
   const status = {
     host,
+    profile,
     settingsPath,
     hooks,
     installed_all: checks.every((check) => check.installed) && obsolete.length === 0,
@@ -208,7 +278,7 @@ export function runHooksInstallUnlocked(argv: string[], options: HooksInstallOpt
 
   let changed = false;
   settings.hooks ??= {};
-  if (host === 'cursor' && !flag(argv, '--remove') && settings.version == null) {
+  if ((host === 'cursor' || host === 'copilot') && !flag(argv, '--remove') && settings.version == null) {
     settings.version = 1;
     changed = true;
   }
@@ -273,6 +343,7 @@ export function runHooksInstallUnlocked(argv: string[], options: HooksInstallOpt
           ok: true,
           action: 'dry-run',
           host,
+          profile,
           changed,
           settings_path: settingsPath,
           hook_count: specs.length,
@@ -285,6 +356,7 @@ export function runHooksInstallUnlocked(argv: string[], options: HooksInstallOpt
         ok: true,
         action: 'dry-run',
         host,
+        profile,
         changed,
         settingsPath,
         resultingSettings: settings,
@@ -304,6 +376,7 @@ export function runHooksInstallUnlocked(argv: string[], options: HooksInstallOpt
         ok: true,
         action: flag(argv, '--remove') ? 'remove' : 'install',
         host,
+        profile,
         changed,
         settings_path: settingsPath,
         hook_count: specs.length,
@@ -317,6 +390,7 @@ export function runHooksInstallUnlocked(argv: string[], options: HooksInstallOpt
       ok: true,
       action: flag(argv, '--remove') ? 'remove' : 'install',
       host,
+      profile,
       changed,
       settingsPath,
       note: changed ? `${settingsPath.split(/[\\/]/).pop()} updated` : 'already up to date - no change',

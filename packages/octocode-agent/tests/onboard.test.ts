@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { parseEnv } from '@octocodeai/config';
 import { runAuthWizard, upsertEnvFile, type WizardIO } from '../src/onboard.js';
+import { AUTH_PROVIDERS } from '../src/auth-providers.js';
 
 let tmps: string[] = [];
 function tmpHome(): string {
@@ -72,6 +73,19 @@ describe('upsertEnvFile', () => {
 });
 
 describe('runAuthWizard', () => {
+  it('offers only credentials consumed by the native model adapter', () => {
+      expect(AUTH_PROVIDERS.map((provider) => provider.keyVar)).toEqual([
+        'OCTOCODE_MODEL_API_KEY',
+        'OPENAI_API_KEY',
+        'ANTHROPIC_API_KEY',
+      ]);
+      expect(AUTH_PROVIDERS.map((provider) => provider.protocol)).toEqual([
+        'openai-chat-completions',
+        'openai-responses',
+        'anthropic-messages',
+      ]);
+  });
+
   it('happy path: pick provider, masked key, saves to home .env', async () => {
     const home = tmpHome();
     const io = fakeIO(['2', 'sk-test-key-123456']);

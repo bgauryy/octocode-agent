@@ -24,6 +24,11 @@ const listableSchemas = [
   "mine_weakness", "developer_review", "doc_staleness", "docs_catalog", "digest", "reflect", "awareness_config",
 ];
 const commandIndex = [
+  { command: "setup", schema: null, use: "Inspect or update the workspace Awareness policy before entering the agent loop.", example: 'npx @octocodeai/octocode-awareness setup --workspace "$PWD" --compact' },
+  { command: "next", schema: "attend", use: "Return the next bounded Awareness action with relevant shared-state evidence.", example: 'npx @octocodeai/octocode-awareness next --workspace "$PWD"' },
+  { command: "inspect", schema: "query", use: "Inspect the shared workboard or one named query view.", example: 'npx @octocodeai/octocode-awareness inspect workboard --workspace "$PWD"' },
+  { command: "verify", schema: "verify_audit", use: "Audit pending or stale verification debt before closing work.", example: 'npx @octocodeai/octocode-awareness verify --agent-id agent --workspace "$PWD"' },
+  { command: "close", schema: "work", use: "End declared WORK presence and move the run to verification.", example: 'npx @octocodeai/octocode-awareness close --agent-id agent --run-id run_123' },
   { command: "attend", schema: "attend", use: "Build one bounded lobby with actions, relevant evidence/gaps, and a next command.", example: 'npx @octocodeai/octocode-awareness attend --query "current task" --workspace "$PWD" --compact' },
   { command: "workspace status", schema: "workspace_status", use: "Check DB health, locks, pending verification, memory counts.", example: 'npx @octocodeai/octocode-awareness workspace status --workspace "$PWD" --compact' },
   { command: "plan create", schema: "plan", use: "Create a shared plan and its managed narrative document folder.", example: 'npx @octocodeai/octocode-awareness plan create --name "Release" --objective "Ship safely" --lead-agent-id agent --workspace "$PWD" --compact' },
@@ -100,7 +105,7 @@ const commandIndex = [
   { command: "schema validate", schema: null, use: "Validate JSON payload against one schema.", example: "npx @octocodeai/octocode-awareness schema validate memory_recall payload.json --compact" },
 ];
 
-const CORE_NOUNS = new Set(["attend", "plan", "task", "work", "verify", "memory", "signal", "query"]);
+const CORE_NOUNS = new Set(["setup", "next", "inspect", "verify", "close", "attend", "plan", "task", "work", "memory", "signal", "query"]);
 const CLI_REQUIRED: Record<string, string[]> = {
   "plan create": ["name", "objective", "lead_agent_id", "workspace"],
   "plan show": ["plan_id"],

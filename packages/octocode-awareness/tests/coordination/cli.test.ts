@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isCliEntrypoint, runCli } from '../../src/coordination/cli.js';
+import { writeWorkspacePolicy } from '../../src/workspace-policy.js';
 
 let workspace: string;
 let stdout: string;
@@ -17,6 +18,7 @@ let errSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-lite-cli-'));
+  writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
   process.env.OCTOCODE_DB_PATH = join(workspace, 'octocode.sqlite3');
   stdout = '';
   stderr = '';
@@ -83,7 +85,7 @@ describe('runCli', () => {
     expect(schema.commands.message).toContain('send --from --text [--to] [--topic] [--file]');
     expect(schema.commands.memory).toContain('evaluate [--corpus-json] [--now] [--limit] [--min-similarity]');
     expect(schema.commands.hooks).toContain('pre-edit [--agent-id] [--host] < event.json');
-    expect(schema.commands.hooks).toContain('install --host claude|codex|cursor [--project-dir] [--dry-run]');
+    expect(schema.commands.hooks).not.toContain('install --host');
 
     stdout = '';
     expect(runCli(['memory', 'store', '--workspace', workspace, '--label', 'DECISION', '--text', 'Keep lite local', '--tags', 'lite,local'])).toBe(0);
@@ -180,23 +182,15 @@ describe('runCli', () => {
     expect(sameOwner).toMatchObject({ ok: true, blocked: false, conflicts: [] });
   });
 
-  it('dry-runs hooks install for Claude, Cursor, and Codex', () => {
-    for (const host of ['claude', 'cursor', 'codex']) {
-      stdout = '';
-      expect(runCli(['hooks', 'install', '--workspace', workspace, '--host', host, '--project-dir', workspace, '--cli', '/tmp/octocode-awareness.js', '--dry-run'])).toBe(0);
-      const result = jsonOut<{ host: string; settingsPath: string; dryRun: boolean; resultingSettings: { hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> } } }>();
-      expect(result.host).toBe(host);
-      expect(result.dryRun).toBe(true);
-      expect(result.settingsPath).toContain(host === 'claude' ? '.claude/settings.json' : `.${host}/hooks.json`);
-      expect(result.resultingSettings.hooks.PreToolUse[0]?.hooks[0]?.command).toContain(' hooks pre-edit ');
-    }
+  it('rejects the removed coordination-layer hook installer', () => {
+    expect(() => runCli(['hooks', 'install', '--workspace', workspace]))
+      .toThrow('hooks installation is owned by the root hooks install command');
   });
 
   it('prints help for subcommands without running hook installation', () => {
     stdout = '';
     expect(runCli(['hooks', 'install', '--help', '--workspace', workspace])).toBe(0);
-    expect(stdout).toContain('Hook install:');
-    expect(stdout).toContain('--dry-run first');
+    expect(stdout).toContain('owned by the root hooks command');
     expect(existsSync(join(workspace, '.claude', 'settings.json'))).toBe(false);
   });
 
@@ -286,13 +280,15 @@ describe('runCli', () => {
   it('reports command errors through the CLI dispatcher', () => {
     expect(() => runCli(['plan', 'nope', '--workspace', workspace])).toThrow('plan action must be create, list, show, done, or abandon');
     expect(() => runCli(['task', 'nope', '--workspace', workspace])).toThrow('task action must be add, list, ready, show, depend, claim, heartbeat, release, done, or reopen');
+    expect(() => runCli(['task', 'list', '--workspace', workspace, '--status', 'MADE_UP'])).toThrow('invalid task status: MADE_UP');
     expect(() => runCli(['lock', 'nope', '--workspace', workspace])).toThrow('lock action must be acquire, wait, prune, release, or list');
     expect(() => runCli(['work', 'nope', '--workspace', workspace])).toThrow('work action must be start, touch, list, show, or end');
     expect(() => runCli(['handoff', 'nope', '--workspace', workspace])).toThrow('handoff action must be add, list, or clear');
     expect(() => runCli(['agent', 'nope', '--workspace', workspace])).toThrow('agent action must be join, touch, leave, or list');
     expect(() => runCli(['message', 'nope', '--workspace', workspace])).toThrow('message action must be send, read, list, or prune');
     expect(() => runCli(['check', 'nope', '--workspace', workspace])).toThrow('check action must be audit or mark');
-    expect(() => runCli(['hooks', 'install', '--workspace', workspace, '--host', 'pi', '--dry-run'])).toThrow('hooks install --host must be claude, codex, or cursor');
+    expect(() => runCli(['hooks', 'install', '--workspace', workspace, '--host', 'pi', '--dry-run']))
+      .toThrow('hooks installation is owned by the root hooks install command');
     expect(() => runCli(['hooks', 'nope', '--workspace', workspace])).toThrow('hooks action must be install or pre-edit');
     expect(() => runCli(['memory', 'nope', '--workspace', workspace])).toThrow('memory action must be store, store-verified, recall, recall-verified, evaluate, list, reindex, forget, or prune');
     expect(() => runCli(['unknown', '--workspace', workspace])).toThrow('unknown command: unknown');

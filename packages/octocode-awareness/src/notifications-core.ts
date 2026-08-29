@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { normalizeArtifact, normalizeNotificationKind, utcNow, parseJsonList } from './helpers.js';
 import { fillScope } from './git.js';
-import { SIGNALS_SELECT_THREAD_ID, SIGNALS_INSERT } from './sql/index.js';
+import { SIGNALS_SELECT_THREAD_ID, SIGNALS_INSERT } from './sql/signals.js';
 import type { InsertNotificationParams, InsertNotificationResult, NotificationRecord, NotificationKind, NotificationStatus } from './types.js';
 
 // ─── Internal row type ────────────────────────────────────────────────────────

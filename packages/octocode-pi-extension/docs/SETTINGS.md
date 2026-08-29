@@ -22,7 +22,6 @@ owned by [`RUNTIME_STATE.md`](RUNTIME_STATE.md).
 | `/settings sources` | MCP discovery sources and warnings. |
 | `/settings agent-context` | MCP prompt mode and artifact status. |
 | `/settings overrides` | Effective SQLite overrides for the workspace. |
-| `/octocode-settings` | Compatibility alias for `/settings`. |
 | `/mcp` | Focused alias for `settings.html#connections`. |
 
 The consolidated terminal footer intentionally omits keyboard-help clutter and
@@ -295,4 +294,3 @@ The shared local server is lazy, reused by other Octocode HTML surfaces,
   `/settings` again for a new live registry snapshot.
 - `/new` is required whenever a frozen system prompt must reflect changed MCP
   routing or skill metadata.
-

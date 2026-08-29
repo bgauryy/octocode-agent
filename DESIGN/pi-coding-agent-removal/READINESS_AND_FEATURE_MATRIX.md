@@ -4,18 +4,38 @@
 
 ## Executive rating
 
-The project is **well specified but not yet implemented**. It is ready to begin the baseline and contract phases, not ready for native canary or dependency removal.
+The project has a **substantial dirty-tree native implementation candidate**, but it is not release-proven. The native editor foundation is usable for continued implementation and verification; the Pi-retirement program is not ready for canary or deletion.
 
 | Rating | Score | Meaning |
 |---|---:|---|
-| RFC/design completeness | **9/10** | Boundaries, stages, schemas, risks, tests, measurements, rollback, OpenTUI, settings/models, hooks, and plugins are documented. |
-| Readiness to start Stage 0/1 | **7/10** | The work can begin after owners, canonical baseline commit, supported-version matrices, and several explicit decisions are signed. |
-| Target implementation completeness | **1.5/10** | Most target agent-core/native modules do not exist. Existing Pi behavior, settings HTML, test harness, and proof adapters are reusable starting points. |
-| Native canary readiness | **0/10** | No native composition root, session store, transports, production OpenTUI adapter, or complete host-conformance result exists. |
-| Dependency-removal readiness | **0/10** | Native launch still depends on Pi and no post-canary observation receipt exists. |
-| Weighted migration readiness | **3.5/10** | Evidence-weighted combination of specification, reusable seams, implementation, verification, and rollout readiness. This is not a schedule estimate. |
+| RFC/design completeness | **9/10** | Boundaries, stages, schemas, risks, tests, measurements, rollback, OpenTUI, settings/models, hooks, plugins, orchestration, and final Pi deletion are reconciled; canonical release evidence remains. |
+| Native-editor implementation readiness | **8.5/10** | The production candidate includes governed runtime composition, composite effect admission with durable native receipts, OpenAI Chat/Responses and Anthropic adapters, a production session router with parent/child navigation and bounded automatic compaction, MCP/Skill lifecycle and controls, worker recovery with RPC/ACP projection, command/MCP/async hooks, trust-gated plugins, semantic OpenTUI, protected settings, and 3,484 passing root tests. Credentialed providers, session import and the complete corruption corpus, authoritative upstream tool metadata, clean packaging, and cross-platform proof remain. |
+| Native canary readiness | **2/10** | Real native paths and local effect-ledger proof exist, but the migration selector, matching real Pi/native conformance, shared cross-host effect proof, platform/package matrices, thresholds, and rollback rehearsal are absent. |
+| Pi-retirement readiness | **2/10** | The native launcher is already Pi-free at its direct surface and the end state is approved, but Pi remains a live package and transitive path; no bounded selector/oracle freeze, observation receipt, prior-native rollback, clean install/upgrade, or final zero-reference proof exists. |
+| Weighted cutover readiness | **5/10** | Evidence-weighted combination of design, implemented native seams, production composition, verification, migration controls, and release proof. This is not a schedule estimate or permission to delete Pi. |
 
-The correct decision is **proceed to Stage 0**, not “start deleting Pi.” The earliest safe implementation work is the canonical baseline, package boundary, schemas, and Pi adapter.
+The correct decision is **continue the dependency-ordered native implementation while the release remains HOLD**, not “start deleting Pi.” Freeze the Pi oracle and build the migration selector before canary; delete both only after native-only rollback and the final retirement gates pass.
+
+### Exhaustive audit receipt
+
+The 2026-08-28 sequential architecture, context-efficiency, Pi-parity, and ecosystem audits
+classified all 108 stable IDs in this file. Maturity is 20 verified, 14 composed,
+48 implemented, 26 declared, and 0 cutover-ready. Parity is 4 approved
+differences, 1 native superset, 13 unproven, 23 partial, 2 mismatches, 63 missing,
+2 holds, and 0 proven matches. The zero-match result is intentional and
+evidence-based: the conformance harness still compares identical synthetic
+handlers rather than real Pi and native production adapters.
+
+See [`evidence/prompt-audit-2026-08-28.md`](evidence/prompt-audit-2026-08-28.md)
+for the fixes, verification receipts, and release gates. These counts do not
+replace the stable requirements below and do not authorize Pi deletion.
+
+Those counts are a dated audit snapshot. Later dirty-tree increments are reflected in the current rating and subsystem rows, but the historical 108-ID classification is not silently recalculated. A new exhaustive audit receipt is required before its counts change.
+
+The 2026-08-28 production-adapter runner reports **0 matched, 1 divergent,
+and 13 unsupported** scenarios. This result supersedes neither the dated 108-ID
+classification nor its zero-match verdict; it shows that runnable adapters exist
+while production parity remains unproven.
 
 ## Maturity scoring
 
@@ -37,24 +57,24 @@ Scores come from repository evidence, not confidence language. A document cannot
 | Subsystem | Maturity | Existing evidence | Missing before next maturity level | Primary gate |
 |---|---:|---|---|---|
 | Canonical baseline | 1/5 | AST/LSP working-tree inventory and focused test receipts | Named clean commit, exact commands, raw/normalized hashes, approved incidental-field classification | `PREREQUISITES.md` baseline receipt |
-| Agent-core package boundary | 0/5 | Full package/module design | `packages/octocode-agent-core/` does not exist; manifest approval, dependency graph, contracts, build/test path | Step 3 |
-| Runtime contracts and schemas | 1/5 | Detailed discriminated types and ownership rules | Implemented source of truth, runtime validators, drift checks, public API review | Schema/type suite |
-| Pi compatibility adapter | 1/5 | Current Pi facade and mapping specification | Adapter over canonical contracts, supported Pi-version matrix, no duplicated domain types | Host-conformance suite |
-| Lifecycle/event bus | 2/5 | Existing hook composer, 17 central registrations, direct listener candidates | Canonical dispatcher, all used listener mappings, ordering/decision fixtures, no direct native Pi listeners | Event golden suite |
-| Tool/command registries | 2/5 | 26 command registrations and one tool-registration funnel | Canonical registries, duplicate/conflict rules, canonical policy metadata, Pi/native adapters | Registry snapshots |
-| Security/policy kernel | 2/5 | Existing trust, approval, plan, and Awareness gates | One kernel-owned chain across every transport plus negative matrix | Zero-bypass guardrail |
-| Native sessions/import | 0/5 | Compatibility requirements and current Pi session reader | Store decision, schemas, importer, projection, atomicity, corruption/restart corpus | Session migration suite |
-| Prompt/compaction | 1/5 | Current hooks and explicit target state machine | Pure assembler, semantic snapshot oracle, native compaction, retry/fault proofs | Prompt/compaction corpus |
-| Native model/tool loop | 0/5 | Adapter strategy retains narrower dependencies initially | Native composition, streaming normalization, retries, cancellation ownership | Deterministic turn suite |
-| Interactive OpenTUI | 2/5 | Four-test proof adapter/view model; no production `@opentui/core` import | Runtime/package spike, production adapter, full renderer/input/restoration/PTTY matrix | OpenTUI acceptance |
-| Print/JSON/RPC | 1/5 | Current Pi-backed modes and captured contract requirements | Native adapters, protocol schemas, malformed-input/cancellation suites | Mode matrix |
-| Unified settings HTML | 2/5 | Existing protected eight-section page and five focused tests | Canonical registry/service, all sections, native host, conflict/recovery/accessibility | Settings completeness suite |
-| Models/`models.json` | 0/5 | Design and legacy/default-model evidence | Catalog/store, precedence, source adapters, structured editor, atomic/revision-safe mutations | Models suite |
-| Codex hooks compatibility | 1/5 | Complete format/event/trust/handler design and official-source fixture plan | Parser, JSON/TOML sources, exact-hash trust, command/MCP handlers, official pinned corpus | Codex compatibility suite |
-| Event-driven plugins | 0/5 | Manifest, capabilities, lifecycle, contributions, and settings design | Catalog, activator, grants, transactional registry, leases, unload/update tests | Plugin lifecycle suite |
-| Shared test harness | 2/5 | `@octocodeai/agent-testing` candidate and focused tests | Approved package boundary, full real-Pi oracle, all native adapters, faults/performance | Complete shared corpus |
+| Agent-core package boundary | 3/5 | Host-neutral package, contracts, kernel, and boundary tests exist | Public API/dependency review plus production reachability for every declared service | Step 3 |
+| Runtime contracts and schemas | 3/5 | Discriminated contracts, schemas, validators, runtime tests, worker RPC/ACP envelopes, provider adapters, and MCP/Skill/hook composition exist | Close durable graph/effect, complete fault/security, clean settings, and cross-host editor gaps | Schema/type suite |
+| Pi compatibility adapter | 3/5 | Pi extension consumes agent-core seams and its package suite passes | Freeze the exact oracle artifact/version and bind it to the real shared conformance runner | Host-conformance suite |
+| Lifecycle/event bus | 3/5 | Canonical lifecycle bus and runtime events exist | Map every used Pi listener and compose blocking hooks/plugins in production | Event golden suite |
+| Tool/command registries | 3/5 | Native Octocode tools use canonical composite effect sets; the facade validates catalog identity/count, schemas, JSON output, cancellation, and typed redacted failures | Pin the production facade, move effects/output/lock targets to authoritative upstream metadata, complete the direct palette and command inventory, and prove real-host parity | Registry snapshots |
+| Security/policy kernel | 3/5 | Native policy, trust, approval, plan, cancellation, composite admission receipts, altered-receipt denial, and persistent effect state pass focused tests | Complete peer-lock targets, expiry/revision/crash semantics, one cross-host effect ledger, and the zero-bypass matrix | Zero-bypass guardrail |
+| Native sessions/import | 3/5 | Native durable store plus production create/resume/switch/fork/name/export and previous/next/parent/child navigation exist | Import and the corruption/restart/migration corpus | Session migration suite |
+| Prompt/compaction | 3/5 | Manual and threshold compaction are production-composed, persisted, cancellable, and retry-bounded | Prove overflow, crash recovery, retained-reference validity, and the complete provider/context corpus | Prompt/compaction corpus |
+| Native model/tool loop | 3/5 | OpenAI Chat, Responses, and Anthropic adapters share the bounded native loop with streaming, tools, cancellation, cache telemetry, and transport tests | Run credentialed real-provider/fault/performance suites and close complete tool/MCP/Skill behavior | Deterministic turn suite |
+| Interactive OpenTUI | 3/5 | Native adapter, controller, renderer, input path, semantic widgets, focused tests, and one real macOS PTY restoration smoke pass exist | Pass canonical package, accessibility, restoration, alternate-input/output, and supported-platform matrices | OpenTUI acceptance |
+| Print/JSON/RPC | 3/5 | Native adapters, versioned RPC schemas, malformed-input/cancellation tests, persistent worker control, and approval/session-bound dynamic RPC/ACP worker projection exist | Complete the fault/backpressure corpus and clean independent-client lifecycle proof | Mode matrix |
+| Unified settings HTML | 3/5 | One native registry/service/page owns revision-safe storage and protected browser actions; provider, MCP, Skill, plugin review/grant, portable export/import/reset, focus/ARIA, and mobile-width checks pass | Complete remaining writers and recovery plus packaged-browser and native/Pi conformance | Settings completeness suite |
+| Models/`models.json` | 2/5 | Native model selection/storage and protocol reporting exist | Effective catalog, precedence/import, provider/model CRUD, safe revisions, backup, conflict, and recovery | Models suite |
+| Codex hooks compatibility | 3/5 | Native filesystem discovery, review/hash checks, command/MCP execution, bounded asynchronous ownership, lifecycle dispatch, and blocking decisions are production-composed | Add pinned official fixtures, the complete fault matrix, and cross-host health/conformance proof | Codex compatibility suite |
+| Event-driven plugins | 3/5 | Native discovery, explicit grants, transactional activation/rollback, owner isolation, leases, unload, a real filesystem fixture, and review/grant settings actions pass | Complete formal capability approval, broader fixtures, update/restart, and clean security proof | Plugin lifecycle suite |
+| Shared test harness | 2/5 | Normalized scenarios and effect-ledger structures exist | Bind real frozen-Pi and native hosts; prove first divergence, faults, security, effects, and performance | Complete shared corpus |
 | Observability/evidence | 1/5 | Receipt schemas and KPI definitions | Runtime trace implementation, privacy review, dashboards/queries, before/after raw receipts | KPI receipt |
-| Canary/rollback/release | 0/5 | Staged policy and rollback rules | Candidate artifact, cohort selector, thresholds, rollback rehearsal, observation window | Stages 6–7 |
+| Canary/rollback/release | 1/5 | Staged policy, temporary-oracle decision, and native-only final rollback rule exist | Implement the migration selector, freeze the oracle, set thresholds, rehearse Pi-window and prior-native rollback, observe, install/upgrade, then delete Pi | Stages 6–7 |
 
 ## Critical blockers
 
@@ -62,12 +82,12 @@ These items block implementation maturity above Level 1 or 2:
 
 1. Select and record the canonical before commit; the inspected tree is dirty and cannot be the release baseline implicitly.
 2. Assign runtime, session, security, extensions, terminal, settings/models, testing, and release owners.
-3. Create the agent-core workspace through the approved manifest process and lock its public dependency direction.
+3. Close the remaining agent-core contracts and prove production reachability without host-specific leakage.
 4. Decide the native session encoding/store after running the required prototype and corruption corpus.
-5. Pin the supported Pi versions and the Codex hook compatibility version/fixture snapshot.
+5. Freeze the temporary Pi oracle artifact/version and pin the Codex hook compatibility version/fixture snapshot.
 6. Approve the plugin capability/trust policy, especially process, filesystem, network, MCP, model, secret, and UI grants.
 7. Select and prove the OpenTUI runtime/native-package route on every supported release platform.
-8. Set quantitative canary thresholds and the observation window before native becomes default.
+8. Implement the release-owned migration selector, then set quantitative canary thresholds and the observation window before native becomes default.
 
 None of these blockers justify bypassing Stage 0. They are the output of Stage 0 and early Stage 1.
 
@@ -91,6 +111,9 @@ The IDs below are stable traceability identifiers for implementation issues and 
 | R-10 | Prompt pipeline | Pure ordered segments, provenance, token accounting, and snapshot comparison |
 | R-11 | Policy kernel | Trust, approval, plan mode, effect class, and peer-lock checks before effects |
 | R-12 | Observability | Correlated redacted event/effect/decision/session receipts and bounded metrics |
+| R-13 | Context governance | Token budgets, cache-friendly stable prefixes, deduplication, truncation policy, provenance, and context-cost telemetry |
+| R-14 | Instruction/config discovery | Hierarchical `AGENTS.md`, Skills, MCP, managed/user/workspace/session sources with trust, precedence, deduplication, refresh, and provenance |
+| R-15 | Model routing and fallback | Catalog-validated health/rate/cost policy, explicit consent rules, per-turn/session scope, provenance, and deterministic fallback without silent capability loss |
 
 ### Tools, commands, resources, and transports
 
@@ -107,7 +130,11 @@ The IDs below are stable traceability identifiers for implementation issues and 
 | T-09 | RPC transport | Correlated requests/responses/events, version rejection, bounds, and malformed-frame recovery |
 | T-10 | SDK/embed boundary | In-process typed composition without exposing private runtime implementation |
 | T-11 | Pure shadow mode | Compare deterministic behavior without duplicate model calls, writes, messages, or effects |
-| T-12 | Host selector | Per-session Pi/native identity during migration and explicit rollback |
+| T-12 | Migration host selector | Release-composed `pi|shadow|native` selection, per-session host/oracle identity, one writable host, and explicit rollback; absent from the current native launcher and deleted with Pi |
+| T-13 | ACP interoperability | Version-pinned ACP agent endpoint with initialize/auth, new/list/resume/close/fork, prompt/cancel, modes/config, progress, permission, terminal/filesystem, MCP, and generated schema conformance |
+| T-14 | Dynamic tool discovery | Searchable deferred tool schemas, capability/policy filtering, deterministic ranking, bounded result sets, and no hidden privilege expansion |
+| T-15 | Semantic code context | Token-budgeted AST/LSP symbol, type, reference, caller/callee, and dependency map with freshness and exact source provenance |
+| T-16 | MCP durable tasks | Version-negotiated task extension with authorization binding, secure IDs, bounded concurrency/TTL, polling/update/cancel, progress, recovery, and audit logging |
 
 ### Sessions, persistence, and context
 
@@ -186,28 +213,42 @@ The IDs below are stable traceability identifiers for implementation issues and 
 | U-13 | Plugins section | Identity/version, API, activation, permissions, contributions, leases, update/unload, and health |
 | U-14 | Protected local server | Loopback, origin/token/CSRF/body/path controls, CSP, no-store, and trust enforcement |
 | U-15 | Accessibility/responsiveness | Keyboard, focus, screen-size, semantic labels, and safe error/recovery flows |
+| U-16 | Change review and checkpoints | Per-effect diff/checkpoint timeline with separate file, conversation, and combined restore, conflict detection, storage bounds, and accessible TUI/editor projection |
+
+### Agents, messaging, and orchestration
+
+| ID | Feature | Required outcome |
+|---|---|---|
+| A-01 | Worker supervisor | Native structured worker lifecycle with bounded spawn, crash cleanup, shutdown ownership, and no orphaned processes |
+| A-02 | Spawn packet and capability policy | Typed goal/context/scope/ownership/acceptance/return packets plus model/tool/path/resource limits |
+| A-03 | Worker ledger and handback | Correlated durable state, progress, terminal reason, evidence, verification, confidence, and session linkage |
+| A-04 | Worker message control | list/status/send/steer/follow-up preserve active-versus-idle and FIFO queue semantics |
+| A-05 | Wait, abort, and kill | Progress-aware waiting, graceful abort, deterministic waiter resolution, and bounded termination escalation |
+| A-06 | Session mailbox and handoff | Durable addressed send/read/ack, broadcast, handoff acceptance, provenance, redaction, expiry, and restart delivery |
+| A-07 | Awareness-backed scheduler | Awareness-owned DAG/task claims, leases, messages, handoffs, locks, checks, work presence, and bounded parallel execution |
+| A-08 | Worktree lifecycle | Approved create/refresh/retain/merge/discard/recovery that never silently loses dirty, conflicting, or unmerged work |
 
 ### Compatibility, verification, and release
 
 | ID | Feature | Required outcome |
 |---|---|---|
-| Q-01 | Supported Pi extension | Pi package remains supported as an adapter over agent-core contracts |
-| Q-02 | Pi-version matrix | Every declared version activates or fails with a typed compatibility error |
+| Q-01 | Temporary Pi oracle | A frozen, named Pi artifact remains only until every accepted capability has native evidence or an approved retirement |
+| Q-02 | Pi retirement | The extension package, live adapters, workspace/release wiring, dependencies, tests, and active product docs are deleted after the observation gate |
 | Q-03 | Shared conformance corpus | Same scenarios run against Pi and native implementations |
-| Q-04 | Static absence proof | Text, AST, LSP, manifest, lockfile, dependency tree, and built artifact show zero native Pi dependency |
+| Q-04 | Static absence proof | Text, AST, LSP, manifest, lockfile, dependency tree, built artifact, and packed release show zero live Pi dependency or product path |
 | Q-05 | Fault injection | Provider, process, tool, persistence, compaction, RPC, UI, settings, hook, and plugin failures |
 | Q-06 | Security matrix | Zero trust, approval, plan, lock, path, protocol, hook, plugin, and secret bypasses |
 | Q-07 | Performance matrix | Startup, first event, turn, append, import/replay, memory, frame, cancellation, and reliability |
 | Q-08 | Platform matrix | Supported OS, architecture, runtime, terminal, browser, and native artifact |
 | Q-09 | Before/after receipts | Named commits, normalized traces, raw hashes, differences, decisions, and owners |
-| Q-10 | Canary and rollback | Cohorts, per-session host identity, zero-tolerance triggers, tested rollback artifact, and observation window |
+| Q-10 | Canary, toggle, and rollback | A release-owned `pi|shadow|native` selector during the bounded comparison window, cohorts, per-session host/oracle identity, one writable host, zero-tolerance triggers, tested prior-native rollback, observation, and selector deletion with Pi |
 
 ## Current versus target product matrix
 
 | Capability | Current Octocode on Pi | Target native Octocode | Migration rule |
 |---|---|---|---|
 | Runtime owner | Pi coding-agent | Octocode agent core | Remove native Pi only after conformance |
-| Pi extension | Primary harness implementation | Supported adapter | Must remain supported and tested |
+| Pi extension | Primary harness implementation | Removed | Freeze as the temporary oracle, migrate or approve every difference, then delete after native-only rollback passes |
 | Terminal | Pi-host UI/shell | OpenTUI semantic adapter | Preserve behavior; keep toolkit outside core |
 | Interactive/print/JSON/RPC | Pi runners/protocol | Native adapters | Same approved modes and protocol semantics |
 | Sessions | Pi manager/JSONL | Native versioned store plus Pi importer | Never rewrite the Pi source in place |
@@ -218,10 +259,13 @@ The IDs below are stable traceability identifiers for implementation issues and 
 | Policy | Extension gates around Pi calls | Kernel-owned pre-effect chain | Zero bypass across transports/plugins |
 | Hooks | Pi events, composer, direct listeners | Canonical bus plus Codex adapter | Every used listener must map |
 | Plugins | Static Pi TypeScript extension behavior | Versioned manifests and typed transactional contributions | No direct private-runtime mutation |
-| Settings | Protected Pi-extension page plus launcher writer | One registry-driven native/Pi page | Zero hidden supported settings |
+| Settings | Protected Pi-extension page plus launcher writer | One registry-driven native page | Temporary Pi projections exist only for comparison; zero hidden native settings |
 | Models | Default values and external sources | Full effective catalog and safe `models.json` management | Preserve/import sources with explicit precedence |
 | Tests | Pi-specific and candidate structural harness | Shared host corpus plus adapter suites | Same scenario, normalized trace, first divergence |
-| Rollback | SDK/subprocess fallback | Host selector, then release artifact | No hidden production fallback after removal |
+| Rollback | SDK/subprocess fallback | Prior native release artifact | Final rollback must not depend on Pi; no hidden production fallback after removal |
+| Editor/IDE integration | Private host and RPC seams | ACP adapter over canonical ports | Do not invent an editor-specific protocol or expose core internals |
+| Context selection | Prompt assembly plus on-demand Octocode tools | Budgeted instruction, semantic-map, and deferred-tool pipeline | AST/LSP evidence is freshness- and provenance-bound |
+| Change review | Session rewind and candidate widget seams | Diff/checkpoint timeline with selective restore | Files and conversation can roll back independently or together |
 
 ## Extensibility comparison with other systems
 
@@ -276,6 +320,11 @@ These are planned advantages. The RFC must not market them as delivered until th
 | Pi and OpenCode load arbitrary TypeScript/JavaScript plugins directly | Preserve a code-plugin path, but require manifest identity, trust, capabilities, containment, and auditable activation. |
 | Claude Code and OpenCode have broader published plugin component/package ecosystems | Prioritize compatibility import, stable schemas, CLI/HTML management, and package-source policy before marketplace scale. |
 | Existing systems already ship their extension runtime | Treat target advantages as hypotheses until shared conformance, adversarial security, unload, and canary receipts prove them. |
+| Gemini CLI and OpenCode implement ACP; Codex exposes a rich app-server | Implement version-pinned ACP over canonical ports; retain native RPC for Octocode automation rather than creating another editor protocol. |
+| Aider budgets a semantic repository map and Codex supports deferred tool search | Build context governance around Octocode AST/LSP and searchable deferred schemas; never inject an unbounded repository/tool catalog. |
+| Gemini CLI and Cline expose checkpoint restore and diff review | Add an accessible selective-restore timeline backed by the native session/checkpoint owner. |
+| MCP durable tasks are evolving from an experimental core feature into an extension | Pin the chosen extension revision and isolate it behind capability negotiation; do not claim support from generic MCP connectivity. |
+| A2A supports remote agent cards, tasks, streaming, and push notifications | Defer to an optional post-cutover adapter; Awareness remains the internal coordination authority. |
 
 ## Minimum viable implementation slice
 
@@ -299,11 +348,12 @@ This slice raises event/hooks/plugins and registries to Level 3. It does not jus
 - Refresh external comparison claims when their pinned source changes or before implementation chooses a compatibility behavior based on them.
 - Keep “documented,” “observed,” “planned,” and “proven” labels distinct.
 
-## Sources checked on 2026-08-27
+## Sources checked on 2026-08-28
 
 - [Official Codex hooks documentation](https://learn.chatgpt.com/docs/hooks) — lifecycle events, JSON/TOML sources, merge, matchers, command/MCP handlers, trust, managed policy, async behavior, and plugin hook packaging.
 - [Pi extension documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md) — TypeScript extensions, events, tools, commands, UI, state, discovery, and package behavior.
 - [Claude Code hooks reference](https://code.claude.com/docs/en/hooks) and [plugin reference](https://code.claude.com/docs/en/plugins-reference) — handler types, events, managed policy, merging, components, and packaging.
 - [OpenCode plugin loading](https://opencode.ai/v2/docs/plugins) and [plugin API](https://opencode.ai/v2/docs/build/plugins) — local/npm loading, ordering, hooks, tools, permissions, session APIs, and UI/plugin surfaces.
+- [Coding-agent landscape receipt](evidence/coding-agent-landscape-2026-08-28.md) — Codex, Gemini CLI, Qwen Code, OpenCode, goose, Aider, Cline, MCP, ACP, A2A, AGENTS.md, Octocode adoption, and AST/LSP reachability.
 
 External documentation is evidence for comparison only. `TEST_PLAN.md` and commit-addressed local receipts remain the oracle for Octocode implementation readiness.

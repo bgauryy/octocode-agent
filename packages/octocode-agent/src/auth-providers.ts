@@ -7,27 +7,30 @@ export interface AuthProvider {
   label: string;
   url: string;
   host: string;
+  protocol: 'openai-chat-completions' | 'openai-responses' | 'anthropic-messages';
 }
 
+/** Credentials accepted by the composed native model adapter. */
 export const AUTH_PROVIDERS: readonly AuthProvider[] = [
   {
-    keyVar: 'ANTHROPIC_API_KEY',
-    label: 'Claude (Anthropic)',
-    url: 'https://console.anthropic.com',
-    host: 'console.anthropic.com',
+    keyVar: 'OCTOCODE_MODEL_API_KEY',
+    label: 'Configured OpenAI-compatible endpoint',
+    url: 'https://platform.openai.com/docs/api-reference/chat',
+    host: 'OpenAI Chat Completions protocol',
+    protocol: 'openai-chat-completions',
   },
   {
     keyVar: 'OPENAI_API_KEY',
-    label: 'GPT-4 (OpenAI)',
+    label: 'OpenAI',
     url: 'https://platform.openai.com/api-keys',
     host: 'platform.openai.com/api-keys',
+    protocol: 'openai-responses',
   },
   {
-    keyVar: 'GEMINI_API_KEY',
-    label: 'Gemini (Google)',
-    url: 'https://aistudio.google.com/app/apikey',
-    host: 'aistudio.google.com/app/apikey',
+    keyVar: 'ANTHROPIC_API_KEY',
+    label: 'Anthropic',
+    url: 'https://console.anthropic.com/settings/keys',
+    host: 'console.anthropic.com/settings/keys',
+    protocol: 'anthropic-messages',
   },
-  { keyVar: 'MISTRAL_API_KEY', label: 'Mistral', url: 'https://console.mistral.ai', host: 'console.mistral.ai' },
-  { keyVar: 'GROQ_API_KEY', label: 'Groq', url: 'https://console.groq.com', host: 'console.groq.com' },
 ];

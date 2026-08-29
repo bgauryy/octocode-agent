@@ -1,11 +1,19 @@
 # Tools Reference — Pi Extension
 
-Complete reference for every tool registered by `@octocodeai/pi-extension`. The 15 Octocode research tools are reached through the built-in `octocode` MCP server; the Pi-specific tools are implemented directly in `src/tools/`. Run `npx octocode tools <name> --scheme` before calling a research tool—the live schema is authoritative.
+Complete reference for every tool registered by the supported Pi adapter and temporary
+parity oracle, `@octocodeai/pi-extension`. This is not the native `octocode-agent` tool
+contract. The native product obtains live schemas and composes policy through its own
+runtime adapters.
 
-The branded launcher suppresses all native Pi built-ins before session creation. The extension
-supplies its guarded same-name `bash`; for direct extension installs it also removes native
-`read`/`edit`/`write`/`grep`/`find`/`ls` on load and session start. `file` consolidates file
-mutations. See **[OVERRIDES.md](./OVERRIDES.md)** for the user contract and developer code map.
+The 15 Octocode research tools are reached through the built-in `octocode` MCP server;
+Pi-specific tools are implemented directly in `src/tools/`. Run
+`npx octocode tools <name> --scheme` before calling a research tool—the live schema is
+authoritative.
+
+The extension supplies its guarded same-name `bash`. For direct extension installs, it
+removes Pi `read`/`edit`/`write`/`grep`/`find`/`ls` on load and session start. `file`
+consolidates file mutations. See **[OVERRIDES.md](./OVERRIDES.md)** for the contract and
+developer code map.
 
 ---
 
@@ -344,7 +352,10 @@ It lists and calls tools, validates exact schemas internally, reads resources, g
 and supports completion without registering each remote tool in Pi. `/mcp` opens the
 local, shared-theme connection and enablement manager.
 
-Call payloads are not character-capped. Native MCP text and image blocks remain native model content; unsupported block types are preserved as lossless JSON text. When an MCP server emits only the compact `structuredContent available` stub, the gateway surfaces the complete `structuredContent` payload instead.
+Call payloads are not character-capped. MCP text and image blocks remain model content;
+unsupported block types are preserved as lossless JSON text. When an MCP server emits only
+the compact `structuredContent available` stub, the gateway surfaces the complete
+`structuredContent` payload instead.
 
 The built-in `octocode` research server is always defined (pinned local `octocode-mcp`,
 with `npx -y octocode-mcp@latest` as fallback). Add a trusted stdio command or Streamable

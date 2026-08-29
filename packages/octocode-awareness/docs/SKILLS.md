@@ -1,8 +1,8 @@
 # Octocode Awareness User Guide
 
-Awareness gives supported coding hosts and custom agents one local store for
-plans, tasks, active file work, exclusive locks, verification, memory, messages, and
-handoffs.
+Awareness gives supported coding hosts and custom agents one façade for plans, tasks,
+active file work, exclusive locks, verification, memory, messages, and handoffs. A
+workspace policy routes repository state locally and reusable memory globally.
 
 ## Install
 
@@ -27,10 +27,12 @@ build paths are maintainer implementation details, not an alternative agent runn
 
 ```bash
 export OCTOCODE_AGENT_ID="${OCTOCODE_AGENT_ID:-my-agent}"
-npx @octocodeai/octocode-awareness attend --workspace "$PWD" --query "current task" --compact
+npx @octocodeai/octocode-awareness setup --compact
+npx @octocodeai/octocode-awareness next --workspace "$PWD" --query "current task"
 ```
 
-Follow `attend.next`. Load inventories only when the next action needs them.
+Follow `next`. Use `inspect`, `verify`, and `close` for the routine loop; load expert noun
+inventories only when the next action needs them.
 
 ## Agent Activation Map
 
@@ -42,7 +44,7 @@ Follow `attend.next`. Load inventories only when the next action needs them.
 | Host hooks | Automate deterministic start/write/failure/stop/compact/session edges; never replace judgment. |
 | `.octocode/` | Discover authored plan docs and bounded generated snapshots when live SQLite is unavailable to a reader. |
 
-Agents should begin with `attend`, not by reading `.octocode/`. A plan document may
+Agents should begin with `next`, not by reading `.octocode/`. A plan document may
 explain intent; live state comes from `attend`, `query`, `memory recall`, or `docs show`.
 `.octocode/` query exports are read-only snapshots — never hand-edit them or read them as state.
 
@@ -70,8 +72,8 @@ judgment, destructive approvals, conflicts, memory truth, and final verification
 ### 1. Attend and choose
 
 ```bash
-npx @octocodeai/octocode-awareness attend --workspace "$PWD" --query "<task>" --compact
-npx @octocodeai/octocode-awareness task ready --plan-id <plan> --compact
+npx @octocodeai/octocode-awareness attend --workspace "$PWD" --query "<task>" --db-scope repo --compact
+npx @octocodeai/octocode-awareness task ready --plan-id <plan> --db-scope repo --compact
 ```
 
 Claim a matching task. Do not create a Markdown “today” list. If no task fits, open
@@ -82,18 +84,18 @@ explicit WORK presence.
 Task-backed:
 
 ```bash
-npx @octocodeai/octocode-awareness task claim --task-id <task> --agent-id "$OCTOCODE_AGENT_ID" --compact
+npx @octocodeai/octocode-awareness task claim --task-id <task> --agent-id "$OCTOCODE_AGENT_ID" --db-scope repo --compact
 npx @octocodeai/octocode-awareness task heartbeat --task-id <task> --run-id <run> \
-  --agent-id "$OCTOCODE_AGENT_ID" --compact  # repeat during long attempts
+  --agent-id "$OCTOCODE_AGENT_ID" --db-scope repo --compact  # repeat during long attempts
 npx @octocodeai/octocode-awareness work start --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" \
-  --file src/a.ts --compact
+  --file src/a.ts --db-scope repo --compact
 ```
 
 Standalone WORK:
 
 ```bash
 npx @octocodeai/octocode-awareness work start --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" \
-  --file src/a.ts --rationale "<why>" --test-plan "<exact check>" --compact
+  --file src/a.ts --rationale "<why>" --test-plan "<exact check>" --db-scope repo --compact
 ```
 
 Hooks declare recognized structured writes automatically. Without working hooks,
@@ -103,7 +105,7 @@ Ordinary overlap is allowed. Inspect peers only when notified or when the intera
 matters:
 
 ```bash
-npx @octocodeai/octocode-awareness work show --workspace "$PWD" --file src/a.ts --compact
+npx @octocodeai/octocode-awareness work show --workspace "$PWD" --file src/a.ts --db-scope repo --compact
 ```
 
 Sensitive work adds `--exclusive`. Exclusive acquisition fails while another agent
@@ -116,9 +118,9 @@ Use signals when another agent must act:
 ```bash
 npx @octocodeai/octocode-awareness signal publish --agent-id "$OCTOCODE_AGENT_ID" \
   --workspace "$PWD" --kind request --subject "Coordinate auth.ts" \
-  --body "I am changing token refresh; are your edits compatible?" --file src/auth.ts --compact
+  --body "I am changing token refresh; are your edits compatible?" --file src/auth.ts --db-scope repo --compact
 npx @octocodeai/octocode-awareness signal list --agent-id "$OCTOCODE_AGENT_ID" \
-  --workspace "$PWD" --limit 5 --compact
+  --workspace "$PWD" --limit 5 --db-scope repo --compact
 ```
 
 Reply in the same thread, acknowledge after acting, and resolve when no work remains.
@@ -131,18 +133,18 @@ Task:
 ```bash
 # run acceptance checks while presence remains active
 npx @octocodeai/octocode-awareness task submit --task-id <task> --run-id <run> \
-  --agent-id "$OCTOCODE_AGENT_ID" --message "ready for verification" --compact
+  --agent-id "$OCTOCODE_AGENT_ID" --message "ready for verification" --db-scope repo --compact
 npx @octocodeai/octocode-awareness verify mark --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" \
-  --message "tests passed" --compact
+  --message "tests passed" --db-scope repo --compact
 ```
 
 Standalone WORK:
 
 ```bash
 # run the declared test plan while presence remains active
-npx @octocodeai/octocode-awareness work end --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" --compact
+npx @octocodeai/octocode-awareness work end --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" --db-scope repo --compact
 npx @octocodeai/octocode-awareness verify mark --run-id <run> --agent-id "$OCTOCODE_AGENT_ID" \
-  --message "check passed" --compact
+  --message "check passed" --db-scope repo --compact
 ```
 
 Finish with `verify audit --workspace "$PWD" --agent-id ... --compact` to list
@@ -156,7 +158,7 @@ Record only future-useful, verified outcomes:
 ```bash
 npx @octocodeai/octocode-awareness reflect record --agent-id "$OCTOCODE_AGENT_ID" \
   --workspace "$PWD" --task "<task>" --outcome worked \
-  --lesson "<reusable result>" --compact
+  --lesson "<reusable result>" --db-scope repo --compact
 ```
 
 Use `--fix-repo`, `--fix-harness`, or `--fix-instructions` to route unresolved
@@ -166,15 +168,15 @@ For unfinished work, use a handoff signal, `refinement set`, or `session capture
 Preview cleanup before mutation:
 
 ```bash
-npx @octocodeai/octocode-awareness maintenance digest --workspace "$PWD" --dry-run --compact
-npx @octocodeai/octocode-awareness lock prune --workspace "$PWD" --expired-only --dry-run --compact
-npx @octocodeai/octocode-awareness signal prune --workspace "$PWD" --resolved --dry-run --compact
+npx @octocodeai/octocode-awareness maintenance digest --workspace "$PWD" --dry-run --db-scope repo --compact
+npx @octocodeai/octocode-awareness lock prune --workspace "$PWD" --expired-only --dry-run --db-scope repo --compact
+npx @octocodeai/octocode-awareness signal prune --workspace "$PWD" --resolved --dry-run --db-scope repo --compact
 ```
 
 ## Memory
 
 ```bash
-npx @octocodeai/octocode-awareness memory recall --query "<task>" --workspace "$PWD" --smart --compact
+npx @octocodeai/octocode-awareness memory recall --query "<task>" --workspace "$PWD" --smart --db-scope global --compact
 npx @octocodeai/octocode-awareness memory record --agent-id "$OCTOCODE_AGENT_ID" \
   --workspace "$PWD" --task-context "<context>" \
   --observation "<verified reusable fact>" --importance 7 --compact
@@ -199,20 +201,23 @@ See [MEMORY_NAVIGATION.md](MEMORY_NAVIGATION.md).
 
 ## Hooks
 
-Codex/Cursor require project config. Claude skill frontmatter is already a hook
-surface; do not also install duplicate settings. Use `--host claude` only when
-frontmatter is unsupported or disabled.
+[`HOOKS.md`](HOOKS.md) is the sole host support and installation matrix. Follow its
+host-specific preview, approval, install, strict-check, and removal flow. Do not infer
+activation from an exact configuration file; use the runtime-health and smoke guidance in
+that document.
+
+After selecting a supported host from that matrix, use the same generic sequence:
 
 ```bash
-npx @octocodeai/octocode-awareness hooks install --host <codex|cursor> --project-dir . --dry-run
+npx @octocodeai/octocode-awareness hooks install --host <host> --project-dir . --dry-run
 # after reviewing the dry-run and obtaining approval:
-npx @octocodeai/octocode-awareness hooks install --host <codex|cursor> --project-dir . --compact
-npx @octocodeai/octocode-awareness hooks check --host <codex|cursor> --project-dir . --strict
+npx @octocodeai/octocode-awareness hooks install --host <host> --project-dir . --compact
+npx @octocodeai/octocode-awareness hooks check --host <host> --project-dir . --strict
 ```
 
-Use non-compact dry-run/check output to review settings and runtime details. Compact
-output is an execution receipt. Repair drift with previewed remove → remove → install
-→ strict check; removal sweeps obsolete Awareness roots/events but preserves other hooks.
+Use non-compact dry-run/check output to review settings and runtime details. Compact output
+is an execution receipt. Repair drift with previewed remove → remove → install → strict
+check; removal sweeps obsolete Awareness roots/events but preserves other hooks.
 
 Pre-edit runs the harness guard, declares advisory work, and blocks only guard denial
 or exclusive conflicts. A successful post-edit logs/heartbeats and keeps the scoped

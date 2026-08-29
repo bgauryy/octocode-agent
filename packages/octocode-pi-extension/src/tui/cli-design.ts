@@ -2,8 +2,8 @@
  * cli-design — shared visual contract for Octocode CLI/TUI surfaces.
  *
  * Keep glyphs, progress wording, inline payload summaries, and raw ANSI fallback
- * styling in one place so the Pi extension UI and the owned OctocodeShell do not
- * drift into separate visual languages.
+ * styling in one place so Pi extension surfaces do not drift into separate visual
+ * languages.
  */
 
 import { truncateToWidth } from '@earendil-works/pi-tui';
@@ -112,7 +112,7 @@ export function summarizeInlineValue(value: unknown, max = 90): string {
 export type CliToolRowState = 'queued' | 'running' | 'update' | 'done' | 'failed';
 
 /**
- * One-line, text-labeled tool row for the alpha OctocodeShell transcript.
+ * One-line, text-labeled tool row for compact Pi transcripts.
  * Truncated to `width` (default: the live terminal width) so a long payload
  * never wraps to a second physical line and breaks the ╭─ … ╰─ frame alignment.
  */

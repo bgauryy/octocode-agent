@@ -109,7 +109,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
 // Per-command flag allowlist. Documented flags that the runtime silently
 // ignored were the #1 source of doc drift — unknown flags are now hard errors.
-export const GLOBAL_FLAGS = ['db', 'compact', 'help'];
+export const GLOBAL_FLAGS = ['db', 'db_scope', 'compact', 'help'];
 
 // Flags whose value must parse to an integer. Without this, `--limit abc` (NaN)
 // or `--limit --smart` (boolean-coerced) silently fell back to a default and
@@ -156,6 +156,8 @@ export const VALUE_REQUIRED_FLAGS = new Set([
   'format', 'view', 'action', 'kind', 'label', 'tag', 'reference', 'state',
   'sort', 'as_of', 'cwd', 'created_by', 'depends_on', 'failure_signature',
   'valid_from', 'valid_to', 'outcome', 'quality', 'reason', 'targets_json',
-  'origin', 'supersedes', 'regex', 'file_regex', 'tags',
+  'origin', 'supersedes', 'regex', 'file_regex', 'tags', 'db_scope',
   'agent_name', 'context', 'before', 'importance', 'check_receipt',
+  'repository_scope', 'memory_scope', 'hook_profile',
+  'profile',
 ]);

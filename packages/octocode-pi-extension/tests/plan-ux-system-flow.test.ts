@@ -14,7 +14,7 @@ import { buildPlanPageHtmlFromModel } from '../src/tools/plan-html.js';
 import { buildPlanReadModel, getCurrentPlanReadModel, renderPlanContext, renderPlanReadModel } from '../src/tools/plan-read-model.js';
 import { planPanelModelLines } from '../src/tools/plan-tool.js';
 import { listLocalServerMounts, serveDirectory, stopLocalServer } from '../src/tools/local-server.js';
-import { answerPendingInteraction, listPendingInteractionIds, setInteractionStoreFactoryForTests } from '../src/tools/interaction-broker.js';
+import { setInteractionStoreFactoryForTests } from '../src/tools/interaction-broker.js';
 import { bindRuntimeRenderer } from '../src/tools/runtime-renderer.js';
 import { createRuntimeStore, type ForegroundActivityInput } from '../src/tools/runtime-store.js';
 import extension from '../src/index.js';
@@ -221,14 +221,14 @@ test('registered AskUser widget covers recommended, free-text, cancel, and nonin
 
   const rpc = createPiFlowHarness({ cwd: workspace, hasUI: false, mode: 'rpc', sessionId: 'rpc-question' });
   await extension(rpc.pi as unknown as PiInstance);
-  const pending = await rpc.runTool('askUser', { queries: [{ reasoning: 'RPC must not fake a default', question: 'Ship?', options: [{ value: 'yes', label: 'Yes', recommended: true }] }] }) as { content: Array<{ text: string }>; details: { status: string; interaction: Parameters<typeof answerPendingInteraction>[0] } };
-  assert.equal(pending.details.status, 'pending');
-  assert.ok(pending.details.interaction.interactionId);
-  assert.match(pending.content[0]!.text, /do not infer a default/i);
-  await rpc.restart('mid-question');
-  assert.ok(listPendingInteractionIds(rpc.context as unknown as PiContext).includes(pending.details.interaction.interactionId));
-  answerPendingInteraction(pending.details.interaction, { status: 'selected', value: 'yes' });
-  assert.throws(() => answerPendingInteraction(pending.details.interaction, { status: 'selected', value: 'yes' }), /answered|pending/i);
+  const unavailable = await rpc.runTool('askUser', { queries: [{ reasoning: 'RPC must not fake a default', question: 'Ship?', options: [{ value: 'yes', label: 'Yes', recommended: true }] }] }) as { content: Array<{ text: string }>; details: { status: string; reason: string } };
+  assert.deepEqual(unavailable.details, {
+    status: 'unavailable',
+    mode: 'rpc',
+    reason: 'interaction-answer-route-unavailable',
+  });
+  assert.match(unavailable.content[0]!.text, /no durable .*answer route/i);
+  assert.match(unavailable.content[0]!.text, /ask the user inline/i);
   } finally {
     setInteractionStoreFactoryForTests();
     await isolated.cleanup();

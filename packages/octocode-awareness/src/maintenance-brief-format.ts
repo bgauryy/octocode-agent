@@ -24,7 +24,7 @@ function briefPath(file: string, workspacePath: string | null): string {
 }
 
 function briefFiles(files: string[], workspacePath: string | null): string {
-  const unique = [...new Set(files.map(file => briefPath(file, workspacePath)).filter(Boolean))];
+  const unique = [...new Set(files.map(file => briefPath(file, workspacePath)).filter(Boolean))].sort();
   if (unique.length === 0) return '';
   const first = summarizeUtf8(unique[0]!, 56);
   const more = unique.length > 1 ? ` (+${unique.length - 1})` : '';

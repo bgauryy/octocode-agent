@@ -3,9 +3,12 @@
 `@octocodeai/agent-core` is the inward dependency boundary for the native agent and supported host adapters.
 
 - `contracts/` contains host-neutral, versioned wire and process-local capability types.
-- `runtime/` contains the kernel, canonical registries, and deny-first policy chain.
+- `runtime/` contains the kernel, canonical registries, deny-first policy chain,
+  retry policy, and injectable effect ledger.
 - `events/` owns ordered lifecycle dispatch and decision aggregation.
-- `session/` owns revision-safe append/replay, deterministic projections, and compaction state.
+- `schemas/` owns runtime JSON Schema validation for tool inputs and outputs.
+- `session/` owns revision-safe append/replay, deterministic projections, and
+  durable compaction attempts, retry, cancellation, validation, and recovery.
 - `settings/` and `models/` own deterministic registries, precedence, redaction, and concurrency semantics.
 - `plugins/` owns transactional contribution publication and reverse unload.
 

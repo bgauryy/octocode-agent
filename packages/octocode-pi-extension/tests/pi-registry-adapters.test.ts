@@ -3,6 +3,7 @@ import { test } from 'vitest';
 import {
   CommandRegistry,
   ToolRegistry,
+  createEffectSet,
   type CommandDefinition as CoreCommandDefinition,
   type ToolDefinition as CoreToolDefinition,
 } from '@octocodeai/agent-core';
@@ -32,7 +33,7 @@ test('registers canonical tools through a policy-owning execution callback', asy
   const definition: CoreToolDefinition = {
     name: 'example', label: 'Example', description: 'Example tool', schemaVersion: 1,
     inputSchema: { type: 'object' }, outputSchema: { type: 'string' }, outputVersion: 1,
-    policy: { effect: 'write', trust: 'workspace', approval: 'on-request', plan: 'allowed' },
+    policy: { effects: createEffectSet('write'), trust: 'workspace', approval: 'on-request', plan: 'allowed' },
     execute: async () => { throw new Error('adapter must dispatch through policy callback'); },
   };
   adapter.register(definition, 'plugin:example');

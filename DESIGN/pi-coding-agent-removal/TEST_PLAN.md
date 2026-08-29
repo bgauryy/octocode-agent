@@ -15,6 +15,8 @@ Testing is mandatory at every migration stage. Passing compilation or one host-s
 
 A stage fails when a required test is skipped without an owner-approved reason and expiration trigger.
 
+The latest dirty-tree integration receipt is [the 2026-08-28 integrated runtime closure](evidence/integrated-runtime-closure-2026-08-28.md): 3,484 root tests pass with 16 expected native skips, and bounded real-process, in-app browser, built-CLI, and one-host PTY checks pass. It is an input to this plan, not a substitute for the clean candidate, credentialed-provider, cross-platform, real Pi/native, canary, or rollback matrices.
+
 ## Test environments
 
 | Dimension | Required coverage | Recording rule |
@@ -167,7 +169,7 @@ Run every scenario against the Pi compatibility adapter and native implementatio
 
 The comparison reports the first divergence and the complete normalized trace hash.
 
-For the supported Pi extension, run the same semantic scenarios against every declared Pi version. Add adapter-specific cases for activation, unsupported-version failure, event mapping, context privilege narrowing, UI fallback, session identity, and renderer-only extensions.
+Before retirement, run the same semantic scenarios through the frozen Pi oracle against every pinned comparison version. Add adapter-specific cases for activation, unsupported-version failure, event mapping, context privilege narrowing, UI fallback, session identity, and renderer-only extensions. After retirement, replace this live matrix with immutable receipts and a zero-live-Pi repository/artifact check.
 
 ## Mode matrix
 
@@ -316,7 +318,7 @@ The release candidate passes only when:
 - all required suites and real paths pass on the named candidate artifact;
 - all required platforms/modes pass or have an approved support-scope change;
 - native agent/core `pi-coding-agent` references and dependency paths equal zero;
-- remaining Pi references match the approved supported-extension inventory and version matrix;
+- before retirement, remaining live Pi references match the frozen-oracle inventory and pinned matrix; after retirement, live repository and artifact references equal zero;
 - session source hashes remain unchanged after import;
 - security bypasses, duplicate effects, unrecoverable migrations, compaction loops, and owned-child leaks equal zero;
 - performance and reliability meet approved baseline-derived thresholds;

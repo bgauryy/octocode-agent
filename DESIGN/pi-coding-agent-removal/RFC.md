@@ -3,18 +3,25 @@
 Status: Draft
 Decision type: Reversible by phase; irreversible only after the final compatibility window
 Authors: Octocode
-Created / Updated: 2026-08-26 / 2026-08-27
+Created / Updated: 2026-08-26 / 2026-08-28
+
+## Audit Reasoning — kept/updated (2026-08-28)
+
+- **Status:** Partially implemented. Agent core, the native launcher/runtime, a replacement-runtime session router, manual and threshold compaction, official Responses and ACP adapters, session-owned MCP elicitation/tasks/provenance, contained Skill lifecycle, dynamic RPC/ACP worker projection, semantic OpenTUI widgets, command/MCP/asynchronous hooks, trust-gated plugins, and protected settings controls exist. Production proof remains incomplete for the full durable session graph and corruption corpus, composite-effect/peer-lock policy, credentialed and broader providers, complete configuration writers, clean cross-host conformance, rollout, and final Pi removal.
+- **Why kept:** This RFC remains the decision owner for the wanted native-only editor cutover and the evidence gates that prevent premature deletion of the temporary Pi oracle.
+- **Evidence:** `packages/octocode-agent/src/native-responses-model.ts`, `native-acp.ts`, `native-mcp.ts`, `native-skills.ts`, `native-session-router.ts`, `native-hook-dispatcher.ts`, `native-settings-page.ts`, and `terminal/opentui/renderer.ts` are production-reachable and covered by focused tests. The dated receipts under `evidence/` record verified slices and limits. The full 108-feature conformance ledger still lacks release-complete clean-candidate evidence.
+- **Remaining work:** Complete every work package in `../10-REMAINING-WORK-PLAN.md`, close every row in `../08-TRACEABILITY-CHECKLIST.md`, including the eight requirements added by the 2026-08-28 ecosystem audit, pass the feature ledger and release gates, then delete `packages/octocode-pi-extension` and every live Pi product path. Historical baseline files under `evidence/` remain immutable; dated research receipts may be added.
 
 ## Summary
 
-Remove `@earendil-works/pi-coding-agent` in stages by introducing an Octocode-owned runtime contract under the planned `packages/octocode-agent-core/` package and treating Pi as a temporary adapter. The native terminal is rebuilt on `@opentui/core` behind a semantic `UiPort`; agent core remains terminal-toolkit-neutral. The first scope can retain `pi-agent-core` and `pi-ai` behind independent adapters, while native `pi-tui` use ends when OpenTUI parity passes. Each phase must run the same deterministic host-conformance scenarios against the Pi-backed and Octocode-backed implementations, preserve existing session import and user-visible modes, and meet the before/after gates in `KPI.md` before the next native Pi dependency is deleted.
+Remove the Pi runtime and `@octocodeai/pi-extension` in stages by moving every accepted capability into the Octocode-owned agent core and native editor. Pi is a temporary executable parity oracle and rollback input, not a permanent product surface. The native terminal uses `@opentui/core` behind a semantic `UiPort`; agent core remains terminal-toolkit-neutral. Each phase runs the same deterministic host-conformance scenarios against the temporary Pi baseline and native implementation, preserves session import and approved user-visible behavior, and meets the gates in `KPI.md` before any Pi path is deleted. The final release removes the extension package, its live adapters, and every Pi dependency after native-only rollback is proven.
 
 `README.md` is the entry point and agent operating guide. Companion documents separate execution concerns: `STATUS.md` is the canonical progress ledger, `STEPS.md` is the operational index, `READINESS_AND_FEATURE_MATRIX.md` owns maturity ratings, the complete feature inventory, and external comparison, `BEFORE_AFTER.md` owns the migration comparison, `IMPACT.md` owns effects and risk, `MIGRATION_STAGES.md` owns stage gates, `SCHEMAS_AND_TYPES.md` owns contracts and Pi mappings, `HOOKS_AND_PLUGINS.md` owns Codex-compatible hooks and event-driven plugins, `OPENTUI_TERMINAL_CORE.md` owns the native terminal decision, `SETTINGS_WEB_UI.md` owns the unified settings page and Models section, and `TEST_PLAN.md` owns mandatory verification. `IMPLEMENTATION.md` remains the task-level build plan.
 
 ## Goals and non-goals
 
 1. **Goal:** Make Octocode own the runtime, lifecycle, session, tool, command, prompt, policy, and transport contracts used by the product.
-2. **Goal:** Remove every `pi-coding-agent` import, package resolution, type import, and subprocess dependency from native `octocode-agent` and agent core. Keep Pi-specific imports isolated to the supported Pi-extension adapter.
+2. **Goal:** Remove every Pi import, package resolution, type import, subprocess dependency, adapter, and product path from the shipped Octocode workspace after parity and rollback gates pass.
 3. **Goal:** Preserve or intentionally improve interactive, print, JSON, RPC, session, compaction, tool, command, and security behavior with measurable evidence.
 4. **Goal:** Replace large optional host objects with capability-focused, versioned interfaces.
 5. **Goal:** Keep every migration phase shippable, observable, and reversible until the compatibility window closes.
@@ -22,17 +29,21 @@ Remove `@earendil-works/pi-coding-agent` in stages by introducing an Octocode-ow
 7. **Goal:** Deliver the native interactive terminal on `@opentui/core` without leaking OpenTUI types into agent core or noninteractive transports.
 8. **Goal:** Make `settings.html` the complete human-facing settings control center, including a Models section for default selection, effective catalog, custom providers/models, and safe `models.json` management.
 9. **Goal:** Support Codex-format lifecycle hooks and trusted event-driven extensions/plugins through canonical agent-core events, schemas, contribution registries, and the unified settings page.
-10. **Non-goal:** Remove `@earendil-works/pi-agent-core` or `@earendil-works/pi-ai` in the first project.
-11. **Non-goal:** Preserve unused Pi APIs solely because the local compatibility interfaces declare them.
-12. **Non-goal:** change the Octocode tool product surface, Awareness storage model, or model-provider policy as part of host extraction.
-13. **Non-goal:** perform a flag-day rewrite of the agent loop, providers, persistence, and protocol.
-14. **Non-goal:** remove or silently deprecate `@octocodeai/pi-extension`; it remains a supported Pi-host adapter built on agent-core contracts.
+10. **Goal:** Expose the native runtime to editors through the Agent Client Protocol, with capability negotiation, session lifecycle, modes, permissions, progress, terminal/filesystem mediation, and generated conformance fixtures.
+11. **Goal:** Govern model-visible context through hierarchical instruction provenance, semantic AST/LSP maps, deferred tool discovery, cache-friendly prompt composition, and explicit budgets.
+12. **Goal:** Provide policy-controlled provider fallback and reviewable checkpoints without duplicating session, policy, or Awareness ownership.
+13. **Non-goal:** Remove `@earendil-works/pi-agent-core` or `@earendil-works/pi-ai` in the first project.
+14. **Non-goal:** Preserve unused Pi APIs solely because the local compatibility interfaces declare them.
+15. **Non-goal:** change the Awareness storage authority or duplicate its scheduler, mailbox, lock, handoff, or memory state.
+16. **Non-goal:** expose an internet-facing A2A service during Pi removal; A2A remains an optional later adapter with separate authentication and tenancy review.
+17. **Non-goal:** perform a flag-day rewrite of the agent loop, providers, persistence, and protocol.
+18. **Non-goal:** delete Pi before the native editor has production reachability, semantic parity or an approved difference, native-only rollback, and signed release evidence.
 
-## Motivation and current state
+## Motivation and historical baseline
 
-`octocode-agent` is a branded launcher around Pi, while `@octocodeai/pi-extension` supplies the Octocode harness. The launcher dynamically imports nine Pi SDK exports and falls back from SDK launch to a Pi subprocess (`packages/octocode-agent/src/sdk-launcher.ts:168,241-251`; `packages/octocode-agent/src/launcher.ts:1097-1153`). The extension defines local compatibility interfaces, but its central `PiInstance`, `PiContext`, and `ToolDefinition` types remain widely referenced (`packages/octocode-pi-extension/src/types.ts:323,372,517`).
+At the accepted 2026-08-26 baseline, `octocode-agent` was a branded launcher around Pi and `@octocodeai/pi-extension` supplied the Octocode harness. The then-current launcher dynamically imported nine Pi SDK exports and could fall back to a Pi subprocess; those files and paths are historical evidence, not descriptions of the current native candidate. The extension's `PiInstance`, `PiContext`, and `ToolDefinition` types defined the extraction boundary.
 
-Fresh AST/LSP checks against the 2026-08-26 working tree produced this current-state snapshot:
+AST/LSP checks against the 2026-08-26 working tree produced this immutable baseline snapshot:
 
 | Surface | Observed baseline | Why it matters |
 |---|---:|---|
@@ -47,7 +58,7 @@ Fresh AST/LSP checks against the 2026-08-26 working tree produced this current-s
 | `PiContext` LSP references | 172 across 20 files | Measures execution-context coupling. |
 | `ToolDefinition` LSP references | 54 across 21 files | Measures schema/execution/render coupling. |
 
-These are working-tree observations, not release baselines. The tree already contains unrelated uncommitted changes, including an in-progress `@octocodeai/agent-testing` package. `PREREQUISITES.md` requires a commit-addressed baseline before implementation begins.
+These are historical working-tree observations, not current implementation claims or a release baseline. The current candidate is described by `STATUS.md`, `READINESS_AND_FEATURE_MATRIX.md`, and root designs `01`–`11`; `PREREQUISITES.md` still requires commit-addressed before/after receipts before release.
 
 The cost of doing nothing is continued dependence on Pi's runtime composition, session format, event semantics, fallback behavior, and deep export implementation. Octocode also continues to carry a large local compatibility facade whose optional methods make actual dependencies hard to see.
 
@@ -77,13 +88,13 @@ The first completion point removes `pi-coding-agent` while allowing two narrower
 - `pi-agent-core` can temporarily provide the model/tool loop behind `ModelLoopPort`.
 - `pi-ai` can temporarily provide providers and streaming normalization behind `ModelPort`.
 
-Removing those packages later requires separate evidence and decisions. The native terminal instead uses `@opentui/core` through the adapter specified by `OPENTUI_TERMINAL_CORE.md`. The supported Pi extension can continue using its Pi host's UI surface.
+Removing those packages requires the same evidence discipline and is part of the final native-only target. The native terminal uses `@opentui/core` through the adapter specified by `OPENTUI_TERMINAL_CORE.md`. Until retirement, the Pi extension supplies baseline behavior only.
 
 ## Reference-level explanation
 
 ### Package boundaries
 
-`packages/octocode-agent-core/` is the required home for all new production runtime contracts, the runtime kernel, session abstractions, prompt assembly, lifecycle and registry implementations, and runtime-level adapters. The package does not exist in the inspected tree and Phase 1 creates it. It must not import `packages/octocode-agent`, `packages/octocode-pi-extension`, or a terminal UI package. The launcher imports and composes agent core. The native terminal adapter lives under `packages/octocode-agent/src/terminal/opentui/` and is the only native product boundary allowed to import `@opentui/core`. The supported Pi extension also imports agent core and translates Pi host APIs at its package boundary; agent core never imports back into the extension.
+`packages/octocode-agent-core/` owns production runtime contracts, the runtime kernel, session abstractions, prompt assembly, lifecycle and registry implementations, and runtime-level adapters. The package now exists as a partially implemented candidate. It must not import `packages/octocode-agent`, `packages/octocode-pi-extension`, or a terminal UI package. The launcher imports and composes agent core. The native terminal adapter lives under `packages/octocode-agent/src/terminal/opentui/` and is the only native product boundary allowed to import `@opentui/core`. During migration, the temporary Pi oracle imports agent core and translates Pi host APIs at its package boundary; agent core never imports back into the extension.
 
 | Boundary | Responsibility | Must not know about |
 |---|---|---|
@@ -101,7 +112,7 @@ Removing those packages later requires separate evidence and decisions. The nati
 | Transport adapters | Interactive, print, JSON, and RPC input/output | Runtime implementation details |
 | Pi compatibility adapter | Translate Octocode contracts to existing Pi behavior during migration | Product-domain decisions |
 
-The Pi extension remains the supported adapter for users running Octocode inside a Pi host. The temporary dependency is the native `octocode-agent` runtime's use of Pi, not the extension product. `SCHEMAS_AND_TYPES.md` owns the mapping and version contract.
+The Pi extension remains available only during the bounded migration and observation window. `SCHEMAS_AND_TYPES.md` owns its temporary mapping/version contract; those mappings become archived fixtures or are deleted at the final retirement gate.
 
 The contracts should expose required capabilities, not a replacement god object:
 
@@ -121,9 +132,9 @@ interface SessionStore {
 
 Detailed signatures are finalized in Phase 1 only after conformance fixtures freeze the observed behavior. Production contracts must use discriminated unions, exhaustive handling, explicit error types, and `AbortSignal`; they must not use `Record<string, unknown>` at an SDK boundary.
 
-### Current Pi API inventory
+### Historical Pi API inventory
 
-The launcher uses these Pi SDK exports (`packages/octocode-agent/src/sdk-launcher.ts:241-251`):
+The 2026-08-26 launcher used these Pi SDK exports; the removed `sdk-launcher.ts` line anchor is preserved only as historical baseline evidence:
 
 | API | Replacement capability |
 |---|---|
@@ -193,15 +204,16 @@ Failures must be explicit and typed. Session writes use expected revisions, midd
 
 ### Compatibility, rollout, and reversibility
 
-Each phase ships behind an internal host selector with three modes: `pi`, `shadow`, and `native`. `shadow` executes only deterministic/pure comparisons; it must never duplicate model calls, writes, messages, or external effects. The default remains `pi` until native acceptance gates pass. Rollback changes the selector to `pi` and does not rewrite native data.
+Each migration release must expose an internal host selector with three modes: `pi`, `shadow`, and `native`. That selector is a release-composition boundary, not an agent-core API: the current native launcher is hard-wired to `native`, so selector implementation and real-host proof remain open work. `shadow` executes only deterministic/pure comparisons; it must never duplicate model calls, writes, messages, or external effects. During the bounded comparison window, the selected host and oracle artifact identity are recorded per session, there is never more than one writable host for a session, and rollback may select `pi` without rewriting native data. After the observation gate, rollback uses a prior native artifact and the Pi selector is deleted with the oracle.
 
 The final removal is allowed only after:
 
 1. the native default passes the defined observation window;
 2. Pi session import is proven on representative fixtures;
-3. native agent/core and native terminal packages do not reference `pi-coding-agent` or `pi-tui`; remaining Pi references are confined to the supported Pi extension;
+3. native agent/core and native terminal packages do not reference Pi, and every extension-only capability has a native owner or an explicitly approved retirement;
 4. the subprocess fallback is deleted;
-5. release and rollback owners approve the evidence receipt.
+5. release and rollback owners approve the evidence receipt; and
+6. the extension package, workspace/release wiring, live docs, dependencies, and packed artifacts can be removed without losing a supported workflow.
 
 ## Drawbacks and pre-mortem
 
@@ -228,24 +240,34 @@ The final removal is allowed only after:
 | Full rewrite in one release | Clean final state | Very high | High | Low | Reject. |
 | Keep Pi only as subprocess/RPC | Strong process isolation | Medium | Medium-low | High | Use only as a transition adapter. |
 | Capability contracts plus strangler adapters | Fits existing single tool funnel and structural shell boundary | Controlled by phase | High | High | Accept. |
+| Add no ecosystem-derived features | Avoids scope growth | High product/integration debt | Medium-low | High | Reject: ACP, context governance, and review safety are demonstrated gaps. |
+| Invent an Octocode editor protocol | Full local control | High interoperability and maintenance risk | Low | Medium | Reject: implement ACP behind a native adapter. |
+| Implement ACP plus bounded context/review requirements | Fits capability ports and staged migration | Medium, isolated by adapters | High | High | Accept. |
+| Add A2A and every experimental MCP extension now | Broadest protocol surface | Very high security/version risk | Medium | Low | Reject for this cutover; keep A2A optional and MCP tasks version-pinned. |
 
 This option fits three boundaries that the repository already exposes. The shell depends on a small structural runtime surface (`packages/octocode-pi-extension/src/shell/shell.ts:29-90`). All tool registrations cross one funnel (`packages/octocode-pi-extension/src/tools/octocode-tools.ts:98-125`). The in-progress deterministic flow harness models host operations without a production Pi import (`packages/octocode-agent-testing/README.md`; `packages/octocode-agent-testing/src/index.ts`).
 
 ## Prior art and related decisions
 
-The accepted custom TUI RFC chose a Pi RPC subprocess and a locally typed wire contract rather than importing Pi types (`.octocode/rfc/pi-custom-tui-protocol/RFC.md`; `.octocode/rfc/pi-custom-tui-protocol/RESOLUTION.md`). This RFC preserves that client as a migration oracle and transport fixture source, then allows it to target the native runtime protocol.
+The accepted custom TUI decision chose a Pi RPC subprocess and a locally typed wire contract rather than importing Pi types. Its original `.octocode/rfc/...` files are no longer present; immutable receipts preserve the decision. This RFC uses that behavior only as migration-oracle and transport-fixture input.
 
-The Awareness surface RFC owns the semantic model-facing plan/coordination contract, not the host implementation (`.octocode/rfc/awareness-pi-surface-consolidation/RFC.md`). This RFC must preserve that contract while replacing the Pi-facing adapter terminology.
+The historical Awareness surface decision owns the semantic model-facing plan/coordination contract, not the host implementation. Its original `.octocode/rfc/...` path is no longer present; current Awareness documentation and contracts are authoritative.
+
+The 2026-08-28 coding-agent landscape audit adds eight requirements without changing the native-only decision. ACP is the accepted editor interoperability boundary; MCP durable tasks are isolated behind a pinned extension adapter; A2A is deferred; semantic code maps use Octocode AST/LSP; model routing remains policy- and consent-bound; checkpoint restore composes with the native session/checkpoint owner. See `evidence/coding-agent-landscape-2026-08-28.md`.
 
 ## Resolved and unresolved questions
 
-- [x] **Q1:** `packages/octocode-agent-core/` owns the production runtime contracts, kernel, session abstractions, prompt assembly, lifecycle/registry implementations, and runtime-level adapters. User decision on 2026-08-26; local structure inspection confirms that Phase 1 must create the package. Dependency-cycle validation remains a Phase 1 exit gate, not an ownership question.
+- [x] **Q1:** `packages/octocode-agent-core/` owns the production runtime contracts, kernel, session abstractions, prompt assembly, lifecycle/registry implementations, and runtime-level adapters. User decision on 2026-08-26; the current candidate contains and composes the package. Dependency-cycle validation remains an exit gate, not an ownership question.
 - [ ] **Q2:** What native session encoding replaces Pi JSONL? — Resolve before Phase 3 with corruption, migration, query, and portability prototypes.
 - [ ] **Q3:** Which event payload fields are stable public protocol versus internal detail? — Resolve in Phase 0 from golden Pi/RPC/flow-harness fixtures.
-- [ ] **Q4:** What release window is sufficient before deleting the Pi rollback adapter? — Product/release owner must set the number of releases and usage threshold before Phase 6.
+- [ ] **Q4:** What release window is sufficient before deleting the Pi oracle and extension package? — Product/release owner must set the number of releases and usage threshold before native-only promotion.
 - [ ] **Q5:** Is `pi-agent-core` retained for the first native runtime or replaced immediately? — Explicitly deferred until the runtime contract and session controller pass without `pi-coding-agent`; trigger is Phase 4 entry.
 - [x] **Q6:** The native interactive frontend uses `@opentui/core` directly behind `UiPort`. The accepted custom TUI protocol remains a compatibility/transport fixture unless a separate product decision ships it. Runtime and packaging compatibility must pass the `OPENTUI_TERMINAL_CORE.md` gate before Stage 5.
-- [x] **Q7:** `settings.html` is the single human-facing configuration surface for native and supported Pi-extension hosts. It includes a registry-driven Models section and safe `models.json` management through the agent-core `SettingsService`; HTML/browser code remains adapter-owned. See `SETTINGS_WEB_UI.md`.
+- [x] **Q7:** `settings.html` is the single human-facing configuration surface for the native editor. During migration, the Pi oracle must project the same canonical settings for comparison. It includes a registry-driven Models section and safe `models.json` management through the agent-core `SettingsService`; HTML/browser code remains adapter-owned. See `SETTINGS_WEB_UI.md`.
+- [x] **Q8:** `@octocodeai/pi-extension` is temporary. It is deleted only after the complete feature ledger, real-host conformance, native-only rollback, platform, packaging, clean-install, and upgrade gates pass. User decision on 2026-08-28.
+- [x] **Q9:** ACP is the editor/IDE interoperability protocol. Native JSON/RPC remains the product's automation surface, while the ACP adapter maps session, mode, permission, progress, terminal, filesystem, and MCP capabilities into canonical ports.
+- [x] **Q10:** A2A is not a Pi-retirement prerequisite. Internal multi-agent coordination remains Awareness-owned; any remote A2A gateway is a separately reviewed optional adapter.
+- [ ] **Q11:** Which ACP SDK/schema and MCP tasks-extension revisions are pinned? — Resolve before their implementation work starts and record generated schema/conformance fixtures.
 
 No recommendation in this RFC depends on unresolved Q2-Q5. `IMPLEMENTATION.md` records their closure gates and prevents dependent phases from starting early.
 
@@ -255,4 +277,5 @@ No recommendation in this RFC depends on unresolved Q2-Q5. `IMPLEMENTATION.md` r
 - Replace `pi-ai` with provider adapters owned in the external Octocode engine stack.
 - Add richer OpenTUI views only when semantic, performance, and accessibility gates remain satisfied.
 - Publish the runtime contract for non-terminal hosts.
+- Add an optional authenticated A2A gateway after native cutover if a real remote-agent consumer exists.
 - Replay production-redacted event traces through the conformance suite.

@@ -803,6 +803,7 @@ test('add: creates mcp.json with mcpServers wrapper and only-defined fields', ()
   assert.equal(parsed.command, 'node');
   const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
   assert.deepEqual(raw.mcpServers.weather, { command: 'node', args: ['w.js'], env: { KEY: 'v' } });
+  if (process.platform !== 'win32') assert.equal(fs.statSync(p).mode & 0o777, 0o600);
 });
 
 test('config supports secret references without copying resolved values into mcp.json', () => {

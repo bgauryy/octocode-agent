@@ -3,10 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'vitest';
-import { buildDiscoverySnapshot, discoverMcpConfigs, getDiscoveryFilePath, writeDiscoveryFile } from '../src/tools/discovery-file.js';
-import { discoverMcpSystem } from '../src/tools/mcp-discovery.js';
+import { buildDiscoverySnapshot, getDiscoveryFilePath, writeDiscoveryFile } from '../src/tools/discovery-file.js';
+import { discoverMcpConfigs, discoverMcpSystem } from '../src/tools/mcp-discovery.js';
 import { __test__ as mcpTestHooks } from '../src/tools/mcp-tool.js';
-import type { DiscoveredSkill } from '../src/tools/skill-tool.js';
+import type { DiscoveredSkillState } from '../src/tools/skill-tool.js';
 import type { PiContext } from '../src/types.js';
 
 afterEach(() => {
@@ -17,8 +17,9 @@ function tmpCtx(): PiContext {
   return { cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'octo-discovery-')) } as unknown as PiContext;
 }
 
-const SKILLS: DiscoveredSkill[] = [
-  { name: 'demo-flow', description: 'Demo workflow.', path: '/x/demo-flow/SKILL.md', dir: '/x/demo-flow', source: 'project' },
+const SKILLS: DiscoveredSkillState[] = [
+  { name: 'demo-flow', description: 'Demo workflow.', path: '/x/demo-flow/SKILL.md', dir: '/x/demo-flow', source: 'project', enabled: true },
+  { name: 'paused-flow', description: 'Paused workflow.', path: '/x/paused-flow/SKILL.md', dir: '/x/paused-flow', source: 'user', enabled: false },
 ];
 
 test('discovery snapshot inventories skills, native tools (sorted), and full MCP configuration', async () => {
@@ -33,7 +34,10 @@ test('discovery snapshot inventories skills, native tools (sorted), and full MCP
   assert.equal(snapshot.version, 1);
   assert.equal(snapshot.workspace, (ctx as unknown as { cwd: string }).cwd);
   assert.deepEqual(snapshot.nativeTools, ['bash', 'skill', 'write'], 'sorted for stable diffs');
-  assert.deepEqual(snapshot.skills, [{ name: 'demo-flow', description: 'Demo workflow.', source: 'project', path: '/x/demo-flow/SKILL.md' }]);
+  assert.deepEqual(snapshot.skills, [
+    { name: 'demo-flow', description: 'Demo workflow.', source: 'project', path: '/x/demo-flow/SKILL.md', enabled: true },
+    { name: 'paused-flow', description: 'Paused workflow.', source: 'user', path: '/x/paused-flow/SKILL.md', enabled: false },
+  ]);
   // MCP: the built-in octocode server is always configured; discovered tools come from the cache.
   const octo = snapshot.mcp.servers.find((s) => s.name === 'octocode');
   assert.ok(octo, 'built-in octocode server inventoried');
@@ -114,6 +118,9 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   const userCodex = path.join(homeDir, '.codex', 'config.toml');
   const userAgents = path.join(homeDir, '.agents', 'mcp.json');
   const userAntigravity = path.join(homeDir, '.gemini', 'antigravity', 'mcp_config.json');
+  const projectGemini = path.join(cwd, '.gemini', 'settings.json');
+  const userGemini = path.join(homeDir, '.gemini', 'settings.json');
+  const userCopilot = path.join(homeDir, '.copilot', 'mcp-config.json');
   const userOctocode = path.join(octocodeHome, 'agent', 'mcp', 'servers.json');
 
   write(projectClaude, JSON.stringify({ mcpServers: { linear: { command: 'npx', args: ['-y', 'linear-mcp'] } } }));
@@ -131,6 +138,9 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   write(userCodex, '[mcp_servers.docs]\nurl = "https://example.invalid/mcp"\n');
   write(userAgents, JSON.stringify({ mcpServers: { globalAgent: { command: 'global-agent-mcp' } } }));
   write(userAntigravity, JSON.stringify({ mcpServers: { calendar: { command: 'calendar-mcp' } } }));
+  write(projectGemini, JSON.stringify({ mcpServers: { projectGemini: { httpUrl: 'https://example.invalid/mcp' } } }));
+  write(userGemini, JSON.stringify({ mcpServers: { userGemini: { command: 'gemini-mcp' } } }));
+  write(userCopilot, JSON.stringify({ mcpServers: { copilot: { command: 'copilot-mcp' } } }));
   write(userOctocode, JSON.stringify({ mcpServers: { globalOctocode: { command: 'global-octocode' } } }));
 
   const configs = discoverMcpConfigs(cwd, { homeDir, octocodeHome });
@@ -145,6 +155,10 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   assert.equal(byPath(projectAntigravity).host, 'antigravity');
   assert.equal(byPath(projectAgent).host, 'agent');
   assert.equal(byPath(userAntigravity).host, 'antigravity');
+  assert.equal(byPath(projectGemini).host, 'gemini');
+  assert.deepEqual(byPath(projectGemini).servers, [{ name: 'projectGemini' }], 'Gemini httpUrl is normalized without exposure');
+  assert.equal(byPath(userGemini).host, 'gemini');
+  assert.equal(byPath(userCopilot).host, 'copilot');
   assert.equal(byPath(userClaude).scope, 'user');
   assert.deepEqual(byPath(userClaude).servers, [{ name: 'memory', command: 'mem-mcp' }]);
   assert.equal(JSON.stringify(configs).includes('never-report-me'), false, 'env secrets never enter discovery output');

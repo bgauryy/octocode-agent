@@ -13,7 +13,7 @@ import { CLI_STATUS_TEXT, paint } from '../tui/cli-design.js';
 import { SEP } from '../tui/palette.js';
 import { buildPlanPrompt } from '../prompts/plan-prompt.js';
 import { adoptPlanModePolicy, enterPlanMode, exitPlanMode, isPlanMode } from './plan-mode.js';
-import { runAskPrompt } from './ask-user-tool.js';
+import { runAskPrompt, type AskOutcome } from './ask-user-tool.js';
 import { consumeHumanAuthorizationReceipt, createHumanAuthorizationReceipt } from './interaction-broker.js';
 import { getCurrentPlanReadModel, renderPlanContext, type PlanReadModelV1 } from './plan-read-model.js';
 import { enablePlanHtmlSync, resetPlanHtmlSync, openPlanHtml, syncCurrentPlanHtmlIfEnabled, writeCurrentPlanArtifacts as writeCanonicalPlanArtifacts, writePlanReadModelArtifacts, planArtifactsDir, readRfcDoc } from './plan-html.js';
@@ -227,6 +227,7 @@ function ensureUnifiedProjection(scope: string, explicit: UnifiedPlanScope | und
   const coordination = getPlanCoordination(scope);
   const review = getPlanReviewState(scope);
   const projection = projectUnifiedPlan({
+    sourceKind: 'pi',
     requestedScope: requestedPlanScope(scope, explicit),
     workspace: coordination.coordinationWorkspace || planWorkspace(scope),
     sourcePlanKey: coordination.sourcePlanKey,
@@ -615,10 +616,10 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
 
   // ── Clarify phase (interview) ────────────────────────────────────────────
   if (p.action === 'clarify') {
-    const clarifyResult = (text: string, isError = false): ToolCallResult => ({
+    const clarifyResult = (text: string, isError = false, extraDetails: Record<string, unknown> = {}): ToolCallResult => ({
       content: [{ type: 'text' as const, text }],
       ...(isError ? { isError: true } : {}),
-      details: { action: 'clarify', decisions: getPlanDecisions(scope) },
+      details: { action: 'clarify', decisions: getPlanDecisions(scope), ...extraDetails },
     }) as unknown as ToolCallResult;
     const questions = (Array.isArray(p.questions) ? p.questions : []).filter((q) => q && String(q.prompt ?? '').trim()).slice(0, MAX_CLARIFY);
     if (questions.length === 0) {
@@ -629,6 +630,7 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
     }
     const recorded: string[] = [];
     let halted: string | undefined;
+    let pendingInteraction: AskOutcome['interaction'] | undefined;
     // Use a mutable index so back-navigation can revisit a prior question.
     let qi = 0;
     while (qi < questions.length) {
@@ -649,6 +651,11 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
       });
       if (!outcome || outcome.status === 'unavailable') {
         halted = `This host cannot prompt — ask the remaining question(s) inline: ${prompt}`;
+        break;
+      }
+      if (outcome.status === 'pending') {
+        pendingInteraction = outcome.interaction;
+        halted = `Interaction pending (correlation=${pendingInteraction?.correlationId ?? 'unavailable'}). Wait for the durable host continuation; do not infer an answer.`;
         break;
       }
       if (outcome.status === 'cancelled') { halted = 'Interview cancelled — proceed only with what is already decided.'; break; }
@@ -676,7 +683,15 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
     }
     const head = recorded.length ? `[PLAN] recorded ${recorded.length} decision(s):\n${recorded.map((r, i) => `${i + 1}. ${r}`).join('\n')}` : '[PLAN] no decisions recorded';
     const tail = halted ? `\n${halted}` : '\nWhen intent + approach are decision-complete, call plan(propose) — the decisions travel with the plan and render on its page.';
-    return clarifyResult(`${head}${tail}`);
+    return clarifyResult(`${head}${tail}`, false, pendingInteraction ? {
+      pendingInteraction: {
+        version: pendingInteraction.version,
+        interactionId: pendingInteraction.interactionId,
+        correlationId: pendingInteraction.correlationId,
+        sessionId: pendingInteraction.sessionId,
+      },
+      continuation: { version: 1, adapter: 'interaction-broker', resumeOn: ['answer', 'session_start'] },
+    } : {});
   }
 
   // ── RFC gate (set/propose only) ──────────────────────────────────────────
@@ -758,7 +773,8 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
         const summary = buildRfcReviewTldr(scope, steps, revision, artifacts);
         const reviewSurface = ctx
           ? await runAskPrompt(ctx, {
-              question: `${summary}\n\nOpen the full plan in your browser?`,
+            question: `${summary}\n\nOpen the full plan in your browser?`,
+            durable: false,
               options: [
                 {
                   value: 'browser',
@@ -822,6 +838,9 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
         if (!outcome || outcome.status === 'unavailable') {
           return '[PLAN] proposed, but this host cannot prompt — present the plan inline and get approval in your reply before executing.';
         }
+        if (outcome.status === 'pending') {
+          return `[PLAN] approval pending (correlation=${outcome.interaction?.correlationId ?? 'unavailable'}) — do not execute until the durable host continuation records approval.`;
+        }
         if (approved) {
           return '[PLAN] approved — begin executing; keep steps updated via start/complete.';
         }
@@ -869,7 +888,20 @@ async function executePlanQuery(p: PlanParams, ctx: PiContext | undefined): Prom
       }
       return {
         content: [{ type: 'text', text: `${verdict}\n${renderList(steps)}${pageNote}` }],
-        details: { action: p.action, ...planPresentation(ctx, scope), verdict },
+        details: {
+          action: p.action,
+          ...planPresentation(ctx, scope),
+          verdict,
+          ...(outcome?.status === 'pending' && outcome.interaction ? {
+            pendingInteraction: {
+              version: outcome.interaction.version,
+              interactionId: outcome.interaction.interactionId,
+              correlationId: outcome.interaction.correlationId,
+              sessionId: outcome.interaction.sessionId,
+            },
+            continuation: { version: 1, adapter: 'interaction-broker', resumeOn: ['answer', 'session_start'] },
+          } : {}),
+        },
       } as unknown as ToolCallResult;
     }
     case 'add':

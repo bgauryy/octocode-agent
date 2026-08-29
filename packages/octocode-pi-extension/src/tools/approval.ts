@@ -24,6 +24,12 @@
 
 import type { PiContext } from '../types.js';
 import {
+  APPROVAL_CLASSES,
+  PERMISSION_LEVELS,
+  type ApprovalClass,
+  type PermissionLevel,
+} from '@octocodeai/octocode-shared/protocols';
+import {
   APPROVAL_CHOICE_ALWAYS,
   APPROVAL_CHOICE_NO,
   APPROVAL_CHOICE_YES,
@@ -32,32 +38,8 @@ import {
 } from '../tui/content.js';
 
 
-/** Stable identifiers for the classes of action we gate. */
-export type ApprovalClass =
-  | 'install'
-  | 'git-write'
-  | 'fs-delete'
-  | 'sudo'
-  | 'publish'
-  | 'system'
-  | 'infra';
-
-export const APPROVAL_CLASSES: readonly ApprovalClass[] = [
-  'install', 'git-write', 'fs-delete', 'sudo', 'publish', 'system', 'infra',
-];
-
-/**
- * Session permission levels — how eagerly the gate prompts:
- * - strict:  prompt for EVERY sensitive action; "Always allow" is not offered
- *            and previously remembered classes are ignored.
- * - default: prompt once per class; "Always allow" remembers the class for the
- *            session.
- * - relaxed: auto-approve the routine local-dev classes (install, git-write);
- *            still prompt for deletes, sudo, publish, system, and infra.
- */
-export type PermissionLevel = 'strict' | 'default' | 'relaxed';
-
-export const PERMISSION_LEVELS: readonly PermissionLevel[] = ['strict', 'default', 'relaxed'];
+export { APPROVAL_CLASSES, PERMISSION_LEVELS };
+export type { ApprovalClass, PermissionLevel };
 
 /**
  * Classes auto-approved under `relaxed` — routine local-dev actions only.

@@ -72,9 +72,6 @@ const SKIPPED_FILES = new Set([
 ]);
 
 const EXCLUDED_BUNDLED_SKILLS = new Set([
-  // Awareness is prompt-owned in pi-extension (<awareness>) and exposed as a CLI,
-  // not a loadable skill; bundling its SKILL.md causes duplicate skill-load UI noise.
-  'octocode-awareness',
   // The full Awareness skill ships with the (now single) @octocodeai/octocode-awareness
   // package for separate installs; the harness uses the inline <awareness> prompt, so it
   // is not bundled as a loadable skill here (preserves the prior 0-awareness-skills bundle).

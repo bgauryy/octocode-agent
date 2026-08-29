@@ -1,14 +1,14 @@
 # Awareness Data Model
 
-Canonical DB: `~/.octocode/memory/awareness.sqlite3` (or `$OCTOCODE_MEMORY_HOME/awareness.sqlite3`), schema v1. Generated `.octocode/` files are query snapshots, not operational state.
+Load when changing schemas or interpreting stored entities.
+
+The advanced v1 schema lives in `awareness.sqlite3`; repository coordination also uses `.octocode/octocode.sqlite3` according to workspace policy. SQLite is canonical. Other generated `.octocode/` files are projections.
 
 ```text
-plan -> tasks -> one claim/run -> run_files (advisory)
-                              `-> locks (exclusive)
-standalone work -> explicit WORK run -> same file/lock model
+plan -> task -> claim/run -> run_files (advisory)
+                           `-> locks (exclusive)
+standalone work ---------> run -> same file/lock model
 ```
-
-## Tables
 
 | Family | Tables |
 |---|---|
@@ -19,15 +19,7 @@ standalone work -> explicit WORK run -> same file/lock model
 | Knowledge | `memories`, `memory_refs`, FTS, `refinements`, `harness_log` |
 | Presence | `agents`, `sessions` |
 
-Run origin is `TASK|WORK|HOOK`. Readiness is derived: `OPEN` + no live claim + all dependencies `DONE`. Tasks are the only queue; refinements are owned follow-up.
-
-## Entities
-
-`plans` stores objective, lead, status, scope, and plan folder; members participate; docs register `PLAN.md`.
-`tasks` stores durable work: reasoning/acceptance, planning paths, priority, status, and dependency graph. `task_claims` leases one agent/run; there is no READY row or second task list.
-`task_runs` stores one attempt with origin, agent/session, rationale, test plan, scope, and `ACTIVE|PENDING|SUCCESS|FAILED` status.
-`run_files` stores `(run_id,file_path)`, optional reason override, heartbeat, expiry, and end time — mandatory advisory "under work" state.
-`locks` stores only exclusive `(run,path)` protection. `edit_log` is completed edit history.
+Run origin is `TASK|WORK|HOOK`. Task readiness is derived from `OPEN`, no live claim, and completed dependencies. Tasks are the queue; refinements are owned follow-up.
 
 ```text
 task: OPEN -> IN_PROGRESS -> VERIFY -> DONE|FAILED
@@ -35,27 +27,10 @@ task: OPEN -> IN_PROGRESS -> VERIFY -> DONE|FAILED
 run:  ACTIVE -> PENDING -> SUCCESS|FAILED
 ```
 
-`delivery_state` suppresses unchanged prompt delivery. Memories store reusable learning; signals store peer threads; refinements store owned follow-up; sessions group host activity. Agent identity is cooperative, not security.
+`task_runs` owns agent/session/task identity and rationale. `run_files` records advisory paths; `locks` records only exclusive protection; `edit_log` is completed history. Never conflate these layers.
 
-## Ownership & Joins
+Verification debt is a `PENDING` run. TTL, cleanup, and delivery fingerprints never establish success. Signal reads live in `signal_reads`; memory references preserve provenance.
 
-| Owner | Dependents |
-|---|---|
-| `plans` | `plan_members`, `plan_docs`, `tasks` |
-| `tasks` | `task_paths`, `task_dependencies`, `task_claims`, `task_events`, `task_runs` |
-| `task_runs` | `run_files`, `locks`, `run_log`, `edit_log`, `harness_log` |
-| agents | sessions, plans, claims, runs, signals, memories |
-| `signals`/`memories` | `signal_reads`/`memory_refs` |
+Inspect public contracts with `schema commands --compact` and `schema json-schema <name>`.
 
-Active file work:
-```sql
-SELECT rf.file_path, r.run_id, r.agent_id, r.task_id, r.rationale
-FROM run_files rf JOIN task_runs r ON r.run_id = rf.run_id
-WHERE rf.ended_at IS NULL AND rf.expires_at > ? AND r.status = 'ACTIVE';
-```
-
-Exclusive state is `EXISTS locks(run_id,file_path)`. Reason display is `reason_override`, else task/run reasoning. Plan/task/agent/session are always joined through `task_runs`, never copied into `run_files` or `locks`.
-
-Verification debt is `task_runs.status='PENDING'`; linked task completion follows `verify mark`. `delivery_state` fingerprints output only; signal read state remains in `signal_reads`.
-
-Inspect public operation contracts with `schema commands --compact` and `schema json-schema <name>`.
+Next: return to `SKILL.md`; use `references/files-awareness.md` for overlap semantics.

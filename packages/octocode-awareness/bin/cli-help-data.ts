@@ -4,61 +4,43 @@ import { BUNDLED_SKILLS, BUNDLED_SKILLS_DIR } from './cli-model.js';
 
 export const HELP = `  🐙 Octocode Awareness
 
-  FIRST RUN  ask before enabling automation
-    config show --compact                 return config or all onboarding questions
-    config init <all five answers>        create ~/.octocode/awareness.json once
-    init --compact                        initialize the advanced workflow store
+  FIRST RUN  use setup to inspect or create workspace policy
+  SIMPLE LOOP
+    setup                                      show or update .octocode/awareness.json
+    next [--query <text>]                       return the next useful action
+    inspect <workboard|files|plans|...>          inspect repository state
+    verify [--agent-id <id>]                    show unresolved verification debt
+    close --run-id <id> [--agent-id <id>]       finish declared work
 
-  AGENT LOOP  follow attend.next; record only observed checks
-    attend  →  work start  →  work end  →  verify mark  →  verify audit
+  DEFAULT POLICY
+    repository state        → .octocode/{octocode,awareness}.sqlite3
+    reusable memory          → global Awareness database
+    hooks                    → coordination profile (edit guards + stop verification)
+    setup --repository-scope repo|global --memory-scope repo|global --hook-profile guard|coordination|full
 
-  SURFACES  two stores, one CLI — do not mix similarly named commands
-    Shared     guide --json · status · message · handoff · check · coordination <command>
-    Advanced   attend · plan · task · work · verify · signal · memory record/recall · refinement
-    Inspect    workspace status · query · reflect · docs · maintenance · session
+  EXPERT COMMANDS
+    attend · plan · task · work · verify · signal · memory record/recall · refinement · query · reflect
+    schema commands --compact                  compact command map
+    schema command <noun> [action]             exact fields
+    <noun> [action] --help                     focused usage
 
-  DISCOVER  never guess a command or flag
-    npx @octocodeai/octocode-awareness schema commands --compact
-                                             compact agent command map
-    schema command <noun> [action]         exact flags and required fields
-    schema json-schema <name> --compact    machine-readable payload contract
-    <noun> [action] --help                 focused usage and example
-
-  EVIDENCE & REFERENCES
-    npx octocode --help                    local, GitHub, and npm research CLI
-    npx octocode tools --json              live research-tool catalog
-    npx octocode tools <name> --scheme     exact research contract
-    docs list · docs show <name>            bundled Awareness references
-
-  HOST AUTOMATION
-    hooks install --host codex|claude|cursor --dry-run
-    Show the noncompact preview and ask the user immediately before every real install.
-    Pi uses @octocodeai/pi-extension native events; never use --host pi.
+  HOOKS
+    hooks install --host codex|claude|cursor --profile guard|coordination|full --dry-run
+    Preview and ask immediately before a real install. Pi uses native events.
 
   RUNNER  npx @octocodeai/octocode-awareness <command> [options]
-  FLAGS   --compact lean JSON · --db <path> advanced DB override
+  AGENT LOOP  setup → next → inspect → verify → close
+  FLAGS   --compact lean JSON · --db-scope repo|global explicit one-call override · --db explicit path
   EXIT    0 ok · 1 input/verification debt · 2 conflict/wait/strict hook health
-  SKILL   bundled (${BUNDLED_SKILLS.length}) at ${BUNDLED_SKILLS_DIR}
+  SKILL   bundled (${BUNDLED_SKILLS.length}) at ${BUNDLED_SKILLS_DIR}`;
 
-  <AGENT_INSTRUCTIONS>
-  AGENTS.md = trigger/router; Agent Skill = operating policy; CLI/SQLite = canonical live state.
-  Use the skill for judgment and this CLI for deterministic state changes.
-  Use npx octocode for local/external research; return grounded evidence to Awareness.
-  Start with config show, then attend; follow returned next commands and live schemas.
-  Ordinary overlap is advisory; lock only unsafe/non-mergeable work. Never claim success without check evidence.
-  Export maintained prompt guidance with: instructions export --format prompt|agents-md|json
-  </AGENT_INSTRUCTIONS>`;
-
-export const HELP_COMPACT = `octocode-awareness: canonical noun/verb CLI; runner: npx @octocodeai/octocode-awareness; AGENTS routes → skill decides → CLI/SQLite acts → hooks automate edges. Use --compact for JSON.
-bundled-skills(${BUNDLED_SKILLS.length}): ${BUNDLED_SKILLS_DIR} — octocode-awareness is bundled; install other workflow skills separately when needed
-setup: config show -> ask all questions if missing -> config init -> init; loop: attend -> work start -> work end -> verify mark -> verify audit; follow attend.next
-coordinate: coordination <command>; guide|instructions export|status|message|handoff|check are direct shortcuts
-start: attend; workspace status; plan create|list|show|join|doc|status; task create|list|ready|show|claim|heartbeat|submit|release|depend; memory recall; signal list; docs list
-edit: work start|touch|end|list|show (advisory default); lock acquire|wait|release|prune only for unsafe/non-mergeable edits; verify audit|mark
-msg: signal publish|list|reply|ack|resolve|prune; agent register|list
-learn: memory record|archive|restore|forget; refinement set|get|list|delete; reflect record|mine-weakness|export-harness|developer-review; maintenance digest
-views: query files|workboard|all|developer-review --format json|table|csv|markdown|html
-inspect: schema commands --compact; docs list|show; <command> --help; research: npx octocode tools --json; exits 0 ok / 1 validation|verify debt / 2 live claim|lock|wait|hooks --strict`;
+export const HELP_COMPACT = `octocode-awareness: canonical noun/verb CLI with setup -> next -> inspect -> verify -> close; use --compact for JSON.
+bundled-skills(${BUNDLED_SKILLS.length}): ${BUNDLED_SKILLS_DIR}
+policy: repository=repo, memory=global, hooks=coordination; setup --repository-scope repo|global --memory-scope repo|global --hook-profile guard|coordination|full
+expert: attend|plan|task|work|verify|signal|memory|refinement|query|reflect; schema commands --compact for the full map
+overrides: --db-scope repo|global changes one call; --db selects an explicit path
+hooks: install --host codex|claude|cursor --profile guard|coordination|full --dry-run; preview and ask before install
+exits: 0 ok / 1 validation|verification debt / 2 conflict|wait|strict hook health`;
 
 export const COMMAND_TO_SCHEMA: Record<string, string> = {
   'tell-memory': 'memory_record',

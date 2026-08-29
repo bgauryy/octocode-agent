@@ -31,6 +31,7 @@ const EXPECTED_BUNDLED_SKILLS = [
   'octocode-chrome-devtools',
   'octocode-documentation',
   'octocode-graph-eval',
+  'octocode-orchestrator',
   'octocode-prompt-optimizer',
   'octocode-research',
   'octocode-rfc-generator',
@@ -193,7 +194,7 @@ test('README bundled-skill count and names match the canonical bundle inventory'
   // dist/skills.
   const skills = EXPECTED_BUNDLED_SKILLS;
 
-  assert.equal(skills.length, 11);
+  assert.equal(skills.length, 12);
   assert.match(readme, new RegExp(`## Bundled skills \\(${skills.length}\\)`));
   assert.match(readme, new RegExp(`\\| Bundled main-agent skills \\| ${skills.length} \\|`));
   for (const skill of skills) {

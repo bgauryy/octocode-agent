@@ -72,3 +72,28 @@ test('maps canonical deny and rewrite decisions back to Pi without widening auth
   const inputResult = await handlers.get('input')?.({ text: 'raw', images: [] }, { cwd: '/w' });
   assert.deepEqual(inputResult, { action: 'transform', text: 'normalized', images: [] });
 });
+
+test('preserves attributed context messages alongside before-agent-start prompt rewrites', async () => {
+  const { pi, handlers } = hostHarness();
+  const bus = new LifecycleBus<Record<string, unknown>>({
+    eventType: 'agent.before-start',
+    authority: ['rewrite', 'context', 'stop'],
+    validate: (payload): payload is Record<string, unknown> => Boolean(payload) && typeof payload === 'object',
+  });
+  const message = {
+    customType: 'octocode-context-update',
+    content: '<active_plan>current</active_plan>',
+    display: false,
+    details: { version: 1, segments: [{ id: 'active-plan', kind: 'plan', authority: 'user' }] },
+  };
+  bus.subscribe({
+    id: 'prompt-and-context',
+    source: 'builtin',
+    handler: async () => ({ kind: 'rewrite', payload: { systemPrompt: 'frozen policy', message } }),
+  });
+  bindPiLifecycleBus(pi, 'before_agent_start', bus);
+
+  const result = await handlers.get('before_agent_start')?.({ systemPrompt: 'Pi base' }, { cwd: '/w' });
+
+  assert.deepEqual(result, { systemPrompt: 'frozen policy', message });
+});

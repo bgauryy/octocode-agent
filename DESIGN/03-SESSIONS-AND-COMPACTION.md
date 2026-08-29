@@ -22,23 +22,19 @@ must not cross the core boundary.
 
 ## Current-state gaps
 
-The dirty-tree implementation is a useful seam, but it is not the target:
+The dirty-tree implementation now satisfies several storage invariants, but it is not the target:
 
-- Native resume selects a stored ID and revision but does not hydrate prior
-  transcript messages into the model request. New work therefore appends to an
-  old file while the model behaves as if the conversation were new.
-- Canonical runtime commands declare create, resume, switch, fork, navigate,
-  name, export, compact, and cancel-compaction, but the runtime kernel returns
-  `unsupported-capability` because no session service is composed.
-- The launcher exposes listing and process-level resume. It has no implemented
-  switch, fork-at-entry, tree navigation, rewind, export, or import workflow.
-- `--no-session` creates a `memory:<pid>` identity but still uses the filesystem
-  store and writes a normal record.
-- Filesystem optimistic concurrency is a check followed by an unlocked rename.
-  Concurrent writers can both accept one revision and lose an append.
-- Backup recovery handles a corrupt primary but not a missing primary. Directory
-  synchronization failures are ignored, and interrupted temporary files have no
-  explicit recovery or cleanup protocol.
+- Native resume now hydrates the stored model projection into the next request.
+- The durable launcher composes create, resume, switch, fork, name, export,
+  compact, cancel-compaction, and previous, next, parent, and child navigation
+  through replacement fixed-session runtimes. Import, rewind, and the complete
+  real CLI/RPC matrix remain release work.
+- `--no-session` now uses in-memory stores and skips durable session and
+  Awareness writes.
+- Filesystem commits now use lockfile exclusion, compare-and-swap, atomic
+  temporary-file replacement, backups, private permissions, and recovery for a
+  missing or corrupt primary. Crash/fault-matrix and multi-process stress
+  evidence are still release gates.
 - Legacy import checks the source digest again only after committing the
   destination. A changed source can therefore produce a failed import with a
   partially committed destination. Invalid JSONL lines also lose their original
@@ -46,13 +42,15 @@ The dirty-tree implementation is a useful seam, but it is not the target:
 - Record validation checks envelope shape and sequence, but does not fully
   validate event payloads, event revisions, visibility, graph references, or
   compaction references. Unknown discriminants can be silently ignored.
-- Fork copies the whole source and rewrites event IDs without remapping every
-  event reference. Fork-at-entry, ancestry, leaf selection, and rewind are not
-  implemented.
+- Fork remaps event IDs and repairs parent-event, branch, compaction, and retained
+  references before commit. Fork-at-entry, rewind, and the complete graph
+  property corpus remain release work.
 - Assistant text deltas are buffered only in memory until a graceful boundary;
   abrupt termination can lose a visible partial response.
-- The compaction state machine is not composed or persisted, permits unbounded
-  retry, and cannot begin another compaction after a terminal state.
+- Manual and threshold compaction are composed and durable. Resume repairs an
+  interrupted attempt, retry is bounded, terminal attempts don't block later
+  compaction, and retained history stays tool-call correlation-closed. Overflow
+  compaction and the complete crash matrix remain release work.
 
 These statements are implementation gaps, not compatibility permissions. The
 target below is authoritative for completion.
@@ -235,7 +233,7 @@ successful import returns or verifies the same result; retrying a failed import
 does not encounter a partial destination. The corpus covers real dated Pi
 shapes through synthetic or irreversibly redacted fixtures.
 
-## Streaming durability
+## Durable stream persistence
 
 Visible user input is durably appended before or at the point the runtime
 accepts it. Assistant streaming uses one of two approved designs:

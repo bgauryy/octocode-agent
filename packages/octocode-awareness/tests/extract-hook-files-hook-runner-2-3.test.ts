@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { connectDb } from '../src/db.js';
 import { insertMemory } from '../src/memory.js';
+import { writeWorkspacePolicy } from '../src/workspace-policy.js';
 import { withEnabledAwarenessConfig } from './helpers/enabled-awareness-config.js';
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST_DIR = resolve(PACKAGE_ROOT, 'out');
@@ -15,15 +16,31 @@ const SKILL_ROOT = resolve(PACKAGE_ROOT, 'skills/octocode-awareness');
 const HOOKS_DIR = resolve(SKILL_ROOT, 'scripts/hooks');
 const NODE = process.execPath;
 function runScript(script: string, args: string[], payload: unknown, env: Record<string, string | undefined> = {}, cwd?: string) {
+    const payloadWorkspace = (payload as { workspace?: unknown })?.workspace;
+    if (typeof payloadWorkspace === 'string' && payloadWorkspace.startsWith(tmpdir())) {
+        writeWorkspacePolicy(payloadWorkspace, {
+            version: 1,
+            storage: { repository: 'global', memory: 'global' },
+            hooks: { profile: 'full' },
+        });
+    }
     return spawnSync(NODE, [script, ...args], {
         input: JSON.stringify(payload),
         encoding: 'utf8',
         timeout: 5000,
         cwd,
-        env: { ...process.env, ...withEnabledAwarenessConfig(env) },
+        env: { ...process.env, OCTOCODE_HOOK_PROFILE: 'full', ...withEnabledAwarenessConfig(env) },
     });
 }
 function runHookWrapper(name: string, payload: unknown, env: Record<string, string | undefined> = {}, cwd?: string) {
+    const payloadWorkspace = (payload as { workspace?: unknown })?.workspace;
+    if (typeof payloadWorkspace === 'string' && payloadWorkspace.startsWith(tmpdir())) {
+        writeWorkspacePolicy(payloadWorkspace, {
+            version: 1,
+            storage: { repository: 'global', memory: 'global' },
+            hooks: { profile: 'full' },
+        });
+    }
     return spawnSync(resolve(HOOKS_DIR, name), [], {
         input: JSON.stringify(payload),
         encoding: 'utf8',
@@ -34,7 +51,7 @@ function runHookWrapper(name: string, payload: unknown, env: Record<string, stri
 }
 
 describe('hook-runner', () => {
-it('reports periodic maintenance pressure without mutating prompt-time state', () => {
+it('signals periodic maintenance pressure without embedding details or mutating state', () => {
     const memoryHome = mkdtempSync(join(tmpdir(), 'octocode-hook-digest-preview-'));
     const workspace = resolve(memoryHome, 'repo');
     mkdirSync(workspace, { recursive: true });
@@ -60,9 +77,10 @@ it('reports periodic maintenance pressure without mutating prompt-time state', (
       };
       const first = runScript(HOOK_RUNNER, ['notify-deliver'], { workspace }, env);
       expect(first.status).toBe(0);
-      expect(first.stdout).toContain('Maintenance pressure');
-      expect(first.stdout).toContain('maintenance digest --dry-run');
-      expect(Buffer.byteLength(first.stdout, 'utf8')).toBeLessThanOrEqual(1024);
+      expect(first.stdout).toContain('Awareness: maintenance 1.');
+      expect(first.stdout).not.toContain('Maintenance pressure');
+      expect(first.stdout).not.toContain('maintenance digest --dry-run');
+      expect(Buffer.byteLength(first.stdout, 'utf8')).toBeLessThanOrEqual(256);
 
       const check = connectDb(dbPath);
       expect(check.prepare('SELECT state FROM memories WHERE memory_id = ?').get(inserted.memoryId))

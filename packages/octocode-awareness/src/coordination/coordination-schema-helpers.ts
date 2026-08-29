@@ -26,7 +26,7 @@ export abstract class AwarenessSchemaHelpers extends CoordinationMemoryAgents {
         memory: ['store --label --text [--tags]', 'store-verified --label --text --source-digest [--scope] [--verified-at] [--valid-until] [--importance] [--tags]', 'recall [--query] [--label] [--limit] [--semantic] [--min-similarity]', 'recall-verified [--query] [--label] [--source-digest] [--scope] [--mode lexical|semantic|hybrid] [--limit] [--now] [--min-similarity]', 'evaluate [--corpus-json] [--now] [--limit] [--min-similarity]', 'list [--limit]', 'reindex [--force] [--limit]', 'forget --memory-id', 'prune --older-than [--label] [--confirm]'],
         agent: ['join --agent-id [--name] [--role] [--meta]', 'touch --agent-id', 'leave --agent-id', 'list [--include-left] [--stale-after]'],
         message: ['send --from --text [--to] [--topic] [--file]', 'read --agent-id [--topic] [--include-read] [--limit]', 'list [--agent-id] [--topic] [--include-read] [--limit]', 'prune --older-than [--read-only] [--confirm]'],
-        hooks: ['pre-edit [--agent-id] [--host] < event.json', 'install --host claude|codex|cursor [--project-dir] [--dry-run]'],
+        hooks: ['pre-edit [--agent-id] [--host] < event.json'],
         schema: ['schema', 'schema commands', 'schema command --name <noun>', 'schema list'],
       },
     };

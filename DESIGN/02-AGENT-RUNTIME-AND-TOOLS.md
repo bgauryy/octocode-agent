@@ -1,4 +1,4 @@
-# Agent Runtime and Tools
+# Agent runtime and tools
 
 Status: required target design
 
@@ -6,20 +6,18 @@ Scope: the host-neutral turn runtime in `@octocodeai/agent-core` and its native 
 
 ## Why this design is required
 
-The current implementation proves several useful primitives—typed commands and events, a bounded model/tool loop, correlated assistant tool-call history, a policy chain, a lifecycle bus, and native OpenAI-compatible transport—but they are not yet composed into a safe agent runtime.
+The current implementation composes typed commands and events, a bounded model/tool loop, correlated assistant tool-call history, schema validation, projected session history, a policy chain, a live-plan gate, lifecycle events, concurrent RPC control, session-owned MCP connections, and explicit OpenAI Chat, Responses, and Anthropic adapters. It is a working native runtime candidate, not a cutover-safe one.
 
 The most consequential current-state gaps are:
 
-- Each turn starts with only the latest user string, so the prompt assembler and resumed model-visible session history are unused. See [kernel.ts:32](/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core/src/runtime/kernel.ts:32), [prompt.ts:3](/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core/src/runtime/prompt.ts:3), and [native-launcher.ts:217](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-launcher.ts:217).
-- Runtime events hard-code headless mode and unknown trust. The production native policy nevertheless allows every read and network effect, without enforcing approval, plan policy, or peer locks. See [kernel.ts:30](/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core/src/runtime/kernel.ts:30), [kernel.ts:45](/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core/src/runtime/kernel.ts:45), and [native-launcher.ts:211](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-launcher.ts:211).
-- The lifecycle bus is invoked by native persistence after runtime events are emitted; it cannot deny or rewrite an effect before execution. See [native-launcher.ts:139](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-launcher.ts:139) and [native-launcher.ts:173](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-launcher.ts:173).
-- Submit, steer, and follow-up all call the same non-reentrant method, while interactive and RPC transports await a whole turn before reading another command. See [kernel.ts:25](/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core/src/runtime/kernel.ts:25), [native-launcher.ts:311](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-launcher.ts:311), and [native-transports.ts:110](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-transports.ts:110).
-- Shutdown aborts active work but does not join it before emitting `runtime.stopped`; the active turn can subsequently set the runtime back to ready. See [kernel.ts:19](/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core/src/runtime/kernel.ts:19) and [kernel.ts:29](/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core/src/runtime/kernel.ts:29).
-- The model adapter ignores thinking level, silently skips malformed streaming frames, drops an unterminated final SSE buffer, collapses unknown stop reasons to complete, and has no classified retry loop. See [native-model.ts:33](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-model.ts:33), [native-model.ts:77](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-model.ts:77), and [native-model.ts:125](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-model.ts:125).
-- Tool schemas are advertised to the model but raw arguments reach the executor without canonical preparation or validation. See [kernel.ts:43](/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core/src/runtime/kernel.ts:43), [registries.ts:7](/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core/src/runtime/registries.ts:7), and [native-tools.ts:41](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-tools.ts:41).
-- Print/JSON/RPC subscribe after start and unsubscribe before stop. RPC casts payloads after checking only `command.type` and wraps command failures inside an outer success. See [native-transports.ts:26](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-transports.ts:26), [native-transports.ts:63](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-transports.ts:63), and [native-transports.ts:113](/Users/bgaryy/code/octocode-agent/packages/octocode-agent/src/native-transports.ts:113).
+- Production composes trust, approval, schema, policy, live-plan decisions, command hooks, registry-owned MCP hooks, and bounded asynchronous hook ownership. Awareness peer-lock coverage, composite-effect classification, and one authoritative durable effect ledger remain incomplete.
+- Persistent RPC accepts control input while a submit is active and projects session-bound workers; ACP dynamically projects the active session and requests permission through the official client method. Frame bounds, backpressure, broken pipes, and the full clean built-client corpus remain open.
+- OpenAI Chat, Responses, and Anthropic protocol adapters pass focused tests. Credentialed provider runs, hosted tool coverage, classified retry ownership, persisted response state, and the complete provider-retirement matrix remain open.
+- MCP connections are session-owned, reuse negotiated catalogs, process progress, invalidate on notifications, and implement bounded elicitation, durable Tasks, provenance, and persisted enablement. Complete subscriptions, authentication variants, restart/fault coverage, and real-host conformance remain incomplete.
+- Skills provides contained discovery, list/load, refresh, provenance, budgets, authorized lifecycle operations, and settings controls. Complete dependency semantics, resumed-session provenance, and the clean cross-host corpus remain open.
+- RPC subscribes across start and stop and validates request envelopes; remaining work is bounded framing, backpressure, fault isolation, byte-pure built-client coverage, and editor conformance.
 
-These gaps conflict with the required runtime/tool parity, zero-bypass policy, cancellation ownership, prompt snapshots, streaming normalization, and transport corpus in [TEST_PLAN.md:59](/Users/bgaryy/code/octocode-agent/DESIGN/pi-coding-agent-removal/TEST_PLAN.md:59), [TEST_PLAN.md:118](/Users/bgaryy/code/octocode-agent/DESIGN/pi-coding-agent-removal/TEST_PLAN.md:118), [TEST_PLAN.md:149](/Users/bgaryy/code/octocode-agent/DESIGN/pi-coding-agent-removal/TEST_PLAN.md:149), and [KPI.md:145](/Users/bgaryy/code/octocode-agent/DESIGN/pi-coding-agent-removal/KPI.md:145).
+These gaps conflict with the required runtime/tool parity, zero-bypass policy, cancellation ownership, prompt snapshots, streaming normalization, and transport corpus in the [test plan](pi-coding-agent-removal/TEST_PLAN.md) and [KPI contract](pi-coding-agent-removal/KPI.md).
 
 ## Design principles
 
@@ -145,9 +143,15 @@ model fragments
   -> finalize correlated call
   -> canonical argument preparation
   -> schema validation
-  -> lifecycle rewrite/context
-  -> revalidation
-  -> trust/approval/plan/lock policy chain
+  -> resolve canonical effect set
+  -> eligible context/rewrite hooks
+  -> restart validation and effect resolution after rewrite
+  -> trust and managed policy
+  -> plan and peer-lock policy
+  -> blocking decision hooks
+  -> restart every gate after rewrite
+  -> approval bound to final digest and effects
+  -> shared effect ledger and owned scope
   -> tool.started
   -> execute in owned child scope
   -> zero or more tool.updated
@@ -169,15 +173,18 @@ model fragments
 The canonical policy order is:
 
 1. tool capability and effect classification;
-2. workspace trust and managed-only restrictions;
-3. plan policy;
-4. peer-lock conflict policy;
-5. approval policy; and
-6. adapter/environment restrictions.
+2. eligibility and authority for context/rewrite hooks;
+3. workspace trust and managed-only restrictions;
+4. plan policy;
+5. peer-lock conflict policy;
+6. blocking hook decisions;
+7. approval policy;
+8. adapter/environment restrictions; and
+9. shared effect-ledger admission.
 
 The policy request includes immutable session/turn/call identity, cwd, runtime mode, trust snapshot, tool provenance, prepared argument digest, effect class, approval requirement, plan requirement, and relevant lock targets. Policies cannot receive arbitrary mutable runtime objects.
 
-Every policy returns an ordered receipt. Deny wins. Missing trust, plan, lock, or approval information denies whenever the tool definition requires that information. Approval is requested only after all non-interactive gates allow, and its decision is bound to the exact prepared-argument digest and effect. A rewrite invalidates earlier validation and approval receipts.
+Every policy returns an ordered receipt. Deny wins. Missing trust, plan, lock, or approval information denies whenever the tool definition requires that information. Hook execution has its own source-trust, authority, timeout, and effect boundary. Approval is requested only after all non-interactive gates allow, and its decision is bound to the exact prepared-argument digest and effect set. A rewrite invalidates validation, classification, policy, hook-decision, approval, and ledger receipts and restarts the boundary.
 
 Effect classification must describe actual effects, not catalog location. A network tool that clones or writes is at least a write effect as well as network-capable. The runtime must support composite effects or a conservative maximum-risk classification.
 
@@ -228,6 +235,20 @@ type RpcResponse =
 A runtime command failure is an outer `ok: false`, not successful transport data containing an inner failure. Parse errors without a recoverable request ID use a protocol-error record; validation errors with an ID are correlated. One malformed frame does not stop the runtime or corrupt event sequencing.
 
 Text print mode writes only final user-facing assistant text to stdout. JSON and RPC modes never emit terminal control sequences, logs, progress prose, or non-JSON bytes to stdout. Exit code is derived from the terminal runtime/turn result, not hard-coded success.
+
+## Context, routing, and interoperability additions
+
+The runtime owns one context manifest per turn. It records each instruction, skill, MCP resource, semantic-map slice, deferred tool schema, and resumed-history segment with source identity, trust, precedence, revision, token cost, truncation decision, and cache-stability class. Stable trusted prefixes precede variable session/turn material. Duplicate content is removed by source-aware identity, not by lossy text similarity.
+
+Semantic context uses Octocode AST discovery followed by LSP definition/reference/caller/type proof. It is token-budgeted and source-linked; relevance is not identity proof. If a language server is missing or stale, the adapter emits an explicit degraded receipt and uses a bounded textual fallback.
+
+Tool discovery first filters by execution-scope capability and policy, then ranks a bounded search result and loads only selected schemas. Search cannot reveal or activate a tool that the current scope could not otherwise enumerate.
+
+Model routing is a policy service over the effective catalog. A route names its trigger, allowed source and destination, capability comparison, consent rule, scope, cost/rate reason, and receipt. Silent fallback is permitted only for explicitly allowlisted equivalent internal calls; user turns cannot silently lose tools, thinking, context, modality, or a configured billing boundary.
+
+The ACP adapter is a transport, not another runtime. It maps initialize/authentication, session new/list/resume/close/fork, prompt/cancel, mode/config, progress, permissions, client filesystem/terminal, and MCP into canonical ports. Upstream schemas are pinned and generated; at least two independent client implementations must pass before the adapter is considered conformant.
+
+MCP durable tasks remain behind an extension-specific capability. Task identifiers are unguessable and authorization-bound; TTL, concurrency, polling, update, cancellation, restart, and audit behavior are bounded and version-tested.
 
 ## Acceptance criteria
 

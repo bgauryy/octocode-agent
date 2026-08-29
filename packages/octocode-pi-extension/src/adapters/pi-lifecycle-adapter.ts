@@ -103,7 +103,12 @@ function mapDecisionToPi(piEvent: PiLifecycleEvent, result: LifecycleDispatchRes
   const rewrote = decision.kind === 'rewrite' || result.receipts.some((receipt) => receipt.decision === 'rewrite');
   if (!rewrote) return piEvent === 'input' ? { action: 'continue' } : undefined;
   if (piEvent === 'input') return { action: 'transform', text: result.payload['text'], images: result.payload['images'] };
-  if (piEvent === 'before_agent_start') return { systemPrompt: result.payload['systemPrompt'] };
+  if (piEvent === 'before_agent_start') {
+    return {
+      ...(result.payload['systemPrompt'] === undefined ? {} : { systemPrompt: result.payload['systemPrompt'] }),
+      ...(result.payload['message'] === undefined ? {} : { message: result.payload['message'] }),
+    };
+  }
   if (piEvent === 'context') return { messages: result.payload['messages'] };
   if (piEvent === 'resources_discover') return result.payload['skillPaths'] === undefined ? {} : { skillPaths: result.payload['skillPaths'] };
   if (piEvent === 'message_end') return { message: result.payload['message'] };
@@ -132,8 +137,17 @@ export function mapPiHookResultToDecision(
   if (piEvent === 'resources_discover') {
     return { kind: 'rewrite', payload: { ...payload, ...(Array.isArray(value['skillPaths']) ? { skillPaths: value['skillPaths'] } : {}) } };
   }
+  if (piEvent === 'before_agent_start' && (value['systemPrompt'] !== undefined || value['message'] !== undefined)) {
+    return {
+      kind: 'rewrite',
+      payload: {
+        ...payload,
+        ...(value['systemPrompt'] === undefined ? {} : { systemPrompt: value['systemPrompt'] }),
+        ...(value['message'] === undefined ? {} : { message: value['message'] }),
+      },
+    };
+  }
   const rewriteKeys: Partial<Record<PiLifecycleEvent, string>> = {
-    before_agent_start: 'systemPrompt',
     context: 'messages',
     message_end: 'message',
     session_before_compact: 'compaction',

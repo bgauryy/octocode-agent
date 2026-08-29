@@ -98,6 +98,7 @@ test('DIAL_MAX_ACTIVE_ENV matches the exact env var resolveSpawnPolicy reads', (
 test('applyDialLevel persists { level } and loadDialLevel round-trips it', async () => {
   resetDialStateForTests();
   const home = tmpHome();
+  fs.chmodSync(home, 0o755);
   const fake = makeFakePi();
 
   await applyDialLevel(fake.pi, undefined, 'ultra', { home, env: {} });
@@ -105,6 +106,10 @@ test('applyDialLevel persists { level } and loadDialLevel round-trips it', async
   const onDisk = JSON.parse(fs.readFileSync(path.join(home, 'dial.json'), 'utf8')) as { level: string };
   assert.deepEqual(onDisk, { level: 'ultra' });
   assert.equal(loadDialLevel(home), 'ultra');
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(home).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(path.join(home, 'dial.json')).mode & 0o777, 0o600);
+  }
 });
 
 test('loadDialLevel falls back to medium for missing, garbage, and unknown-level files', () => {

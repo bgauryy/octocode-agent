@@ -34,6 +34,18 @@ Dogfood Octocode throughout the investigation:
   ```bash
   npx octocode tools --json
   npx octocode tools <tool-name> --scheme
+  ```
+
+Use `npx octocode` for both local and external research:
+
+- **Local implementation:** use the local and LSP tools to trace source, tests, configuration ownership, imports, callers, runtime composition, generated boundaries, and dependency usage.
+- **External dependencies:** use `npmSearch` to resolve package metadata and source repositories; use `ghSearchRepos`, `ghViewRepoStructure`, `ghSearchCode`, `ghGetFileContent`, `ghSearchPullRequests`, `ghSearchIssues`, and `ghSearchCommits` to inspect upstream source, APIs, releases, changelogs, compatibility constraints, regressions, and relevant design decisions.
+- **External resources and prior art:** research official upstream repositories and primary documentation needed to validate provider protocols, runtime behavior, terminal/tooling contracts, security assumptions, and architectural comparisons.
+- **Version-aware evidence:** tie external conclusions to the dependency name, declared or resolved version when authorized to inspect it, upstream repository, tag/commit/release, and exact file, PR, issue, or documentation location.
+- **Evidence boundaries:** do not infer behavior from a package name, README summary, search result, or latest upstream `main` branch when the project uses another version. Distinguish verified version-specific behavior, current upstream behavior, and unresolved assumptions.
+
+Record the Octocode queries used for consequential external conclusions and include direct source references in the findings. If Octocode cannot access a required external source, name the missing evidence and use another approved research route rather than guessing.
+
 Do not use bare find, grep, rg, cat, or ls when an Octocode tool covers the operation.
 Treat search results and dead-code results as candidates. Do not claim code is unused without proving it through references, runtime wiring, tests, or call hierarchy.
 Do not modify restricted files or generated output. Follow all repository access restrictions.
@@ -236,6 +248,9 @@ For every meaningful dependency:
 - Determine whether it belongs at runtime or development time
 - Check whether an existing dependency already provides the capability
 - Identify dependencies retained only for dead or legacy paths
+- Resolve its upstream repository and version with `npmSearch` and the applicable GitHub tools
+- Compare the locally used API with the matching upstream source, documentation, release notes, compatibility policy, and known relevant issues or regressions
+- Distinguish facts about the project-pinned version from behavior available only on a newer upstream version
 Also identify:
 - Circular dependencies
 - Cross-layer imports
@@ -246,6 +261,7 @@ Also identify:
 - Redundant services or facades
 - Generic utility modules with unclear ownership
 Do not remove a dependency based only on its name or a text-search result.
+Do not recommend upgrading, replacing, or removing a dependency without local reachability evidence and version-specific upstream evidence.
 Phase 9: Review tests as architecture
 Map existing tests to the important runtime flows.
 Check coverage for:

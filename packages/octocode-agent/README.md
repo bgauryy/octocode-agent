@@ -1,6 +1,6 @@
 # octocode-agent
 
-The user-facing native Octocode coding agent: one command, one update path, and no native Pi dependency.
+The native Octocode coding agent: one command, one update path, and no native Pi dependency.
 
 ```bash
 npm install -g octocode-agent
@@ -22,6 +22,7 @@ The native launcher composes `@octocodeai/agent-core` with:
 ```text
 octocode-agent [prompt]          Interactive native terminal
 octocode-agent run <prompt>      One-shot text output
+printf 'prompt\n' | octocode-agent run
 octocode-agent run --json ...    One-shot JSON events
 octocode-agent serve             Versioned JSONL RPC on stdio
 
@@ -39,6 +40,15 @@ octocode-agent tools|skills|memory|awareness
 ```
 
 Run `octocode-agent --help` for the installed command truth.
+See the [headless runtime guide](docs/HEADLESS.md) for prompt composition,
+protocol envelopes, caching, MCP, and Agent Skills behavior.
+
+Interactive slash commands include `/help`, `/status`, `/tools`, `/skills`,
+`/thinking`, `/steer`, `/compact`, `/plan show`, and `/settings [section]`.
+`/settings` opens the secure loopback configuration center; see the
+[settings guide](docs/SETTINGS.md) for its current capabilities and limits.
+`/compact` is capability-gated and reports unsupported until the launcher composes
+the durable compaction port.
 
 ## Runtime configuration
 

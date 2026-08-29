@@ -33,12 +33,19 @@
     "node": ">=26.4.0"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
+    "@modelcontextprotocol/client": "2.0.0",
     "@octocodeai/agent-core": "0.1.0",
     "@octocodeai/config": "18.0.1",
     "@octocodeai/octocode-awareness": "1.4.0",
+    "@octocodeai/octocode-shared": "0.1.0",
     "@opentui/core": "0.5.8",
+    "ajv": "8.20.0",
     "octocode": "18.3.0",
-    "web-tree-sitter": "0.25.10"
+    "openai": "7.8.0",
+    "web-tree-sitter": "0.25.10",
+    "zod": "4.4.3",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

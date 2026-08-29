@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { removeStaleHookRunStateLock } from '../bin/hook-run-state.js';
+import { writeWorkspacePolicy } from '../src/workspace-policy.js';
 import { withEnabledAwarenessConfig } from './helpers/enabled-awareness-config.js';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
@@ -32,6 +33,7 @@ function runHook(
   memoryHome: string,
   cwd: string,
 ) {
+  writeWorkspacePolicy(cwd, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
   return spawnSync(process.execPath, [TSX_CLI, SOURCE_RUNNER, command], {
     cwd,
     env: hookEnv(memoryHome),
@@ -47,6 +49,7 @@ function runHookAsync(
   memoryHome: string,
   cwd: string,
 ): Promise<{ code: number | null; stderr: string }> {
+  writeWorkspacePolicy(cwd, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
   return new Promise((resolveResult, reject) => {
     const child = spawn(process.execPath, [TSX_CLI, SOURCE_RUNNER, command], {
       cwd,

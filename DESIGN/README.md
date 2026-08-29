@@ -1,41 +1,44 @@
-# Pi Coding Agent Removal — Completion Design
+# Pi coding-agent removal — implementation guide
 
-Status: canonical implementation guide; implementation required  
-Source RFC: [`pi-coding-agent-removal/RFC.md`](pi-coding-agent-removal/RFC.md)  
-Execution plan: [`pi-coding-agent-removal/STEPS.md`](pi-coding-agent-removal/STEPS.md)  
-Complete RFC and evidence set: [`pi-coding-agent-removal/`](pi-coding-agent-removal/README.md)
+Status: active design index; reconciled 2026-08-28; release remains `HOLD`
 
-This directory is the canonical implementation guide for the Pi coding-agent removal. It combines the original RFC, planning, and evidence set with the implementation-facing completion design produced from the current production-path audit. Start here rather than entering through an individual RFC document.
+This directory is the main guide for completing the native Octocode agent and removing Pi. The RFC folder is normative. The root documents explain the implementation, architecture, execution order, and current maturity without duplicating specialist specifications.
 
-The native cutover is blocked until every required behavior is implemented, exercised through a real host path, and checked off in the traceability matrix. Pi removal must be the final consequence of conformance, never the mechanism used to force it.
+Start with the [RFC overview](pi-coding-agent-removal/README.md), then use the documents below for implementation work.
 
-## Documents
+## Document map
 
-1. [`01-CURRENT-STATE-AUDIT.md`](01-CURRENT-STATE-AUDIT.md) — release-blocking findings and verified positive controls.
-2. [`02-AGENT-RUNTIME-AND-TOOLS.md`](02-AGENT-RUNTIME-AND-TOOLS.md) — agent loop, models, tools, policy, cancellation, and transports.
-3. [`03-SESSIONS-AND-COMPACTION.md`](03-SESSIONS-AND-COMPACTION.md) — durable sessions, resume, branching, migration, and compaction.
-4. [`04-TUI-AND-SETTINGS.md`](04-TUI-AND-SETTINGS.md) — OpenTUI interaction and the unified settings control plane.
-5. [`05-HOOKS-AND-PLUGINS.md`](05-HOOKS-AND-PLUGINS.md) — executable hooks, trust, plugin grants, contributions, and unload.
-6. [`06-CONFORMANCE-SECURITY-AND-OPERATIONS.md`](06-CONFORMANCE-SECURITY-AND-OPERATIONS.md) — real-host comparison, zero-bypass security, observability, and rollback.
-7. [`07-IMPLEMENTATION-SEQUENCE.md`](07-IMPLEMENTATION-SEQUENCE.md) — dependency-safe delivery order and cutover gates.
-8. [`08-TRACEABILITY-CHECKLIST.md`](08-TRACEABILITY-CHECKLIST.md) — one completion ledger for every audited leftover.
-9. [`pi-coding-agent-removal/`](pi-coding-agent-removal/README.md) — the complete source RFC, schemas, stages, test plan, status, decisions, and evidence archive.
+| Need | Document | Authority |
+| --- | --- | --- |
+| Current implementation snapshot | [Current-state audit](01-CURRENT-STATE-AUDIT.md) | Dated summary; does not override live ledgers |
+| Runtime, providers, tools, and policy | [Agent runtime and tools](02-AGENT-RUNTIME-AND-TOOLS.md) | Implementation guide |
+| Durable sessions and compaction | [Sessions and compaction](03-SESSIONS-AND-COMPACTION.md) | Implementation guide |
+| Terminal and settings composition | [TUI and settings](04-TUI-AND-SETTINGS.md) | Implementation guide and route map |
+| Security, conformance, and operations | [Conformance, security, and operations](06-CONFORMANCE-SECURITY-AND-OPERATIONS.md) | Implementation guide |
+| Dependency-safe execution order | [Implementation sequence](07-IMPLEMENTATION-SEQUENCE.md) | Root execution guide |
+| Requirement maturity | [Traceability ledger](08-TRACEABILITY-CHECKLIST.md) | Live implementation ledger |
+| Package boundaries and flows | [Architecture and flow](09-ARCHITECTURE-AND-FLOW.md) | Root architecture guide |
+| Work still required | [Remaining-work plan](10-REMAINING-WORK-PLAN.md) | Live work-group index |
+| Widget classes and accessibility | [OpenTUI widgets and accessibility](11-OPENTUI-WIDGETS-AND-ACCESSIBILITY.md) | Implementation guide |
+| Product scope, schemas, gates, and evidence | [Pi coding-agent removal RFC](pi-coding-agent-removal/README.md) | Normative source |
 
-## How to use this guide
+The hooks and plugins specification lives only in [the RFC specialist document](pi-coding-agent-removal/HOOKS_AND_PLUGINS.md). The OpenTUI core and settings specifications likewise live in [OpenTUI terminal core](pi-coding-agent-removal/OPENTUI_TERMINAL_CORE.md) and [settings web UI](pi-coding-agent-removal/SETTINGS_WEB_UI.md). Root guides link to those owners instead of restating them.
 
-1. Read the current-state audit and the target design for the area being changed.
-2. Consult the source RFC folder for normative schemas, stage definitions, historical decisions, and evidence.
-3. Implement in the order defined by `07-IMPLEMENTATION-SEQUENCE.md`.
-4. Close the corresponding `08-TRACEABILITY-CHECKLIST.md` item only after production composition and verification.
-5. Update the RFC status/evidence documents without weakening the cutover or rollback gates.
+## Authority and update rules
+
+| Information | Canonical owner |
+| --- | --- |
+| Product decisions, accepted schemas, compatibility, and release gates | RFC specialist documents |
+| Current release state and blockers | [RFC status](pi-coding-agent-removal/STATUS.md) |
+| Step order and stop conditions | [RFC steps](pi-coding-agent-removal/STEPS.md) |
+| Requirement maturity | [Traceability ledger](08-TRACEABILITY-CHECKLIST.md) |
+| Dependency-grouped remaining work | [Remaining-work plan](10-REMAINING-WORK-PLAN.md) |
+| Dated command output and evaluations | `pi-coding-agent-removal/evidence/` |
+
+Historical evidence receipts are immutable. Correct current documents rather than rewriting an old receipt. When two active documents conflict, keep the release at `HOLD`, update the owning RFC document first, and then reconcile its implementation guide and live ledger.
 
 ## Completion rule
 
-A checkbox may be closed only when all four conditions hold:
+A requirement advances to `Verified` only when the production native composition reaches it and focused plus production-path checks pass. `Cutover-ready` additionally requires real-host, security, platform, packaging, rollout, and rollback evidence.
 
-1. The behavior is reachable through the production native launcher.
-2. A test exercises that production composition, not only an isolated class or fake handler.
-3. The relevant package is rebuilt and its workspace tests, lint, and typecheck pass.
-4. A real CLI, RPC, PTY, provider, or migration path demonstrates the behavior as applicable.
-
-No compatibility shim is required unless explicitly requested. Generated output and `.octocode/` state must not be hand-edited.
+Pi removal is the final consequence of those gates. It must not be used to manufacture parity. Generated output and `.octocode/` state are never documentation sources and must not be hand-edited.

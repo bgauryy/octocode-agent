@@ -1,8 +1,18 @@
-import type { EventId, SessionId, TurnId } from './identity.js';
+import type { RuntimeErrorData } from './errors.js';
+import type { EventId, SessionId, ToolCallId, TurnId } from './identity.js';
 
 export type RuntimeMode = 'interactive' | 'print' | 'json' | 'rpc' | 'headless';
 export interface TrustSnapshot { readonly workspace: 'trusted' | 'untrusted' | 'unknown'; readonly managedOnly: boolean; }
 export interface ModelRef { readonly providerId: string; readonly modelId: string; }
+export interface ToolCancelledPayload {
+  readonly callId: ToolCallId;
+  readonly name: string;
+  readonly outcome: 'cancelled';
+  readonly category: 'cancelled';
+  readonly message: string;
+  /** Compatibility error envelope for consumers that still read `payload.error`. */
+  readonly error: RuntimeErrorData;
+}
 export type EventPhase = 'before' | 'permission' | 'after' | 'notification';
 export type AgentEventType =
   | 'runtime.ready' | 'runtime.stopping' | 'runtime.stopped' | 'runtime.failed'
@@ -13,7 +23,7 @@ export type AgentEventType =
   | 'turn.started' | 'turn.ended' | 'message.started' | 'message.delta' | 'message.ended'
   | 'tool.requested' | 'tool.blocked' | 'tool.started' | 'tool.updated' | 'tool.ended'
   | 'model.selected' | 'model.thinking-level-selected' | 'provider.request-started' | 'provider.response-received' | 'provider.failed'
-  | 'context.usage-changed' | 'context.compaction-started' | 'context.compaction-retrying' | 'context.compacted' | 'context.compaction-failed'
+  | 'context.appended' | 'context.usage-changed' | 'context.compaction-started' | 'context.compaction-retrying' | 'context.compacted' | 'context.compaction-failed'
   | 'ui.interaction-requested' | 'ui.interaction-resolved' | 'ui.notification' | 'ui.status-changed' | 'ui.presentation-changed'
   | 'resources.discovering' | 'resources.discovered' | 'trust.resolving' | 'trust.resolved'
   | 'prompt.assembling' | 'prompt.assembled' | 'context.preparing' | 'agent.before-start'

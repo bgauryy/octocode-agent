@@ -1,11 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { hookCommand, hookCommandWindows, hookTargetPath, HookEntry, HookHost, HookSpec, WRITE_MATCHERS } from './hooks-install-specs.js';
+import { hookCommand, hookCommandWindows, hookTargetPath, HookEntry, HookSpec, InstallableHookHost, WRITE_MATCHERS } from './hooks-install-specs.js';
+import type { AwarenessHookProfile } from './workspace-policy.js';
 
-export function specsFor(host: HookHost, params: {
+export function specsFor(host: InstallableHookHost, params: {
   globalMode: boolean;
   projectDir: string;
   hookDir: string;
+  profile?: AwarenessHookProfile;
 }): HookSpec[] {
   const spec = (event: string, name: string, matcher?: string): HookSpec => ({
     event,
@@ -16,8 +18,20 @@ export function specsFor(host: HookHost, params: {
       : {}),
     targetPath: hookTargetPath(params.hookDir),
   });
+  const filterProfile = (specs: HookSpec[]): HookSpec[] => {
+    const profile = params.profile ?? 'full';
+    if (profile === 'full') return specs;
+    const lifecycleEvents = new Set(host === 'cursor'
+      ? ['preToolUse', 'postToolUse', 'postToolUseFailure', 'stop', 'subagentStop']
+      : host === 'copilot'
+        ? ['preToolUse', 'postToolUse', 'postToolUseFailure', 'agentStop', 'subagentStop']
+        : host === 'gemini'
+          ? ['BeforeTool', 'AfterTool', 'AfterAgent']
+          : ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SubagentStop']);
+    return specs.filter((entry) => lifecycleEvents.has(entry.event));
+  };
   if (host === 'cursor') {
-    return [
+    return filterProfile([
       spec('preToolUse', 'pre-edit.sh', WRITE_MATCHERS.cursor),
       spec('postToolUse', 'post-edit.sh', WRITE_MATCHERS.cursor),
       spec('postToolUseFailure', 'post-edit.sh', WRITE_MATCHERS.cursor),
@@ -27,10 +41,35 @@ export function specsFor(host: HookHost, params: {
       spec('sessionEnd', 'session-end.sh'),
       spec('preCompact', 'session-compact.sh'),
       spec('sessionStart', 'notify-deliver.sh'),
-    ];
+    ]);
+  }
+  if (host === 'copilot') {
+    return filterProfile([
+      spec('sessionStart', 'notify-deliver.sh'),
+      spec('preToolUse', 'pre-edit.sh', WRITE_MATCHERS.copilot),
+      spec('postToolUse', 'post-edit.sh', WRITE_MATCHERS.copilot),
+      spec('postToolUseFailure', 'post-edit.sh', WRITE_MATCHERS.copilot),
+      spec('subagentStart', 'notify-deliver.sh'),
+      spec('agentStop', 'stop-verify.sh'),
+      spec('subagentStop', 'stop-verify.sh'),
+      spec('preCompact', 'session-compact.sh'),
+      spec('sessionEnd', 'session-end.sh'),
+      spec('userPromptSubmitted', 'notify-deliver.sh'),
+    ]);
+  }
+  if (host === 'gemini') {
+    return filterProfile([
+      spec('SessionStart', 'notify-deliver.sh'),
+      spec('BeforeTool', 'pre-edit.sh', WRITE_MATCHERS.gemini),
+      spec('AfterTool', 'post-edit.sh', WRITE_MATCHERS.gemini),
+      spec('BeforeAgent', 'notify-deliver.sh'),
+      spec('AfterAgent', 'stop-verify.sh'),
+      spec('PreCompress', 'session-compact.sh'),
+      spec('SessionEnd', 'session-end.sh'),
+    ]);
   }
   if (host === 'codex') {
-    return [
+    return filterProfile([
       spec('SessionStart', 'notify-deliver.sh'),
       spec('PreToolUse', 'pre-edit.sh', WRITE_MATCHERS.codex),
       spec('PostToolUse', 'post-edit.sh', WRITE_MATCHERS.codex),
@@ -40,9 +79,9 @@ export function specsFor(host: HookHost, params: {
       spec('PreCompact', 'session-compact.sh'),
       spec('SessionEnd', 'session-end.sh'),
       spec('UserPromptSubmit', 'notify-deliver.sh'),
-    ];
+    ]);
   }
-  return [
+  return filterProfile([
     spec('SessionStart', 'notify-deliver.sh'),
     spec('PreToolUse', 'pre-edit.sh', WRITE_MATCHERS.claude),
     spec('PostToolUse', 'post-edit.sh', WRITE_MATCHERS.claude),
@@ -51,29 +90,43 @@ export function specsFor(host: HookHost, params: {
     spec('Stop', 'stop-verify.sh'),
     spec('SubagentStop', 'stop-verify.sh'),
     spec('PreCompact', 'session-compact.sh'),
+    spec('PostCompact', 'session-compact.sh'),
     spec('SessionEnd', 'session-end.sh'),
     spec('UserPromptSubmit', 'notify-deliver.sh'),
-  ];
+    spec('Notification', 'notify-deliver.sh'),
+  ]);
 }
 
-export function obsoleteSpecsFor(host: HookHost, params: {
+export function obsoleteSpecsFor(host: InstallableHookHost, params: {
   globalMode: boolean;
   projectDir: string;
   hookDir: string;
 }): HookSpec[] {
   return [{
-    event: host === 'cursor' ? 'preToolUse' : 'PreToolUse',
+    event: host === 'cursor' || host === 'copilot'
+      ? 'preToolUse'
+      : host === 'gemini'
+        ? 'BeforeTool'
+        : 'PreToolUse',
     matcher: WRITE_MATCHERS[host],
     command: hookCommand('harness-guard.sh', { host, ...params }),
     targetPath: hookTargetPath(params.hookDir),
   }];
 }
 
-export function entry(host: HookHost, spec: HookSpec): HookEntry {
+export function entry(host: InstallableHookHost, spec: HookSpec): HookEntry {
   if (host === 'cursor') {
     return {
       command: spec.command,
       timeout: 20,
+      ...(spec.matcher ? { matcher: spec.matcher } : {}),
+    };
+  }
+  if (host === 'copilot') {
+    return {
+      type: 'command',
+      command: spec.command,
+      timeoutSec: 20,
       ...(spec.matcher ? { matcher: spec.matcher } : {}),
     };
   }
@@ -83,7 +136,7 @@ export function entry(host: HookHost, spec: HookSpec): HookEntry {
       type: 'command',
       command: spec.command,
       ...(spec.commandWindows ? { commandWindows: spec.commandWindows } : {}),
-      timeout: 20,
+      timeout: host === 'gemini' ? 20_000 : 20,
     }],
   };
 }
@@ -115,10 +168,17 @@ export function matcherMatches(actual: unknown, expected: string | undefined): b
   return expected ? actual === expected : actual == null;
 }
 
-export function isExactHookEntry(host: HookHost, group: HookEntry, spec: HookSpec): boolean {
+export function isExactHookEntry(host: InstallableHookHost, group: HookEntry, spec: HookSpec): boolean {
   if (host === 'cursor') {
     return group.command === spec.command
       && group.timeout === 20
+      && matcherMatches(group.matcher, spec.matcher)
+      && !Array.isArray(group.hooks);
+  }
+  if (host === 'copilot') {
+    return group.type === 'command'
+      && group.command === spec.command
+      && group.timeoutSec === 20
       && matcherMatches(group.matcher, spec.matcher)
       && !Array.isArray(group.hooks);
   }
@@ -128,11 +188,11 @@ export function isExactHookEntry(host: HookHost, group: HookEntry, spec: HookSpe
       hook.type === 'command'
       && hook.command === spec.command
       && hook.commandWindows === spec.commandWindows
-      && hook.timeout === 20
+      && hook.timeout === (host === 'gemini' ? 20_000 : 20)
     ));
 }
 
-export function hasExactCommand(groups: HookEntry[] | undefined, host: HookHost, spec: HookSpec): boolean {
+export function hasExactCommand(groups: HookEntry[] | undefined, host: InstallableHookHost, spec: HookSpec): boolean {
   return (groups ?? []).some((group) => isExactHookEntry(host, group, spec));
 }
 
@@ -145,9 +205,9 @@ export function matchingCommandCount(groups: HookEntry[] | undefined, command: s
   return count;
 }
 
-export function hasDriftedCommand(groups: HookEntry[] | undefined, host: HookHost, spec: HookSpec): boolean {
+export function hasDriftedCommand(groups: HookEntry[] | undefined, host: InstallableHookHost, spec: HookSpec): boolean {
   for (const group of groups ?? []) {
-    if (host === 'cursor') {
+    if (host === 'cursor' || host === 'copilot') {
       if (sameAwarenessCommand(group.command, spec.command) && !isExactHookEntry(host, group, spec)) {
         return true;
       }
@@ -159,7 +219,7 @@ export function hasDriftedCommand(groups: HookEntry[] | undefined, host: HookHos
       const exact = matcherMatches(group.matcher, spec.matcher)
         && hook.type === 'command'
         && hook.commandWindows === spec.commandWindows
-        && hook.timeout === 20;
+        && hook.timeout === (host === 'gemini' ? 20_000 : 20);
       if (!exact) return true;
     }
   }
@@ -254,7 +314,7 @@ export function removeUnexpectedAwarenessCommands(
   return { groups: out, removed };
 }
 
-export function runtimeHealth(host: HookHost, globalMode: boolean): Record<string, unknown> {
+export function runtimeHealth(host: InstallableHookHost, globalMode: boolean): Record<string, unknown> {
   const common = {
     status: 'unverified',
     verified: false,
@@ -274,6 +334,22 @@ export function runtimeHealth(host: HookHost, globalMode: boolean): Record<strin
     return {
       ...common,
       activation: globalMode ? 'global_config_not_probed' : 'skill_or_project_activation_not_checked',
+    };
+  }
+  if (host === 'copilot') {
+    return {
+      ...common,
+      repository_hooks: globalMode ? 'unsupported' : 'not_probed',
+      cli_runtime: 'not_probed',
+      cloud_agent_runtime: 'not_probed',
+    };
+  }
+  if (host === 'gemini') {
+    return {
+      ...common,
+      project_trust: globalMode ? 'not_applicable_global_config' : 'not_checked',
+      hooks_enabled: 'not_checked',
+      disabled_hook_names: 'not_checked',
     };
   }
   return {

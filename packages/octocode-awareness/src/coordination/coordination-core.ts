@@ -2,8 +2,8 @@ import type { AgentRecord,AgentStatus,CheckAudit,CheckStatus,HandoffNote,LiteMes
 import { initOctocodeSchema } from '@octocodeai/octocode-shared/schema';
 import { DatabaseSync,withSqliteBusyRetry } from '@octocodeai/octocode-shared/sqlite';
 import { journalModeForSqliteVersion } from '@octocodeai/octocode-shared/sqlite-version';
-import { mkdirSync } from 'node:fs';
-import { dirname,resolve } from 'node:path';
+import { hardenSqliteFiles,preparePrivateSqlitePath } from '@octocodeai/octocode-shared/permissions';
+import { resolve } from 'node:path';
 import { defaultDbPath,type AwarenessOptions,type AwarenessSchema } from './coordination-shared.js';
 import { parseAgentEventEnvelopeV1, type AgentEventEnvelopeV1 } from '../continuity-contracts.js';
 import { SCHEMA_DDL } from '../db-schema.js';
@@ -17,30 +17,25 @@ export abstract class CoordinationBase {
 
   constructor(options: AwarenessOptions) {
     this.workspace = resolve(options.workspace ?? process.cwd());
-    this.dbPath = resolve(options.dbPath ?? defaultDbPath(this.workspace));
-    mkdirSync(dirname(this.dbPath), { recursive: true });
+    this.dbPath = resolve(options.dbPath ?? defaultDbPath(this.workspace, options.scope));
+    preparePrivateSqlitePath(this.dbPath);
     this.db = new DatabaseSync(this.dbPath);
-    // busy_timeout FIRST: this package exists for parallel agents sharing one
-    // DB, and without it concurrent writers hit SQLITE_BUSY immediately and
-    // silently lose records (verified: 40 parallel `task add` → 9 failures).
-    // 5s matches the hardened open in the full octocode-awareness package.
-    this.db.exec('PRAGMA busy_timeout = 5000');
-    // Version-gated journal mode (shared policy): WAL only when the embedded
-    // SQLite carries the concurrent-WAL reset fix, else DELETE. Setting it is a
-    // write that can race a first opener → bounded BUSY retry.
-    const version = (this.db.prepare('SELECT sqlite_version() AS version').get() as { version: string }).version;
-    withSqliteBusyRetry(() => this.db.exec(`PRAGMA journal_mode = ${journalModeForSqliteVersion(version)}`));
-    this.db.exec('PRAGMA foreign_keys = ON');
-    this.migrate();
-    // The store is shared (~/.octocode/octocode.sqlite3): ensure the agent/session
-    // tables exist alongside Awareness's own, so opening the store in-process
-    // also initialises "our DB" for the agent.
-    initOctocodeSchema(this.db);
-    // Install auxiliary full-runtime relations (memory_refs, plan_members,
-    // task_runs, signals, …) after the coordination migration has established
-    // the unified collision-prone core tables. CREATE IF NOT EXISTS preserves
-    // those canonical plans/tasks/memories shapes.
-    this.db.exec(SCHEMA_DDL);
+    try {
+      // busy_timeout FIRST: this package exists for parallel agents sharing one
+      // DB, and without it concurrent writers hit SQLITE_BUSY immediately and
+      // silently lose records (verified: 40 parallel `task add` → 9 failures).
+      this.db.exec('PRAGMA busy_timeout = 5000');
+      const version = (this.db.prepare('SELECT sqlite_version() AS version').get() as { version: string }).version;
+      withSqliteBusyRetry(() => this.db.exec(`PRAGMA journal_mode = ${journalModeForSqliteVersion(version)}`));
+      this.db.exec('PRAGMA foreign_keys = ON');
+      this.migrate();
+      initOctocodeSchema(this.db);
+      this.db.exec(SCHEMA_DDL);
+      hardenSqliteFiles(this.dbPath);
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   close(): void {

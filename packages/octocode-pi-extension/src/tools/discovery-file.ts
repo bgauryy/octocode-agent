@@ -20,10 +20,7 @@ import {
   discoverMcpConfigs,
   type DiscoveredMcpConfig,
 } from './mcp-discovery.js';
-import type { DiscoveredSkill } from './skill-tool.js';
-
-export { discoverMcpConfigs } from './mcp-discovery.js';
-export type { DiscoveredMcpConfig, DiscoverMcpConfigOptions } from './mcp-discovery.js';
+import type { DiscoveredSkillState } from './skill-tool.js';
 
 /** Per-section character counts for the harness prompt overhead. */
 export interface SystemPromptStats {
@@ -61,7 +58,8 @@ export interface DiscoverySnapshot {
   /** Model-callable native tool names registered by the extension. */
   nativeTools: string[];
   nativeToolCount: number;
-  skills: Array<{ name: string; description: string; source: string; path: string }>;
+  /** Complete discovered inventory. Disabled entries remain visible but are not model-callable. */
+  skills: Array<{ name: string; description: string; source: string; path: string; enabled: boolean }>;
   mcp: McpDiscoverySnapshot & { discoveredConfigs: DiscoveredMcpConfig[] };
 }
 
@@ -72,7 +70,7 @@ export function getDiscoveryFilePath(cwd: string): string {
 export async function buildDiscoverySnapshot(
   ctx: PiContext | undefined,
   opts: {
-    skills: DiscoveredSkill[];
+    skills: DiscoveredSkillState[];
     nativeTools: string[];
     home?: string;
     octocodeHome?: string;
@@ -114,6 +112,7 @@ export async function buildDiscoverySnapshot(
       description: skill.description,
       source: skill.source,
       path: skill.path,
+      enabled: skill.enabled,
     })),
     mcp: {
       ...(await getMcpDiscoverySnapshot(ctx)),
@@ -129,7 +128,7 @@ export async function buildDiscoverySnapshot(
 export async function writeDiscoveryFile(
   ctx: PiContext | undefined,
   opts: {
-    skills: DiscoveredSkill[];
+    skills: DiscoveredSkillState[];
     nativeTools: string[];
     home?: string;
     octocodeHome?: string;

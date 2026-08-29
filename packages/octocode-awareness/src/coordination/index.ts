@@ -1,4 +1,4 @@
-export { execCli,installHostHooks,isCliEntrypoint,runCli,type InstallHost } from './cli.js';
+export { execCli,isCliEntrypoint,runCli } from './cli.js';
 export {
 bytesToEmbedding,cosineSimilarity,
 embeddingToBytes,isEmbeddingEnabled,
@@ -67,6 +67,7 @@ export {
 export type { AgentRecord,AgentStatus,CheckAudit,CheckStatus,HandoffNote,LiteMessage,Lock,LockWaitResult,MemoryItem,Plan,PlanGraphResult,PlanStatus,PruneResult,SourceStep,Task,TaskStatus,WorkPresence } from '@octocodeai/octocode-shared/entities';
 export { detectAgentHost,generateAgentName,type AgentHost } from './agent-naming.js';
 export type { AwarenessOptions,AwarenessSchema } from './coordination-shared.js';
+export type { AwarenessStorageScope } from '../storage-scope.js';
 export { AwarenessStore, openAwarenessStore } from './open.js';
 export type { OutboxEventV1, StoredInteractionV1 } from './coordination-continuity.js';
 export type { VerifiedMemoryV1 } from './coordination-memory-agents.js';

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parseAgentSkill } from '@octocodeai/octocode-shared/agent-skills';
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext, SkillInfo, TSchema } from '../types.js';
 import { getAssetPaths } from '../assets.js';
 import type { registerUniqueTool } from './octocode-tools.js';
@@ -34,11 +35,6 @@ const SKILL_CONTENT_CAP = 48_000;
 
 const SKILL_FILE_LIST_CAP = 30;
 
-function parseFrontmatterField(text: string, field: string): string {
-  const match = text.match(new RegExp(`^${field}:\\s*["']?(.+?)["']?\\s*$`, 'm'));
-  return match?.[1]?.trim() ?? '';
-}
-
 function skillKey(name: string): string {
   return name.replace(/\s+/g, ' ').trim().toLowerCase();
 }
@@ -61,7 +57,9 @@ function scanSkillRoot(dir: string, source: string, out: Map<string, DiscoveredS
     } catch {
       continue;
     }
-    const name = parseFrontmatterField(text, 'name') || entry.name;
+      const parsed = parseAgentSkill(text, entry.name);
+      if (!parsed.ok) continue;
+      const { name, description } = parsed.skill;
     if (isPromptOwnedSkill(name)) continue;
     const key = skillKey(name);
     const existing = out.get(key);
@@ -72,13 +70,13 @@ function scanSkillRoot(dir: string, source: string, out: Map<string, DiscoveredS
     out.set(key, existing
       ? {
           ...existing,
-          description: existing.description || parseFrontmatterField(text, 'description'),
+              description: existing.description || description,
           path: md,
           dir: skillDir,
         }
       : {
           name,
-          description: parseFrontmatterField(text, 'description'),
+              description,
           path: md,
           dir: skillDir,
           source,
@@ -99,6 +97,7 @@ export function skillDiscoveryRoots(cwd: string, home = os.homedir()): Array<{ d
     project('.octocode/skills', 'octocode'),
     project('.pi/agent/skills', 'pi'),
     project('.pi/skills', 'pi'),
+    user('.agents/skills', 'agents'),
     user('.pi/agent/skills', 'pi'),
     user('.pi/skills', 'pi'),
     user('.claude/skills', 'claude'),

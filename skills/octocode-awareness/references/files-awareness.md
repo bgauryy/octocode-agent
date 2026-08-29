@@ -1,5 +1,7 @@
 # Files Awareness And Overlap
 
+Load when overlapping edits or file-presence semantics can change the action. This reference step ends here; return to the main skill flow.
+
 Every structured edit declares advisory `run_files` presence. Ordinary peers may work on the same path; awareness makes that choice informed rather than silently blocking it. Without hooks or manual `work start`, edits are invisible to peers.
 
 ## On Overlap
@@ -30,4 +32,4 @@ Keep one normalized workspace and absolute operational paths so the same file jo
 
 Task paths are non-exclusive planning scope. Run files are live work. Locks are exclusive safety. Edit log is completed history; do not conflate these four layers.
 
-Command/verification detail: `lock-protocol.md`; timing/handoffs: `architecture.md`.
+Return to `SKILL.md` after the overlap decision. Command/verification detail: `lock-protocol.md`; timing/handoffs: `architecture.md`.

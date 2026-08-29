@@ -11,6 +11,7 @@ import { createPlan } from '../src/plans.js';
 import { claimTask, createTask as createTaskBase } from '../src/tasks.js';
 import type { CreateTaskParams } from '../src/tasks.js';
 import { startWork } from '../src/work.js';
+import { writeWorkspacePolicy } from '../src/workspace-policy.js';
 import { withEnabledAwarenessConfig } from './helpers/enabled-awareness-config.js';
 const DIST_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../out');
 const HOOK_RUNNER = resolve(DIST_DIR, 'hook-runner.js');
@@ -23,12 +24,20 @@ function createTask(db: DatabaseSync, params: TestTaskParams) {
     return createTaskBase(db, { acceptanceCriteria: 'affected behavior is verified', ...params });
 }
 function runScript(script: string, args: string[], payload: unknown, env: Record<string, string | undefined> = {}, cwd?: string) {
+    const payloadWorkspace = (payload as { workspace?: unknown })?.workspace;
+    if (typeof payloadWorkspace === 'string' && payloadWorkspace.startsWith(tmpdir())) {
+        writeWorkspacePolicy(payloadWorkspace, {
+            version: 1,
+            storage: { repository: 'global', memory: 'global' },
+            hooks: { profile: 'full' },
+        });
+    }
     return spawnSync(NODE, [script, ...args], {
         input: JSON.stringify(payload),
         encoding: 'utf8',
         timeout: 5000,
         cwd,
-        env: { ...process.env, ...withEnabledAwarenessConfig(env) },
+        env: { ...process.env, OCTOCODE_HOOK_PROFILE: 'full', ...withEnabledAwarenessConfig(env) },
     });
 }
 
@@ -57,6 +66,25 @@ it('allows two agents to declare ordinary work on the same file without locks', 
         { host: 'claude', event: 'PreToolUse', status: 'success' },
       ]);
       db.close();
+    } finally {
+      rmSync(memoryHome, { recursive: true, force: true });
+    }
+  });
+it('uses a deterministic fallback identity without repeating setup guidance on stderr', () => {
+    const memoryHome = mkdtempSync(join(tmpdir(), 'octocode-hook-fallback-id-'));
+    const workspace = resolve(memoryHome, 'repo');
+    mkdirSync(workspace, { recursive: true });
+    try {
+      const result = runScript(HOOK_RUNNER, ['pre-edit'], {
+        workspace,
+        file_path: 'src/fallback.ts',
+        hook_event_name: 'PreToolUse',
+      }, {
+        OCTOCODE_MEMORY_HOME: memoryHome,
+        OCTOCODE_AGENT_ID: undefined,
+      });
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe('');
     } finally {
       rmSync(memoryHome, { recursive: true, force: true });
     }
@@ -214,14 +242,15 @@ it('emits a compact peer delta once and stays silent while peers are unchanged',
       });
 
       expect(first.status).toBe(0);
-      expect(`${first.stdout}${first.stderr}`).toContain('AWARE');
+            expect(`${first.stdout}${first.stderr}`).toContain('Awareness: overlap changed (1 path).');
+      expect(`${first.stdout}${first.stderr}`).not.toContain('agent-a');
       expect(unchanged.status).toBe(0);
       expect(`${unchanged.stdout}${unchanged.stderr}`).toBe('');
     } finally {
       rmSync(memoryHome, { recursive: true, force: true });
     }
   });
-it('caps stop verification detail at three runs and reports omissions', () => {
+  it('reports verification debt without embedding run details', () => {
     const memoryHome = mkdtempSync(join(tmpdir(), 'octocode-hook-stop-cap-'));
     const workspace = resolve(memoryHome, 'repo');
     mkdirSync(workspace, { recursive: true });
@@ -238,8 +267,9 @@ it('caps stop verification detail at three runs and reports omissions', () => {
 
       const stop = runScript(HOOK_RUNNER, ['stop-verify'], { workspace }, env);
       expect(stop.status).toBe(2);
-      expect((stop.stderr.match(/PENDING:run_/g) ?? [])).toHaveLength(3);
-      expect(stop.stderr).toContain('+2 omitted');
+            expect(stop.stderr).toContain('Awareness: verification debt (5).');
+      expect(stop.stderr).not.toContain('PENDING:run_');
+      expect(stop.stderr).not.toContain('post-edit verification');
     } finally {
       rmSync(memoryHome, { recursive: true, force: true });
     }
@@ -291,7 +321,7 @@ it('registers hook agents before checking mailbox delivery', () => {
       rmSync(memoryHome, { recursive: true, force: true });
     }
   });
-it('uses the submitted prompt to inject only a relevant memory lead', () => {
+  it('uses the submitted prompt to signal relevant state without embedding memory content', () => {
     const memoryHome = mkdtempSync(join(tmpdir(), 'octocode-hook-selective-memory-'));
     const workspace = resolve(memoryHome, 'repo');
     mkdirSync(workspace, { recursive: true });
@@ -327,7 +357,8 @@ it('uses the submitted prompt to inject only a relevant memory lead', () => {
         prompt: 'fix token expiry during deployment',
       }, env);
       expect(relevant.status).toBe(0);
-      expect(relevant.stdout).toContain('token expiry');
+            expect(relevant.stdout).toContain('Awareness: memory 1.');
+      expect(relevant.stdout).not.toContain('token expiry');
       expect(relevant.stdout).not.toContain('screenshot archive');
 
       const unrelated = runScript(HOOK_RUNNER, ['notify-deliver'], {

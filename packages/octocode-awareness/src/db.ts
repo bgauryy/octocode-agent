@@ -5,3 +5,5 @@ export { tableColumns } from './db-introspection.js';
 export { hasFts, ftsTermsForRow, rebuildFts, referenceKind, replaceMemoryReferences, evictExpiredLocks } from './db-maintenance.js';
 export type { DeliveryFingerprintKey } from './db-runtime.js';
 export type { EvictExpiredLocksResult } from './db-maintenance.js';
+export { parseStorageScope, repoDatabasePath } from './storage-scope.js';
+export type { AwarenessStorageScope } from './storage-scope.js';

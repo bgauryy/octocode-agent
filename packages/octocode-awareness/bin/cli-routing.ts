@@ -25,6 +25,7 @@ export const KNOWN_FLAGS: Record<string, string[]> = {
   'status': ['workspace', 'artifact', 'limit'],
   'init': [],
   'awareness-config': ['action', 'hooks', 'notifications', 'verification_gate', 'session_capture', 'maintenance_reminders'],
+  'workspace-policy': ['workspace', 'repository_scope', 'memory_scope', 'hook_profile'],
   'self-test': [],
   'prune-stale-locks': ['older_than_minutes', 'expired_only', 'agent_id', 'target_file', 'workspace', 'artifact', 'dry_run'],
   'audit-unverified': ['agent_id', 'workspace', 'artifact', 'older_than_days', 'origin', 'before'],
@@ -43,7 +44,7 @@ export const KNOWN_FLAGS: Record<string, string[]> = {
   'wait-for-lock': ['agent_id', 'target_file', 'file', 'workspace', 'artifact', 'wait_seconds', 'retry_interval'],
   'digest': ['retention_days', 'refinement_handoff_retention_days', 'handoff_signal_retention_days', 'refinement_done_retention_days', 'operational_retention_days', 'pressure_age_days', 'fail_stale_active_runs', 'dry_run', 'export_doc', 'workspace', 'artifact'],
   'hook-run': [],
-  'hooks-install': ['host', 'project_dir', 'global', 'check', 'strict', 'dry_run', 'remove'],
+  'hooks-install': ['host', 'project_dir', 'global', 'check', 'strict', 'dry_run', 'remove', 'profile'],
   'schema': ['examples', 'all'],
   'plan-command': ['action', 'plan_id', 'name', 'objective', 'lead_agent_id', 'agent_id', 'workspace', 'artifact', 'status', 'path', 'title', 'limit', 'full'],
   'task-command': ['action', 'task_id', 'plan_id', 'workspace', 'title', 'reasoning', 'acceptance', 'path', 'created_by', 'agent_id', 'priority', 'depends_on', 'run_id', 'lease_minutes', 'message', 'blocked_reason', 'test_plan', 'status', 'next', 'limit', 'full'],
@@ -99,20 +100,26 @@ export function listLimit(args: ParsedArgs, defaultLimit = 20): number {
   return Math.min(value, 200);
 }
 
-export function extractGlobalDb(argv: string[]): { dbPath: string | null; filtered: string[] } {
+export function extractGlobalDb(argv: string[]): { dbPath: string | null; dbScope: string | null; filtered: string[] } {
   let dbPath: string | null = null;
+  let dbScope: string | null = null;
   const filtered: string[] = [];
   let i = 0;
   while (i < argv.length) {
-    if (argv[i] === '--db') {
+    if (argv[i] === '--db' || argv[i] === '--db-scope') {
+      const flag = argv[i]!;
       const value = argv[i + 1];
-      if (value === undefined || value.startsWith('--')) die('--db expects a path');
-      dbPath = value; i += 2;
+      if (value === undefined || value.startsWith('--')) {
+        die(flag === '--db' ? '--db expects a path' : '--db-scope expects a value');
+      }
+      if (flag === '--db') dbPath = value;
+      else dbScope = value;
+      i += 2;
     } else {
       filtered.push(argv[i]!); i++;
     }
   }
-  return { dbPath, filtered };
+  return { dbPath, dbScope, filtered };
 }
 
 export interface CommandRoute {
@@ -208,6 +215,28 @@ export function selectCommand(argv: string[]): { command: string | undefined; re
   }
 
   const second = normalizeToken(secondRaw);
+  if (first === 'next') {
+    return { command: 'attend', rest: [...(secondRaw ? [secondRaw, ...(thirdRaw ? [thirdRaw, ...tail] : tail)] : []), '--compact'] };
+  }
+  if (first === 'inspect') {
+    return {
+      command: 'query',
+      rest: [...(secondRaw ? ['--view', secondRaw] : ['--view', 'workboard']), ...(thirdRaw ? [thirdRaw, ...tail] : tail), '--compact'],
+    };
+  }
+  if (first === 'verify' && (!secondRaw || secondRaw.startsWith('-'))) {
+    return {
+      command: 'audit-unverified',
+      rest: [...(secondRaw ? [secondRaw, ...(thirdRaw ? [thirdRaw, ...tail] : tail)] : []), '--compact'],
+    };
+  }
+  if (first === 'close') {
+    return {
+      command: 'work-command',
+      rest: ['--action', 'end', ...(secondRaw ? [secondRaw, ...(thirdRaw ? [thirdRaw, ...tail] : tail)] : []), '--compact'],
+    };
+  }
+  if (first === 'setup') return { command: 'workspace-policy', rest: secondRaw ? [secondRaw, ...(thirdRaw ? [thirdRaw, ...tail] : tail)] : [] };
   if (first === 'hook' && second === 'run') {
     return { command: 'hook-run', rest: thirdRaw ? [thirdRaw, ...tail] : tail };
   }

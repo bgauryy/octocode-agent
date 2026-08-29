@@ -182,7 +182,7 @@ Run `/commands` for the live registry grouped into Octocode commands, Pi/extensi
 
 Always-on orientation and health commands: `/commands`, `/octocode`, `/octocode-now`, `/octocode-harness`.
 Work-state commands: `/octocode-plan` (`new <goal>` = plan mode: research → `plan(propose)` → approve/adjust/reject gate; write tools are **blocked by a `tool_call` hook** until approval — `off` lifts it; a `plan mode` status chip shows while on), `/octocode-tasks`, `/octocode-agents`, `/octocode-inbox`, `/octocode-cron`.
-Configuration and integration commands: `/settings` (complete local control center with the live `pi.getCommands()` public registry, skills, MCP servers/tools, prompt state, sources, and overrides; defaults to `#skills` and accepts section completions), `/octocode-settings` (compatibility alias), `/mcp` (opens MCP connections), `/octocode-setup`, `/octocode-skills`, `/octocode-skills-update`, `/octocode-theme`, `/octocode-chrome`.
+Configuration and integration commands: `/settings` (complete local control center with the live `pi.getCommands()` public registry, skills, MCP servers/tools, prompt state, sources, and overrides; defaults to `#skills` and accepts section completions), `/mcp` (opens MCP connections), `/octocode-setup`, `/octocode-skills`, `/octocode-skills-update`, `/octocode-theme`, `/octocode-chrome`.
 Modern TUI commands: `/octocode-palette`, `/octocode-dial`, `/octocode-footer` (`legend` explains every segment), `/octocode-permissions` (level cycle: `ctrl+shift+a`), `/octocode-profile` (apply `~/.octocode/profiles.json` live), `/octocode-plan html` (live local plan page), `/octocode-rewind`, `/octocode-watch`, `/octocode-export`.
 
 At session start, the footer probes `npx octocode auth status --json` asynchronously. It paints `github ✓` green and paints `github ✗ login required` or `github check failed` red. The probe retains only authenticated/source/expiry status, never token values. When the probe reports a missing login, `/commands` shows `npx octocode auth login` and `gh auth login`.
@@ -216,7 +216,7 @@ Ledger badges:
 
 ## Visual contract
 
-`src/tui/cli-design.ts` owns the shared Octocode CLI language: core glyphs, spinner frames, transcript tool rows, thinking rows, compact payload summaries, and raw ANSI fallback colors. Pi component renderers still use `src/tools/render-helpers.ts` for width-safe output, but they import symbols/progress primitives from this contract so the extension UI and `OCTOCODE_SHELL=1` transcript do not drift.
+`src/tui/cli-design.ts` owns the Pi adapter's visual language: core glyphs, spinner frames, transcript tool rows, thinking rows, compact payload summaries, and raw ANSI fallback colors. Pi component renderers still use `src/tools/render-helpers.ts` for width-safe output, but they import symbols and progress primitives from this contract so extension surfaces do not drift.
 
 ## Color system
 

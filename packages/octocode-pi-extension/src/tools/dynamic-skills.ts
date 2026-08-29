@@ -20,9 +20,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseFrontmatter as piParseFrontmatter, stripFrontmatter as piStripFrontmatter } from '@earendil-works/pi-coding-agent';
+import { parseAgentSkill } from '@octocodeai/octocode-shared/agent-skills';
 import { getPiUserSkillsDir } from '../utils.js';
 import { KEYWORD_MATCH_THRESHOLD, tokenize, withRegistryLock, writeJsonAtomic, readJsonSafe } from './registry-store.js';
+import { ensurePrivateDirectory, hardenPrivateFile, PRIVATE_FILE_MODE } from '@octocodeai/octocode-awareness/mcp-state';
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
@@ -94,7 +95,7 @@ function skillDir(dir: string, name: string): string {
 // ─── registry io (atomic) ─────────────────────────────────────────────────────
 
 function ensureRegistry(dir: string): void {
-  fs.mkdirSync(dir, { recursive: true });
+  ensurePrivateDirectory(dir);
   if (!fs.existsSync(indexPath(dir))) writeIndex(dir, { version: 1, skills: {} });
 }
 
@@ -131,9 +132,16 @@ export interface Frontmatter {
  * uses when loading skills, ensuring byte-identical field extraction.
  */
 export function parseFrontmatter(skillMd: string): Frontmatter | null {
-  const { frontmatter } = piParseFrontmatter<Frontmatter>(skillMd);
-  // Pi returns {} when the document has no frontmatter block.
-  return Object.keys(frontmatter).length > 0 ? frontmatter : null;
+  const parsed = parseAgentSkill(skillMd);
+  if (!parsed.ok) return null;
+  return {
+    name: parsed.skill.name,
+    description: parsed.skill.description,
+    ...(parsed.skill.license ? { license: parsed.skill.license } : {}),
+    ...(parsed.skill.compatibility ? { compatibility: parsed.skill.compatibility } : {}),
+    ...(parsed.skill.metadata ? { metadata: parsed.skill.metadata } : {}),
+    ...(parsed.skill.allowedTools ? { 'allowed-tools': parsed.skill.allowedTools } : {}),
+  };
 }
 
 /**
@@ -153,7 +161,8 @@ export function validateSkill(input: SkillInput): SkillValidation {
   if (!input.reason || !input.reason.trim()) {
     return { ok: false, reason: 'no-reason' };
   }
-  const fm = parseFrontmatter(input.skillMd);
+  const parsedSkill = parseAgentSkill(input.skillMd, input.name);
+  const fm = parsedSkill.ok ? parsedSkill.skill : null;
   if (!fm || !fm.name || !fm.description) {
     return { ok: false, reason: 'invalid-frontmatter', detail: 'missing name/description frontmatter' };
   }
@@ -161,7 +170,7 @@ export function validateSkill(input: SkillInput): SkillValidation {
     return { ok: false, reason: 'invalid-frontmatter', detail: 'description exceeds 1024 chars' };
   }
   // Structure: a body after the frontmatter with at least one heading and real content.
-  const body = piStripFrontmatter(input.skillMd).trim();
+  const body = parsedSkill.ok ? parsedSkill.skill.body.trim() : '';
   if (!/^#\s+\S/m.test(body) || body.length < 40) {
     return { ok: false, reason: 'invalid-structure', detail: 'SKILL.md needs a heading and substantive steps' };
   }
@@ -202,14 +211,16 @@ export function registerSkill(input: SkillInput, dir = getSkillsDir()): SkillReg
   ensureRegistry(dir);
   const sdir = skillDir(dir, input.name);
   const existing = readIndex(dir).skills[input.name];
-  fs.mkdirSync(sdir, { recursive: true });
+  ensurePrivateDirectory(sdir);
   const skillMdPath = path.join(sdir, 'SKILL.md');
-  fs.writeFileSync(skillMdPath, input.skillMd);
+  fs.writeFileSync(skillMdPath, input.skillMd, { mode: PRIVATE_FILE_MODE });
+  hardenPrivateFile(skillMdPath);
   for (const f of input.files ?? []) {
     const target = path.join(sdir, f.relPath);
     if (!path.resolve(target).startsWith(path.resolve(sdir) + path.sep)) continue; // no escapes
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, f.content);
+    ensurePrivateDirectory(path.dirname(target));
+    fs.writeFileSync(target, f.content, { mode: PRIVATE_FILE_MODE });
+    hardenPrivateFile(target);
   }
 
   const now = new Date().toISOString();

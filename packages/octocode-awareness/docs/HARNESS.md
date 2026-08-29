@@ -52,22 +52,14 @@ read-only query exports. Architecture narrative lives in [HOW_IT_WORKS.md](HOW_I
 
 ## Host parity
 
-| Behavior | Claude/Codex | Cursor | Pi extension |
-|---|---|---|---|
-| Guard before presence | integrated pre-edit runner | integrated pre-edit runner | composed `tool_call` mutation gate |
-| Advisory declaration | pre-edit | pre-edit | shared presence on mutation, cleaned at session disposal |
-| Edit audit/heartbeat | PostToolUse | postToolUse | shared presence; no advanced shell-hook edit receipt |
-| Changed briefing | UserPromptSubmit or SessionStart | sessionStart locally | durable event drain at session start/turn end |
-| Verification gate | Stop/SubagentStop | stop/subagentStop | plan/check ownership and completion-debt contracts |
-| Pre-compact finalize/capture | PreCompact | preCompact; session remains reusable | `session_before_compact`/`session_compact` checkpoint and rehydration |
-| Session-end cleanup | SessionEnd | sessionEnd locally | `session_shutdown` registry/presence/resource cleanup |
+Host adapters translate their native lifecycle into the shared runner and coordination
+store. They must preserve the same guard-before-presence, edit receipt, changed-state
+briefing, verification, compaction, and session-end invariants where the host exposes an
+equivalent event.
 
-Claude may run skill frontmatter; do not also install duplicate project settings.
-Codex/Cursor require explicit installed config.
-Claude and Codex install both `PreCompact` and `SessionEnd`; Cursor installs their
-native `preCompact` and `sessionEnd` forms for local IDE sessions. Cursor cloud has
-no session start/end boundary. Pi uses native in-process events instead of installed
-shell hooks. See `docs/HOOKS.md` Host Support.
+[`HOOKS.md`](HOOKS.md) is the sole host support matrix. It owns exact event names,
+installation surfaces, platform limitations, runtime-health semantics, and the Pi
+in-process exception. Do not duplicate that matrix here.
 
 ## Self-Improvement Boundary
 

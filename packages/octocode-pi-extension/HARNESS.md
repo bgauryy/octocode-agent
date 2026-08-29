@@ -109,7 +109,7 @@ Format: `{ "mcpServers": { "<name>": { "command": "...", "args": [], "env": {}, 
 
 ### Settings and MCP slash commands
 
-`/settings` rebuilds local `settings.html` from Pi's live public command registry and opens `#skills` by default. The same page contains every command, discovered skill, MCP connection/tool, redacted configuration, enablement override, and prompt-state artifact; section completions jump directly to any panel. `/octocode-settings` remains a compatibility alias. `/mcp` opens the focused connections panel. See [docs/SETTINGS.md](docs/SETTINGS.md) for the complete feature, persistence, security, and refresh contract.
+`/settings` rebuilds local `settings.html` from Pi's live public command registry and opens `#skills` by default. The same page contains every command, discovered skill, MCP connection/tool, redacted configuration, enablement override, and prompt-state artifact; section completions jump directly to any panel. `/mcp` opens the focused connections panel. See [docs/SETTINGS.md](docs/SETTINGS.md) for the complete feature, persistence, security, and refresh contract.
 
 ---
 
@@ -119,7 +119,7 @@ Served via the `resources_discover` hook. Installed at `dist/skills/` inside the
 
 | Skill | Source |
 |---|---|
-| `octocode-brainstorming` · `octocode-chrome-devtools` · `octocode-documentation` · `octocode-graph-eval` · `octocode-prompt-optimizer` · `octocode-research` · `octocode-rfc-generator` · `octocode-roast` · `octocode-scraping` · `octocode-skills` · `octocode-subagent` | `@octocodeai/octocode` package `skills/` → synced into `dist/skills/` at build time |
+| `octocode-brainstorming` · `octocode-chrome-devtools` · `octocode-documentation` · `octocode-graph-eval` · `octocode-orchestrator` · `octocode-prompt-optimizer` · `octocode-research` · `octocode-rfc-generator` · `octocode-roast` · `octocode-scraping` · `octocode-skills` · `octocode-subagent` | `@octocodeai/octocode` package `skills/` → synced into `dist/skills/` at build time |
 
 Env var `OCTOCODE_SKILL_ROOT` is set to the skill root so bundled skills can locate their assets.
 
@@ -154,7 +154,6 @@ Registered via `pi.registerCommand`. All commands support tab-completion where n
 | `/octocode-agents [help\|list\|status\|inspect\|kill\|kill-all\|prune\|hide]` | — | Show, inspect, prune, hide, or kill spawned worker agents |
 | `/octocode-cron [list\|check\|cancel\|help]` | — | List, check, or cancel session jobs |
 | `/settings [commands\|skills\|connections\|add-server\|sources\|agent-context\|overrides]` | — | Rebuild the complete control center from the live command registry; defaults to `settings.html#skills` |
-| `/octocode-settings` | — | Compatibility alias for `/settings` |
 | `/mcp` | — | Open the focused MCP connections panel |
 | `/octocode-setup [project\|global]` | — | Install the `APPEND_SYSTEM.md` block into `.pi/` or `~/.pi/agent/` |
 | `/octocode-skills-update` | — | Update the Pi package then reload Pi resources (interactive only) |
@@ -279,7 +278,7 @@ Resolved by `getAssetPaths()` in `src/assets.ts`.
 16  support tools            (see Support Tools table)
  1  guarded built-in override (bash)
  6  disabled built-ins       (read, edit, write, grep, find, ls → replaced)
-25  slash commands           (live inventory and guidance via /commands)
+24  slash commands           (live inventory and guidance via /commands)
  1  flag                     (--no-context)
 12  lifecycle hooks          (hookComposer; session_start pre-warms MCP catalog)
  5  direct pi.on handlers    (turn_start, 2× turn_end, session_before_compact, session_compact)

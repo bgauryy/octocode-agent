@@ -9,6 +9,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { ensurePrivateDirectory, hardenPrivateFile, PRIVATE_FILE_MODE } from '@octocodeai/octocode-awareness/mcp-state';
 
 /** A candidate needs at least this many overlapping keyword tokens to count as a match. */
 export const KEYWORD_MATCH_THRESHOLD = 2;
@@ -26,9 +27,12 @@ export function tokenize(s: string): Set<string> {
  * reader never observes a partial/torn file.
  */
 export function writeJsonAtomic(filePath: string, value: unknown): void {
+  ensurePrivateDirectory(path.dirname(filePath));
+  hardenPrivateFile(filePath);
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: PRIVATE_FILE_MODE, flag: 'wx' });
   fs.renameSync(tmp, filePath);
+  hardenPrivateFile(filePath);
 }
 
 /**
@@ -59,12 +63,12 @@ export function readJsonSafe<T>(filePath: string, fallback: T, isValid?: (raw: u
  * @param label     used in the timeout error message
  */
 export function withRegistryLock<T>(dir: string, lockName: string, label: string, fn: () => T): T {
-  fs.mkdirSync(dir, { recursive: true });
+  ensurePrivateDirectory(dir);
   const lock = path.join(dir, lockName);
   const start = Date.now();
   for (;;) {
     try {
-      fs.mkdirSync(lock);
+      fs.mkdirSync(lock, { mode: 0o700 });
       break;
     } catch {
       try {

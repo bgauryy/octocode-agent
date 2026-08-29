@@ -4,10 +4,11 @@ import { extractBashWriteTargets } from './bash-tool.js';
 export interface MutationToolEvent { toolName?: string; input?: Record<string, unknown> }
 export interface LockQueryResult { blocked: boolean; message?: string }
 export interface AwarenessMutationGateDependencies {
-  storeExists(): boolean;
+  storeExists(workspace: string): boolean;
   queryTarget(target: string, workspace: string, agentId: string): LockQueryResult;
   startWork(target: string, workspace: string, agentId: string): void;
   endWork(target: string, workspace: string, agentId: string): void;
+  recordEdit?(target: string, workspace: string, agentId: string): void;
   warn?(message: string): void;
 }
 
@@ -53,14 +54,15 @@ function errorMessage(error: unknown): string {
 }
 
 export function createAwarenessMutationGate(deps: AwarenessMutationGateDependencies) {
-  const owned = new Map<string, { target: string; workspace: string; agentId: string }>();
+  const owned = new Map<string, { target: string; workspace: string; agentId: string; activeCalls: number }>();
+  const keyFor = (target: string, workspace: string, agentId: string) => `${workspace}\0${agentId}\0${target}`;
   return {
     preflight(event: MutationToolEvent, workspace: string, agentId: string): { block: true; reason: string } | undefined {
       const targets = extractMutationTargets(event, workspace);
       if (targets.length === 0) return undefined;
 
       try {
-        if (deps.storeExists()) {
+        if (deps.storeExists(workspace)) {
           // Complete the entire lock pass before creating any advisory work row.
           for (const target of targets) {
             const result = deps.queryTarget(target, workspace, agentId);
@@ -74,12 +76,40 @@ export function createAwarenessMutationGate(deps: AwarenessMutationGateDependenc
       for (const target of targets) {
         try {
           deps.startWork(target, workspace, agentId);
-          owned.set(`${workspace}\0${agentId}\0${target}`, { target, workspace, agentId });
+          const key = keyFor(target, workspace, agentId);
+          const existing = owned.get(key);
+          owned.set(key, {
+            target,
+            workspace,
+            agentId,
+            activeCalls: (existing?.activeCalls ?? 0) + 1,
+          });
         } catch (error) {
           deps.warn?.(`Awareness presence update failed: ${errorMessage(error)}`);
         }
       }
       return undefined;
+    },
+    complete(event: MutationToolEvent, workspace: string, agentId: string, succeeded: boolean): void {
+      for (const target of extractMutationTargets(event, workspace)) {
+        const key = keyFor(target, workspace, agentId);
+        const item = owned.get(key);
+        if (!item) continue;
+        if (succeeded && deps.recordEdit) {
+          try { deps.recordEdit(target, workspace, agentId); }
+          catch (error) { deps.warn?.(`Awareness edit receipt failed: ${errorMessage(error)}`); }
+        }
+        if (item.activeCalls > 1) {
+          item.activeCalls -= 1;
+          continue;
+        }
+        try {
+          deps.endWork(target, workspace, agentId);
+          owned.delete(key);
+        } catch (error) {
+          deps.warn?.(`Awareness presence cleanup failed: ${errorMessage(error)}`);
+        }
+      }
     },
     cleanup(): void {
       for (const item of owned.values()) {

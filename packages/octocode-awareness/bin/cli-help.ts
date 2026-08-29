@@ -3,6 +3,15 @@ import { COMMAND_DISPLAY, COMMAND_EXAMPLE, COMMAND_TO_SCHEMA, HELP, HELP_COMPACT
 import { COMMAND_ROUTES, KNOWN_FLAGS, SINGLE_COMMANDS, extractGlobalDb, normalizeToken, selectCommand } from './cli-routing.js';
 
 export const COMMAND_HELP: Record<string, string> = {
+  'next': `usage: npx @octocodeai/octocode-awareness next [--query <text>] [--workspace <repo>] [--limit <n>]
+example: npx @octocodeai/octocode-awareness next --workspace "$PWD" --compact
+schema: npx @octocodeai/octocode-awareness schema json-schema attend --compact`,
+  'inspect': `usage: npx @octocodeai/octocode-awareness inspect <workboard|files|plans|tasks|runs|locks|agents|signals|refinements|activity|developer-review> [options]
+example: npx @octocodeai/octocode-awareness inspect workboard --workspace "$PWD" --compact
+schema: npx @octocodeai/octocode-awareness schema json-schema query --compact`,
+  'close': `usage: npx @octocodeai/octocode-awareness close --run-id <id> --agent-id <id>
+example: npx @octocodeai/octocode-awareness close --run-id run_123 --agent-id agent --compact
+schema: npx @octocodeai/octocode-awareness schema json-schema work --compact`,
   'tell-memory': `usage: npx @octocodeai/octocode-awareness memory record --agent-id <id> --task-context <text> --observation <text> --importance <1-10> [--label <l>] [--tag <t>]... [--reference <r>]... [--file <p>]... [--supersedes <id>]... [--allow-similar]
 scope: [--workspace <p>] [--artifact <a>] [--repo <r>] [--ref <r>]
 lifecycle: [--valid-from <iso>] [--valid-to <iso>] [--failure-signature <key>]
@@ -62,6 +71,9 @@ schema: npx @octocodeai/octocode-awareness schema json-schema agent_signal --com
 example: npx @octocodeai/octocode-awareness verify mark --agent-id agent --run-id run_123 --message "yarn test passed" --compact
 note: prefer explicit --run-id; scope deliberate --all-pending use with --workspace
 schema: npx @octocodeai/octocode-awareness schema json-schema verify --compact`,
+  'verify audit': `usage: npx @octocodeai/octocode-awareness verify audit [--agent-id <id>] [--workspace <repo>] [--stale-hours <n>]
+example: npx @octocodeai/octocode-awareness verify audit --agent-id agent --workspace "$PWD" --compact
+schema: npx @octocodeai/octocode-awareness schema json-schema verify_audit --compact`,
   'reflect': `usage: npx @octocodeai/octocode-awareness reflect record --agent-id <id> --task <text> --outcome worked|partial|failed [--worked <t>] [--didnt-work <t>] [--judgment-note <t>] [--lesson <t>] [--fix-repo <t>] [--fix-harness <t>] [--fix-instructions <t>] [--fix-file <p>]... [--failure-signature <s>] [--eval-failure-json <json>]... [--duo] [--allow-similar] [--importance <1..10>] [--workspace <p>] [--artifact <a>] [--repo <r>] [--ref <r>]
 example: npx @octocodeai/octocode-awareness reflect record --agent-id agent --task "fix CLI" --outcome worked --lesson "Keep CLI nouns canonical" --compact
 note: --outcome must be worked|partial|failed; unknown values hard-error
@@ -138,6 +150,10 @@ example: npx @octocodeai/octocode-awareness maintenance self-test --compact`,
 init flags: --hooks <true|false> --notifications <true|false> --verification-gate <true|false> --session-capture <true|false> --maintenance-reminders <true|false>
 note: config init requires every answer and refuses to overwrite; config validate checks ~/.octocode/awareness.json
 schema: npx @octocodeai/octocode-awareness schema json-schema awareness_config --compact`,
+  'workspace-policy': `usage: npx @octocodeai/octocode-awareness setup [options]
+flags: [--repository-scope repo|global] [--memory-scope repo|global] [--hook-profile guard|coordination|full] [--workspace <repo>]
+defaults: repository=repo, memory=global, hooks=coordination
+example: npx @octocodeai/octocode-awareness setup --repository-scope repo --memory-scope global --hook-profile coordination --workspace "$PWD"`,
 };
 
 export function hyphenFlag(flag: string): string {
@@ -172,6 +188,7 @@ export function helpFor(command: string | null, options: { compact?: boolean; ro
       `example: ${example ?? `npx @octocodeai/octocode-awareness ${display}`}`,
     ].join('\n').trimEnd();
   }
+  if (options.routeKey && COMMAND_HELP[options.routeKey]) return COMMAND_HELP[options.routeKey]!;
   if (COMMAND_HELP[normalized]) return COMMAND_HELP[normalized]!;
   return [
     `usage: npx @octocodeai/octocode-awareness ${display} [options]`,
@@ -188,7 +205,8 @@ export function commandFromHelpArgv(argv: string[]): { command: string | null; r
   const first = normalizeToken(firstRaw);
   const second = normalizeToken(secondRaw);
   let routeKey: string | undefined;
-  if (first === 'hook' && second === 'run') routeKey = 'hook run';
+  if (first && !second && ['next', 'inspect', 'verify', 'close'].includes(first)) routeKey = first;
+  else if (first === 'hook' && second === 'run') routeKey = 'hook run';
   else if (first === 'hooks' && second && ['install', 'check', 'remove'].includes(second)) routeKey = `hooks ${second}`;
   else if (first === 'schema' && second && ['commands', 'list', 'json-schema', 'example', 'validate'].includes(second)) routeKey = `schema ${second}`;
   else if (first && second && COMMAND_ROUTES[`${first} ${second}`]) routeKey = `${first} ${second}`;

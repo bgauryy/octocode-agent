@@ -4,61 +4,8 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { utcNow } from './helpers.js';
 import { normalizeWorkspacePath } from './git.js';
-
-export type PlanTaskStatus = 'OPEN' | 'IN_PROGRESS' | 'BLOCKED' | 'VERIFY' | 'DONE' | 'FAILED' | 'CANCELLED';
-
-export interface PlanTaskRecord {
-  task_id: string;
-  plan_id: string;
-  title: string;
-  reasoning: string;
-  acceptance_criteria: string;
-  status: PlanTaskStatus;
-  priority: number;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-  completed_at: string | null;
-  paths: string[];
-  dependencies: string[];
-  claim: TaskClaimRecord | null;
-}
-
-export interface TaskClaimRecord {
-  task_id: string;
-  run_id: string;
-  agent_id: string;
-  claimed_at: string;
-  heartbeat_at: string;
-  expires_at: string;
-}
-
-export interface TaskRunRecord {
-  run_id: string;
-  task_id: string | null;
-  origin: 'TASK' | 'WORK' | 'HOOK';
-  agent_id: string;
-  session_id: string | null;
-  rationale: string;
-  test_plan: string;
-  context_ref: string | null;
-  status: 'PENDING' | 'ACTIVE' | 'SUCCESS' | 'FAILED';
-  workspace_path: string | null;
-  artifact: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface CreateTaskParams {
-  planId: string;
-  title: string;
-  reasoning: string;
-  acceptanceCriteria: string;
-  paths: string[];
-  createdBy: string;
-  priority?: number;
-  dependsOn?: string[];
-}
+import type { PlanTaskRecord, TaskClaimRecord } from '@octocodeai/octocode-shared/entities';
+export type { CreateTaskParams, PlanTaskRecord, PlanTaskStatus, TaskClaimRecord, TaskRunRecord } from '@octocodeai/octocode-shared/entities';
 
 export const DEFAULT_CLAIM_LEASE_MS = 30 * 60_000;
 export const MAX_CLAIM_LEASE_MS = 60 * 60_000;

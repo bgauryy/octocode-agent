@@ -3,7 +3,8 @@ import { AWARENESS_COMMANDS } from './commands-spec.js';
 /** Static policy fragment for agent hosts; operational detail stays in tool schemas. */
 export const EXTERNAL_AGENT_AWARENESS_PROMPT = `<awareness>
 Awareness coordinates shared repositories. Treat its ledger as coordination evidence, not code truth.
-- The only automatic model-facing signal is an unread direct peer-message. On signal, use message read (action:read), act on decision-changing content, then continue.
+- Automatic model-facing output is limited to terse state-change signals and safety or verification blocks. A signal never embeds ledger contents: inspect the relevant Awareness view only when it can change the next action, then continue.
+- On an overlap signal, inspect peers or ownership before editing. On a general state-change signal, use attend or a targeted message, handoff, or memory read; treat every retrieved row as a lead until verified.
 - Plan owns session and shared plans, task projection, observed check receipts, and completion debt. Do not duplicate those concerns or invent results.
 - Advisory presence is automatic, and mutation-time peer locks are enforced automatically. Use lock only for exceptional non-mergeable exclusivity; inspect or wait on conflict, message when needed, and release it.
 - Inspect peers or ownership only when shared state can change the next action. Use message for overlap, blockers, or decisions; use memory only when verified learning can change the approach. Never edit through a peer lock or take over another owner.
@@ -14,9 +15,11 @@ export const EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS = EXTERNAL_AGENT_AWARENESS_PR
   '</awareness>',
   [
     '- Activate it only when peers, shared plans, overlap, locks, messages, verification debt, handoffs, or reusable memory can change the next action. Skip routine solo work with no shared-state signal.',
-    '- The canonical CLI runner is `npx @octocodeai/octocode-awareness`. Start with `config show --compact`; if the file is missing, ask the user every returned onboarding question together, create it only from all answers, then validate it. After that run `init --compact`.',
+    '- The canonical CLI runner is `npx @octocodeai/octocode-awareness`. Start with `setup --compact` for workspace policy. Shell-hook automation separately uses `config show --compact`; if that global file is missing, ask every returned onboarding question together, create it only from all answers, then validate it.',
     '- Configuration is not hook-install permission. Before every real `hooks install`, show the dry-run target and ask the user for a separate explicit approval immediately before mutation.',
-    '- Use `guide --json`, `coordination schema commands`, or `schema commands --compact` instead of guessing commands or flags.',
+    '- Use `next`, `inspect`, `verify`, and `close` for the routine loop. Use `schema commands --compact` before an expert command instead of guessing flags.',
+    '- Set one stable `OCTOCODE_AGENT_ID` for shell-hook hosts so CLI and hook activity share an identity. If the host supplies neither an agent nor session ID, hooks silently use a deterministic host/workspace fallback with weaker multi-agent correlation.',
+    '- Workspace policy defaults repository-owned commands to repository databases and reusable memory to the global database. Use `setup` to change that split, `--db-scope` only for a one-call override, and `--db` only for an explicit path.',
     '- Use connected Octocode MCP tools or `npx octocode` for local, GitHub, and npm research; inspect live tool schemas and return only grounded, decision-relevant evidence to Awareness.',
     '</awareness>',
   ].join('\n'),

@@ -2,27 +2,32 @@
 
 Hooks automate Awareness lifecycle edges after the skill/CLI has chosen work; they do
 not choose tasks, prove success, or replace `attend`/verify. The CLI works without
-them. Claude, Codex, and Cursor use the shared shell runner and advanced Awareness
-store. Pi uses package APIs, native extension events, and the shared coordination
-store; it does not install or spawn the shell hooks.
+them. Claude, Codex, Cursor, GitHub Copilot, and Gemini use the shared hook runner.
+OpenCode uses one generated project plugin that only translates host events into that
+runner. Pi uses package APIs, native extension events, and the shared coordination
+store; it does not install or spawn shell hooks.
 
 Shell hooks remain inert until `<OCTOCODE_HOME>/awareness.json` exists and validates.
 Feature behavior follows [CONFIGURATION.md](CONFIGURATION.md). Before every real hook
 installation, show the dry-run target and obtain separate user approval immediately
 before changing host settings; configuration answers do not grant that approval.
 
+Workspace policy selects a hook profile. `guard` and `coordination` install the edit
+guard/presence pair plus stop verification. `full` additionally installs prompt/session
+briefing, compaction, and session-end capture. The default is `coordination`.
+
 ## Lifecycle
 
 | Event | Behavior | Output/blocking |
 |---|---|---|
-| Prompt/session start | Register agent; deliver changed operational state plus at most one prompt-grounded memory lead. | Silent for unrelated memory or an unchanged fingerprint. |
-| Before write | Run harness guard, resolve task/explicit work, declare advisory path; honor exclusivity. | Silent normally; compact peer delta; host-native denial on guard or exclusive conflict. |
+| Prompt/session start (`full`) | Register agent; check a database/WAL change token before querying; detect changed operational state plus at most one prompt-grounded memory lead. | Emit a typed pointer such as `Awareness: memory 1.`; stay silent when stores are unchanged. |
+| Before write | Run harness guard, resolve task/explicit work, declare advisory path; honor exclusivity. | Silent normally; typed overlap pointer; host-native denial on guard or exclusive conflict. |
 | Successful write | Write edit audit and heartbeat; keep a scoped automatic HOOK active. | Best-effort, nonblocking. |
 | Failed write | Discard hook-created path presence that has no successful edit audit. | No edit audit or verification debt for a change that never happened. |
 | Subagent start | Register the host child identity and deliver changed state where the host supports child-context injection. | Cursor registration is useful, but child-context injection remains version/surface-dependent. |
-| Stop/subagent stop | Finalize the scoped HOOK once, then audit verification debt. | First 3 items + omitted count; block/remind where supported. |
-| PreCompact | Finalize scoped HOOK state and capture a deduplicated handoff; keep the session reusable. | Best-effort, nonblocking. |
-| SessionEnd | Finalize/capture, then mark the host session ended without claiming work success. | Best-effort, nonblocking. |
+| Stop/subagent stop | Finalize the scoped HOOK once, then audit verification debt. | Count-only block or reminder; inspect details explicitly. |
+| Pre/PostCompact (`full`) | Finalize scoped HOOK state and capture a deduplicated handoff; keep the session reusable. | Best-effort, nonblocking. |
+| SessionEnd (`full`) | Finalize/capture, then mark the host session ended without claiming work success. | Best-effort, nonblocking. |
 
 Pre-edit is the single guard+presence hook. The old separate harness-guard install
 entry is removed during install/repair to guarantee guard ordering.
@@ -31,25 +36,28 @@ entry is removed during install/repair to guarantee guard ordering.
 
 | Host | Surface | Notes |
 |---|---|---|
-| Claude Code | Skill frontmatter while active, or `.claude/settings.json` | Installed hooks add SessionStart; both cover success/failure writes, subagent start/stop, PreCompact, SessionEnd, prompt briefing. Choose one surface. |
+| Claude Code | Skill frontmatter while active, or `.claude/settings.json` | Installed hooks add SessionStart; both cover success/failure writes, subagent start/stop, compact lifecycle, SessionEnd, prompt and notification briefing. Choose one surface. |
 | Codex | `.codex/hooks.json` | SessionStart/SessionEnd, success writes, subagent start/stop, PreCompact, prompt/stop. No distinct failure event; PostToolUse failure metadata is handled when present. |
 | Cursor | `.cursor/hooks.json` | Success/failure writes plus session/subagent/compact/end edges. Cloud supports write/subagent/prompt/compact/stop hooks but not `sessionStart`/`sessionEnd`; child-context injection is not assumed. |
-| Pi | `@octocodeai/pi-extension` native events | `tool_call` lock/presence gate, session registry join/leave, durable event delivery, and compaction rehydration. No shell-hook install or advanced hook receipts. |
+| GitHub Copilot | `.github/hooks/octocode-awareness.json` | Project-scoped official v1 hook file; success/failure writes, session/subagent/compact/end, prompt, and stop events. Global install is unsupported. |
+| Gemini CLI | `.gemini/settings.json` | Session, tool, agent, compression, and end events using Gemini event names and timeout units. |
+| OpenCode | `.opencode/plugins/octocode-awareness.js` | Project-scoped auto-discovered plugin; tool hooks can deny writes, while session events remain fail-open. No OpenCode settings file is rewritten. |
+| Pi | `@octocodeai/pi-extension` native events | `tool_call` guard/presence plus `tool_execution_end` success audit/release, session registry join/leave, durable event delivery, and compaction rehydration. No shell-hook install. |
 | Custom | Library API or `hook run` payload | Must provide stable identity/path events. |
 
 ## Install And Verify
 
-Codex/Cursor require project config. When Claude skill frontmatter is active, use it
+Codex, Copilot, Cursor, Gemini, and OpenCode require project config. When Claude skill frontmatter is active, use it
 and do not also install project settings; `hooks check` reports that definition as a
 separate surface without pretending activation was observed.
 Preview writes, install after approval, then check exact host config:
 
 ```bash
-npx @octocodeai/octocode-awareness hooks install --host <codex|cursor> \
-  --project-dir . --dry-run
-npx @octocodeai/octocode-awareness hooks install --host <codex|cursor> \
-  --project-dir . --compact
-npx @octocodeai/octocode-awareness hooks check --host <codex|cursor> \
+npx @octocodeai/octocode-awareness hooks install --host <codex|copilot|cursor|gemini|opencode> \
+  --profile coordination --project-dir . --dry-run
+npx @octocodeai/octocode-awareness hooks install --host <codex|copilot|cursor|gemini|opencode> \
+  --profile coordination --project-dir . --compact
+npx @octocodeai/octocode-awareness hooks check --host <codex|copilot|cursor|gemini|opencode> \
   --project-dir . --strict --compact
 ```
 
@@ -58,9 +66,9 @@ Use `--host claude` only when skill frontmatter is unsupported or disabled.
 Remove (preview first) when uninstalling host wiring:
 
 ```bash
-npx @octocodeai/octocode-awareness hooks remove --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks remove --host <claude|codex|copilot|cursor|gemini|opencode> \
   --project-dir . --dry-run
-npx @octocodeai/octocode-awareness hooks remove --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks remove --host <claude|codex|copilot|cursor|gemini|opencode> \
   --project-dir . --compact
 ```
 
@@ -73,7 +81,7 @@ the runner target; a missing target is drift.
 `hooks check --strict` remains definition/config-scoped. Runtime receipts are one bounded
 SQLite upsert per workspace, host, and event—no payloads or append-only hook logs. Read:
 
-- `surface`: settings or Claude skill frontmatter;
+- `surface`: settings, project plugin, or Claude skill frontmatter;
 - `health.config` / `health.definition`: whether the selected surface is exact;
 - `health.activation`: still unverified when a host cannot expose it;
 - `health.runtime`: `unverified`, `observed`, `stale` after seven days, or `failed`;
@@ -98,7 +106,7 @@ that the exact hook runs, and that model-visible context or continuation arrives
 ## Identity And Run Resolution
 
 Identity order: host payload agent, `OCTOCODE_AGENT_ID`, payload session, then a
-warned host/workspace fallback. A host child ID prevents subagents collapsing into
+silent deterministic host/workspace fallback. A host child ID prevents subagents collapsing into
 their parent; set one stable environment ID so main-agent CLI and hook work agree.
 
 Pre-edit resolves the run in this order:
@@ -143,33 +151,34 @@ remains explicit.
 For Claude and Codex prompt hooks, the current prompt is held only as a bounded
 transient query; it is not written to SQLite. The selector searches the
 existing scoped memory bank, requires at least two meaningful prompt/memory token
-matches across the bounded normal recall pool, emits at most one
-`Memory lead — verify` item, and otherwise stays silent.
+matches across the bounded normal recall pool, selects at most one memory lead, and
+otherwise stays silent. A match changes the fingerprint but does not embed the lead.
 Signals, overrides, recurring-failure pressure, and open-refinement counts remain
 separate operational interventions. This is a deterministic local policy, not a
 second reasoning agent, and it never makes recalled text authoritative.
 
-The final hook briefing keeps at most five items, truncates each item by UTF-8 bytes,
-and stays within 1 KiB even for multi-byte text. Signal summaries retain the file
-count and one bounded file lead; use `signal list` for full bodies and paths.
+The selector still bounds and fingerprints at most five items, but the hook emits only
+`Awareness state changed.`. Memory observations, handoff bodies, maintenance commands,
+and other ledger contents require a targeted `attend`, signal, or memory read.
 
 Claude/Codex emit event-named `hookSpecificOutput.additionalContext`. Cursor emits
 native `additional_context` at session start and `agent_message` around tool use;
-delivery is best-effort and must be smoked. Peer summaries cap detail and expose
-omitted counts.
+delivery is best-effort and must be smoked. Changed overlap emits only the affected
+path summary; peer identities, rationales, and ownership require an explicit read.
 
 ## Failure Behavior
 
-- Real exclusive conflict and harness denial use exit 2 on Claude/Codex and
-  `permission: deny` on Cursor.
-- Stop debt uses exit 2 on Claude/Codex and Cursor `followup_message`.
+- Real exclusive conflict and harness denial use exit 2 on shell/OpenCode adapters;
+  Cursor emits `permission: deny`, Copilot emits a deny decision, and Gemini emits a
+  blocking host response.
+- Stop debt uses exit 2 where supported and host-native continuation/follow-up output elsewhere.
 - Infrastructure, extraction, post-edit, briefing, and session failures warn and fail
   open so the editor remains usable.
 - A failed write rolls back hook-created file presence without an edit audit; TASK or
   explicit WORK ownership is preserved because the user may retry or investigate.
 - A missing correlation never marks success; TTL and verification audit expose debt.
 
-Environment controls read by the Claude, Codex, and Cursor hook runners:
+Environment controls read by every shared hook-runner adapter:
 
 | Variable | Effect |
 |---|---|
@@ -192,5 +201,5 @@ and invoke the resolved Node executable directly. Claude skill wrappers instead 
 `OCTOCODE_NODE_BIN` when the host environment must override `node`; host payloads or
 the runner's Claude default identify that surface.
 
-Claude/Codex/Cursor wrappers, installer repair, peer dedupe, guard order, and
+Cross-host adapters, installer repair, peer dedupe, guard order, and
 verification caps are covered by focused tests.

@@ -11,7 +11,8 @@ const REPO_ROOT = resolve(TEST_DIR, '../../..');
 const SCRIPT = resolve(PACKAGE_ROOT, 'out/octocode-awareness.js');
 const NODE = process.execPath;
 function runInstallHooks(args: string[], script = SCRIPT) {
-    const result = spawnSync(NODE, [script, ...args], {
+    const effectiveArgs = args.includes('--profile') ? args : [...args, '--profile', 'full'];
+    const result = spawnSync(NODE, [script, ...effectiveArgs], {
         encoding: 'utf8',
         timeout: 5000,
     });
@@ -26,7 +27,8 @@ function runInstallHooks(args: string[], script = SCRIPT) {
     };
 }
 function runInstallHooksRaw(args: string[], script = SCRIPT) {
-    return spawnSync(NODE, [script, ...args], {
+    const effectiveArgs = args.includes('--profile') ? args : [...args, '--profile', 'full'];
+    return spawnSync(NODE, [script, ...effectiveArgs], {
         encoding: 'utf8',
         timeout: 5000,
     });
@@ -108,7 +110,7 @@ it('strict check rejects an exact config whose hook target disappeared', () => {
       }
       const runner = resolve(hookDir, '..', 'hook-runner.mjs');
       writeFileSync(runner, '#!/usr/bin/env node\n');
-      const installed = runHooksInstall(['--host', 'codex', '--project-dir', projectDir], {
+      const installed = runHooksInstall(['--host', 'codex', '--profile', 'full', '--project-dir', projectDir], {
         cwd: projectDir,
         hookDir,
       });
@@ -116,7 +118,7 @@ it('strict check rejects an exact config whose hook target disappeared', () => {
       rmSync(runner);
 
       const checked = runHooksInstall([
-        '--host', 'codex', '--project-dir', projectDir, '--check', '--strict',
+        '--host', 'codex', '--profile', 'full', '--project-dir', projectDir, '--check', '--strict',
       ], { cwd: projectDir, hookDir });
       expect(checked.exitCode).toBe(2);
       expect(checked.payload).toMatchObject({
@@ -222,7 +224,7 @@ it('removes the obsolete standalone harness guard during repair', () => {
         },
       }));
 
-      const repaired = runHooksInstall(['--host', 'codex', '--project-dir', projectDir, '--dry-run'], {
+      const repaired = runHooksInstall(['--host', 'codex', '--profile', 'full', '--project-dir', projectDir, '--dry-run'], {
         cwd: projectDir,
         hookDir,
       });

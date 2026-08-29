@@ -6,11 +6,11 @@
 
 ## Scope
 
-This document establishes the current-code evidence, reproducible baseline, setup, blockers, and compatibility constraints required before Phase 1. It does not authorize implementation.
+This document preserves the 2026-08-26 baseline evidence and defines the reproducible release-baseline setup, blockers, and compatibility constraints. It is historical where explicitly dated and does not override current candidate status.
 
 The baseline observed on 2026-08-26 includes unrelated uncommitted work. Capture a clean or explicitly identified commit before comparing runtime behavior. Never compare “before” from one commit with “after” from another undocumented working-tree state.
 
-## Required current-state evidence
+## Historical baseline evidence
 
 | Requirement | Evidence | Confidence | Owner |
 |---|---|---|---|
@@ -24,7 +24,7 @@ The baseline observed on 2026-08-26 includes unrelated uncommitted work. Capture
 | Pi SDK/helper dependency-bearing files are classified | `sdk-launcher.ts`, `launcher.ts`, `serve.ts`, `types.ts`, `bash-tool.ts`, `dynamic-skills.ts`, `image-render.ts`, `export-command.ts` | Confirmed by source search/read | Runtime and harness |
 | Session identity/branch consumers are inventoried | `src/tools/session-artifacts.ts`, `active-plan.ts`, `rewind-command.ts`, `compaction-state.ts`, `interaction-broker.ts`, `awareness-shared.ts`, and callers | Confirmed; includes tolerant `getLeafId` usage | Sessions |
 | A host-neutral deterministic harness exists in the working tree | `packages/octocode-agent-testing/src/index.ts`; `tests/pi-flow-harness.test.ts` | Confirmed but uncommitted | Testing |
-| Agent core package does not exist in the inspected tree | Local package-structure inspection on 2026-08-26 | Confirmed; Phase 1 creation required | Agent runtime |
+| Agent core package did not exist in the inspected tree | Local package-structure inspection on 2026-08-26 | Historical; the current candidate now contains and composes it | Agent runtime |
 | Existing custom TUI/RPC decision is preserved | `.octocode/rfc/pi-custom-tui-protocol/RFC.md` and `RESOLUTION.md` | Confirmed accepted prior decision | UI/runtime |
 
 ## Measured static baseline
@@ -33,16 +33,16 @@ These values describe the inspected working tree, not a release claim:
 
 | Check | 2026-08-26 result | Target after Phase 6 |
 |---|---:|---:|
-| Pi-family source text occurrences/files | 26 / 16 | Tracked separately per retained adapter |
-| `pi-coding-agent` text occurrences/files | 13 / 10 | 0 in native agent/core; supported extension adapter and historical RFC references allowed |
-| Dependency-bearing `pi-coding-agent` files | 8 | 0 in native agent/core; extension adapter files explicitly classified |
-| Direct `pi.<method>` AST calls | 40 / 5 files | 0 outside the supported Pi-extension adapter |
-| Central `hooks.on` registrations | 17 in the inspected 2026-08-27 tree | 0 outside the supported Pi-extension adapter; equivalent native contract tests pass |
+| Pi-family source text occurrences/files | 26 / 16 | 0 outside immutable historical evidence after retirement |
+| `pi-coding-agent` text occurrences/files | 13 / 10 | 0 in live source, manifests, and artifacts after retirement |
+| Dependency-bearing `pi-coding-agent` files | 8 | 0 after retirement |
+| Direct `pi.<method>` AST calls | 40 / 5 files | 0 after retirement |
+| Central `hooks.on` registrations | 17 in the inspected 2026-08-27 tree | 0 Pi-host registrations after retirement; equivalent native contract tests pass |
 | Actual command registrations | 26 | Same public inventory unless an explicit product change is approved |
 | Tool host registration funnels | 1 | 1 host-neutral registry boundary |
-| LSP `PiInstance` references/files | 64 / 20 | 0 outside the supported Pi-extension adapter |
-| LSP `PiContext` references/files | 172 / 20 | 0 outside the supported Pi-extension adapter |
-| LSP `ToolDefinition` references/files | 54 / 21 | 0 duplicated canonical definitions; Pi-only adapter types allowed |
+| LSP `PiInstance` references/files | 64 / 20 | 0 outside immutable historical evidence after retirement |
+| LSP `PiContext` references/files | 172 / 20 | 0 outside immutable historical evidence after retirement |
+| LSP `ToolDefinition` references/files | 54 / 21 | 0 duplicated canonical definitions and 0 live Pi-only types after retirement |
 
 Raw counts are navigation metrics, not success by themselves. A renamed compatibility facade can make counts reach zero while preserving the same coupling. Structural contract and conformance checks are mandatory.
 
@@ -53,7 +53,7 @@ Raw counts are navigation metrics, not success by themselves. A renamed compatib
 | Supported workspace toolchain | Run the root build/test/lint/typecheck commands documented in `AGENTS.md` | `AGENTS.md` §Build and local run |
 | Octocode research catalog | `npx octocode context --compact`; `npx octocode tools --json` | `AGENTS.md` §Tools |
 | AST and LSP capability | Inspect schemas with `npx octocode tools localSearchCode lspGetSemantics --scheme` | `AGENTS.md` §Tools |
-| Pi-backed real path | Build affected packages, then run `octocode-agent` SDK, print, and RPC smoke scenarios | `packages/octocode-agent/docs/PI_INTEGRATION.md` |
+| Frozen Pi-oracle real path | Before deletion, build the affected packages and run the pinned extension/host comparison scenarios | `packages/octocode-agent/docs/PI_INTEGRATION.md` |
 | Test host | Verify `@octocodeai/agent-testing` tests and the extension mock-host flow | `packages/octocode-agent-testing/README.md`; `packages/octocode-pi-extension/tests/mock-pi-host-flow.test.ts` |
 
 ## Baseline capture protocol

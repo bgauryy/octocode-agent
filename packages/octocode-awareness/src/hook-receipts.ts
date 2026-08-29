@@ -5,10 +5,11 @@ import { utcNow } from './helpers.js';
 import type { HookHost } from './hooks-install-specs.js';
 
 export type HookReceiptStatus = 'success' | 'failure';
+export type HookReceiptHost = HookHost | 'opencode';
 
 export interface HookReceipt {
   workspace_path: string;
-  host: HookHost;
+  host: HookReceiptHost;
   event: string;
   status: HookReceiptStatus;
   last_seen_at: string;
@@ -18,7 +19,7 @@ export const HOOK_RECEIPT_STALE_MS = 7 * 24 * 60 * 60_000;
 
 export function upsertHookReceipt(db: DatabaseSync, receipt: {
   workspacePath: string;
-  host: HookHost;
+  host: HookReceiptHost;
   event: string;
   status: HookReceiptStatus;
   observedAt?: string;
@@ -36,7 +37,7 @@ export function upsertHookReceipt(db: DatabaseSync, receipt: {
 
 export function recordHookReceiptBestEffort(receipt: {
   workspacePath: string;
-  host: HookHost;
+  host: HookReceiptHost;
   event: string;
   status: HookReceiptStatus;
 }): void {
@@ -54,7 +55,7 @@ export function recordHookReceiptBestEffort(receipt: {
 export function hookReceipts(
   db: DatabaseSync,
   workspacePath: string,
-  host: HookHost,
+  host: HookReceiptHost,
 ): HookReceipt[] {
   return db.prepare(`SELECT workspace_path, host, event, status, last_seen_at
     FROM hook_receipts WHERE workspace_path = ? AND host = ? ORDER BY event`)

@@ -77,7 +77,7 @@ an errored, missing, or wrong-workspace step makes Installed scope FAIL.
 Config check is read-only:
 
 ```bash
-npx @octocodeai/octocode-awareness hooks check --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks check --host <claude|codex|copilot|cursor|gemini|opencode> \
   --project-dir . --strict --compact
 ```
 
@@ -89,12 +89,12 @@ If config is missing and installation is in scope, preview first. Apply only aft
 approval for a real project:
 
 ```bash
-npx @octocodeai/octocode-awareness hooks install --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks install --host <claude|codex|copilot|cursor|gemini|opencode> \
   --project-dir . --dry-run
 # after review and approval:
-npx @octocodeai/octocode-awareness hooks install --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks install --host <claude|codex|copilot|cursor|gemini|opencode> \
   --project-dir . --compact
-npx @octocodeai/octocode-awareness hooks check --host <claude|codex|cursor> \
+npx @octocodeai/octocode-awareness hooks check --host <claude|codex|copilot|cursor|gemini|opencode> \
   --project-dir . --strict --compact
 ```
 

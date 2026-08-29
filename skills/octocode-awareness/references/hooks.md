@@ -1,59 +1,43 @@
 # Awareness Hooks
 
-Hooks automate loop edges after the skill is used; they do not choose tasks or replace `attend`/verify. Export one stable `OCTOCODE_AGENT_ID`; without it, presence and peer packets do not join correctly. A config file proves presence, not execution, trust, or model-visible delivery.
+Load when installing, checking, or changing host lifecycle automation.
 
-| Host | Surface | Context / control |
+Hooks automate loop edges; they do not choose tasks or replace `attend`/verify. Export one stable `OCTOCODE_AGENT_ID`. A config entry proves presence, not execution, trust, or model-visible delivery.
+
+| Host | Surface | Key constraint |
 |---|---|---|
-| Claude | active skill frontmatter or `.claude/settings.json` | installed hooks add SessionStart; both cover success/failure writes, subagent start/stop, PreCompact, SessionEnd; exit 2 blocks |
-| Codex | trusted `.codex/hooks.json` | SessionStart/SessionEnd, successful writes, subagent start/stop, PreCompact, prompt/stop; no distinct failure event |
-| Cursor | `.cursor/hooks.json` | success/failure writes and lifecycle; cloud lacks sessionStart/sessionEnd; native deny/follow-up output; child context varies |
-| Pi | `@octocodeai/pi-extension` native events | in-process tool gate, shared presence, registry/event delivery, shutdown cleanup, and compaction rehydration; no shell install |
+| Claude | skill frontmatter or settings | Choose one surface; do not also install duplicate hooks. |
+| Codex | trusted `.codex/hooks.json` | No distinct failed-write event. |
+| GitHub Copilot | `.github/hooks/octocode-awareness.json` | Project-only official v1 hook file. |
+| Cursor | `.cursor/hooks.json` | Local/cloud lifecycle coverage differs. |
+| Gemini CLI | `.gemini/settings.json` | Uses Gemini event names and timeout units. |
+| OpenCode | `.opencode/plugins/octocode-awareness.js` | Project plugin translates events into the shared runner. |
+| Pi | native extension events | Guard at `tool_call`; audit/release at `tool_execution_end`; never install shell hooks. |
 
-Choose one surface. With Claude frontmatter, preview/remove older project or global Awareness hooks; do not also install them. Before every install, show the noncompact dry-run and ask the user for just-in-time approval. Configuration answers are not installation approval. Without an explicit yes, stop after the preview. Then install and check:
+Before installation, show the noncompact dry-run and obtain explicit approval. Then apply and strict-check the same host and scope:
 
 ```bash
-<cli> hooks install --host <codex|cursor> --project-dir . --dry-run
-<cli> hooks install --host <codex|cursor> --project-dir . --compact
-<cli> hooks check --host <codex|cursor> --project-dir . --strict
+<cli> hooks install --host <claude|codex|copilot|cursor|gemini|opencode> --project-dir . --dry-run
+<cli> hooks install --host <claude|codex|copilot|cursor|gemini|opencode> --project-dir . --compact
+<cli> hooks check --host <claude|codex|copilot|cursor|gemini|opencode> --project-dir . --strict
 ```
 
-`--strict` validates exact entries and their runner. For drift: preview remove, remove, install, strict-check. Use `--host claude` only when frontmatter is unavailable.
+For drift, preview removal, remove, reinstall, and strict-check. Configuration answers are not installation approval.
 
-```bash
-<cli> hooks remove --host <claude|codex|cursor> --project-dir . --dry-run
-<cli> hooks remove --host <claude|codex|cursor> --project-dir . --compact
-```
+## Write path
 
-## Write Path
+1. Extract deduplicated paths; no path is a no-op.
+2. Evaluate the harness guard before DB presence.
+3. Resolve one TASK claim, matching WORK, or scoped HOOK fallback.
+4. Declare advisory work; real exclusivity blocks, ordinary overlap succeeds.
+5. Emit only changed overlap pointers.
+6. Log/heartbeat successful edits; failed writes create no success receipt.
+7. Stop, compact, or session end finalizes scoped HOOK work and audits debt.
 
-1. Extract deduplicated paths; no paths → no-op.
-2. Evaluate harness guard before any DB presence.
-3. Resolve exactly one TASK claim, matching explicit WORK presence, or the active fallback for the same agent + stable session/transcript + workspace + artifact.
-4. Declare advisory work. Existing exclusive blocks; ordinary peers succeed.
-5. Emit peer context only when its fingerprint changes.
-6. Post-edit logs/heartbeats. TASK/WORK stays active; scoped HOOK stays active.
-7. Stop, PreCompact, or SessionEnd finalizes scoped HOOK runs once; Stop audits debt.
+N edits in one scoped turn produce one pending HOOK with N files. TASK/WORK never merge into it. Correlation loss never marks success. Expiry removes stale coordination only.
 
-N edits in one scoped turn produce one PENDING HOOK with N files. TASK/WORK never merge into it. Shell creation is cross-process locked. Recursive Stop surfaces continuation debt once, then permits an unchanged recursive Stop to avoid a host loop. Missing stable session correlation uses isolated fallback. Correlation loss never marks success.
+Smoke: registration, one-time peer context, exclusive denial before presence, failed-write behavior, multi-file fallback verification, compaction reuse, session end, and host log visibility. Missing runtime observation is failure even when strict config checks pass.
 
-## Host Edges
+Prompt delivery stays bounded: changed state emits a pointer; details require targeted reads. Harness apply also requires `OCTOCODE_ALLOW_HARNESS_APPLY=1` on a safe non-main branch.
 
-| Edge | Claude/Codex | Cursor |
-|---|---|---|
-| Before | PreToolUse | preToolUse |
-| After | PostToolUse | postToolUse |
-| Brief | UserPromptSubmit | sessionStart |
-| Verify | Stop/SubagentStop | stop/subagentStop |
-| Finalize | SessionEnd; PreCompact also checkpoints | sessionEnd/preCompact |
-
-Claude/Codex context uses event-named `hookSpecificOutput`. Cursor uses `additional_context` at session start and `agent_message` around tool use; Cursor stop uses `followup_message`; Claude/Codex stop uses exit 2. Host delivery is best-effort and must be smoked. PreCompact finalizes/captures but keeps the host session reusable. SessionEnd marks the session ended; it does not delete explicit WORK or claim success. Presence/task claim TTLs are independent. Expiry removes stale coordination, never success, and never changes a live TASK run to PENDING.
-
-Guard denial and real exclusivity use the host's native block shape: exit 2 for Claude/Codex and `permission: deny` for Cursor. Infrastructure/input failure warns and fails open.
-
-## Diagnostics & Prompt Delivery
-
-Bounded SQLite upserts report `unverified|observed|stale|failed`, `coverage`, and `last_seen` without payloads. Codex: inspect project trust, definition trust, and feature enablement. Cursor: smoke local/cloud; flat config lacks a guaranteed Windows command override. Smoke: session/subagent registration; ordinary peer context once; exclusive denial before presence; a failed write creates no audit/debt; N successful writes in one turn become one fallback Verify item with N files; PreCompact reuses the session; SessionEnd ends it; changed briefing and host log visibility. Treat any missing edge as a runtime failure even when config is green.
-
-Prompt-time delivery is transient: shell hooks pass an event prompt when available. The hook emits at most one grounded memory lead (or silence), keeps signals/overrides independent, and caps the final five-item packet at 1 KiB UTF-8. Selection/trust: `references/memory-recall.md`.
-
-Harness edits require `OCTOCODE_ALLOW_HARNESS_APPLY=1` plus a safe non-main branch. Pre-edit remains the single ordered guard+presence edge. Tuning/installation above; file decisions: `references/files-awareness.md`.
+Next: use `references/files-awareness.md` for edit decisions or return to `SKILL.md`.

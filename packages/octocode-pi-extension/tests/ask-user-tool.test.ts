@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import { Type } from 'typebox';
 import { visibleWidth } from '@earendil-works/pi-tui';
-import { registerAskUserTool } from '../src/tools/ask-user-tool.js';
-import { setInteractionStoreFactoryForTests } from '../src/tools/interaction-broker.js';
+import { registerAskUserTool, runAskPrompt } from '../src/tools/ask-user-tool.js';
+import { configureInteractionBrokerRoute, setInteractionStoreFactoryForTests } from '../src/tools/interaction-broker.js';
 import type { PiContext, ToolDefinition } from '../src/types.js';
 
 function loadTool(): ToolDefinition {
@@ -48,6 +48,7 @@ function overlayCtx() {
         }),
     },
   } as unknown as PiContext;
+  configureInteractionBrokerRoute(ctx, true);
   return {
     ctx,
     send: (data: string) => {
@@ -126,12 +127,81 @@ test('askUser creates a pending RPC interaction even though hasUI is true and cu
       custom: async () => { customCalled = true; return undefined; },
     },
   } as unknown as PiContext;
+  configureInteractionBrokerRoute(ctx, true);
 
   const result = await tool.execute('id', { question: 'Ship it?', options: ['yes', 'no'] }, undefined, undefined, ctx);
 
   assert.equal(customCalled, false, 'custom() must not be called outside tui mode');
   assert.match((result.content[0] as { text: string }).text, /Structured interaction pending \(mode=rpc/);
   assert.equal((result.details as { status: string }).status, 'pending');
+});
+
+test('askUser fails closed when a headless host has no durable answer route', async () => {
+  const tool = loadTool();
+  let created = 0;
+  setInteractionStoreFactoryForTests(() => ({
+    createInteraction: () => { created += 1; },
+    answerInteraction: () => undefined,
+    close: () => undefined,
+  }));
+  try {
+    const ctx = {
+      cwd: '/tmp/ask-no-host-route',
+      hasUI: false,
+      mode: 'rpc',
+    } as unknown as PiContext;
+    configureInteractionBrokerRoute(ctx, false);
+    const result = await tool.execute('id', { question: 'Ship it?', options: ['yes', 'no'] }, undefined, undefined, ctx);
+
+    assert.equal(created, 0, 'an unreachable durable interaction must not be persisted');
+    assert.equal((result.details as { status: string }).status, 'unavailable');
+    assert.match((result.content[0] as { text: string }).text, /no durable .*answer route/i);
+    assert.match((result.content[0] as { text: string }).text, /ask the user inline/i);
+  } finally {
+    setInteractionStoreFactoryForTests();
+  }
+});
+
+test('durable answer routes are isolated between mixed hosts in one process', async () => {
+  const tool = loadTool();
+  const supported = { cwd: '/tmp/ask-supported-host', hasUI: false, mode: 'rpc' } as unknown as PiContext;
+  const unsupported = { cwd: '/tmp/ask-unsupported-host', hasUI: false, mode: 'rpc' } as unknown as PiContext;
+  configureInteractionBrokerRoute(supported, true);
+  configureInteractionBrokerRoute(unsupported, false);
+
+  const pending = await tool.execute('supported', { question: 'Supported?' }, undefined, undefined, supported);
+  const unavailable = await tool.execute('unsupported', { question: 'Unsupported?' }, undefined, undefined, unsupported);
+
+  assert.equal((pending.details as { status: string }).status, 'pending');
+  assert.equal((unavailable.details as { status: string }).status, 'unavailable');
+});
+
+test('runAskPrompt returns the durable correlation when an internal RPC prompt cannot render', async () => {
+  const created: Array<{ interactionId: string; correlationId: string }> = [];
+  setInteractionStoreFactoryForTests(() => ({
+    createInteraction: (request: { interactionId: string; correlationId: string }) => { created.push(request); },
+    answerInteraction: () => undefined,
+    close: () => undefined,
+  }));
+  try {
+    const ctx = {
+      cwd: '/tmp/ask-internal-rpc',
+      mode: 'rpc',
+      hasUI: true,
+      ui: { custom: async () => undefined },
+    } as unknown as PiContext;
+    configureInteractionBrokerRoute(ctx, true);
+    const outcome = await runAskPrompt(ctx, {
+      question: 'Approve the plan?',
+      options: [{ value: 'approve', label: 'Approve' }],
+    });
+
+    assert.equal(outcome?.status, 'pending');
+    assert.equal(outcome?.interaction?.interactionId, created[0]?.interactionId);
+    assert.equal(outcome?.interaction?.correlationId, created[0]?.correlationId);
+  } finally {
+    setInteractionStoreFactoryForTests();
+  }
 });
 
 test('askUser emits CURSOR_MARKER at the caret in text mode when focused (IME positioning)', async () => {
@@ -227,6 +297,8 @@ test('askUser returns a structured pending interaction when no interactive UI is
   const tool = loadTool();
   setInteractionStoreFactoryForTests(() => ({ createInteraction: () => undefined, answerInteraction: () => undefined, close: () => undefined }));
   try {
+    const ctx = { mode: 'rpc', hasUI: false } as PiContext;
+    configureInteractionBrokerRoute(ctx, true);
     const result = await tool.execute(
     'id',
     {
@@ -238,7 +310,7 @@ test('askUser returns a structured pending interaction when no interactive UI is
     },
     undefined,
     undefined,
-    { mode: 'rpc', hasUI: false } as PiContext,
+    ctx,
     );
 
     assert.equal(result.isError, undefined);
@@ -942,6 +1014,10 @@ test('askUser renders a final submitted state after completion', async () => {
 
 test('askUser multiSelect and form degrade to inline hints without an interactive UI', async () => {
   const tool = loadTool();
+  const printCtx = { mode: 'print', hasUI: false } as PiContext;
+  const rpcCtx = { mode: 'rpc', hasUI: false } as PiContext;
+  configureInteractionBrokerRoute(printCtx, true);
+  configureInteractionBrokerRoute(rpcCtx, true);
 
   const multi = await tool.execute(
     'id',
@@ -952,7 +1028,7 @@ test('askUser multiSelect and form degrade to inline hints without an interactiv
     },
     undefined,
     undefined,
-    { mode: 'print', hasUI: false } as PiContext,
+    printCtx,
   );
   assert.match((multi.content[0] as { text: string }).text, /Structured interaction pending \(mode=print/);
   assert.match((multi.content[0] as { text: string }).text, /Safe, Fast/);
@@ -964,7 +1040,7 @@ test('askUser multiSelect and form degrade to inline hints without an interactiv
     { question: 'New profile', fields: [{ name: 'name', label: 'Full name' }, { name: 'email' }] },
     undefined,
     undefined,
-    { mode: 'rpc', hasUI: false } as PiContext,
+    rpcCtx,
   );
   assert.match((form.content[0] as { text: string }).text, /Collect these fields inline: Full name, email/);
   assert.equal((form.details as { status: string }).status, 'pending');

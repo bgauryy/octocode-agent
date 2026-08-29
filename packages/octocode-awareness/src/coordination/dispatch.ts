@@ -4,7 +4,7 @@
  * library methods can distinguish omission from explicit null.
  */
 
-import type { AgentStatus,CheckStatus,TaskStatus } from '@octocodeai/octocode-shared/entities';
+import { isTaskStatus, type AgentStatus, type CheckStatus, type TaskStatus } from '@octocodeai/octocode-shared/entities';
 import type { AwarenessStore } from './index.js';
 import type { MemoryEvaluationCorpusV1,MemoryRecallModeV1 } from '../memory-hardening.js';
 
@@ -59,6 +59,13 @@ function list(value: unknown): string | string[] | undefined {
     return arr.length ? arr : undefined;
   }
   return str(value);
+}
+
+function taskStatus(value: unknown): TaskStatus | undefined {
+  const status = str(value);
+  if (status === undefined) return undefined;
+  if (!isTaskStatus(status)) throw new Error(`invalid task status: ${status}`);
+  return status;
 }
 
 /**
@@ -123,7 +130,7 @@ export function dispatchAwarenessCommand(
         case 'list':
           return done(aw.listTasks({
             planId: str(p['planId']),
-            status: str(p['status']) as TaskStatus | undefined,
+            status: taskStatus(p['status']),
             agentId: str(p['agentId']),
           }));
         case 'ready':

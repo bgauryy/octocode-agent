@@ -6,9 +6,10 @@ receives hook automation, verifies work, records learning,
 and exits or hands off. Command recipes live in [SKILLS.md](SKILLS.md); host wiring
 lives in [HOOKS.md](HOOKS.md); schema detail lives in [DB.md](DB.md).
 
-Awareness is a coordination runtime over local SQLite. Every host shares the same
-coordination store; advanced workflow commands use a separately named OCT1 store.
-No server or broker is required, and command families never guess between stores.
+Awareness is a coordination runtime over local SQLite. Workspace policy routes repository
+features to repository scope and reusable memory to global scope by default; `--db-scope`
+overrides one call. Advanced workflow commands retain their separately named OCT1 store.
+No server or broker is required. See [storage scopes](STORAGE_SCOPES.md).
 
 ## Starting Point And Authority Chain
 
@@ -17,9 +18,9 @@ Host starts
   -> AGENTS.md / CLAUDE.md        (entry + router; short and always loaded)
   -> Agent Skills                (policy + judgment; loaded when task matches)
   -> Awareness CLI / library     (control plane + executable contracts)
-  |-> octocode.sqlite3           (shared coordination + continuity)
+  |-> octocode.sqlite3           (shared coordination + continuity, repository or global)
   |    `-> plans, tasks, peers, messages, handoffs, locks, checks, verified memory
-  `-> awareness.sqlite3          (advanced OCT1 workflow)
+  `-> awareness.sqlite3          (advanced OCT1 workflow, repository or global)
        |-> attend / targeted query / workboard
        |-> runs, files, verification, signals, refinements, sessions, memory
        `-> optional .octocode/ query exports (read-only, on request)
@@ -53,7 +54,8 @@ Authority descends from current user instructions and current source/tests, to l
 SQLite state and fresh command evidence, to verified memory/signals, and finally to
 read-only query exports. A lower layer cannot override a higher one.
 
-Rows are isolated by normalized `workspace_path` and optional artifact/repo/ref scope.
+Rows are isolated by normalized `workspace_path` and optional artifact/repo/ref scope,
+including inside repository-level databases.
 
 The default agent surface is deliberately small: `attend`, `plan`, `task`, `work`,
 `verify`, `memory`, `signal`, and `query`. `schema commands --compact` groups
@@ -195,10 +197,10 @@ PreCompact            -> finalize/capture but keep session reusable
 SessionEnd/shutdown   -> finalizes/captures and marks the session ended, never success
 ```
 
-Normal success is silent. Changed peer/briefing fingerprints emit one bounded delta;
+Normal success is silent. Changed peer/briefing fingerprints emit one terse signal;
 unchanged state emits nothing. An exclusive conflict blocks before presence. Prompt
-briefing uses transient prompt text to select at most one grounded memory lead or stay
-silent; signals and overrides remain independent. Stop output is capped.
+briefing uses transient prompt text to select relevant state or stay silent; selected
+contents remain in the ledger for an explicit read. Stop output is count-only.
 
 ### Manual CLI And Hook Parity
 
@@ -222,9 +224,9 @@ Host wiring details live in [HOOKS.md](HOOKS.md).
 Persist everything needed for coordination; prompt only actionable changes:
 
 - ordinary edit: zero injected awareness text;
-- unrelated remembered state: zero injected text; a matching prompt gets at most one
-  `Memory lead — verify` item;
-- changed overlap: file, bounded peers, task/reason, omitted count;
+- unrelated remembered state: zero injected text; matching changed state emits only
+  `Awareness state changed.`;
+- changed overlap: affected path summary only; inspect peers and ownership explicitly;
 - exclusive conflict: holder, reason, expiry, recovery action;
 - compact attend: bounded action packet, not full organ/drive/profile aliases;
 - full rows: explicit `work show`, query, recall, or noncompact attend.

@@ -1,15 +1,33 @@
 # Octocode harness — capability discovery, MCP catalog, skills, and observability
 
-How the Octocode Pi extension (`@octocodeai/pi-extension`) discovers everything the
-agent can do—MCP servers, Agent Skills, and native tools—while keeping model-visible
-catalog bytes stable and making the capability surface observable to users and peers.
+How native `octocode-agent` and the retained Pi parity oracle discover MCP servers and
+Agent Skills. This page owns shared concepts and the cross-host source inventory. Native
+runtime behavior is owned by [`HEADLESS.md`](../packages/octocode-agent/docs/HEADLESS.md);
+Pi-specific catalog, prompt, and UI mechanics are owned by the Pi package docs.
+
+Both hosts use the Agent Skills parser from `@octocodeai/octocode-shared`. The native
+runtime exposes model-facing `skill` and `MCPTool` facades. The Pi adapter retains its
+host-specific persistent catalog and UI only for supported Pi use and parity comparison.
 
 Character and latency measurements below use the deterministic fixture documented in
 `.octocode/rfc/lazy-mcp-schema-hydration/KPI.md`; they don't estimate provider cost.
 
 ---
 
-## 1. The big picture
+## 1. Host flows
+
+Native flow:
+
+```text
+native startup
+ ├─ build the shared Octocode and Awareness prompt
+ ├─ load hierarchical repository instructions
+ ├─ load and cache the live Octocode tool catalog
+ ├─ discover enabled Agent Skills
+ └─ create MCP clients for explicit actions through the native MCP adapter
+```
+
+The following flow is specific to the Pi parity oracle:
 
 ```
 session_start
@@ -39,9 +57,19 @@ misses the first-turn deadline, its late result doesn't appear in later prompts.
 config and tool-list changes invalidate prepared freshness and leases; validator reuse
 remains keyed by the exact schema digest.
 
+The native host loads canonical global and project MCP definitions from
+`$OCTOCODE_HOME/agent/mcp/servers.json` and
+`<workspace>/.octocode/agent/mcp/servers.json`. It uses the official MCP client for
+stdio and Streamable HTTP, validates tool arguments with Ajv, resolves secret
+references only at connection time, constrains stdio working directories to the
+workspace, and supports tools, resources, prompts, and completion. SQLite server/tool
+overrides apply before connection. Foreign-host MCP files remain discovery-only and
+   disabled until explicitly imported through a host-owned settings flow. The Pi adapter
+   provides its own import UI; native settings ownership remains separate.
+
 ---
 
-## 2. MCP: persistent selection index and internal exact schemas
+## 2. Pi oracle: persistent selection index and internal exact schemas
 
 Sources: `packages/octocode-pi-extension/src/tools/mcp-tool.ts`,
 `src/tools/mcp-catalog.ts`, and `src/tools/mcp-schema-validator.ts`
@@ -76,7 +104,7 @@ MCPTool({queries:[{reasoning:"Search code.", action:"call", server:"octocode",
   tool:"ghSearchCode", arguments:{queries:[/* … */]}}]})
 ```
 
-`call` discovers the current schema without invoking the remote tool, compiles or reuses
+`call` discovers the current schema without invoking the remote tool, compiles, or reuses
 a validator keyed by schema digest, and validates arguments immediately before
 `client.callTool`. Invalid arguments return bounded, path-specific
 `MCP_SCHEMA_INVALID` errors. Unsupported schemas return `SCHEMA_UNSUPPORTED`; both paths
@@ -98,7 +126,7 @@ agent restart; adding arbitrary server code requires trust and interactive appro
 
 ---
 
-## 3. Skills: Octocode owns the model-facing flow
+## 3. Pi oracle: model-facing Skill flow
 
 Sources: `packages/octocode-pi-extension/src/tools/skill-tool.ts`,
 `skill-catalog.ts`, `src/prompt.ts` (`stripPiSkillsSection`)
@@ -117,7 +145,7 @@ tool-set timing. Pi's user-facing `/skill:<name>` command remains available.
 
 | Call | Returns |
 |---|---|
-| `skill({queries:[{reasoning:"load matching skill", type:"load", action:"load", name:"…", reason:"why it matches"}]})` | Full `SKILL.md` (cap 48k, explicit truncation pointer) + skill directory + shipped files, with "resolve relative paths against this directory". Loading requires a concise, user-facing `reason`. Names have a case-insensitive fallback. |
+| `skill({queries:[{reasoning:"load matching skill", type:"load", action:"load", name:"…", reason:"why it matches"}]})` | Full `SKILL.md` (cap 48k, explicit truncation pointer) + skill directory + shipped files, with "resolve relative paths against this directory". Loading requires a concise, user-facing `reason`. Names follow the Agent Skills lowercase naming contract. |
 | `skill({queries:[{reasoning:"refresh skill catalog", type:"load", action:"list"}]})` | Every discovered skill with source tag and session usage (`loaded 2× this session`). |
 
 Loads are recorded in a per-session **usage ledger** — shown in `skill list` and the
@@ -140,9 +168,11 @@ result rows stay hidden; errors remain visible.
    `~/.octocode/skills` (labeled `user:<host>`).
 4. **Extension-bundled** skills (labeled `bundled`).
 
-A directory counts as a skill iff it contains `SKILL.md`; `name`/`description`
-come from its frontmatter (directory name fallback). Source files remain owned
-by their host. `/settings` stores only normalized global/workspace enablement overrides
+A directory counts as a skill only when `SKILL.md` has valid YAML frontmatter under
+the Agent Skills specification: `name` must match the parent directory, description and
+compatibility limits apply, and metadata values are strings. `allowed-tools` is retained
+as an experimental requested-capability hint and never grants permission. Source files
+remain owned by their host. `/settings` stores only normalized global/workspace enablement overrides
 in SQLite (`skill_overrides`); workspace overrides win over global overrides,
 then the default is enabled.
 
@@ -151,16 +181,17 @@ then the default is enabled.
 - `<available_skills>` is complete for enabled skills on the initial discovery pass (all enabled names,
   120-character descriptions), then frozen with the rest of the session system
   prompt. It teaches loading via the `skill` tool; `/octocode-skills` and
-  `settings.html` exposes the complete enabled/disabled inventory to the user.
-  A disabled skill is omitted from the prompt, autocomplete, discovery inventory,
-  `/octocode-skills`, and `skill` list/load execution. Changing enablement marks a
+  `settings.html` exposes the complete enabled/disabled inventory.
+  A disabled skill remains in the machine-readable discovery inventory with
+  `enabled: false`, but stays out of the prompt, autocomplete, `/octocode-skills`, and
+  `skill` list/load execution. Changing enablement marks a
   frozen context stale; `/new` rebuilds the prompt while execution blocks immediately.
 - The static prompt's `<skills>` section and `<ultimate_reminders>` name
   `skill({queries:[{reasoning:"load matching skill", type:"load", action:"load"…}]})` as THE loading mechanism.
 
 ---
 
-## 4. The discovery file — `.octocode/discovery.json`
+## 4. Pi oracle discovery file — `.octocode/discovery.json`
 
 Source: `packages/octocode-pi-extension/src/tools/discovery-file.ts`
 
@@ -178,7 +209,9 @@ harness surface:
   "nativeTools": ["MCPTool", "agent", "askUser", "bash", "file", "…"], // sorted extension-owned palette
   "skills": [
     { "name": "octocode-research", "description": "Use when code must be checked…",
-      "source": "user", "path": "/Users/…/skills/octocode-research/SKILL.md" }
+      "source": "user", "path": "/Users/…/skills/octocode-research/SKILL.md", "enabled": true },
+    { "name": "paused-workflow", "description": "Installed but disabled.",
+      "source": "project", "path": "/workspace/.agents/skills/paused-workflow/SKILL.md", "enabled": false }
   ],
   "mcp": {
     "sources":  [ { "scope": "built-in", "path": "…", "trusted": true }, … ],
@@ -186,7 +219,7 @@ harness surface:
                     "tools": [ { "name": "ghSearchCode", "description": "…" }, … ] } ],
     "warnings": [],
     "discoveredConfigs": [
-      { "path": "$OCTOCODE_HOME/agent/mcp.json", "host": "octocode", "scope": "user",
+      { "path": "$OCTOCODE_HOME/agent/mcp/servers.json", "host": "octocode", "scope": "user",
         "format": "json", "active": true,  "servers": [{ "name": "docs", "command": "npx" }] },
       { "path": "~/.claude.json",         "host": "claude", "scope": "user",
         "format": "json", "active": false, "servers": [{ "name": "memory", "command": "memory-mcp" }] },
@@ -209,15 +242,16 @@ Every existing MCP config file found in these project and user locations:
 | Claude Code/Desktop | Official `<ws>/.mcp.json`; compatibility `<ws>/.claude/mcp.json` | `~/.claude.json`, `~/.claude/mcp.json`, and Claude Desktop platform config | Discovered, disabled by default |
 | Cursor | `<ws>/.cursor/mcp.json` | `~/.cursor/mcp.json` | Discovered, disabled by default |
 | Codex | `<ws>/.codex/config.toml` | `~/.codex/config.toml` | Discovered, disabled by default |
-| Antigravity / Gemini | `<ws>/.agents/mcp_config.json` | `~/.gemini/config/mcp_config.json`, `~/.gemini/antigravity/mcp_config.json`, `~/.gemini/antigravity-cli/mcp_config.json` | Discovered, disabled by default |
+| Gemini CLI | `<ws>/.gemini/settings.json` | `~/.gemini/settings.json` | Discovered, disabled by default |
+| Antigravity | `<ws>/.agents/mcp_config.json` | `~/.gemini/config/mcp_config.json`, `~/.gemini/antigravity/mcp_config.json`, `~/.gemini/antigravity-cli/mcp_config.json` | Discovered, disabled by default |
 | Agent compatibility | `<ws>/.agents/mcp.json`, `<ws>/.agent/{mcp,mcp_config}.json` | Matching `~/.agents` and `~/.agent` files | Discovered, disabled by default; a compatibility convention, not part of AGENTS.md |
-| VS Code | `<ws>/.vscode/mcp.json` | `~/.vscode/mcp.json` | Discovered, disabled by default |
+| VS Code / Copilot | `<ws>/.vscode/mcp.json` | `~/.vscode/mcp.json`, `~/.copilot/mcp-config.json` | Discovered, disabled by default |
 
 The global canonical file loads first, followed by the trusted project's canonical file.
 The built-in `octocode` server is lower than both file-based entries.
 
 **Security boundary:** foreign definitions are normalized under collision-safe names such as
-`cursor.docs`, but every discovered server and tool fails closed until the user explicitly
+`cursor.docs`, but every discovered server and tool fails closed until an operator explicitly
 enables it in `/mcp`. Project imports additionally require workspace trust. Their owning files
 remain read-only; canonical Octocode JSON owns managed definitions, SQLite owns only enablement,
 and the OS credential store owns OAuth tokens. The machine-readable discovery snapshot emits
@@ -231,9 +265,10 @@ Host references: [Claude Code MCP](https://code.claude.com/docs/en/mcp),
 
 ---
 
-## 5. What is in the model's context (measured)
+## 5. Pi oracle prompt context (measured)
 
-Per-turn Octocode system-prompt addenda stay in stable-to-volatile order:
+In the Pi parity oracle, per-turn Octocode system-prompt addenda stay in
+stable-to-volatile order:
 
 | # | Block | Model-visible contents | Changes when |
 |---|---|---|---|
@@ -265,6 +300,8 @@ blocked-call count in structured details.
 
 | Concern | Source | Tests |
 |---|---|---|
+| Shared Agent Skills parsing/discovery | `packages/octocode-shared/src/agent-skills.ts` | `packages/octocode-shared/tests/agent-skills.test.ts` |
+| Native MCP and skill runtime adapters | `packages/octocode-agent/src/native-mcp.ts`, `src/native-skills.ts` | `tests/native-agent-capabilities.test.ts`, `tests/native-mcp-external.test.ts` |
 | MCP gateway and mode integration | `packages/octocode-pi-extension/src/tools/mcp-tool.ts` | `tests/mcp-tool.test.ts`, `tests/package.test.ts` |
 | Persistent catalog snapshot and index | `packages/octocode-pi-extension/src/tools/mcp-catalog.ts` | `tests/mcp-catalog.test.ts` |
 | Schema leases and local validation | `packages/octocode-pi-extension/src/tools/mcp-schema-lease.ts`, `src/tools/mcp-schema-validator.ts` | `tests/mcp-schema-validator.test.ts`, `tests/mcp-tool.test.ts` |
@@ -274,5 +311,6 @@ blocked-call count in structured details.
 | Prompt composition + Pi-section strips | `packages/octocode-pi-extension/src/prompt.ts`, `src/prompts/prompt.ts` | `tests/prompt-dedup.test.ts` |
 | Session wiring (init discovery, turn-1 await, dashboards) | `packages/octocode-pi-extension/src/index.ts` | `tests/package.test.ts` |
 
-Related package docs: `packages/octocode-pi-extension/docs/TOOLS.md` (tool
-reference, MCP section), `docs/UI.md` (TUI surfaces).
+Related package docs: [`packages/octocode-agent/docs/HEADLESS.md`](../packages/octocode-agent/docs/HEADLESS.md)
+for native behavior and `packages/octocode-pi-extension/docs/TOOLS.md` plus
+`packages/octocode-pi-extension/docs/UI.md` for the Pi parity oracle.

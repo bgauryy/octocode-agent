@@ -1,7 +1,7 @@
 /**
- * @octocodeai/octocode-shared — canonical home/session paths, the low-level
- * `node:sqlite` runtime, and the single shared local store used across the
- * agent, harness, and coordination layers (Awareness + Awareness).
+ * @octocodeai/octocode-shared — canonical pure prompts, protocol types,
+ * persisted entities, paths, permissions, and low-level local SQLite plumbing
+ * used across the native agent, Pi harness, and Awareness.
  */
 export * from './entities.js';
 export * from './paths.js';
@@ -11,3 +11,7 @@ export * from './schema.js';
 export * from './embed.js';
 export * from './db.js';
 export * from './mcp-state.js';
+export * from './permissions.js';
+export * from './protocols.js';
+export * from './agent-skills.js';
+export * from './prompts/index.js';

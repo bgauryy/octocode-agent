@@ -8,7 +8,10 @@ import { agentId, artifact, completeHookControl, db, emitHookContext, extractFil
 import { emitPeerDelta, registerHookAgent } from './hook-peers.js';
 import { activeRunForFiles, consumeHookRun, isAggregatedFallbackHookRun, recordHookRun, refreshFallbackVerificationPlan, runOrigin, startOrAttachFallbackHookRun, withHookDbRetry } from './hook-run-state.js';
 
-export async function runPreEdit(payload: Record<string, unknown>): Promise<number> {
+export async function runPreEdit(
+  payload: Record<string, unknown>,
+  options: { emitPeerSignal?: boolean } = {},
+): Promise<number> {
   const files = extractFiles(payload);
   if (files.length === 0) return 0;
   const hookWorkspace = workspace(payload) ?? process.cwd();
@@ -25,7 +28,7 @@ export async function runPreEdit(payload: Record<string, unknown>): Promise<numb
     ));
   }
   try {
-    const database = db();
+    const database = db(payload);
     registerHookAgent(database, payload, 'hook:pre-edit');
     const hookAgentId = agentId(payload);
     const hookArtifact = artifact(payload);
@@ -72,7 +75,9 @@ export async function runPreEdit(payload: Record<string, unknown>): Promise<numb
     }
     withHookDbRetry(() => refreshFallbackVerificationPlan(database, result.run.run_id, hookWorkspace));
     recordHookRun(payload, files, hookWorkspace, result.run.run_id);
-    const peerContext = emitPeerDelta(payload, files, hookWorkspace, result.peers);
+    const peerContext = options.emitPeerSignal === false
+      ? null
+      : emitPeerDelta(payload, files, hookWorkspace, result.peers);
     if (peerContext) {
       emitHookContext(
         payload,
@@ -94,7 +99,7 @@ export async function runPostEdit(payload: Record<string, unknown>): Promise<num
   let consumedRunId: string | null = null;
   let stage = 'open database';
   try {
-    const database = db();
+    const database = db(payload);
     stage = 'register hook agent';
     withHookDbRetry(() => registerHookAgent(database, payload, 'hook:post-edit'));
     const hookAgentId = agentId(payload);

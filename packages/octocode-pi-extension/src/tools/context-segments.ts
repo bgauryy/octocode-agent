@@ -18,8 +18,19 @@ export interface AssembledContextV1 {
   manifest: ContextSegmentV1[];
 }
 
+export const INITIAL_CONTEXT_TOKEN_BUDGET = 80_000;
+export const PROVIDER_CONTEXT_TOKEN_BUDGET = 120_000;
+
 export function estimateContextTokens(content: string): number {
   return Math.ceil(content.length / 4);
+}
+
+export function assertContextTokenBudget(label: string, contentChars: number, tokenBudget: number): number {
+  const estimatedTokens = Math.ceil(contentChars / 4);
+  if (estimatedTokens > tokenBudget) {
+    throw new Error(`${label} exceeds total token budget ${tokenBudget} (estimated ${estimatedTokens})`);
+  }
+  return estimatedTokens;
 }
 
 export function contextSegmentFromInput(input: ContextSegmentInput): ContextSegmentV1 {

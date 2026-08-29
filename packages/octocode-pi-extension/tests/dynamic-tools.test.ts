@@ -41,9 +41,18 @@ function register(overrides: Partial<typeof GOOD> = {}, testTimeout?: number) {
 }
 
 test('registerGeneratedTool registers a tool whose test passes', () => {
+  fs.chmodSync(dir, 0o755);
   const res = register();
   assert.equal(res.ok, true);
   assert.ok(readIndex(dir).tools.getCurrentTime);
+  if (process.platform !== 'win32') {
+    const toolDir = path.join(dir, 'getCurrentTime');
+    assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(toolDir).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(path.join(dir, 'index.json')).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(path.join(toolDir, 'tool.mjs')).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(path.join(toolDir, 'tool.test.mjs')).mode & 0o777, 0o600);
+  }
 });
 
 test('SANDBOX: the verification TEST run cannot see process.env secrets', () => {

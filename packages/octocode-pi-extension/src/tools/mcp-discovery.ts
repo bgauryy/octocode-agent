@@ -95,7 +95,13 @@ function splitReferences(value: unknown): { values?: Record<string, string>; ref
 }
 
 function normalizeServer(raw: JsonRecord): Omit<DiscoveredMcpServerConfig, 'disabled' | 'discovered'> | null {
-  const rawUrl = typeof raw['url'] === 'string' ? raw['url'] : typeof raw['serverUrl'] === 'string' ? raw['serverUrl'] : undefined;
+  const rawUrl = typeof raw['url'] === 'string'
+    ? raw['url']
+    : typeof raw['httpUrl'] === 'string'
+      ? raw['httpUrl']
+      : typeof raw['serverUrl'] === 'string'
+        ? raw['serverUrl']
+        : undefined;
   const url = rawUrl?.trim();
   const command = typeof raw['command'] === 'string' ? raw['command'].trim() : undefined;
   if (!url && !command) return null;
@@ -210,6 +216,7 @@ function candidates(cwd: string, options?: string | DiscoverMcpConfigOptions): C
     { ...project('.octocode/agent/mcp/servers.json', 'octocode'), active: true, allowRootServers: true },
     project('.mcp.json', 'claude'), project('.claude/mcp.json', 'claude'),
     project('.cursor/mcp.json', 'cursor'), project('.codex/config.toml', 'codex', 'toml'),
+    project('.gemini/settings.json', 'gemini'),
     project('.agents/mcp_config.json', 'antigravity'), project('.agents/mcp.json', 'agents'),
     project('.agent/mcp_config.json', 'agent'), project('.agent/mcp.json', 'agent'),
     project('.vscode/mcp.json', 'vscode'),
@@ -217,6 +224,7 @@ function candidates(cwd: string, options?: string | DiscoverMcpConfigOptions): C
     { path: path.join(octocodeHome, 'agent', 'mcp', 'servers.json'), host: 'octocode', scope: 'user', format: 'json', active: true, allowRootServers: true },
     { ...user('.claude.json', 'claude'), claudeState: true }, user('.claude/mcp.json', 'claude'),
     user('.cursor/mcp.json', 'cursor'), user('.codex/config.toml', 'codex', 'toml'),
+    user('.gemini/settings.json', 'gemini'), user('.copilot/mcp-config.json', 'copilot'),
     user('.agents/mcp_config.json', 'antigravity'), user('.agents/mcp.json', 'agents'),
     user('.agent/mcp_config.json', 'agent'), user('.agent/mcp.json', 'agent'),
     user('.gemini/config/mcp_config.json', 'antigravity'), user('.gemini/antigravity/mcp_config.json', 'antigravity'),

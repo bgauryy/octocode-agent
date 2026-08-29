@@ -1,18 +1,6 @@
 import { SYSTEM_PROMPT_MARKER, MANAGED_BLOCK_START, MANAGED_BLOCK_END } from './constants.js';
 import type { PromptMode } from './types.js';
 
-export function shouldAppendSystemPrompt(
-  systemPrompt: string,
-  octocodePrompt: string,
-): boolean {
-  if (octocodePrompt.trim().length === 0) return false;
-  // Rely solely on the unique marker rather than a content probe slice.
-  // A probe-slice false-negative would silently skip the append when Pi's own
-  // system prompt happens to share the same boilerplate prefix as the Octocode
-  // prompt (e.g. the same authority/safety preamble).
-  return !systemPrompt.includes(SYSTEM_PROMPT_MARKER);
-}
-
 export function renderSystemPromptAddendum(octocodePrompt: string): string {
   return `${SYSTEM_PROMPT_MARKER}\n${octocodePrompt.trim()}\n${SYSTEM_PROMPT_MARKER}`;
 }
@@ -69,7 +57,7 @@ export function resolvePromptMode(option?: string): PromptMode {
  * `systemPromptOptions.contextFiles` in the hook has no effect.
  */
 export function stripProjectContext(piSystemPrompt: string): string {
-  return piSystemPrompt.replace(/\n*<project_context>[\s\S]*?<\/project_context>\n?/g, '\n');
+  return stripTaggedBlocks(piSystemPrompt, 'project_context', () => true, true).trim();
 }
 
 /**
@@ -82,10 +70,68 @@ export function stripProjectContext(piSystemPrompt: string): string {
  * deterministic regardless of tool-set timing.
  */
 export function stripPiSkillsSection(piSystemPrompt: string): string {
-  return piSystemPrompt.replace(
-    /\n*The following skills provide specialized instructions for specific tasks\.[\s\S]*?<\/available_skills>\n?/g,
-    '\n',
-  );
+  return stripTaggedBlocks(
+    piSystemPrompt,
+    'available_skills',
+    (block) => /<skill(?:\s|>)/.test(block) && /<location(?:\s|>)/.test(block),
+    true,
+    true,
+  ).trim();
+}
+
+function stripTaggedBlocks(
+  source: string,
+  tag: string,
+  shouldStrip: (block: string) => boolean,
+  truncateMalformed: boolean,
+  includePrecedingParagraph = false,
+): string {
+  const open = `<${tag}>`;
+  const close = `</${tag}>`;
+  let cursor = 0;
+  let output = '';
+  for (;;) {
+    const start = source.indexOf(open, cursor);
+    if (start === -1) return `${output}${source.slice(cursor)}`;
+    let scan = start + open.length;
+    let depth = 1;
+    while (depth > 0) {
+      const nextOpen = source.indexOf(open, scan);
+      const nextClose = source.indexOf(close, scan);
+      if (nextClose === -1) {
+        const malformed = source.slice(start);
+        if (truncateMalformed && shouldStrip(malformed)) {
+          return `${output}${source.slice(cursor, paragraphStart(source, start, includePrecedingParagraph))}`.trimEnd();
+        }
+        return `${output}${source.slice(cursor)}`;
+      }
+      if (nextOpen !== -1 && nextOpen < nextClose) {
+        depth += 1;
+        scan = nextOpen + open.length;
+      } else {
+        depth -= 1;
+        scan = nextClose + close.length;
+      }
+    }
+    const block = source.slice(start, scan);
+    if (!shouldStrip(block)) {
+      output += source.slice(cursor, scan);
+      cursor = scan;
+      continue;
+    }
+    const removalStart = paragraphStart(source, start, includePrecedingParagraph);
+    output += source.slice(cursor, removalStart);
+    cursor = scan;
+    if (source[cursor] === '\n') cursor += 1;
+  }
+}
+
+function paragraphStart(source: string, blockStart: number, includePrecedingParagraph: boolean): number {
+  if (!includePrecedingParagraph) return blockStart;
+  const beforeBlock = source.lastIndexOf('\n\n', blockStart - 1);
+  if (beforeBlock === -1) return blockStart;
+  const beforeGuidance = source.lastIndexOf('\n\n', beforeBlock - 1);
+  return beforeGuidance === -1 ? beforeBlock + 2 : beforeGuidance + 2;
 }
 
 export function composeSystemPrompt(opts: {

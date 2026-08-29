@@ -40,6 +40,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { getOctocodeHome } from '../env.js';
+import { ensurePrivateDirectory } from '@octocodeai/octocode-awareness/mcp-state';
 
 const execFileAsync = promisify(execFile);
 
@@ -176,7 +177,8 @@ export async function initCheckpointStore(
     return stdout;
   };
 
-  await mkdir(gitDir, { recursive: true });
+    await mkdir(gitDir, { recursive: true, mode: 0o700 });
+    ensurePrivateDirectory(gitDir);
   // `git init` is idempotent on an existing repo; -c only affects fresh init.
   await git(['-c', 'init.defaultBranch=main', 'init', '--quiet']);
   // Respect the user repo's local excludes (read-only) in addition to the

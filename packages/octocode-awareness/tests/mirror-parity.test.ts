@@ -8,11 +8,6 @@ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(TEST_DIR, '..');
 const REPO_ROOT = resolve(PACKAGE_ROOT, '../..');
 
-// Retired names must stay in sync with build.mjs's retiredPackageSkills —
-// duplicated here (not imported) so this test still fails loudly if build.mjs
-// ever drops a skill without also retiring it, or vice versa.
-const RETIRED_PACKAGE_SKILLS = ['octocode-agent-communication', 'octocode-reflection'];
-
 // Discovered from package skills/ (not hardcoded) so every skill build.mjs
 // bundles is automatically covered by this parity test — adding a new skill
 // folder requires no test edits.
@@ -21,7 +16,7 @@ function discoverPackageSkills(): string[] {
   return readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
-    .filter((name) => name !== 'scripts' && !RETIRED_PACKAGE_SKILLS.includes(name))
+    .filter((name) => name !== 'scripts')
     .filter((name) => existsSync(resolve(skillsRoot, name, 'SKILL.md')))
     .sort();
 }
@@ -54,8 +49,8 @@ function listFiles(root: string): string[] {
 }
 
 describe('package-bundled skill mirrors', () => {
-  it('discovers the package-bundled awareness skill', () => {
-    expect(PACKAGE_SKILLS).toEqual(['octocode-awareness']);
+  it('discovers the package-bundled operating skills', () => {
+    expect(PACKAGE_SKILLS).toEqual(['octocode-awareness', 'octocode-orchestrator']);
   });
 
   for (const skill of PACKAGE_SKILLS) {

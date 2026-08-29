@@ -19,6 +19,7 @@ export interface ExternalPlanProjectionStep {
 export interface ExternalPlanProjectionInput {
   requestedScope: ExternalPlanScope;
   workspace: string;
+  sourceKind?: string;
   sourcePlanKey: string;
   awarenessPlanId?: string;
   title: string;
@@ -120,6 +121,7 @@ export function finalizeExternalPlan(input: { workspace: string; planId: string 
 /** Resolve or materialize an external host's execution plan in the shared ledger. */
 export function projectExternalPlan(input: ExternalPlanProjectionInput): ExternalPlanProjectionResult {
   if (input.requestedScope === 'session') return { scope: 'session', adopted: false };
+  const sourceKind = input.sourceKind?.trim() || 'external-agent';
   const aw = openAwarenessStore({ workspace: input.workspace });
   try {
     if (input.awarenessPlanId && input.steps.length > 0 && input.steps.every((step) => step.awarenessTaskId)) {
@@ -130,7 +132,7 @@ export function projectExternalPlan(input: ExternalPlanProjectionInput): Externa
         taskIdsByStepId[step.id] = task.taskId;
       }
       const plan = aw.getPlan(input.awarenessPlanId);
-      if (plan.sourceKind !== 'pi' || plan.sourceKey !== input.sourcePlanKey) {
+      if (plan.sourceKind !== sourceKind || plan.sourceKey !== input.sourcePlanKey) {
         return { scope: 'shared', adopted: true, awarenessPlanId: input.awarenessPlanId, taskIdsByStepId };
       }
     }
@@ -141,7 +143,7 @@ export function projectExternalPlan(input: ExternalPlanProjectionInput): Externa
     if (input.steps.length === 0) throw new Error('shared plan requires at least one execution step');
 
     const graph = aw.materializePlanGraph({
-      sourceKind: 'pi',
+      sourceKind,
       sourcePlanKey: input.sourcePlanKey,
       title: input.title,
       goal: input.goal,

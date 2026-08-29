@@ -1,5 +1,7 @@
 # Self-Reflection Dialogue
 
+Load when a fuzzy or risky decision benefits from structured challenge. Afterward, return to the main skill flow.
+
 Use role dialogue when an important, fuzzy, risky, or creative idea needs challenge. Skip routine edits, status checks, and obvious verification. For a real second agent, see `references/homeostatic-loop.md` (subagent rubber-duck section); loop closure lives in `references/learning-loop.md`.
 
 ## Pattern

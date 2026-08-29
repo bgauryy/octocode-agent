@@ -1,11 +1,13 @@
 import { resolve } from 'node:path';
 import { openAwarenessStore,type Lock } from './index.js';
+import type { AwarenessStorageScope } from '../storage-scope.js';
 
-export type HookHost = 'claude' | 'codex' | 'cursor' | 'pi' | 'generic';
+export type HookHost = 'claude' | 'codex' | 'copilot' | 'cursor' | 'gemini' | 'opencode' | 'pi' | 'generic';
 
 export interface PreEditHookOptions {
   workspace?: string;
   dbPath?: string;
+  scope?: AwarenessStorageScope;
   agentId: string;
   host?: HookHost;
   event?: unknown;
@@ -119,10 +121,11 @@ export function extractHookTargetPaths(event: unknown): string[] {
 export function checkLockConflicts(params: {
   workspace: string;
   dbPath?: string;
+  scope?: AwarenessStorageScope;
   agentId: string;
   files: string[];
 }): LockConflict[] {
-  const aw = openAwarenessStore({ workspace: params.workspace, dbPath: params.dbPath });
+  const aw = openAwarenessStore({ workspace: params.workspace, dbPath: params.dbPath, scope: params.scope });
   try {
     const targetSet = new Set(params.files.map((file) => resolve(params.workspace, file)));
     return aw.listLocks()
@@ -137,7 +140,7 @@ export function runPreEditLockGate(options: PreEditHookOptions): PreEditHookResu
   const workspace = resolve(options.workspace ?? process.cwd());
   const files = extractHookTargetPaths(options.event);
   const conflicts = files.length > 0
-    ? checkLockConflicts({ workspace, dbPath: options.dbPath, agentId: options.agentId, files })
+    ? checkLockConflicts({ workspace, dbPath: options.dbPath, scope: options.scope, agentId: options.agentId, files })
     : [];
   const blocked = conflicts.length > 0;
   return {

@@ -1,5 +1,6 @@
 import { octocodeDbPath } from '@octocodeai/octocode-shared/paths';
 import { randomUUID } from 'node:crypto';
+import { repoDatabasePath, type AwarenessStorageScope } from '../storage-scope.js';
 
 // ─── Full public surface for in-process external hosts ────────────────────────
 // Hosts that embed Awareness as a library instead of spawning the `cli.js`
@@ -26,6 +27,7 @@ MemoryItem,Plan,PlanGraphResult,PlanStatus,PruneResult,SourceStep,Task,TaskStatu
 export interface AwarenessOptions {
   workspace?: string;
   dbPath?: string;
+  scope?: AwarenessStorageScope;
 }
 
 export interface AwarenessSchema {
@@ -162,14 +164,11 @@ export function required(value: string | undefined | null, name: string): string
   return trimmed;
 }
 
-/**
- * The single shared local store: `~/.octocode/octocode.sqlite3`. Repos are no
- * longer isolated by file — every row carries `workspace_path` — so all repos
- * and the agent/session tables share one file. `workspace` is retained for the
- * signature (callers pass it) but the path is global.
- */
-export function defaultDbPath(_workspace: string): string {
-  return octocodeDbPath();
+/** Resolve shared coordination storage at repository or global level. */
+export function defaultDbPath(workspace: string, scope: AwarenessStorageScope = 'global'): string {
+  return scope === 'repo'
+    ? repoDatabasePath(workspace, 'octocode.sqlite3')
+    : octocodeDbPath();
 }
 
 export function planFromRow(row: PlanRow): Plan {

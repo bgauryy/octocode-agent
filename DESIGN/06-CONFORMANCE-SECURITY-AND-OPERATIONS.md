@@ -41,14 +41,17 @@ Do not erase session ancestry, request/effect correlation, containment-relevant 
 Every effect path must use the same ordered boundary:
 
 1. Normalize and validate input.
-2. Resolve trust and workspace scope.
-3. Check managed policy.
-4. Check plan and peer-lock constraints.
-5. Run blocking pre-effect hooks.
-6. Resolve approval requirements and obtain a decision.
-7. Register the effect with the ledger/ownership scope.
-8. Execute with cancellation and deadline propagation.
-9. Normalize, redact, persist, and emit the result.
+2. Resolve the canonical effect set.
+3. Run eligible context/rewrite hooks; after any rewrite, restart validation and effect resolution.
+4. Resolve trust/workspace scope and check managed policy.
+5. Check plan and peer-lock constraints.
+6. Run blocking decision hooks; after any rewrite, restart every prior gate.
+7. Resolve approval and bind it to the final input digest and effect set.
+8. Register the effect with the shared ledger and owned scope.
+9. Execute with cancellation and deadline propagation.
+10. Validate, redact, persist, and emit the result.
+
+Hook execution itself passes source-trust, authority, timeout, and effect checks. A hook cannot gain authority merely because it participates in this boundary.
 
 No CLI, RPC, plugin, hook, retry, migration, resume, or internal helper may call an effect port around this boundary.
 
@@ -71,7 +74,7 @@ Diagnostics must be useful without containing prompts, credentials, raw environm
 
 - Native is enabled for an explicit cohort and can be disabled immediately.
 - Error, cancellation, terminal-restoration, session-recovery, and mismatch thresholds are defined before rollout.
-- Rollback preserves session data and returns users to a functioning Pi path.
+- Rollback preserves session data and returns users to the frozen Pi oracle only during the declared comparison window; the final native-only release rolls back to the prior native artifact.
 
 ### Native default
 
@@ -80,11 +83,12 @@ Diagnostics must be useful without containing prompts, credentials, raw environm
 - No critical/high conformance or security mismatch remains.
 - Rollback has been exercised against the release artifact.
 
-### Pi removal
+### Complete Pi retirement
 
 - Native default has completed its observation window.
-- The compatibility selector and rollback artifact remain available for the declared rollback window.
-- Pi package dependencies, launch code, documentation, tests, and configuration are removed together.
+- The `pi|shadow|native` selector and frozen Pi artifact remain available only for the declared comparison and rollback window.
+- After that window, native Pi-host dependencies, fallback launch code, compatibility configuration, `@octocodeai/pi-extension`, its Pi dependencies, and live Pi-version workflows are removed together.
+- Immutable redacted parity fixtures and signed receipts may remain; no installed, published, selectable, or supported Pi product path may remain.
 - A clean install and upgrade from the previous supported release both pass.
 
 ## Mandatory scenarios

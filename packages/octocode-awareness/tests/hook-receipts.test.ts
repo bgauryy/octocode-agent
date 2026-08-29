@@ -68,8 +68,10 @@ hooks:
   Stop: stop-verify
   SubagentStop: stop-verify
   PreCompact: session-compact
+  PostCompact: session-compact
   SessionEnd: session-end
   UserPromptSubmit: notify-deliver
+  Notification: notify-deliver
 ---
 # Awareness
 `);
@@ -82,7 +84,7 @@ hooks:
 
     try {
       const checked = runHooksInstall([
-        '--host', 'claude', '--project-dir', projectDir, '--check', '--strict', '--compact',
+        '--host', 'claude', '--profile', 'full', '--project-dir', projectDir, '--check', '--strict', '--compact',
       ], { cwd: projectDir, hookDir, dbPath });
       expect(checked.exitCode).toBe(0);
       expect(checked.payload).toMatchObject({
@@ -90,7 +92,7 @@ hooks:
         surface: 'skill_frontmatter',
         health: {
           definition: 'ready', config: 'not_required', activation: 'unverified',
-          runtime: 'observed', coverage: '1/9',
+          runtime: 'observed', coverage: '1/11',
         },
       });
       expect(Buffer.byteLength(JSON.stringify(checked.payload), 'utf8')).toBeLessThanOrEqual(256);

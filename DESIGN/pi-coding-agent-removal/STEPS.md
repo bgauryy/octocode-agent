@@ -11,7 +11,7 @@ Each step has a primary specification, required supporting documents, an output,
 **References:** `RFC.md` §Goals and non-goals, §Package boundaries, and §Resolved and unresolved questions; `READINESS_AND_FEATURE_MATRIX.md` §Executive rating, §Critical blockers, and §Complete target feature inventory; `IMPACT.md`; `RESOURCES.md`.
 
 - [x] Confirm `packages/octocode-agent-core/` ownership and one-way dependencies. Evidence: `evidence/stage-0-approval-record.md` and `evidence/implementation-run-2026-08-27-b7a3b42.md`.
-- [x] Confirm native `octocode-agent` removes Pi while `@octocodeai/pi-extension` remains supported. Evidence: the same receipts; transitive packaging proof remains a later gate.
+- [x] Confirm native `octocode-agent` removes Pi while `@octocodeai/pi-extension` remains only as a bounded migration oracle pending final deletion. Earlier receipts preserve the prior decision; the 2026-08-28 RFC audit owns the updated end state.
 - [x] Name runtime, session, terminal, security, release, and rollback owners. Evidence: `evidence/stage-0-approval-record.md`.
 - [x] Record owners and unresolved-question triggers in the RFC review receipt. Evidence: `evidence/stage-0-approval-record.md`.
 
@@ -43,6 +43,8 @@ Each step has a primary specification, required supporting documents, an output,
 - [ ] Measure startup, first frame, frame duration, RSS, streaming, resize, and shutdown.
 - [ ] Record the exact OpenTUI version and accepted runtime/packaging decision.
 
+Current partial evidence: [the 2026-08-28 real runtime surface evaluation](evidence/real-runtime-surface-eval-2026-08-28.md) records one macOS/Node 26 experimental-FFI exact-restoration PTY pass. Step 2 remains unchecked until the clean package, performance, accessibility, and supported-platform requirements above pass.
+
 **Output:** OpenTUI compatibility and packaging receipt.
 
 **Stop when:** neither upstream-supported runtime route satisfies repository release requirements.
@@ -55,7 +57,7 @@ Each step has a primary specification, required supporting documents, an output,
 - [x] Implement canonical runtime, lifecycle, tool, command, session, model, RPC, UI, process, policy, and transcript contracts. Dirty-tree evidence: `evidence/implementation-run-2026-08-27-b7a3b42.md`; production wiring and gate acceptance remain pending.
 - [ ] Choose one schema/type source of truth and add deterministic drift checks.
 - [x] Prove agent core imports no launcher, Pi extension, Pi package, or terminal toolkit. Focused boundary/static evidence: `evidence/implementation-run-2026-08-27-b7a3b42.md`.
-- [x] Make the supported Pi extension import and map the canonical contracts. Adapter source and focused test evidence: `evidence/implementation-run-2026-08-27-b7a3b42.md`; the full extension gate is still failing.
+- [x] Make the frozen Pi oracle import and map the canonical contracts. Adapter source and focused test evidence: `evidence/implementation-run-2026-08-27-b7a3b42.md`; the full oracle comparison gate is still failing.
 
 **Output:** agent-core contract package and dual-host contract report.
 
@@ -123,12 +125,17 @@ Each step has a primary specification, required supporting documents, an output,
 
 **References:** `SETTINGS_WEB_UI.md`; `HOOKS_AND_PLUGINS.md` §Settings HTML integration; `SCHEMAS_AND_TYPES.md` settings/model/hook/plugin contracts; `IMPLEMENTATION.md` Phase 5; `TEST_PLAN.md` settings and models suites; `KPI.md` settings completeness, safety, and zero-duplicate-writer gates; `IMPACT.md` configuration and security impacts.
 
+Progress: runtime model selection and the native page share a core-backed service,
+and the page exposes protected theme/default-model mutations plus read-only extension
+state. CLI writers, model sources, automation, the Pi projection, and the complete
+section/action inventory remain open.
+
 - [ ] Freeze the current eight settings sections, 11 mutation actions, security behavior, output path, LSP callers, and HTML tests.
 - [ ] Implement agent-core `SettingsRegistry`, `SettingsService`, model catalog contracts, provenance, precedence, revisions, and redacted projections.
 - [ ] Generalize the existing MCP-named HTML implementation into the single `settings.html` control center.
 - [ ] Add Overview, Appearance, Models, Hooks, Plugins, and Diagnostics while preserving Commands, MCP, Discovery, Agent context, Skills, and Overrides.
 - [ ] Implement `/settings models`, effective catalog/default-model controls, structured provider/model editing, source provenance, refresh, semantic diff, and validated advanced `models.json` editing.
-- [ ] Move launcher config commands and supported Pi-extension settings onto the same service.
+- [ ] Move launcher config commands and temporary Pi-oracle settings projections onto the same service.
 - [ ] Prove atomic writes, conflict handling, rollback, legacy Pi source compatibility, CSP/origin/token/trust/path protections, and zero secret exposure.
 - [ ] Use AST/LSP to remove duplicate direct settings writers after all consumers migrate.
 
@@ -145,7 +152,7 @@ Each step has a primary specification, required supporting documents, an output,
 - [x] Keep print, JSON, RPC, and headless modes free of OpenTUI initialization. Focused transport/launcher tests: `evidence/implementation-run-2026-08-27-b7a3b42.md`; the complete mode matrix remains pending.
 - [ ] Run projection tests, `@opentui/core/testing` integration, golden frames, and real PTY/platform tests.
 - [ ] Prove terminal restoration, accessibility decisions, protocol purity, and parity for every critical interaction.
-- [ ] Remove native `pi-tui` use after OpenTUI gates pass; do not change the supported Pi extension's host UI mapping.
+- [ ] Remove native `pi-tui` use after OpenTUI gates pass; keep the frozen oracle mapping stable until final deletion.
 
 **Output:** OpenTUI parity, accessibility, performance, and restoration receipt.
 
@@ -170,9 +177,9 @@ Each step has a primary specification, required supporting documents, an output,
 
 - [x] Remove native Pi SDK loading, resolution, subprocess fallback, RPC types, helpers, and native `pi-tui` use. Dirty-tree source/direct-manifest/built-JS evidence: `evidence/implementation-run-2026-08-27-b7a3b42.md`; transitive package and release gates remain open.
 - [ ] Run text, AST, LSP, manifest, lockfile, dependency-tree, and built-artifact absence proofs.
-- [ ] Classify all remaining Pi references as supported Pi-extension adapter references.
+- [ ] Classify all remaining Pi references as temporary oracle code or immutable historical evidence.
 - [ ] Rebuild and run the complete real CLI, MCP, skill, interactive OpenTUI, print, JSON, RPC, and session-import matrix.
-- [ ] Retain and test the Pi extension's declared Pi-version matrix.
+- [ ] Freeze and test the Pi oracle's declared version matrix for the comparison window.
 
 **Output:** zero-native-Pi evidence and release candidate receipt.
 
@@ -183,10 +190,10 @@ Each step has a primary specification, required supporting documents, an output,
 **References:** `RFC.md` final-removal conditions; `IMPLEMENTATION.md` Phase 7; `MIGRATION_STAGES.md` cross-stage rules; `KPI.md` adoption/observation rule; `IMPACT.md` operational ownership.
 
 - [ ] Complete the approved observation window and adoption threshold.
-- [ ] Remove the native host selector and rollback adapter.
+- [ ] Remove the host selector, Pi extension package, Pi dependencies, publication path, live compatibility matrix, and product documentation.
 - [ ] Archive redacted fixtures and receipts required for regression testing.
 - [ ] Update ownership documentation and follow-up RFC references.
-- [ ] Preserve `@octocodeai/pi-extension` unless a separate accepted RFC changes that product decision.
+- [ ] Prove no installed, published, selectable, documented-as-live, or supported Pi path remains; preserve only immutable redacted fixtures and signed receipts.
 
 **Output:** final signed migration closure receipt.
 
@@ -194,4 +201,4 @@ Each step has a primary specification, required supporting documents, an output,
 
 ## Completion rule
 
-The migration is complete only when Steps 0-12 are checked with evidence and every referenced document's gate passes. Native agent/core and native terminal artifacts must contain no Pi dependency, the OpenTUI terminal must pass the supported platform matrix, Codex-compatible hooks and event-driven plugins must pass their trust/security/lifecycle gates, the unified `settings.html` page must cover every supported setting including Models/`models.json`, Hooks, and Plugins, and the supported Pi extension must pass its declared compatibility matrix.
+The migration is complete only when Steps 0-12 are checked with evidence and every referenced document's gate passes. Native agent/core and native terminal artifacts must contain no Pi dependency, the OpenTUI terminal must pass the supported platform matrix, Codex-compatible hooks and event-driven plugins must pass their trust/security/lifecycle gates, the unified `settings.html` page must cover every supported setting including Models/`models.json`, Hooks, and Plugins, the frozen Pi oracle must have completed its comparison window, and no live Pi package, selector, workflow, or supported product path may remain.

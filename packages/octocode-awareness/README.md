@@ -11,25 +11,30 @@ One local communication and coordination layer for coding agents sharing a works
 Requires Node 22.13 or newer.
 
 ```bash
-npx @octocodeai/octocode-awareness config show --compact
+npx @octocodeai/octocode-awareness setup --compact
+npx @octocodeai/octocode-awareness next --workspace "$PWD"
+```
+
+`setup` defaults to repository coordination and global memory. CLI use needs no global
+configuration; configure it only for shell hooks. See [configuration](docs/CONFIGURATION.md).
+For the optional advanced store:
+
+```bash
 npx @octocodeai/octocode-awareness init --compact
 ```
 
-If configuration is missing, the skill asks all five questions together, waits,
-creates the file, and validates it before use. See [configuration](docs/CONFIGURATION.md).
-The host or package manager owns skill installation; `init` is repeatable.
-The package bundles only the Awareness skill.
+The package manager owns skill installation. This package bundles only Awareness.
 
 ## One shared external-agent surface
 
-Every agent can use the package runner. Hosts that integrate in-process import the
-same package contracts:
+In-process hosts import the same package contracts:
 
 ```bash
-npx @octocodeai/octocode-awareness status --workspace "$PWD"
-npx @octocodeai/octocode-awareness guide --json
-npx @octocodeai/octocode-awareness instructions export --format agents-md
-npx @octocodeai/octocode-awareness coordination schema commands
+npx @octocodeai/octocode-awareness setup --compact
+npx @octocodeai/octocode-awareness next --workspace "$PWD"
+npx @octocodeai/octocode-awareness inspect workboard --workspace "$PWD"
+npx @octocodeai/octocode-awareness verify --workspace "$PWD"
+npx @octocodeai/octocode-awareness close --run-id <id> --workspace "$PWD"
 ```
 
 In-process hosts import the same contracts instead of recreating policy, flags, or JSON adapters:
@@ -51,7 +56,10 @@ import {
 Callers own prompt injection or `AGENTS.md` replacement and should replace the
 marked block rather than append duplicates.
 
-Both use the workspace-scoped shared database at `~/.octocode/octocode.sqlite3`, overridden by `OCTOCODE_HOME` or `OCTOCODE_DB_PATH`. The workspace `.octocode/` directory is for authored plans, handoffs, and `.octocode/REFLECT.md`; it is not the database. `~/.octocode/` is global Octocode home state.
+Workspace policy stores repository coordination under `<workspace>/.octocode/` and keeps
+reusable memory global by default. Configure it with `setup --repository-scope repo|global
+--memory-scope repo|global --hook-profile guard|coordination|full`. `--db-scope` is a
+one-call override and `--db` selects an explicit path. See [storage scopes](docs/STORAGE_SCOPES.md).
 
 The same root binary also exposes reflection, query, session, digest, and maintenance workflows. Shared-ledger verbs use `coordination` when a name would otherwise be ambiguous.
 
@@ -59,9 +67,9 @@ Host hook installation is optional and separately approval-gated. Preview the ex
 project change, ask the user immediately before mutation, then install and verify:
 
 ```bash
-npx @octocodeai/octocode-awareness hooks install --host <claude|codex|cursor> --project-dir . --dry-run
-npx @octocodeai/octocode-awareness hooks install --host <claude|codex|cursor> --project-dir . --compact
-npx @octocodeai/octocode-awareness hooks check --host <claude|codex|cursor> --project-dir . --strict
+npx @octocodeai/octocode-awareness hooks install --host <claude|codex|copilot|cursor|gemini|opencode> --profile coordination --project-dir . --dry-run
+npx @octocodeai/octocode-awareness hooks install --host <claude|codex|copilot|cursor|gemini|opencode> --profile coordination --project-dir . --compact
+npx @octocodeai/octocode-awareness hooks check --host <claude|codex|copilot|cursor|gemini|opencode> --project-dir . --strict
 ```
 
 ## Feature inventory

@@ -1,19 +1,19 @@
 # Awareness databases
 
-Awareness currently exposes two explicit local SQLite planes. Shared coordination
-uses the workspace-scoped `octocode.sqlite3` resolved by
-`@octocodeai/octocode-shared/paths` (`OCTOCODE_HOME` / `OCTOCODE_DB_PATH`). Advanced
-workflow commands use `$OCTOCODE_MEMORY_HOME/awareness.sqlite3`, or the platform
-memory-home path resolved by `src/db-runtime.ts`; `--db` overrides that path.
+Awareness exposes two explicit local SQLite planes and two storage levels. Shared
+coordination uses `octocode.sqlite3`; advanced workflow uses the OCT1
+`awareness.sqlite3`. `--db-scope repo|global` selects the level, and `--db` overrides
+the resulting path. [STORAGE_SCOPES.md](STORAGE_SCOPES.md) owns the placement decision,
+feature guidance, compatibility behavior, and rollback procedure.
 
 Do not substitute similarly named commands or database overrides across the planes.
 The shared store deliberately co-locates coordination, continuity, control, and
 advanced-compatible auxiliary relations. The advanced OCT1 store remains the strict
 contract for `attend`, runs, signals, reflection, maintenance, and query exports.
 
-`<workspace>/.octocode/` is not the database. It holds optional read-only query
-exports written on request for readers that cannot query Awareness directly, plus
-authored plan narrative. SQLite remains authoritative.
+At repository level, `<workspace>/.octocode/` holds the two database files alongside
+optional read-only query exports and authored plan narrative. Ignore SQLite files and
+sidecars without ignoring authored documents. SQLite remains authoritative.
 
 ## Shared-store contract
 

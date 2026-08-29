@@ -2,7 +2,7 @@
  * Native Octocode settings filesystem adapter.
  */
 import path from 'node:path';
-import { getOctocodeHome } from './utils.js';
+import { getOctocodeHome } from '@octocodeai/octocode-shared/paths';
 import { FileSettingsStorage } from './native-settings.js';
 
 export function agentDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -22,14 +22,6 @@ export function readSettings(dir: string): Record<string, unknown> {
   } catch {
     return {};
   }
-}
-
-/** Persist defaultProvider+defaultModel without clobbering other settings. */
-export function setDefaultModelInSettings(dir: string, provider: string, modelId: string): string {
-  const data = readSettings(dir);
-  data['defaultProvider'] = provider;
-  data['defaultModel'] = modelId;
-  return writeSettings(dir, data);
 }
 
 // ── Generic settings surface (config get|set|list) ──────────────────────────────
@@ -56,13 +48,6 @@ export function getSetting(dir: string, key: string): unknown {
   return readSettings(dir)[key];
 }
 
-/** Write one allowlisted key without clobbering other settings. Returns the file. */
-export function setSetting(dir: string, key: AllowedConfigKey, value: string): string {
-  const data = readSettings(dir);
-  data[key] = value;
-  return writeSettings(dir, data);
-}
-
 /**
  * Write a settings default only when the key is absent. Returns true when the
  * value was written. Use narrower helpers when a key needs value validation.
@@ -87,9 +72,14 @@ export function ensureOctocodeThemeSetting(dir: string): boolean {
   return true;
 }
 
-/** Full settings doc for diagnostics / `config list`. */
+/** Public allowlisted settings projection for diagnostics and `config list`. */
 export function listSettings(dir: string): Record<string, unknown> {
-  return readSettings(dir);
+  const stored = readSettings(dir);
+  return Object.fromEntries(
+    ALLOWED_CONFIG_KEYS
+      .filter((key) => stored[key] !== undefined)
+      .map((key) => [key, stored[key]]),
+  );
 }
 
 /** Current default "provider/model" selection; null when unset. */

@@ -1,0 +1,399 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  createInitialPresentationState,
+  reducePresentation,
+  type PresentationState,
+} from '../src/terminal/opentui/presentation.js';
+import { SemanticWidgetController } from '../src/terminal/opentui/widget-controller.js';
+import { ConfirmWidget } from '../src/terminal/opentui/widgets/confirm.js';
+import {
+  type WidgetContract,
+  type WidgetRenderAdapter,
+  type WidgetRenderState,
+} from '../src/terminal/opentui/widgets/contracts.js';
+import { PromptInputWidget } from '../src/terminal/opentui/widgets/prompt-input.js';
+import { SelectWidget } from '../src/terminal/opentui/widgets/select.js';
+
+class RecordingAdapter implements WidgetRenderAdapter {
+  readonly states = new Map<string, WidgetRenderState>();
+  readonly destroyed: string[] = [];
+  binding?: { generation: number; widget: WidgetContract };
+  focusedId?: string;
+  readonly navigation: { id: string; key: string; offset?: number }[] = [];
+
+  render(state: WidgetRenderState): void {
+    this.states.set(state.id, state);
+  }
+
+  destroy(widgetId: string): void {
+    this.destroyed.push(widgetId);
+    this.states.delete(widgetId);
+  }
+
+  bindInteraction(generation: number | undefined, widget: WidgetContract | undefined): void {
+    this.binding = generation === undefined || widget === undefined ? undefined : { generation, widget };
+  }
+
+  focusWidget(widgetId: string | undefined): void {
+    this.focusedId = widgetId;
+  }
+
+  navigateWidget(widgetId: string, key: string, absoluteOffset?: number): void {
+    this.navigation.push({ id: widgetId, key, ...(absoluteOffset === undefined ? {} : { offset: absoluteOffset }) });
+  }
+}
+
+function withRuntimeWidgets(state: PresentationState): PresentationState {
+  return reducePresentation(state, {
+    type: 'runtime-widgets-changed',
+    snapshots: {
+      header: {
+        authority: 'runtime',
+        title: 'Octocode',
+        trust: 'trusted',
+        working: 'active',
+        width: 80,
+        sessionId: 'session-1',
+        modelId: 'model-1',
+      },
+      footer: {
+        authority: 'runtime',
+        activeMode: 'agent',
+        connection: 'connected',
+        widthColumns: 80,
+        keyHints: [{ key: 'Ctrl-C', label: 'cancel', priority: 1 }],
+      },
+      plan: {
+        authority: 'runtime',
+        planId: 'plan-1',
+        scope: { sessionId: 'session-1', workspace: '/workspace' },
+        revision: 1,
+        phase: 'active',
+        steps: [{ id: 'step-1', text: 'Test widgets', status: 'doing' }],
+      },
+      statusNotifications: [{
+        authority: 'runtime',
+        slot: 'agent',
+        id: 'run-1',
+        message: 'Agent is working',
+        lifecycle: 'active',
+      }],
+    },
+  });
+}
+
+describe('SemanticWidgetController', () => {
+  it('projects transcript, tools, and only runtime-authoritative chrome snapshots', () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter, { widthColumns: 80, heightRows: 24, reducedMotion: true });
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: 'message-started', messageId: 'message-1', role: 'assistant', turnId: 'turn-1',
+    });
+    state = reducePresentation(state, { type: 'message-delta', messageId: 'message-1', text: 'Hello' });
+    state = reducePresentation(state, { type: 'tool-started', callId: 'call-1', name: 'localSearchCode' });
+    controller.render(state);
+
+    expect([...adapter.states.values()].map(({ kind }) => kind)).toEqual(['transcript', 'tool.progress']);
+    expect([...adapter.states.values()].some(({ kind }) => kind === 'header')).toBe(false);
+
+    controller.render(withRuntimeWidgets(state));
+    expect(new Set([...adapter.states.values()].map(({ kind }) => kind))).toEqual(new Set([
+      'transcript', 'tool.progress', 'header', 'footer', 'plan', 'status.notifications',
+    ]));
+    expect(controller.alternateOutput()).toContain('Octocode');
+    expect(controller.alternateOutput()).toContain('Hello');
+    expect(controller.alternateOutput()).toContain('Agent is working');
+  });
+
+  it('projects every typed surface without inferring trusted chrome, and merges every status source', () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter);
+    let state = createInitialPresentationState();
+    for (const value of [
+      { id: 'text', kind: 'text', text: 'Generic text' },
+      { id: 'list', kind: 'list', title: 'Choices', items: ['One', 'Two'] },
+      { id: 'facts', kind: 'key-value', rows: [{ label: 'Model', value: 'native' }] },
+      { id: 'progress', kind: 'progress', label: 'Checks', current: 2, total: 3 },
+    ]) {
+      state = reducePresentation(state, { type: 'presentation-changed', property: 'widget', value });
+    }
+    state = reducePresentation(state, { type: 'status-changed', name: 'model', text: 'ready' });
+    state = reducePresentation(state, { type: 'notification', severity: 'error', message: 'Provider failed' });
+    state = reducePresentation(state, {
+      type: 'runtime-widgets-changed',
+      snapshots: {
+        statusNotifications: [{
+          authority: 'runtime', slot: 'agent', id: 'structured', message: 'Structured remains', lifecycle: 'success',
+        }],
+      },
+    });
+
+    controller.render(state);
+    expect([...adapter.states.values()].filter(({ kind }) => kind === 'presentation-surface')).toHaveLength(4);
+    expect([...adapter.states.values()].some(({ kind }) => kind === 'header' || kind === 'footer')).toBe(false);
+    const alternate = controller.alternateOutput();
+    expect(alternate).toContain('Generic text');
+    expect(alternate).toContain('model: ready');
+    expect(alternate).toContain('Provider failed');
+    expect(alternate).toContain('Structured remains');
+    expect(controller.drainAnnouncements()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ text: 'ERROR: Provider failed', politeness: 'assertive' }),
+      expect.objectContaining({ text: 'SUCCESS: Structured remains', politeness: 'polite' }),
+    ]));
+  });
+
+  it('focuses and navigates every read-only surface, preserves plan position, and resizes chrome from the viewport', () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter, { widthColumns: 80, heightRows: 14 });
+    let state = withRuntimeWidgets(createInitialPresentationState());
+    state = reducePresentation(state, {
+      type: 'presentation-changed', property: 'widget',
+      value: { id: 'notes', kind: 'list', items: Array.from({ length: 12 }, (_, index) => `Item ${index + 1}`) },
+    });
+    controller.render(state);
+    const ids = controller.getFocusableWidgetIds();
+    expect(ids).toHaveLength(4);
+    for (const id of ids) {
+      expect(controller.focusWidget(id)).toBe(true);
+      expect(adapter.states.get(id)?.focused).toBe(true);
+      controller.handleFocusedNavigation('end');
+    }
+    expect(adapter.navigation.map(({ id }) => id)).toEqual(ids);
+    const planId = ids.find((id) => adapter.states.get(id)?.kind === 'plan')!;
+    const planBefore = adapter.states.get(planId)?.revision;
+    controller.resize({ widthColumns: 32, heightRows: 12, reducedMotion: true });
+    expect(adapter.states.get('header')?.regions[0]?.text.length).toBeLessThanOrEqual(32);
+    expect(adapter.states.get('footer')?.regions.every(({ text }) => text.length <= 32)).toBe(true);
+    expect(adapter.states.get(planId)?.revision).toBeGreaterThan(planBefore ?? 0);
+    controller.focusWidget(undefined);
+    expect(adapter.focusedId).toBeUndefined();
+  });
+
+  it('replaces each interaction by generation and uses every interactive widget class', () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter);
+    let state = createInitialPresentationState();
+    const requests = [
+      { type: 'confirm' as const, message: 'Proceed with the requested action?' },
+      { type: 'select' as const, message: 'Choose an option', options: ['Alpha', 'Beta'] },
+      { type: 'input' as const, message: 'Provide a name', initial: 'Ada' },
+      { type: 'editor' as const, initial: 'Line one' },
+    ];
+    const expectedKinds = ['confirm', 'prompt.select', 'prompt.input', 'prompt.editor'];
+
+    requests.forEach((request, index) => {
+      state = reducePresentation(state, { type: 'interaction-requested', request });
+      controller.render(state);
+      expect(state.interaction?.generation).toBe(index + 1);
+      expect([...adapter.states.values()].some(({ kind }) => kind === expectedKinds[index])).toBe(true);
+    });
+
+    expect(adapter.destroyed).toEqual(expect.arrayContaining([
+      'interaction-1', 'interaction-2', 'interaction-3',
+    ]));
+    controller.destroy();
+    expect(adapter.states.size).toBe(0);
+  });
+
+  it('routes native changes and submits through typed widget intents while stale generations no-op', () => {
+    const adapter = new RecordingAdapter();
+    const resolutions: unknown[] = [];
+    const controller = new SemanticWidgetController(adapter, undefined, {
+      resolveInteraction: (generation, result) => resolutions.push({ generation, result }),
+      interactionWidgetFactory: (interaction) => new PromptInputWidget({
+        id: `interaction-${interaction.generation}`,
+        question: 'Lowercase name',
+        required: true,
+        maxLength: 5,
+        pattern: /^[a-z]+$/u,
+        patternDescription: 'Use lowercase letters only.',
+      }),
+    });
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: 'interaction-requested', request: { type: 'input', message: 'Lowercase name' },
+    });
+    controller.render(state);
+
+    controller.handleNativeInteraction(1, { type: 'input-submit', value: '' });
+    expect(adapter.states.get('interaction-1')?.regions).toContainEqual(expect.objectContaining({
+      id: 'validation', text: 'A value is required.',
+    }));
+    controller.handleNativeInteraction(1, { type: 'input-submit', value: 'ABC' });
+    expect(adapter.states.get('interaction-1')?.regions).toContainEqual(expect.objectContaining({
+      id: 'validation', text: 'Use lowercase letters only.',
+    }));
+    controller.handleNativeInteraction(1, { type: 'input-change', value: 'abcdef' });
+    expect(adapter.states.get('interaction-1')?.regions).toContainEqual(expect.objectContaining({
+      id: 'validation', text: 'Enter no more than 5 characters.',
+    }));
+    controller.handleNativeInteraction(0, { type: 'input-submit', value: 'stale' });
+    controller.handleNativeInteraction(1, { type: 'input-change', value: 'ada' });
+    expect(resolutions).toEqual([]);
+    controller.handleNativeInteraction(1, { type: 'input-submit', value: 'ada' });
+    expect(resolutions).toEqual([{ generation: 1, result: { status: 'accepted', value: 'ada' } }]);
+  });
+
+  it('uses stable select IDs for all options, rejects disabled choices, and confirms through typed intents', () => {
+    const adapter = new RecordingAdapter();
+    const resolutions: unknown[] = [];
+    let mode: 'select' | 'confirm' = 'select';
+    const controller = new SemanticWidgetController(adapter, undefined, {
+      resolveInteraction: (generation, result) => resolutions.push({ generation, result }),
+      interactionWidgetFactory: (interaction) => mode === 'select'
+        ? new SelectWidget({
+          id: `interaction-${interaction.generation}`,
+          label: 'Choose',
+          consequential: true,
+          options: Array.from({ length: 12 }, (_, index) => ({
+            id: `choice-${index + 1}`,
+            label: `Option ${index + 1}`,
+            ...(index === 9 ? { disabledReason: 'Unavailable' } : {}),
+          })),
+        })
+        : new ConfirmWidget({
+          id: `interaction-${interaction.generation}`,
+          authority: 'runtime',
+          question: 'Proceed?',
+          consequence: 'Runs the action once.',
+        }),
+    });
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: 'interaction-requested',
+      request: { type: 'select', message: 'Choose', options: Array.from({ length: 12 }, (_, index) => `Option ${index + 1}`) },
+    });
+    controller.render(state);
+    expect((adapter.binding?.widget as SelectWidget).nativeOptions).toHaveLength(12);
+    controller.handleNativeInteraction(1, { type: 'select-submit', optionId: 'choice-10' });
+    expect(resolutions).toEqual([]);
+    controller.handleNativeInteraction(1, { type: 'select-submit', optionId: 'choice-12' });
+    expect(resolutions).toEqual([{ generation: 1, result: { status: 'accepted', value: 'Option 12' } }]);
+
+    mode = 'confirm';
+    state = reducePresentation(state, { type: 'interaction-resolved', generation: 1, result: { status: 'cancelled' } });
+    state = reducePresentation(state, { type: 'interaction-requested', request: { type: 'confirm', message: 'Proceed?' } });
+    controller.render(state);
+    controller.handleNativeInteraction(2, { type: 'confirm-submit', index: 0 });
+    expect(resolutions.at(-1)).toEqual({ generation: 2, result: { status: 'accepted', value: true } });
+  });
+
+  it('fails closed for status actions without a host sink and dispatches validated actions asynchronously when enabled', async () => {
+    const snapshots = {
+      statusNotifications: [{
+        authority: 'runtime' as const,
+        slot: 'system' as const,
+        id: 'retry-provider',
+        message: 'Provider connection failed',
+        lifecycle: 'error' as const,
+        action: { id: 'retry', label: 'Retry connection' },
+      }],
+    };
+    const state = reducePresentation(createInitialPresentationState(), {
+      type: 'runtime-widgets-changed', snapshots,
+    });
+
+    const closedAdapter = new RecordingAdapter();
+    const closed = new SemanticWidgetController(closedAdapter);
+    closed.render(state);
+    expect(closed.alternateOutput()).not.toContain('Retry connection');
+    expect(closedAdapter.states.get('status-notifications')?.regions.join(' ')).not.toContain('Retry connection');
+    expect(closed.focusWidget('status-notifications')).toBe(true);
+    expect(closed.handleFocusedNavigation('enter')).toBe(true);
+
+    const actions: unknown[] = [];
+    const enabled = new SemanticWidgetController(new RecordingAdapter(), undefined, {
+      statusAction: (invocation) => actions.push(invocation),
+    });
+    enabled.render(state);
+    expect(enabled.alternateOutput()).toContain('Retry connection');
+    expect(enabled.focusWidget('status-notifications')).toBe(true);
+    expect(enabled.handleFocusedNavigation('enter')).toBe(true);
+    expect(actions).toEqual([]);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(actions).toEqual([{
+      key: 'system:retry-provider',
+      action: { id: 'retry', label: 'Retry connection' },
+    }]);
+  });
+
+  it('announces each interaction and validation once without exposing the input buffer', () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter, undefined, {
+      interactionWidgetFactory: (interaction) => new PromptInputWidget({
+        id: `interaction-${interaction.generation}`,
+        question: 'API token',
+        help: 'Enter the required credential.',
+        required: true,
+      }),
+    });
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: 'interaction-requested', request: { type: 'confirm', message: 'Delete the session?' },
+    });
+    const confirmController = new SemanticWidgetController(new RecordingAdapter());
+    confirmController.render(state);
+    expect(confirmController.drainAnnouncements()).toContainEqual(expect.objectContaining({
+      source: 'interaction:interaction-1', politeness: 'assertive',
+    }));
+    expect(confirmController.drainAnnouncements()).toEqual([]);
+
+    state = reducePresentation(createInitialPresentationState(), {
+      type: 'interaction-requested', request: { type: 'input', message: 'API token', initial: 'secret-buffer-value' },
+    });
+    controller.render(state);
+    const prompt = controller.drainAnnouncements();
+    expect(prompt).toContainEqual(expect.objectContaining({
+      source: 'interaction:interaction-1', politeness: 'polite', text: 'API token. Enter the required credential.',
+    }));
+    expect(JSON.stringify(prompt)).not.toContain('secret-buffer-value');
+    controller.handleNativeInteraction(1, { type: 'input-submit', value: '' });
+    controller.handleNativeInteraction(1, { type: 'input-submit', value: '' });
+    expect(controller.drainAnnouncements().filter(({ source }) => source.endsWith(':validation'))).toEqual([{
+      source: 'interaction:interaction-1:validation',
+      politeness: 'polite',
+      text: 'A value is required.',
+    }]);
+    expect(controller.drainAnnouncements()).toEqual([]);
+  });
+
+  it('uses the injected clock to throttle material tool progress announcements', () => {
+    const ticks = [1_000, 2_000, 2_600];
+    const controller = new SemanticWidgetController(new RecordingAdapter(), undefined, {
+      nowMs: () => ticks.shift() ?? 2_600,
+    });
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: 'tool-started', callId: 'call-clock', name: 'clockedTool', input: 'safe input',
+    });
+    controller.render(state);
+    expect(controller.drainAnnouncements()).toContainEqual(expect.objectContaining({
+      source: 'tool:call-clock', text: expect.stringContaining('started'),
+    }));
+
+    state = reducePresentation(state, {
+      type: 'tool-updated', callId: 'call-clock', current: 4, total: 100,
+    });
+    controller.render(state);
+    expect(controller.drainAnnouncements()).toEqual([]);
+    state = reducePresentation(state, {
+      type: 'tool-updated', callId: 'call-clock', current: 10, total: 100,
+    });
+    controller.render(state);
+    expect(controller.drainAnnouncements()).toContainEqual(expect.objectContaining({
+      source: 'tool:call-clock', text: 'Tool clockedTool progress: 10/100 (call-clock).',
+    }));
+  });
+
+  it('uses the injected wall clock for status timestamps', () => {
+    const timestamp = Date.UTC(2026, 7, 28, 10, 0, 0);
+    const controller = new SemanticWidgetController(new RecordingAdapter(), undefined, {
+      nowMs: () => timestamp,
+    });
+    const state = reducePresentation(createInitialPresentationState(), {
+      type: 'notification', severity: 'warning', message: 'Context nearly full',
+    });
+
+    controller.render(state);
+
+    expect(controller.alternateOutput()).toContain('2026-08-28T10:00:00.000Z');
+    expect(controller.alternateOutput()).not.toContain('1970-01-01');
+  });
+});

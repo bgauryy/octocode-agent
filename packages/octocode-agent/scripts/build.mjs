@@ -18,7 +18,16 @@ await build({
   ...baseOptions,
   entryPoints: [join(packageRoot, 'src', 'cli.ts')],
   outfile,
-  external: [...baseOptions.external],
+  // Keep runtime protocol libraries external. The MCP client includes CommonJS
+  // process helpers that cannot be safely inlined into the ESM executable.
+  external: [
+    ...baseOptions.external,
+    '@modelcontextprotocol/client',
+    '@modelcontextprotocol/client/*',
+    '@octocodeai/octocode-shared',
+    '@octocodeai/octocode-shared/*',
+    'ajv',
+  ],
   banner: { js: '#!/usr/bin/env node' },
   minify: false,
 });

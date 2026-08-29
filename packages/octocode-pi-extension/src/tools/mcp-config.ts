@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDefaultEnvironment } from '@modelcontextprotocol/client/stdio';
-import { getMcpEnablement, openOctocodeDb } from '@octocodeai/octocode-awareness/mcp-state';
+import { ensurePrivateDirectory, hardenPrivateFile, getMcpEnablement, openOctocodeDb, PRIVATE_FILE_MODE } from '@octocodeai/octocode-awareness/mcp-state';
 import type { PiContext } from '../types.js';
 import { getOctocodeHome } from '../env.js';
 import { discoverMcpSystem } from './mcp-discovery.js';
@@ -288,10 +288,12 @@ function serverContainer(raw: Record<string, unknown>): Record<string, unknown> 
 }
 
 function writeMcpJsonAtomic(filePath: string, raw: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  ensurePrivateDirectory(path.dirname(filePath));
+  hardenPrivateFile(filePath);
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf8');
+  fs.writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', { encoding: 'utf8', mode: PRIVATE_FILE_MODE, flag: 'wx' });
   fs.renameSync(tmp, filePath);
+  hardenPrivateFile(filePath);
 }
 
 /** Insert or update a server in an mcp.json file. Validates via parseServerConfig. */

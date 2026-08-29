@@ -30,7 +30,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getOctocodeHome } from '../env.js';
 import type { PiCommandContext, PiContext, PiInstance } from '../types.js';
-import { atomicWriteUtf8 } from './file-state.js';
+import { atomicWritePrivateUtf8 } from './file-state.js';
 import { runSelectOverlay } from './ui-overlays.js';
 
 // ─── Levels & presets ─────────────────────────────────────────────────────────
@@ -164,7 +164,7 @@ export async function applyDialLevel(
 
   if (deps?.persist !== false) {
     try {
-      await atomicWriteUtf8(dialFilePath(deps?.home), `${JSON.stringify({ level })}\n`);
+        await atomicWritePrivateUtf8(dialFilePath(deps?.home), `${JSON.stringify({ level })}\n`);
     } catch (error) {
       warnings.push(`Could not persist dial level: ${error instanceof Error ? error.message : String(error)}`);
     }

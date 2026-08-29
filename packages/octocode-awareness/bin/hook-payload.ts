@@ -1,17 +1,20 @@
-/**
- * hook-runner.ts — shared implementation for octocode-awareness lifecycle hooks.
- *
- * Shell hook files are intentionally thin wrappers. All parsing, file presence,
- * verification, briefing, and session-capture logic lives here so Claude/Codex
- * skill and project hooks share the same package-owned behavior.
- */
+/** Shared payload normalization for package-owned lifecycle hook adapters. */
 import { createHash } from 'node:crypto';
 import { basename, relative, resolve } from 'node:path';
 import { connectDb, resolveDbPath } from '../src/db.js';
+import { storageScopeForCommand } from '../src/workspace-policy.js';
 import { canonicalizePath } from '../src/git.js';
 import { extractWriteTargetPaths } from '../src/write-targets.js';
 
-export type ShellHookHost = 'claude' | 'codex' | 'cursor';
+export type ShellHookHost = 'claude' | 'codex' | 'cursor' | 'copilot' | 'gemini' | 'opencode';
+
+export type HookRunnerCommand =
+  | 'pre-edit'
+  | 'post-edit'
+  | 'stop-verify'
+  | 'notify-deliver'
+  | 'session-compact'
+  | 'session-end';
 
 export interface HookRunOptions {
   host?: ShellHookHost;
@@ -51,7 +54,14 @@ export function objectOrEmpty(value: unknown): Record<string, unknown> {
 }
 
 export function payloadInput(payload: Record<string, unknown>): unknown {
-  return payload.tool_input ?? payload.input ?? payload.args ?? payload;
+  const input = payload.tool_input ?? payload.toolArgs ?? payload.input ?? payload.args ?? payload;
+  if (typeof input !== 'string' || (payload.tool_input === undefined && payload.toolArgs === undefined)) return input;
+  try {
+    const parsed = JSON.parse(input);
+    return parsed && typeof parsed === 'object' ? parsed : input;
+  } catch {
+    return input;
+  }
 }
 
 export function payloadForFileExtraction(payload: Record<string, unknown>): unknown {
@@ -61,8 +71,6 @@ export function payloadForFileExtraction(payload: Record<string, unknown>): unkn
   if (Object.keys(inputObj).length === 0) return input;
   return { ...payload, ...inputObj };
 }
-
-export let warnedFallbackAgentId = false;
 
 export function firstString(...values: unknown[]): string | null {
   for (const value of values) {
@@ -74,9 +82,54 @@ export function firstString(...values: unknown[]): string | null {
 export function normalizeShellHookHost(value: unknown): ShellHookHost | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim().toLowerCase();
-  return normalized === 'claude' || normalized === 'codex' || normalized === 'cursor'
+  if (normalized === 'github-copilot') return 'copilot';
+  if (normalized === 'gemini-cli') return 'gemini';
+  return normalized === 'claude'
+    || normalized === 'codex'
+    || normalized === 'cursor'
+    || normalized === 'copilot'
+    || normalized === 'gemini'
+    || normalized === 'opencode'
     ? normalized
     : null;
+}
+
+export function hookCommandForHostEvent(
+  host: ShellHookHost,
+  eventName: string,
+): HookRunnerCommand | null {
+  if (host === 'copilot') {
+    const commands: Readonly<Record<string, HookRunnerCommand>> = {
+      preToolUse: 'pre-edit',
+      PreToolUse: 'pre-edit',
+      postToolUse: 'post-edit',
+      PostToolUse: 'post-edit',
+      postToolUseFailure: 'post-edit',
+      PostToolUseFailure: 'post-edit',
+      agentStop: 'stop-verify',
+      Stop: 'stop-verify',
+      subagentStop: 'stop-verify',
+      SubagentStop: 'stop-verify',
+      notification: 'notify-deliver',
+      Notification: 'notify-deliver',
+      preCompact: 'session-compact',
+      PreCompact: 'session-compact',
+      sessionEnd: 'session-end',
+      SessionEnd: 'session-end',
+    };
+    return commands[eventName] ?? null;
+  }
+  if (host === 'gemini') {
+    const commands: Readonly<Record<string, HookRunnerCommand>> = {
+      BeforeTool: 'pre-edit',
+      AfterTool: 'post-edit',
+      AfterAgent: 'stop-verify',
+      PreCompress: 'session-compact',
+      SessionEnd: 'session-end',
+    };
+    return commands[eventName] ?? null;
+  }
+  return null;
 }
 
 export function shellHookHost(payload: Record<string, unknown>): ShellHookHost {
@@ -105,6 +158,12 @@ export function hookContextEnvelope(
     if (eventName === 'sessionStart') return { additional_context: message };
     return { permission: 'allow', agent_message: message };
   }
+  if (host === 'copilot') {
+    if (eventName === 'preToolUse' || eventName === 'PreToolUse') {
+      return { permissionDecision: 'allow', additionalContext: message };
+    }
+    return { additionalContext: message };
+  }
   return {
     hookSpecificOutput: {
       hookEventName: eventName,
@@ -118,6 +177,18 @@ export function hookBlockOutcome(
   phase: 'pre-edit' | 'stop',
   message: string,
 ): HookControlOutcome {
+  if (host === 'copilot') {
+    if (phase === 'stop') {
+      return { exitCode: 0, payload: { decision: 'block', reason: message } };
+    }
+    return {
+      exitCode: 0,
+      payload: {
+        permissionDecision: 'deny',
+        permissionDecisionReason: message,
+      },
+    };
+  }
   if (host !== 'cursor') return { exitCode: 2, stderr: message };
   if (phase === 'stop') {
     return { exitCode: 0, payload: { followup_message: message } };
@@ -171,12 +242,7 @@ export function agentId(payload: Record<string, unknown>): string {
   ) ?? 'shell';
   const scope = `${host}\0${workspace(payload) ?? process.cwd()}`;
   const suffix = createHash('sha1').update(scope).digest('hex').slice(0, 12);
-  const fallback = `hook:${host.replace(/[^a-zA-Z0-9_.:-]/g, '_')}:${suffix}`;
-  if (!warnedFallbackAgentId) {
-    warnedFallbackAgentId = true;
-    console.error(`octocode-awareness: OCTOCODE_AGENT_ID or host session id missing; using fallback agent id "${fallback}". Set OCTOCODE_AGENT_ID for reliable multi-agent awareness.`);
-  }
-  return fallback;
+  return `hook:${host.replace(/[^a-zA-Z0-9_.:-]/g, '_')}:${suffix}`;
 }
 
 export function sessionId(payload: Record<string, unknown>): string | null {
@@ -322,6 +388,10 @@ export function resolveHookPath(file: string, cwd = process.cwd()): string {
   return canonicalizePath(resolve(cwd, file));
 }
 
-export function db() {
-  return connectDb(resolveDbPath(null));
+export function db(payload: Record<string, unknown>, command = 'work-command') {
+  const cwd = workspace(payload) ?? process.cwd();
+  return connectDb(resolveDbPath(null, {
+    scope: storageScopeForCommand(command, cwd),
+    workspace: cwd,
+  }));
 }

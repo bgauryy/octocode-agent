@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -20,9 +20,12 @@ const SHARED_TABLES = [
 describe('shared Awareness database contract', () => {
   it('creates every coordination, continuity, control, and auxiliary entity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'awareness-shared-contract-'));
+    chmodSync(dir, 0o755);
     const dbPath = join(dir, 'octocode.sqlite3');
     const store = openAwarenessStore({ workspace: dir, dbPath });
     store.close();
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    expect(statSync(dbPath).mode & 0o777).toBe(0o600);
     const db = new DatabaseSync(dbPath);
     try {
       const tables = db.prepare(

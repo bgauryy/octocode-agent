@@ -2,7 +2,8 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, s
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-export type HookHost = 'claude' | 'codex' | 'cursor';
+export type HookHost = 'claude' | 'codex' | 'copilot' | 'cursor' | 'gemini' | 'opencode';
+export type InstallableHookHost = Exclude<HookHost, 'opencode'>;
 
 export interface HookSpec {
   event: string;
@@ -20,8 +21,12 @@ export interface NestedHook {
 }
 
 export interface HookEntry {
+  type?: string;
   command?: string;
+  bash?: string;
+  powershell?: string;
   timeout?: number;
+  timeoutSec?: number;
   matcher?: string;
   hooks?: NestedHook[];
   [key: string]: unknown;
@@ -46,12 +51,14 @@ export interface HooksInstallOptions {
   dbPath?: string;
 }
 
-export const WRITE_MATCHERS: Record<HookHost, string> = {
+export const WRITE_MATCHERS: Record<InstallableHookHost, string> = {
   claude: '^(?:Write|Edit|MultiEdit|NotebookEdit)$',
   codex: '^(?:apply_patch|Write|Edit)$',
+  copilot: '^(?:create|edit|str_replace_editor|apply_patch)$',
   cursor: '^(?:Write|Edit|StrReplace|Delete|MultiEdit|NotebookEdit|apply_patch|ApplyPatch)$',
+  gemini: '^(?:write_file|replace|run_shell_command)$',
 };
-export const HOSTS = new Set<HookHost>(['claude', 'codex', 'cursor']);
+export const HOSTS = new Set<InstallableHookHost>(['claude', 'codex', 'copilot', 'cursor', 'gemini']);
 export const CONFIG_LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
 export const CONFIG_LOCK_RETRY_MS = 25;
 export const CONFIG_LOCK_TIMEOUT_MS = 10_000;
@@ -65,15 +72,19 @@ Install, check, dry-run, or remove octocode-awareness lifecycle hooks.
 Targets:
   --host claude         Write Claude Code hooks to .claude/settings.json (install default).
   --host codex         Write Codex hooks to .codex/hooks.json.
+  --host copilot       Write GitHub Copilot v1 hooks to .github/hooks/octocode-awareness.json.
   --host cursor        Write Cursor hooks to .cursor/hooks.json.
+  --host gemini        Write Gemini CLI hooks to .gemini/settings.json.
+  --host opencode      Write an auto-discovered OpenCode project plugin.
 
 Options:
   --project-dir <path>  Target a project hook file under <path> (default: cwd).
-  --global              Target the user hook file with absolute hook paths.
+  --global              Target the user hook file with absolute hook paths (not Copilot/OpenCode).
   --check               Report whether the hooks are installed.
   --strict              With --check, exit 2 if config is missing or drifted.
                         Runtime execution, host trust, and enablement remain unprobed.
   --dry-run             Print the resulting settings without writing.
+  --profile <name>      guard, coordination, or full; default comes from workspace policy.
   --compact             Minify JSON output when supported.
   --remove              Remove only npx @octocodeai/octocode-awareness hooks.`;
 }
@@ -95,10 +106,12 @@ export function requestedHost(argv: string[]): string {
   return opt(argv, '--host', 'claude').toLowerCase();
 }
 
-export function targetConfig(host: HookHost): { dir: string; file: string } {
+export function targetConfig(host: InstallableHookHost): { dir: string; file: string } {
   switch (host) {
     case 'codex': return { dir: '.codex', file: 'hooks.json' };
+    case 'copilot': return { dir: '.github/hooks', file: 'octocode-awareness.json' };
     case 'cursor': return { dir: '.cursor', file: 'hooks.json' };
+    case 'gemini': return { dir: '.gemini', file: 'settings.json' };
     case 'claude': return { dir: '.claude', file: 'settings.json' };
   }
 }
@@ -175,7 +188,7 @@ export function writeSettingsAtomic(settingsPath: string, settings: HookSettings
 }
 
 export function hookCommand(name: string, params: {
-  host: HookHost;
+  host: InstallableHookHost;
   globalMode: boolean;
   projectDir: string;
   hookDir: string;
@@ -213,7 +226,7 @@ export function hookCommand(name: string, params: {
   ].join(' ');
 }
 
-export function projectHookDir(_host: HookHost, globalMode: boolean, projectDir: string, hookDir: string): string {
+export function projectHookDir(_host: InstallableHookHost, globalMode: boolean, projectDir: string, hookDir: string): string {
   if (globalMode) return hookDir;
   const canonical = join(projectDir, 'skills', 'octocode-awareness', 'scripts', 'hooks');
   return existsSync(hookTargetPath(canonical)) ? canonical : hookDir;
@@ -224,7 +237,7 @@ export function hookTargetPath(hookDir: string): string {
 }
 
 export function hookCommandWindows(name: string, params: {
-  host: HookHost;
+  host: InstallableHookHost;
   hookDir: string;
 }): string | undefined {
   if (params.host !== 'codex') return undefined;

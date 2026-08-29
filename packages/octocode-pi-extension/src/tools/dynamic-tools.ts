@@ -27,6 +27,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { getOctocodeHome } from '../env.js';
 import { KEYWORD_MATCH_THRESHOLD, tokenize, withRegistryLock, writeJsonAtomic, readJsonSafe } from './registry-store.js';
+import { ensurePrivateDirectory, hardenPrivateFile, PRIVATE_FILE_MODE } from '@octocodeai/octocode-awareness/mcp-state';
 
 /** A capability a dynamic tool may declare. Escalation beyond `[]` needs approval. */
 export type Capability = 'net' | 'fs' | 'exec';
@@ -151,7 +152,7 @@ function toolDir(dir: string, name: string): string {
 // ─── registry io (atomic) ─────────────────────────────────────────────────────
 
 function ensureRegistry(dir: string): void {
-  fs.mkdirSync(dir, { recursive: true });
+  ensurePrivateDirectory(dir);
   if (!fs.existsSync(indexPath(dir))) {
     writeIndex(dir, { version: 1, tools: {} });
   }
@@ -259,9 +260,11 @@ export function registerGeneratedTool(
   // never leaves a soft-broken tool (files changed but index checksum stale).
   const backup = existing ? snapshotFiles(entryFile, testFile) : null;
 
-  fs.mkdirSync(tdir, { recursive: true });
-  fs.writeFileSync(entryFile, input.source);
-  fs.writeFileSync(testFile, input.test);
+  ensurePrivateDirectory(tdir);
+  fs.writeFileSync(entryFile, input.source, { mode: PRIVATE_FILE_MODE });
+  fs.writeFileSync(testFile, input.test, { mode: PRIVATE_FILE_MODE });
+  hardenPrivateFile(entryFile);
+  hardenPrivateFile(testFile);
 
   // Sandbox the verification test with the SAME isolation the tool gets at runtime.
   // The test is LLM-authored code; running it with full process.env + unrestricted
@@ -343,8 +346,14 @@ function rollback(
     fs.rmSync(tdir, { recursive: true, force: true });
     return;
   }
-  if (backup?.source !== null && backup?.source !== undefined) fs.writeFileSync(entryFile, backup.source);
-  if (backup?.test !== null && backup?.test !== undefined) fs.writeFileSync(testFile, backup.test);
+  if (backup?.source !== null && backup?.source !== undefined) {
+    fs.writeFileSync(entryFile, backup.source, { mode: PRIVATE_FILE_MODE });
+    hardenPrivateFile(entryFile);
+  }
+  if (backup?.test !== null && backup?.test !== undefined) {
+    fs.writeFileSync(testFile, backup.test, { mode: PRIVATE_FILE_MODE });
+    hardenPrivateFile(testFile);
+  }
 }
 
 // ─── isolated execution ────────────────────────────────────────────────────────
@@ -388,6 +397,7 @@ export function runDynamicTool(
   // temp dir (which would expose sibling temp files: other runners, editor swap
   // files, downloaded tarballs, etc.).
   const runnerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-calltool-'));
+  ensurePrivateDirectory(runnerDir);
   const runner = path.join(
     runnerDir,
     `runner-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`,
@@ -406,6 +416,7 @@ export function runDynamicTool(
       `const out = await mod.default(metadata);`,
       `process.stdout.write(JSON.stringify(out ?? null));`,
     ].join('\n'),
+    { mode: PRIVATE_FILE_MODE },
   );
 
   // Pass the runner's realpath as the entry so Node does not need to read the tmp

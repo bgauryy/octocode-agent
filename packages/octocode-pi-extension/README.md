@@ -41,8 +41,8 @@ The build bundles the Octocode workflow skills and invokes the installed Awarene
 | Octocode MCP research tools | 15 |
 | Pi support tools | 16 |
 | Guarded Pi builtin overrides | 1 (`bash`) |
-| Slash command entries | 25 |
-| Bundled main-agent skills | 11 |
+| Slash command entries | 24 |
+| Bundled main-agent skills | 12 |
 
 Awareness is imported **in-process** (no child CLI). The unified Pi surface uses
 `plan` for session/shared execution and observed check receipts, `lock` for exceptional
@@ -68,7 +68,6 @@ policy stays here instead of drifting into launcher shims.
 /octocode-agents         live spawned-worker ledger and controls
 /octocode-harness        exact live tools, commands, and skills
 /settings                live command catalog + complete extension control center; defaults to #skills
-/octocode-settings       compatibility alias for /settings
 /mcp                     focused alias that opens settings.html#connections
 /octocode-cron           list/check/cancel session-scoped Octocode jobs
 /octocode-setup          manage project .pi/APPEND_SYSTEM.md
@@ -176,7 +175,7 @@ operations through the canonical project config. The gateway uses
 }
 ```
 
-## Slash command entries (25)
+## Slash command entries (24)
 
 | Command | Purpose |
 |---|---|
@@ -189,7 +188,6 @@ operations through the canonical project config. The gateway uses
 | `/octocode-agents` | Live spawned-worker ledger with inspect, kill, prune, hide, and risk badges. |
 | `/octocode-cron` | List, check, or cancel session-scoped Octocode jobs. |
 | `/settings` | Open the local control center with every live public slash command plus MCP servers/tools, skills, prompt state, sources, and overrides; defaults to `#skills`, with section completions for direct navigation. |
-| `/octocode-settings` | Compatibility alias for `/settings`. |
 | `/mcp` | Focused alias that opens `settings.html#connections`. |
 | `/octocode-setup` | Install/update the managed system-prompt block; `--global` targets user scope. |
 | `/octocode-skills-update` | Refresh bundled skill installs. |
@@ -209,7 +207,7 @@ Backend handoffs, task repair, verification audits, and presence diagnostics sta
 `$OCTOCODE_AWARENESS_CLI`; they are not a second routine Pi lifecycle. Session jobs are
 report-first wrappers over that CLI; see [docs/CRON.md](docs/CRON.md).
 
-## Bundled skills (11)
+## Bundled skills (12)
 
 Pi discovers the npm-published, build-generated skill tree under `dist/skills/`,
 surfaced at runtime through the single `resources_discover` hook (no package-root
@@ -221,6 +219,7 @@ supported workflow is discoverable on init with zero setup:
 - `octocode-chrome-devtools`
 - `octocode-documentation`
 - `octocode-graph-eval`
+- `octocode-orchestrator`
 - `octocode-prompt-optimizer`
 - `octocode-research`
 - `octocode-rfc-generator`

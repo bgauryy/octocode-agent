@@ -47,7 +47,7 @@ The migration changes the runtime ownership boundary across the launcher and har
 | Pi SDK module shape | Removed | One typed Octocode composition root |
 | Pi RPC types | Removed | Generate or validate local versioned wire contracts |
 | Pi `SessionManager` | Removed | `SessionIdentityReader`, `SessionController`, and `SessionStore` |
-| Pi UI methods | Adapter boundary | Supported Pi extension maps to Pi host UI; native agent maps semantic UI commands to OpenTUI; RPC/headless remain toolkit-free |
+| Pi UI methods | Temporary oracle boundary, then removed | Frozen Pi oracle maps to Pi host UI during comparison; native agent maps semantic UI commands to OpenTUI; RPC/headless remain toolkit-free |
 | Pi settings/model files | Compatibility adapters and declared sources | Unified settings/model contracts expose stored/effective values, provenance, safe mutation, and import behavior |
 | Codex hook sources and plugin hook declarations | New supported compatibility input | Parse/validate declared format, preserve provenance, exact-hash review, publish compatibility version/gaps |
 | Extension registrations | Generalized outside Pi adapter | Permission-scoped typed contributions through transactional canonical registries |
@@ -55,7 +55,7 @@ The migration changes the runtime ownership boundary across the launcher and har
 
 Every replacement production interface in this table belongs under `packages/octocode-agent-core/`. The launcher and UI consume the interfaces; they do not redefine them.
 
-The Pi extension is an approved adapter exception: it owns Pi-only input/output types and translation code, but imports canonical domain contracts from agent core. Removing native Pi dependence must not remove the extension package or its supported host matrix.
+The Pi extension is a temporary adapter exception: during comparison it owns Pi-only input/output types and translation code while importing canonical domain contracts from agent core. The final retirement change removes the extension package, supported-host matrix, selector, publication path, and live product documentation together.
 
 This RFC does not promise source compatibility for internal Pi-named interfaces. It preserves observable product contracts and supplies temporary adapters where migration requires them.
 

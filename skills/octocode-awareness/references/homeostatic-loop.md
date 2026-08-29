@@ -1,5 +1,7 @@
 # Homeostatic Awareness Loop
 
+Load when designing a measurable work, learning, cleanup, or publication loop. Afterward, return to the main skill flow.
+
 Human/agent-in-the-loop software control model for work, learning, cleanup, and publication — not sentience, a persona, or authority.
 
 ## Control Contract

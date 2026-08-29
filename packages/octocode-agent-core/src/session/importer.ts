@@ -4,12 +4,12 @@ import type { LegacySessionSource, SessionEvent, SessionImportReceipt, SessionSt
 
 export const importLegacySession = async (source: LegacySessionSource, destination: SessionStore, destinationId: SessionId, now: () => number = Date.now): Promise<SessionImportReceipt> => {
   const before = await source.digest(); const output: SessionEvent[] = []; let opaque = 0;
-  for await (const record of source.readRecords()) { const translated = translateLegacyRecord(record); if (translated.type === 'opaque.imported') opaque += 1; output.push({ schemaVersion: 1, sessionId: destinationId, eventId: sessionEventId(`import:${output.length + 1}`), revision: revision(String(output.length + 1)), sequence: output.length + 1, timestamp: now(), visibility: translated.type === 'message.appended' ? 'transcript' : 'internal', event: translated }); }
+  for await (const record of source.readRecords()) { const translated = translateLegacyRecord(record); if (translated.type === 'opaque.imported') opaque += 1; const visibility = translated.type === 'message.appended' ? translated.role === 'tool' ? 'transcript' : 'model' : 'internal'; output.push({ schemaVersion: 1, sessionId: destinationId, eventId: sessionEventId(`import:${output.length + 1}`), revision: revision(String(output.length + 1)), sequence: output.length + 1, timestamp: now(), visibility, event: translated }); }
   if (output[0]?.event.type !== 'session.created') output.unshift({ schemaVersion: 1, sessionId: destinationId, eventId: sessionEventId('import:0'), revision: revision('1'), sequence: 1, timestamp: now(), visibility: 'internal', event: { type: 'session.created' } });
   const normalized = output.map((event, index): SessionEvent => ({ ...event, eventId: sessionEventId(`import:${index + 1}`), revision: revision(String(index + 1)), sequence: index + 1 }));
+  const after = await source.digest(); if (before !== after) throw new RuntimeFailure('session-migration', 'Legacy source changed during read-only import', 'unsafe');
   const current = await destination.load(destinationId); if (current.events.length !== 0) throw new RuntimeFailure('session-conflict', 'Legacy import destination must be empty', 'safe');
   const destinationRevision = normalized.length === 0 ? revision('0') : await destination.append(destinationId, revision('0'), normalized);
-  const after = await source.digest(); if (before !== after) throw new RuntimeFailure('session-migration', 'Legacy source changed during read-only import', 'unsafe');
   return { sourceId: source.sourceId, sourceDigest: before, destinationId, imported: normalized.length, opaque, destinationRevision };
 };
 export const translateLegacyRecord = (value: unknown): SessionStoredEvent => {

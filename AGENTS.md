@@ -70,6 +70,8 @@ Full field-level reference: run `$OCTO tools <name> --scheme` for exact schemas.
 **Research flow**
 
 - Use the `octocode-research` skill for research/review/change workflows, then call the catalog tools above with live schemas from `$OCTO tools <name> --scheme`.
+- For a deep, evidence-backed review of the native `octocode-agent` CLI implementation, follow [`prompts/architecture.md`](prompts/architecture.md). It defines the required design-to-runtime mapping, end-to-end flow tracing, finding format, TDD policy, and verification steps; repository and package `AGENTS.md` instructions still take precedence.
+- For an exhaustive feature-parity audit between the native CLI and the supported Pi adapter, follow [`prompts/pi-feature-parity.md`](prompts/pi-feature-parity.md). It requires a complete DESIGN feature-ID ledger, real-host scenario comparison, normalized traces, effect-ledger safety, supported Pi-version coverage, and an evidence-backed cutover verdict.
 - The current CLI has no unified search subcommand and the current catalog has no unified query tool; do not invent either route. Use `$OCTO context --compact` for the live protocol.
 
 Evidence: search hits and `localFindDeadCode` results are **candidates**. Prove identity, references, callers, and reachability with `lspGetSemantics` before delete claims; relevance ordering is not proof.
@@ -115,6 +117,8 @@ SQLite is canonical; never hand-edit generated files under `.octocode/` or `out/
 | Area | Links |
 |---|---|
 | Agent / Pi | [`packages/octocode-agent/docs/README.md`](packages/octocode-agent/docs/README.md) · [`PI_INTEGRATION.md`](packages/octocode-agent/docs/PI_INTEGRATION.md) · pi-extension [`docs/README.md`](packages/octocode-pi-extension/docs/README.md) · [TOOLS](packages/octocode-pi-extension/docs/TOOLS.md) · [AWARENESS flow](packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) · [REFLECT](packages/octocode-pi-extension/docs/REFLECT.md) · [OVERRIDES](packages/octocode-pi-extension/docs/OVERRIDES.md) |
+| Architecture audit | [`prompts/architecture.md`](prompts/architecture.md) — executable review prompt for validating the native CLI end-to-end with Octocode/LSP evidence, TDD, and real CLI verification. |
+| Pi feature parity | [`prompts/pi-feature-parity.md`](prompts/pi-feature-parity.md) — exhaustive real-host comparison of the native CLI and supported Pi adapter across every DESIGN feature ID, mode, scenario, and cutover gate. |
 | Awareness | [`packages/octocode-awareness/docs/README.md`](packages/octocode-awareness/docs/README.md) — [HOW_IT_WORKS](packages/octocode-awareness/docs/HOW_IT_WORKS.md) · [HOOKS](packages/octocode-awareness/docs/HOOKS.md) · [VERIFY](packages/octocode-awareness/docs/VERIFY.md) · [LOCKS](packages/octocode-awareness/docs/LOCKS.md) · [MEMORY_NAVIGATION](packages/octocode-awareness/docs/MEMORY_NAVIGATION.md) · [WIKI](packages/octocode-awareness/docs/WIKI.md) · [REFERENCES](packages/octocode-awareness/docs/REFERENCES.md) |
 | Skills | Repo skill source: [`skills/octocode-awareness`](skills/octocode-awareness) (synced into `packages/octocode-awareness/skills/` at build). Other Octocode skills (research, brainstorming, eval, prompt-optimizer, rfc-generator, roast, skills, subagent) are installed via `node $OCTOCODE_CLI skill --add`. |
 

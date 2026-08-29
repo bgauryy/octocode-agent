@@ -4,11 +4,11 @@
 
 ## Decision
 
-The RFC proposes `@opentui/core` as the native `octocode-agent` terminal rendering and input foundation. The route remains **HOLD** pending runtime/architecture-owner approval and the Step 2 runtime, packaging, platform, security, and rollback spike. An approved first implementation uses OpenTUI Core directly. React and Solid renderers remain excluded unless a later measured proposal proves that an additional framework improves maintainability without weakening startup, packaging, or test gates.
+`@opentui/core` is the implemented native `octocode-agent` terminal rendering and input foundation. The architecture route is accepted and production-composed; release approval remains **HOLD** pending the Step 2 clean packaging, accessibility, supported-platform, security, and rollback evidence. One real macOS/Node 26 experimental-FFI PTY smoke run restored terminal state exactly, but that host-specific result does not satisfy the canonical package or platform matrix. React and Solid renderers remain excluded unless a later measured proposal proves that an additional framework improves maintainability without weakening startup, packaging, or test gates.
 
-OpenTUI is a terminal adapter, not part of the agent runtime kernel. The planned `packages/octocode-agent-core/` package owns semantic `UiPort` contracts and remains terminal-toolkit-neutral. The native adapter lives under the planned `packages/octocode-agent/src/terminal/opentui/` boundary and is the only native product layer allowed to import `@opentui/core`.
+OpenTUI is a terminal adapter, not part of the agent runtime kernel. `packages/octocode-agent-core/` owns semantic `UiPort` contracts and remains terminal-toolkit-neutral. The native adapter lives under `packages/octocode-agent/src/terminal/opentui/` and is the only native product layer allowed to import `@opentui/core`.
 
-The supported `@octocodeai/pi-extension` continues to map the same `UiPort` semantics to Pi host UI APIs. It does not import OpenTUI.
+During migration, the frozen `@octocodeai/pi-extension` oracle maps the same `UiPort` semantics to Pi host UI APIs. It does not import OpenTUI and is deleted at the final retirement gate.
 
 ## Why OpenTUI
 
@@ -22,11 +22,11 @@ This matches the migration requirements:
 - explicit renderer ownership and destruction;
 - support for interactive layout, input, selection, scrolling, keyboard, mouse, and terminal capabilities.
 
-## Working-tree prototype evidence
+## Historical prototype evidence and current candidate
 
-The 2026-08-27 proof at commit `3188378` found that the three prototype files previously cited here were absent from the working tree and from the visible Git history. Octocode file, text, structural AST, and LSP workspace-symbol queries found no OpenTUI repository seam, and the named focused test command exited 1 because no matching test file existed. The isolated `@opentui/core@0.5.8` Bun and Node test-renderer smokes therefore establish local runtime feasibility only; they do not establish a repository adapter, production composition, packaging, PTY lifecycle, or platform support. See [the working-tree route proof](evidence/opentui-route-working-tree.md) and [the route decision packet](evidence/opentui-route-decision-packet.md).
+The 2026-08-27 proof at commit `3188378` found that the earlier prototype files were absent; that result remains immutable historical evidence. The current dirty-tree candidate now contains the native adapter boundary, semantic widget controller, OpenTUI adapter, production renderer/composer wiring, focused tests, built CLI path, and one real PTY exact-restoration smoke pass on macOS. This advances the route from planned to production-composed, but does not prove clean packaged lifecycle, accessibility, alternate input/output, or supported-platform release readiness. See root design [`11-OPENTUI-WIDGETS-AND-ACCESSIBILITY.md`](../11-OPENTUI-WIDGETS-AND-ACCESSIBILITY.md) and [the integrated runtime receipt](evidence/real-runtime-surface-eval-2026-08-28.md).
 
-Implementation must create a canonical test seam under the planned native adapter boundary and derive host-neutral snapshot semantics from the approved `UiPort` contract. It must not invent provenance for the absent proof, leave duplicate `OpenTui*` domain contracts in the supported Pi extension, or make that extension the owner of the native terminal.
+Further implementation must extend the existing canonical seam rather than create a parallel terminal contract. It must not rewrite historical provenance, leave duplicate `OpenTui*` domain contracts in the temporary Pi oracle, or make that oracle the owner of the native terminal.
 
 ## Runtime and packaging gate
 
@@ -41,7 +41,7 @@ Before Stage 1 exits, a spike must select and document one route. The spike reco
 
 Failure to prove either supported route blocks the native terminal stage. It does not authorize a hidden `pi-tui` fallback or moving OpenTUI into agent core.
 
-## Planned boundary
+## Implemented boundary
 
 ```text
 packages/octocode-agent-core
@@ -117,7 +117,7 @@ Keyboard-only operation is mandatory. Focus order, visible focus, cancellation, 
 
 ## Rollback
 
-Before the native-default gate, rollback selects the Pi-backed host for new native-agent sessions. After removal, rollback uses the prior release artifact. The native terminal never silently switches to `pi-tui`; the separately supported Pi extension remains available only in a Pi host.
+Before the native-default gate, the explicit migration selector may choose the frozen Pi-backed host for new sessions. The native terminal never silently switches to `pi-tui`, and the current native launcher lacks that selector. After removal, rollback uses the prior native release artifact; the selector and Pi extension no longer exist in the product.
 
 ## Upstream evidence checked on 2026-08-27
 

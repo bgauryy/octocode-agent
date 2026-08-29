@@ -24,7 +24,7 @@ import {
 let workspace: string;
 
 beforeEach(async () => {
-  workspace = await mkdtemp(join(tmpdir(), 'aw-pi-'));
+  workspace = await mkdtemp(join(tmpdir(), 'aw-external-'));
   process.env.OCTOCODE_DB_PATH = join(workspace, 'shared.sqlite3');
 });
 
@@ -51,6 +51,9 @@ describe('external-agent integration boundary', () => {
   });
 
   it('exports reusable prompt and AGENTS.md instruction blocks without touching files', () => {
+    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).toContain('setup --compact');
+    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).toContain('repository-owned commands');
+    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).not.toContain('compatibility default is global');
     expect(execCli(['instructions', 'export'])).toEqual({
       code: 0,
       stdout: `${EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS}\n`,
@@ -105,6 +108,7 @@ describe('external-agent integration boundary', () => {
       .toMatchObject({ verified: true, reopened: false });
 
     const aw = openAwarenessStore({ workspace });
+    expect(aw.getPlan(planId)).toMatchObject({ sourceKind: 'external-agent', sourceKey: 'shared-plan' });
     aw.claimTask({ taskId: secondId, agentId: 'agent-a' });
     aw.close();
     expect(completeExternalPlanTask({ workspace, taskId: secondId, agentId: 'agent-a' }))

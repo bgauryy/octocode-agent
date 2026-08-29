@@ -6,11 +6,12 @@
  *   workspace_path is the primary isolation key.
  *   artifact is the optional workspace-local package/service/component slice.
  */
-import { mkdirSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve } from 'node:path';
 import { getOctocodeHome } from '@octocodeai/octocode-shared/paths';
+import { hardenSqliteFiles, preparePrivateSqlitePath } from '@octocodeai/octocode-shared/permissions';
 import { utcNow } from './helpers.js';
 import { journalModeForSqliteVersion } from './sqlite-runtime.js';
+import { repoDatabasePath, type AwarenessStorageScope } from './storage-scope.js';
 import {
   assertCanonicalRelationContract,
   assertCanonicalSchemaFingerprint,
@@ -66,8 +67,14 @@ export function memoryHome(): string {
 }
 
 /** Resolve a DB path from an override arg or the default location. */
-export function resolveDbPath(dbArg?: string | null): string {
+export function resolveDbPath(
+  dbArg?: string | null,
+  options: { scope?: AwarenessStorageScope; workspace?: string } = {},
+): string {
   if (dbArg) return resolve(dbArg);
+  if (options.scope === 'repo') {
+    return repoDatabasePath(options.workspace ?? process.cwd(), DEFAULT_DB_NAME);
+  }
   return join(memoryHome(), DEFAULT_DB_NAME);
 }
 
@@ -78,7 +85,7 @@ export function resolveDbPath(dbArg?: string | null): string {
  * connection in the module-level singleton so getDb() works after the call.
  */
 export function connectDb(dbPath: string): DatabaseSync {
-  mkdirSync(dirname(dbPath), { recursive: true });
+  preparePrivateSqlitePath(dbPath);
   const db = new DatabaseSync(dbPath);
   try {
     // busy_timeout is connection-local and must precede the identity reads: in
@@ -96,6 +103,7 @@ export function connectDb(dbPath: string): DatabaseSync {
     withSqliteBusyRetry(() => db.exec(`PRAGMA journal_mode = ${journalMode}`));
     db.exec('PRAGMA foreign_keys = ON');
     initializeDb(db, schemaState);
+    hardenSqliteFiles(dbPath);
     _db = db;
     return db;
   } catch (error) {

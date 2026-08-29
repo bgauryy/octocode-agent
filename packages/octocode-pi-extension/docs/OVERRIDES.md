@@ -17,7 +17,9 @@ The installed `@earendil-works/pi-coding-agent` exports seven built-in tools:
 | `ls` | List directories | No; available/configurable |
 
 Pi settings can change the initial selection through `defaultTools`, `tools`, `excludeTools`, or `noTools`; the table describes the package default.
-The branded `octocode-agent` launcher always suppresses native defaults before session creation: `--no-builtin-tools` on the subprocess path and `noTools:"builtin"` on the SDK path. The extension then supplies the complete public palette and re-applies its disabled-name policy for direct-extension hosts and session resets.
+The Pi extension supplies its public palette and applies its disabled-name policy for
+direct-extension hosts and session resets. Native `octocode-agent` has its own tool catalog
+and does not configure Pi built-ins.
 
 ## Octocode decision matrix
 
@@ -70,8 +72,7 @@ Structured mutations and detected bash write targets are limited to:
 | Concern | Location |
 |---|---|
 | Built-in disabled/override lists | `src/constants.ts` |
-| Registration and active-tool enforcement | `src/index.ts` |
-| Launcher-level native suppression | `../../octocode-agent/src/launcher.ts` |
+| Pi-host active-tool enforcement | `src/index.ts` |
 | Unified public contract and delete operation | `src/tools/file-tool.ts` |
 | Exact-edit engine and diff generation | `src/tools/edit-tool.ts` |
 | Atomic-write engine | `src/tools/write-tool.ts` |
@@ -85,7 +86,7 @@ The edit/write modules remain internal engines; only `file` is registered public
 ## Verification contract
 
 - The public palette contains `file` and `bash`, never `edit` or `write`.
-- Both branded launch paths suppress Pi built-ins before session creation; there is no environment opt-out.
+- Direct Pi-extension sessions suppress replaced Pi built-ins through the extension policy.
 - `DISABLED_BUILTIN_TOOL_NAMES` contains `read`, `edit`, `write`, `grep`, `find`, and `ls`.
 - `OVERRIDDEN_BUILTIN_TOOL_NAMES` contains only `bash`.
 - Mixed batches preflight before mutation.

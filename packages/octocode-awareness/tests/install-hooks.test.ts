@@ -21,6 +21,7 @@ function runInstallHooks(args: string[], script = SCRIPT) {
     expect(result.status).toBe(0);
     return JSON.parse(result.stdout) as {
         host: string;
+        profile: string;
         settingsPath: string;
         resultingSettings: {
             version?: number;
@@ -131,11 +132,11 @@ it('reports direct installer validation failures', () => {
       });
       expect(runHooksInstall(['--check'], { cwd: projectDir, hookDir }).payload).toMatchObject({
         ok: false,
-        error: 'hooks check requires --host claude, --host codex, or --host cursor',
+        error: 'hooks check requires --host claude, codex, copilot, cursor, gemini, or opencode',
       });
       expect(runHooksInstall(['--host', 'unknown'], { cwd: projectDir, hookDir }).payload).toMatchObject({
         ok: false,
-        error: 'invalid --host; expected claude, codex, or cursor',
+        error: 'invalid --host; expected claude, codex, copilot, cursor, gemini, or opencode',
       });
       mkdirSync(resolve(projectDir, '.codex'), { recursive: true });
       writeFileSync(resolve(projectDir, '.codex/hooks.json'), '{not json');
@@ -318,10 +319,25 @@ it('installed Codex hook commands run when Node is absent from PATH', () => {
       rmSync(memoryHome, { recursive: true, force: true });
     }
   });
-it('previews Codex hooks in .codex/hooks.json with current SessionEnd support', () => {
-    const projectDir = mkdtempSync(resolve(tmpdir(), 'octocode-codex-hooks-'));
+it('defaults Codex installation to the coordination profile', () => {
+    const projectDir = mkdtempSync(resolve(tmpdir(), 'octocode-codex-coordination-hooks-'));
     try {
       const result = runInstallHooks(['hooks', 'install', '--host', 'codex', '--project-dir', projectDir, '--dry-run']);
+      expect(result.profile).toBe('coordination');
+      expect(Object.keys(result.resultingSettings.hooks ?? {})).toEqual([
+        'PreToolUse',
+        'PostToolUse',
+        'Stop',
+        'SubagentStop',
+      ]);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+it('previews the full Codex profile with current SessionEnd support', () => {
+    const projectDir = mkdtempSync(resolve(tmpdir(), 'octocode-codex-hooks-'));
+    try {
+      const result = runInstallHooks(['hooks', 'install', '--host', 'codex', '--profile', 'full', '--project-dir', projectDir, '--dry-run']);
 
       expect(result.host).toBe('codex');
       expect(result.settingsPath).toBe(resolve(projectDir, '.codex/hooks.json'));
@@ -367,13 +383,12 @@ it('removes misplaced legacy Awareness hooks while preserving unrelated hooks', 
         },
       }));
 
-      const installed = runInstallHooks(['hooks', 'install', '--host', 'codex', '--project-dir', projectDir, '--dry-run']);
+      const installed = runInstallHooks(['hooks', 'install', '--host', 'codex', '--profile', 'full', '--project-dir', projectDir, '--dry-run']);
       const serializedInstall = JSON.stringify(installed.resultingSettings);
       expect(JSON.stringify(installed.resultingSettings.hooks?.PreCompact)).not.toContain('session-end');
       expect(JSON.stringify(installed.resultingSettings.hooks?.SessionEnd)).toContain('session-end');
       expect(serializedInstall).toContain('session-compact');
       expect(serializedInstall).toContain('/tmp/unrelated.sh');
-
       const removed = runInstallHooks(['hooks', 'remove', '--host', 'codex', '--project-dir', projectDir, '--dry-run']);
       const serializedRemove = JSON.stringify(removed.resultingSettings);
       expect(serializedRemove).not.toContain('octocode-awareness');

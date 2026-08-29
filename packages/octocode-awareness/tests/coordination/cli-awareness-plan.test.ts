@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runCli } from '../../src/coordination/cli.js';
 import { openAwarenessStore } from '../../src/coordination/index.js';
+import { writeWorkspacePolicy } from '../../src/workspace-policy.js';
 
 let workspace: string;
 let stdout: string;
@@ -12,6 +13,7 @@ let errSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-lite-cli-'));
+  writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
   process.env.OCTOCODE_DB_PATH = join(workspace, 'octocode.sqlite3');
   stdout = '';
   outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {

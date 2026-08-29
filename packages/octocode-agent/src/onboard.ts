@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { getOctocodeHome } from './utils.js';
+import { getOctocodeHome } from '@octocodeai/octocode-shared/paths';
 import { markSetupDone } from './state.js';
 import { AUTH_PROVIDERS, type AuthProvider } from './auth-providers.js';
 import {
@@ -21,6 +21,7 @@ import {
   section,
   type Painter,
 } from './ui.js';
+import { ensurePrivateDirectory, hardenPrivateFile } from './private-fs.js';
 
 /** Interactive surface the wizard needs; the real one wraps readline. */
 export interface WizardIO {
@@ -70,13 +71,15 @@ export function upsertEnvFile(envPath: string, name: string, value: string): voi
   if (/[\n\r]/.test(value)) {
     throw new Error(`refusing to write ${name}: value contains a newline (not a valid .env value)`);
   }
-  fs.mkdirSync(path.dirname(envPath), { recursive: true, mode: 0o700 });
+  ensurePrivateDirectory(path.dirname(envPath));
+  hardenPrivateFile(envPath);
   let lines = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8').split('\n') : [];
   const keyLine = `${name}=${value}`;
   const idx = lines.findIndex((l) => l.startsWith(`${name}=`) || l.startsWith(`${name} =`));
   if (idx >= 0) lines[idx] = keyLine;
   else lines = [...lines.filter((l) => l.trim() !== ''), keyLine];
   fs.writeFileSync(envPath, lines.join('\n').replace(/\n+$/, '') + '\n', { mode: 0o600 });
+  hardenPrivateFile(envPath);
 }
 
 /** One pick+key sequence; returns the chosen provider or null on abort. */

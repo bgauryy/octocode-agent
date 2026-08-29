@@ -79,11 +79,13 @@ interface AskParams {
 }
 
 export interface AskOutcome {
-  status: 'selected' | 'text' | 'back' | 'cancelled' | 'timed_out' | 'unavailable' | 'multiSelected' | 'form';
+  status: 'selected' | 'text' | 'back' | 'cancelled' | 'timed_out' | 'unavailable' | 'pending' | 'multiSelected' | 'form';
   value?: string;
   label?: string;
   /** multiSelected → string[] of chosen values; form → Record<fieldName, answer>. */
   values?: string[] | Record<string, string>;
+  /** Durable broker request when this prompt must be completed by a non-TUI host. */
+  interaction?: ReturnType<typeof createPendingInteraction>;
 }
 
 function normalizeOptions(raw: AskParams['options']): AskOption[] {
@@ -513,9 +515,11 @@ export async function runAskPrompt(
     freeTextLabel?: string;
     /** When set, renders a '· N of T ·' pagination badge in the header. */
     pagination?: { current: number; total: number };
+    /** Disable durable brokering for presentation-only choices that can safely fall back. */
+    durable?: boolean;
   },
 ): Promise<AskOutcome | undefined> {
-  const request = shouldBrokerInteraction(ctx)
+  const request = params.durable !== false && shouldBrokerInteraction(ctx)
     ? createPendingInteraction(ctx, {
         question: params.question,
         options: params.options.map((option) => ({
@@ -527,6 +531,9 @@ export async function runAskPrompt(
         })),
       })
     : undefined;
+  if (!supportsAskOverlay(ctx)) {
+    return request ? { status: 'pending', interaction: request } : { status: 'unavailable' };
+  }
   const outcome = await runAskOverlay(ctx, params);
   if (request && outcome && outcome.status !== 'timed_out') answerPendingInteraction(request, outcome);
   return outcome;
@@ -994,7 +1001,7 @@ export function registerAskUserTool(
         const fieldHint = fields.length
           ? ` Collect these fields inline: ${fields.map((f) => f.label || f.name).join(', ')}.`
           : '';
-        const interaction = ctx ? createPendingInteraction(ctx, {
+        const interaction = shouldBrokerInteraction(ctx) ? createPendingInteraction(ctx, {
           question,
           options: options.map((option) => ({
             id: option.value,
@@ -1005,19 +1012,23 @@ export function registerAskUserTool(
           })),
           ...(p.timeoutMs !== undefined ? { expiresInMs: p.timeoutMs } : {}),
         }) : undefined;
-        return {
+        return interaction ? {
           content: [{
             type: 'text',
-            text: `[askUser] Structured interaction pending (mode=${mode}, correlation=${interaction?.correlationId ?? 'unavailable'}). The host must submit one matching answer through the InteractionBroker adapter, then drain its durable continuation; do not infer a default.${listHint}${multiHint}${fieldHint}`,
+            text: `[askUser] Structured interaction pending (mode=${mode}, correlation=${interaction.correlationId}). The host must submit one matching answer through the InteractionBroker adapter, then drain its durable continuation; do not infer a default.${listHint}${multiHint}${fieldHint}`,
           }],
           details: {
-            status: interaction ? 'pending' : 'unavailable',
+            status: 'pending',
             mode,
-            ...(interaction ? {
-              interaction,
-              continuation: { version: 1, adapter: 'interaction-broker', resumeOn: ['answer', 'session_start'] },
-            } : {}),
+            interaction,
+            continuation: { version: 1, adapter: 'interaction-broker', resumeOn: ['answer', 'session_start'] },
           },
+        } as unknown as ToolCallResult : {
+          content: [{
+            type: 'text',
+            text: `[askUser] Input prompt unavailable on this host: no durable InteractionBroker answer route is registered. Ask the user inline instead; do not infer a default.${listHint}${multiHint}${fieldHint}`,
+          }],
+          details: { status: 'unavailable', mode, reason: 'interaction-answer-route-unavailable' },
         } as unknown as ToolCallResult;
       }
 

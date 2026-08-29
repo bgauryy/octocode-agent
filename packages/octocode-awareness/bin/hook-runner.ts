@@ -3,11 +3,18 @@ export type { HookRunOptions } from './hook-payload.js';
 export type { HookControlOutcome } from './hook-payload.js';
 export { hookContextEnvelope } from './hook-payload.js';
 export { hookBlockOutcome } from './hook-payload.js';
+export { hookCommandForHostEvent } from './hook-payload.js';
 import { HookRunOptions, INTERNAL_HOOK_HOST, INTERNAL_SKILL_ROOT, hookEventName, normalizeShellHookHost, parsePayload, readStdin, shellHookHost, workspace } from './hook-payload.js';
 import { runPostEdit, runPreEdit } from './hook-edit-events.js';
 import { runNotifyDeliver, runSessionCompact, runSessionEnd, runStopVerify } from './hook-lifecycle.js';
 import { recordHookReceiptBestEffort } from '../src/hook-receipts.js';
 import { AwarenessFeatureConfig, DEFAULT_AWARENESS_CONFIG, loadAwarenessConfig } from '../src/awareness-config.js';
+import {
+  hookCommandEnabled,
+  loadWorkspacePolicy,
+  type AwarenessHookProfile,
+} from '../src/workspace-policy.js';
+import { hookStateUnchanged, recordHookChangeState } from './hook-change-state.js';
 
 function hookFeatures(): AwarenessFeatureConfig {
   try {
@@ -48,16 +55,29 @@ export async function runHookCommand(
     ...(options.host ? { [INTERNAL_HOOK_HOST]: options.host } : {}),
     ...(options.skillRoot ? { [INTERNAL_SKILL_ROOT]: options.skillRoot } : {}),
   };
+  const configuredProfile = process.env.OCTOCODE_HOOK_PROFILE
+    ?? loadWorkspacePolicy(workspace(payload) ?? process.cwd()).policy.hooks.profile;
+  if (!['guard', 'coordination', 'full'].includes(configuredProfile)) {
+    console.error(`octocode-awareness hook profile warning (hooks inert): expected guard, coordination, or full; got ${configuredProfile}`);
+    return 0;
+  }
+  const profile = configuredProfile as AwarenessHookProfile;
+  if (!hookCommandEnabled(profile, command)) return 0;
   const receipt = (status: 'success' | 'failure') => recordHookReceiptBestEffort({
     workspacePath: workspace(payload) ?? process.cwd(),
     host: shellHookHost(payload),
     event: hookEventName(payload) ?? command,
     status,
   });
+  if (command === 'notify-deliver' && hookStateUnchanged(payload)) {
+    receipt('success');
+    recordHookChangeState(payload);
+    return 0;
+  }
   try {
     let exitCode: number;
     switch (command) {
-      case 'pre-edit': exitCode = await runPreEdit(payload); break;
+      case 'pre-edit': exitCode = await runPreEdit(payload, { emitPeerSignal: profile !== 'guard' }); break;
       case 'post-edit': exitCode = await runPostEdit(payload); break;
       case 'stop-verify': exitCode = await runStopVerify(payload, features); break;
       case 'notify-deliver': exitCode = await runNotifyDeliver(payload, features); break;
@@ -66,6 +86,7 @@ export async function runHookCommand(
       default: return 1;
     }
     receipt(exitCode === 1 ? 'failure' : 'success');
+    if (command === 'notify-deliver') recordHookChangeState(payload);
     return exitCode;
   } catch (error) {
     receipt('failure');

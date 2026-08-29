@@ -59,6 +59,16 @@ export type {
   CapabilityDecisionReceiptV1,
 } from './continuity-contracts.js';
 export {
+  AWARENESS_PEER_EVENT_MESSAGE_TYPE,
+  createAwarenessEventConsumer,
+} from './event-consumer.js';
+export type {
+  AwarenessEventConsumerOptions,
+  AwarenessEventObservability,
+  AwarenessEventStore,
+  AwarenessPeerDelivery,
+} from './event-consumer.js';
+export {
   containsSecretLikeText,
   evaluateMemoryRecall,
   MEMORY_EVALUATION_CORPUS_V1,
@@ -155,7 +165,7 @@ export {
 } from './helpers.js';
 
 // Shared agent-tool operation runner
-export { runAwarenessToolOperation } from './tool-operations.js';
+export { ROUTABLE_OPERATIONS, runAwarenessToolOperation } from './tool-operations.js';
 export type {
   AwarenessToolOperation,
   AwarenessToolOperationContext,
@@ -227,7 +237,6 @@ export {
   runPreEditLockGate,
   checkLockConflicts,
   extractHookTargetPaths,
-  installHostHooks,
   EXTERNAL_AGENT_AWARENESS_PROMPT,
   EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS,
   EXTERNAL_AGENT_AWARENESS_MARKER_START,
@@ -246,6 +255,15 @@ export {
   detectAgentHost,
   generateAgentName,
 } from './coordination/index.js';
+export { storageScopeForCommand } from './workspace-policy.js';
+export {
+  generateOpenCodeAwarenessPlugin,
+  inspectOpenCodeAwarenessPlugin,
+  installOpenCodeAwarenessPlugin,
+  openCodeAwarenessPluginPath,
+  removeOpenCodeAwarenessPlugin,
+  OPENCODE_AWARENESS_PLUGIN_FILE,
+} from './opencode-plugin-adapter.js';
 export type {
   AwarenessCommandOutcome,
   AwarenessCommandRequest,
@@ -254,7 +272,6 @@ export type {
   CommandParam,
   CommandParamType,
   HookHost,
-  InstallHost,
   LockConflict,
   PreEditHookOptions,
   PreEditHookResult,
@@ -274,4 +291,10 @@ export type {
   AgentHost,
   OutboxEventV1,
   StoredInteractionV1,
+  AwarenessStorageScope,
 } from './coordination/index.js';
+export type {
+  OpenCodeAwarenessInstallOptions,
+  OpenCodeAwarenessInstallResult,
+  OpenCodeAwarenessPluginOptions,
+} from './opencode-plugin-adapter.js';

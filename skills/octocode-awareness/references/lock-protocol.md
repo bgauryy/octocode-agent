@@ -1,5 +1,7 @@
 # Exclusive Lock And Verification Protocol
 
+Load when overlap is unsafe or non-mergeable and may require exclusivity. This reference step ends here; return to the main skill flow.
+
 Read `plan-task-workflow.md` first. Ordinary writes use advisory work, not locks.
 
 ## Exclusive
@@ -42,4 +44,4 @@ For proven abandonment, mark the exact run `FAILED`; `verify audit` remains read
 
 Presence/lock expiry never moves a live TASK run to PENDING. Task claim expiry is a separate atomic lifecycle that fails its attempt and returns the task to OPEN.
 
-Exit codes: **2** = lock conflict or wait timeout; **1** = verify debt / validation.
+Return to `SKILL.md`. Exit codes: **2** = lock conflict or wait timeout; **1** = verify debt / validation.

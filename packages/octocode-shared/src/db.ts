@@ -11,8 +11,7 @@
  * retry, WAL checkpoint) lives in sqlite.ts; version-gated journal selection in
  * sqlite-version.ts. Requires Node >=22.13.0.
  */
-import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { octocodeDbPath } from './paths.js';
 import { initOctocodeSchema } from './schema.js';
 import {
@@ -21,6 +20,7 @@ import {
   withSqliteBusyRetry,
 } from './sqlite.js';
 import { journalModeForSqliteVersion } from './sqlite-version.js';
+import { hardenSqliteFiles, preparePrivateSqlitePath } from './permissions.js';
 
 // Cache one connection per resolved path so tests and multiple homes stay
 // isolated while the common (single-home) case reuses one handle.
@@ -38,7 +38,7 @@ export function openOctocodeDb(
   const cached = _cache.get(resolved);
   if (cached) return cached;
 
-  if (resolved !== ':memory:') mkdirSync(dirname(resolved), { recursive: true });
+  preparePrivateSqlitePath(resolved);
   const db = new DatabaseSync(resolved);
   try {
     // busy_timeout first so the version read can't lose a first-open race.
@@ -49,6 +49,7 @@ export function openOctocodeDb(
     withSqliteBusyRetry(() => db.exec(`PRAGMA journal_mode = ${journalMode}`));
     db.exec('PRAGMA foreign_keys = ON');
     initOctocodeSchema(db);
+    hardenSqliteFiles(resolved);
     _cache.set(resolved, db);
     return db;
   } catch (error) {

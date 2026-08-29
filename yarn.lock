@@ -5,6 +5,15 @@ __metadata:
   version: 8
   cacheKey: 10c0
 
+"@agentclientprotocol/sdk@npm:1.4.0":
+  version: 1.4.0
+  resolution: "@agentclientprotocol/sdk@npm:1.4.0"
+  peerDependencies:
+    zod: ^3.25.0 || ^4.0.0
+  checksum: 10c0/d2bc6a9e94cd064d8df1a7c37fc44381a767cfeeda663ba8531164980505c29426b88a50b1a5781a8b4b4304e8756ac557e98d7d26c7f7431716ba107ed9594b
+  languageName: node
+  linkType: hard
+
 "@anthropic-ai/sdk@npm:0.91.1":
   version: 0.91.1
   resolution: "@anthropic-ai/sdk@npm:0.91.1"
@@ -1574,7 +1583,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@modelcontextprotocol/client@npm:^2.0.0":
+"@modelcontextprotocol/client@npm:2.0.0, @modelcontextprotocol/client@npm:^2.0.0":
   version: 2.0.0
   resolution: "@modelcontextprotocol/client@npm:2.0.0"
   dependencies:
@@ -1813,7 +1822,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@octocodeai/octocode-shared@workspace:^, @octocodeai/octocode-shared@workspace:packages/octocode-shared":
+"@octocodeai/octocode-shared@npm:0.1.0, @octocodeai/octocode-shared@workspace:^, @octocodeai/octocode-shared@workspace:packages/octocode-shared":
   version: 0.0.0-use.local
   resolution: "@octocodeai/octocode-shared@workspace:packages/octocode-shared"
   dependencies:
@@ -1823,6 +1832,7 @@ __metadata:
     esbuild: "npm:^0.28.2"
     typescript: "npm:^5.9.3"
     vitest: "npm:^4.1.11"
+    yaml: "npm:2.9.0"
   languageName: unknown
   linkType: soft
 
@@ -1858,6 +1868,7 @@ __metadata:
     "@octocodeai/config": "npm:^18.0.1"
     "@octocodeai/octocode-awareness": "npm:^1.3.0"
     "@octocodeai/octocode-engine": "npm:^18.1.2"
+    "@octocodeai/octocode-shared": "npm:0.1.0"
     "@resvg/resvg-js": "npm:^2.6.2"
     "@types/node": "npm:^26.2.0"
     "@vitest/coverage-v8": "npm:^4.1.11"
@@ -3346,6 +3357,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"ajv@npm:8.20.0, ajv@npm:^8.0.0, ajv@npm:^8.17.1":
+  version: 8.20.0
+  resolution: "ajv@npm:8.20.0"
+  dependencies:
+    fast-deep-equal: "npm:^3.1.3"
+    fast-uri: "npm:^3.0.1"
+    json-schema-traverse: "npm:^1.0.0"
+    require-from-string: "npm:^2.0.2"
+  checksum: 10c0/5df9a1c8f83863cde1bd3a9ddb426f599718f88e3dc9153616c79fb28e0be455335830d7f21d745576519f057b371352daa31047b6a33d7036fe08777d60cf2a
+  languageName: node
+  linkType: hard
+
 "ajv@npm:^6.14.0":
   version: 6.15.0
   resolution: "ajv@npm:6.15.0"
@@ -3355,18 +3378,6 @@ __metadata:
     json-schema-traverse: "npm:^0.4.1"
     uri-js: "npm:^4.2.2"
   checksum: 10c0/67966499dd272ecde1c2e467084411132891523d057487587879d39ac04207f4351b7b2324c83198013967fbfa632c1612adc960114a30770fbe07a0773b32c2
-  languageName: node
-  linkType: hard
-
-"ajv@npm:^8.0.0, ajv@npm:^8.17.1":
-  version: 8.20.0
-  resolution: "ajv@npm:8.20.0"
-  dependencies:
-    fast-deep-equal: "npm:^3.1.3"
-    fast-uri: "npm:^3.0.1"
-    json-schema-traverse: "npm:^1.0.0"
-    require-from-string: "npm:^2.0.2"
-  checksum: 10c0/5df9a1c8f83863cde1bd3a9ddb426f599718f88e3dc9153616c79fb28e0be455335830d7f21d745576519f057b371352daa31047b6a33d7036fe08777d60cf2a
   languageName: node
   linkType: hard
 
@@ -6014,17 +6025,24 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "octocode-agent@workspace:packages/octocode-agent"
   dependencies:
+    "@agentclientprotocol/sdk": "npm:1.4.0"
+    "@modelcontextprotocol/client": "npm:2.0.0"
     "@octocodeai/agent-core": "npm:0.1.0"
     "@octocodeai/config": "npm:18.0.1"
     "@octocodeai/octocode-awareness": "npm:1.4.0"
+    "@octocodeai/octocode-shared": "npm:0.1.0"
     "@opentui/core": "npm:0.5.8"
     "@types/node": "npm:^26.2.0"
     "@vitest/coverage-v8": "npm:^4.1.11"
+    ajv: "npm:8.20.0"
     esbuild: "npm:^0.28.2"
     octocode: "npm:18.3.0"
+    openai: "npm:7.8.0"
     typescript: "npm:^5.9.3"
     vitest: "npm:^4.1.11"
     web-tree-sitter: "npm:0.25.10"
+    zod: "npm:4.4.3"
+    zustand: "npm:^5.0.15"
   bin:
     octocode-agent: ./out/octocode-agent.mjs
   languageName: unknown
@@ -6127,6 +6145,33 @@ __metadata:
     zod:
       optional: true
   checksum: 10c0/fde60f66be934e52c61f0ef864817f4f4ee0bc76ac345599c29a6bfa4ffe5a4563a9e3af5fbc5b9c4bf36a3f06a8b3c0bd9f735f94b8019d6018c6b2ec43c0cf
+  languageName: node
+  linkType: hard
+
+"openai@npm:7.8.0":
+  version: 7.8.0
+  resolution: "openai@npm:7.8.0"
+  peerDependencies:
+    "@aws-sdk/credential-provider-node": ">=3.972.0 <4"
+    "@smithy/hash-node": ">=4.3.0 <5"
+    "@smithy/signature-v4": ">=5.4.0 <6"
+    undici: ">=5 <9"
+    ws: ^8.21.0
+    zod: ^3.25 || ^4.0
+  peerDependenciesMeta:
+    "@aws-sdk/credential-provider-node":
+      optional: true
+    "@smithy/hash-node":
+      optional: true
+    "@smithy/signature-v4":
+      optional: true
+    undici:
+      optional: true
+    ws:
+      optional: true
+    zod:
+      optional: true
+  checksum: 10c0/8df536b67b8c8e73c6ba54a7392f489c01531a48cd80a78aa04d2afb6a7a64ae692cb5102bd58e40c6d0b2cd1fd8944d8a489732c05f97bf0991948b4466d6b5
   languageName: node
   linkType: hard
 
@@ -7824,7 +7869,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"zod@npm:^3.25 || ^4.0, zod@npm:^4.2.0, zod@npm:^4.4.3":
+"zod@npm:4.4.3, zod@npm:^3.25 || ^4.0, zod@npm:^4.2.0, zod@npm:^4.4.3":
   version: 4.4.3
   resolution: "zod@npm:4.4.3"
   checksum: 10c0/7ea31b558e88f9faf44f31dd185e2e1cbf51fed3081787fb96cc2534749b50c0acfc6da7f0922a7353ed092dd358c7d50c28ea96c94d04af64191bd33152eca3

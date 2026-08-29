@@ -19,9 +19,25 @@ const defaultStoreFactory: InteractionStoreFactory = (workspace) => process.env[
   ? { createInteraction: () => undefined, answerInteraction: () => undefined, createAuthorizationReceipt: () => undefined, consumeAuthorizationReceipt: () => undefined, listPendingInteractions: () => [], listEvents: () => [], acknowledgeEvent: () => undefined, close: () => undefined }
   : openAwareness({ workspace });
 let storeFactory: InteractionStoreFactory = defaultStoreFactory;
+const durableAnswerRoutes = new WeakMap<object, boolean>();
 
 export function setInteractionStoreFactoryForTests(factory?: InteractionStoreFactory): void {
   storeFactory = factory ?? defaultStoreFactory;
+}
+
+/** Set by the composed host after it exposes a trusted answer submission route. */
+export function configureInteractionBrokerRoute(ctx: PiContext, available: boolean): void {
+  durableAnswerRoutes.set(ctx, available);
+  if (typeof ctx.sessionManager === 'object' && ctx.sessionManager !== null) {
+    durableAnswerRoutes.set(ctx.sessionManager, available);
+  }
+}
+
+function hasDurableAnswerRoute(ctx: PiContext): boolean {
+  return durableAnswerRoutes.get(ctx) === true
+    || (typeof ctx.sessionManager === 'object'
+      && ctx.sessionManager !== null
+      && durableAnswerRoutes.get(ctx.sessionManager) === true);
 }
 
 export function brokerSessionId(ctx: PiContext): string {
@@ -264,5 +280,9 @@ function continuationFromEvent(event: OutboxEventV1, sessionId: string): Interac
 }
 
 export function shouldBrokerInteraction(ctx: PiContext | undefined): ctx is PiContext {
-  return Boolean(ctx && (ctx.mode !== 'tui' || ctx.sessionManager?.getSessionId?.() || ctx.sessionManager?.getSessionFile?.()));
+  return Boolean(
+    ctx
+    && hasDurableAnswerRoute(ctx)
+    && (ctx.mode !== 'tui' || ctx.sessionManager?.getSessionId?.() || ctx.sessionManager?.getSessionFile?.()),
+  );
 }

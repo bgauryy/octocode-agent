@@ -2,7 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { execCli, runPreEditLockGate, type PreEditHookResult, type PreEditHookOptions } from '@octocodeai/octocode-awareness';
+import {
+  execCli,
+  runPreEditLockGate,
+  storageScopeForCommand,
+  type AwarenessStorageScope,
+  type PreEditHookResult,
+  type PreEditHookOptions,
+} from '@octocodeai/octocode-awareness';
 
 const extensionDir = path.dirname(fileURLToPath(import.meta.url));
 const requireFromExtension = createRequire(import.meta.url);
@@ -48,6 +55,10 @@ export function runAwarenessInProcess(args: string[]): AwarenessRunResult {
 /** Run the Awareness pre-edit lock gate in-process (library call, no spawn). */
 export function runAwarenessPreEdit(options: PreEditHookOptions): PreEditHookResult {
   return runPreEditLockGate(options);
+}
+
+export function resolveAwarenessCoordinationScope(workspace: string): AwarenessStorageScope {
+  return storageScopeForCommand('coordination', workspace);
 }
 
 export interface AssetPaths {

@@ -10,6 +10,9 @@ export type RequestId = Brand<string, 'RequestId'>;
 export type EffectId = Brand<string, 'EffectId'>;
 export type BranchId = Brand<string, 'BranchId'>;
 export type PluginId = Brand<string, 'PluginId'>;
+export type WorkerId = Brand<string, 'WorkerId'>;
+export type CorrelationId = Brand<string, 'CorrelationId'>;
+export type PacketId = Brand<string, 'PacketId'>;
 export type Revision = Brand<string, 'Revision'>;
 
 export const sessionId = (value: string): SessionId => value as SessionId;
@@ -21,4 +24,7 @@ export const requestId = (value: string): RequestId => value as RequestId;
 export const effectId = (value: string): EffectId => value as EffectId;
 export const branchId = (value: string): BranchId => value as BranchId;
 export const pluginId = (value: string): PluginId => value as PluginId;
+export const workerId = (value: string): WorkerId => value as WorkerId;
+export const correlationId = (value: string): CorrelationId => value as CorrelationId;
+export const packetId = (value: string): PacketId => value as PacketId;
 export const revision = (value: string): Revision => value as Revision;

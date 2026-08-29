@@ -41,7 +41,8 @@ test('main prompt keeps Awareness signal-driven and assigns one owner per coordi
   const block = SYSTEM_PROMPT.match(/<awareness>\n([\s\S]*?)\n<\/awareness>/)?.[1] ?? '';
   assert.match(block, /plan.*session.*shared/i, 'plan owns both planning scopes');
   assert.match(block, /observed check receipts/i, 'plan completion owns routine verification receipts');
-  assert.match(block, /only automatic model-facing signal.*unread direct peer-message/i, 'only unread direct messages enter model context');
+  assert.match(block, /automatic model-facing output.*terse state-change signals.*safety or verification blocks/i, 'automatic output is limited to terse actionable signals');
+  assert.match(block, /signal never embeds ledger contents/i, 'signals do not inject ledger rows into model context');
   assert.match(block, /advisory presence.*automatic|automatic.*advisory presence/i, 'ordinary file presence is automatic');
   assert.match(block, /mutation.*peer.*locks.*automatic|peer.*locks.*mutation.*automatic/i, 'peer lock enforcement is automatic');
   assert.match(block, /lock.*exceptional/i, 'explicit locks are exceptional');
@@ -49,12 +50,12 @@ test('main prompt keeps Awareness signal-driven and assigns one owner per coordi
   assert.match(block, /memory.*change the approach/i, 'memory remains conditional');
   assert.doesNotMatch(block, /Awareness CLI|inspect.*schema|backend recovery/i, 'backend recovery detail stays out of the always-loaded prompt');
   assert.doesNotMatch(block, /before (?:starting|finishing)|start every task|join once|claim or create|declare touched paths|verify audit/i);
-  assert.doesNotMatch(block, /awarenessPlan|\bclaim\b|awarenessAgents|\bhandoff\b|\bverify\b|\bwork\b/);
+  assert.doesNotMatch(block, /awarenessPlan|\bclaim\b|awarenessAgents|\bverify\b|\bwork\b/);
 
   const words = block.trim().split(/\s+/).length;
   const bullets = block.match(/^- /gm)?.length ?? 0;
   assert.ok(words <= 180, `Awareness stays concise (received ${words} words)`);
-  assert.ok(bullets <= 4, `Awareness has one compact rule set (received ${bullets} bullets)`);
+  assert.ok(bullets <= 5, `Awareness has one compact rule set (received ${bullets} bullets)`);
 
   const repositoryBlock = SYSTEM_PROMPT.match(/<repository>\n([\s\S]*?)\n<\/repository>/)?.[1] ?? '';
   const routingBlock = SYSTEM_PROMPT.match(/<capability_routing>\n([\s\S]*?)\n<\/capability_routing>/)?.[1] ?? '';

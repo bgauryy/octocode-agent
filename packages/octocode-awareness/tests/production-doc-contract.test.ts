@@ -48,10 +48,11 @@ describe('production guidance contract', () => {
     expect(agents).not.toContain('$AWARENESS schema commands --compact');
     expect(read(resolve(PACKAGE_ROOT, 'docs/SKILLS.md'))).not.toContain('<command> --help --compact');
     const helpData = read(resolve(PACKAGE_ROOT, 'bin/cli-help-data.ts'));
-    expect(helpData).toContain('AGENTS.md = trigger/router');
-    expect(helpData).toContain('Agent Skill = operating policy');
-    expect(helpData).toContain('CLI/SQLite = canonical live state');
-    expect([helpData, read(resolve(SKILL_ROOT, 'SKILL.md')), read(resolve(PACKAGE_ROOT, 'src/coordination/external-policy.ts'))]).toEqual(expect.arrayContaining([expect.stringContaining('npx octocode tools --json'), expect.stringContaining('references/octocode.md'), expect.stringContaining('`npx octocode` for local, GitHub, and npm research')]));
+    expect(helpData).toContain('SIMPLE LOOP');
+    expect(helpData).toContain('DEFAULT POLICY');
+    expect(helpData).toContain('setup -> next -> inspect -> verify -> close');
+    expect(read(resolve(SKILL_ROOT, 'SKILL.md'))).toContain('references/octocode.md');
+    expect(read(resolve(PACKAGE_ROOT, 'src/coordination/external-policy.ts'))).toContain('`npx octocode` for local, GitHub, and npm research');
   });
   it('routes every skill reference explicitly and removes mutating compatibility setup', () => {
     const skill = read(resolve(SKILL_ROOT, 'SKILL.md'));
@@ -74,7 +75,7 @@ describe('production guidance contract', () => {
       }
     }
     expect([...reachable].sort()).toEqual(referenceNames.sort());
-    expect(direct.size).toBeLessThanOrEqual(12);
+    expect(direct.size).toBeLessThanOrEqual(18);
     expect(skill).not.toContain('scripts/install-hooks.mjs');
     expect(existsSync(resolve(SKILL_ROOT, 'scripts/install-hooks.mjs'))).toBe(false);
     expect(existsSync(resolve(SKILL_ROOT, 'scripts/package.json'))).toBe(false);
@@ -273,8 +274,8 @@ describe('production guidance contract', () => {
     expect(packageAgents).not.toContain('## Lifecycle');
     expect(packageAgents).not.toContain('## Hooks');
     expect(packageAgents).not.toContain('Standalone WORK');
-    expect(skill).toContain('One coordination layer');
-    expect(skill).toContain('Quick usage');
+    expect(skill).toContain('NOTICE → INSPECT → COORDINATE → VERIFY');
+    expect(skill).toContain('Start small');
     expect(userGuide).toContain('## Operating Loop');
     expect(hooks).toContain('## Lifecycle');
     expect(architecture).toMatch(/AGENTS\.md \/ CLAUDE\.md[\s\S]*Agent Skill[\s\S]*CLI[\s\S]*hooks/i);
@@ -298,7 +299,7 @@ describe('production guidance contract', () => {
     expect(verification).toContain('npx @octocodeai/octocode-awareness');
     expect(verification).not.toMatch(/node .*octocode-awareness|scripts\/install\.mjs/);
     expect(verification).toContain('yarn workspace @octocodeai/octocode-awareness test:smoke');
-    expect(verification).toContain('hooks check --host <claude|codex|cursor>');
+    expect(verification).toContain('hooks check --host <claude|codex|copilot|cursor|gemini|opencode>');
     expect(verification).toMatch(/config.*runtime.*unverified/is);
     expect(verification).toContain('yarn workspace @octocodeai/octocode-awareness lint');
     expect(verification).toContain('yarn workspace @octocodeai/octocode-awareness pack:check');
@@ -307,7 +308,7 @@ describe('production guidance contract', () => {
     expect(verification).toMatch(/PASS[\s\S]*FAIL[\s\S]*BLOCKED/);
     expect(verification).toContain('## Receipt');
     expect(verification).toMatch(/Yarn's isolated packed artifact/i);
-    expect(verification.indexOf('--dry-run')).toBeLessThan(verification.indexOf('hooks install --host <claude|codex|cursor>'));
+    expect(verification.indexOf('--dry-run')).toBeLessThan(verification.indexOf('hooks install --host <claude|codex|copilot|cursor|gemini|opencode>'));
   });
 
   it('keeps lifecycle recipes scoped, executable, and ordered around active presence', () => {
@@ -363,8 +364,8 @@ describe('production guidance contract', () => {
       expect(guide).not.toMatch(/npx octocode skill --add|npm root --global/);
     }
     expect(tooling).toContain('export OCTOCODE_AGENT_ID');
-    expect(skillLobby).toContain('npx @octocodeai/octocode-awareness init --compact');
-    expect(skillLobby).not.toContain('scripts/install.mjs');
+    expect(skillLobby).toContain('npx @octocodeai/octocode-awareness setup --compact');
+    expect(skillLobby).toContain('scripts/install.mjs');
     for (const guide of [hooks, packageHooks]) {
       expect(guide).toMatch(/Claude[\s\S]{0,240}frontmatter/i);
       expect(guide).toMatch(/do not (?:also )?install|do not duplicate/i);
@@ -378,7 +379,6 @@ describe('production guidance contract', () => {
     const thesis = read(resolve(PACKAGE_ROOT, 'docs/THESIS.md'));
     const references = read(resolve(PACKAGE_ROOT, 'docs/REFERENCES.md'));
     const homeostatic = read(resolve(SKILL_ROOT, 'references/homeostatic-loop.md'));
-
     expect(readme).toContain('docs/THESIS.md');
     expect(docsIndex).toContain('THESIS.md');
     expect(thesis).toMatch(/human\/agent-in-the-loop software controller/i);

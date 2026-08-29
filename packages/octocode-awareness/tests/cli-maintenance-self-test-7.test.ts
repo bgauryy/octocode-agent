@@ -85,16 +85,14 @@ it('--help exits 0', () => {
     expect(r.stdout).toContain('octocode-awareness');
     expect(r.stdout).toContain('FIRST RUN');
     expect(r.stdout).toContain('AGENT LOOP');
-    expect(r.stdout).toContain('DISCOVER');
-    expect(r.stdout).toContain('EVIDENCE & REFERENCES');
-    expect(r.stdout).toContain('npx octocode --help');
-    expect(r.stdout).toContain('npx octocode tools --json');
-    expect(r.stdout).toContain('<AGENT_INSTRUCTIONS>');
-    expect(r.stdout).toContain('ask the user immediately before every real install');
-    expect(r.stdout).toContain('never use --host pi');
+    expect(r.stdout).toContain('SIMPLE LOOP');
+    expect(r.stdout).toContain('DEFAULT POLICY');
+    expect(r.stdout).toContain('schema commands --compact');
+    expect(r.stdout).toContain('Preview and ask immediately before a real install');
+    expect(r.stdout).toContain('Pi uses native events');
     expect(r.stdout).not.toContain('octocode-skills');
     expect(r.stdout).toContain('out/skills');
-    expect(r.stdout).toContain('npx @octocodeai/octocode-awareness schema commands --compact');
+    expect(r.stdout).toContain('schema commands --compact');
     expect(Buffer.byteLength(r.stdout, 'utf8')).toBeLessThanOrEqual(3072);
     expect(r.stdout).not.toContain('tell-memory');
     expect(r.stdout).not.toContain('get-memory');
@@ -122,10 +120,10 @@ it('--help --compact returns a short agent guide', () => {
     expect(r.stdout).toMatch(/bundled-skills\(\d+\):/);
     expect(r.stdout).toContain('out/skills');
     expect(r.stdout).toContain('schema commands --compact');
-    expect(r.stdout).toContain('attend -> work start -> work end -> verify mark -> verify audit');
-    expect(r.stdout).toContain('follow attend.next');
-    expect(r.stdout).toContain('refinement set|get|list|delete');
-    expect(r.stdout).toMatch(/exits 0 ok/);
+    expect(r.stdout).toContain('setup -> next -> inspect -> verify -> close');
+    expect(r.stdout).toContain('repository=repo, memory=global, hooks=coordination');
+    expect(r.stdout).toContain('attend|plan|task|work|verify|signal|memory|refinement');
+    expect(r.stdout).toMatch(/exits: 0 ok/);
     expect(r.stdout).not.toContain('<awareness-package>');
     expect(r.stdout.split('\n').filter(Boolean).length).toBeLessThanOrEqual(10);
   });
@@ -136,7 +134,7 @@ it('resolves bundled skills when the CLI is invoked through an npx-style symlink
       symlinkSync(SCRIPT, linkedScript);
       const r = spawnSync(NODE, [linkedScript, '--help', '--compact'], { encoding: 'utf8', timeout: 5000 });
       expect(r.status).toBe(0);
-      expect(r.stdout).toContain('bundled-skills(1):');
+      expect(r.stdout).toContain('bundled-skills(2):');
       expect(r.stdout).toContain('out/skills');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -272,6 +270,11 @@ it('schema list maps to canonical CLI commands', () => {
     expect(parsed.hint).toContain('minimum agent loop');
     expect(parsed.hint).toContain('Follow attend.next');
     expect(parsed.commands.core.attend).toEqual(['<direct>']);
+    expect(parsed.commands.core.setup).toEqual(['<direct>']);
+    expect(parsed.commands.core.next).toEqual(['<direct>']);
+    expect(parsed.commands.core.inspect).toEqual(['<direct>']);
+    expect(parsed.commands.core.verify).toEqual(expect.arrayContaining(['<direct>', 'audit', 'mark']));
+    expect(parsed.commands.core.close).toEqual(['<direct>']);
     expect(parsed.commands.core.plan).toEqual(expect.arrayContaining(['create', 'status']));
     expect(parsed.commands.core.task).toContain('claim');
     expect(parsed.commands.core).not.toHaveProperty('wiki');

@@ -1,5 +1,7 @@
 # Plan, Task, And Standalone WORK
 
+Load when a shared plan, claimed task, or standalone work declaration is needed. This reference step ends here; return to the main skill flow.
+
 One durable queue exists: plan `tasks`. Never create "today's tasks" in Markdown, memory, or refinements. Inspect attend/Ready/Claimed/Verify; claim a matching task or open explicit Work with reason, files, and test plan.
 
 ## Lead: create shared work
@@ -45,4 +47,4 @@ Dependencies and ACTIVE plan status derive readiness; never set READY manually.
   --message "reviewed" --compact
 ```
 
-Add `--exclusive` only for sensitive work. A new explicit start creates a new run; only explicit `--run-id` or a host hook extends one.
+Return to `SKILL.md`. Add `--exclusive` only for sensitive work; only explicit `--run-id` or a host hook extends a run.

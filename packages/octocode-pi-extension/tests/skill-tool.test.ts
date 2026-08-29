@@ -99,9 +99,11 @@ test('discoverSkills scans the common ecosystem roots (claude/cursor/codex/octoc
   makeSkillDir(path.join(cwd, '.octocode', 'skills'), 'octo-skill', 'From project octocode.');
   makeSkillDir(path.join(cwd, '.pi', 'skills'), 'pi-skill', 'From project pi.');
   makeSkillDir(path.join(home, '.claude', 'skills'), 'home-claude-skill', 'From user claude.');
+  makeSkillDir(path.join(home, '.agents', 'skills'), 'home-agents-skill', 'From user agents.');
   makeSkillDir(path.join(home, '.pi', 'agent', 'skills'), 'home-pi-skill', 'From user pi.');
   const bySource = Object.fromEntries(discoverSkills(cwd, undefined, home).map((s) => [s.name, s.source]));
   assert.equal(bySource['claude-skill'], 'project:claude');
+  assert.equal(bySource['home-agents-skill'], 'user:agents');
   assert.equal(bySource['cursor-skill'], 'project:cursor');
   assert.equal(bySource['codex-skill'], 'project:codex');
   assert.equal(bySource['octo-skill'], 'project:octocode');
@@ -123,7 +125,7 @@ test('discoverSkills dedupes by NAME across roots — most-authoritative root wi
   assert.equal(matches[0]!.source, 'project');
 });
 
-test('discoverSkills dedupes names case-insensitively', () => {
+test('discoverSkills rejects names that violate Agent Skills lowercase naming', () => {
   const cwd = tmpWorkspace();
   const home = tmpWorkspace();
   makeSkillDir(path.join(cwd, '.agents', 'skills'), 'Release-Check', 'Project version.');
@@ -132,7 +134,7 @@ test('discoverSkills dedupes names case-insensitively', () => {
     .filter((skill) => skill.name.toLowerCase() === 'release-check');
 
   assert.equal(matches.length, 1);
-  assert.equal(matches[0]!.description, 'Project version.');
+  assert.equal(matches[0]!.description, 'User copy.');
 });
 
 test('discoverSkills skips directories without SKILL.md and missing roots without throwing', () => {
@@ -231,12 +233,12 @@ test('type:load action:load returns SKILL.md content, directory, and shipped fil
 
 test('type:load is default when type field omitted — load action also default', async () => {
   const cwd = tmpWorkspace();
-  makeSkillDir(path.join(cwd, '.agents', 'skills'), 'Demo-Flow', 'Demo.');
+  makeSkillDir(path.join(cwd, '.agents', 'skills'), 'demo-flow', 'Demo.');
   const def = await makeTool();
   // No type field, no action field — should default to type:load action:load
   const res = await run(def, q([{ reasoning: 'Need the demo.', name: 'demo-flow', reason: 'The current task needs the demo workflow.' }]), cwd);
   assert.equal(res.isError ?? false, false);
-  assert.match((res.content[0] as { text: string }).text, /skill: Demo-Flow/);
+  assert.match((res.content[0] as { text: string }).text, /skill: demo-flow/);
 });
 
 test('type:load action:load requires a user-visible trigger reason', async () => {

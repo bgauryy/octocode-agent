@@ -13,6 +13,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { ensurePrivateDirectory, writePrivateFileAtomic } from './private-fs.js';
 
 /** Current onboarding-flow version — bump when `auth login`/`setup --fix` change shape. */
 export const AGENT_STATE_VERSION = 1;
@@ -37,10 +38,10 @@ export function readAgentState(home: string): AgentState {
 
 /** Merge-patch the state file (dir 0700, file 0600). Returns the written path. */
 export function writeAgentState(home: string, patch: Partial<AgentState>): string {
-  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+  ensurePrivateDirectory(home);
   const merged = { ...readAgentState(home), ...patch };
   const file = statePath(home);
-  fs.writeFileSync(file, JSON.stringify(merged, null, 2) + '\n', { mode: 0o600 });
+  writePrivateFileAtomic(file, JSON.stringify(merged, null, 2) + '\n');
   return file;
 }
 
@@ -111,9 +112,9 @@ export function writeBreadcrumb(
 ): string | null {
   try {
     const file = breadcrumbFile(home, termId);
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    ensurePrivateDirectory(home);
     const body: TerminalBreadcrumb = { ...entry, savedAt: new Date().toISOString() };
-    fs.writeFileSync(file, JSON.stringify(body, null, 2) + '\n');
+    writePrivateFileAtomic(file, JSON.stringify(body, null, 2) + '\n');
     return file;
   } catch {
     return null;

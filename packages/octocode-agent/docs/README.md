@@ -4,6 +4,11 @@ Docs in this directory belong to the branded native launcher package. Keep nativ
 
 | Document | Owns |
 |---|---|
+| [../ARCHITECTURE.md](../ARCHITECTURE.md) | Native package ownership, composition boundaries, and dependency rules. |
+| [HEADLESS.md](HEADLESS.md) | One-shot, JSON, RPC, prompt, cache, tool, MCP, and skill behavior. |
+| [ACP.md](ACP.md) | ACP stdio lifecycle, cancellation, signal, and stop-reason semantics. |
+| [SETTINGS.md](SETTINGS.md) | Native `/settings` usage, security boundary, editable values, and current limits. |
+| [PI_INTEGRATION.md](PI_INTEGRATION.md) | Historical launcher-to-Pi boundary and current parity-oracle role. |
 | [coding-agent-failure-modes.md](coding-agent-failure-modes.md) | Research inventory of common coding-agent failures. |
 | [coding-agent-mistakes-prevention.md](coding-agent-mistakes-prevention.md) | Prevention checklist mapped to agent/harness behavior. |
 

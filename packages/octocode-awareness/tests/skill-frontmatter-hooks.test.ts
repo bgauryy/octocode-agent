@@ -47,13 +47,19 @@ describe('SKILL.md hook frontmatter', () => {
     expect(fm).not.toContain('scripts/hooks/harness-guard.sh');
   });
 
-  it('captures before compaction and handles failed writes', () => {
+  it('registers every package-owned Claude lifecycle edge and lets the workspace profile no-op disabled commands', () => {
     const fm = frontmatter(SKILL_MD);
     expect(fm).toContain('PreCompact:');
+    expect(fm).toContain('PostCompact:');
     expect(fm).toContain('scripts/hooks/session-compact.sh');
     expect(fm).toContain('PostToolUseFailure:');
     expect(fm).toContain('scripts/hooks/post-edit.sh');
     expect(fm).toContain('SubagentStart:');
+    expect(fm).toContain('UserPromptSubmit:');
+    expect(fm).toContain('Notification:');
     expect(fm).toContain('scripts/hooks/notify-deliver.sh');
+    expect(fm).toContain('SessionEnd:');
+    expect(fm).toContain('scripts/hooks/session-end.sh');
+    expect(fm).not.toContain('SessionStart:');
   });
 });

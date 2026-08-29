@@ -6,26 +6,124 @@ import { TransactionalSessionStore, importLegacySession, revision, sessionId } f
 
 import { FileSessionRecordPort, JsonlLegacySessionSource } from '../src/native-session-store.js';
 
+function storedRecord(id: string, revisionValue: string): string {
+  const count = Number(revisionValue);
+  return JSON.stringify({
+    schemaVersion: 1,
+    sessionId: id,
+    revision: revisionValue,
+    events: Array.from({ length: count }, (_, index) => {
+      const sequence = index + 1;
+      return {
+        schemaVersion: 1,
+        sessionId: id,
+        eventId: `${id}:${sequence}`,
+        revision: String(sequence),
+        sequence,
+        timestamp: sequence,
+        visibility: 'internal',
+        event: sequence === 1
+          ? { type: 'session.created' }
+          : { type: 'custom.appended', kind: 'test.marker', value: sequence },
+      };
+    }),
+  });
+}
+
 describe('native filesystem session store', () => {
   it('commits atomically and rejects stale durable revisions', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-session-'));
     const port = new FileSessionRecordPort(dir);
+    fs.chmodSync(dir, 0o755);
     const id = sessionId('session-1');
-    await port.commit(id, revision('0'), revision('1'), JSON.stringify({ schemaVersion: 1, sessionId: id, revision: revision('1'), events: [] }));
-    await expect(port.commit(id, revision('0'), revision('2'), JSON.stringify({ schemaVersion: 1, sessionId: id, revision: revision('2'), events: [] }))).rejects.toThrow(/revision/i);
+    await port.commit(id, revision('0'), revision('1'), storedRecord(id, '1'));
+    await expect(port.commit(id, revision('0'), revision('2'), storedRecord(id, '2'))).rejects.toThrow(/revision/i);
     expect((await port.read(id))?.recovered).toBe(false);
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(port.pathFor(id)).mode & 0o777).toBe(0o600);
+  });
+
+  it('admits only one concurrent writer for the same durable revision', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-session-'));
+    const port = new FileSessionRecordPort(dir);
+    const id = sessionId('session-1');
+    await port.commit(id, revision('0'), revision('1'), storedRecord(id, '1'));
+
+    const results = await Promise.allSettled([
+      port.commit(id, revision('1'), revision('2'), storedRecord(id, '2')),
+      port.commit(id, revision('1'), revision('2'), storedRecord(id, '2')),
+    ]);
+
+    expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+    expect(results.find(({ status }) => status === 'rejected')).toMatchObject({ reason: { category: 'session-conflict' } });
+  });
+
+  it('fails closed without changing the primary when a session lock already exists', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-session-'));
+    const port = new FileSessionRecordPort(dir);
+    const id = sessionId('session-1');
+    const first = storedRecord(id, '1');
+    await port.commit(id, revision('0'), revision('1'), first);
+    fs.writeFileSync(port.lockPathFor(id), 'held', { mode: 0o600 });
+
+    await expect(port.commit(id, revision('1'), revision('2'), storedRecord(id, '2'))).rejects.toMatchObject({ category: 'session-conflict' });
+    expect(fs.readFileSync(port.pathFor(id), 'utf8')).toBe(first);
   });
 
   it('recovers a valid backup after primary corruption', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-session-'));
     const port = new FileSessionRecordPort(dir);
     const id = sessionId('session-1');
-    const first = JSON.stringify({ schemaVersion: 1, sessionId: id, revision: revision('1'), events: [] });
+    const first = storedRecord(id, '1');
     await port.commit(id, revision('0'), revision('1'), first);
-    await port.commit(id, revision('1'), revision('2'), JSON.stringify({ schemaVersion: 1, sessionId: id, revision: revision('2'), events: [] }));
+    await port.commit(id, revision('1'), revision('2'), storedRecord(id, '2'));
     fs.writeFileSync(port.pathFor(id), '{corrupt');
     const recovered = await port.read(id);
     expect(recovered).toEqual({ content: first, recovered: true });
+  });
+
+  it('recovers a valid backup when the primary is missing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-session-'));
+    const port = new FileSessionRecordPort(dir);
+    const id = sessionId('session-1');
+    const first = storedRecord(id, '1');
+    await port.commit(id, revision('0'), revision('1'), first);
+    await port.commit(id, revision('1'), revision('2'), storedRecord(id, '2'));
+    fs.unlinkSync(port.pathFor(id));
+
+    const recovered = await port.read(id);
+
+    expect(recovered).toEqual({ content: first, recovered: true });
+    expect(fs.readFileSync(port.pathFor(id), 'utf8')).toBe(first);
+  });
+
+  it('does not promote a backup with an invalid event union', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-session-'));
+    const port = new FileSessionRecordPort(dir);
+    const id = sessionId('session-1');
+    const corruptPrimary = '{corrupt';
+    const invalidBackup = JSON.stringify({
+      schemaVersion: 1,
+      sessionId: id,
+      revision: '1',
+      events: [{
+        schemaVersion: 1,
+        sessionId: id,
+        eventId: 'bad:1',
+        revision: '1',
+        sequence: 1,
+        timestamp: 1,
+        visibility: 'internal',
+        event: { type: 'future.event' },
+      }],
+    });
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(port.pathFor(id), corruptPrimary);
+    fs.writeFileSync(port.backupPathFor(id), invalidBackup);
+
+    await expect(port.read(id)).rejects.toThrow(/session record/i);
+    expect(fs.readFileSync(port.pathFor(id), 'utf8')).toBe(corruptPrimary);
   });
 
   it('imports a legacy JSONL source without changing its bytes', async () => {

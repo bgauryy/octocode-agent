@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { existsSync,mkdirSync,readFileSync,realpathSync,writeFileSync } from 'node:fs';
-import { dirname,resolve } from 'node:path';
+import { readFileSync,realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AWARENESS_COMMANDS } from './commands-spec.js';
 import { dispatchAwarenessCommand,type AwarenessCommandRequest } from './dispatch.js';
@@ -12,8 +12,8 @@ import {
 } from './external-policy.js';
 import { runPreEditLockGate,type HookHost } from './hooks.js';
 import { isEmbeddingEnabled,openAwarenessStore } from './index.js';
-
-export type InstallHost = 'claude' | 'codex' | 'cursor';
+import { parseStorageScope } from '../storage-scope.js';
+import { storageScopeForCommand } from '../workspace-policy.js';
 
 interface ParsedArgs {
   command?: string;
@@ -83,13 +83,13 @@ function print(value: unknown): void {
 }
 
 function usage(): string {
-  return `octocode-awareness <command> [action]\n\nCommands:\n  guide                 print canonical external-agent usage policy\n  instructions export   emit reusable prompt or AGENTS.md instructions\n  status [--stale-after]\n  schema [commands|list|command --name <noun>] entities and command shapes\n  plan create|list|show|done|abandon\n  task add|list|ready|show|depend|claim|heartbeat|release|done|reopen\n  lock acquire|wait|prune|release|list\n  work start|touch|list|show|end manual advisory file presence\n  handoff add|list|clear manual notes for later agents\n  agent join|touch|leave|list [--stale-after]\n  message send|list|read|prune\n  check audit|mark      verify-gate receipt flow\n  memory store|store-verified|recall|recall-verified|evaluate|list|reindex|forget|prune\n  memory recall --semantic  cosine recall via OCTOCODE_EMBED_CMD (falls back to lexical)\n  hooks pre-edit        JSON lock-conflict gate; exits 2 when another agent owns a lock\n  hooks install         writes the optional pre-edit hook for claude|codex|cursor; use --dry-run first\n\nInstruction export:\n  instructions export [--format prompt|agents-md|json]\n  agents-md includes stable markers for idempotent replacement; output is stdout only\n\nHook install:\n  hooks install --host claude|cursor|codex --project-dir <repo> [--cli <path>] [--dry-run]\n  writes .claude/settings.json, .cursor/hooks.json, or .codex/hooks.json\n\nGlobal flags:\n  --workspace <path>  Workspace root, default cwd\n  --db <path>         SQLite database path`;
+  return `octocode-awareness <command> [action]\n\nCommands:\n  guide                 print canonical external-agent usage policy\n  instructions export   emit reusable prompt or AGENTS.md instructions\n  status [--stale-after]\n  schema [commands|list|command --name <noun>] entities and command shapes\n  plan create|list|show|done|abandon\n  task add|list|ready|show|depend|claim|heartbeat|release|done|reopen\n  lock acquire|wait|prune|release|list\n  work start|touch|list|show|end manual advisory file presence\n  handoff add|list|clear manual notes for later agents\n  agent join|touch|leave|list [--stale-after]\n  message send|list|read|prune\n  check audit|mark      verify-gate receipt flow\n  memory store|store-verified|recall|recall-verified|evaluate|list|reindex|forget|prune\n  memory recall --semantic  cosine recall via OCTOCODE_EMBED_CMD (falls back to lexical)\n  hooks pre-edit        JSON lock-conflict gate; exits 2 when another agent owns a lock\n  hooks install         owned by the root hooks command, not this coordination layer\n\nInstruction export:\n  instructions export [--format prompt|agents-md|json]\n  agents-md includes stable markers for idempotent replacement; output is stdout only\n\nGlobal flags:\n  --workspace <path>       Workspace root, default cwd\n  --db-scope repo|global  Explicit override; default comes from .octocode/awareness.json\n  --db <path>              Explicit database path; overrides --db-scope`;
 }
 function hasHelpFlag(parsed: ParsedArgs): boolean {
   return parsed.command === 'help' || parsed.command === '--help' || parsed.action === 'help' || parsed.action === '--help' || parsed.flags.has('help');
 }
 
-const GLOBAL_FLAGS = ['workspace', 'db', 'help'] as const;
+const GLOBAL_FLAGS = ['workspace', 'db-scope', 'db', 'help'] as const;
 const CLI_ONLY_ACTION_FLAGS: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
   guide: { '': ['json'] },
   instructions: { export: ['format'] },
@@ -147,10 +147,6 @@ function readJsonInput(flags: Map<string, string | true>): unknown {
 
 function defaultHookAgentId(host: string): string {
   return process.env.OCTOCODE_AGENT_ID || `${host || 'hook'}:${process.pid}`;
-}
-
-function quoteShell(value: string): string {
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 /**
@@ -223,34 +219,6 @@ function buildCommandParams(parsed: ParsedArgs): Record<string, unknown> {
   }
 }
 
-export function installHostHooks(params: { host: InstallHost; projectDir: string; cliPath: string; dryRun: boolean }): { ok: boolean; host: InstallHost; settingsPath: string; resultingSettings: unknown; command: string; dryRun: boolean } {
-  const settingsByHost: Record<InstallHost, { dir: string; file: string; matcher: string }> = {
-    claude: { dir: '.claude', file: 'settings.json', matcher: '^(?:Write|Edit|MultiEdit|NotebookEdit)$' },
-    codex: { dir: '.codex', file: 'hooks.json', matcher: '^(?:apply_patch|Write|Edit)$' },
-    cursor: { dir: '.cursor', file: 'hooks.json', matcher: '^(?:Write|Edit|StrReplace|Delete|MultiEdit|NotebookEdit|apply_patch|ApplyPatch)$' },
-  };
-  const spec = settingsByHost[params.host];
-  const settingsPath = resolve(params.projectDir, spec.dir, spec.file);
-  const current = existsSync(settingsPath) ? JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown> : {};
-  const hooks = current.hooks && typeof current.hooks === 'object' ? current.hooks as Record<string, unknown[]> : {};
-  const command = `${quoteShell(process.execPath)} ${quoteShell(resolve(params.cliPath))} hooks pre-edit --host ${params.host} --workspace ${quoteShell(resolve(params.projectDir))}`;
-  const entry = {
-    matcher: spec.matcher,
-    hooks: [{ type: 'command', command, timeout: 5 }],
-  };
-  const existing = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [];
-  hooks.PreToolUse = [
-    ...existing.filter((candidate) => !JSON.stringify(candidate).includes('octocode-awareness') && !JSON.stringify(candidate).includes(' hooks pre-edit ')),
-    entry,
-  ];
-  const resultingSettings = { ...current, hooks };
-  if (!params.dryRun) {
-    mkdirSync(dirname(settingsPath), { recursive: true });
-    writeFileSync(settingsPath, JSON.stringify(resultingSettings, null, 2) + '\n');
-  }
-  return { ok: true, host: params.host, settingsPath, resultingSettings, command, dryRun: params.dryRun };
-}
-
 export function runCli(argv: string[], io: { write?: (chunk: string) => void } = {}): number {
   const previousWriter = currentWriter;
   if (io.write) currentWriter = io.write;
@@ -292,20 +260,18 @@ function runCliInner(argv: string[], write: (chunk: string) => void): number {
   if (parsed.command === 'hooks') {
     switch (parsed.action) {
       case 'install': {
-        const host = (getFlag(parsed.flags, 'host') ?? 'claude') as InstallHost;
-        if (!['claude', 'codex', 'cursor'].includes(host)) throw new Error('hooks install --host must be claude, codex, or cursor');
-        print(installHostHooks({
-          host,
-          projectDir: getFlag(parsed.flags, 'project-dir') ?? process.cwd(),
-          cliPath: getFlag(parsed.flags, 'cli') ?? process.argv[1]!,
-          dryRun: parsed.flags.has('dry-run'),
-        }));
-        return 0;
+        throw new Error('hooks installation is owned by the root hooks install command');
       }
       case 'pre-edit': {
+        const hookWorkspace = getFlag(parsed.flags, 'workspace') ?? process.cwd();
         const result = runPreEditLockGate({
-          workspace: getFlag(parsed.flags, 'workspace'),
+          workspace: hookWorkspace,
           dbPath: getFlag(parsed.flags, 'db'),
+          scope: storageScopeForCommand(
+            'coordination',
+            hookWorkspace,
+            getFlag(parsed.flags, 'db-scope') ? parseStorageScope(getFlag(parsed.flags, 'db-scope')) : undefined,
+          ),
           agentId: getFlag(parsed.flags, 'agent-id') ?? defaultHookAgentId(getFlag(parsed.flags, 'host') ?? 'generic'),
           host: (getFlag(parsed.flags, 'host') ?? 'generic') as HookHost,
           event: readJsonInput(parsed.flags),
@@ -318,9 +284,15 @@ function runCliInner(argv: string[], write: (chunk: string) => void): number {
     }
   }
 
+  const commandWorkspace = getFlag(parsed.flags, 'workspace') ?? process.cwd();
   const aw = openAwarenessStore({
-    workspace: getFlag(parsed.flags, 'workspace'),
+    workspace: commandWorkspace,
     dbPath: getFlag(parsed.flags, 'db'),
+    scope: storageScopeForCommand(
+      'coordination',
+      commandWorkspace,
+      getFlag(parsed.flags, 'db-scope') ? parseStorageScope(getFlag(parsed.flags, 'db-scope')) : undefined,
+    ),
   });
 
   try {

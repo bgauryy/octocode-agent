@@ -73,6 +73,12 @@ test('validation rejects an invalid skill name', () => {
   if (!v.ok) assert.equal(v.reason, 'invalid-name');
 });
 
+test('validation rejects a frontmatter name that does not match its directory name', () => {
+  const v = validateSkill({ ...GOOD, skillMd: GOOD.skillMd.replace('name: release-checklist', 'name: other-skill') });
+  assert.equal(v.ok, false);
+  if (!v.ok) assert.equal(v.reason, 'invalid-frontmatter');
+});
+
 test('validation rejects a missing reason', () => {
   const v = validateSkill({ ...GOOD, reason: '  ' });
   assert.equal(v.ok, false);
@@ -86,7 +92,7 @@ test('validation rejects missing frontmatter', () => {
 });
 
 test('validation rejects a too-thin body', () => {
-  const v = validateSkill({ ...GOOD, skillMd: `---\nname: x-skill\ndescription: d\n---\n\nno heading` });
+  const v = validateSkill({ ...GOOD, name: 'x-skill', skillMd: `---\nname: x-skill\ndescription: d\n---\n\nno heading` });
   assert.equal(v.ok, false);
   if (!v.ok) assert.equal(v.reason, 'invalid-structure');
 });
@@ -98,7 +104,7 @@ test('registerSkill rejects invalid skills (validation gate)', () => {
 
 test('registerSkill writes sandboxed helper files but blocks path escapes', () => {
   const res = registerSkill(
-    { ...GOOD, name: 'with-scripts', files: [{ relPath: 'scripts/run.sh', content: 'echo hi' }, { relPath: '../escape.sh', content: 'bad' }] },
+      { ...GOOD, name: 'with-scripts', skillMd: GOOD.skillMd.replace('name: release-checklist', 'name: with-scripts'), files: [{ relPath: 'scripts/run.sh', content: 'echo hi' }, { relPath: '../escape.sh', content: 'bad' }] },
     dir,
   );
   assert.ok(res.ok);

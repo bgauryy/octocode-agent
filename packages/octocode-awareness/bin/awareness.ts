@@ -13,7 +13,9 @@ import { cmdGetMemory, cmdRefineGet, cmdRefineSet, cmdReflect, cmdTellMemory } f
 import { cmdAuditUnverified, cmdPreFlightIntent, cmdReleaseFileLock, cmdVerify, cmdWork } from './cli-work.js';
 import { cmdExportHarness, cmdForget, cmdMemoryLifecycle, cmdPlan, cmdRefineDelete, cmdTask } from './cli-plans.js';
 import { cmdAttend, cmdDeveloperReview, cmdDocStaleness, cmdDocsCatalog, cmdQuery } from './cli-repo.js';
-import { cmdAwarenessConfig } from './cli-config.js';
+import { cmdAwarenessConfig, cmdWorkspacePolicy } from './cli-config.js';
+import { parseStorageScope } from '../src/storage-scope.js';
+import { storageScopeForCommand } from '../src/workspace-policy.js';
 import { runCli as runCoordinationCli } from '../src/coordination/cli.js';
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
@@ -42,11 +44,12 @@ if (rawArgv.length === 0 || rawArgv.includes('--help') || rawArgv.includes('-h')
   process.exit(0);
 }
 
-export const { dbPath: globalDb, filtered: filteredArgv } = extractGlobalDb(rawArgv);
+export const { dbPath: globalDb, dbScope: globalDbScope, filtered: filteredArgv } = extractGlobalDb(rawArgv);
 export const { command, rest } = selectCommand(filteredArgv);
 setActiveCommand(command ?? '');
 export const args = parseArgs(rest ?? []);
 if (globalDb) args['db'] = globalDb;
+if (globalDbScope) args['db_scope'] = globalDbScope;
 
 // Unknown flags are hard errors — a silently ignored flag reads as "it worked".
 if (command && KNOWN_FLAGS[command]) {
@@ -68,7 +71,16 @@ if (command && KNOWN_FLAGS[command]) {
 }
 if (command && command !== UNKNOWN_COMMAND) validateFlagValues(args);
 
-export const dbPath = resolveDbPath(globalDb ?? null);
+export const workspacePath = typeof args['workspace'] === 'string' ? args['workspace'] : process.cwd();
+export const storageScope = storageScopeForCommand(
+  command ?? '',
+  workspacePath,
+  globalDbScope ? parseStorageScope(globalDbScope) : undefined,
+);
+export const dbPath = resolveDbPath(globalDb ?? null, {
+  scope: storageScope,
+  workspace: workspacePath,
+});
 export const compact = args['compact'] === true || process.env['OCTOCODE_AWARENESS_COMPACT'] === '1';
 export const opts: EmitOptions = { compact };
 
@@ -104,12 +116,13 @@ if (command === 'schema') {
 }
 
 if (command === 'awareness-config') process.exit(cmdAwarenessConfig(args, opts));
+if (command === 'workspace-policy') process.exit(cmdWorkspacePolicy(args, opts));
 
 if (command === 'hook-run') {
   // Hooks always write to the canonical store; a `--db` here was silently
   // ignored (edits would land in the real DB regardless), which is a footgun.
   // Fail loudly instead of misleading the caller.
-  if (globalDb) die('hook run ignores --db: hooks always use the canonical store. Remove --db, or set OCTOCODE_MEMORY_HOME to relocate the store.');
+  if (globalDb || globalDbScope) die('hook run ignores --db and --db-scope: hooks always use the canonical store. Remove the flag, or set OCTOCODE_MEMORY_HOME to relocate the store.');
   process.exit(await runHookCommand(String(args._[0] ?? 'help')));
 }
 

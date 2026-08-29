@@ -4,7 +4,7 @@
 
 ## Decision
 
-`settings.html` is the single human-facing settings control center for native `octocode-agent` and the supported Pi extension. All supported interactive configuration must be discoverable and editable there. Terminal commands can open or deep-link the page and automation can use the same typed settings service, but neither path owns a separate configuration contract.
+`settings.html` is the single human-facing settings control center owned by native `octocode-agent`. During the bounded comparison window, the frozen Pi oracle projects the same canonical settings through an adapter. All supported interactive configuration must be discoverable and editable in the native page. Terminal commands can open or deep-link it and automation can use the same typed settings service, but neither path owns a separate configuration contract.
 
 The page must add first-class **Models**, **Hooks**, and **Plugins** sections. Models manages default provider/model selection, model availability and provenance, custom providers, custom models, compatibility options, and supported `models.json` sources. Hooks and Plugins manage discovery, provenance, exact-hash review, enablement, compatibility, permissions, contributions, health, and redacted diagnostics.
 
@@ -12,7 +12,22 @@ The HTML page is an adapter over canonical agent-core settings contracts. Agent 
 
 ## Current-state evidence
 
-The inspected 2026-08-27 working tree already implements a strong starting point in `packages/octocode-pi-extension/src/tools/mcp-html.ts` and `docs/SETTINGS.md`:
+The inspected 2026-08-28 working tree has two bounded implementations, neither of which satisfies this document's complete acceptance criteria.
+
+Native `octocode-agent` now provides:
+
+- one central slash-command catalog used by routing, help, and composer completion;
+- `/settings [section]`, backed by a process-owned loopback-only server and deep-link anchors;
+- Host and Origin validation, a per-page action token, POST-only bounded JSON, restrictive CSP, no-store and nosniff headers, HTML escaping, and an allowlisted public projection;
+- typed, revision-checked global mutations for `theme` and `defaultModel`, classified as applying on the next session; and
+- one core `SettingsRegistry`/`SettingsService` persistence bridge shared by runtime model selection and the native page, with rollback when the atomic file commit fails;
+- a native extension-controller projection for hook and plugin discovery/activation counts; and
+- focused controller, slash-command, launcher, desktop/mobile browser, and headless regression checks;
+- a real browser save plus focus and ARIA checks, Anthropic/provider credential visibility, and a 390-by-844 layout check with no horizontal overflow.
+
+This native slice is intentionally incomplete. The registry/service does not own launcher config commands, model-source transactions, automation, or the temporary Pi projection. Effective-catalog validation and the complete Models, MCP, Skills, backup, import, provenance, and recovery workflows remain open. Hooks and Plugins still need exact review, capability-grant, revoke, health, and contribution-management workflows. See `evidence/settings-control-center-2026-08-28.md` and `evidence/real-runtime-surface-eval-2026-08-28.md`.
+
+The Pi extension starting point remains in `packages/octocode-pi-extension/src/tools/mcp-html.ts` and its settings documentation:
 
 - `/settings` generates a loopback-only `settings.html` page.
 - The page has eight navigation sections: Runtime, Commands, Connections, Add server, Discovery, Agent context, Skills, and Overrides.
@@ -35,8 +50,8 @@ This RFC generalizes the existing page. It does not create a second settings sit
 | `packages/octocode-agent-core/src/settings/` | `SettingsRegistry`, `SettingsService`, precedence, validation, optimistic concurrency, and redacted projections |
 | `packages/octocode-agent-core/src/models/` | Effective model catalog projection, source merging, default-model validation, and `models.json` import/export contracts |
 | `packages/octocode-agent-core/src/hooks/` and `plugins/` | Redacted catalog/settings projections, trust state, enablement, compatibility, health, and typed mutations |
-| `packages/octocode-agent/src/settings/` | Native filesystem/config adapters and browser composition |
-| `packages/octocode-agent/src/settings/html/` | HTML view, local action routes, section renderers, client behavior, and static assets |
+| `packages/octocode-agent/src/native-settings-service.ts` and `native-settings.ts` | Native core-service persistence bridge and transactional file adapter |
+| `packages/octocode-agent/src/native-settings-page.ts` | HTML view, protected local action routes, section rendering, and client behavior |
 | `packages/octocode-pi-extension/src/settings/` | Pi host settings/model source adapter plus `/settings` command registration |
 
 Move/generalize `mcp-html.ts` into the settings adapter. MCP remains one section contributor rather than the page owner. Replace the temporary `tmp/mcp` output location with `$OCTOCODE_HOME/tmp/settings/<workspace-digest>/settings.html`; keep a tested compatibility redirect or opener mapping during the migration window.

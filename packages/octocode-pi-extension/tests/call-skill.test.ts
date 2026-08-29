@@ -131,7 +131,7 @@ test('triviality guard declines a single-action request', async () => {
 });
 
 test('_force overrides the triviality decline', async () => {
-  setSkillGeneratorForTests(async () => ({ ...skill, name: 'greet-flow' }));
+    setSkillGeneratorForTests(async () => ({ ...skill, name: 'greet-flow', skillMd: skill.skillMd.replace('name: release-checklist', 'name: greet-flow') }));
   const tool = loadTool();
   const res = await run(tool, { skillType: 'greet-flow', mode: 'create', metadata: { intent: 'say hi', reason: 'x', _force: true } });
   assert.equal(res.details.status, 'created');

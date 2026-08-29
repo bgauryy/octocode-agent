@@ -25,6 +25,7 @@
 import { chmod, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { ensurePrivateDirectory, hardenPrivateFile } from '@octocodeai/octocode-awareness/mcp-state';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -113,7 +114,7 @@ export function withFileMutationQueue<T>(key: string, fn: () => Promise<T>): Pro
  * failures. A unique suffix prevents concurrent writers from sharing one temp
  * path; the per-file queue still controls the final write order where needed.
  */
-export async function atomicWriteUtf8(filePath: string, content: string): Promise<void> {
+export async function atomicWriteUtf8(filePath: string, content: string, createMode?: number): Promise<void> {
   // Resolve symlinks: temp+rename over a symlinked path would replace the link
   // with a regular file instead of writing through to its target.
   let absolutePath = resolveFilePath(filePath);
@@ -128,15 +129,24 @@ export async function atomicWriteUtf8(filePath: string, content: string): Promis
   await mkdir(path.dirname(absolutePath), { recursive: true });
   const tmpPath = `${absolutePath}.octocode-${process.pid}-${randomUUID()}.tmp`;
   try {
-    await writeFile(tmpPath, content, 'utf8');
+    await writeFile(tmpPath, content, { encoding: 'utf8', ...(createMode === undefined ? {} : { mode: createMode }) });
     // rename resets permissions to the temp file's umask default; preserve the
     // original mode (e.g. exec bits on scripts).
-    if (existingMode !== undefined) await chmod(tmpPath, existingMode);
+    if (createMode !== undefined) await chmod(tmpPath, createMode);
+    else if (existingMode !== undefined) await chmod(tmpPath, existingMode);
     await rename(tmpPath, absolutePath);
   } catch (error) {
     await rm(tmpPath, { force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+/** Atomic UTF-8 write for Octocode-home state with owner-only access. */
+export async function atomicWritePrivateUtf8(filePath: string, content: string): Promise<void> {
+  ensurePrivateDirectory(path.dirname(filePath));
+  hardenPrivateFile(filePath);
+  await atomicWriteUtf8(filePath, content, 0o600);
+  hardenPrivateFile(filePath);
 }
 
 // ─── Read-state tracking ──────────────────────────────────────────────────────
