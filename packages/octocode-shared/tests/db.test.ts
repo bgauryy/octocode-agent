@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeOctocodeDb, openOctocodeDb } from '../src/db.js';
@@ -18,7 +18,7 @@ const dirs: string[] = [];
 function freshDbPath(): string {
   const dir = mkdtempSync(join(tmpdir(), 'octo-shared-'));
   dirs.push(dir);
-  return join(dir, 'nested', 'octocode.sqlite3');
+  return join(dir, 'nested', 'agent.sqlite3');
 }
 
 afterEach(() => {
@@ -52,26 +52,6 @@ describe('openOctocodeDb', () => {
     openOctocodeDb(path).exec('CREATE TABLE permission_probe (id INTEGER)');
     expect(statSync(parent).mode & 0o777).toBe(0o700);
     expect(statSync(path).mode & 0o777).toBe(0o600);
-    closeOctocodeDb(path);
-  });
-
-  it('migrates legacy home entities while preserving owner execute bits', () => {
-    const path = freshDbPath();
-    const home = join(path, '..');
-    const legacyDir = join(home, 'plans');
-    const legacyFile = join(legacyDir, 'old.json');
-    const executable = join(home, 'tool.mjs');
-    mkdirSync(legacyDir, { recursive: true, mode: 0o755 });
-    writeFileSync(legacyFile, '{}', { mode: 0o644 });
-    writeFileSync(executable, '#!/usr/bin/env node\n', { mode: 0o755 });
-
-    openOctocodeDb(path);
-
-    if (process.platform !== 'win32') {
-      expect(statSync(legacyDir).mode & 0o777).toBe(0o700);
-      expect(statSync(legacyFile).mode & 0o777).toBe(0o600);
-      expect(statSync(executable).mode & 0o777).toBe(0o700);
-    }
     closeOctocodeDb(path);
   });
 
@@ -123,6 +103,17 @@ describe('skill enablement state', () => {
       { scopeKey: '/repo', skillKey: 'octocode research', enabled: true },
       { scopeKey: '*', skillKey: 'octocode research', enabled: false },
     ]);
+    closeOctocodeDb(dbPath);
+  });
+
+  it('keeps duplicate Skill source overrides independent while honoring legacy name defaults', () => {
+    const dbPath = freshDbPath();
+    const db = openOctocodeDb(dbPath);
+    setSkillEnabled(db, '*', 'review', false);
+    setSkillEnabled(db, '/repo', 'review', true, 'agents:user:/home/.agents/skills');
+
+    expect(getSkillEnablement(db, '/repo', 'review', true, 'agents:user:/home/.agents/skills')).toBe(true);
+    expect(getSkillEnablement(db, '/repo', 'review', true, 'octocode:user:/home/.octocode/agent/skills')).toBe(false);
     closeOctocodeDb(dbPath);
   });
 });

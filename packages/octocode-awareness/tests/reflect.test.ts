@@ -62,7 +62,7 @@ describe('reflect', () => {
       task: 'auth refactor', outcome: 'worked',
       lesson: 'always verify JWT expiry',
     });
-    const mem = db.prepare('SELECT observation FROM memories WHERE memory_id = ?')
+    const mem = db.prepare('SELECT observation FROM awareness_memories WHERE memory_id = ?')
       .get(result.learning_memory_id) as { observation: string };
     expect(mem.observation).toContain('always verify JWT expiry');
   });
@@ -73,7 +73,7 @@ describe('reflect', () => {
       task: 'routing', outcome: 'partial',
       worked: 'basic routes pass', didntWork: 'nested routes fail',
     });
-    const mem = db.prepare('SELECT observation FROM memories WHERE memory_id = ?')
+    const mem = db.prepare('SELECT observation FROM awareness_memories WHERE memory_id = ?')
       .get(result.learning_memory_id) as { observation: string };
     expect(mem.observation).toContain('basic routes pass');
     expect(mem.observation).toContain('nested routes fail');
@@ -105,7 +105,7 @@ describe('reflect', () => {
     expect(result.instructions_feedback).toBe(true);
     expect(result.developer_review_refinement_id).toMatch(/^ref_/);
 
-    const mem = db.prepare('SELECT tags_json FROM memories WHERE memory_id = ?')
+    const mem = db.prepare('SELECT tags_json FROM awareness_memories WHERE memory_id = ?')
       .get(result.learning_memory_id) as { tags_json: string };
     const tags: string[] = JSON.parse(mem.tags_json);
     expect(tags).toContain('developer-review');
@@ -131,7 +131,7 @@ describe('reflect', () => {
     const result = reflect(db, {
       task: 't', outcome: 'failed', failureSignature: 'mechanism:test|cause:unit',
     });
-    const mem = db.prepare('SELECT label, failure_signature FROM memories WHERE memory_id = ?')
+    const mem = db.prepare('SELECT label, failure_signature FROM awareness_memories WHERE memory_id = ?')
       .get(result.learning_memory_id) as { label: string; failure_signature: string };
     expect(mem.label).toBe('EXPERIENCE');
     expect(mem.failure_signature).toBe('mechanism:test|cause:unit');
@@ -142,7 +142,7 @@ describe('reflect', () => {
     const result = reflect(db, {
       task: 't', outcome: 'failed', fixHarness: 'fix something',
     });
-    const mem = db.prepare('SELECT tags_json FROM memories WHERE memory_id = ?')
+    const mem = db.prepare('SELECT tags_json FROM awareness_memories WHERE memory_id = ?')
       .get(result.learning_memory_id) as { tags_json: string };
     const tags: string[] = JSON.parse(mem.tags_json);
     expect(tags).toContain('reflection');
@@ -170,7 +170,7 @@ describe('reflect', () => {
     });
     expect(result.eval_failure_count).toBe(1);
     expect(db.prepare(
-      'SELECT count(*) AS count FROM memories WHERE failure_signature = ?',
+      'SELECT count(*) AS count FROM awareness_memories WHERE failure_signature = ?',
     ).get('mechanism:single-eval|cause:one-event')).toEqual({ count: 1 });
     expect(mineWeakness(db, { minCount: 2 }).clusters).toEqual([]);
   });
@@ -196,7 +196,7 @@ describe('reflect', () => {
   it('custom importance overrides the default', () => {
     const db = freshDb();
     const result = reflect(db, { task: 't', outcome: 'worked', importance: 9 });
-    const mem = db.prepare('SELECT importance FROM memories WHERE memory_id = ?')
+    const mem = db.prepare('SELECT importance FROM awareness_memories WHERE memory_id = ?')
       .get(result.learning_memory_id) as { importance: number };
     expect(mem.importance).toBe(9);
   });
@@ -225,7 +225,7 @@ describe('reflect', () => {
       expect.stringMatching(/^dir:.*docs$/),
     ]));
     // valid_to still lives on the memories row
-    const mem = db.prepare('SELECT valid_to FROM memories WHERE memory_id = ?')
+    const mem = db.prepare('SELECT valid_to FROM awareness_memories WHERE memory_id = ?')
       .get(result.learning_memory_id) as { valid_to: string };
     expect(mem.valid_to).toBe('2099-01-01T00:00:00Z');
 

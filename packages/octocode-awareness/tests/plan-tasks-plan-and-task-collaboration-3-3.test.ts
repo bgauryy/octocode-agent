@@ -40,7 +40,7 @@ it('submitTask rejects expired claim without a prior listTasks/getTask', () => {
       expect(() => submitTask(db, {
         taskId: task.task_id, runId: claim.run.run_id, agentId: 'worker',
       })).toThrow(/active claimant/);
-      expect(db.prepare('SELECT status FROM tasks WHERE task_id = ?').get(task.task_id))
+      expect(db.prepare('SELECT status FROM awareness_tasks WHERE task_id = ?').get(task.task_id))
         .toEqual({ status: 'OPEN' });
       expect(db.prepare('SELECT status FROM task_runs WHERE run_id = ?').get(claim.run.run_id))
         .toEqual({ status: 'FAILED' });
@@ -69,7 +69,7 @@ it('releaseTaskClaim rejects expired claim without a prior listTasks/getTask', (
       expect(() => releaseTaskClaim(db, {
         taskId: task.task_id, runId: claim.run.run_id, agentId: 'worker',
       })).toThrow(/active claimant/);
-      expect(db.prepare('SELECT status FROM tasks WHERE task_id = ?').get(task.task_id))
+      expect(db.prepare('SELECT status FROM awareness_tasks WHERE task_id = ?').get(task.task_id))
         .toEqual({ status: 'OPEN' });
       expect(db.prepare('SELECT COUNT(*) AS c FROM task_claims WHERE task_id = ?').get(task.task_id))
         .toEqual({ c: 0 });

@@ -141,7 +141,7 @@ export function targetFilesForRuns(db: DatabaseSync, runIds: string[]): Map<stri
 }
 
 export function closeRunFiles(db: DatabaseSync, runId: string, now: string): void {
-  db.prepare('DELETE FROM locks WHERE run_id = ?').run(runId);
+  db.prepare('DELETE FROM awareness_locks WHERE run_id = ?').run(runId);
   db.prepare(`UPDATE run_files SET heartbeat_at = ?, expires_at = ?, ended_at = ?
     WHERE run_id = ? AND ended_at IS NULL`).run(now, now, now, runId);
 }
@@ -158,7 +158,7 @@ export function finishLinkedTask(
     .get(runId) as { task_id: string | null } | undefined;
   if (!linked?.task_id) return;
   const taskStatus = status === 'SUCCESS' ? 'DONE' : 'FAILED';
-  const updated = db.prepare(`UPDATE tasks SET status = ?, updated_at = ?, completed_at = ?
+  const updated = db.prepare(`UPDATE awareness_tasks SET status = ?, updated_at = ?, completed_at = ?
     WHERE task_id = ? AND status = 'VERIFY'`)
     .run(taskStatus, now, now, linked.task_id);
   if (updated.changes === 0) return;
@@ -178,7 +178,7 @@ export function failStaleLinkedTask(
   const linked = db.prepare('SELECT task_id FROM task_runs WHERE run_id = ?')
     .get(runId) as { task_id: string | null } | undefined;
   if (!linked?.task_id) return;
-  const updated = db.prepare(`UPDATE tasks SET status = 'FAILED', updated_at = ?, completed_at = ?
+  const updated = db.prepare(`UPDATE awareness_tasks SET status = 'FAILED', updated_at = ?, completed_at = ?
     WHERE task_id = ? AND status IN ('IN_PROGRESS', 'VERIFY')`)
     .run(now, now, linked.task_id);
   if (updated.changes === 0) return;

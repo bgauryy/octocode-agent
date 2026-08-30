@@ -21,6 +21,7 @@ describe('native settings service bridge', () => {
   it('owns one typed registry with scope, validation, provenance, and application timing', async () => {
     expect(NATIVE_SETTING_DEFINITIONS.map((definition) => definition.key)).toEqual([
       'theme',
+      'reducedMotion',
       'defaultProvider',
       'defaultModel',
       'nativeExtensions',
@@ -34,9 +35,17 @@ describe('native settings service bridge', () => {
         visibility: 'public',
       }),
       expect.objectContaining({
+        key: 'reducedMotion',
+        scopes: ['global'],
+        kind: { type: 'boolean' },
+        defaultValue: true,
+        application: 'next-session',
+        visibility: 'public',
+      }),
+      expect.objectContaining({
         key: 'defaultProvider',
         scopes: ['global'],
-        kind: { type: 'enum', values: ['openai', 'anthropic'] },
+        kind: { type: 'string' },
         application: 'next-session',
         visibility: 'public',
       }),
@@ -50,9 +59,10 @@ describe('native settings service bridge', () => {
       expect.objectContaining({ key: 'nativeExtensions', kind: { type: 'object' }, visibility: 'never-render' }),
     ]);
 
-    const { settings } = await harness({ theme: 'octocode-light', defaultModel: 'gpt-5.6' });
+    const { settings } = await harness({ theme: 'octocode-light', reducedMotion: false, defaultModel: 'gpt-5.6' });
     expect(settings.snapshot().values).toEqual([
       expect.objectContaining({ key: 'theme', value: 'octocode-light', provenance: 'global', application: 'next-session' }),
+      expect.objectContaining({ key: 'reducedMotion', value: false, provenance: 'global', application: 'next-session' }),
       expect.objectContaining({ key: 'nativeExtensions', value: null, provenance: 'default', application: 'next-session' }),
       expect.objectContaining({ key: 'defaultProvider', value: null, provenance: 'default', application: 'next-session' }),
       expect.objectContaining({ key: 'defaultModel', value: 'gpt-5.6', provenance: 'global', application: 'next-session' }),
@@ -130,9 +140,10 @@ describe('native settings service bridge', () => {
     });
 
     const snapshot = settings.snapshot();
-    expect(snapshot.definitions.map((definition) => definition.key)).toEqual(['theme', 'nativeExtensions', 'defaultProvider', 'defaultModel']);
+    expect(snapshot.definitions.map((definition) => definition.key)).toEqual(['theme', 'reducedMotion', 'nativeExtensions', 'defaultProvider', 'defaultModel']);
     expect(snapshot.values).toEqual([
       expect.objectContaining({ key: 'theme', value: 'octocode-dark', stored: false, provenance: 'default' }),
+      expect.objectContaining({ key: 'reducedMotion', value: true, stored: false, provenance: 'default' }),
       expect.objectContaining({ key: 'nativeExtensions', value: null, stored: false, provenance: 'default' }),
       expect.objectContaining({ key: 'defaultProvider', value: null, stored: false, provenance: 'default' }),
       expect.objectContaining({ key: 'defaultModel', value: 'gpt-5.6', stored: true, provenance: 'global' }),

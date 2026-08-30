@@ -68,7 +68,7 @@ export function sessionCapture(
     if (workspacePath) { cConds.push('(workspace_path = ? OR workspace_path IS NULL)'); cBinds.push(workspacePath); }
     if (artifact) { cConds.push('(artifact = ? OR artifact IS NULL)'); cBinds.push(artifact); }
     consolidationOpportunities = (db.prepare(
-      `SELECT COUNT(*) AS c FROM memories WHERE ${cConds.join(' AND ')}`
+      `SELECT COUNT(*) AS c FROM awareness_memories WHERE ${cConds.join(' AND ')}`
     ).get(...cBinds) as { c: number }).c;
   } catch { /* non-fatal */ }
 
@@ -221,7 +221,7 @@ export function waitForLock(
   if (artifact) { scopeClauses.push('AND (ai.artifact = ? OR ai.artifact IS NULL)'); scopeBinds.push(artifact); }
   const lockStmt = db.prepare(
     `SELECT fl.file_path, ai.agent_id, fl.expires_at
-     FROM locks fl
+     FROM awareness_locks fl
      JOIN task_runs ai ON ai.run_id = fl.run_id
      WHERE fl.file_path IN (${ph})
        AND ai.agent_id <> ?

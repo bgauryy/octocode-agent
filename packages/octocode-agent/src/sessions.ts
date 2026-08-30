@@ -81,8 +81,10 @@ export function listSessions(sessionsRoot: string = nativeSessionsDir()): Sessio
     const file = path.join(sessionsRoot, `${encodeURIComponent(id)}.json`);
     const record = readSessionRecord(file, id);
     if (!record) continue;
+    const transactionFiles = [file, `${file}.bak`, `${file}.head`].filter((candidate) => fs.existsSync(candidate));
+    if (transactionFiles.length === 0) continue;
     let mtimeMs: number;
-    try { mtimeMs = fs.statSync(fs.existsSync(file) ? file : `${file}.bak`).mtimeMs; }
+    try { mtimeMs = Math.max(...transactionFiles.map((candidate) => fs.statSync(candidate).mtimeMs)); }
     catch { continue; }
     const parentSessionId = sessionParent(record);
     sessions.push({

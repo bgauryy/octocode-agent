@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { closeOctocodeDb, octocodeDbPath, openOctocodeDb, setMcpServerEnabled, setMcpToolEnabled } from '@octocodeai/octocode-awareness/mcp-state';
+import { closeOctocodeDb, agentDbPath, openOctocodeDb, setMcpServerEnabled, setMcpToolEnabled } from '@octocodeai/octocode-awareness/mcp-state';
 import { createDefaultOctocodeToolRegistry, createNativeHookMcpExecutor } from '../src/native-tools.js';
 import type { NativeMcpClient } from '../src/native-mcp.js';
 
@@ -13,7 +13,7 @@ function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-hook-'));
   roots.push(root);
   const env = { ...process.env, OCTOCODE_HOME: path.join(root, 'home') };
-  const config = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+  const config = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
   fs.mkdirSync(path.dirname(config), { recursive: true });
   fs.writeFileSync(config, JSON.stringify({ mcpServers: { fixture: { command: process.execPath } } }));
   return { root, env };
@@ -52,7 +52,7 @@ describe('registry-owned native MCP hook executor', () => {
     const registry = await createDefaultOctocodeToolRegistry({ cwd: root, env, run: catalog, mcp: { connect: async () => client } });
     const executor = createNativeHookMcpExecutor(registry)!;
     await expect(executor.execute({ ...handler, server: 'missing' }, {}, new AbortController().signal)).rejects.toThrow(/unknown or disabled.*server/i);
-    const dbFile = octocodeDbPath(env);
+    const dbFile = agentDbPath(env);
     const db = openOctocodeDb(dbFile);
     setMcpToolEnabled(db, root, 'fixture', 'hook', false);
     closeOctocodeDb(dbFile);

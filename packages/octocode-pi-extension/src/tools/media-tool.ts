@@ -25,6 +25,7 @@ import { assertPathAllowed } from './path-guard.js';
 import { resolveFilePath } from './file-state.js';
 import { formatBytes } from './image-render.js';
 import { detectFfmpeg, runFfmpeg, runFfprobeJson } from './ffmpeg-runtime.js';
+import { workspaceAgentRoot } from './session-artifacts.js';
 
 const MODES = ['probe', 'frame', 'contactSheet', 'waveform', 'gif', 'trim', 'audio', 'convert', 'concat'] as const;
 type Mode = (typeof MODES)[number];
@@ -278,7 +279,7 @@ export function concatArgs(
 // ---------------------------------------------------------------------------
 
 function tempPng(cwd: string): string {
-  const dir = path.join(cwd, '.octocode', 'media-tmp');
+  const dir = path.join(workspaceAgentRoot(cwd), 'tmp', 'media');
   fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, `frame-${process.pid}-${globalThis.performance.now().toString(36).replace('.', '')}.png`);
 }
@@ -310,7 +311,7 @@ export async function runMediaQuery(
     const out = resolveOutput(query['output'], cwd, overwrite);
     const reencode = query['reencode'] === true;
     const listContent = sources.map((s) => `file '${s}'`).join('\n') + '\n';
-    const listFile = path.join(cwd, '.octocode', 'media-tmp', `concat-${process.pid}-${Date.now()}.txt`);
+    const listFile = path.join(workspaceAgentRoot(cwd), 'tmp', 'media', `concat-${process.pid}-${Date.now()}.txt`);
     fs.mkdirSync(path.dirname(listFile), { recursive: true });
     fs.writeFileSync(listFile, listContent, 'utf8');
     const args = concatArgs(listFile, out, reencode, {

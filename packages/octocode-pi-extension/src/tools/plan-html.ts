@@ -361,9 +361,9 @@ export interface PlanArtifacts {
 /**
  * Directory for a plan scope's HTML/MD.
  *
- * Primary: `<workspace>/.octocode/agent/<session-key>/plan/` — scoped to the
+ * Primary: `$OCTOCODE_HOME/agent/workspaces/<workspace>/sessions/<session-key>/plan/` — scoped to the
  * session artifact tree so all tool outputs land under one session root.
- * Fallback: `~/.octocode/tmp/plan/<scope-hash>/` — used when the workspace is
+ * Fallback: `$OCTOCODE_HOME/agent/tmp/plan/<scope-hash>/` — used when the workspace is
  * not yet initialised or the session artifact dir cannot be created.
  */
 export function planArtifactsDir(scope: string): string {
@@ -372,7 +372,7 @@ export function planArtifactsDir(scope: string): string {
   } catch {
     // Fallback: global home keyed by scope hash.
     const hash = createHash('sha256').update(scope || 'default').digest('hex').slice(0, 16);
-    return path.join(getOctocodeHome(), 'tmp', 'plan', hash);
+    return path.join(getOctocodeHome(), 'agent', 'tmp', 'plan', hash);
   }
 }
 
@@ -402,7 +402,7 @@ function writeProjectedPlanArtifacts(scope: string, model: PlanReadModelV1, opts
     } catch {
       // Fallback when workspace is not initialised or session context is absent.
       const hash = createHash('sha256').update(scope || 'default').digest('hex').slice(0, 16);
-      dir = path.join(getOctocodeHome(), 'tmp', 'plan', hash);
+      dir = path.join(getOctocodeHome(), 'agent', 'tmp', 'plan', hash);
     }
     ensurePrivateDirectory(dir);
     const htmlPath = path.join(dir, 'plan.html');

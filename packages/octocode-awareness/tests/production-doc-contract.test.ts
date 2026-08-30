@@ -127,7 +127,7 @@ describe('production guidance contract', () => {
     expect(existsSync(resolve(PACKAGE_ROOT, 'src/stubs.ts'))).toBe(false);
   });
 
-  it('ships one current database contract with only the exact receipt-table upgrade', () => {
+  it('ships the agent-host database identity with only explicit schema upgrades', () => {
     const databaseFiles = [
       'db.ts',
       'db-init.ts',
@@ -140,13 +140,9 @@ describe('production guidance contract', () => {
       .map((file) => read(resolve(PACKAGE_ROOT, 'src', file)))
       .join('\n');
 
-    expect(databaseSource).toContain('AWARENESS_APPLICATION_ID = 0x4f435431');
-    expect(databaseSource).not.toMatch(/\b(?:legacy|user_version|AWARENESS_SCHEMA_VERSION)\b/i);
-    expect(databaseSource).toContain("'prior-hook-receipts'");
-    expect(databaseSource).toContain('HOOK_RECEIPTS_DDL');
-    expect(existsSync(resolve(PACKAGE_ROOT, 'src/db-legacy.ts'))).toBe(false);
+    expect(databaseSource).toContain('AGENT_APPLICATION_ID');
+    expect(databaseSource).not.toMatch(/\b(?:user_version|AWARENESS_SCHEMA_VERSION)\b/i);
     expect(existsSync(resolve(PACKAGE_ROOT, 'src/db-rebuild.ts'))).toBe(false);
-    expect(existsSync(resolve(PACKAGE_ROOT, 'tests/legacy-migration.test.ts'))).toBe(false);
     const ownedArtifacts = [
       read(resolve(PACKAGE_ROOT, 'src/attend-model.ts')),
       read(resolve(PACKAGE_ROOT, 'src/attend-query.ts')),

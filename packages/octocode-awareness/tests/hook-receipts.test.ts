@@ -51,7 +51,7 @@ describe('hook runtime receipts', () => {
     const projectDir = mkdtempSync(join(tmpdir(), 'octocode-frontmatter-health-'));
     const skillDir = join(projectDir, '.claude', 'skills', 'octocode-awareness');
     const hookDir = join(skillDir, 'scripts', 'hooks');
-    const dbPath = join(projectDir, 'awareness.sqlite3');
+    const dbPath = join(projectDir, 'agent.sqlite3');
     mkdirSync(hookDir, { recursive: true });
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(join(hookDir, '..', 'hook-runner.mjs'), '#!/usr/bin/env node\n');

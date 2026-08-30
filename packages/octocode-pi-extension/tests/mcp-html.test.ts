@@ -7,6 +7,7 @@ import { SETTINGS_HTML_FILE, applyMcpManagerAction, parseMcpManagerAction, rende
 import type { PiCommand, PiContext } from '../src/types.js';
 import { getFooterDensity, setFooterDensity } from '../src/ui-extras.js';
 import { getPermissionLevel, setPermissionLevel } from '../src/tools/approval.js';
+import { projectMcpPath } from '../src/tools/mcp-config.js';
 
 const originalHome = process.env['OCTOCODE_HOME'];
 const originalCompactMcp = process.env['OCTOCODE_COMPACT_MCP'];
@@ -119,7 +120,7 @@ test('settings.html shows live commands plus the complete skill/MCP surface and 
   process.env['OCTOCODE_HOME'] = path.join(root, 'home');
   delete process.env['OCTOCODE_COMPACT_MCP'];
   const cwd = path.join(root, 'workspace');
-  const configPath = path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json');
+  const configPath = projectMcpPath(cwd, process.env['OCTOCODE_HOME']);
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { docs: {
     url: 'https://mcp.example.test/api',

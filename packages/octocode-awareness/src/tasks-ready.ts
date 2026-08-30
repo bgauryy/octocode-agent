@@ -9,7 +9,7 @@ export function createTask(
   db: DatabaseSync,
   params: CreateTaskParams,
 ): { task: PlanTaskRecord } {
-  const plan = db.prepare('SELECT workspace_path, status FROM plans WHERE plan_id = ?')
+  const plan = db.prepare('SELECT workspace_path, status FROM awareness_plans WHERE plan_id = ?')
     .get(params.planId) as { workspace_path: string; status: string } | undefined;
   if (!plan) throw new Error(`plan not found: ${params.planId}`);
   if (['COMPLETED', 'CANCELLED'].includes(plan.status)) {
@@ -25,13 +25,13 @@ export function createTask(
 
   db.exec('BEGIN IMMEDIATE');
   try {
-    if (tableColumns(db, 'tasks').has('acceptance')) {
-      db.prepare(`INSERT INTO tasks
+    if (tableColumns(db, 'awareness_tasks').has('acceptance')) {
+      db.prepare(`INSERT INTO awareness_tasks
         (task_id, plan_id, title, reasoning, acceptance_criteria, acceptance, workspace_path, paths_json, status, priority, created_by, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?)`)
         .run(taskId, params.planId, title, reasoning, acceptance, acceptance, plan.workspace_path, JSON.stringify(paths), params.priority ?? 0, createdBy, now, now);
     } else {
-      db.prepare(`INSERT INTO tasks
+      db.prepare(`INSERT INTO awareness_tasks
         (task_id, plan_id, title, reasoning, acceptance_criteria, status, priority, created_by, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?)`)
         .run(taskId, params.planId, title, reasoning, acceptance, params.priority ?? 0, createdBy, now, now);
@@ -59,7 +59,7 @@ export function addTaskDependency(
   if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
   try {
     const rows = db.prepare(`SELECT t.task_id, t.plan_id, t.status, p.status AS plan_status
-      FROM tasks t JOIN plans p ON p.plan_id = t.plan_id
+      FROM awareness_tasks t JOIN awareness_plans p ON p.plan_id = t.plan_id
       WHERE t.task_id IN (?, ?)`)
       .all(params.taskId, params.dependsOnTaskId) as unknown as Array<{
         task_id: string;
@@ -117,13 +117,13 @@ export function listTasks(
     binds.push(params.agentId);
   }
   if (params.workspacePath) {
-    where.push('EXISTS (SELECT 1 FROM plans p WHERE p.plan_id = t.plan_id AND p.workspace_path = ?)');
+    where.push('EXISTS (SELECT 1 FROM awareness_plans p WHERE p.plan_id = t.plan_id AND p.workspace_path = ?)');
     binds.push(params.workspacePath);
   }
   const limit = params.limit == null ? null : Math.max(1, Math.floor(params.limit));
   const limitSql = limit == null ? '' : 'LIMIT ?';
   const queryBinds: Array<string | number> = limit == null ? binds : [...binds, limit];
-  return db.prepare(`SELECT t.* FROM tasks t WHERE ${where.join(' AND ')}
+  return db.prepare(`SELECT t.* FROM awareness_tasks t WHERE ${where.join(' AND ')}
     ORDER BY t.priority DESC, t.created_at, t.task_id ${limitSql}`)
     .all(...queryBinds).map((row) => hydrateTask(db, row as Record<string, unknown>));
 }
@@ -142,10 +142,10 @@ export function countTasks(
     binds.push(params.agentId);
   }
   if (params.workspacePath) {
-    where.push('EXISTS (SELECT 1 FROM plans p WHERE p.plan_id = t.plan_id AND p.workspace_path = ?)');
+    where.push('EXISTS (SELECT 1 FROM awareness_plans p WHERE p.plan_id = t.plan_id AND p.workspace_path = ?)');
     binds.push(params.workspacePath);
   }
-  return (db.prepare(`SELECT COUNT(*) AS count FROM tasks t WHERE ${where.join(' AND ')}`)
+  return (db.prepare(`SELECT COUNT(*) AS count FROM awareness_tasks t WHERE ${where.join(' AND ')}`)
     .get(...binds) as { count: number }).count;
 }
 
@@ -162,12 +162,12 @@ export function listReadyTasks(
   const limit = params.limit == null ? null : Math.max(1, Math.floor(params.limit));
   const limitSql = limit == null ? '' : 'LIMIT ?';
   if (limit != null) binds.push(limit);
-  const rows = db.prepare(`SELECT t.* FROM tasks t JOIN plans p ON p.plan_id = t.plan_id
+  const rows = db.prepare(`SELECT t.* FROM awareness_tasks t JOIN awareness_plans p ON p.plan_id = t.plan_id
     WHERE t.status = 'OPEN' AND p.status = 'ACTIVE' ${planWhere} ${workspaceWhere}
       AND NOT EXISTS (SELECT 1 FROM task_claims c WHERE c.task_id = t.task_id)
       AND NOT EXISTS (
         SELECT 1 FROM task_dependencies td
-        JOIN tasks dependency ON dependency.task_id = td.depends_on_task_id
+        JOIN awareness_tasks dependency ON dependency.task_id = td.depends_on_task_id
         WHERE td.task_id = t.task_id AND dependency.status <> 'DONE'
       )
     ORDER BY t.priority DESC, t.created_at, t.task_id ${limitSql}`)
@@ -182,12 +182,12 @@ export function countReadyTasks(db: DatabaseSync, params: { planId?: string | nu
   if (params.planId) binds.push(params.planId);
   const workspaceWhere = params.workspacePath ? 'AND p.workspace_path = ?' : '';
   if (params.workspacePath) binds.push(params.workspacePath);
-  return (db.prepare(`SELECT COUNT(*) AS count FROM tasks t JOIN plans p ON p.plan_id = t.plan_id
+  return (db.prepare(`SELECT COUNT(*) AS count FROM awareness_tasks t JOIN awareness_plans p ON p.plan_id = t.plan_id
     WHERE t.status = 'OPEN' AND p.status = 'ACTIVE' ${planWhere} ${workspaceWhere}
       AND NOT EXISTS (SELECT 1 FROM task_claims c WHERE c.task_id = t.task_id)
       AND NOT EXISTS (
         SELECT 1 FROM task_dependencies td
-        JOIN tasks dependency ON dependency.task_id = td.depends_on_task_id
+        JOIN awareness_tasks dependency ON dependency.task_id = td.depends_on_task_id
         WHERE td.task_id = t.task_id AND dependency.status <> 'DONE'
       )`).get(...binds) as { count: number }).count;
 }

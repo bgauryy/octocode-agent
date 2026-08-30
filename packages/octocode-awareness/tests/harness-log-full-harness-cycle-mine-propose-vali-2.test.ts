@@ -37,7 +37,7 @@ function insertSession(db: DatabaseSync, agentId = 'agent-test'): string {
 function insertMemoryRow(db: DatabaseSync, agentId = 'agent-test'): string {
     const memoryId = 'mem_' + randomUUID().replace(/-/g, '');
     db.prepare(`
-    INSERT INTO memories (memory_id, agent_id, task_context, observation, importance, created_at)
+    INSERT INTO awareness_memories (memory_id, agent_id, task_context, observation, importance, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(memoryId, agentId, 'test task context', 'test observation', 5, new Date().toISOString());
     return memoryId;

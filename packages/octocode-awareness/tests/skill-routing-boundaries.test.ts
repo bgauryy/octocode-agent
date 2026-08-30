@@ -50,8 +50,8 @@ describe('skill routing boundaries', () => {
     expect(text).toContain('npx @octocodeai/octocode-awareness');
     expect(text).not.toContain('npx -p @octocodeai/octocode-awareness octocode-awareness');
     expect(text).not.toContain('node packages/octocode-awareness/out/octocode-awareness.js');
-    expect(text).toContain('.octocode/octocode.sqlite3');
-    expect(text).toContain('.octocode/awareness.sqlite3');
+    expect(text).toContain('$OCTOCODE_HOME/agent/agent.sqlite3');
+    expect(text).not.toMatch(/\.octocode\/(?:octocode|awareness|agent)\.sqlite3/);
     expect(text).not.toMatch(/octocode-awareness-lite|\/lite\b|Awareness Lite/);
     expect(text).toContain('Operating rules');
     expect(text).toContain('observed receipts');

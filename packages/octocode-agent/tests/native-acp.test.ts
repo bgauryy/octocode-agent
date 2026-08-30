@@ -9,6 +9,7 @@ import {
 import { PassThrough } from "node:stream";
 import {
   correlationId,
+  eventId,
   packetId,
   sessionId,
   workerId,
@@ -28,6 +29,23 @@ import type {
   NativeProcessSignal,
   NativeSignalSource,
 } from "../src/native-signal-scope.js";
+
+function runtimeEvent(type: RuntimeEvent["type"], payload: RuntimeEvent["payload"]): RuntimeEvent {
+  return {
+    schemaVersion: 1,
+    eventVersion: 1,
+    id: eventId(`event:${type}`),
+    type,
+    phase: "notification",
+    sessionId: sessionId("runtime-event-session"),
+    timestamp: 1,
+    cwd: "/workspace",
+    mode: "headless",
+    model: { providerId: "openai", modelId: "gpt-5" },
+    trust: { workspace: "trusted", managedOnly: false },
+    payload,
+  } as unknown as RuntimeEvent;
+}
 
 function signalFixture(): NativeSignalSource & {
   emit(signal: NativeProcessSignal): void;
@@ -296,25 +314,16 @@ describe("native ACP adapter", () => {
     const order: string[] = [];
     const runtimes: Array<AgentRuntime & { emit(event: RuntimeEvent): void }> =
       [];
-    const createRuntime = vi.fn(async () => {
+    const createRuntime = vi.fn(async (_cwd: string) => {
       const listeners = new Set<(event: RuntimeEvent) => void>();
       const id = `runtime-${runtimes.length + 1}`;
       const runtime = {
         start: vi.fn(async () => undefined),
         submit: vi.fn(async () => {
           order.push("submit");
-          runtime.emit({
-            type: "message.delta",
-            payload: { type: "text", text: "hello", messageId: "m1" },
-          } as RuntimeEvent);
-          runtime.emit({
-            type: "ui.status-changed",
-            payload: { name: "research", text: "Checking" },
-          } as RuntimeEvent);
-          runtime.emit({
-            type: "turn.ended",
-            payload: { stop: "complete" },
-          } as RuntimeEvent);
+          runtime.emit(runtimeEvent("message.delta", { type: "text", text: "hello", messageId: "m1" }));
+          runtime.emit(runtimeEvent("ui.status-changed", { name: "research", text: "Checking" }));
+          runtime.emit(runtimeEvent("turn.ended", { stop: "complete" }));
         }),
         cancel: vi.fn(async () => undefined),
         execute: vi.fn(async () => ({ ok: true as const })),
@@ -407,10 +416,7 @@ describe("native ACP adapter", () => {
       start: vi.fn(async () => undefined),
       submit: vi.fn(async () => {
         for (const listener of listeners)
-          listener({
-            type: "turn.ended",
-            payload: { stop: "timeout" },
-          } as RuntimeEvent);
+          listener(runtimeEvent("turn.ended", { stop: "timeout" }));
       }),
       cancel: vi.fn(async () => undefined),
       execute: vi.fn(async () => ({ ok: true as const })),
@@ -564,7 +570,7 @@ describe("native ACP adapter", () => {
     await connection.agent.request(methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} });
     const created = await connection.agent.request(methods.agent.session.new, { cwd: "/workspace", mcpServers: [] });
     current = projection(executeSecond, created.sessionId);
-    const request = { protocolVersion: 1 as const, projection: "worker" as const, requestId: "dynamic", sessionId: created.sessionId, command: { type: "list" as const } };
+    const request = { protocolVersion: 1 as const, projection: "worker" as const, requestId: "dynamic", sessionId: sessionId(created.sessionId), command: { type: "list" as const } };
     expect(await current.execute(request)).toMatchObject({ ok: true });
     const response = await adapter.workers?.execute(request);
     expect(response).toMatchObject({ response: { ok: true } });

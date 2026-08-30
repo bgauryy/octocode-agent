@@ -5,8 +5,58 @@ class RecordPort implements SessionRecordPort {
   async read(): Promise<{ content: string; recovered: boolean } | null> { if (this.content === null && this.backup === null) return null; const content = this.content ?? this.backup!; return { content, recovered: this.content === null }; }
   async commit(_id: unknown, expected: string, _next: string, content: string): Promise<void> { const current = this.content === null ? '0' : String((JSON.parse(this.content) as { events: unknown[] }).events.length); if (expected !== current) throw new RuntimeFailure('session-conflict', 'durable conflict', 'safe'); if (this.failCommit) throw new Error('interrupted before rename'); this.backup = this.content; this.content = content; }
 }
+
+class AppendRecordPort implements SessionRecordPort {
+  readonly events: SessionEvent[] = [];
+  reads = 0;
+  commits = 0;
+  appends = 0;
+  async read(): Promise<{ content: string; recovered: boolean } | null> {
+    this.reads += 1;
+    if (this.events.length === 0) return null;
+    return { content: JSON.stringify({ schemaVersion: 1, sessionId: 's', revision: String(this.events.length), events: this.events }), recovered: false };
+  }
+  async readRevision(): Promise<ReturnType<typeof revision> | null> { return this.events.length === 0 ? null : revision(String(this.events.length)); }
+  async appendEvents(_id: unknown, expected: string, _next: string, events: readonly SessionEvent[]): Promise<void> {
+    this.appends += 1;
+    if (expected !== String(this.events.length)) throw new RuntimeFailure('session-conflict', 'durable conflict', 'safe');
+    this.events.push(...events);
+  }
+  async commit(): Promise<void> { this.commits += 1; throw new Error('whole-record commit must not be used'); }
+}
 const make = (sequence: number, event: SessionEvent['event']): SessionEvent => ({ schemaVersion: 1, sessionId: sessionId('s'), eventId: sessionEventId(`e${sequence}`), revision: revision(String(sequence)), sequence, timestamp: sequence, visibility: 'internal', event });
 describe('transactional persistence and migration', () => {
+  it('uses incremental durable append without replaying or rewriting the whole record', async () => {
+    const port = new AppendRecordPort();
+    const store = new TransactionalSessionStore(port);
+    await store.append(sessionId('s'), revision('0'), [make(1, { type: 'session.created' })]);
+    await store.append(sessionId('s'), revision('1'), [make(2, { type: 'session.renamed', name: 'two' })]);
+    await store.append(sessionId('s'), revision('2'), [make(3, { type: 'artifact.linked', artifactId: 'a', uri: 'file:///a' })]);
+
+    expect(port.appends).toBe(3);
+    expect(port.commits).toBe(0);
+    expect(port.reads).toBeLessThanOrEqual(1);
+    expect((await store.load(sessionId('s'))).projection.revision).toBe(revision('3'));
+  });
+
+  it('accepts only versioned checkpoints with declared diagnostic omissions', () => {
+    const first = make(1, { type: 'session.created' });
+    const third = make(3, { type: 'session.renamed', name: 'retained' });
+    expect(parseSessionRecord({
+      schemaVersion: 2,
+      sessionId: 's',
+      revision: '3',
+      retention: { omittedDiagnostics: 1, maxDiagnostics: 256 },
+      events: [first, third],
+    }, sessionId('s'))).toMatchObject({ schemaVersion: 2, revision: '3' });
+    expect(() => parseSessionRecord({
+      schemaVersion: 2,
+      sessionId: 's',
+      revision: '3',
+      retention: { omittedDiagnostics: 0, maxDiagnostics: 256 },
+      events: [first, third],
+    }, sessionId('s'))).toThrow(/session record/i);
+  });
   it('rejects malformed durable event unions before projection or recovery', () => {
     const valid = make(1, { type: 'session.created', name: 'valid' });
     const record = (event: unknown) => ({ schemaVersion: 1, sessionId: 's', revision: '1', events: [event] });

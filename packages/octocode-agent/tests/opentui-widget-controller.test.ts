@@ -45,25 +45,17 @@ class RecordingAdapter implements WidgetRenderAdapter {
 }
 
 function withRuntimeWidgets(state: PresentationState): PresentationState {
-  return reducePresentation(state, {
+  let projected = reducePresentation(state, {
+    type: 'chrome-changed',
+    chrome: {
+      authority: 'runtime', title: 'Octocode', trust: 'trusted', sessionId: 'session-1', modelId: 'model-1',
+    },
+  });
+  projected = reducePresentation(projected, { type: 'runtime-ready' });
+  projected = reducePresentation(projected, { type: 'turn-started', turnId: 'turn-1' });
+  return reducePresentation(projected, {
     type: 'runtime-widgets-changed',
     snapshots: {
-      header: {
-        authority: 'runtime',
-        title: 'Octocode',
-        trust: 'trusted',
-        working: 'active',
-        width: 80,
-        sessionId: 'session-1',
-        modelId: 'model-1',
-      },
-      footer: {
-        authority: 'runtime',
-        activeMode: 'agent',
-        connection: 'connected',
-        widthColumns: 80,
-        keyHints: [{ key: 'Ctrl-C', label: 'cancel', priority: 1 }],
-      },
       plan: {
         authority: 'runtime',
         planId: 'plan-1',
@@ -92,18 +84,85 @@ describe('SemanticWidgetController', () => {
     });
     state = reducePresentation(state, { type: 'message-delta', messageId: 'message-1', text: 'Hello' });
     state = reducePresentation(state, { type: 'tool-started', callId: 'call-1', name: 'localSearchCode' });
+    state = reducePresentation(state, { type: 'tool-started', callId: 'call-plan', name: 'plan' });
     controller.render(state);
 
-    expect([...adapter.states.values()].map(({ kind }) => kind)).toEqual(['transcript', 'tool.progress']);
+    expect([...adapter.states.values()].map(({ kind }) => kind)).toEqual(['transcript', 'tool.progress', 'tool.progress']);
+    const planTool = [...adapter.states.values()].find(({ kind, regions }) => (
+      kind === 'tool.progress' && regions.some(({ text }) => text.includes('Plan'))
+    ));
+    expect(planTool).toBeDefined();
+    expect(planTool!.regions.some(({ text }) => text.includes('Plan and Tasks'))).toBe(false);
     expect([...adapter.states.values()].some(({ kind }) => kind === 'header')).toBe(false);
 
     controller.render(withRuntimeWidgets(state));
     expect(new Set([...adapter.states.values()].map(({ kind }) => kind))).toEqual(new Set([
       'transcript', 'tool.progress', 'header', 'footer', 'plan', 'status.notifications',
     ]));
+    expect([...adapter.states.values()].filter(({ kind }) => kind === 'tool.progress')).toHaveLength(1);
+    expect([...adapter.states.values()].filter(({ kind, regions }) => (
+      kind === 'tool.progress' && regions.some(({ text }) => text === 'Plan')
+    ))).toHaveLength(0);
     expect(controller.alternateOutput()).toContain('Octocode');
     expect(controller.alternateOutput()).toContain('Hello');
     expect(controller.alternateOutput()).toContain('Agent is working');
+  });
+
+  it('replaces the plan projection when session identity changes and removes it when cleared', () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter);
+    let state = withRuntimeWidgets(createInitialPresentationState());
+    controller.render(state);
+
+    state = reducePresentation(state, {
+      type: 'runtime-widgets-changed',
+      snapshots: {
+        plan: {
+          authority: 'runtime',
+          planId: 'plan-2',
+          scope: { sessionId: 'session-2', workspace: '/workspace' },
+          revision: 1,
+          phase: 'active',
+          steps: [{ id: 'step-2', text: 'Continue elsewhere', status: 'doing' }],
+        },
+      },
+    });
+    expect(() => controller.render(state)).not.toThrow();
+    expect(controller.alternateOutput()).toContain('Plan plan-2');
+
+    state = reducePresentation(state, { type: 'runtime-widgets-changed', snapshots: { plan: null } });
+    controller.render(state);
+    expect(controller.alternateOutput()).not.toContain('Plan plan-2');
+  });
+
+  it('keeps focus traversal bounded when tool history grows', () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter);
+    let state = createInitialPresentationState();
+    for (let index = 0; index < 100; index += 1) {
+      state = reducePresentation(state, {
+        type: 'tool-started', callId: `call-${index}`, name: `tool-${index}`,
+      });
+      state = reducePresentation(state, {
+        type: 'tool-result', callId: `call-${index}`, name: `tool-${index}`, result: `result-${index}`,
+      });
+    }
+    state = reducePresentation(state, {
+      type: 'tool-started', callId: 'call-active', name: 'active-tool',
+    });
+    for (let index = 0; index < 20; index += 1) {
+      state = reducePresentation(state, {
+        type: 'presentation-changed', property: 'widget',
+        value: { id: `surface-${index}`, kind: 'text', text: `surface ${index}` },
+      });
+    }
+    controller.render(withRuntimeWidgets(state));
+
+    const focusable = controller.getFocusableWidgetIds();
+    expect(focusable.length).toBeLessThanOrEqual(5);
+    expect(focusable.filter((id) => adapter.states.get(id)?.kind === 'tool.progress')).toHaveLength(1);
+    expect(adapter.states.get(focusable.find((id) => adapter.states.get(id)?.kind === 'tool.progress')!)
+      ?.regions.some(({ text }) => text.includes('active-tool'))).toBe(true);
   });
 
   it('projects every typed surface without inferring trusted chrome, and merges every status source', () => {
@@ -143,6 +202,47 @@ describe('SemanticWidgetController', () => {
     ]));
   });
 
+  it('keeps transient notification chrome recent while alternate output retains history', () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter);
+    let state = createInitialPresentationState();
+    for (let index = 0; index < 10; index += 1) {
+      state = reducePresentation(state, {
+        type: 'notification', severity: 'info', message: `notice ${index}`,
+      });
+    }
+    controller.render(state);
+
+    const status = [...adapter.states.values()].find(({ kind }) => kind === 'status.notifications');
+    expect(status?.regions.filter(({ role }) => role === 'option')).toHaveLength(3);
+    const alternate = controller.alternateOutput();
+    expect(alternate.match(/notice 0/gu)).toHaveLength(1);
+    expect(alternate.match(/notice 9/gu)).toHaveLength(1);
+  });
+
+  it('bounds the global announcement drain while retaining assertive failures and newest work', () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter);
+    let state = createInitialPresentationState();
+    for (let index = 0; index < 100; index += 1) {
+      state = reducePresentation(state, {
+        type: 'tool-started', callId: `call-${index}`, name: `tool-${index}`,
+      });
+    }
+    state = reducePresentation(state, {
+      type: 'notification', severity: 'error', message: 'Provider failed decisively',
+    });
+    controller.render(state);
+
+    const announcements = controller.drainAnnouncements();
+    expect(announcements.length).toBeLessThanOrEqual(32);
+    expect(announcements).toContainEqual(expect.objectContaining({
+      politeness: 'assertive', text: 'ERROR: Provider failed decisively',
+    }));
+    expect(announcements.some(({ source }) => source === 'tool:call-99')).toBe(true);
+    expect(controller.drainAnnouncements()).toEqual([]);
+  });
+
   it('focuses and navigates every read-only surface, preserves plan position, and resizes chrome from the viewport', () => {
     const adapter = new RecordingAdapter();
     const controller = new SemanticWidgetController(adapter, { widthColumns: 80, heightRows: 14 });
@@ -178,7 +278,7 @@ describe('SemanticWidgetController', () => {
       { type: 'confirm' as const, message: 'Proceed with the requested action?' },
       { type: 'select' as const, message: 'Choose an option', options: ['Alpha', 'Beta'] },
       { type: 'input' as const, message: 'Provide a name', initial: 'Ada' },
-      { type: 'editor' as const, initial: 'Line one' },
+      { type: 'editor' as const, message: 'Edit response', initial: 'Line one' },
     ];
     const expectedKinds = ['confirm', 'prompt.select', 'prompt.input', 'prompt.editor'];
 
@@ -270,7 +370,7 @@ describe('SemanticWidgetController', () => {
     expect(resolutions).toEqual([{ generation: 1, result: { status: 'accepted', value: 'Option 12' } }]);
 
     mode = 'confirm';
-    state = reducePresentation(state, { type: 'interaction-resolved', generation: 1, result: { status: 'cancelled' } });
+    state = reducePresentation(state, { type: 'interaction-resolved', result: { status: 'cancelled' } });
     state = reducePresentation(state, { type: 'interaction-requested', request: { type: 'confirm', message: 'Proceed?' } });
     controller.render(state);
     controller.handleNativeInteraction(2, { type: 'confirm-submit', index: 0 });
@@ -302,7 +402,7 @@ describe('SemanticWidgetController', () => {
 
     const actions: unknown[] = [];
     const enabled = new SemanticWidgetController(new RecordingAdapter(), undefined, {
-      statusAction: (invocation) => actions.push(invocation),
+      statusAction: (invocation) => { actions.push(invocation); },
     });
     enabled.render(state);
     expect(enabled.alternateOutput()).toContain('Retry connection');
@@ -361,7 +461,7 @@ describe('SemanticWidgetController', () => {
       nowMs: () => ticks.shift() ?? 2_600,
     });
     let state = reducePresentation(createInitialPresentationState(), {
-      type: 'tool-started', callId: 'call-clock', name: 'clockedTool', input: 'safe input',
+      type: 'tool-started', callId: 'call-clock', name: 'clockedTool',
     });
     controller.render(state);
     expect(controller.drainAnnouncements()).toContainEqual(expect.objectContaining({

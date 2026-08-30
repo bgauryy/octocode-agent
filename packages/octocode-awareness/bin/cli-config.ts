@@ -39,7 +39,7 @@ function supportContract() {
       'Install/check/remove supports claude, codex, and cursor; Pi native events are not installed or controlled here.',
       'When hooks are enabled, mutation lock enforcement and presence declaration stay enabled together.',
       'Explicit CLI commands, evidence requirements, and database integrity checks are not disabled by this file.',
-      'Database locations remain owned by OCTOCODE_HOME/OCTOCODE_MEMORY_HOME/OCTOCODE_DB_PATH.',
+      'Database locations remain owned by OCTOCODE_HOME/OCTOCODE_AGENT_DIR/OCTOCODE_AGENT_DB_PATH.',
     ],
   };
 }

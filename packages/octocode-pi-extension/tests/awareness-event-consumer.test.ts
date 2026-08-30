@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openAwareness, type InboundDecision, type OutboxEventV1 } from '@octocodeai/octocode-awareness';
 import {
+  awarenessEventStatusText,
   createAwarenessEventConsumer,
   registerAwarenessEventConsumer,
   resolvePiEventConsumerId,
@@ -13,6 +14,37 @@ import type { PiContext, PiInstance } from '../src/types.js';
 
 const workspace = '/work/repo';
 const tempRoots: string[] = [];
+
+describe('Awareness event status projection', () => {
+  const stats = {
+    consumerId: 'pi:session-1',
+    backlogDepth: 0,
+    backlogCapped: false,
+    lastAcknowledgedSequence: 7,
+    accepted: 4,
+    held: 2,
+    refused: 1,
+    errors: 3,
+    drainAccepted: 0,
+    drainHeld: 0,
+    drainRefused: 0,
+    drainErrors: 0,
+  };
+
+  it('clears recovered UI attention even when lifetime diagnostics retain old failures', () => {
+    expect(awarenessEventStatusText(stats)).toBeUndefined();
+  });
+
+  it('shows current bounded-drain pressure with queue and cursor context', () => {
+    expect(awarenessEventStatusText({
+      ...stats,
+      backlogDepth: 2,
+      backlogCapped: true,
+      drainAccepted: 1,
+      drainRefused: 1,
+    })).toBe('events q 2+ · ack 7 · accepted 1 · held 0 · refused 1 · errors 0');
+  });
+});
 
 afterEach(() => {
   for (const root of tempRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
@@ -191,7 +223,7 @@ describe('ordered Awareness event consumer', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-event-consumer-'));
     tempRoots.push(root);
     const realWorkspace = path.join(root, 'workspace');
-    const dbPath = path.join(root, 'awareness.sqlite3');
+    const dbPath = path.join(root, 'agent.sqlite3');
     fs.mkdirSync(realWorkspace);
     const seed = openAwareness({ workspace: realWorkspace, dbPath });
     seed.sendMessage({ fromAgentId: 'peer-a', toAgentId: 'pi:session-1', topic: 'EVIDENCE', text: 'durable body' });

@@ -105,7 +105,7 @@ describe('READ -> DO -> LEARN closure fixes', () => {
     const second = reflect(db, params);
     expect(second.learning_memory_id).toBe(first.learning_memory_id);
     expect(second.learning_memory_skipped).toBe(true);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM memories WHERE state = 'ACTIVE'").get())
+    expect(db.prepare("SELECT COUNT(*) AS count FROM awareness_memories WHERE state = 'ACTIVE'").get())
       .toEqual({ count: 1 });
   });
 
@@ -193,7 +193,7 @@ describe('READ -> DO -> LEARN closure fixes', () => {
       agentId: 'owner', taskContext: 'stale ref', observation: 'review old path', importance: 5,
       references: ['file:/repo/missing.ts'], workspacePath: workspace,
     });
-    db.prepare('UPDATE memories SET created_at = ?, updated_at = ? WHERE memory_id = ?')
+    db.prepare('UPDATE awareness_memories SET created_at = ?, updated_at = ? WHERE memory_id = ?')
       .run(old, old, memory.memoryId);
 
     const preview = digest(db, { workspace, dry_run: true });

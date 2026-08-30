@@ -184,12 +184,12 @@ export function cmdStatus(db: DatabaseSync, dbPath: string, args: ParsedArgs, op
   if (artifact) { memScope.push('(artifact = ? OR artifact IS NULL)'); memScopeBinds.push(artifact); }
   const memWhere = memScope.length > 0 ? `WHERE ${memScope.join(' AND ')}` : '';
   const memStates = Object.fromEntries(
-    (db.prepare(`SELECT state, COUNT(*) AS count FROM memories ${memWhere} GROUP BY state`).all(...memScopeBinds) as Array<{ state: string; count: number }>)
+    (db.prepare(`SELECT state, COUNT(*) AS count FROM awareness_memories ${memWhere} GROUP BY state`).all(...memScopeBinds) as Array<{ state: string; count: number }>)
       .map(r => [r.state, r.count])
   );
   const memCount = Object.values(memStates).reduce((sum, count) => sum + count, 0);
   const memLabels = Object.fromEntries(
-    (db.prepare(`SELECT COALESCE(label,'OTHER') AS label, COUNT(*) AS count FROM memories ${memWhere} GROUP BY label`).all(...memScopeBinds) as Array<{ label: string; count: number }>)
+    (db.prepare(`SELECT COALESCE(label,'OTHER') AS label, COUNT(*) AS count FROM awareness_memories ${memWhere} GROUP BY label`).all(...memScopeBinds) as Array<{ label: string; count: number }>)
       .map(r => [r.label, r.count])
   );
   const limit = Math.min(100, Math.max(1, parseInt(String(args['limit'] ?? '20'), 10) || 20));
@@ -214,7 +214,7 @@ export function cmdStatus(db: DatabaseSync, dbPath: string, args: ParsedArgs, op
 }
 
 export function cmdInit(db: DatabaseSync, dbPath: string, opts: EmitOptions): number {
-  const memCount = (db.prepare('SELECT COUNT(*) AS count FROM memories').get() as { count: number }).count;
+  const memCount = (db.prepare('SELECT COUNT(*) AS count FROM awareness_memories').get() as { count: number }).count;
   return emit({ db_path: dbPath, initialized: true, memory_count: memCount }, 0, opts);
 }
 

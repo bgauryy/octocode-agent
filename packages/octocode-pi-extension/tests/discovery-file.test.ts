@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'vitest';
+import { workspaceAgentRoot } from '@octocodeai/octocode-shared/paths';
 import { buildDiscoverySnapshot, getDiscoveryFilePath, writeDiscoveryFile } from '../src/tools/discovery-file.js';
 import { discoverMcpConfigs, discoverMcpSystem } from '../src/tools/mcp-discovery.js';
 import { __test__ as mcpTestHooks } from '../src/tools/mcp-tool.js';
@@ -110,8 +111,7 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   const projectAgents = path.join(cwd, '.agents', 'mcp.json');
   const projectAntigravity = path.join(cwd, '.agents', 'mcp_config.json');
   const projectAgent = path.join(cwd, '.agent', 'mcp.json');
-  const projectOctocodeCompat = path.join(cwd, '.octocode', 'mcp.json');
-  const projectOctocode = path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json');
+  const projectOctocode = path.join(workspaceAgentRoot(cwd, octocodeHome), 'mcp', 'servers.json');
   const userClaude = path.join(homeDir, '.claude.json');
   const userClaudeCompat = path.join(homeDir, '.claude', 'mcp.json');
   const userCursor = path.join(homeDir, '.cursor', 'mcp.json');
@@ -130,7 +130,6 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   write(projectAgents, JSON.stringify({ mcpServers: { sharedAgent: { command: 'agent-mcp' } } }));
   write(projectAntigravity, JSON.stringify({ mcpServers: { drive: { serverUrl: 'https://example.invalid/mcp', oauth: {} } } }));
   write(projectAgent, JSON.stringify({ mcpServers: { singularAgent: { command: 'singular-agent-mcp' } } }));
-  write(projectOctocodeCompat, JSON.stringify({ servers: { oldOctocode: { command: 'old-octocode-mcp' } } }));
   write(projectOctocode, JSON.stringify({ mcpServers: { octocodeAgent: { command: 'octocode-agent' } } }));
   write(userClaude, JSON.stringify({ mcpServers: { memory: { command: 'mem-mcp', env: { TOKEN: 'never-report-me' } } } }));
   write(userClaudeCompat, JSON.stringify({ mcpServers: { userCompat: { command: 'user-compat' } } }));
@@ -170,7 +169,6 @@ test('discoverMcpConfigs inventories official and compatibility MCP locations wi
   for (const config of configs) {
     assert.equal(config.active, expectedActive.has(config.path), `${config.path} active classification`);
   }
-  assert.equal(byPath(projectOctocodeCompat).active, false, 'retired .octocode/mcp.json remains inventory-only');
   assert.equal(byPath(projectClaudeCompat).active, false);
   assert.equal(byPath(userClaudeCompat).active, false);
 });
@@ -230,8 +228,10 @@ test('discovery snapshot embeds discoveredConfigs under mcp', async () => {
   assert.equal(snapshot.mcp.discoveredConfigs[0]!.host, 'cursor');
 });
 
-test('writeDiscoveryFile never throws — an unwritable workspace returns null', async () => {
+test('writeDiscoveryFile never writes into an invalid workspace path', async () => {
   const ctx = { cwd: '/nonexistent-root-path/definitely/not/writable' } as unknown as PiContext;
   const filePath = await writeDiscoveryFile(ctx, { skills: [], nativeTools: [] });
-  assert.equal(filePath, null);
+  assert.ok(filePath);
+  assert.equal(filePath.startsWith('/nonexistent-root-path'), false);
+  assert.match(filePath, /\/agent\/workspaces\//);
 });

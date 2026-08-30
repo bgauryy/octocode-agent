@@ -82,7 +82,7 @@ it('derives readiness from dependencies and atomically claims one task', () => {
         message: 'schema tests pass',
       });
       expect(submitted.task.status).toBe('VERIFY');
-      expect(db.prepare('SELECT COUNT(*) AS count FROM locks WHERE run_id = ?')
+      expect(db.prepare('SELECT COUNT(*) AS count FROM awareness_locks WHERE run_id = ?')
         .get(claim.run.run_id)).toEqual({ count: 0 });
       expect(db.prepare('SELECT COUNT(*) AS count FROM run_files WHERE run_id = ? AND ended_at IS NULL')
         .get(claim.run.run_id)).toEqual({ count: 0 });
@@ -94,7 +94,7 @@ it('derives readiness from dependencies and atomically claims one task', () => {
         message: 'targeted tests passed',
       });
       expect(verified.ok).toBe(true);
-      expect(db.prepare('SELECT status FROM tasks WHERE task_id = ?')
+      expect(db.prepare('SELECT status FROM awareness_tasks WHERE task_id = ?')
         .get(first.task.task_id)).toEqual({ status: 'DONE' });
       expect(listReadyTasks(db, { planId: plan.plan_id }).map((task) => task.task_id))
         .toEqual([second.task.task_id]);
@@ -219,7 +219,7 @@ it('does not treat a live task claim between edits as a stale lock-only run', ()
         runId: claim.run.run_id, agentId: 'worker', workspacePath: workspace, targetFiles: ['src/a.ts'],
       });
       expect(locked.ok).toBe(true);
-      db.prepare("UPDATE locks SET expires_at = '2000-01-01T00:00:00Z' WHERE run_id = ?")
+      db.prepare("UPDATE awareness_locks SET expires_at = '2000-01-01T00:00:00Z' WHERE run_id = ?")
         .run(claim.run.run_id);
       expect(evictExpiredLocks(db)).toEqual({ pruned_locks: 1 });
 
@@ -227,7 +227,7 @@ it('does not treat a live task claim between edits as a stale lock-only run', ()
       expect(audit.stale_active).toEqual([]);
       expect(db.prepare('SELECT status FROM task_runs WHERE run_id = ?').get(claim.run.run_id))
         .toEqual({ status: 'ACTIVE' });
-      expect(db.prepare('SELECT status FROM tasks WHERE task_id = ?').get(task.task_id))
+      expect(db.prepare('SELECT status FROM awareness_tasks WHERE task_id = ?').get(task.task_id))
         .toEqual({ status: 'IN_PROGRESS' });
     } finally {
       rmSync(workspace, { recursive: true, force: true });
@@ -256,7 +256,7 @@ it('clears exclusive locks when a task claim is released', () => {
         taskId: task.task_id, runId: claim.run.run_id, agentId: 'worker',
       });
       expect(released.status).toBe('OPEN');
-      expect(db.prepare('SELECT COUNT(*) AS count FROM locks WHERE run_id = ?')
+      expect(db.prepare('SELECT COUNT(*) AS count FROM awareness_locks WHERE run_id = ?')
         .get(claim.run.run_id)).toEqual({ count: 0 });
       expect(db.prepare('SELECT COUNT(*) AS count FROM run_files WHERE run_id = ? AND ended_at IS NULL')
         .get(claim.run.run_id)).toEqual({ count: 0 });
@@ -288,7 +288,7 @@ it('fails the durable task when its pending run is explicitly marked FAILED', ()
         status: 'FAILED',
         message: 'declared verification failed',
       })).toMatchObject({ ok: true, status: 'FAILED' });
-      expect(db.prepare('SELECT status FROM tasks WHERE task_id = ?').get(task.task_id))
+      expect(db.prepare('SELECT status FROM awareness_tasks WHERE task_id = ?').get(task.task_id))
         .toEqual({ status: 'FAILED' });
     } finally {
       rmSync(workspace, { recursive: true, force: true });

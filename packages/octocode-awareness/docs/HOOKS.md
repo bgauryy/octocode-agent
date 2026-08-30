@@ -185,7 +185,7 @@ Environment controls read by every shared hook-runner adapter:
 | `OCTOCODE_AGENT_ID` | Stable cooperative identity. |
 | `OCTOCODE_AGENT_NAME` | Optional display name attached to registered agent identity. |
 | `OCTOCODE_ARTIFACT` (aliases `OCTOCODE_PACKAGE`, `OCTOCODE_SERVICE`) | Scope presence/coordination to one artifact inside a monorepo workspace. |
-| `OCTOCODE_MEMORY_HOME` | Canonical DB directory. |
+| `OCTOCODE_AGENT_DIR` | Canonical DB directory. |
 | `OCTOCODE_NO_VERIFY_GATE=1` | Disable stop gate only with replacement process. |
 | `OCTOCODE_NO_NOTIFY=1` | Disable prompt briefing. |
 | `OCTOCODE_NO_SESSION_CAPTURE=1` | Disable automatic handoff capture. |

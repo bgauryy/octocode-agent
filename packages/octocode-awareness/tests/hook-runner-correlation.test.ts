@@ -22,7 +22,7 @@ function hookEnv(memoryHome: string): NodeJS.ProcessEnv {
   return withEnabledAwarenessConfig({
     ...process.env,
     NODE_NO_WARNINGS: '1',
-    OCTOCODE_MEMORY_HOME: memoryHome,
+    OCTOCODE_AGENT_DIR: memoryHome,
     OCTOCODE_AGENT_ID: 'correlation-agent',
   });
 }
@@ -92,7 +92,7 @@ describe('shell hook correlation state', () => {
       const first = runHook('pre-edit', payload, memoryHome, workspace);
       expect(first.status, first.stderr).toBe(0);
 
-      const dbPath = join(memoryHome, 'awareness.sqlite3');
+      const dbPath = join(memoryHome, 'agent.sqlite3');
       const db = new DatabaseSync(dbPath);
       const firstRun = db.prepare('SELECT run_id FROM task_runs').get() as { run_id: string };
       const now = new Date().toISOString();
@@ -135,7 +135,7 @@ describe('shell hook correlation state', () => {
       const post = runHook('post-edit', payload, memoryHome, workspace);
       expect(post.status, post.stderr).toBe(0);
 
-      const db = new DatabaseSync(join(memoryHome, 'awareness.sqlite3'));
+      const db = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
       expect((db.prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status = 'ACTIVE'").get() as { c: number }).c).toBe(1);
       expect((db.prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status = 'PENDING'").get() as { c: number }).c).toBe(1);
       expect(stateJsonFiles(memoryHome)).toHaveLength(0);
@@ -156,7 +156,7 @@ describe('shell hook correlation state', () => {
       )));
       for (const start of starts) expect(start.code, start.stderr).toBe(0);
 
-      const before = new DatabaseSync(join(memoryHome, 'awareness.sqlite3'));
+      const before = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
       expect((before.prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status = 'ACTIVE'").get() as { c: number }).c).toBe(3);
       before.close();
 
@@ -165,7 +165,7 @@ describe('shell hook correlation state', () => {
       )));
       for (const finish of finishes) expect(finish.code, finish.stderr).toBe(0);
 
-      const after = new DatabaseSync(join(memoryHome, 'awareness.sqlite3'));
+      const after = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
       expect(
         (after.prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status = 'PENDING'").get() as { c: number }).c,
         finishes.map((finish) => finish.stderr).filter(Boolean).join('\n'),

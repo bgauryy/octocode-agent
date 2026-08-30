@@ -73,7 +73,7 @@ describe('judgment_required — low-confidence recall flag', () => {
 
 describe('per-label decay half-life defaults', () => {
   function halfLife(db: DatabaseSync, id: string): number | null {
-    return (db.prepare('SELECT decay_half_life_days h FROM memories WHERE memory_id = ?')
+    return (db.prepare('SELECT decay_half_life_days h FROM awareness_memories WHERE memory_id = ?')
       .get(id) as { h: number | null }).h;
   }
 
@@ -99,7 +99,7 @@ describe('salience floor on broad forget selectors', () => {
     expect(res.salience_floor).toBe(8);
     expect(res.memory_ids).toContain(minor);
     expect(res.memory_ids).not.toContain(critical);
-    expect(db.prepare('SELECT 1 FROM memories WHERE memory_id = ?').get(critical)).toBeTruthy();
+    expect(db.prepare('SELECT 1 FROM awareness_memories WHERE memory_id = ?').get(critical)).toBeTruthy();
   });
 
   it('explicit --max-importance overrides the floor; explicit ids bypass it', () => {
@@ -141,9 +141,9 @@ describe('salience floor on broad forget selectors', () => {
 
     const deleted = forgetMemory(db, { tags: ['deprecated'], workspacePath: '/workspace/a' });
     expect(deleted.deleted).toBe(1);
-    expect(db.prepare('SELECT 1 FROM memories WHERE memory_id = ?').get(inScope)).toBeUndefined();
-    expect(db.prepare('SELECT 1 FROM memories WHERE memory_id = ?').get(outOfScope)).toBeTruthy();
-    expect(db.prepare('SELECT 1 FROM memories WHERE memory_id = ?').get(global)).toBeTruthy();
+    expect(db.prepare('SELECT 1 FROM awareness_memories WHERE memory_id = ?').get(inScope)).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM awareness_memories WHERE memory_id = ?').get(outOfScope)).toBeTruthy();
+    expect(db.prepare('SELECT 1 FROM awareness_memories WHERE memory_id = ?').get(global)).toBeTruthy();
   });
 
   it('honors forget scope filters through the tool-operation dispatcher', () => {
@@ -179,6 +179,6 @@ describe('salience floor on broad forget selectors', () => {
       dry_run: true,
     });
     expect((bySchemaId.payload as { memory_ids: string[] }).memory_ids).toEqual([inScope]);
-    expect(db.prepare('SELECT 1 FROM memories WHERE memory_id = ?').get(outOfScope)).toBeTruthy();
+    expect(db.prepare('SELECT 1 FROM awareness_memories WHERE memory_id = ?').get(outOfScope)).toBeTruthy();
   });
 });

@@ -110,7 +110,7 @@ export function buildCompactionMarkdown(details: CompactionCheckpointDetails, cr
  * Write compaction checkpoint markdown artifacts.
  *
  * Requires `cwd` + `session` and routes into the session
- * artifact tree at `<workspace>/.octocode/agent/<session-key>/compaction/`.
+ * artifact tree under `$OCTOCODE_HOME/agent/workspaces/<workspace>/sessions/<session-key>/compaction/`.
  * Both a timestamped snapshot and a `latest.md` pointer are written there,
  * and both are registered as `compaction` producers in the manifest.
  * Never throws.

@@ -111,7 +111,7 @@ const AGENT_INSTRUCTIONS = {
   ],
   keys: [
     'Arrow Up and Arrow Down move through items; Home and End jump to the first or last item.',
-    'Enter activates the selected action when one exists; Escape or Ctrl-C returns cancellation to the owning view.',
+    'Enter activates the selected action when one exists; Escape returns to the owning view, while Ctrl-C remains the global cancel or exit key.',
   ],
   accessibility: [
     'Info and success updates use a polite status channel; warnings and errors use an assertive alert channel.',
@@ -202,7 +202,7 @@ export class StatusNotificationsWidget extends OpenTuiWidget<StatusNotificationO
         description: 'A bounded, keyboard-navigable list of runtime lifecycle updates.',
         liveRegion: 'polite',
         keyboardHelp: [
-          'Use Arrow Up or Arrow Down to navigate, Home or End to jump, Enter for an action, and Escape or Ctrl-C to cancel.',
+          'Use Arrow Up or Arrow Down to navigate, Home or End to jump, Enter for an action, Escape to return, and Ctrl-C to cancel or exit.',
         ],
       },
       instructions: AGENT_INSTRUCTIONS,
@@ -290,7 +290,7 @@ export class StatusNotificationsWidget extends OpenTuiWidget<StatusNotificationO
       {
         id: 'help',
         role: 'help',
-        text: '↑/↓ navigate · Home/End jump · Enter action · Esc/Ctrl-C cancel',
+        text: '↑/↓ navigate · Home/End jump · Enter action · Esc back · Ctrl-C cancel/exit',
       },
     ];
   }

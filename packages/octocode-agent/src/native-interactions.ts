@@ -82,7 +82,7 @@ export function createNativeInteractionBroker(
 }
 
 type AskUserInput = {
-  readonly type: 'select' | 'input' | 'confirm';
+  readonly type: 'select' | 'input' | 'editor' | 'confirm';
   readonly question: string;
   readonly options?: readonly string[];
   readonly initial?: string;
@@ -92,7 +92,7 @@ type AskUserInput = {
 function parseAskUserInput(value: unknown): AskUserInput | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   const input = value as Record<string, unknown>;
-  if ((input.type !== 'select' && input.type !== 'input' && input.type !== 'confirm') || typeof input.question !== 'string') return undefined;
+  if ((input.type !== 'select' && input.type !== 'input' && input.type !== 'editor' && input.type !== 'confirm') || typeof input.question !== 'string') return undefined;
   if (input.initial !== undefined && typeof input.initial !== 'string') return undefined;
   if (input.timeoutMs !== undefined && (typeof input.timeoutMs !== 'number' || !Number.isFinite(input.timeoutMs) || input.timeoutMs <= 0)) return undefined;
   if (input.type === 'select' && (!Array.isArray(input.options) || input.options.length === 0 || input.options.length > 100 || !input.options.every((option) => typeof option === 'string'))) return undefined;
@@ -111,6 +111,7 @@ function interactionRequest(input: AskUserInput): UiInteractionRequest {
     case 'confirm': return { type: 'confirm', message: input.question };
     case 'select': return { type: 'select', message: input.question, options: input.options ?? [] };
     case 'input': return { type: 'input', message: input.question, ...(input.initial === undefined ? {} : { initial: input.initial }) };
+    case 'editor': return { type: 'editor', message: input.question, initial: input.initial ?? '' };
   }
 }
 
@@ -121,13 +122,13 @@ export function registerNativeAskUserTool(
   registry.register({
     name: 'askUser',
     label: 'Ask user',
-    description: 'Ask the user to confirm, select an option, or enter free text.',
+    description: 'Ask the user to confirm, select an option, or enter single-line or multiline text.',
     schemaVersion: 1,
     inputSchema: {
       type: 'object',
       required: ['type', 'question'],
       properties: {
-        type: { type: 'string', enum: ['select', 'input', 'confirm'] },
+        type: { type: 'string', enum: ['select', 'input', 'editor', 'confirm'] },
         question: { type: 'string' },
         options: { type: 'array', items: { type: 'string' } },
         initial: { type: 'string' },

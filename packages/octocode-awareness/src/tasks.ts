@@ -1,4 +1,4 @@
-/** Public compatibility barrel for tasks.ts. */
+/** Public API barrel for tasks.ts. */
 export { getTask, activeTaskClaimForAgent } from './tasks-catalog.js';
 export { createTask, addTaskDependency, listTasks, countTasks, listReadyTasks, countReadyTasks } from './tasks-ready.js';
 export { claimTask, heartbeatTaskClaim, submitTask, releaseTaskClaim } from './tasks-claims.js';

@@ -2,9 +2,9 @@
 
 > The canonical entry point for implementation is [`../README.md`](../README.md). This folder preserves the complete source RFC, planning system, decisions, and evidence archive.
 
-This folder is the complete planning and evidence system for replacing Pi with an Octocode-owned runtime and native editor. The 2026-08-28 product decision makes `@octocodeai/pi-extension` a temporary parity oracle that is deleted after native-only conformance, observation, rollback, migration, packaging, install, and upgrade gates pass. Earlier active wording that promises permanent Pi support is superseded and tracked for reconciliation by `../10-REMAINING-WORK-PLAN.md` `DOC-005`; dated files under `evidence/` remain immutable.
+This folder is the complete planning and evidence system for replacing Pi inside native `octocode-agent` with an Octocode-owned runtime and native editor. The 2026-08-29 product decision retains `@octocodeai/pi-extension` as an independently installed Pi compatibility product. Native source, dependencies, artifacts, installers, updates, selectors, fallbacks, and rollback paths remain Pi-free. Dated files under `evidence/` remain immutable.
 
-The RFC is a validated planning baseline. Partial implementation exists, but the production-path audit shows that the native cutover gates are not satisfied. The current release decision remains **do not begin final Pi deletion or canary rollout**. Continue only dependency-ordered native implementation, oracle freeze, selector construction, and verification permitted by the active gates. Read [`../01-CURRENT-STATE-AUDIT.md`](../01-CURRENT-STATE-AUDIT.md), [`../08-TRACEABILITY-CHECKLIST.md`](../08-TRACEABILITY-CHECKLIST.md), and [STATUS.md](STATUS.md) before doing any work.
+The RFC is a validated planning baseline. The locally runnable native implementation and repository verification are green, but the production-path audit shows that external cutover gates are not satisfied. The current release decision remains **do not begin canary rollout or declare native cutover complete**. Continue clean-platform, credentialed provider/editor/MCP, real-host Pi comparison, assistive-technology, canary, rollback, and release verification permitted by the active gates. Read [`../01-CURRENT-STATE-AUDIT.md`](../01-CURRENT-STATE-AUDIT.md), [`../08-TRACEABILITY-CHECKLIST.md`](../08-TRACEABILITY-CHECKLIST.md), [STATUS.md](STATUS.md), and the latest dated CLI review under `evidence/` before doing any work.
 
 ## Target shape
 
@@ -21,20 +21,20 @@ packages/octocode-agent-core
         +--> host-conformance suite
         |
         +--> native Octocode host
-        +--> temporary Pi oracle --> @octocodeai/pi-extension
+        +--> independent Pi compatibility adapter --> @octocodeai/pi-extension
 ```
 
-Agent core must not import Pi or OpenTUI types. The final candidate requires zero live Pi references and dependency paths across source, manifests, lockfiles, built/packed artifacts, installers, update paths, and releases. Pi-specific translation stays in the temporary oracle until deletion. OpenTUI stays in the terminal adapter.
+Agent core must not import Pi or OpenTUI types. The final native candidate requires zero Pi references and dependency paths across native source, manifests, lockfile resolutions, built and packed artifacts, installers, update paths, rollbacks, and releases. Pi-specific translation stays in the independent extension. OpenTUI stays in the native terminal adapter.
 
 ## Non-negotiable rules
 
-1. Do not remove Pi before the Stage 6 observation gate passes.
+1. Do not close native Pi-retirement gates before the Stage 6 observation gate passes.
 2. Do not treat the current dirty working-tree measurements as the canonical before baseline.
 3. Do not mark a stage, step, blocker, or feature complete without commit-addressed evidence.
 4. Do not weaken a requirement by editing a checklist or status table. Update the owning specification first and obtain the required approval.
 5. Run the same host-conformance scenarios against Pi-backed and native implementations.
 6. Keep external effects out of shadow execution. Security bypasses, duplicate effects, data loss, compaction loops, and owned-child leaks have zero tolerance.
-7. Preserve the frozen Pi oracle until the deletion gates pass; then remove the extension package and every live Pi product path.
+7. Keep the Pi extension isolated from native release wiring. Preserve its supported-version matrix, tests, docs, and publication path as an independent compatibility product.
 8. Use Octocode search, AST, and LSP tools for code evidence. Search results are candidates; semantic identity and reachability require LSP proof.
 9. Follow the repository `AGENTS.md`, package architecture documents, build order, TDD workflow, and real-path verification rules.
 10. Never hand-edit generated Awareness state or claim implementation readiness from documentation validation.

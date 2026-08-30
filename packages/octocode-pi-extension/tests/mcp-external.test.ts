@@ -9,6 +9,7 @@ import {
   registerMcpTool,
   stopAllMcpServers,
 } from '../src/tools/mcp-tool.js';
+import { projectMcpPath } from '../src/tools/mcp-config.js';
 import type { PiContext, PiInstance, ToolCallResult, ToolDefinition } from '../src/types.js';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -52,6 +53,8 @@ afterEach(() => {
 
 test('real external Node stdio MCP loads and calls through the canonical project config', async () => {
   const root = fs.mkdtempSync(path.join(packageRoot, '.tmp-external-node-mcp-'));
+  const previousOctocodeHome = process.env.OCTOCODE_HOME;
+  process.env.OCTOCODE_HOME = path.join(root, 'octocode-home');
   const serverPath = path.join(root, 'server.mjs');
   fs.writeFileSync(serverPath, `
     import { Server } from '@modelcontextprotocol/server';
@@ -71,7 +74,8 @@ test('real external Node stdio MCP loads and calls through the canonical project
   try {
     for (const label of ['canonical']) {
       const workspace = path.join(root, `workspace-${label}`);
-      const configPath = path.join(workspace, '.octocode', 'agent', 'mcp', 'servers.json');
+      fs.mkdirSync(workspace, { recursive: true });
+      const configPath = projectMcpPath(workspace);
       const serverName = 'external_canonical';
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       fs.writeFileSync(configPath, JSON.stringify({
@@ -119,6 +123,8 @@ test('real external Node stdio MCP loads and calls through the canonical project
     }
   } finally {
     stopAllMcpServers();
+    if (previousOctocodeHome === undefined) delete process.env.OCTOCODE_HOME;
+    else process.env.OCTOCODE_HOME = previousOctocodeHome;
     fs.rmSync(root, { recursive: true, force: true });
   }
 }, 30_000);

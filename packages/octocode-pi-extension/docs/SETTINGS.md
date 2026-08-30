@@ -117,7 +117,7 @@ Canonical definition files:
 
 | Scope | Source of truth |
 |---|---|
-| Project | `<workspace>/.octocode/agent/mcp/servers.json` |
+| Workspace | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json` |
 | Global | `$OCTOCODE_HOME/agent/mcp/servers.json` |
 
 Project writes require a trusted workspace. Definitions are validated and
@@ -136,8 +136,7 @@ Project locations:
 - `.codex/config.toml`;
 - `.agents/mcp_config.json` and `.agents/mcp.json`;
 - `.agent/mcp_config.json` and `.agent/mcp.json`;
-- `.vscode/mcp.json`;
-- legacy `.octocode/mcp.json` as an inventory-only compatibility source.
+- `.vscode/mcp.json`.
 
 User locations:
 
@@ -150,8 +149,7 @@ User locations:
 - `~/.gemini/antigravity/mcp_config.json`;
 - `~/.gemini/antigravity-cli/mcp_config.json`;
 - Claude Desktop's macOS and XDG configuration locations;
-- `~/.vscode/mcp.json`;
-- legacy `$OCTOCODE_HOME/mcp.json` as inventory-only compatibility.
+- `~/.vscode/mcp.json`.
 
 The Discovery section shows the host, exact source path, trust status,
 read-only/active classification, and parse/import warnings. Untrusted project
@@ -202,9 +200,9 @@ Each skill card shows:
 Discovery merges Pi-provided metadata, bundled skills, and `SKILL.md` files
 from these roots, in precedence order:
 
-- project `.agents/skills`, `.claude/skills`, `.cursor/skills`,
+- project `.agent/skills`, `.agents/skills`, `.claude/skills`, `.cursor/skills`,
   `.codex/skills`, `.octocode/skills`, `.pi/agent/skills`, and `.pi/skills`;
-- user `~/.pi/agent/skills`, `~/.pi/skills`, `~/.claude/skills`,
+- user `~/.agent/skills`, `~/.agents/skills`, `~/.pi/agent/skills`, `~/.pi/skills`, `~/.claude/skills`,
   `~/.cursor/skills`, `~/.codex/skills`, and `~/.octocode/skills`;
 - extension-bundled skills.
 

@@ -12,7 +12,7 @@ subdirectories.
 All session outputs are written under:
 
 ```
-<your-workspace>/.octocode/agent/<session-key>/
+$OCTOCODE_HOME/agent/workspaces/<workspace-key>/sessions/<session-key>/
 ```
 
 The `session-key` is derived from the session ID (from the Pi session manager)
@@ -58,7 +58,7 @@ at the session root. You can open it any time to see exactly what the current
 session has produced:
 
 ```json
-// <workspace>/.octocode/agent/<session-key>/manifest.json
+// $OCTOCODE_HOME/agent/workspaces/<workspace-key>/sessions/<session-key>/manifest.json
 {
   "version": 1,
   "sessionKey": "my-session-a3f4b9c12d01",
@@ -91,7 +91,7 @@ The plan HTML file (`plan/plan.html`) auto-refreshes every 10 seconds. You can
 open it in a browser directly:
 
 ```sh
-open "$(ls -dt <workspace>/.octocode/agent/*/plan/plan.html | head -1)"
+open "$(ls -dt "$OCTOCODE_HOME"/agent/workspaces/<workspace-key>/sessions/*/plan/plan.html | head -1)"
 ```
 
 Or use the `localServer` tool inside Octocode to serve it:
@@ -115,7 +115,7 @@ hook exceptions, and provider HTTP errors ≥ 400.
 
 ```sh
 # Find the current session's error log
-ls -t <workspace>/.octocode/agent/*/logs/error.txt | head -1 | xargs cat
+ls -t "$OCTOCODE_HOME"/agent/workspaces/<workspace-key>/sessions/*/logs/error.txt | head -1 | xargs cat
 ```
 
 Each entry includes: timestamp, uptime, source, cwd, model, severity, duration
@@ -193,17 +193,16 @@ few MB depending on screenshot count). You can safely delete old session trees:
 
 ```sh
 # List all session trees, sorted by age
-ls -lt <workspace>/.octocode/agent/
+ls -lt "$OCTOCODE_HOME"/agent/workspaces/<workspace-key>/sessions/
 
 # Remove trees older than 30 days
-find <workspace>/.octocode/agent -maxdepth 1 -type d -mtime +30 -exec rm -rf {} +
+find "$OCTOCODE_HOME"/agent/workspaces/<workspace-key>/sessions -maxdepth 1 -type d -mtime +30 -exec rm -rf {} +
 
 # Remove everything (nuclear — keeps the workspace clean)
-rm -rf <workspace>/.octocode/agent/
+rm -rf "$OCTOCODE_HOME"/agent/workspaces/<workspace-key>/sessions/
 ```
 
-> The `.octocode/agent/` directory itself can be added to `.gitignore` if you
-> don't want session artifacts committed to version control.
+> Session artifacts are global and never need a repository `.gitignore` entry.
 
 ---
 

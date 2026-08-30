@@ -25,6 +25,55 @@ describe('native OpenAI-compatible model port', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('supports explicitly configured header-only and no-auth compatible providers', async () => {
+    const requests: RequestInit[] = [];
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const headerOnly = createOpenAiCompatibleModelPort({
+      endpoint: 'https://example.test/v1', apiKey: '', defaultModel: 'model-1', fetch, stream: false,
+      allowMissingApiKey: true, headers: { 'x-provider-key': 'header-secret' },
+    });
+    const noAuth = createOpenAiCompatibleModelPort({
+      endpoint: 'http://127.0.0.1:11434/v1', apiKey: '', defaultModel: 'model-1', fetch, stream: false,
+      allowMissingApiKey: true,
+    });
+
+    await headerOnly.run({ messages: [{ role: 'user', content: 'hello' }] }, { signal: new AbortController().signal });
+    await noAuth.run({ messages: [{ role: 'user', content: 'hello' }] }, { signal: new AbortController().signal });
+
+    expect(requests[0]?.headers).toMatchObject({ 'x-provider-key': 'header-secret' });
+    expect(requests[0]?.headers).not.toHaveProperty('Authorization');
+    expect(requests[1]?.headers).not.toHaveProperty('Authorization');
+  });
+
+  it('resolves Pi runtime credentials only when a model request starts', async () => {
+    const resolveAuth = vi.fn(() => ({ apiKey: 'request-secret', headers: { 'x-runtime': 'resolved' } }));
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ Authorization: 'Bearer request-secret', 'x-runtime': 'resolved' });
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const port = createOpenAiCompatibleModelPort({
+      endpoint: 'https://example.test/v1',
+      apiKey: '',
+      defaultModel: 'model-1',
+      fetch,
+      stream: false,
+      resolveAuth,
+    });
+
+    expect(resolveAuth).not.toHaveBeenCalled();
+    await port.run({ messages: [{ role: 'user', content: 'hello' }] }, { signal: new AbortController().signal });
+    expect(resolveAuth).toHaveBeenCalledOnce();
+  });
+
   it('normalizes a non-stream response and keeps credentials out of results', async () => {
     const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(init?.headers).toMatchObject({ Authorization: 'Bearer synthetic-secret' });
@@ -79,7 +128,7 @@ describe('native OpenAI-compatible model port', () => {
       endpoint: 'https://example.test/v1', apiKey: 'secret', defaultModel: 'm',
       fetch: async (_url, init) => new Response(new ReadableStream({
         start(stream) {
-          stream.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n'));
+          stream.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'));
           init?.signal?.addEventListener('abort', () => stream.error(new DOMException('Aborted', 'AbortError')), { once: true });
         },
       }), { status: 200 }),
@@ -122,7 +171,7 @@ describe('native OpenAI-compatible model port', () => {
         { role: 'user', content: 'find' },
         {
           role: 'assistant',
-          content: '',
+          content: null,
           tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'search', arguments: '{"q":"x"}' } }],
         },
         { role: 'tool', content: '{"ok":true}', tool_call_id: 'call-1' },
@@ -137,7 +186,7 @@ describe('native OpenAI-compatible model port', () => {
     ] }, { signal: new AbortController().signal });
   });
 
-  it('consumes a final SSE record without a trailing newline', async () => {
+  it('rejects an invalid SSE record without an event delimiter', async () => {
     const body = 'data: {"choices":[{"delta":{"content":"final"},"finish_reason":"stop"}]}';
     const port = createOpenAiCompatibleModelPort({
       endpoint: 'https://example.test/v1',
@@ -145,15 +194,10 @@ describe('native OpenAI-compatible model port', () => {
       defaultModel: 'm',
       fetch: async () => new Response(body, { status: 200 }),
     });
-    const deltas: unknown[] = [];
-
-    const result = await port.run(
+    await expect(port.run(
       { messages: [{ role: 'user', content: 'hi' }] },
-      { signal: new AbortController().signal, emit: async (delta) => { deltas.push(delta); } },
-    );
-
-    expect(deltas).toEqual([{ type: 'text', text: 'final' }]);
-    expect(result.stop).toBe('complete');
+      { signal: new AbortController().signal },
+    )).rejects.toMatchObject({ category: 'provider' });
   });
 
   it('rejects malformed streaming frames and tool arguments without echoing them', async () => {
@@ -166,7 +210,7 @@ describe('native OpenAI-compatible model port', () => {
     await expect(malformedFrame.run(
       { messages: [{ role: 'user', content: 'hi' }] },
       { signal: new AbortController().signal },
-    )).rejects.toThrow('Malformed model provider stream frame');
+    )).rejects.toMatchObject({ category: 'provider' });
 
     const malformedTool = createOpenAiCompatibleModelPort({
       endpoint: 'https://example.test/v1',
@@ -180,7 +224,7 @@ describe('native OpenAI-compatible model port', () => {
     await expect(malformedTool.run(
       { messages: [{ role: 'user', content: 'hi' }] },
       { signal: new AbortController().signal },
-    )).rejects.toThrow('Malformed model tool arguments');
+    )).rejects.toMatchObject({ category: 'adapter-translation' });
   });
 
   it('rejects unsupported thinking controls before sending provider bytes', async () => {
@@ -202,7 +246,7 @@ describe('native OpenAI-compatible model port', () => {
     await expect(incomplete.run(
       { messages: [{ role: 'user', content: 'hi' }] },
       { signal: new AbortController().signal },
-    )).rejects.toThrow(/tool call/i);
+    )).rejects.toMatchObject({ category: 'provider' });
 
     const conflicting = createOpenAiCompatibleModelPort({
       endpoint: 'https://example.test/v1', apiKey: 'secret', defaultModel: 'm',
@@ -214,7 +258,7 @@ describe('native OpenAI-compatible model port', () => {
     await expect(conflicting.run(
       { messages: [{ role: 'user', content: 'hi' }] },
       { signal: new AbortController().signal },
-    )).rejects.toThrow(/inconsistent/i);
+    )).rejects.toMatchObject({ category: 'provider' });
   });
 
   it('does not classify an unterminated stream without a finish reason as complete', async () => {
@@ -222,18 +266,18 @@ describe('native OpenAI-compatible model port', () => {
       endpoint: 'https://example.test/v1', apiKey: 'secret', defaultModel: 'm',
       fetch: async () => new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n', { status: 200 }),
     });
-    const result = await port.run(
+    await expect(port.run(
       { messages: [{ role: 'user', content: 'hi' }] },
       { signal: new AbortController().signal },
-    );
-    expect(result.stop).toBe('error');
+    )).rejects.toMatchObject({ category: 'provider' });
   });
 
   it('sends an explicit stable prompt-cache routing key when configured', async () => {
     const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(JSON.parse(String(init?.body))).toMatchObject({ prompt_cache_key: 'octocode:stable-prefix' });
       return new Response(JSON.stringify({
-        choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        id: 'chatcmpl-1', created: 1, model: 'm', object: 'chat.completion',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop', logprobs: null }],
         usage: { prompt_tokens: 1, completion_tokens: 1, prompt_tokens_details: { cached_tokens: 1 } },
       }), { status: 200 });
     });

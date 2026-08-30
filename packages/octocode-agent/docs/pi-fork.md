@@ -1,112 +1,45 @@
-# Pi Fork Dev Guide
+# Develop against a Pi fork
 
-`octocode-agent` bundles `@earendil-works/pi-coding-agent` as the Pi host. This guide
-shows how to run a locally-built fork of Pi instead — no code change required.
+`octocode-agent` does not bundle or launch Pi. Use a Pi fork only with the independently
+installed `@octocodeai/pi-extension` package and the fork's own Pi host command.
 
-## Why Fork
+## Scope
 
-The Pi extension API (`@octocodeai/pi-extension`) controls tools, system prompt, skills,
-and events. Forking Pi gives additional control over:
+A Pi fork can change Pi-owned behavior such as its model loop, sessions, built-in commands,
+or TUI. The Octocode extension continues to own its Pi adapter, tools, prompt integration,
+skills, settings projection, and Awareness wiring.
 
-- Default CLI flags and startup behaviour
-- TUI branding and layout changes
-- Session / compaction internals
-- Core slash commands
-- Own publish cadence (no dependency on upstream releases)
+The native `octocode-agent` package is outside this workflow. Do not add a Pi fork, the Pi
+extension, or Pi-specific environment variables to its dependencies or launcher.
 
-## Fork Setup (one-time)
+## Build the fork
 
-### 1. Fork on GitHub
+Follow the fork's repository instructions for installation, build, and tests. The supported
+upstream source is `https://github.com/earendil-works/pi`.
 
-Go to https://github.com/earendil-works/pi → **Fork** → your account or org.
+If you rename or publish the fork, preserve its Pi extension-loading contract. Install
+`@octocodeai/pi-extension` into that Pi environment and load it through the Pi host's
+documented extension mechanism.
 
-```bash
-# Clone your fork next to the octocode monorepo
-git clone https://github.com/<your-org>/pi.git ~/code/pi-fork
-cd ~/code/pi-fork
+## Compatibility requirements
 
-# Track upstream for sync
-git remote add upstream https://github.com/earendil-works/pi.git
-git fetch upstream
-```
+The extension fails closed on unsupported Pi versions. Its supported version is defined by
+`packages/octocode-pi-extension/package.json` and enforced by
+`packages/octocode-pi-extension/src/adapters/pi-host-compatibility.ts`.
 
-### 2. Rename the package (optional but recommended for prod)
+Before using a fork with the extension:
 
-In `packages/coding-agent/package.json`:
-```json
-{
-  "name": "@octocodeai/pi-coding-agent",
-  "version": "0.80.3-octocode.0"
-}
-```
+1. Match or explicitly update the supported Pi version.
+2. Build `@octocodeai/pi-extension`.
+3. Run the Pi-host compatibility and extension test suites.
+4. Load the built extension through the actual Pi extension loader.
+5. Exercise startup, registration, one turn, tool execution, session resume, compaction, and shutdown.
 
-Keep `"bin": { "pi": "..." }` unchanged — the launcher resolves it from the `bin` field.
+## Native boundary
 
-### 3. Build the fork
+The native release must continue to satisfy `yarn workspace octocode-agent
+check:no-native-pi`. A Pi fork must not introduce native imports, subprocess fallbacks,
+package resolution, installers, update paths, or rollback dependencies.
 
-```bash
-cd ~/code/pi-fork
-npm install
-npm run build          # or: npx tsc -p packages/coding-agent/tsconfig.build.json
-```
-
-The built entry is typically at `packages/coding-agent/out/cli.js`.
-
-## Local Dev Workflow
-
-Point `octocode-agent` at the fork binary with an env var — **no package.json edit**:
-
-```bash
-# Find the pi binary in the fork
-ls ~/code/pi-fork/packages/coding-agent/out/  # look for cli.js or similar
-
-export OCTOCODE_PI_BIN=~/code/pi-fork/packages/coding-agent/out/cli.js
-octocode-agent          # uses the fork binary
-octocode-agent --version  # shows: pi host ... (local binary: ...)
-```
-
-Add to `~/.octocode/.env` or a `.env` in the project to persist across sessions.
-
-## Production Fork Workflow
-
-When the fork is published to npm (e.g. `@octocodeai/pi-coding-agent`):
-
-```bash
-# 1. Update octocode-agent/package.json dependency
-#    "@earendil-works/pi-coding-agent" → "@octocodeai/pi-coding-agent"
-
-# 2. Update PI_PACKAGE constant in bin/launcher.mjs
-
-# 3. Or — override without changing code:
-export OCTOCODE_PI_PACKAGE=@octocodeai/pi-coding-agent
-```
-
-## Syncing with Upstream
-
-```bash
-cd ~/code/pi-fork
-git fetch upstream
-git merge upstream/main --no-ff -m "chore: sync upstream earendil-works/pi@$(git rev-parse --short upstream/main)"
-# Resolve conflicts; focus on packages/coding-agent/
-npm run check && ./test.sh   # fork's CI gate
-```
-
-## Env Var Reference
-
-| Env var | Effect |
-|---|---|
-| `OCTOCODE_PI_BIN` | Absolute path to a locally-built Pi binary (takes priority) |
-| `OCTOCODE_PI_PACKAGE` | npm package name override (e.g. `@octocodeai/pi-coding-agent`) |
-| `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` | Suppress project context file loading (enabled by default) |
-| `OCTOCODE_AGENT_EXTENSION_SPEC` | Override the core extension spec (npm:/git:/path) |
-| `OCTOCODE_AGENT_CLEAN=1` | Suppress user skills (fully deterministic agent) |
-
-## What `--no-context-files` Does (opt-in)
-
-Project context files stay **enabled** by default so repository rules remain
-authoritative. Pass `--no-context-files` to Pi only when needed:
-
-- `OCTOCODE_AGENT_NO_CONTEXT_FILES=1` — suppress project context files for every launch
-- `OCTOCODE_AGENT_CLEAN=1` — also adds `--no-skills` (fully deterministic branded agent)
-
-(See `buildPiArgs` in `src/launcher.ts`.)
+See [Historical Pi launcher integration](PI_INTEGRATION.md) for the former native boundary
+and the current package ownership rules.

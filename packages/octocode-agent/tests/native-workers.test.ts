@@ -181,6 +181,29 @@ describe('native worker process port', () => {
     expect(Object.isFrozen(process.specs[0]!.env)).toBe(true);
   });
 
+  it('forwards model credentials without forwarding legacy environment-based model discovery', async () => {
+    const { process, supervisor } = fixture({
+      env: {
+        OCTOCODE_MODEL_API_KEY: 'fixture-key',
+        OCTOCODE_MODEL_ENDPOINT: 'http://127.0.0.1:43123/v1',
+        OCTOCODE_MODEL_PROTOCOL: 'openai-chat-completions',
+        OCTOCODE_MODEL: 'fixture-model',
+        OMIT: 'nope',
+      },
+    });
+
+    await supervisor.spawn(spawnPacket('worker-1'));
+    await tick();
+
+    expect(process.specs[0]!.env).toMatchObject({
+      OCTOCODE_MODEL_API_KEY: 'fixture-key',
+    });
+    expect(process.specs[0]!.env).not.toHaveProperty('OCTOCODE_MODEL_ENDPOINT');
+    expect(process.specs[0]!.env).not.toHaveProperty('OCTOCODE_MODEL_PROTOCOL');
+    expect(process.specs[0]!.env).not.toHaveProperty('OCTOCODE_MODEL');
+    expect(process.specs[0]!.env).not.toHaveProperty('OMIT');
+  });
+
   it('leaves bounded concurrency and queued cleanup solely to WorkerSupervisor', async () => {
     const { process, supervisor } = fixture({ maxActive: 1 });
     await supervisor.spawn(spawnPacket('worker-1'));

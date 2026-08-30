@@ -12,8 +12,9 @@ The widget classes are production-projected by `SemanticWidgetController` and
 materialized by `OpenTuiSemanticAdapter`. In the full-screen path, OpenTUI owns
 input, queues composer submissions, routes modal control events with generation
 checks, and restores composer focus after resolution. Headless, alternate, and
-test terminals retain the external line-reader path. Mouse parity, an approved
-user-facing alternate-output mode, and release evidence remain open. See
+test terminals retain the external line-reader path. Interactive `--accessible`
+mode keeps the composer and native nonsensitive controls while adding complete
+linear semantic output. Mouse parity and release evidence remain open. See
 [Known remaining work](#known-remaining-work).
 
 ## Shared contract
@@ -66,19 +67,55 @@ effects.
   timeout, and effect authorization. Agent-authored prose is never runtime
   authority.
 
+### Architecture decision: one presentation authority
+
+`PresentationState` is the only domain read model for the native terminal. It
+owns working state, active interaction state, and semantic chrome facts such as
+runtime identity, workspace trust, and connection state. The launcher emits
+those facts; it does not preassemble header or footer widgets.
+
+`projectPresentationChrome()` combines the immutable presentation state with
+the current viewport width to produce `HeaderSnapshot` and `FooterSnapshot`.
+This projector is the sole owner of active mode and contextual key hints. Width,
+focus, composer drafts, completion state, and native controls remain ephemeral
+renderer state and never enter the reducer.
+
+This design rejects two alternatives:
+
+- Reject a launcher-owned snapshot helper because it remains a second
+  presentation clock and reads runtime and terminal snapshots independently.
+- Do not store complete header and footer snapshots in the reducer. Doing so
+  makes viewport width and keymaps persistent domain state.
+
+The implementation sequence is dependency ordered:
+
+1. Reducer and projector tests freeze identity, lifecycle, interaction, and
+   resize invariants.
+2. `PresentationState` accepts runtime chrome facts and derives connection from
+   lifecycle events.
+3. `SemanticWidgetController` projects header and footer from state plus its
+   viewport.
+4. The launcher emits deduplicated chrome facts and no longer manufactures
+   width, working, mode, connection, or keymap snapshots.
+5. Focused, FFI, package, build, and real-terminal checks guard the integrated
+   path.
+
 ## Controller hierarchy and event flow
 
 Keep controller ownership narrow. Do not add renderer, focus, or interaction
 state to a widget when the state belongs to a higher layer.
 
 ```text
-runtime event or user input
+runtime event
+  -> native semantic event and chrome-fact mapping
   -> Zustand PresentationStore
+     -> immutable PresentationState
   -> OpenTuiTerminalController
      -> renderer lifecycle and ordered external input
      -> one generation-scoped pending interaction
   -> SemanticWidgetController
      -> presentation-to-widget projection
+     -> pure state + viewport header/footer projection
      -> semantic interaction and announcement routing
   -> WidgetHost
      -> instance identity, lifecycle, focus, and destruction
@@ -92,10 +129,12 @@ The source hierarchy is:
 
 - `terminal-controller.ts` owns terminal startup, teardown, input ordering, and
   interaction settlement. `createOpenTuiTerminal()` remains the public factory.
-- `index.ts` owns presentation contracts, the pure reducer, and the Zustand
-  store. Renderer-local state must not become a second presentation store.
+- `presentation.ts` owns presentation contracts, the pure reducer, and the Zustand
+  store. `projectPresentationChrome()` owns state-sensitive header/footer
+  projection. Renderer-local state must not become a second presentation store.
 - `widget-controller.ts` owns semantic projection. It composes `WidgetHost`
-  instead of duplicating lifecycle and focus maps.
+  instead of duplicating lifecycle and focus maps, and supplies only its current
+  viewport to the chrome projector.
 - `widget-host.ts` owns widget instances. It rejects ambiguous duplicate IDs and
   centralizes mount, activation, focus, removal, and destruction.
 - `widgets/sanitize.ts` owns the single grapheme segmenter and shared terminal
@@ -143,7 +182,8 @@ remain authoritative for exact wording and validation bounds.
   never infer counts, percentages, duration, or completion. The first terminal
   state remains authoritative.
 - **Keys:** Enter expands or collapses bounded input and outcome detail. The
-  global focus order reaches each active tool row.
+  global focus order reaches one active tool row, or the most recent row when no
+  tool is active. Tool history remains available in the scrollable activity rail.
 - **Accessibility:** Pair glyphs with status words, use a static running marker
   in reduced-motion mode, and announce only material transitions.
 - **Recovery:** Fall back to an indeterminate state for invalid totals, redact
@@ -281,7 +321,8 @@ remain authoritative for exact wording and validation bounds.
   decorative or speculative alerts.
 - **Input and output:** Derive severity and urgency from runtime lifecycle.
   Actions return to the runtime for validation and dispatch; rendering never
-  executes them.
+  executes them. Keep the three most recent transient items in visible chrome;
+  retain older bounded history in alternate output.
 - **Keys:** Arrow keys navigate, Home and End jump, Enter returns the selected
   action, and Escape or Ctrl-C returns cancellation.
 - **Accessibility:** Use polite status output for info and success, assertive
@@ -339,6 +380,9 @@ The system-wide rules are:
   mirror it but must never be required.
 - Focus must be deterministic and visible in text. Consequential controls must
   not turn initial focus into an inferred answer.
+- Global Tab traversal is bounded to the transcript, one relevant tool, the
+  authoritative plan, active notifications, and the latest generic surface.
+  History growth must not create additional focus stops.
 - Status, severity, trust, selection, verification, and progress must use words
   or color-independent glyphs, never color alone.
 - Text must be sanitized and bounded at Unicode grapheme boundaries. The footer
@@ -348,14 +392,16 @@ The system-wide rules are:
   not depend on blinking or animation for meaning.
 - Resize must preserve semantic state. Narrow layouts may omit lower-priority
   visual detail, but must retain essential state and complete alternate output.
+  On short narrow terminals, the activity rail yields to the transcript, current
+  action, and composer instead of displacing them below the viewport.
 - Live announcements must be bounded, deduplicated, and limited to material
   transitions.
 
 Alternate output is a semantic, linear snapshot contract. It is suitable for
-redirected output, non-interactive terminals, test assertions, and a future
-approved assistive-output route. The controller can compose all widget-specific
-alternate representations, but the launcher does not yet expose that route as
-an end-user mode.
+redirected output, non-interactive terminals, test assertions, and the
+interactive `--accessible` route. Accessible mode does not remove the composer
+or nonsensitive modal controls. Sensitive values still require an approved
+masked input route and never materialize in an unmasked native control.
 
 ## Source and test map
 
@@ -372,7 +418,7 @@ an end-user mode.
 
 ## Verification state
 
-The following commands passed after the native-input ownership edits:
+The following commands passed after the conversation-first UX pass:
 
 ```text
 yarn workspace octocode-agent test
@@ -383,43 +429,59 @@ NODE_OPTIONS=--experimental-ffi yarn workspace octocode-agent test
 node packages/octocode-agent/out/octocode-agent.mjs --help
 ```
 
-The normal package suite reported 318 passing tests and 15 explicitly skipped
-FFI tests. The FFI-enabled suite reported 333 passing tests with no skips. The
-package typecheck, lint, build, and built CLI help path passed. Root lint also
-passed. The full root test completed successfully across core, testing,
-Awareness, shared, native-agent, and Pi-extension workspaces. This remains a
-candidate receipt because the external PTY, packaging, accessibility, and
-supported-platform release evidence listed below is still incomplete.
+The normal package suite and the final FFI-enabled suite each reported 612
+passing tests and 27 explicit skips across 72 test files. Package and test-source
+typecheck, lint, build, and root lint passed. Built CLI PTY checks exercised `/help`,
+`/status`, and clean `/exit` in the default terminal, then confirmed that
+`--accessible` keeps an interactive composer and restores the terminal. This
+remains a candidate receipt because assistive-technology validation and the
+complete supported-platform release matrix require external evidence. The
+packed-install sensor builds internal packages in dependency order, bundles
+their implementation, installs the tarball against the public registry in an
+isolated home, and runs credential-free help and discovery. The packed manifest
+exposes no unpublished runtime dependency.
 
 ## Known remaining work
 
-- Add confirm and notification mouse parity and complete active-view keymap
-  ownership. Native input already routes normal and multiline paste, normal
-  submit and follow-up dispatch, uses state-sensitive Ctrl-C escalation, and
-  rejects stale modal callbacks by interaction generation.
-- Expose and approve the alternate-output route for users who cannot consume the
-  visual terminal. Internal semantic roles alone are not a screen-reader
-  integration.
-- Expose the reduced-motion preference through canonical settings; the renderer
-  now accepts an injected preference and defaults to static reduced motion.
-  Complete terminal-capability and minimum-size coverage. Unicode cursor
-  synchronization and grapheme-aware widgets now have FFI coverage.
-- Extend the existing `@opentui/core/testing` suite with mouse, clock,
-  capability, and golden-frame cases. The current FFI suite covers native
-  input, paste synchronization, Unicode cursor movement, semantic text styling,
-  modal resolution, searchable selection, focus restoration, generation
-  safety, sensitive-value non-leakage, combining-mark completion, input cursor
-  conversion, narrow completion visibility, and idle resize behavior.
+- The keymap ownership split is deliberate: projected footer hints cover
+  confirm, select, input, editor, active-turn, and idle domain states, while
+  composer-assist and semantic-focus widgets own their ephemeral navigation and
+  inline help. Confirm choices and notification actions have tested pointer
+  routes.
+- Validate `--accessible` with target assistive technologies and users. The
+  interactive linear route is implemented, but internal semantic roles alone
+  are not a screen-reader integration. Sensitive prompt and editor values remain
+  fail-closed until the public interaction contract carries sensitivity metadata
+  and an approved masked terminal transport exists.
+- Complete supported-platform validation. The
+  canonical `reducedMotion` setting applies on the next session and defaults to
+  static output. The FFI suite covers minimal and rich capability projections,
+  a manual clock, normalized semantic frames, confirm and notification mouse
+  activation, and the 20-, 71-, and 72-column minimum-height matrix.
+- The package and root verification paths now require strict test-source
+  compilation, the complete FFI suite, builds, isolated pack/install, PTY
+  restoration, sustained Unicode streaming and resize, real SIGINT/SIGTERM
+  launcher shutdown, and guarded performance measurements. The checked-in CI
+  workflow runs the same gate on Linux and macOS; repository branch protection
+  must require both jobs.
 - Introduce Markdown or code renderables only after presentation state preserves
   trusted content provenance and language metadata. The adapter uses
   `StyledText` for semantic hierarchy today; it does not interpret arbitrary
   transcript or tool text as markup.
-- Run real PTY restoration, sustained-stream, native-asset, packaging,
-  accessibility, performance, and supported-platform tests with the built CLI.
-- Decide whether production widget discovery should use `WidgetRegistry`; today
-  the controller constructs the built-in classes directly.
+- Current-host PTY sensors cover normal lifecycle, 10,000 Unicode events,
+  SIGWINCH resize, SIGINT/SIGTERM launcher shutdown, cleanup sequences, and exact
+  mode and size restoration. A guarded in-memory performance sensor covers first
+  render, streaming, resize, shutdown, and RSS. Process states that cannot run
+  cleanup, other platforms, and human accessibility remain release evidence,
+  not local pass claims.
+- Keep production widget construction direct and typed. `WidgetRegistry` remains
+  a bounded contract utility, not a production discovery mechanism. Reconsider
+  this decision only with an approved versioned widget-plugin capability.
 
-These gaps keep the OpenTUI and Pi-removal release gates on **HOLD**. The target
+External validation gaps keep the OpenTUI and Pi-removal release gates on
+**HOLD**. Follow the native package
+[`RELEASE_VALIDATION.md`](../packages/octocode-agent/docs/RELEASE_VALIDATION.md)
+runbook. The target
 interaction and release criteria remain in
 [`04-TUI-AND-SETTINGS.md`](04-TUI-AND-SETTINGS.md), and work-package ownership
 remains in [`10-REMAINING-WORK-PLAN.md`](10-REMAINING-WORK-PLAN.md).

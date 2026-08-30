@@ -7,7 +7,7 @@ remain owned by [LOCKS.md](LOCKS.md) and [REFLECTION.md](REFLECTION.md).
 
 ```bash
 SWEEP_WS="$(mktemp -d)"
-SWEEP_DB="$SWEEP_WS/awareness.sqlite3"
+SWEEP_DB="$SWEEP_WS/agent.sqlite3"
 S="$AWARENESS --db $SWEEP_DB"
 $S init --compact
 ```

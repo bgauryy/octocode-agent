@@ -78,7 +78,7 @@ describe('markVerified', () => {
       agentId: 'agent-a', workspacePath: '/tmp/ws-a', targetFiles: ['/tmp/stale-active.ts'],
     });
     if (!claim.ok) throw new Error('claim failed');
-    db.prepare('DELETE FROM locks WHERE run_id = ?').run(claim.run.run_id);
+    db.prepare('DELETE FROM awareness_locks WHERE run_id = ?').run(claim.run.run_id);
     db.prepare('UPDATE run_files SET expires_at = ? WHERE run_id = ?')
       .run('2000-01-01T00:00:00Z', claim.run.run_id);
 
@@ -232,10 +232,10 @@ describe('markVerified', () => {
     // Link both runs to VERIFY tasks so finishLinkedTask inserts task_events.
     for (const runId of [a, b]) {
       const taskId = `task_${runId.slice(4)}`;
-      db.prepare(`INSERT INTO plans(plan_id, name, objective, lead_agent_id, status, workspace_path, doc_dir, created_at, updated_at)
+      db.prepare(`INSERT INTO awareness_plans(plan_id, name, objective, lead_agent_id, status, workspace_path, doc_dir, created_at, updated_at)
         VALUES (?, 'p', 'o', 'lead', 'ACTIVE', '/tmp/ws-a', '/tmp/docs', datetime('now'), datetime('now'))`)
         .run(`plan_${runId}`);
-      db.prepare(`INSERT INTO tasks(task_id, plan_id, title, reasoning, acceptance_criteria, status, priority, created_by, created_at, updated_at)
+      db.prepare(`INSERT INTO awareness_tasks(task_id, plan_id, title, reasoning, acceptance_criteria, status, priority, created_by, created_at, updated_at)
         VALUES (?, ?, 't', 'r', 'a', 'VERIFY', 0, 'lead', datetime('now'), datetime('now'))`)
         .run(taskId, `plan_${runId}`);
       db.prepare('UPDATE task_runs SET task_id = ? WHERE run_id = ?').run(taskId, runId);
@@ -255,7 +255,7 @@ describe('markVerified', () => {
 
     expect(db.prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status = 'PENDING' AND agent_id = 'agent-a'")
       .get()).toEqual({ c: 2 });
-    expect(db.prepare("SELECT COUNT(*) AS c FROM tasks WHERE status = 'VERIFY'").get()).toEqual({ c: 2 });
+    expect(db.prepare("SELECT COUNT(*) AS c FROM awareness_tasks WHERE status = 'VERIFY'").get()).toEqual({ c: 2 });
     expect(auditUnverified(db, { agentId: 'agent-a', workspacePath: '/tmp/ws-a' }).count).toBe(2);
   });
 

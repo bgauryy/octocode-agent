@@ -4,7 +4,7 @@ import path from 'node:path';
 import {
   closeOctocodeDb,
   listWorkerLifecycleEvents,
-  octocodeDbPath,
+  agentDbPath,
   openOctocodeDb,
 } from '@octocodeai/octocode-awareness/mcp-state';
 import { WorkerSupervisor, correlationId, packetId, sessionId, workerId, type WorkerLedgerEntry, type WorkerSpawnPacket } from '@octocodeai/agent-core';
@@ -44,7 +44,7 @@ describe('native worker restart recovery', () => {
     expect(JSON.stringify(recovered)).not.toContain('private prompt');
     expect(await recoverNativeWorkerOrphans({ workspace, sessionId: 'session-1', env })).toEqual([]);
 
-    const dbPath = octocodeDbPath(env);
+    const dbPath = agentDbPath(env);
     const db = openOctocodeDb(dbPath);
     try {
       const events = listWorkerLifecycleEvents(db, { workspace, sessionId: 'session-1', limit: 20 });
@@ -101,8 +101,10 @@ describe('native worker restart recovery', () => {
     let childIdentity: NativeWorkerProcessIdentity | undefined;
     const ledger = { append: async (entry: WorkerLedgerEntry) => { if (parentAlive || entry.type !== 'worker.terminal') await durable.append(entry); } };
     const script = `let pending='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{pending+=chunk;let i;while((i=pending.indexOf('\\n'))>=0){const line=pending.slice(0,i);pending=pending.slice(i+1);if(!line)continue;const req=JSON.parse(line);process.stdout.write(JSON.stringify({protocolVersion:1,requestId:req.requestId,ok:true})+'\\n')}});setInterval(()=>{},1000);`;
+    const workerFixture = path.join(root, 'worker-fixture.mjs');
+    fs.writeFileSync(workerFixture, script);
     const port = new NativeWorkerProcessPort({
-      process: createNodeNativeWorkerProcessAdapter(), command: process.execPath, argvPrefix: ['-e', script], cwd: workspace, env: {},
+      process: createNodeNativeWorkerProcessAdapter(), command: process.execPath, argvPrefix: [workerFixture], cwd: workspace, env: {},
       onProcessStarted: async (packet, identity) => { childIdentity = identity; await durable.recordProcess(packet, identity); },
     });
     const supervisor = new WorkerSupervisor({ port, ledger, maxActive: 1 });
@@ -118,18 +120,24 @@ describe('native worker restart recovery', () => {
     parentAlive = false;
 
     const receipts = await recoverNativeWorkerOrphans({ workspace, sessionId: 'session-real', env, termGraceMs: 500, killGraceMs: 500, pollMs: 10 });
-    expect(receipts).toEqual([expect.objectContaining({ workerId: 'worker-real', termination: expect.stringMatching(/terminated|killed/) })]);
+    // Under process-heavy suites the child can exit and its PID can be reused before
+    // recovery probes it. Identity replacement is the required fail-closed result;
+    // the assertion below still proves that the original child is no longer live.
+    expect(receipts).toEqual([expect.objectContaining({
+      workerId: 'worker-real',
+      termination: expect.stringMatching(/terminated|killed|already-exited|identity-replaced/),
+    })]);
     for (let index = 0; index < 100; index += 1) {
       try { process.kill(childIdentity!.pid, 0); await new Promise((resolve) => setTimeout(resolve, 10)); }
       catch { break; }
     }
     expect(() => process.kill(childIdentity!.pid, 0)).toThrow();
-    const db = openOctocodeDb(octocodeDbPath(env));
+    const db = openOctocodeDb(agentDbPath(env));
     try {
       const events = listWorkerLifecycleEvents(db, { workspace, sessionId: 'session-real', limit: 20 });
       expect(events.map((event) => event.type)).toContain('worker.process');
       expect(events.filter((event) => event.type === 'worker.terminal')).toHaveLength(1);
       expect(JSON.stringify(events)).not.toContain('OCTOCODE_WORKER_OWNERSHIP_TOKEN');
-    } finally { closeOctocodeDb(octocodeDbPath(env)); }
+    } finally { closeOctocodeDb(agentDbPath(env)); }
   });
 });

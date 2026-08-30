@@ -103,12 +103,12 @@ test('applyDialLevel persists { level } and loadDialLevel round-trips it', async
 
   await applyDialLevel(fake.pi, undefined, 'ultra', { home, env: {} });
 
-  const onDisk = JSON.parse(fs.readFileSync(path.join(home, 'dial.json'), 'utf8')) as { level: string };
+  const onDisk = JSON.parse(fs.readFileSync(path.join(home, 'agent', 'dial.json'), 'utf8')) as { level: string };
   assert.deepEqual(onDisk, { level: 'ultra' });
   assert.equal(loadDialLevel(home), 'ultra');
   if (process.platform !== 'win32') {
-    assert.equal(fs.statSync(home).mode & 0o777, 0o700);
-    assert.equal(fs.statSync(path.join(home, 'dial.json')).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(path.join(home, 'agent')).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(path.join(home, 'agent', 'dial.json')).mode & 0o777, 0o600);
   }
 });
 
@@ -116,10 +116,11 @@ test('loadDialLevel falls back to medium for missing, garbage, and unknown-level
   const home = tmpHome();
   assert.equal(loadDialLevel(home), DEFAULT_EFFORT_LEVEL); // missing file
 
-  fs.writeFileSync(path.join(home, 'dial.json'), 'not json at all');
+  fs.mkdirSync(path.join(home, 'agent'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'agent', 'dial.json'), 'not json at all');
   assert.equal(loadDialLevel(home), DEFAULT_EFFORT_LEVEL);
 
-  fs.writeFileSync(path.join(home, 'dial.json'), JSON.stringify({ level: 'turbo' }));
+  fs.writeFileSync(path.join(home, 'agent', 'dial.json'), JSON.stringify({ level: 'turbo' }));
   assert.equal(loadDialLevel(home), DEFAULT_EFFORT_LEVEL);
 });
 
@@ -131,7 +132,7 @@ test('restoreDialOnStartup applies the persisted level without re-persisting', a
 
   // Simulate a fresh session: delete the file after loading would prove no rewrite,
   // so instead capture mtime and assert restore does not rewrite the file.
-  const filePath = path.join(home, 'dial.json');
+  const filePath = path.join(home, 'agent', 'dial.json');
   const before = fs.statSync(filePath).mtimeMs;
 
   const fake = makeFakePi();

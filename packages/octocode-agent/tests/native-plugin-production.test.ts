@@ -13,7 +13,7 @@ import { agentDir } from '../src/settings.js';
 function runtime(): AgentRuntime {
   return {
     start: vi.fn(async () => undefined), submit: vi.fn(async () => undefined), cancel: vi.fn(async () => undefined),
-    execute: vi.fn(async () => ({ ok: true, data: {} })), snapshot: () => ({ state: 'ready' }) as RuntimeSnapshot,
+    execute: vi.fn(async () => ({ ok: true as const, data: {} })), snapshot: () => ({ state: 'ready' }) as RuntimeSnapshot,
     subscribe: () => () => undefined, stop: vi.fn(async () => undefined),
   };
 }

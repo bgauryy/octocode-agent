@@ -183,7 +183,7 @@ export function notifyGet(
     if (artifact) { overrideConds.push('(artifact = ? OR artifact IS NULL)'); overrideBinds.push(artifact); }
     const overrideRows = db.prepare(
       `SELECT memory_id, observation, importance
-       FROM memories
+       FROM awareness_memories
        WHERE ${overrideConds.join(' AND ')}
        ORDER BY importance DESC, last_accessed_at DESC
        LIMIT 2`
@@ -238,7 +238,7 @@ export function notifyGet(
       if (artifact) { conditions.push('(artifact = ? OR artifact IS NULL)'); bindParams.push(artifact); }
       memRows = db.prepare(
         `SELECT memory_id, task_context, observation, label, importance, failure_signature
-         FROM memories
+         FROM awareness_memories
          WHERE ${conditions.join(' AND ')}
          ORDER BY importance DESC, last_accessed_at DESC
          LIMIT 3`
@@ -262,7 +262,7 @@ export function notifyGet(
     if (artifact) { wkConditions.push('(artifact = ? OR artifact IS NULL)'); wkParams.push(artifact); }
     const topWk = db.prepare(
       `SELECT failure_signature, count(*) AS freq, avg(importance) AS avg_imp
-       FROM memories
+       FROM awareness_memories
        WHERE ${wkConditions.join(' AND ')}
        GROUP BY failure_signature HAVING freq >= 2
        ORDER BY freq * avg_imp DESC LIMIT 1`

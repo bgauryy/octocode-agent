@@ -1,4 +1,3 @@
-import { createInterface } from "node:readline";
 import { once } from "node:events";
 import type { Readable, Writable } from "node:stream";
 import type {
@@ -7,6 +6,7 @@ import type {
   RpcProtocolError,
   RpcRequest,
   RpcResponse,
+  OpaqueRuntimeEvent,
   RuntimeEvent,
 } from "@octocodeai/agent-core";
 import {
@@ -32,9 +32,57 @@ type Write = (value: string) => void;
 export interface NativeTransportLifecycleOptions {
   readonly signalSource?: NativeSignalSource;
   readonly cleanupTimeoutMs?: number;
+  /** Safe by default: model inputs and tool payloads are redacted from public JSONL. */
+  readonly eventExposure?: "safe" | "full";
+  /** Bounded for fail-fast RPC delivery; primarily configurable for deterministic hosts/tests. */
+  readonly maxPendingOutputBytes?: number;
 }
 
 const DEFAULT_CLEANUP_TIMEOUT_MS = 1_000;
+const MAX_RPC_INPUT_FRAME_BYTES = 1024 * 1024;
+
+type RpcInputFrame = { readonly line: string } | { readonly tooLarge: true };
+
+async function* readRpcInputFrames(
+  input: Readable,
+  maxFrameBytes = MAX_RPC_INPUT_FRAME_BYTES,
+): AsyncGenerator<RpcInputFrame> {
+  let fragments: Buffer[] = [];
+  let frameBytes = 0;
+  let tooLarge = false;
+  for await (const chunk of input) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    let cursor = 0;
+    while (cursor < buffer.length) {
+      const newline = buffer.indexOf(0x0a, cursor);
+      const end = newline < 0 ? buffer.length : newline;
+      const segment = buffer.subarray(cursor, end);
+      if (!tooLarge) {
+        if (frameBytes + segment.length > maxFrameBytes) {
+          fragments = [];
+          frameBytes = 0;
+          tooLarge = true;
+        } else if (segment.length > 0) {
+          fragments.push(Buffer.from(segment));
+          frameBytes += segment.length;
+        }
+      }
+      if (newline < 0) break;
+      if (tooLarge) yield { tooLarge: true };
+      else {
+        let frame = Buffer.concat(fragments, frameBytes);
+        if (frame.at(-1) === 0x0d) frame = frame.subarray(0, -1);
+        yield { line: frame.toString("utf8") };
+      }
+      fragments = [];
+      frameBytes = 0;
+      tooLarge = false;
+      cursor = newline + 1;
+    }
+  }
+  if (tooLarge) yield { tooLarge: true };
+  else if (frameBytes > 0) yield { line: Buffer.concat(fragments, frameBytes).toString("utf8") };
+}
 
 function eventText(event: RuntimeEvent): string | undefined {
   if (event.type !== "message.delta") return undefined;
@@ -45,17 +93,32 @@ function eventText(event: RuntimeEvent): string | undefined {
 }
 
 /** Project internal lifecycle events onto the versioned public transport surface. */
-function publicRuntimeEvent(event: RuntimeEvent): RuntimeEvent {
-  if (event.type !== "context.preparing") return event;
-  const payload = event.payload as { messages?: unknown };
-  return {
-    ...event,
-    payload: {
-      messageCount: Array.isArray(payload.messages)
-        ? payload.messages.length
-        : 0,
-    },
-  };
+function publicRuntimeEvent(event: RuntimeEvent, exposure: "safe" | "full" = "safe"): RuntimeEvent {
+  if (exposure === "full") return event;
+  const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+    ? event.payload as Record<string, unknown>
+    : {};
+  if (event.type === "context.preparing") {
+    return {
+      ...event,
+      payload: { messageCount: Array.isArray(payload.messages) ? payload.messages.length : 0 },
+    };
+  }
+  const redact = (source: OpaqueRuntimeEvent, key: string): RuntimeEvent => ({
+    ...source,
+    payload: { ...payload, ...(key in payload ? { [key]: "[REDACTED]" } : {}) },
+  });
+  if (event.type === "input.received" || event.type === "input.transformed" || event.type === "input.handled" || event.type === "input.queued" || event.type === "input.rejected" || event.type === "context.appended") {
+    return redact(event, "text");
+  }
+  if (event.type === "tool.requested" || event.type === "permission.requested") return redact(event, "input");
+  if (event.type === "tool.updated") return redact(event, "update");
+  if (event.type === "tool.ended") return redact(event, "result");
+  if (event.type === "ui.interaction-resolved") return redact(event, "value");
+  if (event.type === "prompt.assembled") {
+    return { ...event, payload: { redacted: true } };
+  }
+  return event;
 }
 
 function terminalStopExitCode(stop: unknown): 0 | 1 {
@@ -95,7 +158,7 @@ export async function runPrintTransport(
       const envelope: RpcEvent = {
         protocolVersion: 1,
         sequence: ++sequence,
-        event: publicRuntimeEvent(event),
+        event: publicRuntimeEvent(event, options.eventExposure),
       };
       options.write(`${JSON.stringify(envelope)}\n`);
       return;
@@ -197,14 +260,18 @@ function createJsonLineWriter(
   maxPendingBytes = 1024 * 1024,
 ): {
   enqueue(value: unknown): void;
+  assertHealthy(): void;
   flush(): Promise<void>;
 } {
   let pendingBytes = 0;
   let tail = Promise.resolve();
   let failure: Error | undefined;
   return {
+    assertHealthy() {
+      if (failure) throw failure;
+    },
     enqueue(value) {
-      if (failure) return;
+      if (failure) throw failure;
       const line = `${JSON.stringify(value)}\n`;
       const bytes = Buffer.byteLength(line);
       if (pendingBytes + bytes > maxPendingBytes) {
@@ -212,7 +279,7 @@ function createJsonLineWriter(
           "protocol",
           `RPC output queue exceeded ${maxPendingBytes} bytes`,
         );
-        return;
+        throw failure;
       }
       pendingBytes += bytes;
       tail = tail
@@ -226,6 +293,7 @@ function createJsonLineWriter(
         });
     },
     async flush() {
+      if (failure) throw failure;
       await tail;
       if (failure) throw failure;
     },
@@ -241,20 +309,19 @@ export async function runRpcTransport(
   } & NativeTransportLifecycleOptions = {},
 ): Promise<number> {
   let sequence = 0;
-  const writer = createJsonLineWriter(streams.output);
+  const writer = createJsonLineWriter(streams.output, options.maxPendingOutputBytes);
   const unsubscribe = runtime.subscribe((event) => {
     const envelope: RpcEvent = {
       protocolVersion: 1,
       sequence: ++sequence,
-      event: publicRuntimeEvent(event),
+      event: publicRuntimeEvent(event, options.eventExposure),
     };
     writer.enqueue(envelope);
   });
-  let lines: ReturnType<typeof createInterface> | undefined;
   const signals = createNativeSignalScope({
     source: options.signalSource,
     onSignal: async (signal) => {
-      lines?.close();
+      streams.input.destroy();
       await runtime.cancel(nativeSignalReason(signal));
     },
   });
@@ -263,9 +330,9 @@ export async function runRpcTransport(
     const operation = (async () => {
       await runtime.start();
       if (signals.signal !== undefined) return;
-      lines = createInterface({ input: streams.input, crlfDelay: Infinity });
       const pending = new Set<Promise<void>>();
       const dispatch = async (line: string): Promise<void> => {
+        writer.assertHealthy();
         try {
           let candidate: unknown;
           try {
@@ -341,8 +408,15 @@ export async function runRpcTransport(
           );
         }
       };
-      for await (const line of lines) {
+      for await (const frame of readRpcInputFrames(streams.input)) {
+        if ("tooLarge" in frame) {
+          writer.enqueue(protocolError("validation", `RPC input frame exceeds ${MAX_RPC_INPUT_FRAME_BYTES} bytes`));
+          continue;
+        }
+        const line = frame.line;
         if (!line.trim()) continue;
+        while (pending.size >= 2) await Promise.race(pending);
+        writer.assertHealthy();
         const task = dispatch(line);
         pending.add(task);
         void task.then(

@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -11,6 +10,7 @@ import {
   PolicyChain,
   RuntimeFailure,
   SessionController,
+  eventId,
   revision,
   sessionEventId,
   sessionId,
@@ -21,11 +21,8 @@ import {
   type EffectLedgerPort,
   type EffectLedgerRecord,
   type EffectSet,
-  type LifecycleDispatchResult,
   type ModelMessage,
   type ModelPort,
-  type ModelToolCall,
-  type Revision,
   type RuntimeEvent,
   type SessionEvent,
   type SessionEventId,
@@ -33,7 +30,8 @@ import {
   type SessionStore,
   type ToolRegistry,
 } from '@octocodeai/agent-core';
-import { getSkillEnablement, octocodeDbPath, openOctocodeDb, recordSession } from '@octocodeai/octocode-awareness/mcp-state';
+import { agentDbPath, closeOctocodeDb, getSkillEnablement, openOctocodeDb, recordSession } from '@octocodeai/octocode-awareness/mcp-state';
+import type { AwarenessEventObservability } from '@octocodeai/octocode-awareness';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -42,7 +40,7 @@ import {
   resolveNativeModelConfiguration,
   type NativeProviderProtocol,
 } from './native-provider-registry.js';
-import { handleNativeSlashCommand, type NativeSkillSummary } from './native-slash-commands.js';
+import { runNativeProviderSmoke, type NativeProviderSmokeResult } from './native-provider-smoke.js';
 import {
   createNativeInteractionBroker,
   registerNativeAskUserTool,
@@ -54,15 +52,16 @@ import {
   createNativeCapabilityComposition,
   createNativeHookMcpExecutor,
   createNativeSettingsCapabilityControl,
+  octocodeCatalogCacheMetrics,
 } from './native-tools.js';
 import {
   FileBackedRuntimePlanState,
   FilePlanStore,
   InMemoryPlanStore,
+  NativePlanWorkerOwnership,
   projectRuntimePlanSnapshot,
   type NativePlanInteraction,
   type RuntimePlanSnapshot,
-  type RuntimePlanSnapshotSink,
 } from './native-plan.js';
 import { FileSessionRecordPort } from './native-session-store.js';
 import { FileSettingsStorage } from './native-settings.js';
@@ -79,6 +78,7 @@ import {
   type NativeSettingsPageController,
 } from './native-settings-page.js';
 import { listNativeSkillSummaries } from './native-skills.js';
+import { buildNativeDiscoverySnapshot } from './native-discovery.js';
 import {
   buildNativePromptSnapshot,
   nativePromptRecord,
@@ -92,6 +92,10 @@ import { getOctocodeHome } from '@octocodeai/octocode-shared/paths';
 import { runJsonTransport, runPrintTransport, runRpcTransport } from './native-transports.js';
 import { withNativeSessionCommunication } from './native-communications.js';
 import { createNativeSessionRuntimeRouter } from './native-session-router.js';
+import { createRuntimeEventPersister } from './native-runtime-session-projector.js';
+import { runNativeInteractiveController } from './native-interactive-controller.js';
+
+export { createRuntimeEventPersister } from './native-runtime-session-projector.js';
 
 const DEFAULT_NATIVE_COMPACTION_INPUT_TOKEN_THRESHOLD = 64_000;
 import { NativeAwarenessWorkerLedger } from './native-worker-ledger.js';
@@ -108,11 +112,10 @@ import {
 import { recoverNativeWorkerOrphans } from './native-worker-recovery.js';
 import {
   type OpenTuiTerminal,
-  type PresentationEvent,
 } from './terminal/opentui/presentation.js';
 
 export interface ParsedNativeArgs {
-  mode: 'interactive' | 'print' | 'rpc';
+  mode: 'interactive' | 'print' | 'rpc' | 'acp';
   outputFormat: 'text' | 'json';
   initialMessage?: string;
   session?: string;
@@ -121,7 +124,32 @@ export interface ParsedNativeArgs {
   continue: boolean;
   accessible: boolean;
   allowWorkers: boolean;
+  model?: { readonly providerId: string; readonly modelId: string };
+  fallbackModels: { readonly providerId: string; readonly modelId: string }[];
   rest: string[];
+}
+
+export type NativeModelRef = { readonly providerId: string; readonly modelId: string };
+export type NativeFallbackProbe = (model: NativeModelRef) => Promise<NativeProviderSmokeResult>;
+
+/** Evaluates only a user-supplied chain and never changes vendors implicitly. */
+export async function selectNativeFallbackModel(
+  candidates: readonly NativeModelRef[],
+  probe: NativeFallbackProbe,
+): Promise<NativeModelRef> {
+  for (const candidate of candidates) {
+    const result = await probe(candidate);
+    if (result.status === 'PASS') return candidate;
+  }
+  throw new RuntimeFailure('provider', 'No explicitly configured model passed provider health checks');
+}
+
+function parseModelRef(value: string, option: '--model' | '--fallback-model'): { providerId: string; modelId: string } {
+  const separator = value.indexOf('/');
+  const providerId = value.slice(0, separator).trim();
+  const modelId = value.slice(separator + 1).trim();
+  if (separator < 1 || !providerId || !modelId) throw new RuntimeFailure('validation', `Invalid value for ${option}: ${value}`);
+  return { providerId, modelId };
 }
 
 export interface NativeLaunchDependencies {
@@ -135,7 +163,8 @@ export interface NativeLaunchDependencies {
     cwd: string;
     args: ParsedNativeArgs;
     interactions: NativeInteractionBroker;
-    onPlanSnapshot?: RuntimePlanSnapshotSink;
+    onPlanSnapshot?: (snapshot: RuntimePlanSnapshot | undefined) => void;
+    onAwarenessObservability?: (stats: AwarenessEventObservability) => void;
     settings: NativeSettingsService;
     extensions: NativeExtensionsController;
     onWorkerProjection?: (projection: NativeWorkerTransportProjection) => void;
@@ -155,6 +184,7 @@ export interface NativeLaunchDependencies {
   }) => Promise<NativeExtensionsController>;
   createLineReader?: (input: Readable) => AsyncIterable<string>;
   authorizeWorkerProjection?: (request: NativeWorkerProjectionAuthorizationRequest) => Promise<boolean>;
+  probeFallbackModel?: NativeFallbackProbe;
   signalSource?: {
     on(signal: 'SIGINT' | 'SIGTERM', listener: () => void): void;
     off(signal: 'SIGINT' | 'SIGTERM', listener: () => void): void;
@@ -169,6 +199,7 @@ export function parseNativeArgs(argv: readonly string[] = []): ParsedNativeArgs 
     continue: false,
     accessible: false,
     allowWorkers: false,
+    fallbackModels: [],
     rest: [],
   };
   let print = false;
@@ -208,6 +239,14 @@ export function parseNativeArgs(argv: readonly string[] = []): ParsedNativeArgs 
       parsed.allowWorkers = true;
       continue;
     }
+    if (arg === '--model' || arg === '--fallback-model') {
+      const value = optionValue(arg, index);
+      index += 1;
+      const model = parseModelRef(value, arg);
+      if (arg === '--model') parsed.model = model;
+      else parsed.fallbackModels.push(model);
+      continue;
+    }
     if (arg === '--mode') {
       const value = optionValue(arg, index);
       index += 1;
@@ -238,11 +277,15 @@ export function parseNativeArgs(argv: readonly string[] = []): ParsedNativeArgs 
   if (explicit === 'rpc') parsed.mode = 'rpc';
   else if (print || explicit === 'text' || explicit === 'json') parsed.mode = 'print';
   if (explicit === 'json') parsed.outputFormat = 'json';
+  if (parsed.fallbackModels.length > 0 && parsed.model === undefined) {
+    throw new RuntimeFailure('validation', '--fallback-model requires --model');
+  }
   return parsed;
 }
 
-function configuredApiKey(env: NodeJS.ProcessEnv, protocol: NativeProviderProtocol): string {
-  return env.OCTOCODE_MODEL_API_KEY
+function configuredApiKey(env: NodeJS.ProcessEnv, protocol: NativeProviderProtocol, credentialEnv?: string): string {
+  return (credentialEnv ? env[credentialEnv] : undefined)
+    ?? env.OCTOCODE_MODEL_API_KEY
     ?? (protocol === 'anthropic-messages' ? env.ANTHROPIC_API_KEY : env.OPENAI_API_KEY)
     ?? '';
 }
@@ -428,207 +471,6 @@ export function createNativeSessionEffectLedger(
   };
 }
 
-export function createRuntimeEventPersister(options: {
-  sessions: SessionStore;
-  activeSessionId: SessionId;
-  initialRevision: Revision;
-  lifecycle?: Map<RuntimeEvent['type'], LifecycleBus<unknown>>;
-  onRuntimeStopping?: () => Promise<void>;
-}): (runtimeEvent: RuntimeEvent) => Promise<LifecycleDispatchResult<unknown>> {
-  let storedRevision = options.initialRevision;
-  const lifecycle = options.lifecycle ?? new Map<RuntimeEvent['type'], LifecycleBus<unknown>>();
-  const assistantChunks: string[] = [];
-  const assistantToolCalls: ModelToolCall[] = [];
-  const pendingToolCalls = new Map<string, string>();
-  const requestedToolCalls = new Set<string>();
-  const pendingLifecycleContext: string[] = [];
-  let assistantMessageEnded = false;
-  let runtimeCleanupStarted = false;
-
-  const dispatch = async (runtimeEvent: RuntimeEvent): Promise<LifecycleDispatchResult<unknown>> => {
-    let bus = lifecycle.get(runtimeEvent.type);
-    if (!bus) {
-      bus = new LifecycleBus({ eventType: runtimeEvent.type, authority: ['observe'], validate: (_payload): _payload is unknown => true });
-      lifecycle.set(runtimeEvent.type, bus);
-    }
-    return await bus.dispatch(runtimeEvent);
-  };
-  const append = async (
-    runtimeEvent: RuntimeEvent,
-    storedEvent: SessionEvent['event'],
-    visibility: SessionEvent['visibility'],
-  ): Promise<void> => {
-    await appendBatch(runtimeEvent, [{ event: storedEvent, visibility }]);
-  };
-  const appendBatch = async (
-    runtimeEvent: RuntimeEvent,
-    records: readonly { event: SessionEvent['event']; visibility: SessionEvent['visibility']; causationId?: string }[],
-  ): Promise<void> => {
-    storedRevision = (await options.sessions.load(options.activeSessionId)).projection.revision;
-    const baseSequence = Number(storedRevision);
-    const entries = records.map((record, index): SessionEvent => {
-      const sequence = baseSequence + index + 1;
-      return {
-        schemaVersion: 1,
-        sessionId: options.activeSessionId,
-        eventId: sessionEventId(`${options.activeSessionId}:runtime-event:${sequence}`),
-        revision: revision(String(sequence)),
-        sequence,
-        timestamp: runtimeEvent.timestamp,
-        visibility: record.visibility,
-        ...(record.causationId ? { causationId: record.causationId } : {}),
-        event: record.event,
-      };
-    });
-    storedRevision = await options.sessions.append(options.activeSessionId, storedRevision, entries);
-  };
-  const flushAssistant = async (runtimeEvent: RuntimeEvent): Promise<void> => {
-    if (assistantChunks.length === 0 && assistantToolCalls.length === 0) return;
-    const content = assistantChunks.join('');
-    const toolCalls = assistantToolCalls.splice(0);
-    assistantChunks.length = 0;
-    assistantMessageEnded = false;
-    requestedToolCalls.clear();
-    for (const call of toolCalls) pendingToolCalls.set(call.id, call.name);
-    await append(runtimeEvent, { type: 'message.appended', role: 'assistant', content, ...(toolCalls.length === 0 ? {} : { toolCalls }) }, 'model');
-  };
-  const discardAssistant = (): void => {
-    assistantChunks.length = 0;
-    assistantToolCalls.length = 0;
-    assistantMessageEnded = false;
-    requestedToolCalls.clear();
-  };
-  const appendToolResult = async (
-    runtimeEvent: RuntimeEvent,
-    callId: string,
-    content: unknown,
-  ): Promise<boolean> => {
-    if (!pendingToolCalls.has(callId)) return false;
-    pendingToolCalls.delete(callId);
-    await append(runtimeEvent, {
-      type: 'message.appended',
-      role: 'tool',
-      toolCallId: callId,
-      content: JSON.stringify(content) ?? 'null',
-    }, 'model');
-    return true;
-  };
-  const cancelPendingToolCalls = async (runtimeEvent: RuntimeEvent, reason: string): Promise<void> => {
-    for (const callId of [...pendingToolCalls.keys()]) {
-      await appendToolResult(runtimeEvent, callId, { error: reason, category: 'cancelled' });
-    }
-  };
-  const flushLifecycleContext = async (runtimeEvent: RuntimeEvent): Promise<void> => {
-    if (pendingToolCalls.size > 0 || pendingLifecycleContext.length === 0) return;
-    for (const context of pendingLifecycleContext.splice(0)) {
-      await append(runtimeEvent, { type: 'message.appended', role: 'system', content: context }, 'model');
-    }
-  };
-
-  return async (runtimeEvent: RuntimeEvent): Promise<LifecycleDispatchResult<unknown>> => {
-    let lifecycleResult = await dispatch(runtimeEvent);
-    if (runtimeEvent.type === 'tool.requested') {
-      const original = runtimeEvent.payload as Record<string, unknown>;
-      const rewritten = lifecycleResult.payload;
-      if (typeof original.callId !== 'string') throw new RuntimeFailure('validation', 'tool.requested requires a callId');
-      if (typeof rewritten !== 'object' || rewritten === null || Array.isArray(rewritten)) throw new RuntimeFailure('validation', 'tool.requested lifecycle payload must be an object');
-      const candidate = rewritten as Record<string, unknown>;
-      if (typeof candidate.name !== 'string' || !candidate.name.trim()) throw new RuntimeFailure('validation', 'tool.requested lifecycle payload requires a non-empty name');
-      if (!('input' in candidate)) throw new RuntimeFailure('validation', 'tool.requested lifecycle payload requires input');
-      lifecycleResult = { ...lifecycleResult, payload: { ...candidate, callId: original.callId } };
-    }
-    runtimeEvent = lifecycleResult.payload === runtimeEvent.payload
-      ? runtimeEvent
-      : { ...runtimeEvent, payload: lifecycleResult.payload } as RuntimeEvent;
-    const payload = runtimeEvent.payload as Record<string, unknown>;
-    if (runtimeEvent.type === 'message.delta') {
-      if (payload.type === 'text' && typeof payload.text === 'string') assistantChunks.push(payload.text);
-      else if (payload.type === 'tool-call' && typeof payload.id === 'string' && typeof payload.name === 'string') {
-        assistantToolCalls.push({ id: payload.id, name: payload.name, input: payload.input });
-      }
-      return lifecycleResult;
-    }
-    if (runtimeEvent.type === 'message.ended') {
-      if (payload.status === 'cancelled' || payload.status === 'error') discardAssistant();
-      else if (assistantToolCalls.length === 0) await flushAssistant(runtimeEvent);
-      else assistantMessageEnded = true;
-    } else if (runtimeEvent.type === 'turn.ended') {
-      if (payload.stop === 'cancelled' || payload.stop === 'error') {
-        if (assistantMessageEnded && assistantToolCalls.length > 0) await flushAssistant(runtimeEvent);
-        else discardAssistant();
-      }
-      else await flushAssistant(runtimeEvent);
-    } else if (runtimeEvent.type === 'runtime.failed' || runtimeEvent.type === 'runtime.stopping') {
-      discardAssistant();
-    }
-
-    if (runtimeEvent.type === 'tool.requested' && typeof payload.callId === 'string') {
-      const call = assistantToolCalls.find((candidate) => candidate.id === payload.callId);
-      if (!call) throw new RuntimeFailure('internal-invariant', `tool.requested has no buffered assistant call: ${payload.callId}`);
-      const index = assistantToolCalls.indexOf(call);
-      assistantToolCalls[index] = { id: call.id, name: payload.name as string, input: payload.input };
-      requestedToolCalls.add(call.id);
-      pendingLifecycleContext.push(...lifecycleResult.context);
-      if (assistantMessageEnded && requestedToolCalls.size === assistantToolCalls.length) await flushAssistant(runtimeEvent);
-    }
-
-    if (runtimeEvent.type === 'tool.blocked' && typeof payload.callId === 'string') {
-      if (assistantMessageEnded && assistantToolCalls.length > 0) await flushAssistant(runtimeEvent);
-      await appendToolResult(runtimeEvent, payload.callId, {
-        error: typeof payload.error === 'string' ? payload.error : 'Tool call blocked',
-        ...(typeof payload.category === 'string' ? { category: payload.category } : {}),
-      });
-      await flushLifecycleContext(runtimeEvent);
-      return lifecycleResult;
-    }
-    if (runtimeEvent.type === 'tool.ended' && typeof payload.callId === 'string') {
-      if (assistantMessageEnded && assistantToolCalls.length > 0) await flushAssistant(runtimeEvent);
-      const appended = await appendToolResult(runtimeEvent, payload.callId, payload.result === undefined ? { error: payload.error } : payload.result);
-      if (!appended) await append(runtimeEvent, { type: 'custom.appended', kind: runtimeEvent.type, value: runtimeEvent.payload }, 'diagnostics');
-      await flushLifecycleContext(runtimeEvent);
-      return lifecycleResult;
-    }
-    if (runtimeEvent.type === 'turn.ended' && payload.stop === 'cancelled') {
-      await cancelPendingToolCalls(runtimeEvent, 'Tool call cancelled');
-    } else if (runtimeEvent.type === 'runtime.failed') {
-      await cancelPendingToolCalls(runtimeEvent, 'Tool call aborted by runtime failure');
-    } else if (runtimeEvent.type === 'runtime.stopping') {
-      await cancelPendingToolCalls(runtimeEvent, 'Tool call cancelled during runtime shutdown');
-    }
-    await flushLifecycleContext(runtimeEvent);
-    if (runtimeEvent.type === 'context.appended') {
-      const eventId = typeof payload.eventId === 'string' ? payload.eventId.trim() : '';
-      const text = typeof payload.text === 'string' ? payload.text.trim() : '';
-      if (!eventId || !text || payload.provenance !== 'peer-attributed-data') {
-        throw new RuntimeFailure('validation', 'context.appended requires attributed peer context identity');
-      }
-      await appendBatch(runtimeEvent, [
-        { event: { type: 'message.appended', role: 'system', content: text }, visibility: 'model', causationId: eventId },
-        { event: { type: 'custom.appended', kind: 'native.context.event', value: { eventId, provenance: payload.provenance } }, visibility: 'internal', causationId: eventId },
-      ]);
-      return lifecycleResult;
-    }
-    const modelVisibleInputText = runtimeEvent.type === 'input.received'
-      && lifecycleResult.decision.kind === 'continue'
-      && typeof payload.text === 'string'
-      ? payload.text
-      : undefined;
-    const storedEvent: SessionEvent['event'] = modelVisibleInputText !== undefined
-      ? { type: 'message.appended', role: 'user', content: modelVisibleInputText }
-      : { type: 'custom.appended', kind: runtimeEvent.type, value: runtimeEvent.payload };
-    await append(
-      runtimeEvent,
-      storedEvent,
-      modelVisibleInputText !== undefined ? 'model' : 'diagnostics',
-    );
-    if (runtimeEvent.type === 'runtime.stopping' && !runtimeCleanupStarted) {
-      runtimeCleanupStarted = true;
-      await options.onRuntimeStopping?.();
-    }
-    return lifecycleResult;
-  };
-}
-
 export function createNativeSessionStore(noSession: boolean, sessionsRoot: string): SessionStore {
   return noSession
     ? new InMemorySessionStore()
@@ -722,7 +564,8 @@ export async function createDefaultNativeRuntime(options: {
   model?: ModelPort;
   tools?: ToolRegistry;
   interactions?: NativeInteractionBroker;
-  onPlanSnapshot?: RuntimePlanSnapshotSink;
+  onPlanSnapshot?: (snapshot: RuntimePlanSnapshot | undefined) => void;
+  onAwarenessObservability?: (stats: AwarenessEventObservability) => void;
   settings?: NativeSettingsService;
   extensions?: NativeExtensionsController;
   onWorkerProjection?: (projection: NativeWorkerTransportProjection) => void;
@@ -743,6 +586,8 @@ export async function createDefaultNativeRuntime(options: {
       committed: boolean;
       worker?: NativeWorkerTransportProjection;
       plan?: RuntimePlanSnapshot;
+      planObserved: boolean;
+      awareness?: AwarenessEventObservability;
     }>();
     const commitCandidate = (id: SessionId): void => {
       for (const candidate of candidates.values()) candidate.committed = false;
@@ -750,13 +595,17 @@ export async function createDefaultNativeRuntime(options: {
       if (candidate === undefined) return;
       candidate.committed = true;
       if (candidate.worker !== undefined) options.onWorkerProjection?.(candidate.worker);
-      if (candidate.plan !== undefined) options.onPlanSnapshot?.(candidate.plan);
+      if (candidate.planObserved) options.onPlanSnapshot?.(candidate.plan);
+      if (candidate.awareness !== undefined) options.onAwarenessObservability?.(candidate.awareness);
     };
     const router = await createNativeSessionRuntimeRouter({
       controller,
       initialSessionId: activeSessionId,
       createRuntime: async ({ sessionId: nextSessionId }) => {
-        const candidate: { committed: boolean; worker?: NativeWorkerTransportProjection; plan?: RuntimePlanSnapshot } = { committed: false };
+        const candidate: { committed: boolean; worker?: NativeWorkerTransportProjection; plan?: RuntimePlanSnapshot; planObserved: boolean; awareness?: AwarenessEventObservability } = {
+          committed: false,
+          planObserved: false,
+        };
         candidates.set(String(nextSessionId), candidate);
         try {
           return await createDefaultNativeRuntime({
@@ -768,8 +617,13 @@ export async function createDefaultNativeRuntime(options: {
               if (candidate.committed) options.onWorkerProjection?.(projection);
             },
             onPlanSnapshot: (snapshot) => {
+              candidate.planObserved = true;
               candidate.plan = snapshot;
               if (candidate.committed) options.onPlanSnapshot?.(snapshot);
+            },
+            onAwarenessObservability: (stats) => {
+              candidate.awareness = stats;
+              if (candidate.committed) options.onAwarenessObservability?.(stats);
             },
           });
         } catch (error) {
@@ -796,10 +650,20 @@ export async function createDefaultNativeRuntime(options: {
   const configuredProviderValue = settings.snapshot().values.find(({ key }) => key === 'defaultProvider')?.value;
   const configuredModel = typeof configuredModelValue === 'string' ? configuredModelValue : undefined;
   const configuredProvider = typeof configuredProviderValue === 'string' ? configuredProviderValue : undefined;
+  const delegatedModel = options.args.model === undefined && configuredModel === undefined && configuredProvider === undefined && workerCapabilities.allowedModels?.length === 1
+    ? workerCapabilities.allowedModels[0]
+    : undefined;
   const modelConfiguration = resolveNativeModelConfiguration({
     env: options.env,
-    configuredProvider,
-    configuredModel,
+    configuredProvider: options.args.model?.providerId ?? configuredProvider ?? delegatedModel?.providerId,
+    configuredModel: options.args.model?.modelId ?? configuredModel ?? delegatedModel?.modelId,
+    ...(options.args.model !== undefined
+      ? { configuredSelectionSource: 'cli.override', forceConfiguredSelection: true }
+      : delegatedModel === undefined ? {} : { configuredSelectionSource: 'worker.capabilities' }),
+    cwd: options.cwd,
+    home: options.env.HOME ?? path.dirname(getOctocodeHome(options.env)),
+    octocodeHome: getOctocodeHome(options.env),
+    workspaceTrusted: workspaceTrust === 'trusted',
   });
   const modelEndpoint = modelConfiguration.endpoint;
   const modelProtocol = modelConfiguration.protocol;
@@ -821,10 +685,10 @@ export async function createDefaultNativeRuntime(options: {
       revision: storedPlan.revision,
       active: storedPlan.phase === 'active',
     });
-    try { options.onPlanSnapshot?.(projectRuntimePlanSnapshot(storedPlan)); }
-    catch {
-      // Presentation observers are not part of durable plan hydration.
-    }
+  }
+  try { options.onPlanSnapshot?.(storedPlan === undefined ? undefined : projectRuntimePlanSnapshot(storedPlan)); }
+  catch {
+    // Presentation observers are not part of durable plan hydration.
   }
   const capabilityComposition = createNativeCapabilityComposition({
     cwd: options.cwd,
@@ -855,6 +719,10 @@ export async function createDefaultNativeRuntime(options: {
       : { effect: 'deny', reason: `Native ${request.effects.join('+')} effects require an explicit approved adapter`, category: 'approval' }
   ));
   const lifecycle = new Map<RuntimeEvent['type'], LifecycleBus<unknown>>();
+  const runtimeMode = options.args.mode === 'print'
+    ? options.args.outputFormat === 'json' ? 'json' : 'print'
+    : options.args.mode;
+  let emitWorkerLifecycle: ((type: 'worker.started' | 'worker.stopped', payload: unknown) => Promise<void>) | undefined;
   const mcpHookExecutor = createNativeHookMcpExecutor(tools);
   const disposeHooks = options.extensions === undefined
     ? undefined
@@ -955,6 +823,8 @@ export async function createDefaultNativeRuntime(options: {
         worktreesRoot: workerWorktreesRoot,
       }),
       maxActive: 4,
+      onStarted: async (snapshot) => emitWorkerLifecycle?.('worker.started', snapshot),
+      onStopped: async (snapshot) => emitWorkerLifecycle?.('worker.stopped', snapshot),
     });
     options.onWorkerProjection?.(new NativeWorkerTransportProjection(workerSupervisor, {
       activeSessionId,
@@ -987,6 +857,7 @@ export async function createDefaultNativeRuntime(options: {
       defaultModel: { providerId, modelId: effectiveModel },
       defaultMaxTurns: 16,
       allowWorktree: true,
+      planOwnership: new NativePlanWorkerOwnership(planStore),
     });
   }
   if (storedRevision === revision('0')) {
@@ -1056,7 +927,7 @@ export async function createDefaultNativeRuntime(options: {
   }
   if (!options.args.noSession) {
     const sessionFile = new FileSessionRecordPort(sessionsRoot).pathFor(activeSessionId);
-    recordSession(openOctocodeDb(octocodeDbPath(options.env)), {
+    recordSession(openOctocodeDb(agentDbPath(options.env)), {
       sessionId: activeSessionId,
       workspacePath: options.cwd,
       cwd: options.cwd,
@@ -1078,21 +949,47 @@ export async function createDefaultNativeRuntime(options: {
       disposeHooks?.();
     },
   });
+  emitWorkerLifecycle = async (type, payload) => {
+    await persistRuntimeEvent({
+      schemaVersion: 1,
+      eventVersion: 1,
+      id: eventId(`native:${type}:${randomUUID()}`),
+      type,
+      phase: 'after',
+      sessionId: activeSessionId,
+      timestamp: Date.now(),
+      cwd: options.cwd,
+      mode: runtimeMode,
+      outputFormat: options.args.outputFormat,
+      model: { providerId, modelId: effectiveModel },
+      trust: { workspace: workspaceTrust, managedOnly: false },
+      payload: payload as Readonly<unknown>,
+    });
+  };
   const modelPort = options.model ?? createNativeProviderModelPort(modelProtocol === 'anthropic-messages'
     ? {
         protocol: modelProtocol,
         endpoint: modelEndpoint,
-        apiKey: configuredApiKey(options.env, modelProtocol),
+        apiKey: configuredApiKey(options.env, modelProtocol, modelConfiguration.credentialEnv),
+        resolveAuth: modelConfiguration.resolveRuntimeAuth,
+        allowMissingApiKey: modelConfiguration.credential.source === 'headers' || modelConfiguration.credential.source === 'none',
         defaultModel: effectiveModel,
-        promptCaching: true,
+        promptCaching: modelConfiguration.promptCaching !== 'disabled',
+        ...(modelConfiguration.maxOutputTokens === undefined ? {} : { maxOutputTokens: modelConfiguration.maxOutputTokens }),
+        ...(modelConfiguration.sendSessionAffinityHeaders ? { sessionAffinityId: activeSessionId } : {}),
       }
     : {
         protocol: modelProtocol,
         endpoint: modelEndpoint,
-        apiKey: configuredApiKey(options.env, modelProtocol),
+        apiKey: configuredApiKey(options.env, modelProtocol, modelConfiguration.credentialEnv),
+        resolveAuth: modelConfiguration.resolveRuntimeAuth,
+        allowMissingApiKey: modelConfiguration.credential.source === 'headers' || modelConfiguration.credential.source === 'none',
         defaultModel: effectiveModel,
-        ...(new URL(modelEndpoint).hostname === 'api.openai.com' ? { promptCacheKey: `octocode:${activePrompt!.sha256.slice(0, 55)}` } : {}),
+        ...(modelConfiguration.promptCaching === 'enabled' || (modelConfiguration.promptCaching === 'auto' && new URL(modelEndpoint).hostname === 'api.openai.com')
+          ? { promptCacheKey: `octocode:${activePrompt!.sha256.slice(0, 55)}` }
+          : {}),
       });
+  let activeTransportModelId = effectiveModel;
   const durableCompaction = new DurableCompactionService({
     store: sessions,
     summarizer: { summarize: async ({ messages, reason, attempt, signal }) => {
@@ -1103,7 +1000,7 @@ export async function createDefaultNativeRuntime(options: {
           { role: 'user', content: `Compaction reason: ${reason}; attempt: ${attempt}.` },
           ...messages.map(({ eventId: _eventId, ...message }) => message),
         ],
-        model: { providerId, modelId: effectiveModel },
+        model: { providerId, modelId: activeTransportModelId },
         toolChoice: 'none',
       }, { signal, emit: async (delta) => { if (delta.type === 'text') text.push(delta.text); } });
       if (response.stop === 'error' || response.stop === 'tool' || response.stop === 'cancelled') throw new RuntimeFailure('compaction', `Compaction model stopped with ${response.stop}`, 'safe');
@@ -1119,9 +1016,8 @@ export async function createDefaultNativeRuntime(options: {
     planState,
     policy,
     ...(workerCapabilities.maxTurns === undefined ? {} : { maxIterations: workerCapabilities.maxTurns }),
-    mode: options.args.mode === 'print'
-      ? options.args.outputFormat === 'json' ? 'json' : 'print'
-      : options.args.mode,
+    mode: runtimeMode,
+    outputFormat: options.args.outputFormat,
     trust: { workspace: workspaceTrust, managedOnly: false },
     approve: async (request) => {
       if (request.name === 'worker' && options.args.allowWorkers && workspaceTrust === 'trusted') return true;
@@ -1151,17 +1047,24 @@ export async function createDefaultNativeRuntime(options: {
       cancel: (reason) => durableCompaction.cancel(activeSessionId, reason),
     },
     initialModel: { providerId, modelId: effectiveModel },
-    validateModel: (model) => modelConfiguration.catalog.providers.some(({ id, enabled }) => id === model.providerId && enabled)
-      && modelConfiguration.catalog.models.some(({ providerId: candidateProvider, id, enabled }) => (
-        candidateProvider === model.providerId && id === model.modelId && enabled
-      ))
-      ? undefined
-      : `Model ${model.providerId}/${model.modelId} is not available in the effective native model catalog`,
+    validateModel: (model) => {
+      if (model.providerId !== providerId) {
+        return `Changing providers from ${providerId} to ${model.providerId} requires a new session so the native transport, endpoint, and credentials can be recomposed`;
+      }
+      const available = modelConfiguration.catalog.providers.some(({ id, enabled }) => id === model.providerId && enabled)
+        && modelConfiguration.catalog.models.some(({ providerId: candidateProvider, id, enabled }) => (
+          candidateProvider === model.providerId && id === model.modelId && enabled
+        ));
+      if (!available) return `Model ${model.providerId}/${model.modelId} is not available in the effective native model catalog`;
+      activeTransportModelId = model.modelId;
+      return undefined;
+    },
     validateThinking: providerId === 'anthropic'
       ? (level) => ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(level)
         ? undefined
         : `Thinking level ${level} is not supported by the Anthropic Messages adapter`
       : () => 'Thinking controls are not supported by the active OpenAI-compatible adapter',
+    monitoring: { snapshot: () => ({ cache: octocodeCatalogCacheMetrics() }) },
     emit: persistRuntimeEvent,
     model: modelPort,
   });
@@ -1170,14 +1073,24 @@ export async function createDefaultNativeRuntime(options: {
     workspace: options.cwd,
     sessionId: String(activeSessionId),
     agentId,
+    ...(options.onAwarenessObservability === undefined ? {} : { onObservability: options.onAwarenessObservability }),
   });
+}
+
+function nativeAwarenessStatus(stats: AwarenessEventObservability): string | undefined {
+  const attention = stats.backlogDepth > 0
+    || stats.drainHeld > 0
+    || stats.drainRefused > 0
+    || stats.drainErrors > 0;
+  if (!attention) return undefined;
+  return `queue ${stats.backlogDepth}${stats.backlogCapped ? '+' : ''} · ack ${stats.lastAcknowledgedSequence} · accepted ${stats.drainAccepted} · held ${stats.drainHeld} · refused ${stats.drainRefused} · errors ${stats.drainErrors}`;
 }
 
 export function nativeEffectAllowed(request: { readonly effects: EffectSet; readonly operation: string }): boolean {
   return request.effects.every((effect) => effect === 'read'
     || effect === 'network'
     || (effect === 'process' && (request.operation === 'tool:MCPTool' || request.operation === 'tool:worker'))
-    || (effect === 'write' && (request.operation === 'tool:plan' || request.operation === 'tool:awareness')));
+    || (effect === 'write' && (request.operation === 'tool:plan' || request.operation === 'tool:awareness' || request.operation === 'tool:MCPTool')));
 }
 
 export function nativeToolApprovalMessage(request: {
@@ -1193,359 +1106,6 @@ export function nativeToolApprovalMessage(request: {
   const scope = ['server', 'action', 'tool', 'uri']
     .flatMap((key) => typeof input[key] === 'string' && input[key] ? [`${key}=${input[key]}`] : []);
   return `Allow MCP ${scope.join(' ')} (${effects})?`;
-}
-
-function presentationEvents(event: RuntimeEvent, activeTurnId?: string): readonly PresentationEvent[] {
-  const payload = event.payload as Record<string, unknown>;
-  const callId = typeof payload.callId === 'string' ? payload.callId : undefined;
-  const name = typeof payload.name === 'string' ? payload.name : 'tool';
-  const turn = typeof payload.turnId === 'string'
-    ? payload.turnId
-    : event.turnId === undefined
-      ? activeTurnId
-      : String(event.turnId);
-  const stringify = (value: unknown): string | undefined => {
-    if (value === undefined) return undefined;
-    try { return JSON.stringify(value) ?? String(value); }
-    catch { return '[unserializable]'; }
-  };
-  const errorDetails = (): { message: string; category?: string } => {
-    if (typeof payload.error === 'string') return { message: payload.error, ...(typeof payload.category === 'string' ? { category: payload.category } : {}) };
-    if (typeof payload.error === 'object' && payload.error !== null) {
-      const error = payload.error as Record<string, unknown>;
-      return {
-        message: typeof error.message === 'string' ? error.message : 'Tool execution failed',
-        ...(typeof error.category === 'string' ? { category: error.category } : typeof payload.category === 'string' ? { category: payload.category } : {}),
-      };
-    }
-    return { message: 'Tool execution failed', ...(typeof payload.category === 'string' ? { category: payload.category } : {}) };
-  };
-  switch (event.type) {
-    case 'runtime.ready': return [{ type: 'runtime-ready' }];
-    case 'runtime.stopping': return [{ type: 'runtime-stopping' }];
-    case 'runtime.failed': return [{ type: 'runtime-failed' }];
-    case 'input.received':
-      return typeof payload.text === 'string' ? [{ type: 'input-received', text: payload.text, ...(turn === undefined ? {} : { turnId: turn }) }] : [];
-    case 'input.queued': {
-      const position = typeof payload.position === 'number' ? payload.position : undefined;
-      const kind = payload.kind === 'steer' ? 'Steer' : 'Follow-up';
-      return [{
-        type: 'notification',
-        severity: 'info',
-        message: `${kind} queued${position === undefined ? '' : ` · position ${position}`}`,
-      }];
-    }
-    case 'input.rejected': {
-      const kind = payload.kind === 'steer' ? 'Steer' : 'Follow-up';
-      const reason = typeof payload.reason === 'string' ? payload.reason : 'runtime unavailable';
-      return [{ type: 'notification', severity: 'error', message: `${kind} rejected · ${reason}` }];
-    }
-    case 'turn.started':
-      return turn === undefined ? [] : [{ type: 'turn-started', turnId: turn }];
-    case 'turn.ended': {
-      if (turn === undefined) return [];
-      const stop = payload.stop;
-      return [{ type: 'turn-ended', turnId: turn, outcome: stop === 'cancelled' ? 'cancelled' : stop === 'error' ? 'error' : 'completed' }];
-    }
-    case 'message.started': {
-      const messageId = typeof payload.messageId === 'string' ? payload.messageId : String(event.id);
-      const role = payload.role === 'user' || payload.role === 'system' || payload.role === 'tool' ? payload.role : 'assistant';
-      return [{ type: 'message-started', messageId, role, ...(turn === undefined ? {} : { turnId: turn }) }];
-    }
-    case 'message.delta':
-      return typeof payload.text === 'string' ? [{
-        type: 'message-delta',
-        text: payload.text,
-        messageId: typeof payload.messageId === 'string' ? payload.messageId : `assistant:${turn ?? 'unscoped'}`,
-        role: 'assistant',
-        ...(turn === undefined ? {} : { turnId: turn }),
-        ...(payload.segment === 'thinking' ? { segment: 'thinking' as const } : {}),
-      }] : [];
-    case 'message.ended': {
-      const messageId = typeof payload.messageId === 'string' ? payload.messageId : `assistant:${turn ?? 'unscoped'}`;
-      return [{ type: 'message-ended', messageId, status: payload.status === 'cancelled' || payload.status === 'error' ? payload.status : 'complete' }];
-    }
-    case 'tool.requested':
-      return callId === undefined ? [] : [{
-        type: 'tool-requested', callId, name,
-        ...(turn === undefined ? {} : { turnId: turn }),
-        ...(payload.input === undefined ? {} : { input: stringify(payload.input) }),
-      }];
-    case 'tool.started':
-      return callId === undefined ? [] : [{ type: 'tool-started', callId, name, ...(turn === undefined ? {} : { turnId: turn }) }];
-    case 'tool.updated': {
-      const update = typeof payload.update === 'object' && payload.update !== null ? payload.update as Record<string, unknown> : undefined;
-      const value = typeof update?.value === 'object' && update.value !== null ? update.value as Record<string, unknown> : undefined;
-      return callId === undefined ? [] : [{
-        type: 'tool-updated', callId, name,
-        ...(typeof update?.message === 'string' ? { message: update.message } : {}),
-        ...(typeof value?.current === 'number' ? { current: value.current } : {}),
-        ...(typeof value?.total === 'number' ? { total: value.total } : {}),
-      }];
-    }
-    case 'tool.blocked': {
-      if (callId === undefined) return [];
-      const error = errorDetails();
-      return [{ type: 'tool-blocked', callId, name, message: error.message, ...(error.category === undefined ? {} : { category: error.category }) }];
-    }
-    case 'tool.ended': {
-      if (callId === undefined) return [];
-      if (payload.outcome === 'cancelled' || payload.category === 'cancelled') {
-        const error = errorDetails();
-        return [{
-          type: 'tool-cancelled', callId, name,
-          ...(typeof payload.message === 'string' ? { message: payload.message } : error.message === 'Tool execution failed' ? {} : { message: error.message }),
-        }];
-      }
-      if (payload.error !== undefined) {
-        const error = errorDetails();
-        return [{ type: 'tool-ended', callId, name, error: error.message, ...(error.category === undefined ? {} : { category: error.category }) }];
-      }
-      return [{ type: 'tool-ended', callId, name, ...(payload.result === undefined ? {} : { result: stringify(payload.result) }) }];
-    }
-    case 'context.usage-changed': {
-      const inputTokens = typeof payload.inputTokens === 'number' ? payload.inputTokens : undefined;
-      const outputTokens = typeof payload.outputTokens === 'number' ? payload.outputTokens : undefined;
-      return inputTokens === undefined || outputTokens === undefined ? [] : [{
-        type: 'status-changed',
-        name: 'context.usage',
-        text: `${inputTokens} input · ${outputTokens} output tokens`,
-      }];
-    }
-    case 'provider.response-received': {
-      const usage = typeof payload.usage === 'object' && payload.usage !== null ? payload.usage as Record<string, unknown> : undefined;
-      const inputTokens = typeof usage?.inputTokens === 'number' ? usage.inputTokens : undefined;
-      const outputTokens = typeof usage?.outputTokens === 'number' ? usage.outputTokens : undefined;
-      return inputTokens === undefined || outputTokens === undefined ? [] : [{
-        type: 'status-changed', name: 'context.usage', text: `${inputTokens} input · ${outputTokens} output tokens`,
-      }];
-    }
-    case 'ui.notification': {
-      if (typeof payload.message !== 'string') return [];
-      const severity = payload.severity;
-      return [{
-        type: 'notification',
-        message: payload.message,
-        severity: severity === 'success' || severity === 'warning' || severity === 'error' ? severity : 'info',
-      }];
-    }
-    case 'ui.status-changed':
-      return typeof payload.name === 'string'
-        ? [{ type: 'status-changed', name: payload.name, text: typeof payload.text === 'string' ? payload.text : undefined }]
-        : [];
-    default:
-      return [];
-  }
-}
-
-async function runInteractive(
-  runtime: AgentRuntime,
-  terminal: OpenTuiTerminal,
-  interactions: NativeInteractionBroker,
-  input: Readable,
-  initialMessage?: string,
-  createLineReader: (input: Readable) => AsyncIterable<string> = (stream) => createInterface({ input: stream, crlfDelay: Infinity }),
-  currentPlan: () => RuntimePlanSnapshot | undefined = () => undefined,
-  skills: () => readonly NativeSkillSummary[] = () => [],
-  signalSource: NonNullable<NativeLaunchDependencies['signalSource']> = process,
-  settingsPage?: NativeSettingsPageController,
-): Promise<number> {
-  try {
-    await terminal.start();
-  } catch (startupFailure) {
-    await Promise.allSettled([
-      Promise.resolve().then(() => runtime.stop()),
-      Promise.resolve().then(() => settingsPage?.close()),
-      Promise.resolve().then(() => terminal.stop()),
-    ]);
-    throw startupFailure;
-  }
-  let detachInteractions: () => void = () => undefined;
-  let activeTurnId: string | undefined;
-  let submissionInFlight = false;
-  let submissionFailure: unknown;
-  const submissions = new Set<Promise<void>>();
-  const submit = (text: string): void => {
-    submissionInFlight = true;
-    const task = runtime.submit(text)
-      .catch((error) => { submissionFailure ??= error; })
-      .finally(() => { submissionInFlight = false; });
-    submissions.add(task);
-    void task.finally(() => submissions.delete(task));
-  };
-  let followUps = Promise.resolve();
-  const followUp = (text: string): void => {
-    const task = followUps.then(async () => {
-      const result = await runtime.execute({ type: 'input.follow-up', text });
-      if (!result.ok) terminal.accept({
-        type: 'notification',
-        severity: 'error',
-        message: `Follow-up rejected · ${result.error.message}`,
-      });
-    }).catch((error) => { submissionFailure ??= error; });
-    followUps = task;
-    submissions.add(task);
-    void task.finally(() => submissions.delete(task));
-  };
-  let chromeConnection: 'connected' | 'connecting' | 'error' = 'connecting';
-  let chromeTrust: 'trusted' | 'untrusted' | 'unknown' = 'unknown';
-  let runtimeFailed = false;
-  const presentChrome = (
-    working: 'idle' | 'active' | 'cancelling' | 'failed',
-    connection = chromeConnection,
-  ): void => {
-    chromeConnection = connection;
-    const snapshot = runtime.snapshot();
-    const interaction = terminal.snapshot()?.interaction;
-    const keyHints = interaction === undefined
-      ? [
-          { key: 'Enter', label: 'Send', priority: 1 },
-          { key: 'Ctrl-C', label: 'Cancel or exit', priority: 2 },
-          { key: 'Tab', label: 'Move focus', priority: 3 },
-          { key: '/', label: 'Commands', priority: 4 },
-          { key: '@', label: 'Files', priority: 5 },
-        ]
-      : [
-          { key: 'Enter', label: 'Choose', priority: 1 },
-          { key: 'Esc', label: 'Cancel', priority: 2 },
-          { key: 'Tab', label: 'Move choice', priority: 3 },
-        ];
-    terminal.accept({
-      type: 'runtime-widgets-changed',
-      snapshots: {
-        header: {
-          authority: 'runtime', title: 'Octocode Agent',
-          ...(snapshot.model?.modelId === undefined ? {} : { modelId: snapshot.model.modelId }),
-          ...(snapshot.sessionId === undefined ? {} : { sessionId: String(snapshot.sessionId) }),
-          trust: chromeTrust, working, width: 80,
-        },
-        footer: {
-          authority: 'runtime', activeMode: working === 'active' ? 'running' : 'interactive', connection, widthColumns: 80,
-          keyHints,
-        },
-      },
-    });
-  };
-  const currentWorking = (): 'idle' | 'active' | 'cancelling' | 'failed' => {
-    const state = runtime.snapshot().state;
-    if (state === 'running') return 'active';
-    if (state === 'failed') return 'failed';
-    if (state === 'stopping') return 'cancelling';
-    return 'idle';
-  };
-  const interactionHandler = terminal.interact === undefined
-    ? async () => ({ status: 'unsupported' as const })
-    : async (...args: Parameters<NonNullable<OpenTuiTerminal['interact']>>) => {
-        const pending = terminal.interact!(...args);
-        presentChrome(currentWorking());
-        try { return await pending; }
-        finally { presentChrome(currentWorking()); }
-      };
-  detachInteractions = interactions.attach(interactionHandler);
-  terminal.accept({ type: 'interaction-handler-state', ready: terminal.interact !== undefined });
-  const unsubscribe = runtime.subscribe((event) => {
-    const payload = event.payload as Record<string, unknown>;
-    chromeTrust = event.trust.workspace;
-    if (event.type === 'turn.started' && typeof payload.turnId === 'string') activeTurnId = payload.turnId;
-    for (const semantic of presentationEvents(event, activeTurnId)) terminal.accept(semantic);
-    if (event.type === 'runtime.ready') { runtimeFailed = false; presentChrome('idle', 'connected'); }
-    else if (event.type === 'runtime.stopping') presentChrome('cancelling', 'connecting');
-    else if (event.type === 'runtime.failed') { runtimeFailed = true; presentChrome('failed', 'error'); }
-    else if (event.type === 'turn.started') presentChrome('active');
-    else if (event.type === 'turn.ended') presentChrome(runtimeFailed ? 'failed' : 'idle');
-    if (event.type === 'turn.ended') activeTurnId = undefined;
-  });
-  let detachInput: (() => void) | undefined;
-  let detachFailure: (() => void) | undefined;
-  let detachSignals: (() => void) | undefined;
-  try {
-    presentChrome('idle');
-    await runtime.start();
-    if (initialMessage) submit(initialMessage);
-    let finishNativeInput: (() => void) | undefined;
-    const nativeInputDone = new Promise<void>((resolve) => { finishNativeInput = resolve; });
-    detachFailure = terminal.subscribeFailure?.((error) => {
-      submissionFailure ??= error;
-      finishNativeInput?.();
-    });
-    const handleLine = async (line: string): Promise<boolean> => {
-      if (terminal.acceptInput?.(line)) return true;
-      const command = await handleNativeSlashCommand(line, {
-        runtime,
-        terminal,
-        currentPlan,
-        skills,
-        ...(settingsPage ? { openSettings: (section) => settingsPage.open(section) } : {}),
-      });
-      if (command === 'exit') return false;
-      if (command === 'handled') return true;
-      if (line.trim()) {
-        const runtimeActive = runtime.snapshot().state === 'running';
-        if (!submissionInFlight && activeTurnId === undefined && !runtimeActive) submit(line);
-        else followUp(line);
-      }
-      return true;
-    };
-    if (terminal.inputOwnership === 'renderer') {
-      if (!terminal.subscribeInput) throw new Error('renderer-owned input requires a terminal input subscription');
-      const settleSignal = (signal: 'SIGINT' | 'SIGTERM'): void => {
-        void (async () => {
-          try {
-            const active = runtime.snapshot().state === 'running' || activeTurnId !== undefined || submissionInFlight;
-            if (active) await runtime.cancel(signal === 'SIGTERM' ? 'process terminated' : 'user interrupt');
-            if (signal === 'SIGTERM' || !active) finishNativeInput?.();
-          } catch (error) {
-            submissionFailure ??= error;
-            finishNativeInput?.();
-          }
-        })();
-      };
-      const onSigint = () => settleSignal('SIGINT');
-      const onSigterm = () => settleSignal('SIGTERM');
-      signalSource.on('SIGINT', onSigint);
-      signalSource.on('SIGTERM', onSigterm);
-      detachSignals = () => {
-        signalSource.off('SIGINT', onSigint);
-        signalSource.off('SIGTERM', onSigterm);
-      };
-      detachInput = terminal.subscribeInput(async (event) => {
-        if (event.type === 'line') {
-           if (!await handleLine(event.line)) finishNativeInput?.();
-          return;
-        }
-        if (terminal.cancelInteraction?.()) return;
-        if (runtime.snapshot().state === 'running' || activeTurnId !== undefined || submissionInFlight) {
-          await runtime.cancel('user interrupt');
-        } else {
-          finishNativeInput?.();
-        }
-      });
-      await nativeInputDone;
-    } else {
-      for await (const line of createLineReader(input)) {
-        if (!await handleLine(line)) break;
-      }
-    }
-    return 0;
-  } finally {
-    let failure: unknown;
-    try { await runtime.stop(); }
-    catch (error) { failure = error; }
-    finally {
-      await Promise.allSettled([...submissions]);
-      failure ??= submissionFailure;
-      unsubscribe();
-      detachInput?.();
-      detachFailure?.();
-      detachSignals?.();
-      detachInteractions();
-      try { await settingsPage?.close(); }
-      catch (error) { failure ??= error; }
-      try { await terminal.stop(); }
-      catch (error) { failure ??= error; }
-    }
-    if (failure !== undefined) throw failure;
-  }
 }
 
 export async function launchNativeAgent(
@@ -1580,6 +1140,30 @@ export async function launchNativeAgent(
   const settings = await createNativeSettingsService(settingsStorage);
   const storedSettings = settingsStorage.read().values;
   const workspaceTrust = resolveNativeWorkspaceTrust(cwd, storedSettings);
+  if (args.model !== undefined && args.fallbackModels.length > 0) {
+    const probe = dependencies.probeFallbackModel ?? (async (candidate: NativeModelRef) => {
+      const configuration = resolveNativeModelConfiguration({
+        env,
+        configuredProvider: candidate.providerId,
+        configuredModel: candidate.modelId,
+        configuredSelectionSource: 'cli.override',
+        forceConfiguredSelection: true,
+        cwd,
+        home: env.HOME ?? path.dirname(getOctocodeHome(env)),
+        octocodeHome: getOctocodeHome(env),
+        workspaceTrusted: workspaceTrust === 'trusted',
+      });
+      const apiKey = configuration.credentialEnv === undefined ? '' : env[configuration.credentialEnv]?.trim() ?? '';
+      return runNativeProviderSmoke({
+        protocol: configuration.protocol,
+        endpoint: configuration.endpoint,
+        apiKey,
+        model: candidate.modelId,
+        ...(configuration.resolveRuntimeAuth === undefined ? {} : { resolveAuth: configuration.resolveRuntimeAuth }),
+      });
+    });
+    args.model = await selectNativeFallbackModel([args.model, ...args.fallbackModels], probe);
+  }
   const settingsCapabilityComposition = createNativeCapabilityComposition({
     cwd,
     env,
@@ -1598,8 +1182,11 @@ export async function launchNativeAgent(
       }));
   if (!extensions.snapshot().discovered) await extensions.discover();
   await extensions.activateEligible();
-  let presentPlanSnapshot: RuntimePlanSnapshotSink | undefined;
+  let presentPlanSnapshot: ((snapshot: RuntimePlanSnapshot | undefined) => void) | undefined;
   let currentPlanSnapshot: RuntimePlanSnapshot | undefined;
+  let planSnapshotObserved = false;
+  let currentAwarenessObservability: AwarenessEventObservability | undefined;
+  let presentAwarenessObservability: ((stats: AwarenessEventObservability) => void) | undefined;
   let workerProjection: NativeWorkerTransportProjection | undefined;
   try {
     const runtime = await (dependencies.createRuntime ?? createDefaultNativeRuntime)({
@@ -1612,9 +1199,16 @@ export async function launchNativeAgent(
       onWorkerProjection: (projection) => { workerProjection = projection; },
       ...(dependencies.authorizeWorkerProjection === undefined ? {} : { authorizeWorkerProjection: dependencies.authorizeWorkerProjection }),
       ...(args.mode === 'interactive'
-        ? { onPlanSnapshot: (snapshot: RuntimePlanSnapshot) => {
+        ? { onPlanSnapshot: (snapshot: RuntimePlanSnapshot | undefined) => {
+            planSnapshotObserved = true;
             currentPlanSnapshot = snapshot;
             presentPlanSnapshot?.(snapshot);
+          } }
+        : {}),
+      ...(args.mode === 'interactive'
+        ? { onAwarenessObservability: (stats: AwarenessEventObservability) => {
+            currentAwarenessObservability = stats;
+            presentAwarenessObservability?.(stats);
           } }
         : {}),
     });
@@ -1627,10 +1221,23 @@ export async function launchNativeAgent(
                 if (args.outputFormat === 'json') return await runJsonTransport(runtime, message, (value) => { stdout.write(value); }, dependencies.signalSource === undefined ? {} : { signalSource: dependencies.signalSource });
                 return await runPrintTransport(runtime, message, { format: 'text', write: (value) => { stdout.write(value); }, ...(dependencies.signalSource === undefined ? {} : { signalSource: dependencies.signalSource }) });
               }
+    const reducedMotion = settings.snapshot().values.find(({ key }) => key === 'reducedMotion')?.value !== false;
     const terminal = dependencies.createTerminal
       ? dependencies.createTerminal()
-      : (await import('./terminal/opentui/renderer.js')).createDefaultOpenTuiTerminal({ cwd, alternateOutput: args.accessible });
-    presentPlanSnapshot = (plan) => terminal.accept({ type: 'runtime-widgets-changed', snapshots: { plan } });
+      : (await import('./terminal/opentui/renderer.js')).createDefaultOpenTuiTerminal({
+          cwd, alternateOutput: args.accessible, reducedMotion,
+        });
+    presentPlanSnapshot = (plan) => terminal.accept({
+      type: 'runtime-widgets-changed',
+      snapshots: { plan: plan ?? null },
+    });
+    if (planSnapshotObserved) presentPlanSnapshot(currentPlanSnapshot);
+    presentAwarenessObservability = (stats) => terminal.accept({
+      type: 'status-changed',
+      name: 'awareness.events',
+      ...(nativeAwarenessStatus(stats) === undefined ? {} : { text: nativeAwarenessStatus(stats) }),
+    });
+    if (currentAwarenessObservability !== undefined) presentAwarenessObservability(currentAwarenessObservability);
     const settingsPage = dependencies.createSettingsPage
       ? dependencies.createSettingsPage({ env, cwd, runtime, settings, extensions })
       : createNativeSettingsPageController({
@@ -1643,31 +1250,63 @@ export async function launchNativeAgent(
             settingsStorage.read().values,
           ),
           getExtensionsSnapshot: () => extensions.snapshot(),
+          getDiscoverySnapshot: () => {
+            const values = settings.snapshot().values;
+            const configuredProvider = values.find(({ key }) => key === 'defaultProvider')?.value;
+            const configuredModel = values.find(({ key }) => key === 'defaultModel')?.value;
+            return buildNativeDiscoverySnapshot({
+              cwd,
+              env,
+              configuredProvider: typeof configuredProvider === 'string' ? configuredProvider : undefined,
+              configuredModel: typeof configuredModel === 'string' ? configuredModel : undefined,
+              workspaceTrusted: resolveNativeWorkspaceTrust(cwd, settingsStorage.read().values) === 'trusted',
+            });
+          },
           capabilityControl: createNativeSettingsCapabilityControl({
             cwd,
             env,
             skills: settingsCapabilityComposition.skills,
           }),
         });
-    return await runInteractive(
+    const selectedInteractiveModel = runtime.snapshot().model;
+    const thinkingSupported = selectedInteractiveModel != null && resolveNativeModelConfiguration({
+      env,
+      configuredProvider: selectedInteractiveModel.providerId,
+      configuredModel: selectedInteractiveModel.modelId,
+      configuredSelectionSource: 'cli.override',
+      forceConfiguredSelection: true,
+      cwd,
+      home: env.HOME ?? path.dirname(getOctocodeHome(env)),
+      octocodeHome: getOctocodeHome(env),
+      workspaceTrusted: workspaceTrust === 'trusted',
+    }).protocol === 'anthropic-messages';
+    return await runNativeInteractiveController({
       runtime,
       terminal,
       interactions,
-      stdin,
-      args.initialMessage,
-      dependencies.createLineReader,
-      () => currentPlanSnapshot,
-      () => {
-        const db = openOctocodeDb(octocodeDbPath(env));
-        return listNativeSkillSummaries({
-          cwd,
-          homeDir: env.HOME,
-          isEnabled: (name) => getSkillEnablement(db, cwd, name, true),
-        });
+      input: stdin,
+      ...(args.initialMessage === undefined ? {} : { initialMessage: args.initialMessage }),
+      ...(dependencies.createLineReader === undefined ? {} : { createLineReader: dependencies.createLineReader }),
+      currentPlan: () => currentPlanSnapshot,
+      skills: () => {
+        const dbFile = agentDbPath(env);
+        const db = openOctocodeDb(dbFile);
+        try {
+          return listNativeSkillSummaries({
+            cwd,
+            homeDir: env.HOME,
+            octocodeHome: getOctocodeHome(env),
+            workspaceTrusted: resolveNativeWorkspaceTrust(cwd, settingsStorage.read().values) === 'trusted',
+            isEnabled: (name, defaultEnabled, source) => getSkillEnablement(db, cwd, name, defaultEnabled, source.id),
+          });
+        } finally {
+          closeOctocodeDb(dbFile);
+        }
       },
-      dependencies.signalSource,
+      ...(dependencies.signalSource === undefined ? {} : { signalSource: dependencies.signalSource }),
       settingsPage,
-    );
+      thinkingSupported,
+    });
   } finally {
     extensions.deactivateAll();
   }

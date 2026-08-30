@@ -1,4 +1,4 @@
-# How Octocode Awareness Works
+# How Octocode Awareness works
 
 This is the canonical end-to-end lifecycle for Awareness. It owns how an agent enters
 through `AGENTS.md`, activates skills, uses the CLI to create and mutate live state,
@@ -6,24 +6,24 @@ receives hook automation, verifies work, records learning,
 and exits or hands off. Command recipes live in [SKILLS.md](SKILLS.md); host wiring
 lives in [HOOKS.md](HOOKS.md); schema detail lives in [DB.md](DB.md).
 
-Awareness is a coordination runtime over local SQLite. Workspace policy routes repository
-features to repository scope and reusable memory to global scope by default; `--db-scope`
-overrides one call. Advanced workflow commands retain their separately named OCT1 store.
-No server or broker is required. See [storage scopes](STORAGE_SCOPES.md).
+Awareness is a coordination runtime over one global agent SQLite database. Workspace
+columns isolate repository state inside `$OCTOCODE_HOME/agent/agent.sqlite3`; repository
+`.octocode/` directories are not default agent storage. No server or broker is required.
+See [agent storage](STORAGE_SCOPES.md).
 
-## Starting Point And Authority Chain
+## Authority chain
 
 ```text
 Host starts
   -> AGENTS.md / CLAUDE.md        (entry + router; short and always loaded)
   -> Agent Skills                (policy + judgment; loaded when task matches)
   -> Awareness CLI / library     (control plane + executable contracts)
-  |-> octocode.sqlite3           (shared coordination + continuity, repository or global)
-  |    `-> plans, tasks, peers, messages, handoffs, locks, checks, verified memory
-  `-> awareness.sqlite3          (advanced OCT1 workflow, repository or global)
-       |-> attend / targeted query / workboard
-       |-> runs, files, verification, signals, refinements, sessions, memory
-       `-> optional .octocode/ query exports (read-only, on request)
+  `-> $OCTOCODE_HOME/agent/
+       |-> agent.sqlite3         (one OCTA store with module-owned table families)
+       |    |-> plans, tasks, peers, messages, handoffs, locks, checks
+       |    `-> runs, files, verification, signals, refinements, sessions, memory
+       |-> workspaces/ + sessions/ + workers/ + logs/ + temporary artifacts
+       `-> optional repository query exports (read-only, only when requested)
 
 Host hooks ---------------------> same package contracts and selected store (edge automation)
 ```
@@ -46,16 +46,15 @@ Each layer has one job:
    roll back failed writes, finalize fallback runs, deliver changed context, and
    surface verification debt. They never choose goals, create a plan, decide a lock
    is warranted, mark tests successful, or turn memory into authority.
-5. **Human docs and `.octocode/` are read surfaces.** Authored plan documents explain
-   intent. Generated output files are bounded snapshots;
-   they are never canonical state.
+5. **Human docs and explicit exports are read surfaces.** Authored plan documents explain
+   intent. Generated output files are bounded snapshots; they are never canonical state.
 
 Authority descends from current user instructions and current source/tests, to live
 SQLite state and fresh command evidence, to verified memory/signals, and finally to
 read-only query exports. A lower layer cannot override a higher one.
 
-Rows are isolated by normalized `workspace_path` and optional artifact/repo/ref scope,
-including inside repository-level databases.
+Rows are isolated by normalized `workspace_path` and optional artifact/repo/ref scope
+inside the global agent database.
 
 The default agent surface is deliberately small: `attend`, `plan`, `task`, `work`,
 `verify`, `memory`, `signal`, and `query`. `schema commands --compact` groups
@@ -64,7 +63,7 @@ returns one action contract with router-injected fields removed. Locks are norma
 requested through `work start --exclusive`. Raw lock, hook, maintenance, refinement, session, docs, and schema
 commands remain available when the lifecycle requires them.
 
-## Bootstrap Lifecycle
+## Bootstrap lifecycle
 
 ```text
 INSTALL PACKAGE -> INSTALL SKILL -> INIT STORE -> SET IDENTITY
@@ -87,7 +86,7 @@ INSTALL PACKAGE -> INSTALL SKILL -> INIT STORE -> SET IDENTITY
 Hooks are optional. If they are absent or unhealthy, the manual CLI lifecycle below
 remains complete.
 
-## Homeostatic Control Model
+## Homeostatic control model
 
 Awareness is a supervised software control loop, not an autonomous agent. It
 senses operational pressure in SQLite and hooks, compares that evidence with
@@ -102,7 +101,7 @@ adaptation, forgetting, and repair. It does not imply sentience, self-chosen goa
 network coordination, or permission to mutate code/instructions. The complete
 pressure table and success measures live in [THESIS.md](THESIS.md).
 
-## Durable Work Model
+## Durable work model
 
 ```text
 Plan -> Task -> TaskRun -> RunFile
@@ -161,7 +160,7 @@ Host sessions are not work-unit boundaries. Only a task claim or explicit
 `work start` may reuse an explicit standalone WORK run; fallback hook writes remain
 isolated.
 
-## Entity Lifecycles
+## Entity lifecycles
 
 | Entity | Lifecycle | Invariant |
 |---|---|---|
@@ -202,7 +201,7 @@ unchanged state emits nothing. An exclusive conflict blocks before presence. Pro
 briefing uses transient prompt text to select relevant state or stay silent; selected
 contents remain in the ledger for an explicit read. Stop output is count-only.
 
-### Manual CLI And Hook Parity
+### Manual CLI and hook parity
 
 | Need | Hook/host automation | Manual control-plane equivalent |
 |---|---|---|
@@ -219,7 +218,7 @@ receipts, memory judgment, cleanup approval, or query-export requests.
 
 Host wiring details live in [HOOKS.md](HOOKS.md).
 
-## Context Model
+## Context model
 
 Persist everything needed for coordination; prompt only actionable changes:
 
@@ -233,7 +232,7 @@ Persist everything needed for coordination; prompt only actionable changes:
 
 This separates database completeness from token cost.
 
-## Knowledge And Memory
+## Knowledge and memory
 
 Memory is durable verified learning, not routine status. Signals are typed peer
 messages. Refinements are owned follow-up/handoff state, not another task queue.
@@ -252,7 +251,7 @@ The memory lifecycle is deliberately conservative:
 CSV/HTML when requested (`query --format html/json/csv`). SQLite is canonical;
 current source/tests/user instructions always win.
 
-## Completion Contract
+## Completion contract
 
 Awareness work is complete only when:
 

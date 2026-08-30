@@ -22,6 +22,7 @@ import {
 } from '../src/tools/plan-html.js';
 import { setPlan, setPlanRfc, setPlanDecisions, getPlan, completeStep, clearPlan, type PlanStep, type ReviewState } from '../src/tools/active-plan.js';
 import { buildPlanReadModel } from '../src/tools/plan-read-model.js';
+import { workspaceAgentRoot } from '../src/tools/session-artifacts.js';
 
 const ORIGINAL_HOME = process.env['OCTOCODE_HOME'];
 afterEach(() => {
@@ -291,8 +292,7 @@ test('canonical artifact adapters write html + md under the octocode home; live 
   const artifacts = writeModelArtifacts(scope, STEPS, { status: 'draft', workspace: '/some/workspace', generatedAt: new Date('2026-01-02T03:04:05.000Z') })!;
   assert.ok(fs.existsSync(artifacts.htmlPath));
   assert.ok(fs.existsSync(artifacts.mdPath));
-  // Artifacts live under ~/.octocode/tmp/plan/<scope-hash>/, not the cwd.
-  assert.ok(artifacts.htmlPath.startsWith(path.join(home, 'tmp', 'plan')), 'html lives under the home tmp/plan dir');
+  assert.ok(artifacts.htmlPath.startsWith(path.join(home, 'agent', 'tmp', 'plan')), 'html lives under the global agent tmp/plan dir');
   const page = fs.readFileSync(artifacts.htmlPath, 'utf8');
   assert.match(page, /<!doctype html>/);
   assert.doesNotMatch(page, /http-equiv="refresh"/, 'live updates do not blindly reload while the user is reviewing');
@@ -325,7 +325,7 @@ test('writePlanReadModelArtifacts saves session review files privately under the
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-plan-session-'));
   try {
     const artifacts = writeModelArtifacts(workspace, STEPS, { status: 'draft', workspace })!;
-    const sessionRoot = path.join(workspace, '.octocode', 'agent');
+    const sessionRoot = workspaceAgentRoot(workspace, process.env['OCTOCODE_HOME']);
     assert.ok(artifacts.htmlPath.startsWith(sessionRoot));
     assert.ok(artifacts.mdPath.startsWith(sessionRoot));
     assert.equal(fs.statSync(artifacts.htmlPath).mode & 0o777, 0o600);

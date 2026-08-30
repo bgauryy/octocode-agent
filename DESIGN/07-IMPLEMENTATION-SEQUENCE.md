@@ -1,8 +1,8 @@
 # Implementation Sequence
 
 Status: required execution order  
-Scope: dependency-ordered implementation, verification, rollout, and complete Pi retirement
-Invariant: `@octocodeai/pi-extension` remains a frozen temporary Pi oracle through the bounded comparison window and is deleted only after native-only rollback and every retirement gate pass
+Scope: dependency-ordered implementation, verification, rollout, and complete native Pi retirement
+Invariant: native agent/core and release artifacts remain Pi-free; `@octocodeai/pi-extension` remains an independently installed, version-pinned Pi compatibility product
 
 ## Sequence principle
 
@@ -66,7 +66,7 @@ the runner but never satisfy a phase conformance gate.
 
 ### Entry gate
 
-- RFC scope and the temporary Pi-oracle boundary are accepted.
+- RFC scope and the independent Pi-extension boundary are accepted.
 - Candidate baseline SHA and evidence/privacy protocol are identified.
 - Runtime, security, session, terminal, settings, testing, release, and rollback
   owners are accountable.
@@ -80,8 +80,8 @@ the runner but never satisfy a phase conformance gate.
 - Approve the OpenTUI runtime/package/platform route.
 - Define rollout thresholds, canary cohort, observation window, rollback window,
   artifact compatibility policy, and zero-tolerance failures.
-- Inventory and freeze the temporary Pi adapter independently from native dependencies so
-  native cleanup cannot remove its package or tests before the retirement gate.
+- Inventory and pin the independent Pi adapter separately from native dependencies so
+  native cleanup cannot remove or absorb its package, tests, docs, or publication path.
 
 ### Continuous conformance gate
 
@@ -398,17 +398,17 @@ of Stage 5.
   `octocode-agent` and agent core.
 - Verify source, manifest, dependency tree, built JavaScript, packed artifact,
   clean install, and supported upgrade contain no native Pi path.
-- Freeze `@octocodeai/pi-extension` and its Pi-version matrix as the migration
-  oracle; do not add product features after the freeze point.
+- Pin `@octocodeai/pi-extension` and its Pi-version matrix as the independent
+  compatibility reference; changes follow its own Pi-host compatibility policy.
 - After the approved observation and rollback window, delete the temporary
-  selector, Pi extension package, Pi dependencies, live compatibility tests,
-  publication workflow, and product documentation together.
-- Archive only immutable redacted fixtures and signed comparison receipts.
+  native selector and every native Pi dependency, fallback, installer, updater,
+  and release path. Retain the extension's tests, docs, and publication workflow.
+- Preserve immutable redacted fixtures and signed comparison receipts.
 
 ### Continuous conformance gate
 
-- Before deletion, re-run complete native and frozen-oracle suites independently.
-- After deletion, re-run the complete native-only suite and zero-live-Pi scan.
+- Before native release closure, re-run complete native and Pi-extension suites independently.
+- After selector and fallback removal, re-run the complete native-only suite and native zero-Pi scan.
 - Re-run packed artifact, clean install, upgrade, session readability, and
   rollback checks from immutable artifacts.
 
@@ -416,11 +416,11 @@ of Stage 5.
 
 - Native agent/core have zero Pi-family source, manifest, resolution, built, and
   packed-artifact dependencies.
-- No installed, published, selectable, documented-as-live, or supported Pi path remains.
+- No installed, published, selectable, documented-as-live, or supported Pi path remains in native artifacts or release wiring; the independent Pi extension remains supported.
 - Native behavior, security, sessions, all modes, settings, OpenTUI, and every
   platform remain green.
-- Signed closure records the final dependency graph, native-only rollback
-  disposition, deleted Pi inventory, and archived evidence inventory.
+- Signed closure records the final native dependency graph, native-only rollback
+  disposition, removed native Pi inventory, extension boundary, and evidence inventory.
 
 ## Per-change workflow
 

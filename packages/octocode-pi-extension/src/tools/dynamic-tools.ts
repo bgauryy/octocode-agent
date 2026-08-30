@@ -2,7 +2,7 @@
  * dynamic-tools — the deterministic core of the `callTool` meta-tool.
  *
  * A "dynamic tool" is a self-contained, verified capability persisted to a
- * filesystem registry under `getOctocodeHome()/dynamic-tools/`. Each tool is a
+ * filesystem registry under `getOctocodeHome()/agent/dynamic-tools/`. Each tool is a
  * directory with a `tool.mjs` (default async export `(metadata) => result`), a
  * `tool.test.mjs` used as a verification gate, and an entry in `index.json`.
  *
@@ -136,9 +136,9 @@ const NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 
 // ─── paths ──────────────────────────────────────────────────────────────────
 
-/** Registry root: `getOctocodeHome()/dynamic-tools`. Never hand-roll this path. */
+/** Registry root: `getOctocodeHome()/agent/dynamic-tools`. Never hand-roll this path. */
 export function getRegistryDir(env?: NodeJS.ProcessEnv): string {
-  return path.join(getOctocodeHome(env), 'dynamic-tools');
+  return path.join(getOctocodeHome(env), 'agent', 'dynamic-tools');
 }
 
 function indexPath(dir: string): string {

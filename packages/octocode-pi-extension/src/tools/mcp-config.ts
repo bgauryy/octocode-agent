@@ -7,6 +7,7 @@ import { ensurePrivateDirectory, hardenPrivateFile, getMcpEnablement, openOctoco
 import type { PiContext } from '../types.js';
 import { getOctocodeHome } from '../env.js';
 import { discoverMcpSystem } from './mcp-discovery.js';
+import { workspaceAgentRoot } from './session-artifacts.js';
 
 export interface McpServerConfig {
   transport?: 'stdio' | 'http';
@@ -173,8 +174,8 @@ export function buildServerHeaders(config: McpServerConfig): Record<string, stri
   return { ...(config.headers ?? {}), ...referenced };
 }
 
-export function projectMcpPath(cwd: string): string {
-  return path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json');
+export function projectMcpPath(cwd: string, octocodeHome = getOctocodeHome()): string {
+  return path.join(workspaceAgentRoot(cwd, octocodeHome), 'mcp', 'servers.json');
 }
 
 export function globalMcpPath(_homeDir = os.homedir(), octocodeHome = getOctocodeHome()): string {
@@ -188,8 +189,8 @@ export function globalMcpConfigPaths(options: McpConfigPathOptions = {}): string
 }
 
 /** The single canonical project MCP server-definition file. */
-export function projectMcpConfigPaths(cwd: string): string[] {
-  return [projectMcpPath(cwd)];
+export function projectMcpConfigPaths(cwd: string, octocodeHome = getOctocodeHome()): string[] {
+  return [projectMcpPath(cwd, octocodeHome)];
 }
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -404,7 +405,7 @@ export async function loadMcpConfig(
     }
   }
 
-  for (const candidate of projectMcpConfigPaths(cwd)) {
+  for (const candidate of projectMcpConfigPaths(cwd, pathOptions.octocodeHome ?? getOctocodeHome())) {
     if (!fs.existsSync(candidate)) continue;
     if (!trusted) {
       sources.push({ scope: 'project', path: candidate, trusted: false });

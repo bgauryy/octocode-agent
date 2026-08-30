@@ -15,8 +15,8 @@ import { DEFAULT_OCTOCODE_THEME, OCTOCODE_THEME_NAMES } from './settings.js';
 const DEFAULT_MODEL_KEY = 'defaultModel';
 const DEFAULT_PROVIDER_KEY = 'defaultProvider';
 const THEME_KEY = 'theme';
+const REDUCED_MOTION_KEY = 'reducedMotion';
 const NATIVE_EXTENSIONS_KEY = 'nativeExtensions';
-const NATIVE_PROVIDER_IDS = ['openai', 'anthropic'] as const;
 
 const themeDefinition: SettingDefinition = {
     key: THEME_KEY,
@@ -26,6 +26,20 @@ const themeDefinition: SettingDefinition = {
     kind: { type: 'enum', values: OCTOCODE_THEME_NAMES },
     scopes: ['global'],
     defaultValue: DEFAULT_OCTOCODE_THEME,
+    mutability: 'editable',
+    application: 'next-session',
+    visibility: 'public',
+    owner: 'octocode-agent',
+    documentation: 'docs/SETTINGS.md',
+};
+const reducedMotionDefinition: SettingDefinition = {
+    key: REDUCED_MOTION_KEY,
+    schemaVersion: 1,
+    section: 'Appearance',
+    order: 20,
+    kind: { type: 'boolean' },
+    scopes: ['global'],
+    defaultValue: true,
     mutability: 'editable',
     application: 'next-session',
     visibility: 'public',
@@ -53,7 +67,7 @@ const defaultProviderDefinition: SettingDefinition = {
     schemaVersion: 1,
     section: 'Models',
     order: 5,
-    kind: { type: 'enum', values: NATIVE_PROVIDER_IDS },
+    kind: { type: 'string' },
     scopes: ['global'],
     defaultValue: null,
     mutability: 'editable',
@@ -61,6 +75,8 @@ const defaultProviderDefinition: SettingDefinition = {
     visibility: 'public',
     owner: 'octocode-agent',
     documentation: 'docs/SETTINGS.md',
+    normalize: (value: unknown) => typeof value === 'string' ? value.trim() : value,
+    validate: (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9_.-]{1,200}$/.test(value),
 };
 const nativeExtensionsDefinition: SettingDefinition = {
     key: NATIVE_EXTENSIONS_KEY,
@@ -82,6 +98,7 @@ const nativeExtensionsDefinition: SettingDefinition = {
 
 export const NATIVE_SETTING_DEFINITIONS: readonly SettingDefinition[] = Object.freeze([
   themeDefinition,
+  reducedMotionDefinition,
   defaultProviderDefinition,
   defaultModelDefinition,
   nativeExtensionsDefinition,
@@ -98,8 +115,12 @@ function hydrationEntries(values: Readonly<Record<string, unknown>>): readonly [
   if ((OCTOCODE_THEME_NAMES as readonly unknown[]).includes(values[THEME_KEY])) {
     entries.push([THEME_KEY, values[THEME_KEY]]);
   }
-  if ((NATIVE_PROVIDER_IDS as readonly unknown[]).includes(values[DEFAULT_PROVIDER_KEY])) {
-    entries.push([DEFAULT_PROVIDER_KEY, values[DEFAULT_PROVIDER_KEY]]);
+  if (typeof values[REDUCED_MOTION_KEY] === 'boolean') {
+    entries.push([REDUCED_MOTION_KEY, values[REDUCED_MOTION_KEY]]);
+  }
+  const provider = values[DEFAULT_PROVIDER_KEY];
+  if (typeof provider === 'string' && /^[A-Za-z0-9_.-]{1,200}$/.test(provider.trim())) {
+    entries.push([DEFAULT_PROVIDER_KEY, provider.trim()]);
   }
   const model = values[DEFAULT_MODEL_KEY];
   if (typeof model === 'string' && model.trim().length > 0 && model.trim().length <= 200) {
@@ -350,18 +371,19 @@ export class NativeSettingsService {
 
 export interface NativePortableSettings {
   readonly schemaVersion: 1;
-  readonly values: Readonly<Record<string, string>>;
+  readonly values: Readonly<Record<string, string | boolean>>;
 }
 
-const PORTABLE_KEYS = new Set([THEME_KEY, DEFAULT_PROVIDER_KEY, DEFAULT_MODEL_KEY]);
+const PORTABLE_KEYS = new Set([THEME_KEY, REDUCED_MOTION_KEY, DEFAULT_PROVIDER_KEY, DEFAULT_MODEL_KEY]);
 
 function parsePortableSettings(value: unknown): NativePortableSettings | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const item = value as Record<string, unknown>;
   if (item.schemaVersion !== 1 || !item.values || typeof item.values !== 'object' || Array.isArray(item.values)) return undefined;
   const entries = Object.entries(item.values as Record<string, unknown>);
-  if (entries.some(([key, entry]) => !PORTABLE_KEYS.has(key) || typeof entry !== 'string')) return undefined;
-  return { schemaVersion: 1, values: Object.fromEntries(entries) as Record<string, string> };
+  if (entries.some(([key, entry]) => !PORTABLE_KEYS.has(key)
+    || (key === REDUCED_MOTION_KEY ? typeof entry !== 'boolean' : typeof entry !== 'string'))) return undefined;
+  return { schemaVersion: 1, values: Object.fromEntries(entries) as Record<string, string | boolean> };
 }
 
 interface ExtensionPolicyInput {

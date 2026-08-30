@@ -90,7 +90,7 @@ export function inspectMaintenancePressure(
   ).all(cutoff, ...scopeBinds) as unknown as Array<{ signal_id: string }>;
   const referenceRows = db.prepare(
     `SELECT m.memory_id, r.reference
-       FROM memories m
+       FROM awareness_memories m
        JOIN memory_refs r ON r.memory_id = m.memory_id
       WHERE m.state = 'ACTIVE'
         AND r.reference LIKE 'file:%'
@@ -184,10 +184,10 @@ export function digest(
   if (params.dry_run) {
     const candidateLimit = 20;
     const wouldArchive = (db.prepare(
-      `SELECT COUNT(*) AS c FROM memories WHERE valid_to IS NOT NULL AND valid_to < ? AND state = 'ACTIVE'${memoryScopeSql}`
+      `SELECT COUNT(*) AS c FROM awareness_memories WHERE valid_to IS NOT NULL AND valid_to < ? AND state = 'ACTIVE'${memoryScopeSql}`
     ).get(now, ...memoryScopeBinds) as { c: number }).c;
     const wouldPruneOld = (db.prepare(
-      `SELECT COUNT(*) AS c FROM memories WHERE state = 'SUPERSEDED' AND updated_at < ?${memoryScopeSql}`
+      `SELECT COUNT(*) AS c FROM awareness_memories WHERE state = 'SUPERSEDED' AND updated_at < ?${memoryScopeSql}`
     ).get(cutoff, ...memoryScopeBinds) as { c: number }).c;
     const lockDryRun = pruneStale(db, {
       ...(workspacePath ? { workspace: workspacePath } : {}),
@@ -196,7 +196,7 @@ export function digest(
       dry_run: true,
     });
     const wouldPruneLocks = lockDryRun.would_prune ?? 0;
-    // Handoff refinements are legacy dead letters (handoffs now live in signals):
+    // Stale handoff refinements are dead letters (handoffs now live in signals):
     // prune them past retention in ANY state — their addressed identity never returns.
     const wouldPruneRefinements = (db.prepare(`SELECT COUNT(*) AS c FROM refinements
        WHERE ((quality = 'handoff' AND updated_at < ?)
@@ -216,12 +216,12 @@ export function digest(
         AND status IN ('SUCCESS','FAILED') AND updated_at < ?${memoryScopeSql}`)
       .get(operationalCutoff, ...memoryScopeBinds) as { c: number }).c;
     const expireMemoryIds = (db.prepare(
-      `SELECT memory_id FROM memories
+      `SELECT memory_id FROM awareness_memories
        WHERE valid_to IS NOT NULL AND valid_to < ? AND state = 'ACTIVE'${memoryScopeSql}
        ORDER BY datetime(valid_to), memory_id LIMIT ?`
     ).all(now, ...memoryScopeBinds, candidateLimit) as Array<{ memory_id: string }>).map(row => row.memory_id);
     const purgeMemoryIds = (db.prepare(
-      `SELECT memory_id FROM memories
+      `SELECT memory_id FROM awareness_memories
        WHERE state = 'SUPERSEDED' AND updated_at < ?${memoryScopeSql}
        ORDER BY datetime(updated_at), memory_id LIMIT ?`
     ).all(cutoff, ...memoryScopeBinds, candidateLimit) as Array<{ memory_id: string }>).map(row => row.memory_id);
@@ -281,14 +281,14 @@ export function digest(
   try {
     // 1. Archive expired memories (valid_to < now)
     archiveRes = db.prepare(
-      `UPDATE memories
+      `UPDATE awareness_memories
        SET state = 'SUPERSEDED', expired_at = ?, updated_at = ?
        WHERE valid_to IS NOT NULL AND valid_to < ? AND state = 'ACTIVE'${memoryScopeSql}`
     ).run(now, now, now, ...memoryScopeBinds) as { changes: number };
 
     // 2. Hard-delete old SUPERSEDED entries to keep the DB lean
     deleteRes = db.prepare(
-      `DELETE FROM memories
+      `DELETE FROM awareness_memories
        WHERE state = 'SUPERSEDED' AND updated_at < ?${memoryScopeSql}`
     ).run(cutoff, ...memoryScopeBinds) as { changes: number };
 
@@ -299,7 +299,7 @@ export function digest(
       expired_only: true,
     }).pruned_locks;
 
-    // 4. Prune legacy handoff refinements past retention in ANY state (dead
+    // 4. Prune stale handoff refinements past retention in ANY state (dead
     // letters — handoffs live in signals now) and completed repo-fix refinements.
     pruneRefinementsRes = db.prepare(
       `DELETE FROM refinements

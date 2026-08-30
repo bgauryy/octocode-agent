@@ -2,11 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Ajv from 'ajv';
+import Ajv2020 from 'ajv/dist/2020.js';
 import { Client, StreamableHTTPClientTransport, type Progress, type Transport } from '@modelcontextprotocol/client';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { createEffectSet, type HookDecision, type JsonSchema, type ToolRegistry } from '@octocodeai/agent-core';
-import { repositoryDirectories } from '@octocodeai/octocode-shared/agent-skills';
-import { getOctocodeHome } from '@octocodeai/octocode-shared/paths';
+import { discoverMcpSystem, repositoryDirectories } from '@octocodeai/octocode-shared/agent-skills';
+import { getOctocodeHome, workspaceAgentRoot } from '@octocodeai/octocode-shared/paths';
 
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const SERVER_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -14,6 +15,7 @@ const MCP_TASK_STORE_VERSION = 1;
 const MCP_TASK_LOCK_ATTEMPTS = 100;
 const MCP_TASK_LOCK_RETRY_MS = 5;
 const MCP_TASK_LOCK_STALE_MS = 30_000;
+const MCP_TASK_LOCK_MAX_BYTES = 4_096;
 
 export interface NativeMcpServerConfig {
   transport: 'stdio' | 'http';
@@ -28,6 +30,8 @@ export interface NativeMcpServerConfig {
   bearerTokenEnvVar?: string;
   timeoutMs?: number;
   provenance?: { scope: 'global' | 'workspace'; file: string; discoveryOrder: number };
+  defaultEnabled?: boolean;
+  discovered?: { host: string; scope: 'project' | 'user'; path: string; originalName: string };
 }
 
 export interface NativeMcpClient {
@@ -59,7 +63,7 @@ export interface NativeMcpOptions {
   homeDir?: string;
   octocodeHome?: string;
   connect?: (name: string, config: NativeMcpServerConfig, signal: AbortSignal) => Promise<NativeMcpClient>;
-  isEnabled?: (server: string, tool?: string) => boolean;
+  isEnabled?: (server: string, tool?: string, defaultEnabled?: boolean) => boolean;
   catalogTtlMs?: number;
   now?: () => number;
   elicit?: (request: NativeMcpElicitationRequest) => Promise<NativeMcpElicitationResult>;
@@ -299,7 +303,7 @@ async function acquireTaskStoreLock(lockFile: string): Promise<void> {
     try {
       const descriptor = fs.openSync(lockFile, 'wx', 0o600);
       try {
-        fs.writeFileSync(descriptor, `${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`);
+        fs.writeFileSync(descriptor, `${JSON.stringify({ pid: process.pid, createdAt: Date.now(), nonce: randomUUID() })}\n`);
         fs.fsyncSync(descriptor);
       } catch (error) {
         fs.closeSync(descriptor);
@@ -311,9 +315,7 @@ async function acquireTaskStoreLock(lockFile: string): Promise<void> {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       try {
-        const stat = fs.lstatSync(lockFile);
-        if (Date.now() - stat.mtimeMs > MCP_TASK_LOCK_STALE_MS) {
-          fs.unlinkSync(lockFile);
+        if (tryRemoveStaleTaskStoreLock(lockFile)) {
           continue;
         }
       } catch (inspectionError) {
@@ -325,6 +327,48 @@ async function acquireTaskStoreLock(lockFile: string): Promise<void> {
     }
   }
   throw new McpTaskStoreConflictError('MCP task state is busy; retry the operation');
+}
+
+interface McpTaskLockOwner {
+  readonly pid: number;
+  readonly createdAt: number;
+  readonly nonce: string;
+}
+
+function parseTaskStoreLockOwner(content: string): McpTaskLockOwner | undefined {
+  try {
+    const value = JSON.parse(content) as Record<string, unknown>;
+    if (!Number.isSafeInteger(value.pid) || (value.pid as number) <= 0
+      || typeof value.createdAt !== 'number' || !Number.isFinite(value.createdAt)
+      || typeof value.nonce !== 'string' || value.nonce.length === 0 || value.nonce.length > 128) return undefined;
+    return { pid: value.pid as number, createdAt: value.createdAt, nonce: value.nonce };
+  } catch { return undefined; }
+}
+
+function processIsAlive(pid: number): boolean {
+  if (pid === process.pid) return true;
+  try { process.kill(pid, 0); return true; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code !== 'ESRCH';
+  }
+}
+
+function sameLockIdentity(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs;
+}
+
+function tryRemoveStaleTaskStoreLock(lockFile: string): boolean {
+  const before = fs.lstatSync(lockFile);
+  if (!before.isFile() || before.isSymbolicLink() || before.size > MCP_TASK_LOCK_MAX_BYTES) return false;
+  if (Date.now() - before.mtimeMs <= MCP_TASK_LOCK_STALE_MS) return false;
+  const content = fs.readFileSync(lockFile, 'utf8');
+  const owner = parseTaskStoreLockOwner(content);
+  if (owner !== undefined && processIsAlive(owner.pid)) return false;
+  const after = fs.lstatSync(lockFile);
+  if (!sameLockIdentity(before, after) || fs.readFileSync(lockFile, 'utf8') !== content) return false;
+  fs.unlinkSync(lockFile);
+  return true;
 }
 
 async function persistTask(file: string, entry: StoredMcpTask, maximum: number): Promise<void> {
@@ -451,13 +495,33 @@ function readConfigFile(
 export function loadNativeMcpServers(options: NativeMcpOptions): Record<string, NativeMcpServerConfig> {
   const env = options.env ?? process.env;
   const octocodeHome = options.octocodeHome ?? getOctocodeHome(env);
-  const globalFile = path.join(octocodeHome, 'agent', 'mcp', 'servers.json');
-  const global = readConfigFile(globalFile, { scope: 'global', file: globalFile, discoveryOrder: 0 });
-  const project = Object.assign({}, ...repositoryDirectories(options.cwd).map((directory, index) => {
-    const file = path.join(directory, '.octocode', 'agent', 'mcp', 'servers.json');
-    return readConfigFile(file, { scope: 'workspace', file, discoveryOrder: index + 1 });
-  }));
-  return { ...global, ...project };
+  const homeDir = options.homeDir ?? env.HOME ?? process.cwd();
+  const globalFiles = [path.join(octocodeHome, 'agent', 'mcp', 'servers.json')];
+  const global: Record<string, NativeMcpServerConfig> = Object.assign({}, ...globalFiles.map((file, index) => readConfigFile(file, {
+    scope: 'global', file, discoveryOrder: index,
+  })));
+  const repository = repositoryDirectories(options.cwd)[0] ?? path.resolve(options.cwd);
+  const workspaceFile = path.join(workspaceAgentRoot(repository, octocodeHome), 'mcp', 'servers.json');
+  const workspace = readConfigFile(workspaceFile, {
+    scope: 'workspace', file: workspaceFile, discoveryOrder: globalFiles.length,
+  });
+  const discovered = Object.fromEntries(repositoryDirectories(options.cwd).flatMap((directory) =>
+    discoverMcpSystem(directory, { homeDir, octocodeHome }).definitions,
+  ).map(({ name, config }) => [name, {
+    ...config,
+    transport: config.transport ?? (config.url ? 'http' as const : 'stdio' as const),
+    defaultEnabled: false,
+    provenance: {
+      scope: config.discovered.scope === 'project' ? 'workspace' as const : 'global' as const,
+      file: config.discovered.path,
+      discoveryOrder: Number.MAX_SAFE_INTEGER,
+    },
+  }]));
+  const canonical = Object.fromEntries(Object.entries({ ...global, ...workspace }).map(([name, config]) => [name, {
+    ...config,
+    defaultEnabled: true,
+  }]));
+  return { ...discovered, ...canonical };
 }
 
 function referencedValues(values: Record<string, string> | undefined, refs: Record<string, string> | undefined, env: NodeJS.ProcessEnv): Record<string, string> {
@@ -514,10 +578,14 @@ function requiredString(params: Record<string, unknown>, key: string): string {
 
 export function registerNativeMcpTool(registry: ToolRegistry, options: NativeMcpOptions): NativeMcpSessionManager {
   const servers = loadNativeMcpServers(options);
-  const enabled = (server: string, tool?: string): boolean => options.isEnabled?.(server, tool) ?? true;
+  const enabled = (server: string, tool?: string): boolean => {
+    const defaultEnabled = servers[server]?.defaultEnabled ?? true;
+    return options.isEnabled?.(server, tool, defaultEnabled) ?? defaultEnabled;
+  };
   const connect = options.connect ?? ((name, config, signal) => connectNativeMcp(name, config, signal, options));
   const manager = new NativeMcpSessionManager(connect);
   const ajv = new Ajv({ allErrors: true, strict: false });
+  const ajv2020 = new Ajv2020({ allErrors: true, strict: false });
   const now = options.now ?? Date.now;
   const catalogTtlMs = options.catalogTtlMs ?? DEFAULT_MCP_CATALOG_TTL_MS;
   const configuredClients = new WeakSet<object>();
@@ -612,7 +680,8 @@ export function registerNativeMcpTool(registry: ToolRegistry, options: NativeMcp
     }
     if (!definition) throw new Error(`Unknown MCP tool: ${server}/${tool}`);
     const schema = isRecord(definition.inputSchema) ? definition.inputSchema as JsonSchema : { type: 'object' };
-    const validate = ajv.compile(schema);
+    const validator = schema.$schema === 'https://json-schema.org/draft/2020-12/schema' ? ajv2020 : ajv;
+    const validate = validator.compile(schema);
     if (!validate(args)) throw new Error(`Invalid MCP arguments: ${ajv.errorsText(validate.errors, { separator: '; ' })}`);
     let progressTail = Promise.resolve();
     let content: unknown;

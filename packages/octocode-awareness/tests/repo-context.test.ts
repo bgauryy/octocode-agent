@@ -66,7 +66,7 @@ function seededDb(workspace: string): {
      VALUES ('run_auth', 'WORK', 'agent-a', 'edit auth file', 'vitest auth', 'ACTIVE', ?, 'svc', ?, ?)`).run(workspace, now, now);
     db.prepare(`INSERT INTO run_files (run_id, file_path, source, started_at, heartbeat_at, expires_at)
      VALUES ('run_auth', ?, 'EXPLICIT', ?, ?, ?)`).run(file, now, now, future);
-    db.prepare(`INSERT INTO locks (lock_id, file_path, run_id, acquired_at, expires_at)
+    db.prepare(`INSERT INTO awareness_locks (lock_id, file_path, run_id, acquired_at, expires_at)
      VALUES ('lock_auth', ?, 'run_auth', ?, ?)`).run(file, now, future);
     insertRefinement(db, {
         agentId: 'agent-a',
@@ -144,7 +144,7 @@ it('builds a delta-sized compact attend packet with only actionable work', () =>
     try {
       const { db, file } = seededDb(dir);
       const accessBefore = db.prepare(
-        'SELECT COALESCE(SUM(access_count), 0) AS count FROM memories'
+        'SELECT COALESCE(SUM(access_count), 0) AS count FROM awareness_memories'
       ).get() as { count: number };
       const result = attendAwareness(db, {
         agentId: 'agent-a',
@@ -170,7 +170,7 @@ it('builds a delta-sized compact attend packet with only actionable work', () =>
       expect(JSON.stringify(result)).not.toContain('raw_ids');
       expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThan(2 * 1024);
       const accessAfter = db.prepare(
-        'SELECT COALESCE(SUM(access_count), 0) AS count FROM memories'
+        'SELECT COALESCE(SUM(access_count), 0) AS count FROM awareness_memories'
       ).get() as { count: number };
       expect(accessAfter.count).toBe(accessBefore.count);
     } finally {
@@ -245,11 +245,11 @@ it('routes a submitted task to its exact pending run owner', () => {
     try {
       const db = freshDb();
       const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-      db.prepare(`INSERT INTO plans
+      db.prepare(`INSERT INTO awareness_plans
         (plan_id, name, objective, lead_agent_id, status, workspace_path, doc_dir, created_at, updated_at)
         VALUES ('plan_verify', 'Verify', 'Route exact run', 'lead', 'ACTIVE', ?, '.octocode/plan/verify', ?, ?)`)
         .run(dir, now, now);
-      db.prepare(`INSERT INTO tasks
+      db.prepare(`INSERT INTO awareness_tasks
         (task_id, plan_id, title, reasoning, acceptance_criteria, status, priority, created_by, created_at, updated_at)
         VALUES ('task_verify', 'plan_verify', 'Verify task', 'reason', 'tests pass', 'VERIFY', 1, 'lead', ?, ?)`)
         .run(now, now);

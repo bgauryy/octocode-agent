@@ -30,7 +30,7 @@ npx @octocodeai/octocode-awareness verify --workspace "$PWD"
 npx @octocodeai/octocode-awareness close --run-id <id> --workspace "$PWD"
 ```
 
-Defaults route repository state to `.octocode/octocode.sqlite3` and `.octocode/awareness.sqlite3`, reusable memory to the global database, and hooks to the `coordination` profile. Change policy once with `setup --repository-scope repo|global --memory-scope repo|global --hook-profile guard|coordination|full`. Use `--db-scope` only as a one-call override and `--db` only for an explicit path.
+All durable agent state uses the single global `$OCTOCODE_HOME/agent/agent.sqlite3` database; repositories are isolated by workspace columns, never by repository-local agent databases. Hooks use the `coordination` profile by default. Use `--db` only for an explicit isolated path.
 
 Expert nouns remain available for plans, tasks, work, locks, verification, messages/signals, handoffs, memory, reflection, queries, and schema discovery.
 

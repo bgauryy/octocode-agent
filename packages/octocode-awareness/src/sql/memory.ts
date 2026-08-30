@@ -4,7 +4,7 @@
 
 // Insert a new memory record with all columns
 export const MEMORY_INSERT = `
-  INSERT INTO memories (
+  INSERT INTO awareness_memories (
     memory_id, agent_id, task_context, observation, importance,
     label, tags_json, workspace_path, artifact, repo, ref,
     file_tree_fingerprint, novelty_score, created_at, updated_at,
@@ -16,7 +16,7 @@ export const MEMORY_INSERT = `
 
 // Select all columns for a single memory by primary key
 export const MEMORY_SELECT_BY_ID = `
-  SELECT * FROM memories WHERE memory_id = ?
+  SELECT * FROM awareness_memories WHERE memory_id = ?
 `;
 
 // FTS-assisted search: joins memories_fts, scores with BM25 column weights (task_context=10, observation=7, tags=2)
@@ -24,7 +24,7 @@ export const MEMORY_SELECT_BY_ID = `
 // Params: ftsQuery, ...filterParams, limit
 export const MEMORY_FTS_SELECT = `
   SELECT m.*, ABS(bm25(memories_fts, 0, 10, 7, 2)) AS _bm25
-  FROM memories m
+  FROM awareness_memories m
   JOIN memories_fts ON memories_fts.memory_id = m.memory_id
   WHERE memories_fts MATCH ?
     AND {WHERE}
@@ -36,7 +36,7 @@ export const MEMORY_FTS_SELECT = `
 // Dynamic: {WHERE} is replaced with AND-joined filter conditions; params: ...filterParams, limit
 export const MEMORY_FALLBACK_SELECT = `
   SELECT m.*, 0 AS _bm25
-  FROM memories m
+  FROM awareness_memories m
   WHERE {WHERE}
   ORDER BY m.importance DESC, m.created_at DESC
   LIMIT ?
@@ -46,7 +46,7 @@ export const MEMORY_FALLBACK_SELECT = `
 // Dynamic: {ID_PLACEHOLDERS} = comma-joined ?s for ids; {STATE_PLACEHOLDERS} = comma-joined ?s for states
 // Params: ...ids, minImportance, ...states
 export const MEMORY_SELECT_BY_IDS_FILTERED = `
-  SELECT m.*, 0 AS _bm25 FROM memories m
+  SELECT m.*, 0 AS _bm25 FROM awareness_memories m
   WHERE m.memory_id IN ({ID_PLACEHOLDERS})
     AND m.importance >= ?
     AND m.state IN ({STATE_PLACEHOLDERS})
@@ -56,7 +56,7 @@ export const MEMORY_SELECT_BY_IDS_FILTERED = `
 // Dynamic: {WHERE} is an OR-combined selector expression built at runtime
 // Params: ...selectorBindParams
 export const MEMORY_SELECT_IDS_WHERE = `
-  SELECT memory_id FROM memories WHERE {WHERE}
+  SELECT memory_id FROM awareness_memories WHERE {WHERE}
 `;
 
 // ─── memories: UPDATE ─────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ export const MEMORY_SELECT_IDS_WHERE = `
 // Increment access_count and update last_accessed_at for a set of recalled memories
 // Dynamic: {PLACEHOLDERS} = comma-joined ?s for memory_ids; Params: now, ...memoryIds
 export const MEMORY_BUMP_ACCESS = `
-  UPDATE memories
+  UPDATE awareness_memories
   SET access_count = COALESCE(access_count, 0) + 1, last_accessed_at = ?
   WHERE memory_id IN ({PLACEHOLDERS})
 `;
@@ -72,7 +72,7 @@ export const MEMORY_BUMP_ACCESS = `
 // Update last_accessed_at and access_count by memory_id (used by helpers)
 // Params: last_accessed_at, access_count, memory_id
 export const MEMORY_UPDATE_ACCESS = `
-  UPDATE memories
+  UPDATE awareness_memories
   SET last_accessed_at = ?, access_count = ?
   WHERE memory_id = ?
 `;
@@ -80,7 +80,7 @@ export const MEMORY_UPDATE_ACCESS = `
 // Persist a dense embedding BLOB and its model identifier onto an existing memory row
 // Params: embedding (BLOB), embedding_model, updated_at, memory_id
 export const MEMORY_EMBEDDING_UPDATE = `
-  UPDATE memories SET embedding = ?, embedding_model = ?, updated_at = ?
+  UPDATE awareness_memories SET embedding = ?, embedding_model = ?, updated_at = ?
   WHERE memory_id = ?
 `;
 
@@ -89,7 +89,7 @@ export const MEMORY_EMBEDDING_UPDATE = `
 // Hard-delete memories by id list
 // Dynamic: {PLACEHOLDERS} = comma-joined ?s; Params: ...ids
 export const MEMORY_DELETE_BY_IDS = `
-  DELETE FROM memories WHERE memory_id IN ({PLACEHOLDERS})
+  DELETE FROM awareness_memories WHERE memory_id IN ({PLACEHOLDERS})
 `;
 
 // ─── memories: embedding search ───────────────────────────────────────────────
@@ -97,7 +97,7 @@ export const MEMORY_DELETE_BY_IDS = `
 // Fetch stored embeddings for in-process cosine ranking; capped at 2000 to bound heap usage
 // Dynamic: {WHERE} = AND-joined conditions for state/model filter; Params: ...binds
 export const MEMORY_EMBEDDING_SELECT = `
-  SELECT memory_id, embedding, embedding_model FROM memories
+  SELECT memory_id, embedding, embedding_model FROM awareness_memories
   WHERE {WHERE}
   ORDER BY COALESCE(last_accessed_at, created_at) DESC
   LIMIT 2000
@@ -114,7 +114,7 @@ export const MEMORY_MINE_WEAKNESS_SELECT = `
          count(*) * avg(importance) AS score,
          group_concat(memory_id, ',') AS ids,
          group_concat(DISTINCT label) AS labels
-  FROM memories
+  FROM awareness_memories
   WHERE {WHERE}
   GROUP BY failure_signature
   HAVING freq >= ?
@@ -126,7 +126,7 @@ export const MEMORY_MINE_WEAKNESS_SELECT = `
 // Dynamic: {PLACEHOLDERS} = comma-joined ?s for raw signatures; Params: ...rawSigs
 export const MEMORY_MINE_WEAKNESS_REPS_SELECT = `
   SELECT failure_signature, observation, max(importance)
-  FROM memories
+  FROM awareness_memories
   WHERE failure_signature IN ({PLACEHOLDERS}) AND state = 'ACTIVE'
   GROUP BY failure_signature
 `;
@@ -134,7 +134,7 @@ export const MEMORY_MINE_WEAKNESS_REPS_SELECT = `
 // Count total distinct failure signatures and total flagged memories in the active store
 export const MEMORY_MINE_WEAKNESS_TOTALS = `
   SELECT count(DISTINCT failure_signature) AS sigs, count(*) AS mems
-  FROM memories WHERE failure_signature IS NOT NULL AND state = 'ACTIVE'
+  FROM awareness_memories WHERE failure_signature IS NOT NULL AND state = 'ACTIVE'
 `;
 
 // ─── memories_fts: INSERT / DELETE ────────────────────────────────────────────

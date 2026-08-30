@@ -83,5 +83,5 @@ yarn workspace @octocodeai/octocode-awareness test:smoke
 
 Migration tests must cover generation-1 execution tables, generation-2
 `files_json`/typed locks, generation-3 normalized run files/exclusive locks, and
-the canonical OCT1/v1 identity. Hook tests must replay equivalent shell/in-process
+the canonical OCTA/v1 identity. Hook tests must replay equivalent shell/in-process
 events. Output tests must enforce byte/detail caps, not only row counts.

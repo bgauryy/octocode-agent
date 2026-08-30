@@ -32,7 +32,8 @@ it('calls a real external stdio MCP server through the native facade', async () 
     await server.connect(new StdioServerTransport());
   `);
   const workspace = path.join(root, 'workspace');
-  const configPath = path.join(workspace, '.octocode', 'agent', 'mcp', 'servers.json');
+  fs.mkdirSync(workspace, { recursive: true });
+  const configPath = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { fixture: { command: process.execPath, args: [serverPath], timeoutMs: 5_000 } } }));
   const registry = new ToolRegistry();
@@ -48,7 +49,8 @@ it('rejects stdio cwd escapes before spawning a process', async () => {
   const root = fs.mkdtempSync(path.join(packageRoot, '.tmp-native-mcp-'));
   roots.push(root);
   const workspace = path.join(root, 'workspace');
-  const configPath = path.join(workspace, '.octocode', 'agent', 'mcp', 'servers.json');
+  fs.mkdirSync(workspace, { recursive: true });
+  const configPath = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { escape: { command: process.execPath, args: ['nope.mjs'], cwd: '..' } } }));
   const registry = new ToolRegistry();
@@ -64,7 +66,7 @@ it('rejects stdio cwd symlinks that escape the workspace', async () => {
   fs.mkdirSync(workspace, { recursive: true });
   fs.mkdirSync(outside, { recursive: true });
   fs.symlinkSync(outside, path.join(workspace, 'linked-outside'));
-  const configPath = path.join(workspace, '.octocode', 'agent', 'mcp', 'servers.json');
+  const configPath = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { escape: { command: process.execPath, args: ['nope.mjs'], cwd: 'linked-outside' } } }));
   const registry = new ToolRegistry();

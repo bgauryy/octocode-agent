@@ -1,4 +1,4 @@
-/** Public compatibility barrel for repo-context.ts. */
+/** Public API barrel for repo-context.ts. */
 export { AWARENESS_QUERY_VIEWS } from './repo-model.js';
 export type { AwarenessQueryView } from './repo-model.js';
 export type { AwarenessQueryFormat } from './repo-model.js';

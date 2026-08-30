@@ -63,7 +63,7 @@ export function releaseFileLock(
   const where = whereClauses.join(' AND ');
   const locks = db.prepare(
     `SELECT fl.lock_id, fl.run_id, fl.file_path
-       FROM locks fl JOIN task_runs ai ON ai.run_id = fl.run_id
+       FROM awareness_locks fl JOIN task_runs ai ON ai.run_id = fl.run_id
       WHERE ${where}`
   ).all(...whereParams) as unknown as Array<{ lock_id: string; run_id: string; file_path: string }>;
 
@@ -109,14 +109,14 @@ export function releaseFileLock(
     throw new Error('task-linked runs must use task submit or task release; lock release may only keep them ACTIVE');
   }
 
-  // FIX #3 (P0): Wrap DELETE from locks AND UPDATE task_runs status in a single atomic transaction
+  // FIX #3 (P0): Wrap DELETE from awareness_locks AND UPDATE task_runs status in a single atomic transaction
   // so a crash between the two statements never leaves orphaned lock rows with no task update.
   db.exec('BEGIN IMMEDIATE');
   let updatedRuns = 0;
   try {
     const lockIds = locks.map((lock) => lock.lock_id);
     if (lockIds.length > 0) {
-      db.prepare(`DELETE FROM locks WHERE lock_id IN (${lockIds.map(() => '?').join(',')})`).run(...lockIds);
+      db.prepare(`DELETE FROM awareness_locks WHERE lock_id IN (${lockIds.map(() => '?').join(',')})`).run(...lockIds);
     }
 
     for (const tid of runIds) {
@@ -130,7 +130,7 @@ export function releaseFileLock(
           WHERE run_id = ? AND ended_at IS NULL${fileClause}`)
           .run(now, now, now, tid, ...releasedFiles);
       }
-      const remaining = db.prepare('SELECT 1 FROM locks WHERE run_id = ? LIMIT 1').get(tid);
+      const remaining = db.prepare('SELECT 1 FROM awareness_locks WHERE run_id = ? LIMIT 1').get(tid);
       if (!remaining) {
         if (effectiveStatus !== 'ACTIVE' && metadata?.origin !== 'TASK') {
           db.prepare(`UPDATE run_files SET heartbeat_at = ?, expires_at = ?, ended_at = ?

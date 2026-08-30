@@ -5,7 +5,7 @@ import type { NativeWorkerProcessIdentity } from './native-workers.js';
 import {
   appendWorkerLifecycleEvent,
   closeOctocodeDb,
-  octocodeDbPath,
+  agentDbPath,
   openOctocodeDb,
   type WorkerLifecycleJsonValue,
 } from '@octocodeai/octocode-awareness/mcp-state';
@@ -79,7 +79,7 @@ export class NativeAwarenessWorkerLedger implements WorkerLedgerPort {
 
   constructor(options: NativeAwarenessWorkerLedgerOptions) {
     this.#workspace = options.workspace;
-    this.#dbPath = octocodeDbPath(options.env);
+    this.#dbPath = agentDbPath(options.env);
     this.#now = options.now ?? Date.now;
   }
 

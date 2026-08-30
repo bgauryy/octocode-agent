@@ -36,10 +36,10 @@ describe('pruneStale', () => {
 
       // Force-expire the lock so pruneStale will pick it up
       const past = new Date(Date.now() - 5000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(past, runId);
+      db.prepare('UPDATE awareness_locks SET expires_at = ? WHERE run_id = ?').run(past, runId);
 
       // Verify preconditions
-      const locksBefore = db.prepare('SELECT COUNT(*) AS c FROM locks WHERE run_id = ?').get(runId) as { c: number };
+      const locksBefore = db.prepare('SELECT COUNT(*) AS c FROM awareness_locks WHERE run_id = ?').get(runId) as { c: number };
       expect(locksBefore.c).toBe(1);
       const taskBefore = db.prepare('SELECT status FROM task_runs WHERE run_id = ?').get(runId) as { status: string };
       expect(taskBefore.status).toBe('ACTIVE');
@@ -51,7 +51,7 @@ describe('pruneStale', () => {
       expect(result).toEqual({ pruned_locks: 1 });
 
       // Both mutations visible in the DB simultaneously
-      const locksAfter = db.prepare('SELECT COUNT(*) AS c FROM locks WHERE run_id = ?').get(runId) as { c: number };
+      const locksAfter = db.prepare('SELECT COUNT(*) AS c FROM awareness_locks WHERE run_id = ?').get(runId) as { c: number };
       expect(locksAfter.c).toBe(0);
       const taskAfter = db.prepare('SELECT status FROM task_runs WHERE run_id = ?').get(runId) as { status: string };
       expect(taskAfter.status).toBe('ACTIVE');
@@ -66,14 +66,14 @@ describe('pruneStale', () => {
       if (!claim.ok) throw new Error('claim failed');
       const runId = claim.run.run_id;
       const past = new Date(Date.now() - 5000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(past, runId);
+      db.prepare('UPDATE awareness_locks SET expires_at = ? WHERE run_id = ?').run(past, runId);
       expect(pruneStale(db, { dry_run: true }).would_prune).toBe(1);
 
       const future = new Date(Date.now() + 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(future, runId);
+      db.prepare('UPDATE awareness_locks SET expires_at = ? WHERE run_id = ?').run(future, runId);
       const result = pruneStale(db);
       expect(result.pruned_locks).toBe(0);
-      const lockCount = db.prepare('SELECT COUNT(*) AS c FROM locks WHERE run_id = ?').get(runId) as { c: number };
+      const lockCount = db.prepare('SELECT COUNT(*) AS c FROM awareness_locks WHERE run_id = ?').get(runId) as { c: number };
       expect(lockCount.c).toBe(1);
     } finally { cleanup(); }
   });
@@ -87,7 +87,7 @@ describe('pruneStale', () => {
       const runId = claim.run.run_id;
 
       const past = new Date(Date.now() - 5000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(past, runId);
+      db.prepare('UPDATE awareness_locks SET expires_at = ? WHERE run_id = ?').run(past, runId);
 
       const result = pruneStale(db, { dryRun: true });
       expect(result.dry_run).toBe(true);
@@ -95,7 +95,7 @@ describe('pruneStale', () => {
       expect(result.pruned_locks).toBe(0);
 
       // Lock must still exist after dry run
-      const locksAfter = db.prepare('SELECT COUNT(*) AS c FROM locks WHERE run_id = ?').get(runId) as { c: number };
+      const locksAfter = db.prepare('SELECT COUNT(*) AS c FROM awareness_locks WHERE run_id = ?').get(runId) as { c: number };
       expect(locksAfter.c).toBe(1);
     } finally { cleanup(); }
   });
@@ -112,7 +112,7 @@ describe('fileLock', () => {
       if (!first.ok || first.type !== 'lock') throw new Error('first lock failed');
       db.prepare("UPDATE run_files SET expires_at = '2000-01-01T00:00:00Z' WHERE run_id = ?")
         .run(first.run_id);
-      db.prepare("UPDATE locks SET expires_at = '2000-01-01T00:00:00Z' WHERE run_id = ?")
+      db.prepare("UPDATE awareness_locks SET expires_at = '2000-01-01T00:00:00Z' WHERE run_id = ?")
         .run(first.run_id);
 
       const second = startWork(db, {

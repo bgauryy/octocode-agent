@@ -1,10 +1,10 @@
 # Current-state audit
 
-Snapshot: 2026-08-28. Release decision: `HOLD`.
+Snapshot: 2026-08-29. Release decision: `HOLD`.
 
-The native launcher now has a credible production-composed agent path. The latest dirty-tree evaluation passes 3,484 root tests with 16 expected native skips and includes production session routing and automatic compaction, MCP/Skill lifecycle, real multi-process worker recovery, dynamic session-bound RPC/ACP projection, provider adapters, command/MCP/asynchronous hooks, trust-gated plugin activation, browser settings controls, and one exact PTY restoration smoke test. These are implementation increments, not cutover approval.
+The native launcher now has a credible production-composed agent path. The latest dirty-tree evaluation passes 3,687 root tests, including 699 native tests with 38 environment-dependent skips. It covers checkpointed session recovery and compaction, MCP/Skill discovery and enablement, multi-process worker recovery, session-bound RPC/ACP projection, capability-checked provider adapters, redacted hooks, transactional browser settings, cache monitoring, and real PTY restoration, signal cleanup, lossless Unicode streaming, and guarded performance. These are implementation increments, not cutover approval.
 
-Use the [traceability ledger](08-TRACEABILITY-CHECKLIST.md), [remaining-work plan](10-REMAINING-WORK-PLAN.md), and [RFC status](pi-coding-agent-removal/STATUS.md) for live state. The [real runtime surface evaluation](pi-coding-agent-removal/evidence/real-runtime-surface-eval-2026-08-28.md) is the latest integrated receipt.
+Use the [traceability ledger](08-TRACEABILITY-CHECKLIST.md), [remaining-work plan](10-REMAINING-WORK-PLAN.md), and [RFC status](pi-coding-agent-removal/STATUS.md) for live state. The status log records the current full-gate receipt; older evidence documents remain immutable historical baselines.
 
 ## Current maturity
 

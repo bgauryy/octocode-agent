@@ -36,7 +36,7 @@ export const SCHEMA_DDL = `
       summary        TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS memories (
+    CREATE TABLE IF NOT EXISTS awareness_memories (
       memory_id             TEXT PRIMARY KEY,
       agent_id              TEXT NOT NULL,
       task_context          TEXT NOT NULL,
@@ -65,7 +65,7 @@ export const SCHEMA_DDL = `
       updated_at            TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS plans (
+    CREATE TABLE IF NOT EXISTS awareness_plans (
       plan_id        TEXT PRIMARY KEY,
       name           TEXT NOT NULL,
       objective      TEXT NOT NULL,
@@ -80,7 +80,7 @@ export const SCHEMA_DDL = `
     );
 
     CREATE TABLE IF NOT EXISTS plan_members (
-      plan_id    TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
+      plan_id    TEXT NOT NULL REFERENCES awareness_plans(plan_id) ON DELETE CASCADE,
       agent_id   TEXT NOT NULL,
       role       TEXT NOT NULL DEFAULT 'CONTRIBUTOR' CHECK(role IN ('LEAD','CONTRIBUTOR')),
       joined_at  TEXT NOT NULL,
@@ -88,7 +88,7 @@ export const SCHEMA_DDL = `
     );
 
     CREATE TABLE IF NOT EXISTS plan_docs (
-      plan_id       TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
+      plan_id       TEXT NOT NULL REFERENCES awareness_plans(plan_id) ON DELETE CASCADE,
       relative_path TEXT NOT NULL,
       title         TEXT NOT NULL,
       kind          TEXT NOT NULL DEFAULT 'SUPPORTING' CHECK(kind IN ('PRIMARY','SUPPORTING')),
@@ -96,9 +96,9 @@ export const SCHEMA_DDL = `
       PRIMARY KEY(plan_id, relative_path)
     );
 
-    CREATE TABLE IF NOT EXISTS tasks (
+    CREATE TABLE IF NOT EXISTS awareness_tasks (
       task_id      TEXT PRIMARY KEY,
-      plan_id      TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
+      plan_id      TEXT NOT NULL REFERENCES awareness_plans(plan_id) ON DELETE CASCADE,
       title        TEXT NOT NULL,
       reasoning    TEXT NOT NULL,
       acceptance_criteria TEXT NOT NULL,
@@ -112,15 +112,15 @@ export const SCHEMA_DDL = `
     );
 
     CREATE TABLE IF NOT EXISTS task_paths (
-      task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES awareness_tasks(task_id) ON DELETE CASCADE,
       path    TEXT NOT NULL,
       ordinal INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(task_id, path)
     );
 
     CREATE TABLE IF NOT EXISTS task_dependencies (
-      task_id            TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
-      depends_on_task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+      task_id            TEXT NOT NULL REFERENCES awareness_tasks(task_id) ON DELETE CASCADE,
+      depends_on_task_id TEXT NOT NULL REFERENCES awareness_tasks(task_id) ON DELETE CASCADE,
       created_by         TEXT NOT NULL,
       created_at         TEXT NOT NULL,
       PRIMARY KEY(task_id, depends_on_task_id),
@@ -129,7 +129,7 @@ export const SCHEMA_DDL = `
 
     CREATE TABLE IF NOT EXISTS task_runs (
       run_id         TEXT PRIMARY KEY,
-      task_id        TEXT REFERENCES tasks(task_id) ON DELETE SET NULL,
+      task_id        TEXT REFERENCES awareness_tasks(task_id) ON DELETE SET NULL,
       origin         TEXT NOT NULL DEFAULT 'TASK' CHECK(origin IN ('TASK','WORK','HOOK')),
       agent_id       TEXT NOT NULL,
       session_id     TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
@@ -157,7 +157,7 @@ export const SCHEMA_DDL = `
     );
 
     CREATE TABLE IF NOT EXISTS task_claims (
-      task_id      TEXT PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+      task_id      TEXT PRIMARY KEY REFERENCES awareness_tasks(task_id) ON DELETE CASCADE,
       run_id       TEXT NOT NULL UNIQUE REFERENCES task_runs(run_id) ON DELETE CASCADE,
       agent_id     TEXT NOT NULL,
       claimed_at   TEXT NOT NULL,
@@ -167,7 +167,7 @@ export const SCHEMA_DDL = `
 
     CREATE TABLE IF NOT EXISTS task_events (
       event_id   TEXT PRIMARY KEY,
-      task_id    TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+      task_id    TEXT NOT NULL REFERENCES awareness_tasks(task_id) ON DELETE CASCADE,
       run_id     TEXT REFERENCES task_runs(run_id) ON DELETE SET NULL,
       agent_id   TEXT NOT NULL,
       event_type TEXT NOT NULL
@@ -176,7 +176,7 @@ export const SCHEMA_DDL = `
       created_at TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS locks (
+    CREATE TABLE IF NOT EXISTS awareness_locks (
       lock_id     TEXT PRIMARY KEY,
       file_path   TEXT NOT NULL,
       run_id      TEXT NOT NULL REFERENCES task_runs(run_id) ON DELETE CASCADE,
@@ -258,13 +258,13 @@ export const SCHEMA_DDL = `
       kind      TEXT,
       ordinal   INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (memory_id, reference),
-      FOREIGN KEY(memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE
+      FOREIGN KEY(memory_id) REFERENCES awareness_memories(memory_id) ON DELETE CASCADE
     );
 
     -- ARCH-5: Agent identity registry — maps opaque agentIds to human-readable names.
-    -- Separate from memories so the mapping persists even when memories are pruned.
+    -- Separate from awareness_memories so the mapping persists even when memories are pruned.
     -- ON CONFLICT logic in agents.ts ensures a non-empty name is never overwritten by ''.
-    CREATE TABLE IF NOT EXISTS agents (
+    CREATE TABLE IF NOT EXISTS awareness_agents (
       agent_id       TEXT PRIMARY KEY,
       agent_name     TEXT NOT NULL DEFAULT '',
       workspace_path TEXT,
@@ -298,7 +298,7 @@ export const SCHEMA_DDL = `
       artifact     TEXT,
       event_type   TEXT NOT NULL CHECK(event_type IN ('mine','propose','validate','apply','capture','reflect')),
       payload_json TEXT,           -- JSON with event-specific data
-      memory_id    TEXT REFERENCES memories(memory_id) ON DELETE SET NULL,
+      memory_id    TEXT REFERENCES awareness_memories(memory_id) ON DELETE SET NULL,
       run_id       TEXT REFERENCES task_runs(run_id) ON DELETE SET NULL,
       created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     );
@@ -309,22 +309,22 @@ export const SCHEMA_INDEX_DDL = `
   CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_path);
   CREATE INDEX IF NOT EXISTS idx_sessions_scope     ON sessions(workspace_path, artifact);
 
-  CREATE INDEX IF NOT EXISTS idx_memories_importance      ON memories(importance);
-  CREATE INDEX IF NOT EXISTS idx_memories_created_at      ON memories(created_at);
-  CREATE INDEX IF NOT EXISTS idx_memories_state           ON memories(state);
-  CREATE INDEX IF NOT EXISTS idx_memories_label           ON memories(label);
-  CREATE INDEX IF NOT EXISTS idx_memories_failure_sig     ON memories(failure_signature);
-  CREATE INDEX IF NOT EXISTS idx_memories_workspace_path  ON memories(workspace_path);
-  CREATE INDEX IF NOT EXISTS idx_memories_scope           ON memories(workspace_path, repo, ref);
-  CREATE INDEX IF NOT EXISTS idx_memories_artifact_scope  ON memories(workspace_path, artifact);
-  CREATE INDEX IF NOT EXISTS idx_memories_repo_ref        ON memories(repo, ref);
-  CREATE INDEX IF NOT EXISTS idx_memories_valid           ON memories(valid_from, valid_to);
-  CREATE INDEX IF NOT EXISTS idx_memories_embedding_model ON memories(embedding_model);
+  CREATE INDEX IF NOT EXISTS idx_awareness_memories_importance      ON awareness_memories(importance);
+  CREATE INDEX IF NOT EXISTS idx_awareness_memories_created_at      ON awareness_memories(created_at);
+  CREATE INDEX IF NOT EXISTS idx_awareness_memories_state           ON awareness_memories(state);
+  CREATE INDEX IF NOT EXISTS idx_awareness_memories_label           ON awareness_memories(label);
+  CREATE INDEX IF NOT EXISTS idx_awareness_memories_failure_sig     ON awareness_memories(failure_signature);
+  CREATE INDEX IF NOT EXISTS idx_awareness_memories_workspace_path  ON awareness_memories(workspace_path);
+  CREATE INDEX IF NOT EXISTS idx_awareness_memories_scope           ON awareness_memories(workspace_path, repo, ref);
+  CREATE INDEX IF NOT EXISTS idx_awareness_memories_artifact_scope  ON awareness_memories(workspace_path, artifact);
+  CREATE INDEX IF NOT EXISTS idx_awareness_memories_repo_ref        ON awareness_memories(repo, ref);
+  CREATE INDEX IF NOT EXISTS idx_awareness_memories_valid           ON awareness_memories(valid_from, valid_to);
+  CREATE INDEX IF NOT EXISTS idx_awareness_memories_embedding_model ON awareness_memories(embedding_model);
 
-  CREATE INDEX IF NOT EXISTS idx_plans_scope          ON plans(workspace_path, artifact, status);
-  CREATE INDEX IF NOT EXISTS idx_plans_lead           ON plans(lead_agent_id, status);
+  CREATE INDEX IF NOT EXISTS idx_awareness_plans_scope          ON awareness_plans(workspace_path, artifact, status);
+  CREATE INDEX IF NOT EXISTS idx_awareness_plans_lead           ON awareness_plans(lead_agent_id, status);
   CREATE INDEX IF NOT EXISTS idx_plan_members_agent   ON plan_members(agent_id, plan_id);
-  CREATE INDEX IF NOT EXISTS idx_tasks_plan_status    ON tasks(plan_id, status, priority DESC, created_at);
+  CREATE INDEX IF NOT EXISTS idx_awareness_tasks_plan_status    ON awareness_tasks(plan_id, status, priority DESC, created_at);
   CREATE INDEX IF NOT EXISTS idx_task_deps_dependency ON task_dependencies(depends_on_task_id);
   CREATE INDEX IF NOT EXISTS idx_task_claims_agent    ON task_claims(agent_id, expires_at);
   CREATE INDEX IF NOT EXISTS idx_task_claims_expiry   ON task_claims(expires_at);
@@ -337,9 +337,9 @@ export const SCHEMA_INDEX_DDL = `
   CREATE INDEX IF NOT EXISTS idx_run_files_path_active ON run_files(file_path, ended_at, expires_at);
   CREATE INDEX IF NOT EXISTS idx_run_files_heartbeat   ON run_files(heartbeat_at);
 
-  CREATE INDEX IF NOT EXISTS idx_locks_file_path   ON locks(file_path);
-  CREATE INDEX IF NOT EXISTS idx_locks_acquired_at ON locks(acquired_at);
-  CREATE INDEX IF NOT EXISTS idx_locks_expires_at  ON locks(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_awareness_locks_file_path   ON awareness_locks(file_path);
+  CREATE INDEX IF NOT EXISTS idx_awareness_locks_acquired_at ON awareness_locks(acquired_at);
+  CREATE INDEX IF NOT EXISTS idx_awareness_locks_expires_at  ON awareness_locks(expires_at);
 
   CREATE INDEX IF NOT EXISTS idx_delivery_state_delivered ON delivery_state(delivered_at);
 
@@ -358,9 +358,9 @@ export const SCHEMA_INDEX_DDL = `
   CREATE INDEX IF NOT EXISTS idx_memory_refs_ref  ON memory_refs(reference);
   CREATE INDEX IF NOT EXISTS idx_memory_refs_kind ON memory_refs(kind);
 
-  CREATE INDEX IF NOT EXISTS idx_agents_workspace ON agents(workspace_path);
-  CREATE INDEX IF NOT EXISTS idx_agents_scope     ON agents(workspace_path, artifact);
-  CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_awareness_agents_workspace ON awareness_agents(workspace_path);
+  CREATE INDEX IF NOT EXISTS idx_awareness_agents_scope     ON awareness_agents(workspace_path, artifact);
+  CREATE INDEX IF NOT EXISTS idx_awareness_agents_last_seen ON awareness_agents(last_seen_at DESC);
 
   CREATE INDEX IF NOT EXISTS idx_edit_log_session     ON edit_log(session_id);
   CREATE INDEX IF NOT EXISTS idx_edit_log_run         ON edit_log(run_id);

@@ -11,8 +11,8 @@
  *
  * Only checks the dependency sections a consumer actually installs. A consumer
  * of a published package never installs its devDependencies, so a `workspace:`
- * ref there cannot trigger EUNSUPPORTEDPROTOCOL — and @octocodeai/octocode-tools-core
- * legitimately lives in devDependencies now: it is bundled into the build output
+ * ref there cannot trigger EUNSUPPORTEDPROTOCOL — and unpublished internal packages
+ * legitimately live in devDependencies: they are bundled into the build output
  * (esbuild) and never published, so it is a build-time-only workspace link.
  * (npm also auto-corrects any leftover workspace: ref on publish.)
  */
@@ -33,6 +33,8 @@ const PUBLISHED_DEP_FIELDS = [
 
 const UNPUBLISHED_RUNTIME_PACKAGES = new Set([
   '@octocodeai/octocode-tools-core',
+  '@octocodeai/agent-core',
+  '@octocodeai/octocode-shared',
 ]);
 
 const offenders = [];

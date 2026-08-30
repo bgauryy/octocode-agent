@@ -8,7 +8,7 @@
 
 OpenTUI is a terminal adapter, not part of the agent runtime kernel. `packages/octocode-agent-core/` owns semantic `UiPort` contracts and remains terminal-toolkit-neutral. The native adapter lives under `packages/octocode-agent/src/terminal/opentui/` and is the only native product layer allowed to import `@opentui/core`.
 
-During migration, the frozen `@octocodeai/pi-extension` oracle maps the same `UiPort` semantics to Pi host UI APIs. It does not import OpenTUI and is deleted at the final retirement gate.
+The independent `@octocodeai/pi-extension` adapter maps the same `UiPort` semantics to Pi host UI APIs. It does not import OpenTUI and remains isolated from native release wiring.
 
 ## Why OpenTUI
 
@@ -26,7 +26,7 @@ This matches the migration requirements:
 
 The 2026-08-27 proof at commit `3188378` found that the earlier prototype files were absent; that result remains immutable historical evidence. The current dirty-tree candidate now contains the native adapter boundary, semantic widget controller, OpenTUI adapter, production renderer/composer wiring, focused tests, built CLI path, and one real PTY exact-restoration smoke pass on macOS. This advances the route from planned to production-composed, but does not prove clean packaged lifecycle, accessibility, alternate input/output, or supported-platform release readiness. See root design [`11-OPENTUI-WIDGETS-AND-ACCESSIBILITY.md`](../11-OPENTUI-WIDGETS-AND-ACCESSIBILITY.md) and [the integrated runtime receipt](evidence/real-runtime-surface-eval-2026-08-28.md).
 
-Further implementation must extend the existing canonical seam rather than create a parallel terminal contract. It must not rewrite historical provenance, leave duplicate `OpenTui*` domain contracts in the temporary Pi oracle, or make that oracle the owner of the native terminal.
+Further implementation must extend the existing canonical seam rather than create a parallel terminal contract. It must not rewrite historical provenance, leave duplicate `OpenTui*` domain contracts in the independent Pi extension, or make that extension the owner of the native terminal.
 
 ## Runtime and packaging gate
 
@@ -84,6 +84,22 @@ The adapter must not own:
 | Tool presentation | Render prepared input, progress, result, and classified error | Long output, Unicode, redaction, and cancellation tests |
 | Presentation state | Apply title, editor content, header, footer, widget, focus, and layout | Resize and minimum-terminal-size matrix |
 
+The production layout is conversation-first. The transcript and current action
+retain priority over historical activity. Global Tab traversal is bounded to at
+most five semantic destinations regardless of history size, and only one tool
+row participates at a time. A runtime-owned plan suppresses a generic duplicate
+`plan` row. Short narrow terminals hide the activity rail so the composer and
+current action remain reachable; alternate output retains the omitted detail.
+The `--accessible` route keeps the interactive composer and nonsensitive native
+controls while exposing the complete linear semantic projection.
+
+`PresentationState` is the single native terminal read model. Runtime events
+update semantic chrome facts—identity, trust, and connection—alongside working
+and interaction state. `projectPresentationChrome()` combines those facts with
+the controller viewport to produce header/footer snapshots and contextual key
+hints. The launcher does not construct display snapshots, and the reducer does
+not store viewport width, focus, composer drafts, or native controls.
+
 No OpenTUI class, renderable, event, color, layout, key, or renderer type may appear in an agent-core public contract.
 
 ## Lifecycle and failure rules
@@ -117,7 +133,9 @@ Keyboard-only operation is mandatory. Focus order, visible focus, cancellation, 
 
 ## Rollback
 
-Before the native-default gate, the explicit migration selector may choose the frozen Pi-backed host for new sessions. The native terminal never silently switches to `pi-tui`, and the current native launcher lacks that selector. After removal, rollback uses the prior native release artifact; the selector and Pi extension no longer exist in the product.
+The native launcher has no Pi selector or fallback. Before and after the
+native-default gate, rollback uses the prior native release artifact. The native
+terminal never switches to `pi-tui` or imports the independent Pi extension.
 
 ## Upstream evidence checked on 2026-08-27
 

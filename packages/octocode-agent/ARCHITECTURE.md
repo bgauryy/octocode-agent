@@ -5,21 +5,26 @@ inward on `@octocodeai/agent-core`; core never imports this package.
 
 ## Ownership
 
-- `native-launcher.ts` composes the runtime, sessions, settings, model, tools,
-  policy, Awareness, interactions, and transports. Interactive startup and
-  teardown share one cleanup boundary, including renderer initialization
-  failures.
+- `native-launcher.ts` is the native composition root for sessions, settings,
+  models, tools, policy, Awareness, extensions, and transports.
+  `native-runtime-session-projector.ts` owns lifecycle-to-session durability,
+  `native-runtime-presentation.ts` owns runtime-to-OpenTUI translation, and
+  `native-interactive-controller.ts` owns interactive input, signals, slash
+  commands, presentation, and ordered teardown.
 - `native-provider-registry.ts` is the model composition boundary. It composes the
   canonical, persisted-settings, and environment model sources into the core
   `ModelCatalog`; runtime selection is validated against that effective catalog.
   `native-model.ts`, `native-openai-responses-model.ts`, and
   `native-anthropic-messages-model.ts` own OpenAI Chat Completions, OpenAI
   Responses, and Anthropic Messages translation. External credentialed provider
-  conformance remains a release gate.
+  conformance remains a release gate. Pi's provider runtime is a comparison oracle,
+  not a native dependency. Protocols with required continuation metadata (including
+  Google thought signatures) need Octocode-owned adapters and durable core contracts;
+  discovery alone never implies executable support.
 - `native-mcp.ts` uses the official MCP client with session-owned connection
   reuse, negotiated catalog invalidation, reconnect, progress, and shared
-  shutdown. Elicitation, provenance, durable Tasks, and real-host fault matrices
-  remain open.
+  shutdown. Session-owned elicitation, provenance, and durable Tasks are
+  implemented; credentialed real-host and fault-matrix evidence remains open.
 - `native-command-catalog.ts` is the authority for slash-command routing, help,
   and composer completion. `native-settings-page.ts` owns the protected
   loopback browser adapter. `native-settings-service.ts` is the persistence
@@ -51,8 +56,10 @@ inward on `@octocodeai/agent-core`; core never imports this package.
 - `terminal/opentui/presentation.ts` owns semantic presentation state and the
   Zustand store. `create-terminal.ts` is the terminal composition root.
   Controllers and widgets import their concrete owners directly.
-- `terminal/opentui/renderer.ts` and `opentui-adapter.ts` are the only OpenTUI
-  toolkit boundary. OpenTUI values never enter core, sessions, or transports.
+- `terminal/opentui/` is the only OpenTUI toolkit boundary. Its renderer and
+  adapter own lifecycle/composition, while toolkit-facing keymap and rich-content
+  helpers remain contained in the same subtree. OpenTUI values never enter core,
+  sessions, or transports.
 - `@octocodeai/octocode-shared` owns shared paths, protocols, prompt fragments,
   entities, and discovery helpers. Native code imports its published subpaths
   instead of recreating policy or importing the aggregate package root.
@@ -73,6 +80,8 @@ inward on `@octocodeai/agent-core`; core never imports this package.
   resolution. Do not create another resolver.
 - Keep provider, MCP, ACP, and telemetry protocols behind adapters. Their SDKs do
   not own the canonical runtime loop, effect ledger, or session store.
+- Treat raw lifecycle events as debug data. Export operational telemetry only through
+  the redacted, versioned `monitoring.snapshot` contract.
 - Compose compaction only through the core durable service and runtime port.
   Transport and UI adapters can request or cancel it, but they must not mutate
   model history or session projections directly.

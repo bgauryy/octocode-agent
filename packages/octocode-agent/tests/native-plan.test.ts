@@ -7,6 +7,7 @@ import {
   FilePlanStore,
   FileBackedRuntimePlanState,
   InMemoryPlanStore,
+  NativePlanWorkerOwnership,
   registerNativePlanTool,
   type NativePlanInteraction,
   type NativePlanVerifier,
@@ -29,7 +30,7 @@ function harness(options: { store?: PlanStore; interact?: NativePlanInteraction;
   });
   const tool = registry.get('plan')!;
   const controller = new AbortController();
-  const update = vi.fn(async () => undefined);
+  const update = vi.fn(async (_event: { message?: string }) => undefined);
   const execute = (input: unknown, selectedScope = scope(), signal = controller.signal) => tool.execute({
     input,
     callId: 'plan-call' as never,
@@ -47,6 +48,44 @@ function harness(options: { store?: PlanStore; interact?: NativePlanInteraction;
 }
 
 describe('native plan tool', () => {
+  it('claims one runnable active step per worker and releases it without completing or verifying', async () => {
+    const store = new InMemoryPlanStore();
+    const { execute } = harness({ store });
+    const ownership = new NativePlanWorkerOwnership(store);
+    await execute({ action: 'set', steps: [{ text: 'Build', checkCommand: 'yarn test' }, { text: 'Ship', dependsOn: [1] }] });
+
+    await expect(ownership.claim({ scope: scope(), planStepId: 'step:1:2', workerId: 'worker:blocked' }))
+      .rejects.toThrow(/blocked/i);
+    await expect(ownership.claim({ scope: scope(), planStepId: 'step:1:1', workerId: 'worker:one' }))
+      .resolves.toMatchObject({ planStepId: 'step:1:1', workerId: 'worker:one', status: 'active' });
+    await expect(ownership.claim({ scope: scope(), planStepId: 'step:1:1', workerId: 'worker:two' }))
+      .rejects.toThrow(/owned|active/i);
+    const claimed = (await execute({ action: 'show' })).content as { plan: { phase: string; steps: Array<Record<string, unknown>> } };
+    expect(claimed.plan.phase).toBe('active');
+    expect(claimed.plan.steps[0]).toMatchObject({ id: 'step:1:1', status: 'doing', workerId: 'worker:one' });
+    await expect(execute({ action: 'complete', index: 1 })).resolves.toMatchObject({ ok: false, category: 'worker-owned-step' });
+    await expect(execute({ action: 'clear' })).resolves.toMatchObject({ ok: false, category: 'worker-owned-step' });
+    await expect(execute({ action: 'set', steps: ['Replacement'] })).resolves.toMatchObject({ ok: false, category: 'worker-owned-step' });
+
+    await expect(ownership.release({ scope: scope(), planStepId: 'step:1:1', workerId: 'worker:one' }))
+      .resolves.toMatchObject({ planStepId: 'step:1:1', workerId: 'worker:one', status: 'released' });
+    const shown = (await execute({ action: 'show' })).content as { plan: { phase: string; steps: Array<Record<string, unknown>> } };
+    expect(shown.plan.phase).toBe('active');
+    expect(shown.plan.steps[0]).toMatchObject({ id: 'step:1:1', status: 'todo' });
+    const released = (await store.load(scope()))!;
+    expect(released.steps[0]).not.toHaveProperty('workerId');
+    expect(released.steps[0]).not.toHaveProperty('receipt');
+  });
+
+  it('rejects worker claims when the plan phase is not active', async () => {
+    const store = new InMemoryPlanStore();
+    const { execute } = harness({ store, interact: async () => ({ status: 'pending' }) });
+    const ownership = new NativePlanWorkerOwnership(store);
+    await execute({ action: 'propose', steps: ['Draft work'] });
+    await expect(ownership.claim({ scope: scope(), planStepId: 'step:1:1', workerId: 'worker:one' }))
+      .rejects.toThrow(/active plan/i);
+  });
+
   it('synchronizes active phase and authoritative revision into live runtime policy state', async () => {
     const planState = new LiveRuntimePlanState();
     const { execute } = harness({

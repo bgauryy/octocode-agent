@@ -19,7 +19,7 @@ schema merge.
 
 ## Advanced plane
 
-The same package CLI owns attend/workboard, plan runs, signals, refinements, sessions, reflection, query exports, and maintenance. Repository scope uses `<workspace>/.octocode/awareness.sqlite3`; global scope uses `$OCTOCODE_MEMORY_HOME/awareness.sqlite3`, normally below `$OCTOCODE_HOME/memory/`. Both use the advanced OCT1 schema. Run `npx @octocodeai/octocode-awareness init --compact` for the selected level. Use these commands only for advanced features, not shared coordination.
+The same package CLI owns attend/workboard, plan runs, signals, refinements, sessions, reflection, query exports, and maintenance. All workspaces share the canonical OCTA database at `$OCTOCODE_HOME/agent/agent.sqlite3`; workspace identity is stored in scoped columns, never separate repository databases. Run `npx @octocodeai/octocode-awareness init --compact` to initialize it. Use these commands only for advanced features, not shared coordination.
 
 Prefer repository scope for operational state tied to one checkout. Prefer global scope
 for cross-repository memory, maintenance, registry, and machine-level control. Each Git

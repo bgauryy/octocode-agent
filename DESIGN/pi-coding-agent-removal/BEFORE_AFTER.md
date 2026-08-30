@@ -24,7 +24,7 @@ Never compare a release baseline with an undocumented working tree. Never remove
 | Concern | Before: Pi-backed host | After: Octocode-owned host | Required impact |
 |---|---|---|---|
 | Production ownership | Runtime behavior spans launcher and Pi extension integration | `packages/octocode-agent-core/` owns contracts, kernel, sessions, prompt, lifecycle/registries, and runtime adapters | One package owns the runtime boundary |
-| Pi extension | Owns Octocode harness behavior directly against Pi-shaped contracts | Frozen adapter imports agent-core contracts only during comparison; final native-only release deletes it | Migration retains a bounded oracle without creating a permanent second product surface |
+| Pi extension | Owns Octocode harness behavior directly against Pi-shaped contracts | Independent adapter imports public agent-core contracts and remains outside native release wiring | Native remains Pi-free without removing the supported Pi product |
 | Composition | `sdk-launcher.ts` dynamically imports nine Pi SDK exports | One Octocode composition root injects capability ports | Product modules no longer load `pi-coding-agent` |
 | Runtime | Pi creates services, sessions, and runtime | `AgentRuntime` and runtime kernel own lifecycle and execution | Equivalent observable behavior |
 | Host API | Broad `PiInstance` with optional methods | Required capability interfaces such as `ToolRegistry` and `LifecycleBus` | Compile-time dependency reduction |
@@ -38,7 +38,7 @@ Never compare a release baseline with an undocumented working tree. Never remove
 | Compaction | Pi session compaction callbacks and retry behavior | Explicit Octocode compaction state machine | Preserve all reasons and one terminal state |
 | Prompt | Pi session/runtime assembles prompt inputs | Pure Octocode prompt assembler | No unapproved semantic drift |
 | Interactive UI | Octocode shell over Pi runtime and Pi TUI components | Octocode runtime with semantic `UiPort` plus native `@opentui/core` adapter | Preserve critical semantics, improve ownership, restore terminal on every exit path, and keep OpenTUI types adapter-private |
-| Settings UI | Pi-extension `settings.html` owns eight sections while launcher settings remain separate | One registry-driven native `settings.html`; the temporary Pi oracle projects the same snapshots during comparison | Every supported human-facing setting appears or has an approved classification |
+| Settings UI | Pi-extension `settings.html` owns eight sections while launcher settings remain separate | One registry-driven native `settings.html`; the independent Pi extension projects compatible snapshots | Every supported human-facing setting appears or has an approved classification |
 | Models configuration | Default provider/model in Pi `settings.json`; `models.json` remains outside the page | Models section manages effective catalog, default selection, custom providers/models, and canonical/legacy sources | Provenance, precedence, schema, revision, atomicity, recovery, and zero-secret gates pass |
 | Print/JSON/RPC | Pi mode runners and Pi RPC types | Octocode transport adapters from shared contracts | Versioned wire compatibility |
 | Settings/helpers | Pi settings, shell, frontmatter, and export helpers | Octocode-owned repositories/helpers | Remove helper and deep-import coupling |
@@ -48,8 +48,8 @@ Never compare a release baseline with an undocumented working tree. Never remove
 
 | Measurement | Observed working-tree before | Canonical before | Required after |
 |---|---:|---:|---:|
-| Pi-family source text occurrences/files | 26 / 16 | Capture in Phase 0 | 0 outside immutable historical evidence after retirement |
-| `pi-coding-agent` text occurrences/files | 13 / 10 | Capture in Phase 0 | 0 in live source/manifests/artifacts after retirement |
+| Pi-family source text occurrences/files | 26 / 16 | Capture in Phase 0 | 0 in native source/manifests/artifacts; extension-owned references classified separately |
+| `pi-coding-agent` text occurrences/files | 13 / 10 | Capture in Phase 0 | 0 in native source/manifests/artifacts; independent extension references allowed |
 | Dependency-bearing `pi-coding-agent` files | 8 | Capture in Phase 0 | 0 after retirement |
 | Direct `pi.<method>` AST calls | 40 / 5 files | Capture in Phase 0 | 0 after retirement |
 | Central `hooks.on` registrations | 17 in the inspected 2026-08-27 tree | Capture in Phase 0 | 0 Pi-host registrations after retirement; equivalent native lifecycle contracts pass |

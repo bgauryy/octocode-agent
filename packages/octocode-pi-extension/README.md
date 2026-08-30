@@ -150,8 +150,8 @@ The Lite CLI remains available for backend diagnostics and recovery. It does not
 aliases to the Pi tool palette.
 
 `MCPTool` includes one built-in server named `octocode`. Definitions load from
-`$OCTOCODE_HOME/agent/mcp/servers.json` and, after workspace trust,
-`.octocode/agent/mcp/servers.json`; the project definition wins.
+`$OCTOCODE_HOME/agent/mcp/servers.json` and, after workspace trust, the namespaced
+`$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json`; the workspace definition wins.
 
 Configured stdio or Streamable HTTP entries can override the built-in default. Enabled
 servers and tools are discovered automatically during extension initialization and injected

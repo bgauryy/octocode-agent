@@ -4,11 +4,17 @@ import {
   InputRenderableEvents,
   ScrollBoxRenderable,
   SelectRenderable,
+  TabSelectRenderable,
   TextAttributes,
   TextRenderable,
   TextareaRenderable,
 } from '@opentui/core';
-import { createTestRenderer, KeyCodes } from '@opentui/core/testing';
+import {
+  createTestRenderer,
+  KeyCodes,
+  ManualClock,
+  setRendererCapabilities,
+} from '@opentui/core/testing';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -29,6 +35,44 @@ const hasNativeFfi = process.execArgv.includes('--experimental-ffi')
 const describeNativeFfi = hasNativeFfi ? describe : describe.skip;
 
 describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--experimental-ffi)', () => {
+  it('streams bounded sanitized semantic announcements only in alternate-output mode', async () => {
+    const setup = await createTestRenderer({ width: 80, height: 24 });
+    const state = reducePresentation(createInitialPresentationState(), {
+      type: 'runtime-widgets-changed',
+      snapshots: { statusNotifications: [{
+        authority: 'runtime', slot: 'system', id: 'clear',
+        message: 'Context cleared. New session started. api_key=secret-value-long',
+        lifecycle: 'success',
+      }] },
+    });
+    const streamed: string[] = [];
+    const facade = createOpenTuiRendererFacade(setup.renderer, {
+      initialState: state,
+      alternateOutput: true,
+      alternateOutputSink: (text) => streamed.push(text),
+    });
+    facade.render(state);
+    await setup.flush();
+
+    expect(streamed).toEqual([
+      'SUCCESS: Context cleared. New session started. api_key=[REDACTED]',
+    ]);
+    expect(facade.drainAnnouncements?.()).toHaveLength(1);
+    await facade.destroy();
+    setup.renderer.destroy();
+
+    const ordinarySetup = await createTestRenderer({ width: 80, height: 24 });
+    const ordinaryStreamed: string[] = [];
+    const ordinary = createOpenTuiRendererFacade(ordinarySetup.renderer, {
+      initialState: state,
+      alternateOutputSink: (text) => ordinaryStreamed.push(text),
+    });
+    await ordinarySetup.flush();
+    expect(ordinaryStreamed).toEqual([]);
+    await ordinary.destroy();
+    ordinarySetup.renderer.destroy();
+  });
+
   it('applies the narrow layout on initial render and omits unavailable status actions from the projection', async () => {
     const setup = await createTestRenderer({ width: 64, height: 18 });
     const state = reducePresentation(createInitialPresentationState(), {
@@ -41,11 +85,8 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
     const facade = createOpenTuiRendererFacade(setup.renderer, { initialState: state });
     await setup.flush();
 
-    const body = setup.renderer.root.findDescendantById('octocode-agent-body') as BoxRenderable;
     const rail = setup.renderer.root.findDescendantById('octocode-agent-rail') as BoxRenderable;
-    const transcript = setup.renderer.root.findDescendantById('octocode-agent-transcript') as BoxRenderable;
-    expect(rail.width).toBe(body.width);
-    expect(rail.y).toBeGreaterThanOrEqual(transcript.y + transcript.height);
+    expect(rail.visible).toBe(false);
     const frame = setup.captureCharFrame();
     expect(frame).not.toContain('Retry provider');
     expect(frame).not.toContain('Enter action');
@@ -55,11 +96,120 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
     setup.renderer.destroy();
   });
 
+  it('bounds and scrolls activity on a short narrow terminal without hiding the composer', async () => {
+    const setup = await createTestRenderer({ width: 40, height: 12 });
+    const facade = createOpenTuiRendererFacade(setup.renderer);
+    let state = createInitialPresentationState();
+    for (let index = 0; index < 20; index += 1) {
+      state = reducePresentation(state, {
+        type: 'tool-started', callId: `call-${index}`, name: `tool-${index}`,
+      });
+    }
+    facade.render(state);
+    await setup.flush();
+
+    const rail = setup.renderer.root.findDescendantById('octocode-agent-rail') as ScrollBoxRenderable;
+    const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as InputRenderable;
+    expect(rail).toBeInstanceOf(ScrollBoxRenderable);
+    expect(rail.visible).toBe(false);
+    expect(composer.height).toBeGreaterThan(0);
+    expect(composer.y + composer.height).toBeLessThanOrEqual(12);
+
+    await facade.destroy();
+    setup.renderer.destroy();
+  });
+
+  it('keeps the composer visible when wide-terminal activity fills the rail', async () => {
+    const setup = await createTestRenderer({
+      width: 80, height: 24, kittyKeyboard: true, otherModifiersMode: true,
+    });
+    const facade = createOpenTuiRendererFacade(setup.renderer);
+    let state = createInitialPresentationState();
+    state = reducePresentation(state, {
+      type: 'presentation-changed', property: 'widget',
+      value: {
+        id: 'help', kind: 'list', title: 'Native commands',
+        items: Array.from({ length: 30 }, (_, index) => `Command ${index + 1}`),
+      },
+    });
+    facade.render(state);
+    await setup.flush();
+
+    const rail = setup.renderer.root.findDescendantById('octocode-agent-rail') as ScrollBoxRenderable;
+    const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as TextareaRenderable;
+    expect(rail.visible).toBe(true);
+    expect(composer.height).toBeGreaterThan(0);
+    expect(composer.y + composer.height).toBeLessThanOrEqual(24);
+
+    await facade.destroy();
+    setup.renderer.destroy();
+  });
+
+  it('uses a multiline composer with explicit Ctrl/Meta-Enter submission', async () => {
+    const setup = await createTestRenderer({ width: 80, height: 24 });
+    const submitted: string[] = [];
+    const facade = createOpenTuiRendererFacade(setup.renderer, {
+      events: {
+        submitLine: (line) => submitted.push(line),
+        interrupt: () => undefined,
+        resolveInteraction: () => undefined,
+      },
+    });
+    const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as TextareaRenderable;
+    expect(composer).toBeInstanceOf(TextareaRenderable);
+
+    setup.mockInput.typeText('first');
+    setup.mockInput.pressKey(KeyCodes.RETURN);
+    setup.mockInput.typeText('second');
+    await setup.flush();
+    expect(composer.plainText).toBe('first\nsecond');
+    expect(submitted).toEqual([]);
+
+    composer.handleKeyPress({ name: 'return', ctrl: true } as Parameters<typeof composer.handleKeyPress>[0]);
+    await setup.flush();
+    expect(submitted).toEqual(['first\nsecond']);
+    expect(composer.plainText).toBe('');
+
+    setup.mockInput.typeText('meta');
+    setup.mockInput.pressKey(KeyCodes.RETURN, { meta: true });
+    await setup.flush();
+    expect(submitted).toEqual(['first\nsecond', 'meta']);
+    await facade.destroy();
+    setup.renderer.destroy();
+  });
+
+  it('switches the wide rail between Activity and Context without stealing completion Tab', async () => {
+    const setup = await createTestRenderer({ width: 80, height: 24 });
+    const facade = createOpenTuiRendererFacade(setup.renderer);
+    const tabs = setup.renderer.root.findDescendantById('octocode-agent-rail-tabs') as TabSelectRenderable;
+    const tools = setup.renderer.root.findDescendantById('octocode-agent-tools') as BoxRenderable;
+    const sidebar = setup.renderer.root.findDescendantById('octocode-agent-sidebar') as BoxRenderable;
+    const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as TextareaRenderable;
+    expect(tabs).toBeInstanceOf(TabSelectRenderable);
+    expect(tools.visible).toBe(false);
+    expect(sidebar.visible).toBe(true);
+
+    tabs.setSelectedIndex(0);
+    tabs.selectCurrent();
+    await setup.flush();
+    expect(tools.visible).toBe(true);
+    expect(sidebar.visible).toBe(false);
+
+    await setup.mockInput.typeText('/pl');
+    await setup.flush();
+    setup.mockInput.pressKey(KeyCodes.TAB);
+    await setup.flush();
+    expect(composer.plainText).toBe('/plan ');
+    expect(tabs.getSelectedIndex()).toBe(0);
+    await facade.destroy();
+    setup.renderer.destroy();
+  });
+
   it('routes Enter on a focused status action through the typed asynchronous host sink', async () => {
     const setup = await createTestRenderer({ width: 80, height: 20 });
     const actions: unknown[] = [];
     const facade = createOpenTuiRendererFacade(setup.renderer, {
-      statusAction: (invocation) => actions.push(invocation),
+      statusAction: (invocation) => { actions.push(invocation); },
     });
     const state = reducePresentation(createInitialPresentationState(), {
       type: 'runtime-widgets-changed',
@@ -74,6 +224,7 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
 
     setup.mockInput.pressKey(KeyCodes.TAB);
     setup.mockInput.pressKey(KeyCodes.TAB);
+    setup.mockInput.pressKey(KeyCodes.TAB);
     await setup.flush();
     expect((setup.renderer.root.findDescendantById('status-notifications-scroll') as ScrollBoxRenderable).focused).toBe(true);
     setup.mockInput.pressKey(KeyCodes.RETURN);
@@ -84,6 +235,192 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
       action: { id: 'retry-provider', label: 'Retry provider' },
     }]);
 
+    await facade.destroy();
+    setup.renderer.destroy();
+  });
+
+  it('routes raw Escape and Ctrl-C by active-turn state while preserving local modal handling and text input', async () => {
+    const setup = await createTestRenderer({ width: 80, height: 24 });
+    const interrupts: string[] = [];
+    const resolutions: unknown[] = [];
+    const facade = createOpenTuiRendererFacade(setup.renderer, {
+      events: {
+        submitLine: () => undefined,
+        interrupt: () => interrupts.push('interrupt'),
+        resolveInteraction: (generation, result) => resolutions.push({ generation, result }),
+      },
+    });
+    const idle = reducePresentation(createInitialPresentationState(), { type: 'runtime-ready' });
+    facade.render(idle);
+    await setup.flush();
+
+    await setup.mockInput.typeText('c');
+    await setup.flush();
+    expect((setup.renderer.root.findDescendantById('octocode-agent-composer') as TextareaRenderable).plainText).toBe('c');
+    setup.mockInput.pressEscape();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await setup.flush();
+    expect(interrupts).toEqual([]);
+
+    const active = reducePresentation(idle, { type: 'presentation-changed', property: 'working', value: 'active' });
+    facade.render(active);
+    setup.mockInput.pressEscape();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await setup.flush();
+    expect(interrupts).toEqual(['interrupt']);
+
+    facade.render(reducePresentation(active, {
+      type: 'interaction-requested', request: { type: 'confirm', message: 'Proceed?' },
+    }));
+    await setup.flush();
+    setup.mockInput.pressEscape();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(resolutions).toEqual([{ generation: 1, result: { status: 'cancelled' } }]);
+    expect(interrupts).toEqual(['interrupt']);
+
+    await facade.destroy();
+    setup.renderer.destroy();
+
+    const activeCtrlSetup = await createTestRenderer({ width: 80, height: 24 });
+    const activeCtrlInterrupts: string[] = [];
+    const activeCtrlFacade = createOpenTuiRendererFacade(activeCtrlSetup.renderer, {
+      events: {
+        submitLine: () => undefined,
+        interrupt: () => activeCtrlInterrupts.push('interrupt'),
+        resolveInteraction: () => undefined,
+      },
+    });
+    activeCtrlFacade.render(active);
+    activeCtrlSetup.mockInput.pressKey('c', { ctrl: true });
+    await activeCtrlSetup.flush();
+    expect(activeCtrlInterrupts).toEqual(['interrupt']);
+    await activeCtrlFacade.destroy();
+    activeCtrlSetup.renderer.destroy();
+
+    const idleCtrlSetup = await createTestRenderer({ width: 80, height: 24 });
+    const idleCtrlInterrupts: string[] = [];
+    const idleCtrlFacade = createOpenTuiRendererFacade(idleCtrlSetup.renderer, {
+      events: {
+        submitLine: () => undefined,
+        interrupt: () => idleCtrlInterrupts.push('interrupt'),
+        resolveInteraction: () => undefined,
+      },
+    });
+    idleCtrlFacade.render(idle);
+    idleCtrlSetup.mockInput.pressKey('c', { ctrl: true });
+    await idleCtrlSetup.flush();
+    expect(idleCtrlInterrupts).toEqual(['interrupt']);
+    await idleCtrlFacade.destroy();
+    idleCtrlSetup.renderer.destroy();
+  });
+
+  it('routes mouse activation for confirm choices and notification actions', async () => {
+    const confirmSetup = await createTestRenderer({ width: 80, height: 30, footerHeight: 0, useMouse: true, enableMouseMovement: true });
+    const resolutions: unknown[] = [];
+    const confirmFacade = createOpenTuiRendererFacade(confirmSetup.renderer, {
+      events: {
+        submitLine: () => undefined,
+        interrupt: () => undefined,
+        resolveInteraction: (generation, result) => resolutions.push({ generation, result }),
+      },
+    });
+    confirmFacade.render(reducePresentation(createInitialPresentationState(), {
+      type: 'interaction-requested', request: { type: 'confirm', message: 'Proceed?' },
+    }));
+    await confirmSetup.flush();
+    const confirm = confirmSetup.renderer.root.findDescendantById('interaction-1-confirm') as SelectRenderable;
+    expect(confirm.y + confirm.height).toBeLessThanOrEqual(30);
+    await confirmSetup.mockMouse.click(confirm.x + 2, confirm.y);
+    await confirmSetup.flush();
+    await confirmSetup.waitFor(() => resolutions.length > 0);
+    expect(resolutions).toEqual([{ generation: 1, result: { status: 'accepted', value: true } }]);
+    await confirmFacade.destroy();
+    confirmSetup.renderer.destroy();
+
+    const statusSetup = await createTestRenderer({ width: 80, height: 20, footerHeight: 0, useMouse: true, enableMouseMovement: true });
+    const actions: unknown[] = [];
+    const statusFacade = createOpenTuiRendererFacade(statusSetup.renderer, {
+      statusAction: (invocation) => { actions.push(invocation); },
+    });
+    statusFacade.render(reducePresentation(createInitialPresentationState(), {
+      type: 'runtime-widgets-changed',
+      snapshots: { statusNotifications: [{
+        authority: 'runtime', slot: 'system', id: 'retry', message: 'Provider failed', lifecycle: 'error',
+        action: { id: 'retry-provider', label: 'Retry provider' },
+      }] },
+    }));
+    await statusSetup.flush();
+    const statusText = statusSetup.renderer.root.findDescendantById('status-notifications-semantics') as TextRenderable;
+    await statusSetup.mockMouse.click(statusText.x + 2, statusText.y + 1);
+    await statusSetup.flush();
+    await statusSetup.waitFor(() => actions.length > 0);
+    expect(actions).toEqual([{
+      key: 'system:retry',
+      action: { id: 'retry-provider', label: 'Retry provider' },
+    }]);
+    await statusFacade.destroy();
+    statusSetup.renderer.destroy();
+  });
+
+  it('preserves a normalized semantic frame across clock and terminal capability variants', async () => {
+    const clock = new ManualClock();
+    clock.setTime(1_000);
+    const setup = await createTestRenderer({
+      width: 80, height: 24, footerHeight: 0, kittyKeyboard: true, otherModifiersMode: true,
+    });
+    const facade = createOpenTuiRendererFacade(setup.renderer, { nowMs: () => clock.now() });
+    const state = reducePresentation(createInitialPresentationState(), {
+      type: 'message-started', messageId: 'message-capability', role: 'assistant',
+    });
+    facade.render(reducePresentation(state, {
+      type: 'message-delta', messageId: 'message-capability', text: 'Capability-safe output',
+    }));
+    setRendererCapabilities(setup.renderer, {
+      rgb: false, ansi256: false, unicode: 'wcwidth', kitty_keyboard: false, hyperlinks: false,
+      terminal: { name: 'minimal', version: '1', from_xtversion: false },
+    });
+    await setup.flush();
+    const normalized = (frame: string) => frame.split('\n').map((line) => line.trimEnd()).filter(Boolean);
+    const minimal = normalized(setup.captureCharFrame());
+
+    clock.advance(5_000);
+    setRendererCapabilities(setup.renderer, {
+      rgb: true, ansi256: true, unicode: 'unicode', kitty_keyboard: true, hyperlinks: true,
+      terminal: { name: 'rich', version: '2', from_xtversion: true },
+    });
+    facade.render(reducePresentation(state, {
+      type: 'message-delta', messageId: 'message-capability', text: 'Capability-safe output',
+    }));
+    await setup.flush();
+    expect(normalized(setup.captureCharFrame())).toEqual(minimal);
+    expect(clock.now()).toBe(6_000);
+    expect((setup.renderer.root.findDescendantById('octocode-agent-composer') as TextareaRenderable).focused).toBe(true);
+    await facade.destroy();
+    setup.renderer.destroy();
+  });
+
+  it.each([
+    { width: 20, height: 6 },
+    { width: 71, height: 18 },
+    { width: 72, height: 18 },
+    { width: 71, height: 23 },
+    { width: 72, height: 24 },
+  ])('keeps the current action reachable at the $width x $height layout boundary', async ({ width, height }) => {
+    const setup = await createTestRenderer({ width, height, footerHeight: 0 });
+    const facade = createOpenTuiRendererFacade(setup.renderer);
+    facade.render(reducePresentation(createInitialPresentationState(), {
+      type: 'interaction-requested', request: { type: 'confirm', message: 'Proceed?' },
+    }));
+    await setup.flush();
+    const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as InputRenderable;
+    const confirm = setup.renderer.root.findDescendantById('interaction-1-confirm') as SelectRenderable;
+    const rail = setup.renderer.root.findDescendantById('octocode-agent-rail') as ScrollBoxRenderable;
+    expect(composer).toBeInstanceOf(TextareaRenderable);
+    expect(confirm).toBeInstanceOf(SelectRenderable);
+    expect(confirm.y).toBeGreaterThanOrEqual(0);
+    expect(confirm.y + confirm.height).toBeLessThanOrEqual(height);
+    expect(rail.visible).toBe(width >= 72 || height >= 24);
     await facade.destroy();
     setup.renderer.destroy();
   });
@@ -135,18 +472,14 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
     });
     state = reducePresentation(state, { type: 'status-changed', name: 'runtime', text: 'active' });
     state = reducePresentation(state, {
-      type: 'runtime-widgets-changed',
-      snapshots: {
-        header: {
-          authority: 'runtime', title: 'Octocode Agent With A Long Title', trust: 'trusted', working: 'active',
-          width: 80, sessionId: 'session-that-must-not-survive-narrow-layout', modelId: 'model-with-long-name',
-        },
-        footer: {
-          authority: 'runtime', activeMode: 'agent-mode-with-long-name', connection: 'connected', widthColumns: 80,
-          keyHints: [{ key: 'Ctrl-C', label: 'Cancel current turn', priority: 1 }],
-        },
+      type: 'chrome-changed',
+      chrome: {
+        authority: 'runtime', title: 'Octocode Agent With A Long Title', trust: 'trusted',
+        sessionId: 'session-that-must-not-survive-narrow-layout', modelId: 'model-with-long-name',
       },
     });
+    state = reducePresentation(state, { type: 'runtime-ready' });
+    state = reducePresentation(state, { type: 'presentation-changed', property: 'working', value: 'active' });
     facade.render(state);
     await setup.flush();
     const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as InputRenderable;
@@ -156,10 +489,12 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
     await setup.flush();
     const surface = setup.renderer.root.findDescendantById('presentation-1-scroll') as ScrollBoxRenderable;
     expect(surface.focused).toBe(true);
-    expect(setup.captureCharFrame()).toContain('▶ Runtime presentation');
+    expect(facade.alternateOutput?.()).toContain('Row 1');
     setup.mockInput.pressKey(KeyCodes.END);
     await setup.flush();
     expect(surface.scrollTop).toBeGreaterThan(0);
+    state = reducePresentation(state, { type: 'presentation-changed', property: 'working', value: 'idle' });
+    facade.render(state);
     setup.mockInput.pressEscape();
     await new Promise((resolve) => setTimeout(resolve, 40));
     await setup.flush();
@@ -170,7 +505,7 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
     await setup.flush();
     const frame = setup.captureCharFrame();
     expect(frame).not.toContain('session-that-must-not-survive-narrow-layout');
-    expect(frame).not.toContain('Cancel current turn');
+    expect(frame).not.toContain('Cancel turn');
     expect(facade.alternateOutput?.()).toContain('session-that-must-not-survive-narrow-layout');
 
     await facade.destroy();
@@ -198,7 +533,7 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
     expect(frame).not.toMatch(/\[(banner|log|region|status)\]/u);
     expect(frame).not.toContain('CONTENT:');
     expect(semanticTranscript.chunks.some(({ attributes }) => (
-      attributes & TextAttributes.BOLD
+      (attributes ?? 0) & TextAttributes.BOLD
     ) !== 0)).toBe(true);
     const input = setup.renderer.root.findDescendantById('interaction-1-input');
     expect(input).toBeInstanceOf(InputRenderable);
@@ -218,6 +553,24 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
     setup.renderer.destroy();
   });
 
+  it('keeps composer and modal controls interactive in accessible output mode', async () => {
+    const setup = await createTestRenderer({ width: 80, height: 24 });
+    const facade = createOpenTuiRendererFacade(setup.renderer, { alternateOutput: true });
+    const state = reducePresentation(createInitialPresentationState(), {
+      type: 'interaction-requested',
+      request: { type: 'input', message: 'Accessible name', initial: 'Ada' },
+    });
+    facade.render(state);
+    await setup.flush();
+
+    expect(setup.renderer.root.findDescendantById('octocode-agent-composer')).toBeInstanceOf(TextareaRenderable);
+    expect(setup.renderer.root.findDescendantById('interaction-1-input')).toBeInstanceOf(InputRenderable);
+    expect(setup.captureCharFrame()).toContain('Accessible name');
+
+    await facade.destroy();
+    setup.renderer.destroy();
+  });
+
   it('restores composer focus when a focused semantic surface is removed', async () => {
     const setup = await createTestRenderer({ width: 80, height: 20 });
     const facade = createOpenTuiRendererFacade(setup.renderer);
@@ -227,7 +580,7 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
     });
     facade.render(state);
     await setup.flush();
-    const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as InputRenderable;
+    const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as TextareaRenderable;
     setup.mockInput.pressKey(KeyCodes.TAB, { shift: true });
     await setup.flush();
     expect(composer.focused).toBe(false);
@@ -248,7 +601,6 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
     const facade = createOpenTuiRendererFacade(setup.renderer);
     await setup.flush();
 
-    const body = setup.renderer.root.findDescendantById('octocode-agent-body') as BoxRenderable;
     const rail = setup.renderer.root.findDescendantById('octocode-agent-rail') as BoxRenderable;
     const transcript = setup.renderer.root.findDescendantById('octocode-agent-transcript') as BoxRenderable;
     expect(rail.y).toBe(transcript.y);
@@ -256,8 +608,7 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
     setup.resize(40, 18);
     await setup.flush();
 
-    expect(rail.width).toBe(body.width);
-    expect(rail.y).toBeGreaterThanOrEqual(transcript.y + transcript.height);
+    expect(rail.visible).toBe(false);
 
     await facade.destroy();
     setup.renderer.destroy();
@@ -277,7 +628,7 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
       },
     });
     const state = reducePresentation(createInitialPresentationState(), {
-      type: 'interaction-requested', request: { type: 'editor', initial: 'A😀éB' },
+      type: 'interaction-requested', request: { type: 'editor', message: 'Unicode editor', initial: 'A😀éB' },
     });
     facade.render(state);
     await setup.flush();
@@ -310,7 +661,7 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
       },
     });
     facade.render(reducePresentation(createInitialPresentationState(), {
-      type: 'interaction-requested', request: { type: 'input', prompt: 'Unicode input', initial: 'éx' },
+      type: 'interaction-requested', request: { type: 'input', message: 'Unicode input', initial: 'éx' },
     }));
     await setup.flush();
     const input = setup.renderer.root.findDescendantById('interaction-1-input') as InputRenderable;
@@ -336,7 +687,7 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
       },
     });
     const state = reducePresentation(createInitialPresentationState(), {
-      type: 'interaction-requested', request: { type: 'editor', initial: 'seed' },
+      type: 'interaction-requested', request: { type: 'editor', message: 'Paste editor', initial: 'seed' },
     });
     facade.render(state);
     await setup.flush();
@@ -377,7 +728,7 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
       });
       facade.render(reducePresentation(createInitialPresentationState(), {
         type: 'interaction-requested',
-        request: kind === 'input' ? { type: 'input', prompt: 'Secret' } : { type: 'editor', initial: secret },
+        request: kind === 'input' ? { type: 'input', message: 'Secret' } : { type: 'editor', message: 'Secret', initial: secret },
       }));
       await setup.flush();
       expect(setup.captureCharFrame()).not.toContain(secret);
@@ -406,14 +757,14 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
     await setup.flush();
 
     const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as InputRenderable;
-    expect(composer).toBeInstanceOf(InputRenderable);
+    expect(composer).toBeInstanceOf(TextareaRenderable);
     expect(composer.focused).toBe(true);
     setup.mockInput.typeText('hello');
-    setup.mockInput.pressKey(KeyCodes.RETURN);
+    setup.mockInput.pressKey(KeyCodes.RETURN, { meta: true });
     await setup.flush();
     await new Promise<void>((resolve) => queueMicrotask(resolve));
     expect(inputEvents).toContainEqual({ type: 'line', line: 'hello' });
-    expect(composer.value).toBe('');
+    expect(composer.plainText).toBe('');
 
     const first = terminal.interact?.({ type: 'input', message: 'First' }, new AbortController().signal);
     await setup.flush();
@@ -442,7 +793,7 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
     setup.mockInput.pressKey(KeyCodes.RETURN);
     await expect(selectResult).resolves.toEqual({ status: 'accepted', value: 'Beta' });
 
-    const editorResult = terminal.interact?.({ type: 'editor', initial: 'seed' }, new AbortController().signal);
+    const editorResult = terminal.interact?.({ type: 'editor', message: 'Edit response', initial: 'seed' }, new AbortController().signal);
     await setup.flush();
     const editor = setup.renderer.root.findDescendantById('interaction-4-textarea') as TextareaRenderable;
     expect(editor).toBeInstanceOf(TextareaRenderable);
@@ -551,7 +902,6 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
         id: `interaction-${interaction.generation}`,
         label: 'Choose',
         consequential: true,
-        viewportRows: 3,
         options: labels.map((label, index) => ({
           id: `choice-${index + 1}`,
           label,
@@ -594,33 +944,35 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
         }],
       },
     });
-    const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as InputRenderable;
+    const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as TextareaRenderable;
 
     setup.mockInput.typeText('/pl');
     await setup.flush();
     expect(setup.captureCharFrame()).toContain('/plan');
     setup.mockInput.pressKey(KeyCodes.TAB);
     await setup.flush();
-    expect(composer.value).toBe('/plan ');
+    expect(composer.plainText).toBe('/plan ');
     expect(submitted).toEqual([]);
 
-    composer.value = 'review @src';
+    composer.setText('review @src');
+    composer.cursorOffset = composer.plainText.length;
+    composer.onContentChange?.({});
     await new Promise<void>((resolve) => queueMicrotask(resolve));
     await setup.flush();
     expect(setup.captureCharFrame()).toContain('src/agent file.ts');
     setup.mockInput.pressKey(KeyCodes.RETURN);
     await setup.flush();
-    expect(composer.value).toBe('review @"src/agent file.ts"');
+    expect(composer.plainText).toBe('review @"src/agent file.ts"');
     expect(submitted).toEqual([]);
 
-    composer.value = 'é @sr';
+    composer.setText('é @sr');
     composer.cursorOffset = 5;
-    composer.emit(InputRenderableEvents.INPUT, composer.value);
+    composer.onContentChange?.({});
     await new Promise<void>((resolve) => queueMicrotask(resolve));
     await setup.flush();
     setup.mockInput.pressKey(KeyCodes.RETURN);
     await setup.flush();
-    expect(composer.value).toBe('é @"src/agent file.ts"');
+    expect(composer.plainText).toBe('é @"src/agent file.ts"');
     expect(submitted).toEqual([]);
 
     await facade.destroy();
@@ -630,13 +982,13 @@ describeNativeFfi('production OpenTUI widget renderer (requires NODE_OPTIONS=--e
   it('keeps the selected completion visible on a narrow terminal', async () => {
     const setup = await createTestRenderer({ width: 40, height: 18 });
     const facade = createOpenTuiRendererFacade(setup.renderer);
-    const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as InputRenderable;
+    const composer = setup.renderer.root.findDescendantById('octocode-agent-composer') as TextareaRenderable;
     await setup.mockInput.typeText('/pl');
     await setup.flush();
     expect(setup.captureCharFrame()).toContain('/plan');
     setup.mockInput.pressKey(KeyCodes.TAB);
     await setup.flush();
-    expect(composer.value).toBe('/plan ');
+    expect(composer.plainText).toBe('/plan ');
     await facade.destroy();
     setup.renderer.destroy();
   });

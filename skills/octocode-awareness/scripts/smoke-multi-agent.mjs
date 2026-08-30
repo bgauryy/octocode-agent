@@ -237,7 +237,7 @@ assert(stale.run?.run_id, "agent-stale should get a run_id");
 
 const staleDb = new DatabaseSync(db);
 const pastTime = new Date(Date.now() - 35 * 60000).toISOString().replace(/\.\d{3}Z$/, "Z");
-staleDb.prepare("UPDATE locks SET expires_at = ? WHERE run_id = ?").run(pastTime, stale.run.run_id);
+staleDb.prepare("UPDATE awareness_locks SET expires_at = ? WHERE run_id = ?").run(pastTime, stale.run.run_id);
 staleDb.close();
 console.log(`[age-stale-lock] set expires_at to ${pastTime}`);
 

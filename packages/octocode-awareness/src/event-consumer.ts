@@ -28,6 +28,11 @@ export interface AwarenessEventObservability {
   held: number;
   refused: number;
   errors: number;
+  /** Outcomes from only the most recent drain; lifetime counters remain above. */
+  drainAccepted: number;
+  drainHeld: number;
+  drainRefused: number;
+  drainErrors: number;
 }
 
 export interface AwarenessPeerDelivery {
@@ -38,6 +43,7 @@ export interface AwarenessPeerDelivery {
     version: 1;
     eventId: string;
     sequence: number;
+    createdAt: string;
     messageClass: 'informational' | 'blocking' | 'handoff';
     provenance: 'peer-attributed-data';
   };
@@ -48,7 +54,7 @@ export interface AwarenessEventConsumerOptions {
   consumerId: string;
   expectedAgentId: string;
   openStore?: (workspace: string) => AwarenessEventStore;
-  deliver(message: AwarenessPeerDelivery): void | Promise<void>;
+  deliver(message: AwarenessPeerDelivery): void | InboundDecision | Promise<void | InboundDecision>;
   onObservability?(stats: AwarenessEventObservability): void;
   now?: () => number;
   maxEventsPerDrain?: number;
@@ -99,6 +105,10 @@ const initialObservability = (consumerId: string): AwarenessEventObservability =
   held: 0,
   refused: 0,
   errors: 0,
+  drainAccepted: 0,
+  drainHeld: 0,
+  drainRefused: 0,
+  drainErrors: 0,
 });
 
 /** Bounded serialized transaction-outbox consumer for attributed peer data. */
@@ -110,6 +120,10 @@ export function createAwarenessEventConsumer(options: AwarenessEventConsumerOpti
   let inFlight: Promise<AwarenessEventObservability> | undefined;
 
   const drainOnce = async (): Promise<AwarenessEventObservability> => {
+    stats.drainAccepted = 0;
+    stats.drainHeld = 0;
+    stats.drainRefused = 0;
+    stats.drainErrors = 0;
     let store: AwarenessEventStore | undefined;
     try {
       store = openStore(options.workspace);
@@ -142,6 +156,7 @@ export function createAwarenessEventConsumer(options: AwarenessEventConsumerOpti
                   version: 1,
                   eventId: candidate.eventId,
                   sequence: candidate.sequence,
+                  createdAt: candidate.createdAt,
                   messageClass: policy.messageClass as 'informational' | 'blocking' | 'handoff',
                   provenance: 'peer-attributed-data',
                 },
@@ -150,20 +165,25 @@ export function createAwarenessEventConsumer(options: AwarenessEventConsumerOpti
           }
         } catch {
           stats.errors += 1;
+          stats.drainErrors += 1;
           decision = 'refuse';
           delivery = undefined;
         }
         try {
-          if (delivery) await options.deliver(delivery);
+          if (delivery) decision = (await options.deliver(delivery)) ?? decision;
           const ack = store.acknowledgeEvent({ consumerId: options.consumerId, eventId: candidate.eventId, decision });
           stats.lastAcknowledgedSequence = ack.sequence;
           if (!ack.duplicate) {
             if (decision === 'accept') stats.accepted += 1;
             else if (decision === 'hold') stats.held += 1;
             else stats.refused += 1;
+            if (decision === 'accept') stats.drainAccepted += 1;
+            else if (decision === 'hold') stats.drainHeld += 1;
+            else stats.drainRefused += 1;
           }
         } catch {
           stats.errors += 1;
+          stats.drainErrors += 1;
           break;
         }
       }
@@ -174,6 +194,7 @@ export function createAwarenessEventConsumer(options: AwarenessEventConsumerOpti
       return { ...stats };
     } catch {
       stats.errors += 1;
+      stats.drainErrors += 1;
       options.onObservability?.({ ...stats });
       return { ...stats };
     } finally {

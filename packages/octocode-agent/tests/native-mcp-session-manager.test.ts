@@ -14,7 +14,7 @@ afterEach(() => {
 function fixtureRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-session-'));
   roots.push(root);
-  const config = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+  const config = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
   fs.mkdirSync(path.dirname(config), { recursive: true });
   fs.writeFileSync(config, JSON.stringify({ mcpServers: { fixture: { command: process.execPath } } }));
   return root;
@@ -43,6 +43,42 @@ function fakeClient(overrides: Partial<NativeMcpClient> = {}): NativeMcpClient {
 }
 
 describe('native MCP session manager', () => {
+  it('does not steal an old MCP task lock from a live owner', async () => {
+    const root = fixtureRoot();
+    const store = path.join(root, '.octocode', 'mcp-tasks.json');
+    const lock = `${store}.lock`;
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, `${JSON.stringify({ pid: process.pid, createdAt: 1, nonce: 'live-owner' })}\n`, { mode: 0o600 });
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lock, old, old);
+    const manager = new NativeMcpSessionManager(async () => fakeClient());
+
+    await expect(manager.persistTask(store, {
+      task: { id: 'blocked' },
+      provenance: { server: 'fixture', operation: 'get', observedAt: Date.now() },
+    }, 10)).rejects.toThrow(/busy/i);
+    expect(fs.existsSync(lock)).toBe(true);
+    expect(fs.readFileSync(lock, 'utf8')).toContain('live-owner');
+  });
+
+  it('recovers an old MCP task lock only after proving its owner is gone', async () => {
+    const root = fixtureRoot();
+    const store = path.join(root, '.octocode', 'mcp-tasks.json');
+    const lock = `${store}.lock`;
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, `${JSON.stringify({ pid: 2_147_483_647, createdAt: 1, nonce: 'dead-owner' })}\n`, { mode: 0o600 });
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lock, old, old);
+    const manager = new NativeMcpSessionManager(async () => fakeClient());
+
+    await expect(manager.persistTask(store, {
+      task: { id: 'recovered' },
+      provenance: { server: 'fixture', operation: 'get', observedAt: Date.now() },
+    }, 10)).resolves.toBeUndefined();
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(fs.readFileSync(store, 'utf8')).toContain('recovered');
+  });
+
   it('shares simultaneous acquisition and evicts a rejected connection for retry', async () => {
     const client = fakeClient();
     const connect = vi.fn()
@@ -172,6 +208,41 @@ describe('native MCP session manager', () => {
       { version: 1, kind: 'progress', message: 'halfway', value: { progress: 1, total: 2, message: 'halfway' } },
       { version: 1, kind: 'progress', message: 'done', value: { progress: 2, total: 2, message: 'done' } },
     ]);
+    await manager.close();
+  });
+
+  it.each([
+    ['draft-07', 'http://json-schema.org/draft-07/schema#'],
+    ['draft 2020-12', 'https://json-schema.org/draft/2020-12/schema'],
+  ])('validates %s MCP tool schemas', async (_label, schemaVersion) => {
+    const root = fixtureRoot();
+    const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }] }));
+    const client = fakeClient({
+      listTools: async () => ({
+        tools: [{
+          name: 'probe',
+          inputSchema: {
+            $schema: schemaVersion,
+            type: 'object',
+            required: ['message'],
+            properties: { message: { type: 'string' } },
+            additionalProperties: false,
+          },
+        }],
+      }),
+      callTool,
+    });
+    const registry = new ToolRegistry();
+    const manager = registerNativeMcpTool(registry, {
+      cwd: root,
+      octocodeHome: path.join(root, 'home'),
+      connect: async () => client,
+    });
+
+    await expect(registry.get('MCPTool')!.execute(execution({
+      action: 'call', server: 'fixture', tool: 'probe', arguments: { message: 'hello' },
+    }, root))).resolves.toMatchObject({ ok: true });
+    expect(callTool).toHaveBeenCalledOnce();
     await manager.close();
   });
 });

@@ -21,6 +21,7 @@ import {
   type DiscoveredMcpConfig,
 } from './mcp-discovery.js';
 import type { DiscoveredSkillState } from './skill-tool.js';
+import { workspaceAgentRoot } from './session-artifacts.js';
 
 /** Per-section character counts for the harness prompt overhead. */
 export interface SystemPromptStats {
@@ -64,7 +65,7 @@ export interface DiscoverySnapshot {
 }
 
 export function getDiscoveryFilePath(cwd: string): string {
-  return path.join(cwd, '.octocode', 'discovery.json');
+  return path.join(workspaceAgentRoot(cwd), 'discovery.json');
 }
 
 export async function buildDiscoverySnapshot(

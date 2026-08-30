@@ -1,11 +1,12 @@
 import type { UiInteractionResult } from '@octocodeai/agent-core';
 
-import type {
-  NotificationSeverity,
-  PresentationInteraction,
-  PresentationState,
-  PresentationToolRow,
-  PresentationWidget,
+import {
+  projectPresentationChrome,
+  type NotificationSeverity,
+  type PresentationInteraction,
+  type PresentationState,
+  type PresentationToolRow,
+  type PresentationWidget,
 } from './presentation.js';
 import { ConfirmWidget } from './widgets/confirm.js';
 import type { WidgetContract, WidgetInputResult, WidgetRenderAdapter } from './widgets/contracts.js';
@@ -128,7 +129,7 @@ function toolPresentation(row: PresentationToolRow): { readonly label?: string; 
       result: skills === undefined ? row.result : `${skills} skills discovered`,
     };
   }
-  if (row.name === 'plan') return { label: 'Plan and Tasks', input: row.input, result: row.result };
+  if (row.name === 'plan') return { label: 'Plan', input: row.input, result: row.result };
   if (row.name === 'askUser') return { label: 'Question', input: row.input, result: row.result };
   if (row.name === 'MCPTool') return { label: 'MCP', input: row.input, result: row.result };
   return { input: row.input, result: row.result };
@@ -219,7 +220,7 @@ function interactionWidget(interaction: PresentationInteraction): WidgetContract
         ...(interaction.request.initial === undefined ? {} : { initialValue: interaction.request.initial }),
       });
     case 'editor':
-      return new EditorWidget({ id, label: 'Multiline response', initialValue: interaction.request.initial });
+      return new EditorWidget({ id, label: interaction.request.message, initialValue: interaction.request.initial });
   }
 }
 
@@ -239,6 +240,7 @@ export class SemanticWidgetController {
   private transcript?: TranscriptWidget;
   private readonly tools = new Map<string, ToolProgressWidget>();
   private readonly toolWidgetIds = new Map<string, string>();
+  private focusableToolWidgetId?: string;
   private nextToolWidgetId = 1;
   private header?: HeaderWidget;
   private footer?: FooterWidget;
@@ -246,8 +248,7 @@ export class SemanticWidgetController {
   private statuses?: StatusNotificationsWidget;
   private readonly surfaces = new Map<string, SurfaceProjection>();
   private nextSurfaceWidgetId = 1;
-  private runtimeHeaderSnapshot?: NonNullable<PresentationState['runtimeWidgets']>['header'];
-  private runtimeFooterSnapshot?: NonNullable<PresentationState['runtimeWidgets']>['footer'];
+  private presentationState?: PresentationState;
   private interaction?: WidgetContract;
   private interactionGeneration?: number;
   private currentInteractionRequest?: PresentationInteraction['request'];
@@ -256,6 +257,7 @@ export class SemanticWidgetController {
   private readonly interactionAnnouncements: SemanticWidgetAnnouncement[] = [];
   private readonly interactionAnnouncementSignatures = new Set<string>();
   private readonly interactionAnnouncementSignatureOrder: string[] = [];
+  private archivedNotificationsOutput = '';
   private lastClockMs = 0;
 
   private static readonly INTERACTION_ANNOUNCEMENT_LIMIT = 32;
@@ -277,6 +279,7 @@ export class SemanticWidgetController {
   }
 
   render(state: PresentationState): void {
+    this.presentationState = state;
     this.renderTranscript(state);
     this.renderTools(state);
     this.renderRuntimeSnapshots(state);
@@ -288,17 +291,7 @@ export class SemanticWidgetController {
   resize(viewport: WidgetViewport): void {
     this.viewport = this.normalizeViewport(viewport);
     this.transcript?.render(this.adapter);
-    if (this.header && this.runtimeHeaderSnapshot) {
-      this.header.update({ ...this.runtimeHeaderSnapshot, width: this.viewport.widthColumns });
-      this.header.render(this.adapter);
-    }
-    if (this.footer && this.runtimeFooterSnapshot) {
-      this.footer.update({
-        ...this.runtimeFooterSnapshot,
-        widthColumns: Math.min(1_000, Math.max(20, this.viewport.widthColumns)),
-      });
-      this.footer.render(this.adapter);
-    }
+    if (this.presentationState !== undefined) this.renderChrome(this.presentationState);
     this.plan?.resize(Math.min(1_000, Math.max(20, this.viewport.widthColumns)), Math.max(1, Math.min(61, this.viewport.heightRows - 8)));
     for (const { widget } of this.surfaces.values()) {
       const surfaceWidth = this.viewport.widthColumns < 72
@@ -324,10 +317,11 @@ export class SemanticWidgetController {
   getFocusableWidgetIds(): readonly string[] {
     const order: string[] = [];
     if (this.transcript) order.push(this.transcript.id);
-    order.push(...[...this.tools.values()].map((widget) => widget.id));
+    if (this.focusableToolWidgetId !== undefined) order.push(this.focusableToolWidgetId);
     if (this.plan) order.push(this.plan.id);
     if (this.statuses) order.push(this.statuses.id);
-    order.push(...[...this.surfaces.values()].map(({ widget }) => widget.id));
+    const latestSurface = [...this.surfaces.values()].at(-1)?.widget;
+    if (latestSurface !== undefined) order.push(latestSurface.id);
     return Object.freeze(order);
   }
 
@@ -359,6 +353,21 @@ export class SemanticWidgetController {
       : undefined;
     this.adapter.navigateWidget?.(widget.id, normalized, absoluteOffset);
     return true;
+  }
+
+  /** Select and activate a visible runtime notification action from a pointer event. */
+  activateStatusItem(itemIndex: number): boolean {
+    const widget = this.statuses;
+    if (!widget || !Number.isSafeInteger(itemIndex) || itemIndex < 0 || itemIndex >= widget.items.length) return false;
+    this.focusWidget(widget.id);
+    widget.handleInput({ type: 'key', key: 'home' });
+    for (let index = 0; index < itemIndex; index += 1) {
+      widget.handleInput({ type: 'key', key: 'arrowdown' });
+    }
+    const result = widget.handleInput({ type: 'key', key: 'enter' });
+    widget.render(this.adapter);
+    if (result.output !== undefined) this.dispatchStatusAction(widget, result.output);
+    return result.status !== 'ignored';
   }
 
   /**
@@ -427,6 +436,7 @@ export class SemanticWidgetController {
     for (const widget of this.tools.values()) sections.push(widget.toPlainText({ expanded: true }));
     if (this.plan) sections.push(this.plan.toPlainText());
     for (const { widget } of this.surfaces.values()) sections.push(widget.alternateOutput());
+    if (this.archivedNotificationsOutput) sections.push(this.archivedNotificationsOutput);
     if (this.statuses) sections.push(this.statuses.toPlainText());
     if (this.interaction instanceof PromptInputWidget || this.interaction instanceof ConfirmWidget
       || this.interaction instanceof EditorWidget || this.interaction instanceof SelectWidget) {
@@ -459,13 +469,24 @@ export class SemanticWidgetController {
       announcements.push({ source: `status:${item.key}`, politeness: item.liveRegion, text: item.text });
     }
     announcements.push(...this.interactionAnnouncements.splice(0));
-    return Object.freeze(announcements);
+    if (announcements.length <= 32) return Object.freeze(announcements);
+    const indexed = announcements.map((announcement, index) => ({ announcement, index }));
+    const assertive = indexed.filter(({ announcement }) => announcement.politeness === 'assertive').slice(-32);
+    const assertiveIndexes = new Set(assertive.map(({ index }) => index));
+    const politeSlots = 32 - assertive.length;
+    const polite = politeSlots === 0 ? [] : indexed
+      .filter(({ index }) => !assertiveIndexes.has(index))
+      .slice(-politeSlots);
+    return Object.freeze([...assertive, ...polite]
+      .sort((left, right) => left.index - right.index)
+      .map(({ announcement }) => announcement));
   }
 
   destroy(): void {
     this.host.destroy();
     this.tools.clear();
     this.toolWidgetIds.clear();
+    this.focusableToolWidgetId = undefined;
     this.transcript = undefined;
     this.header = undefined;
     this.footer = undefined;
@@ -473,14 +494,14 @@ export class SemanticWidgetController {
     this.statuses = undefined;
     this.surfaces.clear();
     this.derivedStatusIds.clear();
-    this.runtimeHeaderSnapshot = undefined;
-    this.runtimeFooterSnapshot = undefined;
+    this.presentationState = undefined;
     this.interaction = undefined;
     this.interactionGeneration = undefined;
     this.currentInteractionRequest = undefined;
     this.interactionAnnouncements.length = 0;
     this.interactionAnnouncementSignatures.clear();
     this.interactionAnnouncementSignatureOrder.length = 0;
+    this.archivedNotificationsOutput = '';
     this.adapter.bindInteraction?.(undefined, undefined);
   }
 
@@ -502,14 +523,17 @@ export class SemanticWidgetController {
   }
 
   private renderTools(state: PresentationState): void {
-    const liveIds = new Set(state.tools.map(({ callId }) => callId));
+    const rows = state.runtimeWidgets?.plan === undefined
+      ? state.tools
+      : state.tools.filter(({ name }) => name !== 'plan');
+    const liveIds = new Set(rows.map(({ callId }) => callId));
     for (const [callId, widget] of this.tools) {
       if (liveIds.has(callId)) continue;
       this.host.remove(widget);
       this.tools.delete(callId);
       this.toolWidgetIds.delete(callId);
     }
-    for (const row of state.tools) {
+    for (const row of rows) {
       const snapshot = toolSnapshot(row, this.viewport.reducedMotion === true);
       let widget = this.tools.get(row.callId);
       if (!widget) {
@@ -523,28 +547,32 @@ export class SemanticWidgetController {
       }
       widget.render(this.adapter);
     }
+    const focusable = [...rows].reverse().find(({ status }) => (
+      status === 'pending' || status === 'running' || status === 'blocked' || status === 'error'
+    )) ?? rows.at(-1);
+    this.focusableToolWidgetId = focusable === undefined
+      ? undefined
+      : this.toolWidgetIds.get(focusable.callId);
   }
 
   private renderRuntimeSnapshots(state: PresentationState): void {
     const snapshots = state.runtimeWidgets;
-    this.runtimeHeaderSnapshot = snapshots?.header;
-    this.runtimeFooterSnapshot = snapshots?.footer;
-    const header = snapshots?.header === undefined
-      ? undefined
-      : { ...snapshots.header, width: this.viewport.widthColumns };
-    const footer = snapshots?.footer === undefined
-      ? undefined
-      : {
-          ...snapshots.footer,
-          widthColumns: Math.min(1_000, Math.max(20, this.viewport.widthColumns)),
-        };
-    this.header = this.updateOptional(this.header, header, (value) => new HeaderWidget('header', value));
-    this.footer = this.updateOptional(this.footer, footer, (value) => new FooterWidget('footer', value));
+    this.renderChrome(state);
+    if (this.plan !== undefined && snapshots?.plan !== undefined && !this.plan.hasIdentity(snapshots.plan)) {
+      this.host.remove(this.plan);
+      this.plan = undefined;
+    }
     this.plan = this.updateOptional(this.plan, snapshots?.plan, (value) => new PlanWidget('plan', value, {
       widthColumns: Math.min(1_000, Math.max(20, this.viewport.widthColumns)),
       viewportRows: Math.max(1, Math.min(61, this.viewport.heightRows - 8)),
     }));
 
+  }
+
+  private renderChrome(state: PresentationState): void {
+    const chrome = projectPresentationChrome(state, this.viewport.widthColumns);
+    this.header = this.updateOptional(this.header, chrome?.header, (value) => new HeaderWidget('header', value));
+    this.footer = this.updateOptional(this.footer, chrome?.footer, (value) => new FooterWidget('footer', value));
   }
 
   private renderPresentationSurfaces(state: PresentationState): void {
@@ -626,8 +654,15 @@ export class SemanticWidgetController {
         lifecycle: 'active',
       });
     }
+    const visibleNotifications = state.notifications.slice(-3);
+    this.archivedNotificationsOutput = state.notifications.slice(0, -3)
+      .map(({ severity, message }) => `[${severity.toUpperCase()}] ${sanitizeSingleLineText(message, {
+        maxGraphemes: 1_024,
+        redactCredentials: true,
+      })}`)
+      .join('\n');
     const notificationOccurrences = new Map<string, number>();
-    state.notifications.forEach((notification) => {
+    visibleNotifications.forEach((notification) => {
       const signature = JSON.stringify([notification.severity, notification.message]);
       const occurrence = (notificationOccurrences.get(signature) ?? 0) + 1;
       notificationOccurrences.set(signature, occurrence);

@@ -48,16 +48,16 @@ Evidence:
 
 - Core's manifest has no `dependencies`, `peerDependencies`, or `optionalDependencies`: [agent-core package](../packages/octocode-agent-core/package.json).
 - Native's declared runtime dependencies are listed in [native package](../packages/octocode-agent/package.json), and its launcher composes core directly in [native-launcher.ts](../packages/octocode-agent/src/native-launcher.ts).
-- The temporary Pi oracle declares core, Pi, Awareness, engine, MCP, and UI dependencies in [Pi-extension package](../packages/octocode-pi-extension/package.json); the final retirement change deletes that package and its live dependency path.
+- The independent Pi adapter declares core, Pi, Awareness, engine, MCP, and UI dependencies in [Pi-extension package](../packages/octocode-pi-extension/package.json). Those dependencies remain isolated from native agent/core and native release artifacts.
 - The conformance package exposes a structural handler interface rather than production host factories in [host-conformance.ts](../packages/octocode-agent-testing/src/host-conformance.ts).
 
 Current semantic breaks:
 
 - Native infers tool effect policy from catalog category or name in [native-tools.ts](../packages/octocode-agent/src/native-tools.ts), then its production policy allows every read and network effect in [native-launcher.ts](../packages/octocode-agent/src/native-launcher.ts).
-- Pi production applies plan and peer-lock gates through host hooks in [Pi extension index](../packages/octocode-pi-extension/src/index.ts), while native does not compose equivalent gates.
+- Native now composes the core plan-policy state and fail-closed lock-target gate. The external catalog still lacks authoritative lock-target metadata, and native has no peer-lock checker for a future non-empty target set, so cross-host peer-lock conformance remains open.
 - Pi lifecycle translation uses core, but Pi production tools still register through the Pi-local funnel in [octocode-tools.ts](../packages/octocode-pi-extension/src/tools/octocode-tools.ts); the canonical Pi registry adapters are exported but are not the production registration root.
-- Native and Pi each construct settings behavior separately in [native settings](../packages/octocode-agent/src/settings.ts) and [Pi settings HTML](../packages/octocode-pi-extension/src/tools/mcp-html.ts).
-- Core avoids forbidden imports but the kernel still reads `process.cwd()` in [kernel.ts](../packages/octocode-agent-core/src/runtime/kernel.ts), so host-neutrality is not yet capability-complete.
+- Core owns the canonical settings service; native consumes it and Pi exposes an adapter, while complete cross-host value and mutation conformance remains open.
+- Core now receives `cwd` through its runtime options and the package boundary rejects host filesystem, Pi, OpenTUI, and launcher imports. The remaining host-neutrality risk is semantic conformance, not an ambient `process.cwd()` dependency.
 
 ## Target dependency graph
 
@@ -73,7 +73,7 @@ Current semantic breaks:
                        |                             |
           +------------+------------+   +------------+-------------+
           | native octocode-agent   |   | @octocodeai/pi-extension |
-          | composition + adapters  |   | temporary Pi oracle      |
+          | composition + adapters  |   | independent Pi adapter   |
           +---+----+----+----+------+   +---+----+----+-------------+
               |    |    |    |              |    |    |
               |    |    |    +-> OpenTUI    |    |    +-> Pi host/TUI
@@ -152,23 +152,36 @@ The native production composition root is `createDefaultNativeRuntime` in [nativ
 
 The launcher may choose adapters and presentation. It may not replace canonical policy with a permissive local shortcut.
 
-### Temporary Pi oracle
+### Independent Pi compatibility adapter
 
-During migration, the pinned extension factory in [Pi extension index](../packages/octocode-pi-extension/src/index.ts) is the Pi-oracle composition root. It must:
+The pinned extension factory in [Pi extension index](../packages/octocode-pi-extension/src/index.ts) is the independent Pi composition root and conformance reference. It must:
 
 1. assert the supported Pi host version;
 2. create or receive the canonical registries/services;
 3. bind Pi events to canonical lifecycle buses;
 4. register canonical tools and commands through Pi registry adapters;
 5. translate Pi trust/session/model/UI capabilities into core ports;
-6. preserve Pi-only presentation and compatibility behavior only at the temporary boundary; and
+6. preserve Pi-only presentation and compatibility behavior only at the extension boundary; and
 7. execute the same canonical pre-effect decisions as native.
 
-Direct Pi registrations remain temporary comparison code until every production registration is projected through the canonical registry. The final retirement release deletes this composition root and selector after the signed observation and native-only rollback gates pass.
+Direct Pi registrations remain adapter-local compatibility code until every shared production registration is projected through the canonical registry. Native release closure removes migration selectors and proves that this composition root is unreachable from native source, dependencies, artifacts, installers, updates, and rollback paths.
 
 ### Settings page
 
 There is one canonical `SettingsRegistry` and `SettingsService` composition per effective configuration scope. Native CLI, native HTML, Pi HTML, model selection, hooks, and plugins use that service. Hosts contribute storage and action capabilities; they do not create competing definitions for the same key.
+
+### Control plane
+
+The canonical product vocabulary is **Ask**, **Plan**, **Delegate**, and **Configure**. It names semantic ownership, not four new services:
+
+| Term | Semantic owner | Host projection | Evidence boundary |
+|---|---|---|---|
+| Ask | Core interaction request/result contract; runtime owns request lifetime | OpenTUI, headless, JSON/RPC, ACP, and Pi presentation | Native broker/tool exist at `native-interactions.ts:30-150`; mode and cross-host parity remain open |
+| Plan | Runtime owns the active session plan and policy snapshot; Awareness owns shared DAG/task/work records | Plan widget, commands, RPC/ACP, and Pi projection | `native-plan.ts:20-123` is implemented; shared-authority restart/conformance remains open |
+| Delegate | Runtime worker supervisor owns process lifecycle; Awareness owns durable coordination/mailbox/handoff records | Worker tool plus UI/RPC/ACP/Pi controls | `native-worker-tool.ts:31,386-390` and launcher composition exist; clean multi-process/platform proof remains open |
+| Configure | Core SettingsRegistry/SettingsService owns definitions, effective values, revisions, and mutations | HTML, CLI, OpenTUI, RPC/ACP, and Pi projections | `native-settings-page.ts:12-15,161-180` is production-reachable; complete action/conformance proof remains open |
+
+**Connections** is Configure's namespace for providers and external services. MCP Servers, Tools, Resources, Prompts, and **MCP Tasks** belong beneath Connections. The shipped native section inventory contains `connections` and no separate `add-server` entry at `native-settings-page.ts:12-15`. Its Connections section renders the model endpoint, MCP server/tool controls, and the negotiated-capability note for MCP Tasks together at `native-settings-page.ts:181`; native task get/result/cancel operations exist at `native-mcp.ts:677-712`. Real negotiated MCP Tasks behavior against a live supported server and the Pi/native conformance matrix remain open.
 
 ### Conformance
 
@@ -397,7 +410,7 @@ AgentRuntime + SessionController + PolicyKernel + UiPort
 
 ACP never owns session records, permissions, tools, or terminal state. It maps upstream methods into canonical ports and projects canonical events back into ACP updates. Native JSON/RPC remains the Octocode automation protocol; ACP is the editor interoperability protocol.
 
-MCP durable tasks are a separate versioned adapter below the persistent MCP catalog. The adapter negotiates one pinned extension revision, binds task state to authorization context, and delegates task persistence/cancellation to runtime-owned scopes. Generic MCP connectivity must not imply task support.
+MCP durable tasks are a separate versioned adapter below the persistent MCP catalog and appear to users under Configure → Connections → MCP Tasks. The adapter negotiates one pinned extension revision, binds task state to authorization context, and delegates task persistence/cancellation to runtime-owned scopes. Generic MCP connectivity must not imply task support.
 
 A2A is outside the cutover graph. If a real remote-agent consumer appears after native release, an authenticated A2A transport/plugin may map Agent Cards and remote tasks onto canonical runtime/worker ports. It cannot replace Awareness as the internal coordination authority.
 
@@ -408,8 +421,8 @@ Checkpoint review composes the session controller, filesystem checkpoint port, s
 ### Accepted
 
 1. `@octocodeai/agent-core` is the sole host-neutral semantic owner and has zero runtime dependencies.
-2. During migration, native and the frozen Pi oracle are sibling adapters that depend inward on core; neither depends on the other.
-3. `@octocodeai/pi-extension` is temporary comparison infrastructure and is deleted at the final retirement gate.
+2. Native and the independent Pi extension are sibling adapters that depend inward on core; neither depends on the other.
+3. `@octocodeai/pi-extension` is an independently installed, version-pinned Pi compatibility product and conformance reference outside native release wiring.
 4. Native OpenTUI is adapter-private and never enters core, Pi, print, JSON, or RPC boundaries.
 5. Awareness and config remain independent leaf services consumed through host adapters.
 6. One canonical pre-effect order governs every host and transport.
@@ -420,6 +433,7 @@ Checkpoint review composes the session controller, filesystem checkpoint port, s
 11. Official SDKs own external wire protocols: OpenAI Responses for the provider adapter, MCP for context/tool servers, and ACP for editor interoperability.
 12. Awareness remains the durable local worker/mailbox substrate. A2A is reserved for a future approved remote-agent boundary.
 13. OpenTelemetry GenAI conventions may receive a redacted event projection; they do not replace canonical lifecycle events.
+14. Ask, Plan, Delegate, and Configure are the canonical control-plane terms; MCP Tasks is subordinate to Configure → Connections.
 
 ### Open ADRs and partially implemented decisions
 

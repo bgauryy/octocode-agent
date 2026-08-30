@@ -10,15 +10,23 @@
   "type": "module",
   "packageManager": "yarn@4.9.1",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=26.4.0"
   },
   "scripts": {
     "build": "yarn workspaces foreach -At run build",
     "lint": "yarn workspaces foreach -At run lint",
     "lint:fix": "yarn workspaces foreach -At run lint:fix",
     "test": "yarn workspaces foreach -At run test",
+    "test:ffi": "yarn workspace octocode-agent test:ffi",
+    "test:pack": "yarn workspace octocode-agent test:pack",
+    "test:pty": "yarn workspace octocode-agent test:pty",
+    "test:pty:stream": "yarn workspace octocode-agent test:pty:stream",
+    "test:pty:signals": "yarn workspace octocode-agent test:pty:signals",
+    "test:performance": "yarn workspace octocode-agent test:performance",
+    "test:performance:guarded": "yarn workspace octocode-agent test:performance:guarded",
     "test:quiet": "yarn workspaces foreach -At run test:quiet",
-    "typecheck": "yarn workspaces foreach -At run typecheck"
+    "typecheck": "yarn workspaces foreach -At run typecheck && yarn workspace octocode-agent typecheck:tests",
+    "verify": "yarn lint && yarn typecheck && yarn test && yarn test:ffi && yarn build && yarn test:pack && yarn test:pty && yarn test:pty:stream && yarn test:pty:signals && yarn test:performance:guarded"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

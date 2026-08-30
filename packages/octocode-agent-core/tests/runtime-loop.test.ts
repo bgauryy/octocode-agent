@@ -443,12 +443,14 @@ describe('bounded model/tool loop', () => {
       'runtime.ready',
       'input.received',
       'turn.started',
+      'agent.started',
       'context.preparing',
       'provider.request-started',
       'message.started',
       'message.ended',
       'provider.failed',
       'runtime.failed',
+      'agent.ended',
       'turn.ended',
     ]);
     expect(events.find((event) => event.type === 'provider.failed')).toMatchObject({
@@ -1443,5 +1445,141 @@ describe('bounded model/tool loop', () => {
         policy: expect.objectContaining({ receipts: [expect.objectContaining({ policy: 'audit' })] }),
       }),
     })]);
+  });
+
+  it('correlates provider attempts and exposes a redacted monitoring snapshot', async () => {
+    const events: RuntimeEvent[] = [];
+    let attempt = 0;
+    let clock = 100;
+    const kernel = new RuntimeKernel({
+      sessionId: sessionId('s-monitoring'),
+      initialModel: { providerId: 'custom-vendor', modelId: 'model-1' },
+      maxProviderAttempts: 2,
+      now: () => clock,
+      model: {
+        run: async (_request, context) => {
+          attempt += 1;
+          clock += 10;
+          if (attempt === 1) throw new RuntimeFailure('provider', 'secret upstream body', 'safe');
+          await context.emit?.({ type: 'text', text: 'private model output' });
+          clock += 15;
+          return {
+            stop: 'complete',
+            usage: { inputTokens: 12, outputTokens: 3, cachedInputTokens: 7, cacheWriteInputTokens: 2 },
+          };
+        },
+      },
+      emit: async (event) => { events.push(event); },
+    });
+
+    await kernel.submit('private prompt');
+
+    const starts = events.filter((event) => event.type === 'provider.request-started');
+    const failed = events.find((event) => event.type === 'provider.failed')!;
+    const response = events.find((event) => event.type === 'provider.response-received')!;
+    expect(starts).toHaveLength(2);
+    expect((failed.payload as { requestId: string }).requestId).toBe((starts[0]!.payload as { requestId: string }).requestId);
+    expect((response.payload as { requestId: string }).requestId).toBe((starts[1]!.payload as { requestId: string }).requestId);
+    expect(response.payload).toMatchObject({ attempt: 2, maxAttempts: 2, durationMs: 25, ttftMs: 10 });
+
+    const monitoring = await kernel.execute({ type: 'monitoring.snapshot' });
+    expect(monitoring).toMatchObject({
+      ok: true,
+      data: {
+        schemaVersion: 1,
+        sessionId: 's-monitoring',
+        model: { providerId: 'custom-vendor', modelId: 'model-1' },
+        usage: { inputTokens: 12, outputTokens: 3, cachedInputTokens: 7, cacheWriteInputTokens: 2 },
+        provider: {
+          requests: 2,
+          responses: 1,
+          failures: 1,
+          retries: 1,
+          durationMs: { count: 2, sum: 35, min: 10, max: 25 },
+          ttftMs: { count: 1, sum: 10, min: 10, max: 10 },
+          byErrorCategory: { provider: 1 },
+        },
+      },
+    });
+    expect(JSON.stringify(monitoring)).not.toContain('private prompt');
+    expect(JSON.stringify(monitoring)).not.toContain('private model output');
+    expect(JSON.stringify(monitoring)).not.toContain('secret upstream body');
+  });
+
+  it('uses a real production clock when no deterministic clock is injected', async () => {
+    const before = Date.now();
+    const events: RuntimeEvent[] = [];
+    const kernel = new RuntimeKernel({
+      sessionId: sessionId('s-production-clock'),
+      model: { run: async () => ({ stop: 'complete', usage: { inputTokens: 1, outputTokens: 1 } }) },
+      emit: async (event) => { events.push(event); },
+    });
+
+    await kernel.submit('clock');
+
+    const after = Date.now();
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every(({ timestamp }) => timestamp >= before && timestamp <= after)).toBe(true);
+    const monitoring = await kernel.execute({ type: 'monitoring.snapshot' });
+    expect(monitoring).toMatchObject({ ok: true, data: { generatedAt: expect.any(Number) } });
+    expect((monitoring as { data: { generatedAt: number } }).data.generatedAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('merges only typed bounded native monitoring contributions', async () => {
+    const kernel = new RuntimeKernel({
+      sessionId: sessionId('s-native-monitoring'),
+      model: { run: async () => ({ stop: 'complete', usage: { inputTokens: 0, outputTokens: 0 } }) },
+      monitoring: {
+        snapshot: () => ({
+          cache: {
+            hits: 5, misses: 2, loads: 4, loadFailures: 1, expirations: 3,
+            evictions: 1, entries: 7, maxEntries: 32, ttlMs: 60_000,
+          },
+        }),
+      },
+    });
+
+    await expect(kernel.execute({ type: 'monitoring.snapshot' })).resolves.toMatchObject({
+      ok: true,
+      data: {
+        native: {
+          cache: {
+            hits: 5, misses: 2, loads: 4, loadFailures: 1, expirations: 3,
+            evictions: 1, entries: 7, maxEntries: 32, ttlMs: 60_000,
+          },
+        },
+      },
+    });
+  });
+
+  it.each([
+    [{ hits: 0, misses: 0, loads: 0, loadFailures: 0, expirations: 0, evictions: 0, entries: 33, maxEntries: 32, ttlMs: 60_000 }],
+    [{ hits: 0, misses: 0, loads: 0, loadFailures: -1, expirations: 0, evictions: 0, entries: 0, maxEntries: 32, ttlMs: 60_000 }],
+    [{ hits: 0, misses: 0, loads: 0, loadFailures: 0, expirations: 0, evictions: 0, entries: 0, maxEntries: 0, ttlMs: 60_000 }],
+    [{ hits: 0, misses: 0, loads: 0, loadFailures: 0, expirations: 0, evictions: 0, entries: 0, maxEntries: 32, ttlMs: 0 }],
+  ])('omits invalid native cache monitoring contributions: %j', async (cache) => {
+    const kernel = new RuntimeKernel({
+      sessionId: sessionId('s-invalid-native-monitoring'),
+      model: { run: async () => ({ stop: 'complete', usage: { inputTokens: 0, outputTokens: 0 } }) },
+      monitoring: { snapshot: () => ({ cache }) },
+    });
+    await expect(kernel.execute({ type: 'monitoring.snapshot' })).resolves.toMatchObject({ ok: true });
+    const result = await kernel.execute({ type: 'monitoring.snapshot' });
+    expect(result.ok && result.data).not.toHaveProperty('native');
+  });
+
+  it('does not publish process counters without an authoritative synchronous native source', async () => {
+    const kernel = new RuntimeKernel({
+      sessionId: sessionId('s-no-invented-process-monitoring'),
+      model: { run: async () => ({ stop: 'complete', usage: { inputTokens: 0, outputTokens: 0 } }) },
+      monitoring: {
+        snapshot: () => ({
+          cache: { hits: 0, misses: 0, loads: 0, loadFailures: 0, expirations: 0, evictions: 0, entries: 0, maxEntries: 32, ttlMs: 60_000 },
+          process: { activeWorkers: 9, startedWorkers: 9, completedWorkers: 0, failedWorkers: 0, cancelledWorkers: 0 },
+        } as never),
+      },
+    });
+    const result = await kernel.execute({ type: 'monitoring.snapshot' });
+    expect(result.ok && result.data).not.toHaveProperty('native.process');
   });
 });

@@ -34,6 +34,23 @@ describe('external boundaries', () => {
     expect(() => parseRpcEvent({ protocolVersion: 1, sequence: 1, event: { ...event, trust: { workspace: 'trusted', managedOnly: false, extra: true } } })).toThrow(/event/i);
     expect(() => parseRpcEvent({ protocolVersion: 1, sequence: 1, event, extra: true })).toThrow(/event/i);
   });
+  it('validates mapped event payloads while preserving named opaque events', () => {
+    const envelope = {
+      schemaVersion: 1, eventVersion: 1, id: 'provider-1', type: 'provider.response-received', phase: 'after',
+      sessionId: 'session-1', timestamp: 1, cwd: '/workspace', mode: 'rpc',
+      trust: { workspace: 'trusted', managedOnly: false },
+    };
+    expect(() => parseRpcEvent({
+      protocolVersion: 1,
+      sequence: 1,
+      event: { ...envelope, payload: { durationMs: 'slow' } },
+    })).toThrow(/payload/i);
+    expect(parseRpcEvent({
+      protocolVersion: 1,
+      sequence: 1,
+      event: { ...envelope, type: 'plugin.lifecycle', payload: { vendorData: { any: true } } },
+    }).event.payload).toEqual({ vendorData: { any: true } });
+  });
 });
 describe('hook discovery and trust', () => {
   it('merges eligible sources deterministically and invalidates changed hashes', () => { const catalog = new HookCatalog(); const source = (id: string, scope: HookSourceDescriptor['scope'], hash: string, order: number): HookSourceDescriptor => ({ id, scope, provenance: id, managed: false, rawHash: hash, normalizedHash: hash, trust: 'trusted', revision: revision(hash), discoveryOrder: order }); const config = parseCodexHooks({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: './check' }] }] } }); catalog.register(source('workspace', 'workspace', 'h1', 1), config); catalog.review('workspace', 'h1'); expect(catalog.effective(false, false)).toHaveLength(0); expect(catalog.effective(true, false)).toHaveLength(1); catalog.register(source('workspace', 'workspace', 'h2', 1), config); expect(catalog.effective(true, false)).toHaveLength(0); expect(() => catalog.review('workspace', 'h1')).toThrow(/hash/i); });

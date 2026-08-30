@@ -2,10 +2,10 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { formatExternalAgentCoordinationContext, openAwareness } from '@octocodeai/octocode-awareness';
 import { getInstallSource } from '../assets.js';
+import { getOctocodeHome } from '../env.js';
 import { truncateUserVisibleToolOutput } from '../utils.js';
 import { OCTOCODE_SPINNER_FRAMES } from '../ui-extras.js';
 import { hasUiTickSubscriber, setUiTickSubscriber } from '../tui/ui-ticker.js';
@@ -31,6 +31,7 @@ import { makeRenderer, truncateToWidth } from './render-helpers.js';
 import { refreshStatusPanel, resumeStatusPanel, setStatusPanelAgentSource } from './status-panel.js';
 import { stringEnumSchema } from './schema-helpers.js';
 import { setManagedStatus } from './runtime-renderer.js';
+import { workspaceAgentRoot } from './session-artifacts.js';
 import { getRandomAgentName } from '../agentNames.js';
 import {
   assertWorktreeSpawnAllowed,
@@ -495,14 +496,16 @@ function safeName(value: string): string {
 }
 
 function writeTempPromptFile(name: string, text: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-pi-agent-'));
+  const root = path.join(getOctocodeHome(), 'agent', 'tmp', 'prompts');
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  const dir = fs.mkdtempSync(path.join(root, 'worker-'));
   const filePath = path.join(dir, `${safeName(name)}.md`);
   fs.writeFileSync(filePath, text, { encoding: 'utf8', mode: 0o600 });
   return filePath;
 }
 
 function buildHandbackPath(workspace: string, agentId: string): string {
-  return path.join(workspace, '.octocode', 'tmp', 'agents', agentId, HANDBACK_ARTIFACT_FILENAME);
+  return path.join(workspaceAgentRoot(workspace), 'workers', agentId, HANDBACK_ARTIFACT_FILENAME);
 }
 
 function ensureHandbackDir(filePath: string): void {
@@ -516,8 +519,10 @@ function prepareHandbackPath(workspace: string, agentId: string): { path: string
     return { path: preferredPath };
   } catch (preferredError) {
     const fallbackPath = path.join(
-      os.tmpdir(),
-      'octocode-agent-handbacks',
+      getOctocodeHome(),
+      'agent',
+      'tmp',
+      'handbacks',
       agentId,
       HANDBACK_ARTIFACT_FILENAME,
     );
@@ -1369,7 +1374,7 @@ export function spawnRpcAgent(params: SpawnAgentParams, ctx?: PiContext): AgentR
   } catch (error) {
     // processFactory threw before the record was added to `agents`, so removePromptFiles()
     // (wired to the record's 'close'/'error' handlers) would never run. Clean up the temp
-    // system-prompt files buildPiArgs wrote so a failing factory does not leak files in os.tmpdir.
+    // system-prompt files buildPiArgs wrote so a failing factory does not leak files.
     cleanupPromptFiles(promptFiles);
     if (worktree) removeAgentWorktree(worktree, { force: true });
     throw error;

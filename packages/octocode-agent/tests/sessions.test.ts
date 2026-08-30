@@ -50,6 +50,18 @@ describe('native session inventory', () => {
     expect(listProjectSessions('/workspace/a', root).map((session) => session.uuid)).toEqual(['native:newer', 'native:older']);
   });
 
+  it('uses the transactional head timestamp after a resumed session appends segments', () => {
+    const root = temporaryRoot();
+    const resumed = writeSession(root, 'native:resumed', '/workspace/a', 1_000);
+    writeSession(root, 'native:other', '/workspace/a', 2_000);
+    const head = `${resumed}.head`;
+    fs.writeFileSync(head, JSON.stringify({ revision: '9' }));
+    fs.utimesSync(head, new Date(3_000), new Date(3_000));
+
+    expect(listProjectSessions('/workspace/a', root).map(({ uuid }) => uuid)).toEqual(['native:resumed', 'native:other']);
+    expect(listSessions(root)[0]?.mtimeMs).toBe(3_000);
+  });
+
   it('resolves durable parent and newest-child navigation within the current workspace', () => {
     const root = temporaryRoot();
     writeSession(root, 'parent', '/workspace/a', 1_000);

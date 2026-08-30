@@ -31,7 +31,7 @@ function insertMem(db: DatabaseSync, opts: {
     const memoryId = opts.memoryId ?? 'mem_' + randomUUID().replace(/-/g, '');
     const now = new Date().toISOString();
     db.prepare(`
-    INSERT INTO memories (
+    INSERT INTO awareness_memories (
       memory_id, agent_id, task_context, observation, importance,
       label, tags_json, workspace_path, failure_signature, created_at
     ) VALUES (?, 'agent-test', 'test context', ?, ?, ?, ?, ?, ?, ?)
@@ -39,16 +39,16 @@ function insertMem(db: DatabaseSync, opts: {
     return memoryId;
 }
 
-// ─── 3. notifyGet — reads from memories ──────────────────────────────────────
+// ─── 3. notifyGet — reads from awareness_memories ──────────────────────────────────────
 
-describe('notifyGet — smart briefing from memories table', () => {
+describe('notifyGet — smart briefing from awareness_memories table', () => {
   it('returns empty briefing when no memories exist', () => {
     const db = freshDb();
     const res = notifyGet(db, { agent_id: 'agent-a', workspace: '/ws' });
     expect(res.ok).toBe(true);
   });
 
-  it('surfaces high-importance memories from memories table using importance column', () => {
+  it('surfaces high-importance memories from awareness_memories table using importance column', () => {
     const db = freshDb();
     insertMem(db, {
       importance: 8,
@@ -151,7 +151,7 @@ describe('notifyGet — smart briefing from memories table', () => {
       workspacePath: '/ws',
     });
     const prompt = 'private deployment token rotate-now-secret';
-    const before = (db.prepare('SELECT COUNT(*) AS count FROM memories').get() as { count: number }).count;
+    const before = (db.prepare('SELECT COUNT(*) AS count FROM awareness_memories').get() as { count: number }).count;
 
     const result = notifyGet(db, {
       agent_id: 'agent-private',
@@ -162,7 +162,7 @@ describe('notifyGet — smart briefing from memories table', () => {
     }) as { additionalContext?: string };
 
     expect(result.additionalContext).toContain('private deployment token');
-    expect((db.prepare('SELECT COUNT(*) AS count FROM memories').get() as { count: number }).count).toBe(before);
+    expect((db.prepare('SELECT COUNT(*) AS count FROM awareness_memories').get() as { count: number }).count).toBe(before);
     const delivery = db.prepare('SELECT fingerprint, scope_key FROM delivery_state').get() as {
       fingerprint: string; scope_key: string;
     };

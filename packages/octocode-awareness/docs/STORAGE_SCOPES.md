@@ -1,109 +1,63 @@
-# Awareness storage scopes
+# Agent storage
 
 Status: Accepted
 
-Awareness supports repository and global SQLite storage. Workspace policy defaults
-repository-owned commands to `repo` and reusable-memory commands to `global`. Set it once
-with `setup`; use `--db-scope repo|global` only for a single-call override. An explicit
-`--db <path>` overrides both.
+All durable agent state uses one global SQLite database:
 
-## Decision
+```text
+$OCTOCODE_HOME/
+├── agent/
+│   ├── agent.sqlite3
+│   ├── sessions/
+│   ├── workspaces/
+│   ├── skills/
+│   └── mcp/
+├── <CLI-owned files and databases>
+└── <MCP-owned files and databases>
+```
 
-Use repository storage for operational state that belongs to one checkout. Use global
-storage only when a feature must span repositories or belongs to the local Octocode
-installation.
+The agent owns only `$OCTOCODE_HOME/agent/`. The Octocode CLI and MCP server can
+own other files under `$OCTOCODE_HOME`; agent code must not reuse or overwrite
+those paths. Repository `.octocode/` directories are not default agent database
+or artifact locations.
 
-| Existing store | Repository database | Global database |
-|---|---|---|
-| Shared coordination | `<workspace>/.octocode/octocode.sqlite3` | `$OCTOCODE_HOME/octocode.sqlite3` |
-| Advanced workflow | `<workspace>/.octocode/awareness.sqlite3` | `$OCTOCODE_MEMORY_HOME/awareness.sqlite3` |
+## Database contract
 
-When `OCTOCODE_MEMORY_HOME` is unset, the global advanced database lives under
-`$OCTOCODE_HOME/memory/`. `OCTOCODE_DB_PATH` continues to control the global shared
-coordination database. The package config loader owns environment and platform-default
-resolution.
+`$OCTOCODE_HOME/agent/agent.sqlite3` is the only default agent database. The
+coordination, continuity, session, settings, and advanced Awareness modules use
+separate table families in that physical store. Workspace isolation remains
+logical through `workspace_path` and related scope columns.
 
-Both levels retain `workspace_path` columns. Repository databases use those columns for
-integrity and future import/export checks; global databases also use them to isolate rows
-from different workspaces.
+`OCTOCODE_AGENT_DB_PATH` overrides the database for an explicitly managed
+deployment or test. An explicit `--db <absolute-path>` affects only that CLI call.
+Storage-scope flags remain accepted where required by command contracts, but they
+don't select a repository database.
 
-## Feature placement
+## Artifacts
 
-| Prefer repository scope | Prefer global scope |
-|---|---|
-| Plans, tasks, work presence, locks, checks, messages, and handoffs | Agent sessions and machine-level control state |
-| Repository signals, refinements, and verification debt | Cross-repository memory and maintenance |
-| `attend`, workboard, and repository query views | Cross-workspace audits and registry views |
+Session, plan, log, browser, worker handback, discovery, and temporary media
+artifacts live under `$OCTOCODE_HOME/agent/`. Workspace-specific artifacts use a
+stable workspace key beneath `agent/workspaces/`, so multiple repositories don't
+collide while still sharing one global agent home.
 
-The policy lives at `<workspace>/.octocode/awareness.json`. It is a thin routing layer over
-the two existing stores; it does not merge schemas or copy rows. Global automatic-feature
-preferences and host hook definitions remain global or host-owned.
+Authored repository files and explicit query exports are not database state. A
+user can still request an export path inside a repository; SQLite remains
+authoritative.
 
-## CLI usage
+## Operational checks
 
-Set the normal split once:
+Use the CLI rather than editing SQLite directly:
 
 ```bash
-npx @octocodeai/octocode-awareness setup --workspace "$PWD" \
-  --repository-scope repo --memory-scope global --hook-profile coordination
-npx @octocodeai/octocode-awareness next --workspace "$PWD"
-npx @octocodeai/octocode-awareness inspect workboard --workspace "$PWD"
+npx @octocodeai/octocode-awareness init --compact
+npx @octocodeai/octocode-awareness workspace status --workspace "$PWD" --compact
 ```
 
-Commands and hooks load the same repository policy, so normal work does not repeat a scope
-flag. Expert commands remain available underneath the façade.
-
-Use global storage when the command must see state from more than one repository:
+For isolated testing, provide an explicit database:
 
 ```bash
-npx @octocodeai/octocode-awareness memory recall \
-  --query "migration lesson" --all-workspaces --db-scope global --compact
+npx @octocodeai/octocode-awareness init --db /absolute/path/agent.sqlite3 --compact
 ```
 
-Use `--db` only for tests, recovery, or an explicitly managed deployment:
-
-```bash
-npx @octocodeai/octocode-awareness maintenance init \
-  --db /absolute/path/awareness.sqlite3 --compact
-```
-
-## Data compatibility and rollback
-
-The CLI does not copy or delete data when policy changes. Existing releases wrote to
-global databases, so use `--db-scope global` to inspect existing state. A repository-level
-command creates its database on first use.
-
-Rollback is `setup --repository-scope global --memory-scope global` or deleting only the
-workspace policy file to restore defaults. Preserve both databases until checks show the
-required state. Never merge SQLite files by copying tables manually.
-
-## Alternatives considered
-
-| Alternative | Decision |
-|---|---|
-| Keep every table in one global database | Rejected because unrelated repositories share write contention, migration risk, retention, and privacy boundaries. |
-| Put every table in each repository | Rejected because sessions, machine-level control, cross-repository memory, and global maintenance need a stable home outside one checkout. |
-| Configure one level for all commands | Rejected because storage ownership follows the feature domain. Workspace policy records the split; the explicit flag remains for recovery. |
-
-## Pre-mortem
-
-The most likely failure is an operator writing related commands to different levels and
-believing data was lost. Every status result therefore reports its database path, help
-defines the level flag, and switching levels never copies or deletes data. The next likely
-failure is committing SQLite sidecars; use the narrow ignore rules below. A read-only
-workspace cannot use repository scope, so select global scope, or an explicit writable
-`--db` path.
-
-## Repository hygiene
-
-Repository databases can create SQLite sidecar files. Ignore only the database files, not
-the authored `.octocode/` documents:
-
-```gitignore
-.octocode/*.sqlite3
-.octocode/*.sqlite3-shm
-.octocode/*.sqlite3-wal
-```
-
-Each Git worktree has its own repository database. Use global scope when separate worktrees
-must deliberately share live state.
+See [DB.md](DB.md) for table ownership and fail-closed schema checks, and
+[HOW_IT_WORKS.md](HOW_IT_WORKS.md) for the agent lifecycle.

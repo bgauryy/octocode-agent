@@ -12,7 +12,7 @@ function run(home: string, args: string[]) {
   const result = spawnSync(process.execPath, [SCRIPT, ...args, '--compact'], {
     encoding: 'utf8',
     timeout: 5_000,
-    env: { ...process.env, OCTOCODE_HOME: home, OCTOCODE_MEMORY_HOME: join(home, 'memory') },
+    env: { ...process.env, OCTOCODE_HOME: home, OCTOCODE_AGENT_DIR: join(home, 'memory') },
   });
   return {
     status: result.status,

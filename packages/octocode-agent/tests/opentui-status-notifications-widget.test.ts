@@ -29,6 +29,7 @@ describe('StatusNotificationsWidget', () => {
     const text = state.regions.map((region) => region.text).join('\n');
     expect(text).toContain('ℹ [INFO] agent/research');
     expect(text).toContain('! [WARNING] permission/write');
+    expect(text).toContain('Esc back · Ctrl-C cancel/exit');
   });
 
   it('derives polite or assertive urgency from lifecycle and deduplicates updates', () => {

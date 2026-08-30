@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest';
 import { openAwarenessStore } from '../src/coordination/index.js';
 
 const SHARED_TABLES = [
-  'agent_sessions', 'agents', 'authorization_receipts', 'capability_receipts',
+  'agent_schema_modules', 'agent_sessions', 'agents', 'authorization_receipts',
+  'awareness_agents', 'awareness_locks', 'awareness_memories', 'awareness_plans', 'awareness_tasks', 'capability_receipts',
   'delivery_state', 'edit_log', 'event_acknowledgements', 'event_consumers',
   'event_outbox', 'handoffs', 'harness_log', 'hook_receipts', 'locks',
   'mcp_catalog_state', 'mcp_server_overrides', 'mcp_tool_overrides', 'memories',
@@ -21,7 +22,7 @@ describe('shared Awareness database contract', () => {
   it('creates every coordination, continuity, control, and auxiliary entity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'awareness-shared-contract-'));
     chmodSync(dir, 0o755);
-    const dbPath = join(dir, 'octocode.sqlite3');
+    const dbPath = join(dir, 'agent.sqlite3');
     const store = openAwarenessStore({ workspace: dir, dbPath });
     store.close();
     expect(statSync(dir).mode & 0o777).toBe(0o700);

@@ -39,6 +39,8 @@ export interface WorkerSupervisorOptions {
   readonly maxActive: number;
   readonly shutdownGraceMs?: number;
   readonly worktrees?: WorkerWorktreePort;
+  readonly onStarted?: (snapshot: WorkerSnapshot) => void | Promise<void>;
+  readonly onStopped?: (snapshot: WorkerSnapshot) => void | Promise<void>;
 }
 
 const terminalState = (outcome: WorkerTerminalOutcome): WorkerState => outcome;
@@ -52,6 +54,8 @@ export class WorkerSupervisor implements WorkerController {
   readonly #maxActive: number;
   readonly #shutdownGraceMs: number;
   readonly #worktrees?: WorkerWorktreePort;
+  readonly #onStarted?: WorkerSupervisorOptions['onStarted'];
+  readonly #onStopped?: WorkerSupervisorOptions['onStopped'];
   #active = 0;
   #state: WorkerSupervisorSnapshot['state'] = 'running';
 
@@ -63,6 +67,8 @@ export class WorkerSupervisor implements WorkerController {
     this.#maxActive = options.maxActive;
     this.#shutdownGraceMs = options.shutdownGraceMs ?? 5_000;
     this.#worktrees = options.worktrees;
+    this.#onStarted = options.onStarted;
+    this.#onStopped = options.onStopped;
   }
 
   async spawn(packet: WorkerSpawnPacket): Promise<WorkerSnapshot> {
@@ -197,6 +203,8 @@ export class WorkerSupervisor implements WorkerController {
       return;
     }
     await this.#recordState(record, 'running');
+    try { await this.#onStarted?.(this.#snapshot(record)); }
+    catch { /* Lifecycle observers cannot orphan a running worker. */ }
     while (record.pending.length > 0 && record.state === 'running') {
       const packet = record.pending.shift();
       if (packet !== undefined) {
@@ -256,6 +264,8 @@ export class WorkerSupervisor implements WorkerController {
           try { await this.#worktrees?.release(record.spawn, immutable); }
           catch { /* Cleanup is fail-closed by retaining the worktree; terminal settlement remains authoritative. */ }
         }
+        try { await this.#onStopped?.(this.#snapshot(record)); }
+        catch { /* Lifecycle observers cannot erase authoritative terminal state. */ }
         record.resolve(immutable);
         this.#pump();
       } catch (error) {

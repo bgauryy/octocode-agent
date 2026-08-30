@@ -11,12 +11,21 @@ Pass a prompt as an argument or through standard input:
 octocode-agent run "Inspect the failing tests"
 printf '%s\n' "Inspect the failing tests" | octocode-agent run
 octocode-agent run --json "Inspect the failing tests"
+octocode-agent run --model openai/gpt-5 "Inspect the failing tests"
+octocode-agent run --model primary/model --fallback-model backup/model "Inspect the failing tests"
 ```
 
 Text mode writes only assistant text to standard output. JSON mode writes one
 versioned runtime-event envelope per line. Both modes return a nonzero status for
 runtime failures, terminal turn errors, and turn timeouts. An empty terminal
 invocation fails before the runtime or model starts.
+
+`--model provider/model` is a process-local override. Fallback is deliberately
+opt-in: each repeated `--fallback-model provider/model` extends an ordered chain,
+the primary and fallbacks are health-probed before runtime creation, and execution
+uses the first passing candidate. No passing candidate means no session turn is
+started. Without a fallback flag, normal provider error and retry semantics are
+unchanged and the launcher never switches vendors.
 
 Headless modes own `SIGINT` and `SIGTERM` while work is active. The first signal
 cancels the runtime, closes controller input when applicable, stops the runtime
@@ -40,8 +49,12 @@ active provider attempt, then adds the steered input at the next model-safe
 point within the same turn. It doesn't replay effects that already completed.
 Follow-ups remain FIFO inputs for later turns. Runtime startup must complete
 before request dispatch begins, so a startup failure exits without waiting for
-input to close. Close standard input to drain pending commands and stop the
-runtime.
+input to close. Each UTF-8 JSONL input frame is limited to 1 MiB; an oversized
+frame receives a typed validation error, is discarded without parsing, and does
+not prevent a following valid frame from running. Buffered RPC output is also
+limited to 1 MiB. If a consumer stops reading and the queue reaches that limit,
+the transport reports a redacted overflow error and tears down deterministically.
+Close standard input to drain pending commands and stop the runtime.
 
 ## Prompt and cache behavior
 
@@ -61,10 +74,16 @@ caching. The official Responses adapter reports `cachedInputTokens` and
 adapter reports cache reads when a compatible provider supplies them; neither
 adapter invents unavailable usage.
 
-The native launcher selects Responses for `api.openai.com`. Custom
-OpenAI-compatible endpoints default to Chat Completions. Set
-`OCTOCODE_MODEL_PROTOCOL` to `openai-responses` or
-`openai-chat-completions` to select an adapter explicitly.
+`/status` reports cumulative input, output, cache-read, and cache-write tokens when
+the selected protocol supplies them. These are provider token counters, not a claim
+about current context-window occupancy or local response caching.
+
+The native launcher selects Responses for the canonical `api.openai.com` provider.
+Custom providers declare `openai-responses`, `openai-completions`, or
+`anthropic-messages` in a discovered `models.json` file. Model, endpoint, and protocol
+environment variables don't create catalog entries; environment variables are reserved
+for referenced credentials. Other native wire
+protocols are not executable merely because discovery finds a model definition.
 
 Run `octocode-agent acp` to serve ACP v1 over stdio for an editor. This route
 uses the official ACP SDK, creates one canonical runtime per ACP session, and
@@ -164,6 +183,11 @@ Explicit resume and terminal continuation recover from a valid session backup
 when the primary is missing or corrupt. New session and fork identities combine
 a timestamp with a UUID, and fork repair remaps parent, branch, compaction, and
 retained-event references before the destination becomes visible.
+
+Session writes use process-owned lock records. A dead process owner is reclaimed;
+a live owner remains authoritative and causes the competing launcher to fail
+closed. Append segments, versioned checkpoints, and bounded diagnostic retention
+preserve recovery evidence without treating an incomplete write as committed state.
 
 See the cross-host [capability discovery guide](../../../docs/DISCOVERY.md) for source
 locations. That guide keeps Pi catalog and UI mechanics explicitly scoped to the parity

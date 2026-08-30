@@ -2,9 +2,9 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { createEffectSet, jsonSchemaError, ToolRegistry, type EffectSet, type JsonSchema } from '@octocodeai/agent-core';
-import { closeOctocodeDb, ensurePrivateDirectory, getMcpEnablement, getSkillEnablement, listMcpOverrides, octocodeDbPath, openOctocodeDb, setMcpServerEnabled, setMcpToolEnabled, setSkillEnabled } from '@octocodeai/octocode-awareness/mcp-state';
+import { agentDbPath, closeOctocodeDb, ensurePrivateDirectory, getMcpEnablement, getSkillEnablement, listMcpOverrides, openOctocodeDb, setMcpServerEnabled, setMcpToolEnabled, setSkillEnabled } from '@octocodeai/octocode-awareness/mcp-state';
 import { defaultAgentSkillRoots, discoverAgentSkills, parseAgentSkill } from '@octocodeai/octocode-shared/agent-skills';
-import { getOctocodeHome } from '@octocodeai/octocode-shared/paths';
+import { agentHome, getOctocodeHome } from '@octocodeai/octocode-shared/paths';
 import path from 'node:path';
 import os from 'node:os';
 import { registerNativeAwarenessTool, type NativeAwarenessOptions } from './native-awareness.js';
@@ -12,7 +12,7 @@ import type { NativeInteractionBroker } from './native-interactions.js';
 import type { NativeHookMcpExecutor } from './native-hook-dispatcher.js';
 import { loadNativeMcpServers, registerNativeMcpTool, type NativeMcpElicitationRequest, type NativeMcpElicitationResult, type NativeMcpOptions, type NativeMcpSessionManager } from './native-mcp.js';
 import { registerNativePlanTool, type NativePlanOptions } from './native-plan.js';
-import { listNativeSkillSummaries, registerNativeSkillTool, type NativeSkillLifecycleResult, type NativeSkillMutationRequest, type NativeSkillOptions } from './native-skills.js';
+import { listNativeSkillInventory, registerNativeSkillTool, type NativeSkillLifecycleResult, type NativeSkillMutationRequest, type NativeSkillOptions } from './native-skills.js';
 import type { NativeSettingsCapabilityControl } from './native-settings-page.js';
 
 export interface OctocodeCatalogTool {
@@ -52,7 +52,9 @@ export type OctocodeCommandRunner = (
 ) => Promise<string>;
 
 const CATALOG_CACHE_TTL_MS = 60_000;
+const CATALOG_CACHE_MAX_ENTRIES = 32;
 const catalogCache = new Map<string, { expiresAt: number; value: Promise<OctocodeCatalog> }>();
+const catalogCacheCounters = { hits: 0, misses: 0, loads: 0, loadFailures: 0, expirations: 0, evictions: 0 };
 const runnerIds = new WeakMap<OctocodeCommandRunner, number>();
 const registryMcpManagers = new WeakMap<ToolRegistry, NativeMcpSessionManager>();
 let nextRunnerId = 0;
@@ -200,7 +202,12 @@ function copyBoundedSkill(source: string, target: string, name: string): string 
 
 function skillLifecycle(options: NativeCapabilityCompositionOptions, managedRoot: string) {
   const roots = defaultAgentSkillRoots(options.cwd, options.env.HOME ?? os.homedir(), options.env.OCTOCODE_HOME ?? getOctocodeHome(options.env));
-  const known = (name: string): boolean => discoverAgentSkills(roots).skills.some((skill) => skill.name === name);
+  const known = (name: string, source?: string): boolean => listNativeSkillInventory({
+    cwd: options.cwd,
+    homeDir: options.env.HOME ?? os.homedir(),
+    octocodeHome: options.env.OCTOCODE_HOME ?? getOctocodeHome(options.env),
+    workspaceTrusted: options.workspaceTrust === 'trusted',
+  }).entries.some((entry) => entry.name === name && (source === undefined || entry.source === source));
   return {
     managedRoot,
     async mutate(request: NativeSkillMutationRequest): Promise<NativeSkillLifecycleResult> {
@@ -213,10 +220,10 @@ function skillLifecycle(options: NativeCapabilityCompositionOptions, managedRoot
       }
       const target = path.join(managedRoot, name);
       if ((request.action === 'enable' || request.action === 'disable')) {
-        if (!known(name)) throw new Error(`Unknown skill: ${name}`);
-        const dbFile = octocodeDbPath(options.env);
+        if (!known(name, request.source)) throw new Error(`Unknown skill: ${name}`);
+        const dbFile = agentDbPath(options.env);
         const db = openOctocodeDb(dbFile);
-        try { setSkillEnabled(db, options.cwd, name, request.action === 'enable'); }
+        try { setSkillEnabled(db, options.cwd, name, request.action === 'enable', request.source); }
         finally { closeOctocodeDb(dbFile); }
         return { name, enabled: request.action === 'enable', provenance: { scope: 'workspace', operation: request.action, source: 'settings', revision: `sqlite:${options.cwd}:${name}` } };
       }
@@ -251,14 +258,22 @@ function skillLifecycle(options: NativeCapabilityCompositionOptions, managedRoot
 
 /** Compose production MCP/Skill policy from launcher-owned interaction and trust state. */
 export function createNativeCapabilityComposition(options: NativeCapabilityCompositionOptions): NativeCapabilityComposition {
-  const workspace = canonicalLocalPath(options.cwd);
-  const managedRoot = canonicalLocalPath(path.join(workspace, '.octocode', 'skills'));
-  if (managedRoot !== workspace && !managedRoot.startsWith(`${workspace}${path.sep}`)) throw new Error('Managed skill root must stay within the workspace');
+  const declaredAgentRoot = path.resolve(agentHome(options.env));
+  if (fs.existsSync(declaredAgentRoot) && fs.lstatSync(declaredAgentRoot).isSymbolicLink()) {
+    throw new Error('Managed skill root cannot redirect the global agent home');
+  }
+  fs.mkdirSync(declaredAgentRoot, { recursive: true, mode: 0o700 });
+  const managedAgentRoot = canonicalLocalPath(declaredAgentRoot);
+  const managedRoot = canonicalLocalPath(path.join(managedAgentRoot, 'skills'));
+  if (managedRoot !== managedAgentRoot && !managedRoot.startsWith(`${managedAgentRoot}${path.sep}`)) {
+    throw new Error('Managed skill root must stay within the global agent home');
+  }
   const lifecycle = skillLifecycle(options, managedRoot);
   return {
     mcp: { elicit: (request) => brokerElicitation(options.interactions, options.workspaceTrust, request) },
     skills: {
       lifecycle,
+      workspaceTrusted: options.workspaceTrust === 'trusted',
       authorizeMutation: async (request) => {
         if (options.workspaceTrust !== 'trusted') return false;
         if (request.action === 'refresh') return true;
@@ -280,17 +295,31 @@ export function createNativeSettingsCapabilityControl(options: {
 }): NativeSettingsCapabilityControl {
   const scope = path.resolve(options.cwd);
   const snapshot = () => {
-    const dbFile = octocodeDbPath(options.env);
+    const dbFile = agentDbPath(options.env);
     const db = openOctocodeDb(dbFile);
     try {
       const servers = loadNativeMcpServers({ cwd: scope, env: options.env });
       const overrides = [...listMcpOverrides(db, '*').tools, ...listMcpOverrides(db, scope).tools];
       const mcpServers = Object.keys(servers).sort().map((name) => ({
         name,
-        enabled: getMcpEnablement(db, scope, name, undefined, true),
+        enabled: getMcpEnablement(db, scope, name, undefined, servers[name]?.defaultEnabled ?? true),
+        source: servers[name]?.discovered?.host ?? 'octocode',
+        path: servers[name]?.provenance?.file,
         tools: [...new Set(overrides.filter(({ serverKey }) => serverKey === name).map(({ toolName }) => toolName))].sort().map((tool) => ({ tool, name: tool, enabled: getMcpEnablement(db, scope, name, tool, true) })).map(({ name, enabled }) => ({ name, enabled })),
       }));
-      const skills = listNativeSkillSummaries({ cwd: scope }).map(({ name }) => ({ name, enabled: getSkillEnablement(db, scope, name, true) }));
+      const skills = listNativeSkillInventory({
+        cwd: scope,
+        homeDir: options.env.HOME ?? os.homedir(),
+        octocodeHome: getOctocodeHome(options.env),
+        workspaceTrusted: options.skills.workspaceTrusted,
+        isEnabled: (name, defaultEnabled, source) => getSkillEnablement(db, scope, name, defaultEnabled, source.id),
+      }).entries.map((entry) => ({
+        name: entry.name,
+        enabled: entry.enabled,
+        source: entry.source,
+        vendor: entry.vendor,
+        path: entry.path,
+      }));
       const revision = createHash('sha256').update(JSON.stringify({ mcpServers, skills })).digest('hex');
       return { revision, mcpServers, skills };
     } finally { closeOctocodeDb(dbFile); }
@@ -305,13 +334,13 @@ export function createNativeSettingsCapabilityControl(options: {
         if (!lifecycle || !authorizeMutation) return { ok: false, revision: expectedRevision, error: 'Skill mutation is unavailable.' };
         const request: NativeSkillMutationRequest = action.op === 'refresh-skills'
           ? { action: 'refresh', managedRoot: lifecycle.managedRoot }
-          : { action: action.enabled ? 'enable' : 'disable', name: action.name, managedRoot: lifecycle.managedRoot };
+          : { action: action.enabled ? 'enable' : 'disable', name: action.name, source: action.source, managedRoot: lifecycle.managedRoot };
         if (!await authorizeMutation(request)) return { ok: false, revision: expectedRevision, error: 'Skill mutation was not authorized.' };
         await lifecycle.mutate(request);
       } else {
         const current = snapshot();
         if (!current.mcpServers.some(({ name }) => name === action.server)) return { ok: false, revision: current.revision, error: 'Unknown MCP server.' };
-        const dbFile = octocodeDbPath(options.env);
+        const dbFile = agentDbPath(options.env);
         const db = openOctocodeDb(dbFile);
         try {
           if (action.op === 'set-mcp-tool-enabled') setMcpToolEnabled(db, scope, action.server, action.tool, action.enabled);
@@ -426,8 +455,22 @@ export async function loadOctocodeCatalog(options: {
   const run = options.run ?? execOctocode;
   const now = options.now ?? Date.now;
   const key = options.cacheKey ?? catalogCacheKey(run, options.cwd, options.env);
+  const currentTime = now();
+  for (const [candidate, entry] of catalogCache) {
+    if (entry.expiresAt <= currentTime) {
+      catalogCache.delete(candidate);
+      catalogCacheCounters.expirations += 1;
+    }
+  }
   const cached = catalogCache.get(key);
-  if (cached && cached.expiresAt > now()) return cached.value;
+  if (cached) {
+    catalogCacheCounters.hits += 1;
+    catalogCache.delete(key);
+    catalogCache.set(key, cached);
+    return cached.value;
+  }
+  catalogCacheCounters.misses += 1;
+  catalogCacheCounters.loads += 1;
   const load = (async (): Promise<OctocodeCatalog> => {
     let parsed: unknown;
     try {
@@ -447,13 +490,27 @@ export async function loadOctocodeCatalog(options: {
     assertOctocodeCatalog(parsed);
     return { ...parsed, tools: [...parsed.tools].sort((left, right) => left.name.localeCompare(right.name)) };
   })();
-  catalogCache.set(key, { expiresAt: now() + CATALOG_CACHE_TTL_MS, value: load });
-  void load.catch(() => { if (catalogCache.get(key)?.value === load) catalogCache.delete(key); });
+  while (catalogCache.size >= CATALOG_CACHE_MAX_ENTRIES) {
+    const oldest = catalogCache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    catalogCache.delete(oldest);
+    catalogCacheCounters.evictions += 1;
+  }
+  catalogCache.set(key, { expiresAt: currentTime + CATALOG_CACHE_TTL_MS, value: load });
+  void load.catch(() => {
+    catalogCacheCounters.loadFailures += 1;
+    if (catalogCache.get(key)?.value === load) catalogCache.delete(key);
+  });
   return load;
+}
+
+export function octocodeCatalogCacheMetrics(): Readonly<typeof catalogCacheCounters & { entries: number; maxEntries: number; ttlMs: number }> {
+  return { ...catalogCacheCounters, entries: catalogCache.size, maxEntries: CATALOG_CACHE_MAX_ENTRIES, ttlMs: CATALOG_CACHE_TTL_MS };
 }
 
 export function resetOctocodeCatalogCacheForTests(): void {
   catalogCache.clear();
+  for (const key of Object.keys(catalogCacheCounters) as Array<keyof typeof catalogCacheCounters>) catalogCacheCounters[key] = 0;
 }
 
 export async function executeOctocodeTool(
@@ -506,7 +563,7 @@ export async function createDefaultOctocodeToolRegistry(options: {
       ...(options.allowedTools === undefined ? {} : { allowedTools: options.allowedTools }),
     },
   );
-  const stateDbPath = octocodeDbPath(env);
+  const stateDbPath = agentDbPath(env);
   const readState = <T>(read: (db: ReturnType<typeof openOctocodeDb>) => T): T => {
     const db = openOctocodeDb(stateDbPath);
     try { return read(db); }
@@ -517,7 +574,7 @@ export async function createDefaultOctocodeToolRegistry(options: {
       cwd,
       homeDir: env.HOME ?? os.homedir(),
       ...options.skills,
-      isEnabled: (name) => readState((db) => getSkillEnablement(db, cwd, name, true)),
+      isEnabled: (name, defaultEnabled, source) => readState((db) => getSkillEnablement(db, cwd, name, defaultEnabled, source.id)),
     });
   }
   if (options.allowedTools === undefined || options.allowedTools.has('MCPTool')) {
@@ -526,7 +583,7 @@ export async function createDefaultOctocodeToolRegistry(options: {
       env,
       homeDir: env.HOME ?? os.homedir(),
       ...options.mcp,
-      isEnabled: (server, tool) => readState((db) => getMcpEnablement(db, cwd, server, tool, true)),
+      isEnabled: (server, tool, defaultEnabled) => readState((db) => getMcpEnablement(db, cwd, server, tool, defaultEnabled ?? true)),
     });
     registryMcpManagers.set(registry, mcpManager);
   }

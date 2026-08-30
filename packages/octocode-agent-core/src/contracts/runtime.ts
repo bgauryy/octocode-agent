@@ -37,8 +37,42 @@ export type RuntimeCommand =
   | { readonly type: 'context.append'; readonly eventId: string; readonly text: string; readonly provenance: 'peer-attributed-data' }
   | { readonly type: 'tools.list' }
   | { readonly type: 'tools.activate'; readonly name: string }
+  | { readonly type: 'monitoring.snapshot' }
   | { readonly type: 'runtime.snapshot' }
   | { readonly type: 'runtime.stop' };
 export type RuntimeCommandResult = { readonly ok: true; readonly data?: unknown } | { readonly ok: false; readonly error: RuntimeErrorData };
+export interface MonitoringAggregate { readonly count: number; readonly sum: number; readonly min: number | null; readonly max: number | null; }
+export interface NativeMonitoringContributionV1 {
+  readonly cache?: {
+    readonly hits: number;
+    readonly misses: number;
+    readonly loads: number;
+    readonly loadFailures: number;
+    readonly expirations: number;
+    readonly evictions: number;
+    readonly entries: number;
+    readonly maxEntries: number;
+    readonly ttlMs: number;
+  };
+}
+export interface NativeMonitoringPort { snapshot(): NativeMonitoringContributionV1; }
+export interface MonitoringSnapshotV1 {
+  readonly schemaVersion: 1;
+  readonly generatedAt: number;
+  readonly sessionId: SessionId;
+  readonly model: { readonly providerId: string; readonly modelId: string } | null;
+  readonly usage: RuntimeSnapshot['usage'];
+  readonly provider: {
+    readonly requests: number;
+    readonly responses: number;
+    readonly failures: number;
+    readonly retries: number;
+    readonly cancellations: number;
+    readonly durationMs: MonitoringAggregate;
+    readonly ttftMs: MonitoringAggregate;
+    readonly byErrorCategory: Readonly<Partial<Record<RuntimeErrorData['category'], number>>>;
+  };
+  readonly native?: NativeMonitoringContributionV1;
+}
 export interface RuntimeSnapshot { readonly schemaVersion: 1; readonly state: 'created' | 'starting' | 'ready' | 'running' | 'stopping' | 'stopped' | 'failed'; readonly sessionId: SessionId; readonly activeTurn: boolean; readonly model: { readonly providerId: string; readonly modelId: string } | null; readonly thinkingLevel: string | null; readonly usage: { readonly inputTokens: number; readonly outputTokens: number; readonly cachedInputTokens?: number; readonly cacheWriteInputTokens?: number }; readonly revision: number; }
 export interface AgentRuntime { start(): Promise<void>; submit(input: string): Promise<void>; cancel(reason?: string): Promise<void>; execute(command: RuntimeCommand): Promise<RuntimeCommandResult>; snapshot(): RuntimeSnapshot; subscribe(listener: (event: RuntimeEvent) => void): () => void; stop(): Promise<void>; }

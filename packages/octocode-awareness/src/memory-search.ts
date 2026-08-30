@@ -82,7 +82,7 @@ export function lexicalSearch(
         // bm25() returns negative values; ABS() + DESC gives best-match-first.
         const sql = `
           SELECT m.*, ABS(bm25(memories_fts, 0, 10, 7, 2)) AS _bm25
-          FROM memories m
+          FROM awareness_memories m
           JOIN memories_fts ON memories_fts.memory_id = m.memory_id
           WHERE memories_fts MATCH ?
             AND ${conditions.join(' AND ')}
@@ -267,7 +267,7 @@ export function regexCandidateIds(db: DatabaseSync, regexes: RegExp[]): Set<stri
   type Row = MemoryRow & { references_text: string | null };
   const rows = db.prepare(
     `SELECT m.*, group_concat(r.reference, char(31)) AS references_text
-     FROM memories m
+     FROM awareness_memories m
      LEFT JOIN memory_refs r ON r.memory_id = m.memory_id
      GROUP BY m.memory_id`
   ).all() as unknown as Row[];

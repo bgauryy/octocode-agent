@@ -14,7 +14,8 @@ import fs from 'node:fs';
 import { execSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveSessionIdentity } from './tools/session-artifacts.js';
+import { resolveSessionIdentity, workspaceAgentRoot } from './tools/session-artifacts.js';
+import { getOctocodeHome } from './env.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -94,9 +95,8 @@ export interface ChromeDebugConnectOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   workspaceCwd?: string;
-  /** Resolved session key from resolveSessionIdentity — when present, screenshots and
-   *  session metadata land under `<workspace>/.octocode/agent/<sessionKey>/browser/`
-   *  instead of the shared `.octocode/screenshots/` and `.octocode/chrome-debug/` dirs. */
+  /** Resolved session key from resolveSessionIdentity — screenshots and session
+   * metadata land in the workspace/session tree under `$OCTOCODE_HOME/agent`. */
   sessionKey?: string;
 }
 
@@ -428,12 +428,12 @@ export function findChromePath(): string {
 }
 
 export function getDefaultToolUserDataDir(): string {
-  return path.join(os.homedir(), '.octocode', 'chrome-debug', 'profile');
+  return path.join(getOctocodeHome(), 'agent', 'browser', 'profiles', 'default');
 }
 
 /** Port-specific profile so parallel Chrome instances never share data. */
 export function getPortUserDataDir(port: number): string {
-  return path.join(os.homedir(), '.octocode', 'chrome-debug', `profile-${port}`);
+  return path.join(getOctocodeHome(), 'agent', 'browser', 'profiles', `port-${port}`);
 }
 
 export async function launchChrome(opts: {
@@ -498,11 +498,11 @@ export async function launchChrome(opts: {
 // ─── Session metadata ─────────────────────────────────────────────────────────
 
 export function getSessionDir(workspaceCwd: string, port: number, sessionKey: string): string {
-  return path.join(workspaceCwd, '.octocode', 'agent', sessionKey, 'browser', `port-${port}`);
+  return path.join(workspaceAgentRoot(workspaceCwd), 'sessions', sessionKey, 'browser', `port-${port}`);
 }
 
 export function getScreenshotDir(workspaceCwd: string, sessionKey: string): string {
-  return path.join(workspaceCwd, '.octocode', 'agent', sessionKey, 'browser', 'screenshots');
+  return path.join(workspaceAgentRoot(workspaceCwd), 'sessions', sessionKey, 'browser', 'screenshots');
 }
 
 export function readSessionMeta(sessionFile: string): SessionMetadata | null {

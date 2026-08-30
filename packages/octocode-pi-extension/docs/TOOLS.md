@@ -275,7 +275,7 @@ A model-runtime `maximum output token limit` stop is different from context pres
 ## Session artifact routing
 
 Every tool output that lands on disk is now routed into the **session artifact tree** under
-`<workspace>/.octocode/agent/<session-key>/` and registered in a session manifest
+`$OCTOCODE_HOME/agent/workspaces/<workspace-key>/sessions/<session-key>/` and registered in a session manifest
 (`manifest.json`). The `session-key` is derived from `sessionManager.getSessionId()` (falls
 back to the session-file basename, then `process-<pid>`).
 
@@ -298,7 +298,7 @@ cannot be created (e.g., workspace does not yet exist).
 ## Internal error log
 
 The extension appends extension-visible errors to `logs/error.txt` inside the session
-artifact tree (`<workspace>/.octocode/agent/<session-key>/logs/error.txt`). When session
+artifact tree (`$OCTOCODE_HOME/agent/workspaces/<workspace-key>/sessions/<session-key>/logs/error.txt`). When session
 context is not available, the fallback path is `<workspace>/.octocode/logs/error.txt`.
 
 - user-visible extension `error` notifications;
@@ -393,7 +393,7 @@ A project entry with the same server name wins.
 |---|---|---|---|
 | 1 | Built-in | pinned local `octocode-mcp`, with `npx -y octocode-mcp@latest` fallback | Always as `octocode` |
 | 2 | Global | `$OCTOCODE_HOME/agent/mcp/servers.json` | If the file exists |
-| 3 | Project | `<workspace>/.octocode/agent/mcp/servers.json` | Trusted workspaces only |
+| 3 | Workspace | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json` | Trusted workspaces only |
 
 For an untrusted project config, the gateway records a skipped source and warning but never
 spawns a process. Run `MCPTool({queries:[{reasoning:"Inspect resolved MCP configuration.",action:"config"}]})`
@@ -413,7 +413,7 @@ MCPTool({queries:[{reasoning:"Add the trusted documentation server.", action:"ad
 
 | Scope | Managed path | Gate |
 |---|---|---|
-| Project | `<workspace>/.octocode/agent/mcp/servers.json` | Workspace trust; removal also requires interactive approval |
+| Workspace | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json` | Workspace trust; removal also requires interactive approval |
 | Global | `$OCTOCODE_HOME/agent/mcp/servers.json` | Adding an arbitrary local process requires interactive approval |
 
 You can also edit any active path in the preceding table. The gateway watches existing

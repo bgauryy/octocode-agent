@@ -23,7 +23,7 @@ function fixture(sessionId = 'rpc-session'): { ctx: PiContext } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'interaction-adapter-'));
   roots.push(root);
   const workspace = path.join(root, 'workspace');
-  const dbPath = path.join(root, 'awareness.sqlite3');
+  const dbPath = path.join(root, 'agent.sqlite3');
   fs.mkdirSync(workspace, { recursive: true });
   setInteractionStoreFactoryForTests((storeWorkspace) => openAwareness({ workspace: storeWorkspace, dbPath }));
   return {

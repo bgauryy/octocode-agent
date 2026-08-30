@@ -1412,13 +1412,13 @@ export async function handleMcpAction(
       const choice2 = await runSelectOverlay(ctx, {
         title: `Add MCP server "${serverName}" to PROJECT servers.json? It will run locally as: ${cmd2}${argText2 ? ' ' + argText2 : ''}`,
         items: [
-          { value: 'deny', label: 'Deny', description: 'Do not modify .octocode/agent/mcp/servers.json' },
+          { value: 'deny', label: 'Deny', description: 'Do not modify the workspace-scoped global MCP config' },
           { value: 'allow', label: 'Allow', description: 'Write the server config; it spawns on next MCPTool call' },
         ],
       });
       if (choice2 !== 'allow') {
         const why2 = choice2 === undefined ? 'no interactive UI to approve it' : 'the user denied it';
-        return result(`Project MCP add refused: ${why2}. Ask the user to edit .octocode/agent/mcp/servers.json directly if they want this server.`, undefined, true);
+        return result(`Project MCP add refused: ${why2}. Ask the user to edit the workspace-scoped config under $OCTOCODE_HOME/agent directly if they want this server.`, undefined, true);
       }
     }
     if (scope === 'global' && !options.trustedBrowserAction) {
@@ -1473,13 +1473,13 @@ export async function handleMcpAction(
       const rmChoice = await runSelectOverlay(ctx, {
         title: `Remove MCP server "${serverName}" from PROJECT servers.json?`,
         items: [
-          { value: 'deny', label: 'Deny', description: 'Keep the server in .octocode/agent/mcp/servers.json' },
-          { value: 'allow', label: 'Allow', description: 'Remove it from .octocode/agent/mcp/servers.json' },
+          { value: 'deny', label: 'Deny', description: 'Keep the server in the workspace-scoped global MCP config' },
+          { value: 'allow', label: 'Allow', description: 'Remove it from the workspace-scoped global MCP config' },
         ],
       });
       if (rmChoice !== 'allow') {
         const rmWhy = rmChoice === undefined ? 'no interactive UI to approve it' : 'the user denied it';
-        return result(`Project MCP remove refused: ${rmWhy}. Ask the user to edit .octocode/agent/mcp/servers.json directly if they want to remove this server.`, undefined, true);
+        return result(`Project MCP remove refused: ${rmWhy}. Ask the user to edit the workspace-scoped config under $OCTOCODE_HOME/agent directly if they want to remove this server.`, undefined, true);
       }
     }
     const target = scopeTargetPath(scope, ctx);
@@ -1753,7 +1753,7 @@ export function registerMcpTool(
     scope: Type.Optional(stringEnumSchema(
       Type,
       ['project', 'global'],
-      'add/remove target: project (.octocode/agent/mcp/servers.json) or global ($OCTOCODE_HOME/agent/mcp/servers.json).',
+      'add/remove target: project ($OCTOCODE_HOME/agent/workspaces/<workspace>/mcp/servers.json) or global ($OCTOCODE_HOME/agent/mcp/servers.json).',
     ) as TSchema),
   }, { additionalProperties: false }) as TSchema;
 
@@ -1836,7 +1836,7 @@ export function registerMcpTool(
     promptGuidelines: [
       'MCPTool has two schema layers: put MCP actions in outer MCPTool.queries[]; put the selected server-tool input only in queries[].arguments (for Octocode tools, commonly arguments.queries[]). Never place inner server-tool fields directly in MCPTool.queries[].',
       'MCPTool default server: octocode = pinned local octocode-mcp binary (npx -y octocode-mcp@latest fallback) — the default research surface for code/file/structure/history/package lookups.',
-      'Canonical config is $OCTOCODE_HOME/agent/mcp/servers.json plus trusted <workspace>/.octocode/agent/mcp/servers.json.',
+      'Canonical config is $OCTOCODE_HOME/agent/mcp/servers.json plus trusted workspace-scoped config under $OCTOCODE_HOME/agent/workspaces/.',
       'Local servers use stdio; remote servers use Streamable HTTP. Only those transports are supported.',
       'Use resources/read-resource and prompts/get-prompt/complete for the non-tool core MCP primitives.',
       'Manage servers at runtime without restarting the agent: add/remove writes the canonical config; restart/stop reconnect. Live connections auto-reconnect when config changes.',

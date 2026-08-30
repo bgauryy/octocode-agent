@@ -1,9 +1,11 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  runNativeProviderSmoke,
   runNativeProviderSmokeMatrix,
-  type NativeProviderProtocol,
 } from '../src/native-provider-smoke.js';
+import type { ModelPort } from '@octocodeai/agent-core';
+import type { NativeProviderProtocol } from '../src/native-provider-registry.js';
 
 const servers: http.Server[] = [];
 
@@ -39,12 +41,68 @@ function fixtureFrames(pathname: string): string {
     user: null, metadata: {},
   };
   return [
+    { type: 'response.output_item.added', sequence_number: 0, output_index: 0, item: { type: 'message', id: 'item', status: 'in_progress', role: 'assistant', content: [] } },
     { type: 'response.output_text.delta', sequence_number: 1, item_id: 'item', output_index: 0, content_index: 0, delta: 'OK', logprobs: [] },
     { type: 'response.completed', sequence_number: 2, response },
   ].map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('');
 }
 
 describe('native provider protocol smoke', () => {
+  it('preserves Pi Anthropic baseUrl semantics by appending /v1/messages', async () => {
+    let requestedPath = '';
+    const server = http.createServer((request, response) => {
+      requestedPath = request.url ?? '';
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(fixtureFrames(requestedPath));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('fixture server address unavailable');
+
+    await expect(runNativeProviderSmoke({
+      protocol: 'anthropic-messages',
+      endpoint: `http://127.0.0.1:${address.port}/anthropic`,
+      apiKey: 'fixture-key',
+      model: 'fixture-model',
+    })).resolves.toMatchObject({ status: 'PASS' });
+    expect(requestedPath).toBe('/anthropic/v1/messages');
+  });
+
+  it('bounds a non-responsive provider probe', async () => {
+    const port = {
+      run: async (_request: unknown, context: { signal: AbortSignal }) => new Promise<never>((_resolve, reject) => {
+        context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true });
+      }),
+    } as unknown as ModelPort;
+
+    await expect(runNativeProviderSmoke({
+      protocol: 'openai-responses', endpoint: 'https://models.example/v1',
+      apiKey: 'configured', model: 'fixture', port, timeoutMs: 10,
+    })).resolves.toEqual({
+      status: 'FAIL', protocol: 'openai-responses', category: 'provider-smoke', reason: 'timeout',
+    });
+  });
+
+  it.each([
+    [401, 'unauthorized'],
+    [404, 'not-found'],
+    [429, 'rate-limited'],
+  ] as const)('sanitizes provider HTTP %s failures', async (status, reason) => {
+    const port = {
+      run: async () => { throw Object.assign(new Error(`secret response body api-key-value`), { status }); },
+    } as unknown as ModelPort;
+
+    const result = await runNativeProviderSmoke({
+      protocol: 'openai-responses', endpoint: 'https://models.example/v1',
+      apiKey: 'api-key-value', model: 'fixture', port,
+    });
+
+    expect(result).toEqual({ status: 'FAIL', protocol: 'openai-responses', category: 'provider-smoke', reason });
+    expect(JSON.stringify(result)).not.toContain('api-key-value');
+    expect(JSON.stringify(result)).not.toContain('secret response body');
+  });
+
   it('runs every supported production protocol through a real loopback streaming server', async () => {
     const requests: Array<{ path: string; authorization?: string; anthropicKey?: string; body: unknown }> = [];
     const server = http.createServer((request, response) => {

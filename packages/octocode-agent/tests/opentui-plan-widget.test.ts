@@ -50,9 +50,24 @@ describe('PlanWidget', () => {
     expect(state.regions[3]?.text).toContain('>> CURRENT');
     expect(state.regions[3]?.text).toContain('2. [DOING]');
     expect(widget.toPlainText()).toContain('Plan plan-1 — revision 3 — phase ACTIVE');
+    expect(widget.toPlainText()).toContain('Steps — 1 of 3 complete');
+    expect(widget.toPlainText()).not.toContain('Tasks —');
     expect(widget.toPlainText()).toContain('depends on: discover');
     expect(widget.toPlainText()).toContain('verification: SUCCESS');
     expect(widget.toPlainText()).toContain('3. [TODO] verify: Verify accessibility');
+  });
+
+  it('keeps runtime-authoritative worker ownership visible in compact and accessible output', () => {
+    const value = snapshot({
+      steps: snapshot().steps.map((step) => (
+        step.id === 'implement' ? { ...step, workerId: 'worker:w1' } : step
+      )),
+    });
+    const widget = activeWidget(value);
+
+    expect(widget.render().regions.find((region) => region.id === 'step-implement')?.text)
+      .toContain('WORKER worker:w1');
+    expect(widget.toPlainText()).toContain('worker: worker:w1');
   });
 
   it('supports navigation only and preserves the viewport across resize', () => {

@@ -56,14 +56,14 @@ describe('semantic memory recall', () => {
     scriptPath = join(workspace, 'embed.mjs');
     await writeFile(scriptPath, EMBED_SCRIPT, 'utf8');
     process.env['OCTOCODE_EMBED_CMD'] = `"${process.execPath}" "${scriptPath}"`;
-    process.env.OCTOCODE_DB_PATH = join(workspace, 'octocode.sqlite3');
+    process.env.OCTOCODE_AGENT_DB_PATH = join(workspace, 'agent.sqlite3');
     aw = openAwarenessStore({ workspace });
   });
 
   afterEach(async () => {
     if (prevCmd === undefined) delete process.env['OCTOCODE_EMBED_CMD'];
     else process.env['OCTOCODE_EMBED_CMD'] = prevCmd;
-    delete process.env.OCTOCODE_DB_PATH;
+    delete process.env.OCTOCODE_AGENT_DB_PATH;
     await rm(workspace, { recursive: true, force: true });
   });
 

@@ -34,7 +34,7 @@ export function memoryRows(
   const rows = db.prepare(
     `SELECT memory_id, agent_id, task_context, observation, importance, state, label, tags_json,
             workspace_path, artifact, repo, ref, failure_signature, created_at, updated_at
-       FROM memories
+       FROM awareness_memories
       WHERE ${where.join(' AND ')}
       ORDER BY importance DESC, datetime(created_at) DESC
       LIMIT ?`
@@ -79,9 +79,9 @@ export function planRows(db: DatabaseSync, params: AwarenessQueryParams): Awaren
   const rows = db.prepare(
     `SELECT plan_id, name, objective, lead_agent_id, status, workspace_path, artifact,
             doc_dir, created_at, updated_at,
-            (SELECT COUNT(*) FROM plan_members pm WHERE pm.plan_id = plans.plan_id) AS member_count,
-            (SELECT COUNT(*) FROM tasks t WHERE t.plan_id = plans.plan_id) AS task_count
-       FROM plans
+            (SELECT COUNT(*) FROM plan_members pm WHERE pm.plan_id = awareness_plans.plan_id) AS member_count,
+            (SELECT COUNT(*) FROM awareness_tasks t WHERE t.plan_id = awareness_plans.plan_id) AS task_count
+       FROM awareness_plans
        ${sqlWhere}
       ORDER BY datetime(updated_at) DESC
       LIMIT ?`
@@ -139,11 +139,11 @@ export function taskRows(db: DatabaseSync, params: AwarenessQueryParams): Awaren
               AND c.task_id IS NULL
               AND NOT EXISTS (
                 SELECT 1 FROM task_dependencies td
-                JOIN tasks dependency ON dependency.task_id = td.depends_on_task_id
+                JOIN awareness_tasks dependency ON dependency.task_id = td.depends_on_task_id
                 WHERE td.task_id = t.task_id AND dependency.status <> 'DONE'
               ) THEN 1 ELSE 0 END AS ready
-       FROM tasks t
-       JOIN plans p ON p.plan_id = t.plan_id
+       FROM awareness_tasks t
+       JOIN awareness_plans p ON p.plan_id = t.plan_id
        LEFT JOIN task_claims c ON c.task_id = t.task_id AND c.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
        ${sqlWhere}
       ORDER BY t.priority DESC, datetime(t.created_at), t.task_id
@@ -181,14 +181,14 @@ export function countTaskRows(db: DatabaseSync, params: AwarenessQueryParams, re
     where.push("t.status = 'OPEN'", "p.status = 'ACTIVE'", 'c.task_id IS NULL');
     where.push(`NOT EXISTS (
       SELECT 1 FROM task_dependencies td
-      JOIN tasks dependency ON dependency.task_id = td.depends_on_task_id
+      JOIN awareness_tasks dependency ON dependency.task_id = td.depends_on_task_id
       WHERE td.task_id = t.task_id AND dependency.status <> 'DONE'
     )`);
   }
   const sqlWhere = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
   return (db.prepare(`SELECT COUNT(*) AS count
-    FROM tasks t
-    JOIN plans p ON p.plan_id = t.plan_id
+    FROM awareness_tasks t
+    JOIN awareness_plans p ON p.plan_id = t.plan_id
     LEFT JOIN task_claims c ON c.task_id = t.task_id
       AND c.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     ${sqlWhere}`).get(...binds) as { count: number }).count;

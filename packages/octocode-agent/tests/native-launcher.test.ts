@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
+import { agentDbPath } from '@octocodeai/octocode-awareness/mcp-state';
 import {
   InMemorySessionStore,
   LifecycleBus,
@@ -31,23 +32,31 @@ import {
   parseNativeArgs,
   retainedCompactionEventIds,
   resolveNativeSessionId,
+  selectNativeFallbackModel,
   resolveNativeWorkerCapabilities,
   resolveNativeWorkspaceTrust,
 } from '../src/native-launcher.js';
 import { FileSessionRecordPort } from '../src/native-session-store.js';
 import { FileSettingsStorage } from '../src/native-settings.js';
 import { createNativeInteractionBroker } from '../src/native-interactions.js';
+import { loadOctocodeCatalog, resetOctocodeCatalogCacheForTests } from '../src/native-tools.js';
 import type { RuntimePlanSnapshot } from '../src/native-plan.js';
 import { nativeSessionsDir } from '../src/sessions.js';
-import { readBreadcrumb, writeBreadcrumb } from '../src/state.js';
+import { readBreadcrumb } from '../src/state.js';
 import { createOpenTuiTerminal } from '../src/terminal/opentui/create-terminal.js';
+import {
+  createInitialPresentationState,
+  projectPresentationChrome,
+  reducePresentation,
+  type PresentationEvent,
+} from '../src/terminal/opentui/presentation.js';
 
 function fakeRuntime(): AgentRuntime {
   return {
     start: vi.fn(async () => undefined),
     submit: vi.fn(async () => undefined),
     cancel: vi.fn(async () => undefined),
-    execute: vi.fn(async () => ({ ok: true, data: {} })),
+    execute: vi.fn(async () => ({ ok: true as const, data: {} })),
     snapshot: () => ({ state: 'ready' }) as RuntimeSnapshot,
     subscribe: () => () => undefined,
     stop: vi.fn(async () => undefined),
@@ -55,6 +64,39 @@ function fakeRuntime(): AgentRuntime {
 }
 
 describe('native launcher', () => {
+  it('composes authoritative Octocode catalog cache metrics into monitoring snapshots', async () => {
+    resetOctocodeCatalogCacheForTests();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-native-monitoring-'));
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-native-monitoring-workspace-'));
+    const run = vi.fn(async () => JSON.stringify({ kind: 'octocode.toolCatalog.full', version: 1, toolCount: 0, tools: [] }));
+    await loadOctocodeCatalog({ run, cacheKey: 'native-monitoring-fixture' });
+    const runtime = await createDefaultNativeRuntime({
+      env: { OCTOCODE_HOME: home },
+      cwd,
+      args: parseNativeArgs(['--no-session']),
+      tools: new ToolRegistry(),
+      model: { run: async () => ({ stop: 'complete', usage: { inputTokens: 0, outputTokens: 0 } }) },
+    });
+    try {
+      await expect(runtime.execute({ type: 'monitoring.snapshot' })).resolves.toMatchObject({
+        ok: true,
+        data: {
+          native: {
+            cache: {
+              hits: 0, misses: 1, loads: 1, loadFailures: 0, expirations: 0,
+              evictions: 0, entries: 1, maxEntries: 32, ttlMs: 60_000,
+            },
+          },
+        },
+      });
+    } finally {
+      await runtime.stop();
+      resetOctocodeCatalogCacheForTests();
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('allows only explicitly composed native mutation adapters', () => {
     expect(nativeEffectAllowed({ effects: createEffectSet('write'), operation: 'tool:awareness' })).toBe(true);
     expect(nativeEffectAllowed({ effects: createEffectSet('network', 'write'), operation: 'tool:plan' })).toBe(true);
@@ -71,6 +113,17 @@ describe('native launcher', () => {
     expect(parseNativeArgs(['--mode', 'rpc'])).toMatchObject({ mode: 'rpc' });
     expect(parseNativeArgs(['--mode', 'rpc', '--allow-workers'])).toMatchObject({ mode: 'rpc', allowWorkers: true });
     expect(parseNativeArgs(['--accessible'])).toMatchObject({ mode: 'interactive', accessible: true });
+    expect(parseNativeArgs([
+      '--model', 'primary/model-a',
+      '--fallback-model', 'backup/model-b',
+      '--fallback-model', 'last/model-c',
+    ])).toMatchObject({
+      model: { providerId: 'primary', modelId: 'model-a' },
+      fallbackModels: [
+        { providerId: 'backup', modelId: 'model-b' },
+        { providerId: 'last', modelId: 'model-c' },
+      ],
+    });
   });
 
   it('rejects unknown options and missing or invalid option values', () => {
@@ -81,6 +134,62 @@ describe('native launcher', () => {
     expect(() => parseNativeArgs(['--session'])).toThrow('Missing value for --session');
     expect(() => parseNativeArgs(['--name', '   '])).toThrow('Invalid value for --name');
     expect(() => parseNativeArgs(['-n', '--print'])).toThrow('Missing value for -n');
+    expect(() => parseNativeArgs(['--model', 'missing-provider'])).toThrow('Invalid value for --model');
+    expect(() => parseNativeArgs(['--fallback-model', 'backup/model'])).toThrow('--fallback-model requires --model');
+  });
+
+  it('selects the first healthy model only when an explicit fallback chain is evaluated', async () => {
+    const candidates = [
+      { providerId: 'primary', modelId: 'model-a' },
+      { providerId: 'backup', modelId: 'model-b' },
+      { providerId: 'last', modelId: 'model-c' },
+    ];
+    const probe = vi.fn(async (candidate: { providerId: string; modelId: string }) => (
+      candidate.providerId === 'backup'
+        ? { status: 'PASS' as const, protocol: 'openai-responses' as const, stop: 'complete' as const }
+        : { status: 'FAIL' as const, protocol: 'openai-responses' as const, category: 'provider-smoke' as const, reason: 'provider-error' as const }
+    ));
+
+    await expect(selectNativeFallbackModel(candidates, probe)).resolves.toEqual(candidates[1]);
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed when no explicitly configured fallback is healthy', async () => {
+    const probe = vi.fn(async () => ({
+      status: 'SKIP' as const,
+      capability: 'credentials-absent' as const,
+      protocol: 'anthropic-messages' as const,
+    }));
+    await expect(selectNativeFallbackModel([
+      { providerId: 'primary', modelId: 'model-a' },
+      { providerId: 'backup', modelId: 'model-b' },
+    ], probe)).rejects.toThrow('No explicitly configured model passed provider health checks');
+  });
+
+  it('preflights an explicit chain before runtime creation and passes the selected model onward', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-fallback-'));
+    const runtime = fakeRuntime();
+    let selected: { providerId: string; modelId: string } | undefined;
+    const probeFallbackModel = vi.fn(async (candidate: { providerId: string; modelId: string }) => (
+      candidate.providerId === 'backup'
+        ? { status: 'PASS' as const, protocol: 'openai-responses' as const, stop: 'complete' as const }
+        : { status: 'FAIL' as const, protocol: 'openai-responses' as const, category: 'provider-smoke' as const, reason: 'not-found' as const }
+    ));
+    try {
+      await expect(launchNativeAgent([
+        '--print', '--model', 'primary/model-a', '--fallback-model', 'backup/model-b', 'hello',
+      ], {
+        env: { HOME: root, OCTOCODE_HOME: root },
+        cwd: root,
+        createRuntime: async ({ args }) => { selected = args.model; return runtime; },
+        probeFallbackModel,
+        stdout: new PassThrough(),
+      })).resolves.toBe(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+    expect(probeFallbackModel).toHaveBeenCalledTimes(2);
+    expect(selected).toEqual({ providerId: 'backup', modelId: 'model-b' });
   });
 
   it('treats every token after -- as prompt text, including option-shaped tokens', async () => {
@@ -137,11 +246,13 @@ describe('native launcher', () => {
     const runtime = fakeRuntime();
     const open = vi.fn(async () => ({ ok: true as const, url: 'http://127.0.0.1:43123/#models' }));
     const close = vi.fn(async () => undefined);
-    const createSettingsPage = vi.fn(() => ({ open, close, diagnostics: () => ({ actionToken: 'test' }) }));
+    type CreateSettingsPage = NonNullable<NonNullable<Parameters<typeof launchNativeAgent>[1]>['createSettingsPage']>;
+    const createSettingsPage = vi.fn<CreateSettingsPage>(() => ({ open, close, diagnostics: () => ({ actionToken: 'test' }) }));
     let runtimeSettings: unknown;
     const terminal = {
+      inputOwnership: 'external' as const,
       start: vi.fn(async () => undefined), accept: vi.fn(), stop: vi.fn(async () => undefined),
-      snapshot: vi.fn(() => ({ ready: true })), acceptInput: vi.fn(() => false),
+      snapshot: vi.fn(() => createInitialPresentationState()), acceptInput: vi.fn(() => false),
     };
     await expect(launchNativeAgent([], {
       createRuntime: async (options) => { runtimeSettings = options.settings; return runtime; },
@@ -163,10 +274,11 @@ describe('native launcher', () => {
     runtime.stop = vi.fn(async () => { throw new Error('runtime cleanup failed'); });
     const close = vi.fn(async () => { throw new Error('page cleanup failed'); });
     const terminal = {
+      inputOwnership: 'external' as const,
       start: vi.fn(async () => { throw new Error('terminal startup failed'); }),
       accept: vi.fn(),
       stop: vi.fn(async () => { throw new Error('terminal cleanup failed'); }),
-      snapshot: vi.fn(),
+      snapshot: vi.fn(() => createInitialPresentationState()),
     };
 
     await expect(launchNativeAgent([], {
@@ -235,15 +347,16 @@ describe('native launcher', () => {
       steps: [{ id: 'step-1', text: 'Implement', status: 'doing' }],
     };
     const terminal = {
+      inputOwnership: 'external' as const,
       start: vi.fn(async () => undefined),
       accept: vi.fn(),
       stop: vi.fn(async () => undefined),
-      snapshot: vi.fn(),
+      snapshot: vi.fn(() => createInitialPresentationState()),
     };
 
     await expect(launchNativeAgent([], {
       createRuntime: async ({ onPlanSnapshot }) => {
-        runtime.start = vi.fn(async () => { onPlanSnapshot?.(plan); });
+        onPlanSnapshot?.(plan);
         return runtime;
       },
       createTerminal: () => terminal,
@@ -254,6 +367,46 @@ describe('native launcher', () => {
       type: 'runtime-widgets-changed',
       snapshots: { plan },
     });
+  });
+
+  it('replays current Awareness delivery health into Zustand and clears recovered attention', async () => {
+    const input = new PassThrough();
+    input.end('/exit\n');
+    const runtime = fakeRuntime();
+    const terminal = {
+      inputOwnership: 'external' as const,
+      start: vi.fn(async () => undefined),
+      accept: vi.fn(),
+      stop: vi.fn(async () => undefined),
+      snapshot: vi.fn(() => createInitialPresentationState()),
+    };
+
+    await expect(launchNativeAgent([], {
+      createRuntime: async ({ onAwarenessObservability }) => {
+        onAwarenessObservability?.({
+          consumerId: 'native-session:session-1', backlogDepth: 2, backlogCapped: false,
+          lastAcknowledgedSequence: 7, accepted: 3, held: 1, refused: 0, errors: 0,
+          drainAccepted: 0, drainHeld: 1, drainRefused: 0, drainErrors: 0,
+        });
+        runtime.start = vi.fn(async () => {
+          onAwarenessObservability?.({
+            consumerId: 'native-session:session-1', backlogDepth: 0, backlogCapped: false,
+            lastAcknowledgedSequence: 9, accepted: 5, held: 1, refused: 0, errors: 0,
+            drainAccepted: 2, drainHeld: 0, drainRefused: 0, drainErrors: 0,
+          });
+        });
+        return runtime;
+      },
+      createTerminal: () => terminal,
+      stdin: input,
+    })).resolves.toBe(0);
+
+    expect(terminal.accept).toHaveBeenCalledWith({
+      type: 'status-changed',
+      name: 'awareness.events',
+      text: 'queue 2 · ack 7 · accepted 0 · held 1 · refused 0 · errors 0',
+    });
+    expect(terminal.accept).toHaveBeenCalledWith({ type: 'status-changed', name: 'awareness.events' });
   });
 
   it('keeps the terminal owned and subscribed through runtime shutdown failures', async () => {
@@ -270,10 +423,11 @@ describe('native launcher', () => {
       throw new Error('runtime stop failed');
     });
     const terminal = {
+      inputOwnership: 'external' as const,
       start: vi.fn(async () => undefined),
       accept: vi.fn(),
       stop: vi.fn(async () => undefined),
-      snapshot: vi.fn(),
+      snapshot: vi.fn(() => createInitialPresentationState()),
     };
 
     await expect(launchNativeAgent([], {
@@ -294,10 +448,11 @@ describe('native launcher', () => {
     let interactionResult: unknown;
     let resolveInteraction: ((value: { status: 'accepted'; value: string }) => void) | undefined;
     const terminal = {
+      inputOwnership: 'external' as const,
       start: vi.fn(async () => undefined),
       accept: vi.fn(),
       stop: vi.fn(async () => undefined),
-      snapshot: vi.fn(),
+      snapshot: vi.fn(() => createInitialPresentationState()),
       interact: vi.fn(async () => new Promise<{ status: 'accepted'; value: string }>((resolve) => { resolveInteraction = resolve; })),
       acceptInput: vi.fn((line: string) => {
         if (!resolveInteraction) return false;
@@ -332,8 +487,8 @@ describe('native launcher', () => {
     runtime.submit = vi.fn(async () => new Promise<void>((resolve) => { finishSubmissions.push(resolve); }));
     runtime.stop = vi.fn(async () => { for (const finish of finishSubmissions) finish(); });
     const commands: unknown[] = [];
-    runtime.execute = vi.fn(async (command) => { commands.push(command); return { ok: true, data: {} }; });
-    const terminal = { start: vi.fn(async () => undefined), accept: vi.fn(), stop: vi.fn(async () => undefined), snapshot: vi.fn(), acceptInput: vi.fn(() => false) };
+    runtime.execute = vi.fn(async (command) => { commands.push(command); return { ok: true as const, data: {} }; });
+    const terminal = { inputOwnership: 'external' as const, start: vi.fn(async () => undefined), accept: vi.fn(), stop: vi.fn(async () => undefined), snapshot: vi.fn(() => createInitialPresentationState()), acceptInput: vi.fn(() => false) };
 
     await launchNativeAgent([], { createRuntime: async () => runtime, createTerminal: () => terminal, stdin: input });
 
@@ -358,7 +513,7 @@ describe('native launcher', () => {
       start: vi.fn(async () => undefined),
       accept: vi.fn((event: unknown) => { accepted.push(event); }),
       stop: vi.fn(async () => undefined),
-      snapshot: vi.fn(() => ({ ready: true })),
+      snapshot: vi.fn(() => createInitialPresentationState()),
       acceptInput: vi.fn(() => false),
       subscribeInput: vi.fn((listener: (event: { type: 'line'; line: string } | { type: 'interrupt' }) => void | Promise<void>) => {
         queueMicrotask(async () => {
@@ -381,12 +536,116 @@ describe('native launcher', () => {
     expect(createLineReader).not.toHaveBeenCalled();
     expect(runtime.submit).toHaveBeenCalledWith('native message');
     expect(accepted).toContainEqual(expect.objectContaining({
-      type: 'runtime-widgets-changed',
-      snapshots: expect.objectContaining({
-        header: expect.objectContaining({ authority: 'runtime', modelId: 'test-model' }),
-        footer: expect.objectContaining({ authority: 'runtime', activeMode: 'interactive' }),
+      type: 'chrome-changed',
+      chrome: expect.objectContaining({
+        authority: 'runtime', modelId: 'test-model', trust: 'unknown',
       }),
     }));
+  });
+
+  it('routes /thinking for an Anthropic-selected renderer session', async () => {
+    const runtime = fakeRuntime();
+    runtime.snapshot = () => ({
+      state: 'ready', sessionId: sessionId('native:thinking'),
+      model: { providerId: 'anthropic', modelId: 'claude-test' },
+    }) as RuntimeSnapshot;
+    const terminal = {
+      inputOwnership: 'renderer' as const,
+      start: vi.fn(async () => undefined), accept: vi.fn(), stop: vi.fn(async () => undefined),
+      snapshot: vi.fn(() => createInitialPresentationState()), acceptInput: vi.fn(() => false),
+      subscribeInput: vi.fn((listener: (event: { type: 'line'; line: string }) => void | Promise<void>) => {
+        queueMicrotask(async () => {
+          await listener({ type: 'line', line: '/thinking high' });
+          await listener({ type: 'line', line: '/exit' });
+        });
+        return vi.fn();
+      }),
+    };
+
+    await expect(launchNativeAgent([], {
+      createRuntime: async () => runtime,
+      createTerminal: () => terminal,
+      stdin: new PassThrough(),
+      env: { OCTOCODE_MODEL_PROTOCOL: 'anthropic-messages', OCTOCODE_MODEL: 'claude-test' },
+    })).resolves.toBe(0);
+    expect(runtime.execute).toHaveBeenCalledWith({ type: 'model.thinking', level: 'high' });
+  });
+
+  it('routes renderer interrupts exclusively to an interaction, active turn, or idle exit', async () => {
+    const run = async (state: 'ready' | 'running', interactionOpen: boolean) => {
+      const runtime = fakeRuntime();
+      runtime.snapshot = () => ({ state }) as RuntimeSnapshot;
+      const cancelInteraction = vi.fn(() => interactionOpen);
+      const terminal = {
+        inputOwnership: 'renderer' as const,
+        start: vi.fn(async () => undefined), accept: vi.fn(), stop: vi.fn(async () => undefined),
+        snapshot: vi.fn(() => createInitialPresentationState()), cancelInteraction,
+        subscribeInput: vi.fn((listener: (event: { type: 'line'; line: string } | { type: 'interrupt' }) => void | Promise<void>) => {
+          queueMicrotask(async () => {
+            await listener({ type: 'interrupt' });
+            if (state === 'running' || interactionOpen) await listener({ type: 'line', line: '/exit' });
+          });
+          return vi.fn();
+        }),
+      };
+      const signalSource = { on: vi.fn(), off: vi.fn() };
+
+      await expect(launchNativeAgent([], {
+        createRuntime: async () => runtime,
+        createTerminal: () => terminal,
+        signalSource,
+        stdin: new PassThrough(),
+      })).resolves.toBe(0);
+      return { runtime, cancelInteraction };
+    };
+
+    const active = await run('running', false);
+    expect(active.cancelInteraction).toHaveBeenCalledOnce();
+    expect(active.runtime.cancel).toHaveBeenCalledOnce();
+    expect(active.runtime.cancel).toHaveBeenCalledWith('user interrupt');
+
+    const idle = await run('ready', false);
+    expect(idle.cancelInteraction).toHaveBeenCalledOnce();
+    expect(idle.runtime.cancel).not.toHaveBeenCalled();
+
+    const modal = await run('running', true);
+    expect(modal.cancelInteraction).toHaveBeenCalledOnce();
+    expect(modal.runtime.cancel).not.toHaveBeenCalled();
+  });
+
+  it('uses SIGINT to cancel active work, then exits when the runtime is idle', async () => {
+    const runtime = fakeRuntime();
+    let state: 'ready' | 'running' = 'running';
+    runtime.snapshot = () => ({ state }) as RuntimeSnapshot;
+    runtime.cancel = vi.fn(async () => { state = 'ready'; });
+    const listeners = new Map<string, () => void>();
+    const signalSource = {
+      on: vi.fn((signal: 'SIGINT' | 'SIGTERM', listener: () => void) => {
+        listeners.set(signal, listener);
+        if (signal === 'SIGTERM') queueMicrotask(() => {
+          listeners.get('SIGINT')?.();
+          queueMicrotask(() => listeners.get('SIGINT')?.());
+        });
+      }),
+      off: vi.fn((signal: 'SIGINT' | 'SIGTERM') => { listeners.delete(signal); }),
+    };
+    const terminal = {
+      inputOwnership: 'renderer' as const,
+      start: vi.fn(async () => undefined), accept: vi.fn(), stop: vi.fn(async () => undefined),
+      snapshot: vi.fn(() => createInitialPresentationState()), subscribeInput: vi.fn(() => vi.fn()),
+    };
+
+    await expect(launchNativeAgent([], {
+      createRuntime: async () => runtime,
+      createTerminal: () => terminal,
+      signalSource,
+      stdin: new PassThrough(),
+    })).resolves.toBe(0);
+
+    expect(runtime.cancel).toHaveBeenCalledOnce();
+    expect(runtime.cancel).toHaveBeenCalledWith('user interrupt');
+    expect(runtime.stop).toHaveBeenCalledOnce();
+    expect(signalSource.off).toHaveBeenCalledTimes(2);
   });
 
   it('terminates renderer-owned interactive mode when the terminal reports a fatal callback failure', async () => {
@@ -397,7 +656,7 @@ describe('native launcher', () => {
       start: vi.fn(async () => undefined),
       accept: vi.fn(),
       stop: vi.fn(async () => undefined),
-      snapshot: vi.fn(() => ({ ready: true })),
+      snapshot: vi.fn(() => createInitialPresentationState()),
       subscribeInput: vi.fn(() => vi.fn()),
       subscribeFailure: vi.fn((listener: (error: unknown) => void) => {
         reportFailure = listener;
@@ -429,7 +688,7 @@ describe('native launcher', () => {
     const terminal = {
       inputOwnership: 'renderer' as const,
       start: vi.fn(async () => undefined), accept: vi.fn(), stop: vi.fn(async () => undefined),
-      snapshot: vi.fn(() => ({ ready: true })), subscribeInput: vi.fn(() => vi.fn()),
+      snapshot: vi.fn(() => createInitialPresentationState()), subscribeInput: vi.fn(() => vi.fn()),
     };
     await expect(launchNativeAgent([], {
       createRuntime: async () => runtime,
@@ -446,7 +705,7 @@ describe('native launcher', () => {
   it('publishes the configured production model through requests, snapshots, and events', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-native-model-'));
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-native-model-workspace-'));
-    const env = { OCTOCODE_HOME: home, OCTOCODE_MODEL: 'gpt-configured' };
+    const env = { OCTOCODE_HOME: home };
     const requests: ModelRequest[] = [];
     const model: ModelPort = {
       run: async (request) => {
@@ -457,7 +716,7 @@ describe('native launcher', () => {
     const runtime = await createDefaultNativeRuntime({
       env,
       cwd,
-      args: parseNativeArgs(['--no-session']),
+      args: parseNativeArgs(['--no-session', '--model', 'openai/gpt-configured']),
       model,
       tools: new ToolRegistry(),
     });
@@ -481,25 +740,38 @@ describe('native launcher', () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-native-session-router-workspace-'));
     const env = { ...process.env, OCTOCODE_HOME: home };
     const workerProjections: unknown[] = [];
+    const requests: ModelRequest[] = [];
     const runtime = await createDefaultNativeRuntime({
       env,
       cwd,
       args: parseNativeArgs([]),
-      model: { run: async () => ({ stop: 'complete', usage: { inputTokens: 1, outputTokens: 1 } }) },
+      model: {
+        run: async (request) => {
+          requests.push(structuredClone(request));
+          return { stop: 'complete', usage: { inputTokens: 1, outputTokens: 1 } };
+        },
+      },
       onWorkerProjection: (projection) => { workerProjections.push(projection); },
     });
     const initial = runtime.snapshot().sessionId;
     const created = sessionId('native:created-through-router');
     expect(workerProjections).toHaveLength(1);
+    await runtime.submit('old session turn');
+    expect(runtime.snapshot().usage).toMatchObject({ inputTokens: 1, outputTokens: 1 });
 
     await expect(runtime.execute({ type: 'session.create', id: created, name: 'Created' })).resolves.toMatchObject({
       ok: true,
       data: { sessionId: created, projection: { name: 'Created' } },
     });
     expect(runtime.snapshot().sessionId).toBe(created);
+    expect(runtime.snapshot().usage).toMatchObject({ inputTokens: 0, outputTokens: 0 });
     expect(workerProjections).toHaveLength(2);
     expect(workerProjections[1]).not.toBe(workerProjections[0]);
     await runtime.submit('new session turn');
+    expect(requests.at(-1)?.messages.some(({ content }) => content.includes('old session turn'))).toBe(false);
+    expect((await createNativeSessionStore(false, nativeSessionsDir(env)).load(initial)).projection.transcript).toContainEqual(
+      expect.objectContaining({ role: 'user', content: 'old session turn' }),
+    );
     expect((await createNativeSessionStore(false, nativeSessionsDir(env)).load(created)).projection.customEntries).toContainEqual(
       expect.objectContaining({ kind: 'session.cwd', value: cwd }),
     );
@@ -518,12 +790,10 @@ describe('native launcher', () => {
     const runtime = await createDefaultNativeRuntime({
       env: {
         OCTOCODE_HOME: home,
-        OCTOCODE_MODEL_PROTOCOL: 'anthropic-messages',
-        OCTOCODE_MODEL: 'claude-test',
         ANTHROPIC_API_KEY: 'not-used-by-injected-port',
       },
       cwd,
-      args: parseNativeArgs(['--no-session']),
+      args: parseNativeArgs(['--no-session', '--model', 'anthropic/claude-test']),
       model: {
         run: async (request) => {
           requests.push(structuredClone(request));
@@ -550,24 +820,40 @@ describe('native launcher', () => {
   it('rejects model capabilities that the composed native adapter cannot honor', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-native-capability-'));
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-native-capability-workspace-'));
+    const requests: ModelRequest[] = [];
     const runtime = await createDefaultNativeRuntime({
       env: { OCTOCODE_HOME: home, OCTOCODE_MODEL: 'gpt-configured' },
       cwd,
       args: parseNativeArgs(['--no-session']),
-      model: { run: vi.fn(async () => ({ stop: 'complete', usage: { inputTokens: 0, outputTokens: 0 } })) },
+      model: { run: vi.fn(async (request, context) => {
+        requests.push(structuredClone(request));
+        await context.emit({ type: 'text', text: 'summary' });
+        return { stop: 'complete' as const, usage: { inputTokens: 0, outputTokens: 0 } };
+      }) },
       tools: new ToolRegistry(),
     });
 
-    await expect(runtime.execute({ type: 'model.select', providerId: 'anthropic', modelId: 'claude-test' })).resolves.toMatchObject({
+    await expect(runtime.execute({ type: 'model.select', providerId: 'anthropic', modelId: 'claude-sonnet-4-5' })).resolves.toMatchObject({
       ok: false,
-      error: { category: 'unsupported-capability' },
+      error: {
+        category: 'unsupported-capability',
+        message: expect.stringMatching(/new session/i),
+      },
     });
+    await expect(runtime.execute({ type: 'model.select', providerId: 'openai', modelId: 'gpt-5' })).resolves.toEqual({ ok: true });
+    await runtime.submit('exercise selected model');
+    await expect(runtime.execute({ type: 'context.compact', reason: 'manual' })).resolves.toMatchObject({ ok: true });
+    expect(requests).toHaveLength(2);
+    expect(requests.map(({ model }) => model)).toEqual([
+      { providerId: 'openai', modelId: 'gpt-5' },
+      { providerId: 'openai', modelId: 'gpt-5' },
+    ]);
     await expect(runtime.execute({ type: 'model.thinking', level: 'high' })).resolves.toMatchObject({
       ok: false,
       error: { category: 'unsupported-capability' },
     });
     expect(runtime.snapshot()).toMatchObject({
-      model: { providerId: 'openai', modelId: 'gpt-configured' },
+      model: { providerId: 'openai', modelId: 'gpt-5' },
       thinkingLevel: null,
     });
     await runtime.stop();
@@ -705,7 +991,7 @@ describe('native launcher', () => {
       event: { type: 'session.created' },
     }]);
     const persist = createRuntimeEventPersister({ sessions: store, activeSessionId: id, initialRevision: revision('1') });
-    const runtimeEvent = (type: RuntimeEvent['type'], eventId: string, payload: unknown): RuntimeEvent => ({
+    const runtimeEvent = (type: RuntimeEvent['type'], eventId: string, payload: RuntimeEvent['payload']): RuntimeEvent => ({
       schemaVersion: 1,
       eventVersion: 1,
       id: eventId as RuntimeEvent['id'],
@@ -717,7 +1003,7 @@ describe('native launcher', () => {
       mode: 'headless',
       trust: { workspace: 'trusted', managedOnly: false },
       payload,
-    });
+    } as unknown as RuntimeEvent);
     await persist(runtimeEvent('message.delta', 'delta-1', { type: 'text', text: 'hel' }));
     await persist(runtimeEvent('message.delta', 'delta-2', { type: 'text', text: 'lo' }));
     await persist(runtimeEvent('message.ended', 'message-1', { status: 'complete' }));
@@ -726,6 +1012,109 @@ describe('native launcher', () => {
     expect(loaded.projection.transcript).toHaveLength(1);
     expect(loaded.projection.transcript[0]?.content).toBe('hello');
     expect(loaded.projection.modelContext[0]).toMatchObject({ role: 'assistant', content: 'hello' });
+  });
+
+  it('serializes concurrent runtime events before committing the session', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-runtime-persistence-'));
+    try {
+      const store = new TransactionalSessionStore(new FileSessionRecordPort(root));
+      const id = sessionId('native:concurrent-runtime-events');
+      await store.append(id, revision('0'), [{
+        schemaVersion: 1,
+        sessionId: id,
+        eventId: sessionEventId('created'),
+        revision: revision('1'),
+        sequence: 1,
+        timestamp: 1,
+        visibility: 'internal',
+        event: { type: 'session.created' },
+      }]);
+      const persist = createRuntimeEventPersister({
+        sessions: store,
+        activeSessionId: id,
+        initialRevision: revision('1'),
+      });
+      const runtimeEvent = (type: RuntimeEvent['type'], eventId: string): RuntimeEvent => ({
+        schemaVersion: 1,
+        eventVersion: 1,
+        id: eventId as RuntimeEvent['id'],
+        type,
+        phase: 'notification',
+        sessionId: id,
+        timestamp: 2,
+        cwd: '/workspace',
+        mode: 'headless',
+        trust: { workspace: 'trusted', managedOnly: false },
+        payload: {},
+      } as unknown as RuntimeEvent);
+
+      await Promise.all([
+        persist(runtimeEvent('turn.ended', 'runtime:turn-ended')),
+        persist(runtimeEvent('runtime.stopping', 'runtime:stopping')),
+      ]);
+
+      const loaded = await store.load(id);
+      expect(loaded.projection.revision).toBe(revision('3'));
+      expect(loaded.events.slice(1).map(({ event }) => event.type === 'custom.appended' ? event.kind : event.type)).toEqual([
+        'turn.ended',
+        'runtime.stopping',
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('allows runtime cleanup to persist worker lifecycle events without deadlocking the persistence queue', async () => {
+    const store = new InMemorySessionStore();
+    const id = sessionId('native:runtime-cleanup-worker-event');
+    await store.append(id, revision('0'), [{
+      schemaVersion: 1,
+      sessionId: id,
+      eventId: sessionEventId('created'),
+      revision: revision('1'),
+      sequence: 1,
+      timestamp: 1,
+      visibility: 'internal',
+      event: { type: 'session.created' },
+    }]);
+    const runtimeEvent = (type: RuntimeEvent['type'], eventId: string): RuntimeEvent => ({
+      schemaVersion: 1,
+      eventVersion: 1,
+      id: eventId as RuntimeEvent['id'],
+      type,
+      phase: 'notification',
+      sessionId: id,
+      timestamp: 2,
+      cwd: '/workspace',
+      mode: 'headless',
+      trust: { workspace: 'trusted', managedOnly: false },
+      payload: {},
+    } as unknown as RuntimeEvent);
+    let persist!: ReturnType<typeof createRuntimeEventPersister>;
+    persist = createRuntimeEventPersister({
+      sessions: store,
+      activeSessionId: id,
+      initialRevision: revision('1'),
+      onRuntimeStopping: async () => {
+        await persist(runtimeEvent('worker.stopped', 'runtime:worker-stopped'));
+      },
+    });
+
+    await expect(Promise.race([
+      persist(runtimeEvent('runtime.stopping', 'runtime:stopping')),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('runtime cleanup deadlocked')), 100)),
+    ])).resolves.toBeDefined();
+
+    const loaded = await store.load(id);
+    const lifecycleKinds = loaded.events.slice(1).map(({ event }) => {
+      expect(event.type).toBe('custom.appended');
+      if (!('kind' in event)) throw new Error(`expected custom.appended, received ${event.type}`);
+      return event.kind;
+    });
+    expect(lifecycleKinds).toEqual([
+      'runtime.stopping',
+      'worker.stopped',
+    ]);
   });
 
   it('commits peer context and its replay marker atomically before outbox acknowledgement', async () => {
@@ -799,11 +1188,11 @@ describe('native launcher', () => {
       initialRevision: revision('1'),
       lifecycle: new Map([['tool.requested', bus]]),
     });
-    const runtimeEvent = (type: RuntimeEvent['type'], eventId: string, payload: unknown): RuntimeEvent => ({
+    const runtimeEvent = (type: RuntimeEvent['type'], eventId: string, payload: RuntimeEvent['payload']): RuntimeEvent => ({
       schemaVersion: 1, eventVersion: 1, id: eventId as RuntimeEvent['id'], type, phase: type === 'tool.requested' ? 'permission' : 'notification', sessionId: id,
       timestamp: 2, cwd: '/workspace', mode: 'headless', trust: { workspace: 'trusted', managedOnly: false },
       payload,
-    });
+    } as unknown as RuntimeEvent);
 
     await persist(runtimeEvent('message.delta', 'call-delta', { type: 'tool-call', id: 'call-1', name: 'unsafe', input: { approved: false } }));
     await persist(runtimeEvent('message.ended', 'message-ended', { status: 'complete' }));
@@ -893,6 +1282,33 @@ describe('native launcher', () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
+  it('runs owned runtime cleanup when persisting shutdown fails and preserves the persistence error', async () => {
+    const store = new InMemorySessionStore();
+    const id = sessionId('native:runtime-cleanup-persistence-failure');
+    await store.append(id, revision('0'), [{
+      schemaVersion: 1, sessionId: id, eventId: sessionEventId('created'), revision: revision('1'), sequence: 1,
+      timestamp: 1, visibility: 'internal', event: { type: 'session.created' },
+    }]);
+    const failure = new Error('persist stopping failed');
+    vi.spyOn(store, 'append').mockRejectedValueOnce(failure);
+    const cleanup = vi.fn(async () => undefined);
+    const persist = createRuntimeEventPersister({
+      sessions: store,
+      activeSessionId: id,
+      initialRevision: revision('1'),
+      onRuntimeStopping: cleanup,
+    });
+    const stopping = (eventId: string): RuntimeEvent => ({
+      schemaVersion: 1, eventVersion: 1, id: eventId as RuntimeEvent['id'], type: 'runtime.stopping', phase: 'after', sessionId: id,
+      timestamp: 2, cwd: '/workspace', mode: 'headless', trust: { workspace: 'trusted', managedOnly: false }, payload: {},
+    });
+
+    await expect(persist(stopping('stopping-failed'))).rejects.toBe(failure);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    await persist(stopping('stopping-retried'));
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
   it('does not persist partial provider output that the runtime cancels', async () => {
     const store = new InMemorySessionStore();
     const id = sessionId('native:cancelled-partial');
@@ -901,10 +1317,10 @@ describe('native launcher', () => {
       timestamp: 1, visibility: 'internal', event: { type: 'session.created' },
     }]);
     const persist = createRuntimeEventPersister({ sessions: store, activeSessionId: id, initialRevision: revision('1') });
-    const runtimeEvent = (type: RuntimeEvent['type'], eventId: string, payload: unknown): RuntimeEvent => ({
+    const runtimeEvent = (type: RuntimeEvent['type'], eventId: string, payload: RuntimeEvent['payload']): RuntimeEvent => ({
       schemaVersion: 1, eventVersion: 1, id: eventId as RuntimeEvent['id'], type, phase: 'notification', sessionId: id,
       timestamp: 2, cwd: '/workspace', mode: 'headless', trust: { workspace: 'trusted', managedOnly: false }, payload,
-    });
+    } as unknown as RuntimeEvent);
 
     await persist(runtimeEvent('message.delta', 'partial', { type: 'text', text: 'discard me' }));
     await persist(runtimeEvent('provider.response-received', 'cancelled-response', { stop: 'cancelled' }));
@@ -921,10 +1337,10 @@ describe('native launcher', () => {
       timestamp: 1, visibility: 'internal', event: { type: 'session.created' },
     }]);
     const persist = createRuntimeEventPersister({ sessions: store, activeSessionId: id, initialRevision: revision('1') });
-    const runtimeEvent = (type: RuntimeEvent['type'], eventId: string, payload: unknown): RuntimeEvent => ({
+    const runtimeEvent = (type: RuntimeEvent['type'], eventId: string, payload: RuntimeEvent['payload']): RuntimeEvent => ({
       schemaVersion: 1, eventVersion: 1, id: eventId as RuntimeEvent['id'], type, phase: 'notification', sessionId: id,
       timestamp: 2, cwd: '/workspace', mode: 'headless', trust: { workspace: 'trusted', managedOnly: false }, payload,
-    });
+    } as unknown as RuntimeEvent);
 
     await persist(runtimeEvent('message.delta', 'call-delta', { type: 'tool-call', id: 'call-1', name: 'lookup', input: { q: 1 } }));
     await persist(runtimeEvent('message.ended', 'message-1', { status: 'complete' }));
@@ -967,10 +1383,10 @@ describe('native launcher', () => {
       timestamp: 1, visibility: 'internal', event: { type: 'session.created' },
     }]);
     const persist = createRuntimeEventPersister({ sessions: store, activeSessionId: id, initialRevision: revision('1') });
-    const runtimeEvent = (type: RuntimeEvent['type'], eventId: string, payload: unknown): RuntimeEvent => ({
+    const runtimeEvent = (type: RuntimeEvent['type'], eventId: string, payload: RuntimeEvent['payload']): RuntimeEvent => ({
       schemaVersion: 1, eventVersion: 1, id: eventId as RuntimeEvent['id'], type, phase: 'notification', sessionId: id,
       timestamp: 2, cwd: '/workspace', mode: 'headless', trust: { workspace: 'trusted', managedOnly: false }, payload,
-    });
+    } as unknown as RuntimeEvent);
 
     await persist(runtimeEvent('message.delta', 'call-blocked', { type: 'tool-call', id: 'call-blocked', name: 'write', input: {} }));
     await persist(runtimeEvent('message.ended', 'message-blocked', { status: 'complete' }));
@@ -999,11 +1415,11 @@ describe('native launcher', () => {
     input.end('hello\n/exit\n');
     const listeners = new Set<(event: RuntimeEvent) => void>();
     const id = sessionId('native:presentation');
-    const emit = (type: RuntimeEvent['type'], payload: unknown) => {
-      const runtimeEvent: RuntimeEvent = {
+    const emit = (type: RuntimeEvent['type'], payload: RuntimeEvent['payload']) => {
+      const runtimeEvent = {
         schemaVersion: 1, eventVersion: 1, id: `event:${type}` as RuntimeEvent['id'], type, phase: 'notification', sessionId: id,
         timestamp: 1, cwd: '/workspace', mode: 'interactive', trust: { workspace: 'trusted', managedOnly: false }, payload,
-      };
+      } as unknown as RuntimeEvent;
       for (const listener of listeners) listener(runtimeEvent);
     };
     const runtime = fakeRuntime();
@@ -1018,6 +1434,17 @@ describe('native launcher', () => {
       emit('input.queued', { kind: 'follow-up', text: 'next', position: 2 });
       emit('input.rejected', { kind: 'follow-up', text: 'later', reason: 'input queue full', limit: 1 });
       emit('input.received', { text });
+      emit('context.appended', {
+        eventId: 'peer:event-1',
+        text: 'Research worker completed the state audit.',
+        provenance: 'peer-attributed-data',
+      });
+      emit('worker.started', { workerId: 'worker:research-1', state: 'running' });
+      emit('worker.stopped', {
+        workerId: 'worker:research-1',
+        state: 'succeeded',
+        terminal: { outcome: 'succeeded' },
+      });
       emit('turn.started', { turnId: 'turn-1' });
       emit('tool.requested', { callId: 'call-1', name: 'lookup' });
       emit('tool.started', { callId: 'call-1', name: 'lookup' });
@@ -1029,17 +1456,30 @@ describe('native launcher', () => {
       emit('turn.ended', { turnId: 'turn-1', stop: 'complete' });
     });
     runtime.stop = vi.fn(async () => { emit('runtime.stopping', {}); });
-    const terminal = { start: vi.fn(async () => undefined), accept: vi.fn(), stop: vi.fn(async () => undefined), snapshot: vi.fn() };
+    const terminal = { inputOwnership: 'external' as const, start: vi.fn(async () => undefined), accept: vi.fn(), stop: vi.fn(async () => undefined), snapshot: vi.fn(() => createInitialPresentationState()) };
 
     await expect(launchNativeAgent([], { createRuntime: async () => runtime, createTerminal: () => terminal, stdin: input })).resolves.toBe(0);
 
     const presentation = terminal.accept.mock.calls.map(([event]) => event);
-    expect(presentation.filter((event) => event.type !== 'runtime-widgets-changed')).toEqual([
+    expect(presentation).toEqual([
       { type: 'interaction-handler-state', ready: false },
+      {
+        type: 'chrome-changed',
+        chrome: { authority: 'runtime', title: 'Octocode Agent', sessionId: id, modelId: 'gpt-runtime', trust: 'unknown' },
+      },
+      {
+        type: 'chrome-changed',
+        chrome: { authority: 'runtime', title: 'Octocode Agent', sessionId: id, modelId: 'gpt-runtime', trust: 'trusted' },
+      },
       { type: 'runtime-ready' },
+      { type: 'presentation-changed', property: 'working', value: 'active' },
       { type: 'notification', severity: 'info', message: 'Follow-up queued · position 2' },
       { type: 'notification', severity: 'error', message: 'Follow-up rejected · input queue full' },
       { type: 'input-received', text: 'hello' },
+      { type: 'notification', severity: 'info', message: 'Peer context received and added to this session' },
+      { type: 'status-changed', name: 'worker:research-1', text: 'RUNNING' },
+      { type: 'status-changed', name: 'worker:research-1' },
+      { type: 'notification', severity: 'success', message: 'worker:research-1 · SUCCEEDED' },
       { type: 'turn-started', turnId: 'turn-1' },
       { type: 'tool-requested', callId: 'call-1', name: 'lookup', turnId: 'turn-1' },
       { type: 'tool-started', callId: 'call-1', name: 'lookup', turnId: 'turn-1' },
@@ -1051,27 +1491,21 @@ describe('native launcher', () => {
       { type: 'turn-ended', turnId: 'turn-1', outcome: 'completed' },
       { type: 'runtime-stopping' },
     ]);
-    expect(presentation.filter((event) => event.type === 'runtime-widgets-changed')).toEqual(expect.arrayContaining([
-      expect.objectContaining({ snapshots: expect.objectContaining({
-        header: expect.objectContaining({ authority: 'runtime', working: 'idle' }),
-        footer: expect.objectContaining({ authority: 'runtime', connection: 'connecting' }),
-      }) }),
-      expect.objectContaining({ snapshots: expect.objectContaining({
-        header: expect.objectContaining({
-          working: 'idle', trust: 'trusted', sessionId: id,
-          modelId: 'gpt-runtime',
-        }),
-        footer: expect.objectContaining({ connection: 'connected' }),
-      }) }),
-      expect.objectContaining({ snapshots: expect.objectContaining({
-        header: expect.objectContaining({ working: 'active' }),
-        footer: expect.objectContaining({ connection: 'connected' }),
-      }) }),
-      expect.objectContaining({ snapshots: expect.objectContaining({
-        header: expect.objectContaining({ working: 'cancelling' }),
-        footer: expect.objectContaining({ connection: 'connecting' }),
-      }) }),
+    const states = presentation.reduce<ReturnType<typeof createInitialPresentationState>[]>((history, event) => {
+      history.push(reducePresentation(history.at(-1)!, event as PresentationEvent));
+      return history;
+    }, [createInitialPresentationState()]);
+    const active = states.find((state) => state.activeTurnId === 'turn-1');
+    expect(projectPresentationChrome(active!, 80)?.footer.keyHints).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'Enter', label: 'Follow up' }),
+      expect.objectContaining({ key: '/steer', label: 'Redirect' }),
     ]));
+    const final = states.at(-1)!;
+    expect(final).toMatchObject({
+      working: 'cancelling',
+      chrome: { trust: 'trusted', sessionId: id, modelId: 'gpt-runtime', connection: 'connecting' },
+    });
+    expect(projectPresentationChrome(final, 80)?.header.working).toBe(final.working);
   });
 
   it('hydrates a resumed production runtime from durable model-visible history', async () => {
@@ -1104,7 +1538,7 @@ describe('native launcher', () => {
       sessionFile: path.join(nativeSessionsDir(env), `${encodeURIComponent(id)}.json`),
       cwd,
     });
-    const index = new DatabaseSync(path.join(home, 'octocode.sqlite3'), { readOnly: true });
+    const index = new DatabaseSync(agentDbPath(env), { readOnly: true });
     try {
       expect(index.prepare('SELECT workspace_path, cwd FROM agent_sessions WHERE session_id = ?').get(id)).toEqual({
         workspace_path: cwd,
@@ -1123,6 +1557,59 @@ describe('native launcher', () => {
       { role: 'assistant', content: 'prior answer' },
       { role: 'user', content: 'current question' },
     ]);
+  });
+
+  it('does not replay a genuinely cancelled persisted turn when resuming a session', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-runtime-cancel-resume-'));
+    const env = { OCTOCODE_HOME: home };
+    const cwd = '/workspace';
+    const id = sessionId('native:cancel-resume');
+    const store = new TransactionalSessionStore(new FileSessionRecordPort(nativeSessionsDir(env)));
+    await store.append(id, revision('0'), [
+      {
+        schemaVersion: 1, sessionId: id, eventId: sessionEventId('cancel-resume-1'), revision: revision('1'), sequence: 1,
+        timestamp: 1, visibility: 'internal', event: { type: 'session.created' },
+      },
+      {
+        schemaVersion: 1, sessionId: id, eventId: sessionEventId('cancel-resume-2'), revision: revision('2'), sequence: 2,
+        timestamp: 2, visibility: 'internal', event: { type: 'custom.appended', kind: 'session.cwd', value: cwd },
+      },
+    ]);
+    let modelStarted!: () => void;
+    const started = new Promise<void>((resolve) => { modelStarted = resolve; });
+    const first = await createDefaultNativeRuntime({
+      env, cwd, args: parseNativeArgs(['--session', id]), tools: new ToolRegistry(),
+      model: {
+        run: async (_request, context) => {
+          modelStarted();
+          await new Promise<void>((resolve) => context.signal.addEventListener('abort', () => resolve(), { once: true }));
+          return { stop: 'cancelled', usage: { inputTokens: 1, outputTokens: 0 } };
+        },
+      },
+    });
+    const cancelled = first.submit('cancelled question');
+    await started;
+    await first.cancel('test cancellation');
+    await cancelled;
+    await first.stop();
+
+    const resumedRequests: ModelRequest[] = [];
+    const resumed = await createDefaultNativeRuntime({
+      env, cwd, args: parseNativeArgs(['--session', id]), tools: new ToolRegistry(),
+      model: {
+        run: async (request) => {
+          resumedRequests.push(structuredClone(request));
+          return { stop: 'complete', usage: { inputTokens: 1, outputTokens: 1 } };
+        },
+      },
+    });
+
+    expect(resumedRequests).toEqual([]);
+    await resumed.submit('new question');
+    await resumed.stop();
+    expect(resumedRequests).toHaveLength(1);
+    expect(resumedRequests[0]?.messages).toContainEqual({ role: 'user', content: 'cancelled question' });
+    expect(resumedRequests[0]?.messages.at(-1)).toEqual({ role: 'user', content: 'new question' });
   });
 
   it('persists automatic compaction and restores its summary on restart', async () => {

@@ -29,7 +29,7 @@ function insertMem(db: DatabaseSync, opts: {
     const memoryId = opts.memoryId ?? 'mem_' + randomUUID().replace(/-/g, '');
     const now = new Date().toISOString();
     db.prepare(`
-    INSERT INTO memories (
+    INSERT INTO awareness_memories (
       memory_id, agent_id, task_context, observation, importance,
       label, tags_json, workspace_path, failure_signature, created_at
     ) VALUES (?, 'agent-test', 'test context', ?, ?, ?, ?, ?, ?, ?)

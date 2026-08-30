@@ -16,6 +16,9 @@ export interface SqliteLike {
   prepare(sql: string): { run(...params: unknown[]): unknown };
 }
 
+/** ASCII "OCTA": the database is exclusively owned by the Octocode agent. */
+export const AGENT_APPLICATION_ID = 0x4f435441;
+
 /** UTC timestamp in ISO-8601, matching the rest of the stores. */
 export function utcNow(): string {
   return new Date().toISOString();
@@ -28,6 +31,12 @@ export function utcNow(): string {
  */
 export function initOctocodeSchema(db: SqliteLike): void {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_schema_modules (
+      module_key  TEXT PRIMARY KEY,
+      version     INTEGER NOT NULL CHECK(version > 0),
+      fingerprint TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS octocode_meta (
       key        TEXT PRIMARY KEY,
       value      TEXT NOT NULL,

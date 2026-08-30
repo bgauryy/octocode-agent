@@ -17,7 +17,7 @@ export function discardUncommittedHookFiles(db: DatabaseSync, params: {
   db.exec('BEGIN IMMEDIATE');
   try {
     const placeholders = targets.map(() => '?').join(',');
-    db.prepare(`DELETE FROM locks WHERE run_id = ? AND file_path IN (${placeholders})`)
+    db.prepare(`DELETE FROM awareness_locks WHERE run_id = ? AND file_path IN (${placeholders})`)
       .run(params.runId, ...targets);
     const discarded = db.prepare(`DELETE FROM run_files
       WHERE run_id = ? AND file_path IN (${placeholders})

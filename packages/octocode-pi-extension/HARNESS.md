@@ -101,7 +101,7 @@ The harness merges active files from lowest to highest precedence. A later entry
 |---|---|---|
 | 1 | Built-in | pinned-local-first `octocode` server |
 | 2 | Global | `$OCTOCODE_HOME/agent/mcp/servers.json` |
-| 3 | Project | `<workspace>/.octocode/agent/mcp/servers.json` |
+| 3 | Workspace | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json` |
 
 Project files load only after workspace trust. `MCPTool` `action:"add"|"remove"` manages the canonical files; direct edits hot-refresh connections and artifacts, while `/new` refreshes the frozen agent prompt.
 

@@ -5,7 +5,7 @@
 import type { UiPort, UiInteractionRequest, UiInteractionResult } from '@octocodeai/agent-core';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
-import type { FooterSnapshot } from './widgets/footer.js';
+import type { FooterConnectionState, FooterSnapshot } from './widgets/footer.js';
 import type { HeaderSnapshot } from './widgets/header.js';
 import type { PlanWidgetSnapshot } from './widgets/plan.js';
 import type { StatusNotificationInput } from './widgets/status-notifications.js';
@@ -15,6 +15,17 @@ export type NotificationSeverity = 'info' | 'success' | 'warning' | 'error';
 export type PresentationMessageRole = 'system' | 'user' | 'assistant' | 'tool';
 export type PresentationMessageStatus = 'streaming' | 'complete' | 'cancelled' | 'error';
 export type PresentationToolStatus = 'pending' | 'running' | 'success' | 'error' | 'blocked' | 'cancelled';
+
+export interface PresentationChromeFacts {
+  readonly authority: 'runtime';
+  readonly title: string;
+  readonly sessionId?: string;
+  readonly modelId?: string;
+  readonly trust: 'trusted' | 'untrusted' | 'unknown';
+  readonly connection: FooterConnectionState;
+}
+
+export type PresentationChromeUpdate = Omit<PresentationChromeFacts, 'connection'>;
 
 export const MAX_PRESENTATION_MESSAGES = 200;
 export const MAX_PRESENTATION_TOOLS = 100;
@@ -57,7 +68,7 @@ export type PresentationInteractionRequest =
   | { readonly type: 'confirm'; readonly message: string }
   | { readonly type: 'select'; readonly message: string; readonly options: readonly string[] }
   | { readonly type: 'input'; readonly message: string; readonly initial?: string }
-  | { readonly type: 'editor'; readonly initial: string };
+  | { readonly type: 'editor'; readonly message: string; readonly initial: string };
 
 export interface PresentationInteraction {
   /** Monotonic identity used to discard stale rendered interaction instances. */
@@ -69,10 +80,14 @@ export interface PresentationInteraction {
 }
 
 /** Runtime-owned semantic widget state. Display strings are deliberately excluded. */
-export interface RuntimeWidgetSnapshots {
-  readonly header?: HeaderSnapshot;
-  readonly footer?: FooterSnapshot;
+export interface RuntimeWidgetState {
   readonly plan?: PlanWidgetSnapshot;
+  readonly statusNotifications?: readonly StatusNotificationInput[];
+}
+
+export interface RuntimeWidgetSnapshots {
+  /** `null` explicitly clears a previously projected plan; omission preserves it. */
+  readonly plan?: PlanWidgetSnapshot | null;
   readonly statusNotifications?: readonly StatusNotificationInput[];
 }
 
@@ -85,6 +100,7 @@ export type PresentationWidget =
 export interface PresentationState {
   readonly ready: boolean;
   readonly working: WorkingState;
+  readonly chrome?: PresentationChromeFacts;
   readonly activeTurnId?: string;
   readonly turns: readonly PresentationTurn[];
   readonly messages: readonly PresentationMessage[];
@@ -97,13 +113,15 @@ export interface PresentationState {
   readonly widgets: Readonly<Record<string, PresentationWidget>>;
   readonly interactionHandler: 'required' | 'ready';
   readonly interaction?: PresentationInteraction;
-  readonly runtimeWidgets?: RuntimeWidgetSnapshots;
+  readonly runtimeWidgets?: RuntimeWidgetState;
 }
 
 export type PresentationEvent =
   | { type: 'runtime-ready' }
   | { type: 'runtime-stopping' }
   | { type: 'runtime-failed' }
+  | { type: 'context-cleared' }
+  | { type: 'chrome-changed'; chrome: PresentationChromeUpdate }
   | { type: 'turn-started'; turnId: string }
   | { type: 'turn-ended'; turnId: string; outcome: 'completed' | 'cancelled' | 'error' }
   | { type: 'input-received'; text: string; messageId?: string; turnId?: string }
@@ -194,6 +212,70 @@ export function createInitialPresentationState(): PresentationState {
     notifications: [],
     widgets: {},
     interactionHandler: 'required',
+  };
+}
+
+export function projectPresentationChrome(
+  state: PresentationState,
+  viewportWidth: number,
+): { readonly header: HeaderSnapshot; readonly footer: FooterSnapshot } | undefined {
+  const chrome = state.chrome;
+  if (chrome === undefined) return undefined;
+  const interactionActive = state.interaction?.status === 'pending' || state.interaction?.status === 'validation';
+  const interactionType = interactionActive ? state.interaction?.request.type : undefined;
+  const keyHints = interactionType === 'confirm'
+    ? [
+        { key: 'Enter', label: 'Choose', priority: 1 },
+        { key: 'Esc/Ctrl-C', label: 'Cancel', priority: 2 },
+        { key: 'Tab', label: 'Move choice', priority: 3 },
+      ]
+    : interactionType === 'select'
+      ? [
+          { key: 'Enter', label: 'Choose', priority: 1 },
+          { key: 'Esc/Ctrl-C', label: 'Cancel', priority: 2 },
+          { key: '↑/↓', label: 'Move choice', priority: 3 },
+        ]
+      : interactionType === 'input'
+      ? [
+          { key: 'Enter', label: 'Submit', priority: 1 },
+          { key: 'Esc/Ctrl-C', label: 'Cancel', priority: 2 },
+        ]
+        : interactionType === 'editor'
+          ? [
+              { key: 'Meta-Enter', label: 'Submit', priority: 1 },
+              { key: 'Esc/Ctrl-C', label: 'Cancel', priority: 2 },
+            ]
+    : state.working === 'active'
+      ? [
+          { key: 'Enter', label: 'Follow up', priority: 1 },
+          { key: 'Esc/Ctrl-C', label: 'Cancel turn', priority: 2 },
+          { key: '/steer', label: 'Redirect', priority: 3 },
+          { key: 'Tab', label: 'Inspect activity', priority: 4 },
+        ]
+      : [
+          { key: 'Enter', label: 'Send', priority: 1 },
+          { key: 'Ctrl-C', label: 'Exit', priority: 2 },
+          { key: 'Tab', label: 'Inspect activity', priority: 3 },
+          { key: '/', label: 'Commands', priority: 4 },
+          { key: '@', label: 'Files', priority: 5 },
+        ];
+  return {
+    header: {
+      authority: chrome.authority,
+      title: chrome.title,
+      ...(chrome.sessionId === undefined ? {} : { sessionId: chrome.sessionId }),
+      ...(chrome.modelId === undefined ? {} : { modelId: chrome.modelId }),
+      trust: chrome.trust,
+      working: state.working,
+      width: Math.min(10_000, Math.max(1, viewportWidth)),
+    },
+    footer: {
+      authority: chrome.authority,
+      activeMode: interactionActive ? 'respond' : 'chat',
+      connection: chrome.connection,
+      widthColumns: Math.min(1_000, Math.max(20, viewportWidth)),
+      keyHints,
+    },
   };
 }
 
@@ -326,12 +408,42 @@ export function reducePresentation(
   event: PresentationEvent,
 ): PresentationState {
   switch (event.type) {
+    case 'context-cleared':
+      return {
+        ...state,
+        working: 'idle',
+        activeTurnId: undefined,
+        statuses: Object.fromEntries(Object.entries(state.statuses).filter(([name]) => name !== 'context.usage')),
+        interaction: undefined,
+      };
     case 'runtime-ready':
-      return { ...state, ready: true, working: 'idle' };
+      return {
+        ...state,
+        ready: true,
+        working: 'idle',
+        ...(state.chrome === undefined ? {} : { chrome: { ...state.chrome, connection: 'connected' as const } }),
+      };
     case 'runtime-stopping':
-      return { ...state, working: 'cancelling' };
+      return {
+        ...state,
+        working: 'cancelling',
+        ...(state.chrome === undefined ? {} : { chrome: { ...state.chrome, connection: 'connecting' as const } }),
+      };
     case 'runtime-failed':
-      return { ...state, working: 'failed' };
+      return {
+        ...state,
+        working: 'failed',
+        ...(state.chrome === undefined ? {} : { chrome: { ...state.chrome, connection: 'error' as const } }),
+      };
+    case 'chrome-changed':
+      return {
+        ...state,
+        chrome: {
+          ...event.chrome,
+          connection: state.chrome?.connection
+            ?? (state.working === 'failed' ? 'error' : state.ready ? 'connected' : 'connecting'),
+        },
+      };
     case 'turn-started': {
       const turns = [
         ...state.turns.filter(({ id }) => id !== event.turnId),
@@ -471,18 +583,17 @@ export function reducePresentation(
         },
       };
     case 'runtime-widgets-changed':
-      return {
-        ...state,
-        runtimeWidgets: {
+      {
+        const runtimeWidgets: { plan?: PlanWidgetSnapshot; statusNotifications?: readonly StatusNotificationInput[] } = {
           ...state.runtimeWidgets,
-          ...(event.snapshots.header === undefined ? {} : { header: event.snapshots.header }),
-          ...(event.snapshots.footer === undefined ? {} : { footer: event.snapshots.footer }),
-          ...(event.snapshots.plan === undefined ? {} : { plan: event.snapshots.plan }),
-          ...(event.snapshots.statusNotifications === undefined
-            ? {}
-            : { statusNotifications: [...event.snapshots.statusNotifications] }),
-        },
-      };
+        };
+        if (event.snapshots.plan === null) delete runtimeWidgets.plan;
+        else if (event.snapshots.plan !== undefined) runtimeWidgets.plan = event.snapshots.plan;
+        if (event.snapshots.statusNotifications !== undefined) {
+          runtimeWidgets.statusNotifications = [...event.snapshots.statusNotifications];
+        }
+        return { ...state, runtimeWidgets };
+      }
     case 'notification':
       return {
         ...state,

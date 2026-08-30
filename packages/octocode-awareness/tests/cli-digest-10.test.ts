@@ -143,9 +143,9 @@ describe('digest', () => {
 
       const conn = new DatabaseSync(db);
       try {
-        conn.prepare("UPDATE memories SET state = 'SUPERSEDED', updated_at = ? WHERE memory_id = ?")
+        conn.prepare("UPDATE awareness_memories SET state = 'SUPERSEDED', updated_at = ? WHERE memory_id = ?")
           .run(daysAgo(5), (oldMemory['memory'] as Record<string, unknown>)['memory_id'] as string);
-        conn.prepare("UPDATE memories SET state = 'SUPERSEDED', updated_at = ? WHERE memory_id = ?")
+        conn.prepare("UPDATE awareness_memories SET state = 'SUPERSEDED', updated_at = ? WHERE memory_id = ?")
           .run(daysAgo(0), (freshMemory['memory'] as Record<string, unknown>)['memory_id'] as string);
         conn.prepare('UPDATE refinements SET updated_at = ? WHERE refinement_id = ?')
           .run(daysAgo(5), (oldHandoff['refinement'] as Record<string, unknown>)['refinement_id'] as string);

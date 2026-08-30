@@ -16,7 +16,7 @@ const ENABLED_TEST_CONFIG = JSON.stringify({
 export function withEnabledAwarenessConfig(
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const home = env.OCTOCODE_HOME ?? env.OCTOCODE_MEMORY_HOME;
+  const home = env.OCTOCODE_HOME ?? env.OCTOCODE_AGENT_DIR;
   if (!home) return env;
   mkdirSync(home, { recursive: true });
   const configPath = join(home, 'awareness.json');

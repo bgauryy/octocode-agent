@@ -97,6 +97,25 @@ describe('runAuthWizard', () => {
     expect(io.lines.join('\n')).toContain('auth status');
   });
 
+  it('accepts a discovered provider credential key', async () => {
+    const home = tmpHome();
+    const io = fakeIO(['1', 'custom-key-123456']);
+    const code = await runAuthWizard({
+      env: {},
+      io,
+      octocodeHome: home,
+      providers: [{
+        keyVar: 'CUSTOM_PROVIDER_KEY',
+        label: 'Discovered provider custom',
+        protocol: 'openai-chat-completions',
+      }],
+    });
+
+    expect(code).toBe(0);
+    expect(fs.readFileSync(path.join(home, '.env'), 'utf8')).toBe('CUSTOM_PROVIDER_KEY=custom-key-123456\n');
+    expect(io.lines.join('\n')).toContain('CUSTOM_PROVIDER_KEY');
+  });
+
   it('cancel on empty choice → 1, no file written', async () => {
     const home = tmpHome();
     const io = fakeIO(['']);

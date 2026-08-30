@@ -37,6 +37,7 @@ import {
 import { registerSpawnSubagentTool } from '../src/tools/spawn-subagent-tool.js';
 import type { ToolDefinition } from '../src/types.js';
 import { makeMockAgentProcess } from './helpers/mock-process.js';
+import { workspaceAgentRoot } from '../src/tools/session-artifacts.js';
 
 test('extractDeltaSummary prefers the latest structured worker line', () => {
   const out = '[STATUS] booting\nsome noise\n[ACTION] editing src/foo.ts\ntrailing chatter';
@@ -175,7 +176,7 @@ test('worker lastOutput preserves the complete agent result without truncation',
   assert.equal(record.normalizedResult?.status, 'done');
 });
 
-test('spawnRpcAgent assigns a durable handback file in the parent workspace and injects it into the worker packet', () => {
+test('spawnRpcAgent assigns a globally durable workspace-scoped handback and injects it into the worker packet', () => {
   if (isSubagentProcess()) return;
 
   const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-handback-test-')));
@@ -186,7 +187,8 @@ test('spawnRpcAgent assigns a durable handback file in the parent workspace and 
     const record = spawnRpcAgent({ task: 'Goal: test\nContext: ctx\nScope: scope\nOwnership: read\nAcceptance: done\nReturn: result', cwd: tmpDir, resourceMode: 'lean' });
     const initialPrompt = String(mock.writes[0]?.['message'] ?? '');
 
-    assert.match(record.handbackPath, new RegExp(`${tmpDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.octocode/tmp/agents/${record.id}/handback\\.md`));
+    assert.equal(record.handbackPath, path.join(workspaceAgentRoot(tmpDir), 'workers', record.id, 'handback.md'));
+    assert.equal(record.handbackPath.startsWith(tmpDir), false);
     assert.equal(fs.existsSync(path.dirname(record.handbackPath)), true, 'handback directory should be created before the worker starts');
     assert.match(initialPrompt, /durable handback file:/);
     assert.match(initialPrompt, new RegExp(record.handbackPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
@@ -196,7 +198,7 @@ test('spawnRpcAgent assigns a durable handback file in the parent workspace and 
   }
 });
 
-test('spawnRpcAgent falls back visibly when the parent workspace cannot hold a handback', () => {
+test('spawnRpcAgent keeps handbacks global when the workspace path is invalid', () => {
   if (isSubagentProcess()) return;
 
   const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-handback-fallback-test-')));
@@ -211,10 +213,10 @@ test('spawnRpcAgent falls back visibly when the parent workspace cannot hold a h
     fallbackAgentDir = path.dirname(record.handbackPath);
     const initialPrompt = String(mock.writes[0]?.['message'] ?? '');
 
-    assert.ok(record.handbackPath.startsWith(path.join(os.tmpdir(), 'octocode-agent-handbacks', record.id)));
+    assert.equal(record.handbackPath, path.join(workspaceAgentRoot(invalidWorkspace), 'workers', record.id, 'handback.md'));
     assert.match(record.handbackPath, /handback\.md$/);
     assert.equal(fs.existsSync(fallbackAgentDir), true);
-    assert.ok(record.policyWarnings.some(warning => /temporary fallback/.test(warning)));
+    assert.equal(record.policyWarnings.some(warning => /temporary fallback/.test(warning)), false);
     assert.ok(initialPrompt.includes(record.handbackPath));
   } finally {
     if (fallbackAgentDir) fs.rmSync(fallbackAgentDir, { recursive: true, force: true });

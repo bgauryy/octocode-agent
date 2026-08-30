@@ -5,12 +5,15 @@ import type {
   RuntimeCommand,
   RuntimeCommandResult,
   RuntimeCompactionPort,
+  MonitoringSnapshotV1,
+  NativeMonitoringContributionV1,
+  NativeMonitoringPort,
   RuntimePlanPolicySnapshot,
   RuntimePlanStateProvider,
   RuntimePlanStateUpdater,
   RuntimeSnapshot,
 } from '../contracts/runtime.js';
-import type { RuntimeEvent, RuntimeMode, ToolCancelledPayload, TrustSnapshot } from '../contracts/events.js';
+import type { RuntimeEvent, RuntimeEventOf, RuntimeEventPayload, RuntimeMode, RuntimeOutputFormat, ToolCancelledPayload, TrustSnapshot } from '../contracts/events.js';
 import type { ModelMessage, ModelPort, ModelRequest, ModelResponse } from '../contracts/ports.js';
 import { createEffectSet, type EffectSet, type ToolDefinition, type ToolExecutionUpdate, type ToolPolicyMetadata } from '../contracts/tools.js';
 import type { LifecycleDispatchResult } from '../events/bus.js';
@@ -23,7 +26,7 @@ interface ToolGateRequest { readonly callId: string; readonly name: string; read
 type ToolGateResult = { readonly allowed: true; readonly effects: EffectSet; readonly policy: EffectAdmissionReceipt['policy'] }
   | { readonly allowed: false; readonly category: 'validation' | 'trust' | 'approval' | 'plan-policy' | 'peer-lock' | 'policy' | 'cancelled'; readonly reason: string };
 interface QueuedInput { readonly kind: 'follow-up' | 'steer'; readonly text: string; }
-export interface RuntimeKernelOptions { readonly sessionId: SessionId; readonly model: ModelPort; readonly compaction?: RuntimeCompactionPort; readonly compactionInputTokenThreshold?: number; readonly effectLedger?: EffectLedgerPort; readonly initialModel?: NonNullable<RuntimeSnapshot['model']>; readonly validateModel?: (model: NonNullable<RuntimeSnapshot['model']>) => string | undefined; readonly validateThinking?: (level: string) => string | undefined; readonly initialMessages?: readonly ModelMessage[]; readonly initialContextEventIds?: readonly string[]; readonly tools?: ToolRegistry; readonly policy?: PolicyChain; readonly maxIterations?: number; readonly maxToolCalls?: number; readonly maxProviderAttempts?: number; readonly providerRetryDelayMs?: number; readonly maxQueuedInputs?: number; readonly maxToolResultBytes?: number; readonly maxToolResultBytesPerTurn?: number; readonly turnTimeoutMs?: number; readonly cwd?: string; readonly mode?: RuntimeMode; readonly trust?: TrustSnapshot; /** Legacy construction-time fallback. Prefer planState for live policy. */ readonly planActive?: boolean; readonly planState?: RuntimePlanStateProvider; readonly approve?: (request: ToolGateRequest) => Promise<boolean>; readonly checkPeerLocks?: (targets: readonly string[], request: ToolGateRequest) => Promise<boolean>; readonly emit?: (event: RuntimeEvent) => Promise<LifecycleDispatchResult<unknown> | void>; readonly now?: () => number; readonly createTurnId?: (sequence: number) => TurnId; }
+export interface RuntimeKernelOptions { readonly sessionId: SessionId; readonly model: ModelPort; readonly compaction?: RuntimeCompactionPort; readonly compactionInputTokenThreshold?: number; readonly effectLedger?: EffectLedgerPort; readonly initialModel?: NonNullable<RuntimeSnapshot['model']>; readonly validateModel?: (model: NonNullable<RuntimeSnapshot['model']>) => string | undefined; readonly validateThinking?: (level: string) => string | undefined; readonly initialMessages?: readonly ModelMessage[]; readonly initialContextEventIds?: readonly string[]; readonly tools?: ToolRegistry; readonly policy?: PolicyChain; readonly maxIterations?: number; readonly maxToolCalls?: number; readonly maxProviderAttempts?: number; readonly providerRetryDelayMs?: number; readonly maxQueuedInputs?: number; readonly maxToolResultBytes?: number; readonly maxToolResultBytesPerTurn?: number; readonly turnTimeoutMs?: number; readonly cwd?: string; readonly mode?: RuntimeMode; readonly outputFormat?: RuntimeOutputFormat; readonly trust?: TrustSnapshot; /** Legacy construction-time fallback. Prefer planState for live policy. */ readonly planActive?: boolean; readonly planState?: RuntimePlanStateProvider; readonly approve?: (request: ToolGateRequest) => Promise<boolean>; readonly checkPeerLocks?: (targets: readonly string[], request: ToolGateRequest) => Promise<boolean>; readonly emit?: (event: RuntimeEvent) => Promise<LifecycleDispatchResult<unknown> | void>; readonly monitoring?: NativeMonitoringPort; readonly now?: () => number; readonly createTurnId?: (sequence: number) => TurnId; }
 
 const defaultTrust: TrustSnapshot = { workspace: 'unknown', managedOnly: false };
 const DEFAULT_PLAN_POLICY_SNAPSHOT: RuntimePlanPolicySnapshot = Object.freeze({ authority: 'runtime', revision: 0, active: false });
@@ -31,7 +34,29 @@ const DEFAULT_TURN_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_MAX_TOOL_RESULT_BYTES_PER_TURN = 4 * 1024 * 1024;
 const TURN_DEADLINE_EXCEEDED = Symbol('turn-deadline-exceeded');
 const DEFAULT_RUNTIME_CWD = '';
-const DEFAULT_RUNTIME_NOW = (): number => 0;
+const DEFAULT_RUNTIME_NOW = Date.now;
+interface MutableAggregate { count: number; sum: number; min: number | null; max: number | null; }
+const emptyAggregate = (): MutableAggregate => ({ count: 0, sum: 0, min: null, max: null });
+function observeAggregate(aggregate: MutableAggregate, value: number | undefined): void {
+  if (value === undefined || !Number.isFinite(value)) return;
+  const normalized = Math.max(0, value);
+  aggregate.count += 1;
+  aggregate.sum += normalized;
+  aggregate.min = aggregate.min === null ? normalized : Math.min(aggregate.min, normalized);
+  aggregate.max = aggregate.max === null ? normalized : Math.max(aggregate.max, normalized);
+}
+const isCounter = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+function nativeMonitoringContribution(value: NativeMonitoringContributionV1 | undefined): NativeMonitoringContributionV1 | undefined {
+  if (value === undefined || typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const cache = value.cache;
+  if (cache === undefined || (
+    !isCounter(cache.hits) || !isCounter(cache.misses) || !isCounter(cache.loads)
+    || !isCounter(cache.loadFailures) || !isCounter(cache.expirations) || !isCounter(cache.evictions)
+    || !isCounter(cache.entries) || !isCounter(cache.maxEntries) || cache.maxEntries === 0
+    || cache.entries > cache.maxEntries || !isCounter(cache.ttlMs) || cache.ttlMs === 0
+  )) return undefined;
+  return { cache: structuredClone(cache) };
+}
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isModelToolCall = (value: unknown): boolean => isRecord(value)
   && typeof value['id'] === 'string'
@@ -119,9 +144,13 @@ export class RuntimeKernel implements AgentRuntime {
   readonly #now: () => number;
   readonly #queuedInputs: QueuedInput[] = [];
   readonly #pendingSteers: QueuedInput[] = [];
+  readonly #providerDurationMs = emptyAggregate();
+  readonly #providerTtftMs = emptyAggregate();
+  readonly #providerErrors: Record<string, number> = {};
   #history: ModelMessage[];
   #compaction: AbortController | null = null;
   #state: RuntimeSnapshot['state'] = 'created'; #active: AbortController | null = null; #activeProviderAttempt: AbortController | null = null; #activeTurn: Promise<void> | null = null; #activeTurnId: ReturnType<typeof turnId> | null = null; #queueDrain: Promise<void> | null = null; #stopping: Promise<void> | null = null; #revision = 0; #model: RuntimeSnapshot['model'] = null; #thinking: string | null = null; #usage: RuntimeSnapshot['usage'] = { inputTokens: 0, outputTokens: 0 }; #lastCompactedInputTokens = 0; #sequence = 0;
+  #providerRequests = 0; #providerResponses = 0; #providerFailures = 0; #providerRetries = 0; #providerCancellations = 0;
   constructor(options: RuntimeKernelOptions) {
     this.#options = options;
     this.#cwd = options.cwd ?? DEFAULT_RUNTIME_CWD;
@@ -160,6 +189,7 @@ export class RuntimeKernel implements AgentRuntime {
   async #submitTurn(input: string, controller: AbortController): Promise<void> {
     this.#state = 'running'; this.#revision += 1; const id = this.#options.createTurnId?.(this.#sequence + 1) ?? turnId(`turn:${this.#sequence + 1}`); this.#activeTurnId = id;
     let stop: string = 'error';
+    let agentStarted = false;
     const abortStop = (): 'cancelled' | 'timeout' => controller.signal.reason === TURN_DEADLINE_EXCEEDED ? 'timeout' : 'cancelled';
     try {
       const lifecycle = await this.#emit('input.received', 'before', { text: input });
@@ -175,13 +205,24 @@ export class RuntimeKernel implements AgentRuntime {
       } else if (controller.signal.aborted) stop = abortStop();
       else {
         if (effectiveInput !== input) await this.#emit('input.transformed', 'after', { original: input, text: effectiveInput });
+        await this.#emit('agent.started', 'notification', { turnId: id });
+        agentStarted = true;
         stop = await this.#runModelToolLoop(effectiveInput, id, controller.signal);
         if (!controller.signal.aborted) await this.#maybeAutoCompact();
         if (stop === 'cancelled') stop = abortStop();
       }
     }
     catch (error) { if (!controller.signal.aborted) { this.#state = 'failed'; await this.#emit('runtime.failed', 'notification', { message: error instanceof Error ? error.message : 'Model failed' }); throw error; } stop = abortStop(); }
-    finally { if (this.#state === 'running') this.#state = 'ready'; this.#revision += 1; try { await this.#emit('turn.ended', 'after', { turnId: id, stop }); } finally { this.#activeTurnId = null; } }
+    finally {
+      if (this.#state === 'running') this.#state = 'ready';
+      this.#revision += 1;
+      try {
+        if (agentStarted) await this.#emit('agent.ended', 'after', { turnId: id, stop });
+      } finally {
+        try { await this.#emit('turn.ended', 'after', { turnId: id, stop }); }
+        finally { this.#activeTurnId = null; }
+      }
+    }
   }
   async cancel(reason = 'cancelled'): Promise<void> { this.#active?.abort(reason); }
   async execute(command: RuntimeCommand): Promise<RuntimeCommandResult> {
@@ -241,6 +282,7 @@ export class RuntimeKernel implements AgentRuntime {
           return { ok: true };
         }
         case 'context.usage': case 'runtime.snapshot': return { ok: true, data: this.snapshot() };
+        case 'monitoring.snapshot': return { ok: true, data: this.monitoringSnapshot() };
         case 'tools.list': return { ok: true, data: this.#options.tools?.list().map(({ name, label, description, policy }) => ({ name, label, description, policy: { effects: createEffectSet(...policy.effects), trust: policy.trust, approval: policy.approval, plan: policy.plan } })) ?? [] };
         case 'runtime.stop': await this.stop(); return { ok: true };
         default: return { ok: false, error: new RuntimeFailure('unsupported-capability', `Command ${command.type} requires a composed service`).toJSON() };
@@ -284,6 +326,27 @@ export class RuntimeKernel implements AgentRuntime {
     }
   }
   snapshot(): RuntimeSnapshot { return { schemaVersion: 1, state: this.#state, sessionId: this.#options.sessionId, activeTurn: this.#active !== null, model: this.#model, thinkingLevel: this.#thinking, usage: this.#usage, revision: this.#revision }; }
+  monitoringSnapshot(): MonitoringSnapshotV1 {
+    const native = nativeMonitoringContribution(this.#options.monitoring?.snapshot());
+    return {
+      schemaVersion: 1,
+      generatedAt: this.#now(),
+      sessionId: this.#options.sessionId,
+      model: this.#model,
+      usage: { ...this.#usage },
+      provider: {
+        requests: this.#providerRequests,
+        responses: this.#providerResponses,
+        failures: this.#providerFailures,
+        retries: this.#providerRetries,
+        cancellations: this.#providerCancellations,
+        durationMs: { ...this.#providerDurationMs },
+        ttftMs: { ...this.#providerTtftMs },
+        byErrorCategory: { ...this.#providerErrors },
+      },
+      ...(native === undefined ? {} : { native }),
+    };
+  }
   subscribe(listener: (event: RuntimeEvent) => void): () => void { this.#listeners.add(listener); return () => this.#listeners.delete(listener); }
   async stop(): Promise<void> {
     if (this.#state === 'stopped') return;
@@ -338,8 +401,8 @@ export class RuntimeKernel implements AgentRuntime {
       }
     }
   }
-  async #emit(type: RuntimeEvent['type'], phase: RuntimeEvent['phase'], payload: unknown): Promise<LifecycleDispatchResult<unknown>> {
-    const event: RuntimeEvent = { schemaVersion: 1, eventVersion: 1, id: eventId(`runtime:${++this.#sequence}`), type, phase, sessionId: this.#options.sessionId, ...(this.#activeTurnId === null ? {} : { turnId: this.#activeTurnId }), timestamp: this.#now(), cwd: this.#cwd, mode: this.#options.mode ?? 'headless', ...(this.#model === null ? {} : { model: this.#model }), trust: this.#options.trust ?? defaultTrust, payload: payload as Readonly<unknown> };
+  async #emit<TType extends RuntimeEvent['type']>(type: TType, phase: RuntimeEvent['phase'], payload: RuntimeEventPayload<TType>): Promise<LifecycleDispatchResult<unknown>> {
+    const event = { schemaVersion: 1, eventVersion: 1, id: eventId(`runtime:${++this.#sequence}`), type, phase, sessionId: this.#options.sessionId, ...(this.#activeTurnId === null ? {} : { turnId: this.#activeTurnId }), timestamp: this.#now(), cwd: this.#cwd, mode: this.#options.mode ?? 'headless', ...(this.#options.outputFormat === undefined ? {} : { outputFormat: this.#options.outputFormat }), ...(this.#model === null ? {} : { model: this.#model }), trust: this.#options.trust ?? defaultTrust, payload } as RuntimeEventOf<TType>;
     const result = await this.#options.emit?.(event) ?? {
       payload,
       decision: { kind: 'continue' as const },
@@ -386,11 +449,19 @@ export class RuntimeKernel implements AgentRuntime {
     const policy = await (this.#options.policy ?? new PolicyChain()).evaluate({ operation: `tool:${call.name}`, trust, effects, metadata: { callId, tool: call.name, approval: definition.policy.approval, plan: definition.policy.plan, planActive: planState.active, planRevision: planState.revision, trustRequirement: definition.policy.trust, lockTargets, mode: request.mode, cwd: this.#cwd } });
     if (policy.effect === 'deny') return { allowed: false, category: policy.category, reason: policy.reason };
     if (definition.policy.approval !== 'never') {
-      if (!this.#options.approve) return { allowed: false, category: 'approval', reason: 'Tool requires approval' };
-      const approval = await awaitAbortable(() => this.#options.approve!(request), signal);
-      if (approval.kind === 'aborted') return { allowed: false, category: 'cancelled', reason: 'Tool call cancelled while awaiting approval' };
-      if (approval.kind === 'error') return { allowed: false, category: 'approval', reason: 'Tool approval failed' };
-      if (!approval.value) return { allowed: false, category: 'approval', reason: 'Tool approval was denied' };
+      const permission = await this.#emit('permission.requested', 'permission', {
+        callId, name: call.name, input: call.input, policy: definition.policy,
+      });
+      if (permission.decision.kind === 'deny' || permission.decision.kind === 'stop') {
+        return { allowed: false, category: 'approval', reason: permission.decision.reason };
+      }
+      if (permission.decision.kind !== 'allow') {
+        if (!this.#options.approve) return { allowed: false, category: 'approval', reason: 'Tool requires approval' };
+        const approval = await awaitAbortable(() => this.#options.approve!(request), signal);
+        if (approval.kind === 'aborted') return { allowed: false, category: 'cancelled', reason: 'Tool call cancelled while awaiting approval' };
+        if (approval.kind === 'error') return { allowed: false, category: 'approval', reason: 'Tool approval failed' };
+        if (!approval.value) return { allowed: false, category: 'approval', reason: 'Tool approval was denied' };
+      }
     }
     return {
       allowed: true,
@@ -466,12 +537,20 @@ export class RuntimeKernel implements AgentRuntime {
       let calls: { id: string; name: string; input: unknown }[] = [];
       let text: string[] = [];
       let messageId = '';
+      let requestId = '';
+      let requestStartedAt = 0;
+      let firstDeltaAt: number | undefined;
+      let successfulAttempt = 0;
       for (let providerAttempt = 1; providerAttempt <= maxProviderAttempts; providerAttempt += 1) {
         calls = [];
         text = [];
         messageId = `${activeTurnId}:message:${iteration + 1}:attempt:${providerAttempt}`;
-        await this.#emit('provider.request-started', 'notification', { iteration, attempt: providerAttempt, maxAttempts: maxProviderAttempts });
-        await this.#emit('message.started', 'notification', { messageId, role: 'assistant', iteration, attempt: providerAttempt });
+        requestId = `${activeTurnId}:provider:${iteration + 1}:attempt:${providerAttempt}`;
+        requestStartedAt = this.#now();
+        firstDeltaAt = undefined;
+        this.#providerRequests += 1;
+        await this.#emit('provider.request-started', 'notification', { requestId, iteration, attempt: providerAttempt, maxAttempts: maxProviderAttempts });
+        await this.#emit('message.started', 'notification', { requestId, messageId, role: 'assistant', iteration, attempt: providerAttempt });
         const attemptController = new AbortController();
         const abortAttempt = (): void => attemptController.abort(signal.reason);
         if (signal.aborted) abortAttempt();
@@ -480,7 +559,7 @@ export class RuntimeKernel implements AgentRuntime {
         let attempt;
         try {
           attempt = await awaitAbortable(
-            () => this.#options.model.run(request, { signal: attemptController.signal, emit: async (delta) => { if (attemptController.signal.aborted) return; if (delta.type === 'tool-call') calls.push({ id: delta.id, name: delta.name, input: delta.input }); else if (delta.type === 'text') text.push(delta.text); if (!attemptController.signal.aborted) await this.#emit('message.delta', 'notification', { ...delta, messageId, ...(delta.type === 'thinking' ? { segment: 'thinking' } : {}) }); } }),
+             () => this.#options.model.run(request, { signal: attemptController.signal, emit: async (delta) => { if (attemptController.signal.aborted) return; firstDeltaAt ??= this.#now(); if (delta.type === 'tool-call') calls.push({ id: delta.id, name: delta.name, input: delta.input }); else if (delta.type === 'text') text.push(delta.text); if (!attemptController.signal.aborted) await this.#emit('message.delta', 'notification', { ...delta, requestId, messageId, ...(delta.type === 'thinking' ? { segment: 'thinking' } : {}) }); } }),
             attemptController.signal,
           );
         } finally {
@@ -488,19 +567,28 @@ export class RuntimeKernel implements AgentRuntime {
           if (this.#activeProviderAttempt === attemptController) this.#activeProviderAttempt = null;
         }
         if (attempt.kind === 'aborted') {
-          await this.#emit('message.ended', 'after', { messageId, status: 'cancelled' });
+          const durationMs = Math.max(0, this.#now() - requestStartedAt);
+          this.#providerCancellations += 1;
+          observeAggregate(this.#providerDurationMs, durationMs);
+          await this.#emit('message.ended', 'after', { requestId, messageId, status: 'cancelled' });
           if (!signal.aborted && this.#pendingSteers.length > 0) continue modelLoop;
           this.#history = messages;
           return 'cancelled';
         }
-        if (attempt.kind === 'value') { result = attempt.value; break; }
+        if (attempt.kind === 'value') { result = attempt.value; successfulAttempt = providerAttempt; break; }
         const error = attempt.error;
         const retryable = error instanceof RuntimeFailure && error.retry === 'safe' && effects.size === 0 && providerAttempt < maxProviderAttempts;
-        await this.#emit('message.ended', 'after', { messageId, status: 'error', retrying: retryable });
-        await this.#emit('provider.failed', 'after', { iteration, attempt: providerAttempt, retrying: retryable, message: error instanceof Error ? error.message : 'Model provider failed' });
-        if (!retryable) throw error;
-        const configuredDelay = error.retryAfterMs ?? this.#options.providerRetryDelayMs ?? 0;
+        const configuredDelay = (error instanceof RuntimeFailure ? error.retryAfterMs : undefined) ?? this.#options.providerRetryDelayMs ?? 0;
         const delayMs = Number.isFinite(configuredDelay) ? Math.max(0, Math.min(configuredDelay, 30_000)) : 0;
+        const durationMs = Math.max(0, this.#now() - requestStartedAt);
+        const category = error instanceof RuntimeFailure ? error.category : 'provider';
+        this.#providerFailures += 1;
+        if (retryable) this.#providerRetries += 1;
+        this.#providerErrors[category] = (this.#providerErrors[category] ?? 0) + 1;
+        observeAggregate(this.#providerDurationMs, durationMs);
+        await this.#emit('message.ended', 'after', { requestId, messageId, status: 'error', retrying: retryable });
+        await this.#emit('provider.failed', 'after', { requestId, iteration, attempt: providerAttempt, maxAttempts: maxProviderAttempts, retrying: retryable, category, durationMs, delayMs, message: error instanceof Error ? error.message : 'Model provider failed' });
+        if (!retryable) throw error;
         if (delayMs > 0) {
           const delayed = await awaitAbortable(() => new Promise<void>((resolve) => setTimeout(resolve, delayMs)), signal);
           if (delayed.kind === 'aborted') { this.#history = messages; return 'cancelled'; }
@@ -519,13 +607,20 @@ export class RuntimeKernel implements AgentRuntime {
         ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
       };
       this.#revision += 1;
-      await this.#emit('provider.response-received', 'after', { iteration, stop: result.stop, usage: result.usage });
+      const durationMs = Math.max(0, this.#now() - requestStartedAt);
+      const ttftMs = firstDeltaAt === undefined ? undefined : Math.max(0, firstDeltaAt - requestStartedAt);
+      this.#providerResponses += 1;
+      observeAggregate(this.#providerDurationMs, durationMs);
+      observeAggregate(this.#providerTtftMs, ttftMs);
+      await this.#emit('provider.response-received', 'after', { requestId, iteration, attempt: successfulAttempt, maxAttempts: maxProviderAttempts, durationMs, ...(ttftMs === undefined ? {} : { ttftMs }), stop: result.stop, usage: result.usage });
       await this.#emit('context.usage-changed', 'notification', this.#usage);
-      if (signal.aborted) { await this.#emit('message.ended', 'after', { messageId, status: 'cancelled' }); this.#history = messages; return 'cancelled'; }
+      if (signal.aborted) { await this.#emit('message.ended', 'after', { requestId, messageId, status: 'cancelled' }); this.#history = messages; return 'cancelled'; }
       if (result.stop === 'error') {
         const failure = new RuntimeFailure('provider', 'Model provider returned an error stop', 'unknown');
-        await this.#emit('message.ended', 'after', { messageId, status: 'error' });
-        await this.#emit('provider.failed', 'after', { iteration, message: failure.message });
+        this.#providerFailures += 1;
+        this.#providerErrors[failure.category] = (this.#providerErrors[failure.category] ?? 0) + 1;
+        await this.#emit('message.ended', 'after', { requestId, messageId, status: 'error' });
+        await this.#emit('provider.failed', 'after', { requestId, iteration, attempt: successfulAttempt, maxAttempts: maxProviderAttempts, retrying: false, category: failure.category, durationMs, delayMs: 0, message: failure.message });
         throw failure;
       }
       if ((result.stop === 'tool') !== (calls.length > 0)) {
@@ -535,19 +630,23 @@ export class RuntimeKernel implements AgentRuntime {
             ? 'Model returned a tool stop without tool calls'
             : 'Model returned tool calls without a tool stop',
         );
-        await this.#emit('message.ended', 'after', { messageId, status: 'error' });
-        await this.#emit('provider.failed', 'after', { iteration, message: failure.message });
+        this.#providerFailures += 1;
+        this.#providerErrors[failure.category] = (this.#providerErrors[failure.category] ?? 0) + 1;
+        await this.#emit('message.ended', 'after', { requestId, messageId, status: 'error' });
+        await this.#emit('provider.failed', 'after', { requestId, iteration, attempt: successfulAttempt, maxAttempts: maxProviderAttempts, retrying: false, category: failure.category, durationMs, delayMs: 0, message: failure.message });
         throw failure;
       }
       if (toolCallCount + calls.length > maxToolCalls) {
         const failure = new RuntimeFailure('model', `Model tool-call budget exceeded ${maxToolCalls}`);
-        await this.#emit('message.ended', 'after', { messageId, status: 'error' });
-        await this.#emit('provider.failed', 'after', { iteration, message: failure.message });
+        this.#providerFailures += 1;
+        this.#providerErrors[failure.category] = (this.#providerErrors[failure.category] ?? 0) + 1;
+        await this.#emit('message.ended', 'after', { requestId, messageId, status: 'error' });
+        await this.#emit('provider.failed', 'after', { requestId, iteration, attempt: successfulAttempt, maxAttempts: maxProviderAttempts, retrying: false, category: failure.category, durationMs, delayMs: 0, message: failure.message });
         throw failure;
       }
       toolCallCount += calls.length;
       if (text.length > 0 || calls.length > 0) messages.push({ role: 'assistant', content: text.join(''), ...(calls.length === 0 ? {} : { toolCalls: structuredClone(calls) }) });
-      await this.#emit('message.ended', 'after', { messageId, status: 'complete' });
+      await this.#emit('message.ended', 'after', { requestId, messageId, status: 'complete' });
       if (result.stop !== 'tool' || calls.length === 0) {
         if (this.#pendingSteers.length > 0) continue modelLoop;
         this.#history = messages;
@@ -638,7 +737,7 @@ export class RuntimeKernel implements AgentRuntime {
            const execution = await awaitAbortable(() => definition.execute({
              input: call.input,
              callId,
-             context: { sessionId: this.#options.sessionId, turnId: activeTurnId, cwd: this.#cwd, mode: this.#options.mode ?? 'headless', trust: this.#options.trust ?? defaultTrust, signal },
+              context: { sessionId: this.#options.sessionId, turnId: activeTurnId, cwd: this.#cwd, mode: this.#options.mode ?? 'headless', ...(this.#options.outputFormat === undefined ? {} : { outputFormat: this.#options.outputFormat }), trust: this.#options.trust ?? defaultTrust, signal },
              signal,
              update: async (update) => {
                if (signal.aborted) return;

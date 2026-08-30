@@ -3,6 +3,7 @@ import {
   createOctocodeToolRegistry,
   executeOctocodeTool,
   loadOctocodeCatalog,
+  octocodeCatalogCacheMetrics,
   OctocodeFacadeError,
   resetOctocodeCatalogCacheForTests,
   type OctocodeCatalog,
@@ -58,6 +59,22 @@ describe('native Octocode tool registry', () => {
     expect(first.tools[0]?.name).not.toBe(discussions.tools[0]?.name);
   });
 
+  it('bounds the process catalog cache with least-recently-used eviction', async () => {
+    resetOctocodeCatalogCacheForTests();
+    const run = vi.fn(async () => JSON.stringify({ kind: 'octocode.toolCatalog.full', version: 1, toolCount: 0, tools: [] }));
+    for (let index = 0; index < 32; index += 1) await loadOctocodeCatalog({ run, cacheKey: `key-${index}` });
+    await loadOctocodeCatalog({ run, cacheKey: 'key-0' });
+    await loadOctocodeCatalog({ run, cacheKey: 'key-32' });
+    await loadOctocodeCatalog({ run, cacheKey: 'key-1' });
+    await loadOctocodeCatalog({ run, cacheKey: 'key-0' });
+
+    expect(run).toHaveBeenCalledTimes(34);
+    expect(octocodeCatalogCacheMetrics()).toEqual({
+      hits: 2, misses: 34, loads: 34, loadFailures: 0,
+      expirations: 0, evictions: 2, entries: 32, maxEntries: 32, ttlMs: 60_000,
+    });
+  });
+
   it.each([
     [{ kind: 'wrong', version: 1, toolCount: 0, tools: [] }, 'protocol kind'],
     [{ kind: 'octocode.toolCatalog.full', version: 2, toolCount: 0, tools: [] }, 'protocol version'],
@@ -83,7 +100,7 @@ describe('native Octocode tool registry', () => {
 
   it('registers the live catalog and executes through the Octocode CLI boundary', async () => {
     const execute = vi.fn(async (name: string, input: unknown) => ({ name, input, ok: true }));
-    const update = vi.fn(async () => undefined);
+    const update = vi.fn(async (_event: { version: number; kind: string; message?: string }) => undefined);
     const registry = createOctocodeToolRegistry(catalog, execute);
     expect(registry.list().map((tool) => tool.name)).toEqual(['awareness', 'ghSearchCode', 'localSearchCode', 'plan']);
 

@@ -41,13 +41,13 @@ export function rebuildFts(db: DatabaseSync): void {
     // Select only the columns needed for FTS indexing — avoids loading the
     // embedding BLOB (can be 1536 floats = 6KB per row) for all rows.
     const rows = db.prepare(
-      'SELECT memory_id, task_context, observation, tags_json, label FROM memories'
+      'SELECT memory_id, task_context, observation, tags_json, label FROM awareness_memories'
     ).all() as unknown as Array<Pick<MemoryRow, 'memory_id' | 'task_context' | 'observation' | 'tags_json' | 'label'> & { references?: string[] }>;
     if (rows.length > 0) {
       const refs = db.prepare(
         `SELECT r.memory_id, r.reference
          FROM memory_refs r
-         JOIN memories m ON m.memory_id = r.memory_id
+         JOIN awareness_memories m ON m.memory_id = r.memory_id
          ORDER BY r.memory_id, r.ordinal`
       ).all() as unknown as Array<{ memory_id: string; reference: string }>;
       const refsByMemory = new Map<string, string[]>();
@@ -102,14 +102,14 @@ export interface EvictExpiredLocksResult {
 export function evictExpiredLocks(db: DatabaseSync): EvictExpiredLocksResult {
   const now = utcNow();
   const stale = db.prepare(
-    'SELECT COUNT(*) AS c FROM locks WHERE expires_at IS NOT NULL AND expires_at <= ?'
+    'SELECT COUNT(*) AS c FROM awareness_locks WHERE expires_at IS NOT NULL AND expires_at <= ?'
   ).get(now) as { c: number };
   if (stale.c === 0) return { pruned_locks: 0 };
 
   db.exec('SAVEPOINT evict_expired_locks');
   try {
     const deleteRes = db.prepare(
-      'DELETE FROM locks WHERE expires_at IS NOT NULL AND expires_at <= ?'
+      'DELETE FROM awareness_locks WHERE expires_at IS NOT NULL AND expires_at <= ?'
     ).run(now) as { changes: number };
     db.exec('RELEASE SAVEPOINT evict_expired_locks');
     return { pruned_locks: deleteRes.changes };

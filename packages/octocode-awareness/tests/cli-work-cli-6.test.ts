@@ -96,7 +96,7 @@ describe('work CLI', () => {
       expect(ended['status']).toBe('PENDING');
       const checkDb = new DatabaseSync(db);
       try {
-        expect(checkDb.prepare('SELECT COUNT(*) AS count FROM locks').get()).toEqual({ count: 0 });
+        expect(checkDb.prepare('SELECT COUNT(*) AS count FROM awareness_locks').get()).toEqual({ count: 0 });
       } finally {
         checkDb.close();
       }

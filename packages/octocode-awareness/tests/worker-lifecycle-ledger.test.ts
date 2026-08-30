@@ -15,7 +15,7 @@ const directories: string[] = [];
 function fixturePath(): string {
   const directory = mkdtempSync(join(tmpdir(), 'awareness-worker-ledger-'));
   directories.push(directory);
-  return join(directory, 'octocode.sqlite3');
+  return join(directory, 'agent.sqlite3');
 }
 
 function event(overrides: Partial<WorkerLifecycleEventInput> = {}): WorkerLifecycleEventInput {

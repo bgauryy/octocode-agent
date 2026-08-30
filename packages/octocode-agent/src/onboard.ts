@@ -83,28 +83,29 @@ export function upsertEnvFile(envPath: string, name: string, value: string): voi
 }
 
 /** One pick+key sequence; returns the chosen provider or null on abort. */
-async function pickProvider(io: WizardIO, p: Painter): Promise<AuthProvider | null> {
-  const rows = AUTH_PROVIDERS.map(
+async function pickProvider(io: WizardIO, p: Painter, providers: readonly AuthProvider[]): Promise<AuthProvider | null> {
+  const rows = providers.map(
     (provider, i) =>
       `  ${p.brand(String(i + 1))}  ${p.bold(provider.keyVar.padEnd(20))} ${p.gray(
-        `${link(p, provider.url, provider.host, process.stdout.isTTY)} — ${provider.label}`,
+        `${provider.url && provider.host ? `${link(p, provider.url, provider.host, process.stdout.isTTY)} — ` : ''}${provider.label}`,
       )}`,
   );
   io.out(section(p, 'Pick a provider') + '\n' + rows.join('\n'));
-  const choice = (await io.ask(p.gray(`  number [1-${AUTH_PROVIDERS.length}] (empty to cancel): `)))?.trim();
+  const choice = (await io.ask(p.gray(`  number [1-${providers.length}] (empty to cancel): `)))?.trim();
   if (!choice) return null;
   const n = Number(choice);
-  if (!Number.isInteger(n) || n < 1 || n > AUTH_PROVIDERS.length) {
+  if (!Number.isInteger(n) || n < 1 || n > providers.length) {
     io.out(`${p.red('✗')} invalid choice`);
     return null;
   }
-  return AUTH_PROVIDERS[n - 1];
+  return providers[n - 1];
 }
 
 export interface AuthWizardOpts {
   env?: NodeJS.ProcessEnv;
   io?: WizardIO;
   octocodeHome?: string;
+  providers?: readonly AuthProvider[];
 }
 
 /**
@@ -129,7 +130,7 @@ export async function runAuthWizard(opts: AuthWizardOpts = {}): Promise<number> 
   const io = opts.io ?? defaultIO();
 
   io.out(header(p, 'auth login'));
-  const provider = await pickProvider(io, p);
+  const provider = await pickProvider(io, p, opts.providers ?? AUTH_PROVIDERS);
   if (!provider) {
     io.out(hint(p, 'cancelled — no changes made'));
     return 1;

@@ -51,7 +51,7 @@ describe('native Awareness tool', () => {
     registerNativeAwarenessTool(registry, {
       cwd: '/configured',
       env: { OCTOCODE_AGENT_ID: 'native-agent' },
-      dbPath: '/state/octocode.sqlite3',
+      dbPath: '/state/agent.sqlite3',
       openDb,
       closeDb,
       run,
@@ -61,11 +61,11 @@ describe('native Awareness tool', () => {
       action: 'workspace_status', request: { compact: true },
     }, { cwd: '/runtime-workspace', sessionId: 'session-native' }));
 
-    expect(openDb).toHaveBeenCalledWith('/state/octocode.sqlite3');
+    expect(openDb).toHaveBeenCalledWith('/state/agent.sqlite3');
     expect(run).toHaveBeenCalledWith(db, 'workspace_status', { compact: true }, {
       cwd: '/runtime-workspace', sessionId: 'session-native', agentId: 'native-agent',
     });
-    expect(closeDb).toHaveBeenCalledWith('/state/octocode.sqlite3');
+    expect(closeDb).toHaveBeenCalledWith('/state/agent.sqlite3');
     expect(result).toEqual({
       ok: true,
       content: { operation: 'workspace_status', exitCode: 0, payload: { peers: 2 } },
@@ -85,7 +85,7 @@ describe('native Awareness tool', () => {
       openDb: () => db,
       closeDb,
       run,
-      dbPath: '/state/octocode.sqlite3',
+      dbPath: '/state/agent.sqlite3',
     });
     const tool = registry.get('awareness')!;
 
@@ -106,7 +106,7 @@ describe('native Awareness tool', () => {
 
   it('uses a session-scoped native identity when the environment has no agent id', async () => {
     const registry = new ToolRegistry();
-    const run = vi.fn(() => ({ exitCode: 0, payload: {} }));
+    const run = vi.fn((_db: unknown, _operation: string, _request: unknown, _context: unknown) => ({ exitCode: 0, payload: {} }));
     registerNativeAwarenessTool(registry, {
       cwd: '/workspace', env: {}, openDb: () => ({} as never), closeDb: () => undefined, run,
     });

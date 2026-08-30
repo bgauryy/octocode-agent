@@ -48,10 +48,10 @@ test('drives AskUser, browser Accept/Start, shared work, verification, and every
     { close: (store) => store.close() },
   );
   roots.push(isolated.root);
-  const previousDb = process.env['OCTOCODE_DB_PATH'];
+  const previousDb = process.env['OCTOCODE_AGENT_DB_PATH'];
   const previousHome = process.env['OCTOCODE_HOME'];
   const previousAgent = process.env['OCTOCODE_AGENT_ID'];
-  process.env['OCTOCODE_DB_PATH'] = isolated.dbPath;
+  process.env['OCTOCODE_AGENT_DB_PATH'] = isolated.dbPath;
   process.env['OCTOCODE_HOME'] = isolated.root;
   process.env['OCTOCODE_AGENT_ID'] = 'pi:system-flow';
   const { rfcPath, revision } = fixtureAt(isolated.workspace);
@@ -147,7 +147,7 @@ test('drives AskUser, browser Accept/Start, shared work, verification, and every
   } finally {
     stopLocalServer();
     await isolated.cleanup();
-    if (previousDb === undefined) delete process.env['OCTOCODE_DB_PATH']; else process.env['OCTOCODE_DB_PATH'] = previousDb;
+    if (previousDb === undefined) delete process.env['OCTOCODE_AGENT_DB_PATH']; else process.env['OCTOCODE_AGENT_DB_PATH'] = previousDb;
     if (previousHome === undefined) delete process.env['OCTOCODE_HOME']; else process.env['OCTOCODE_HOME'] = previousHome;
     if (previousAgent === undefined) delete process.env['OCTOCODE_AGENT_ID']; else process.env['OCTOCODE_AGENT_ID'] = previousAgent;
   }

@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, test } from 'vitest';
-import { resolveSessionIdentity, createSessionArtifactContext } from '../src/tools/session-artifacts.js';
+import { resolveSessionIdentity, createSessionArtifactContext, workspaceAgentRoot } from '../src/tools/session-artifacts.js';
 import { planArtifactsDir } from '../src/tools/plan-html.js';
 import { getSessionDir, getScreenshotDir } from '../src/chrome-debug.js';
 import { writeCompactionArtifact } from '../src/tools/compaction-artifacts.js';
@@ -26,13 +26,21 @@ import { writeCompactionArtifact } from '../src/tools/compaction-artifacts.js';
 // ---------------------------------------------------------------------------
 
 let tmpRoot: string;
+let tmpHome: string;
+let priorOctocodeHome: string | undefined;
 
 beforeEach(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-test-'));
+  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-test-home-'));
+  priorOctocodeHome = process.env.OCTOCODE_HOME;
+  process.env.OCTOCODE_HOME = tmpHome;
 });
 
 afterEach(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  if (priorOctocodeHome === undefined) delete process.env.OCTOCODE_HOME;
+  else process.env.OCTOCODE_HOME = priorOctocodeHome;
 });
 
 /** Minimal PiSessionManager stub that returns a deterministic session ID. */
@@ -102,7 +110,7 @@ test('planArtifactsDir: routes inside the session artifact tree when workspace e
   // without requiring a live plan scope.
   const sessionManager = makeSessionManager('plan-test-id');
   const { sessionKey } = resolveSessionIdentity({ cwd: tmpRoot, sessionManager });
-  const expected = path.join(tmpRoot, '.octocode', 'agent', sessionKey, 'plan');
+  const expected = path.join(workspaceAgentRoot(tmpRoot), 'sessions', sessionKey, 'plan');
 
   // Create the artifact context directly and confirm resolve('plan') matches.
   const ctx = createSessionArtifactContext({ cwd: tmpRoot, sessionManager });
@@ -169,25 +177,19 @@ test('writePlanArtifacts: registerProducer is idempotent — duplicate calls do 
 // many side effects. Instead we test the path derivation logic directly via
 // resolveSessionIdentity, which is the exact mechanism getInternalErrorLogPath
 // uses after the Crime 1 fix.
-test('getInternalErrorLogPath shape: session manager → <ws>/.octocode/agent/<key>/logs/error.txt', () => {
+test('getInternalErrorLogPath shape: session manager → global workspace session logs', () => {
   const sessionManager = makeSessionManager('err-log-test');
-  const { sessionKey } = resolveSessionIdentity({ cwd: tmpRoot, sessionManager });
-  const expected = path.join(tmpRoot, '.octocode', 'agent', sessionKey, 'logs', 'error.txt');
-
-  // Mirror the exact logic inside getInternalErrorLogPath (Crime 1 fix).
-  const { sessionKey: sk } = resolveSessionIdentity({ cwd: tmpRoot, sessionManager });
-  const computed = path.join(tmpRoot, '.octocode', 'agent', sk, 'logs', 'error.txt');
+  const expected = createSessionArtifactContext({ cwd: tmpRoot, sessionManager }).resolve('logs/error.txt');
+  const computed = createSessionArtifactContext({ cwd: tmpRoot, sessionManager }).resolve('logs/error.txt');
 
   assert.equal(computed, expected);
-  assert.ok(computed.includes('.octocode/agent/'), 'must be inside the session artifact tree');
+  assert.ok(computed.startsWith(workspaceAgentRoot(tmpRoot, tmpHome)), 'must be inside the global workspace session tree');
   assert.ok(computed.endsWith('logs/error.txt'), 'must end with logs/error.txt');
 });
 
-test('getInternalErrorLogPath shape: no session manager → <cwd>/.octocode/logs/error.txt', () => {
-  // When sessionManager is absent the fallback is the workspace-local path.
-  const fallback = path.join(tmpRoot, '.octocode', 'logs', 'error.txt');
-  assert.equal(fallback, path.join(tmpRoot, '.octocode', 'logs', 'error.txt'));
-  assert.ok(!fallback.includes('.octocode/agent/'), 'fallback must not be session-scoped');
+test('getInternalErrorLogPath shape: no session manager → global workspace logs', () => {
+  const fallback = path.join(workspaceAgentRoot(tmpRoot, tmpHome), 'logs', 'error.txt');
+  assert.equal(fallback.startsWith(tmpRoot), false, 'fallback must not be workspace-local');
 });
 
 test('getInternalErrorLogPath: session path is deterministic across calls (no I/O side effects)', () => {
@@ -197,8 +199,7 @@ test('getInternalErrorLogPath: session path is deterministic across calls (no I/
   const p2 = resolveSessionIdentity({ cwd: tmpRoot, sessionManager }).sessionKey;
   assert.equal(p1, p2);
   // No session artifact dir should have been created.
-  const agentDir = path.join(tmpRoot, '.octocode', 'agent');
-  assert.ok(!fs.existsSync(agentDir), 'resolveSessionIdentity must not create directories');
+  assert.equal(fs.existsSync(path.join(tmpRoot, '.octocode')), false, 'identity resolution never creates repository-local state');
 });
 
 // ---------------------------------------------------------------------------
@@ -207,12 +208,12 @@ test('getInternalErrorLogPath: session path is deterministic across calls (no I/
 
 test('getSessionDir: with sessionKey routes to browser/port-N inside session tree', () => {
   const dir = getSessionDir('/ws', 9222, 'my-key-abc');
-  assert.equal(dir, '/ws/.octocode/agent/my-key-abc/browser/port-9222');
+  assert.equal(dir, path.join(workspaceAgentRoot('/ws'), 'sessions', 'my-key-abc', 'browser', 'port-9222'));
 });
 
 test('getScreenshotDir: with cwd + sessionKey routes to browser/screenshots inside session tree', () => {
   const dir = getScreenshotDir('/ws', 'my-key-abc');
-  assert.equal(dir, '/ws/.octocode/agent/my-key-abc/browser/screenshots');
+  assert.equal(dir, path.join(workspaceAgentRoot('/ws'), 'sessions', 'my-key-abc', 'browser', 'screenshots'));
 });
 
 // ---------------------------------------------------------------------------
@@ -265,8 +266,8 @@ test('writeCompactionArtifact: routes to session artifact dir when cwd + session
 
   const result = writeCompactionArtifact(details, sessionManager, tmpRoot);
   assert.ok(result, 'must return an artifact record');
-  assert.ok(result!.path.includes('.octocode/agent/'), 'snapshot must be inside the session artifact tree');
-  assert.ok(result!.latestPath.includes('.octocode/agent/'), 'latest.md must be inside the session artifact tree');
+  assert.ok(result!.path.startsWith(workspaceAgentRoot(tmpRoot, tmpHome)), 'snapshot must be inside the global workspace session tree');
+  assert.ok(result!.latestPath.startsWith(workspaceAgentRoot(tmpRoot, tmpHome)), 'latest.md must be inside the global workspace session tree');
   assert.ok(result!.path.includes('/compaction/'), 'snapshot must be under compaction/ subdir');
   assert.ok(result!.latestPath.endsWith('compaction/latest.md'), 'latest pointer must be compaction/latest.md');
 
@@ -338,10 +339,10 @@ test('writeCompactionArtifact: skips writes when session is absent', () => {
 // createSessionArtifactContext — path guard and isolation
 // ---------------------------------------------------------------------------
 
-test('createSessionArtifactContext: session root is inside the workspace', () => {
+test('createSessionArtifactContext: session root is global and workspace-scoped', () => {
   const ctx = createSessionArtifactContext({ cwd: tmpRoot, sessionManager: makeSessionManager('guard-test') });
-  assert.ok(ctx.root.startsWith(tmpRoot), 'session root must be inside the workspace');
-  assert.ok(ctx.root.includes('.octocode/agent/'), 'session root must be under .octocode/agent/');
+  assert.ok(ctx.root.startsWith(workspaceAgentRoot(tmpRoot)), 'session root must preserve workspace identity globally');
+  assert.equal(ctx.root.startsWith(tmpRoot), false, 'session root must not be inside the workspace');
 });
 
 test('createSessionArtifactContext: resolve() rejects traversal attempts', () => {

@@ -25,11 +25,11 @@ let workspace: string;
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-external-'));
-  process.env.OCTOCODE_DB_PATH = join(workspace, 'shared.sqlite3');
+  process.env.OCTOCODE_AGENT_DB_PATH = join(workspace, 'shared.sqlite3');
 });
 
 afterEach(async () => {
-  delete process.env.OCTOCODE_DB_PATH;
+  delete process.env.OCTOCODE_AGENT_DB_PATH;
   await rm(workspace, { recursive: true, force: true });
 });
 

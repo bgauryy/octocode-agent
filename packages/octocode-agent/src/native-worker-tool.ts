@@ -17,6 +17,7 @@ import {
   type WorkerSpawnPacket,
   type WorkerTerminalPacket,
 } from '@octocodeai/agent-core';
+import type { NativePlanWorkerOwnershipPort, PlanScope } from './native-plan.js';
 
 const MAX_TASK_CHARS = 16_384;
 const MAX_TEXT_CHARS = 8_192;
@@ -46,12 +47,16 @@ export interface NativeWorkerToolOptions {
   readonly allowWorktree?: boolean;
   /** Test seam. Generated values remain internal and are never accepted from model input. */
   readonly idFactory?: () => string;
+  /** Optional native-plan bridge. Shared Awareness ownership remains independent. */
+  readonly planOwnership?: NativePlanWorkerOwnershipPort;
 }
 
 interface WorkerBinding {
   readonly workerId: WorkerId;
   readonly correlationId: ReturnType<typeof correlationId>;
   readonly sessionId: SessionId;
+  readonly planStepId?: string;
+  ownershipStatus?: 'active' | 'released';
 }
 
 interface ParsedInput {
@@ -65,6 +70,7 @@ interface ParsedInput {
   readonly model?: ModelRef;
   readonly maxTurns?: number;
   readonly workspace?: WorkspaceInput;
+  readonly planStepId?: string;
 }
 
 class NativeWorkerToolError extends Error {
@@ -107,6 +113,7 @@ export const NATIVE_WORKER_INPUT_SCHEMA: JsonSchema = {
       model: modelSchema,
       maxTurns: { type: 'integer', minimum: 1, maximum: MAX_TURNS },
       workspace: workspaceSchema,
+      planStepId: stringSchema(MAX_ID_CHARS),
     }, ['task']),
     branch('list', {}, []),
     branch('status', { workerId: stringSchema(MAX_ID_CHARS) }, ['workerId']),
@@ -123,6 +130,7 @@ const publicWorkerSchema: JsonSchema = {
   type: 'object',
   properties: {
     workerId: { type: 'string' }, correlationId: { type: 'string' }, state: { type: 'string' }, queueDepth: { type: 'integer' },
+    planStepId: { type: 'string' }, ownershipStatus: { type: 'string', enum: ['active', 'released'] },
     terminal: {
       type: 'object',
       properties: {
@@ -198,7 +206,7 @@ function parseInput(value: unknown, options: { allowWorktree: boolean; maxWaitMs
   }
   if (action === 'list') { assertOnly(value, ['action']); return { action }; }
   if (action === 'spawn') {
-    assertOnly(value, ['action', 'task', 'tools', 'model', 'maxTurns', 'workspace']);
+    assertOnly(value, ['action', 'task', 'tools', 'model', 'maxTurns', 'workspace', 'planStepId']);
     let tools: readonly string[] | undefined;
     if (value['tools'] !== undefined) {
       if (!Array.isArray(value['tools']) || value['tools'].length > MAX_TOOLS) throw new NativeWorkerToolError('validation', `tools must contain at most ${MAX_TOOLS} entries`);
@@ -218,6 +226,7 @@ function parseInput(value: unknown, options: { allowWorktree: boolean; maxWaitMs
       ...(model === undefined ? {} : { model }),
       ...(value['maxTurns'] === undefined ? {} : { maxTurns: integer(value['maxTurns'], 'maxTurns', MAX_TURNS) }),
       ...(value['workspace'] === undefined ? {} : { workspace: parseWorkspace(value['workspace'], options.allowWorktree) }),
+      ...(value['planStepId'] === undefined ? {} : { planStepId: boundedString(value['planStepId'], 'planStepId', MAX_ID_CHARS) }),
     };
   }
   const worker = boundedString(value['workerId'], 'workerId', MAX_ID_CHARS);
@@ -261,7 +270,7 @@ function publicTerminal(value: WorkerTerminalPacket): Record<string, unknown> {
   };
 }
 
-function publicWorker(value: unknown): Record<string, unknown> | null {
+function publicWorker(value: unknown, binding?: WorkerBinding): Record<string, unknown> | null {
   if (!isRecord(value) || typeof value['workerId'] !== 'string' || typeof value['correlationId'] !== 'string' || typeof value['state'] !== 'string' || !Number.isInteger(value['queueDepth'])) return null;
   const terminal = isRecord(value['terminal']) && value['terminal']['type'] === 'worker.terminal'
     ? publicTerminal(value['terminal'] as unknown as WorkerTerminalPacket)
@@ -271,13 +280,14 @@ function publicWorker(value: unknown): Record<string, unknown> | null {
     correlationId: value['correlationId'],
     state: value['state'],
     queueDepth: value['queueDepth'],
+    ...(binding?.planStepId === undefined ? {} : { planStepId: binding.planStepId, ownershipStatus: binding.ownershipStatus }),
     ...(terminal === undefined ? {} : { terminal }),
   };
 }
 
-function publicTerminalWorker(value: unknown): Record<string, unknown> | null {
+function publicTerminalWorker(value: unknown, binding?: WorkerBinding): Record<string, unknown> | null {
   if (!isRecord(value) || value['type'] !== 'worker.terminal' || typeof value['workerId'] !== 'string' || typeof value['correlationId'] !== 'string' || typeof value['outcome'] !== 'string') return null;
-  return { workerId: value['workerId'], correlationId: value['correlationId'], state: value['outcome'], queueDepth: 0, terminal: publicTerminal(value as unknown as WorkerTerminalPacket) };
+  return { workerId: value['workerId'], correlationId: value['correlationId'], state: value['outcome'], queueDepth: 0, ...(binding?.planStepId === undefined ? {} : { planStepId: binding.planStepId, ownershipStatus: binding.ownershipStatus }), terminal: publicTerminal(value as unknown as WorkerTerminalPacket) };
 }
 
 function waitBounded<T>(promise: Promise<T>, timeoutMs: number, signal: AbortSignal): Promise<T> {
@@ -304,6 +314,13 @@ export function createNativeWorkerTool(options: NativeWorkerToolOptions): ToolDe
   if (defaultModel !== undefined && !allowedModels.has(`${defaultModel.providerId}\0${defaultModel.modelId}`)) throw new NativeWorkerToolError('validation', 'Default model is not allowed');
   const bindings = new Map<string, WorkerBinding>();
 
+  const planScope = (request: ToolExecutionInput): PlanScope => ({ sessionId: String(request.context.sessionId), workspace: request.context.cwd });
+  const releaseOwnership = async (binding: WorkerBinding, request: ToolExecutionInput): Promise<void> => {
+    if (binding.planStepId === undefined || binding.ownershipStatus !== 'active' || options.planOwnership === undefined) return;
+    await options.planOwnership.release({ scope: planScope(request), planStepId: binding.planStepId, workerId: binding.workerId, signal: request.signal });
+    binding.ownershipStatus = 'released';
+  };
+
   const requireBinding = (id: string, session: SessionId): WorkerBinding => {
     const binding = bindings.get(id);
     if (binding === undefined || binding.sessionId !== session) throw new NativeWorkerToolError('not-found', 'Worker not found in this session');
@@ -314,11 +331,15 @@ export function createNativeWorkerTool(options: NativeWorkerToolOptions): ToolDe
     const input = parseInput(request.input, { allowWorktree: options.allowWorktree === true, maxWaitMs });
     await request.update({ version: 1, kind: 'status', message: `Worker ${input.action}` });
     if (input.action === 'spawn') {
+      if (input.planStepId !== undefined && options.planOwnership === undefined) throw new NativeWorkerToolError('validation', 'Native plan-step ownership is unavailable');
       const tools = input.tools ?? defaultTools;
       for (const tool of tools) if (!allowedTools.has(tool)) throw new NativeWorkerToolError('validation', `Tool is not allowed: ${tool}`);
       const model = input.model ?? defaultModel;
       if (model !== undefined && !allowedModels.has(`${model.providerId}\0${model.modelId}`)) throw new NativeWorkerToolError('validation', 'Model is not allowed');
-      const binding: WorkerBinding = { workerId: workerId(idFactory()), correlationId: correlationId(idFactory()), sessionId: request.context.sessionId };
+      const binding: WorkerBinding = {
+        workerId: workerId(idFactory()), correlationId: correlationId(idFactory()), sessionId: request.context.sessionId,
+        ...(input.planStepId === undefined ? {} : { planStepId: input.planStepId, ownershipStatus: 'active' as const }),
+      };
       const capabilities: WorkerCapabilities = { tools: [...tools], models: model === undefined ? [] : [{ ...model }], maxTurns: input.maxTurns ?? defaultMaxTurns };
       const packet: WorkerSpawnPacket = Object.freeze({
         schemaVersion: 1,
@@ -331,11 +352,16 @@ export function createNativeWorkerTool(options: NativeWorkerToolOptions): ToolDe
         workspace: input.workspace ?? { mode: 'shared' as const },
         capabilities: Object.freeze({ ...capabilities, tools: Object.freeze([...capabilities.tools]), models: Object.freeze(capabilities.models.map((item) => Object.freeze({ ...item }))) }),
       });
+      if (binding.planStepId !== undefined) {
+        try { await options.planOwnership!.claim({ scope: planScope(request), planStepId: binding.planStepId, workerId: binding.workerId, signal: request.signal }); }
+        catch { throw new NativeWorkerToolError('validation', `Plan step ${binding.planStepId} cannot be claimed`); }
+      }
       bindings.set(binding.workerId, binding);
       try {
         const result = await options.controller.execute({ type: 'spawn', packet });
-        return { action: 'spawn', worker: publicWorker(result) ?? { workerId: binding.workerId, correlationId: binding.correlationId, state: 'queued', queueDepth: 0 } };
+        return { action: 'spawn', worker: publicWorker(result, binding) ?? { workerId: binding.workerId, correlationId: binding.correlationId, state: 'queued', queueDepth: 0, ...(binding.planStepId === undefined ? {} : { planStepId: binding.planStepId, ownershipStatus: binding.ownershipStatus }) } };
       } catch {
+        try { await releaseOwnership(binding, request); } catch { /* retain the primary spawn failure */ }
         bindings.delete(binding.workerId);
         throw new NativeWorkerToolError('worker', 'Worker spawn failed');
       }
@@ -344,7 +370,12 @@ export function createNativeWorkerTool(options: NativeWorkerToolOptions): ToolDe
       let result: unknown;
       try { result = await options.controller.execute({ type: 'list' }); }
       catch { throw new NativeWorkerToolError('worker', 'Worker list failed'); }
-      const workers = Array.isArray(result) ? result.filter((item) => isRecord(item) && typeof item['workerId'] === 'string' && bindings.get(item['workerId'])?.sessionId === request.context.sessionId).map(publicWorker).filter((item): item is Record<string, unknown> => item !== null) : [];
+      const visible = Array.isArray(result) ? result.filter((item) => isRecord(item) && typeof item['workerId'] === 'string' && bindings.get(item['workerId'])?.sessionId === request.context.sessionId) : [];
+      for (const item of visible) {
+        const binding = bindings.get((item as Record<string, unknown>)['workerId'] as string)!;
+        if (isRecord((item as Record<string, unknown>)['terminal'])) await releaseOwnership(binding, request);
+      }
+      const workers = visible.map((item) => publicWorker(item, bindings.get((item as Record<string, unknown>)['workerId'] as string))).filter((item): item is Record<string, unknown> => item !== null);
       return { action: 'list', workers };
     }
     const binding = requireBinding(input.workerId!, request.context.sessionId);
@@ -357,8 +388,15 @@ export function createNativeWorkerTool(options: NativeWorkerToolOptions): ToolDe
     try {
       const operation = options.controller.execute(command);
       const result = input.action === 'wait' ? await waitBounded(operation, input.timeoutMs ?? maxWaitMs, request.signal) : await operation;
-      if (input.action === 'status') return { action: input.action, worker: publicWorker(result) };
-      if (input.action === 'wait') return { action: input.action, worker: publicTerminalWorker(result) };
+      if (input.action === 'status') {
+        if (isRecord(result) && isRecord(result['terminal'])) await releaseOwnership(binding, request);
+        return { action: input.action, worker: publicWorker(result, binding) };
+      }
+      if (input.action === 'wait') {
+        if (isRecord(result) && result['type'] === 'worker.terminal') await releaseOwnership(binding, request);
+        return { action: input.action, worker: publicTerminalWorker(result, binding) };
+      }
+      if (input.action === 'abort' || input.action === 'kill') await releaseOwnership(binding, request);
       return { action: input.action, acknowledged: true };
     } catch (error) {
       if (error instanceof NativeWorkerToolError) throw error;

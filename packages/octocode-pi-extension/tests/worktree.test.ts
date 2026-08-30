@@ -92,7 +92,7 @@ test('createAgentWorktree creates an isolated branch under Octocode home', () =>
 
   assert.equal(state.baseCommit, git(repo, ['rev-parse', 'HEAD']));
   assert.match(state.branch, /^octocode\/agents\/rex-worker-12345678$/);
-  assert.ok(state.path.startsWith(path.join(home, 'worktrees')));
+  assert.ok(state.path.startsWith(path.join(home, 'agent', 'worktrees')));
   assert.equal(git(state.path, ['branch', '--show-current']), state.branch);
   assert.equal(fs.existsSync(path.join(state.path, 'README.md')), true);
   if (process.platform !== 'win32') {

@@ -39,7 +39,7 @@ export const SETTINGS_HTML_FILE = 'settings.html';
 
 function managerDir(cwd: string): string {
   const key = createHash('sha256').update(path.resolve(cwd)).digest('hex').slice(0, 32);
-  return path.join(getOctocodeHome(), 'tmp', 'settings', key);
+  return path.join(getOctocodeHome(), 'agent', 'tmp', 'settings', key);
 }
 
 export type McpManagerAction =

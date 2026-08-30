@@ -3,7 +3,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { assemblePrompt, type ModelMessage, type PromptSnapshot } from '@octocodeai/agent-core';
 import { EXTERNAL_AGENT_AWARENESS_PROMPT } from '@octocodeai/octocode-awareness';
-import { buildOctocodeSystemPrompt, repositoryDirectories } from '@octocodeai/octocode-shared';
+import { repositoryDirectories } from '@octocodeai/octocode-shared/agent-skills';
+import { buildOctocodeSystemPrompt } from '@octocodeai/octocode-shared/prompts';
 
 const INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md'] as const;
 const MAX_INSTRUCTION_FILES = 16;
@@ -44,8 +45,8 @@ export function parseNativePromptRecord(value: unknown): NativePromptRecord | un
   return Object.freeze(record as NativePromptRecord);
 }
 
-function encodeInstructionFiles(files: readonly NativeInstructionFile[]): string {
-  return JSON.stringify(files.map((file) => ({ path: file.path, content: file.content.trim() })))
+function encodeJson(value: unknown): string {
+  return JSON.stringify(value)
     .replace(/[<>&\u2028\u2029]/g, (character) => ({
       '<': '\\u003c',
       '>': '\\u003e',
@@ -53,6 +54,10 @@ function encodeInstructionFiles(files: readonly NativeInstructionFile[]): string
       '\u2028': '\\u2028',
       '\u2029': '\\u2029',
     })[character]!);
+}
+
+function encodeInstructionFiles(files: readonly NativeInstructionFile[]): string {
+  return encodeJson(files.map((file) => ({ path: file.path, content: file.content.trim() })));
 }
 
 function readInstructionFile(file: string, remainingBytes: number): (NativeInstructionFile & { readonly bytes: number }) | undefined {
@@ -105,6 +110,14 @@ export function buildNativePromptSnapshot(
       priority: 0,
       content: buildOctocodeSystemPrompt(EXTERNAL_AGENT_AWARENESS_PROMPT).trimEnd(),
       provenance: '@octocodeai/octocode-shared + @octocodeai/octocode-awareness',
+      trusted: true,
+    },
+    {
+      id: 'runtime-context',
+      placement: 'system',
+      priority: 10,
+      content: `<runtime_context encoding="json">\n${encodeJson({ cwd: path.resolve(cwd) })}\n</runtime_context>\nUse this exact cwd for local tool paths. Resolve relative paths against it; never guess a generic workspace path.`,
+      provenance: 'native runtime',
       trusted: true,
     },
     ...(repositoryInstructions ? [{

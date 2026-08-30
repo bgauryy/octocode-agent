@@ -95,7 +95,7 @@ export interface CheckpointStoreOptions {
 /** `<home>/checkpoints/<sha256(resolved cwd).slice(0,16)>` — never inside the user repo. */
 export function checkpointStoreDir(cwd: string, home?: string): string {
   const key = createHash('sha256').update(path.resolve(cwd)).digest('hex').slice(0, 16);
-  return path.join(home ?? getOctocodeHome(), 'checkpoints', key);
+  return path.join(home ?? getOctocodeHome(), 'agent', 'checkpoints', key);
 }
 
 // ─── Internals ───────────────────────────────────────────────────────────────

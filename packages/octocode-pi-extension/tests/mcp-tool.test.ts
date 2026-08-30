@@ -17,6 +17,7 @@ import {
   warmMcpCatalog,
 } from '../src/tools/mcp-tool.js';
 import { buildMcpCatalogSnapshot } from '../src/tools/mcp-catalog.js';
+import { projectMcpPath } from '../src/tools/mcp-config.js';
 
 const mcpCtx = { cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-cache-')) } as unknown as import('../src/types.js').PiContext;
 const originalOctocodeHome = process.env['OCTOCODE_HOME'];
@@ -493,6 +494,7 @@ function createDelayedMcpFixture(delayMs: number): {
   cleanup: () => void;
 } {
   const cwd = fs.mkdtempSync(path.join(process.cwd(), '.tmp-mcp-warm-flow-'));
+  process.env['OCTOCODE_HOME'] = path.join(cwd, '.octocode-home');
   const serverPath = path.join(cwd, 'server.mjs');
   const discoveryMarker = path.join(cwd, 'listed.marker');
   fs.writeFileSync(serverPath, `
@@ -507,8 +509,9 @@ function createDelayedMcpFixture(delayMs: number): {
     });
     await server.connect(new StdioServerTransport());
   `);
-  fs.mkdirSync(path.join(cwd, '.octocode', 'agent', 'mcp'), { recursive: true });
-  fs.writeFileSync(path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json'), JSON.stringify({
+  const configPath = projectMcpPath(cwd);
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({
     mcpServers: {
       octocode: {
         command: process.execPath,
@@ -532,6 +535,7 @@ function createCallGateMcpFixture(): {
   cleanup: () => void;
 } {
   const cwd = fs.mkdtempSync(path.join(process.cwd(), '.tmp-mcp-call-gate-'));
+  process.env['OCTOCODE_HOME'] = path.join(cwd, '.octocode-home');
   const serverPath = path.join(cwd, 'server.mjs');
   const callMarker = path.join(cwd, 'called.ndjson');
   fs.writeFileSync(serverPath, `
@@ -559,8 +563,9 @@ function createCallGateMcpFixture(): {
     });
     await server.connect(new StdioServerTransport());
   `);
-  fs.mkdirSync(path.join(cwd, '.octocode', 'agent', 'mcp'), { recursive: true });
-  fs.writeFileSync(path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json'), JSON.stringify({
+  const configPath = projectMcpPath(cwd);
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({
     mcpServers: {
       octocode: {
         command: process.execPath,
@@ -582,8 +587,10 @@ function createFailingMcpFixture(): {
   cleanup: () => void;
 } {
   const cwd = fs.mkdtempSync(path.join(process.cwd(), '.tmp-mcp-failed-warm-'));
-  fs.mkdirSync(path.join(cwd, '.octocode', 'agent', 'mcp'), { recursive: true });
-  fs.writeFileSync(path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json'), JSON.stringify({
+  process.env['OCTOCODE_HOME'] = path.join(cwd, '.octocode-home');
+  const configPath = projectMcpPath(cwd);
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({
     mcpServers: {
       octocode: {
         command: process.execPath,
@@ -914,7 +921,7 @@ test('add: overriding octocode notes the shadow of the built-in default', async 
   );
   assert.equal(res.isError ?? false, false);
   assert.match((res.content[0] as { text: string }).text, /overrides the built-in octocode default/i);
-  const written = JSON.parse(fs.readFileSync(path.join((ctx as unknown as { cwd: string }).cwd, '.octocode', 'agent', 'mcp', 'servers.json'), 'utf8'));
+  const written = JSON.parse(fs.readFileSync(projectMcpPath((ctx as unknown as { cwd: string }).cwd), 'utf8'));
   assert.equal(written.mcpServers.octocode.command, 'npx');
 });
 

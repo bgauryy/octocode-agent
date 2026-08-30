@@ -5,8 +5,8 @@
 export interface AuthProvider {
   keyVar: string;
   label: string;
-  url: string;
-  host: string;
+  url?: string;
+  host?: string;
   protocol: 'openai-chat-completions' | 'openai-responses' | 'anthropic-messages';
 }
 

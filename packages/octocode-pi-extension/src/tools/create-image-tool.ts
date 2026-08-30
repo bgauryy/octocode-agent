@@ -19,7 +19,6 @@
  */
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import { Resvg } from '@resvg/resvg-js';
@@ -34,6 +33,7 @@ import { resolveFilePath } from './file-state.js';
 import { buildImageLinesFromData, effectiveInlineImages, formatBytes, isTerminalImageCapable } from './image-render.js';
 import { connectToChrome, cleanupConnection, findChromePath } from '../chrome-debug.js';
 import { buildQueryEnvelopeSchema, executeQueryBatch } from './query-envelope.js';
+import { getOctocodeHome } from '../env.js';
 
 type TypeBoxBuilder = (typeof import('typebox'))['Type'];
 type RegisterFn = typeof registerUniqueTool;
@@ -58,7 +58,7 @@ let htmlRenderPortCounter = 0;
 let fallbackFileCounter = 0;
 const implicitArtifactFiles = new Set<string>();
 const implicitArtifactDirs = new Set<string>();
-const FALLBACK_ROOT = path.join(os.tmpdir(), 'octocode-images');
+const fallbackRoot = (): string => path.join(getOctocodeHome(), 'agent', 'tmp', 'images');
 
 /** Next distinct headless render port, rotating within the safe range. */
 function nextHtmlRenderPort(): number {
@@ -319,9 +319,9 @@ export async function createImageFromHtml(
  * Persist a rendered PNG so it can be opened when the terminal can't display
  * it inline.
  *
- * Primary: `<workspace>/.octocode/agent/<session-key>/images/<name>.png`
+ * Primary: `$OCTOCODE_HOME/agent/workspaces/<workspace>/sessions/<session-key>/images/<name>.png`
  * (registered as an `image` producer in the session artifact manifest).
- * Fallback: `<OS tmp>/octocode-images/<session-id>/` when session context
+ * Fallback: `$OCTOCODE_HOME/agent/tmp/images/<session-id>/` when session context
  * is unavailable or the artifact dir cannot be created.
  *
  * Never throws — this is best-effort.
@@ -350,7 +350,7 @@ function persistFallbackPng(base64: string, ctx?: PiContext, name?: string): str
   try {
     const sessionId = ctx?.sessionManager?.getSessionId?.() ?? `pid-${process.pid}`;
     const safeSession = sessionId.replace(/[^\w.-]+/g, '_').slice(0, 96) || `pid-${process.pid}`;
-    const dir = path.join(FALLBACK_ROOT, safeSession);
+    const dir = path.join(fallbackRoot(), safeSession);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.chmodSync(dir, 0o700);
     const file = path.join(dir, `${safeBase}-${suffix}.png`);
@@ -379,7 +379,7 @@ export function cleanupImplicitImageArtifacts(): number {
     try { fs.rmdirSync(dir); } catch { /* non-empty or already removed */ }
   }
   implicitArtifactDirs.clear();
-  try { fs.rmdirSync(FALLBACK_ROOT); } catch { /* another session may still own it */ }
+  try { fs.rmdirSync(fallbackRoot()); } catch { /* another session may still own it */ }
   return removed;
 }
 

@@ -1,7 +1,7 @@
 import type { AgentRuntime } from '@octocodeai/agent-core';
 
 import type { RuntimePlanSnapshot } from './native-plan.js';
-import { nativeCommandHelpItems } from './native-command-catalog.js';
+import { nativeCommandAlias, nativeCommandHelpItems } from './native-command-catalog.js';
 import { NATIVE_SETTINGS_SECTIONS, type NativeSettingsSection } from './native-settings-page.js';
 import type { OpenTuiTerminal, PresentationWidget } from './terminal/opentui/presentation.js';
 
@@ -16,6 +16,7 @@ export interface NativeSlashCommandContext {
   readonly currentPlan: () => RuntimePlanSnapshot | undefined;
   readonly skills: () => readonly NativeSkillSummary[];
   readonly thinkingSupported?: boolean;
+  readonly onContextCleared?: () => void;
   readonly openSettings?: (section?: NativeSettingsSection) => Promise<{
     readonly ok: boolean;
     readonly url?: string;
@@ -64,8 +65,11 @@ export async function handleNativeSlashCommand(
 ): Promise<NativeSlashCommandOutcome> {
   const trimmed = line.trim();
   if (!trimmed.startsWith('/')) return 'not-command';
-  const [rawName = '', ...args] = trimmed.slice(1).split(/\s+/);
-  const name = rawName.toLocaleLowerCase('en-US');
+  const [rawName = '', ...rawArgs] = trimmed.slice(1).split(/\s+/);
+  const requestedName = rawName.toLocaleLowerCase('en-US');
+  const alias = nativeCommandAlias(requestedName);
+  const name = alias?.target ?? requestedName;
+  const args = rawArgs.length === 0 && alias?.defaultArgs ? [...alias.defaultArgs] : rawArgs;
   if (name === 'exit' || name === 'quit') return 'exit';
 
   if (name === 'help') {
@@ -91,6 +95,8 @@ export async function handleNativeSlashCommand(
         { label: 'Thinking', value: snapshot.thinkingLevel ?? 'default' },
         { label: 'Input tokens', value: String(snapshot.usage.inputTokens) },
         { label: 'Output tokens', value: String(snapshot.usage.outputTokens) },
+        ...(snapshot.usage.cachedInputTokens === undefined ? [] : [{ label: 'Cached input tokens', value: String(snapshot.usage.cachedInputTokens) }]),
+        ...(snapshot.usage.cacheWriteInputTokens === undefined ? [] : [{ label: 'Cache write tokens', value: String(snapshot.usage.cacheWriteInputTokens) }]),
       ],
     });
     return 'handled';
@@ -131,6 +137,22 @@ export async function handleNativeSlashCommand(
     const failure = errorMessage(result);
     if (failure) commandFailure(context.terminal, '/thinking', failure);
     else notify(context.terminal, 'success', `Thinking level: ${level}`);
+    return 'handled';
+  }
+
+  if (name === 'clear') {
+    if (args.length > 0) {
+      commandFailure(context.terminal, '/clear', 'usage: /clear');
+      return 'handled';
+    }
+    const result = await context.runtime.execute({ type: 'session.create' });
+    const failure = errorMessage(result);
+    if (failure) commandFailure(context.terminal, '/clear', failure);
+    else {
+      if (context.onContextCleared === undefined) context.terminal.accept({ type: 'context-cleared' });
+      else context.onContextCleared();
+      notify(context.terminal, 'success', 'Context cleared. New session started.');
+    }
     return 'handled';
   }
 

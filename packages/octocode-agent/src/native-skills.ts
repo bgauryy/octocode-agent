@@ -3,19 +3,24 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { createEffectSet, RuntimeFailure, type ToolRegistry } from '@octocodeai/agent-core';
 import {
-  defaultAgentSkillRoots,
-  discoverAgentSkills,
+  defaultAgentSkillSources,
+  discoverAgentSkillInventory,
+  effectiveAgentSkills,
   listAgentSkillFiles,
   repositoryDirectories,
   type AgentSkill,
+  type AgentSkillInventoryEntry,
+  type AgentSkillInventoryResult,
+  type AgentSkillSourceDescriptor,
 } from '@octocodeai/octocode-shared/agent-skills';
 
 export interface NativeSkillOptions {
   cwd: string;
   homeDir?: string;
   octocodeHome?: string;
+  workspaceTrusted?: boolean;
   roots?: readonly string[];
-  isEnabled?: (name: string) => boolean;
+  isEnabled?: (name: string, defaultEnabled: boolean, source: AgentSkillSourceDescriptor) => boolean;
   lifecycle?: NativeSkillLifecycle;
   authorizeMutation?: (request: NativeSkillMutationRequest) => Promise<boolean>;
 }
@@ -48,28 +53,56 @@ export interface NativeSkillSummary {
 const MAX_SUPPORT_FILE_BYTES = 512 * 1024;
 const SKILL_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 
-function validatedSkillRoots(roots: readonly string[]): { roots: string[]; errors: Array<{ path: string; error: string }> } {
-  const valid: string[] = [];
+function skillSources(options: NativeSkillOptions): AgentSkillSourceDescriptor[] {
+  if (!options.roots) return defaultAgentSkillSources(options.cwd, options.homeDir, options.octocodeHome).map((source) => (
+    source.scope === 'workspace' && options.workspaceTrusted === false
+      ? { ...source, defaultEnabled: false }
+      : source
+  ));
+  const repositoryRoot = repositoryDirectories(options.cwd)[0] ?? path.resolve(options.cwd);
+  return options.roots.map((root, precedence) => {
+    const resolvedRoot = path.resolve(root);
+    const scope = resolvedRoot === repositoryRoot || resolvedRoot.startsWith(`${repositoryRoot}${path.sep}`) ? 'workspace' : 'user';
+    return {
+      id: `custom:${scope}:${resolvedRoot}`,
+      vendor: 'custom',
+      scope,
+      root: resolvedRoot,
+      precedence,
+      defaultEnabled: true,
+    };
+  });
+}
+
+function validatedSkillSources(sources: readonly AgentSkillSourceDescriptor[]): { sources: AgentSkillSourceDescriptor[]; errors: Array<{ path: string; error: string }> } {
+  const valid: AgentSkillSourceDescriptor[] = [];
   const errors: Array<{ path: string; error: string }> = [];
-  for (const root of roots) {
+  for (const source of sources) {
     try {
-      const stat = fs.lstatSync(root);
+      const stat = fs.lstatSync(source.root);
       if (!stat.isDirectory() || stat.isSymbolicLink()) {
-        errors.push({ path: root, error: 'Skill root must be a real directory' });
+        errors.push({ path: source.root, error: 'Skill root must be a real directory' });
         continue;
       }
-      valid.push(path.resolve(root));
+      valid.push({ ...source, root: path.resolve(source.root) });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') errors.push({ path: root, error: error instanceof Error ? error.message : 'Unreadable skill root' });
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') errors.push({ path: source.root, error: error instanceof Error ? error.message : 'Unreadable skill root' });
     }
   }
-  return { roots: valid, errors };
+  return { sources: valid, errors };
+}
+
+export function listNativeSkillInventory(options: NativeSkillOptions): AgentSkillInventoryResult {
+  const validation = validatedSkillSources(skillSources(options));
+  const inventory = discoverAgentSkillInventory(
+    validation.sources,
+    options.isEnabled ? (name, source) => options.isEnabled!(name, source.defaultEnabled, source) : undefined,
+  );
+  return { entries: inventory.entries, errors: [...validation.errors, ...inventory.errors] };
 }
 
 export function listNativeSkillSummaries(options: NativeSkillOptions): readonly NativeSkillSummary[] {
-  const roots = validatedSkillRoots(options.roots ?? defaultAgentSkillRoots(options.cwd, options.homeDir, options.octocodeHome)).roots;
-  return discoverAgentSkills(roots).skills
-    .filter((skill) => options.isEnabled?.(skill.name) ?? true)
+  return effectiveAgentSkills(listNativeSkillInventory(options).entries)
     .map(({ name, description }) => Object.freeze({ name, description }));
 }
 
@@ -78,9 +111,9 @@ function requireRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function publicMetadata(skill: AgentSkill, roots: readonly string[], repositoryRoot: string): Record<string, unknown> {
-  const root = roots.find((candidate) => path.dirname(skill.dir) === path.resolve(candidate)) ?? path.dirname(skill.dir);
-  const resolvedRoot = path.resolve(root);
+function publicMetadata(skill: AgentSkill, entries: readonly AgentSkillInventoryEntry[], repositoryRoot: string): Record<string, unknown> {
+  const inventory = entries.find((entry) => entry.parseStatus === 'valid' && entry.path === skill.path);
+  const resolvedRoot = inventory?.root ?? path.resolve(path.dirname(skill.dir));
   return {
     name: skill.name,
     description: skill.description,
@@ -90,11 +123,13 @@ function publicMetadata(skill: AgentSkill, roots: readonly string[], repositoryR
     ...(skill.allowedTools ? { allowedTools: skill.allowedTools, allowedToolsPolicy: 'requested-only' } : {}),
     path: skill.path,
     provenance: {
-      scope: resolvedRoot === repositoryRoot || resolvedRoot.startsWith(`${repositoryRoot}${path.sep}`) ? 'workspace' : 'user',
+      source: inventory?.source ?? `custom:user:${resolvedRoot}`,
+      vendor: inventory?.vendor ?? 'custom',
+      scope: inventory?.scope ?? (resolvedRoot === repositoryRoot || resolvedRoot.startsWith(`${repositoryRoot}${path.sep}`) ? 'workspace' : 'user'),
       root: resolvedRoot,
       file: skill.path,
-      discoveryOrder: Math.max(0, roots.findIndex((candidate) => path.resolve(candidate) === resolvedRoot)),
-      revision: `sha256:${createHash('sha256').update(skill.source).digest('hex')}`,
+      discoveryOrder: inventory?.precedence ?? 0,
+      revision: inventory?.revision ?? `sha256:${createHash('sha256').update(skill.source).digest('hex')}`,
     },
   };
 }
@@ -120,14 +155,20 @@ function containedPath(root: string, candidate: string, label: string): string {
 }
 
 export function registerNativeSkillTool(registry: ToolRegistry, options: NativeSkillOptions): void {
-  const rootValidation = validatedSkillRoots(options.roots ?? defaultAgentSkillRoots(options.cwd, options.homeDir, options.octocodeHome));
-  const roots = rootValidation.roots;
-  let discovery = discoverAgentSkills(roots);
-  let skills = discovery.skills.filter((skill) => options.isEnabled?.(skill.name) ?? true);
+  let sourceValidation = validatedSkillSources(skillSources(options));
+  let discovery = discoverAgentSkillInventory(
+    sourceValidation.sources,
+    options.isEnabled ? (name, source) => options.isEnabled!(name, source.defaultEnabled, source) : undefined,
+  );
+  let skills = effectiveAgentSkills(discovery.entries);
   let byName = new Map(skills.map((skill) => [skill.name, skill]));
   const refreshCatalog = (): void => {
-    discovery = discoverAgentSkills(roots);
-    skills = discovery.skills.filter((skill) => options.isEnabled?.(skill.name) ?? true);
+    sourceValidation = validatedSkillSources(skillSources(options));
+    discovery = discoverAgentSkillInventory(
+      sourceValidation.sources,
+      options.isEnabled ? (name, source) => options.isEnabled!(name, source.defaultEnabled, source) : undefined,
+    );
+    skills = effectiveAgentSkills(discovery.entries);
     byName = new Map(skills.map((skill) => [skill.name, skill]));
   };
   const repositoryRoot = repositoryDirectories(options.cwd)[0] ?? path.resolve(options.cwd);
@@ -155,9 +196,12 @@ export function registerNativeSkillTool(registry: ToolRegistry, options: NativeS
       ? { effects: createEffectSet('read', 'write'), trust: 'workspace', approval: 'on-request', plan: 'allowed' }
       : { effects: createEffectSet('read'), trust: 'none', approval: 'never', plan: 'allowed' },
     async execute({ input, context }) {
+      // The settings/control plane persists enablement independently of this registry.
+      // Re-read it so an already-running agent observes capability changes immediately.
+      refreshCatalog();
       const params = requireRecord(input);
       if (params.action === 'list') {
-        return { ok: true, content: { skills: skills.map((skill) => publicMetadata(skill, roots, repositoryRoot)), errors: [...rootValidation.errors, ...discovery.errors] }, detailsVersion: 1 };
+        return { ok: true, content: { skills: skills.map((skill) => publicMetadata(skill, discovery.entries, repositoryRoot)), errors: [...sourceValidation.errors, ...discovery.errors] }, detailsVersion: 1 };
       }
       const mutationActions = new Set<NativeSkillMutationAction>(['refresh', 'enable', 'disable', 'install', 'update', 'remove']);
       if (typeof params.action === 'string' && mutationActions.has(params.action as NativeSkillMutationAction)) {
@@ -202,7 +246,7 @@ export function registerNativeSkillTool(registry: ToolRegistry, options: NativeS
       return {
         ok: true,
         content: {
-          ...publicMetadata(skill, roots, repositoryRoot),
+          ...publicMetadata(skill, discovery.entries, repositoryRoot),
           instructions: skill.body,
           files: listAgentSkillFiles(skill.dir),
         },

@@ -115,4 +115,4 @@ Store exact JSON queries and tool versions in each evidence receipt because sche
 - Native session encoding benchmarks and corruption behavior — decision-grade when all candidates run the same fixture corpus.
 - Supported-platform terminal restoration and signal behavior — decision-grade when CI or recorded manual runs cover each supported environment.
 - Real-world redacted latency, memory, abort, and compaction baselines — decision-grade after telemetry fields and privacy review are approved.
-- Long-term removal of `pi-agent-core` or `pi-ai` from any separately evaluated external stack is outside this RFC. Native `pi-tui` removal is part of the OpenTUI stage; Pi-host UI exists only inside the frozen oracle until the final package deletion.
+- Long-term removal of `pi-agent-core` or `pi-ai` from the independent Pi stack is outside this RFC. Native `pi-tui` removal is part of the OpenTUI stage; Pi-host UI remains adapter-local to the Pi extension.

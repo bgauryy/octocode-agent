@@ -4,6 +4,9 @@ import {
   type AwarenessEventStore,
 } from '@octocodeai/octocode-awareness';
 import type { AgentRuntime, RuntimeCommand, RuntimeCommandResult } from '@octocodeai/agent-core';
+import { filterNativeContextEvent } from './native-context-filter.js';
+
+const DEFAULT_CONTEXT_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
 export interface NativeCommunicationOptions {
   workspace: string;
@@ -11,6 +14,8 @@ export interface NativeCommunicationOptions {
   agentId: string;
   openStore?: (workspace: string) => AwarenessEventStore;
   onObservability?(stats: AwarenessEventObservability): void;
+  contextNow?: () => number;
+  contextMaxAgeMs?: number;
 }
 
 /**
@@ -29,6 +34,16 @@ export function withNativeSessionCommunication(
     ...(options.openStore ? { openStore: options.openStore } : {}),
     ...(options.onObservability ? { onObservability: options.onObservability } : {}),
     deliver: async (message) => {
+      const filtered = filterNativeContextEvent({
+        eventId: message.details.eventId,
+        text: message.content,
+        provenance: message.details.provenance,
+        timestamp: message.details.createdAt,
+      }, {
+        now: options.contextNow?.() ?? Date.now(),
+        maxAgeMs: options.contextMaxAgeMs ?? DEFAULT_CONTEXT_MAX_AGE_MS,
+      });
+      if (filtered.decision === 'reject') return 'refuse';
       const result = await runtime.execute({
         type: 'context.append',
         eventId: message.details.eventId,
@@ -36,6 +51,7 @@ export function withNativeSessionCommunication(
         provenance: message.details.provenance,
       });
       if (!result.ok) throw new Error(result.error.message);
+      return 'accept';
     },
   });
 

@@ -2,6 +2,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { assertContextSegmentAuthority, type ContextSegmentV1 } from '@octocodeai/octocode-awareness';
+import { workspaceAgentKey, workspaceAgentRoot } from '@octocodeai/octocode-shared/paths';
+import { getOctocodeHome } from '../env.js';
 
 export const SESSION_MANIFEST_VERSION = 1 as const;
 export const PLAN_SNAPSHOT_VERSION = 1 as const;
@@ -17,6 +19,8 @@ export type SessionIdentitySource = 'session-id' | 'session-file' | 'process-fal
 
 export interface SessionIdentityInput {
   cwd?: string;
+  /** Octocode home override, primarily for deterministic tests. */
+  octocodeHome?: string;
   sessionManager?: {
     getSessionId?(): string | undefined;
     getSessionFile?(): string | undefined;
@@ -120,6 +124,13 @@ export function resolveSessionIdentity(input: SessionIdentityInput = {}): Sessio
   return { workspace, rawId, source, sessionKey: `${slug(readable)}-${suffix}` };
 }
 
+export { workspaceAgentKey, workspaceAgentRoot };
+
+export function sessionArtifactRoot(input: SessionIdentityInput = {}): string {
+  const identity = resolveSessionIdentity(input);
+  return path.join(workspaceAgentRoot(identity.workspace, input.octocodeHome ?? getOctocodeHome()), 'sessions', identity.sessionKey);
+}
+
 function isInside(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
@@ -156,21 +167,25 @@ function ensurePrivateDir(dir: string): void {
   }
 }
 
-function ensureContainedSessionRoot(workspace: string, root: string): void {
+function ensureContainedSessionRoot(workspace: string, agentRoot: string, root: string): void {
   if (!fs.existsSync(workspace)) throw new Error(`Session workspace does not exist: ${workspace}`);
-  const realWorkspace = fs.realpathSync(workspace);
-  const relativeRoot = path.relative(workspace, root);
-  if (relativeRoot.startsWith('..') || path.isAbsolute(relativeRoot)) {
-    throw new Error('Session root escaped the workspace');
+  if (fs.existsSync(agentRoot) && fs.lstatSync(agentRoot).isSymbolicLink()) {
+    throw new Error(`Global agent root must not be a symlink: ${agentRoot}`);
   }
-  let cursor = workspace;
+  ensurePrivateDir(agentRoot);
+  const realAgentRoot = fs.realpathSync(agentRoot);
+  const relativeRoot = path.relative(agentRoot, root);
+  if (relativeRoot.startsWith('..') || path.isAbsolute(relativeRoot)) {
+    throw new Error('Session root escaped the global agent root');
+  }
+  let cursor = agentRoot;
   for (const component of relativeRoot.split(path.sep)) {
     cursor = path.join(cursor, component);
     if (!fs.existsSync(cursor)) fs.mkdirSync(cursor, { mode: PRIVATE_DIR_MODE });
     const stat = fs.statSync(cursor);
     if (!stat.isDirectory()) throw new Error(`Session root ancestor is not a directory: ${cursor}`);
     const real = fs.realpathSync(cursor);
-    if (!isInside(realWorkspace, real)) throw new Error(`Session root symlink escaped the workspace: ${cursor}`);
+    if (!isInside(realAgentRoot, real)) throw new Error(`Session root symlink escaped the global agent root: ${cursor}`);
     try {
       fs.chmodSync(cursor, PRIVATE_DIR_MODE);
     } catch {
@@ -320,8 +335,9 @@ function writeExclusive(file: string, contents: string): 'created' | 'exists' {
 
 export function createSessionArtifactContext(input: SessionIdentityInput = {}): SessionArtifactContext {
   const identity = resolveSessionIdentity(input);
-  const root = path.join(identity.workspace, '.octocode', 'agent', identity.sessionKey);
-  ensureContainedSessionRoot(identity.workspace, root);
+  const agentRoot = path.join(path.resolve(input.octocodeHome ?? getOctocodeHome()), 'agent');
+  const root = sessionArtifactRoot({ ...input, cwd: identity.workspace });
+  ensureContainedSessionRoot(identity.workspace, agentRoot, root);
   const manifestPath = path.join(root, 'manifest.json');
   writeExclusive(manifestPath, `${JSON.stringify(createManifest(identity), null, 2)}\n`);
   const manifestLock = path.join(root, '.manifest.lock');

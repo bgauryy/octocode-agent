@@ -38,7 +38,7 @@ function insertSession(db: DatabaseSync, agentId = 'agent-test'): string {
 function insertMemoryRow(db: DatabaseSync, agentId = 'agent-test'): string {
     const memoryId = 'mem_' + randomUUID().replace(/-/g, '');
     db.prepare(`
-    INSERT INTO memories (memory_id, agent_id, task_context, observation, importance, created_at)
+    INSERT INTO awareness_memories (memory_id, agent_id, task_context, observation, importance, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(memoryId, agentId, 'test task context', 'test observation', 5, new Date().toISOString());
     return memoryId;
@@ -114,7 +114,7 @@ describe('insertHarnessLog — memory_id FK', () => {
     });
 
     const row = db.prepare(
-      'SELECT h.harness_id, m.memory_id FROM harness_log h JOIN memories m ON h.memory_id = m.memory_id WHERE h.harness_id = ?'
+      'SELECT h.harness_id, m.memory_id FROM harness_log h JOIN awareness_memories m ON h.memory_id = m.memory_id WHERE h.harness_id = ?'
     ).get(harnessId) as { harness_id: string; memory_id: string } | undefined;
 
     expect(row).toBeDefined();
@@ -298,7 +298,7 @@ describe('harness_log.memory_id SET NULL on memory delete', () => {
     expect(before!.memory_id).toBe(memoryId);
 
     // Delete the memory
-    db.prepare('DELETE FROM memories WHERE memory_id = ?').run(memoryId);
+    db.prepare('DELETE FROM awareness_memories WHERE memory_id = ?').run(memoryId);
 
     // harness_log row must remain but memory_id must be NULL
     const after = db.prepare(

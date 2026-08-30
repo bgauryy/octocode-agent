@@ -112,7 +112,7 @@ export function createAgentWorktree(opts: CreateWorktreeOptions): InternalWorktr
   const repoKey = hashRepoKey(commonDir);
   const id8 = shortId(opts.agentId);
   const branch = `octocode/agents/${safeBranchName(opts.name)}-${id8}`;
-  const worktreeRoot = path.join(opts.home ?? getOctocodeHome(), 'worktrees', repoKey);
+  const worktreeRoot = path.join(opts.home ?? getOctocodeHome(), 'agent', 'worktrees', repoKey);
   const worktreePath = path.join(worktreeRoot, id8);
   ensurePrivateDirectory(worktreeRoot);
 
@@ -218,7 +218,7 @@ export function sweepAgentWorktrees(parentCwd: string, liveWorktreePaths: Iterab
   assertWorktreeSpawnAllowed(parentCwd);
   try { git(parentCwd, ['worktree', 'prune']); } catch { /* best-effort */ }
   const commonDir = git(parentCwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
-  const root = path.join(home ?? getOctocodeHome(), 'worktrees', hashRepoKey(commonDir));
+  const root = path.join(home ?? getOctocodeHome(), 'agent', 'worktrees', hashRepoKey(commonDir));
   if (!fs.existsSync(root)) return 0;
   const live = new Set([...liveWorktreePaths].map((p) => path.resolve(p)));
   let removed = 0;

@@ -98,11 +98,11 @@ export function getActiveDialLevel(): EffortLevel | undefined {
 // ─── Persistence ──────────────────────────────────────────────────────────────
 
 function dialFilePath(home?: string): string {
-  return path.join(home ?? getOctocodeHome(), DIAL_FILE_NAME);
+  return path.join(home ?? getOctocodeHome(), 'agent', DIAL_FILE_NAME);
 }
 
 /**
- * Read the persisted dial level from <home>/dial.json, or undefined when the
+ * Read the persisted dial level from <home>/agent/dial.json, or undefined when the
  * user never dialed (missing/unreadable/malformed/unknown-level file).
  */
 export function loadPersistedDialLevel(home?: string): EffortLevel | undefined {

@@ -5,18 +5,16 @@ import { handoffFromRow,HandoffRow,id,lockFromRow,LockRow,now,required,sleepMs,s
 
 export abstract class CoordinationState extends CoordinationPlansTasks {
   acquireLock(params: { filePath: string; agentId: string; reason?: string | null; ttlSeconds?: number }): Lock {
-    this.pruneExpiredLocks();
     const filePath = resolve(this.workspace, required(params.filePath, 'file'));
     const agentId = required(params.agentId, 'agent-id');
-    const existing = this.db.prepare('SELECT * FROM locks WHERE workspace_path = ? AND file_path = ?').get(this.workspace, filePath) as unknown as LockRow | undefined;
-    if (existing && existing.agent_id !== agentId) throw new Error(`lock conflict on ${filePath}: held by ${existing.agent_id}`);
     const acquiredAt = now();
     const ttlSeconds = params.ttlSeconds && params.ttlSeconds > 0 ? params.ttlSeconds : 1800;
     const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
-    this.db.prepare(`INSERT INTO locks(workspace_path, file_path, agent_id, reason, acquired_at, expires_at)
+    const result = this.db.prepare(`INSERT INTO locks(workspace_path, file_path, agent_id, reason, acquired_at, expires_at)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_path, file_path) DO UPDATE SET agent_id = excluded.agent_id, reason = excluded.reason,
-        acquired_at = excluded.acquired_at, expires_at = excluded.expires_at`).run(
+        acquired_at = excluded.acquired_at, expires_at = excluded.expires_at
+      WHERE locks.agent_id = excluded.agent_id OR locks.expires_at <= excluded.acquired_at`).run(
           this.workspace,
           filePath,
           agentId,
@@ -24,6 +22,11 @@ export abstract class CoordinationState extends CoordinationPlansTasks {
           acquiredAt,
           expiresAt,
         );
+    if (result.changes === 0) {
+      const existing = this.db.prepare('SELECT * FROM locks WHERE workspace_path = ? AND file_path = ?')
+        .get(this.workspace, filePath) as unknown as LockRow | undefined;
+      throw new Error(`lock conflict on ${filePath}: held by ${existing?.agent_id ?? 'another agent'}`);
+    }
     return this.getLock(filePath);
   }
 

@@ -120,31 +120,57 @@ export function parseSessionEvent(value: unknown, id: SessionId): SessionEvent {
 }
 
 export function parseSessionRecord(value: unknown, id: SessionId): SessionRecord {
-  if (!isRecord(value) || !hasShape(value, ['schemaVersion', 'sessionId', 'revision', 'events'])) {
+  if (!isRecord(value) || (value['schemaVersion'] !== 1 && value['schemaVersion'] !== 2)) {
+    throw new RuntimeFailure('session-corruption', 'Session record envelope is invalid', 'unsafe', true, 'sensitive');
+  }
+  const v1 = value['schemaVersion'] === 1;
+  if (!hasShape(value, v1 ? ['schemaVersion', 'sessionId', 'revision', 'events'] : ['schemaVersion', 'sessionId', 'revision', 'retention', 'events'])) {
     throw new RuntimeFailure('session-corruption', 'Session record envelope is invalid', 'unsafe', true, 'sensitive');
   }
   if (
-    value['schemaVersion'] !== 1
-    || value['sessionId'] !== id
+    value['sessionId'] !== id
     || typeof value['revision'] !== 'string'
     || !Array.isArray(value['events'])
-    || value['revision'] !== String(value['events'].length)
   ) throw new RuntimeFailure('session-corruption', 'Session record envelope is invalid', 'unsafe', true, 'sensitive');
+  const events = value['events'].map((event) => parseSessionEvent(event, id));
+  const revisionValue = Number(value['revision']);
+  if (!Number.isSafeInteger(revisionValue) || revisionValue < 0) throw new RuntimeFailure('session-corruption', 'Session record envelope is invalid', 'unsafe', true, 'sensitive');
+  if (v1) {
+    if (revisionValue !== events.length) throw new RuntimeFailure('session-corruption', 'Session record envelope is invalid', 'unsafe', true, 'sensitive');
+    return { schemaVersion: 1, sessionId: id, revision: revision(value['revision']), events };
+  }
+  const retention = value['retention'];
+  if (!isRecord(retention) || !hasShape(retention, ['omittedDiagnostics', 'maxDiagnostics'])
+    || !Number.isSafeInteger(retention['omittedDiagnostics']) || Number(retention['omittedDiagnostics']) < 0
+    || !Number.isSafeInteger(retention['maxDiagnostics']) || Number(retention['maxDiagnostics']) <= 0
+    || revisionValue !== events.length + Number(retention['omittedDiagnostics'])) {
+    throw new RuntimeFailure('session-corruption', 'Session record envelope is invalid', 'unsafe', true, 'sensitive');
+  }
+  let prior = 0;
+  for (const event of events) {
+    if (event.sequence <= prior) throw new RuntimeFailure('session-corruption', 'Session record envelope is invalid', 'unsafe', true, 'sensitive');
+    prior = event.sequence;
+  }
+  if ((revisionValue === 0 && events.length !== 0) || (revisionValue > 0 && events.at(-1)?.sequence !== revisionValue)) {
+    throw new RuntimeFailure('session-corruption', 'Session record envelope is invalid', 'unsafe', true, 'sensitive');
+  }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sessionId: id,
     revision: revision(value['revision']),
-    events: value['events'].map((event) => parseSessionEvent(event, id)),
+    retention: { omittedDiagnostics: Number(retention['omittedDiagnostics']), maxDiagnostics: Number(retention['maxDiagnostics']) },
+    events,
   };
 }
 
-export const projectSession = (id: SessionId, events: readonly SessionEvent[]): SessionProjection => {
-  let name: string | undefined; const transcript: SessionProjection['transcript'][number][] = []; const modelContext: SessionProjection['modelContext'][number][] = []; const customEntries: SessionProjection['customEntries'][number][] = []; const branches: SessionProjection['branches'][number][] = []; let selectedBranch: SessionProjection['selectedBranch']; let compaction: SessionProjection['compaction'] = null; let compactionAttempt: SessionProjection['compactionAttempt'] = null; const artifacts: SessionProjection['artifacts'][number][] = [];
-  const seen = new Set<string>(); let expected = 1;
+export interface ProjectionOptions { readonly allowGaps?: boolean; readonly revision?: Revision; }
+const project = (id: SessionId, events: readonly SessionEvent[], base: SessionProjection | undefined, seen: Set<string>, options: ProjectionOptions): SessionProjection => {
+  let name = base?.name; const transcript: SessionProjection['transcript'][number][] = [...(base?.transcript ?? [])]; const modelContext: SessionProjection['modelContext'][number][] = [...(base?.modelContext ?? [])]; const customEntries: SessionProjection['customEntries'][number][] = [...(base?.customEntries ?? [])]; const branches: SessionProjection['branches'][number][] = [...(base?.branches ?? [])]; let selectedBranch = base?.selectedBranch; let compaction: SessionProjection['compaction'] = base?.compaction ?? null; let compactionAttempt: SessionProjection['compactionAttempt'] = base?.compactionAttempt ?? null; const artifacts: SessionProjection['artifacts'][number][] = [...(base?.artifacts ?? [])];
+  let expected = Number(base?.revision ?? revision('0')) + 1;
   for (const candidate of events) {
     const stored = parseSessionEvent(candidate, id);
-    if (stored.sessionId !== id || seen.has(stored.eventId) || stored.sequence !== expected) throw new RuntimeFailure('session-corruption', `Invalid session event sequence at ${stored.eventId}`);
-    seen.add(stored.eventId); expected += 1;
+    if (stored.sessionId !== id || seen.has(stored.eventId) || (options.allowGaps ? stored.sequence < expected : stored.sequence !== expected)) throw new RuntimeFailure('session-corruption', `Invalid session event sequence at ${stored.eventId}`);
+    seen.add(stored.eventId); expected = stored.sequence + 1;
     const event = stored.event;
     switch (event.type) {
       case 'session.created': name = event.name; break; case 'session.renamed': name = event.name; break;
@@ -170,8 +196,18 @@ export const projectSession = (id: SessionId, events: readonly SessionEvent[]): 
       case 'opaque.imported': break;
     }
   }
-  return { sessionId: id, revision: revision(String(events.length)), ...(name === undefined ? {} : { name }), transcript, modelContext, customEntries, branches, ...(selectedBranch === undefined ? {} : { selectedBranch }), compaction, compactionAttempt, artifacts };
+  const projectedRevision = options.revision ?? revision(String(expected - 1));
+  return { sessionId: id, revision: projectedRevision, ...(name === undefined ? {} : { name }), transcript, modelContext, customEntries, branches, ...(selectedBranch === undefined ? {} : { selectedBranch }), compaction, compactionAttempt, artifacts };
 };
+
+export const projectSession = (id: SessionId, events: readonly SessionEvent[], options: ProjectionOptions = {}): SessionProjection => project(id, events, undefined, new Set(), options);
+
+export const extendSessionProjection = (
+  id: SessionId,
+  base: SessionProjection,
+  events: readonly SessionEvent[],
+  existingEventIds: ReadonlySet<string>,
+): SessionProjection => project(id, events, base, new Set(existingEventIds), { revision: revision(String(Number(base.revision) + events.length)) });
 
 export class InMemorySessionStore implements SessionStore {
   readonly #sessions = new Map<SessionId, SessionEvent[]>();

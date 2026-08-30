@@ -3,7 +3,7 @@
  *
  * One tool that gives agents control over Chrome DevTools Protocol (CDP) through
  * a declarative scheme registry. A `raw` action exposes any Domain.method.
- * Screenshots are written to `<workspace>/.octocode/agent/<session-key>/browser/screenshots/`
+ * Screenshots are written to `$OCTOCODE_HOME/agent/workspaces/<workspace>/sessions/<session-key>/browser/screenshots/`
  * (session-scoped). Session metadata lands at `browser/port-<N>/session.json` inside the
  * same session tree. A deterministic session identity is derived when the host does not provide one.
  *

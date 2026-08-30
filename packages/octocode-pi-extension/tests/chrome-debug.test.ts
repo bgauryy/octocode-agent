@@ -46,6 +46,7 @@ import {
   type CdpSession,
   type CdpTargetInfo,
 } from '../src/chrome-debug.js';
+import { workspaceAgentRoot } from '../src/tools/session-artifacts.js';
 import { closeAllChromeConnections } from '../src/chrome-connection-cache.js';
 
 import {
@@ -810,7 +811,7 @@ describe('captureScreenshot', () => {
 describe('getScreenshotDir', () => {
   test('resolves under workspace cwd when provided', () => {
     const dir = getScreenshotDir('/my/workspace', 'session-test');
-    assert.equal(dir, '/my/workspace/.octocode/agent/session-test/browser/screenshots');
+    assert.equal(dir, path.join(workspaceAgentRoot('/my/workspace'), 'sessions', 'session-test', 'browser', 'screenshots'));
   });
 
   test('keeps browser artifacts isolated by session key', () => {
@@ -826,8 +827,8 @@ describe('getScreenshotDir', () => {
 test('getDefaultToolUserDataDir returns non-default profile path', () => {
   const dir = getDefaultToolUserDataDir();
   assert.ok(dir.includes('.octocode'), 'Should be under .octocode');
-  assert.ok(dir.includes('chrome-debug'), 'Should mention chrome-debug');
-  assert.ok(dir.includes('profile'), 'Should end with /profile');
+  assert.ok(dir.includes(path.join('agent', 'browser', 'profiles')), 'Should use the global agent browser profile root');
+  assert.ok(dir.endsWith(path.join('profiles', 'default')));
 
   // Must NOT match the OS default Chrome profile dir
   const osDefaults = [
@@ -844,7 +845,7 @@ test('getDefaultToolUserDataDir returns non-default profile path', () => {
 });
 
 test('getPortUserDataDir scopes Chrome profiles by port', () => {
-  assert.ok(getPortUserDataDir(19333).endsWith(path.join('chrome-debug', 'profile-19333')));
+  assert.ok(getPortUserDataDir(19333).endsWith(path.join('browser', 'profiles', 'port-19333')));
   assert.notEqual(getPortUserDataDir(19333), getPortUserDataDir(19334));
 });
 
@@ -1083,7 +1084,7 @@ test('connectToChrome attaches through fake CDP HTTP and WebSocket, writes metad
       assert.equal(conn.metadata.activeTarget?.via, 'target-url');
       assert.equal(conn.metadata.identity?.tabHost, 'app.example');
       assert.deepEqual(conn.metadata.identity?.cookieNames, ['sid', 'prefs']);
-      assert.equal(conn.screenshotDir, path.join(tmp, '.octocode', 'agent', 'chrome-debug-test', 'browser', 'screenshots'));
+      assert.equal(conn.screenshotDir, getScreenshotDir(tmp, 'chrome-debug-test'));
       assert.equal(readSessionMeta(conn.sessionFile)?.activeTarget?.title, 'Dashboard');
 
       const logPath = path.join(getSessionDir(tmp, port, 'chrome-debug-test'), 'cdp-events.jsonl');

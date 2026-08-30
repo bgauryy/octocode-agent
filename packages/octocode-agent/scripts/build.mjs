@@ -24,11 +24,15 @@ await build({
     ...baseOptions.external,
     '@modelcontextprotocol/client',
     '@modelcontextprotocol/client/*',
-    '@octocodeai/octocode-shared',
-    '@octocodeai/octocode-shared/*',
     'ajv',
+    'yaml',
   ],
-  banner: { js: '#!/usr/bin/env node' },
+  // Some bundled AI SDK dependencies still contain dynamic CommonJS requires.
+  // Provide an ESM-local require so builtins such as `path` remain available in
+  // the single-file executable on modern Node releases.
+  banner: {
+    js: "#!/usr/bin/env node\nimport { createRequire as __octocodeCreateRequire } from 'node:module';\nconst require = __octocodeCreateRequire(import.meta.url);",
+  },
   minify: false,
 });
 

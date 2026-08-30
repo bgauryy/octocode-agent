@@ -57,15 +57,32 @@ misses the first-turn deadline, its late result doesn't appear in later prompts.
 config and tool-list changes invalidate prepared freshness and leases; validator reuse
 remains keyed by the exact schema digest.
 
-The native host loads canonical global and project MCP definitions from
-`$OCTOCODE_HOME/agent/mcp/servers.json` and
-`<workspace>/.octocode/agent/mcp/servers.json`. It uses the official MCP client for
+The native host loads managed models, MCP servers, and Skills from global
+`$OCTOCODE_HOME/agent/models.json`, `$OCTOCODE_HOME/agent/mcp/servers.json`, and
+`$OCTOCODE_HOME/agent/skills/` sources. Repository scope uses the corresponding
+`$OCTOCODE_HOME/agent/workspaces/<workspace-key>/` sources. It uses the official MCP client for
 stdio and Streamable HTTP, validates tool arguments with Ajv, resolves secret
 references only at connection time, constrains stdio working directories to the
 workspace, and supports tools, resources, prompts, and completion. SQLite server/tool
 overrides apply before connection. Foreign-host MCP files remain discovery-only and
-   disabled until explicitly imported through a host-owned settings flow. The Pi adapter
-   provides its own import UI; native settings ownership remains separate.
+disabled until explicitly enabled through the owning settings flow. The Pi adapter
+provides its own settings UI; native settings ownership remains separate.
+
+Native model compatibility reads Pi provider definitions and selection from
+`~/.pi/agent/models.json` and `~/.pi/agent/settings.json`. For the selected Pi
+provider, a stored `api_key` in `~/.pi/agent/auth.json` takes precedence over the
+provider definition's fallback key. Credential discovery supports Pi's original
+provider ID when a unique model match resolves it to a renamed provider. It rejects
+OAuth, malformed entries, symbolic links, and oversized credential files without
+including secret values in discovery or runtime output.
+
+The native model catalog is file-backed: canonical definitions plus global/workspace
+Octocode and Pi `models.json` sources. Persisted Settings and explicit CLI model choices
+select entries; environment variables don't define providers, endpoints, protocols, or
+model IDs. They may only resolve credential references at request time. Settings exposes
+each source's provenance, sanitized endpoint host, protocol support, enabled state, and
+credential readiness. Its Pi adoption action persists only the provider/model default and
+continues to link the Pi files read-only—credential bytes are never copied.
 
 ---
 
@@ -80,7 +97,7 @@ Sources: `packages/octocode-pi-extension/src/tools/mcp-tool.ts`,
 |---|---|---|---|
 | 1 | Built-in | Pinned local `octocode-mcp` (`npx` fallback) | Always as `octocode`; can't be removed |
 | 2 | Global | `$OCTOCODE_HOME/agent/mcp/servers.json` | When present |
-| 3 | Project | `<workspace>/.octocode/agent/mcp/servers.json` | Trusted workspace only |
+| 3 | Workspace | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json` | Trusted workspace only |
 
 ### Startup and persistence
 
@@ -159,11 +176,12 @@ result rows stay hidden; errors remain visible.
 `discoverSkills()` merges (first match per **name** wins):
 
 1. **Pi's live catalog** (`systemPromptOptions.skills`) — session authority.
-2. **Project roots**: `.agents/skills` (vendor-neutral standard, labeled
-   `project`) · `.claude/skills` · `.cursor/skills` · `.codex/skills` ·
+2. **Project roots**: `.agent/skills` · `.agents/skills` (vendor-neutral
+   compatibility roots, with `.agents` labeled `project`) · `.claude/skills` · `.cursor/skills` · `.codex/skills` ·
    `.octocode/skills` · `.pi/agent/skills` · `.pi/skills` (labeled
    `project:<host>`).
-3. **User roots**: `~/.pi/agent/skills` (labeled `user`) · `~/.pi/skills` ·
+3. **User roots**: `~/.agent/skills` · `~/.agents/skills` ·
+   `~/.pi/agent/skills` (labeled `user`) · `~/.pi/skills` ·
    `~/.claude/skills` · `~/.cursor/skills` · `~/.codex/skills` ·
    `~/.octocode/skills` (labeled `user:<host>`).
 4. **Extension-bundled** skills (labeled `bundled`).
@@ -236,9 +254,12 @@ harness surface:
 
 Every existing MCP config file found in these project and user locations:
 
+Pi's active `.pi/mcp.json` and `.pi/agent/mcp.json` files appear in `mcp.sources`.
+The following table covers managed and compatibility discovery inventory.
+
 | Host | Project locations | User locations | Activation |
 |---|---|---|---|
-| Octocode | `<ws>/.octocode/agent/mcp/servers.json` | `$OCTOCODE_HOME/agent/mcp/servers.json` | Active |
+| Octocode | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json` | `$OCTOCODE_HOME/agent/mcp/servers.json` | Active |
 | Claude Code/Desktop | Official `<ws>/.mcp.json`; compatibility `<ws>/.claude/mcp.json` | `~/.claude.json`, `~/.claude/mcp.json`, and Claude Desktop platform config | Discovered, disabled by default |
 | Cursor | `<ws>/.cursor/mcp.json` | `~/.cursor/mcp.json` | Discovered, disabled by default |
 | Codex | `<ws>/.codex/config.toml` | `~/.codex/config.toml` | Discovered, disabled by default |
@@ -301,7 +322,8 @@ blocked-call count in structured details.
 | Concern | Source | Tests |
 |---|---|---|
 | Shared Agent Skills parsing/discovery | `packages/octocode-shared/src/agent-skills.ts` | `packages/octocode-shared/tests/agent-skills.test.ts` |
-| Native MCP and skill runtime adapters | `packages/octocode-agent/src/native-mcp.ts`, `src/native-skills.ts` | `tests/native-agent-capabilities.test.ts`, `tests/native-mcp-external.test.ts` |
+| Native MCP and Skill runtime adapters | `packages/octocode-agent/src/native-mcp.ts`, `src/native-skills.ts` | `tests/native-agent-capabilities.test.ts`, `tests/native-mcp-real-host.test.ts`, `tests/native-skill-discovery.test.ts` |
+| Native cross-host discovery and controls | `packages/octocode-agent/src/native-discovery.ts`, `src/native-settings-service.ts` | `tests/native-discovery-built-host.test.ts`, `tests/native-settings-service.test.ts` |
 | MCP gateway and mode integration | `packages/octocode-pi-extension/src/tools/mcp-tool.ts` | `tests/mcp-tool.test.ts`, `tests/package.test.ts` |
 | Persistent catalog snapshot and index | `packages/octocode-pi-extension/src/tools/mcp-catalog.ts` | `tests/mcp-catalog.test.ts` |
 | Schema leases and local validation | `packages/octocode-pi-extension/src/tools/mcp-schema-lease.ts`, `src/tools/mcp-schema-validator.ts` | `tests/mcp-schema-validator.test.ts`, `tests/mcp-tool.test.ts` |

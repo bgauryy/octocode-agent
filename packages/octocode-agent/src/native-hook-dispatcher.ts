@@ -1,6 +1,7 @@
 import {
   LifecycleBus,
   RuntimeFailure,
+  type AgentEventEnvelope,
   type AgentEventType,
   type EventAuthority,
   type HookDecision,
@@ -11,7 +12,7 @@ import {
 import type { NativeExtensionsController } from './native-extensions.js';
 import type { NativeHookCommandExecutor, NativeHookCommandResult } from './native-extension-adapters.js';
 
-type CodexEvent = 'SessionStart' | 'SessionEnd' | 'UserPromptSubmit' | 'PreToolUse' | 'PostToolUse' | 'PreCompact' | 'PostCompact';
+type CodexEvent = 'SessionStart' | 'SessionEnd' | 'UserPromptSubmit' | 'PreToolUse' | 'PermissionRequest' | 'PostToolUse' | 'PreCompact' | 'PostCompact' | 'SubagentStart' | 'SubagentStop' | 'Stop';
 type CommandExecutor = Pick<NativeHookCommandExecutor, 'execute'>;
 type McpHandler = Extract<HookHandlerDefinition, { type: 'mcp_tool' }>;
 
@@ -40,6 +41,8 @@ export interface NativeHookDispatcherOptions {
   readonly executor: CommandExecutor;
   readonly mcpExecutor?: NativeHookMcpExecutor;
   readonly workspaceTrusted: boolean;
+  /** Decision data is the safe default; full observational results require explicit trust. */
+  readonly dataExposure?: 'decision' | 'full';
   readonly managedOnly?: boolean;
   readonly signal?: AbortSignal;
   readonly onReceipt?: (receipt: NativeHookDispatchReceipt) => void;
@@ -56,13 +59,20 @@ const MAPPINGS: readonly Mapping[] = Object.freeze([
   { runtimeEvent: 'session.stopping', codexEvent: 'SessionEnd', authority: ['observe'] },
   { runtimeEvent: 'input.received', codexEvent: 'UserPromptSubmit', authority: ['observe', 'context', 'rewrite', 'stop'] },
   { runtimeEvent: 'tool.requested', codexEvent: 'PreToolUse', authority: ['observe', 'rewrite', 'allow-deny'] },
+  { runtimeEvent: 'permission.requested', codexEvent: 'PermissionRequest', authority: ['observe', 'allow-deny'] },
   { runtimeEvent: 'tool.ended', codexEvent: 'PostToolUse', authority: ['observe', 'context'] },
   { runtimeEvent: 'context.compaction-started', codexEvent: 'PreCompact', authority: ['observe', 'context', 'stop'] },
   { runtimeEvent: 'context.compacted', codexEvent: 'PostCompact', authority: ['observe', 'context'] },
+  { runtimeEvent: 'worker.started', codexEvent: 'SubagentStart', authority: ['observe', 'context'] },
+  { runtimeEvent: 'worker.stopped', codexEvent: 'SubagentStop', authority: ['observe', 'context'] },
+  { runtimeEvent: 'agent.ended', codexEvent: 'Stop', authority: ['observe', 'context'] },
 ]);
 
 /** Installs reviewed hook subscriptions into the runtime-owned lifecycle buses. */
 export function installNativeHookDispatcher(options: NativeHookDispatcherOptions): NativeHookDispatcherControl {
+  if (options.dataExposure === 'full' && !options.workspaceTrusted) {
+    throw new RuntimeFailure('trust', 'Full-data hook exposure requires a trusted workspace');
+  }
   const groups = options.extensions.effectiveHooks({
     workspaceTrusted: options.workspaceTrusted,
     managedOnly: options.managedOnly ?? false,
@@ -95,7 +105,7 @@ export function installNativeHookDispatcher(options: NativeHookDispatcherOptions
               return { kind: 'continue' };
             }
             if (handler.async) {
-              const task = executeHandler(options, handler, codexInput(mapping.codexEvent, envelope, payload), owned.signal)
+              const task = executeHandler(options, handler, codexInput(mapping.codexEvent, envelope, payload, options.dataExposure ?? 'decision'), owned.signal)
                 .then(() => receipt(options, mapping, effective.source.id, handlerIndex, 'executed'))
                 .catch((error) => receipt(options, mapping, effective.source.id, handlerIndex, 'failed', error instanceof Error ? error.message : 'handler failed'))
                 .finally(() => pending.delete(task));
@@ -103,7 +113,7 @@ export function installNativeHookDispatcher(options: NativeHookDispatcherOptions
               return { kind: 'continue' };
             }
             try {
-              const result = await executeHandler(options, handler, codexInput(mapping.codexEvent, envelope, payload), owned.signal);
+              const result = await executeHandler(options, handler, codexInput(mapping.codexEvent, envelope, payload, options.dataExposure ?? 'decision'), owned.signal);
               const translated = translateDecision(mapping.codexEvent, payload, result);
               receipt(options, mapping, effective.source.id, handlerIndex, 'executed', translated.reason);
               return translated.decision;
@@ -181,7 +191,8 @@ function validPayload(event: RuntimeEvent['type'], payload: unknown): boolean {
 }
 
 function matchSubject(event: CodexEvent, payload: Record<string, unknown>): string {
-  if (event === 'PreToolUse' || event === 'PostToolUse') return typeof payload.name === 'string' ? payload.name : '';
+  if (event === 'PreToolUse' || event === 'PermissionRequest' || event === 'PostToolUse') return typeof payload.name === 'string' ? payload.name : '';
+  if (event === 'SubagentStart' || event === 'SubagentStop') return typeof payload.workerId === 'string' ? payload.workerId : '';
   if (event === 'UserPromptSubmit') return typeof payload.source === 'string' ? payload.source : 'user';
   return typeof payload.reason === 'string' ? payload.reason : '';
 }
@@ -191,16 +202,28 @@ function matches(matcher: string | undefined, subject: string): boolean {
   return new RegExp(matcher).test(subject);
 }
 
-function codexInput(event: CodexEvent, envelope: RuntimeEvent, payload: Record<string, unknown>): Readonly<Record<string, unknown>> {
+function codexInput(
+  event: CodexEvent,
+  envelope: Pick<AgentEventEnvelope, 'sessionId' | 'turnId' | 'cwd' | 'model'>,
+  payload: Record<string, unknown>,
+  exposure: 'decision' | 'full',
+): Readonly<Record<string, unknown>> {
   const base: Record<string, unknown> = {
     session_id: String(envelope.sessionId), cwd: envelope.cwd, hook_event_name: event,
     ...(envelope.turnId === undefined ? {} : { turn_id: String(envelope.turnId) }),
     ...(envelope.model === undefined ? {} : { model: envelope.model.modelId }),
   };
-  if (event === 'PreToolUse' || event === 'PostToolUse') {
-    return Object.freeze({ ...base, tool_name: payload.name, tool_input: payload.input, tool_use_id: payload.callId, ...(event === 'PostToolUse' ? { tool_response: payload.result } : {}) });
+  if (event === 'PreToolUse' || event === 'PermissionRequest' || event === 'PostToolUse') {
+    return Object.freeze({
+      ...base,
+      tool_name: payload.name,
+      tool_input: event === 'PostToolUse' && exposure !== 'full' ? '[REDACTED]' : payload.input,
+      tool_use_id: payload.callId,
+      ...(event === 'PostToolUse' ? { tool_response: exposure === 'full' ? payload.result : '[REDACTED]' } : {}),
+    });
   }
   if (event === 'UserPromptSubmit') return Object.freeze({ ...base, prompt: payload.text });
+  if (event === 'SubagentStart' || event === 'SubagentStop') return Object.freeze({ ...base, agent_id: payload.workerId, agent_type: payload.agentType ?? 'worker' });
   return Object.freeze({ ...base, reason: payload.reason });
 }
 
@@ -216,6 +239,7 @@ function translateDecision(event: CodexEvent, payload: Record<string, unknown>, 
     return { decision: { kind: 'rewrite', payload: { ...payload, text: specific.updatedPrompt } } };
   }
   const decision = result.decision as HookDecision;
+  if ((decision.kind === 'allow' || decision.kind === 'deny') && event === 'PermissionRequest') return { decision };
   if (decision.kind === 'deny' && event === 'PreToolUse') return { decision };
   if (decision.kind === 'stop' && (event === 'SessionStart' || event === 'UserPromptSubmit' || event === 'PreCompact')) return { decision };
   if (decision.kind === 'context' && event !== 'SessionEnd' && event !== 'PreToolUse') return { decision };

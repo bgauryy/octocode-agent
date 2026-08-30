@@ -18,6 +18,16 @@ export interface ColumnInfo {
 
 export let _canonicalColumns: Map<string, ColumnInfo[]> | undefined;
 
+/** Relations owned by other modules inside the one agent database. */
+export const AGENT_HOST_EXTRA_RELATIONS = new Set([
+  'agent_schema_modules', 'octocode_meta', 'agent_sessions',
+  'mcp_server_overrides', 'mcp_tool_overrides', 'skill_overrides', 'mcp_catalog_state',
+  'plans', 'tasks', 'locks', 'memories', 'agents', 'work_presence', 'handoffs',
+  'messages', 'message_receipts', 'event_outbox', 'event_consumers',
+  'event_acknowledgements', 'authorization_receipts', 'capability_receipts',
+  'pending_interactions', 'worker_lifecycle_events',
+]);
+
 /** Desired columns per table, derived from the executable DDL. */
 export function canonicalColumns(): Map<string, ColumnInfo[]> {
   if (_canonicalColumns) return _canonicalColumns;
@@ -72,25 +82,23 @@ export function readSchemaObjects(db: DatabaseSync): SchemaObject[] {
   }));
 }
 
+export function readCanonicalModuleSchemaObjects(db: DatabaseSync): SchemaObject[] {
+  const canonical = new DatabaseSync(':memory:');
+  try {
+    canonical.exec(SCHEMA_DDL);
+    canonical.exec(SCHEMA_INDEX_DDL);
+    const owned = new Set(readSchemaObjects(canonical).map(({ type, name }) => `${type}:${name}`));
+    return readSchemaObjects(db).filter(({ type, name }) => owned.has(`${type}:${name}`));
+  } finally {
+    canonical.close();
+  }
+}
+
 export function schemaObjectsFingerprint(objects: SchemaObject[]): string {
   return createHash('sha256').update(JSON.stringify(objects)).digest('hex');
 }
 
 export const _canonicalSchemaFingerprints = new Map<boolean, string>();
-export const _priorHookReceiptSchemaFingerprints = new Map<boolean, string>();
-export const _priorLifecycleConstraintSchemaFingerprints = new Map<boolean, string>();
-
-function priorLifecycleConstraintSchemaDdl(): string {
-  return SCHEMA_DDL
-    .replace(
-      "      event_type TEXT NOT NULL\n                 CHECK(event_type IN ('CREATED','DEPENDENCY_ADDED','CLAIMED','SUBMITTED','BLOCKED','RELEASED','CLAIM_EXPIRED','VERIFIED','VERIFICATION_FAILED')),",
-      '      event_type TEXT NOT NULL,',
-    )
-    .replace(
-      "      status         TEXT NOT NULL DEFAULT 'open'\n                     CHECK(status IN ('open','resolved')),",
-      "      status         TEXT NOT NULL DEFAULT 'open',",
-    );
-}
 
 export function canonicalSchemaFingerprint(includeFts: boolean): string {
   const cached = _canonicalSchemaFingerprints.get(includeFts);
@@ -108,68 +116,6 @@ export function canonicalSchemaFingerprint(includeFts: boolean): string {
   }
 }
 
-/** Exact immediately-prior schema: canonical in every respect except the new receipt table. */
-export function priorHookReceiptSchemaFingerprint(includeFts: boolean): string {
-  const cached = _priorHookReceiptSchemaFingerprints.get(includeFts);
-  if (cached) return cached;
-  const prior = new DatabaseSync(':memory:');
-  try {
-    prior.exec(SCHEMA_DDL);
-    prior.exec(SCHEMA_INDEX_DDL);
-    if (includeFts) prior.exec(FTS_SCHEMA_DDL);
-    prior.exec('DROP TABLE hook_receipts');
-    const fingerprint = schemaObjectsFingerprint(readSchemaObjects(prior));
-    _priorHookReceiptSchemaFingerprints.set(includeFts, fingerprint);
-    return fingerprint;
-  } finally {
-    prior.close();
-  }
-}
-
-export function isExactPriorHookReceiptSchema(
-  db: DatabaseSync,
-  relations?: SchemaIdentity['relations'],
-): boolean {
-  const actualRelations = relations ?? readSchemaIdentity(db).relations;
-  const expected = new Set([...canonicalColumns().keys()].filter((name) => name !== 'hook_receipts'));
-  const actual = actualRelations.filter(({ name }) => name !== 'memories_fts');
-  if (actual.some(({ type }) => type !== 'table')) return false;
-  if (actual.length !== expected.size || actual.some(({ name }) => !expected.has(name))) return false;
-  const objects = readSchemaObjects(db);
-  const includeFts = objects.some(({ type, name }) => type === 'table' && name === 'memories_fts');
-  return schemaObjectsFingerprint(objects) === priorHookReceiptSchemaFingerprint(includeFts);
-}
-
-export function priorLifecycleConstraintSchemaFingerprint(includeFts: boolean): string {
-  const cached = _priorLifecycleConstraintSchemaFingerprints.get(includeFts);
-  if (cached) return cached;
-  const prior = new DatabaseSync(':memory:');
-  try {
-    prior.exec(priorLifecycleConstraintSchemaDdl());
-    prior.exec(SCHEMA_INDEX_DDL);
-    if (includeFts) prior.exec(FTS_SCHEMA_DDL);
-    const fingerprint = schemaObjectsFingerprint(readSchemaObjects(prior));
-    _priorLifecycleConstraintSchemaFingerprints.set(includeFts, fingerprint);
-    return fingerprint;
-  } finally {
-    prior.close();
-  }
-}
-
-export function isExactPriorLifecycleConstraintSchema(
-  db: DatabaseSync,
-  relations?: SchemaIdentity['relations'],
-): boolean {
-  const actualRelations = relations ?? readSchemaIdentity(db).relations;
-  const expected = new Set(canonicalColumns().keys());
-  const actual = actualRelations.filter(({ name }) => name !== 'memories_fts');
-  if (actual.some(({ type }) => type !== 'table')) return false;
-  if (actual.length !== expected.size || actual.some(({ name }) => !expected.has(name))) return false;
-  const objects = readSchemaObjects(db);
-  const includeFts = objects.some(({ type, name }) => type === 'table' && name === 'memories_fts');
-  return schemaObjectsFingerprint(objects) === priorLifecycleConstraintSchemaFingerprint(includeFts);
-}
-
 export function assertCanonicalRelationContract(
   db: DatabaseSync,
   relations?: SchemaIdentity['relations'],
@@ -179,7 +125,7 @@ export function assertCanonicalRelationContract(
   const actual = new Set(actualRows.map(({ name }) => name));
   const missing = [...expected].filter((name) => !actual.has(name));
   const unexpected = actualRows.filter(({ name, type }) => (
-    type !== 'table' || (!expected.has(name) && name !== 'memories_fts')
+    type !== 'table' || (!expected.has(name) && name !== 'memories_fts' && !AGENT_HOST_EXTRA_RELATIONS.has(name))
   ));
   if (missing.length === 0 && unexpected.length === 0) return;
   const details = [
@@ -190,7 +136,19 @@ export function assertCanonicalRelationContract(
 }
 
 export function assertCanonicalSchemaFingerprint(db: DatabaseSync): void {
-  const objects = readSchemaObjects(db);
+  const canonical = new DatabaseSync(':memory:');
+  try {
+    canonical.exec(SCHEMA_DDL);
+    canonical.exec(SCHEMA_INDEX_DDL);
+    const ownedKeys = new Set(readSchemaObjects(canonical).map(({ type, name }) => `${type}:${name}`));
+    const unexpectedTrigger = readSchemaObjects(db).find(({ type, name }) => type === 'trigger' && !ownedKeys.has(`${type}:${name}`));
+    if (unexpectedTrigger) {
+      throw new Error(`canonical schema fingerprint mismatch (unexpected trigger ${unexpectedTrigger.name})`);
+    }
+  } finally {
+    canonical.close();
+  }
+  const objects = readCanonicalModuleSchemaObjects(db);
   const includeFts = objects.some(({ type, name }) => type === 'table' && name === 'memories_fts');
   const expectedFingerprint = canonicalSchemaFingerprint(includeFts);
   const actualFingerprint = schemaObjectsFingerprint(objects);

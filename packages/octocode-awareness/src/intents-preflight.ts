@@ -85,7 +85,7 @@ export function activeLockRows(
 
   const rows = db.prepare(
     `SELECT fl.run_id, fl.file_path, ai.agent_id, ai.rationale AS reason, fl.expires_at
-       FROM locks fl
+       FROM awareness_locks fl
        JOIN task_runs ai ON ai.run_id = fl.run_id
       WHERE ${clauses.join(' AND ')}
       ORDER BY fl.acquired_at DESC`

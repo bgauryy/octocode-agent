@@ -8,15 +8,14 @@ import {
   formatPresentationSections,
   MAX_PRESENTATION_MESSAGES,
   MAX_PRESENTATION_TOOLS,
+  projectPresentationChrome,
   reducePresentation,
   type OpenTuiRendererEvents,
 } from '../src/terminal/opentui/presentation.js';
 import { createOpenTuiTerminal } from '../src/terminal/opentui/create-terminal.js';
 
 describe('OpenTUI presentation projection', () => {
-  it('merges independently produced authoritative runtime widget snapshots', () => {
-    const header = { authority: 'runtime' as const, title: 'Octocode', trust: 'trusted' as const, working: 'idle' as const, width: 80 };
-    const footer = { authority: 'runtime' as const, activeMode: 'interactive', connection: 'connected' as const, widthColumns: 80, keyHints: [] };
+  it('owns runtime chrome facts in presentation state and projects viewport-specific widgets', () => {
     const plan = {
       authority: 'runtime' as const,
       planId: 'plan:stable',
@@ -27,11 +26,113 @@ describe('OpenTUI presentation projection', () => {
     };
     const notifications = [{ authority: 'runtime' as const, slot: 'system' as const, id: 'sync', message: 'Synced', lifecycle: 'success' as const }];
 
-    let state = reducePresentation(createInitialPresentationState(), { type: 'runtime-widgets-changed', snapshots: { header, footer } });
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: 'chrome-changed',
+      chrome: {
+        authority: 'runtime', title: 'Octocode', modelId: 'gpt-5', sessionId: 'session-1', trust: 'trusted',
+      },
+    });
+    state = reducePresentation(state, { type: 'runtime-ready' });
+    state = reducePresentation(state, { type: 'turn-started', turnId: 'turn-1' });
     state = reducePresentation(state, { type: 'runtime-widgets-changed', snapshots: { plan } });
     state = reducePresentation(state, { type: 'runtime-widgets-changed', snapshots: { statusNotifications: notifications } });
 
-    expect(state.runtimeWidgets).toEqual({ header, footer, plan, statusNotifications: notifications });
+    const narrow = projectPresentationChrome(state, 40);
+    const wide = projectPresentationChrome(state, 120);
+    expect(state.chrome).toEqual({
+      authority: 'runtime', title: 'Octocode', modelId: 'gpt-5', sessionId: 'session-1',
+      trust: 'trusted', connection: 'connected',
+    });
+    expect(state.runtimeWidgets).toEqual({ plan, statusNotifications: notifications });
+    state = reducePresentation(state, { type: 'runtime-widgets-changed', snapshots: { plan: null } });
+    expect(state.runtimeWidgets).toEqual({ statusNotifications: notifications });
+    expect(narrow?.header).toMatchObject({ working: state.working, width: 40 });
+    expect(narrow?.footer).toMatchObject({ activeMode: 'chat', connection: 'connected', widthColumns: 40 });
+    expect(narrow?.footer.keyHints).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'Enter', label: 'Follow up' }),
+      expect.objectContaining({ key: 'Esc/Ctrl-C', label: 'Cancel turn' }),
+      expect.objectContaining({ key: '/steer', label: 'Redirect' }),
+    ]));
+    expect(wide?.header.width).toBe(120);
+    expect(state.chrome).not.toHaveProperty('width');
+    expect(state.chrome).not.toHaveProperty('keyHints');
+  });
+
+  it('resets stale context usage while preserving the visible transcript when context is cleared', () => {
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: 'chrome-changed',
+      chrome: { authority: 'runtime', title: 'Octocode', sessionId: 'session-1', trust: 'trusted' },
+    });
+    state = reducePresentation(state, { type: 'runtime-ready' });
+    state = reducePresentation(state, { type: 'turn-started', turnId: 'turn-1' });
+    state = reducePresentation(state, { type: 'user-message', text: 'old context', turnId: 'turn-1' });
+    state = reducePresentation(state, { type: 'tool-started', callId: 'call-1', name: 'lookup' });
+    state = reducePresentation(state, { type: 'status-changed', name: 'context.usage', text: '42%' });
+    state = reducePresentation(state, {
+      type: 'presentation-changed', property: 'widget',
+      value: { id: 'native-command-output', kind: 'text', text: 'old output' },
+    });
+
+    const cleared = reducePresentation(state, { type: 'context-cleared' });
+
+    expect(cleared).toMatchObject({
+      ready: true,
+      working: 'idle',
+      activeTurnId: undefined,
+      statuses: {},
+    });
+    expect(cleared.turns).toEqual(state.turns);
+    expect(cleared.messages).toEqual(state.messages);
+    expect(cleared.tools).toEqual(state.tools);
+    expect(cleared.widgets).toEqual(state.widgets);
+    expect(cleared.chrome).toEqual(state.chrome);
+  });
+
+  it('derives interaction mode from canonical interaction state without a chrome rewrite', () => {
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: 'chrome-changed',
+      chrome: { authority: 'runtime', title: 'Octocode', trust: 'unknown' },
+    });
+    state = reducePresentation(state, {
+      type: 'interaction-requested', request: { type: 'confirm', message: 'Continue?' },
+    });
+    expect(projectPresentationChrome(state, 80)?.footer).toMatchObject({ activeMode: 'respond' });
+    state = reducePresentation(state, {
+      type: 'interaction-resolved', result: { status: 'accepted', value: true },
+    });
+    expect(projectPresentationChrome(state, 80)?.footer).toMatchObject({ activeMode: 'chat' });
+  });
+
+  it('owns footer key hints per active interaction type', () => {
+    const chrome = reducePresentation(createInitialPresentationState(), {
+      type: 'chrome-changed',
+      chrome: { authority: 'runtime', title: 'Octocode', trust: 'unknown' },
+    });
+    const hintsFor = (request: Parameters<typeof reducePresentation>[1] & { type: 'interaction-requested' }) => (
+      projectPresentationChrome(reducePresentation(chrome, request), 120)?.footer.keyHints
+    );
+
+    expect(hintsFor({ type: 'interaction-requested', request: { type: 'confirm', message: 'Continue?' } })).toEqual([
+      { key: 'Enter', label: 'Choose', priority: 1 },
+      { key: 'Esc/Ctrl-C', label: 'Cancel', priority: 2 },
+      { key: 'Tab', label: 'Move choice', priority: 3 },
+    ]);
+    expect(hintsFor({
+      type: 'interaction-requested',
+      request: { type: 'select', message: 'Choose', options: ['Alpha', 'Beta'] },
+    })).toEqual([
+      { key: 'Enter', label: 'Choose', priority: 1 },
+      { key: 'Esc/Ctrl-C', label: 'Cancel', priority: 2 },
+      { key: '↑/↓', label: 'Move choice', priority: 3 },
+    ]);
+    expect(hintsFor({ type: 'interaction-requested', request: { type: 'input', message: 'Name' } })).toEqual([
+      { key: 'Enter', label: 'Submit', priority: 1 },
+      { key: 'Esc/Ctrl-C', label: 'Cancel', priority: 2 },
+    ]);
+    expect(hintsFor({ type: 'interaction-requested', request: { type: 'editor', message: 'Explain', initial: '' } })).toEqual([
+      { key: 'Meta-Enter', label: 'Submit', priority: 1 },
+      { key: 'Esc/Ctrl-C', label: 'Cancel', priority: 2 },
+    ]);
   });
 
   it('reduces semantic events without toolkit values entering state', () => {
@@ -150,7 +251,8 @@ describe('OpenTUI presentation projection', () => {
     const failure = new Promise<unknown>((resolve) => terminal.subscribeFailure?.(resolve));
     await terminal.start();
 
-    nativeEvents!.failure(new Error('status callback failed'));
+    expect(nativeEvents).toBeDefined();
+    nativeEvents?.failure?.(new Error('status callback failed'));
 
     await expect(failure).resolves.toEqual(expect.objectContaining({ message: 'status callback failed' }));
     await terminal.stop();

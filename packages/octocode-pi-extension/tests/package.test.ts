@@ -59,6 +59,7 @@ import { registerWriteTool } from '../src/tools/write-tool.js';
 import { DIRECT_TOOL_DESCRIPTIONS, getDirectToolContractStats, registerUniqueTool } from '../src/tools/octocode-tools.js';
 import { runtimeStoreFor, setManagedActivity } from '../src/tools/runtime-renderer.js';
 import { warmMcpCatalog } from '../src/tools/mcp-tool.js';
+import { projectMcpPath } from '../src/tools/mcp-config.js';
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
 const distDir = path.join(packageRoot, 'dist');
@@ -128,15 +129,15 @@ test('failed normal build removes package-root skill staging', () => {
 function withTempMemoryHome(fn: (tmp?: string) => void | Promise<void>) {
   return async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-pi-test-'));
-    const previousMemory = process.env['OCTOCODE_MEMORY_HOME'];
+    const previousMemory = process.env['OCTOCODE_AGENT_DIR'];
     const previousHome = process.env['OCTOCODE_HOME'];
-    process.env['OCTOCODE_MEMORY_HOME'] = tmp;
+    process.env['OCTOCODE_AGENT_DIR'] = tmp;
     process.env['OCTOCODE_HOME'] = tmp;
     try {
       await fn(tmp);
     } finally {
-      if (previousMemory === undefined) delete process.env['OCTOCODE_MEMORY_HOME'];
-      else process.env['OCTOCODE_MEMORY_HOME'] = previousMemory;
+      if (previousMemory === undefined) delete process.env['OCTOCODE_AGENT_DIR'];
+      else process.env['OCTOCODE_AGENT_DIR'] = previousMemory;
       if (previousHome === undefined) delete process.env['OCTOCODE_HOME'];
       else process.env['OCTOCODE_HOME'] = previousHome;
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -807,7 +808,7 @@ test(
     assert.match(status, new RegExp(`MCP research \\(octocode server\\) · ${OCTOCODE_SUPPORT_TOOL_NAMES.length} support · 1 guarded built-ins · 6 replaced`));
     assert.match(status, /awareness CLI: .*octocode-awareness.*octocode-awareness\.js/);
     assert.match(status, /management CLI: npx octocode/);
-    assert.match(status, /internal error log: .*\.octocode\/logs\/error\.txt/);
+    assert.match(status, /internal error log: .*\/agent\/workspaces\/.*\/logs\/error\.txt/);
     assert.match(
       status,
       /disabled\/replaced built-ins: overridden: bash; removed: read, edit, write, grep, find, ls/
@@ -1048,7 +1049,8 @@ test('/octocode-footer switches footer density and rejects unknown modes', async
 });
 
 test('/octocode-profile applies profile fields to the live session', withTempMemoryHome(async (tmp) => {
-  fs.writeFileSync(path.join(tmp!, 'profiles.json'), JSON.stringify({
+  fs.mkdirSync(path.join(tmp!, 'agent'), { recursive: true });
+  fs.writeFileSync(path.join(tmp!, 'agent', 'profiles.json'), JSON.stringify({
     deep: {
       model: 'anthropic/claude-sonnet-4',
       tools: 'file,bash,read',
@@ -2406,7 +2408,7 @@ test('mcp initialization reads canonical project config before the agent calls t
   assert.match(mcpTool.description!, /stdio and Streamable HTTP/i);
   assert.doesNotMatch(mcpTool.description!, /prepare/i);
   const mcpGuidelines = mcpTool.promptGuidelines?.join('\n') ?? '';
-  assert.match(mcpGuidelines, /\.octocode\/agent\/mcp\/servers\.json/);
+  assert.match(mcpGuidelines, /\$OCTOCODE_HOME\/agent\/.*mcp\/servers\.json/);
   assert.match(mcpGuidelines, /Streamable HTTP/i);
   assert.match(mcpGuidelines, /pinned local.*npx.*fallback/i);
 
@@ -2421,8 +2423,9 @@ test('mcp initialization reads canonical project config before the agent calls t
       server.setRequestHandler('tools/call', async (request) => ({ content: [{ type:'text', text:'echo:' + request.params.arguments?.text }] }));
       await server.connect(new StdioServerTransport());
     `);
-    fs.mkdirSync(path.join(tmp, '.octocode', 'agent', 'mcp'), { recursive: true });
-    fs.writeFileSync(path.join(tmp, '.octocode', 'agent', 'mcp', 'servers.json'), JSON.stringify({
+    const projectConfigPath = projectMcpPath(tmp);
+    fs.mkdirSync(path.dirname(projectConfigPath), { recursive: true });
+    fs.writeFileSync(projectConfigPath, JSON.stringify({
       mcpServers: {
         fake: {
           command: 'node',
@@ -3830,6 +3833,7 @@ test('Awareness pre-edit gate blocks lock conflicts', async () => {
     });
 
     fs.writeFileSync(path.join(workspace, 'GLOBAL.md'), '# global');
+    fs.mkdirSync(path.join(workspace, '.octocode'), { recursive: true });
     fs.writeFileSync(path.join(workspace, '.octocode', 'awareness.json'), JSON.stringify({
       version: 1,
       storage: { repository: 'global', memory: 'global' },

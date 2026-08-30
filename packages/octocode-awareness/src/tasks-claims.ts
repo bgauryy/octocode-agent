@@ -23,7 +23,7 @@ export function claimTask(
   try {
     evictExpiredTaskClaims(db, now);
     const row = db.prepare(`SELECT t.*, p.workspace_path, p.artifact, p.status AS plan_status
-      FROM tasks t JOIN plans p ON p.plan_id = t.plan_id WHERE t.task_id = ?`)
+      FROM awareness_tasks t JOIN awareness_plans p ON p.plan_id = t.plan_id WHERE t.task_id = ?`)
       .get(params.taskId) as Record<string, unknown> | undefined;
     if (!row) { db.exec('ROLLBACK'); return { ok: false, error: `task not found: ${params.taskId}`, task_id: params.taskId }; }
     const existing = db.prepare('SELECT agent_id FROM task_claims WHERE task_id = ?').get(params.taskId) as { agent_id: string } | undefined;
@@ -37,7 +37,7 @@ export function claimTask(
       return { ok: false, error: `task is not ready: status=${String(row['status'])}`, task_id: params.taskId };
     }
     const blocked = db.prepare(`SELECT 1 FROM task_dependencies td
-      JOIN tasks dependency ON dependency.task_id = td.depends_on_task_id
+      JOIN awareness_tasks dependency ON dependency.task_id = td.depends_on_task_id
       WHERE td.task_id = ? AND dependency.status <> 'DONE' LIMIT 1`).get(params.taskId);
     if (blocked) { db.exec('ROLLBACK'); return { ok: false, error: 'task is blocked by unfinished dependencies', task_id: params.taskId }; }
     const workspacePath = String(row['workspace_path']);
@@ -62,7 +62,7 @@ export function claimTask(
     db.prepare(`INSERT INTO task_claims(task_id, run_id, agent_id, claimed_at, heartbeat_at, expires_at)
       VALUES (?, ?, ?, ?, ?, ?)`)
       .run(params.taskId, runId, agentId, now, now, expiresAt);
-    db.prepare("UPDATE tasks SET status = 'IN_PROGRESS', updated_at = ? WHERE task_id = ?")
+    db.prepare("UPDATE awareness_tasks SET status = 'IN_PROGRESS', updated_at = ? WHERE task_id = ?")
       .run(now, params.taskId);
     db.prepare(`INSERT INTO plan_members(plan_id, agent_id, role, joined_at)
       VALUES (?, ?, 'CONTRIBUTOR', ?) ON CONFLICT(plan_id, agent_id) DO NOTHING`)
@@ -120,12 +120,12 @@ export function submitTask(
       db.exec('ROLLBACK');
       throw new Error('only the active claimant can submit this task');
     }
-    db.prepare('DELETE FROM locks WHERE run_id = ?').run(params.runId);
+    db.prepare('DELETE FROM awareness_locks WHERE run_id = ?').run(params.runId);
     db.prepare(`UPDATE run_files SET heartbeat_at = ?, expires_at = ?, ended_at = ?
       WHERE run_id = ? AND ended_at IS NULL`).run(now, now, now, params.runId);
     db.prepare("UPDATE task_runs SET status = 'PENDING', updated_at = ? WHERE run_id = ? AND status = 'ACTIVE'")
       .run(now, params.runId);
-    db.prepare("UPDATE tasks SET status = 'VERIFY', updated_at = ? WHERE task_id = ?")
+    db.prepare("UPDATE awareness_tasks SET status = 'VERIFY', updated_at = ? WHERE task_id = ?")
       .run(now, params.taskId);
     db.prepare('DELETE FROM task_claims WHERE task_id = ?').run(params.taskId);
     event(db, params.taskId, params.runId, params.agentId, 'SUBMITTED', params.message?.trim() || 'submitted for verification', now);
@@ -158,12 +158,12 @@ export function releaseTaskClaim(
       db.exec('ROLLBACK');
       throw new Error('only the active claimant can release this task');
     }
-    db.prepare('DELETE FROM locks WHERE run_id = ?').run(params.runId);
+    db.prepare('DELETE FROM awareness_locks WHERE run_id = ?').run(params.runId);
     db.prepare(`UPDATE run_files SET heartbeat_at = ?, expires_at = ?, ended_at = ?
       WHERE run_id = ? AND ended_at IS NULL`).run(now, now, now, params.runId);
     db.prepare("UPDATE task_runs SET status = 'FAILED', updated_at = ? WHERE run_id = ? AND status = 'ACTIVE'")
       .run(now, params.runId);
-    db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?')
+    db.prepare('UPDATE awareness_tasks SET status = ?, updated_at = ? WHERE task_id = ?')
       .run(blockedReason ? 'BLOCKED' : 'OPEN', now, params.taskId);
     db.prepare('DELETE FROM task_claims WHERE task_id = ?').run(params.taskId);
     event(db, params.taskId, params.runId, params.agentId, blockedReason ? 'BLOCKED' : 'RELEASED', blockedReason || 'claim released', now);

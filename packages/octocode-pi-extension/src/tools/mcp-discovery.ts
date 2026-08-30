@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getOctocodeHome } from '../env.js';
+import { workspaceAgentRoot } from './session-artifacts.js';
 
 export interface DiscoveredMcpServerConfig {
   transport?: 'stdio' | 'http';
@@ -213,14 +214,13 @@ function candidates(cwd: string, options?: string | DiscoverMcpConfigOptions): C
   const project = (relative: string, host: string, format: 'json' | 'toml' = 'json'): Candidate => ({ path: path.join(cwd, relative), host, scope: 'project', format, active: false });
   const user = (relative: string, host: string, format: 'json' | 'toml' = 'json'): Candidate => ({ path: path.join(homeDir, relative), host, scope: 'user', format, active: false });
   return [
-    { ...project('.octocode/agent/mcp/servers.json', 'octocode'), active: true, allowRootServers: true },
+    { path: path.join(workspaceAgentRoot(cwd, octocodeHome), 'mcp', 'servers.json'), host: 'octocode', scope: 'project', format: 'json', active: true, allowRootServers: true },
     project('.mcp.json', 'claude'), project('.claude/mcp.json', 'claude'),
     project('.cursor/mcp.json', 'cursor'), project('.codex/config.toml', 'codex', 'toml'),
     project('.gemini/settings.json', 'gemini'),
     project('.agents/mcp_config.json', 'antigravity'), project('.agents/mcp.json', 'agents'),
     project('.agent/mcp_config.json', 'agent'), project('.agent/mcp.json', 'agent'),
     project('.vscode/mcp.json', 'vscode'),
-    { ...project('.octocode/mcp.json', 'octocode'), allowRootServers: true },
     { path: path.join(octocodeHome, 'agent', 'mcp', 'servers.json'), host: 'octocode', scope: 'user', format: 'json', active: true, allowRootServers: true },
     { ...user('.claude.json', 'claude'), claudeState: true }, user('.claude/mcp.json', 'claude'),
     user('.cursor/mcp.json', 'cursor'), user('.codex/config.toml', 'codex', 'toml'),
@@ -231,7 +231,6 @@ function candidates(cwd: string, options?: string | DiscoverMcpConfigOptions): C
     user('.gemini/antigravity-cli/mcp_config.json', 'antigravity'),
     user('Library/Application Support/Claude/claude_desktop_config.json', 'claude-desktop'),
     user('.config/Claude/claude_desktop_config.json', 'claude-desktop'), user('.vscode/mcp.json', 'vscode'),
-    { path: path.join(octocodeHome, 'mcp.json'), host: 'octocode', scope: 'user', format: 'json', active: false, allowRootServers: true },
   ];
 }
 

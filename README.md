@@ -15,7 +15,7 @@
 `octocode-agent` is the **agent slice** of the Octocode platform. It packages three layers around one native product runtime:
 
 1. **[`octocode-agent`](packages/octocode-agent)** — the native editor and launcher. It composes `@octocodeai/agent-core`, native transports, sessions, settings, and OpenTUI.
-2. **[`@octocodeai/pi-extension`](packages/octocode-pi-extension)** — the supported Pi adapter and temporary parity oracle. It remains available during migration; the final cutover removes it only after its gates pass.
+2. **[`@octocodeai/pi-extension`](packages/octocode-pi-extension)** — the independently supported Pi adapter and cross-host conformance reference. Native agent/core and native release artifacts do not depend on it.
 3. **[`@octocodeai/octocode-awareness`](packages/octocode-awareness)** — the shared coordination, hooks, and memory runtime used by supported coding hosts.
 
 > **The native editor runs the product loop.** The migration keeps Pi as a supported
@@ -52,7 +52,6 @@ npm install -g octocode-agent
 octocode-agent                 # launch the native editor
 octocode-agent --version       # launcher and native core version
 octocode-agent update          # self-update the native product
-octocode-agent update core     # update @octocodeai/agent-core
 ```
 
 Use the supported parity oracle inside an existing Pi install:
@@ -71,7 +70,7 @@ npx octocode status
 
 ---
 
-## The Three Layers
+## The three layers
 
 ### 1. `octocode-agent` — the launcher
 
@@ -81,7 +80,6 @@ It has no Pi dependency and does not embed, spawn, or fall back to Pi.
 ```bash
 octocode-agent [agent args...]   # launch the native editor
 octocode-agent update            # self-update the platform
-octocode-agent update core       # refresh @octocodeai/agent-core
 octocode-agent --help            # native launcher help
 ```
 
@@ -197,26 +195,44 @@ that always *means* something:
 
 All copy lives in one content module and all design constants (palette tokens, separators,
 brand marks, wave/glow painters) in one design module — wording and colors cannot drift
-between surfaces, and the test suite pins the rules (e.g. only warning/error states may glow).
+between surfaces, and the test suite pins the rules (for example, only warning/error states may glow).
 
 ---
 
-## Extending with MCP Servers and Skills
+## Extend with MCP servers and skills
 
 Use **MCP servers** to expose more tools. Use **skills** to teach the agent a reusable workflow.
 Most integrations only need MCP config — no code change, rebuild, or new skill.
+
+The native launcher discovers Octocode-managed configuration at both scopes.
+`$OCTOCODE_HOME` is normally `~/.octocode`.
+
+| Scope | Models | MCP servers | Skills |
+|---|---|---|---|
+| Global | `$OCTOCODE_HOME/agent/models.json` | `$OCTOCODE_HOME/agent/mcp/servers.json` | `$OCTOCODE_HOME/agent/skills/` |
+| Workspace | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/models.json` | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json` | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/skills/` |
+
+Run `octocode-agent setup --fix --scope project` to initialize the current
+repository or `octocode-agent setup --fix --scope all` to initialize both
+scopes. The default scope is global.
 
 MCP server config is read from:
 
 | Scope | Paths in precedence order | Loaded when |
 |---|---|---|
 | Built-in | pinned local `octocode-mcp` (`npx -y octocode-mcp@latest` fallback) | Always, as server `octocode` |
-| Global | `~/.pi/mcp.json`; `$OCTOCODE_HOME/agent/mcp.json`; `~/.pi/agent/mcp.json` | When each file exists |
-| Project | `<workspace>/.pi/mcp.json`; `<workspace>/.octocode/agent/mcp.json`; `<workspace>/.pi/agent/mcp.json` | Only after the project is trusted |
+| Global | `$OCTOCODE_HOME/agent/mcp/servers.json`; vendor user files | Managed source is active; vendor imports are disabled by default |
+| Workspace | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json`; vendor workspace files | Managed source requires workspace trust; vendor imports are disabled by default |
 
-A later definition of the same server name wins. Claude Code, Cursor, Codex, `.agents`,
-and compatibility `.octocode/mcp.json` files are discovery inventory only; copy a trusted
-stdio entry into an active path before the gateway can run it.
+A later active definition of the same server name wins. Claude Code, Cursor,
+Codex, `.agent`, and `.agents` files are
+read-only discovery imports. They are disabled by default and can be enabled
+explicitly from `/settings` without copying or editing the owning file.
+
+Skill discovery checks `.pi/skills`, `.pi/agent/skills`, `.claude/skills`,
+`.cursor/skills`, `.codex/skills`, `.agent/skills`, and `.agents/skills` under
+both the user home and workspace hierarchy. Compatibility Skills are disabled
+by default and are enabled by exact source, so duplicate names remain independent.
 
 Minimal config:
 
@@ -268,7 +284,7 @@ graph TD
     AGENT["octocode-agent<br/>native product runtime"]
     CORE["@octocodeai/agent-core<br/>runtime · lifecycle · policy · sessions"]
     PI["Pi runtime<br/>supported parity host"]
-    EXT["@octocodeai/pi-extension<br/>temporary parity oracle"]
+    EXT["@octocodeai/pi-extension<br/>independent Pi adapter"]
     AW["@octocodeai/octocode-awareness<br/>SHARED COORDINATION: plans/tasks · locks · memory · checks (SQLite)"]
     SKILL["octocode-awareness skill<br/>external-agent router"]
     BRAIN["External npm brain (sibling repos)<br/>octocode-tools-core · octocode-engine · @octocodeai/config"]
@@ -294,7 +310,7 @@ sibling repos and consumed here as npm dependencies. Never duplicate `getOctocod
 
 ---
 
-## Architecture Audit Prompt
+## Architecture audit prompt
 
 Use [`prompts/architecture.md`](prompts/architecture.md) when asking a coding agent to review
 the native `octocode-agent` CLI implementation end-to-end. The prompt requires the reviewer
@@ -314,7 +330,7 @@ Yarn 4 workspaces monorepo (`packages/*`), Node ≥ 22 (Awareness runtime needs 
 | Package | npm name | Role | Deep dive |
 |---|---|---|---|
 | [`packages/octocode-agent`](packages/octocode-agent) | `octocode-agent` | Native editor and launcher — one command, one update path. | [docs](packages/octocode-agent/docs/README.md) |
-| [`packages/octocode-pi-extension`](packages/octocode-pi-extension) | `@octocodeai/pi-extension` | Supported Pi adapter and temporary parity oracle. | [docs](packages/octocode-pi-extension/docs/README.md) |
+| [`packages/octocode-pi-extension`](packages/octocode-pi-extension) | `@octocodeai/pi-extension` | Independently supported Pi adapter and conformance reference. | [docs](packages/octocode-pi-extension/docs/README.md) |
 | [`packages/octocode-awareness`](packages/octocode-awareness) | `@octocodeai/octocode-awareness` | Shared root coordination used by Pi/external agents plus advanced reflection/query/session runtime. Canonical skill source. | [docs](packages/octocode-awareness/docs/README.md) |
 
 Agent guides: [`AGENTS.md`](AGENTS.md) (repo) · [`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md) (package). Internals: each package's `ARCHITECTURE.md` where present.
@@ -331,9 +347,10 @@ yarn build        # build all packages
 yarn test         # run all test suites
 yarn lint         # lint all
 yarn typecheck    # typecheck all
+yarn verify       # full integration/release gate, including pack, PTY, and performance checks
 ```
 
-Per-package verification (no root `verify`):
+For focused development, per-package verification remains available:
 
 ```bash
 yarn workspace @octocodeai/octocode-awareness verify
@@ -361,7 +378,7 @@ import-only library/schema API + bundled skills), extension `dist/**`, and any
 
 ---
 
-## How the Pieces Wire Together
+## How the pieces wire together
 
 1. `octocode-agent` composes `@octocodeai/agent-core`, native model/tool adapters, sessions,
    transports, and OpenTUI without importing Pi.

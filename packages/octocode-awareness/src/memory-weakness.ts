@@ -87,7 +87,7 @@ export function mineWeakness(db: DatabaseSync, params: MineWeaknessParams = {}):
            count(*) * avg(importance) AS score,
            group_concat(memory_id, ',') AS ids,
            group_concat(DISTINCT label) AS labels
-    FROM memories
+    FROM awareness_memories
     WHERE ${conditions.join(' AND ')}
     GROUP BY failure_signature
     ORDER BY score DESC
@@ -151,7 +151,7 @@ export function mineWeakness(db: DatabaseSync, params: MineWeaknessParams = {}):
     const ph = allRawSigs.map(() => '?').join(',');
     const repRows = db.prepare(
       `SELECT failure_signature, observation, max(importance)
-       FROM memories
+       FROM awareness_memories
        WHERE failure_signature IN (${ph}) AND ${conditions.join(' AND ')}
        GROUP BY failure_signature`
     ).all(...allRawSigs, ...bindParams) as unknown as RepRow[];
@@ -184,7 +184,7 @@ export function mineWeakness(db: DatabaseSync, params: MineWeaknessParams = {}):
   type TotalRow = { sigs: number; mems: number };
   const totals = db.prepare(
     `SELECT count(DISTINCT failure_signature) AS sigs, count(*) AS mems
-     FROM memories WHERE ${conditions.join(' AND ')}`
+     FROM awareness_memories WHERE ${conditions.join(' AND ')}`
   ).get(...bindParams) as unknown as TotalRow;
 
   const next = selected.length > 0

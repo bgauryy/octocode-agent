@@ -2,13 +2,12 @@
 
 > Historical migration reference. Do not use this page for current launcher commands or
 > architecture. Native `octocode-agent` neither imports nor launches Pi. The supported Pi
-> path is the separate `@octocodeai/pi-extension` parity oracle.
+> path is the separate `@octocodeai/pi-extension` compatibility product and conformance reference.
 
 ## Purpose
 
 This page records the former launcher-to-Pi boundary so parity tests and migration reviews
-can identify intentional differences. It does not define a production fallback, update
-path, or permanent compatibility promise.
+can identify intentional differences. It does not define a native fallback or update path.
 
 Current owners:
 
@@ -17,11 +16,11 @@ Current owners:
 - Native prompt behavior: [`HEADLESS.md`](HEADLESS.md) and
   `packages/octocode-agent/src/native-prompt.ts`.
 - Pi adapter behavior: [`packages/octocode-pi-extension/docs`](../../octocode-pi-extension/docs/README.md).
-- Cutover and deletion gates: [`DESIGN/pi-coding-agent-removal`](../../../DESIGN/pi-coding-agent-removal/README.md).
+- Native cutover and extension-isolation gates: [`DESIGN/pi-coding-agent-removal`](../../../DESIGN/pi-coding-agent-removal/README.md).
 
-## Frozen oracle boundary
+## Independent extension boundary
 
-During migration, `@octocodeai/pi-extension` remains a supported Pi package. It supplies
+`@octocodeai/pi-extension` remains a supported Pi package independently of the native product. It supplies
 the Pi-specific prompt adapter, tools, skills, UI, and Awareness lifecycle wiring used by
 the parity corpus. Operators can install it in a Pi host independently of
 `octocode-agent`.
@@ -33,10 +32,11 @@ The native product does not:
 - spawn a Pi subprocess;
 - fall back to Pi after a native failure;
 - accept Pi-compatible arguments as its command contract; or
-- update the Pi adapter through `octocode-agent update core`.
+- update the Pi adapter through the native launcher.
 
-The native `update core` command targets `@octocodeai/agent-core`. The removal RFC evidence
-owns Pi-oracle versions and host matrices; the launcher package does not.
+`octocode-agent update platform` replaces the launcher and its bundled agent core
+together. The removal RFC evidence owns Pi-extension versions and host matrices;
+the launcher package does not.
 
 ## Historical comparison surfaces
 
@@ -54,10 +54,11 @@ Parity work can compare these former Pi-host surfaces with their native owners:
 Use the shared conformance corpus and effect ledger to compare behavior. A passing unit test
 or structural similarity is not a cutover receipt.
 
-## Retirement rule
+## Isolation rule
 
-Pi remains a separately installable supported adapter and executable parity oracle until
-the native-only release, rollback, migration, and real-host conformance gates pass. The
-native launcher has no implemented `pi|shadow|native` release selector today; that selector
-is gated migration work, not a current user-facing toggle. After the gates pass, delete the
-Pi package and its product path. Do not preserve a hidden launcher fallback.
+Pi remains a separately installable supported adapter and executable conformance reference.
+The native launcher has no `pi|shadow|native` user-facing selector and must not depend on,
+install, update, select, or fall back to the extension. Native release gates prove this
+absence across source, manifests, dependency trees, built and packed artifacts, installers,
+updates, and rollback packages. The extension retains its Pi-version matrix, tests, docs,
+and publication path.

@@ -9,13 +9,13 @@ let aw: AwarenessStore;
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-lite-'));
-  process.env.OCTOCODE_DB_PATH = join(workspace, 'octocode.sqlite3');
+  process.env.OCTOCODE_AGENT_DB_PATH = join(workspace, 'agent.sqlite3');
   aw = openAwarenessStore({ workspace });
 });
 
 afterEach(async () => {
   aw.close();
-  delete process.env.OCTOCODE_DB_PATH;
+  delete process.env.OCTOCODE_AGENT_DB_PATH;
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -278,64 +278,4 @@ describe('Phase 1: source identities, ABANDONED/CANCELLED, and graph primitives'
     expect(Array.from(mapping2.values()).map((t) => t.taskId)).not.toContain(manualTask.taskId);
   });
 
-  it('migrates old plans/tasks tables to add ABANDONED/CANCELLED statuses', async () => {
-    aw.close();
-
-    // Create a legacy DB with old-style status constraints
-    const { DatabaseSync: DS } = require('node:sqlite');
-    const legacyDb = new DS(process.env.OCTOCODE_DB_PATH!);
-    try {
-      legacyDb.exec(`
-        DROP TABLE IF EXISTS tasks;
-        DROP TABLE IF EXISTS plans;
-        CREATE TABLE plans (
-          plan_id TEXT PRIMARY KEY,
-          workspace_path TEXT NOT NULL DEFAULT '',
-          title TEXT NOT NULL,
-          goal TEXT,
-          status TEXT NOT NULL CHECK(status IN ('OPEN', 'DONE')),
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL
-        );
-        CREATE TABLE tasks (
-          task_id TEXT PRIMARY KEY,
-          workspace_path TEXT NOT NULL DEFAULT '',
-          plan_id TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
-          title TEXT NOT NULL,
-          file_path TEXT,
-          check_command TEXT,
-          status TEXT NOT NULL CHECK(status IN ('OPEN', 'CLAIMED', 'DONE')),
-          agent_id TEXT,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          done_at TEXT
-        );
-        INSERT INTO plans VALUES ('p1', '${workspace.replace(/'/g, "''")}', 'Legacy Plan', NULL, 'OPEN', datetime('now'), datetime('now'));
-        INSERT INTO tasks VALUES ('t1', '${workspace.replace(/'/g, "''")}', 'p1', 'Legacy Task', NULL, NULL, 'OPEN', NULL, datetime('now'), datetime('now'), NULL);
-      `);
-    } finally {
-      legacyDb.close();
-    }
-
-    // Re-open triggers migration
-    aw = openAwarenessStore({ workspace });
-
-    // Should be able to insert ABANDONED plan
-    const { DatabaseSync: DS2 } = require('node:sqlite');
-    const db = new DS2(aw.dbPath);
-    try {
-      const result = db.prepare("INSERT INTO plans(plan_id, workspace_path, title, goal, status, source_kind, source_key, rfc_path, rfc_revision, created_at, updated_at) VALUES ('p2', ?, 'Abandoned', NULL, 'ABANDONED', NULL, NULL, NULL, NULL, datetime('now'), datetime('now'))").run(workspace);
-      expect(result.changes).toBe(1);
-      const result2 = db.prepare("INSERT INTO tasks(task_id, workspace_path, plan_id, title, file_path, paths_json, reasoning, acceptance, check_command, status, priority, dependencies_json, agent_id, claimed_at, lease_expires_at, source_step_key, created_at, updated_at, done_at, verified_at, verified_by, verification_message) VALUES ('t2', ?, 'p2', 'Cancelled Task', NULL, '[]', NULL, NULL, NULL, 'CANCELLED', 0, '[]', NULL, NULL, NULL, NULL, datetime('now'), datetime('now'), NULL, NULL, NULL, NULL)").run(workspace);
-      expect(result2.changes).toBe(1);
-    } finally {
-      db.close();
-    }
-
-    // Legacy data still accessible
-    const plans = aw.listPlans();
-    expect(plans.some((p) => p.planId === 'p1')).toBe(true);
-    const tasks = aw.listTasks({});
-    expect(tasks.some((t) => t.taskId === 't1')).toBe(true);
-  });
 });

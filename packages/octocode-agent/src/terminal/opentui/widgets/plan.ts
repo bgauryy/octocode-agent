@@ -33,6 +33,7 @@ export interface PlanWidgetStep {
   readonly dependsOn?: readonly string[];
   readonly checkCommand?: string;
   readonly receipt?: PlanWidgetVerificationReceipt;
+  readonly workerId?: string;
 }
 
 export interface PlanWidgetSnapshot {
@@ -78,11 +79,11 @@ const AGENT_INSTRUCTIONS = {
   inputs: [
     'Use stable plan and step IDs plus the exact authoritative session and workspace scope.',
     'Provide monotonically increasing revisions and explicit empty, draft, approved, active, or complete phases.',
-    'Provide each step text, optional active form, status, stable dependency IDs, optional check command, and optional verification receipt.',
+    'Provide each step text, optional active form, status, stable dependency IDs, optional worker owner, optional check command, and optional verification receipt.',
     'Accept only snapshots and verification receipts marked with runtime authority; treat receipt command, status, and message as an indivisible runtime-issued record.',
   ],
   stateAndOutput: [
-    'Preserve authoritative step order and mark the sole doing step with the literal words CURRENT and DOING.',
+    'Preserve authoritative step order, keep worker ownership visible, and mark the sole doing step with the literal words CURRENT and DOING.',
     'Never fabricate completion or verification, reorder stable IDs, hide blockers, or infer that draft means approved.',
     'A done step without a receipt remains visibly NOT RECORDED; a failed receipt remains visibly FAILED.',
     'The visual viewport may be bounded, but the alternate snapshot always includes plan ID, scope, revision, phase, and every step and detail.',
@@ -183,6 +184,7 @@ function normalizeSnapshot(value: PlanWidgetSnapshot): PlanWidgetSnapshot {
       ...(dependsOn === undefined ? {} : { dependsOn }),
       ...(step.checkCommand === undefined ? {} : { checkCommand: safeText(step.checkCommand, `step ${number} check command`, MAX_COMMAND_LENGTH) }),
       ...(step.receipt === undefined ? {} : { receipt: normalizeReceipt(step.receipt, number) }),
+      ...(step.workerId === undefined ? {} : { workerId: safeId(step.workerId, `step ${number} worker id`) }),
     } satisfies PlanWidgetStep;
   });
   if (doingCount > 1) throw new Error('a plan cannot contain multiple doing steps');
@@ -271,11 +273,15 @@ export class PlanWidget extends OpenTuiWidget {
     return this.currentScrollOffset;
   }
 
+  hasIdentity(value: Pick<PlanWidgetSnapshot, 'planId' | 'scope'>): boolean {
+    return value.planId === this.snapshot.planId
+      && value.scope.sessionId === this.snapshot.scope.sessionId
+      && value.scope.workspace === this.snapshot.scope.workspace;
+  }
+
   update(nextValue: PlanWidgetSnapshot): void {
     const next = normalizeSnapshot(nextValue);
-    if (next.planId !== this.snapshot.planId
-      || next.scope.sessionId !== this.snapshot.scope.sessionId
-      || next.scope.workspace !== this.snapshot.scope.workspace) {
+    if (!this.hasIdentity(next)) {
       throw new Error('plan identity or scope cannot change within a widget');
     }
     if (next.revision < this.snapshot.revision) throw new Error('stale plan revision');
@@ -327,13 +333,14 @@ export class PlanWidget extends OpenTuiWidget {
     const lines = [
       `Plan ${this.snapshot.planId} — revision ${this.snapshot.revision} — phase ${this.snapshot.phase.toUpperCase()}`,
       `Scope — session: ${this.snapshot.scope.sessionId} — workspace: ${this.snapshot.scope.workspace}`,
-      `Tasks — ${completedCount(this.snapshot)} of ${this.snapshot.steps.length} complete`,
+      `Steps — ${completedCount(this.snapshot)} of ${this.snapshot.steps.length} complete`,
     ];
     if (this.snapshot.steps.length === 0) lines.push('No plan steps.');
     this.snapshot.steps.forEach((step, index) => {
       const current = step.status === 'doing' ? ' >> CURRENT' : '';
       lines.push(`${index + 1}. [${step.status.toUpperCase()}] ${step.id}: ${step.text}${current}`);
       if (step.activeForm !== undefined) lines.push(`   active form: ${step.activeForm}`);
+      if (step.workerId !== undefined) lines.push(`   worker: ${step.workerId}`);
       if (step.dependsOn !== undefined && step.dependsOn.length > 0) {
         lines.push(`   depends on: ${step.dependsOn.join(', ')}`);
         const blockers = step.dependsOn.filter((id) => this.snapshot.steps.find((candidate) => candidate.id === id)?.status !== 'done');
@@ -395,7 +402,8 @@ export class PlanWidget extends OpenTuiWidget {
     const verification = step.receipt === undefined
       ? (step.status === 'done' ? ' · verification NOT RECORDED' : '')
       : ` · verification ${step.receipt.status}`;
-    return `${index + 1}. [${step.status.toUpperCase()}]${current} ${step.id}: ${step.activeForm ?? step.text}${blocked}${verification}`;
+    const worker = step.workerId === undefined ? '' : ` · WORKER ${step.workerId}`;
+    return `${index + 1}. [${step.status.toUpperCase()}]${current} ${step.id}: ${step.activeForm ?? step.text}${worker}${blocked}${verification}`;
   }
 
   private statusFor(id: string): string {

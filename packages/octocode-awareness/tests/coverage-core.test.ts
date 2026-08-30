@@ -27,12 +27,12 @@ describe('core branch coverage helpers', () => {
 
     const dir = mkdtempSync(join(tmpdir(), 'oc-db-utils-'));
     try {
-      const dbPath = join(dir, 'awareness.sqlite3');
+      const dbPath = join(dir, 'agent.sqlite3');
       const first = connectCachedDb(dbPath);
       const second = connectCachedDb(dbPath);
       expect(first).toBe(second);
       expect(resolveDbPath(dbPath)).toBe(dbPath);
-      expect(tableColumns(first, 'memories')).toContain('memory_id');
+      expect(tableColumns(first, 'awareness_memories')).toContain('memory_id');
       expect(referenceKind('https://octocode.ai')).toBe('url');
       expect(referenceKind('file:/tmp/a.ts')).toBe('file');
       expect(referenceKind('plain text')).toBe('other');
@@ -56,7 +56,7 @@ describe('core branch coverage helpers', () => {
         ttlMs: 60_000,
       });
       if (!task.ok) throw new Error('claim failed');
-      first.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(new Date(Date.now() - 1000).toISOString(), task.run.run_id);
+      first.prepare('UPDATE awareness_locks SET expires_at = ? WHERE run_id = ?').run(new Date(Date.now() - 1000).toISOString(), task.run.run_id);
       expect(evictExpiredLocks(first)).toEqual({ pruned_locks: 1 });
       expect(evictExpiredLocks(first)).toEqual({ pruned_locks: 0 });
     } finally {
@@ -151,7 +151,7 @@ describe('core branch coverage helpers', () => {
       ttlMs: 60_000,
     });
     if (!stale.ok) throw new Error('stale claim failed');
-    db.prepare('DELETE FROM locks WHERE run_id = ?').run(stale.run.run_id);
+    db.prepare('DELETE FROM awareness_locks WHERE run_id = ?').run(stale.run.run_id);
     db.prepare('UPDATE run_files SET expires_at = ? WHERE run_id = ?')
       .run('2000-01-01T00:00:00Z', stale.run.run_id);
 
@@ -194,7 +194,7 @@ describe('core branch coverage helpers', () => {
     });
     storeEmbedding(db, first, new Float32Array([1, 0, 0]), 'model-a');
     storeEmbedding(db, second, new Float32Array([0, 1, 0]), 'model-b');
-    db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE memory_id = ?')
+    db.prepare('UPDATE awareness_memories SET embedding = ?, embedding_model = ? WHERE memory_id = ?')
       .run(Buffer.from([1, 2, 3]), 'model-a', corrupt);
 
     expect(searchByEmbedding(db, new Float32Array([1, 0, 0]), 5, 0.5)[0]).toMatchObject({ memory_id: first });

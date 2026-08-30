@@ -1,8 +1,8 @@
 # Pi coding-agent removal — implementation guide
 
-Status: active design index; reconciled 2026-08-28; release remains `HOLD`
+Status: active design index; reconciled 2026-08-29; release remains `HOLD`
 
-This directory is the main guide for completing the native Octocode agent and removing Pi. The RFC folder is normative. The root documents explain the implementation, architecture, execution order, and current maturity without duplicating specialist specifications.
+This directory is the main guide for completing the native Octocode agent and removing Pi from native product paths. The RFC folder is normative. The independent Pi extension remains a supported compatibility product. The root documents explain the implementation, architecture, execution order, and current maturity without duplicating specialist specifications.
 
 Start with the [RFC overview](pi-coding-agent-removal/README.md), then use the documents below for implementation work.
 
@@ -41,4 +41,4 @@ Historical evidence receipts are immutable. Correct current documents rather tha
 
 A requirement advances to `Verified` only when the production native composition reaches it and focused plus production-path checks pass. `Cutover-ready` additionally requires real-host, security, platform, packaging, rollout, and rollback evidence.
 
-Pi removal is the final consequence of those gates. It must not be used to manufacture parity. Generated output and `.octocode/` state are never documentation sources and must not be hand-edited.
+Native Pi removal is the final consequence of those gates. It must not be used to manufacture parity or to delete the independent Pi extension. Generated output and `.octocode/` state are never documentation sources and must not be hand-edited.

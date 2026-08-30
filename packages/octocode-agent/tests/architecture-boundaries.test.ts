@@ -36,6 +36,16 @@ describe('native package architecture', () => {
     expect(internalIndexImports).toEqual([]);
   });
 
+  it('imports shared contracts through their owning published subpaths', () => {
+    const aggregateSharedImports = sourceFiles.flatMap((path) => (
+      /(?:from\s+|import\s*\()(['"])@octocodeai\/octocode-shared\1/u.test(source(path))
+        ? [display(path)]
+        : []
+    ));
+
+    expect(aggregateSharedImports).toEqual([]);
+  });
+
   it('keeps the OpenTUI dependency graph acyclic', () => {
     const tuiRoot = join(sourceRoot, 'terminal', 'opentui');
     const tuiFiles = sourceFiles.filter((path) => path.startsWith(`${tuiRoot}/`));
@@ -60,5 +70,37 @@ describe('native package architecture', () => {
 
     for (const path of tuiFiles) visit(path, []);
     expect(cycles).toEqual([]);
+  });
+
+  it('keeps session projection and presentation translation out of the launcher', () => {
+    const launcher = source(join(sourceRoot, 'native-launcher.ts'));
+
+    expect(launcher).not.toContain('export function createRuntimeEventPersister');
+    expect(launcher).not.toContain('function presentationEvents');
+    expect(launcher).not.toContain('async function runInteractive');
+  });
+
+  it('delegates provider wire formats to Vercel AI SDK instead of owning rigid serializers', () => {
+    const packageJson = JSON.parse(source(join(packageRoot, 'package.json'))) as {
+      dependencies?: Record<string, string>;
+    };
+    const dependencies = packageJson.dependencies ?? {};
+    expect(dependencies).toMatchObject({
+      ai: '7.0.84',
+      '@ai-sdk/openai': '4.0.51',
+      '@ai-sdk/anthropic': '4.0.45',
+      '@ai-sdk/openai-compatible': '3.0.40',
+    });
+    expect(dependencies).not.toHaveProperty('openai');
+    expect(sourceFiles.map((path) => display(path))).not.toEqual(expect.arrayContaining([
+      'src/native-openai-responses-model.ts',
+      'src/native-anthropic-messages-model.ts',
+    ]));
+    const adapter = source(join(sourceRoot, 'native-model.ts'));
+    expect(adapter).toContain("from 'ai'");
+    expect(adapter).toContain("from '@ai-sdk/openai'");
+    expect(adapter).toContain("from '@ai-sdk/anthropic'");
+    expect(adapter).toContain("from '@ai-sdk/openai-compatible'");
+    expect(adapter).not.toMatch(/TextDecoderStream|response\.completed|content_block_delta/u);
   });
 });

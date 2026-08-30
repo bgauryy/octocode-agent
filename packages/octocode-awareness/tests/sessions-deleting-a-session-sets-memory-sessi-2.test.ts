@@ -51,7 +51,7 @@ function insertTask(db: DatabaseSync, runId: string, agentId: string, sessionId:
  */
 function insertMemoryWithSession(db: DatabaseSync, memoryId: string, agentId: string, sessionId: string | null): void {
     db.prepare(`
-    INSERT INTO memories(memory_id, agent_id, task_context, observation, importance,
+    INSERT INTO awareness_memories(memory_id, agent_id, task_context, observation, importance,
                          session_id, created_at)
     VALUES (?, ?, 'task ctx', 'observation text', 5, ?,
             strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -66,14 +66,14 @@ function insertMemoryWithSession(db: DatabaseSync, memoryId: string, agentId: st
 describe('deleting a session sets memory.session_id = NULL (ON DELETE SET NULL)', () => {
   it('memory.session_id becomes NULL after the parent session is deleted', () => {
     const db = freshDb();
-    if (!tableColumns(db, 'memories').has('session_id')) return; // schema not yet updated
+    if (!tableColumns(db, 'awareness_memories').has('session_id')) return; // schema not yet updated
 
     const { session_id } = insertSession(db, { agentId: 'agent-1' });
     insertMemoryWithSession(db, 'mem-cascade', 'agent-1', session_id);
 
     // Sanity-check the FK is in place before deletion.
     const before = db
-      .prepare('SELECT session_id FROM memories WHERE memory_id = ?')
+      .prepare('SELECT session_id FROM awareness_memories WHERE memory_id = ?')
       .get('mem-cascade') as { session_id: string | null };
     expect(before.session_id).toBe(session_id);
 
@@ -82,7 +82,7 @@ describe('deleting a session sets memory.session_id = NULL (ON DELETE SET NULL)'
 
     // memory.session_id must be NULL — the memory itself must survive.
     const after = db
-      .prepare('SELECT memory_id, session_id FROM memories WHERE memory_id = ?')
+      .prepare('SELECT memory_id, session_id FROM awareness_memories WHERE memory_id = ?')
       .get('mem-cascade') as { memory_id: string; session_id: string | null } | undefined;
     expect(after).toBeDefined();
     expect(after!.memory_id).toBe('mem-cascade');

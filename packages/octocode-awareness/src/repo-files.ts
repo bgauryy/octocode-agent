@@ -55,7 +55,7 @@ export function fileRows(db: DatabaseSync, params: AwarenessQueryParams): Awaren
   const memoryRefs = db.prepare(
     `SELECT r.reference, m.label, m.created_at
        FROM memory_refs r
-       JOIN memories m ON m.memory_id = r.memory_id
+       JOIN awareness_memories m ON m.memory_id = r.memory_id
       WHERE ${memoryWhere.join(' AND ')}
       ORDER BY datetime(m.created_at) DESC
       LIMIT ?`
@@ -149,13 +149,13 @@ export function repoProfileRows(db: DatabaseSync, params: AwarenessQueryParams):
 
   const trackedFiles = fileRows(db, withScope(params, { limit: 500 }));
   return [
-    { metric: 'active_memories', count: countWhere(db, 'memories', memWhere, memBinds) },
+    { metric: 'active_memories', count: countWhere(db, 'awareness_memories', memWhere, memBinds) },
     { metric: 'gotchas', count: memoryRows(db, withScope(params, { view: 'gotchas', limit: 500 }), { gotchas: true }).length },
     { metric: 'lessons', count: memoryRows(db, withScope(params, { view: 'lessons', limit: 500 }), { lessons: true }).length },
-    { metric: 'plans', count: countWhere(db, 'plans', planWhere, planBinds) },
-    { metric: 'tasks', count: countWhere(db, 'tasks t JOIN plans p ON p.plan_id = t.plan_id', taskWhere, taskBinds) },
+    { metric: 'plans', count: countWhere(db, 'awareness_plans', planWhere, planBinds) },
+    { metric: 'tasks', count: countWhere(db, 'awareness_tasks t JOIN awareness_plans p ON p.plan_id = t.plan_id', taskWhere, taskBinds) },
     { metric: 'runs', count: countWhere(db, 'task_runs', runWhere, runBinds) },
-    { metric: 'active_locks', count: countWhere(db, 'locks l JOIN task_runs t ON t.run_id = l.run_id', lockWhere, lockBinds) },
+    { metric: 'active_locks', count: countWhere(db, 'awareness_locks l JOIN task_runs t ON t.run_id = l.run_id', lockWhere, lockBinds) },
     { metric: 'actionable_refinements', count: countWhere(db, 'refinements', actionableRefinementWhere, refinementBinds) },
     { metric: 'all_open_refinements', count: countWhere(db, 'refinements', allRefinementWhere, refinementBinds) },
     { metric: 'open_signals', count: countWhere(db, 'signals', signalWhere, signalBinds) },
@@ -261,9 +261,9 @@ export function filesUnderWorkRows(db: DatabaseSync, params: AwarenessQueryParam
             l.expires_at AS lock_expires_at
        FROM run_files rf
        JOIN task_runs tr ON tr.run_id = rf.run_id
-       LEFT JOIN tasks t ON t.task_id = tr.task_id
-       LEFT JOIN plans p ON p.plan_id = t.plan_id
-       LEFT JOIN locks l ON l.run_id = rf.run_id AND l.file_path = rf.file_path
+       LEFT JOIN awareness_tasks t ON t.task_id = tr.task_id
+       LEFT JOIN awareness_plans p ON p.plan_id = t.plan_id
+       LEFT JOIN awareness_locks l ON l.run_id = rf.run_id AND l.file_path = rf.file_path
          AND (l.expires_at IS NULL OR l.expires_at > ?)
       WHERE ${where.join(' AND ')}
       ORDER BY rf.file_path, datetime(rf.heartbeat_at) DESC, tr.agent_id, rf.run_id

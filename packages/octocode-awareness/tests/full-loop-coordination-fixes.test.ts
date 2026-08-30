@@ -67,7 +67,7 @@ describe('full-loop coordination correctness fixes', () => {
       expect(() => claimTask(db, {
         taskId: task.task_id, agentId: 'agent-b', sessionId: 'session-shared',
       })).toThrow(/belongs to agent agent-a/);
-      expect(db.prepare('SELECT status FROM tasks WHERE task_id = ?').get(task.task_id))
+      expect(db.prepare('SELECT status FROM awareness_tasks WHERE task_id = ?').get(task.task_id))
         .toEqual({ status: 'OPEN' });
       expect(db.prepare('SELECT COUNT(*) AS count FROM task_claims WHERE task_id = ?').get(task.task_id))
         .toEqual({ count: 0 });
@@ -104,12 +104,12 @@ describe('full-loop coordination correctness fixes', () => {
         taskId: first.task_id, dependsOnTaskId: second.task_id, agentId: 'lead',
       })).toThrow(/cycle/);
 
-      db.prepare("UPDATE tasks SET status = 'DONE' WHERE task_id = ?").run(second.task_id);
+      db.prepare("UPDATE awareness_tasks SET status = 'DONE' WHERE task_id = ?").run(second.task_id);
       expect(() => addTaskDependency(db, {
         taskId: second.task_id, dependsOnTaskId: first.task_id, agentId: 'lead',
       })).toThrow(/status DONE/);
-      db.prepare("UPDATE tasks SET status = 'OPEN' WHERE task_id = ?").run(second.task_id);
-      db.prepare("UPDATE plans SET status = 'CANCELLED' WHERE plan_id = ?").run(plan.plan_id);
+      db.prepare("UPDATE awareness_tasks SET status = 'OPEN' WHERE task_id = ?").run(second.task_id);
+      db.prepare("UPDATE awareness_plans SET status = 'CANCELLED' WHERE plan_id = ?").run(plan.plan_id);
       expect(() => addTaskDependency(db, {
         taskId: second.task_id, dependsOnTaskId: first.task_id, agentId: 'lead',
       })).toThrow(/cancelled plan/);

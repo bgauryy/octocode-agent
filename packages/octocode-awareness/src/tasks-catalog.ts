@@ -55,12 +55,12 @@ export function evictExpiredTaskClaims(db: DatabaseSync, now = utcNow()): void {
   db.exec('SAVEPOINT evict_expired_task_claims');
   try {
     for (const claim of expired) {
-      db.prepare('DELETE FROM locks WHERE run_id = ?').run(claim.run_id);
+      db.prepare('DELETE FROM awareness_locks WHERE run_id = ?').run(claim.run_id);
       db.prepare(`UPDATE run_files SET heartbeat_at = ?, expires_at = ?, ended_at = ?
         WHERE run_id = ? AND ended_at IS NULL`).run(now, now, now, claim.run_id);
       db.prepare("UPDATE task_runs SET status = 'FAILED', updated_at = ? WHERE run_id = ? AND status = 'ACTIVE'")
         .run(now, claim.run_id);
-      db.prepare("UPDATE tasks SET status = 'OPEN', updated_at = ? WHERE task_id = ? AND status = 'IN_PROGRESS'")
+      db.prepare("UPDATE awareness_tasks SET status = 'OPEN', updated_at = ? WHERE task_id = ? AND status = 'IN_PROGRESS'")
         .run(now, claim.task_id);
       db.prepare('DELETE FROM task_claims WHERE task_id = ?').run(claim.task_id);
       event(db, claim.task_id, claim.run_id, claim.agent_id, 'CLAIM_EXPIRED', 'claim lease expired', now);
@@ -86,7 +86,7 @@ export function hydrateTask(db: DatabaseSync, row: Record<string, unknown>): Pla
 
 export function getTask(db: DatabaseSync, taskId: string): PlanTaskRecord | null {
   evictExpiredTaskClaims(db);
-  const row = db.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId) as Record<string, unknown> | undefined;
+  const row = db.prepare('SELECT * FROM awareness_tasks WHERE task_id = ?').get(taskId) as Record<string, unknown> | undefined;
   return row ? hydrateTask(db, row) : null;
 }
 
@@ -105,8 +105,8 @@ export function activeTaskClaimForAgent(
     binds.push(params.artifact);
   }
   const claims = db.prepare(`SELECT c.* FROM task_claims c
-    JOIN tasks t ON t.task_id = c.task_id
-    JOIN plans p ON p.plan_id = t.plan_id
+    JOIN awareness_tasks t ON t.task_id = c.task_id
+    JOIN awareness_plans p ON p.plan_id = t.plan_id
     WHERE ${where.join(' AND ')} ORDER BY c.claimed_at DESC LIMIT 2`)
     .all(...binds) as unknown as TaskClaimRecord[];
   return claims.length === 1 ? claims[0]! : null;

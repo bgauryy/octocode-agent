@@ -22,7 +22,7 @@ describe('native tool registry lifecycle', () => {
   it('retains and idempotently closes the MCP manager owned by a default registry', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-tools-lifecycle-'));
     roots.push(root);
-    const config = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+    const config = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
     fs.mkdirSync(path.dirname(config), { recursive: true });
     fs.writeFileSync(config, JSON.stringify({ mcpServers: { fixture: { command: process.execPath } } }));
     const registry = await createDefaultOctocodeToolRegistry({

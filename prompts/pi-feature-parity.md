@@ -9,7 +9,7 @@ Your job is to determine which observable Pi behaviors the native agentic CLI pr
 
 This is a parity audit, not a search for identical internals. The native implementation may use different architecture, storage, protocols, and UI technology. It passes only when the approved semantic contract and externally observable behavior are equivalent or an explicit design decision authorizes a difference.
 
-Treat `@octocodeai/pi-extension` as a temporary executable parity oracle. The final target is one native editor with no live Pi package, dependency, adapter, launcher, installer, update, or release path. Do not delete the oracle early: first map every accepted capability to native evidence or an explicit approved retirement, pass native-only rollback, and preserve historical receipts unchanged.
+Treat `@octocodeai/pi-extension` as an independently installed, version-pinned Pi compatibility product and executable conformance reference. The native target is one editor with no Pi package, dependency, adapter, launcher, selector, fallback, installer, update, or rollback path in native source or release artifacts. Keep the extension, its Pi-only dependencies, tests, docs, version matrix, and publication path isolated from native release wiring. Preserve historical receipts unchanged.
 
 ## Audit rules
 
@@ -310,7 +310,7 @@ Return the audit in this order:
 6. **Complete feature-ID ledger** — one row per current `R-*`, `T-*`, `S-*`, `H-*`, `P-*`, `U-*`, and `Q-*` requirement.
 7. **Behavioral equivalence matrix** — runtime, input, turns, tools, commands, models, messages, sessions, compaction, UI, settings, hooks, plugins, transports, cancellation, and security.
 8. **Mode matrix** — interactive, print, JSON, and RPC results.
-9. **Temporary Pi-oracle matrix** — frozen artifact/version identity, activation, semantic baseline coverage, and the evidence-retention plan after deletion.
+9. **Independent Pi-reference matrix** — pinned artifact/version identity, activation, semantic baseline coverage, package isolation, and long-term evidence-retention plan.
 10. **First-divergence reports** — exact trace location and impact for every mismatch.
 11. **Test/evidence gaps** — what remains unproven and why existing evidence is insufficient.
 12. **Prioritized remediation plan** — smallest dependency-safe work packages and tests.
@@ -369,4 +369,4 @@ Answer each directly:
 - Are hooks, plugins, settings, models, tools, commands, and resources complete and safe?
 - Does the frozen Pi oracle cover every accepted baseline behavior, and can its live package be deleted without losing required evidence?
 - Can either host bypass policy or produce duplicate/unregistered effects?
-- Is the native editor cutover-ready, can rollback succeed without Pi, and what exact evidence still blocks the final Pi-deletion `GO`?
+- Is the native editor cutover-ready, can rollback succeed without Pi, and what exact evidence still blocks the native Pi-absence `GO` while the independent extension remains supported?

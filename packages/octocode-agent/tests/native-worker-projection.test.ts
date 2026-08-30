@@ -79,7 +79,7 @@ describe('native worker transport projection', () => {
     }) : undefined);
     const transport = createProjection(execute);
     const response = await transport.execute({
-      protocolVersion: 1, requestId: 'request-2', sessionId: session, correlationId: correlation,
+      protocolVersion: 1, projection: 'worker', requestId: 'request-2', sessionId: session, correlationId: correlation,
       command: { type: 'abort', workerId: id, reason: 'stop' },
     });
     expect(response).toMatchObject({ ok: false, error: { category: 'correlation' } });
@@ -90,7 +90,7 @@ describe('native worker transport projection', () => {
     const execute = vi.fn(async () => undefined);
     const transport = createProjection(execute);
     const response = await transport.execute({
-      protocolVersion: 1, requestId: 'request-3', sessionId: session, correlationId: correlation,
+      protocolVersion: 1, projection: 'worker', requestId: 'request-3', sessionId: session, correlationId: correlation,
       command: {
         type: 'spawn',
         packet: {
@@ -109,7 +109,7 @@ describe('native worker transport projection', () => {
       { workerId: id, correlationId: correlation, sessionId: session, state: 'running', queueDepth: 0, capabilities: { tools: [], models: [], maxTurns: 1 } },
       { workerId: workerId('other'), correlationId: correlationId('other'), sessionId: sessionId('session-2'), state: 'running', queueDepth: 0, capabilities: { tools: [], models: [], maxTurns: 1 } },
     ]);
-    const response = await transport.execute({ protocolVersion: 1, requestId: 'request-4', sessionId: session, command: { type: 'list' } });
+    const response = await transport.execute({ protocolVersion: 1, projection: 'worker', requestId: 'request-4', sessionId: session, command: { type: 'list' } });
     expect(response).toMatchObject({ ok: true, data: { action: 'list', workers: [{ workerId: 'worker-1' }] } });
   });
 
@@ -117,6 +117,7 @@ describe('native worker transport projection', () => {
     const execute = vi.fn(async () => []);
     const response = await createProjection(execute).execute({
       protocolVersion: 1,
+      projection: 'worker',
       requestId: 'wrong-session',
       sessionId: sessionId('caller-selected-session'),
       command: { type: 'list' },
@@ -129,7 +130,7 @@ describe('native worker transport projection', () => {
     const execute = vi.fn(async () => undefined);
     const transport = createProjection(execute, { authorize: undefined });
     const response = await transport.execute({
-      protocolVersion: 1, requestId: 'denied', sessionId: session, correlationId: correlation,
+      protocolVersion: 1, projection: 'worker', requestId: 'denied', sessionId: session, correlationId: correlation,
       command: {
         type: 'spawn',
         packet: {
@@ -148,7 +149,7 @@ describe('native worker transport projection', () => {
     const authorize = vi.fn(async () => true);
     const transport = createProjection(execute, { authorize });
     const response = await transport.execute({
-      protocolVersion: 1, requestId: 'escalated', sessionId: session, correlationId: correlation,
+      protocolVersion: 1, projection: 'worker', requestId: 'escalated', sessionId: session, correlationId: correlation,
       command: {
         type: 'spawn',
         packet: {
@@ -179,7 +180,7 @@ describe('native worker transport projection', () => {
       },
     };
     const response = await createProjection(execute, { authorize }).execute({
-      protocolVersion: 1, requestId: 'approved', sessionId: session, correlationId: correlation, command,
+      protocolVersion: 1, projection: 'worker', requestId: 'approved', sessionId: session, correlationId: correlation, command,
     });
     expect(response).toMatchObject({ projection: 'worker', ok: true, data: { action: 'spawn' } });
     expect(authorize).toHaveBeenCalledWith({

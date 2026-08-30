@@ -4,7 +4,7 @@
 
 ## Contract ownership
 
-`packages/octocode-agent-core/` owns canonical production types and runtime-validation schemas. During migration, `packages/octocode-pi-extension` imports those contracts and translates Pi host inputs into them. Agent core never imports the Pi extension or a Pi package, and the final retirement release deletes the temporary adapter.
+`packages/octocode-agent-core/` owns canonical production types and runtime-validation schemas. `packages/octocode-pi-extension` imports those public contracts and translates Pi host inputs into them. Agent core and native `octocode-agent` never import the Pi extension or a Pi package. The extension remains an independent compatibility product.
 
 ```text
 packages/octocode-agent-core
@@ -207,9 +207,9 @@ Codex field aliases normalize at the parser boundary while retaining source prov
 
 Trust hashes, content hashes, revisions, event IDs, plugin IDs, and contribution IDs use distinct branded types. Public projections exclude raw commands, prompt text, arguments, environment values, secrets, and unbounded output. Settings receives redacted descriptors and typed mutation commands, never executable handler objects.
 
-## Temporary Pi-oracle compatibility contract
+## Independent Pi-extension compatibility contract
 
-`packages/octocode-pi-extension` is frozen and supported only during the bounded migration, comparison, and rollback window, subject to the following rules:
+`packages/octocode-pi-extension` is independently installed and version-pinned. It remains supported outside the native release and is subject to the following rules:
 
 1. It imports public contracts and tool/runtime factories from agent core.
 2. It owns all Pi SDK/extension type imports and host-shape translation.
@@ -220,9 +220,9 @@ Trust hashes, content hashes, revisions, event IDs, plugin IDs, and contribution
 7. Its supported Pi-version matrix is explicit and tested.
 8. An unsupported Pi version fails at activation with a typed compatibility error.
 9. Pi-only presentation capabilities remain adapter extensions and cannot enter core domain contracts.
-10. The final retirement gate deletes the Pi-extension package, selector, live compatibility matrix, publication path, and product documentation together.
+10. Native release gates remove migration selectors and prove no Pi path in native source, dependencies, artifacts, installers, updates, or rollback packages; they do not delete the Pi extension.
 11. Pi lifecycle inputs map to canonical hook events and canonical decisions map back without widening authority.
-12. Hook/plugin contributions register through agent-core registries; Pi-specific presentation remains adapter-local until deletion.
+12. Hook/plugin contributions register through agent-core registries; Pi-specific presentation remains adapter-local.
 
 ## Pi-to-core mapping
 

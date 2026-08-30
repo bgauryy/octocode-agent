@@ -72,7 +72,7 @@ describe('runAwarenessToolOperation', () => {
       const secondId = (second.payload as { memory_id: string }).memory_id;
 
       expect(db.prepare(
-        'SELECT artifact, repo, ref, file_tree_fingerprint FROM memories WHERE memory_id = ?',
+        'SELECT artifact, repo, ref, file_tree_fingerprint FROM awareness_memories WHERE memory_id = ?',
       ).get(firstId)).toEqual({
         artifact: 'service-a', repo: 'owner/repo', ref: 'feature-a', file_tree_fingerprint: 'tree-a',
       });
@@ -113,7 +113,7 @@ describe('runAwarenessToolOperation', () => {
       }, dir);
       expect(recorded.exitCode).toBe(0);
       const memoryId = (recorded.payload as { memory_id: string }).memory_id;
-      expect(db.prepare('SELECT workspace_path FROM memories WHERE memory_id = ?').get(memoryId))
+      expect(db.prepare('SELECT workspace_path FROM awareness_memories WHERE memory_id = ?').get(memoryId))
         .toEqual({ workspace_path: realpathSync(dir) });
 
       const duplicate = run(db, 'record', {
@@ -319,7 +319,7 @@ describe('runAwarenessToolOperation', () => {
 
       const stale = run(db, 'file_lock', { type: 'lock', target_files: [join(dir, 'stale.ts')], reasoning: 'stale active' }, dir);
       const staleTask = (stale.payload as { run_id: string }).run_id;
-      db.prepare('DELETE FROM locks WHERE run_id = ?').run(staleTask);
+      db.prepare('DELETE FROM awareness_locks WHERE run_id = ?').run(staleTask);
       db.prepare('UPDATE run_files SET expires_at = ? WHERE run_id = ?')
         .run('2000-01-01T00:00:00Z', staleTask);
       const staleAudit = run(db, 'verify_audit', {}, dir);

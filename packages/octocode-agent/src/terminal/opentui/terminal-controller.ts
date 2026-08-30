@@ -33,7 +33,7 @@ function presentationInteractionRequest(
       message: request.message,
       ...(request.initial === undefined ? {} : { initial: request.initial }),
     };
-    case 'editor': return { type: 'editor', initial: request.initial };
+    case 'editor': return { type: 'editor', message: request.message, initial: request.initial };
     case 'custom': return undefined;
   }
 }

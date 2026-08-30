@@ -29,7 +29,7 @@ function insertMem(db: DatabaseSync, opts: {
     const memoryId = opts.memoryId ?? 'mem_' + randomUUID().replace(/-/g, '');
     const now = new Date().toISOString();
     db.prepare(`
-    INSERT INTO memories (
+    INSERT INTO awareness_memories (
       memory_id, agent_id, task_context, observation, importance,
       label, tags_json, workspace_path, failure_signature, created_at
     ) VALUES (?, 'agent-test', 'test context', ?, ?, ?, ?, ?, ?, ?)
@@ -61,7 +61,7 @@ function insertLock(db: DatabaseSync, opts: {
     const lockId = 'lock_' + randomUUID().replace(/-/g, '');
     const now = new Date().toISOString();
     db.prepare(`
-    INSERT INTO locks (lock_id, file_path, run_id, acquired_at, expires_at)
+    INSERT INTO awareness_locks (lock_id, file_path, run_id, acquired_at, expires_at)
     VALUES (?, ?, ?, ?, ?)
   `).run(lockId, opts.filePath ?? '/ws/a.ts', opts.runId, now, opts.expiresAt ?? null);
     return lockId;
@@ -82,7 +82,7 @@ describe('pruneStale — locks + tasks', () => {
     expect(res.pruned_locks).toBe(0);
 
     // Nothing deleted
-    const lockCount = (db.prepare('SELECT COUNT(*) AS c FROM locks').get() as { c: number }).c;
+    const lockCount = (db.prepare('SELECT COUNT(*) AS c FROM awareness_locks').get() as { c: number }).c;
     expect(lockCount).toBe(1);
   });
 
@@ -95,7 +95,7 @@ describe('pruneStale — locks + tasks', () => {
     const res = pruneStale(db, {});
     expect(res.pruned_locks).toBeGreaterThanOrEqual(1);
 
-    const lockCount = (db.prepare('SELECT COUNT(*) AS c FROM locks').get() as { c: number }).c;
+    const lockCount = (db.prepare('SELECT COUNT(*) AS c FROM awareness_locks').get() as { c: number }).c;
     expect(lockCount).toBe(0);
   });
 
@@ -137,7 +137,7 @@ describe('pruneStale — locks + tasks', () => {
     const res = pruneStale(db, {});
     expect(res.pruned_locks).toBe(0);
 
-    const lockCount = (db.prepare('SELECT COUNT(*) AS c FROM locks').get() as { c: number }).c;
+    const lockCount = (db.prepare('SELECT COUNT(*) AS c FROM awareness_locks').get() as { c: number }).c;
     expect(lockCount).toBe(1);
   });
 });
@@ -172,7 +172,7 @@ describe('getWorkspaceStatus — current schema', () => {
     expect(status.active_runs).toBeGreaterThanOrEqual(1);
   });
 
-  it('returns active locks from locks table', () => {
+  it('returns active locks from awareness_locks table', () => {
     const db = freshDb();
     const runId = insertTask(db);
     const future = new Date(Date.now() + 10 * 60_000).toISOString();
@@ -199,7 +199,7 @@ describe('getWorkspaceStatus — current schema', () => {
     expect(status.locks).toHaveLength(0);
     expect(status.pending_runs).toBe(0);
     expect(status.active_runs).toBe(1);
-    const lockCount = db.prepare('SELECT COUNT(*) AS count FROM locks').get() as { count: number };
+    const lockCount = db.prepare('SELECT COUNT(*) AS count FROM awareness_locks').get() as { count: number };
     expect(lockCount.count).toBe(1);
     const task = db.prepare('SELECT status FROM task_runs WHERE run_id = ?').get(runId) as { status: string };
     expect(task.status).toBe('ACTIVE');

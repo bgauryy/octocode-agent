@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { utcNow, type SqliteLike } from './schema.js';
 
 // This module owns normalized capability overrides. It retains its published
@@ -40,9 +41,14 @@ export function normalizeSkillKey(name: string): string {
   return key;
 }
 
-export function setSkillEnabled(db: SqliteLike, scopeKey: string, skillName: string, enabled: boolean): void {
+function normalizeSkillSourceKey(name: string, sourceId: string): string {
+  assertKey('skill source', sourceId);
+  return `${normalizeSkillKey(name)}@${createHash('sha256').update(sourceId).digest('hex')}`;
+}
+
+export function setSkillEnabled(db: SqliteLike, scopeKey: string, skillName: string, enabled: boolean, sourceId?: string): void {
   assertKey('skill scope', scopeKey);
-  const skillKey = normalizeSkillKey(skillName);
+  const skillKey = sourceId === undefined ? normalizeSkillKey(skillName) : normalizeSkillSourceKey(skillName, sourceId);
   db.prepare(`INSERT INTO skill_overrides (scope_key, skill_key, enabled, updated_at)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(scope_key, skill_key) DO UPDATE SET enabled=excluded.enabled, updated_at=excluded.updated_at`)
@@ -54,12 +60,16 @@ export function getSkillEnablement(
   scopeKey: string,
   skillName: string,
   configDefault = true,
+  sourceId?: string,
 ): boolean {
   assertKey('skill scope', scopeKey);
   const skillKey = normalizeSkillKey(skillName);
-  const workspace = db.prepare('SELECT enabled FROM skill_overrides WHERE scope_key=? AND skill_key=?').get(scopeKey, skillKey);
-  const global = db.prepare('SELECT enabled FROM skill_overrides WHERE scope_key=? AND skill_key=?').get(MCP_GLOBAL_SCOPE, skillKey);
-  for (const row of [workspace, global]) {
+  const sourceKey = sourceId === undefined ? undefined : normalizeSkillSourceKey(skillName, sourceId);
+  const read = (scope: string, key: string) => db.prepare('SELECT enabled FROM skill_overrides WHERE scope_key=? AND skill_key=?').get(scope, key);
+  const rows = sourceKey === undefined
+    ? [read(scopeKey, skillKey), read(MCP_GLOBAL_SCOPE, skillKey)]
+    : [read(scopeKey, sourceKey), read(scopeKey, skillKey), read(MCP_GLOBAL_SCOPE, sourceKey), read(MCP_GLOBAL_SCOPE, skillKey)];
+  for (const row of rows) {
     if (row && typeof row === 'object') return Number((row as { enabled: number }).enabled) === 1;
   }
   return configDefault;

@@ -62,6 +62,7 @@ describe('native session communication bridge', () => {
       sessionId: 'parent-session',
       agentId: 'native:parent-session',
       openStore: () => store,
+      contextNow: () => Date.parse('2026-08-28T00:01:00.000Z'),
     });
 
     await wrapped.start();
@@ -75,6 +76,42 @@ describe('native session communication bridge', () => {
       provenance: 'peer-attributed-data',
     });
     expect(acknowledgements).toEqual([{ eventId: 'evt-1', decision: 'accept' }]);
+  });
+
+  it('refuses stale peer context before it reaches model history', async () => {
+    const events = [peerEvent(1)];
+    let cursor = 0;
+    const acknowledgements: Array<{ eventId: string; decision: InboundDecision }> = [];
+    const store: AwarenessEventStore = {
+      listEvents: ({ limit }) => events.filter((event) => event.sequence > cursor).slice(0, limit),
+      acknowledgeEvent: ({ eventId, decision }) => {
+        acknowledgements.push({ eventId, decision });
+        cursor = 1;
+        return { sequence: cursor, decision, duplicate: false };
+      },
+      getConsumerCursor: () => cursor,
+      close: vi.fn(),
+    };
+    const execute = vi.fn(async () => ({ ok: true as const }));
+    const runtime: AgentRuntime = {
+      start: vi.fn(async () => undefined), submit: vi.fn(async () => undefined),
+      cancel: vi.fn(async () => undefined), execute,
+      snapshot: () => ({ state: 'ready' }) as RuntimeSnapshot,
+      subscribe: () => () => undefined, stop: vi.fn(async () => undefined),
+    };
+    const wrapped = withNativeSessionCommunication(runtime, {
+      workspace,
+      sessionId: 'parent-session',
+      agentId: 'native:parent-session',
+      openStore: () => store,
+      contextNow: () => Date.parse('2026-08-30T00:00:00.000Z'),
+      contextMaxAgeMs: 24 * 60 * 60 * 1_000,
+    });
+
+    await wrapped.start();
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(acknowledgements).toEqual([{ eventId: 'evt-1', decision: 'refuse' }]);
   });
 
   it('runs a real SQLite parent-child handoff through the headless session bridge', async () => {

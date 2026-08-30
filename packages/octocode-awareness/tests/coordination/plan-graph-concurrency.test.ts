@@ -38,7 +38,7 @@ function projectionWorker(input: {
     workerData: {
       moduleUrl: new URL('../../out/index.js', import.meta.url).href,
       workspace,
-      dbPath: process.env.OCTOCODE_DB_PATH,
+      dbPath: process.env.OCTOCODE_AGENT_DB_PATH,
       input,
     },
   });
@@ -62,13 +62,13 @@ function projectionWorker(input: {
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-plan-race-'));
-  process.env.OCTOCODE_DB_PATH = join(workspace, 'octocode.sqlite3');
+  process.env.OCTOCODE_AGENT_DB_PATH = join(workspace, 'agent.sqlite3');
   aw = openAwarenessStore({ workspace });
 });
 
 afterEach(async () => {
   aw.close();
-  delete process.env.OCTOCODE_DB_PATH;
+  delete process.env.OCTOCODE_AGENT_DB_PATH;
   await rm(workspace, { recursive: true, force: true });
 });
 

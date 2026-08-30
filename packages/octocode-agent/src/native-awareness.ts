@@ -7,7 +7,7 @@ import {
 } from '@octocodeai/octocode-awareness';
 import {
   closeOctocodeDb,
-  octocodeDbPath,
+  agentDbPath,
   openOctocodeDb,
 } from '@octocodeai/octocode-awareness/mcp-state';
 import { createEffectSet, type ToolRegistry } from '@octocodeai/agent-core';
@@ -39,7 +39,7 @@ function errorMessage(error: unknown): string {
 
 export function registerNativeAwarenessTool(registry: ToolRegistry, options: NativeAwarenessOptions): void {
   const env = options.env ?? process.env;
-  const dbPath = options.dbPath ?? octocodeDbPath(env);
+  const dbPath = options.dbPath ?? agentDbPath(env);
   const openDb = options.openDb ?? openOctocodeDb;
   const closeDb = options.closeDb ?? closeOctocodeDb;
   const run = options.run ?? runAwarenessToolOperation;

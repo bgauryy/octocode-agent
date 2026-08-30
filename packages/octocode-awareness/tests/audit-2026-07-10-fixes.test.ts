@@ -168,7 +168,7 @@ describe('NULL-expiry locks in dashboards (finding 2)', () => {
     expect(result.ok).toBe(true);
     // Legacy permanent locks have no expiry; the conflict checker treats
     // them as active forever, so dashboards must count them too.
-    db.prepare('UPDATE locks SET expires_at = NULL').run();
+    db.prepare('UPDATE awareness_locks SET expires_at = NULL').run();
     return { db, workspace };
   }
 

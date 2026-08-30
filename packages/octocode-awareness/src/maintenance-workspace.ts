@@ -41,7 +41,7 @@ export function getWorkspaceStatus(
   if (wsPath) { memoryScope.push('(workspace_path = ? OR workspace_path IS NULL)'); memoryScopeParams.push(wsPath); }
   if (artifact) { memoryScope.push('(artifact = ? OR artifact IS NULL)'); memoryScopeParams.push(artifact); }
   const activeMemories = (db.prepare(
-    `SELECT COUNT(*) AS c FROM memories WHERE ${memoryScope.join(' AND ')}`
+    `SELECT COUNT(*) AS c FROM awareness_memories WHERE ${memoryScope.join(' AND ')}`
   ).get(...memoryScopeParams) as { c: number }).c;
 
   const runScopeParts: string[] = [];
@@ -64,20 +64,20 @@ export function getWorkspaceStatus(
   if (artifact) { planScopeParts.push('(p.artifact = ? OR p.artifact IS NULL)'); planScopeParams.push(artifact); }
   const planScope = planScopeParts.length > 0 ? ` AND ${planScopeParts.join(' AND ')}` : '';
   const activePlans = (db.prepare(
-    `SELECT COUNT(*) AS c FROM plans p WHERE p.status IN ('DRAFT','ACTIVE','PAUSED')${planScope}`,
+    `SELECT COUNT(*) AS c FROM awareness_plans p WHERE p.status IN ('DRAFT','ACTIVE','PAUSED')${planScope}`,
   ).get(...planScopeParams) as { c: number }).c;
-  const readyTasks = (db.prepare(`SELECT COUNT(*) AS c FROM tasks t JOIN plans p ON p.plan_id = t.plan_id
+  const readyTasks = (db.prepare(`SELECT COUNT(*) AS c FROM awareness_tasks t JOIN awareness_plans p ON p.plan_id = t.plan_id
     WHERE t.status = 'OPEN'${planScope}
       AND NOT EXISTS (SELECT 1 FROM task_claims c WHERE c.task_id = t.task_id AND c.expires_at > ?)
       AND NOT EXISTS (
-        SELECT 1 FROM task_dependencies td JOIN tasks dependency ON dependency.task_id = td.depends_on_task_id
+        SELECT 1 FROM task_dependencies td JOIN awareness_tasks dependency ON dependency.task_id = td.depends_on_task_id
         WHERE td.task_id = t.task_id AND dependency.status <> 'DONE'
       )`).get(...planScopeParams, utcNow()) as { c: number }).c;
   const inProgressTasks = (db.prepare(
-    `SELECT COUNT(*) AS c FROM tasks t JOIN plans p ON p.plan_id = t.plan_id WHERE t.status = 'IN_PROGRESS'${planScope}`,
+    `SELECT COUNT(*) AS c FROM awareness_tasks t JOIN awareness_plans p ON p.plan_id = t.plan_id WHERE t.status = 'IN_PROGRESS'${planScope}`,
   ).get(...planScopeParams) as { c: number }).c;
   const verifyTasks = (db.prepare(
-    `SELECT COUNT(*) AS c FROM tasks t JOIN plans p ON p.plan_id = t.plan_id WHERE t.status = 'VERIFY'${planScope}`,
+    `SELECT COUNT(*) AS c FROM awareness_tasks t JOIN awareness_plans p ON p.plan_id = t.plan_id WHERE t.status = 'VERIFY'${planScope}`,
   ).get(...planScopeParams) as { c: number }).c;
 
   const actionableRefinements = openRefinementCount(db, {
@@ -102,13 +102,13 @@ export function getWorkspaceStatus(
   const lockWhere = lockWhereParts.length > 0 ? `WHERE ${lockWhereParts.join(' AND ')}` : '';
   const lockCount = (db.prepare(
     `SELECT COUNT(*) AS count
-     FROM locks fl
+     FROM awareness_locks fl
      JOIN task_runs ai ON ai.run_id = fl.run_id
      ${lockWhere}`
   ).get(...lockParams) as { count: number }).count;
   const lockRows = db.prepare(
     `SELECT fl.file_path, ai.agent_id, fl.run_id, ai.rationale AS reason, fl.expires_at
-     FROM locks fl
+     FROM awareness_locks fl
      JOIN task_runs ai ON ai.run_id = fl.run_id
      ${lockWhere}
      ORDER BY fl.acquired_at DESC
@@ -170,7 +170,7 @@ export function exportMemoryDoc(
   const rows = db.prepare(
     `SELECT m.memory_id, m.label, m.importance, m.task_context, m.observation,
             m.tags_json, m.repo, m.ref, m.failure_signature, m.created_at
-     FROM memories m
+     FROM awareness_memories m
      WHERE ${conds.join(' AND ')}
      ORDER BY m.importance DESC, m.created_at DESC`
   ).all(...bindParams) as unknown as MemRow[];
@@ -178,7 +178,7 @@ export function exportMemoryDoc(
     const refs = db.prepare(
       `SELECT r.memory_id, r.reference
        FROM memory_refs r
-       JOIN memories m ON m.memory_id = r.memory_id
+       JOIN awareness_memories m ON m.memory_id = r.memory_id
        WHERE ${conds.join(' AND ')}
        ORDER BY r.memory_id, r.ordinal`
     ).all(...bindParams) as unknown as Array<{ memory_id: string; reference: string }>;
@@ -261,7 +261,7 @@ export function exportHarness(
   // Tier 1: harness-tagged memories (explicit skill improvement proposals)
   const harnessRows = db.prepare(
     `SELECT memory_id, label, importance, observation
-     FROM memories
+     FROM awareness_memories
      WHERE state = 'ACTIVE'
        AND tags_json LIKE '%"harness"%'
        ${scopeSql}
@@ -281,7 +281,7 @@ export function exportHarness(
     const remaining = limit - memories.length;
     const generalRows = db.prepare(
       `SELECT memory_id, label, importance, observation
-       FROM memories
+       FROM awareness_memories
        WHERE state = 'ACTIVE'
          AND importance >= ?
          AND label <> 'EXPERIENCE'

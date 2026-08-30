@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { closeOctocodeDb, getMcpEnablement, getSkillEnablement, octocodeDbPath, openOctocodeDb } from '@octocodeai/octocode-awareness/mcp-state';
+import { closeOctocodeDb, getMcpEnablement, getSkillEnablement, agentDbPath, openOctocodeDb } from '@octocodeai/octocode-awareness/mcp-state';
 import { createNativeInteractionBroker } from '../src/native-interactions.js';
 import { createNativeCapabilityComposition, createNativeSettingsCapabilityControl } from '../src/native-tools.js';
 
@@ -52,7 +52,7 @@ describe('native MCP/Skill production composition', () => {
     expect(fs.readFileSync(path.join(lifecycle.managedRoot, 'demo', 'SKILL.md'), 'utf8')).toContain('Second.');
 
     await lifecycle.mutate({ action: 'disable', name: 'demo', managedRoot: lifecycle.managedRoot });
-    const dbFile = octocodeDbPath(env);
+    const dbFile = agentDbPath(env);
     const db = openOctocodeDb(dbFile);
     expect(getSkillEnablement(db, root, 'demo', true)).toBe(false);
     closeOctocodeDb(dbFile);
@@ -72,21 +72,26 @@ describe('native MCP/Skill production composition', () => {
       .resolves.toEqual({ action: 'decline' });
   });
 
-  it('rejects a managed skill root redirected outside the workspace', () => {
+  it('rejects a managed skill root redirected outside the global agent home', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-capabilities-link-'));
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'native-capabilities-link-outside-'));
     roots.push(root, outside);
-    fs.symlinkSync(outside, path.join(root, '.octocode'));
-    expect(() => createNativeCapabilityComposition({ cwd: root, env: { OCTOCODE_HOME: path.join(root, 'home') }, interactions: createNativeInteractionBroker(), workspaceTrust: 'trusted' }))
-      .toThrow(/managed skill root.*workspace/i);
+    const octocodeHome = path.join(root, 'home');
+    fs.mkdirSync(octocodeHome);
+    fs.symlinkSync(outside, path.join(octocodeHome, 'agent'));
+    expect(() => createNativeCapabilityComposition({ cwd: root, env: { OCTOCODE_HOME: octocodeHome }, interactions: createNativeInteractionBroker(), workspaceTrust: 'trusted' }))
+      .toThrow(/managed skill root.*global agent home/i);
   });
 
   it('shares MCP and Skill lifecycle authorities with the settings control plane', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-settings-capabilities-'));
     roots.push(root);
     fs.mkdirSync(path.join(root, '.git'));
-    fs.mkdirSync(path.join(root, '.octocode', 'agent', 'mcp'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.octocode', 'agent', 'mcp', 'servers.json'), JSON.stringify({ docs: { command: 'docs-mcp' } }));
+    fs.mkdirSync(path.join(root, 'home', 'agent', 'mcp'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'home', 'agent', 'mcp', 'servers.json'), JSON.stringify({ docs: { command: 'docs-mcp' } }));
+    const importedSkill = path.join(root, '.agent', 'skills', 'research');
+    fs.mkdirSync(importedSkill, { recursive: true });
+    fs.writeFileSync(path.join(importedSkill, 'SKILL.md'), '---\nname: research\ndescription: Imported research skill.\n---\nUse evidence.');
     const interactions = createNativeInteractionBroker();
     interactions.attach(async () => ({ status: 'accepted', value: true }));
     const env = { OCTOCODE_HOME: path.join(root, 'home') };
@@ -94,12 +99,30 @@ describe('native MCP/Skill production composition', () => {
     const control = createNativeSettingsCapabilityControl({ cwd: root, env, skills: composition.skills });
     const before = control.snapshot();
     expect(before.mcpServers).toContainEqual(expect.objectContaining({ name: 'docs', enabled: true }));
+    const skill = before.skills.find(({ name }) => name === 'research');
+    expect(skill).toMatchObject({ enabled: false, vendor: 'agent' });
     const changed = await control.mutate({ requestId: 'disable-docs', expectedRevision: before.revision, action: { op: 'set-mcp-server-enabled', server: 'docs', enabled: false } });
     expect(changed.ok).toBe(true);
-    const dbFile = octocodeDbPath(env);
+    const dbFile = agentDbPath(env);
     const db = openOctocodeDb(dbFile);
     expect(getMcpEnablement(db, root, 'docs', undefined, true)).toBe(false);
     closeOctocodeDb(dbFile);
     await expect(control.mutate({ requestId: 'stale', expectedRevision: before.revision, action: { op: 'set-mcp-server-enabled', server: 'docs', enabled: true } })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/changed/i) });
+    const reenabled = await control.mutate({ requestId: 'enable-docs', expectedRevision: changed.revision, action: { op: 'set-mcp-server-enabled', server: 'docs', enabled: true } });
+    expect(reenabled.ok).toBe(true);
+    const enabledSkill = await control.mutate({
+      requestId: 'enable-research',
+      expectedRevision: reenabled.revision,
+      action: { op: 'set-skill-enabled', name: 'research', source: skill!.source!, enabled: true },
+    });
+    expect(enabledSkill.ok).toBe(true);
+    expect(control.snapshot().skills.find(({ name }) => name === 'research')).toMatchObject({ enabled: true, source: skill!.source });
+    const disabledSkill = await control.mutate({
+      requestId: 'disable-research',
+      expectedRevision: enabledSkill.revision,
+      action: { op: 'set-skill-enabled', name: 'research', source: skill!.source!, enabled: false },
+    });
+    expect(disabledSkill.ok).toBe(true);
+    expect(control.snapshot().skills.find(({ name }) => name === 'research')).toMatchObject({ enabled: false, source: skill!.source });
   });
 });

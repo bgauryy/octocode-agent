@@ -25,7 +25,8 @@ describe('Awareness no-legacy contract', () => {
     [['lock', 'wait', '--file', 'src/a.ts', '--wait-seconds', '1ms'], /unknown flag: --wait-seconds/],
     [['memory', 'recall', '--smart'], /unknown flag: --smart/],
   ] as const)('rejects removed form %j without forwarding', (args, errorPattern) => {
-    const result = execCli([...args, '--workspace', workspace()]);
+    const root = workspace();
+    const result = execCli([...args, '--workspace', root, '--db', join(root, 'agent.sqlite3')]);
     expect(result.code).toBe(1);
     expect(result.stderr).toMatch(errorPattern);
   });

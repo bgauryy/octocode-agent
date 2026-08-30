@@ -115,7 +115,7 @@ export function pruneStale(db: DatabaseSync, params: Record<string, unknown> = {
   if (workspacePath) { conditions.push('t.workspace_path = ?'); binds.push(workspacePath); }
   if (artifact) { conditions.push('(t.artifact = ? OR t.artifact IS NULL)'); binds.push(artifact); }
   const where = conditions.join(' AND ');
-  const from = 'locks l JOIN task_runs t ON t.run_id = l.run_id';
+  const from = 'awareness_locks l JOIN task_runs t ON t.run_id = l.run_id';
 
   let staleLocks: Array<{ lock_id: string; run_id: string; file_path: string; agent_id: string; reason: string; expires_at: string | null }> = [];
   try {
@@ -156,7 +156,7 @@ export function pruneStale(db: DatabaseSync, params: Record<string, unknown> = {
       return { pruned_locks: 0 };
     }
     const ph = staleLocks.map(() => '?').join(',');
-    db.prepare(`DELETE FROM locks WHERE lock_id IN (${ph})`).run(...staleLocks.map(l => l.lock_id));
+    db.prepare(`DELETE FROM awareness_locks WHERE lock_id IN (${ph})`).run(...staleLocks.map(l => l.lock_id));
     if (ownsTransaction) db.exec('COMMIT');
   } catch (e) {
     if (ownsTransaction) {

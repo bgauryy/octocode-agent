@@ -15,7 +15,7 @@ Testing is mandatory at every migration stage. Passing compilation or one host-s
 
 A stage fails when a required test is skipped without an owner-approved reason and expiration trigger.
 
-The latest dirty-tree integration receipt is [the 2026-08-28 integrated runtime closure](evidence/integrated-runtime-closure-2026-08-28.md): 3,484 root tests pass with 16 expected native skips, and bounded real-process, in-app browser, built-CLI, and one-host PTY checks pass. It is an input to this plan, not a substitute for the clean candidate, credentialed-provider, cross-platform, real Pi/native, canary, or rollback matrices.
+The 2026-08-28 [integrated runtime closure](evidence/integrated-runtime-closure-2026-08-28.md) remains an immutable baseline. The current 2026-08-29 dirty-tree gate passes 3,687 root tests plus package-install, real-PTY restoration, lossless Unicode streaming, SIGINT/SIGTERM cleanup, and guarded performance sensors. These receipts are inputs to this plan, not substitutes for the clean candidate, credentialed-provider, cross-platform, real Pi/native, canary, or rollback matrices.
 
 ## Test environments
 
@@ -69,6 +69,8 @@ The latest dirty-tree integration receipt is [the 2026-08-28 integrated runtime 
 | OpenTUI projection/renderer | Pi semantic baseline | `@opentui/core` adapter and test renderer | 0, 5-7 | Runtime/package spike plus frame, input, lifecycle, accessibility, and PTY gates pass |
 | Settings registry/HTML | Existing eight-section page and direct writers | Unified native and Pi-extension page | 1, 5-7 | Every supported setting renders/classifies; identical effective values and typed mutations |
 | Models/`models.json` | Pi defaults and compatibility sources | Canonical catalog/store plus import adapters | 1, 5-7 | Default/catalog/CRUD/import/diff/conflict/atomicity/redaction suites pass |
+| Ask/Plan/Delegate/Configure | Supported Pi projections | Native production control-plane owners | 2-7 | Same approved semantics and authority split; no parallel store or bypass |
+| Connections/MCP Tasks | Supported Pi MCP adapter | Native MCP adapter plus Configure → Connections projection | 4-7 | Negotiation, auth, task state, cancellation, recovery, redaction, and information architecture pass |
 | Print | Pi runner | Native adapter | 5-7 | Same normalized output and exit code |
 | JSON/RPC | Pi protocol | Native/compatibility adapter | 5-7 | Schema and corpus pass |
 | Packaging/dependencies | Pi artifact | Native artifact | 6-7 | Target dependency/reference counts |
@@ -161,15 +163,31 @@ Run every scenario against the Pi compatibility adapter and native implementatio
 7. Send steer and follow-up input while streaming.
 8. Start, name, resume, fork, navigate tree, rewind, export, and stop a session.
 9. Compact manually, at threshold, on overflow, on retry, and on failed retry.
-10. Exercise every semantic UI request with interactive and headless adapters.
+10. Exercise every semantic UI request with interactive and headless adapters, including Ask, Plan, Delegate, Configure, and MCP Tasks beneath Configure → Connections.
 11. Run print, JSON, and RPC command/event corpora.
 12. Restart after each persistence fault and verify one deterministic projection.
 13. Load reviewed Codex hooks, dispatch every mapped lifecycle event, and compare decision/context/rewrite receipts.
 14. Activate, use, disable, unload, update, and resume with a synthetic plugin while proving transactional contributions and zero owned resources.
-
 The comparison reports the first divergence and the complete normalized trace hash.
 
-Before retirement, run the same semantic scenarios through the frozen Pi oracle against every pinned comparison version. Add adapter-specific cases for activation, unsupported-version failure, event mapping, context privilege narrowing, UI fallback, session identity, and renderer-only extensions. After retirement, replace this live matrix with immutable receipts and a zero-live-Pi repository/artifact check.
+Run the same semantic scenarios through the independently supported Pi extension against every declared version. Add adapter-specific cases for activation, unsupported-version failure, event mapping, context privilege narrowing, UI fallback, session identity, and renderer-only extensions. Native release closure retains these live extension tests and separately requires zero native Pi paths.
+
+## Sealed held-out evaluation corpus
+
+The release/test owner freezes `native-pi-isolation-v1` before the candidate run. Each family has at least one undisclosed concrete variant per applicable mode; the receipt contains only hashes until evaluation completes.
+
+| Family | Held-out variation | Required invariant |
+|---|---|---|
+| Lifecycle | Start/stop interleaving with one listener failure | One legal terminal sequence; no post-stop event |
+| Stream/tool | Chunk and tool-argument boundaries vary | Same normalized content, correlation, and result |
+| Policy/effects | Trust, plan, lock, hook rewrite, and approval combinations | Same ordered decision; zero unregistered effect |
+| Cancellation | Cancel during model, tool child, worker, and compaction boundaries | One terminal result; zero owned child |
+| Sessions | Branched imported session with unknown/truncated records | Source unchanged; deterministic safe projection or typed rejection |
+| Control plane | Ask timeout, Plan revision conflict, Delegate dead pipe, Configure revision conflict | Canonical owner resolves deterministically; no host-private bypass |
+| Connections | MCP task auth/TTL/restart/cancel and cross-caller isolation | Task remains negotiated, scoped, durable, redacted, and under Connections |
+| Output/platform | Malformed JSON/RPC plus narrow Unicode PTY crash | Protocol purity and exact terminal restoration |
+
+The baseline runner has not executed this sealed corpus. Unsupported, skipped, quarantined, or fixture-mutated required cases fail the KPI.
 
 ## Mode matrix
 
@@ -318,7 +336,7 @@ The release candidate passes only when:
 - all required suites and real paths pass on the named candidate artifact;
 - all required platforms/modes pass or have an approved support-scope change;
 - native agent/core `pi-coding-agent` references and dependency paths equal zero;
-- before retirement, remaining live Pi references match the frozen-oracle inventory and pinned matrix; after retirement, live repository and artifact references equal zero;
+- extension-owned Pi references match the approved package/test/publication inventory, while native source, manifests, dependency tree, built/packed artifacts, installers, updates, selectors, fallbacks, and rollback paths contain zero Pi references;
 - session source hashes remain unchanged after import;
 - security bypasses, duplicate effects, unrecoverable migrations, compaction loops, and owned-child leaks equal zero;
 - performance and reliability meet approved baseline-derived thresholds;

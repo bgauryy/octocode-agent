@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { correlationId, packetId, sessionId, workerId, type WorkerSpawnPacket, type WorkerTerminalPacket } from '@octocodeai/agent-core';
-import { closeOctocodeDb, listWorkerLifecycleEvents, octocodeDbPath, openOctocodeDb } from '@octocodeai/octocode-awareness/mcp-state';
+import { closeOctocodeDb, listWorkerLifecycleEvents, agentDbPath, openOctocodeDb } from '@octocodeai/octocode-awareness/mcp-state';
 import { NativeAwarenessWorkerLedger } from '../src/native-worker-ledger.js';
 
 describe('native Awareness worker ledger adapter', () => {
@@ -23,7 +23,7 @@ describe('native Awareness worker ledger adapter', () => {
     await ledger.append(spawn);
     await ledger.append(terminal);
 
-    const dbPath = octocodeDbPath(env);
+    const dbPath = agentDbPath(env);
     const db = openOctocodeDb(dbPath);
     try {
       const events = listWorkerLifecycleEvents(db, { workspace: '/workspace', sessionId: 'session:1' });

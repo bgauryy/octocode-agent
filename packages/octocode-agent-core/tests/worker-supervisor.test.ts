@@ -68,6 +68,24 @@ const controlled = (): ControlledWorker => {
 const tick = async (): Promise<void> => { for (let index = 0; index < 12; index += 1) await Promise.resolve(); };
 
 describe('WorkerSupervisor', () => {
+  it('reports exactly one canonical start and stop boundary per worker', async () => {
+    const worker = controlled();
+    const started = vi.fn();
+    const stopped = vi.fn();
+    const supervisor = new WorkerSupervisor({
+      port: { spawn: async () => worker.handle }, maxActive: 1, onStarted: started, onStopped: stopped,
+    });
+    const packet = spawnPacket('lifecycle');
+    await supervisor.spawn(packet);
+    await tick();
+    expect(started).toHaveBeenCalledOnce();
+    expect(started).toHaveBeenCalledWith(expect.objectContaining({ workerId: packet.workerId, state: 'running' }));
+    worker.finish(terminalPacket(packet, 'succeeded'));
+    await supervisor.wait(packet.workerId);
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(stopped).toHaveBeenCalledWith(expect.objectContaining({ workerId: packet.workerId, state: 'succeeded' }));
+  });
+
   it('enforces active concurrency and drains queued workers in FIFO order', async () => {
     const workers = new Map<string, ControlledWorker>();
     const starts: string[] = [];

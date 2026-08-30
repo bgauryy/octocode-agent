@@ -41,7 +41,7 @@ describe('pruneStale', () => {
       if (!result.ok) throw new Error('claim failed');
       // Age the lock to the past
       const past = new Date(Date.now() - 5000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(past, result.run.run_id);
+      db.prepare('UPDATE awareness_locks SET expires_at = ? WHERE run_id = ?').run(past, result.run.run_id);
 
       const pruned = pruneStale(db, {});
       expect(pruned.pruned_locks).toBeGreaterThanOrEqual(1);
@@ -57,7 +57,7 @@ describe('pruneStale', () => {
       });
       if (!claim.ok) throw new Error('claim failed');
       const past = new Date(Date.now() - 5000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(past, claim.run.run_id);
+      db.prepare('UPDATE awareness_locks SET expires_at = ? WHERE run_id = ?').run(past, claim.run.run_id);
 
       pruneStale(db, {});
       const intent = db.prepare('SELECT status FROM task_runs WHERE run_id = ?').get(claim.run.run_id) as { status: string };
@@ -196,12 +196,12 @@ describe('digest dry_run', () => {
       validFrom: new Date(Date.now() - 2000).toISOString(),
       validTo: new Date(Date.now() - 1000).toISOString(),
     });
-    const before = (db.prepare("SELECT COUNT(*) AS c FROM memories WHERE state = 'ACTIVE'").get() as { c: number }).c;
+    const before = (db.prepare("SELECT COUNT(*) AS c FROM awareness_memories WHERE state = 'ACTIVE'").get() as { c: number }).c;
     const result = digest(db, { dry_run: true });
     expect(result.dry_run).toBe(true);
     expect(result.would_archive).toBeGreaterThanOrEqual(1);
     expect(result.archived_memories).toBe(0); // nothing actually changed
-    const after = (db.prepare("SELECT COUNT(*) AS c FROM memories WHERE state = 'ACTIVE'").get() as { c: number }).c;
+    const after = (db.prepare("SELECT COUNT(*) AS c FROM awareness_memories WHERE state = 'ACTIVE'").get() as { c: number }).c;
     expect(after).toBe(before); // state unchanged
   });
 
@@ -232,7 +232,7 @@ describe('digest dry_run', () => {
 });
 
 describe('digest', () => {
-  it('rebuilds memories_fts from memories source of truth', () => {
+  it('rebuilds memories_fts from awareness_memories source of truth', () => {
     const db = freshDb();
     insertMemory(db, {
       taskContext: 'digest fts source',
@@ -259,7 +259,7 @@ describe('digest', () => {
       label: 'GOTCHA',
     });
     rebuildFts(db);
-    db.prepare('DELETE FROM memories WHERE memory_id = ?').run(memoryId);
+    db.prepare('DELETE FROM awareness_memories WHERE memory_id = ?').run(memoryId);
 
     const result = digest(db, {});
     expect(result.fts_rebuilt).toBe(true);

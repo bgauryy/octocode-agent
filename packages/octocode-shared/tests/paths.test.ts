@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import {
-  OCTOCODE_DB_FILENAME,
-  awarenessDbPath,
+  AGENT_DB_FILENAME,
+  OCTOCODE_AGENT_DB_PATH_ENV,
+  agentDbPath,
+  agentHome,
   getOctocodeHome,
-  octocodeDbPath,
   safeSessionId,
   sessionArtifactDir,
   sessionDir,
@@ -12,31 +13,39 @@ import {
 } from '../src/paths.js';
 
 const HOME = '/tmp/octo-home';
-const env = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({ OCTOCODE_AGENT_DIR: HOME, ...extra });
+const env = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({ OCTOCODE_HOME: HOME, ...extra });
 
 describe('getOctocodeHome', () => {
-  it('honors OCTOCODE_AGENT_DIR over config resolution', () => {
-    expect(getOctocodeHome(env())).toBe(HOME);
+  it('remains the product home even when the agent root is overridden', () => {
+    expect(getOctocodeHome(env({ OCTOCODE_AGENT_DIR: '/tmp/custom-agent' }))).toBe(HOME);
   });
 });
 
-describe('octocodeDbPath', () => {
-  it('defaults to <home>/octocode.sqlite3', () => {
-    expect(octocodeDbPath(env())).toBe(join(HOME, OCTOCODE_DB_FILENAME));
+describe('agentHome', () => {
+  it('defaults to <home>/agent', () => {
+    expect(agentHome(env())).toBe(join(HOME, 'agent'));
   });
 
-  it('honors OCTOCODE_DB_PATH override', () => {
-    expect(octocodeDbPath(env({ OCTOCODE_DB_PATH: '/var/db/x.sqlite3' }))).toBe('/var/db/x.sqlite3');
-  });
-
-  it('ignores a blank OCTOCODE_DB_PATH override', () => {
-    expect(octocodeDbPath(env({ OCTOCODE_DB_PATH: '   ' }))).toBe(join(HOME, OCTOCODE_DB_FILENAME));
+  it('honors the agent-root override without changing the product home', () => {
+    const overridden = env({ OCTOCODE_AGENT_DIR: '/tmp/custom-agent' });
+    expect(agentHome(overridden)).toBe('/tmp/custom-agent');
+    expect(getOctocodeHome(overridden)).toBe(HOME);
   });
 });
 
-describe('awarenessDbPath', () => {
-  it('lives under the same home in its own file', () => {
-    expect(awarenessDbPath(env())).toBe(join(HOME, 'memory', 'awareness.sqlite3'));
+describe('agentDbPath', () => {
+  it('defaults to <home>/agent/agent.sqlite3', () => {
+    expect(agentDbPath(env())).toBe(join(HOME, 'agent', AGENT_DB_FILENAME));
+  });
+
+  it('prefers the agent-specific DB override', () => {
+    expect(agentDbPath(env({ [OCTOCODE_AGENT_DB_PATH_ENV]: '/var/db/agent.sqlite3' }))).toBe('/var/db/agent.sqlite3');
+  });
+
+  it('ignores blank DB overrides', () => {
+    expect(agentDbPath(env({
+      [OCTOCODE_AGENT_DB_PATH_ENV]: '   ',
+    }))).toBe(join(HOME, 'agent', AGENT_DB_FILENAME));
   });
 });
 

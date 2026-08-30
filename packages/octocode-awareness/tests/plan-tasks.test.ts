@@ -24,13 +24,13 @@ function createTask(db: DatabaseSync, params: TestTaskParams) {
 describe('plan and task collaboration', () => {
 it('keeps durable tasks distinct from execution runs', () => {
     const db = freshDb();
-    expect([...tableColumns(db, 'tasks')]).toEqual(expect.arrayContaining([
+    expect([...tableColumns(db, 'awareness_tasks')]).toEqual(expect.arrayContaining([
       'task_id', 'plan_id', 'title', 'reasoning', 'status',
     ]));
     expect([...tableColumns(db, 'task_runs')]).toEqual(expect.arrayContaining([
       'run_id', 'task_id', 'agent_id', 'test_plan', 'status',
     ]));
-    expect(tableColumns(db, 'tasks').has('test_plan')).toBe(false);
+    expect(tableColumns(db, 'awareness_tasks').has('test_plan')).toBe(false);
     expect(tableColumns(db, 'task_runs').has('title')).toBe(false);
   });
 it('creates a managed plan document and registers the lead as a member', () => {
@@ -152,7 +152,7 @@ it('validates plan ownership, document containment, filters, and cleanup', () =>
       }).status).toBe('ACTIVE');
 
       const failedDb = freshDb();
-      failedDb.exec(`CREATE TRIGGER reject_plan BEFORE INSERT ON plans
+      failedDb.exec(`CREATE TRIGGER reject_plan BEFORE INSERT ON awareness_plans
         BEGIN SELECT RAISE(ABORT, 'forced plan failure'); END`);
       const failedWorkspace = mkdtempSync(join(tmpdir(), 'oc-plan-fail-'));
       try {
@@ -195,7 +195,7 @@ it('covers dependency guards, filtered task views, heartbeats, and lease expiry'
         planId: otherPlan.plan_id, title: 'Foreign', reasoning: 'Remain in another plan.',
         paths: ['src/c.ts'], createdBy: 'lead',
       }).task;
-      db.prepare("UPDATE tasks SET status = 'BLOCKED' WHERE task_id = ?").run(foreign.task_id);
+      db.prepare("UPDATE awareness_tasks SET status = 'BLOCKED' WHERE task_id = ?").run(foreign.task_id);
       const notOpen = claimTask(db, { taskId: foreign.task_id, agentId: 'worker' });
       expect(notOpen.ok).toBe(false);
       if (!notOpen.ok) expect(notOpen.error).toMatch(/status=BLOCKED/);
@@ -256,7 +256,7 @@ it('covers dependency guards, filtered task views, heartbeats, and lease expiry'
         .toBe('OPEN');
       expect(db.prepare('SELECT status FROM task_runs WHERE run_id = ?').get(claim.run.run_id))
         .toEqual({ status: 'FAILED' });
-      expect(db.prepare('SELECT COUNT(*) AS count FROM locks WHERE run_id = ?').get(claim.run.run_id))
+      expect(db.prepare('SELECT COUNT(*) AS count FROM awareness_locks WHERE run_id = ?').get(claim.run.run_id))
         .toEqual({ count: 0 });
 
       expect(() => updatePlanStatus(db, {
@@ -274,7 +274,7 @@ it('covers dependency guards, filtered task views, heartbeats, and lease expiry'
           name: 'Task rollback', objective: 'Rollback a failed task insert.',
           leadAgentId: 'lead', workspacePath: failedWorkspace,
         }).plan;
-        failedDb.exec(`CREATE TRIGGER reject_task BEFORE INSERT ON tasks
+        failedDb.exec(`CREATE TRIGGER reject_task BEFORE INSERT ON awareness_tasks
           BEGIN SELECT RAISE(ABORT, 'forced task failure'); END`);
         expect(() => createTask(failedDb, {
           planId: failedPlan.plan_id, title: 'Rejected', reasoning: 'Exercise rollback.',

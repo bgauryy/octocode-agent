@@ -66,7 +66,7 @@ function activePeerRows(db: DatabaseSync, runId: string, files: string[]): WorkP
   const now = utcNow();
   const rows = db.prepare(`SELECT rf.run_id, tr.task_id, tr.origin, tr.agent_id, rf.file_path,
       tr.rationale, rf.heartbeat_at, rf.expires_at,
-      EXISTS(SELECT 1 FROM locks l WHERE l.run_id = rf.run_id AND l.file_path = rf.file_path
+      EXISTS(SELECT 1 FROM awareness_locks l WHERE l.run_id = rf.run_id AND l.file_path = rf.file_path
         AND (l.expires_at IS NULL OR l.expires_at > ?)) AS exclusive
     FROM run_files rf
     JOIN task_runs tr ON tr.run_id = rf.run_id
@@ -103,7 +103,7 @@ function conflictRows(
   if (exclusive) {
     return db.prepare(`SELECT rf.run_id, tr.task_id, tr.origin, tr.agent_id, rf.file_path,
         tr.rationale, rf.heartbeat_at, rf.expires_at,
-        EXISTS(SELECT 1 FROM locks l WHERE l.run_id = rf.run_id AND l.file_path = rf.file_path
+        EXISTS(SELECT 1 FROM awareness_locks l WHERE l.run_id = rf.run_id AND l.file_path = rf.file_path
           AND (l.expires_at IS NULL OR l.expires_at > ?)) AS exclusive,
         'ACTIVE_WORK' AS conflict_type
       FROM run_files rf JOIN task_runs tr ON tr.run_id = rf.run_id
@@ -115,7 +115,7 @@ function conflictRows(
   return db.prepare(`SELECT l.run_id, tr.task_id, tr.origin, tr.agent_id, l.file_path,
       tr.rationale, rf.heartbeat_at, COALESCE(l.expires_at, rf.expires_at) AS expires_at,
       1 AS exclusive, 'EXCLUSIVE_LOCK' AS conflict_type
-    FROM locks l
+    FROM awareness_locks l
     JOIN task_runs tr ON tr.run_id = l.run_id
     LEFT JOIN run_files rf ON rf.run_id = l.run_id AND rf.file_path = l.file_path
     WHERE l.file_path IN (${placeholders}) AND l.run_id <> ? AND tr.status = 'ACTIVE'
@@ -214,7 +214,7 @@ export function startWork(db: DatabaseSync, params: StartWorkParams): StartWorkR
     for (const file of files) {
       upsert.run(runId, file, params.reasonOverride?.trim() || null, source, now, now, expiresAt);
       if (params.exclusive) {
-        db.prepare(`INSERT INTO locks(lock_id, file_path, run_id, acquired_at, expires_at)
+        db.prepare(`INSERT INTO awareness_locks(lock_id, file_path, run_id, acquired_at, expires_at)
           VALUES (?, ?, ?, ?, ?)
           ON CONFLICT(file_path, run_id) DO UPDATE SET expires_at = excluded.expires_at`)
           .run(`lock_${randomUUID().replace(/-/g, '')}`, file, runId, now, expiresAt);
@@ -247,7 +247,7 @@ export function renewWorkLease(
       throw new Error(`run ${params.runId} belongs to ${currentRun.agent_id}`);
     }
     if (currentRun.status !== 'ACTIVE') throw new Error(`run ${params.runId} is not ACTIVE`);
-    const allLockRows = db.prepare('SELECT file_path FROM locks WHERE run_id = ?')
+    const allLockRows = db.prepare('SELECT file_path FROM awareness_locks WHERE run_id = ?')
       .all(params.runId) as unknown as Array<{ file_path: string }>;
     const lockedTargets = new Set(allLockRows.map((row) => row.file_path));
     const targets = options.exclusiveOnly
@@ -268,7 +268,7 @@ export function renewWorkLease(
       .all(params.runId, ...targets) as unknown as Array<{ file_path: string }>;
     if (present.length !== targets.length) throw new Error('one or more active file presences were not found for this run');
 
-    db.prepare('DELETE FROM locks WHERE expires_at IS NOT NULL AND expires_at <= ?').run(now);
+    db.prepare('DELETE FROM awareness_locks WHERE expires_at IS NOT NULL AND expires_at <= ?').run(now);
     for (const file of targets) {
       const conflicts = conflictRows(db, params.runId, [file], lockedTargets.has(file));
       if (conflicts.length > 0) {
@@ -282,7 +282,7 @@ export function renewWorkLease(
       const result = update.run(now, expiresAt, params.runId, file) as { changes: number };
       if (result.changes === 0) throw new Error(`active file presence not found: ${file}`);
       if (lockedTargets.has(file)) {
-        db.prepare(`INSERT INTO locks(lock_id, file_path, run_id, acquired_at, expires_at)
+        db.prepare(`INSERT INTO awareness_locks(lock_id, file_path, run_id, acquired_at, expires_at)
           VALUES (?, ?, ?, ?, ?)
           ON CONFLICT(file_path, run_id) DO UPDATE SET expires_at = excluded.expires_at`)
           .run(`lock_${randomUUID().replace(/-/g, '')}`, file, params.runId, now, expiresAt);
@@ -323,7 +323,7 @@ export function endWork(db: DatabaseSync, params: EndWorkParams): WorkMutationRe
       if (ended.changes !== targets.length) {
         throw new Error('one or more active file presences were not found for this run');
       }
-      db.prepare(`DELETE FROM locks WHERE run_id = ?
+      db.prepare(`DELETE FROM awareness_locks WHERE run_id = ?
         AND file_path IN (${targets.map(() => '?').join(',')})`)
         .run(params.runId, ...targets);
     }
@@ -363,7 +363,7 @@ export function listWork(db: DatabaseSync, params: ListWorkParams = {}): ListWor
   if (limit != null) binds.push(limit);
   const rows = db.prepare(`SELECT rf.*, tr.task_id, tr.origin, tr.agent_id, tr.session_id,
       tr.rationale, tr.test_plan, tr.status, tr.workspace_path, tr.artifact,
-      EXISTS(SELECT 1 FROM locks l WHERE l.run_id = rf.run_id AND l.file_path = rf.file_path
+      EXISTS(SELECT 1 FROM awareness_locks l WHERE l.run_id = rf.run_id AND l.file_path = rf.file_path
         AND (l.expires_at IS NULL OR l.expires_at > ?)) AS exclusive,
       COUNT(*) OVER() AS result_total
     FROM run_files rf JOIN task_runs tr ON tr.run_id = rf.run_id

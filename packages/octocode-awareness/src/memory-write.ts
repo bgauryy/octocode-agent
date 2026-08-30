@@ -20,7 +20,7 @@ export function bumpAccess(db: DatabaseSync, memoryIds: string[]): void {
   const now = utcNow();
   const placeholders = memoryIds.map(() => '?').join(',');
   db.prepare(`
-    UPDATE memories
+    UPDATE awareness_memories
     SET access_count = COALESCE(access_count, 0) + 1, last_accessed_at = ?
     WHERE memory_id IN (${placeholders})
   `).run(now, ...memoryIds);
@@ -91,7 +91,7 @@ export function insertMemory(db: DatabaseSync, params: InsertMemoryParams): Inse
       const placeholders = supersedeIds.map(() => '?').join(',');
       const rows = db.prepare(`
         SELECT memory_id, agent_id, state, workspace_path, artifact, repo, ref
-        FROM memories WHERE memory_id IN (${placeholders})
+        FROM awareness_memories WHERE memory_id IN (${placeholders})
       `).all(...supersedeIds) as unknown as Array<Record<string, string | null>>;
       const byId = new Map(rows.map(row => [String(row['memory_id']), row]));
       for (const oldId of supersedeIds) {
@@ -120,7 +120,7 @@ export function insertMemory(db: DatabaseSync, params: InsertMemoryParams): Inse
     noveltyScore = Math.max(0, Math.min(1, 1 - (similar[0]?.similarity ?? 0)));
     similarMemoryIds = similar.map(m => m.memory_id);
 
-    const compatibilityText = tableColumns(db, 'memories').has('text');
+    const compatibilityText = tableColumns(db, 'awareness_memories').has('text');
     const columns = `memory_id, agent_id, task_context, observation, ${compatibilityText ? 'text, ' : ''}importance,
       label, tags_json, workspace_path, artifact, repo, ref,
       file_tree_fingerprint, novelty_score, created_at, updated_at,
@@ -134,7 +134,7 @@ export function insertMemory(db: DatabaseSync, params: InsertMemoryParams): Inse
       fileTreeFingerprint, noveltyScore, createdAt, createdAt, createdAt,
       failureSignature ?? null, validFromVal, normalizedValidTo, halfLifeDefault,
     ];
-    db.prepare(`INSERT INTO memories (${columns}) VALUES (${placeholders})`).run(...values);
+    db.prepare(`INSERT INTO awareness_memories (${columns}) VALUES (${placeholders})`).run(...values);
 
     // Populate structured reference index (memory_refs table)
     if (refList.length > 0) {
@@ -162,7 +162,7 @@ export function insertMemory(db: DatabaseSync, params: InsertMemoryParams): Inse
     // ACTIVE after the new one is visible to concurrent readers.
     for (const oldId of supersedeIds) {
       const r = db.prepare(`
-        UPDATE memories
+        UPDATE awareness_memories
         SET state = 'SUPERSEDED', superseded_by = ?, updated_at = ?,
             valid_to = COALESCE(valid_to, ?), expired_at = ?
         WHERE memory_id = ? AND state = 'ACTIVE'

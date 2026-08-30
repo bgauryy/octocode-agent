@@ -45,7 +45,7 @@ export function lifecycleSelection(
     binds.push(scope.ref);
   }
   const rows = db.prepare(
-    `SELECT memory_id FROM memories WHERE ${conditions.join(' AND ')}`
+    `SELECT memory_id FROM awareness_memories WHERE ${conditions.join(' AND ')}`
   ).all(...binds) as Array<{ memory_id: string }>;
   const selected = new Set(rows.map(row => row.memory_id));
   return memoryIds.filter(memoryId => selected.has(memoryId));
@@ -64,7 +64,7 @@ export function archiveMemories(db: DatabaseSync, params: MemoryLifecycleParams)
   if (ids.length > 0) {
     const now = utcNow();
     db.prepare(
-      `UPDATE memories SET state = 'SUPERSEDED', expired_at = ?, updated_at = ?
+      `UPDATE awareness_memories SET state = 'SUPERSEDED', expired_at = ?, updated_at = ?
        WHERE memory_id IN (${ids.map(() => '?').join(',')})`
     ).run(now, now, ...ids);
   }
@@ -84,7 +84,7 @@ export function restoreMemories(db: DatabaseSync, params: MemoryLifecycleParams)
   if (ids.length > 0) {
     const now = utcNow();
     db.prepare(
-      `UPDATE memories SET state = 'ACTIVE', expired_at = NULL, valid_to = NULL, updated_at = ?
+      `UPDATE awareness_memories SET state = 'ACTIVE', expired_at = NULL, valid_to = NULL, updated_at = ?
        WHERE memory_id IN (${ids.map(() => '?').join(',')})`
     ).run(now, ...ids);
   }
@@ -181,7 +181,7 @@ export function forgetMemory(db: DatabaseSync, params: ForgetMemoryParams): Forg
     ? `(${selectorWhere}) AND ${scopeConds.join(' AND ')}`
     : selectorWhere;
   const rows = db.prepare(
-    `SELECT memory_id FROM memories WHERE ${where}`
+    `SELECT memory_id FROM awareness_memories WHERE ${where}`
   ).all(...bindParams, ...scopeBinds) as unknown as Array<{ memory_id: string }>;
   const ids = rows.map(r => r.memory_id);
 
@@ -198,7 +198,7 @@ export function forgetMemory(db: DatabaseSync, params: ForgetMemoryParams): Forg
     const ph = ids.map(() => '?').join(',');
     db.exec('BEGIN IMMEDIATE');
     try {
-      db.prepare(`DELETE FROM memories WHERE memory_id IN (${ph})`).run(...ids);
+      db.prepare(`DELETE FROM awareness_memories WHERE memory_id IN (${ph})`).run(...ids);
       if (hasFts(db)) {
         db.prepare(`DELETE FROM memories_fts WHERE memory_id IN (${ph})`).run(...ids);
       }

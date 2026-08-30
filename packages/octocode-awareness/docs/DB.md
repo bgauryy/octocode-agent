@@ -1,23 +1,18 @@
 # Awareness databases
 
-Awareness exposes two explicit local SQLite planes and two storage levels. Shared
-coordination uses `octocode.sqlite3`; advanced workflow uses the OCT1
-`awareness.sqlite3`. `--db-scope repo|global` selects the level, and `--db` overrides
-the resulting path. [STORAGE_SCOPES.md](STORAGE_SCOPES.md) owns the placement decision,
-feature guidance, compatibility behavior, and rollback procedure.
+Awareness uses one global agent database at
+`$OCTOCODE_HOME/agent/agent.sqlite3`. Coordination, continuity, control, sessions,
+and advanced workflow modules own distinct table families in that physical store.
+[STORAGE_SCOPES.md](STORAGE_SCOPES.md) defines placement, overrides, and artifacts.
 
-Do not substitute similarly named commands or database overrides across the planes.
-The shared store deliberately co-locates coordination, continuity, control, and
-advanced-compatible auxiliary relations. The advanced OCT1 store remains the strict
-contract for `attend`, runs, signals, reflection, maintenance, and query exports.
+The agent owns only `$OCTOCODE_HOME/agent/`. Databases and configuration elsewhere
+under `$OCTOCODE_HOME` can belong to the Octocode CLI or MCP server and must not be
+opened as the agent database. Repository `.octocode/` directories are not default
+agent storage. SQLite remains authoritative; explicit exports are read surfaces.
 
-At repository level, `<workspace>/.octocode/` holds the two database files alongside
-optional read-only query exports and authored plan narrative. Ignore SQLite files and
-sidecars without ignoring authored documents. SQLite remains authoritative.
+## Coordination table contract
 
-## Shared-store contract
-
-`src/coordination/coordination-migration.ts` owns the shared coordination and
+`src/coordination/coordination-schema.ts` owns the shared coordination and
 continuity DDL. Its fifteen primary entities are:
 
 - coordination: `plans`, `tasks`, `locks`, `work_presence`, `handoffs`, `memories`,
@@ -34,18 +29,19 @@ graphs; lock/work/handoff/check state; memory/agent/message operations; continui
 schema/dispatch; and host adapters. This domain split avoids both one giant store file
 and one tiny file per SQL statement.
 
-## Advanced OCT1 contract
+## Advanced Awareness table contract
 
-`src/db-schema.ts` owns all advanced table, index, and optional FTS DDL. There is one
-current OCT1 contract and one application identity:
+`src/db-schema.ts` owns all advanced table, index, and optional FTS DDL. The complete
+agent database has one application identity:
 
 ```text
-application_id = 0x4f435431  # ASCII OCT1
+application_id = 0x4f435441  # ASCII OCTA
 ```
 
-The application ID distinguishes Awareness from unrelated SQLite files. The
-normalized schema fingerprint distinguishes the exact executable contract.
-There is no second initializer or parallel numeric contract field.
+The application ID distinguishes agent state from unrelated CLI, MCP, and foreign
+SQLite files. Module fingerprints distinguish each executable table contract, and
+`agent_schema_modules` records their versions without assigning a second database
+identity.
 
 The advanced database layer is split by responsibility:
 
@@ -82,15 +78,11 @@ JSON, table, CSV, Markdown, and HTML—80 view/format combinations.
 
 ## Startup contract
 
-Startup accepts only two states:
-
-1. An empty SQLite store, which is initialized from the canonical DDL.
-2. An OCT1 store whose relations and normalized fingerprint match exactly.
-
-Any other application ID, unbranded non-empty store, missing relation, extra
-relation, or changed DDL is rejected before Awareness writes application data.
-This fail-closed boundary prevents the package from guessing ownership or
-silently reshaping an incompatible database.
+Startup accepts only an empty store or an OCTA agent store containing recognized
+module relations. Any foreign application ID, unknown relation, partial module, or
+changed module DDL is rejected before agent DDL writes application data. This
+fail-closed boundary prevents the package from guessing ownership or reshaping a
+CLI or MCP database.
 
 Fresh initialization runs under `BEGIN IMMEDIATE`. A second process that opens
 the same empty path waits on the bounded SQLite busy retry, reclassifies the
@@ -130,9 +122,9 @@ Initialization and canonical opens enforce:
 - `PRAGMA integrity_check`;
 - `PRAGMA foreign_key_check`.
 
-An exact fingerprint means a DDL edit is a contract change. Coordinate such a
-change explicitly and create a fresh store; do not add an alternate initializer
-or a numeric field that allows two definitions to coexist.
+An exact module fingerprint means a DDL edit is a contract change. Coordinate such
+a change explicitly; don't add another physical agent database or a numeric field
+that allows two definitions to coexist.
 
 ## FTS
 

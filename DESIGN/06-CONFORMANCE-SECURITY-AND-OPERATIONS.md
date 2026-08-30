@@ -83,12 +83,13 @@ Diagnostics must be useful without containing prompts, credentials, raw environm
 - No critical/high conformance or security mismatch remains.
 - Rollback has been exercised against the release artifact.
 
-### Complete Pi retirement
+### Complete native Pi retirement
 
 - Native default has completed its observation window.
-- The `pi|shadow|native` selector and frozen Pi artifact remain available only for the declared comparison and rollback window.
-- After that window, native Pi-host dependencies, fallback launch code, compatibility configuration, `@octocodeai/pi-extension`, its Pi dependencies, and live Pi-version workflows are removed together.
-- Immutable redacted parity fixtures and signed receipts may remain; no installed, published, selectable, or supported Pi product path may remain.
+- Any `pi|shadow|native` comparison selector remains available only for the declared comparison and rollback window.
+- After that window, native Pi-host dependencies, fallback launch code, compatibility configuration, installers, update paths, and rollback dependencies are removed together.
+- `@octocodeai/pi-extension`, its Pi dependencies, supported-version workflow, tests, docs, and publication path remain isolated from native release wiring.
+- Immutable redacted parity fixtures and signed receipts remain available for regression evidence.
 - A clean install and upgrade from the previous supported release both pass.
 
 ## Mandatory scenarios

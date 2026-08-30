@@ -45,7 +45,7 @@ describe('advisory work presence', () => {
       });
       expect(db.prepare('SELECT COUNT(*) AS count FROM run_files WHERE ended_at IS NULL').get())
         .toEqual({ count: 2 });
-      expect(db.prepare('SELECT COUNT(*) AS count FROM locks').get()).toEqual({ count: 0 });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM awareness_locks').get()).toEqual({ count: 0 });
     } finally { ws.cleanup(); }
   });
 
@@ -183,7 +183,7 @@ describe('exclusive work', () => {
       if (!first.ok) throw new Error('first exclusive start failed');
       const past = '2000-01-01T00:00:00Z';
       db.prepare('UPDATE run_files SET expires_at = ? WHERE run_id = ?').run(past, first.run.run_id);
-      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(past, first.run.run_id);
+      db.prepare('UPDATE awareness_locks SET expires_at = ? WHERE run_id = ?').run(past, first.run.run_id);
 
       const second = startWork(db, {
         agentId: 'agent-b', workspacePath: ws.path, targetFiles: ['src/a.ts'], exclusive: true,
@@ -194,7 +194,7 @@ describe('exclusive work', () => {
       expect(() => touchWork(db, {
         agentId: 'agent-a', runId: first.run.run_id, targetFiles: ['src/a.ts'],
       })).toThrow(/conflict/i);
-      expect(db.prepare(`SELECT COUNT(*) AS count FROM locks
+      expect(db.prepare(`SELECT COUNT(*) AS count FROM awareness_locks
         WHERE file_path = ? AND (expires_at IS NULL OR expires_at > datetime('now'))`)
         .get(canonicalizePath(join(ws.path, 'src/a.ts')))).toEqual({ count: 1 });
     } finally { ws.cleanup(); }
@@ -214,7 +214,7 @@ describe('exclusive work', () => {
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error('unexpected exclusive start');
       expect(result.conflicts[0]).toMatchObject({ agent_id: 'agent-a', conflict_type: 'ACTIVE_WORK' });
-      expect(db.prepare('SELECT COUNT(*) AS count FROM locks').get()).toEqual({ count: 0 });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM awareness_locks').get()).toEqual({ count: 0 });
     } finally { ws.cleanup(); }
   });
 
@@ -245,7 +245,7 @@ describe('exclusive work', () => {
       });
       if (!result.ok) throw new Error('exclusive start failed');
       expect(db.prepare(`SELECT rf.run_id, l.run_id AS lock_run
-        FROM run_files rf JOIN locks l ON l.run_id = rf.run_id AND l.file_path = rf.file_path
+        FROM run_files rf JOIN awareness_locks l ON l.run_id = rf.run_id AND l.file_path = rf.file_path
         WHERE rf.run_id = ?`).get(result.run.run_id))
         .toEqual({ run_id: result.run.run_id, lock_run: result.run.run_id });
     } finally { ws.cleanup(); }

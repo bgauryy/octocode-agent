@@ -134,7 +134,7 @@ note: on overlap, inspect work show and signal if edits interact; never surprise
 schema: npx @octocodeai/octocode-awareness schema json-schema work --compact`,
   'hook-run': `usage: octocode-awareness hook run <pre-edit|post-edit|stop-verify|notify-deliver|session-compact|session-end> < hook-payload.json
 payload: host JSON on stdin; common fields are cwd/workspace, session_id, tool_name, and tool_input/path
-store: hook run intentionally rejects --db; set OCTOCODE_MEMORY_HOME to select the hook database`,
+store: hook run intentionally rejects --db; set OCTOCODE_AGENT_DIR to select the hook database`,
   'hooks-install': hooksInstallUsage(),
   'schema': `usage: npx @octocodeai/octocode-awareness schema commands|list|command <noun> [action]|json-schema <name>|example <name>|validate <name> <json-file|->
 examples:
@@ -142,7 +142,7 @@ examples:
   npx @octocodeai/octocode-awareness schema command memory recall --compact
   npx @octocodeai/octocode-awareness schema json-schema query --compact`,
   'init': `usage: npx @octocodeai/octocode-awareness init [--db <path>]
-example: npx @octocodeai/octocode-awareness init --db .octocode/awareness.sqlite3 --compact
+example: npx @octocodeai/octocode-awareness init --db "$OCTOCODE_HOME/agent/agent.sqlite3" --compact
 alias: npx @octocodeai/octocode-awareness maintenance init`,
   'self-test': `usage: npx @octocodeai/octocode-awareness maintenance self-test
 example: npx @octocodeai/octocode-awareness maintenance self-test --compact`,

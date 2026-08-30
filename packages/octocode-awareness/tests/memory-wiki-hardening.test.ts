@@ -70,9 +70,9 @@ describe('memory trust with lean retrieval', () => {
       workspacePath: '/workspace/a', supersedes: ['mem_missing'],
     })).toThrow(/not found/i);
 
-    const row = db.prepare('SELECT state, superseded_by FROM memories WHERE memory_id = ?').get(old.memoryId) as Record<string, unknown>;
+    const row = db.prepare('SELECT state, superseded_by FROM awareness_memories WHERE memory_id = ?').get(old.memoryId) as Record<string, unknown>;
     expect(row).toEqual({ state: 'ACTIVE', superseded_by: null });
-    expect((db.prepare('SELECT COUNT(*) AS count FROM memories').get() as { count: number }).count).toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS count FROM awareness_memories').get() as { count: number }).count).toBe(1);
   });
 
   it('caps list fields and omits absent optional fields from lean memory rows', () => {

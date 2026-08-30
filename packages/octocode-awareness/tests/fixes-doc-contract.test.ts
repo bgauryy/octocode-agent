@@ -40,7 +40,7 @@ describe('reflect — judgment_note / duo / eval_failures', () => {
     expect(r.reflection_duo?.advisory).toBe(true);
     expect(r.reflection_duo?.roles.map((x) => x.role)).toEqual(['supporter', 'skeptic']);
     // Only the single learning memory exists — the packet is not stored.
-    const count = (db.prepare('SELECT COUNT(*) c FROM memories').get() as { c: number }).c;
+    const count = (db.prepare('SELECT COUNT(*) c FROM awareness_memories').get() as { c: number }).c;
     expect(count).toBe(1);
   });
 
@@ -57,7 +57,7 @@ describe('reflect — judgment_note / duo / eval_failures', () => {
     expect(r.eval_failure_ids).toHaveLength(2);
 
     const rows = db.prepare(
-      "SELECT memory_id, failure_signature, observation, tags_json FROM memories"
+      "SELECT memory_id, failure_signature, observation, tags_json FROM awareness_memories"
     ).all() as Array<{ memory_id: string; failure_signature: string | null; observation: string; tags_json: string }>;
     // Structured eval rows are the failure events. The summary deliberately
     // carries no signature so one failed eval cannot form a count=2 cluster.
@@ -133,7 +133,7 @@ describe('pruneStale — documented filters', () => {
     const expires = expired
       ? new Date(Date.now() - 60000).toISOString().replace(/\.\d{3}Z$/, 'Z')
       : new Date(Date.now() + 3600000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-    db.prepare('UPDATE locks SET acquired_at = ?, expires_at = ? WHERE run_id = ?')
+    db.prepare('UPDATE awareness_locks SET acquired_at = ?, expires_at = ? WHERE run_id = ?')
       .run(acquired, expires, runId);
   }
 

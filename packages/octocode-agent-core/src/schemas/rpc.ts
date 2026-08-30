@@ -1,6 +1,6 @@
 import { RuntimeFailure } from '../contracts/errors.js';
 import type { RuntimeErrorData } from '../contracts/errors.js';
-import type { RuntimeEvent } from '../contracts/events.js';
+import { AGENT_EVENT_TYPES, RUNTIME_MODES, RUNTIME_OUTPUT_FORMATS, type RuntimeEvent } from '../contracts/events.js';
 import type { RpcEvent, RpcRequest, RpcResponse } from '../contracts/rpc.js';
 
 const ERROR_CATEGORIES = new Set([
@@ -10,23 +10,10 @@ const ERROR_CATEGORIES = new Set([
   'session-migration', 'persistence', 'compaction', 'adapter-compatibility',
   'adapter-translation', 'conflict', 'plugin', 'internal-invariant',
 ]);
-const EVENT_TYPES = new Set([
-  'runtime.ready', 'runtime.stopping', 'runtime.stopped', 'runtime.failed',
-  'session.starting', 'session.started', 'session.switching', 'session.forked', 'session.tree-changed', 'session.metadata-changed', 'session.stopping',
-  'session.before-switch', 'session.before-fork',
-  'input.received', 'input.transformed', 'input.handled', 'input.queued', 'input.rejected',
-  'agent.starting', 'agent.started', 'agent.settled', 'agent.ended',
-  'turn.started', 'turn.ended', 'message.started', 'message.delta', 'message.ended',
-  'tool.requested', 'tool.blocked', 'tool.started', 'tool.updated', 'tool.ended',
-  'model.selected', 'model.thinking-level-selected', 'provider.request-started', 'provider.response-received', 'provider.failed',
-  'context.appended', 'context.usage-changed', 'context.compaction-started', 'context.compaction-retrying', 'context.compacted', 'context.compaction-failed',
-  'ui.interaction-requested', 'ui.interaction-resolved', 'ui.notification', 'ui.status-changed', 'ui.presentation-changed',
-  'resources.discovering', 'resources.discovered', 'trust.resolving', 'trust.resolved',
-  'prompt.assembling', 'prompt.assembled', 'context.preparing', 'agent.before-start',
-  'settings.changed', 'plugin.lifecycle',
-]);
+const EVENT_TYPES: ReadonlySet<string> = new Set(AGENT_EVENT_TYPES);
 const EVENT_PHASES = new Set(['before', 'permission', 'after', 'notification']);
-const RUNTIME_MODES = new Set(['interactive', 'print', 'json', 'rpc', 'headless']);
+const RPC_RUNTIME_MODES: ReadonlySet<string> = new Set(RUNTIME_MODES);
+const RPC_OUTPUT_FORMATS: ReadonlySet<string> = new Set(RUNTIME_OUTPUT_FORMATS);
 
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return Object.keys(value).every((key) => keys.includes(key));
@@ -42,6 +29,61 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+function isNonNegativeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isUsage(value: unknown): boolean {
+  return isRecord(value)
+    && hasOnlyKeys(value, ['inputTokens', 'outputTokens', 'cachedInputTokens', 'cacheWriteInputTokens'])
+    && isNonNegativeInteger(value.inputTokens)
+    && isNonNegativeInteger(value.outputTokens)
+    && (value.cachedInputTokens === undefined || isNonNegativeInteger(value.cachedInputTokens))
+    && (value.cacheWriteInputTokens === undefined || isNonNegativeInteger(value.cacheWriteInputTokens));
+}
+
+function isMappedEventPayload(type: unknown, payload: unknown): boolean {
+  if (type === 'provider.request-started') {
+    return isRecord(payload)
+      && hasOnlyKeys(payload, ['requestId', 'iteration', 'attempt', 'maxAttempts'])
+      && isNonEmptyString(payload.requestId)
+      && isNonNegativeInteger(payload.iteration)
+      && isNonNegativeInteger(payload.attempt)
+      && isNonNegativeInteger(payload.maxAttempts);
+  }
+  if (type === 'provider.response-received') {
+    return isRecord(payload)
+      && hasOnlyKeys(payload, ['requestId', 'iteration', 'attempt', 'maxAttempts', 'durationMs', 'ttftMs', 'stop', 'usage'])
+      && isNonEmptyString(payload.requestId)
+      && isNonNegativeInteger(payload.iteration)
+      && isNonNegativeInteger(payload.attempt)
+      && isNonNegativeInteger(payload.maxAttempts)
+      && isNonNegativeNumber(payload.durationMs)
+      && (payload.ttftMs === undefined || isNonNegativeNumber(payload.ttftMs))
+      && (payload.stop === 'complete' || payload.stop === 'tool' || payload.stop === 'cancelled' || payload.stop === 'length' || payload.stop === 'error')
+      && isUsage(payload.usage);
+  }
+  if (type === 'provider.failed') {
+    return isRecord(payload)
+      && hasOnlyKeys(payload, ['requestId', 'iteration', 'attempt', 'maxAttempts', 'retrying', 'category', 'durationMs', 'delayMs', 'message'])
+      && (payload.requestId === undefined || isNonEmptyString(payload.requestId))
+      && isNonNegativeInteger(payload.iteration)
+      && (payload.attempt === undefined || isNonNegativeInteger(payload.attempt))
+      && (payload.maxAttempts === undefined || isNonNegativeInteger(payload.maxAttempts))
+      && (payload.retrying === undefined || typeof payload.retrying === 'boolean')
+      && (payload.category === undefined || (typeof payload.category === 'string' && ERROR_CATEGORIES.has(payload.category)))
+      && (payload.durationMs === undefined || isNonNegativeNumber(payload.durationMs))
+      && (payload.delayMs === undefined || isNonNegativeNumber(payload.delayMs))
+      && typeof payload.message === 'string';
+  }
+  if (type === 'context.usage-changed') return isUsage(payload);
+  return true;
 }
 
 function isRuntimeErrorData(value: unknown): value is RuntimeErrorData {
@@ -72,7 +114,7 @@ function isTrustSnapshot(value: unknown): boolean {
 function isRuntimeEvent(value: unknown): value is RuntimeEvent {
   if (!isRecord(value) || !hasOnlyKeys(value, [
     'schemaVersion', 'eventVersion', 'id', 'type', 'phase', 'sessionId', 'turnId', 'parentEventId',
-    'timestamp', 'cwd', 'mode', 'model', 'trust', 'payload',
+    'timestamp', 'cwd', 'mode', 'outputFormat', 'model', 'trust', 'payload',
   ])) return false;
   return value.schemaVersion === 1
     && value.eventVersion === 1
@@ -84,10 +126,12 @@ function isRuntimeEvent(value: unknown): value is RuntimeEvent {
     && (value.parentEventId === undefined || isNonEmptyString(value.parentEventId))
     && typeof value.timestamp === 'number' && Number.isFinite(value.timestamp)
     && typeof value.cwd === 'string'
-    && typeof value.mode === 'string' && RUNTIME_MODES.has(value.mode)
+    && typeof value.mode === 'string' && RPC_RUNTIME_MODES.has(value.mode)
+    && (value.outputFormat === undefined || (typeof value.outputFormat === 'string' && RPC_OUTPUT_FORMATS.has(value.outputFormat)))
     && (value.model === undefined || isModelRef(value.model))
     && isTrustSnapshot(value.trust)
-    && Object.hasOwn(value, 'payload') && value.payload !== undefined;
+    && Object.hasOwn(value, 'payload') && value.payload !== undefined
+    && isMappedEventPayload(value.type, value.payload);
 }
 
 function isRuntimeCommand(value: unknown): boolean {
@@ -117,7 +161,7 @@ function isRuntimeCommand(value: unknown): boolean {
         && hasOnlyKeys(command, ['type', 'reason']);
     case 'tools.activate':
       return typeof command.name === 'string' && hasOnlyKeys(command, ['type', 'name']);
-    case 'session.export': case 'context.cancel-compaction': case 'context.usage': case 'tools.list': case 'runtime.snapshot': case 'runtime.stop':
+    case 'session.export': case 'context.cancel-compaction': case 'context.usage': case 'tools.list': case 'monitoring.snapshot': case 'runtime.snapshot': case 'runtime.stop':
       return hasOnlyKeys(command, ['type']);
     default:
       return false;
@@ -153,8 +197,9 @@ export const parseRpcEvent = (input: unknown): RpcEvent => {
     throw new RuntimeFailure('validation', 'Malformed RPC event');
   }
   if (!isRuntimeEvent(input.event)) {
-    const payloadMissing = isRecord(input.event) && (!Object.hasOwn(input.event, 'payload') || input.event.payload === undefined);
-    throw new RuntimeFailure('validation', payloadMissing ? 'Malformed RPC event payload' : 'Malformed RPC event envelope');
+    const payloadInvalid = isRecord(input.event)
+      && (!Object.hasOwn(input.event, 'payload') || input.event.payload === undefined || !isMappedEventPayload(input.event.type, input.event.payload));
+    throw new RuntimeFailure('validation', payloadInvalid ? 'Malformed RPC event payload' : 'Malformed RPC event envelope');
   }
   return input as unknown as RpcEvent;
 };

@@ -4,57 +4,69 @@
  * Single source of truth for where Octocode keeps its state. Everything lives
  * under the Octocode home (`~/.octocode` by default):
  *
- *   <home>/octocode.sqlite3                       the shared local DB (agent + lite + sessions)
- *   <home>/memory/awareness.sqlite3               the full-awareness store (own schema contract)
+ *   <home>/agent/agent.sqlite3                    the shared agent DB
  *   <home>/agent/sessions/<sessionId>/            per-session artifacts
  *       compaction/   plans/   logs/   db/
  *
- * Home resolution is NEVER reimplemented — it delegates to `@octocodeai/config`
- * (`OCTOCODE_HOME` → platform default), with the launcher-scoped
- * `OCTOCODE_AGENT_DIR` override taking precedence when set.
+ * Product-home resolution is NEVER reimplemented — it delegates to
+ * `@octocodeai/config` (`OCTOCODE_HOME` → platform default). The
+ * launcher-scoped `OCTOCODE_AGENT_DIR` override applies only to the agent root.
  */
-import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { basename, join, resolve } from 'node:path';
 import { getOctocodeHome as configGetOctocodeHome } from '@octocodeai/config';
 
-/** Filename of the single shared local SQLite store, under the Octocode home. */
-export const OCTOCODE_DB_FILENAME = 'octocode.sqlite3';
+/** Filename of the canonical agent SQLite store, under the agent root. */
+export const AGENT_DB_FILENAME = 'agent.sqlite3';
 
-/** Env var that pins the shared DB file, overriding the home-relative default. */
-export const OCTOCODE_DB_PATH_ENV = 'OCTOCODE_DB_PATH';
+/** Env var that pins the agent DB file, overriding the agent-root default. */
+export const OCTOCODE_AGENT_DB_PATH_ENV = 'OCTOCODE_AGENT_DB_PATH';
 
 /** Per-session artifact buckets written under `<home>/agent/sessions/<id>/`. */
 export type SessionArtifact = 'compaction' | 'plans' | 'logs' | 'db';
 
 /**
- * Resolve the Octocode home directory.
- * Precedence: OCTOCODE_AGENT_DIR › @octocodeai/config (OCTOCODE_HOME › platform default).
+ * Resolve the product-wide Octocode home directory through `@octocodeai/config`.
  */
 export function getOctocodeHome(env: NodeJS.ProcessEnv = process.env): string {
-  return env.OCTOCODE_AGENT_DIR ?? configGetOctocodeHome(env);
+  return configGetOctocodeHome(env);
 }
 
 /**
- * Path to the single shared local SQLite store.
- * `OCTOCODE_DB_PATH` overrides the home-relative default (used by tests and
- * callers that need an isolated file).
+ * Root for agent-owned databases, sessions, and other artifacts.
+ * `OCTOCODE_AGENT_DIR` remains a launcher-compatible root override.
  */
-export function octocodeDbPath(env: NodeJS.ProcessEnv = process.env): string {
-  const override = env[OCTOCODE_DB_PATH_ENV]?.trim();
+export function agentHome(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.OCTOCODE_AGENT_DIR?.trim();
   if (override) return resolve(override);
-  return join(getOctocodeHome(env), OCTOCODE_DB_FILENAME);
+  return join(getOctocodeHome(env), 'agent');
+}
+
+/** Stable, readable key for workspace-scoped state kept inside the global agent home. */
+export function workspaceAgentKey(cwd: string): string {
+  const workspace = resolve(cwd);
+  const readable = basename(workspace).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'workspace';
+  return `${readable}-${createHash('sha256').update(workspace).digest('hex').slice(0, 16)}`;
+}
+
+/** Global-only root for agent-owned files associated with one workspace. */
+export function workspaceAgentRoot(cwd: string, octocodeHome = getOctocodeHome()): string {
+  return join(resolve(octocodeHome), 'agent', 'workspaces', workspaceAgentKey(cwd));
 }
 
 /**
- * Path to the full-awareness store. Awareness owns its own strict schema
- * contract, so it lives in a separate file — but under the same shared home.
+ * Path to the canonical agent SQLite store.
+ * `OCTOCODE_AGENT_DB_PATH` is authoritative.
  */
-export function awarenessDbPath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(getOctocodeHome(env), 'memory', 'awareness.sqlite3');
+export function agentDbPath(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env[OCTOCODE_AGENT_DB_PATH_ENV]?.trim();
+  if (override) return resolve(override);
+  return join(agentHome(env), AGENT_DB_FILENAME);
 }
 
 /** Root that holds every session's artifact directory. */
 export function sessionsRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return join(getOctocodeHome(env), 'agent', 'sessions');
+  return join(agentHome(env), 'sessions');
 }
 
 /**

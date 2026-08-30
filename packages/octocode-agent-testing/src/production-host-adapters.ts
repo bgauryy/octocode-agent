@@ -7,18 +7,22 @@ import type {
 } from "./host-conformance.js";
 
 const INITIAL_PRODUCTION_SCENARIO = "lifecycle-clean-start-stop";
+const COMPOSITION_DRIVER_EVIDENCE = "production-composition/synthetic-driver";
 
 function productionSupport(
   host: string,
   scenarioId: string,
   drivers: ProductionScenarioDrivers<unknown>,
+  unsupportedReasons: ProductionScenarioUnsupportedReasons,
 ): HostScenarioSupport {
   return scenarioId === INITIAL_PRODUCTION_SCENARIO ||
     typeof drivers[scenarioId as CanonicalScenarioId] === "function"
     ? { supported: true }
     : {
         supported: false,
-        reason: `${host} production adapter has not implemented ${scenarioId}`,
+        reason:
+          unsupportedReasons[scenarioId as CanonicalScenarioId] ??
+          `${host} production composition has no executable ${scenarioId} driver`,
       };
 }
 
@@ -34,18 +38,22 @@ export type ProductionScenarioDriver<TSurface> = (
 export type ProductionScenarioDrivers<TSurface> = Partial<
   Record<CanonicalScenarioId, ProductionScenarioDriver<TSurface>>
 >;
+export type ProductionScenarioUnsupportedReasons = Partial<
+  Record<CanonicalScenarioId, string>
+>;
 
 function recordRegistryProjection(
   context: HostExecutionContext,
+  identity: Readonly<Record<string, unknown>>,
   registry: Readonly<Record<string, unknown>>,
 ): void {
   context.emit("host.started");
-  context.emit("registry.snapshot", registry);
+  context.emit("registry.snapshot", { identity, registry });
   context.effect({
     id: `${INITIAL_PRODUCTION_SCENARIO}:registry`,
     kind: "registry.projection",
     effectful: false,
-    data: registry,
+    data: { identity, registry },
   });
   context.emit("host.stopped");
 }
@@ -58,7 +66,7 @@ export interface ProductionPiHarness<TPi> {
   emit(event: string, data: unknown): Promise<unknown>;
 }
 
-/** Runs the actual supported Pi extension factory against a structural Pi host. */
+/** Runs the supported Pi production composition with a synthetic scenario driver. */
 export function createProductionPiHostAdapter<TPi>(options: {
   readonly hostVersion: string;
   readonly createHarness: () => ProductionPiHarness<TPi>;
@@ -66,16 +74,18 @@ export function createProductionPiHostAdapter<TPi>(options: {
   readonly scenarioDrivers?: ProductionScenarioDrivers<
     ProductionPiHarness<TPi>
   >;
+  readonly unsupportedReasons?: ProductionScenarioUnsupportedReasons;
 }): HostConformanceAdapter {
   const drivers = options.scenarioDrivers ?? {};
   return {
-    name: `pi@${options.hostVersion}`,
-    evidence: "production",
+    name: `pi@${options.hostVersion} [${COMPOSITION_DRIVER_EVIDENCE}]`,
+    evidence: "synthetic",
     supports: (scenario) =>
       productionSupport(
         "Pi",
         scenario.id,
         drivers as ProductionScenarioDrivers<unknown>,
+        options.unsupportedReasons ?? {},
       ),
     async execute(scenario, context) {
       if (
@@ -83,6 +93,7 @@ export function createProductionPiHostAdapter<TPi>(options: {
           "Pi",
           scenario.id,
           drivers as ProductionScenarioDrivers<unknown>,
+          options.unsupportedReasons ?? {},
         ).supported
       )
         throw new Error(`Unsupported Pi scenario: ${scenario.id}`);
@@ -104,7 +115,11 @@ export function createProductionPiHostAdapter<TPi>(options: {
         hooks: [...harness.handlers.keys()].sort(),
       };
       await harness.emit("session_shutdown", { reason: "quit" });
-      recordRegistryProjection(context, registry);
+      recordRegistryProjection(
+        context,
+        { composition: "@octocodeai/pi-extension", hostVersion: options.hostVersion },
+        registry,
+      );
     },
   };
 }
@@ -149,7 +164,7 @@ function nativeRegistry(
   };
 }
 
-/** Runs the actual native launcher and observes its production `/tools` and lifecycle projections. */
+/** Runs the native production composition with a synthetic lifecycle/runtime driver. */
 export function createProductionNativeHostAdapter<TDependencies>(options: {
   readonly launch: (
     argv: readonly string[],
@@ -158,16 +173,18 @@ export function createProductionNativeHostAdapter<TDependencies>(options: {
   readonly createDependencies: (events: unknown[]) => TDependencies;
   readonly commandNames: readonly string[];
   readonly scenarioDrivers?: ProductionScenarioDrivers<NativeProductionCapture>;
+  readonly unsupportedReasons?: ProductionScenarioUnsupportedReasons;
 }): HostConformanceAdapter {
   const drivers = options.scenarioDrivers ?? {};
   return {
-    name: "native",
-    evidence: "production",
+    name: `native [${COMPOSITION_DRIVER_EVIDENCE}]`,
+    evidence: "synthetic",
     supports: (scenario) =>
       productionSupport(
         "Native",
         scenario.id,
         drivers as ProductionScenarioDrivers<unknown>,
+        options.unsupportedReasons ?? {},
       ),
     async execute(scenario, context) {
       if (
@@ -175,6 +192,7 @@ export function createProductionNativeHostAdapter<TDependencies>(options: {
           "Native",
           scenario.id,
           drivers as ProductionScenarioDrivers<unknown>,
+          options.unsupportedReasons ?? {},
         ).supported
       )
         throw new Error(`Unsupported native scenario: ${scenario.id}`);
@@ -195,7 +213,11 @@ export function createProductionNativeHostAdapter<TDependencies>(options: {
         });
         return;
       }
-      recordRegistryProjection(context, nativeRegistry(capture));
+      recordRegistryProjection(
+        context,
+        { composition: "octocode-agent/native-launcher" },
+        nativeRegistry(capture),
+      );
     },
   };
 }

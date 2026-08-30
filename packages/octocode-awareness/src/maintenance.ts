@@ -1,4 +1,4 @@
-/** Public compatibility barrel for maintenance.ts. */
+/** Public API barrel for maintenance.ts. */
 export { pruneStale } from './maintenance-stale.js';
 export { notifyGet } from './maintenance-briefing.js';
 export { parseGitStatusShortLines } from './maintenance-git-status.js';

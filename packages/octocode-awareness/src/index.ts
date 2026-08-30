@@ -7,8 +7,7 @@
 
 // DB layer
 export {
-  AWARENESS_APPLICATION_ID,
-  connectDb, connectCachedDb, initDb, memoryHome, resolveDbPath, hasFts, tableColumns,
+  connectDb, connectCachedDb, initDb, resolveDbPath, hasFts, tableColumns,
   replaceMemoryReferences, referenceKind, evictExpiredLocks, checkpointWal,
   getDeliveryFingerprint, setDeliveryFingerprint,
 } from './db.js';

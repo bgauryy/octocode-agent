@@ -11,13 +11,13 @@ let aw: AwarenessStore;
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-lite-'));
-  process.env.OCTOCODE_DB_PATH = join(workspace, 'octocode.sqlite3');
+  process.env.OCTOCODE_AGENT_DB_PATH = join(workspace, 'agent.sqlite3');
   aw = openAwarenessStore({ workspace });
 });
 
 afterEach(async () => {
   aw.close();
-  delete process.env.OCTOCODE_DB_PATH;
+  delete process.env.OCTOCODE_AGENT_DB_PATH;
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -79,7 +79,7 @@ describe('AwarenessStore cross-workspace isolation (single global file)', () => 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'aw-lite-iso-'));
     // ONE shared db file, two distinct workspaces — the global-store model.
-    dbPath = join(root, 'octocode.sqlite3');
+    dbPath = join(root, 'agent.sqlite3');
     repoA = join(root, 'repo-a');
     repoB = join(root, 'repo-b');
     a = openAwarenessStore({ workspace: repoA, dbPath });

@@ -75,7 +75,7 @@ test('getRegistryDir resolves under OCTOCODE_HOME', () => {
   const prev = process.env.OCTOCODE_HOME;
   process.env.OCTOCODE_HOME = dir;
   try {
-    assert.equal(getRegistryDir(), path.join(dir, 'dynamic-tools'));
+    assert.equal(getRegistryDir(), path.join(dir, 'agent', 'dynamic-tools'));
   } finally {
     if (prev === undefined) delete process.env.OCTOCODE_HOME;
     else process.env.OCTOCODE_HOME = prev;

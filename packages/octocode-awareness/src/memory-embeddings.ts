@@ -31,7 +31,7 @@ export function storeEmbedding(
   // Serialize Float32Array → raw binary buffer stored as BLOB
   const blob = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
   db.prepare(
-    `UPDATE memories SET embedding = ?, embedding_model = ?, updated_at = ?
+    `UPDATE awareness_memories SET embedding = ?, embedding_model = ?, updated_at = ?
      WHERE memory_id = ?`
   ).run(blob, model, utcNow(), memoryId);
 }
@@ -72,7 +72,7 @@ export function searchByEmbedding(
   type EmbRow = { memory_id: string; embedding: Buffer; embedding_model: string };
   // Limit to avoid loading unbounded embedding blobs into JS heap; cosine-rank within the cap.
   const rows = db.prepare(
-    `SELECT memory_id, embedding, embedding_model FROM memories
+    `SELECT memory_id, embedding, embedding_model FROM awareness_memories
      WHERE ${conditions.join(' AND ')}
      ORDER BY COALESCE(last_accessed_at, created_at) DESC
      LIMIT 2000`
@@ -107,7 +107,7 @@ export function loadMemoriesByIds(
   if (ids.length === 0) return [];
   const placeholders = ids.map(() => '?').join(', ');
   const rows = db.prepare(
-    `SELECT * FROM memories WHERE memory_id IN (${placeholders}) AND state = 'ACTIVE'`
+    `SELECT * FROM awareness_memories WHERE memory_id IN (${placeholders}) AND state = 'ACTIVE'`
   ).all(...ids) as unknown as MemoryRow[];
   const byId = new Map(rows.map(row => [row.memory_id, rowToMemory(row)]));
   attachMemoryReferences(db, [...byId.values()]);

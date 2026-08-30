@@ -49,19 +49,19 @@ it('allows two agents to declare ordinary work on the same file without locks', 
     try {
       const payload = { workspace, file_path: 'src/shared.ts', hook_event_name: 'PreToolUse' };
       const first = runScript(HOOK_RUNNER, ['pre-edit'], payload, {
-        OCTOCODE_MEMORY_HOME: memoryHome,
+        OCTOCODE_AGENT_DIR: memoryHome,
         OCTOCODE_AGENT_ID: 'agent-a',
       });
       const second = runScript(HOOK_RUNNER, ['pre-edit'], payload, {
-        OCTOCODE_MEMORY_HOME: memoryHome,
+        OCTOCODE_AGENT_DIR: memoryHome,
         OCTOCODE_AGENT_ID: 'agent-b',
       });
 
       expect(first.status, first.stderr).toBe(0);
       expect(second.status, second.stderr).toBe(0);
-      const db = new DatabaseSync(join(memoryHome, 'awareness.sqlite3'));
+      const db = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
       expect((db.prepare('SELECT COUNT(*) AS count FROM run_files WHERE ended_at IS NULL').get() as { count: number }).count).toBe(2);
-      expect((db.prepare('SELECT COUNT(*) AS count FROM locks').get() as { count: number }).count).toBe(0);
+      expect((db.prepare('SELECT COUNT(*) AS count FROM awareness_locks').get() as { count: number }).count).toBe(0);
       expect(db.prepare('SELECT host, event, status FROM hook_receipts').all()).toEqual([
         { host: 'claude', event: 'PreToolUse', status: 'success' },
       ]);
@@ -80,7 +80,7 @@ it('uses a deterministic fallback identity without repeating setup guidance on s
         file_path: 'src/fallback.ts',
         hook_event_name: 'PreToolUse',
       }, {
-        OCTOCODE_MEMORY_HOME: memoryHome,
+        OCTOCODE_AGENT_DIR: memoryHome,
         OCTOCODE_AGENT_ID: undefined,
       });
       expect(result.status).toBe(0);
@@ -94,7 +94,7 @@ it('blocks shell edits when another run holds sensitive exclusive work', () => {
     const workspace = resolve(memoryHome, 'repo');
     mkdirSync(workspace, { recursive: true });
     try {
-      const db = connectDb(join(memoryHome, 'awareness.sqlite3'));
+      const db = connectDb(join(memoryHome, 'agent.sqlite3'));
       const exclusive = startWork(db, {
         agentId: 'sensitive-agent',
         workspacePath: workspace,
@@ -109,7 +109,7 @@ it('blocks shell edits when another run holds sensitive exclusive work', () => {
       db.close();
 
       const blocked = runScript(HOOK_RUNNER, ['pre-edit'], { workspace, file_path: 'src/schema.ts' }, {
-        OCTOCODE_MEMORY_HOME: memoryHome,
+        OCTOCODE_AGENT_DIR: memoryHome,
         OCTOCODE_AGENT_ID: 'other-agent',
       });
       expect(blocked.status).toBe(2);
@@ -123,7 +123,7 @@ it('attaches shell edits to exactly one claimed TASK run', () => {
     const workspace = resolve(memoryHome, 'repo');
     mkdirSync(workspace, { recursive: true });
     try {
-      const db = connectDb(join(memoryHome, 'awareness.sqlite3'));
+      const db = connectDb(join(memoryHome, 'agent.sqlite3'));
       const plan = createPlan(db, {
         name: 'Shell task hooks',
         objective: 'Keep hook edits on the claim',
@@ -142,14 +142,14 @@ it('attaches shell edits to exactly one claimed TASK run', () => {
       if (!claim.ok) throw new Error(claim.error);
       db.close();
 
-      const env = { OCTOCODE_MEMORY_HOME: memoryHome, OCTOCODE_AGENT_ID: 'task-agent' };
+      const env = { OCTOCODE_AGENT_DIR: memoryHome, OCTOCODE_AGENT_ID: 'task-agent' };
       for (const [index, file] of ['src/a.ts', 'src/b.ts'].entries()) {
         const payload = { workspace, eventId: `task-${index}`, file_path: file };
         expect(runScript(HOOK_RUNNER, ['pre-edit'], payload, env).status).toBe(0);
         expect(runScript(HOOK_RUNNER, ['post-edit'], payload, env).status).toBe(0);
       }
 
-      const inspect = new DatabaseSync(join(memoryHome, 'awareness.sqlite3'));
+      const inspect = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
       expect((inspect.prepare('SELECT COUNT(*) AS count FROM task_runs').get() as { count: number }).count).toBe(1);
       expect((inspect.prepare('SELECT COUNT(*) AS count FROM task_claims').get() as { count: number }).count).toBe(1);
       expect((inspect.prepare('SELECT COUNT(*) AS count FROM run_files WHERE run_id = ? AND ended_at IS NULL').get(claim.run.run_id) as { count: number }).count).toBe(2);
@@ -164,7 +164,7 @@ it('keeps an explicit WORK run active across shell edits', () => {
     const workspace = resolve(memoryHome, 'repo');
     mkdirSync(workspace, { recursive: true });
     try {
-      const db = connectDb(join(memoryHome, 'awareness.sqlite3'));
+      const db = connectDb(join(memoryHome, 'agent.sqlite3'));
       const explicit = startWork(db, {
         agentId: 'work-agent',
         workspacePath: workspace,
@@ -178,14 +178,14 @@ it('keeps an explicit WORK run active across shell edits', () => {
       if (!explicit.ok) throw new Error('unexpected conflict');
       db.close();
 
-      const env = { OCTOCODE_MEMORY_HOME: memoryHome, OCTOCODE_AGENT_ID: 'work-agent' };
+      const env = { OCTOCODE_AGENT_DIR: memoryHome, OCTOCODE_AGENT_ID: 'work-agent' };
       for (let index = 0; index < 2; index += 1) {
         const payload = { workspace, eventId: `work-${index}`, file_path: 'src/a.ts' };
         expect(runScript(HOOK_RUNNER, ['pre-edit'], payload, env).status).toBe(0);
         expect(runScript(HOOK_RUNNER, ['post-edit'], payload, env).status).toBe(0);
       }
 
-      const inspect = new DatabaseSync(join(memoryHome, 'awareness.sqlite3'));
+      const inspect = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
       expect(inspect.prepare('SELECT origin, status FROM task_runs WHERE run_id = ?').get(explicit.run.run_id)).toMatchObject({ origin: 'WORK', status: 'ACTIVE' });
       expect((inspect.prepare('SELECT COUNT(*) AS count FROM run_files WHERE run_id = ? AND ended_at IS NULL').get(explicit.run.run_id) as { count: number }).count).toBe(1);
       inspect.close();
@@ -203,7 +203,7 @@ it('runs the harness guard before declaring file work', () => {
         ['pre-edit'],
         { workspace: skillRoot, file_path: 'SKILL.md' },
         {
-          OCTOCODE_MEMORY_HOME: memoryHome,
+          OCTOCODE_AGENT_DIR: memoryHome,
           OCTOCODE_AGENT_ID: 'guarded-agent',
           OCTOCODE_SKILL_ROOT: skillRoot,
           OCTOCODE_ALLOW_HARNESS_APPLY: undefined,
@@ -213,7 +213,7 @@ it('runs the harness guard before declaring file work', () => {
 
       expect(result.status).toBe(2);
       expect(result.stderr).toContain('editing the skill itself is gated');
-      const inspect = new DatabaseSync(join(memoryHome, 'awareness.sqlite3'));
+      const inspect = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
       expect((inspect.prepare('SELECT COUNT(*) AS count FROM task_runs').get() as { count: number }).count).toBe(0);
       expect(inspect.prepare('SELECT event, status FROM hook_receipts').get()).toMatchObject({ event: 'pre-edit', status: 'success' });
       inspect.close();
@@ -228,16 +228,16 @@ it('emits a compact peer delta once and stays silent while peers are unchanged',
     try {
       const base = { workspace, file_path: 'src/shared.ts' };
       expect(runScript(HOOK_RUNNER, ['pre-edit'], { ...base, eventId: 'a-1' }, {
-        OCTOCODE_MEMORY_HOME: memoryHome,
+        OCTOCODE_AGENT_DIR: memoryHome,
         OCTOCODE_AGENT_ID: 'agent-a',
       }).status).toBe(0);
 
       const first = runScript(HOOK_RUNNER, ['pre-edit'], { ...base, eventId: 'b-1' }, {
-        OCTOCODE_MEMORY_HOME: memoryHome,
+        OCTOCODE_AGENT_DIR: memoryHome,
         OCTOCODE_AGENT_ID: 'agent-b',
       });
       const unchanged = runScript(HOOK_RUNNER, ['pre-edit'], { ...base, eventId: 'b-2' }, {
-        OCTOCODE_MEMORY_HOME: memoryHome,
+        OCTOCODE_AGENT_DIR: memoryHome,
         OCTOCODE_AGENT_ID: 'agent-b',
       });
 
@@ -256,7 +256,7 @@ it('emits a compact peer delta once and stays silent while peers are unchanged',
     mkdirSync(workspace, { recursive: true });
     try {
       const env = {
-        OCTOCODE_MEMORY_HOME: memoryHome,
+        OCTOCODE_AGENT_DIR: memoryHome,
         OCTOCODE_AGENT_ID: 'stop-agent',
       };
       for (let index = 0; index < 5; index += 1) {
@@ -287,7 +287,7 @@ it('registers hook agents before checking mailbox delivery', () => {
     mkdirSync(workspace, { recursive: true });
     try {
       const env = {
-        OCTOCODE_MEMORY_HOME: memoryHome,
+        OCTOCODE_AGENT_DIR: memoryHome,
         OCTOCODE_AGENT_ID: 'hook-agent',
         OCTOCODE_AGENT_NAME: 'Hook Agent',
         OCTOCODE_AGENT_CONTEXT: 'codex-hook',
@@ -305,7 +305,7 @@ it('registers hook agents before checking mailbox delivery', () => {
       ], {
         encoding: 'utf8',
         timeout: 5000,
-        env: { ...process.env, OCTOCODE_MEMORY_HOME: memoryHome },
+        env: { ...process.env, OCTOCODE_AGENT_DIR: memoryHome },
       });
       expect(listed.status).toBe(0);
       const parsed = JSON.parse(listed.stdout) as { agents: Array<Record<string, unknown>> };
@@ -326,7 +326,7 @@ it('registers hook agents before checking mailbox delivery', () => {
     const workspace = resolve(memoryHome, 'repo');
     mkdirSync(workspace, { recursive: true });
     try {
-      const dbPath = join(memoryHome, 'awareness.sqlite3');
+      const dbPath = join(memoryHome, 'agent.sqlite3');
       const database = connectDb(dbPath);
       insertMemory(database, {
         agentId: 'memory-agent',
@@ -347,7 +347,7 @@ it('registers hook agents before checking mailbox delivery', () => {
       database.close();
 
       const env = {
-        OCTOCODE_MEMORY_HOME: memoryHome,
+        OCTOCODE_AGENT_DIR: memoryHome,
         OCTOCODE_AGENT_ID: 'prompt-agent',
         OCTOCODE_NO_DIGEST: '1',
       };

@@ -173,9 +173,9 @@ describe('full-loop host hook contracts', () => {
       const workspace = join(memoryDir, 'workspace');
       mkdirSync(workspace, { recursive: true });
       writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
-    const priorMemoryHome = process.env.OCTOCODE_MEMORY_HOME;
+    const priorMemoryHome = process.env.OCTOCODE_AGENT_DIR;
     const priorAgentId = process.env.OCTOCODE_AGENT_ID;
-    process.env.OCTOCODE_MEMORY_HOME = memoryDir;
+    process.env.OCTOCODE_AGENT_DIR = memoryDir;
     process.env.OCTOCODE_AGENT_ID = 'hook-contract-agent';
     try {
       for (let index = 0; index < 5; index += 1) {
@@ -272,8 +272,8 @@ describe('full-loop host hook contracts', () => {
       expect(database.prepare("SELECT COUNT(*) AS count FROM task_runs WHERE origin = 'HOOK' AND status = 'ACTIVE'").get()).toEqual({ count: 1 });
       database.close();
     } finally {
-      if (priorMemoryHome === undefined) delete process.env.OCTOCODE_MEMORY_HOME;
-      else process.env.OCTOCODE_MEMORY_HOME = priorMemoryHome;
+      if (priorMemoryHome === undefined) delete process.env.OCTOCODE_AGENT_DIR;
+      else process.env.OCTOCODE_AGENT_DIR = priorMemoryHome;
       if (priorAgentId === undefined) delete process.env.OCTOCODE_AGENT_ID;
       else process.env.OCTOCODE_AGENT_ID = priorAgentId;
       rmSync(memoryDir, { recursive: true, force: true });
@@ -285,9 +285,9 @@ describe('full-loop host hook contracts', () => {
       const workspace = join(memoryDir, 'workspace');
       mkdirSync(workspace, { recursive: true });
       writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
-    const priorMemoryHome = process.env.OCTOCODE_MEMORY_HOME;
+    const priorMemoryHome = process.env.OCTOCODE_AGENT_DIR;
     const priorAgentId = process.env.OCTOCODE_AGENT_ID;
-    process.env.OCTOCODE_MEMORY_HOME = memoryDir;
+    process.env.OCTOCODE_AGENT_DIR = memoryDir;
     process.env.OCTOCODE_AGENT_ID = 'hook-failure-agent';
     try {
       const payload = {
@@ -311,8 +311,8 @@ describe('full-loop host hook contracts', () => {
       expect(auditUnverified(database, { agentId: 'hook-failure-agent', workspacePath: workspace }).count).toBe(0);
       database.close();
     } finally {
-      if (priorMemoryHome === undefined) delete process.env.OCTOCODE_MEMORY_HOME;
-      else process.env.OCTOCODE_MEMORY_HOME = priorMemoryHome;
+      if (priorMemoryHome === undefined) delete process.env.OCTOCODE_AGENT_DIR;
+      else process.env.OCTOCODE_AGENT_DIR = priorMemoryHome;
       if (priorAgentId === undefined) delete process.env.OCTOCODE_AGENT_ID;
       else process.env.OCTOCODE_AGENT_ID = priorAgentId;
       rmSync(memoryDir, { recursive: true, force: true });
@@ -324,19 +324,19 @@ describe('full-loop host hook contracts', () => {
       const workspace = join(memoryDir, 'workspace');
       mkdirSync(workspace, { recursive: true });
       writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
-    const priorMemoryHome = process.env.OCTOCODE_MEMORY_HOME;
+    const priorMemoryHome = process.env.OCTOCODE_AGENT_DIR;
     const priorAgentId = process.env.OCTOCODE_AGENT_ID;
-    process.env.OCTOCODE_MEMORY_HOME = memoryDir;
+    process.env.OCTOCODE_AGENT_DIR = memoryDir;
     process.env.OCTOCODE_AGENT_ID = 'hook-race-agent';
     const basePayload = { cwd: workspace, session_id: 'hook-race-session', tool_name: 'Write' };
     try {
       await Promise.all([
         runPreEditChild({ ...basePayload, tool_use_id: 'race-a', tool_input: { path: 'src/a.ts' } }, {
-          OCTOCODE_MEMORY_HOME: memoryDir,
+          OCTOCODE_AGENT_DIR: memoryDir,
           OCTOCODE_AGENT_ID: 'hook-race-agent',
         }),
         runPreEditChild({ ...basePayload, tool_use_id: 'race-b', tool_input: { path: 'src/b.ts' } }, {
-          OCTOCODE_MEMORY_HOME: memoryDir,
+          OCTOCODE_AGENT_DIR: memoryDir,
           OCTOCODE_AGENT_ID: 'hook-race-agent',
         }),
       ]);
@@ -355,8 +355,8 @@ describe('full-loop host hook contracts', () => {
       expect(database.prepare("SELECT COUNT(*) AS count FROM task_runs WHERE origin = 'HOOK' AND status = 'PENDING'").get()).toEqual({ count: 1 });
       database.close();
     } finally {
-      if (priorMemoryHome === undefined) delete process.env.OCTOCODE_MEMORY_HOME;
-      else process.env.OCTOCODE_MEMORY_HOME = priorMemoryHome;
+      if (priorMemoryHome === undefined) delete process.env.OCTOCODE_AGENT_DIR;
+      else process.env.OCTOCODE_AGENT_DIR = priorMemoryHome;
       if (priorAgentId === undefined) delete process.env.OCTOCODE_AGENT_ID;
       else process.env.OCTOCODE_AGENT_ID = priorAgentId;
       rmSync(memoryDir, { recursive: true, force: true });
@@ -368,9 +368,9 @@ describe('full-loop host hook contracts', () => {
       const workspace = join(memoryDir, 'workspace');
       mkdirSync(workspace, { recursive: true });
       writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
-    const priorMemoryHome = process.env.OCTOCODE_MEMORY_HOME;
+    const priorMemoryHome = process.env.OCTOCODE_AGENT_DIR;
     const priorAgentId = process.env.OCTOCODE_AGENT_ID;
-    process.env.OCTOCODE_MEMORY_HOME = memoryDir;
+    process.env.OCTOCODE_AGENT_DIR = memoryDir;
     process.env.OCTOCODE_AGENT_ID = 'hook-recursive-agent';
     const stopPayload = { cwd: workspace, session_id: 'recursive-session' };
     const edit = async (id: string, file: string) => {
@@ -389,8 +389,8 @@ describe('full-loop host hook contracts', () => {
       expect(auditUnverified(database, { agentId: 'hook-recursive-agent', workspacePath: workspace }).count).toBe(2);
       database.close();
     } finally {
-      if (priorMemoryHome === undefined) delete process.env.OCTOCODE_MEMORY_HOME;
-      else process.env.OCTOCODE_MEMORY_HOME = priorMemoryHome;
+      if (priorMemoryHome === undefined) delete process.env.OCTOCODE_AGENT_DIR;
+      else process.env.OCTOCODE_AGENT_DIR = priorMemoryHome;
       if (priorAgentId === undefined) delete process.env.OCTOCODE_AGENT_ID;
       else process.env.OCTOCODE_AGENT_ID = priorAgentId;
       rmSync(memoryDir, { recursive: true, force: true });

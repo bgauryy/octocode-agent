@@ -66,7 +66,7 @@ function seededDb(workspace: string): {
      VALUES ('run_auth', 'WORK', 'agent-a', 'edit auth file', 'vitest auth', 'ACTIVE', ?, 'svc', ?, ?)`).run(workspace, now, now);
     db.prepare(`INSERT INTO run_files (run_id, file_path, source, started_at, heartbeat_at, expires_at)
      VALUES ('run_auth', ?, 'EXPLICIT', ?, ?, ?)`).run(file, now, now, future);
-    db.prepare(`INSERT INTO locks (lock_id, file_path, run_id, acquired_at, expires_at)
+    db.prepare(`INSERT INTO awareness_locks (lock_id, file_path, run_id, acquired_at, expires_at)
      VALUES ('lock_auth', ?, 'run_auth', ?, ?)`).run(file, now, future);
     insertRefinement(db, {
         agentId: 'agent-a',

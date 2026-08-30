@@ -48,7 +48,7 @@ function insertTask(db: DatabaseSync, runId: string, agentId: string, sessionId:
  */
 function insertMemoryWithSession(db: DatabaseSync, memoryId: string, agentId: string, sessionId: string | null): void {
     db.prepare(`
-    INSERT INTO memories(memory_id, agent_id, task_context, observation, importance,
+    INSERT INTO awareness_memories(memory_id, agent_id, task_context, observation, importance,
                          session_id, created_at)
     VALUES (?, ?, 'task ctx', 'observation text', 5, ?,
             strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -230,7 +230,7 @@ describe('endSession', () => {
 describe('session_id links correctly to memories', () => {
   it('documents whether memories has a session_id column', () => {
     const db = freshDb();
-    const cols = tableColumns(db, 'memories');
+    const cols = tableColumns(db, 'awareness_memories');
     if (!cols.has('session_id')) {
       expect(cols.has('session_id')).toBe(false);
       return;
@@ -240,13 +240,13 @@ describe('session_id links correctly to memories', () => {
 
   it('a memory inserted with session_id can be queried by session', () => {
     const db = freshDb();
-    if (!tableColumns(db, 'memories').has('session_id')) return; // schema not yet updated
+    if (!tableColumns(db, 'awareness_memories').has('session_id')) return; // schema not yet updated
 
     const session = insertSession(db, { agentId: 'agent-1' });
     insertMemoryWithSession(db, 'mem-link-test', 'agent-1', session.session_id);
 
     const row = db
-      .prepare('SELECT memory_id, session_id FROM memories WHERE session_id = ?')
+      .prepare('SELECT memory_id, session_id FROM awareness_memories WHERE session_id = ?')
       .get(session.session_id) as { memory_id: string; session_id: string } | undefined;
 
     expect(row).toBeDefined();
@@ -256,12 +256,12 @@ describe('session_id links correctly to memories', () => {
 
   it('memory.session_id can be NULL (session-less memory)', () => {
     const db = freshDb();
-    if (!tableColumns(db, 'memories').has('session_id')) return;
+    if (!tableColumns(db, 'awareness_memories').has('session_id')) return;
 
     insertMemoryWithSession(db, 'mem-no-session', 'agent-1', null);
 
     const row = db
-      .prepare('SELECT session_id FROM memories WHERE memory_id = ?')
+      .prepare('SELECT session_id FROM awareness_memories WHERE memory_id = ?')
       .get('mem-no-session') as { session_id: string | null } | undefined;
 
     expect(row).toBeDefined();

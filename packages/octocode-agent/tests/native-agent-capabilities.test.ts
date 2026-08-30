@@ -20,26 +20,23 @@ const execution = (input: unknown, cwd: string, trust: 'trusted' | 'untrusted' =
 });
 
 describe('native Agent Skills and MCP capabilities', () => {
-  it('discovers and overlays MCP configuration from repository root to nested workspace', () => {
+  it('loads managed MCP configuration only from the global agent home', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-hierarchy-'));
     roots.push(root);
-    fs.mkdirSync(path.join(root, '.git'));
     const nested = path.join(root, 'packages', 'app');
     fs.mkdirSync(nested, { recursive: true });
-    const writeConfig = (directory: string, servers: Record<string, unknown>): void => {
-      const file = path.join(directory, '.octocode', 'agent', 'mcp', 'servers.json');
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, JSON.stringify({ mcpServers: servers }));
-    };
-    writeConfig(root, { shared: { command: 'root-command' }, rootOnly: { command: 'root-only' } });
-    writeConfig(path.join(root, 'packages'), { shared: { command: 'package-command' } });
-    writeConfig(nested, { nestedOnly: { command: 'nested-only' } });
+    const octocodeHome = path.join(root, 'home');
+    const globalConfig = path.join(octocodeHome, 'agent', 'mcp', 'servers.json');
+    const projectConfig = path.join(nested, '.octocode', 'agent', 'mcp', 'servers.json');
+    fs.mkdirSync(path.dirname(globalConfig), { recursive: true });
+    fs.mkdirSync(path.dirname(projectConfig), { recursive: true });
+    fs.writeFileSync(globalConfig, JSON.stringify({ mcpServers: { managed: { command: 'managed-command' } } }));
+    fs.writeFileSync(projectConfig, JSON.stringify({ mcpServers: { forbidden: { command: 'project-command' } } }));
 
-    expect(loadNativeMcpServers({ cwd: nested, octocodeHome: path.join(root, 'home') })).toMatchObject({
-      shared: { command: 'package-command', provenance: { scope: 'workspace', file: path.join(root, 'packages', '.octocode', 'agent', 'mcp', 'servers.json') } },
-      rootOnly: { command: 'root-only', provenance: { scope: 'workspace', file: path.join(root, '.octocode', 'agent', 'mcp', 'servers.json') } },
-      nestedOnly: { command: 'nested-only', provenance: { scope: 'workspace', file: path.join(nested, '.octocode', 'agent', 'mcp', 'servers.json') } },
+    expect(loadNativeMcpServers({ cwd: nested, env: { OCTOCODE_HOME: octocodeHome } })).toMatchObject({
+      managed: { command: 'managed-command', provenance: { scope: 'global', file: globalConfig } },
     });
+    expect(loadNativeMcpServers({ cwd: nested, env: { OCTOCODE_HOME: octocodeHome } })).not.toHaveProperty('forbidden');
   });
 
   it('does not follow symlinked MCP configuration files', () => {
@@ -48,10 +45,27 @@ describe('native Agent Skills and MCP capabilities', () => {
     roots.push(root, outside);
     const outsideConfig = path.join(outside, 'servers.json');
     fs.writeFileSync(outsideConfig, JSON.stringify({ mcpServers: { escaped: { command: 'nope' } } }));
-    const config = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+    const octocodeHome = path.join(root, 'octocode-home');
+    const config = path.join(octocodeHome, 'agent', 'mcp', 'servers.json');
     fs.mkdirSync(path.dirname(config), { recursive: true });
     fs.symlinkSync(outsideConfig, config);
-    expect(loadNativeMcpServers({ cwd: root, octocodeHome: path.join(root, 'home') })).not.toHaveProperty('escaped');
+    expect(loadNativeMcpServers({ cwd: root, octocodeHome })).not.toHaveProperty('escaped');
+  });
+
+  it('does not let a disabled compatibility server overwrite a colliding managed server', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-collision-'));
+    roots.push(root);
+    const home = path.join(root, 'home');
+    const octocodeHome = path.join(root, 'octocode-home');
+    fs.mkdirSync(root, { recursive: true });
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    fs.mkdirSync(path.join(octocodeHome, 'agent', 'mcp'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { docs: { url: 'https://foreign.example/mcp' } } }));
+    fs.writeFileSync(path.join(octocodeHome, 'agent', 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { 'cursor.docs': { url: 'https://managed.example/mcp' } } }));
+
+    expect(loadNativeMcpServers({ cwd: root, homeDir: home, octocodeHome })).toMatchObject({
+      'cursor.docs': { url: 'https://managed.example/mcp', defaultEnabled: true },
+    });
   });
 
   it('loads skill instructions progressively without granting allowed-tools', async () => {
@@ -112,7 +126,8 @@ describe('native Agent Skills and MCP capabilities', () => {
   it('routes MCP list/describe/call through canonical config and validates arguments', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-'));
     roots.push(root);
-    const config = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+    const octocodeHome = path.join(root, 'home');
+    const config = path.join(octocodeHome, 'agent', 'mcp', 'servers.json');
     fs.mkdirSync(path.dirname(config), { recursive: true });
     fs.writeFileSync(config, JSON.stringify({ mcpServers: { fixture: { command: process.execPath, args: ['fixture.mjs'], env: { TOKEN: '${env:MCP_FIXTURE_TOKEN}' } } } }));
     const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }] }));
@@ -127,9 +142,10 @@ describe('native Agent Skills and MCP capabilities', () => {
       complete: async () => ({ completion: { values: [] } }),
       close: async () => undefined,
     };
-    const connect = vi.fn(async () => client);
+    type Connect = NonNullable<Parameters<typeof registerNativeMcpTool>[1]['connect']>;
+    const connect = vi.fn<Connect>(async () => client);
     const registry = new ToolRegistry();
-    registerNativeMcpTool(registry, { cwd: root, homeDir: path.join(root, 'home'), connect });
+    registerNativeMcpTool(registry, { cwd: root, homeDir: octocodeHome, octocodeHome, connect });
     const tool = registry.get('MCPTool')!;
     await expect(tool.execute(execution({ action: 'call', server: 'fixture', tool: 'probe', arguments: {} }, root))).rejects.toThrow(/message/);
     const called = await tool.execute(execution({ action: 'call', server: 'fixture', tool: 'probe', arguments: { message: 'hello' } }, root));
@@ -144,7 +160,7 @@ describe('native Agent Skills and MCP capabilities', () => {
   it('normalizes MCP tool errors without hiding their corrective content', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-error-'));
     roots.push(root);
-    const config = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+    const config = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
     fs.mkdirSync(path.dirname(config), { recursive: true });
     fs.writeFileSync(config, JSON.stringify({ mcpServers: { fixture: { command: process.execPath } } }));
     const client: NativeMcpClient = {
@@ -167,7 +183,7 @@ describe('native Agent Skills and MCP capabilities', () => {
   it('keeps MCP model-facing metadata stable across equivalent config ordering', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-order-'));
     roots.push(root);
-    const config = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+    const config = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
     fs.mkdirSync(path.dirname(config), { recursive: true });
     const descriptionFor = (servers: Record<string, unknown>): string => {
       fs.writeFileSync(config, JSON.stringify({ mcpServers: servers }));
@@ -183,7 +199,7 @@ describe('native Agent Skills and MCP capabilities', () => {
   it('collects paginated MCP tool catalogs deterministically', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-pages-'));
     roots.push(root);
-    const config = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+    const config = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
     fs.mkdirSync(path.dirname(config), { recursive: true });
     fs.writeFileSync(config, JSON.stringify({ mcpServers: { fixture: { command: process.execPath } } }));
     const listTools = vi.fn(async (params?: { cursor?: string }) => params?.cursor === 'next'
@@ -204,7 +220,7 @@ describe('native Agent Skills and MCP capabilities', () => {
   it('treats absent or zero MCP TTL hints as immediately stale', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-ttl-'));
     roots.push(root);
-    const config = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+    const config = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
     fs.mkdirSync(path.dirname(config), { recursive: true });
     fs.writeFileSync(config, JSON.stringify({ mcpServers: { fixture: { command: process.execPath } } }));
     const listTools = vi.fn(async () => ({
@@ -228,22 +244,40 @@ describe('native Agent Skills and MCP capabilities', () => {
   it('keeps status secret-free and does not connect', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-status-'));
     roots.push(root);
-    const config = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+    const config = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
     fs.mkdirSync(path.dirname(config), { recursive: true });
     fs.writeFileSync(config, JSON.stringify({ mcpServers: { remote: { url: 'https://mcp.example.test', headers: { Authorization: 'secret-value' } } } }));
     const connect = vi.fn();
     const registry = new ToolRegistry();
-    registerNativeMcpTool(registry, { cwd: root, octocodeHome: path.join(root, 'home'), connect });
+    registerNativeMcpTool(registry, { cwd: root, homeDir: path.join(root, 'user-home'), octocodeHome: path.join(root, 'home'), connect });
     const status = await registry.get('MCPTool')!.execute(execution({ action: 'status' }, root));
-    expect(status.content).toMatchObject({ servers: [{ name: 'remote', transport: 'http', enabled: true, provenance: { scope: 'workspace', file: config } }] });
+    expect(status.content).toMatchObject({ servers: [{ name: 'remote', transport: 'http', enabled: true, provenance: { scope: 'global', file: config } }] });
     expect(JSON.stringify(status.content)).not.toContain('secret-value');
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('discovers foreign MCP servers but blocks connection until explicitly enabled', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-foreign-'));
+    roots.push(root);
+    const homeDir = path.join(root, 'home');
+    const config = path.join(homeDir, '.agents', 'mcp.json');
+    fs.mkdirSync(path.dirname(config), { recursive: true });
+    fs.writeFileSync(config, JSON.stringify({ mcpServers: { foreign: { url: 'https://mcp.example.test' } } }));
+    const connect = vi.fn();
+    const registry = new ToolRegistry();
+    registerNativeMcpTool(registry, { cwd: root, homeDir, octocodeHome: path.join(root, 'octocode'), connect });
+    const tool = registry.get('MCPTool')!;
+
+    const status = await tool.execute(execution({ action: 'status' }, root));
+    expect(status.content).toMatchObject({ servers: [expect.objectContaining({ name: 'agents.foreign', enabled: false })] });
+    await expect(tool.execute(execution({ action: 'describe', server: 'agents.foreign', tool: 'probe' }, root))).rejects.toThrow(/disabled MCP server/);
     expect(connect).not.toHaveBeenCalled();
   });
 
   it('keeps resources, prompts, and completion protocol families reachable', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-protocols-'));
     roots.push(root);
-    const config = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+    const config = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
     fs.mkdirSync(path.dirname(config), { recursive: true });
     fs.writeFileSync(config, JSON.stringify({ mcpServers: { fixture: { command: process.execPath } } }));
     const client: NativeMcpClient = {

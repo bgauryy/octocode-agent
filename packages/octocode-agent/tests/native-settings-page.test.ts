@@ -7,7 +7,8 @@ import type { RuntimeSnapshot } from '@octocodeai/agent-core';
 
 import { FileSettingsStorage } from '../src/native-settings.js';
 import { createNativeSettingsService } from '../src/native-settings-service.js';
-import { createNativeSettingsPageController } from '../src/native-settings-page.js';
+import { createNativeSettingsPageController, NATIVE_SETTINGS_SECTIONS } from '../src/native-settings-page.js';
+import type { NativeDiscoverySnapshot } from '../src/native-discovery.js';
 
 function request(url: string, options: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
   return new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>((resolve, reject) => {
@@ -23,7 +24,10 @@ function request(url: string, options: { method?: string; headers?: Record<strin
   });
 }
 
-async function harness(capabilityControl?: Parameters<typeof createNativeSettingsPageController>[0]['capabilityControl']) {
+async function harness(
+  capabilityControl?: Parameters<typeof createNativeSettingsPageController>[0]['capabilityControl'],
+  discovery?: NativeDiscoverySnapshot,
+) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-settings-page-'));
   const storage = new FileSettingsStorage(path.join(dir, 'settings.json'));
   const saved = storage.commit('0', {
@@ -43,6 +47,7 @@ async function harness(capabilityControl?: Parameters<typeof createNativeSetting
       usage: { inputTokens: 12, outputTokens: 3 }, revision: 1,
     } as RuntimeSnapshot),
     workspaceTrust: 'trusted', openUrl, capabilityControl,
+    ...(discovery === undefined ? {} : { getDiscoverySnapshot: () => discovery }),
   });
   return { controller, storage, saved, openUrl };
 }
@@ -74,7 +79,16 @@ describe('native settings page controller', () => {
     }
     expect(page.body).not.toContain('must-never-render');
     expect(page.body).not.toContain('<img src=x');
-    expect(page.body).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(page.body).not.toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(page.body).toContain('legacyModelEnvironmentIgnored');
+    expect(NATIVE_SETTINGS_SECTIONS).not.toContain('add-server');
+    expect(page.body).not.toContain('id="add-server"');
+    expect(page.body).toContain('<section id="connections"><h2>Connections</h2>');
+    expect(page.body).toContain('MCP servers and tools');
+    expect(page.body).toContain('MCP Tasks');
+    expect(page.body).toContain('href="/api/settings/export"');
+    expect(page.body).toContain('id="settings-import"');
+    expect(page.body).toContain('id="settings-reset"');
     const snapshot = await request(new URL('/api/settings', opened.url!).href);
     expect(snapshot.status).toBe(200);
     expect(snapshot.body).not.toContain('must-never-render');
@@ -83,8 +97,13 @@ describe('native settings page controller', () => {
     expect(JSON.parse(snapshot.body)).toMatchObject({
       schemaVersion: 1,
       runtime: { state: 'ready', trust: 'trusted', model: 'openai/active-model' },
+      settings: {
+        defaultProvider: { value: 'openai', editable: true, application: 'next session' },
+        defaultModel: { value: 'gpt-5.6', editable: true, application: 'next session' },
+      },
       credentials: { modelApiKeyConfigured: true },
     });
+    expect(page.body).toContain('id="default-provider"');
     await controller.close();
   });
 
@@ -99,12 +118,115 @@ describe('native settings page controller', () => {
     expect(page.body).toContain('<section id="models" tabindex="-1" aria-labelledby="models-heading">');
     expect(page.body).toContain('<h2 id="models-heading">Models</h2>');
     expect(page.body).toContain('aria-describedby="model-help"');
+    expect(page.body).toContain('Catalog discovery is file-backed');
+    expect(page.body).toContain('are not catalog sources');
     expect(page.body).toContain('id="status" role="status" aria-live="polite" aria-atomic="true"');
     expect(page.body).toContain(':focus-visible');
     expect(page.body).toContain('@media(prefers-reduced-motion:reduce)');
+    expect(page.body).toContain('id="motion-form"');
+    expect(page.body).toContain("key:'reducedMotion'");
     expect(page.body).toContain("setAttribute('aria-current','location')");
     expect(page.body).toContain('target.focus({preventScroll:true})');
 
+    await controller.close();
+  });
+
+  it('renders a secret-safe model catalog with provenance, readiness, and Pi adoption', async () => {
+    const discovery = {
+      schemaVersion: 1,
+      generatedAt: '2026-08-30T00:00:00.000Z',
+      workspace: '/workspace',
+      models: {
+        selection: { providerId: 'openai', modelId: 'gpt-5' },
+        selectionSource: 'pi.user.settings',
+        credential: {
+          providerId: 'openai', configured: false, source: 'environment', verification: 'discovery',
+          environmentVariables: ['PI_OPENAI_KEY'], missingEnvironmentVariables: ['PI_OPENAI_KEY'],
+        },
+        sources: [{
+          id: 'pi.user', kind: 'legacy', scope: 'global', precedence: 20, writable: false,
+          revision: 'pi-revision', path: '/home/.pi/agent/models.json', owner: 'pi', parseState: 'warning', redaction: 'sensitive',
+        }],
+        providers: [
+          {
+            id: 'openai', apiFamily: 'chat-completions', endpoint: 'https://user:pass@pi.example/v1?token=bad#fragment',
+            enabled: true, scope: 'global', sourceId: 'pi.user', credential: { type: 'environment', name: 'PI_OPENAI_KEY' },
+            warnings: ['Uses compatibility protocol'],
+          },
+          {
+            id: 'google', apiFamily: 'google-generative-ai', endpoint: 'https://google.example/v1',
+            enabled: false, scope: 'global', sourceId: 'pi.user', credential: null,
+            warnings: ['Unsupported protocol: google-generative-ai'],
+          },
+        ],
+        entries: [
+          {
+            providerId: 'openai', id: 'gpt-5', displayName: 'GPT 5 from Pi', enabled: true,
+            limits: { context: null, output: null }, modalities: ['text'], tools: 'supported',
+            thinking: { supported: true, levels: ['low'] }, cost: null, sourceId: 'pi.user', scope: 'global', warnings: [],
+          },
+          {
+            providerId: 'google', id: 'gemini', displayName: 'Gemini from Pi', enabled: false,
+            limits: { context: null, output: null }, modalities: ['text'], tools: 'unknown',
+            thinking: { supported: null, levels: [] }, cost: null, sourceId: 'pi.user', scope: 'global',
+            warnings: ['Unsupported protocol: google-generative-ai'],
+          },
+        ],
+      },
+      mcp: { sources: [], servers: [] },
+      skills: { sources: [], errors: [] },
+    } as unknown as NativeDiscoverySnapshot;
+    const { controller, storage } = await harness(undefined, discovery);
+    const opened = await controller.open('models');
+    const page = await request(opened.url!);
+    const snapshot = await request(new URL('/api/settings', opened.url!).href);
+
+    for (const value of ['pi.user', 'pi', '/home/.pi/agent/models.json', 'chat-completions', 'pi.example', 'enabled', 'Uses compatibility protocol', 'missing', 'environment', 'Adopt Pi model as native default', 'google-generative-ai', 'disabled', 'Unsupported protocol: google-generative-ai', 'Gemini from Pi']) {
+      expect(page.body).toContain(value);
+    }
+    expect(page.body).toContain('data-provider="openai"');
+    expect(page.body).toContain('data-model="gpt-5"');
+    expect(page.body).toContain("op:'set-default-model'");
+    expect(`${page.body}${snapshot.body}`).not.toMatch(/user:pass|token=bad|fragment/);
+    expect(JSON.parse(snapshot.body)).toMatchObject({
+      discovery: { models: { providers: expect.arrayContaining([
+        expect.objectContaining({ endpointHost: 'pi.example', credential: expect.objectContaining({ configured: false, source: 'environment' }) }),
+      ]) } },
+    });
+    const origin = new URL(opened.url!).origin;
+    const revision = (JSON.parse(snapshot.body) as { revision: string }).revision;
+    const adopted = await request(`${origin}/api/settings/mutate`, {
+      method: 'POST',
+      headers: { origin, 'content-type': 'application/json', 'x-octocode-action-token': controller.diagnostics().actionToken },
+      body: JSON.stringify({
+        schemaVersion: 1, requestId: 'adopt-pi-model', expectedRevision: revision, scope: 'global',
+        actions: [{ op: 'set-default-model', providerId: 'openai', modelId: 'gpt-5' }],
+      }),
+    });
+    expect(adopted.status).toBe(200);
+    expect(storage.read().values).toMatchObject({ defaultProvider: 'openai', defaultModel: 'gpt-5' });
+    await controller.close();
+  });
+
+  it('persists the typed reduced-motion preference for the next session', async () => {
+    const { controller, storage } = await harness();
+    const opened = await controller.open('appearance');
+    const origin = new URL(opened.url!).origin;
+    const snapshot = JSON.parse((await request(`${origin}/api/settings`)).body) as { revision: string };
+    const response = await request(`${origin}/api/settings/mutate`, {
+      method: 'POST',
+      headers: {
+        origin,
+        'content-type': 'application/json',
+        'x-octocode-action-token': controller.diagnostics().actionToken,
+      },
+      body: JSON.stringify({
+        schemaVersion: 1, requestId: 'motion', expectedRevision: snapshot.revision, scope: 'global',
+        actions: [{ op: 'set', key: 'reducedMotion', value: false }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(storage.read().values).toMatchObject({ reducedMotion: false });
     await controller.close();
   });
 
@@ -131,6 +253,88 @@ describe('native settings page controller', () => {
 
     const stale = await request(mutationUrl, { method: 'POST', headers: { origin, 'content-type': 'application/json', 'x-octocode-action-token': info.actionToken }, body });
     expect(stale.status).toBe(409);
+    await controller.close();
+  });
+
+  it('changes provider and model through one optimistic transaction', async () => {
+    const { controller, storage } = await harness();
+    const opened = await controller.open('models');
+    const origin = new URL(opened.url!).origin;
+    const snapshot = JSON.parse((await request(`${origin}/api/settings`)).body) as { revision: string };
+    const response = await request(`${origin}/api/settings/mutate`, {
+      method: 'POST',
+      headers: {
+        origin,
+        'content-type': 'application/json',
+        'x-octocode-action-token': controller.diagnostics().actionToken,
+      },
+      body: JSON.stringify({
+        schemaVersion: 1,
+        requestId: 'select-model',
+        expectedRevision: snapshot.revision,
+        scope: 'global',
+        actions: [{ op: 'set-default-model', providerId: 'anthropic', modelId: 'claude-sonnet-4-5' }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(storage.read().values).toMatchObject({
+      defaultProvider: 'anthropic',
+      defaultModel: 'claude-sonnet-4-5',
+    });
+    await controller.close();
+  });
+
+  it('rejects an unavailable provider and model without committing either value', async () => {
+    const { controller, storage } = await harness();
+    const opened = await controller.open('models');
+    const origin = new URL(opened.url!).origin;
+    const snapshot = JSON.parse((await request(`${origin}/api/settings`)).body) as { revision: string };
+    const before = storage.read();
+    const response = await request(`${origin}/api/settings/mutate`, {
+      method: 'POST',
+      headers: { origin, 'content-type': 'application/json', 'x-octocode-action-token': controller.diagnostics().actionToken },
+      body: JSON.stringify({
+        schemaVersion: 1, requestId: 'invalid-model', expectedRevision: snapshot.revision, scope: 'global',
+        actions: [{ op: 'set-default-model', providerId: 'missing-provider', modelId: 'missing-model' }],
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(storage.read()).toEqual(before);
+    await controller.close();
+  });
+
+  it('imports and resets portable user configuration through typed page actions', async () => {
+    const { controller, storage } = await harness();
+    const opened = await controller.open('overrides');
+    const origin = new URL(opened.url!).origin;
+    const headers = {
+      origin,
+      'content-type': 'application/json',
+      'x-octocode-action-token': controller.diagnostics().actionToken,
+    };
+    let revision = (JSON.parse((await request(`${origin}/api/settings`)).body) as { revision: string }).revision;
+    const imported = await request(`${origin}/api/settings/mutate`, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        schemaVersion: 1, requestId: 'import-settings', expectedRevision: revision, scope: 'global',
+        actions: [{ op: 'import-settings', document: { schemaVersion: 1, values: { theme: 'octocode-light', defaultProvider: 'anthropic', defaultModel: 'claude-sonnet-4-5' } } }],
+      }),
+    });
+    expect(imported.status).toBe(200);
+    revision = (JSON.parse(imported.body) as { revision: string }).revision;
+    expect(storage.read().values).toMatchObject({ theme: 'octocode-light', defaultProvider: 'anthropic', defaultModel: 'claude-sonnet-4-5' });
+
+    const reset = await request(`${origin}/api/settings/mutate`, {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        schemaVersion: 1, requestId: 'reset-settings', expectedRevision: revision, scope: 'global',
+        actions: [{ op: 'reset-settings' }],
+      }),
+    });
+    expect(reset.status).toBe(200);
+    expect(storage.read().values).toEqual({ apiKey: 'must-never-render', arbitrary: { nested: 'must-never-render-either' } });
     await controller.close();
   });
 
@@ -193,7 +397,7 @@ describe('native settings page controller', () => {
     const opened = await controller.open();
     const origin = new URL(opened.url!).origin;
     const headers = { origin, 'content-type': 'application/json', 'x-octocode-action-token': controller.diagnostics().actionToken };
-    const body = JSON.stringify({ schemaVersion: 1, requestId: 'skill-off', expectedRevision: 'cap-1', scope: 'capabilities', actions: [{ op: 'set-skill-enabled', name: 'research', enabled: false }] });
+    const body = JSON.stringify({ schemaVersion: 1, requestId: 'skill-off', expectedRevision: 'cap-1', scope: 'capabilities', actions: [{ op: 'set-skill-enabled', name: 'research', source: 'octocode:user:/skills', enabled: false }] });
     expect((await request(`${origin}/api/settings/mutate`, { method: 'POST', headers, body })).status).toBe(404);
     await controller.close();
   });

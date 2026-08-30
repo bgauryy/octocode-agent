@@ -30,9 +30,9 @@ function seedActiveFilePeers(db: DatabaseSync, workspace: string, file: string):
     const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
     const future = new Date(Date.now() + 60000).toISOString();
     const past = new Date(Date.now() - 60000).toISOString();
-    db.prepare(`INSERT INTO plans (plan_id, name, objective, lead_agent_id, status, workspace_path, artifact, doc_dir, created_at, updated_at)
+    db.prepare(`INSERT INTO awareness_plans (plan_id, name, objective, lead_agent_id, status, workspace_path, artifact, doc_dir, created_at, updated_at)
      VALUES ('plan_file_work', 'Shared auth plan', 'Coordinate auth edits', 'agent-a', 'ACTIVE', ?, 'svc', '.octocode/plan/auth', ?, ?)`).run(workspace, now, now);
-    db.prepare(`INSERT INTO tasks (task_id, plan_id, title, reasoning, acceptance_criteria, status, priority, created_by, created_at, updated_at)
+    db.prepare(`INSERT INTO awareness_tasks (task_id, plan_id, title, reasoning, acceptance_criteria, status, priority, created_by, created_at, updated_at)
      VALUES ('task_file_work', 'plan_file_work', 'Edit auth', 'shared task reason', 'tests pass', 'IN_PROGRESS', 80, 'agent-a', ?, ?)`).run(now, now);
     for (const [index, agentId] of ['agent-a', 'agent-b', 'agent-c', 'agent-d', 'agent-expired'].entries()) {
         const runId = `run_peer_${index}`;
@@ -41,7 +41,7 @@ function seedActiveFilePeers(db: DatabaseSync, workspace: string, file: string):
         db.prepare(`INSERT INTO run_files (run_id, file_path, source, started_at, heartbeat_at, expires_at)
        VALUES (?, ?, 'EXPLICIT', ?, ?, ?)`).run(runId, file, now, now, agentId === 'agent-expired' ? past : future);
     }
-    db.prepare(`INSERT INTO locks (lock_id, file_path, run_id, acquired_at, expires_at)
+    db.prepare(`INSERT INTO awareness_locks (lock_id, file_path, run_id, acquired_at, expires_at)
      VALUES ('lock_peer', ?, 'run_peer_0', ?, ?)`).run(file, now, future);
 }
 function seededDb(workspace: string): {
@@ -84,7 +84,7 @@ function seededDb(workspace: string): {
      VALUES ('run_auth', 'WORK', 'agent-a', 'edit auth file', 'vitest auth', 'ACTIVE', ?, 'svc', ?, ?)`).run(workspace, now, now);
     db.prepare(`INSERT INTO run_files (run_id, file_path, source, started_at, heartbeat_at, expires_at)
      VALUES ('run_auth', ?, 'EXPLICIT', ?, ?, ?)`).run(file, now, now, future);
-    db.prepare(`INSERT INTO locks (lock_id, file_path, run_id, acquired_at, expires_at)
+    db.prepare(`INSERT INTO awareness_locks (lock_id, file_path, run_id, acquired_at, expires_at)
      VALUES ('lock_auth', ?, 'run_auth', ?, ?)`).run(file, now, future);
     insertRefinement(db, {
         agentId: 'agent-a',
@@ -130,11 +130,11 @@ it('routes attend.next through owned Claimed, then FilesUnderWork, then Inbox', 
       const future = new Date(Date.now() + 60_000).toISOString();
       const file = join(dir, 'src', 'auth.ts');
 
-      db.prepare(`INSERT INTO plans
+      db.prepare(`INSERT INTO awareness_plans
         (plan_id, name, objective, lead_agent_id, status, workspace_path, doc_dir, created_at, updated_at)
         VALUES ('plan_next', 'Next', 'Route mid-loop', 'owner', 'ACTIVE', ?, '.octocode/plan/next', ?, ?)`)
         .run(dir, now, now);
-      db.prepare(`INSERT INTO tasks
+      db.prepare(`INSERT INTO awareness_tasks
         (task_id, plan_id, title, reasoning, acceptance_criteria, status, priority, created_by, created_at, updated_at)
         VALUES ('task_next', 'plan_next', 'Claimed work', 'reason', 'tests pass', 'IN_PROGRESS', 1, 'owner', ?, ?)`)
         .run(now, now);
@@ -146,7 +146,7 @@ it('routes attend.next through owned Claimed, then FilesUnderWork, then Inbox', 
         (task_id, run_id, agent_id, claimed_at, heartbeat_at, expires_at)
         VALUES ('task_next', 'run_next', 'owner', ?, ?, ?)`) 
         .run(now, now, future);
-      db.prepare(`INSERT INTO tasks
+      db.prepare(`INSERT INTO awareness_tasks
         (task_id, plan_id, title, reasoning, acceptance_criteria, status, priority, created_by, created_at, updated_at)
         VALUES ('task_unrelated', 'plan_next', 'Unrelated ready work', 'different request', 'tests pass', 'OPEN', 99, 'other', ?, ?)`) 
         .run(now, now);
@@ -239,7 +239,7 @@ it('groups active file work by relative path, caps peers, and shows exclusive lo
 
       const profile = queryAwareness(db, { workspacePath: dir, artifact: 'svc', view: 'repo-profile' });
       expect(profile.rows).toContainEqual({ metric: 'active_locks', count: 1 });
-      db.prepare("UPDATE locks SET expires_at = '2000-01-01T00:00:00Z'").run();
+      db.prepare("UPDATE awareness_locks SET expires_at = '2000-01-01T00:00:00Z'").run();
       const expiredProfile = queryAwareness(db, { workspacePath: dir, artifact: 'svc', view: 'repo-profile' });
       expect(expiredProfile.rows).toContainEqual({ metric: 'active_locks', count: 0 });
     } finally {

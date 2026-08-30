@@ -25,7 +25,7 @@ Native `octocode-agent` now provides:
 - focused controller, slash-command, launcher, desktop/mobile browser, and headless regression checks;
 - a real browser save plus focus and ARIA checks, Anthropic/provider credential visibility, and a 390-by-844 layout check with no horizontal overflow.
 
-This native slice is intentionally incomplete. The registry/service does not own launcher config commands, model-source transactions, automation, or the temporary Pi projection. Effective-catalog validation and the complete Models, MCP, Skills, backup, import, provenance, and recovery workflows remain open. Hooks and Plugins still need exact review, capability-grant, revoke, health, and contribution-management workflows. See `evidence/settings-control-center-2026-08-28.md` and `evidence/real-runtime-surface-eval-2026-08-28.md`.
+This native slice is intentionally incomplete. The registry/service does not own launcher config commands, model-source transactions, automation, or the independent Pi-extension projection. Effective-catalog validation and the complete Models, MCP, Skills, backup, import, provenance, and recovery workflows remain open. Hooks and Plugins still need exact review, capability-grant, revoke, health, and contribution-management workflows. See `evidence/settings-control-center-2026-08-28.md` and `evidence/real-runtime-surface-eval-2026-08-28.md`.
 
 The Pi extension starting point remains in `packages/octocode-pi-extension/src/tools/mcp-html.ts` and its settings documentation:
 
@@ -141,7 +141,7 @@ Never accept or display a raw API key in the normal form. Credential references 
 The page lists every supported source with exact path, scope, precedence, owner, revision/hash, parse status, writability, and effective contribution. The target native sources are:
 
 - global: `$OCTOCODE_HOME/agent/models.json`;
-- workspace: `<workspace>/.octocode/agent/models.json`.
+- workspace: `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/models.json`.
 
 Legacy Pi sources such as `~/.pi/agent/models.json` and workspace `.pi/models.json` remain compatibility inputs. During the compatibility window, the Pi-extension adapter can expose a Pi-owned source as editable only when the active Pi host contract supports safe mutation. Otherwise, the page presents it read-only with **Import into Octocode**, a semantic diff, and no source modification.
 

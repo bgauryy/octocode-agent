@@ -11,10 +11,11 @@ import {
   type WorkerTerminalPacket,
 } from '@octocodeai/agent-core';
 import { createNativeWorkerTool } from '../src/native-worker-tool.js';
+import type { NativePlanWorkerOwnershipPort } from '../src/native-plan.js';
 
 const ids = ['worker-1', 'correlation-1', 'packet-1', 'packet-2', 'packet-3'];
 
-function harness(execute?: (command: WorkerCommand) => Promise<unknown>) {
+function harness(execute?: (command: WorkerCommand) => Promise<unknown>, planOwnership?: NativePlanWorkerOwnershipPort) {
   const commands: WorkerCommand[] = [];
   const controller: WorkerController = {
     execute: vi.fn(async (command: WorkerCommand) => {
@@ -39,6 +40,7 @@ function harness(execute?: (command: WorkerCommand) => Promise<unknown>) {
     allowedModels: [{ providerId: 'openai', modelId: 'gpt-test' }],
     defaultMaxTurns: 8,
     maxWaitMs: 100,
+    ...(planOwnership === undefined ? {} : { planOwnership }),
     idFactory: () => ids[index++] ?? `generated-${index}`,
   });
   const abort = new AbortController();
@@ -59,6 +61,59 @@ function harness(execute?: (command: WorkerCommand) => Promise<unknown>) {
 }
 
 describe('native worker tool', () => {
+  it('binds a worker to one plan step, exposes ownership, and releases without auto-completing on terminal success', async () => {
+    const planOwnership: NativePlanWorkerOwnershipPort = {
+      claim: vi.fn(async ({ planStepId, workerId }) => ({ planStepId, workerId, status: 'active' as const })),
+      release: vi.fn(async ({ planStepId, workerId }) => ({ planStepId, workerId, status: 'released' as const })),
+    };
+    const terminal: WorkerTerminalPacket = {
+      schemaVersion: 1, type: 'worker.terminal', packetId: packetId('terminal'), workerId: workerId('worker-1'),
+      correlationId: correlationId('correlation-1'), sessionId: sessionId('session:one'), redaction: 'sensitive', outcome: 'succeeded',
+    };
+    const { call } = harness(async (command) => {
+      if (command.type === 'spawn') return { workerId: command.packet.workerId, correlationId: command.packet.correlationId, sessionId: command.packet.sessionId, state: 'queued', queueDepth: 0, capabilities: command.packet.capabilities } satisfies WorkerSnapshot;
+      if (command.type === 'list') return [{ workerId: workerId('worker-1'), correlationId: correlationId('correlation-1'), sessionId: sessionId('session:one'), state: 'running', queueDepth: 0, capabilities: { tools: [], models: [], maxTurns: 1 } } satisfies WorkerSnapshot];
+      if (command.type === 'status') return { workerId: workerId('worker-1'), correlationId: correlationId('correlation-1'), sessionId: sessionId('session:one'), state: 'running', queueDepth: 0, capabilities: { tools: [], models: [], maxTurns: 1 } } satisfies WorkerSnapshot;
+      if (command.type === 'wait') return terminal;
+      return undefined;
+    }, planOwnership);
+
+    expect(await call({ action: 'spawn', task: 'Build it', planStepId: 'step:1:1' })).toMatchObject({
+      content: { worker: { planStepId: 'step:1:1', ownershipStatus: 'active' } },
+    });
+    expect(planOwnership.claim).toHaveBeenCalledWith(expect.objectContaining({
+      scope: { sessionId: 'session:one', workspace: '/trusted/workspace' }, planStepId: 'step:1:1', workerId: 'worker-1',
+    }));
+    expect(await call({ action: 'list' })).toMatchObject({ content: { workers: [{ planStepId: 'step:1:1', ownershipStatus: 'active' }] } });
+    expect(await call({ action: 'status', workerId: 'worker-1' })).toMatchObject({ content: { worker: { planStepId: 'step:1:1', ownershipStatus: 'active' } } });
+    expect(await call({ action: 'wait', workerId: 'worker-1', timeoutMs: 50 })).toMatchObject({
+      content: { worker: { state: 'succeeded', planStepId: 'step:1:1', ownershipStatus: 'released' } },
+    });
+    expect(planOwnership.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases a claimed plan step when worker spawn fails', async () => {
+    const planOwnership: NativePlanWorkerOwnershipPort = {
+      claim: vi.fn(async ({ planStepId, workerId }) => ({ planStepId, workerId, status: 'active' as const })),
+      release: vi.fn(async ({ planStepId, workerId }) => ({ planStepId, workerId, status: 'released' as const })),
+    };
+    const { call } = harness(async () => { throw new Error('spawn failed'); }, planOwnership);
+    await expect(call({ action: 'spawn', task: 'Build it', planStepId: 'step:1:1' })).rejects.toThrow(/spawn failed/i);
+    expect(planOwnership.claim).toHaveBeenCalledTimes(1);
+    expect(planOwnership.release).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['abort', 'kill'] as const)('releases plan-step ownership after %s is acknowledged', async (action) => {
+    const planOwnership: NativePlanWorkerOwnershipPort = {
+      claim: vi.fn(async ({ planStepId, workerId }) => ({ planStepId, workerId, status: 'active' as const })),
+      release: vi.fn(async ({ planStepId, workerId }) => ({ planStepId, workerId, status: 'released' as const })),
+    };
+    const { call } = harness(undefined, planOwnership);
+    await call({ action: 'spawn', task: 'Build it', planStepId: 'step:1:1' });
+    await expect(call({ action, workerId: 'worker-1', reason: 'stop' })).resolves.toMatchObject({ content: { acknowledged: true } });
+    expect(planOwnership.release).toHaveBeenCalledTimes(1);
+  });
+
   it('is a closed, process/on-request trusted-workspace tool that remains plan-allowed', () => {
     const { tool } = harness();
     expect(tool.policy).toEqual({ effects: ['process'], trust: 'workspace', approval: 'on-request', plan: 'allowed' });

@@ -9,6 +9,7 @@ import {
   isPathInsideSessionRoot,
   readPlanProjection,
   resolveSessionIdentity,
+  workspaceAgentRoot,
   writePlanBranchSnapshot,
   type PlanProjectionV1,
 } from '../src/tools/session-artifacts.js';
@@ -74,7 +75,8 @@ test('process fallback is stable for one process/workspace and isolated across w
 test('context contains private writes, rejects traversal and symlink escapes, and preserves old bytes on serialization failure', () => {
   const workspace = tempRoot('octocode-session-context-');
   const ctx = createSessionArtifactContext({ cwd: workspace, sessionManager: { getSessionId: () => 'ctx-test' } });
-  assert.equal(ctx.root, path.join(workspace, '.octocode', 'agent', ctx.identity.sessionKey));
+  assert.equal(ctx.root, path.join(workspaceAgentRoot(workspace), 'sessions', ctx.identity.sessionKey));
+  assert.equal(ctx.root.startsWith(workspace), false);
   assert.ok(isPathInsideSessionRoot(ctx, ctx.resolve('plan', 'state.json')));
   assert.equal(isPathInsideSessionRoot(ctx, workspace), false);
 
@@ -104,16 +106,17 @@ test('context contains private writes, rejects traversal and symlink escapes, an
   }
 });
 
-test('context rejects pre-existing workspace artifact symlinks that escape the workspace', () => {
+test('context rejects a symlinked global agent root', () => {
   if (process.platform === 'win32') return;
   const workspace = tempRoot('octocode-session-root-symlink-');
   const outside = tempRoot('octocode-session-root-outside-');
-  fs.symlinkSync(outside, path.join(workspace, '.octocode'), 'dir');
+  const octocodeHome = tempRoot('octocode-session-home-');
+  fs.symlinkSync(outside, path.join(octocodeHome, 'agent'), 'dir');
   assert.throws(
-    () => createSessionArtifactContext({ cwd: workspace, sessionManager: { getSessionId: () => 'escape-test' } }),
-    /symlink escaped the workspace/i,
+    () => createSessionArtifactContext({ cwd: workspace, octocodeHome, sessionManager: { getSessionId: () => 'escape-test' } }),
+    /agent root must not be a symlink/i,
   );
-  assert.equal(fs.existsSync(path.join(outside, 'agent')), false);
+  assert.deepEqual(fs.readdirSync(outside), []);
 });
 
 test('manifest tracks bounded producer paths and NDJSON events append complete private lines', () => {

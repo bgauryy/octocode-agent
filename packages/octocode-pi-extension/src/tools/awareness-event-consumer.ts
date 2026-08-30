@@ -12,6 +12,16 @@ import type { PiContext, PiInstance } from '../types.js';
 export { AWARENESS_PEER_EVENT_MESSAGE_TYPE, createAwarenessEventConsumer };
 export type { AwarenessEventObservability, AwarenessEventStore, AwarenessPeerDelivery };
 
+/** Render only current-drain delivery pressure; lifetime totals are diagnostic history. */
+export function awarenessEventStatusText(stats: AwarenessEventObservability): string | undefined {
+  const attention = stats.backlogDepth > 0
+    || stats.drainHeld > 0
+    || stats.drainRefused > 0
+    || stats.drainErrors > 0;
+  if (!attention) return undefined;
+  return `events q ${stats.backlogDepth}${stats.backlogCapped ? '+' : ''} · ack ${stats.lastAcknowledgedSequence} · accepted ${stats.drainAccepted} · held ${stats.drainHeld} · refused ${stats.drainRefused} · errors ${stats.drainErrors}`;
+}
+
 interface RegisterAwarenessEventConsumerOptions {
   openStore?: (workspace: string) => AwarenessEventStore;
   resolveExpectedAgentId?(ctx: PiContext): string;
@@ -34,6 +44,10 @@ const initialObservability = (consumerId: string): AwarenessEventObservability =
   held: 0,
   refused: 0,
   errors: 0,
+  drainAccepted: 0,
+  drainHeld: 0,
+  drainRefused: 0,
+  drainErrors: 0,
 });
 
 export function resolvePiEventConsumerId(ctx: PiContext): string | undefined {
@@ -52,12 +66,12 @@ export function registerAwarenessEventConsumer(pi: PiInstance, options: Register
     const workspace = path.resolve(ctx.cwd ?? process.cwd());
     const consumerId = resolvePiEventConsumerId(ctx);
     if (!consumerId) {
-      options.onObservability?.({ ...initialObservability('unavailable'), errors: 1 }, ctx);
+      options.onObservability?.({ ...initialObservability('unavailable'), errors: 1, drainErrors: 1 }, ctx);
       return;
     }
     const expectedAgentId = options.resolveExpectedAgentId?.(ctx);
     if (!expectedAgentId?.trim()) {
-      options.onObservability?.({ ...initialObservability(consumerId), errors: 1 }, ctx);
+      options.onObservability?.({ ...initialObservability(consumerId), errors: 1, drainErrors: 1 }, ctx);
       return;
     }
     const key = `${workspace}\0${consumerId}`;

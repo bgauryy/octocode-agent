@@ -81,11 +81,11 @@ describe('source CLI regressions', () => {
     const dir = mktemp();
     try {
       const result = runSource(['workspace', 'status', '--db', '--compact'], {
-        env: { ...process.env, OCTOCODE_MEMORY_HOME: dir },
+        env: { ...process.env, OCTOCODE_AGENT_DIR: dir },
       });
       expect(result.status).toBe(1);
       expect(String(result.parsed?.['error'])).toContain('--db expects a path');
-      expect(existsSync(join(dir, 'awareness.sqlite3'))).toBe(false);
+      expect(existsSync(join(dir, 'agent.sqlite3'))).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -352,7 +352,7 @@ process.stdout.write(JSON.stringify({ embedding, model: 'scope-test' }));
 
       const conn = new DatabaseSync(db);
       try {
-        expect(conn.prepare('SELECT access_count FROM memories WHERE memory_id = ?').get(insideId))
+        expect(conn.prepare('SELECT access_count FROM awareness_memories WHERE memory_id = ?').get(insideId))
           .toEqual({ access_count: 1 });
       } finally {
         conn.close();

@@ -16,7 +16,7 @@ AST/text discovery and LSP checks on the 2026-08-27 working tree found:
 |---|---|---|
 | Central middleware | 17 `hooks.on(...)` registrations in `packages/octocode-pi-extension/src/index.ts` | Preserve stable ordering, transforms, blocking, errors, and cancellation. |
 | Direct host listeners | 20 `pi.on(...)` occurrences across nine extension source files, including comments describing required wiring | Inventory real listeners separately from comments and route production listeners through canonical subscriptions. |
-| Hook composer | `OctocodeHookComposer` and `createHookComposer` live in `hook-composer.ts` | Retain as a temporary Pi adapter or replace with the canonical dispatcher after conformance. |
+| Hook composer | `OctocodeHookComposer` and `createHookComposer` live in `hook-composer.ts` | Keep adapter-local for Pi compatibility while shared decisions move through the canonical dispatcher. |
 | LSP use | `createHookComposer` has four references across `hook-composer.ts` and `index.ts`; the class is otherwise exported | The extraction blast radius is concentrated, but its public export requires a compatibility decision. |
 | Commands | 18 central plus eight module registrations | Command contributions need duplicate detection, policy metadata, ownership, and deterministic unload. |
 | Tools | 26 source files expose registration paths through one `registerTool` funnel | Plugin tool contributions must use the same canonical registry and security pipeline. |
@@ -317,7 +317,7 @@ Mandatory tests include:
 5. Add plugin catalog, transactional contributions, settings sections, and diagnostics.
 6. Run Pi/native shadow comparison only for pure event decisions; never duplicate handler effects.
 7. Enable reviewed hooks/plugins for a canary cohort, then native default after gates pass.
-8. Freeze Pi-specific hook composition as oracle-only behavior, then delete it with the Pi package after native conformance and rollback gates pass.
+8. Keep Pi-specific hook composition adapter-local in the independently published Pi extension after native conformance and rollback gates pass.
 
 Before native default, rollback disables the new loader and selects the Pi adapter without rewriting hook/plugin files or trust records. After dependency removal, rollback uses the prior release artifact. A failed plugin is disabled independently; the runtime continues only if the failing event contract permits failure isolation.
 

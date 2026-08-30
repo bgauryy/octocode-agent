@@ -40,6 +40,8 @@ export interface NativePlanStep {
   readonly dependsOn?: readonly number[];
   readonly checkCommand?: string;
   readonly receipt?: PlanVerificationReceipt;
+  /** Native worker holding this step. Presence never implies verification or completion. */
+  readonly workerId?: string;
 }
 
 export interface NativePlanDecision {
@@ -71,6 +73,7 @@ export interface RuntimePlanSnapshot {
     readonly dependsOn?: readonly string[];
     readonly checkCommand?: string;
     readonly receipt?: PlanVerificationReceipt & { readonly authority: 'runtime' };
+    readonly workerId?: string;
   }[];
 }
 
@@ -80,6 +83,24 @@ export type RuntimePlanSnapshotSink = (snapshot: RuntimePlanSnapshot) => void;
 export interface PlanStore {
   load(scope: PlanScope, signal?: AbortSignal): Promise<NativePlanSnapshot | undefined>;
   save(scope: PlanScope, expectedRevision: number, snapshot: NativePlanSnapshot, signal?: AbortSignal): Promise<void>;
+}
+
+export interface NativePlanWorkerOwnershipRequest {
+  readonly scope: PlanScope;
+  readonly planStepId: string;
+  readonly workerId: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface NativePlanWorkerOwnershipResult {
+  readonly planStepId: string;
+  readonly workerId: string;
+  readonly status: 'active' | 'released';
+}
+
+export interface NativePlanWorkerOwnershipPort {
+  claim(request: NativePlanWorkerOwnershipRequest): Promise<NativePlanWorkerOwnershipResult>;
+  release(request: NativePlanWorkerOwnershipRequest): Promise<NativePlanWorkerOwnershipResult>;
 }
 
 export interface NativePlanInteractionRequest {
@@ -165,6 +186,7 @@ export function projectRuntimePlanSnapshot(snapshot: NativePlanSnapshot): Runtim
       ...(step.dependsOn === undefined ? {} : { dependsOn: step.dependsOn.map((dependency) => stepIds[dependency - 1]!) }),
       ...(step.checkCommand === undefined ? {} : { checkCommand: step.checkCommand }),
       ...(step.receipt === undefined ? {} : { receipt: { authority: 'runtime' as const, ...step.receipt } }),
+      ...(step.workerId === undefined ? {} : { workerId: step.workerId }),
     })),
   });
 }
@@ -225,7 +247,7 @@ function parseStoredPlan(value: unknown, scope: PlanScope): NativePlanSnapshot {
 
   const steps: NativePlanStep[] = rawSteps.map((value, position) => {
     const step = storedRecord(value, `step ${position + 1}`);
-    assertClosed(step, ['id', 'text', 'status', 'activeForm', 'dependsOn', 'checkCommand', 'receipt'], `step ${position + 1}`);
+    assertClosed(step, ['id', 'text', 'status', 'activeForm', 'dependsOn', 'checkCommand', 'receipt', 'workerId'], `step ${position + 1}`);
     if (step.status !== 'todo' && step.status !== 'doing' && step.status !== 'done') {
       throw new PlanOperationError('invalid-plan', `step ${position + 1}.status is invalid`);
     }
@@ -247,6 +269,10 @@ function parseStoredPlan(value: unknown, scope: PlanScope): NativePlanSnapshot {
     if (step.status === 'done' && checkCommand !== undefined && parsedReceipt?.status !== 'SUCCESS') {
       throw new PlanOperationError('invalid-plan', `step ${position + 1} lacks successful verification`);
     }
+    const owningWorkerId = step.workerId === undefined ? undefined : storedText(step.workerId, `step ${position + 1}.workerId`);
+    if (owningWorkerId !== undefined && step.status !== 'doing') {
+      throw new PlanOperationError('invalid-plan', `step ${position + 1} has worker ownership while not active`);
+    }
     return {
       id: storedText(step.id, `step ${position + 1}.id`),
       text: storedText(step.text, `step ${position + 1}.text`),
@@ -255,6 +281,7 @@ function parseStoredPlan(value: unknown, scope: PlanScope): NativePlanSnapshot {
       ...(dependsOn === undefined ? {} : { dependsOn }),
       ...(checkCommand === undefined ? {} : { checkCommand }),
       ...(parsedReceipt === undefined ? {} : { receipt: parsedReceipt }),
+      ...(owningWorkerId === undefined ? {} : { workerId: owningWorkerId }),
     };
   });
   if (new Set(steps.map((step) => step.id)).size !== steps.length) throw new PlanOperationError('invalid-plan', 'Stored plan step IDs must be unique');
@@ -299,6 +326,46 @@ export class InMemoryPlanStore implements PlanStore {
     }
     abortIfNeeded(signal);
     this.#plans.set(key, immutable(snapshot));
+  }
+}
+
+/** Durable CAS bridge between native worker lifecycle and native plan steps. */
+export class NativePlanWorkerOwnership implements NativePlanWorkerOwnershipPort {
+  constructor(readonly store: PlanStore) {}
+
+  async claim(request: NativePlanWorkerOwnershipRequest): Promise<NativePlanWorkerOwnershipResult> {
+    abortIfNeeded(request.signal);
+    const current = await this.store.load(request.scope, request.signal);
+    if (current === undefined || current.phase !== 'active') throw new PlanOperationError('inactive-plan', 'Worker ownership requires an active plan');
+    const selected = current.steps.findIndex((step) => step.id === request.planStepId);
+    if (selected < 0) throw new PlanOperationError('invalid-target', `Plan step ${request.planStepId} was not found`);
+    const target = current.steps[selected]!;
+    if (target.status !== 'todo') throw new PlanOperationError('active-step-exists', `Plan step ${request.planStepId} is already active or complete`);
+    if (current.steps.some((step) => step.status === 'doing')) throw new PlanOperationError('active-step-exists', 'Another plan step is already active');
+    if (!(target.dependsOn ?? []).every((dependency) => current.steps[dependency - 1]?.status === 'done')) {
+      throw new PlanOperationError('blocked-step', `Plan step ${request.planStepId} is blocked by dependencies`);
+    }
+    const worker = storedText(request.workerId, 'workerId');
+    const steps = current.steps.map((step, position) => position === selected ? { ...step, status: 'doing' as const, workerId: worker } : step);
+    await this.store.save(request.scope, current.revision, immutable({ ...current, revision: current.revision + 1, steps }), request.signal);
+    return freeze({ planStepId: request.planStepId, workerId: worker, status: 'active' as const });
+  }
+
+  async release(request: NativePlanWorkerOwnershipRequest): Promise<NativePlanWorkerOwnershipResult> {
+    abortIfNeeded(request.signal);
+    const current = await this.store.load(request.scope, request.signal);
+    if (current === undefined) throw new PlanOperationError('inactive-plan', 'Worker ownership requires an existing plan');
+    const selected = current.steps.findIndex((step) => step.id === request.planStepId);
+    if (selected < 0) throw new PlanOperationError('invalid-target', `Plan step ${request.planStepId} was not found`);
+    const target = current.steps[selected]!;
+    if (target.workerId !== request.workerId) throw new PlanOperationError('ownership-mismatch', `Plan step ${request.planStepId} is not owned by worker ${request.workerId}`);
+    const steps = current.steps.map((step, position) => {
+      if (position !== selected) return step;
+      const { workerId: _workerId, receipt: previousReceipt, ...unowned } = step;
+      return { ...unowned, status: 'todo' as const, ...(previousReceipt?.status === 'FAILED' ? { receipt: previousReceipt } : {}) };
+    });
+    await this.store.save(request.scope, current.revision, immutable({ ...current, revision: current.revision + 1, phase: 'active', steps }), request.signal);
+    return freeze({ planStepId: request.planStepId, workerId: request.workerId, status: 'released' as const });
   }
 }
 
@@ -557,6 +624,7 @@ async function executePlan(
   const stored = await store.load(scope, execution.signal);
   let current = stored ?? emptyPlan(scope);
   const hasCurrentPlan = stored !== undefined;
+  const hasWorkerOwnership = current.steps.some((step) => step.workerId !== undefined);
 
   const publish = (snapshot: NativePlanSnapshot): void => {
     planState?.update({
@@ -588,6 +656,9 @@ async function executePlan(
   if (action === 'show') {
     if (hasCurrentPlan) publish(current);
     return success('shown');
+  }
+  if (hasWorkerOwnership && (action === 'clear' || action === 'set' || action === 'propose')) {
+    throw new PlanOperationError('worker-owned-step', 'Release the active worker-owned plan step before replacing the plan');
   }
   if (action === 'clear') {
     const plan = await commit({ version: 1, scope, phase: 'empty', steps: [], decisions: [] });
@@ -655,6 +726,7 @@ async function executePlan(
     if (selected === undefined) throw new PlanOperationError('explicit-index-required', 'complete requires an explicit index unless exactly one step is active');
     const target = current.steps[selected - 1]!;
     if (target.status !== 'doing') throw new PlanOperationError('not-active', `Step ${selected} is not active`);
+    if (target.workerId !== undefined) throw new PlanOperationError('worker-owned-step', `Step ${selected} remains owned by worker ${target.workerId}`);
     let observedReceipt: PlanVerificationReceipt | undefined;
     if (target.checkCommand !== undefined) {
       if (params.receipt !== undefined) throw new PlanOperationError('invalid-receipt', 'Caller-supplied verification receipts are not authoritative');

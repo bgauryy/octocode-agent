@@ -14,7 +14,7 @@ let errSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-lite-cli-'));
   writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
-  process.env.OCTOCODE_DB_PATH = join(workspace, 'octocode.sqlite3');
+  process.env.OCTOCODE_AGENT_DB_PATH = join(workspace, 'agent.sqlite3');
   stdout = '';
   outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
     stdout += chunk.toString();
@@ -26,7 +26,7 @@ beforeEach(async () => {
 afterEach(async () => {
   outSpy.mockRestore();
   errSpy.mockRestore();
-  delete process.env.OCTOCODE_DB_PATH;
+  delete process.env.OCTOCODE_AGENT_DB_PATH;
   await rm(workspace, { recursive: true, force: true });
 });
 

@@ -114,7 +114,7 @@ import {
 import { configureInteractionBrokerRoute } from './tools/interaction-broker.js';
 import { registerMemoryTool } from './tools/memory-tool.js';
 import { registerAwarenessCoordinationTools } from './tools/awareness-coordination-tools.js';
-import { registerAwarenessEventConsumer } from './tools/awareness-event-consumer.js';
+import { awarenessEventStatusText, registerAwarenessEventConsumer } from './tools/awareness-event-consumer.js';
 import { getAwarenessAgentId } from './tools/awareness-shared.js';
 import { activePlanScope, adoptPlanFromBranch, getPlan, getPlanReviewState, bumpPlanTurn, setPlanEntryAppender, PLAN_ENTRY_TYPE } from './tools/active-plan.js';
 import { getCurrentPlanReadModel, renderPlanContext } from './tools/plan-read-model.js';
@@ -137,7 +137,7 @@ import { probeGitHubAuth } from './tools/github-auth-status.js';
 import { registerOctocodeAutocomplete } from './tools/autocomplete-providers.js';
 import { registerOctocodeMessageRenderers } from './tools/custom-messages.js';
 import { initCheckpointStore, type CheckpointEngine } from './tools/checkpoints.js';
-import { createSessionArtifactContext, resolveSessionIdentity } from './tools/session-artifacts.js';
+import { createSessionArtifactContext, workspaceAgentRoot } from './tools/session-artifacts.js';
 import { consumeValidatedRehydration, runAndRecordRehydration, REHYDRATION_RECEIPT_ENTRY_TYPE, type CurrentRehydrationSource } from './tools/rehydration-orchestrator.js';
 import { createCheckpointInputHook, registerRewindCommand } from './tools/rewind-command.js';
 import { registerDialCommand, restoreDialOnStartup, getActiveDialLevel } from './tools/effort-dial.js';
@@ -666,11 +666,10 @@ export function getInternalErrorLogPath(
     try {
       // resolveSessionIdentity is pure computation (zero I/O). The session artifact dir
       // is created lazily on the first real appendFile write, not on every path lookup.
-      const { sessionKey } = resolveSessionIdentity({ cwd, sessionManager });
-      return path.join(cwd, '.octocode', 'agent', sessionKey, 'logs', 'error.txt');
+      return createSessionArtifactContext({ cwd, sessionManager }).resolve('logs/error.txt');
     } catch { /* fallback when cwd is unavailable */ }
   }
-  return path.join(cwd, '.octocode', 'logs', 'error.txt');
+  return path.join(workspaceAgentRoot(cwd), 'logs', 'error.txt');
 }
 
 function normalizeError(error: unknown): { name?: string; message: string; stack?: string; cause?: string } {
@@ -1089,7 +1088,7 @@ export function disableBuiltinTools(pi: PiInstance): boolean {
 }
 
 function profileFilePath(): string {
-  return path.join(getOctocodeHome(process.env), 'profiles.json');
+  return path.join(getOctocodeHome(process.env), 'agent', 'profiles.json');
 }
 
 function listProfileNames(): string[] {
@@ -1275,12 +1274,9 @@ function registerRuntimeUiPhase({ pi, Type, registeredToolNames, notify }: Runti
       });
     },
     onObservability: (stats, ctx) => {
-      const attention = stats.backlogDepth > 0 || stats.held > 0 || stats.refused > 0 || stats.errors > 0;
       runtimeStoreFor(ctx)?.getState().setStatus(
         'octocode-awareness-events',
-        attention
-          ? `events q ${stats.backlogDepth}${stats.backlogCapped ? '+' : ''} · ack ${stats.lastAcknowledgedSequence} · accepted ${stats.accepted} · held ${stats.held} · refused ${stats.refused} · errors ${stats.errors}`
-          : undefined,
+        awarenessEventStatusText(stats),
       );
     },
   });
@@ -1845,7 +1841,7 @@ async function wireOctocodePiExtension(
           if (!update || !runtime.isCurrent()) return;
           notify(
             ctx,
-            `@octocodeai/pi-extension ${update.latestVersion} is available (current: ${update.currentVersion}). Run: octocode-agent update core`,
+            `@octocodeai/pi-extension ${update.latestVersion} is available (current: ${update.currentVersion}). Run: pi update ${getInstallSource()}`,
             'info',
           );
         }));
@@ -2493,7 +2489,7 @@ async function wireOctocodePiExtension(
           : `No profiles found at ${profileFilePath()}. Usage: /octocode-profile <name>`, 'info');
         return;
       }
-      const profile = loadProfile(name, getOctocodeHome(process.env));
+      const profile = loadProfile(name, path.join(getOctocodeHome(process.env), 'agent'));
       if (!profile) {
         notify(ctx, `Profile "${name}" not found in ${profileFilePath()}.`, 'warning');
         return;

@@ -27,7 +27,8 @@ describe('native composer completion', () => {
 
   it('provides stable described native commands', () => {
     expect(NATIVE_SLASH_COMMANDS.map(({ name }) => name)).toEqual([
-      'cancel', 'compact', 'exit', 'help', 'plan', 'quit', 'settings', 'skills', 'status', 'steer', 'thinking', 'tools',
+      'cancel', 'clear', 'compact', 'exit', 'help', 'plan', 'quit', 'settings', 'skills', 'status', 'steer', 'thinking', 'tools',
+      'commands',
     ]);
     expect(NATIVE_SLASH_COMMANDS.every(({ description }) => description.length > 0)).toBe(true);
   });

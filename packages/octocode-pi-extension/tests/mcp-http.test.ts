@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'vitest';
 import { handleMcpAction, stopAllMcpServers } from '../src/tools/mcp-tool.js';
+import { projectMcpPath } from '../src/tools/mcp-config.js';
 import type { PiContext, ToolCallResult } from '../src/types.js';
 
 const roots: string[] = [];
@@ -97,7 +98,8 @@ test('Streamable HTTP supports tools, resources, templates, prompts, reads, comp
   const fixture = await fixtureServer();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-mcp-http-'));
   roots.push(root);
-  const configPath = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+  process.env.OCTOCODE_HOME = path.join(root, 'octocode-home');
+  const configPath = projectMcpPath(root);
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { remote: { url: fixture.url, timeoutMs: 5_000 } } }));
   const ctx = { cwd: root, isProjectTrusted: async () => true } as unknown as PiContext;

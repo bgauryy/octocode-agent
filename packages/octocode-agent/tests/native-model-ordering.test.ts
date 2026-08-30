@@ -7,7 +7,7 @@ describe('native model streamed tool-call ordering', () => {
     const body = [
       'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call-b","function":{"name":"beta","arguments":"{}"}}]}}]}',
       'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-a","function":{"name":"alpha","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}',
-    ].join('\n') + '\n';
+    ].join('\n\n') + '\n\ndata: [DONE]\n\n';
     const port = createOpenAiCompatibleModelPort({
       endpoint: 'https://example.test/v1',
       apiKey: 'secret',
@@ -17,7 +17,13 @@ describe('native model streamed tool-call ordering', () => {
     const deltas: unknown[] = [];
 
     const result = await port.run(
-      { messages: [{ role: 'user', content: 'run both' }] },
+      {
+        messages: [{ role: 'user', content: 'run both' }],
+        tools: [
+          { name: 'alpha', description: 'Alpha', inputSchema: { type: 'object' } },
+          { name: 'beta', description: 'Beta', inputSchema: { type: 'object' } },
+        ],
+      },
       { signal: new AbortController().signal, emit: async (delta) => { deltas.push(delta); } },
     );
 

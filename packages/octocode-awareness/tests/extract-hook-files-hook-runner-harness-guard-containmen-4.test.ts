@@ -29,7 +29,7 @@ describe('pre-edit integrated harness-guard containment', () => {
       args,
       { tool_name: 'Edit', tool_input: { file_paths: files } },
       {
-        OCTOCODE_MEMORY_HOME: join(cwd, '.memory'),
+        OCTOCODE_AGENT_DIR: join(cwd, '.memory'),
         OCTOCODE_AGENT_ID: 'containment-test',
         OCTOCODE_ALLOW_HARNESS_APPLY: undefined,
         ...extraEnv,

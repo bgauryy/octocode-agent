@@ -1,4 +1,4 @@
-/** Public compatibility barrel for memory.ts. */
+/** Public API barrel for memory.ts. */
 export { findSimilarMemories, decayComponents, decayScore } from './memory-scoring.js';
 export { lexicalSearch } from './memory-search.js';
 export { bumpAccess, insertMemory, insertMemoryWithSimilarityGate } from './memory-write.js';

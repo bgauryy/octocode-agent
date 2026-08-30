@@ -1,13 +1,12 @@
 import type { ModelDelta } from '@octocodeai/agent-core';
-import type * as Responses from 'openai/resources/responses/responses';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createOpenAiCompatibleModelPort, NATIVE_MODEL_PROTOCOL_SUPPORT } from '../src/native-model.js';
 
 function responseFixture(
-  usage: Responses.ResponseUsage,
-  output: Responses.ResponseOutputItem[] = [],
-): Responses.Response {
+  usage: Record<string, unknown>,
+  output: readonly Record<string, unknown>[] = [],
+): Record<string, unknown> {
   return {
     id: 'resp-1',
     created_at: 1,
@@ -35,16 +34,52 @@ const usageFixture = {
   output_tokens: 3,
   output_tokens_details: { reasoning_tokens: 0 },
   total_tokens: 11,
-} satisfies Responses.ResponseUsage;
+};
 
-function sse(events: readonly Responses.ResponseStreamEvent[]): Response {
+function sse(events: readonly Record<string, unknown>[]): Response {
   const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n';
   return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
 }
 
 describe('native OpenAI Responses model port', () => {
+  it('defers credential validation until the first model request', async () => {
+    const port = createOpenAiCompatibleModelPort({
+      protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', apiKey: '', defaultModel: 'gpt-5',
+    });
+
+    await expect(port.run(
+      { messages: [{ role: 'user', content: 'hi' }] },
+      { signal: new AbortController().signal },
+    )).rejects.toThrow(/OCTOCODE_MODEL_API_KEY|OPENAI_API_KEY/);
+  });
+
+  it('supports explicitly configured header-only Responses providers', async () => {
+    const completed = {
+      type: 'response.completed', response: responseFixture(usageFixture), sequence_number: 1,
+    };
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get('x-provider-key')).toBe('header-secret');
+      expect(headers.has('authorization')).toBe(false);
+      return sse([completed]);
+    });
+    const port = createOpenAiCompatibleModelPort({
+      protocol: 'openai-responses', endpoint: 'https://responses.example/v1', apiKey: '', defaultModel: 'model-1',
+      allowMissingApiKey: true, headers: { 'x-provider-key': 'header-secret' }, fetch,
+    });
+
+    await expect(port.run(
+      { messages: [{ role: 'user', content: 'hello' }] },
+      { signal: new AbortController().signal },
+    )).resolves.toMatchObject({ stop: 'complete' });
+  });
+
   it('streams typed text and reports only terminal Responses usage', async () => {
     const events = [
+      {
+        type: 'response.output_item.added', output_index: 0, sequence_number: 0,
+        item: { type: 'message', id: 'message-1', status: 'in_progress', role: 'assistant', content: [] },
+      },
       {
         type: 'response.output_text.delta',
         content_index: 0,
@@ -59,7 +94,7 @@ describe('native OpenAI Responses model port', () => {
         response: responseFixture(usageFixture),
         sequence_number: 2,
       },
-    ] satisfies Responses.ResponseStreamEvent[];
+    ];
     const fetch = vi.fn(async () => sse(events));
     const port = createOpenAiCompatibleModelPort({
       protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', apiKey: 'secret', defaultModel: 'gpt-5', fetch,
@@ -86,8 +121,12 @@ describe('native OpenAI Responses model port', () => {
       name: 'search',
       arguments: '{"q":"x"}',
       status: 'completed',
-    } satisfies Responses.ResponseFunctionToolCall;
+    };
     const events = [
+      {
+        type: 'response.output_item.added', output_index: 0, sequence_number: 0,
+        item: { type: 'function_call', id: 'item-1', call_id: 'call-1', name: 'search', arguments: '' },
+      },
       {
         type: 'response.function_call_arguments.delta',
         delta: '{"q":"x"}',
@@ -106,17 +145,19 @@ describe('native OpenAI Responses model port', () => {
         response: responseFixture(usageFixture, [functionCall]),
         sequence_number: 3,
       },
-    ] satisfies Responses.ResponseStreamEvent[];
+    ];
     const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       expect(body).toMatchObject({
         model: 'gpt-5',
         stream: true,
         tool_choice: { type: 'function', name: 'search' },
-        tools: [{ type: 'function', name: 'search', description: 'Search', parameters: { type: 'object' }, strict: false }],
       });
+      expect(body.tools).toEqual([
+        expect.objectContaining({ type: 'function', name: 'search', description: 'Search', parameters: { type: 'object' } }),
+      ]);
       expect(body.input).toEqual([
-        { type: 'message', role: 'user', content: 'find' },
+        { role: 'user', content: [{ type: 'input_text', text: 'find' }] },
         { type: 'function_call', call_id: 'old-call', name: 'search', arguments: '{"q":"old"}' },
         { type: 'function_call_output', call_id: 'old-call', output: '{"ok":true}' },
       ]);
@@ -185,7 +226,7 @@ describe('native OpenAI Responses model port', () => {
       message: 'provider detail must stay private',
       param: null,
       sequence_number: 1,
-    } satisfies Responses.ResponseErrorEvent;
+    };
     const failing = createOpenAiCompatibleModelPort({
       protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', apiKey: 'secret', defaultModel: 'gpt-5',
       fetch: async () => sse([errorEvent]),

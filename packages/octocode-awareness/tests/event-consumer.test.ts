@@ -59,11 +59,32 @@ describe('Awareness event consumer', () => {
     const [first, second] = await Promise.all([consumer.drain(), consumer.drain()]);
     expect(first).toEqual(second);
     expect(deliver).toHaveBeenCalledTimes(2);
+    expect(deliver).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      details: expect.objectContaining({ createdAt: '2026-08-28T00:00:00.000Z' }),
+    }));
     expect(fixture.acknowledgements).toEqual([
       { eventId: 'evt-1', decision: 'accept' },
       { eventId: 'evt-2', decision: 'accept' },
     ]);
     expect(consumer.snapshot()).toMatchObject({ accepted: 2, backlogDepth: 0, lastAcknowledgedSequence: 2 });
+  });
+
+  it('lets the delivery boundary downgrade accepted context before acknowledgement', async () => {
+    const fixture = fakeStore([peerEvent(1)]);
+    const deliver = vi.fn(() => 'refuse' as const);
+    const consumer = createAwarenessEventConsumer({
+      workspace,
+      consumerId: 'native-session:session-1',
+      expectedAgentId: 'native:session-1',
+      openStore: () => fixture.store,
+      deliver,
+    });
+    const stats = await consumer.drain();
+
+    expect(deliver).toHaveBeenCalledOnce();
+    expect(fixture.acknowledgements).toEqual([{ eventId: 'evt-1', decision: 'refuse' }]);
+    expect(stats).toMatchObject({ accepted: 0, refused: 1, drainRefused: 1 });
+    expect(await consumer.drain()).toMatchObject({ refused: 1, drainRefused: 0, drainErrors: 0 });
   });
 
   it('holds proposals and refuses internal, wrong-target, expired, and malformed events without delivery', async () => {
@@ -105,8 +126,8 @@ describe('Awareness event consumer', () => {
       maxEventsPerDrain: 1,
     });
 
-    expect(await consumer.drain()).toMatchObject({ errors: 1, backlogDepth: 2, lastAcknowledgedSequence: 0 });
-    expect(await consumer.drain()).toMatchObject({ accepted: 1, backlogDepth: 1, lastAcknowledgedSequence: 1 });
+    expect(await consumer.drain()).toMatchObject({ errors: 1, drainErrors: 1, drainAccepted: 0, backlogDepth: 2, lastAcknowledgedSequence: 0 });
+    expect(await consumer.drain()).toMatchObject({ accepted: 1, drainErrors: 0, drainAccepted: 1, backlogDepth: 1, lastAcknowledgedSequence: 1 });
     expect(fixture.acknowledgements).toEqual([{ eventId: 'evt-1', decision: 'accept' }]);
     expect(observed).toHaveBeenCalledTimes(2);
   });

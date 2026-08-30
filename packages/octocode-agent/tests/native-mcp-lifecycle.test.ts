@@ -25,7 +25,7 @@ function execution(input: unknown, cwd: string, signal = new AbortController().s
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-state-'));
   roots.push(root);
-  const config = path.join(root, '.octocode', 'agent', 'mcp', 'servers.json');
+  const config = path.join(root, 'home', 'agent', 'mcp', 'servers.json');
   fs.mkdirSync(path.dirname(config), { recursive: true });
   fs.writeFileSync(config, JSON.stringify({ mcpServers: { fixture: { command: process.execPath } } }));
   return root;

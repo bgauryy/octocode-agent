@@ -20,14 +20,14 @@ describe('memory archive lifecycle', () => {
       .toEqual({ archived: 0, dry_run: true, would_archive: 1, memory_ids: [memoryId] });
     expect(archiveMemories(db, { memoryIds: [memoryId] }))
       .toEqual({ archived: 1, memory_ids: [memoryId] });
-    expect(db.prepare('SELECT state, expired_at FROM memories WHERE memory_id = ?').get(memoryId))
+    expect(db.prepare('SELECT state, expired_at FROM awareness_memories WHERE memory_id = ?').get(memoryId))
       .toMatchObject({ state: 'SUPERSEDED', expired_at: expect.any(String) });
 
     expect(restoreMemories(db, { memoryIds: [memoryId], dryRun: true }))
       .toEqual({ restored: 0, dry_run: true, would_restore: 1, memory_ids: [memoryId] });
     expect(restoreMemories(db, { memoryIds: [memoryId] }))
       .toEqual({ restored: 1, memory_ids: [memoryId] });
-    expect(db.prepare('SELECT state, expired_at FROM memories WHERE memory_id = ?').get(memoryId))
+    expect(db.prepare('SELECT state, expired_at FROM awareness_memories WHERE memory_id = ?').get(memoryId))
       .toEqual({ state: 'ACTIVE', expired_at: null });
   });
 });
@@ -52,7 +52,7 @@ describe('insertMemory', () => {
       tags: ['jwt', 'auth'],
       references: ['https://example.com'],
     });
-    const row = db.prepare('SELECT * FROM memories WHERE memory_id = ?').get(memoryId) as Record<string, unknown>;
+    const row = db.prepare('SELECT * FROM awareness_memories WHERE memory_id = ?').get(memoryId) as Record<string, unknown>;
     expect(row['agent_id']).toBe('agent-x');
     expect(row['importance']).toBe(8);
     expect(row['label']).toBe('SECURITY');
@@ -85,7 +85,7 @@ describe('insertMemory', () => {
       taskContext: 't', observation: 'o', importance: 5,
       validFrom: '2026-01-01T02:00:00+02:00', validTo: '2026-01-02T02:00:00+02:00',
     });
-    expect(db.prepare('SELECT valid_from, valid_to FROM memories WHERE memory_id = ?').get(memoryId))
+    expect(db.prepare('SELECT valid_from, valid_to FROM awareness_memories WHERE memory_id = ?').get(memoryId))
       .toEqual({ valid_from: '2026-01-01T00:00:00Z', valid_to: '2026-01-02T00:00:00Z' });
   });
 
@@ -99,7 +99,7 @@ describe('insertMemory', () => {
       supersedes: [oldId],
     });
     expect(superseded).toContain(oldId);
-    const oldRow = db.prepare('SELECT state, superseded_by FROM memories WHERE memory_id = ?').get(oldId) as Record<string, unknown>;
+    const oldRow = db.prepare('SELECT state, superseded_by FROM awareness_memories WHERE memory_id = ?').get(oldId) as Record<string, unknown>;
     expect(oldRow['state']).toBe('SUPERSEDED');
   });
 

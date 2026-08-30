@@ -37,13 +37,13 @@ describe('initDb idempotency', () => {
     initDb(db);
     // Insert a row after first init
     db.prepare(
-      `INSERT INTO agents(agent_id, registered_at, last_seen_at)
+      `INSERT INTO awareness_agents(agent_id, registered_at, last_seen_at)
        VALUES ('agent-1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`
     ).run();
     // Second and third init must not wipe data
     initDb(db);
     initDb(db);
-    const row = db.prepare('SELECT * FROM agents WHERE agent_id = ?').get('agent-1') as { agent_id: string } | undefined;
+    const row = db.prepare('SELECT * FROM awareness_agents WHERE agent_id = ?').get('agent-1') as { agent_id: string } | undefined;
     expect(row?.agent_id).toBe('agent-1');
   });
 });
@@ -62,7 +62,7 @@ describe('memories_fts virtual table', () => {
 
     // Insert a memory row first so FK / consistency holds
     db.prepare(`
-      INSERT INTO memories(memory_id, agent_id, task_context, observation, importance, created_at)
+      INSERT INTO awareness_memories(memory_id, agent_id, task_context, observation, importance, created_at)
       VALUES ('mem_fts_test', 'agent-1', 'authentication flow', 'JWT must be validated on every request', 7, '2026-01-01T00:00:00.000Z')
     `).run();
 
@@ -96,7 +96,7 @@ describe('memories_fts virtual table', () => {
     if (!hasFts(db)) return;
 
     db.prepare(`
-      INSERT INTO memories(memory_id, agent_id, task_context, observation, importance, created_at)
+      INSERT INTO awareness_memories(memory_id, agent_id, task_context, observation, importance, created_at)
       VALUES ('mem_ctx', 'agent-2', 'database indexing strategy', 'use partial indexes for sparse columns', 6, '2026-01-02T00:00:00.000Z')
     `).run();
 

@@ -191,7 +191,7 @@ export function addMemoryFileFilter(where: string[], binds: BindValue[], file: s
   if (candidates.length === 0) return;
   where.push(`EXISTS (
     SELECT 1 FROM memory_refs r
-    WHERE r.memory_id = memories.memory_id
+          WHERE r.memory_id = awareness_memories.memory_id
       AND (${candidates.map(() => 'r.reference LIKE ?').join(' OR ')})
   )`);
   binds.push(...candidates);

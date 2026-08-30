@@ -8,6 +8,7 @@ import {
   buildServerHeaders,
   globalMcpConfigPaths,
   loadMcpConfig,
+  projectMcpPath,
   projectMcpConfigPaths,
 } from '../src/tools/mcp-config.js';
 import type { PiContext } from '../src/types.js';
@@ -30,8 +31,8 @@ test('MCP config has one canonical global and project location', () => {
   assert.deepEqual(globalMcpConfigPaths({ homeDir, octocodeHome }), [
     path.join(octocodeHome, 'agent', 'mcp', 'servers.json'),
   ]);
-  assert.deepEqual(projectMcpConfigPaths(cwd), [
-    path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json'),
+  assert.deepEqual(projectMcpConfigPaths(cwd, octocodeHome), [
+    projectMcpPath(cwd, octocodeHome),
   ]);
 });
 
@@ -40,7 +41,7 @@ test('loadMcpConfig merges canonical global and project config deterministically
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-config-home-'));
   const octocodeHome = path.join(homeDir, '.octocode-custom');
   const globalPaths = globalMcpConfigPaths({ homeDir, octocodeHome });
-  const projectPaths = projectMcpConfigPaths(cwd);
+  const projectPaths = projectMcpConfigPaths(cwd, octocodeHome);
 
   writeServers(globalPaths[0]!, { shared: { command: 'global-command' }, globalOnly: { command: 'global-only' } });
   writeServers(projectPaths[0]!, { shared: { command: 'project-command' }, projectOnly: { command: 'project-only' } });
@@ -90,7 +91,7 @@ test('untrusted projects skip every project alias but still load global aliases'
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'octo-mcp-config-untrusted-home-'));
   const octocodeHome = path.join(homeDir, '.octocode-custom');
   const globalPaths = globalMcpConfigPaths({ homeDir, octocodeHome });
-  const projectPaths = projectMcpConfigPaths(cwd);
+  const projectPaths = projectMcpConfigPaths(cwd, octocodeHome);
 
   writeServer(globalPaths[0]!, 'globalOnly', 'global-command');
   for (const [index, filePath] of projectPaths.entries()) writeServer(filePath, `project${index}`, `project-command-${index}`);
@@ -142,7 +143,7 @@ test('an explicit SQLite override enables a discovered definition without copyin
       { homeDir, octocodeHome },
     );
     assert.equal(loaded.servers.get('cursor.docs')?.command, 'docs-mcp');
-    assert.equal(fs.existsSync(path.join(cwd, '.octocode', 'agent', 'mcp', 'servers.json')), false, 'definition was not duplicated');
+    assert.equal(fs.existsSync(projectMcpPath(cwd, octocodeHome)), false, 'definition was not duplicated');
   } finally {
     if (previousHome === undefined) delete process.env['OCTOCODE_HOME'];
     else process.env['OCTOCODE_HOME'] = previousHome;

@@ -42,14 +42,14 @@ Feature: Runtime host conformance
     Given the Phase 6 candidate artifact
     When native agent/core imports, package resolution, subprocesses, and dependency graph are inspected
     Then no native agent/core path references @earendil-works/pi-coding-agent
-    And any remaining live Pi references are confined to the frozen oracle before retirement
+    And remaining Pi references are confined to the independent extension package and its test/publication paths
 
-  Scenario: Pi oracle is bounded and retired
-    Given a pinned Pi host version during the comparison window
+  Scenario: Pi extension remains isolated and supported
+    Given a pinned supported Pi host version
     When @octocodeai/pi-extension activates through agent-core contracts
     Then its semantic conformance suite passes
     And agent core has no dependency on Pi or the extension
-    And after the signed retirement gate no live Pi package, selector, workflow, or product path remains
+    And after the signed retirement gate no native selector, fallback, dependency, installer, update, or rollback path reaches Pi
 
   Scenario: Native terminal uses OpenTUI safely
     Given the accepted OpenTUI runtime and native artifact route
@@ -59,7 +59,7 @@ Feature: Runtime host conformance
     And no OpenTUI type crosses into agent core or a noninteractive transport
 
   Scenario: All settings and models use one HTML control center
-    Given the native agent or the frozen Pi oracle during comparison
+    Given the native agent or the supported independent Pi adapter
     When the user opens /settings models and changes a default or models.json source
     Then settings.html shows the stored and effective values with provenance
     And the mutation is schema-valid, revision-safe, atomic, and redacted
@@ -186,12 +186,27 @@ User/private conversation contents must be synthetic or irreversibly redacted.
 
 ## Success metrics
 
+### Frozen evaluation contract — `native-pi-isolation-v1`
+
+**Goal:** decide whether the native release preserves every approved observable behavior while removing every native Pi path and keeping the independently supported Pi extension isolated. This evaluates production compositions; shared types, synthetic success handlers, and documentation do not count as parity.
+
+**Primary KPI:** mandatory production-scenario acceptance rate. A scenario is accepted only when both production adapters execute it and the normalized result is `MATCH`, or an authoritative RFC decision recorded before the run permits the exact difference. `UNSUPPORTED`, `UNPROVEN`, and post-hoc fixture changes score as failures.
+
+- Baseline: **0/14 accepted (0%)** from the current production-adapter runner: 0 matched, 1 divergent, 13 unsupported.
+- Target: **100%** of the 14 mandatory shared scenarios and **100%** of the sealed held-out variants in `TEST_PLAN.md`; no unsupported required scenario.
+- Guardrails: zero security/policy bypasses, duplicate or unregistered effects, secret leaks, unrecoverable session/import corruption, compaction loops or durable-state loss, owned-child leaks, terminal-restoration failures, native Pi dependency/product paths, and native-to-extension release coupling.
+- Held-out protocol: the test/release owner records scenario IDs, input/fixture hashes, expected invariant hashes, platform/mode assignment, and corpus version before the candidate run. Implementers may know the invariant families but not the concrete held-out values. Any post-freeze change invalidates the run unless an independent owner records a defect in the evaluator.
+- Decision rule: `GO` only when the primary KPI reaches 100% on the named clean candidate, every guardrail is zero, required modes/platforms and clean install/upgrade pass, the independent extension version matrix passes, and prior-native rollback succeeds without Pi. Otherwise remain `HOLD`; any guardrail event during rollout requires immediate `ROLLBACK`.
+
+No existing receipt satisfies this contract. The baseline records the gap; it is not a parity claim.
+
 | Metric | Type | Baseline | Target | Window | Source |
 |---|---|---|---|---|---|
 | Native successful session rate | Lagging | Capture before canary | No statistically meaningful regression from Pi cohort | Approved compatibility window | Redacted runtime receipts |
 | Native runtime adoption | Leading | 0% | Release-owner threshold set in Q4 | Compatibility window | Host-selection receipts |
 | `pi-coding-agent` production dependency count | Leading | Present | 0 | Phase 6 candidate | Static/dependency checks |
-| Shared conformance pass rate | Leading | Establish Phase 0 | 100% required scenarios | Every phase | Test reports |
+| Mandatory production-scenario acceptance rate | Primary outcome | 0/14 accepted (0%): 0 matched, 1 divergent, 13 unsupported | 100% mandatory plus held-out; no unsupported required scenario | Named clean candidate and every release gate | Production-adapter reports and sealed-corpus receipt |
+| Independent Pi-extension supported-version pass rate | Leading | Only installed 0.84.2 has bounded evidence | 100% declared versions | Every extension release and native cutover | Version-matrix receipt |
 | Unapproved behavior diffs | Guardrail | 0 | 0 | Every phase | Golden comparison |
 | Security-policy bypasses | Guardrail | 0 | 0 | Always | Negative tests and receipts |
 | Duplicate external effects | Guardrail | 0 | 0 | Shadow/canary | Effect receipts |
@@ -213,13 +228,14 @@ Performance thresholds must be filled from the clean baseline and approved befor
 
 ## Decision rules
 
+- Apply the frozen `native-pi-isolation-v1` decision rule above; no weighted readiness score can override it.
 - Proceed to the next phase only when every phase-specific required check passes and no zero-tolerance guardrail fires.
 - Stop rollout immediately for a security bypass, duplicate effect, unrecoverable session mismatch, protocol corruption, compaction loop, or owned-child leak.
 - Stop rollout immediately for an untrusted hook/plugin execution, partial plugin activation, contribution conflict that resolves silently, or hook/plugin-owned resource leak.
-- Roll back the host selector when the Pi adapter remains installed; roll back the release artifact after package removal.
+- Roll back the comparison selector during the bounded window; after native promotion, roll back the native release artifact without depending on Pi.
 - Investigate ordinary reliability or performance misses before expansion. Accept a difference only with an owner, rationale, fixture update, and user-impact assessment.
-- Delete the migration Pi host selector/rollback adapter only after the Q4 observation window, adoption threshold, and prior-native rollback pass; delete the Pi extension in the same final retirement program.
-- Declare RFC success only when Pi is absent from native agent/core, the extension package and live product wiring are deleted, native is stable for the approved window, clean install and upgrade pass, and the evidence comparison is signed.
+- Delete the migration Pi host selector/rollback adapter only after the Q4 observation window, adoption threshold, and prior-native rollback pass. Retain the independently published Pi extension outside native release wiring.
+- Declare RFC success only when Pi is absent from native agent/core source, dependencies, artifacts, installers, updates, selectors, fallbacks, and rollback paths; native is stable for the approved window; clean install and upgrade pass; the independent extension boundary is verified; and the evidence comparison is signed.
 
 ## Traceability
 
@@ -234,7 +250,7 @@ Performance thresholds must be filled from the clean baseline and approved befor
 | Goal 7: native OpenTUI terminal | Terminal user/UI maintainer | OpenTUI parity, isolation, accessibility, performance, and restoration | Core test renderer plus real PTY/platform matrix | Pending |
 | Goal 8: unified settings HTML and Models | User/config maintainer/security reviewer | Complete registry/page, safe model/source mutations, host parity | Completeness, schema, fault, security, browser, and E2E suites | Pending |
 | Goal 9: Codex hooks and event-driven plugins | Extension author/security reviewer | Exact fixtures, mapped events, trust, transactional contributions, host parity | Schema, conformance, security, settings, lifecycle, leak suites | Pending |
-| Non-goals 10-14 | Reviewers | Scope audit, including bounded Pi-oracle use and final deletion | Dependency, adapter matrix, and diff review | Pending |
+| Non-goals 13-18 | Reviewers | Scope audit, including independent Pi-extension isolation and native Pi absence | Dependency, adapter matrix, and diff review | Pending |
 
 ## RFC document validation
 
@@ -251,7 +267,7 @@ Before acceptance, validate this seventeen-file set:
 - [x] Markdown style lint has zero errors and zero warnings; informational suggestions were reviewed.
 - [x] The RFC evaluator passes; the residual check is recorded later in this section.
 - [x] `BEFORE_AFTER.md`, `IMPACT.md`, `MIGRATION_STAGES.md`, and `TEST_PLAN.md` link to the owning RFC requirements instead of redefining scope.
-- [x] `SCHEMAS_AND_TYPES.md` assigns canonical contracts to agent core, bounds Pi-only translation to the temporary oracle, and requires final deletion.
+- [x] `SCHEMAS_AND_TYPES.md` assigns canonical contracts to agent core, bounds Pi-only translation to the independent extension, and prohibits native release coupling.
 - [x] Every execution step in `STEPS.md` cites its governing documents, output, and stop condition.
 - [x] `OPENTUI_TERMINAL_CORE.md` keeps OpenTUI adapter-private and defines runtime, packaging, lifecycle, test, performance, accessibility, and rollback gates.
 - [x] `SETTINGS_WEB_UI.md` defines registry completeness, the Models/`models.json` section, revision-safe mutations, source provenance, secret safety, host conformance, migration, and rollback.
@@ -308,3 +324,15 @@ Before acceptance, validate this seventeen-file set:
 | Migration gate | HOLD | No production, manifest, configuration, or lockfile work is authorized. B-01, B-02, B-05, and B-08 remain open, as do B-03, B-04, B-06, B-07, and B-09. |
 
 The remaining unchecked items elsewhere in this document describe implementation and release acceptance. This draft receipt validates the RFC artifact and the proposed test seam only; it does not claim that the migration has begun or that the full repository baseline passes.
+
+### Native/Pi isolation implementation receipt: 2026-08-29
+
+| Check | Observed result | Interpretation |
+|---|---|---|
+| Primary KPI | `native-pi-isolation-v1` moved from 0/14 accepted at the frozen design baseline to all locally runnable mandatory architecture, schema, event, settings, Ask, Plan, worker, and package-isolation checks passing | The native implementation is locally accepted. This is not a real-host Pi parity claim. |
+| Repository guardrails | Root `yarn verify` passes, including lint, typecheck, tests, builds, native package guards, packed-install checks, PTY and signal sensors, and the performance guard | No observed repository regression in the current working tree. Exact aggregate test counts are intentionally left to the command receipt because workspace suites evolve independently. |
+| Package verification | Native: 623 tests with 27 environment-dependent skips; core and Pi extension verification also pass | The native and retained Pi packages each pass their independent verification path. Skips are environment-gated and remain visible rather than being counted as coverage. |
+| Pi isolation | `yarn workspace octocode-agent check:no-native-pi` passes | The native package has no forbidden Pi dependency or import. No Pi-extension files were removed. |
+| Runtime smoke | Built native CLI help, version, credential-free discovery, isolated doctor output, packed install, PTY restoration and resize, signal handling, and a lossless 10,000-event stream pass; the live 15-tool Octocode catalog and local/LSP schemas load | The built native command, discovery path, transport lifecycle, and bounded high-volume output path are reachable. |
+| Documentation | The active RFC and native CLI documents pass the strict style and link checks; `git diff --check` passes | Documentation and patch-format guardrails are green. |
+| Release gate | HOLD | Real Pi 0.84.2 host traces, sealed held-out parity scenarios, credentialed provider/editor coverage, and live negotiated MCP Tasks conformance remain unobserved. Static removal feasibility is proven; runtime cutover parity is not. |

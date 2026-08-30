@@ -211,7 +211,7 @@ export function fallbackSearch(
   appendFallbackQueryConditions(query, fallbackConditions, fallbackParams);
   const sql = `
     SELECT m.*, 0 AS _bm25
-    FROM memories m
+    FROM awareness_memories m
     WHERE ${fallbackConditions.join(' AND ')}
     ORDER BY m.importance DESC, m.created_at DESC
     LIMIT ?

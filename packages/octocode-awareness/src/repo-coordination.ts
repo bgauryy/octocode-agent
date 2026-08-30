@@ -39,7 +39,7 @@ export function lockRows(db: DatabaseSync, params: AwarenessQueryParams): Awaren
   const rows = db.prepare(
     `SELECT l.file_path, l.run_id, t.agent_id, t.rationale AS reason,
             l.acquired_at, l.expires_at, t.task_id, t.workspace_path, t.artifact, t.status
-       FROM locks l
+       FROM awareness_locks l
        JOIN task_runs t ON t.run_id = l.run_id
        ${sqlWhere}
       ORDER BY datetime(l.acquired_at) DESC
@@ -76,7 +76,7 @@ export function agentRows(db: DatabaseSync, params: AwarenessQueryParams): Aware
   const sqlWhere = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
   const rows = db.prepare(
     `SELECT agent_id, agent_name, workspace_path, artifact, context, registered_at, last_seen_at
-       FROM agents
+       FROM awareness_agents
        ${sqlWhere}
       ORDER BY datetime(last_seen_at) DESC
       LIMIT ?`
@@ -234,7 +234,7 @@ export function developerReviewRows(db: DatabaseSync, params: AwarenessQueryPara
   addTextFilter(memWhere, memBinds, params.query, ['task_context', 'observation']);
   const memRows = db.prepare(
     `SELECT memory_id, agent_id, task_context, observation, importance, created_at, updated_at
-       FROM memories
+       FROM awareness_memories
       WHERE ${memWhere.join(' AND ')}
       ORDER BY importance DESC, datetime(created_at) DESC
       LIMIT ?`

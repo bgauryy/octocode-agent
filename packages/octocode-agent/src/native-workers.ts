@@ -107,7 +107,7 @@ const MAX_CAPABILITY_ENV_BYTES = 16 * 1024;
 const DEFAULT_ENV_ALLOWLIST = Object.freeze([
   'HOME', 'PATH', 'SHELL', 'TMPDIR', 'USER',
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS',
-  'OCTOCODE_HOME', 'OCTOCODE_MODEL_API_KEY', 'OCTOCODE_MODEL_PROVIDER', 'OCTOCODE_MODEL_ID',
+  'OCTOCODE_HOME', 'OCTOCODE_MODEL_API_KEY',
   'OPENAI_API_KEY', 'OPENAI_BASE_URL',
 ]);
 
@@ -437,11 +437,12 @@ export class NativeWorkerProcessPort implements WorkerPort {
     });
     const processHandle = this.#process.spawn(spec);
     if (this.#onProcessStarted !== undefined) {
-      if (processHandle.identity === undefined) {
+      const identity = processHandle.identity;
+      if (identity === undefined) {
         processHandle.kill();
         throw new RuntimeFailure('unsupported-capability', 'Native worker process identity cannot be verified on this platform');
       }
-      try { await this.#onProcessStarted(packet, processHandle.identity); }
+      try { await this.#onProcessStarted(packet, identity); }
       catch {
         processHandle.kill();
         throw new RuntimeFailure('persistence', 'Native worker process identity could not be persisted');

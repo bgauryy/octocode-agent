@@ -19,12 +19,18 @@ export interface SessionEvent { readonly schemaVersion: 1; readonly sessionId: S
 export interface SessionProjection { readonly sessionId: SessionId; readonly revision: Revision; readonly name?: string; readonly transcript: readonly { readonly eventId: SessionEventId; readonly role: string; readonly content: string }[]; readonly modelContext: readonly (ModelMessage & { readonly eventId: SessionEventId })[]; readonly customEntries: readonly { readonly eventId: SessionEventId; readonly kind: string; readonly value: unknown }[]; readonly branches: readonly { readonly id: BranchId; readonly parentId?: BranchId }[]; readonly selectedBranch?: BranchId; readonly compaction: { readonly attemptId: string; readonly sourceRevision: Revision; readonly summary: string; readonly retainedEventIds: readonly SessionEventId[]; readonly sourceEventIds: readonly SessionEventId[]; readonly projectionVersion: 1 } | null; readonly compactionAttempt: { readonly state: 'running' | 'retrying' | 'failed' | 'cancelled' | 'compacted'; readonly attemptId: string; readonly sourceRevision: Revision; readonly attempt: number; readonly reason?: string } | null; readonly artifacts: readonly { readonly id: string; readonly uri: string }[]; }
 export interface SessionLoadResult { readonly events: readonly SessionEvent[]; readonly projection: SessionProjection; }
 export interface SessionStore { append(id: SessionId, expectedRevision: Revision, events: readonly SessionEvent[]): Promise<Revision>; load(id: SessionId): Promise<SessionLoadResult>; }
-export interface SessionRecord { readonly schemaVersion: 1; readonly sessionId: SessionId; readonly revision: Revision; readonly events: readonly SessionEvent[]; }
+export type SessionRecord =
+  | { readonly schemaVersion: 1; readonly sessionId: SessionId; readonly revision: Revision; readonly events: readonly SessionEvent[] }
+  | { readonly schemaVersion: 2; readonly sessionId: SessionId; readonly revision: Revision; readonly retention: { readonly omittedDiagnostics: number; readonly maxDiagnostics: number }; readonly events: readonly SessionEvent[] };
 export interface SessionRecordPort {
   /** Read the last committed record. Implementations may recover a valid backup before returning. */
   read(id: SessionId): Promise<{ readonly content: string; readonly recovered: boolean } | null>;
   /** Atomically commit or reject when the durable revision differs. Hosts implement temp-write, sync, and rename. */
   commit(id: SessionId, expectedRevision: Revision, nextRevision: Revision, content: string): Promise<void>;
+  /** Optional incremental path. Implementations must atomically admit the exact expected revision or reject. */
+  appendEvents?(id: SessionId, expectedRevision: Revision, nextRevision: Revision, events: readonly SessionEvent[]): Promise<void | { readonly checkpointed: boolean }>;
+  /** Optional cheap durable revision check used to retain a validated in-process projection cache. */
+  readRevision?(id: SessionId): Promise<Revision | null>;
 }
 export interface LegacySessionSource { readonly sourceId: string; digest(): Promise<string>; readRecords(): AsyncIterable<unknown>; }
 export interface SessionImportReceipt { readonly sourceId: string; readonly sourceDigest: string; readonly destinationId: SessionId; readonly imported: number; readonly opaque: number; readonly destinationRevision: Revision; }

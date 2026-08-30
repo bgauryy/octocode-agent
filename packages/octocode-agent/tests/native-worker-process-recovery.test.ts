@@ -98,8 +98,11 @@ describe('native worker real-process recovery', () => {
     children.add(child);
     child.stdout.setEncoding('utf8');
     await once(child.stdout, 'data');
+    // Subscribe before delivering the signal so a fast acknowledgement cannot
+    // arrive between kill() and listener registration.
+    const termAcknowledged = once(child.stdout, 'data');
     child.kill('SIGTERM');
-    await once(child.stdout, 'data');
+    await termAcknowledged;
     expect(child.exitCode).toBeNull();
     child.kill('SIGKILL');
     const [, signal] = await once(child, 'close') as [number | null, NodeJS.Signals | null];

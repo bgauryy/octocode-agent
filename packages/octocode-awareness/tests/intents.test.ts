@@ -148,7 +148,7 @@ describe('preFlightIntent', () => {
       const first = preFlightIntent(db, { agentId: 'agent-a', targetFiles: [path], ttlMs: 60_000 });
       if (!first.ok) throw new Error('first claim failed');
       const past = new Date(Date.now() - 5000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-      db.prepare('UPDATE locks SET expires_at = ? WHERE run_id = ?').run(past, first.run.run_id);
+      db.prepare('UPDATE awareness_locks SET expires_at = ? WHERE run_id = ?').run(past, first.run.run_id);
       const second = preFlightIntent(db, { agentId: 'agent-b', targetFiles: [path] });
       expect(second.ok).toBe(false);
     } finally { cleanup(); }
@@ -298,7 +298,7 @@ describe('releaseFileLock', () => {
         agentId: 'agent-a', sessionId: 'session-a', workspacePath: dir, artifact: 'pkg', targetFiles: [path],
       });
       if (!claim.ok) throw new Error('claim failed');
-      db.prepare('DELETE FROM locks WHERE run_id = ?').run(claim.run.run_id);
+      db.prepare('DELETE FROM awareness_locks WHERE run_id = ?').run(claim.run.run_id);
 
       const released = releaseFileLock(db, {
         agentId: 'agent-a', sessionId: 'session-a', workspacePath: dir, artifact: 'pkg',
@@ -326,7 +326,7 @@ describe('releaseFileLock', () => {
       const runId = claim.run.run_id;
 
       // Pre-conditions: one lock row, task ACTIVE
-      const locksBefore = db.prepare('SELECT COUNT(*) AS c FROM locks WHERE run_id = ?').get(runId) as { c: number };
+      const locksBefore = db.prepare('SELECT COUNT(*) AS c FROM awareness_locks WHERE run_id = ?').get(runId) as { c: number };
       expect(locksBefore.c).toBe(1);
       const taskBefore = db.prepare('SELECT status FROM task_runs WHERE run_id = ?').get(runId) as { status: string };
       expect(taskBefore.status).toBe('ACTIVE');
@@ -336,7 +336,7 @@ describe('releaseFileLock', () => {
       expect(release.released).toBe(true);
 
       // Both mutations must be visible together — locks gone, task updated
-      const locksAfter = db.prepare('SELECT COUNT(*) AS c FROM locks WHERE run_id = ?').get(runId) as { c: number };
+      const locksAfter = db.prepare('SELECT COUNT(*) AS c FROM awareness_locks WHERE run_id = ?').get(runId) as { c: number };
       expect(locksAfter.c).toBe(0);
       const taskAfter = db.prepare('SELECT status FROM task_runs WHERE run_id = ?').get(runId) as { status: string };
       expect(taskAfter.status).toBe('PENDING');

@@ -10,19 +10,19 @@ beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-lite-'));
   // Redirect the shared global store to a per-test file so tests stay isolated
   // and never touch the real ~/.octocode.
-  process.env.OCTOCODE_DB_PATH = join(workspace, 'octocode.sqlite3');
+  process.env.OCTOCODE_AGENT_DB_PATH = join(workspace, 'agent.sqlite3');
   aw = openAwarenessStore({ workspace });
 });
 afterEach(async () => {
   aw.close();
-  delete process.env.OCTOCODE_DB_PATH;
+  delete process.env.OCTOCODE_AGENT_DB_PATH;
   await rm(workspace, { recursive: true, force: true });
 });
 describe('AwarenessStore', () => {
   it('creates a local sqlite database and reports status', () => {
     const status = aw.status();
     expect(status.workspace).toBe(workspace);
-    expect(status.dbPath).toBe(join(workspace, 'octocode.sqlite3'));
+    expect(status.dbPath).toBe(join(workspace, 'agent.sqlite3'));
     expect(status).toMatchObject({
       plans: 0,
       activePlans: 0,
@@ -285,39 +285,6 @@ describe('AwarenessStore', () => {
     expect(aw.pruneLocks({ dryRun: false })).toMatchObject({ dryRun: false, matched: 1, deleted: 1 });
     expect(aw.listLocks()).toHaveLength(0);
     expect(aw.listWork()).toHaveLength(0);
-  });
-
-  it('migrates older task tables by adding verification columns', async () => {
-    aw.close();
-
-    const legacyDb = new DatabaseSync(join(workspace, 'octocode.sqlite3'));
-    try {
-      legacyDb.exec(`
-        DROP TABLE tasks;
-        CREATE TABLE tasks (
-          task_id TEXT PRIMARY KEY,
-          plan_id TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
-          title TEXT NOT NULL,
-          file_path TEXT,
-          status TEXT NOT NULL CHECK(status IN ('OPEN', 'CLAIMED', 'DONE')),
-          agent_id TEXT,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          done_at TEXT
-        );
-      `);
-    } finally {
-      legacyDb.close();
-    }
-
-    aw = openAwarenessStore({ workspace });
-    const columns = new DatabaseSync(aw.dbPath);
-    try {
-      const names = columns.prepare('PRAGMA table_info(tasks)').all().map((row) => (row as { name: string }).name);
-      expect(names).toEqual(expect.arrayContaining(['paths_json', 'reasoning', 'acceptance', 'check_command', 'priority', 'dependencies_json', 'claimed_at', 'lease_expires_at', 'verified_at', 'verified_by', 'verification_message']));
-    } finally {
-      columns.close();
-    }
   });
 
   it('reports stale active agents without a daemon heartbeat', () => {

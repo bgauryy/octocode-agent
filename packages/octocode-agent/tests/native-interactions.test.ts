@@ -35,7 +35,7 @@ describe('native interaction broker and askUser tool', () => {
       type: 'object',
       required: ['type', 'question'],
       properties: {
-        type: { enum: ['select', 'input', 'confirm'] },
+        type: { enum: ['select', 'input', 'editor', 'confirm'] },
         question: { type: 'string' },
         options: { type: 'array' },
       },
@@ -47,7 +47,7 @@ describe('native interaction broker and askUser tool', () => {
     });
   });
 
-  it('maps select, free-text, and confirm requests through one attached handler', async () => {
+  it('maps select, free-text, multiline editor, and confirm requests through one attached handler', async () => {
     const requests: UiInteractionRequest[] = [];
     const broker = createNativeInteractionBroker();
     broker.attach(async (request) => {
@@ -62,16 +62,19 @@ describe('native interaction broker and askUser tool', () => {
 
     const selected = await ask.execute(execution({ type: 'select', question: 'Pick', options: ['one', 'two'] }));
     const text = await ask.execute(execution({ type: 'input', question: 'Name?', initial: 'octo' }));
+    const edited = await ask.execute(execution({ type: 'editor', question: 'Revise the plan', initial: 'Step 1' }));
     const confirmed = await ask.execute(execution({ type: 'confirm', question: 'Continue?' }));
 
-    expect([selected.content, text.content, confirmed.content]).toEqual([
+    expect([selected.content, text.content, edited.content, confirmed.content]).toEqual([
       { status: 'accepted', value: 'two' },
+      { status: 'accepted', value: 'octocode' },
       { status: 'accepted', value: 'octocode' },
       { status: 'accepted', value: true },
     ]);
     expect(requests).toEqual([
       { type: 'select', message: 'Pick', options: ['one', 'two'] },
       { type: 'input', message: 'Name?', initial: 'octo' },
+      { type: 'editor', message: 'Revise the plan', initial: 'Step 1' },
       { type: 'confirm', message: 'Continue?' },
     ]);
   });

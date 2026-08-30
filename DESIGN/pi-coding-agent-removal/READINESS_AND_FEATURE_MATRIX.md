@@ -4,17 +4,17 @@
 
 ## Executive rating
 
-The project has a **substantial dirty-tree native implementation candidate**, but it is not release-proven. The native editor foundation is usable for continued implementation and verification; the Pi-retirement program is not ready for canary or deletion.
+The project has a **substantial dirty-tree native implementation candidate**, but it is not release-proven. The native editor foundation is usable for continued implementation and verification; the native Pi-decoupling program is not ready for canary or release closure.
 
 | Rating | Score | Meaning |
 |---|---:|---|
-| RFC/design completeness | **9/10** | Boundaries, stages, schemas, risks, tests, measurements, rollback, OpenTUI, settings/models, hooks, plugins, orchestration, and final Pi deletion are reconciled; canonical release evidence remains. |
-| Native-editor implementation readiness | **8.5/10** | The production candidate includes governed runtime composition, composite effect admission with durable native receipts, OpenAI Chat/Responses and Anthropic adapters, a production session router with parent/child navigation and bounded automatic compaction, MCP/Skill lifecycle and controls, worker recovery with RPC/ACP projection, command/MCP/async hooks, trust-gated plugins, semantic OpenTUI, protected settings, and 3,484 passing root tests. Credentialed providers, session import and the complete corruption corpus, authoritative upstream tool metadata, clean packaging, and cross-platform proof remain. |
+| RFC/design completeness | **9/10** | Boundaries, stages, schemas, risks, tests, measurements, rollback, OpenTUI, settings/models, hooks, plugins, orchestration, native Pi absence, and independent extension support are reconciled; canonical release evidence remains. |
+| Native-editor implementation readiness | **8.5/10** | The production candidate includes governed runtime composition, composite effect admission with durable native receipts, capability-checked OpenAI and Anthropic adapters plus custom providers, checkpointed session recovery and bounded compaction, global/workspace MCP and Skill discovery with enablement controls, worker recovery with RPC/ACP projection, redacted hooks, transactional settings, typed monitoring/cache metrics, semantic OpenTUI, and 3,687 passing root tests. Credentialed provider calls, the complete corruption corpus, authoritative upstream tool metadata, a clean candidate, and cross-platform proof remain. |
 | Native canary readiness | **2/10** | Real native paths and local effect-ledger proof exist, but the migration selector, matching real Pi/native conformance, shared cross-host effect proof, platform/package matrices, thresholds, and rollback rehearsal are absent. |
-| Pi-retirement readiness | **2/10** | The native launcher is already Pi-free at its direct surface and the end state is approved, but Pi remains a live package and transitive path; no bounded selector/oracle freeze, observation receipt, prior-native rollback, clean install/upgrade, or final zero-reference proof exists. |
-| Weighted cutover readiness | **5/10** | Evidence-weighted combination of design, implemented native seams, production composition, verification, migration controls, and release proof. This is not a schedule estimate or permission to delete Pi. |
+| Native Pi-decoupling readiness | **4/10** | The native launcher manifest, source, built artifact, and focused guard are Pi-free. Packed dependency-tree, clean install/upgrade, native rollback, and release-scoped absence receipts remain. Pi references inside the independent extension are allowed and classified separately. |
+| Weighted cutover readiness | **5/10** | Evidence-weighted combination of design, implemented native seams, production composition, verification, migration controls, and release proof. This is not a schedule estimate or permission to declare native cutover complete. |
 
-The correct decision is **continue the dependency-ordered native implementation while the release remains HOLD**, not “start deleting Pi.” Freeze the Pi oracle and build the migration selector before canary; delete both only after native-only rollback and the final retirement gates pass.
+The correct decision is **continue the dependency-ordered native implementation while the release remains HOLD**. Keep native source and artifacts Pi-free, retain the independent Pi extension, and complete real-host comparison, native rollback, platform, packaging, install, and upgrade gates before release closure.
 
 ### Exhaustive audit receipt
 
@@ -74,7 +74,7 @@ Scores come from repository evidence, not confidence language. A document cannot
 | Event-driven plugins | 3/5 | Native discovery, explicit grants, transactional activation/rollback, owner isolation, leases, unload, a real filesystem fixture, and review/grant settings actions pass | Complete formal capability approval, broader fixtures, update/restart, and clean security proof | Plugin lifecycle suite |
 | Shared test harness | 2/5 | Normalized scenarios and effect-ledger structures exist | Bind real frozen-Pi and native hosts; prove first divergence, faults, security, effects, and performance | Complete shared corpus |
 | Observability/evidence | 1/5 | Receipt schemas and KPI definitions | Runtime trace implementation, privacy review, dashboards/queries, before/after raw receipts | KPI receipt |
-| Canary/rollback/release | 1/5 | Staged policy, temporary-oracle decision, and native-only final rollback rule exist | Implement the migration selector, freeze the oracle, set thresholds, rehearse Pi-window and prior-native rollback, observe, install/upgrade, then delete Pi | Stages 6–7 |
+| Canary/rollback/release | 1/5 | Staged policy, independent Pi-reference decision, and native-only final rollback rule exist | Freeze the Pi reference, set thresholds, rehearse the comparison window and prior-native rollback, observe, install/upgrade, then close native Pi-absence gates | Stages 6–7 |
 
 ## Critical blockers
 
@@ -84,7 +84,7 @@ These items block implementation maturity above Level 1 or 2:
 2. Assign runtime, session, security, extensions, terminal, settings/models, testing, and release owners.
 3. Close the remaining agent-core contracts and prove production reachability without host-specific leakage.
 4. Decide the native session encoding/store after running the required prototype and corruption corpus.
-5. Freeze the temporary Pi oracle artifact/version and pin the Codex hook compatibility version/fixture snapshot.
+5. Pin the independent Pi reference artifact/version and the Codex hook compatibility version/fixture snapshot.
 6. Approve the plugin capability/trust policy, especially process, filesystem, network, MCP, model, secret, and UI grants.
 7. Select and prove the OpenTUI runtime/native-package route on every supported release platform.
 8. Implement the release-owned migration selector, then set quantitative canary thresholds and the observation window before native becomes default.
@@ -130,7 +130,7 @@ The IDs below are stable traceability identifiers for implementation issues and 
 | T-09 | RPC transport | Correlated requests/responses/events, version rejection, bounds, and malformed-frame recovery |
 | T-10 | SDK/embed boundary | In-process typed composition without exposing private runtime implementation |
 | T-11 | Pure shadow mode | Compare deterministic behavior without duplicate model calls, writes, messages, or effects |
-| T-12 | Migration host selector | Release-composed `pi|shadow|native` selection, per-session host/oracle identity, one writable host, and explicit rollback; absent from the current native launcher and deleted with Pi |
+| T-12 | Migration host selector | Optional release-composed `pi|shadow|native` comparison selection, per-session host/reference identity, one writable host, and explicit rollback; absent from the current native launcher and removed after the comparison window |
 | T-13 | ACP interoperability | Version-pinned ACP agent endpoint with initialize/auth, new/list/resume/close/fork, prompt/cancel, modes/config, progress, permission, terminal/filesystem, MCP, and generated schema conformance |
 | T-14 | Dynamic tool discovery | Searchable deferred tool schemas, capability/policy filtering, deterministic ranking, bounded result sets, and no hidden privilege expansion |
 | T-15 | Semantic code context | Token-budgeted AST/LSP symbol, type, reference, caller/callee, and dependency map with freshness and exact source provenance |
@@ -232,23 +232,23 @@ The IDs below are stable traceability identifiers for implementation issues and 
 
 | ID | Feature | Required outcome |
 |---|---|---|
-| Q-01 | Temporary Pi oracle | A frozen, named Pi artifact remains only until every accepted capability has native evidence or an approved retirement |
-| Q-02 | Pi retirement | The extension package, live adapters, workspace/release wiring, dependencies, tests, and active product docs are deleted after the observation gate |
+| Q-01 | Independent Pi reference | A frozen, named Pi artifact and extension version provide reproducible cross-host evidence without entering native release wiring |
+| Q-02 | Native Pi retirement | Native agent/core source, manifests, lockfile resolutions, dependency tree, built and packed artifacts, installers, updates, selectors, fallbacks, and rollback paths contain no Pi |
 | Q-03 | Shared conformance corpus | Same scenarios run against Pi and native implementations |
-| Q-04 | Static absence proof | Text, AST, LSP, manifest, lockfile, dependency tree, built artifact, and packed release show zero live Pi dependency or product path |
+| Q-04 | Static absence proof | Text, AST, LSP, manifest, lockfile, dependency tree, built artifact, and packed native release show zero Pi dependency or product path; extension-owned Pi references are isolated and explicitly classified |
 | Q-05 | Fault injection | Provider, process, tool, persistence, compaction, RPC, UI, settings, hook, and plugin failures |
 | Q-06 | Security matrix | Zero trust, approval, plan, lock, path, protocol, hook, plugin, and secret bypasses |
 | Q-07 | Performance matrix | Startup, first event, turn, append, import/replay, memory, frame, cancellation, and reliability |
 | Q-08 | Platform matrix | Supported OS, architecture, runtime, terminal, browser, and native artifact |
 | Q-09 | Before/after receipts | Named commits, normalized traces, raw hashes, differences, decisions, and owners |
-| Q-10 | Canary, toggle, and rollback | A release-owned `pi|shadow|native` selector during the bounded comparison window, cohorts, per-session host/oracle identity, one writable host, zero-tolerance triggers, tested prior-native rollback, observation, and selector deletion with Pi |
+| Q-10 | Canary, comparison, and rollback | Optional release-owned `pi|shadow|native` comparison during the bounded window, cohorts, per-session host/reference identity, one writable host, zero-tolerance triggers, tested prior-native rollback, observation, and migration-selector removal while the independent Pi extension remains supported |
 
 ## Current versus target product matrix
 
 | Capability | Current Octocode on Pi | Target native Octocode | Migration rule |
 |---|---|---|---|
 | Runtime owner | Pi coding-agent | Octocode agent core | Remove native Pi only after conformance |
-| Pi extension | Primary harness implementation | Removed | Freeze as the temporary oracle, migrate or approve every difference, then delete after native-only rollback passes |
+| Pi extension | Primary Pi-host implementation | Independently supported compatibility product | Keep its Pi-only dependencies, tests, docs, version matrix, and publication path isolated from native artifacts and release wiring |
 | Terminal | Pi-host UI/shell | OpenTUI semantic adapter | Preserve behavior; keep toolkit outside core |
 | Interactive/print/JSON/RPC | Pi runners/protocol | Native adapters | Same approved modes and protocol semantics |
 | Sessions | Pi manager/JSONL | Native versioned store plus Pi importer | Never rewrite the Pi source in place |
@@ -259,7 +259,7 @@ The IDs below are stable traceability identifiers for implementation issues and 
 | Policy | Extension gates around Pi calls | Kernel-owned pre-effect chain | Zero bypass across transports/plugins |
 | Hooks | Pi events, composer, direct listeners | Canonical bus plus Codex adapter | Every used listener must map |
 | Plugins | Static Pi TypeScript extension behavior | Versioned manifests and typed transactional contributions | No direct private-runtime mutation |
-| Settings | Protected Pi-extension page plus launcher writer | One registry-driven native page | Temporary Pi projections exist only for comparison; zero hidden native settings |
+| Settings | Protected Pi-extension page plus launcher writer | One registry-driven native page | Pi projections remain adapter-local; native has zero hidden settings or Pi dependency |
 | Models | Default values and external sources | Full effective catalog and safe `models.json` management | Preserve/import sources with explicit precedence |
 | Tests | Pi-specific and candidate structural harness | Shared host corpus plus adapter suites | Same scenario, normalized trace, first divergence |
 | Rollback | SDK/subprocess fallback | Prior native release artifact | Final rollback must not depend on Pi; no hidden production fallback after removal |

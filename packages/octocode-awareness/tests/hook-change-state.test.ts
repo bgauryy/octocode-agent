@@ -6,11 +6,11 @@ import { hookStateUnchanged, recordHookChangeState } from '../bin/hook-change-st
 import { briefingChangeSignal, overlapChangeSignal, verificationDebtSignal } from '../bin/hook-signals.js';
 import { resolveDbPath } from '../src/db.js';
 
-const originalMemoryHome = process.env.OCTOCODE_MEMORY_HOME;
+const originalMemoryHome = process.env.OCTOCODE_AGENT_DIR;
 
 afterEach(() => {
-  if (originalMemoryHome === undefined) delete process.env.OCTOCODE_MEMORY_HOME;
-  else process.env.OCTOCODE_MEMORY_HOME = originalMemoryHome;
+  if (originalMemoryHome === undefined) delete process.env.OCTOCODE_AGENT_DIR;
+  else process.env.OCTOCODE_AGENT_DIR = originalMemoryHome;
 });
 
 describe('hook change fast path', () => {
@@ -18,7 +18,7 @@ describe('hook change fast path', () => {
     const root = mkdtempSync(join(tmpdir(), 'awareness-hook-token-'));
     const workspace = join(root, 'repo');
     mkdirSync(workspace, { recursive: true });
-    process.env.OCTOCODE_MEMORY_HOME = join(root, 'memory');
+    process.env.OCTOCODE_AGENT_DIR = join(root, 'memory');
     const payload = { workspace, session_id: 'session-1' };
     try {
       expect(hookStateUnchanged(payload)).toBe(false);

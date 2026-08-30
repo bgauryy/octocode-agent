@@ -27,15 +27,59 @@ async function controller(configuration: CodexHookConfiguration): Promise<Native
   return value;
 }
 
-function event(type: RuntimeEvent['type'], payload: unknown): RuntimeEvent {
+function event(type: RuntimeEvent['type'], payload: RuntimeEvent['payload']): RuntimeEvent {
   return {
     schemaVersion: 1, eventVersion: 1, id: eventId(`event:${type}`), type, phase: 'before',
     sessionId: sessionId('session:1'), timestamp: 1, cwd: '/workspace', mode: 'headless',
     model: { providerId: 'openai', modelId: 'gpt-5' }, trust: { workspace: 'trusted', managedOnly: false }, payload,
-  };
+  } as unknown as RuntimeEvent;
 }
 
 describe('native hook dispatcher', () => {
+  it('installs explicit lifecycle mappings for every supported Codex hook event', async () => {
+    const hooks = Object.fromEntries([
+      'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse',
+      'PreCompact', 'PostCompact', 'SubagentStart', 'SubagentStop', 'Stop',
+    ].map((name, declarationOrder) => [name, [{ handlers: [{ type: 'command', command: name, timeoutSeconds: 1, async: false }], declarationOrder }]]));
+    const extensions = await controller({ schemaVersion: 1, unsupported: [], hooks });
+    const lifecycle = new Map<RuntimeEvent['type'], LifecycleBus<unknown>>();
+    installNativeHookDispatcher({
+      extensions, lifecycle, workspaceTrusted: true,
+      executor: { execute: vi.fn(async () => ({ decision: { kind: 'continue' as const }, output: {}, stderr: '' })) },
+    });
+    expect([...lifecycle.keys()]).toEqual(expect.arrayContaining([
+      'session.starting', 'session.stopping', 'input.received', 'tool.requested', 'permission.requested',
+      'tool.ended', 'context.compaction-started', 'context.compacted', 'worker.started', 'worker.stopped', 'agent.ended',
+    ]));
+  });
+
+  it('translates permission, subagent, and stop hook inputs at their canonical boundaries', async () => {
+    const extensions = await controller({ schemaVersion: 1, unsupported: [], hooks: {
+      PermissionRequest: [{ matcher: '^guarded$', handlers: [{ type: 'command', command: 'permission', timeoutSeconds: 1, async: false }], declarationOrder: 0 }],
+      SubagentStart: [{ handlers: [{ type: 'command', command: 'worker-start', timeoutSeconds: 1, async: false }], declarationOrder: 1 }],
+      SubagentStop: [{ handlers: [{ type: 'command', command: 'worker-stop', timeoutSeconds: 1, async: false }], declarationOrder: 2 }],
+      Stop: [{ handlers: [{ type: 'command', command: 'stop', timeoutSeconds: 1, async: false }], declarationOrder: 3 }],
+    } });
+    const execute = vi.fn(async (handler: { command?: string }, _input: unknown) => ({
+      decision: handler.command === 'permission' ? { kind: 'allow' as const } : { kind: 'continue' as const },
+      output: {}, stderr: '',
+    }));
+    const lifecycle = new Map<RuntimeEvent['type'], LifecycleBus<unknown>>();
+    installNativeHookDispatcher({ extensions, lifecycle, executor: { execute }, workspaceTrusted: true });
+
+    await expect(lifecycle.get('permission.requested')!.dispatch(event('permission.requested', { callId: 'call:permission', name: 'guarded', input: { path: 'a' } }))).resolves.toMatchObject({ decision: { kind: 'allow' } });
+    await lifecycle.get('worker.started')!.dispatch(event('worker.started', { workerId: 'worker:1', agentType: 'researcher' }));
+    await lifecycle.get('worker.stopped')!.dispatch(event('worker.stopped', { workerId: 'worker:1', outcome: 'succeeded' }));
+    await lifecycle.get('agent.ended')!.dispatch(event('agent.ended', { reason: 'complete' }));
+
+    expect(execute.mock.calls.map(([handler, input]) => [handler.command, input])).toEqual([
+      ['permission', expect.objectContaining({ hook_event_name: 'PermissionRequest', tool_name: 'guarded', tool_use_id: 'call:permission' })],
+      ['worker-start', expect.objectContaining({ hook_event_name: 'SubagentStart', agent_id: 'worker:1', agent_type: 'researcher' })],
+      ['worker-stop', expect.objectContaining({ hook_event_name: 'SubagentStop', agent_id: 'worker:1', agent_type: 'worker' })],
+      ['stop', expect.objectContaining({ hook_event_name: 'Stop', reason: 'complete' })],
+    ]);
+  });
+
   it('installs deterministic matched PreToolUse denial with Codex stdin and lifecycle authority', async () => {
     const extensions = await controller({ schemaVersion: 1, unsupported: [], hooks: {
       PreToolUse: [
@@ -43,7 +87,7 @@ describe('native hook dispatcher', () => {
         { matcher: '^edit$', handlers: [{ type: 'command', command: 'hit', timeoutSeconds: 1, async: false }], declarationOrder: 1 },
       ],
     } });
-    const execute = vi.fn(async () => ({ decision: { kind: 'deny' as const, reason: 'blocked' }, output: {}, stderr: '' }));
+    const execute = vi.fn(async (_handler: unknown, _input: unknown) => ({ decision: { kind: 'deny' as const, reason: 'blocked' }, output: {}, stderr: '' }));
     const lifecycle = new Map<RuntimeEvent['type'], LifecycleBus<unknown>>();
     installNativeHookDispatcher({ extensions, lifecycle, executor: { execute }, workspaceTrusted: true });
 
@@ -109,6 +153,34 @@ describe('native hook dispatcher', () => {
     installed();
   });
 
+  it('redacts observational hook results unless trusted full-data exposure is explicit', async () => {
+    const extensions = await controller({ schemaVersion: 1, unsupported: [], hooks: {
+      PostToolUse: [{ handlers: [{ type: 'command', command: 'observe', timeoutSeconds: 1, async: false }], declarationOrder: 0 }],
+    } });
+    const safeExecute = vi.fn(async (..._args: unknown[]) => ({ decision: { kind: 'continue' as const }, output: {}, stderr: '' }));
+    const safeLifecycle = new Map<RuntimeEvent['type'], LifecycleBus<unknown>>();
+    installNativeHookDispatcher({ extensions, lifecycle: safeLifecycle, executor: { execute: safeExecute }, workspaceTrusted: true });
+    await safeLifecycle.get('tool.ended')!.dispatch(event('tool.ended', { callId: 'call:safe', name: 'probe', result: { token: 'PRIVATE RESULT' } }));
+    expect(safeExecute.mock.calls[0]?.[1]).toMatchObject({ tool_response: '[REDACTED]' });
+
+    const fullExecute = vi.fn(async (..._args: unknown[]) => ({ decision: { kind: 'continue' as const }, output: {}, stderr: '' }));
+    const fullLifecycle = new Map<RuntimeEvent['type'], LifecycleBus<unknown>>();
+    installNativeHookDispatcher({ extensions, lifecycle: fullLifecycle, executor: { execute: fullExecute }, workspaceTrusted: true, dataExposure: 'full' });
+    await fullLifecycle.get('tool.ended')!.dispatch(event('tool.ended', { callId: 'call:full', name: 'probe', result: { token: 'VISIBLE RESULT' } }));
+    expect(fullExecute.mock.calls[0]?.[1]).toMatchObject({ tool_response: { token: 'VISIBLE RESULT' } });
+  });
+
+  it('rejects full-data hook exposure outside a trusted workspace', async () => {
+    const extensions = await controller({ schemaVersion: 1, unsupported: [], hooks: {} });
+    expect(() => installNativeHookDispatcher({
+      extensions,
+      lifecycle: new Map<RuntimeEvent['type'], LifecycleBus<unknown>>(),
+      executor: { execute: vi.fn() },
+      workspaceTrusted: false,
+      dataExposure: 'full',
+    })).toThrow(/full-data.*trusted workspace/i);
+  });
+
   it('times out MCP hooks and cancels owned asynchronous hooks on disposal', async () => {
     const extensions = await controller({ schemaVersion: 1, unsupported: [], hooks: {
       SessionStart: [{ handlers: [
@@ -138,7 +210,7 @@ describe('native hook dispatcher', () => {
     } });
     const lifecycle = new Map<RuntimeEvent['type'], LifecycleBus<unknown>>();
     const signal = new AbortController().signal;
-    const execute = vi.fn(async () => {
+    const execute = vi.fn(async (_handler: unknown, _input: unknown, _signal: AbortSignal) => {
       await lifecycle.get('session.starting')!.dispatch(event('session.starting', { reason: 'new' }));
       return { decision: { kind: 'continue' as const }, output: {}, stderr: '' };
     });

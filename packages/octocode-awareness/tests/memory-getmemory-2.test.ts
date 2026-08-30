@@ -59,7 +59,7 @@ describe('getMemory', () => {
     const db = freshDb();
     const first = insertMemory(db, { taskContext: 'stable order', observation: 'same', importance: 5 });
     const second = insertMemory(db, { taskContext: 'stable order', observation: 'same', importance: 5 });
-    db.prepare("UPDATE memories SET created_at = '2026-01-01T00:00:00Z', last_accessed_at = '2026-01-01T00:00:00Z'").run();
+    db.prepare("UPDATE awareness_memories SET created_at = '2026-01-01T00:00:00Z', last_accessed_at = '2026-01-01T00:00:00Z'").run();
 
     const ids = getMemory(db, { query: 'stable order', sort: 'recent', limit: 10, recordAccess: false })
       .memories.map(memory => memory.memory_id);
@@ -99,7 +99,7 @@ describe('getMemory', () => {
     const { memoryId } = insertMemory(db, {
       taskContext: 'alternate ranker', observation: 'candidate result', importance: 5,
     });
-    const before = db.prepare('SELECT access_count FROM memories WHERE memory_id = ?')
+    const before = db.prepare('SELECT access_count FROM awareness_memories WHERE memory_id = ?')
       .get(memoryId) as { access_count: number };
 
     const result = getMemory(db, {
@@ -107,7 +107,7 @@ describe('getMemory', () => {
     });
 
     expect(result.memories.map(memory => memory.memory_id)).toEqual([memoryId]);
-    expect(db.prepare('SELECT access_count FROM memories WHERE memory_id = ?').get(memoryId))
+    expect(db.prepare('SELECT access_count FROM awareness_memories WHERE memory_id = ?').get(memoryId))
       .toEqual({ access_count: before.access_count });
   });
 
@@ -290,7 +290,7 @@ describe('getMemory', () => {
   it('rebuildFts handles large reference sets without placeholder-limit failures', { timeout: 20_000 }, () => {
     const db = freshDb();
     const insert = db.prepare(`
-      INSERT INTO memories (
+      INSERT INTO awareness_memories (
         memory_id, agent_id, task_context, observation, importance,
         label, tags_json, created_at, updated_at, last_accessed_at, access_count
       ) VALUES (?, 'agent-test', ?, ?, 5, 'OTHER', '[]', ?, ?, ?, 0)
@@ -327,7 +327,7 @@ describe('bumpAccess', () => {
       taskContext: 't', observation: 'o', importance: 5,
     });
     bumpAccess(db, [memoryId]);
-    const row = db.prepare('SELECT access_count FROM memories WHERE memory_id = ?').get(memoryId) as { access_count: number };
+    const row = db.prepare('SELECT access_count FROM awareness_memories WHERE memory_id = ?').get(memoryId) as { access_count: number };
     expect(row.access_count).toBe(1);
   });
 
@@ -341,8 +341,8 @@ describe('bumpAccess', () => {
     const { memoryId: id1 } = insertMemory(db, { taskContext: 't', observation: 'o', importance: 5 });
     const { memoryId: id2 } = insertMemory(db, { taskContext: 't', observation: 'o', importance: 5 });
     bumpAccess(db, [id1, id2]);
-    const r1 = db.prepare('SELECT access_count FROM memories WHERE memory_id = ?').get(id1) as { access_count: number };
-    const r2 = db.prepare('SELECT access_count FROM memories WHERE memory_id = ?').get(id2) as { access_count: number };
+    const r1 = db.prepare('SELECT access_count FROM awareness_memories WHERE memory_id = ?').get(id1) as { access_count: number };
+    const r2 = db.prepare('SELECT access_count FROM awareness_memories WHERE memory_id = ?').get(id2) as { access_count: number };
     expect(r1.access_count).toBe(1);
     expect(r2.access_count).toBe(1);
   });

@@ -10,7 +10,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { AWARENESS_APPLICATION_ID, getDeliveryFingerprint, initDb, setDeliveryFingerprint, tableColumns } from '../src/db.js';
+import { getDeliveryFingerprint, initDb, setDeliveryFingerprint, tableColumns } from '../src/db.js';
+import { AGENT_APPLICATION_ID } from '@octocodeai/octocode-shared/schema';
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function freshDb(): DatabaseSync {
     const db = new DatabaseSync(':memory:');
@@ -25,25 +26,25 @@ describe('initDb creates all required tables', () => {
   const db = freshDb();
 
   const requiredTables = [
-    'memories',
+    'awareness_memories',
     'memories_fts',
     'memory_refs',
-    'plans',
+    'awareness_plans',
     'plan_members',
     'plan_docs',
-    'tasks',
+    'awareness_tasks',
     'task_paths',
     'task_dependencies',
     'task_claims',
     'task_events',
     'task_runs',
     'run_files',
-    'locks',
+    'awareness_locks',
     'delivery_state',
     'run_log',
     'signals',
     'signal_reads',
-    'agents',
+    'awareness_agents',
     'sessions',
     'refinements',
     'edit_log',
@@ -69,18 +70,18 @@ describe('initDb table set', () => {
   it('creates only known application tables plus FTS internals', () => {
     const allowed = new Set([
       'sessions',
-      'memories',
-      'plans',
+      'awareness_memories',
+      'awareness_plans',
       'plan_members',
       'plan_docs',
-      'tasks',
+      'awareness_tasks',
       'task_paths',
       'task_dependencies',
       'task_claims',
       'task_events',
       'task_runs',
       'run_files',
-      'locks',
+      'awareness_locks',
       'delivery_state',
       'hook_receipts',
       'run_log',
@@ -88,7 +89,7 @@ describe('initDb table set', () => {
       'signals',
       'signal_reads',
       'memory_refs',
-      'agents',
+      'awareness_agents',
       'edit_log',
       'harness_log',
     ]);
@@ -106,7 +107,7 @@ describe('initDb table set', () => {
 
 describe('memories table column names', () => {
   const db = freshDb();
-  const cols = [...tableColumns(db, 'memories')].sort();
+  const cols = [...tableColumns(db, 'awareness_memories')].sort();
 
   it('matches the current memory column set', () => {
     expect(cols).toEqual([
@@ -144,7 +145,7 @@ describe('memories table column names', () => {
 
 describe('tasks table column names', () => {
   const db = freshDb();
-  const cols = [...tableColumns(db, 'tasks')].sort();
+  const cols = [...tableColumns(db, 'awareness_tasks')].sort();
 
   it('matches the current task column set', () => {
     expect(cols).toEqual([
@@ -190,7 +191,7 @@ describe('task_runs table column names', () => {
 
 describe('locks table column names', () => {
   const db = freshDb();
-  const cols = [...tableColumns(db, 'locks')].sort();
+  const cols = [...tableColumns(db, 'awareness_locks')].sort();
 
   it('matches the current lock column set', () => {
     expect(cols).toEqual([
@@ -237,16 +238,16 @@ describe('delivery_state table column names', () => {
 });
 
 describe('canonical schema identity', () => {
-  it('uses the sole OCT1 application identity', () => {
+  it('uses the one agent application identity', () => {
     const db = freshDb();
     expect(db.prepare('PRAGMA application_id').get())
-      .toEqual({ application_id: AWARENESS_APPLICATION_ID });
+      .toEqual({ application_id: AGENT_APPLICATION_ID });
   });
 
   it('rejects an extra application relation on the canonical fast path', () => {
     const db = freshDb();
     db.exec('CREATE TABLE unexpected_state(value TEXT)');
-    expect(() => initDb(db)).toThrow(/canonical relation contract mismatch.*unexpected_state/i);
+    expect(() => initDb(db)).toThrow(/unrecognized.*unexpected_state|canonical relation contract mismatch.*unexpected_state/i);
   });
 
   it('rejects canonical-header structural drift', () => {
@@ -267,8 +268,8 @@ describe('canonical schema identity', () => {
 
   it('rejects an unexpected trigger', () => {
     const db = freshDb();
-    db.exec(`CREATE TRIGGER destructive_memory_trigger AFTER INSERT ON memories
-      BEGIN DELETE FROM memories WHERE memory_id = NEW.memory_id; END`);
+    db.exec(`CREATE TRIGGER destructive_memory_trigger AFTER INSERT ON awareness_memories
+      BEGIN DELETE FROM awareness_memories WHERE memory_id = NEW.memory_id; END`);
     expect(() => initDb(db)).toThrow(/canonical schema fingerprint mismatch/i);
   });
 });
@@ -319,9 +320,9 @@ describe('signals table column names', () => {
 describe('lifecycle enum constraints', () => {
   it('rejects unknown task event types', () => {
     const db = freshDb();
-    db.prepare(`INSERT INTO plans(plan_id, name, objective, lead_agent_id, status, workspace_path, doc_dir, created_at, updated_at)
+    db.prepare(`INSERT INTO awareness_plans(plan_id, name, objective, lead_agent_id, status, workspace_path, doc_dir, created_at, updated_at)
       VALUES ('plan_lifecycle', 'Lifecycle', 'Keep lifecycle values bounded.', 'lead', 'ACTIVE', '/tmp/repo', '.octocode/plan/lifecycle', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`).run();
-    db.prepare(`INSERT INTO tasks(task_id, plan_id, title, reasoning, acceptance_criteria, status, created_by, created_at, updated_at)
+    db.prepare(`INSERT INTO awareness_tasks(task_id, plan_id, title, reasoning, acceptance_criteria, status, created_by, created_at, updated_at)
       VALUES ('task_lifecycle', 'plan_lifecycle', 'Task', 'reason', 'verify', 'OPEN', 'lead', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`).run();
 
     expect(() => db.prepare(`INSERT INTO task_events(event_id, task_id, agent_id, event_type, message, created_at)

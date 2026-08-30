@@ -30,7 +30,7 @@ export type {
 } from '@octocodeai/octocode-shared/entities';
 
 function ledgerPlanPredicate(db: DatabaseSync): string {
-  return tableColumns(db, 'plans').has('source_kind')
+  return tableColumns(db, 'awareness_plans').has('source_kind')
     ? "(source_kind = 'awareness-ledger' OR name IS NOT NULL)"
     : '1 = 1';
 }
@@ -116,18 +116,18 @@ export function createPlan(
         plan_id: planId,
       primary_doc: 'PLAN.md',
       supporting_docs_dir: 'docs',
-      live_task_state: 'awareness.sqlite3',
+      live_task_state: 'agent.sqlite3',
     }, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
 
     db.exec('BEGIN IMMEDIATE');
     try {
-      if (tableColumns(db, 'plans').has('title')) {
-        db.prepare(`INSERT INTO plans
+      if (tableColumns(db, 'awareness_plans').has('title')) {
+        db.prepare(`INSERT INTO awareness_plans
           (plan_id, name, objective, lead_agent_id, title, goal, status, workspace_path, artifact, doc_dir, source_kind, source_key, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, 'awareness-ledger', ?, ?, ?)`)
           .run(planId, name, objective, leadAgentId, name, objective, workspacePath, plan.artifact, docDir, planId, now, now);
       } else {
-        db.prepare(`INSERT INTO plans
+        db.prepare(`INSERT INTO awareness_plans
           (plan_id, name, objective, lead_agent_id, status, workspace_path, artifact, doc_dir, created_at, updated_at)
           VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?)`)
           .run(planId, name, objective, leadAgentId, workspacePath, plan.artifact, docDir, now, now);
@@ -152,7 +152,7 @@ export function createPlan(
 }
 
 export function getPlan(db: DatabaseSync, planId: string): PlanDetail | null {
-  const row = db.prepare(`SELECT * FROM plans WHERE plan_id = ? AND ${ledgerPlanPredicate(db)}`).get(planId) as Record<string, unknown> | undefined;
+  const row = db.prepare(`SELECT * FROM awareness_plans WHERE plan_id = ? AND ${ledgerPlanPredicate(db)}`).get(planId) as Record<string, unknown> | undefined;
   if (!row) return null;
   const members = db.prepare(
     'SELECT agent_id, role, joined_at FROM plan_members WHERE plan_id = ? ORDER BY role, joined_at, agent_id',
@@ -180,7 +180,7 @@ export function listPlans(
   const limitSql = limit == null ? '' : 'LIMIT ?';
   const queryBinds: Array<string | number> = limit == null ? binds : [...binds, limit];
   return db.prepare(
-    `SELECT * FROM plans WHERE ${where.join(' AND ')} ORDER BY updated_at DESC, plan_id ${limitSql}`,
+    `SELECT * FROM awareness_plans WHERE ${where.join(' AND ')} ORDER BY updated_at DESC, plan_id ${limitSql}`,
   ).all(...queryBinds).map((row) => rowToPlan(row as Record<string, unknown>));
 }
 
@@ -197,7 +197,7 @@ export function countPlans(
   const artifact = normalizeArtifact(params.artifact);
   if (artifact) { where.push('(artifact = ? OR artifact IS NULL)'); binds.push(artifact); }
   if (params.status) { where.push('status = ?'); binds.push(params.status); }
-  return (db.prepare(`SELECT COUNT(*) AS count FROM plans WHERE ${where.join(' AND ')}`)
+  return (db.prepare(`SELECT COUNT(*) AS count FROM awareness_plans WHERE ${where.join(' AND ')}`)
     .get(...binds) as { count: number }).count;
 }
 
@@ -257,7 +257,7 @@ export function updatePlanStatus(
   db.exec('BEGIN IMMEDIATE');
   try {
     if (params.status === 'COMPLETED') {
-      const unfinished = db.prepare(`SELECT COUNT(*) AS count FROM tasks
+      const unfinished = db.prepare(`SELECT COUNT(*) AS count FROM awareness_tasks
         WHERE plan_id = ? AND status NOT IN ('DONE', 'CANCELLED')`)
         .get(params.planId) as { count: number };
       if (unfinished.count > 0) {
@@ -266,17 +266,17 @@ export function updatePlanStatus(
     }
     if (params.status === 'CANCELLED') {
       const active = db.prepare(`SELECT COUNT(*) AS count FROM task_claims c
-        JOIN tasks t ON t.task_id = c.task_id
+        JOIN awareness_tasks t ON t.task_id = c.task_id
         WHERE t.plan_id = ? AND c.expires_at > ?`)
         .get(params.planId, now) as { count: number };
       if (active.count > 0) {
         throw new Error(`cannot cancel plan ${params.planId} with ${active.count} active task run(s)`);
       }
-      db.prepare(`UPDATE tasks SET status = 'CANCELLED', completed_at = ?, updated_at = ?
+      db.prepare(`UPDATE awareness_tasks SET status = 'CANCELLED', completed_at = ?, updated_at = ?
         WHERE plan_id = ? AND status IN ('OPEN', 'BLOCKED', 'VERIFY')`)
         .run(now, now, params.planId);
     }
-    db.prepare('UPDATE plans SET status = ?, updated_at = ? WHERE plan_id = ?')
+    db.prepare('UPDATE awareness_plans SET status = ?, updated_at = ? WHERE plan_id = ?')
       .run(params.status, now, params.planId);
     db.exec('COMMIT');
   } catch (error) {

@@ -308,7 +308,7 @@ it('installed Codex hook commands run when Node is absent from PATH', () => {
         env: {
           ...process.env,
           PATH: '/usr/bin:/bin',
-          OCTOCODE_MEMORY_HOME: memoryHome,
+          OCTOCODE_AGENT_DIR: memoryHome,
           OCTOCODE_AGENT_ID: 'no-node-path-agent',
         },
       });

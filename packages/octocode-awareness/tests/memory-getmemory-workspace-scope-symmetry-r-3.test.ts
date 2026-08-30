@@ -91,15 +91,15 @@ describe('fix-a: supersede atomicity', () => {
       supersedes: [idA],
     });
 
-    const rowA = db.prepare('SELECT state FROM memories WHERE memory_id = ?').get(idA) as { state: string };
-    const rowB = db.prepare('SELECT state FROM memories WHERE memory_id = ?').get(idB) as { state: string };
+    const rowA = db.prepare('SELECT state FROM awareness_memories WHERE memory_id = ?').get(idA) as { state: string };
+    const rowB = db.prepare('SELECT state FROM awareness_memories WHERE memory_id = ?').get(idB) as { state: string };
 
     // A must be SUPERSEDED; B must be ACTIVE — never both ACTIVE simultaneously
     expect(rowA.state).toBe('SUPERSEDED');
     expect(rowB.state).toBe('ACTIVE');
 
     const activeCount = db.prepare(
-      "SELECT COUNT(*) AS n FROM memories WHERE memory_id IN (?, ?) AND state = 'ACTIVE'"
+      "SELECT COUNT(*) AS n FROM awareness_memories WHERE memory_id IN (?, ?) AND state = 'ACTIVE'"
     ).get(idA, idB) as { n: number };
     expect(activeCount.n).toBe(1);
   });
@@ -119,7 +119,7 @@ describe('fix-a: supersede atomicity', () => {
     db.exec('SAVEPOINT sp_crash_sim');
     try {
       db.prepare(`
-        INSERT INTO memories
+        INSERT INTO awareness_memories
           (memory_id, agent_id, task_context, observation, importance, label, tags_json, created_at, updated_at)
         VALUES
           ('mem_crash_b', 'agent', 'ctx-b', 'obs-b', 6, 'OTHER', '[]',
@@ -133,10 +133,10 @@ describe('fix-a: supersede atomicity', () => {
     }
 
     // After rollback: A is still ACTIVE (not accidentally superseded), B does not exist
-    const rowA = db.prepare('SELECT state FROM memories WHERE memory_id = ?').get(idA) as { state: string };
+    const rowA = db.prepare('SELECT state FROM awareness_memories WHERE memory_id = ?').get(idA) as { state: string };
     expect(rowA.state).toBe('ACTIVE');
 
-    const rowB = db.prepare('SELECT memory_id FROM memories WHERE memory_id = ?').get('mem_crash_b');
+    const rowB = db.prepare('SELECT memory_id FROM awareness_memories WHERE memory_id = ?').get('mem_crash_b');
     expect(rowB).toBeUndefined();
   });
 });
@@ -157,7 +157,7 @@ describe('fix-b: forgetMemory atomicity', () => {
     forgetMemory(db, { memoryIds: [memoryId] });
 
     // Main memories row must be gone
-    const mainRow = db.prepare('SELECT memory_id FROM memories WHERE memory_id = ?').get(memoryId);
+    const mainRow = db.prepare('SELECT memory_id FROM awareness_memories WHERE memory_id = ?').get(memoryId);
     expect(mainRow).toBeUndefined();
 
     // FTS row must also be gone — verifies atomic cleanup, not just the main table
@@ -179,7 +179,7 @@ describe('fix-b: forgetMemory atomicity', () => {
     expect(result.deleted).toBe(0);
 
     // Memory must still be present
-    const row = db.prepare('SELECT memory_id FROM memories WHERE memory_id = ?').get(memoryId);
+    const row = db.prepare('SELECT memory_id FROM awareness_memories WHERE memory_id = ?').get(memoryId);
     expect(row).toBeDefined();
   });
 });

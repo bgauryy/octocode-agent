@@ -4,7 +4,7 @@ Default agent guide for this repo (the agent-focused slice of the Octocode monor
 
 ## Dogfood
 
-This monorepo is the platform. Use what we ship — do not reinvent with host defaults.
+This monorepo is the platform. Use its shipped capabilities instead of host defaults.
 
 | Need | Use | Not |
 |---|---|---|
@@ -80,7 +80,8 @@ Evidence: search hits and `localFindDeadCode` results are **candidates**. Prove 
 
 ```bash
 yarn build · yarn test · yarn lint · yarn typecheck   # root: fan out to all workspaces
-yarn workspace <pkg-name> verify          # per-package (no root `verify`)
+yarn verify                               # root: full integration/release gate
+yarn workspace <pkg-name> verify          # focused per-package verification
 ```
 
 Native-engine builds, platform checks, and version/pin sync scripts live in the sibling `octocode` monorepo, not here.

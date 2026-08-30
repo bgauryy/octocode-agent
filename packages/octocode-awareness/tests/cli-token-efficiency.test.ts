@@ -26,7 +26,7 @@ function ok(db: string, args: string[]): Record<string, unknown> {
 describe('CLI token efficiency', () => {
   it('bounds compact list surfaces and preserves explicit deep retrieval', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'oc-token-budget-'));
-    const db = join(workspace, 'awareness.sqlite3');
+    const db = join(workspace, 'agent.sqlite3');
     try {
       const created = ok(db, [
         'plan', 'create', '--name', 'Compact plan', '--objective', 'Bound every list',
@@ -122,7 +122,7 @@ describe('CLI token efficiency', () => {
 
   it('routes an inbox to a bounded signal read', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'oc-token-next-'));
-    const db = join(workspace, 'awareness.sqlite3');
+    const db = join(workspace, 'agent.sqlite3');
     try {
       ok(db, [
         'signal', 'publish', '--agent-id', 'sender', '--to-agent', 'reader',
@@ -143,7 +143,7 @@ describe('CLI token efficiency', () => {
 
   it('caps repeated memory fields and omits lean markers when recall is empty', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'oc-token-memory-'));
-    const db = join(workspace, 'awareness.sqlite3');
+    const db = join(workspace, 'agent.sqlite3');
     try {
       const repeated = Array.from({ length: 8 }, (_, index) => [`--tag`, `tag-${index}`, `--reference`, `doc:ref-${index}`]).flat();
       ok(db, [
@@ -170,7 +170,7 @@ describe('CLI token efficiency', () => {
 
   it('keeps discovery, exact contracts, and hooks receipts byte-lean', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'oc-token-contract-'));
-    const db = join(workspace, 'awareness.sqlite3');
+    const db = join(workspace, 'agent.sqlite3');
     try {
       const commands = run(db, ['schema', 'commands', '--compact']);
       expect(commands.status).toBe(0);

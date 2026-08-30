@@ -394,6 +394,33 @@ describe("native noninteractive transports", () => {
     expect(fixture.execute).toHaveBeenCalledWith({ type: "runtime.snapshot" });
   });
 
+  it("rejects oversized RPC frames by UTF-8 bytes and continues with the next frame", async () => {
+    const fixture = runtimeFixture();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const writes: string[] = [];
+    output.on("data", (chunk) => writes.push(String(chunk)));
+
+    const run = runRpcTransport(fixture.runtime, { input, output });
+    input.write(`${"x".repeat(1024 * 1024 + 1)}\n`);
+    input.write(`${"🙂".repeat(1024 * 1024 / 4 + 1)}\n`);
+    input.write(`${JSON.stringify({ protocolVersion: 1, requestId: "after-large", command: { type: "runtime.snapshot" } })}\n`);
+    input.end();
+    await run;
+
+    const lines = writes
+      .join("")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(lines.slice(0, 2)).toEqual([
+      expect.objectContaining({ category: "validation", message: expect.stringMatching(/frame.*1048576 bytes/i) }),
+      expect.objectContaining({ category: "validation", message: expect.stringMatching(/frame.*1048576 bytes/i) }),
+    ]);
+    expect(lines[2]).toMatchObject({ protocolVersion: 1, requestId: "after-large", ok: true });
+    expect(fixture.execute).toHaveBeenCalledTimes(1);
+  });
+
   it("waits for RPC output backpressure without corrupting JSONL frames", async () => {
     const fixture = runtimeFixture();
     const input = new PassThrough();
@@ -422,6 +449,46 @@ describe("native noninteractive transports", () => {
         .split("\n")
         .map((line) => JSON.parse(line)),
     ).toEqual([expect.objectContaining({ requestId: "slow", ok: true })]);
+  });
+
+  it("fails fast on RPC output saturation before dispatching later commands", async () => {
+    const fixture = runtimeFixture();
+    const input = new PassThrough();
+    const output = new Writable({
+      highWaterMark: 1,
+      write(_chunk, _encoding, _callback) {
+        // Deliberately never drain: the transport must fail instead of continuing
+        // to execute commands whose responses can no longer be delivered.
+      },
+    });
+
+    const run = runRpcTransport(fixture.runtime, { input, output }, { maxPendingOutputBytes: 256 });
+    for (let index = 0; index < 20; index += 1) {
+      input.write(`${JSON.stringify({ protocolVersion: 1, requestId: `blocked-${index}`, command: { type: "runtime.snapshot" } })}\n`);
+    }
+
+    await expect(run).rejects.toThrow(/output queue exceeded 256 bytes/i);
+    expect(fixture.execute.mock.calls.length).toBeLessThan(20);
+  });
+
+  it("uses a safe public event projection unless full exposure is explicit", async () => {
+    const safe = runtimeFixture();
+    const safeWrites: string[] = [];
+    vi.mocked(safe.runtime.submit).mockImplementation(async () => {
+      safe.emit(event("input.received", { text: "PRIVATE PROMPT", source: "user" }));
+      safe.emit(event("tool.requested", { callId: "call:1", name: "probe", input: { token: "PRIVATE TOKEN" } }));
+      safe.emit(event("tool.ended", { callId: "call:1", name: "probe", result: { content: "PRIVATE RESULT" } }));
+    });
+    await runJsonTransport(safe.runtime, "hello", (value) => safeWrites.push(value));
+    expect(safeWrites.join("")).not.toMatch(/PRIVATE PROMPT|PRIVATE TOKEN|PRIVATE RESULT/);
+
+    const full = runtimeFixture();
+    const fullWrites: string[] = [];
+    vi.mocked(full.runtime.submit).mockImplementation(async () => {
+      full.emit(event("tool.ended", { callId: "call:2", name: "probe", result: { content: "VISIBLE RESULT" } }));
+    });
+    await runJsonTransport(full.runtime, "hello", (value) => fullWrites.push(value), { eventExposure: "full" });
+    expect(fullWrites.join("")).toContain("VISIBLE RESULT");
   });
 
   it("returns runtime command failures as correlated outer failures and rejects malformed commands", async () => {

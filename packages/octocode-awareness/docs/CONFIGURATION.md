@@ -64,8 +64,8 @@ other than `1`. The bundled skill includes the machine-readable
 The file does not disable explicit CLI operations, evidence rules, database integrity,
 or only one half of the mutation guard/presence pair. Existing environment kill switches
 remain supported and take precedence when disabling automation. `--db-scope repo|global`
-overrides workspace policy for one call; `OCTOCODE_HOME`, `OCTOCODE_MEMORY_HOME`, and
-`OCTOCODE_DB_PATH` resolve global locations; and `--db` overrides the selected path.
+overrides workspace policy for one call; `OCTOCODE_HOME`, `OCTOCODE_AGENT_DIR`, and
+`OCTOCODE_AGENT_DB_PATH` resolve global locations; and `--db` overrides the selected path.
 See [storage scopes](STORAGE_SCOPES.md).
 
 Hook profiles are `guard`, `coordination`, and `full`. Host support, event mappings,

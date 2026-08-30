@@ -29,6 +29,8 @@ describe('native prompt composition', () => {
     expect(message.role).toBe('system');
     expect(message.content).toContain('<authority>');
     expect(message.content).toContain('<awareness>');
+    expect(message.content).toContain(`<runtime_context encoding="json">\n${JSON.stringify({ cwd })}`);
+    expect(message.content).toContain('Use this exact cwd for local tool paths');
     expect(message.content.indexOf('root instructions')).toBeLessThan(message.content.indexOf('package instructions'));
     expect(message.content.indexOf('package instructions')).toBeLessThan(message.content.indexOf('app fallback instructions'));
   });
@@ -74,6 +76,7 @@ describe('native prompt composition', () => {
     expect(snapshot.sections[0]?.placement).toBe('system');
     expect(snapshot.fragments.map((fragment) => fragment.id)).toEqual([
       'octocode-product-policy',
+      'runtime-context',
       'repository-instructions',
     ]);
     expect(snapshot.sections[0]?.content.match(/same instructions/g)).toHaveLength(1);
