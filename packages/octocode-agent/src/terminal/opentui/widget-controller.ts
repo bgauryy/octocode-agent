@@ -1,32 +1,54 @@
-import type { UiInteractionResult } from '@octocodeai/agent-core';
+import type { UiInteractionResult } from "@octocodeai/agent-core";
+import type { NativeWorkerOperationIntent } from "../../native-worker-operations.js";
+import type {
+  NativePresentationNotificationSeverity,
+  NativePresentationWidget,
+} from "../../presentation/contracts.js";
 
 import {
   projectPresentationChrome,
-  type NotificationSeverity,
   type PresentationInteraction,
   type PresentationState,
   type PresentationToolRow,
-  type PresentationWidget,
-} from './presentation.js';
-import { ConfirmWidget } from './widgets/confirm.js';
-import type { WidgetContract, WidgetInputResult, WidgetRenderAdapter } from './widgets/contracts.js';
-import { EditorWidget } from './widgets/editor.js';
-import { FooterWidget } from './widgets/footer.js';
-import { HeaderWidget } from './widgets/header.js';
-import { PlanWidget } from './widgets/plan.js';
-import { PresentationSurfaceWidget, type PresentationSurfacePayload } from './widgets/presentation-surface.js';
-import { PromptInputWidget } from './widgets/prompt-input.js';
-import { SelectWidget } from './widgets/select.js';
-import { StatusNotificationsWidget } from './widgets/status-notifications.js';
-import { ToolProgressWidget, type ToolOutcomeClassification, type ToolProgressSnapshot } from './widgets/tool-progress.js';
-import { TranscriptWidget } from './widgets/transcript.js';
+} from "./presentation.js";
+import { ConfirmWidget } from "./widgets/confirm.js";
+import type {
+  WidgetContract,
+  WidgetInputResult,
+  WidgetRenderAdapter,
+} from "./widgets/contracts.js";
+import { EditorWidget } from "./widgets/editor.js";
+import { FooterWidget } from "./widgets/footer.js";
+import { HeaderWidget } from "./widgets/header.js";
+import { PlanWidget } from "./widgets/plan.js";
+import {
+  PresentationSurfaceWidget,
+  type PresentationSurfacePayload,
+} from "./widgets/presentation-surface.js";
+import { PromptInputWidget } from "./widgets/prompt-input.js";
+import { SelectWidget } from "./widgets/select.js";
+import { StatusNotificationsWidget } from "./widgets/status-notifications.js";
+import {
+  ToolProgressWidget,
+  type ToolOutcomeClassification,
+  type ToolProgressSnapshot,
+} from "./widgets/tool-progress.js";
+import { TranscriptWidget } from "./widgets/transcript.js";
+import {
+  WorkerProgressWidget,
+  type WorkerProgressSnapshot,
+} from "./widgets/worker-progress.js";
+import {
+  WorkerOperationsWidget,
+} from "./widgets/worker-operations.js";
 import type {
   StatusNotificationAction,
   StatusNotificationInput,
   StatusNotificationOutput,
-} from './widgets/status-notifications.js';
-import { sanitizeSingleLineText } from './widgets/sanitize.js';
-import { WidgetHost } from './widget-host.js';
+} from "./widgets/status-notifications.js";
+import { sanitizeSingleLineText } from "./widgets/sanitize.js";
+import { WidgetHost } from "./widget-host.js";
+import { resolveOpenTuiSurfaceViewport } from "./layout-policy.js";
 
 export interface WidgetViewport {
   readonly widthColumns: number;
@@ -36,25 +58,45 @@ export interface WidgetViewport {
 }
 
 export type NativeInteractionEvent =
-  | { readonly type: 'input-change'; readonly value: string; readonly cursor?: number }
-  | { readonly type: 'input-submit'; readonly value: string; readonly cursor?: number }
-  | { readonly type: 'editor-change'; readonly value: string; readonly cursor?: number }
-  | { readonly type: 'editor-submit'; readonly value: string; readonly cursor?: number }
-  | { readonly type: 'select-highlight'; readonly optionId: string }
-  | { readonly type: 'select-submit'; readonly optionId: string }
-  | { readonly type: 'confirm-highlight'; readonly index: number }
-  | { readonly type: 'confirm-submit'; readonly index: number }
-  | { readonly type: 'key'; readonly key: string };
+  | {
+      readonly type: "input-change";
+      readonly value: string;
+      readonly cursor?: number;
+    }
+  | {
+      readonly type: "input-submit";
+      readonly value: string;
+      readonly cursor?: number;
+    }
+  | {
+      readonly type: "editor-change";
+      readonly value: string;
+      readonly cursor?: number;
+    }
+  | {
+      readonly type: "editor-submit";
+      readonly value: string;
+      readonly cursor?: number;
+    }
+  | { readonly type: "select-highlight"; readonly optionId: string }
+  | { readonly type: "select-submit"; readonly optionId: string }
+  | { readonly type: "confirm-highlight"; readonly index: number }
+  | { readonly type: "confirm-submit"; readonly index: number }
+  | { readonly type: "discuss" }
+  | { readonly type: "key"; readonly key: string };
 
 interface InteractionAwareAdapter extends WidgetRenderAdapter {
-  bindInteraction?(generation: number | undefined, widget: WidgetContract | undefined): void;
+  bindInteraction?(
+    generation: number | undefined,
+    widget: WidgetContract | undefined,
+  ): void;
   focusWidget?(widgetId: string | undefined): void;
   navigateWidget?(widgetId: string, key: string, absoluteOffset?: number): void;
 }
 
 export interface SemanticWidgetAnnouncement {
   readonly source: string;
-  readonly politeness: 'polite' | 'assertive';
+  readonly politeness: "polite" | "assertive";
   readonly text: string;
 }
 
@@ -70,14 +112,24 @@ interface SurfaceProjection {
 }
 
 export interface SemanticWidgetControllerOptions {
-  readonly resolveInteraction?: (generation: number, result: UiInteractionResult) => void;
+  readonly resolveInteraction?: (
+    generation: number,
+    result: UiInteractionResult,
+  ) => void;
   /** Runtime-owned sink. Without it, action descriptors are removed before projection. */
-  readonly statusAction?: (invocation: StatusNotificationActionInvocation) => void | Promise<void>;
+  readonly statusAction?: (
+    invocation: StatusNotificationActionInvocation,
+  ) => void | Promise<void>;
   readonly callbackFailure?: (error: unknown) => void;
+  readonly workerOperation?: (
+    intent: NativeWorkerOperationIntent,
+  ) => void | Promise<void>;
   /** Injectable clock for deterministic, monotonic tool progress throttling. */
   readonly nowMs?: () => number;
   /** Test/embedding seam for richer validated prompts not yet represented by UiInteractionRequest. */
-  readonly interactionWidgetFactory?: (interaction: PresentationInteraction) => WidgetContract;
+  readonly interactionWidgetFactory?: (
+    interaction: PresentationInteraction,
+  ) => WidgetContract;
 }
 
 const DEFAULT_VIEWPORT: WidgetViewport = Object.freeze({
@@ -87,140 +139,260 @@ const DEFAULT_VIEWPORT: WidgetViewport = Object.freeze({
   alternateOutput: false,
 });
 
-function toolClassification(row: PresentationToolRow): ToolOutcomeClassification {
+function toolClassification(
+  row: PresentationToolRow,
+): ToolOutcomeClassification {
   const category = row.error?.category?.toLowerCase();
-  if (row.status === 'cancelled') return 'cancelled';
-  if (row.status === 'blocked') return category === 'permission' ? 'permission' : 'policy';
-  if (category === 'validation') return 'validation';
-  if (category === 'timeout') return 'timeout';
-  return row.status === 'success' ? 'result' : 'system';
+  if (row.status === "cancelled") return "cancelled";
+  if (row.status === "blocked")
+    return category === "permission" ? "permission" : "policy";
+  if (category === "validation") return "validation";
+  if (category === "timeout") return "timeout";
+  return row.status === "success" ? "result" : "system";
 }
 
-function validProgress(row: PresentationToolRow): Pick<ToolProgressSnapshot, 'current' | 'total'> {
+function validProgress(
+  row: PresentationToolRow,
+): Pick<ToolProgressSnapshot, "current" | "total"> {
   const current = row.progress?.current;
   const total = row.progress?.total;
-  return Number.isSafeInteger(current) && Number.isSafeInteger(total) && current! >= 0 && total! > 0 && current! <= total!
+  return Number.isSafeInteger(current) &&
+    Number.isSafeInteger(total) &&
+    current! >= 0 &&
+    total! > 0 &&
+    current! <= total!
     ? { current, total }
     : {};
 }
 
-function parsedRecord(value: string | undefined): Record<string, unknown> | undefined {
+function parsedRecord(
+  value: string | undefined,
+): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
   try {
     const parsed = JSON.parse(value) as unknown;
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
       : undefined;
   } catch {
     return undefined;
   }
 }
 
-function toolPresentation(row: PresentationToolRow): { readonly label?: string; readonly input?: string; readonly result?: string } {
+function toolPresentation(row: PresentationToolRow): {
+  readonly label?: string;
+  readonly input?: string;
+  readonly result?: string;
+} {
   const input = parsedRecord(row.input);
   const result = parsedRecord(row.result);
-  if (row.name === 'skill') {
+  if (row.name === "skill") {
     const action = input?.action;
-    const skillName = typeof input?.name === 'string' ? input.name : undefined;
-    const skills = Array.isArray(result?.skills) ? result.skills.length : undefined;
+    const skillName = typeof input?.name === "string" ? input.name : undefined;
+    const skills = Array.isArray(result?.skills)
+      ? result.skills.length
+      : undefined;
     return {
-      label: 'Agent Skill',
-      input: action === 'load' && skillName ? `Load ${skillName}` : action === 'list' ? 'List discovered skills' : row.input,
+      label: "Agent Skill",
+      input:
+        action === "load" && skillName
+          ? `Load ${skillName}`
+          : action === "list"
+            ? "List discovered skills"
+            : row.input,
       result: skills === undefined ? row.result : `${skills} skills discovered`,
     };
   }
-  if (row.name === 'plan') return { label: 'Plan', input: row.input, result: row.result };
-  if (row.name === 'askUser') return { label: 'Question', input: row.input, result: row.result };
-  if (row.name === 'MCPTool') return { label: 'MCP', input: row.input, result: row.result };
+  if (row.name === "plan")
+    return { label: "Plan", input: row.input, result: row.result };
+  if (row.name === "askUser")
+    return { label: "Question", input: row.input, result: row.result };
+  if (row.name === "MCPTool") {
+    const action = typeof input?.action === "string" ? input.action : undefined;
+    const server = typeof input?.server === "string" ? input.server : undefined;
+    const tool = typeof input?.tool === "string" ? input.tool : undefined;
+    const count =
+      typeof result?.toolCount === "number" ? result.toolCount : undefined;
+    const source =
+      result?.source === "cache" || result?.source === "server"
+        ? result.source
+        : undefined;
+    const inputSummary =
+      action === "discover" && server
+        ? `Discover tools · ${server}`
+        : action === "refresh" && server
+          ? `Refresh tools · ${server}`
+          : action === "describe" && server && tool
+            ? `Describe ${server}/${tool}`
+            : action === "call" && server && tool
+              ? `Call ${server}/${tool}`
+              : row.input;
+    return {
+      label: "MCP",
+      input: inputSummary,
+      result:
+        count === undefined
+          ? row.result
+          : `${count} ${count === 1 ? "tool" : "tools"}${source === undefined ? "" : ` · ${source}`}`,
+    };
+  }
   return { input: row.input, result: row.result };
 }
 
-function toolSnapshot(row: PresentationToolRow, reducedMotion: boolean): ToolProgressSnapshot {
+function toolSnapshot(
+  row: PresentationToolRow,
+  reducedMotion: boolean,
+): ToolProgressSnapshot {
   const presentation = toolPresentation(row);
   const summary = row.error?.message ?? presentation.result;
   return {
-    authority: 'runtime',
+    authority: "runtime",
     callId: row.callId,
     toolName: row.name,
     ...(presentation.label === undefined ? {} : { label: presentation.label }),
     status: row.status,
-    ...(presentation.input === undefined ? {} : { inputSummary: presentation.input }),
-    ...(row.progress?.message === undefined ? {} : { message: row.progress.message }),
+    ...(presentation.input === undefined
+      ? {}
+      : { inputSummary: presentation.input }),
+    ...(row.progress?.message === undefined
+      ? {}
+      : { message: row.progress.message }),
     ...validProgress(row),
     ...(summary === undefined
       ? {}
-      : { outcome: { authority: 'runtime', classification: toolClassification(row), summary } }),
+      : {
+          outcome: {
+            authority: "runtime",
+            classification: toolClassification(row),
+            summary,
+          },
+        }),
     reducedMotion,
   };
 }
 
-function notificationLifecycle(severity: NotificationSeverity): StatusNotificationInput['lifecycle'] {
+function notificationLifecycle(
+  severity: NativePresentationNotificationSeverity,
+): StatusNotificationInput["lifecycle"] {
   switch (severity) {
-    case 'info': return 'active';
-    case 'success': return 'success';
-    case 'warning': return 'warning';
-    case 'error': return 'error';
+    case "info":
+      return "active";
+    case "success":
+      return "success";
+    case "warning":
+      return "warning";
+    case "error":
+      return "error";
   }
 }
 
-function surfacePayload(widget: PresentationWidget): PresentationSurfacePayload {
+function surfacePayload(
+  widget: NativePresentationWidget,
+): PresentationSurfacePayload {
   switch (widget.kind) {
-    case 'text': return { kind: 'text', text: widget.text };
-    case 'list': return { kind: 'list', ...(widget.title === undefined ? {} : { title: widget.title }), items: [...widget.items] };
-    case 'key-value': return {
-      kind: 'key-value',
-      ...(widget.title === undefined ? {} : { title: widget.title }),
-      rows: widget.rows.map((row) => ({ ...row })),
-    };
-    case 'progress': return {
-      kind: 'progress',
-      label: widget.label,
-      current: widget.current,
-      ...(widget.total === undefined ? {} : { total: widget.total }),
-    };
+    case "text":
+      return { kind: "text", text: widget.text };
+    case "list":
+      return {
+        kind: "list",
+        ...(widget.title === undefined ? {} : { title: widget.title }),
+        items: [...widget.items],
+      };
+    case "key-value":
+      return {
+        kind: "key-value",
+        ...(widget.title === undefined ? {} : { title: widget.title }),
+        rows: widget.rows.map((row) => ({ ...row })),
+      };
+    case "progress":
+      return {
+        kind: "progress",
+        label: widget.label,
+        current: widget.current,
+        ...(widget.total === undefined ? {} : { total: widget.total }),
+      };
   }
 }
 
-type NavigableWidget = TranscriptWidget
+type NavigableWidget =
+  | TranscriptWidget
   | ToolProgressWidget
   | PlanWidget
+  | WorkerOperationsWidget
   | StatusNotificationsWidget
   | PresentationSurfaceWidget;
 
 function isNavigableWidget(widget: WidgetContract): widget is NavigableWidget {
-  return widget instanceof TranscriptWidget
-    || widget instanceof ToolProgressWidget
-    || widget instanceof PlanWidget
-    || widget instanceof StatusNotificationsWidget
-    || widget instanceof PresentationSurfaceWidget;
+  return (
+    widget instanceof TranscriptWidget ||
+    widget instanceof ToolProgressWidget ||
+    widget instanceof PlanWidget ||
+    widget instanceof WorkerOperationsWidget ||
+    widget instanceof StatusNotificationsWidget ||
+    widget instanceof PresentationSurfaceWidget
+  );
 }
 
-function interactionWidget(interaction: PresentationInteraction): WidgetContract {
+function interactionWidget(
+  interaction: PresentationInteraction,
+): WidgetContract {
   const id = `interaction-${interaction.generation}`;
+  const workflow = interaction.request.workflow;
+  const workflowContext =
+    workflow === undefined
+      ? undefined
+      : [
+          `${workflow.title ?? "Questions"} · Question ${workflow.index + 1} of ${workflow.total}`,
+          workflow.instructions,
+          workflow.allowDiscuss
+            ? "Choose Discuss (Ctrl-D) when the question needs conversation before answering."
+            : undefined,
+        ]
+          .filter((value): value is string => value !== undefined)
+          .join(" ");
   switch (interaction.request.type) {
-    case 'confirm':
+    case "confirm":
       return new ConfirmWidget({
         id,
-        authority: 'runtime',
+        authority: "runtime",
         question: interaction.request.message,
-        consequence: 'Choosing Yes authorizes the requested action; No or cancel authorizes nothing.',
-        risk: 'consequential',
+        consequence:
+          workflowContext === undefined
+            ? "Choosing Yes authorizes the requested action; No or cancel authorizes nothing."
+            : `${workflowContext} Choosing Yes authorizes the requested action; No or cancel authorizes nothing.`,
+        risk: "consequential",
       });
-    case 'select':
+    case "select":
       return new SelectWidget({
         id,
         label: interaction.request.message,
+        ...(workflowContext === undefined
+          ? {}
+          : { description: workflowContext }),
         consequential: true,
-        options: interaction.request.options.map((label, index) => ({ id: `choice-${index + 1}`, label })),
+        options: interaction.request.options.map((label, index) => ({
+          id: `choice-${index + 1}`,
+          label,
+        })),
       });
-    case 'input':
+    case "input":
       return new PromptInputWidget({
         id,
         question: interaction.request.message,
-        ...(interaction.request.initial === undefined ? {} : { initialValue: interaction.request.initial }),
+        ...(workflowContext === undefined ? {} : { help: workflowContext }),
+        ...(interaction.request.initial === undefined
+          ? {}
+          : { initialValue: interaction.request.initial }),
       });
-    case 'editor':
-      return new EditorWidget({ id, label: interaction.request.message, initialValue: interaction.request.initial });
+    case "editor":
+      return new EditorWidget({
+        id,
+        label: interaction.request.message,
+        ...(workflowContext === undefined ? {} : { help: workflowContext }),
+        initialValue: interaction.request.initial,
+      });
   }
 }
 
@@ -230,11 +402,21 @@ function interactionWidget(interaction: PresentationInteraction): WidgetContract
  */
 export class SemanticWidgetController {
   private readonly adapter: InteractionAwareAdapter;
-  private readonly resolveInteraction?: (generation: number, result: UiInteractionResult) => void;
-  private readonly statusAction?: (invocation: StatusNotificationActionInvocation) => void | Promise<void>;
+  private readonly resolveInteraction?: (
+    generation: number,
+    result: UiInteractionResult,
+  ) => void;
+  private readonly statusAction?: (
+    invocation: StatusNotificationActionInvocation,
+  ) => void | Promise<void>;
   private readonly callbackFailure?: (error: unknown) => void;
+  private readonly workerOperation?: (
+    intent: NativeWorkerOperationIntent,
+  ) => void | Promise<void>;
   private readonly nowMs: () => number;
-  private readonly interactionWidgetFactory: (interaction: PresentationInteraction) => WidgetContract;
+  private readonly interactionWidgetFactory: (
+    interaction: PresentationInteraction,
+  ) => WidgetContract;
   private readonly host: WidgetHost<NavigableWidget>;
   private viewport: WidgetViewport;
   private transcript?: TranscriptWidget;
@@ -242,22 +424,26 @@ export class SemanticWidgetController {
   private readonly toolWidgetIds = new Map<string, string>();
   private focusableToolWidgetId?: string;
   private nextToolWidgetId = 1;
+  private readonly workers = new Map<string, WorkerProgressWidget>();
+  private readonly workerWidgetIds = new Map<string, string>();
+  private nextWorkerWidgetId = 1;
   private header?: HeaderWidget;
   private footer?: FooterWidget;
   private plan?: PlanWidget;
+  private workerInbox?: WorkerOperationsWidget;
   private statuses?: StatusNotificationsWidget;
   private readonly surfaces = new Map<string, SurfaceProjection>();
   private nextSurfaceWidgetId = 1;
   private presentationState?: PresentationState;
   private interaction?: WidgetContract;
   private interactionGeneration?: number;
-  private currentInteractionRequest?: PresentationInteraction['request'];
+  private currentInteractionRequest?: PresentationInteraction["request"];
   private readonly derivedStatusIds = new Map<string, string>();
   private nextDerivedStatusId = 1;
   private readonly interactionAnnouncements: SemanticWidgetAnnouncement[] = [];
   private readonly interactionAnnouncementSignatures = new Set<string>();
   private readonly interactionAnnouncementSignatureOrder: string[] = [];
-  private archivedNotificationsOutput = '';
+  private archivedNotificationsOutput = "";
   private lastClockMs = 0;
 
   private static readonly INTERACTION_ANNOUNCEMENT_LIMIT = 32;
@@ -274,14 +460,18 @@ export class SemanticWidgetController {
     this.resolveInteraction = options.resolveInteraction;
     this.statusAction = options.statusAction;
     this.callbackFailure = options.callbackFailure;
+    this.workerOperation = options.workerOperation;
     this.nowMs = options.nowMs ?? Date.now;
-    this.interactionWidgetFactory = options.interactionWidgetFactory ?? interactionWidget;
+    this.interactionWidgetFactory =
+      options.interactionWidgetFactory ?? interactionWidget;
   }
 
   render(state: PresentationState): void {
     this.presentationState = state;
     this.renderTranscript(state);
     this.renderTools(state);
+    this.renderWorkers(state);
+    this.renderWorkerInbox(state);
     this.renderRuntimeSnapshots(state);
     this.renderPresentationSurfaces(state);
     this.renderStatuses(state);
@@ -291,34 +481,52 @@ export class SemanticWidgetController {
   resize(viewport: WidgetViewport): void {
     this.viewport = this.normalizeViewport(viewport);
     this.transcript?.render(this.adapter);
-    if (this.presentationState !== undefined) this.renderChrome(this.presentationState);
-    this.plan?.resize(Math.min(1_000, Math.max(20, this.viewport.widthColumns)), Math.max(1, Math.min(61, this.viewport.heightRows - 8)));
+    if (this.presentationState !== undefined)
+      this.renderChrome(this.presentationState);
+    this.plan?.resize(
+      Math.min(1_000, Math.max(20, this.viewport.widthColumns)),
+      Math.max(1, Math.min(61, this.viewport.heightRows - 8)),
+    );
+    this.workerInbox?.resize(
+      Math.min(1_000, Math.max(20, this.viewport.widthColumns)),
+      Math.max(1, Math.min(50, this.viewport.heightRows - 8)),
+    );
+    const surfaceViewport = resolveOpenTuiSurfaceViewport(this.viewport);
     for (const { widget } of this.surfaces.values()) {
-      const surfaceWidth = this.viewport.widthColumns < 72
-        ? this.viewport.widthColumns
-        : Math.floor(this.viewport.widthColumns * 0.66);
       widget.resize(
-        Math.min(240, Math.max(20, surfaceWidth)),
-        Math.max(1, Math.min(16, this.viewport.heightRows - 8)),
+        surfaceViewport.widthColumns,
+        surfaceViewport.viewportRows,
       );
       widget.render(this.adapter);
     }
-    if (this.interaction instanceof PromptInputWidget || this.interaction instanceof ConfirmWidget) {
+    if (
+      this.interaction instanceof PromptInputWidget ||
+      this.interaction instanceof ConfirmWidget
+    ) {
       this.interaction.resize(this.viewport.widthColumns);
     } else if (this.interaction instanceof EditorWidget) {
-      this.interaction.resize(this.viewport.widthColumns, Math.max(1, this.viewport.heightRows - 8));
+      this.interaction.resize(
+        this.viewport.widthColumns,
+        Math.max(1, this.viewport.heightRows - 8),
+      );
     } else if (this.interaction instanceof SelectWidget) {
-      this.interaction.resize(this.viewport.widthColumns, Math.max(1, Math.min(50, this.viewport.heightRows - 8)));
+      this.interaction.resize(
+        this.viewport.widthColumns,
+        Math.max(1, Math.min(50, this.viewport.heightRows - 8)),
+      );
     }
     this.plan?.render(this.adapter);
+    this.workerInbox?.render(this.adapter);
     this.interaction?.render(this.adapter);
   }
 
   getFocusableWidgetIds(): readonly string[] {
     const order: string[] = [];
     if (this.transcript) order.push(this.transcript.id);
-    if (this.focusableToolWidgetId !== undefined) order.push(this.focusableToolWidgetId);
+    if (this.focusableToolWidgetId !== undefined)
+      order.push(this.focusableToolWidgetId);
     if (this.plan) order.push(this.plan.id);
+    if (this.workerInbox) order.push(this.workerInbox.id);
     if (this.statuses) order.push(this.statuses.id);
     const latestSurface = [...this.surfaces.values()].at(-1)?.widget;
     if (latestSurface !== undefined) order.push(latestSurface.id);
@@ -333,24 +541,33 @@ export class SemanticWidgetController {
     const widget = this.host.focused();
     if (!widget) return false;
     const normalized = key.toLowerCase();
-    if (normalized === 'escape' || normalized === 'esc') {
+    if (normalized === "escape" || normalized === "esc") {
       this.focusWidget(undefined);
       return true;
     }
-    const widgetKey = normalized === 'return'
-      ? 'enter'
-      : widget instanceof TranscriptWidget
-        ? ({ arrowup: 'up', arrowdown: 'down' }[normalized] ?? normalized)
-        : normalized;
-    const result = widget.handleInput({ type: 'key', key: widgetKey });
-    if (result.status === 'ignored') return false;
+    const widgetKey =
+      normalized === "return"
+        ? "enter"
+        : widget instanceof TranscriptWidget
+          ? ({ arrowup: "up", arrowdown: "down" }[normalized] ?? normalized)
+          : normalized;
+    const result = widget.handleInput({ type: "key", key: widgetKey });
+    if (result.status === "ignored") return false;
     widget.render(this.adapter);
-    if (widget instanceof StatusNotificationsWidget && result.output !== undefined) {
+    if (
+      widget instanceof StatusNotificationsWidget &&
+      result.output !== undefined
+    ) {
       this.dispatchStatusAction(widget, result.output);
     }
-    const absoluteOffset = widget instanceof PlanWidget || widget instanceof PresentationSurfaceWidget
-      ? widget.scrollOffset
-      : undefined;
+    if (widget instanceof WorkerOperationsWidget && result.output !== undefined) {
+      this.dispatchWorkerOperation(result.output);
+    }
+    const absoluteOffset =
+      widget instanceof PlanWidget ||
+      widget instanceof PresentationSurfaceWidget
+        ? widget.scrollOffset
+        : undefined;
     this.adapter.navigateWidget?.(widget.id, normalized, absoluteOffset);
     return true;
   }
@@ -358,72 +575,116 @@ export class SemanticWidgetController {
   /** Select and activate a visible runtime notification action from a pointer event. */
   activateStatusItem(itemIndex: number): boolean {
     const widget = this.statuses;
-    if (!widget || !Number.isSafeInteger(itemIndex) || itemIndex < 0 || itemIndex >= widget.items.length) return false;
+    if (
+      !widget ||
+      !Number.isSafeInteger(itemIndex) ||
+      itemIndex < 0 ||
+      itemIndex >= widget.items.length
+    )
+      return false;
     this.focusWidget(widget.id);
-    widget.handleInput({ type: 'key', key: 'home' });
+    widget.handleInput({ type: "key", key: "home" });
     for (let index = 0; index < itemIndex; index += 1) {
-      widget.handleInput({ type: 'key', key: 'arrowdown' });
+      widget.handleInput({ type: "key", key: "arrowdown" });
     }
-    const result = widget.handleInput({ type: 'key', key: 'enter' });
+    const result = widget.handleInput({ type: "key", key: "enter" });
     widget.render(this.adapter);
-    if (result.output !== undefined) this.dispatchStatusAction(widget, result.output);
-    return result.status !== 'ignored';
+    if (result.output !== undefined)
+      this.dispatchStatusAction(widget, result.output);
+    return result.status !== "ignored";
   }
 
   /**
    * Route a generation-scoped native event through the active semantic widget.
    * Only a typed widget intent may resolve the runtime interaction.
    */
-  handleNativeInteraction(generation: number, event: NativeInteractionEvent): void {
+  handleNativeInteraction(
+    generation: number,
+    event: NativeInteractionEvent,
+  ): void {
     if (generation !== this.interactionGeneration || !this.interaction) return;
+    if (event.type === "discuss") {
+      if (this.currentInteractionRequest?.workflow?.allowDiscuss === true) {
+        this.resolveInteraction?.(generation, { status: "discuss" });
+      }
+      return;
+    }
     const widget = this.interaction;
     let result: WidgetInputResult;
     if (widget instanceof PromptInputWidget) {
-      if (event.type !== 'input-change' && event.type !== 'input-submit' && event.type !== 'key') return;
-      if (event.type !== 'key') {
+      if (
+        event.type !== "input-change" &&
+        event.type !== "input-submit" &&
+        event.type !== "key"
+      )
+        return;
+      if (event.type !== "key") {
         result = widget.replaceValue(event.value, event.cursor);
-        if (result.status === 'invalid') {
+        if (result.status === "invalid") {
           widget.render(this.adapter);
           this.queueValidationAnnouncement(widget, result.message);
           return;
         }
       }
-      result = widget.handleInput(event.type === 'input-submit' ? { type: 'submit' } : event.type === 'key'
-        ? { type: 'key', key: event.key }
-        : { type: 'text', text: '' });
+      result = widget.handleInput(
+        event.type === "input-submit"
+          ? { type: "submit" }
+          : event.type === "key"
+            ? { type: "key", key: event.key }
+            : { type: "text", text: "" },
+      );
     } else if (widget instanceof EditorWidget) {
-      if (event.type !== 'editor-change' && event.type !== 'editor-submit' && event.type !== 'key') return;
-      if (event.type !== 'key') {
+      if (
+        event.type !== "editor-change" &&
+        event.type !== "editor-submit" &&
+        event.type !== "key"
+      )
+        return;
+      if (event.type !== "key") {
         result = widget.replaceValue(event.value, event.cursor);
-        if (result.status === 'invalid') {
+        if (result.status === "invalid") {
           widget.render(this.adapter);
           this.queueValidationAnnouncement(widget, result.message);
           return;
         }
       }
-      result = widget.handleInput(event.type === 'editor-submit' ? { type: 'submit' } : event.type === 'key'
-        ? { type: 'key', key: event.key }
-        : { type: 'text', text: '' });
+      result = widget.handleInput(
+        event.type === "editor-submit"
+          ? { type: "submit" }
+          : event.type === "key"
+            ? { type: "key", key: event.key }
+            : { type: "text", text: "" },
+      );
     } else if (widget instanceof SelectWidget) {
-      if (event.type === 'select-highlight') result = widget.highlightById(event.optionId);
-      else if (event.type === 'select-submit') result = widget.selectById(event.optionId);
-      else if (event.type === 'key') result = widget.handleInput({ type: 'key', key: event.key });
+      if (event.type === "select-highlight")
+        result = widget.highlightById(event.optionId);
+      else if (event.type === "select-submit")
+        result = widget.selectById(event.optionId);
+      else if (event.type === "key")
+        result = widget.handleInput({ type: "key", key: event.key });
       else return;
     } else if (widget instanceof ConfirmWidget) {
-      if (event.type === 'confirm-highlight') result = widget.handleInput({ type: 'select', index: event.index });
-      else if (event.type === 'confirm-submit') {
-        const highlighted = widget.handleInput({ type: 'select', index: event.index });
-        result = highlighted.status === 'handled'
-          ? widget.handleInput({ type: 'submit' })
-          : highlighted;
-      } else if (event.type === 'key') result = widget.handleInput({ type: 'key', key: event.key });
+      if (event.type === "confirm-highlight")
+        result = widget.handleInput({ type: "select", index: event.index });
+      else if (event.type === "confirm-submit") {
+        const highlighted = widget.handleInput({
+          type: "select",
+          index: event.index,
+        });
+        result =
+          highlighted.status === "handled"
+            ? widget.handleInput({ type: "submit" })
+            : highlighted;
+      } else if (event.type === "key")
+        result = widget.handleInput({ type: "key", key: event.key });
       else return;
     } else {
       return;
     }
 
     widget.render(this.adapter);
-    if (result.status === 'invalid') this.queueValidationAnnouncement(widget, result.message);
+    if (result.status === "invalid")
+      this.queueValidationAnnouncement(widget, result.message);
     if (!result.output || generation !== this.interactionGeneration) return;
     const resolved = this.toUiResult(widget, result.output);
     if (resolved) this.resolveInteraction?.(generation, resolved);
@@ -433,64 +694,99 @@ export class SemanticWidgetController {
     const sections: string[] = [];
     if (this.header) sections.push(this.header.toPlainText());
     if (this.transcript) sections.push(this.transcript.alternateOutput());
-    for (const widget of this.tools.values()) sections.push(widget.toPlainText({ expanded: true }));
+    for (const widget of this.tools.values())
+      sections.push(widget.toPlainText({ expanded: true }));
+    for (const widget of this.workers.values())
+      sections.push(widget.toPlainText());
     if (this.plan) sections.push(this.plan.toPlainText());
-    for (const { widget } of this.surfaces.values()) sections.push(widget.alternateOutput());
-    if (this.archivedNotificationsOutput) sections.push(this.archivedNotificationsOutput);
+    if (this.workerInbox) sections.push(this.workerInbox.toPlainText());
+    for (const { widget } of this.surfaces.values())
+      sections.push(widget.alternateOutput());
+    if (this.archivedNotificationsOutput)
+      sections.push(this.archivedNotificationsOutput);
     if (this.statuses) sections.push(this.statuses.toPlainText());
-    if (this.interaction instanceof PromptInputWidget || this.interaction instanceof ConfirmWidget
-      || this.interaction instanceof EditorWidget || this.interaction instanceof SelectWidget) {
+    if (
+      this.interaction instanceof PromptInputWidget ||
+      this.interaction instanceof ConfirmWidget ||
+      this.interaction instanceof EditorWidget ||
+      this.interaction instanceof SelectWidget
+    ) {
       sections.push(this.interaction.alternateOutput());
     }
     if (this.footer) sections.push(this.footer.toPlainText());
-    return sections.filter(Boolean).join('\n\n');
+    return sections.filter(Boolean).join("\n\n");
   }
 
   drainAnnouncements(): readonly SemanticWidgetAnnouncement[] {
     const announcements: SemanticWidgetAnnouncement[] = [];
     for (const item of this.transcript?.drainAnnouncements() ?? []) {
-      announcements.push({ source: 'transcript', politeness: item.politeness, text: item.text });
+      announcements.push({
+        source: "transcript",
+        politeness: item.politeness,
+        text: item.text,
+      });
     }
     for (const [callId, widget] of this.tools) {
       for (const text of widget.takeAnnouncements()) {
-        announcements.push({ source: `tool:${callId}`, politeness: 'polite', text });
+        announcements.push({
+          source: `tool:${callId}`,
+          politeness: "polite",
+          text,
+        });
       }
     }
     for (const text of this.header?.takeAnnouncements() ?? []) {
-      announcements.push({ source: 'header', politeness: 'polite', text });
+      announcements.push({ source: "header", politeness: "polite", text });
     }
     for (const text of this.footer?.takeAnnouncements() ?? []) {
-      announcements.push({ source: 'footer', politeness: 'polite', text });
+      announcements.push({ source: "footer", politeness: "polite", text });
     }
     for (const text of this.plan?.takeAnnouncements() ?? []) {
-      announcements.push({ source: 'plan', politeness: 'polite', text });
+      announcements.push({ source: "plan", politeness: "polite", text });
     }
     for (const item of this.statuses?.takeAnnouncements() ?? []) {
-      announcements.push({ source: `status:${item.key}`, politeness: item.liveRegion, text: item.text });
+      announcements.push({
+        source: `status:${item.key}`,
+        politeness: item.liveRegion,
+        text: item.text,
+      });
     }
     announcements.push(...this.interactionAnnouncements.splice(0));
     if (announcements.length <= 32) return Object.freeze(announcements);
-    const indexed = announcements.map((announcement, index) => ({ announcement, index }));
-    const assertive = indexed.filter(({ announcement }) => announcement.politeness === 'assertive').slice(-32);
+    const indexed = announcements.map((announcement, index) => ({
+      announcement,
+      index,
+    }));
+    const assertive = indexed
+      .filter(({ announcement }) => announcement.politeness === "assertive")
+      .slice(-32);
     const assertiveIndexes = new Set(assertive.map(({ index }) => index));
     const politeSlots = 32 - assertive.length;
-    const polite = politeSlots === 0 ? [] : indexed
-      .filter(({ index }) => !assertiveIndexes.has(index))
-      .slice(-politeSlots);
-    return Object.freeze([...assertive, ...polite]
-      .sort((left, right) => left.index - right.index)
-      .map(({ announcement }) => announcement));
+    const polite =
+      politeSlots === 0
+        ? []
+        : indexed
+            .filter(({ index }) => !assertiveIndexes.has(index))
+            .slice(-politeSlots);
+    return Object.freeze(
+      [...assertive, ...polite]
+        .sort((left, right) => left.index - right.index)
+        .map(({ announcement }) => announcement),
+    );
   }
 
   destroy(): void {
     this.host.destroy();
     this.tools.clear();
     this.toolWidgetIds.clear();
+    this.workers.clear();
+    this.workerWidgetIds.clear();
     this.focusableToolWidgetId = undefined;
     this.transcript = undefined;
     this.header = undefined;
     this.footer = undefined;
     this.plan = undefined;
+    this.workerInbox = undefined;
     this.statuses = undefined;
     this.surfaces.clear();
     this.derivedStatusIds.clear();
@@ -501,7 +797,7 @@ export class SemanticWidgetController {
     this.interactionAnnouncements.length = 0;
     this.interactionAnnouncementSignatures.clear();
     this.interactionAnnouncementSignatureOrder.length = 0;
-    this.archivedNotificationsOutput = '';
+    this.archivedNotificationsOutput = "";
     this.adapter.bindInteraction?.(undefined, undefined);
   }
 
@@ -514,7 +810,7 @@ export class SemanticWidgetController {
       segments: message.segments.map((segment) => ({ ...segment })),
     }));
     if (!this.transcript) {
-      this.transcript = new TranscriptWidget('transcript', messages);
+      this.transcript = new TranscriptWidget("transcript", messages);
       this.host.register(this.transcript);
     } else {
       this.transcript.update(messages);
@@ -523,9 +819,10 @@ export class SemanticWidgetController {
   }
 
   private renderTools(state: PresentationState): void {
-    const rows = state.runtimeWidgets?.plan === undefined
-      ? state.tools
-      : state.tools.filter(({ name }) => name !== 'plan');
+    const rows =
+      state.runtimeWidgets?.plan === undefined
+        ? state.tools
+        : state.tools.filter(({ name }) => name !== "plan");
     const liveIds = new Set(rows.map(({ callId }) => callId));
     for (const [callId, widget] of this.tools) {
       if (liveIds.has(callId)) continue;
@@ -537,7 +834,9 @@ export class SemanticWidgetController {
       const snapshot = toolSnapshot(row, this.viewport.reducedMotion === true);
       let widget = this.tools.get(row.callId);
       if (!widget) {
-        const widgetId = this.toolWidgetIds.get(row.callId) ?? `tool-${this.nextToolWidgetId++}`;
+        const widgetId =
+          this.toolWidgetIds.get(row.callId) ??
+          `tool-${this.nextToolWidgetId++}`;
         this.toolWidgetIds.set(row.callId, widgetId);
         widget = new ToolProgressWidget(widgetId, snapshot, this.readClock());
         this.tools.set(row.callId, widget);
@@ -547,38 +846,132 @@ export class SemanticWidgetController {
       }
       widget.render(this.adapter);
     }
-    const focusable = [...rows].reverse().find(({ status }) => (
-      status === 'pending' || status === 'running' || status === 'blocked' || status === 'error'
-    )) ?? rows.at(-1);
-    this.focusableToolWidgetId = focusable === undefined
-      ? undefined
-      : this.toolWidgetIds.get(focusable.callId);
+    const focusable =
+      [...rows]
+        .reverse()
+        .find(
+          ({ status }) =>
+            status === "pending" ||
+            status === "running" ||
+            status === "blocked" ||
+            status === "error",
+        ) ?? rows.at(-1);
+    this.focusableToolWidgetId =
+      focusable === undefined
+        ? undefined
+        : this.toolWidgetIds.get(focusable.callId);
+  }
+
+  private renderWorkers(state: PresentationState): void {
+    const liveIds = new Set(state.workers.map(({ workerId }) => workerId));
+    for (const [workerId, widget] of this.workers) {
+      if (liveIds.has(workerId)) continue;
+      this.host.remove(widget);
+      this.workers.delete(workerId);
+      this.workerWidgetIds.delete(workerId);
+    }
+    for (const row of state.workers) {
+      const snapshot: WorkerProgressSnapshot = {
+        authority: "runtime",
+        workerId: row.workerId,
+        ...(row.agentType === undefined ? {} : { agentType: row.agentType }),
+        state: row.state,
+        ...(row.active === undefined ? {} : { active: row.active }),
+        ...(row.queued === undefined ? {} : { queued: row.queued }),
+        ...(row.maxActive === undefined ? {} : { maxActive: row.maxActive }),
+        ...(row.planStepId === undefined ? {} : { planStepId: row.planStepId }),
+        ...(row.taskLabel === undefined ? {} : { taskLabel: row.taskLabel }),
+        startedAtMs: row.startedAtMs,
+        updatedAtMs:
+          row.state === "running"
+            ? Math.max(row.updatedAtMs, this.readClock())
+            : row.updatedAtMs,
+      };
+      let widget = this.workers.get(row.workerId);
+      if (!widget) {
+        const widgetId =
+          this.workerWidgetIds.get(row.workerId) ??
+          `worker-${this.nextWorkerWidgetId++}`;
+        this.workerWidgetIds.set(row.workerId, widgetId);
+        widget = new WorkerProgressWidget(widgetId, snapshot);
+        this.workers.set(row.workerId, widget);
+        this.host.register(widget);
+      } else {
+        widget.update(snapshot);
+      }
+      widget.render(this.adapter);
+    }
+  }
+
+  private renderWorkerInbox(state: PresentationState): void {
+    const snapshot = state.workerInbox;
+    if (snapshot === undefined) return;
+    if (this.workerInbox === undefined) {
+      this.workerInbox = new WorkerOperationsWidget("worker-inbox", snapshot, {
+        widthColumns: Math.min(1_000, Math.max(20, this.viewport.widthColumns)),
+        viewportRows: Math.max(1, Math.min(50, this.viewport.heightRows - 8)),
+      });
+      this.host.register(this.workerInbox);
+    } else {
+      this.workerInbox.update(snapshot);
+    }
+    this.workerInbox.render(this.adapter);
   }
 
   private renderRuntimeSnapshots(state: PresentationState): void {
     const snapshots = state.runtimeWidgets;
     this.renderChrome(state);
-    if (this.plan !== undefined && snapshots?.plan !== undefined && !this.plan.hasIdentity(snapshots.plan)) {
+    if (
+      this.plan !== undefined &&
+      snapshots?.plan !== undefined &&
+      !this.plan.hasIdentity(snapshots.plan)
+    ) {
       this.host.remove(this.plan);
       this.plan = undefined;
     }
-    this.plan = this.updateOptional(this.plan, snapshots?.plan, (value) => new PlanWidget('plan', value, {
-      widthColumns: Math.min(1_000, Math.max(20, this.viewport.widthColumns)),
-      viewportRows: Math.max(1, Math.min(61, this.viewport.heightRows - 8)),
-    }));
-
+    this.plan = this.updateOptional(
+      this.plan,
+      snapshots?.plan,
+      (value) =>
+        new PlanWidget("plan", value, {
+          widthColumns: Math.min(
+            1_000,
+            Math.max(20, this.viewport.widthColumns),
+          ),
+          viewportRows: Math.max(1, Math.min(61, this.viewport.heightRows - 8)),
+        }),
+    );
   }
 
   private renderChrome(state: PresentationState): void {
     const chrome = projectPresentationChrome(state, this.viewport.widthColumns);
-    this.header = this.updateOptional(this.header, chrome?.header, (value) => new HeaderWidget('header', value));
-    this.footer = this.updateOptional(this.footer, chrome?.footer, (value) => new FooterWidget('footer', value));
+    this.header = this.updateOptional(
+      this.header,
+      chrome?.header,
+      (value) => new HeaderWidget("header", value),
+    );
+    this.footer = this.updateOptional(
+      this.footer,
+      chrome?.footer,
+      (value) => new FooterWidget("footer", value),
+    );
   }
 
   private renderPresentationSurfaces(state: PresentationState): void {
-    const desired = new Map<string, { readonly sourceId: string; readonly payload: PresentationSurfacePayload }>();
-    for (const [id, widget] of Object.entries(state.widgets).sort(([left], [right]) => left.localeCompare(right))) {
-      desired.set(`widget:${id}`, { sourceId: `widget-${id}`, payload: surfacePayload(widget) });
+    const desired = new Map<
+      string,
+      {
+        readonly sourceId: string;
+        readonly payload: PresentationSurfacePayload;
+      }
+    >();
+    for (const [id, widget] of Object.entries(state.widgets).sort(
+      ([left], [right]) => left.localeCompare(right),
+    )) {
+      desired.set(`widget:${id}`, {
+        sourceId: `widget-${id}`,
+        payload: surfacePayload(widget),
+      });
     }
     for (const [key, projection] of this.surfaces) {
       if (desired.has(key)) continue;
@@ -590,15 +983,20 @@ export class SemanticWidgetController {
       const signature = JSON.stringify(payload);
       let projection = this.surfaces.get(key);
       if (!projection) {
-        const widget = new PresentationSurfaceWidget(`presentation-${this.nextSurfaceWidgetId++}`, {
-          authority: 'runtime',
-          id: value.sourceId,
-          revision: 0,
-          payload,
-        }, {
-          widthColumns: Math.min(240, Math.max(20, this.viewport.widthColumns)),
-          viewportRows: Math.max(1, Math.min(16, this.viewport.heightRows - 8)),
-        });
+        const surfaceViewport = resolveOpenTuiSurfaceViewport(this.viewport);
+        const widget = new PresentationSurfaceWidget(
+          `presentation-${this.nextSurfaceWidgetId++}`,
+          {
+            authority: "runtime",
+            id: value.sourceId,
+            revision: 0,
+            payload,
+          },
+          {
+            widthColumns: surfaceViewport.widthColumns,
+            viewportRows: surfaceViewport.viewportRows,
+          },
+        );
         projection = { widget, signature, revision: 0 };
         this.surfaces.set(key, projection);
         this.host.register(widget);
@@ -606,7 +1004,7 @@ export class SemanticWidgetController {
         projection.signature = signature;
         projection.revision += 1;
         projection.widget.update({
-          authority: 'runtime',
+          authority: "runtime",
           id: value.sourceId,
           revision: projection.revision,
           payload,
@@ -617,7 +1015,9 @@ export class SemanticWidgetController {
   }
 
   private renderStatuses(state: PresentationState): void {
-    const desired: StatusNotificationInput[] = (state.runtimeWidgets?.statusNotifications ?? []).map((item) => (
+    const desired: StatusNotificationInput[] = (
+      state.runtimeWidgets?.statusNotifications ?? []
+    ).map((item) =>
       this.statusAction === undefined && item.action !== undefined
         ? {
             authority: item.authority,
@@ -626,8 +1026,8 @@ export class SemanticWidgetController {
             message: item.message,
             lifecycle: item.lifecycle,
           }
-        : item
-    ));
+        : item,
+    );
     const occupied = new Set(desired.map(({ slot, id }) => `${slot}:${id}`));
     const activeDerivedSources = new Set<string>();
     const uniqueId = (sourceKey: string): string => {
@@ -644,38 +1044,47 @@ export class SemanticWidgetController {
       occupied.add(`system:${candidate}`);
       return candidate;
     };
-    for (const [name, text] of Object.entries(state.statuses)
-      .sort(([left], [right]) => left.localeCompare(right))) {
+    for (const [name, text] of Object.entries(state.statuses).sort(
+      ([left], [right]) => left.localeCompare(right),
+    )) {
       desired.push({
-        authority: 'runtime',
-        slot: 'system',
+        authority: "runtime",
+        slot: "system",
         id: uniqueId(`status:${name}`),
         message: `${name}: ${text}`,
-        lifecycle: 'active',
+        lifecycle: "active",
       });
     }
     const visibleNotifications = state.notifications.slice(-3);
-    this.archivedNotificationsOutput = state.notifications.slice(0, -3)
-      .map(({ severity, message }) => `[${severity.toUpperCase()}] ${sanitizeSingleLineText(message, {
-        maxGraphemes: 1_024,
-        redactCredentials: true,
-      })}`)
-      .join('\n');
+    this.archivedNotificationsOutput = state.notifications
+      .slice(0, -3)
+      .map(
+        ({ severity, message }) =>
+          `[${severity.toUpperCase()}] ${sanitizeSingleLineText(message, {
+            maxGraphemes: 1_024,
+            redactCredentials: true,
+          })}`,
+      )
+      .join("\n");
     const notificationOccurrences = new Map<string, number>();
     visibleNotifications.forEach((notification) => {
-      const signature = JSON.stringify([notification.severity, notification.message]);
+      const signature = JSON.stringify([
+        notification.severity,
+        notification.message,
+      ]);
       const occurrence = (notificationOccurrences.get(signature) ?? 0) + 1;
       notificationOccurrences.set(signature, occurrence);
       desired.push({
-        authority: 'runtime',
-        slot: 'system',
+        authority: "runtime",
+        slot: "system",
         id: uniqueId(`notification:${signature}:${occurrence}`),
         message: notification.message,
         lifecycle: notificationLifecycle(notification.severity),
       });
     });
     for (const sourceKey of this.derivedStatusIds.keys()) {
-      if (!activeDerivedSources.has(sourceKey)) this.derivedStatusIds.delete(sourceKey);
+      if (!activeDerivedSources.has(sourceKey))
+        this.derivedStatusIds.delete(sourceKey);
     }
 
     if (desired.length === 0) {
@@ -684,32 +1093,41 @@ export class SemanticWidgetController {
       return;
     }
     if (!this.statuses) {
-      this.statuses = new StatusNotificationsWidget('status-notifications', {
+      this.statuses = new StatusNotificationsWidget("status-notifications", {
         itemLimit: 64,
         historyLimit: 512,
         announcementLimit: 64,
       });
       this.host.register(this.statuses);
     }
-    const incomingKeys = new Set(desired
-      .filter(({ lifecycle }) => lifecycle !== 'cleared')
-      .map(({ slot, id }) => `${slot}:${id}`));
+    const incomingKeys = new Set(
+      desired
+        .filter(({ lifecycle }) => lifecycle !== "cleared")
+        .map(({ slot, id }) => `${slot}:${id}`),
+    );
     for (const item of this.statuses.items) {
       if (incomingKeys.has(item.key)) continue;
-      this.statuses.upsert({
-        authority: 'runtime',
-        slot: item.slot,
-        id: item.id,
-        message: item.message,
-        lifecycle: 'cleared',
-      }, this.readClock());
+      this.statuses.upsert(
+        {
+          authority: "runtime",
+          slot: item.slot,
+          id: item.id,
+          message: item.message,
+          lifecycle: "cleared",
+        },
+        this.readClock(),
+      );
     }
     for (const item of desired) this.statuses.upsert(item, this.readClock());
     this.statuses.render(this.adapter);
   }
 
-  private renderInteraction(interaction: PresentationInteraction | undefined): void {
-    const visible = interaction !== undefined && (interaction.status === 'pending' || interaction.status === 'validation');
+  private renderInteraction(
+    interaction: PresentationInteraction | undefined,
+  ): void {
+    const visible =
+      interaction !== undefined &&
+      (interaction.status === "pending" || interaction.status === "validation");
     if (!visible) {
       if (this.interaction) this.host.remove(this.interaction);
       this.interaction = undefined;
@@ -718,7 +1136,10 @@ export class SemanticWidgetController {
       this.adapter.bindInteraction?.(undefined, undefined);
       return;
     }
-    if (!this.interaction || this.interactionGeneration !== interaction.generation) {
+    if (
+      !this.interaction ||
+      this.interactionGeneration !== interaction.generation
+    ) {
       if (this.interaction) this.host.remove(this.interaction);
       this.interaction = this.interactionWidgetFactory(interaction);
       this.interactionGeneration = interaction.generation;
@@ -731,7 +1152,10 @@ export class SemanticWidgetController {
       this.queueInteractionAnnouncement(this.interaction);
     }
     if (interaction.validation !== undefined) {
-      this.queueValidationAnnouncement(this.interaction, interaction.validation);
+      this.queueValidationAnnouncement(
+        this.interaction,
+        interaction.validation,
+      );
     }
     this.interaction.render(this.adapter);
   }
@@ -757,47 +1181,94 @@ export class SemanticWidgetController {
   }
 
   private normalizeViewport(viewport: WidgetViewport): WidgetViewport {
-    if (!Number.isSafeInteger(viewport.widthColumns) || viewport.widthColumns < 1 || viewport.widthColumns > 10_000) {
-      throw new Error('widget viewport width must be an integer from 1 to 10000');
+    if (
+      !Number.isSafeInteger(viewport.widthColumns) ||
+      viewport.widthColumns < 1 ||
+      viewport.widthColumns > 10_000
+    ) {
+      throw new Error(
+        "widget viewport width must be an integer from 1 to 10000",
+      );
     }
-    if (!Number.isSafeInteger(viewport.heightRows) || viewport.heightRows < 1 || viewport.heightRows > 10_000) {
-      throw new Error('widget viewport height must be an integer from 1 to 10000');
+    if (
+      !Number.isSafeInteger(viewport.heightRows) ||
+      viewport.heightRows < 1 ||
+      viewport.heightRows > 10_000
+    ) {
+      throw new Error(
+        "widget viewport height must be an integer from 1 to 10000",
+      );
     }
     return Object.freeze({ ...viewport });
   }
 
-  private toUiResult(widget: WidgetContract, output: unknown): UiInteractionResult | undefined {
-    if (!output || typeof output !== 'object' || !('type' in output)) return undefined;
-    if (output.type === 'cancel') return { status: 'cancelled' };
-    if (output.type === 'timeout') return { status: 'timeout' };
-    if ((widget instanceof PromptInputWidget || widget instanceof EditorWidget)
-      && output.type === 'submit' && 'value' in output && typeof output.value === 'string') {
-      return { status: 'accepted', value: output.value };
+  private toUiResult(
+    widget: WidgetContract,
+    output: unknown,
+  ): UiInteractionResult | undefined {
+    if (!output || typeof output !== "object" || !("type" in output))
+      return undefined;
+    if (output.type === "cancel") return { status: "cancelled" };
+    if (output.type === "timeout") return { status: "timeout" };
+    if (
+      (widget instanceof PromptInputWidget || widget instanceof EditorWidget) &&
+      output.type === "submit" &&
+      "value" in output &&
+      typeof output.value === "string"
+    ) {
+      return { status: "accepted", value: output.value };
     }
-    if (widget instanceof ConfirmWidget && output.type === 'decision'
-      && 'confirmed' in output && typeof output.confirmed === 'boolean') {
-      return { status: 'accepted', value: output.confirmed };
+    if (
+      widget instanceof ConfirmWidget &&
+      output.type === "decision" &&
+      "confirmed" in output &&
+      typeof output.confirmed === "boolean"
+    ) {
+      return { status: "accepted", value: output.confirmed };
     }
-    if (widget instanceof SelectWidget && output.type === 'select'
-      && 'optionId' in output && typeof output.optionId === 'string') {
-      const index = Number.parseInt(output.optionId.replace(/^choice-/u, ''), 10) - 1;
+    if (
+      widget instanceof SelectWidget &&
+      output.type === "select" &&
+      "optionId" in output &&
+      typeof output.optionId === "string"
+    ) {
+      const index =
+        Number.parseInt(output.optionId.replace(/^choice-/u, ""), 10) - 1;
       const request = this.currentInteractionRequest;
-      if (request?.type !== 'select' || !Number.isSafeInteger(index) || index < 0) return undefined;
+      if (
+        request?.type !== "select" ||
+        !Number.isSafeInteger(index) ||
+        index < 0
+      )
+        return undefined;
       const value = request.options[index];
-      return value === undefined ? undefined : { status: 'accepted', value };
+      return value === undefined ? undefined : { status: "accepted", value };
     }
     return undefined;
   }
 
-  private dispatchStatusAction(widget: StatusNotificationsWidget, value: unknown): void {
-    if (this.statusAction === undefined || !value || typeof value !== 'object') return;
+  private dispatchStatusAction(
+    widget: StatusNotificationsWidget,
+    value: unknown,
+  ): void {
+    if (this.statusAction === undefined || !value || typeof value !== "object")
+      return;
     const output = value as Partial<StatusNotificationOutput>;
-    if (output.type !== 'action' || typeof output.key !== 'string' || output.action === undefined
-      || typeof output.action.id !== 'string' || typeof output.action.label !== 'string') return;
+    if (
+      output.type !== "action" ||
+      typeof output.key !== "string" ||
+      output.action === undefined ||
+      typeof output.action.id !== "string" ||
+      typeof output.action.label !== "string"
+    )
+      return;
     const selected = widget.items.find(({ key }) => key === output.key);
-    if (selected?.action === undefined
-      || selected.action.id !== output.action.id
-      || selected.action.label !== output.action.label) return;
+    if (
+      selected?.action === undefined ||
+      selected.action.id !== output.action.id ||
+      selected.action.label !== output.action.label
+    )
+      return;
     const invocation: StatusNotificationActionInvocation = Object.freeze({
       key: selected.key,
       action: Object.freeze({ ...selected.action }),
@@ -809,9 +1280,32 @@ export class SemanticWidgetController {
     });
   }
 
+  private dispatchWorkerOperation(value: unknown): void {
+    if (this.workerOperation === undefined || value === null || typeof value !== "object") return;
+    const candidate = value as Partial<Extract<NativeWorkerOperationIntent, { type: "inspect" }>>;
+    if (
+      candidate.type !== "inspect" ||
+      typeof candidate.workerId !== "string" ||
+      !Number.isSafeInteger(candidate.expectedGeneration)
+    ) return;
+    const intent = candidate as Extract<NativeWorkerOperationIntent, { type: "inspect" }>;
+    const snapshot = this.presentationState?.workerInbox;
+    if (
+      snapshot === undefined ||
+      intent.expectedGeneration !== snapshot.generation ||
+      !snapshot.workers.some(({ workerId }) => workerId === intent.workerId)
+    ) return;
+    const immutableIntent = Object.freeze({ ...intent });
+    queueMicrotask(() => {
+      void Promise.resolve()
+        .then(() => this.workerOperation?.(immutableIntent))
+        .catch((error: unknown) => this.callbackFailure?.(error));
+    });
+  }
+
   private queueInteractionAnnouncement(widget: WidgetContract): void {
     const { label, description, liveRegion } = widget.accessibility;
-    if (liveRegion === 'off') return;
+    if (liveRegion === "off") return;
     this.queueInteractionAnnouncementValue({
       source: `interaction:${widget.id}`,
       politeness: liveRegion,
@@ -819,41 +1313,67 @@ export class SemanticWidgetController {
     });
   }
 
-  private queueValidationAnnouncement(widget: WidgetContract, message: string | undefined): void {
-    const text = message === undefined ? '' : sanitizeSingleLineText(message.replace(/[\r\n]+/gu, ' '), {
-      maxGraphemes: 512,
-      tabWidth: 1,
-      redactCredentials: true,
-    }).replace(/\s{2,}/gu, ' ').trim();
+  private queueValidationAnnouncement(
+    widget: WidgetContract,
+    message: string | undefined,
+  ): void {
+    const text =
+      message === undefined
+        ? ""
+        : sanitizeSingleLineText(message.replace(/[\r\n]+/gu, " "), {
+            maxGraphemes: 512,
+            tabWidth: 1,
+            redactCredentials: true,
+          })
+            .replace(/\s{2,}/gu, " ")
+            .trim();
     if (!text) return;
     this.queueInteractionAnnouncementValue({
       source: `interaction:${widget.id}:validation`,
-      politeness: widget.accessibility.liveRegion === 'off' ? 'polite' : widget.accessibility.liveRegion,
+      politeness:
+        widget.accessibility.liveRegion === "off"
+          ? "polite"
+          : widget.accessibility.liveRegion,
       text,
     });
   }
 
-  private queueInteractionAnnouncementValue(announcement: SemanticWidgetAnnouncement): void {
-    const signature = JSON.stringify([announcement.source, announcement.politeness, announcement.text]);
+  private queueInteractionAnnouncementValue(
+    announcement: SemanticWidgetAnnouncement,
+  ): void {
+    const signature = JSON.stringify([
+      announcement.source,
+      announcement.politeness,
+      announcement.text,
+    ]);
     if (this.interactionAnnouncementSignatures.has(signature)) return;
     this.interactionAnnouncementSignatures.add(signature);
     this.interactionAnnouncementSignatureOrder.push(signature);
-    if (this.interactionAnnouncementSignatureOrder.length > SemanticWidgetController.INTERACTION_DEDUPE_LIMIT) {
+    if (
+      this.interactionAnnouncementSignatureOrder.length >
+      SemanticWidgetController.INTERACTION_DEDUPE_LIMIT
+    ) {
       const evicted = this.interactionAnnouncementSignatureOrder.shift();
-      if (evicted !== undefined) this.interactionAnnouncementSignatures.delete(evicted);
+      if (evicted !== undefined)
+        this.interactionAnnouncementSignatures.delete(evicted);
     }
     this.interactionAnnouncements.push(Object.freeze({ ...announcement }));
-    if (this.interactionAnnouncements.length > SemanticWidgetController.INTERACTION_ANNOUNCEMENT_LIMIT) {
+    if (
+      this.interactionAnnouncements.length >
+      SemanticWidgetController.INTERACTION_ANNOUNCEMENT_LIMIT
+    ) {
       this.interactionAnnouncements.splice(
         0,
-        this.interactionAnnouncements.length - SemanticWidgetController.INTERACTION_ANNOUNCEMENT_LIMIT,
+        this.interactionAnnouncements.length -
+          SemanticWidgetController.INTERACTION_ANNOUNCEMENT_LIMIT,
       );
     }
   }
 
   private readClock(): number {
     const value = this.nowMs();
-    if (!Number.isFinite(value) || value < 0) throw new Error('widget clock must return a non-negative finite value');
+    if (!Number.isFinite(value) || value < 0)
+      throw new Error("widget clock must return a non-negative finite value");
     this.lastClockMs = Math.max(this.lastClockMs, value);
     return this.lastClockMs;
   }

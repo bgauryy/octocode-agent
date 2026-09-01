@@ -8,7 +8,7 @@ import {
   type SettingsSnapshot,
 } from '@octocodeai/agent-core';
 
-import { FileSettingsStorage } from './native-settings.js';
+import type { NativeSettingsStorage, StoredSettings } from './native-settings.js';
 import { resolveNativeExtensionPolicy } from './native-extension-adapters.js';
 import { DEFAULT_OCTOCODE_THEME, OCTOCODE_THEME_NAMES } from './settings.js';
 
@@ -16,6 +16,8 @@ const DEFAULT_MODEL_KEY = 'defaultModel';
 const DEFAULT_PROVIDER_KEY = 'defaultProvider';
 const THEME_KEY = 'theme';
 const REDUCED_MOTION_KEY = 'reducedMotion';
+export const NATIVE_COMPACTION_THRESHOLD_KEY = 'compactionInputTokenThreshold';
+export const DEFAULT_NATIVE_COMPACTION_INPUT_TOKEN_THRESHOLD = 64_000;
 const NATIVE_EXTENSIONS_KEY = 'nativeExtensions';
 
 const themeDefinition: SettingDefinition = {
@@ -45,6 +47,21 @@ const reducedMotionDefinition: SettingDefinition = {
     visibility: 'public',
     owner: 'octocode-agent',
     documentation: 'docs/SETTINGS.md',
+};
+const compactionThresholdDefinition: SettingDefinition = {
+    key: NATIVE_COMPACTION_THRESHOLD_KEY,
+    schemaVersion: 1,
+    section: 'Agent',
+    order: 10,
+    kind: { type: 'integer', minimum: 4_096, maximum: 2_000_000 },
+    scopes: ['global'],
+    defaultValue: DEFAULT_NATIVE_COMPACTION_INPUT_TOKEN_THRESHOLD,
+    mutability: 'editable',
+    application: 'next-session',
+    visibility: 'public',
+    owner: 'octocode-agent',
+    documentation: 'docs/SETTINGS.md',
+    validate: (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 4_096 && (value as number) <= 2_000_000,
 };
 const defaultModelDefinition: SettingDefinition = {
     key: DEFAULT_MODEL_KEY,
@@ -99,6 +116,7 @@ const nativeExtensionsDefinition: SettingDefinition = {
 export const NATIVE_SETTING_DEFINITIONS: readonly SettingDefinition[] = Object.freeze([
   themeDefinition,
   reducedMotionDefinition,
+  compactionThresholdDefinition,
   defaultProviderDefinition,
   defaultModelDefinition,
   nativeExtensionsDefinition,
@@ -154,17 +172,17 @@ function persistenceError(requestId: string): SettingsMutationResult {
 
 /**
  * Native persistence bridge for the host-neutral settings registry/service.
- * Candidate state is published only after FileSettingsStorage commits it.
+ * Candidate state is published only after the configured storage port commits it.
  */
 export class NativeSettingsService {
   readonly registry: SettingsRegistry;
-  readonly #storage: FileSettingsStorage;
+  readonly #storage: NativeSettingsStorage;
   #service: SettingsService;
   #storageRevision: string;
   #persistedValues: Record<string, unknown>;
   #history: SettingsMutation[];
 
-  private constructor(storage: FileSettingsStorage, stored: ReturnType<FileSettingsStorage['read']>) {
+  private constructor(storage: NativeSettingsStorage, stored: StoredSettings) {
     this.#storage = storage;
     this.#storageRevision = stored.revision;
     this.#persistedValues = { ...stored.values };
@@ -173,8 +191,8 @@ export class NativeSettingsService {
     this.#history = [];
   }
 
-  static async create(storage: FileSettingsStorage): Promise<NativeSettingsService> {
-    const stored = storage.read();
+  static async create(storage: NativeSettingsStorage): Promise<NativeSettingsService> {
+    const stored = await storage.read();
     const settings = new NativeSettingsService(storage, stored);
     for (const [key, value] of hydrationEntries(stored.values)) {
       const mutation = hydrationMutation(settings.#service, key, value);
@@ -350,7 +368,7 @@ export class NativeSettingsService {
     }
 
     try {
-      const stored = this.#storage.commit(expectedStorageRevision, persistedValues);
+      const stored = await this.#storage.commit(expectedStorageRevision, persistedValues);
       this.#storageRevision = stored.revision;
       this.#persistedValues = { ...stored.values };
     } catch {
@@ -396,6 +414,6 @@ function mutationError(requestId: string, category: 'validation' | 'conflict' | 
   return { ok: false, requestId, error: { category, message, ...(currentRevision === undefined ? {} : { currentRevision }) } };
 }
 
-export function createNativeSettingsService(storage: FileSettingsStorage): Promise<NativeSettingsService> {
+export function createNativeSettingsService(storage: NativeSettingsStorage): Promise<NativeSettingsService> {
   return NativeSettingsService.create(storage);
 }

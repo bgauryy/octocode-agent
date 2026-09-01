@@ -23,24 +23,27 @@ The skill decides when shared state matters. The CLI owns state changes. Hooks o
 ## Start small
 
 ```bash
-npx @octocodeai/octocode-awareness setup --compact
-npx @octocodeai/octocode-awareness next --workspace "$PWD"
-npx @octocodeai/octocode-awareness inspect workboard --workspace "$PWD"
-npx @octocodeai/octocode-awareness verify --workspace "$PWD"
-npx @octocodeai/octocode-awareness close --run-id <id> --workspace "$PWD"
+export OCTOCODE_AGENT_ID="${OCTOCODE_AGENT_ID:-agent}"
+npx @octocodeai/octocode-awareness attend --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" --compact
+npx @octocodeai/octocode-awareness work start --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" --file <path> --rationale "<scope>" --test-plan "<check>" --compact
+npx @octocodeai/octocode-awareness work end --agent-id "$OCTOCODE_AGENT_ID" --run-id <id> --compact
+npx @octocodeai/octocode-awareness verify mark --agent-id "$OCTOCODE_AGENT_ID" --run-id <id> --message "<observed check + result>" --compact
+npx @octocodeai/octocode-awareness verify audit --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" --compact
 ```
 
-All durable agent state uses the single global `$OCTOCODE_HOME/agent/agent.sqlite3` database; repositories are isolated by workspace columns, never by repository-local agent databases. Hooks use the `coordination` profile by default. Use `--db` only for an explicit isolated path.
-
-Expert nouns remain available for plans, tasks, work, locks, verification, messages/signals, handoffs, memory, reflection, queries, and schema discovery.
+Durable state uses `$OCTOCODE_HOME/agent/agent.sqlite3`; workspace columns isolate repositories. Use `query <view>` for targeted reads. Hooks use the `coordination` profile by default. Use `--db` only for an explicit isolated path.
 
 ## Operating rules
 
-1. **NOTICE** — Run `next` after a meaningful shared-state signal; follow its returned action.
+1. **NOTICE** — Run `attend` after a meaningful shared-state signal; follow its returned action.
 2. Declare bounded work and paths. Ordinary overlap is advisory; inspect and message only when edits interact.
 3. Use an exclusive lock only for unsafe, non-mergeable state.
 4. Run the declared check. Record only observed receipts; search hits, expiry, memories, and peer notes are leads, not proof.
 5. Close work; leave a handoff only for real continuation and store only verified reusable learning.
+
+## Reflect when it earns storage
+
+After verification, use `reflect record` only for a reusable lesson, a recurring failure signature, or owned follow-up. Include the observed outcome and fix target. Reflection proposes memory or refinement; it never authorizes edits, skill changes, hook installation, or policy mutation.
 
 Host adapters own automatic stable identity and observed check receipts. Do not duplicate status, presence, or verification calls when the host already projects them.
 

@@ -24,11 +24,6 @@ const listableSchemas = [
   "mine_weakness", "developer_review", "doc_staleness", "docs_catalog", "digest", "reflect", "awareness_config",
 ];
 const commandIndex = [
-  { command: "setup", schema: null, use: "Inspect or update the workspace Awareness policy before entering the agent loop.", example: 'npx @octocodeai/octocode-awareness setup --workspace "$PWD" --compact' },
-  { command: "next", schema: "attend", use: "Return the next bounded Awareness action with relevant shared-state evidence.", example: 'npx @octocodeai/octocode-awareness next --workspace "$PWD"' },
-  { command: "inspect", schema: "query", use: "Inspect the shared workboard or one named query view.", example: 'npx @octocodeai/octocode-awareness inspect workboard --workspace "$PWD"' },
-  { command: "verify", schema: "verify_audit", use: "Audit pending or stale verification debt before closing work.", example: 'npx @octocodeai/octocode-awareness verify --agent-id agent --workspace "$PWD"' },
-  { command: "close", schema: "work", use: "End declared WORK presence and move the run to verification.", example: 'npx @octocodeai/octocode-awareness close --agent-id agent --run-id run_123' },
   { command: "attend", schema: "attend", use: "Build one bounded lobby with actions, relevant evidence/gaps, and a next command.", example: 'npx @octocodeai/octocode-awareness attend --query "current task" --workspace "$PWD" --compact' },
   { command: "workspace status", schema: "workspace_status", use: "Check DB health, locks, pending verification, memory counts.", example: 'npx @octocodeai/octocode-awareness workspace status --workspace "$PWD" --compact' },
   { command: "plan create", schema: "plan", use: "Create a shared plan and its managed narrative document folder.", example: 'npx @octocodeai/octocode-awareness plan create --name "Release" --objective "Ship safely" --lead-agent-id agent --workspace "$PWD" --compact' },
@@ -57,7 +52,6 @@ const commandIndex = [
   { command: "memory archive", schema: "memory_lifecycle", use: "Preview or reversibly archive explicit active memories.", example: "npx @octocodeai/octocode-awareness memory archive --memory-id mem_123 --dry-run --compact" },
   { command: "memory restore", schema: "memory_lifecycle", use: "Preview or restore explicitly archived memories; never revive replacement history.", example: "npx @octocodeai/octocode-awareness memory restore --memory-id mem_123 --dry-run --compact" },
   { command: "refinement get", schema: "refine_query", use: "Read unfinished handoffs or follow-up work.", example: 'npx @octocodeai/octocode-awareness refinement get --workspace "$PWD" --state open --limit 3 --compact' },
-  { command: "refinement list", schema: "refine_query", use: "Alias of refinement get; matches the routing table and CLI help.", example: 'npx @octocodeai/octocode-awareness refinement list --workspace "$PWD" --compact' },
   { command: "refinement set", schema: "refinement", use: "Save handoff/work state for the next agent.", example: 'npx @octocodeai/octocode-awareness refinement set --agent-id agent --reasoning "handoff" --remember "next step" --workspace "$PWD" --compact' },
   { command: "refinement delete", schema: "refine_delete", use: "Delete stale refinement rows; dry-run first.", example: "npx @octocodeai/octocode-awareness refinement delete --refinement-id ref_123 --dry-run --compact" },
   { command: "lock acquire", schema: "lock_acquire", use: "Acquire exclusive sensitive-file protection; exit 2 means conflict.", example: 'npx @octocodeai/octocode-awareness lock acquire --agent-id agent --target-file src/file.ts --rationale "sensitive edit" --test-plan "yarn test" --compact' },
@@ -88,8 +82,7 @@ const commandIndex = [
   { command: "docs show", schema: "docs_catalog", use: "Show one skill reference by name.", example: "npx @octocodeai/octocode-awareness docs show architecture" },
   { command: "docs staleness", schema: "doc_staleness", use: "Find docs likely stale from edit activity.", example: 'npx @octocodeai/octocode-awareness docs staleness --targets-json \'[{"docFile":"README.md","sourceDirs":["src"]}]\' --compact' },
   { command: "maintenance digest", schema: "digest", use: "Preview or run memory, expired-lock, terminal-refinement, and terminal-run cleanup; signal/reference pressure is report-only.", example: 'npx @octocodeai/octocode-awareness maintenance digest --dry-run --workspace "$PWD" --compact' },
-  { command: "init", schema: null, use: "Initialize the advanced Awareness workflow store deterministically; safe to repeat.", example: "npx @octocodeai/octocode-awareness init --compact" },
-  { command: "maintenance init", schema: null, use: "Long-form alias of init.", example: "npx @octocodeai/octocode-awareness maintenance init --compact" },
+  { command: "maintenance init", schema: null, use: "Initialize the Awareness workflow store deterministically; safe to repeat.", example: "npx @octocodeai/octocode-awareness maintenance init --compact" },
   { command: "maintenance self-test", schema: null, use: "Run in-memory DB smoke checks.", example: "npx @octocodeai/octocode-awareness maintenance self-test --compact" },
   { command: "config show", schema: "awareness_config", use: "Inspect the effective Awareness feature configuration and return every onboarding question when the file is missing.", example: "npx @octocodeai/octocode-awareness config show --compact" },
   { command: "config init", schema: "awareness_config", use: "Create awareness.json only after the user answers every returned question; refuses overwrite.", example: "npx @octocodeai/octocode-awareness config init --hooks true --notifications true --verification-gate true --session-capture true --maintenance-reminders false --compact" },
@@ -105,7 +98,7 @@ const commandIndex = [
   { command: "schema validate", schema: null, use: "Validate JSON payload against one schema.", example: "npx @octocodeai/octocode-awareness schema validate memory_recall payload.json --compact" },
 ];
 
-const CORE_NOUNS = new Set(["setup", "next", "inspect", "verify", "close", "attend", "plan", "task", "work", "memory", "signal", "query"]);
+const CORE_NOUNS = new Set(["verify", "attend", "plan", "task", "work", "memory", "signal", "query"]);
 const CLI_REQUIRED: Record<string, string[]> = {
   "plan create": ["name", "objective", "lead_agent_id", "workspace"],
   "plan show": ["plan_id"],
@@ -290,9 +283,7 @@ export async function runSchemaCli(argv: string[]): Promise<number> {
 
   if (command === "command") {
     const requestedCommandName = [schemaName, file].filter(Boolean).join(" ");
-    const commandName = file === "run" && schemaName && cliCommandSchema(schemaName)
-      ? schemaName
-      : requestedCommandName;
+    const commandName = requestedCommandName;
     const commandSchema = cliCommandSchema(commandName);
     if (!commandSchema) {
       return printJsonError({

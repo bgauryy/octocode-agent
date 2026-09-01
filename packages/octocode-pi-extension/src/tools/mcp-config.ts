@@ -74,7 +74,7 @@ const DEFAULT_OCTOCODE_MCP_NPX_CACHE = path.join(os.homedir(), '.cache', 'octoco
  *   "structuredContent available …" stub for structured-content-aware clients;
  *   Pi's MCP surfaces only read text blocks, so full text must stay on or the
  *   model sees counts instead of data.
- * - ENABLE_LOCAL: turns on the local* tool family (localSearchCode etc). Force
+ * - ENABLE_LOCAL: turns on the local tool family (localSearch, localGetFileContent, etc.). Force
  *   it rather than trusting octocode-mcp's own internal default — if that
  *   upstream default ever flips, local tools must not silently disappear here.
  * - ENABLE_CLONE: enables ghCloneRepo so the agent can clone a repo once and

@@ -352,6 +352,9 @@ export class SelectWidget extends OpenTuiWidget<SelectWidgetIntent> {
     const regions: WidgetRenderRegion[] = [
       { id: 'label', role: 'prompt', text: this.optionsState.label },
     ];
+    if (this.optionsState.description) {
+      regions.push({ id: 'description', role: 'help', text: this.optionsState.description });
+    }
     const end = Math.min(this.optionsState.options.length, this.scrollOffsetValue + this.viewportRowsValue);
     for (let index = this.scrollOffsetValue; index < end; index += 1) {
       const option = this.optionsState.options[index];

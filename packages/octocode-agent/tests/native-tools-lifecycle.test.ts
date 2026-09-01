@@ -28,7 +28,14 @@ describe('native tool registry lifecycle', () => {
     const registry = await createDefaultOctocodeToolRegistry({
       cwd: root,
       env: { ...process.env, OCTOCODE_HOME: path.join(root, 'home') },
-      run: async () => JSON.stringify({ tools: [] }),
+      run: async () =>
+        JSON.stringify({
+          kind: 'octocode.toolCatalog.full',
+          version: 1,
+          toolCount: 0,
+          tools: [],
+        }),
+      allowedTools: new Set(['MCPTool']),
     });
 
     await closeNativeToolRegistry(registry);

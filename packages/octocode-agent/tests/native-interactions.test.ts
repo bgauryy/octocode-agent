@@ -33,7 +33,10 @@ describe('native interaction broker and askUser tool', () => {
     expect(tool.policy).toEqual({ effects: ['read'], trust: 'none', approval: 'never', plan: 'allowed' });
     expect(tool.inputSchema).toMatchObject({
       type: 'object',
-      required: ['type', 'question'],
+      anyOf: [
+        { required: ['type', 'question'] },
+        { required: ['questions'] },
+      ],
       properties: {
         type: { enum: ['select', 'input', 'editor', 'confirm'] },
         question: { type: 'string' },
@@ -77,6 +80,71 @@ describe('native interaction broker and askUser tool', () => {
       { type: 'editor', message: 'Revise the plan', initial: 'Step 1' },
       { type: 'confirm', message: 'Continue?' },
     ]);
+  });
+
+  it('runs bounded question workflows one question at a time and returns an ordered answer ledger', async () => {
+    const requests: UiInteractionRequest[] = [];
+    const broker = createNativeInteractionBroker();
+    broker.attach(async (request) => {
+      requests.push(request);
+      return request.type === 'confirm'
+        ? { status: 'accepted', value: true }
+        : { status: 'accepted', value: request.type === 'select' ? request.options[0] : 'typed answer' };
+    });
+    const registry = new ToolRegistry();
+    registerNativeAskUserTool(registry, broker);
+
+    const result = await registry.get('askUser')!.execute(execution({
+      title: 'Implementation choices',
+      instructions: 'Answer what is known; choose Discuss when context is missing.',
+      questions: [
+        { id: 'runtime', type: 'select', question: 'Runtime?', options: ['Rust', 'TypeScript'] },
+        { id: 'confirm', type: 'confirm', question: 'Proceed?' },
+      ],
+    }));
+
+    expect(result.content).toEqual({
+      status: 'answered',
+      answers: [
+        { id: 'runtime', value: 'Rust' },
+        { id: 'confirm', value: true },
+      ],
+    });
+    expect(requests).toEqual([
+      expect.objectContaining({
+        type: 'select', message: 'Runtime?',
+        workflow: expect.objectContaining({ questionId: 'runtime', index: 0, total: 2, allowDiscuss: true }),
+      }),
+      expect.objectContaining({
+        type: 'confirm', message: 'Proceed?',
+        workflow: expect.objectContaining({ questionId: 'confirm', index: 1, total: 2, allowDiscuss: true }),
+      }),
+    ]);
+  });
+
+  it('stops a question workflow at Discuss and preserves prior answers for the model', async () => {
+    const broker = createNativeInteractionBroker();
+    let call = 0;
+    broker.attach(async () => (++call === 1
+      ? { status: 'accepted', value: 'TypeScript' }
+      : { status: 'discuss' }));
+    const registry = new ToolRegistry();
+    registerNativeAskUserTool(registry, broker);
+
+    const result = await registry.get('askUser')!.execute(execution({
+      questions: [
+        { id: 'interface', type: 'input', question: 'Interface?' },
+        { id: 'storage', type: 'input', question: 'Storage?' },
+        { id: 'rendering', type: 'input', question: 'Rendering?' },
+      ],
+    }));
+
+    expect(result.content).toEqual({
+      status: 'discuss',
+      question: { id: 'storage', question: 'Storage?' },
+      answers: [{ id: 'interface', value: 'TypeScript' }],
+      remainingQuestionIds: ['storage', 'rendering'],
+    });
   });
 
   it('settles cancellation, timeout, and caller abort even when a handler ignores its signal', async () => {

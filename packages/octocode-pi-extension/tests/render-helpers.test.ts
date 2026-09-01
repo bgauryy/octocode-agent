@@ -116,22 +116,22 @@ test('component renderer resolves live props and enforces the terminal width con
 
 test('buildToolCallSummary formats each Octocode direct-tool family', () => {
   const cases: Array<[string, unknown, RegExp]> = [
-    ['ghSearchCode', { queries: [{ owner: 'octo', repo: 'repo', keywords: ['foo', 'bar'], language: 'ts', filename: 'a.ts' }, { keywords: ['more'] }] }, /"foo bar".*file:a\.ts.*lang:ts.*in octo\/repo/],
-    ['ghSearchRepos', { queries: [{ keywords: ['agent'], language: 'Rust' }] }, /"agent".*lang:Rust/],
+    ['ghSearch', { queries: [{ operation: 'code', owner: 'octo', repo: 'repo', keywords: ['foo', 'bar'], language: 'ts', filename: 'a.ts' }, { operation: 'code', keywords: ['more'] }] }, /"foo bar".*file:a\.ts.*lang:ts.*in octo\/repo/],
+    ['ghSearch', { queries: [{ operation: 'repositories', keywords: ['agent'], language: 'Rust' }] }, /"agent".*lang:Rust/],
     ['ghGetFileContent', { queries: [{ owner: 'octo', repo: 'repo', path: 'src/a.ts', matchString: 'needle in haystack' }] }, /octo\/repo:src\/a\.ts \/needle in haystack\//],
     ['ghGetFileContent', { queries: [{ owner: 'octo', repo: 'repo', path: 'src/a.ts', startLine: 3, endLine: 8 }] }, /:src\/a\.ts:3-8/],
-    ['ghViewRepoStructure', { queries: [{ owner: 'octo', repo: 'repo', path: 'packages/pi' }] }, /octo\/repo\/packages\/pi/],
+    ['ghSearch', { queries: [{ operation: 'tree', owner: 'octo', repo: 'repo', path: 'packages/pi' }] }, /octo\/repo\/packages\/pi/],
     ['ghSearchPullRequests', { queries: [{ owner: 'octo', repo: 'repo', prNumber: 17 }] }, /octo\/repo PR #17/],
     ['ghSearchIssues', { queries: [{ owner: 'octo', repo: 'repo', keywordsToSearch: ['memory', 'leak'] }] }, /octo\/repo "memory leak"/],
     ['ghSearchCommits', { queries: [{ owner: 'octo', repo: 'repo', path: 'src', base: 'main', head: 'next' }] }, /octo\/repo path:src main\.\.next/],
     ['ghCloneRepo', { queries: [{ owner: 'octo', repo: 'repo', sparsePath: 'src' }] }, /octo\/repo\/src/],
     ['ghUnknown', { queries: [{ owner: 'octo', repo: 'repo' }] }, /octo\/repo/],
-    ['localSearchCode', { queries: [{ searchText: 'class Foo', path: '/very/long/path/to/project/src', mode: 'ast' }, { searchText: 'next' }] }, /\[ast\] "class Foo".*project\/src/],
+    ['localSearch', { queries: [{ operation: 'structural', pattern: 'class $A', path: '/very/long/path/to/project/src' }, { operation: 'text', searchText: 'next', path: '/tmp' }] }, /\[structural\] "class \$A".*project\/src/],
     ['localGetFileContent', { queries: [{ path: '/tmp/src/file.ts', startLine: 10, endLine: 12 }] }, /file\.ts:10-12/],
     ['localGetFileContent', { queries: [{ path: '/tmp/src/file.ts', matchString: 'export function longName' }] }, /file\.ts \/export function long/],
-    ['localViewStructure', { queries: [{ path: '/tmp/workspace', maxDepth: 4 }] }, /workspace depth:4/],
-    ['localFindFiles', { queries: [{ path: '/tmp/workspace', names: ['a.ts', 'b.ts'], pathPattern: 'src/**' }] }, /workspace \[a\.ts, b\.ts\] src\/\*\*/],
-    ['localFindDeadCode', { queries: [{ path: '/tmp/workspace', entrypoints: ['src/index.ts'] }] }, /workspace entries:\[src\/index\.ts\]/],
+    ['localSearch', { queries: [{ operation: 'tree', path: '/tmp/workspace', maxDepth: 4 }] }, /workspace depth:4/],
+    ['localSearch', { queries: [{ operation: 'files', path: '/tmp/workspace', names: ['a.ts', 'b.ts'], pathPattern: 'src/**' }] }, /workspace \[a\.ts, b\.ts\] src\/\*\*/],
+    ['localAnalyzeGraph', { queries: [{ operation: 'deadCode', path: '/tmp/workspace', entrypoints: ['src/index.ts'] }] }, /workspace entries:\[src\/index\.ts\]/],
     ['lspGetSemantics', { queries: [{ type: 'references', symbolName: 'run', uri: 'file:///tmp/src/main.ts?x=1', lineHint: 42 }] }, /references "run" in main\.ts:42/],
     ['npmSearch', { queries: [{ packageName: 'vitest' }] }, /vitest/],
     ['customTool', { queries: [{ id: 'skip', reasoning: 'skip', alpha: 'one', beta: 'two', gamma: 'three', delta: 'four' }] }, /one two three/],
@@ -141,20 +141,20 @@ test('buildToolCallSummary formats each Octocode direct-tool family', () => {
     assert.match(buildToolCallSummary(toolName, args), pattern, toolName);
   }
 
-  assert.equal(buildToolCallSummary('ghSearchCode', {}), '');
+  assert.equal(buildToolCallSummary('ghSearch', {}), '');
   assert.equal(buildToolCallSummary('localGetFileContent', { queries: [{ path: 'short.ts' }] }), 'short.ts');
 });
 
 test('buildResultStats extracts meaningful per-tool result summaries', () => {
   const result = (data: Record<string, unknown>) => ({ data });
 
-  assert.deepEqual(buildResultStats('ghSearchCode', { results: [result({ totalCount: 7 }), result({ items: [{ path: 'src/a.ts' }, { repository: { fullName: 'octo/repo' } }] })] }), {
+  assert.deepEqual(buildResultStats('ghSearch', { results: [result({ operation: 'code', files: [{ path: 'src/a.ts' }] }), result({ operation: 'code', files: [{ repository: { fullName: 'octo/repo' } }] })] }), {
     queryCount: 2,
-    summary: '9 results',
+    summary: '2 results',
     paths: undefined,
     previews: ['src/a.ts', 'octo/repo'],
   });
-  assert.deepEqual(buildResultStats('ghSearchRepos', { results: [result({ items: [{ fullName: 'a/repo' }, { name: 'fallback' }] })] }), {
+  assert.deepEqual(buildResultStats('ghSearch', { results: [result({ operation: 'repositories', repositories: [{ fullName: 'a/repo' }, { name: 'fallback' }] })] }), {
     queryCount: 1,
     summary: '2 results',
     paths: ['a/repo', 'fallback'],
@@ -165,15 +165,17 @@ test('buildResultStats extracts meaningful per-tool result summaries', () => {
     paths: ['a.ts', 'b.ts'],
     previews: ['export const a = 1;'],
   });
-  assert.deepEqual(buildResultStats('ghViewRepoStructure', { results: [result({ totalEntries: 5 }), result({ files: ['a', 'b'] })] }), {
-    queryCount: 2,
-    summary: '7 entries',
+  assert.deepEqual(buildResultStats('ghSearch', { results: [result({ operation: 'tree', structure: [{ path: 'a' }, { path: 'b' }] })] }), {
+    queryCount: 1,
+    summary: '2 results',
+    paths: undefined,
+    previews: ['a', 'b'],
   });
   assert.deepEqual(buildResultStats('ghCloneRepo', { results: [result({ localPath: '/tmp/repo' }), result({ path: '/tmp/other' })] }), {
     queryCount: 2,
     paths: ['/tmp/repo', '/tmp/other'],
   });
-  assert.deepEqual(buildResultStats('localSearchCode', { results: [result({ totalMatches: 3, totalFiles: 2 }), result({ matches: [{}, {}] })] }), {
+  assert.deepEqual(buildResultStats('localSearch', { results: [result({ stats: { totalOccurrences: 3, filesMatched: 2 } }), result({ stats: { totalOccurrences: 2 } })] }), {
     queryCount: 2,
     summary: '5 matches, 2 files',
   });
@@ -183,13 +185,13 @@ test('buildResultStats extracts meaningful per-tool result summaries', () => {
     summary: '9 lines',
     previews: ['function run() {}'],
   });
-  assert.deepEqual(buildResultStats('localViewStructure', { results: [result({ files: ['a'] })] }), {
+  assert.deepEqual(buildResultStats('localSearch', { results: [result({ files: ['a'] })] }), {
     queryCount: 1,
     summary: '1 entries',
   });
-  assert.deepEqual(buildResultStats('localFindFiles', { results: [result({ entries: ['a', 'b'] }), result({ totalEntries: 3 })] }), {
-    queryCount: 2,
-    summary: '5 files',
+  assert.deepEqual(buildResultStats('localSearch', { results: [result({ files: ['a', 'b'], folders: ['c', 'd', 'e'] })] }), {
+    queryCount: 1,
+    summary: '5 entries',
   });
   assert.deepEqual(buildResultStats('lspGetSemantics', { results: [result({ location: { uri: 'file:///tmp/a.ts', line: 12 }, references: [{}, {}] }), result({ symbols: [{}] })] }), {
     queryCount: 2,
@@ -217,16 +219,16 @@ test('buildResultStats extracts meaningful per-tool result summaries', () => {
 });
 
 test('Octocode renderers cover partial, collapsed, expanded, stats, and error states', () => {
-  const call = buildOctocodeRenderCall('ghSearchCode', { queries: [{ owner: 'o', repo: 'r', keywords: ['x'] }] }, theme).render(120)[0]!;
+  const call = buildOctocodeRenderCall('ghSearch', { queries: [{ operation: 'code', owner: 'o', repo: 'r', keywords: ['x'] }] }, theme).render(120)[0]!;
   assert.match(call, /<accent>◇<\/accent>/);
-  assert.match(call, /<toolTitle><b>ghSearchCode<\/b><\/toolTitle>/);
+  assert.match(call, /<toolTitle><b>ghSearch<\/b><\/toolTitle>/);
   assert.match(call, /<dim> · <\/dim><dim>"x" in o\/r<\/dim>/);
-  const callLines = buildOctocodeRenderCall('ghSearchCode', { queries: [{ owner: 'o', repo: 'r', keywords: ['x'], reasoning: 'find x' }] }, theme).render(120);
+  const callLines = buildOctocodeRenderCall('ghSearch', { queries: [{ operation: 'code', owner: 'o', repo: 'r', keywords: ['x'], reasoning: 'find x' }] }, theme).render(120);
   assert.equal(callLines.length, 2);
   assert.match(callLines[1]!, /find x/);
   assert.doesNotMatch(callLines.join('\n'), /request:|reasoning:/);
 
-  const parallelCall = buildOctocodeRenderCall('ghSearchCode', {
+  const parallelCall = buildOctocodeRenderCall('ghSearch', {
     queryRunType: 'parallel',
     queries: [
       { owner: 'o', repo: 'r', keywords: ['x'], reasoning: 'find x' },
@@ -235,14 +237,14 @@ test('Octocode renderers cover partial, collapsed, expanded, stats, and error st
   }, theme).render(160);
   assert.match(parallelCall[0]!, /2 queries.*parallel/);
 
-  const running = buildOctocodeRenderResult('localSearchCode', textResult('still running'), { isPartial: true }, theme).render(120)[0]!;
+  const running = buildOctocodeRenderResult('localSearch', textResult('still running'), { isPartial: true }, theme).render(120)[0]!;
   assert.match(running, /<accent>⠋|<accent>⠙|<accent>⠹|<accent>⠸|<accent>⠼|<accent>⠴|<accent>⠦|<accent>⠧|<accent>⠇|<accent>⠏/);
-  assert.match(running, /<toolTitle>localSearchCode<\/toolTitle>/);
+  assert.match(running, /<toolTitle>localSearch<\/toolTitle>/);
   assert.match(running, /<dim>running…<\/dim>/);
 
   const collapsed = buildOctocodeRenderResult(
-    'localSearchCode',
-    textResult('ok', { results: [{ data: { totalMatches: 4, totalFiles: 2 } }] }),
+    'localSearch',
+    textResult('ok', { results: [{ data: { stats: { totalOccurrences: 4, filesMatched: 2 } } }] }),
     { expanded: false },
     theme,
   ).render(180)[0]!;

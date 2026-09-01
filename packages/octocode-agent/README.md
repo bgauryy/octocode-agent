@@ -12,9 +12,33 @@ The native launcher composes `@octocodeai/agent-core` with:
 
 - OpenAI-compatible model streaming and tool calls;
 - the live `octocode` catalog and exact tool schemas;
-- transactional native sessions and revisioned settings;
+- the packaged Rust SQLite actor for durable sessions, effect settlement,
+  automations, and worker-message leases, plus a separate filesystem service;
+- native `file`, `bash`, `web`, and `runFfmpeg` base tools with
+  input-sensitive policy;
+- revisioned settings and a session-owned automation scheduler;
 - interactive OpenTUI plus print, JSON, and versioned RPC transports;
 - host-neutral lifecycle, policy, hooks, plugin, model, and settings contracts.
+
+The interactive composition uses a renderer-neutral boundary:
+
+```text
+versioned RuntimeEvent -> interactive-controller subscription
+                       -> native runtime projector -> NativePresentationEvent
+                       -> NativeInteractivePresentationPort.accept
+                       -> OpenTUI reducer/store -> widgets and renderer
+OpenTUI input -> native interactive controller -> core commands
+```
+
+See [the native architecture guide](ARCHITECTURE.md) for the complete module map
+and event, controller, presentation, persistence, and transport flows.
+
+Programmatic native extensions can register executable custom tools through the
+activation writer's `addTool` API. Each tool is namespaced to its plugin, requires
+an exact reviewed hash plus `tools.register`, declares effects/policy, and holds an
+activation lease while executing. Filesystem plugin manifests cannot embed code,
+so declarative JSON `tools` contributions fail closed instead of appearing ready
+but inert.
 
 `@octocodeai/pi-extension` remains a separately supported adapter for existing Pi users. It is not a dependency of the native launcher.
 
@@ -25,6 +49,7 @@ octocode-agent [--] [prompt]     Interactive native terminal (`--` forces prompt
 octocode-agent run <prompt>      One-shot text output
 printf 'prompt\n' | octocode-agent run
 octocode-agent run --json ...    One-shot JSON events
+octocode-agent run --permissions strict|default|allow-all ...
 octocode-agent serve             Versioned JSONL RPC on stdio
 
 octocode-agent config get|set|list|sources
@@ -44,10 +69,14 @@ octocode-agent tools|skills|memory|awareness
 Run `octocode-agent --help` for the installed command truth.
 See the [headless runtime guide](docs/HEADLESS.md) for prompt composition,
 protocol envelopes, caching, MCP, and Agent Skills behavior.
+See [parallel tools, MCP calls, and workers](docs/PARALLELISM_AND_WORKERS.md)
+for concurrency limits, root-only `--allow-workers`, leaf children, and join behavior.
+See [permissions and context](docs/PERMISSIONS_AND_CONTEXT.md) for HITL modes,
+capability ceilings, context artifacts, cache-stable assembly, memory, and compaction.
 
 Interactive slash commands include `/help`, `/status`, `/tools`, `/skills`,
 `/thinking`, `/steer`, `/clear`, `/compact`, `/plan show`, and
-`/settings [section]`.
+`/automations list|run|cancel`, and `/settings [section]`.
 `/settings` opens the secure loopback configuration center; see the
 [settings guide](docs/SETTINGS.md) for its current capabilities and limits.
 `/clear` starts a fresh session with empty model context and zero session token
@@ -124,12 +153,28 @@ Update the installed launcher and its bundled core together with
 `octocode-agent update platform`. The CLI rejects other update targets before it
 starts a package-manager process.
 
-Secrets are never rendered in settings projections. Session and settings writes use restrictive permissions, revision checks, backup recovery, file sync, and atomic rename. Legacy JSONL sessions are imported read-only into a separate native destination.
+Secrets are never rendered in settings projections. Installed Unix builds use the
+Rust core and filesystem binaries packaged beside the JavaScript launcher. The Rust actor owns
+durable session compare-and-append, session indexes, effect settlement,
+automation definitions and runs, and worker-message leases in SQLite. Settings
+mutations remain revisioned and atomic. `--no-session` keeps the run in memory.
+The separate filesystem service performs bounded, workspace-contained reads,
+hashes, atomic replacement, deletion, and external-process path authorization
+only after TypeScript schema, trust, approval, and effect checks. TypeScript
+still owns process supervision and FFmpeg argument semantics. There is no
+production Node fallback. Linux, macOS, and Windows use native
+capability-rooted implementations; other targets fail closed.
 
 ## Package boundaries
 
 - `@octocodeai/agent-core` owns host-neutral contracts and kernel behavior.
-- `octocode-agent` owns filesystem, process, provider, transport, and OpenTUI adapters.
+- `octocode-agent` owns file-tool semantics and filesystem ports, plus process,
+  provider, transport, renderer-neutral presentation, interactive controller,
+  and OpenTUI adapters.
+- `octocode-agent-core-rust` owns durable SQLite transactions, revisions,
+  leases, fencing tokens, integrity checks, and contained cross-platform filesystem
+  primitives. TypeScript owns timing, file schemas/edit semantics, semantic
+  execution, policy, and presentation.
 - `@octocodeai/pi-extension` owns the retained Pi mapping only.
 - `@octocodeai/agent-testing` owns normalized cross-host conformance utilities.
 
@@ -146,5 +191,12 @@ yarn workspace octocode-agent check:no-native-pi
 yarn workspace octocode-agent verify
 node packages/octocode-agent/out/octocode-agent.mjs --help
 ```
+
+`yarn workspace octocode-agent build` compiles both release Rust services and copies
+the platform binaries under `out/native/<platform>-<arch>/`. The built launcher
+fails closed if a required packaged binary is missing. Developers can set
+`OCTOCODE_AGENT_RUST_CORE_BIN` or `OCTOCODE_AGENT_RUST_CORE_DB` to an absolute
+path for an explicit local override. `OCTOCODE_AGENT_RUST_FS_BIN` overrides the
+filesystem service with an absolute path. Installed users don't need these variables.
 
 See [`docs/README.md`](docs/README.md) and the repository RFC evidence for architecture, migration, and verification details.

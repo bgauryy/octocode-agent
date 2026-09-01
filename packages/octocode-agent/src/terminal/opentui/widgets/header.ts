@@ -6,6 +6,12 @@ import type {
 } from './contracts.js';
 import { fitTerminalText, terminalDisplayWidth } from './layout.js';
 import { sanitizeSingleLineText, segmentGraphemes } from './sanitize.js';
+import {
+  OCTOCODE_BETA_NOTICE,
+  OCTOCODE_COMPACT_MARK,
+  OCTOCODE_TAGLINE,
+  renderOctocodeBannerLines,
+} from '../branding/banner.js';
 
 export type HeaderTrust = 'trusted' | 'untrusted' | 'unknown';
 export type HeaderWorkingState = 'idle' | 'active' | 'cancelling' | 'failed';
@@ -19,6 +25,7 @@ export interface HeaderSnapshot {
   readonly title: string;
   readonly sessionId?: string;
   readonly modelId?: string;
+  readonly version?: string;
   readonly trust: HeaderTrust;
   readonly working: HeaderWorkingState;
   readonly width: number;
@@ -97,6 +104,9 @@ function normalizeSnapshot(snapshot: HeaderSnapshot): HeaderSnapshot {
     ...(snapshot.modelId === undefined
       ? {}
       : { modelId: safeIdentity(snapshot.modelId, 'model id') }),
+    ...(snapshot.version === undefined
+      ? {}
+      : { version: safeIdentity(snapshot.version, 'version') }),
     trust: snapshot.trust,
     working: snapshot.working,
     width: snapshot.width,
@@ -107,6 +117,7 @@ function sameSnapshot(left: HeaderSnapshot, right: HeaderSnapshot): boolean {
   return left.title === right.title
     && left.sessionId === right.sessionId
     && left.modelId === right.modelId
+    && left.version === right.version
     && left.trust === right.trust
     && left.working === right.working
     && left.width === right.width;
@@ -167,7 +178,13 @@ export class HeaderWidget extends OpenTuiWidget {
 
   /** Complete alternate output; unlike the visible line this is not viewport-truncated. */
   toPlainText(): string {
-    return this.allSegments().join(' · ');
+    return [
+      OCTOCODE_COMPACT_MARK,
+      ...(this.snapshot.version === undefined ? [] : [`v${this.snapshot.version}`]),
+      OCTOCODE_TAGLINE,
+      OCTOCODE_BETA_NOTICE,
+      this.allSegments().join(' · '),
+    ].join('\n');
   }
 
   /** Terminal-column measurement exposed for deterministic renderer/tests. */
@@ -176,7 +193,15 @@ export class HeaderWidget extends OpenTuiWidget {
   }
 
   protected renderRegions(): readonly WidgetRenderRegion[] {
-    return [{ id: 'summary', role: 'content', text: this.visibleLine() }];
+    return [{
+      id: 'summary',
+      role: 'content',
+      text: renderOctocodeBannerLines({
+        width: this.snapshot.width,
+        ...(this.snapshot.version === undefined ? {} : { version: this.snapshot.version }),
+        statusLine: this.visibleLine(),
+      }).join('\n'),
+    }];
   }
 
   private allSegments(): readonly string[] {

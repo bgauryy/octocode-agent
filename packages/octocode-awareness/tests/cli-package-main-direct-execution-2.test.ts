@@ -68,14 +68,14 @@ describe('package entry separation', () => {
 // ─── maintenance init ─────────────────────────────────────────────────────────
 
 describe('maintenance init', () => {
-  it('exposes init as the canonical root command', () => {
+  it('rejects the removed root init alias', () => {
     const dir = mktemp();
     const db = join(dir, 'test.sqlite3');
     try {
-      const result = ok(db, ['init']);
-      expect(result['initialized']).toBe(true);
-      expect(result['memory_count']).toBe(0);
-      expect(existsSync(db)).toBe(true);
+      const result = run(db, ['init']);
+      expect(result.status).toBe(1);
+      expect(result.parsed?.['error']).toBe('unknown command: init');
+      expect(existsSync(db)).toBe(false);
     } finally { rmSync(dir, { recursive: true }); }
   });
 

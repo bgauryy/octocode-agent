@@ -9,7 +9,6 @@ import {
   parseRpcEvent,
   parseRpcResponse,
   type RpcResponse,
-  type RuntimeCommand,
   type WorkerHandle,
   type WorkerPacket,
   type WorkerPort,
@@ -18,6 +17,16 @@ import {
   type WorkerTerminalPacket,
   type WorkerWorktreePort,
 } from '@octocodeai/agent-core';
+import type {
+  NativeWorkerInputCommand,
+  NativeWorkerMessageJournal,
+} from './native-rust-worker-messages.js';
+import {
+  encodeNativeWorkerBootstrapPacketV1,
+  type NativeWorkerBootstrapPacketV1,
+  type NativeWorkerPromptCustomizationV1,
+} from './native-worker-bootstrap.js';
+import type { NativeResolvedPortableCustomizationDescriptorV1 } from './native-portable-customization.js';
 
 export interface NativeGitProcessResult { readonly stdout: string; readonly stderr: string }
 export interface NativeGitProcessAdapter {
@@ -45,6 +54,8 @@ export interface NativeWorkerProcessSpec {
   readonly promptDigest: string;
   readonly cacheKey: string;
   readonly ownershipToken: string;
+  /** One closed bootstrap frame delivered over inherited descriptor 3. */
+  readonly bootstrap?: Uint8Array;
 }
 
 export interface NativeWorkerProcessIdentity {
@@ -67,6 +78,7 @@ export interface NativeWorkerProcessHandle {
   readonly stderr: AsyncIterable<string | Uint8Array>;
   readonly exit: Promise<NativeWorkerProcessResult>;
   write(line: string): Promise<void>;
+  endInput(): Promise<void>;
   abort(): void;
   kill(): void;
 }
@@ -94,9 +106,16 @@ export interface NativeWorkerProcessPortOptions {
   readonly envAllowlist?: readonly string[];
   readonly maxOutputBytes?: number;
   readonly parentAgentId?: string;
+  /** Current process depth in the bounded native-worker tree. Root is zero. */
+  readonly workerDepth?: number;
+  /** Maximum child-process depth. A process at this depth cannot delegate again. */
+  readonly maxWorkerDepth?: number;
   /** Optional defense-in-depth boundary for worktree process cwd validation. */
   readonly worktreesRoot?: string;
   readonly onProcessStarted?: (packet: WorkerSpawnPacket, identity: NativeWorkerProcessIdentity) => void | Promise<void>;
+  readonly messageJournal?: NativeWorkerMessageJournal;
+  readonly workerCustomization?: NativeResolvedPortableCustomizationDescriptorV1;
+  readonly workerPromptCustomization?: NativeWorkerPromptCustomizationV1;
 }
 
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -104,6 +123,7 @@ const MAX_WORKER_TOOLS = 128;
 const MAX_WORKER_MODELS = 64;
 const MAX_WORKER_TURNS = 1_000;
 const MAX_CAPABILITY_ENV_BYTES = 16 * 1024;
+const DEFAULT_MAX_WORKER_DEPTH = 1;
 const DEFAULT_ENV_ALLOWLIST = Object.freeze([
   'HOME', 'PATH', 'SHELL', 'TMPDIR', 'USER',
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS',
@@ -120,6 +140,12 @@ function safeString(value: string, label: string): string {
 function positiveInteger(value: number | undefined, fallback: number, label: string): number {
   const resolved = value ?? fallback;
   if (!Number.isSafeInteger(resolved) || resolved <= 0) throw new RuntimeFailure('validation', `${label} must be a positive integer`);
+  return resolved;
+}
+
+function nonNegativeInteger(value: number | undefined, fallback: number, label: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved < 0) throw new RuntimeFailure('validation', `${label} must be a non-negative integer`);
   return resolved;
 }
 
@@ -279,24 +305,29 @@ export function sameNativeWorkerProcess(left: NativeWorkerProcessIdentity, right
 
 function capabilityEnvironment(packet: WorkerSpawnPacket): {
   tools: string;
+  octocodeTools?: string;
   models: string;
   maxTurns: string;
 } {
   if (packet.capabilities.tools.length > MAX_WORKER_TOOLS) throw new RuntimeFailure('validation', `Worker tools exceed ${MAX_WORKER_TOOLS}`);
+  if ((packet.capabilities.octocodeTools?.length ?? 0) > MAX_WORKER_TOOLS) throw new RuntimeFailure('validation', `Worker Octocode tools exceed ${MAX_WORKER_TOOLS}`);
   if (packet.capabilities.models.length > MAX_WORKER_MODELS) throw new RuntimeFailure('validation', `Worker models exceed ${MAX_WORKER_MODELS}`);
   if (!Number.isSafeInteger(packet.capabilities.maxTurns) || packet.capabilities.maxTurns < 1 || packet.capabilities.maxTurns > MAX_WORKER_TURNS) {
     throw new RuntimeFailure('validation', `Worker maxTurns must be between 1 and ${MAX_WORKER_TURNS}`);
   }
   const tools = JSON.stringify(packet.capabilities.tools.map((tool) => safeString(tool, 'Worker tool capability')));
+  const octocodeTools = packet.capabilities.octocodeTools === undefined
+    ? undefined
+    : JSON.stringify(packet.capabilities.octocodeTools.map((tool) => safeString(tool, 'Worker Octocode tool capability')));
   const models = JSON.stringify(packet.capabilities.models.map((model) => ({
     providerId: safeString(model.providerId, 'Worker model provider'),
     modelId: safeString(model.modelId, 'Worker model id'),
   })));
   const maxTurns = String(packet.capabilities.maxTurns);
-  if (Buffer.byteLength(tools) + Buffer.byteLength(models) + Buffer.byteLength(maxTurns) > MAX_CAPABILITY_ENV_BYTES) {
+  if (Buffer.byteLength(tools) + Buffer.byteLength(octocodeTools ?? '') + Buffer.byteLength(models) + Buffer.byteLength(maxTurns) > MAX_CAPABILITY_ENV_BYTES) {
     throw new RuntimeFailure('validation', `Worker capability metadata exceeds ${MAX_CAPABILITY_ENV_BYTES} bytes`);
   }
-  return { tools, models, maxTurns };
+  return { tools, ...(octocodeTools === undefined ? {} : { octocodeTools }), models, maxTurns };
 }
 
 function messageText(value: unknown): string | undefined {
@@ -337,8 +368,15 @@ export function createNodeNativeWorkerProcessAdapter(): NativeWorkerProcessAdapt
         cwd: spec.cwd,
         env: { ...spec.env },
         shell: false,
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
       });
+      const bootstrap = child.stdio[3];
+      if (bootstrap == null || typeof (bootstrap as NodeJS.WritableStream).write !== 'function') {
+        child.kill('SIGKILL');
+        throw new RuntimeFailure('adapter-compatibility', 'Native worker bootstrap pipe is unavailable');
+      }
+      bootstrap.on('error', () => undefined);
+      (bootstrap as NodeJS.WritableStream).end(Buffer.from(spec.bootstrap ?? []));
       const exit = new Promise<NativeWorkerProcessResult>((resolve, reject) => {
         child.once('error', reject);
         child.once('close', (code, signal) => resolve({ code, signal }));
@@ -352,6 +390,12 @@ export function createNodeNativeWorkerProcessAdapter(): NativeWorkerProcessAdapt
         async write(line) {
           if (child.stdin.destroyed || !child.stdin.writable) throw new RuntimeFailure('adapter-compatibility', 'Native worker stdin is unavailable');
           if (!child.stdin.write(line, 'utf8')) await once(child.stdin, 'drain');
+        },
+        async endInput() {
+          if (child.stdin.destroyed || child.stdin.writableEnded) return;
+          await new Promise<void>((resolve, reject) => {
+            child.stdin.end((error?: Error | null) => error ? reject(error) : resolve());
+          });
         },
         abort: () => { child.kill('SIGTERM'); },
         kill: () => { child.kill('SIGKILL'); },
@@ -374,8 +418,13 @@ export class NativeWorkerProcessPort implements WorkerPort {
   readonly #envAllowlist: readonly string[];
   readonly #maxOutputBytes: number;
   readonly #parentAgentId: string;
+  readonly #workerDepth: number;
+  readonly #maxWorkerDepth: number;
   readonly #worktreesRoot?: string;
   readonly #onProcessStarted?: NativeWorkerProcessPortOptions['onProcessStarted'];
+  readonly #messageJournal?: NativeWorkerMessageJournal;
+  readonly #workerCustomization?: NativeResolvedPortableCustomizationDescriptorV1;
+  readonly #workerPromptCustomization?: NativeWorkerPromptCustomizationV1;
 
   constructor(options: NativeWorkerProcessPortOptions) {
     this.#process = options.process;
@@ -387,14 +436,28 @@ export class NativeWorkerProcessPort implements WorkerPort {
     for (const key of this.#envAllowlist) safeString(key, 'Worker environment allowlist key');
     this.#maxOutputBytes = positiveInteger(options.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, 'maxOutputBytes');
     this.#parentAgentId = options.parentAgentId?.trim() || this.#sourceEnv.OCTOCODE_AGENT_ID?.trim() || 'native-agent';
+    this.#workerDepth = nonNegativeInteger(options.workerDepth, 0, 'workerDepth');
+    this.#maxWorkerDepth = positiveInteger(options.maxWorkerDepth, DEFAULT_MAX_WORKER_DEPTH, 'maxWorkerDepth');
+    if (this.#maxWorkerDepth !== DEFAULT_MAX_WORKER_DEPTH) {
+      throw new RuntimeFailure('validation', 'Native workers are leaf-only; maxWorkerDepth must be 1');
+    }
+    if (this.#workerDepth > this.#maxWorkerDepth) throw new RuntimeFailure('validation', 'workerDepth cannot exceed maxWorkerDepth');
     this.#worktreesRoot = options.worktreesRoot === undefined
       ? undefined
       : path.resolve(safeString(options.worktreesRoot, 'Worker worktrees root'));
     this.#onProcessStarted = options.onProcessStarted;
+    this.#messageJournal = options.messageJournal;
+    this.#workerCustomization = options.workerCustomization;
+    this.#workerPromptCustomization = options.workerPromptCustomization;
   }
 
   async spawn(packet: WorkerSpawnPacket, signal: AbortSignal): Promise<WorkerHandle> {
     if (signal.aborted) throw new RuntimeFailure('cancelled', 'Worker spawn was cancelled');
+    const childDepth = this.#workerDepth + 1;
+    const delegates = packet.capabilities.tools.includes('worker');
+    if (delegates && childDepth >= this.#maxWorkerDepth) {
+      throw new RuntimeFailure('validation', `Worker capability exceeds the native worker depth cap ${this.#maxWorkerDepth}`);
+    }
     const workerCwd = packet.workspace.mode === 'worktree'
       ? canonicalDirectory(this.#worktreesRoot === undefined
         ? packet.workspace.path
@@ -403,13 +466,19 @@ export class NativeWorkerProcessPort implements WorkerPort {
     const prompt = safeString(packet.prompt, 'Worker prompt');
     const capabilities = capabilityEnvironment(packet);
     const promptDigest = sha256(prompt);
+    const customizationDigest = this.#workerCustomization !== undefined
+      ? sha256(JSON.stringify(this.#workerCustomization))
+      : this.#workerPromptCustomization === undefined
+        ? null
+        : sha256(JSON.stringify(this.#workerPromptCustomization));
     const cacheKey = sha256(JSON.stringify([
       this.#command,
       this.#argvPrefix,
-      this.#cwd,
+      workerCwd,
       promptDigest,
       packet.promptSnapshotId,
       packet.capabilities,
+      customizationDigest,
     ]));
     const env: NodeJS.ProcessEnv = {};
     for (const key of this.#envAllowlist) {
@@ -417,23 +486,42 @@ export class NativeWorkerProcessPort implements WorkerPort {
       if (value !== undefined) env[key] = value;
     }
     env.OCTOCODE_NATIVE_WORKER = '1';
+    env.OCTOCODE_NATIVE_WORKER_BOOTSTRAP_FD = '3';
+    env.OCTOCODE_NATIVE_WORKER_DEPTH = String(childDepth);
+    env.OCTOCODE_NATIVE_WORKER_MAX_DEPTH = String(this.#maxWorkerDepth);
     env.OCTOCODE_AGENT_ID = `${this.#parentAgentId}:worker:${packet.workerId}`;
+    env.OCTOCODE_WORKER_ID = packet.workerId;
     env.OCTOCODE_WORKER_CORRELATION_ID = packet.correlationId;
     env.OCTOCODE_EXPECTED_PROMPT_SHA256 = safeString(packet.promptSnapshotId, 'Worker prompt snapshot id');
     env.OCTOCODE_WORKER_ALLOWED_TOOLS = capabilities.tools;
+    if (capabilities.octocodeTools !== undefined) env.OCTOCODE_WORKER_ALLOWED_OCTOCODE_TOOLS = capabilities.octocodeTools;
     env.OCTOCODE_WORKER_ALLOWED_MODELS = capabilities.models;
     env.OCTOCODE_WORKER_MAX_TURNS = capabilities.maxTurns;
     const ownershipToken = randomUUID();
     env.OCTOCODE_WORKER_OWNERSHIP_TOKEN = ownershipToken;
+    const bootstrapPacket: NativeWorkerBootstrapPacketV1 = {
+      schemaVersion: 1,
+      type: 'native.worker.bootstrap',
+      workerId: packet.workerId,
+      correlationId: packet.correlationId,
+      promptSnapshotId: packet.promptSnapshotId,
+      ...(this.#workerCustomization === undefined
+        ? {}
+        : { customization: this.#workerCustomization }),
+      ...(this.#workerPromptCustomization === undefined
+        ? {}
+        : { promptCustomization: this.#workerPromptCustomization }),
+    };
     const spec: NativeWorkerProcessSpec = Object.freeze({
       command: this.#command,
-      args: Object.freeze([...this.#argvPrefix, '--mode', 'rpc', '--no-session']),
+      args: Object.freeze([...this.#argvPrefix, '--mode', 'rpc', '--no-session', ...(delegates ? ['--allow-workers'] : [])]),
       cwd: workerCwd,
       env: Object.freeze(env),
       shell: false,
       promptDigest,
       cacheKey,
       ownershipToken,
+      bootstrap: encodeNativeWorkerBootstrapPacketV1(bootstrapPacket),
     });
     const processHandle = this.#process.spawn(spec);
     if (this.#onProcessStarted !== undefined) {
@@ -454,6 +542,8 @@ export class NativeWorkerProcessPort implements WorkerPort {
     let protocolFailure: string | undefined;
     let requestSequence = 0;
     const pending = new Map<string, { resolve(response: RpcResponse): void; reject(error: Error): void }>();
+    let journalTail: Promise<void> = Promise.resolve();
+    let journalFailure: string | undefined;
 
     const forceKill = (): void => {
       if (killSent) return;
@@ -468,15 +558,36 @@ export class NativeWorkerProcessPort implements WorkerPort {
       pending.clear();
       forceKill();
     };
-    const request = (command: RuntimeCommand): { written: Promise<void>; response: Promise<RpcResponse> } => {
+    const settleJournal = (operation: () => Promise<void>, reason: string): Promise<void> => {
+      const settlement = journalTail.then(operation);
+      journalTail = settlement.catch(() => { journalFailure ??= reason; });
+      return settlement;
+    };
+    const request = async (command: NativeWorkerInputCommand): Promise<{ written: Promise<void>; response: Promise<RpcResponse> }> => {
       const requestId = `native-worker:${packet.workerId}:${++requestSequence}`;
+      const lease = await this.#messageJournal?.stage({
+        workerId: String(packet.workerId),
+        correlationId: String(packet.correlationId),
+        sessionId: String(packet.sessionId),
+        parentAgentId: this.#parentAgentId,
+        requestId,
+        command,
+      });
+      const deliveryCommand = lease?.command ?? command;
       let resolve!: (response: RpcResponse) => void;
       let reject!: (error: Error) => void;
-      const response = new Promise<RpcResponse>((accept, decline) => { resolve = accept; reject = decline; });
+      const rpcResponse = new Promise<RpcResponse>((accept, decline) => { resolve = accept; reject = decline; });
       pending.set(requestId, { resolve, reject });
-      const written = processHandle.write(`${JSON.stringify({ protocolVersion: 1, requestId, command })}\n`).catch((error: unknown) => {
+      const written = processHandle.write(`${JSON.stringify({ protocolVersion: 1, requestId, command: deliveryCommand })}\n`).catch((error: unknown) => {
         pending.delete(requestId);
         reject(error instanceof Error ? error : new Error('Native worker RPC write failed'));
+        throw error;
+      });
+      const response = rpcResponse.then(async (value) => {
+        if (lease !== undefined) await settleJournal(() => lease.ack(), 'Worker message acknowledgement failed');
+        return value;
+      }, async (error: unknown) => {
+        if (lease !== undefined) await settleJournal(() => lease.release(), 'Worker message release failed');
         throw error;
       });
       return { written, response };
@@ -484,10 +595,12 @@ export class NativeWorkerProcessPort implements WorkerPort {
     const abort = async (reason: string): Promise<void> => {
       if (termSent || killSent) return;
       termSent = true;
-      const cancel = request({ type: 'input.cancel', reason });
-      try { await cancel.written; }
+      try {
+        const cancel = await request({ type: 'input.cancel', reason });
+        await cancel.written;
+        void cancel.response.catch(() => undefined);
+      }
       catch { /* TERM is still required if the RPC stream is already broken. */ }
-      void cancel.response.catch(() => undefined);
       processHandle.abort();
     };
     const onSignalAbort = (): void => {
@@ -506,8 +619,14 @@ export class NativeWorkerProcessPort implements WorkerPort {
       onFailure: failProtocol,
       onExceeded: () => { failProtocol(`Worker output exceeded ${this.#maxOutputBytes} bytes`); },
     });
-    const initial = request({ type: 'input.submit', text: prompt });
-    await initial.written;
+    let initial: Awaited<ReturnType<typeof request>>;
+    try {
+      initial = await request({ type: 'input.submit', text: prompt });
+      await initial.written;
+    } catch (error) {
+      forceKill();
+      throw error;
+    }
     void initial.response.then((response) => {
       if (!response.ok) failProtocol('Worker rejected its initial prompt');
     }, () => undefined);
@@ -518,7 +637,17 @@ export class NativeWorkerProcessPort implements WorkerPort {
         signal.removeEventListener('abort', onSignalAbort);
       }
       const captured = await capture;
-      if (pending.size > 0 && requestedOutcome === undefined) failProtocol('Worker RPC stream ended with unresolved requests');
+      if (pending.size > 0) {
+        if (requestedOutcome === undefined) {
+          failProtocol('Worker RPC stream ended with unresolved requests');
+        } else {
+          const failure = new RuntimeFailure('cancelled', 'Worker process ended before acknowledging all input');
+          for (const request of pending.values()) request.reject(failure);
+          pending.clear();
+        }
+      }
+      await journalTail;
+      if (journalFailure !== undefined) failProtocol(journalFailure);
       const handback: NativeWorkerHandback = Object.freeze({
         schemaVersion: 1,
         text: captured.text,
@@ -537,13 +666,16 @@ export class NativeWorkerProcessPort implements WorkerPort {
 
     return Object.freeze({
       completion,
+      async join(): Promise<void> {
+        await processHandle.endInput();
+      },
       async send(workerPacket: WorkerPacket): Promise<void> {
-        const command: RuntimeCommand = workerPacket.type === 'worker.steer'
+        const command: NativeWorkerInputCommand = workerPacket.type === 'worker.steer'
           ? { type: 'input.steer', text: workerPacket.text }
           : workerPacket.type === 'worker.follow-up'
             ? { type: 'input.follow-up', text: workerPacket.text }
             : { type: 'input.submit', text: workerPacket.text };
-        const sent = request(command);
+        const sent = await request(command);
         await sent.written;
         const response = await sent.response;
         if (!response.ok) throw new RuntimeFailure('adapter-translation', 'Native worker rejected an input command');

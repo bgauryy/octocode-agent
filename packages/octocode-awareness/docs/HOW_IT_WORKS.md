@@ -71,7 +71,7 @@ INSTALL PACKAGE -> INSTALL SKILL -> INIT STORE -> SET IDENTITY
 ```
 
 1. Install the package and the `octocode-awareness` skill for the host.
-2. Run `init` once. It creates/checks the advanced workflow SQLite store; it does
+2. Run `maintenance init` once. It creates/checks the advanced workflow SQLite store; it does
    not create repository work.
 3. Set one stable `OCTOCODE_AGENT_ID` for the main agent. Host-provided child IDs keep
    subagents distinct while the parent CLI and hooks share one identity.

@@ -49,14 +49,14 @@ authoritative.
 Use the CLI rather than editing SQLite directly:
 
 ```bash
-npx @octocodeai/octocode-awareness init --compact
+npx @octocodeai/octocode-awareness maintenance init --compact
 npx @octocodeai/octocode-awareness workspace status --workspace "$PWD" --compact
 ```
 
 For isolated testing, provide an explicit database:
 
 ```bash
-npx @octocodeai/octocode-awareness init --db /absolute/path/agent.sqlite3 --compact
+npx @octocodeai/octocode-awareness maintenance init --db /absolute/path/agent.sqlite3 --compact
 ```
 
 See [DB.md](DB.md) for table ownership and fail-closed schema checks, and

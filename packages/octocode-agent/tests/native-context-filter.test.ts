@@ -91,4 +91,12 @@ describe('filterNativeContextEvent', () => {
     expect(filterNativeContextEvent({ eventId: 'evt-empty', text: ' ', provenance: 'peer-attributed-data' }))
       .toEqual({ decision: 'reject', reason: 'invalid' });
   });
+
+  it('rejects peer content that exceeds the model-context byte budget', () => {
+    expect(filterNativeContextEvent({
+      eventId: 'evt-oversized',
+      text: `[peer:worker-1; authority:data]\n${'x'.repeat(128)}`,
+      provenance: 'peer-attributed-data',
+    }, { maxTextBytes: 64 })).toEqual({ decision: 'reject', reason: 'oversized' });
+  });
 });

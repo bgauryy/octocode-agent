@@ -3,11 +3,12 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Ajv from 'ajv';
 import Ajv2020 from 'ajv/dist/2020.js';
-import { Client, StreamableHTTPClientTransport, type Progress, type Transport } from '@modelcontextprotocol/client';
+import { Client, StreamableHTTPClientTransport, specTypeSchemas, type Progress, type Transport } from '@modelcontextprotocol/client';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { createEffectSet, type HookDecision, type JsonSchema, type ToolRegistry } from '@octocodeai/agent-core';
+import { RuntimeFailure, createEffectSet, jsonSchemaError, type HookDecision, type JsonSchema, type ToolRegistry } from '@octocodeai/agent-core';
 import { discoverMcpSystem, repositoryDirectories } from '@octocodeai/octocode-shared/agent-skills';
 import { getOctocodeHome, workspaceAgentRoot } from '@octocodeai/octocode-shared/paths';
+import type { NativeMcpOAuthFlow } from './native-mcp-oauth.js';
 
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const SERVER_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -28,26 +29,35 @@ export interface NativeMcpServerConfig {
   headers?: Record<string, string>;
   headerRefs?: Record<string, string>;
   bearerTokenEnvVar?: string;
+  oauth?: true;
   timeoutMs?: number;
+  maxConcurrentCalls?: number;
   provenance?: { scope: 'global' | 'workspace'; file: string; discoveryOrder: number };
   defaultEnabled?: boolean;
   discovered?: { host: string; scope: 'project' | 'user'; path: string; originalName: string };
 }
 
 export interface NativeMcpClient {
-  listTools(params?: { cursor?: string }, options?: NativeMcpRequestOptions): Promise<{ tools?: Array<Record<string, unknown>>; nextCursor?: string; ttlMs?: number; cacheScope?: 'public' | 'private' }>;
+  listTools(params?: { cursor?: string }, options?: NativeMcpRequestOptions): Promise<{ tools?: Array<Record<string, unknown>>; nextCursor?: string; ttlMs?: number }>;
   callTool(params: { name: string; arguments?: Record<string, unknown> }, options?: NativeMcpRequestOptions): Promise<unknown>;
   listResources(params?: { cursor?: string }, options?: NativeMcpRequestOptions): Promise<{ resources?: Array<Record<string, unknown>>; nextCursor?: string }>;
   readResource(params: { uri: string }, options?: NativeMcpRequestOptions): Promise<unknown>;
   listPrompts(params?: { cursor?: string }, options?: NativeMcpRequestOptions): Promise<{ prompts?: Array<Record<string, unknown>>; nextCursor?: string }>;
   getPrompt(params: { name: string; arguments?: Record<string, string> }, options?: NativeMcpRequestOptions): Promise<unknown>;
   complete(params: { ref: Record<string, unknown>; argument: { name: string; value: string } }, options?: NativeMcpRequestOptions): Promise<unknown>;
-  getTask?(params: { taskId: string }, options?: NativeMcpRequestOptions): Promise<unknown>;
-  getTaskResult?(params: { taskId: string }, options?: NativeMcpRequestOptions): Promise<unknown>;
-  cancelTask?(params: { taskId: string }, options?: NativeMcpRequestOptions): Promise<unknown>;
+  /** Send a negotiated MCP request. The production client applies its official era-specific result schema. */
+  request(
+    request: {
+      method: 'tasks/get' | 'tasks/list' | 'tasks/result' | 'tasks/cancel';
+      params?: { taskId?: string; cursor?: string };
+    },
+    resultSchema: unknown,
+    options?: NativeMcpRequestOptions,
+  ): Promise<unknown>;
   getServerCapabilities?(): { tools?: { listChanged?: boolean }; elicitation?: Record<string, unknown>; tasks?: Record<string, unknown> } | undefined;
   setNotificationHandler?(method: 'notifications/tools/list_changed', handler: () => void | Promise<void>): void;
   setRequestHandler?(method: 'elicitation/create', handler: (request: { params: Record<string, unknown> }, extra?: { signal?: AbortSignal }) => Promise<NativeMcpElicitationResult>): void;
+  onclose?: () => void;
   close(): Promise<void>;
 }
 
@@ -66,9 +76,32 @@ export interface NativeMcpOptions {
   isEnabled?: (server: string, tool?: string, defaultEnabled?: boolean) => boolean;
   catalogTtlMs?: number;
   now?: () => number;
+  onCatalogInvalidated?: (notification: NativeMcpCatalogInvalidatedNotification) => void | Promise<void>;
   elicit?: (request: NativeMcpElicitationRequest) => Promise<NativeMcpElicitationResult>;
   taskStoreFile?: string;
   maxStoredTasks?: number;
+  oauth?: {
+    createFlow(input: { serverName: string; serverUrl: string }): Promise<NativeMcpOAuthFlow>;
+    status(input: { serverName: string; serverUrl: string }): Promise<{ state: 'authorization-required' | 'connected'; credentialConfigured: boolean }>;
+    revoke(input: { serverName: string; serverUrl: string }): Promise<void>;
+  };
+}
+
+export interface NativeMcpCatalogInvalidatedNotification {
+  readonly schemaVersion: 1;
+  readonly kind: 'mcp.catalog-invalidated';
+  readonly severity: 'info';
+  readonly server: string;
+  readonly message: string;
+}
+
+export interface NativeMcpLiveSnapshot {
+  readonly connectionState: 'disconnected' | 'connecting' | 'connected';
+  readonly catalogState: 'not-loaded' | 'ready' | 'stale' | 'empty';
+  readonly lastRefreshAt?: number;
+  readonly knownCatalogNames: readonly string[];
+  readonly knownCatalogCount: number;
+  readonly knownCatalogNamesTruncated: boolean;
 }
 
 export interface NativeMcpElicitationRequest {
@@ -87,7 +120,7 @@ export interface NativeMcpElicitationResult {
 
 interface StoredMcpTask {
   readonly task: unknown;
-  readonly provenance: { readonly server: string; readonly operation: 'get' | 'result' | 'cancel'; readonly observedAt: number };
+  readonly provenance: { readonly server: string; readonly operation: 'get' | 'list' | 'result' | 'cancel'; readonly observedAt: number };
 }
 
 class McpTaskStoreCorruptionError extends Error {
@@ -121,43 +154,153 @@ export interface NativeMcpHookResult {
 }
 
 const MAX_MCP_CATALOG_PAGES = 100;
+const MAX_MCP_CATALOG_ITEMS = 1_000;
+const MAX_MCP_CATALOG_ITEM_BYTES = 256 * 1024;
+const MAX_MCP_TRANSPORT_BYTES = 1024 * 1024;
+const MAX_MCP_CURSOR_BYTES = 8 * 1024;
+const MAX_MCP_JSON_DEPTH = 64;
+const MAX_MCP_JSON_NODES = 50_000;
+const MAX_MCP_OBJECT_PROPERTIES = 2_000;
+const MAX_MCP_PROGRESS_UPDATES = 256;
+const MAX_MCP_PROGRESS_MESSAGE_BYTES = 4 * 1024;
+const MAX_MCP_PROGRESS_BYTES = 16 * 1024;
+const MAX_MCP_ELICITATION_BYTES = 64 * 1024;
+const MAX_MCP_ELICITATION_URL_BYTES = 8 * 1024;
+const MAX_MCP_TASK_ITEM_BYTES = 256 * 1024;
 const DEFAULT_MCP_CATALOG_TTL_MS = 0;
 const DEFAULT_MAX_STORED_TASKS = 100;
 const SENSITIVE_KEY_RE = /(?:api[-_]?key|token|secret|password|authorization|cookie)/i;
+const MAX_PARALLEL_MCP_CALLS = 8;
+
+class McpPayloadBoundsError extends Error {
+  readonly code = 'MCP_PAYLOAD_BOUNDS';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'McpPayloadBoundsError';
+  }
+}
+
+interface PermitWaiter {
+  readonly resolve: () => void;
+  readonly reject: (error: Error) => void;
+  readonly signal: AbortSignal;
+  readonly abort: () => void;
+}
+
+class McpPermitPool {
+  readonly #waiters: PermitWaiter[] = [];
+  #active = 0;
+
+  constructor(readonly maximum: number) {}
+
+  async run<T>(signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
+    await this.acquire(signal);
+    try { return await operation(); }
+    finally { this.release(); }
+  }
+
+  private acquire(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.reject(new RuntimeFailure('cancelled', 'MCP call cancelled'));
+    if (this.#active < this.maximum) {
+      this.#active += 1;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+      const waiter: PermitWaiter = {
+        resolve, reject, signal,
+        abort: () => {
+          const index = this.#waiters.indexOf(waiter);
+          if (index >= 0) this.#waiters.splice(index, 1);
+          reject(new RuntimeFailure('cancelled', 'MCP call cancelled'));
+        },
+      };
+      signal.addEventListener('abort', waiter.abort, { once: true });
+      this.#waiters.push(waiter);
+    });
+  }
+
+  private release(): void {
+    for (;;) {
+      const waiter = this.#waiters.shift();
+      if (!waiter) {
+        this.#active -= 1;
+        return;
+      }
+      waiter.signal.removeEventListener('abort', waiter.abort);
+      if (waiter.signal.aborted) continue;
+      waiter.resolve();
+      return;
+    }
+  }
+}
 
 type NativeMcpConnect = (name: string, config: NativeMcpServerConfig, signal: AbortSignal) => Promise<NativeMcpClient>;
-type NativeMcpCatalog = { expiresAt: number; tools: Array<Record<string, unknown>> };
+type NativeMcpCatalog = { expiresAt: number; refreshedAt: number; tools: Array<Record<string, unknown>> };
+type NativeMcpManagerOptions = {
+  readonly now?: () => number;
+  readonly onCatalogInvalidated?: NativeMcpOptions['onCatalogInvalidated'];
+};
+const MAX_LIVE_MCP_CATALOG_NAMES = 100;
 
 export class NativeMcpSessionManager {
   readonly #connections = new Map<string, Promise<NativeMcpClient>>();
+  readonly #connectionStates = new Map<string, 'connecting' | 'connected'>();
   readonly #catalogs = new Map<string, NativeMcpCatalog>();
+  readonly #invalidatedCatalogs = new Set<string>();
   #closed = false;
   #closePromise: Promise<void> | undefined;
   #taskWrites = Promise.resolve();
   #hookCall: ((handler: NativeMcpHookHandler, input: Readonly<Record<string, unknown>>, signal: AbortSignal) => Promise<NativeMcpHookResult>) | undefined;
+  readonly #now: () => number;
 
-  constructor(private readonly connect: NativeMcpConnect) {}
+  constructor(
+    private readonly connect: NativeMcpConnect,
+    private readonly options: NativeMcpManagerOptions = {},
+  ) {
+    this.#now = options.now ?? Date.now;
+  }
 
   async acquire(name: string, config: NativeMcpServerConfig, signal: AbortSignal): Promise<NativeMcpClient> {
     if (this.#closed) throw new Error('MCP session manager is closed');
     const existing = this.#connections.get(name);
-    if (existing) return existing;
+    if (existing) return withMcpCancellation(existing, signal, `MCP connection cancelled for ${name}`);
+    this.#connectionStates.set(name, 'connecting');
     const connection = this.connect(name, config, signal).then((client) => {
+      this.#connectionStates.set(name, 'connected');
+      const previousOnClose = client.onclose;
+      client.onclose = () => {
+        previousOnClose?.();
+        if (this.#connections.get(name) !== connection) return;
+        this.#connections.delete(name);
+        this.#connectionStates.delete(name);
+        this.#invalidatedCatalogs.add(name);
+      };
       if (client.getServerCapabilities?.()?.tools?.listChanged === true && client.setNotificationHandler) {
-        client.setNotificationHandler('notifications/tools/list_changed', () => {
-          this.#catalogs.delete(name);
+        client.setNotificationHandler('notifications/tools/list_changed', async () => {
+          this.#invalidatedCatalogs.add(name);
+          const notification: NativeMcpCatalogInvalidatedNotification = {
+            schemaVersion: 1,
+            kind: 'mcp.catalog-invalidated',
+            severity: 'info',
+            server: name,
+            message: `MCP tool catalog changed · ${name} · refresh required`,
+          };
+          await Promise.resolve(this.options.onCatalogInvalidated?.(notification)).catch(() => undefined);
         });
       }
       return client;
     }).catch((error: unknown) => {
-      this.#connections.delete(name);
+      if (this.#connections.get(name) === connection) this.#connections.delete(name);
+      this.#connectionStates.delete(name);
       throw error;
     });
     this.#connections.set(name, connection);
-    return connection;
+    return withMcpCancellation(connection, signal, `MCP connection cancelled for ${name}`);
   }
 
   catalog(name: string, now: number): Array<Record<string, unknown>> | undefined {
+    if (this.#invalidatedCatalogs.has(name)) return undefined;
     const catalog = this.#catalogs.get(name);
     return catalog && catalog.expiresAt > now ? catalog.tools : undefined;
   }
@@ -166,8 +309,32 @@ export class NativeMcpSessionManager {
     return this.#catalogs.has(name);
   }
 
-  setCatalog(name: string, catalog: NativeMcpCatalog): void {
-    this.#catalogs.set(name, catalog);
+  catalogState(name: string, now: number): NativeMcpLiveSnapshot['catalogState'] {
+    const catalog = this.#catalogs.get(name);
+    if (!catalog) return this.#invalidatedCatalogs.has(name) ? 'stale' : 'not-loaded';
+    if (this.#invalidatedCatalogs.has(name) || catalog.expiresAt <= now) return 'stale';
+    return catalog.tools.length === 0 ? 'empty' : 'ready';
+  }
+
+  setCatalog(name: string, catalog: Omit<NativeMcpCatalog, 'refreshedAt'>): void {
+    this.#catalogs.set(name, { ...catalog, refreshedAt: this.#now() });
+    this.#invalidatedCatalogs.delete(name);
+  }
+
+  liveSnapshot(name: string, now = this.#now()): NativeMcpLiveSnapshot {
+    const catalog = this.#catalogs.get(name);
+    const names = catalog?.tools
+      .map((tool) => tool.name)
+      .filter((toolName): toolName is string => typeof toolName === 'string')
+      .sort((left, right) => left.localeCompare(right)) ?? [];
+    return {
+      connectionState: this.#connectionStates.get(name) ?? 'disconnected',
+      catalogState: this.catalogState(name, now),
+      ...(catalog === undefined ? {} : { lastRefreshAt: catalog.refreshedAt }),
+      knownCatalogNames: names.slice(0, MAX_LIVE_MCP_CATALOG_NAMES),
+      knownCatalogCount: names.length,
+      knownCatalogNamesTruncated: names.length > MAX_LIVE_MCP_CATALOG_NAMES,
+    };
   }
 
   persistTask(file: string, entry: StoredMcpTask, maximum: number): Promise<void> {
@@ -192,6 +359,8 @@ export class NativeMcpSessionManager {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
     this.#catalogs.clear();
+    this.#invalidatedCatalogs.clear();
+    this.#connectionStates.clear();
     const connections = [...this.#connections.values()];
     this.#connections.clear();
     this.#closePromise = (async () => {
@@ -206,6 +375,159 @@ export class NativeMcpSessionManager {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function throwIfMcpAborted(signal: AbortSignal | undefined, message: string): void {
+  if (signal?.aborted) throw new RuntimeFailure('cancelled', message);
+}
+
+function withMcpCancellation<T>(operation: Promise<T>, signal: AbortSignal | undefined, message: string): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) return Promise.reject(new RuntimeFailure('cancelled', message));
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new RuntimeFailure('cancelled', message));
+    signal.addEventListener('abort', abort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function boundedMcpValue(value: unknown, label: string, maximumBytes: number, redact = false): unknown {
+  let nodes = 0;
+  let approximateBytes = 0;
+  const ancestors = new Set<object>();
+  const addBytes = (bytes: number): void => {
+    approximateBytes += bytes;
+    if (approximateBytes > maximumBytes) throw new McpPayloadBoundsError(`${label} exceeds the ${maximumBytes} byte limit`);
+  };
+  const visit = (candidate: unknown, depth: number): unknown => {
+    nodes += 1;
+    if (nodes > MAX_MCP_JSON_NODES) throw new McpPayloadBoundsError(`${label} exceeds the JSON node-count limit`);
+    if (depth > MAX_MCP_JSON_DEPTH) throw new McpPayloadBoundsError(`${label} exceeds the JSON depth limit`);
+    if (candidate === null) { addBytes(4); return null; }
+    if (typeof candidate === 'string') { addBytes(Buffer.byteLength(candidate, 'utf8') + 2); return candidate; }
+    if (typeof candidate === 'boolean') { addBytes(candidate ? 4 : 5); return candidate; }
+    if (typeof candidate === 'number') {
+      if (!Number.isFinite(candidate)) throw new McpPayloadBoundsError(`${label} is not valid bounded JSON`);
+      addBytes(24);
+      return candidate;
+    }
+    if (typeof candidate !== 'object') throw new McpPayloadBoundsError(`${label} is not valid bounded JSON`);
+    if (ancestors.has(candidate)) throw new McpPayloadBoundsError(`${label} is not valid bounded JSON`);
+    ancestors.add(candidate);
+    try {
+      if (Array.isArray(candidate)) {
+        if (candidate.length > MAX_MCP_JSON_NODES) throw new McpPayloadBoundsError(`${label} exceeds the JSON item-count limit`);
+        addBytes(2 + candidate.length);
+        return candidate.map((item) => visit(item, depth + 1));
+      }
+      if (!isRecord(candidate)) throw new McpPayloadBoundsError(`${label} is not valid bounded JSON`);
+      const prototype = Object.getPrototypeOf(candidate);
+      if (prototype !== Object.prototype && prototype !== null) throw new McpPayloadBoundsError(`${label} is not valid bounded JSON`);
+      const entries = Object.entries(candidate);
+      if (entries.length > MAX_MCP_OBJECT_PROPERTIES) throw new McpPayloadBoundsError(`${label} exceeds the object-property limit`);
+      addBytes(2 + entries.length);
+      const result: Record<string, unknown> = {};
+      for (const [key, item] of entries) {
+        addBytes(Buffer.byteLength(key, 'utf8') + 3);
+        result[key] = visit(item, depth + 1);
+      }
+      return result;
+    } finally {
+      ancestors.delete(candidate);
+    }
+  };
+  const cloned = visit(value, 0);
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(cloned);
+  } catch (error) {
+    throw new McpPayloadBoundsError(`${label} is not valid bounded JSON`);
+  }
+  if (Buffer.byteLength(encoded, 'utf8') > maximumBytes) {
+    throw new McpPayloadBoundsError(`${label} exceeds the ${maximumBytes} byte limit`);
+  }
+  return redact ? redactMcpValue(cloned) : cloned;
+}
+
+function boundedMcpRecord(value: unknown, label: string, maximumBytes: number, redact = false): Record<string, unknown> {
+  const bounded = boundedMcpValue(value, label, maximumBytes, redact);
+  if (!isRecord(bounded)) throw new McpPayloadBoundsError(`${label} must be a JSON object`);
+  return bounded;
+}
+
+function truncateUtf8(value: string, maximumBytes: number): string {
+  if (Buffer.byteLength(value, 'utf8') <= maximumBytes) return value;
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(value.slice(0, middle), 'utf8') <= maximumBytes) low = middle;
+    else high = middle - 1;
+  }
+  if (low > 0 && low < value.length) {
+    const previous = value.charCodeAt(low - 1);
+    const next = value.charCodeAt(low);
+    if (previous >= 0xD800 && previous <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) low -= 1;
+  }
+  return value.slice(0, low);
+}
+
+function boundedMcpProgress(value: unknown): Progress {
+  if (!isRecord(value) || typeof value.progress !== 'number' || !Number.isFinite(value.progress)) {
+    throw new McpPayloadBoundsError('MCP progress update is invalid');
+  }
+  const progress: Progress = {
+    progress: value.progress,
+    ...(typeof value.total === 'number' && Number.isFinite(value.total) ? { total: value.total } : {}),
+    ...(typeof value.message === 'string' ? { message: truncateUtf8(value.message, MAX_MCP_PROGRESS_MESSAGE_BYTES) } : {}),
+  };
+  return boundedMcpValue(progress, 'MCP progress update', MAX_MCP_PROGRESS_BYTES) as Progress;
+}
+
+interface McpCatalogAccumulator {
+  readonly items: Array<Record<string, unknown>>;
+  encodedBytes: number;
+}
+
+function appendMcpCatalogItems(accumulator: McpCatalogAccumulator, value: unknown, family: 'tools' | 'resources' | 'prompts'): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) throw new McpPayloadBoundsError(`MCP ${family} catalog items must be an array`);
+  if (accumulator.items.length + value.length > MAX_MCP_CATALOG_ITEMS) {
+    throw new McpPayloadBoundsError(`MCP ${family} catalog exceeds the item-count limit`);
+  }
+  for (const candidate of value) {
+    const item = boundedMcpRecord(candidate, `MCP ${family} catalog item`, MAX_MCP_CATALOG_ITEM_BYTES);
+    if (family === 'tools') {
+      if (typeof item.name !== 'string' || item.name.length === 0 || item.name.length > 256) {
+        throw new McpPayloadBoundsError('MCP tools catalog item has an invalid name');
+      }
+      if (item.inputSchema !== undefined && !isRecord(item.inputSchema)) {
+        throw new McpPayloadBoundsError('MCP tools catalog item has an invalid input schema');
+      }
+    }
+    accumulator.encodedBytes += Buffer.byteLength(JSON.stringify(item), 'utf8') + 1;
+    if (accumulator.encodedBytes > MAX_MCP_TRANSPORT_BYTES) {
+      throw new McpPayloadBoundsError(`MCP ${family} catalog exceeds the aggregate byte limit`);
+    }
+    accumulator.items.push(item);
+  }
+}
+
+function boundedMcpCursor(value: unknown, family: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > MAX_MCP_CURSOR_BYTES) {
+    throw new McpPayloadBoundsError(`MCP ${family} cursor is invalid or exceeds the byte limit`);
+  }
+  return value;
 }
 
 function redactMcpValue(value: unknown, seen = new WeakSet<object>()): unknown {
@@ -248,10 +570,16 @@ function isStoredMcpTask(value: unknown): value is StoredMcpTask {
   const { server, operation, observedAt } = value.provenance;
   return typeof server === 'string'
     && SERVER_NAME_RE.test(server)
-    && (operation === 'get' || operation === 'result' || operation === 'cancel')
+    && (operation === 'get' || operation === 'list' || operation === 'result' || operation === 'cancel')
     && typeof observedAt === 'number'
     && Number.isFinite(observedAt)
     && observedAt >= 0;
+}
+
+function boundedStoredMcpTask(value: unknown): StoredMcpTask {
+  const entry = boundedMcpValue(value, 'MCP task entry', MAX_MCP_TASK_ITEM_BYTES);
+  if (!isStoredMcpTask(entry)) throw new McpPayloadBoundsError('MCP task entry is not a valid JSON task record');
+  return entry;
 }
 
 function readTaskStore(file: string): StoredMcpTask[] {
@@ -266,7 +594,7 @@ function readTaskStore(file: string): StoredMcpTask[] {
     throw new McpTaskStoreCorruptionError('MCP task state is not a bounded regular file');
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+    const parsed = boundedMcpValue(JSON.parse(fs.readFileSync(file, 'utf8')) as unknown, 'MCP task state', MAX_CONFIG_BYTES);
     if (!isRecord(parsed)
       || Object.keys(parsed).some((key) => key !== 'version' && key !== 'tasks')
       || parsed.version !== MCP_TASK_STORE_VERSION
@@ -283,6 +611,15 @@ function readTaskStore(file: string): StoredMcpTask[] {
     }
     throw error;
   }
+}
+
+function encodedTaskStore(tasks: readonly StoredMcpTask[]): string {
+  const state = boundedMcpValue({ version: MCP_TASK_STORE_VERSION, tasks }, 'MCP task state', MAX_CONFIG_BYTES);
+  const content = `${JSON.stringify(state)}\n`;
+  if (Buffer.byteLength(content, 'utf8') > MAX_CONFIG_BYTES) {
+    throw new McpPayloadBoundsError('MCP task state exceeds the encoded byte limit');
+  }
+  return content;
 }
 
 function syncDirectory(directory: string): void {
@@ -372,16 +709,29 @@ function tryRemoveStaleTaskStoreLock(lockFile: string): boolean {
 }
 
 async function persistTask(file: string, entry: StoredMcpTask, maximum: number): Promise<void> {
+  if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 1_000) {
+    throw new McpPayloadBoundsError('MCP task maximum must be an integer from 1 through 1000');
+  }
+  const boundedEntry = boundedStoredMcpTask(entry);
   const directory = path.dirname(file);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const lockFile = `${file}.lock`;
   await acquireTaskStoreLock(lockFile);
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    const tasks = [...readTaskStore(file), entry].slice(-maximum);
+    const tasks = [...readTaskStore(file), boundedEntry].slice(-maximum);
+    let content: string | undefined;
+    while (content === undefined) {
+      try {
+        content = encodedTaskStore(tasks);
+      } catch (error) {
+        if (!(error instanceof McpPayloadBoundsError) || tasks.length <= 1) throw error;
+        tasks.shift();
+      }
+    }
     const descriptor = fs.openSync(temporary, 'wx', 0o600);
     try {
-      fs.writeFileSync(descriptor, `${JSON.stringify({ version: MCP_TASK_STORE_VERSION, tasks })}\n`);
+      fs.writeFileSync(descriptor, content);
       fs.fsyncSync(descriptor);
     } finally {
       fs.closeSync(descriptor);
@@ -454,10 +804,16 @@ function normalizeServer(value: unknown): NativeMcpServerConfig | undefined {
   }
   if (value.args !== undefined && (!Array.isArray(value.args) || value.args.some((item) => typeof item !== 'string'))) return undefined;
   const timeout = Number(value.timeoutMs);
+  const maxConcurrentCalls = Number(value.maxConcurrentCalls);
   const env = splitReferences(value.env);
   const headers = splitReferences(value.headers);
   const explicitEnvRefs = stringRecord(value.envRefs);
   const explicitHeaderRefs = stringRecord(value.headerRefs);
+  const oauth = value.oauth === true;
+  const hasStaticAuthorization = value.bearerTokenEnvVar !== undefined
+    || Object.keys(headers.values ?? {}).some((key) => key.toLowerCase() === 'authorization')
+    || Object.keys({ ...(headers.refs ?? {}), ...(explicitHeaderRefs ?? {}) }).some((key) => key.toLowerCase() === 'authorization');
+  if (oauth && (hasStaticAuthorization || !url)) return undefined;
   return {
     transport: url ? 'http' : 'stdio',
     ...(command ? { command } : {}),
@@ -469,7 +825,9 @@ function normalizeServer(value: unknown): NativeMcpServerConfig | undefined {
     ...(headers.values ? { headers: headers.values } : {}),
     ...((headers.refs || explicitHeaderRefs) ? { headerRefs: { ...(headers.refs ?? {}), ...(explicitHeaderRefs ?? {}) } } : {}),
     ...(typeof value.bearerTokenEnvVar === 'string' ? { bearerTokenEnvVar: value.bearerTokenEnvVar } : {}),
+    ...(oauth ? { oauth: true as const } : {}),
     ...(Number.isFinite(timeout) && timeout >= 1_000 && timeout <= 120_000 ? { timeoutMs: timeout } : {}),
+    ...(Number.isSafeInteger(maxConcurrentCalls) && maxConcurrentCalls >= 1 && maxConcurrentCalls <= 4 ? { maxConcurrentCalls } : {}),
   };
 }
 
@@ -542,9 +900,10 @@ function resolveServerCwd(config: NativeMcpServerConfig, workspace: string): str
   return resolved;
 }
 
-async function connectNativeMcp(_name: string, config: NativeMcpServerConfig, signal: AbortSignal, options: NativeMcpOptions): Promise<NativeMcpClient> {
+export async function connectNativeMcp(name: string, config: NativeMcpServerConfig, signal: AbortSignal, options: NativeMcpOptions): Promise<NativeMcpClient> {
   const env = options.env ?? process.env;
   let transport: Transport;
+  let oauthFlow: NativeMcpOAuthFlow | undefined;
   if (config.transport === 'http') {
     const headers = referencedValues(config.headers, config.headerRefs, env);
     if (config.bearerTokenEnvVar) {
@@ -552,7 +911,16 @@ async function connectNativeMcp(_name: string, config: NativeMcpServerConfig, si
       if (!token) throw new Error(`Missing bearer token environment variable: ${config.bearerTokenEnvVar}`);
       headers.Authorization = `Bearer ${token}`;
     }
-    transport = new StreamableHTTPClientTransport(new URL(config.url!), { requestInit: { headers } });
+    if (config.oauth) {
+      if (!options.oauth) throw new Error(`MCP OAuth server ${name} requires an interactive OAuth host`);
+      oauthFlow = await options.oauth.createFlow({ serverName: name, serverUrl: config.url! });
+    }
+    const httpTransport = new StreamableHTTPClientTransport(new URL(config.url!), {
+      requestInit: { headers },
+      ...(oauthFlow ? { authProvider: oauthFlow.provider } : {}),
+    });
+    oauthFlow?.attachTransport(httpTransport);
+    transport = httpTransport;
   } else {
     transport = new StdioClientTransport({
       command: config.command!,
@@ -566,14 +934,92 @@ async function connectNativeMcp(_name: string, config: NativeMcpServerConfig, si
     { name: 'octocode-agent', version: '1.1.0' },
     { capabilities: { elicitation: { form: {}, url: {} } }, versionNegotiation: { mode: 'auto' } },
   );
-  await client.connect(transport, { signal, timeout: config.timeoutMs ?? 30_000 });
-  return client as unknown as NativeMcpClient;
+  try {
+    await client.connect(transport, { signal, timeout: config.timeoutMs ?? 30_000 });
+  } catch (error) {
+    await oauthFlow?.close();
+    throw error;
+  }
+  if (!oauthFlow) return client as unknown as NativeMcpClient;
+  const nativeClient = client as unknown as NativeMcpClient;
+  const closeClient = nativeClient.close.bind(nativeClient);
+  nativeClient.close = async () => {
+    await Promise.allSettled([closeClient(), oauthFlow.close()]);
+  };
+  return nativeClient;
 }
 
 function requiredString(params: Record<string, unknown>, key: string): string {
   const value = params[key];
   if (typeof value !== 'string' || !value) throw new Error(`MCP ${key} is required`);
   return value;
+}
+
+const MCP_NAME_SCHEMA: JsonSchema = { type: 'string', minLength: 1, maxLength: 256 };
+const MCP_ARGUMENTS_SCHEMA: JsonSchema = { type: 'object', maxProperties: MAX_MCP_OBJECT_PROPERTIES };
+const MCP_CALL_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: { server: MCP_NAME_SCHEMA, tool: MCP_NAME_SCHEMA, arguments: MCP_ARGUMENTS_SCHEMA },
+  required: ['server', 'tool'],
+  additionalProperties: false,
+};
+
+function actionSchema(action: string, properties: Readonly<Record<string, JsonSchema>> = {}, required: readonly string[] = []): JsonSchema {
+  return {
+    type: 'object',
+    properties: { action: { const: action }, ...properties },
+    required: ['action', ...required],
+    additionalProperties: false,
+  };
+}
+
+const MCP_INPUT_SCHEMA: JsonSchema = {
+  oneOf: [
+    actionSchema('status'),
+    actionSchema('auth-status', { server: MCP_NAME_SCHEMA }, ['server']),
+    actionSchema('auth-revoke', { server: MCP_NAME_SCHEMA }, ['server']),
+    actionSchema('capabilities', { server: MCP_NAME_SCHEMA }, ['server']),
+    actionSchema('discover', { server: MCP_NAME_SCHEMA }, ['server']),
+    actionSchema('refresh', { server: MCP_NAME_SCHEMA }, ['server']),
+    actionSchema('describe', { server: MCP_NAME_SCHEMA, tool: MCP_NAME_SCHEMA }, ['server', 'tool']),
+    actionSchema('call', MCP_CALL_SCHEMA.properties, MCP_CALL_SCHEMA.required),
+    actionSchema('parallel-call', {
+      calls: { type: 'array', minItems: 1, maxItems: MAX_PARALLEL_MCP_CALLS, items: MCP_CALL_SCHEMA },
+    }, ['calls']),
+    actionSchema('resources', { server: MCP_NAME_SCHEMA }, ['server']),
+    actionSchema('read-resource', { server: MCP_NAME_SCHEMA, uri: { type: 'string', minLength: 1, maxLength: 8_192 } }, ['server', 'uri']),
+    actionSchema('prompts', { server: MCP_NAME_SCHEMA }, ['server']),
+    actionSchema('get-prompt', { server: MCP_NAME_SCHEMA, prompt: MCP_NAME_SCHEMA, arguments: MCP_ARGUMENTS_SCHEMA }, ['server', 'prompt']),
+    actionSchema('complete', {
+      server: MCP_NAME_SCHEMA,
+      ref: { type: 'object' },
+      argument: {
+        type: 'object',
+        properties: { name: MCP_NAME_SCHEMA, value: { type: 'string', maxLength: 65_536 } },
+        required: ['name', 'value'],
+        additionalProperties: false,
+      },
+    }, ['server', 'ref', 'argument']),
+    actionSchema('task-get', { server: MCP_NAME_SCHEMA, taskId: MCP_NAME_SCHEMA }, ['server', 'taskId']),
+    actionSchema('task-list', {
+      server: MCP_NAME_SCHEMA,
+      cursor: { type: 'string', minLength: 1, maxLength: 8_192 },
+    }, ['server']),
+    actionSchema('task-result', { server: MCP_NAME_SCHEMA, taskId: MCP_NAME_SCHEMA }, ['server', 'taskId']),
+    actionSchema('task-cancel', { server: MCP_NAME_SCHEMA, taskId: MCP_NAME_SCHEMA }, ['server', 'taskId']),
+  ],
+};
+
+function mapMcpBounded<T, R>(items: readonly T[], maximum: number, operation: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  return Promise.all(Array.from({ length: Math.min(maximum, items.length) }, async () => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await operation(items[index]!, index);
+    }
+  })).then(() => results);
 }
 
 export function registerNativeMcpTool(registry: ToolRegistry, options: NativeMcpOptions): NativeMcpSessionManager {
@@ -583,12 +1029,17 @@ export function registerNativeMcpTool(registry: ToolRegistry, options: NativeMcp
     return options.isEnabled?.(server, tool, defaultEnabled) ?? defaultEnabled;
   };
   const connect = options.connect ?? ((name, config, signal) => connectNativeMcp(name, config, signal, options));
-  const manager = new NativeMcpSessionManager(connect);
+  const now = options.now ?? Date.now;
+  const manager = new NativeMcpSessionManager(connect, {
+    now,
+    onCatalogInvalidated: options.onCatalogInvalidated,
+  });
   const ajv = new Ajv({ allErrors: true, strict: false });
   const ajv2020 = new Ajv2020({ allErrors: true, strict: false });
-  const now = options.now ?? Date.now;
   const catalogTtlMs = options.catalogTtlMs ?? DEFAULT_MCP_CATALOG_TTL_MS;
   const configuredClients = new WeakSet<object>();
+  const globalCallPool = new McpPermitPool(4);
+  const serverCallPools = new Map<string, McpPermitPool>();
   const configureClient = (server: string, client: NativeMcpClient): void => {
     if (configuredClients.has(client as object)) return;
     configuredClients.add(client as object);
@@ -596,15 +1047,33 @@ export function registerNativeMcpTool(registry: ToolRegistry, options: NativeMcp
     // in getServerCapabilities(). Presence of the configured broker is the local authorization gate.
     if (client.setRequestHandler && options.elicit) {
       client.setRequestHandler('elicitation/create', async ({ params }, extra) => {
-        const message = typeof params.message === 'string' ? params.message.slice(0, 4_096) : `MCP ${server} requests input.`;
+        throwIfMcpAborted(extra?.signal, `MCP elicitation cancelled for ${server}`);
+        const message = typeof params.message === 'string'
+          ? truncateUtf8(params.message, MAX_MCP_PROGRESS_MESSAGE_BYTES)
+          : `MCP ${server} requests input.`;
         const mode = params.mode === 'url' ? 'url' : 'form';
-        const result = await options.elicit!({
+        const requestedSchema = params.requestedSchema === undefined
+          ? undefined
+          : boundedMcpRecord(params.requestedSchema, 'MCP elicitation requested schema', MAX_MCP_ELICITATION_BYTES);
+        const url = params.url === undefined ? undefined : params.url;
+        if (url !== undefined && (typeof url !== 'string' || Buffer.byteLength(url, 'utf8') > MAX_MCP_ELICITATION_URL_BYTES)) {
+          throw new McpPayloadBoundsError('MCP elicitation URL exceeds the byte limit');
+        }
+        const rawResult = await withMcpCancellation(options.elicit!({
           server, message, mode,
-          ...(isRecord(params.requestedSchema) ? { requestedSchema: params.requestedSchema } : {}),
-          ...(typeof params.url === 'string' ? { url: params.url } : {}),
+          ...(requestedSchema ? { requestedSchema } : {}),
+          ...(url ? { url } : {}),
           ...(extra?.signal ? { signal: extra.signal } : {}),
-        });
-        return redactMcpValue(result) as NativeMcpElicitationResult;
+        }), extra?.signal, `MCP elicitation cancelled for ${server}`);
+        const result = boundedMcpRecord(rawResult, 'MCP elicitation result', MAX_MCP_ELICITATION_BYTES, true);
+        if (!['accept', 'decline', 'cancel'].includes(String(result.action))
+          || (result.content !== undefined && !isRecord(result.content))) {
+          throw new McpPayloadBoundsError('MCP elicitation result is invalid');
+        }
+        return {
+          action: result.action as NativeMcpElicitationResult['action'],
+          ...(isRecord(result.content) ? { content: result.content } : {}),
+        };
       });
     }
   };
@@ -614,16 +1083,22 @@ export function registerNativeMcpTool(registry: ToolRegistry, options: NativeMcp
     requestOptions: { signal: AbortSignal; timeout: number },
     fetchPage: (params: { cursor?: string } | undefined) => Promise<{ nextCursor?: string } & Record<string, unknown>>,
   ): Promise<Record<string, unknown>> => {
-    const items: Array<Record<string, unknown>> = [];
+    const accumulator: McpCatalogAccumulator = { items: [], encodedBytes: 2 };
     let cursor: string | undefined;
+    const seenCursors = new Set<string>();
     for (let page = 0; page < MAX_MCP_CATALOG_PAGES; page += 1) {
-      const result = await fetchPage(cursor === undefined ? undefined : { cursor });
-      const pageItems = result[family];
-      if (Array.isArray(pageItems)) items.push(...pageItems.filter(isRecord));
-      if (!result.nextCursor) return { [family]: items };
-      if (result.nextCursor === cursor) throw new Error(`MCP ${family} pagination did not advance for ${server}`);
-      cursor = result.nextCursor;
-      if (requestOptions.signal.aborted) throw new Error(`MCP ${family} listing cancelled for ${server}`);
+      const result = boundedMcpRecord(await withMcpCancellation(
+        fetchPage(cursor === undefined ? undefined : { cursor }),
+        requestOptions.signal,
+        `MCP ${family} listing cancelled for ${server}`,
+      ), `MCP ${family} catalog transport response`, MAX_MCP_TRANSPORT_BYTES);
+      appendMcpCatalogItems(accumulator, result[family], family);
+      const nextCursor = boundedMcpCursor(result.nextCursor, family);
+      if (nextCursor === undefined) return { [family]: accumulator.items };
+      if (nextCursor === cursor || seenCursors.has(nextCursor)) throw new Error(`MCP ${family} pagination did not advance for ${server}`);
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+      throwIfMcpAborted(requestOptions.signal, `MCP ${family} listing cancelled for ${server}`);
     }
     throw new Error(`MCP ${family} pagination exceeded ${MAX_MCP_CATALOG_PAGES} pages for ${server}`);
   };
@@ -635,37 +1110,45 @@ export function registerNativeMcpTool(registry: ToolRegistry, options: NativeMcp
   ): Promise<Array<Record<string, unknown>>> => {
     const cached = manager.catalog(server, now());
     if (!force && cached) return cached;
-    const tools: Array<Record<string, unknown>> = [];
+    const accumulator: McpCatalogAccumulator = { items: [], encodedBytes: 2 };
     let cursor: string | undefined;
+    const seenCursors = new Set<string>();
     let minimumTtlMs = Number.POSITIVE_INFINITY;
-    let cacheScope: 'public' | 'private' | undefined;
     for (let page = 0; page < MAX_MCP_CATALOG_PAGES; page += 1) {
-      const result = await client.listTools(cursor === undefined ? undefined : { cursor }, requestOptions);
-      const pageTtlMs = Number.isSafeInteger(result.ttlMs) && result.ttlMs! >= 0 ? result.ttlMs! : catalogTtlMs;
+      const result = boundedMcpRecord(await withMcpCancellation(
+        client.listTools(cursor === undefined ? undefined : { cursor }, requestOptions),
+        requestOptions.signal,
+        `MCP tools listing cancelled for ${server}`,
+      ), 'MCP tools catalog transport response', MAX_MCP_TRANSPORT_BYTES);
+      const pageTtlMs = Number.isSafeInteger(result.ttlMs) && (result.ttlMs as number) >= 0 ? result.ttlMs as number : catalogTtlMs;
       minimumTtlMs = Math.min(minimumTtlMs, pageTtlMs);
-      if (result.cacheScope !== undefined) {
-        if (cacheScope !== undefined && cacheScope !== result.cacheScope) throw new Error(`MCP tools pages disagree on cache scope for ${server}`);
-        cacheScope = result.cacheScope;
+      appendMcpCatalogItems(accumulator, result.tools, 'tools');
+      const nextCursor = boundedMcpCursor(result.nextCursor, 'tools');
+      if (nextCursor === undefined) {
+        accumulator.items.sort((left, right) => String(left.name ?? '').localeCompare(String(right.name ?? '')));
+        manager.setCatalog(server, { expiresAt: now() + (Number.isFinite(minimumTtlMs) ? minimumTtlMs : 0), tools: accumulator.items });
+        return accumulator.items;
       }
-      tools.push(...(result.tools ?? []));
-      if (!result.nextCursor) {
-        tools.sort((left, right) => String(left.name ?? '').localeCompare(String(right.name ?? '')));
-        manager.setCatalog(server, { expiresAt: now() + (Number.isFinite(minimumTtlMs) ? minimumTtlMs : 0), tools });
-        return tools;
-      }
-      if (result.nextCursor === cursor) throw new Error(`MCP tools pagination did not advance for ${server}`);
-      cursor = result.nextCursor;
+      if (nextCursor === cursor || seenCursors.has(nextCursor)) throw new Error(`MCP tools pagination did not advance for ${server}`);
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
     }
     throw new Error(`MCP tools pagination exceeded ${MAX_MCP_CATALOG_PAGES} pages for ${server}`);
   };
-  const callConfiguredTool = async (
+  interface PreparedMcpToolCall {
+    readonly server: string;
+    readonly tool: string;
+    readonly client: NativeMcpClient;
+    readonly arguments: Record<string, unknown>;
+    readonly requestOptions: NativeMcpRequestOptions;
+  }
+  const prepareConfiguredTool = async (
     server: string,
     tool: string,
     args: Record<string, unknown>,
     signal: AbortSignal,
-    update?: (value: { version: 1; kind: 'progress'; message?: string; value: Progress }) => Promise<void>,
-  ): Promise<unknown> => {
-    if (signal.aborted) throw new Error(`MCP call cancelled for ${server}/${tool}`);
+  ): Promise<PreparedMcpToolCall> => {
+    throwIfMcpAborted(signal, `MCP call cancelled for ${server}/${tool}`);
     const config = servers[server];
     if (!config || !enabled(server)) throw new Error(`Unknown or disabled MCP server: ${server}`);
     if (!enabled(server, tool)) throw new Error(`Unknown or disabled MCP tool: ${server}/${tool}`);
@@ -679,22 +1162,77 @@ export function registerNativeMcpTool(registry: ToolRegistry, options: NativeMcp
       definition = catalog.find((item) => item.name === tool);
     }
     if (!definition) throw new Error(`Unknown MCP tool: ${server}/${tool}`);
+    const boundedArgs = boundedMcpRecord(args, 'MCP tool arguments transport payload', MAX_MCP_TRANSPORT_BYTES);
     const schema = isRecord(definition.inputSchema) ? definition.inputSchema as JsonSchema : { type: 'object' };
     const validator = schema.$schema === 'https://json-schema.org/draft/2020-12/schema' ? ajv2020 : ajv;
     const validate = validator.compile(schema);
-    if (!validate(args)) throw new Error(`Invalid MCP arguments: ${ajv.errorsText(validate.errors, { separator: '; ' })}`);
+    if (!validate(boundedArgs)) throw new Error(`Invalid MCP arguments: ${ajv.errorsText(validate.errors, { separator: '; ' })}`);
+    return { server, tool, client, arguments: boundedArgs, requestOptions };
+  };
+  const executePreparedTool = async (
+    prepared: PreparedMcpToolCall,
+    signal: AbortSignal,
+    update?: (value: { version: 1; kind: 'progress'; message?: string; value: Progress }) => Promise<void>,
+  ): Promise<unknown> => {
+    const { server, tool, client, arguments: boundedArgs, requestOptions } = prepared;
+    throwIfMcpAborted(signal, `MCP call cancelled for ${server}/${tool}`);
     let progressTail = Promise.resolve();
+    let progressError: unknown;
+    let progressCount = 0;
     let content: unknown;
     try {
-      content = await client.callTool({ name: tool, arguments: args }, {
+      content = await withMcpCancellation(client.callTool({ name: tool, arguments: boundedArgs }, {
         ...requestOptions,
         onprogress: (progress) => {
-          if (!update) return;
-          progressTail = progressTail.then(() => update({ version: 1, kind: 'progress', ...(typeof progress.message === 'string' ? { message: progress.message } : {}), value: progress }));
+          if (!update || signal.aborted || progressCount >= MAX_MCP_PROGRESS_UPDATES || progressError !== undefined) return;
+          let bounded: Progress;
+          try {
+            bounded = boundedMcpProgress(progress);
+          } catch (error) {
+            progressError = error;
+            return;
+          }
+          progressCount += 1;
+          progressTail = progressTail.then(() => update({
+            version: 1,
+            kind: 'progress',
+            ...(typeof bounded.message === 'string' ? { message: bounded.message } : {}),
+            value: bounded,
+          }));
         },
-      });
-    } finally { await progressTail; }
-    return content;
+      }), signal, `MCP call cancelled for ${server}/${tool}`);
+    } finally {
+      await withMcpCancellation(progressTail, signal, `MCP call cancelled for ${server}/${tool}`);
+      if (progressError !== undefined) throw progressError;
+    }
+    throwIfMcpAborted(signal, `MCP call cancelled for ${server}/${tool}`);
+    return boundedMcpValue(content, 'MCP tool transport result', MAX_MCP_TRANSPORT_BYTES);
+  };
+  const withCallPermits = async <T>(
+    server: string,
+    signal: AbortSignal,
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    const config = servers[server];
+    if (!config || !enabled(server)) throw new Error(`Unknown or disabled MCP server: ${server}`);
+    let pool = serverCallPools.get(server);
+    if (!pool) {
+      pool = new McpPermitPool(config.maxConcurrentCalls ?? 1);
+      serverCallPools.set(server, pool);
+    }
+    return pool.run(signal, () => globalCallPool.run(signal, operation));
+  };
+  const callConfiguredTool = async (
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal,
+    update?: (value: { version: 1; kind: 'progress'; message?: string; value: Progress }) => Promise<void>,
+  ): Promise<unknown> => {
+    return withCallPermits(server, signal, async () => {
+      const prepared = await prepareConfiguredTool(server, tool, args, signal);
+      return executePreparedTool(prepared, signal, update);
+    });
   };
   manager.setHookCall(async (handler, input, signal) => {
     const configured = handler.input === undefined
@@ -707,47 +1245,161 @@ export function registerNativeMcpTool(registry: ToolRegistry, options: NativeMcp
     const output = hookOutput(content);
     return { decision: hookDecision(output), output, stderr: '' };
   });
+  const readActions = new Set(['auth-status', 'capabilities', 'discover', 'refresh', 'describe', 'resources', 'read-resource', 'prompts', 'get-prompt', 'complete', 'task-get', 'task-list', 'task-result']);
+  const transportEffects = (server: unknown, mutating: boolean) => {
+    if (typeof server !== 'string' || !servers[server]) return createEffectSet('network', 'process', 'write');
+    const transport = servers[server]!.transport === 'http' ? 'network' : 'process';
+    return mutating ? createEffectSet(transport, 'write') : createEffectSet('read', transport);
+  };
   registry.register({
     name: 'MCPTool',
     label: 'MCP',
-    description: `Use explicitly configured Model Context Protocol servers for tools, resources, prompts, and completion. Configured servers: ${Object.keys(servers).filter((name) => enabled(name)).sort((left, right) => left.localeCompare(right)).join(', ') || 'none'}.`,
+    description: `Use explicitly configured Model Context Protocol servers for tools, resources, prompts, completion, and negotiated tasks. Configured servers: ${Object.keys(servers).filter((name) => enabled(name)).sort((left, right) => left.localeCompare(right)).join(', ') || 'none'}.`,
     schemaVersion: 1,
-    inputSchema: {
-      type: 'object',
-      required: ['action'],
-      properties: {
-        action: { type: 'string', enum: ['status', 'capabilities', 'describe', 'call', 'resources', 'read-resource', 'prompts', 'get-prompt', 'complete', 'task-get', 'task-result', 'task-cancel'] },
-        server: { type: 'string' }, tool: { type: 'string' }, arguments: { type: 'object' }, uri: { type: 'string' }, prompt: { type: 'string' }, ref: { type: 'object' }, argument: { type: 'object' }, taskId: { type: 'string' },
-      },
-      additionalProperties: false,
-    },
+    inputSchema: MCP_INPUT_SCHEMA,
     outputSchema: {},
     outputVersion: 1,
-    policy: { effects: createEffectSet('network', 'process', 'write'), trust: 'workspace', approval: 'on-request', plan: 'allowed' },
-    async execute({ input, signal, update }) {
-      if (!isRecord(input)) throw new Error('MCP input must be an object');
+    policy: {
+      effects: createEffectSet('network', 'process', 'write'),
+      trust: 'workspace',
+      approval: 'on-request',
+      plan: 'allowed',
+      resolve: (input) => {
+        if (!isRecord(input) || typeof input.action !== 'string')
+          return { effects: createEffectSet('network', 'process', 'write'), trust: 'workspace', approval: 'always' };
+        if (input.action === 'status') return { effects: createEffectSet('read'), trust: 'none', approval: 'never' };
+        if (readActions.has(input.action)) return { effects: transportEffects(input.server, false), trust: 'workspace', approval: 'never' };
+        if (input.action === 'call' || input.action === 'task-cancel')
+          return { effects: transportEffects(input.server, true), trust: 'workspace', approval: 'on-request' };
+        if (input.action === 'parallel-call')
+          return { effects: createEffectSet('network', 'process', 'write'), trust: 'workspace', approval: 'on-request' };
+        return { effects: createEffectSet('network', 'process', 'write'), trust: 'workspace', approval: 'always' };
+      },
+      concurrency: (input) => {
+        if (!isRecord(input)) return undefined;
+        if (input.action === 'parallel-call') return { lane: 'mcp:parallel-call', maxActive: 4 };
+        if (input.action !== 'call' || typeof input.server !== 'string') return undefined;
+        const config = servers[input.server];
+        if (!config) return undefined;
+        return { lane: `mcp:${input.server}`, maxActive: config.maxConcurrentCalls ?? 1 };
+      },
+    },
+    async execute({ input: rawInput, signal, update }) {
+      const input = boundedMcpRecord(rawInput, 'MCP input transport payload', MAX_MCP_TRANSPORT_BYTES);
+      const invalid = jsonSchemaError(input, MCP_INPUT_SCHEMA);
+      if (invalid) throw new RuntimeFailure('validation', invalid);
       const action = requiredString(input, 'action');
       if (action === 'status') {
-        return { ok: true, content: { servers: Object.entries(servers).sort(([left], [right]) => left.localeCompare(right)).map(([name, config]) => ({ name, transport: config.transport, enabled: enabled(name), provenance: config.provenance })) }, detailsVersion: 1 };
+        const content = boundedMcpValue({ servers: Object.entries(servers).sort(([left], [right]) => left.localeCompare(right)).map(([name, config]) => ({ name, transport: config.transport, enabled: enabled(name), ...manager.liveSnapshot(name, now()), provenance: config.provenance })) }, 'MCP status transport result', MAX_MCP_TRANSPORT_BYTES, true);
+        return { ok: true, content, detailsVersion: 1 };
+      }
+      if (action === 'parallel-call') {
+        const calls = input.calls as Array<{ server: string; tool: string; arguments?: Record<string, unknown> }>;
+        const prepared = await mapMcpBounded(calls, 4, (call) => withCallPermits(
+          call.server,
+          signal,
+          () => prepareConfiguredTool(call.server, call.tool, call.arguments ?? {}, signal),
+        ));
+        const results = await mapMcpBounded(prepared, 4, async (call) => {
+          if (signal.aborted) throw new RuntimeFailure('cancelled', 'MCP parallel call cancelled');
+          try {
+            const content = await withCallPermits(call.server, signal, () => executePreparedTool(call, signal, update));
+            return {
+              ok: !(isRecord(content) && content.isError === true),
+              server: call.server,
+              tool: call.tool,
+              content: redactMcpValue(content),
+            };
+          } catch (error) {
+            if (signal.aborted) throw new RuntimeFailure('cancelled', 'MCP parallel call cancelled');
+            const message = error instanceof Error && /^(?:Invalid MCP arguments|Unknown (?:or disabled )?MCP)/.test(error.message)
+              ? error.message.slice(0, 2_048)
+              : `MCP call failed for ${call.server}/${call.tool}`;
+            return { ok: false, server: call.server, tool: call.tool, error: message };
+          }
+        });
+        return { ok: results.every((result) => result.ok), content: { results }, detailsVersion: 1 };
       }
       const server = requiredString(input, 'server');
       const config = servers[server];
       if (!config || !enabled(server)) throw new Error(`Unknown or disabled MCP server: ${server}`);
+      if (action === 'auth-status' || action === 'auth-revoke') {
+        if (!config.oauth || !config.url || !options.oauth) throw new Error(`MCP server ${server} does not use OAuth`);
+        if (action === 'auth-revoke') await options.oauth.revoke({ serverName: server, serverUrl: config.url });
+        const status = await options.oauth.status({ serverName: server, serverUrl: config.url });
+        return { ok: true, content: { server, ...status }, detailsVersion: 1 };
+      }
+      if (action === 'discover' || action === 'refresh') {
+        const previousState = manager.catalogState(server, now());
+        const cached = action === 'discover' ? manager.catalog(server, now()) : undefined;
+        await update({
+          version: 1,
+          kind: 'progress',
+          message: cached === undefined
+            ? `${action === 'refresh' || previousState === 'stale' ? 'Refreshing' : 'Discovering'} MCP tools from ${server}`
+            : `Using cached MCP tools from ${server}`,
+          value: { progress: 0, total: 1 },
+        });
+        const client = await manager.acquire(server, config, signal);
+        configureClient(server, client);
+        const requestOptions = { signal, timeout: config.timeoutMs ?? 30_000 };
+        const tools = cached ?? await toolsFor(server, client, requestOptions, action === 'refresh');
+        await update({
+          version: 1,
+          kind: 'progress',
+          message: `MCP catalog ready: ${server} (${tools.length} tools)`,
+          value: { progress: 1, total: 1 },
+        });
+        return {
+          ok: true,
+          content: boundedMcpValue({
+            server,
+            source: cached === undefined ? 'server' : 'cache',
+            phase: cached !== undefined ? 'cached' : previousState === 'stale' ? 'updated' : 'discovered',
+            toolCount: tools.length,
+            tools,
+          }, 'MCP discovery transport result', MAX_MCP_TRANSPORT_BYTES),
+          detailsVersion: 1,
+        };
+      }
       const client = await manager.acquire(server, config, signal);
       configureClient(server, client);
       const requestOptions = { signal, timeout: config.timeoutMs ?? 30_000 };
       if (action === 'capabilities') {
         const capabilities = client.getServerCapabilities?.() ?? {};
-        return { ok: true, content: { server, capabilities: redactMcpValue(capabilities) }, detailsVersion: 1 };
+        return { ok: true, content: boundedMcpValue({ server, capabilities }, 'MCP capabilities transport result', MAX_MCP_TRANSPORT_BYTES, true), detailsVersion: 1 };
       }
-      if (action === 'task-get' || action === 'task-result' || action === 'task-cancel') {
-        if (signal.aborted) throw new Error(`MCP task request cancelled for ${server}`);
-        if (!client.getServerCapabilities?.()?.tasks) throw new Error(`MCP server ${server} did not negotiate the tasks capability`);
-        const taskId = requiredString(input, 'taskId');
-        const operation = action === 'task-get' ? 'get' : action === 'task-result' ? 'result' : 'cancel';
-        const method = operation === 'get' ? client.getTask : operation === 'result' ? client.getTaskResult : client.cancelTask;
-        if (!method) throw new Error(`MCP server ${server} negotiated tasks without ${operation} support`);
-        const task = redactMcpValue(await method.call(client, { taskId }, requestOptions));
+      if (action === 'task-get' || action === 'task-list' || action === 'task-result' || action === 'task-cancel') {
+        throwIfMcpAborted(signal, `MCP task request cancelled for ${server}`);
+        const tasks = client.getServerCapabilities?.()?.tasks;
+        if (!tasks) throw new Error(`MCP server ${server} did not negotiate the tasks capability`);
+        const operation = action === 'task-get'
+          ? 'get'
+          : action === 'task-list'
+            ? 'list'
+            : action === 'task-result'
+              ? 'result'
+              : 'cancel';
+        if (operation === 'list' && !isRecord(tasks.list))
+          throw new Error(`MCP server ${server} did not negotiate tasks/list`);
+        if (operation === 'cancel' && !isRecord(tasks.cancel))
+          throw new Error(`MCP server ${server} did not negotiate tasks/cancel`);
+        const params = operation === 'list'
+          ? (typeof input.cursor === 'string' ? { cursor: input.cursor } : {})
+          : { taskId: requiredString(input, 'taskId') };
+        const resultSchema = operation === 'get'
+          ? specTypeSchemas.GetTaskResult
+          : operation === 'list'
+            ? specTypeSchemas.ListTasksResult
+            : operation === 'result'
+              ? specTypeSchemas.GetTaskPayloadResult
+              : specTypeSchemas.CancelTaskResult;
+        const task = boundedMcpValue(await withMcpCancellation(
+          client.request({ method: `tasks/${operation}`, params }, resultSchema, requestOptions),
+          signal,
+          `MCP task request cancelled for ${server}`,
+        ), 'MCP task transport result', MAX_MCP_TASK_ITEM_BYTES, true);
+        throwIfMcpAborted(signal, `MCP task request cancelled for ${server}`);
         const entry: StoredMcpTask = { task, provenance: { server, operation, observedAt: now() } };
         const maximum = Math.max(1, Math.min(1_000, options.maxStoredTasks ?? DEFAULT_MAX_STORED_TASKS));
         const storeFile = containedFile(options.taskStoreFile ?? path.join(options.octocodeHome ?? getOctocodeHome(options.env ?? process.env), 'agent', 'mcp', 'tasks.json'), options);
@@ -765,26 +1417,39 @@ export function registerNativeMcpTool(registry: ToolRegistry, options: NativeMcp
             definition = catalog.find((item) => item.name === tool);
           }
           if (!definition) throw new Error(`Unknown MCP tool: ${server}/${tool}`);
-          return { ok: true, content: definition, detailsVersion: 1 };
+          return { ok: true, content: boundedMcpValue(definition, 'MCP tool description transport result', MAX_MCP_CATALOG_ITEM_BYTES), detailsVersion: 1 };
         }
         const args = input.arguments === undefined ? {} : input.arguments;
         if (!isRecord(args)) throw new Error('MCP arguments must be an object');
-        const content = await callConfiguredTool(server, tool, args, signal, update);
+        const content = redactMcpValue(await callConfiguredTool(server, tool, args, signal, update));
         return isRecord(content) && content.isError === true
           ? { ok: false, category: 'tool-execution', content, detailsVersion: 1 }
           : { ok: true, content, detailsVersion: 1 };
       }
-      if (action === 'resources') return { ok: true, content: await paginatedList(server, 'resources', requestOptions, (params) => client.listResources(params, requestOptions)), detailsVersion: 1 };
-      if (action === 'read-resource') return { ok: true, content: await client.readResource({ uri: requiredString(input, 'uri') }, requestOptions), detailsVersion: 1 };
-      if (action === 'prompts') return { ok: true, content: await paginatedList(server, 'prompts', requestOptions, (params) => client.listPrompts(params, requestOptions)), detailsVersion: 1 };
+      if (action === 'resources') {
+        const content = await paginatedList(server, 'resources', requestOptions, (params) => client.listResources(params, requestOptions));
+        return { ok: true, content: boundedMcpValue(content, 'MCP resources transport result', MAX_MCP_TRANSPORT_BYTES, true), detailsVersion: 1 };
+      }
+      if (action === 'read-resource') {
+        const content = await withMcpCancellation(client.readResource({ uri: requiredString(input, 'uri') }, requestOptions), signal, `MCP resource read cancelled for ${server}`);
+        return { ok: true, content: boundedMcpValue(content, 'MCP resource transport result', MAX_MCP_TRANSPORT_BYTES, true), detailsVersion: 1 };
+      }
+      if (action === 'prompts') {
+        const content = await paginatedList(server, 'prompts', requestOptions, (params) => client.listPrompts(params, requestOptions));
+        return { ok: true, content: boundedMcpValue(content, 'MCP prompts transport result', MAX_MCP_TRANSPORT_BYTES, true), detailsVersion: 1 };
+      }
       if (action === 'get-prompt') {
         const args = input.arguments === undefined ? undefined : input.arguments;
         if (args !== undefined && (!isRecord(args) || Object.values(args).some((value) => typeof value !== 'string'))) throw new Error('MCP prompt arguments must be strings');
-        return { ok: true, content: await client.getPrompt({ name: requiredString(input, 'prompt'), ...(args ? { arguments: args as Record<string, string> } : {}) }, requestOptions), detailsVersion: 1 };
+        const promptArgs = args === undefined ? undefined : boundedMcpRecord(args, 'MCP prompt arguments transport payload', MAX_MCP_TRANSPORT_BYTES) as Record<string, string>;
+        const content = await withMcpCancellation(client.getPrompt({ name: requiredString(input, 'prompt'), ...(promptArgs ? { arguments: promptArgs } : {}) }, requestOptions), signal, `MCP prompt request cancelled for ${server}`);
+        return { ok: true, content: boundedMcpValue(content, 'MCP prompt transport result', MAX_MCP_TRANSPORT_BYTES, true), detailsVersion: 1 };
       }
       if (action === 'complete') {
         if (!isRecord(input.ref) || !isRecord(input.argument) || typeof input.argument.name !== 'string' || typeof input.argument.value !== 'string') throw new Error('MCP complete requires ref and string argument fields');
-        return { ok: true, content: await client.complete({ ref: input.ref, argument: { name: input.argument.name, value: input.argument.value } }, requestOptions), detailsVersion: 1 };
+        const ref = boundedMcpRecord(input.ref, 'MCP completion reference transport payload', MAX_MCP_TRANSPORT_BYTES);
+        const content = await withMcpCancellation(client.complete({ ref, argument: { name: input.argument.name, value: input.argument.value } }, requestOptions), signal, `MCP completion request cancelled for ${server}`);
+        return { ok: true, content: boundedMcpValue(content, 'MCP completion transport result', MAX_MCP_TRANSPORT_BYTES, true), detailsVersion: 1 };
       }
       throw new Error(`Unsupported MCP action: ${action}`);
     },

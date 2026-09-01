@@ -6,19 +6,20 @@ Inspect the live catalog before constructing requests:
 
 ```bash
 npx octocode tools --json
-npx octocode tools localViewStructure localSearchCode localGetFileContent lspGetSemantics --scheme
+npx octocode tools localSearch localAnalyzeGraph localGetFileContent lspGetSemantics --scheme
 ```
 
 ## Research Recipes
 
 ```bash
 # Exact JSON fields come from --scheme; local paths must be absolute.
-npx octocode tools localViewStructure --queries '{"path":"/absolute/workspace","maxDepth":2}'
-npx octocode tools localSearchCode --queries '{"path":"/absolute/workspace","searchText":"term","mode":"discovery"}'
+npx octocode tools localSearch --queries '{"operation":"tree","path":"/absolute/workspace","maxDepth":2}'
+npx octocode tools localSearch --queries '{"operation":"text","path":"/absolute/workspace","searchText":"term","resultView":"discovery"}'
 npx octocode tools localGetFileContent --queries '{"path":"/absolute/workspace/README.md","minify":"symbols"}'
 
 # Remote/package contracts
-npx octocode tools ghSearchCode ghSearchRepos ghSearchPullRequests ghSearchCommits npmSearch --scheme
+npx octocode tools ghSearch ghGetFileContent ghSearchPullRequests ghSearchIssues ghSearchCommits ghListReleases ghSearchDiscussions ghCloneRepo npmSearch --scheme
+# Releases and Discussions appear only when their feature flags enable them.
 ```
 
 Treat hits as leads. Cite paths/lines/IDs in locks, signals, memories, and refinements. Zero matches require one scope/mode/spelling adjustment before an absence claim. Install a dedicated research workflow skill separately for deeper evidence workflows.

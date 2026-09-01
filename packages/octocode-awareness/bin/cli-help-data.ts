@@ -4,19 +4,19 @@ import { BUNDLED_SKILLS, BUNDLED_SKILLS_DIR } from './cli-model.js';
 
 export const HELP = `  🐙 Octocode Awareness
 
-  FIRST RUN  use setup to inspect or create workspace policy
-  SIMPLE LOOP
-    setup                                      show or update .octocode/awareness.json
-    next [--query <text>]                       return the next useful action
-    inspect <workboard|files|plans|...>          inspect repository state
-    verify [--agent-id <id>]                    show unresolved verification debt
-    close --run-id <id> [--agent-id <id>]       finish declared work
+  ROUTINE LOOP
+    attend [--query <text>]                     return the next useful action
+    work start --agent-id <id> --file <path>    declare bounded advisory work
+    work end --agent-id <id> --run-id <id>      finish work and create verification debt
+    verify mark --agent-id <id> --run-id <id>   record an observed check receipt
+    verify audit [--agent-id <id>]              show unresolved verification debt
+
+  LEARNING  reflect record only after a verified reusable lesson, recurring failure, or owned follow-up
 
   DEFAULT POLICY
-    repository state        → .octocode/{octocode,awareness}.sqlite3
-    reusable memory          → global Awareness database
+    database                → $OCTOCODE_HOME/agent/agent.sqlite3
+    isolation               → workspace_path columns
     hooks                    → coordination profile (edit guards + stop verification)
-    setup --repository-scope repo|global --memory-scope repo|global --hook-profile guard|coordination|full
 
   EXPERT COMMANDS
     attend · plan · task · work · verify · signal · memory record/recall · refinement · query · reflect
@@ -29,14 +29,14 @@ export const HELP = `  🐙 Octocode Awareness
     Preview and ask immediately before a real install. Pi uses native events.
 
   RUNNER  npx @octocodeai/octocode-awareness <command> [options]
-  AGENT LOOP  setup → next → inspect → verify → close
+  AGENT LOOP  attend → work start → work end → verify mark → verify audit
   FLAGS   --compact lean JSON · --db-scope repo|global explicit one-call override · --db explicit path
   EXIT    0 ok · 1 input/verification debt · 2 conflict/wait/strict hook health
   SKILL   bundled (${BUNDLED_SKILLS.length}) at ${BUNDLED_SKILLS_DIR}`;
 
-export const HELP_COMPACT = `octocode-awareness: canonical noun/verb CLI with setup -> next -> inspect -> verify -> close; use --compact for JSON.
+export const HELP_COMPACT = `octocode-awareness canonical noun/verb CLI: attend -> work start -> work end -> verify mark -> verify audit; use --compact for JSON.
 bundled-skills(${BUNDLED_SKILLS.length}): ${BUNDLED_SKILLS_DIR}
-policy: repository=repo, memory=global, hooks=coordination; setup --repository-scope repo|global --memory-scope repo|global --hook-profile guard|coordination|full
+policy: one global agent database, workspace-scoped rows, hooks=coordination
 expert: attend|plan|task|work|verify|signal|memory|refinement|query|reflect; schema commands --compact for the full map
 overrides: --db-scope repo|global changes one call; --db selects an explicit path
 hooks: install --host codex|claude|cursor --profile guard|coordination|full --dry-run; preview and ask before install
@@ -104,7 +104,7 @@ export const COMMAND_DISPLAY: Record<string, string> = {
   'doc-staleness': 'docs staleness',
   'docs-catalog': 'docs list|show',
   'digest': 'maintenance digest',
-  'init': 'init',
+  'init': 'maintenance init',
   'self-test': 'maintenance self-test',
   'reflect': 'reflect record',
   'plan-command': 'plan create|list|show|join|doc|status',
@@ -144,7 +144,7 @@ export const COMMAND_EXAMPLE: Record<string, string> = {
   'doc-staleness': 'npx @octocodeai/octocode-awareness docs staleness --targets-json \'[{"docFile":"README.md","sourceDirs":["src"]}]\' --compact',
   'docs-catalog': 'npx @octocodeai/octocode-awareness docs list --compact',
   'digest': 'npx @octocodeai/octocode-awareness maintenance digest --dry-run --workspace "$PWD" --compact',
-  'init': 'npx @octocodeai/octocode-awareness init --compact',
+  'init': 'npx @octocodeai/octocode-awareness maintenance init --compact',
   'self-test': 'npx @octocodeai/octocode-awareness maintenance self-test --compact',
   'reflect': 'npx @octocodeai/octocode-awareness reflect record --agent-id agent --task "fix CLI" --outcome worked --lesson "Keep commands canonical" --compact',
   'plan-command': 'npx @octocodeai/octocode-awareness plan create --name "Release" --objective "Ship safely" --lead-agent-id agent --workspace "$PWD" --compact',

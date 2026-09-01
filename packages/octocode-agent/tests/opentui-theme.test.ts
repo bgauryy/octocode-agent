@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  NATIVE_DESIGN_TONE_CUES,
+  type NativeDesignTone,
+} from '../src/presentation/design/semantics.js';
+import {
   OPEN_TUI_THEMES,
   contrastRatio,
   resolveOpenTuiRole,
@@ -25,6 +29,9 @@ const semanticRoles: readonly OpenTuiSemanticRole[] = [
   'diffAdded',
   'diffRemoved',
   'diffContext',
+];
+const designTones: readonly NativeDesignTone[] = [
+  'info', 'success', 'warning', 'error', 'count',
 ];
 
 describe('OpenTUI theme', () => {
@@ -80,6 +87,16 @@ describe('OpenTUI theme', () => {
         expect(resolved.marker).not.toHaveLength(0);
         expect(resolved.foreground).toMatch(/^#[0-9a-f]{6}$/iu);
       }
+    }
+  });
+
+  it('composes shared semantic cues with terminal-only text attributes', () => {
+    for (const role of designTones) {
+      const resolved = resolveOpenTuiRole(role, { mode: 'dark', colorMode: 'none' });
+      expect({ marker: resolved.marker, label: resolved.label })
+        .toEqual(NATIVE_DESIGN_TONE_CUES[role]);
+      expect(resolved).not.toHaveProperty('fontFamily');
+      expect(resolved).not.toHaveProperty('fontSize');
     }
   });
 

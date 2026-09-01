@@ -1,4 +1,4 @@
-# Octocode Awareness Documentation
+# Octocode Awareness documentation
 
 Each concept has one owner. Command names and schemas come from
 `npx @octocodeai/octocode-awareness schema commands --compact`; prose docs do not duplicate the
@@ -6,10 +6,11 @@ complete command inventory.
 
 | Document | Owns |
 |---|---|
+| [../ARCHITECTURE.md](../ARCHITECTURE.md) | Package ownership, storage boundaries, dependency rules, and generated-source policy. |
 | [THESIS.md](THESIS.md) | Homeostatic control model, metaphor boundary, pressures, and success measures |
 | [HOW_IT_WORKS.md](HOW_IT_WORKS.md) | Canonical complete bootstrap, operating, state, hook, memory, projection, and exit lifecycle |
 | [DB.md](DB.md) | SQLite schema, relationships, migration, scope |
-| [STORAGE_SCOPES.md](STORAGE_SCOPES.md) | Repository/global database decision, CLI selection, placement, and rollback |
+| [STORAGE_SCOPES.md](STORAGE_SCOPES.md) | Single global agent database, logical workspace isolation, explicit overrides, and artifacts |
 | [CONFIGURATION.md](CONFIGURATION.md) | Global feature defaults, onboarding questions, validation, and fixed safety boundaries |
 | [LOCKS.md](LOCKS.md) | Advisory file work, exclusive locks, verification |
 | [HOOKS.md](HOOKS.md) | Host installation and runtime behavior |
@@ -26,7 +27,8 @@ Agent-facing procedures live under package-local `skills/octocode-awareness/refe
 are listed by `npx @octocodeai/octocode-awareness docs list --compact`. Start with `flow-matrix`
 when choosing among lifecycle paths, then open exactly one deeper reference.
 
-Canonical data lives in the database selected by workspace policy; repository work defaults
-to repository scope and reusable memory to global scope. `--db-scope` overrides one call.
+Canonical data lives in `$OCTOCODE_HOME/agent/agent.sqlite3`. Workspace policy
+selects logical behavior, not a repository-local database. An explicit `--db`
+path overrides one call.
 On request, `query` writes read-only `<workspace>/.octocode/` export snapshots;
 managed `.octocode/plan/**` files are plan narrative, not a live task checklist.

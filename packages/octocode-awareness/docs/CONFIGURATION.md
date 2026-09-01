@@ -2,13 +2,14 @@
 
 Awareness has two separate configurations:
 
-- `<workspace>/.octocode/awareness.json` selects repository/global storage and the hook
-  profile. `setup` creates or updates it; defaults are repository coordination, global
-  reusable memory, and `coordination` hooks.
-- `<OCTOCODE_HOME>/awareness.json` controls global automatic-feature preferences.
+- An optional `<workspace>/.octocode/awareness.json` selects logical
+  coordination/memory scope behavior and the hook profile. Scope settings don't
+  select a repository database; durable state remains in the default global
+  agent database unless the caller supplies an explicit override.
+- `$OCTOCODE_HOME/awareness.json` controls global automatic-feature preferences.
 
 Awareness reads global automatic-feature preferences from
-`<OCTOCODE_HOME>/awareness.json`, normally `~/.octocode/awareness.json`.
+`$OCTOCODE_HOME/awareness.json`, normally `~/.octocode/awareness.json`.
 Explicit CLI operations do not require this file. Before enabling shell-hook
 automation, complete the onboarding below; automatic hook entrypoints stay inert
 until the file exists and validates.
@@ -20,7 +21,7 @@ npx @octocodeai/octocode-awareness config show --compact
 ```
 
 When missing, the result returns the complete five-question questionnaire and the
-recommended value for each option. Ask all questions together. After the user answers:
+recommended value for each option. Ask all questions together. After the operator answers:
 
 ```bash
 npx @octocodeai/octocode-awareness config init \
@@ -64,8 +65,10 @@ other than `1`. The bundled skill includes the machine-readable
 The file does not disable explicit CLI operations, evidence rules, database integrity,
 or only one half of the mutation guard/presence pair. Existing environment kill switches
 remain supported and take precedence when disabling automation. `--db-scope repo|global`
-overrides workspace policy for one call; `OCTOCODE_HOME`, `OCTOCODE_AGENT_DIR`, and
-`OCTOCODE_AGENT_DB_PATH` resolve global locations; and `--db` overrides the selected path.
+overrides logical scope behavior for one call; it doesn't select a repository
+database. `OCTOCODE_HOME`, `OCTOCODE_AGENT_DIR`, and
+`OCTOCODE_AGENT_DB_PATH` resolve global locations, and `--db` selects an explicit
+database path for one call.
 See [storage scopes](STORAGE_SCOPES.md).
 
 Hook profiles are `guard`, `coordination`, and `full`. Host support, event mappings,

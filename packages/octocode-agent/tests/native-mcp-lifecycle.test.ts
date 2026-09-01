@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ToolRegistry } from '@octocodeai/agent-core';
-import { registerNativeMcpTool, type NativeMcpClient } from '../src/native-mcp.js';
+import { NativeMcpSessionManager, registerNativeMcpTool, type NativeMcpClient } from '../src/native-mcp.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -35,7 +35,7 @@ function client(overrides: Partial<NativeMcpClient> = {}): NativeMcpClient {
   return {
     listTools: async () => ({ tools: [] }), callTool: async () => ({}), listResources: async () => ({}),
     readResource: async () => ({}), listPrompts: async () => ({}), getPrompt: async () => ({}),
-    complete: async () => ({}), close: async () => undefined, ...overrides,
+    complete: async () => ({}), request: async () => ({}), close: async () => undefined, ...overrides,
   };
 }
 
@@ -77,12 +77,49 @@ describe('native MCP negotiated state surfaces', () => {
       .toEqual({ action: 'accept', content: { token: '[REDACTED]', choice: 'yes' } });
   });
 
+  it('bounds elicitation schemas and broker results before crossing the interaction boundary', async () => {
+    const root = fixture();
+    let handler: ((request: { params: Record<string, unknown> }, extra?: { signal?: AbortSignal }) => Promise<unknown>) | undefined;
+    const elicit = vi.fn(async () => ({ action: 'accept' as const, content: { answer: 'x'.repeat(2 * 1024 * 1024) } }));
+    const fake = client({ setRequestHandler: (_method, registered) => { handler = registered; } });
+    const registry = new ToolRegistry();
+    registerNativeMcpTool(registry, { cwd: root, octocodeHome: path.join(root, 'home'), connect: async () => fake, elicit });
+    await registry.get('MCPTool')!.execute(execution({ action: 'capabilities', server: 'fixture' }, root));
+
+    await expect(handler!({ params: {
+      message: 'Choose',
+      requestedSchema: { type: 'object', description: 'x'.repeat(2 * 1024 * 1024) },
+    } })).rejects.toThrow(/elicitation.*(?:byte|size|large|limit)|(?:byte|size|large|limit).*elicitation/i);
+    expect(elicit).not.toHaveBeenCalled();
+
+    await expect(handler!({ params: { message: 'Choose', requestedSchema: { type: 'object' } } }))
+      .rejects.toThrow(/elicitation.*(?:byte|size|large|limit)|(?:byte|size|large|limit).*elicitation/i);
+  });
+
+  it('does not invoke the elicitation broker after cancellation', async () => {
+    const root = fixture();
+    let handler: ((request: { params: Record<string, unknown> }, extra?: { signal?: AbortSignal }) => Promise<unknown>) | undefined;
+    const elicit = vi.fn(async () => ({ action: 'decline' as const }));
+    const fake = client({ setRequestHandler: (_method, registered) => { handler = registered; } });
+    const registry = new ToolRegistry();
+    registerNativeMcpTool(registry, { cwd: root, octocodeHome: path.join(root, 'home'), connect: async () => fake, elicit });
+    await registry.get('MCPTool')!.execute(execution({ action: 'capabilities', server: 'fixture' }, root));
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(handler!({ params: { message: 'Choose' } }, { signal: controller.signal })).rejects.toThrow(/cancel/i);
+    expect(elicit).not.toHaveBeenCalled();
+  });
+
   it('persists bounded task provenance and supports negotiated get/result/cancel with cancellation', async () => {
     const root = fixture();
-    const getTask = vi.fn(async ({ taskId }: { taskId: string }) => ({ taskId, status: 'working' }));
-    const getTaskResult = vi.fn(async ({ taskId }: { taskId: string }) => ({ taskId, result: { text: 'done', apiKey: 'secret' } }));
-    const cancelTask = vi.fn(async ({ taskId }: { taskId: string }) => ({ taskId, status: 'cancelled' }));
-    const fake = client({ getServerCapabilities: () => ({ tasks: {} }), getTask, getTaskResult, cancelTask });
+    const request = vi.fn(async ({ method, params }: { method: string; params?: { taskId?: string } }) => {
+      const taskId = params?.taskId;
+      if (method === 'tasks/result') return { taskId, result: { text: 'done', apiKey: 'secret' } };
+      if (method === 'tasks/cancel') return { taskId, status: 'cancelled' };
+      return { taskId, status: 'working' };
+    });
+    const fake = client({ getServerCapabilities: () => ({ tasks: { cancel: {} } }), request: request as NativeMcpClient['request'] });
     const registry = new ToolRegistry();
     registerNativeMcpTool(registry, {
       cwd: root, octocodeHome: path.join(root, 'home'), connect: async () => fake,
@@ -117,7 +154,7 @@ describe('native MCP negotiated state surfaces', () => {
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'native-mcp-outside-'));
     roots.push(outside);
     fs.symlinkSync(outside, path.join(root, 'linked-state'));
-    const fake = client({ getServerCapabilities: () => ({ tasks: {} }), getTask: async ({ taskId }) => ({ taskId }) });
+    const fake = client({ getServerCapabilities: () => ({ tasks: {} }), request: async ({ params }) => ({ taskId: params?.taskId }) });
     const registry = new ToolRegistry();
     registerNativeMcpTool(registry, { cwd: root, octocodeHome: path.join(root, 'home'), connect: async () => fake, taskStoreFile: path.join(root, 'linked-state', 'tasks.json') });
     await expect(registry.get('MCPTool')!.execute(execution({ action: 'task-get', server: 'fixture', taskId: 'escape' }, root)))
@@ -127,7 +164,7 @@ describe('native MCP negotiated state surfaces', () => {
 
   it('serializes concurrent task ledger updates without losing bounded entries', async () => {
     const root = fixture();
-    const fake = client({ getServerCapabilities: () => ({ tasks: {} }), getTask: async ({ taskId }) => ({ taskId, status: 'working' }) });
+    const fake = client({ getServerCapabilities: () => ({ tasks: {} }), request: async ({ params }) => ({ taskId: params?.taskId, status: 'working' }) });
     const registry = new ToolRegistry();
     const store = path.join(root, 'state', 'tasks.json');
     registerNativeMcpTool(registry, { cwd: root, octocodeHome: path.join(root, 'home'), connect: async () => fake, taskStoreFile: store, maxStoredTasks: 8 });
@@ -137,6 +174,47 @@ describe('native MCP negotiated state surfaces', () => {
     expect(tasks.map(({ task }) => task.taskId).sort()).toEqual(Array.from({ length: 8 }, (_, index) => `t${index}`).sort());
     expect(fs.readdirSync(path.dirname(store)).filter((name) => name.endsWith('.tmp') || name.endsWith('.lock'))).toEqual([]);
     if (process.platform !== 'win32') expect(fs.statSync(store).mode & 0o777).toBe(0o600);
+  });
+
+  it('evicts old task entries by encoded bytes so every successful write remains readable', async () => {
+    const root = fixture();
+    const store = path.join(root, 'state', 'tasks.json');
+    const fake = client({
+      getServerCapabilities: () => ({ tasks: {} }),
+      request: async ({ params }) => ({ taskId: params?.taskId, status: 'working', payload: 'x'.repeat(200_000) }),
+    });
+    const registry = new ToolRegistry();
+    registerNativeMcpTool(registry, {
+      cwd: root,
+      octocodeHome: path.join(root, 'home'),
+      connect: async () => fake,
+      taskStoreFile: store,
+      maxStoredTasks: 20,
+    });
+    const tool = registry.get('MCPTool')!;
+
+    for (let index = 0; index < 8; index += 1) {
+      await expect(tool.execute(execution({ action: 'task-get', server: 'fixture', taskId: `large-${index}` }, root)))
+        .resolves.toMatchObject({ ok: true });
+    }
+    const persisted = JSON.parse(fs.readFileSync(store, 'utf8')) as { tasks: unknown[] };
+    expect(persisted.tasks.length).toBeGreaterThan(0);
+    expect(persisted.tasks.length).toBeLessThan(8);
+    expect(fs.statSync(store).size).toBeLessThanOrEqual(1024 * 1024);
+    await expect(tool.execute(execution({ action: 'task-get', server: 'fixture', taskId: 'still-readable' }, root)))
+      .resolves.toMatchObject({ ok: true });
+  });
+
+  it('rejects non-JSON task entries before creating self-corrupting state', async () => {
+    const root = fixture();
+    const store = path.join(root, 'state', 'tasks.json');
+    const manager = new NativeMcpSessionManager(async () => client());
+
+    await expect(manager.persistTask(store, {
+      task: undefined,
+      provenance: { server: 'fixture', operation: 'get', observedAt: Date.now() },
+    }, 10)).rejects.toThrow(/task.*(?:json|valid|serial)|(?:json|valid|serial).*task/i);
+    expect(fs.existsSync(store)).toBe(false);
   });
 
   it('serializes task ledger updates across independent processes', async () => {
@@ -152,7 +230,8 @@ describe('native MCP negotiated state surfaces', () => {
         listTools: async () => ({ tools: [] }), callTool: async () => ({}), listResources: async () => ({}),
         readResource: async () => ({}), listPrompts: async () => ({}), getPrompt: async () => ({}), complete: async () => ({}),
         getServerCapabilities: () => ({ tasks: {} }),
-        getTask: async ({ taskId }) => {
+        request: async ({ params }) => {
+          const taskId = params.taskId;
           process.send('at-task');
           await new Promise((resolve) => process.once('message', resolve));
           return { taskId, status: 'working' };
@@ -198,7 +277,7 @@ describe('native MCP negotiated state surfaces', () => {
     fs.mkdirSync(path.dirname(store), { recursive: true });
     const corrupt = '{"version":1,"tasks":[{"task":';
     fs.writeFileSync(store, corrupt);
-    const fake = client({ getServerCapabilities: () => ({ tasks: {} }), getTask: async ({ taskId }) => ({ taskId }) });
+    const fake = client({ getServerCapabilities: () => ({ tasks: {} }), request: async ({ params }) => ({ taskId: params?.taskId }) });
     const registry = new ToolRegistry();
     registerNativeMcpTool(registry, { cwd: root, octocodeHome: path.join(root, 'home'), connect: async () => fake, taskStoreFile: store });
 
@@ -213,7 +292,7 @@ describe('native MCP negotiated state surfaces', () => {
     fs.mkdirSync(path.dirname(store), { recursive: true });
     const unsupported = '{"version":2,"tasks":[]}\n';
     fs.writeFileSync(store, unsupported);
-    const fake = client({ getServerCapabilities: () => ({ tasks: {} }), getTask: async ({ taskId }) => ({ taskId }) });
+    const fake = client({ getServerCapabilities: () => ({ tasks: {} }), request: async ({ params }) => ({ taskId: params?.taskId }) });
     const registry = new ToolRegistry();
     registerNativeMcpTool(registry, { cwd: root, octocodeHome: path.join(root, 'home'), connect: async () => fake, taskStoreFile: store });
 
@@ -227,7 +306,7 @@ describe('native MCP negotiated state surfaces', () => {
     const store = path.join(root, 'state', 'tasks.json');
     fs.mkdirSync(path.dirname(store), { recursive: true });
     fs.writeFileSync(`${store}.lock`, 'active', { mode: 0o600 });
-    const fake = client({ getServerCapabilities: () => ({ tasks: {} }), getTask: async ({ taskId }) => ({ taskId }) });
+    const fake = client({ getServerCapabilities: () => ({ tasks: {} }), request: async ({ params }) => ({ taskId: params?.taskId }) });
     const registry = new ToolRegistry();
     registerNativeMcpTool(registry, { cwd: root, octocodeHome: path.join(root, 'home'), connect: async () => fake, taskStoreFile: store });
     const startedAt = Date.now();

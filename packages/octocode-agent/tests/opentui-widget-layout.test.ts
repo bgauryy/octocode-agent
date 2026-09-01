@@ -10,6 +10,8 @@ describe('terminal widget layout', () => {
     expect(terminalDisplayWidth('e\u0301')).toBe(1);
     expect(terminalDisplayWidth('界')).toBe(2);
     expect(terminalDisplayWidth('👩‍💻')).toBe(2);
+    expect(terminalDisplayWidth('▶')).toBe(1);
+    expect(terminalDisplayWidth('▶️')).toBe(2);
   });
 
   it('fits only at grapheme boundaries and reserves the ellipsis column', () => {

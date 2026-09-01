@@ -19,6 +19,10 @@ describe('OpenTUI keymap precedence', () => {
     expect(resolveOpenTuiKeyAction({ name: 'escape' }, { assistOpen: true })).toBe('assist-dismiss');
     expect(resolveOpenTuiKeyAction({ name: 'tab' }, { interaction: 'confirm' })).toBe('interaction-navigate');
     expect(resolveOpenTuiKeyAction({ name: 'escape' }, { interaction: 'select' })).toBe('interaction-cancel');
+    expect(resolveOpenTuiKeyAction(
+      { name: 'd', ctrl: true },
+      { interaction: 'input', discussAvailable: true },
+    )).toBe('interaction-discuss');
   });
 
   it('normalizes aliases while preserving interrupt and focus semantics', () => {

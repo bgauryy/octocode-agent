@@ -1,4 +1,14 @@
-export type OpenTuiThemeMode = 'dark' | 'light';
+import {
+  NATIVE_DESIGN_PALETTES,
+  type NativeDesignPalette,
+  type NativeDesignThemeMode,
+} from '../../presentation/design/tokens.js';
+import {
+  NATIVE_DESIGN_TONE_CUES,
+  type NativeDesignTone,
+} from '../../presentation/design/semantics.js';
+
+export type OpenTuiThemeMode = NativeDesignThemeMode;
 export type OpenTuiColorMode = 'truecolor' | 'ansi16' | 'none';
 export type OpenTuiSemanticRole =
   | 'text'
@@ -19,29 +29,7 @@ export type OpenTuiSemanticRole =
   | 'diffRemoved'
   | 'diffContext';
 
-export interface OpenTuiThemeColors {
-  readonly background: string;
-  readonly surface: string;
-  readonly surfaceRaised: string;
-  readonly text: string;
-  readonly muted: string;
-  readonly accent: string;
-  readonly info: string;
-  readonly success: string;
-  readonly warning: string;
-  readonly error: string;
-  readonly border: string;
-  readonly focus: string;
-  readonly selectionText: string;
-  readonly selectionBackground: string;
-  readonly path: string;
-  readonly code: string;
-  readonly link: string;
-  readonly count: string;
-  readonly diffAdded: string;
-  readonly diffRemoved: string;
-  readonly diffContext: string;
-}
+export type OpenTuiThemeColors = NativeDesignPalette;
 
 export interface OpenTuiTheme {
   readonly mode: OpenTuiThemeMode;
@@ -59,58 +47,10 @@ export interface ResolvedOpenTuiRole {
   readonly underline: boolean;
 }
 
-const darkColors: OpenTuiThemeColors = Object.freeze({
-  background: '#0b0f14',
-  surface: '#111820',
-  surfaceRaised: '#17212b',
-  text: '#f2f4f7',
-  muted: '#aeb7c2',
-  accent: '#63b3ff',
-  info: '#72c7ff',
-  success: '#70d69b',
-  warning: '#ffd166',
-  error: '#ff858f',
-  border: '#8491a1',
-  focus: '#91c9ff',
-  selectionText: '#ffffff',
-  selectionBackground: '#285b85',
-  path: '#9ac6ff',
-  code: '#e6b673',
-  link: '#72c7ff',
-  count: '#d2a8ff',
-  diffAdded: '#70d69b',
-  diffRemoved: '#ff858f',
-  diffContext: '#aeb7c2',
-});
-
-const lightColors: OpenTuiThemeColors = Object.freeze({
-  background: '#fcfcfd',
-  surface: '#f4f6f8',
-  surfaceRaised: '#e9eef3',
-  text: '#18202a',
-  muted: '#52606d',
-  accent: '#075ea8',
-  info: '#075a9c',
-  success: '#176b3a',
-  warning: '#7a4b00',
-  error: '#a61b29',
-  border: '#596574',
-  focus: '#005a9c',
-  selectionText: '#102a43',
-  selectionBackground: '#cde7ff',
-  path: '#174f8a',
-  code: '#7a4b00',
-  link: '#075a9c',
-  count: '#6b2da8',
-  diffAdded: '#176b3a',
-  diffRemoved: '#a61b29',
-  diffContext: '#52606d',
-});
-
 /** Accessible, immutable palettes for terminal background preference. */
 export const OPEN_TUI_THEMES: Readonly<Record<OpenTuiThemeMode, OpenTuiTheme>> = Object.freeze({
-  dark: Object.freeze({ mode: 'dark', colors: darkColors }),
-  light: Object.freeze({ mode: 'light', colors: lightColors }),
+  dark: Object.freeze({ mode: 'dark', colors: NATIVE_DESIGN_PALETTES.dark }),
+  light: Object.freeze({ mode: 'light', colors: NATIVE_DESIGN_PALETTES.light }),
 });
 
 interface RoleCue {
@@ -120,21 +60,28 @@ interface RoleCue {
   readonly underline: boolean;
 }
 
+function designToneCue(
+  tone: NativeDesignTone,
+  attributes: Pick<RoleCue, 'bold' | 'underline'>,
+): RoleCue {
+  return Object.freeze({ ...NATIVE_DESIGN_TONE_CUES[tone], ...attributes });
+}
+
 const roleCues: Readonly<Record<OpenTuiSemanticRole, RoleCue>> = Object.freeze({
   text: Object.freeze({ marker: 'T', label: 'text', bold: false, underline: false }),
   muted: Object.freeze({ marker: '·', label: 'muted', bold: false, underline: false }),
   accent: Object.freeze({ marker: '◆', label: 'accent', bold: true, underline: false }),
-  info: Object.freeze({ marker: 'i', label: 'info', bold: false, underline: false }),
-  success: Object.freeze({ marker: '✓', label: 'success', bold: true, underline: false }),
-  warning: Object.freeze({ marker: '!', label: 'warning', bold: true, underline: false }),
-  error: Object.freeze({ marker: '×', label: 'error', bold: true, underline: false }),
+  info: designToneCue('info', { bold: false, underline: false }),
+  success: designToneCue('success', { bold: true, underline: false }),
+  warning: designToneCue('warning', { bold: true, underline: false }),
+  error: designToneCue('error', { bold: true, underline: false }),
   border: Object.freeze({ marker: '|', label: 'border', bold: false, underline: false }),
   focus: Object.freeze({ marker: '>', label: 'focus', bold: true, underline: true }),
   selection: Object.freeze({ marker: '*', label: 'selected', bold: true, underline: false }),
   path: Object.freeze({ marker: '/', label: 'path', bold: false, underline: false }),
   code: Object.freeze({ marker: '`', label: 'code', bold: false, underline: false }),
   link: Object.freeze({ marker: '↗', label: 'link', bold: false, underline: true }),
-  count: Object.freeze({ marker: '#', label: 'count', bold: true, underline: false }),
+  count: designToneCue('count', { bold: true, underline: false }),
   diffAdded: Object.freeze({ marker: '+', label: 'added', bold: true, underline: false }),
   diffRemoved: Object.freeze({ marker: '−', label: 'removed', bold: true, underline: false }),
   diffContext: Object.freeze({ marker: '@', label: 'context', bold: false, underline: false }),

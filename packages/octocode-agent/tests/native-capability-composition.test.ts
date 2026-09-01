@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { closeOctocodeDb, getMcpEnablement, getSkillEnablement, agentDbPath, openOctocodeDb } from '@octocodeai/octocode-awareness/mcp-state';
 import { createNativeInteractionBroker } from '../src/native-interactions.js';
+import { NativeMcpSessionManager } from '../src/native-mcp.js';
 import { createNativeCapabilityComposition, createNativeSettingsCapabilityControl } from '../src/native-tools.js';
 
 const roots: string[] = [];
@@ -96,9 +97,30 @@ describe('native MCP/Skill production composition', () => {
     interactions.attach(async () => ({ status: 'accepted', value: true }));
     const env = { OCTOCODE_HOME: path.join(root, 'home') };
     const composition = createNativeCapabilityComposition({ cwd: root, env, interactions, workspaceTrust: 'trusted' });
-    const control = createNativeSettingsCapabilityControl({ cwd: root, env, skills: composition.skills });
+    const mcpManager = new NativeMcpSessionManager(async () => { throw new Error('not connected'); }, { now: () => 100 });
+    mcpManager.setCatalog('docs', {
+      expiresAt: 200,
+      tools: [
+        { name: 'search', inputSchema: { type: 'object' } },
+        { name: 'open', inputSchema: { type: 'object' } },
+      ],
+    });
+    const control = createNativeSettingsCapabilityControl({ cwd: root, env, skills: composition.skills, mcpManager, now: () => 100 });
     const before = control.snapshot();
-    expect(before.mcpServers).toContainEqual(expect.objectContaining({ name: 'docs', enabled: true }));
+    expect(before.mcpServers).toContainEqual(expect.objectContaining({
+      name: 'docs',
+      enabled: true,
+      connectionState: 'disconnected',
+      catalogState: 'ready',
+      lastRefreshAt: 100,
+      knownCatalogNames: ['open', 'search'],
+      knownCatalogCount: 2,
+      knownCatalogNamesTruncated: false,
+      tools: [
+        { name: 'open', enabled: true },
+        { name: 'search', enabled: true },
+      ],
+    }));
     const skill = before.skills.find(({ name }) => name === 'research');
     expect(skill).toMatchObject({ enabled: false, vendor: 'agent' });
     const changed = await control.mutate({ requestId: 'disable-docs', expectedRevision: before.revision, action: { op: 'set-mcp-server-enabled', server: 'docs', enabled: false } });
@@ -124,5 +146,6 @@ describe('native MCP/Skill production composition', () => {
     });
     expect(disabledSkill.ok).toBe(true);
     expect(control.snapshot().skills.find(({ name }) => name === 'research')).toMatchObject({ enabled: false, source: skill!.source });
+    await mcpManager.close();
   });
 });

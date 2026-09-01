@@ -10,7 +10,7 @@ import {
   type WorkerLifecycleJsonValue,
 } from '@octocodeai/octocode-awareness/mcp-state';
 
-const MAX_DURABLE_HANDBACK_CHARS = 16_384;
+const MAX_DURABLE_HANDBACK_BYTES = 4 * 1024 * 1024;
 
 const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
 
@@ -18,12 +18,16 @@ function boundedHandback(value: unknown): WorkerLifecycleJsonValue | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   const source = value as Record<string, unknown>;
   const result: Record<string, WorkerLifecycleJsonValue> = {};
+  let textBytes = 0;
   for (const key of ['summary', 'text'] as const) {
     const text = source[key];
     if (typeof text !== 'string') continue;
-    result[key] = text.slice(0, MAX_DURABLE_HANDBACK_CHARS);
+    textBytes += Buffer.byteLength(text);
+    if (textBytes > MAX_DURABLE_HANDBACK_BYTES)
+      throw new Error(`Worker handback exceeds ${MAX_DURABLE_HANDBACK_BYTES} durable bytes`);
+    result[key] = text;
     result[`${key}Sha256`] = digest(text);
-    result[`${key}Truncated`] = text.length > MAX_DURABLE_HANDBACK_CHARS;
+    result[`${key}Truncated`] = false;
   }
   for (const key of ['exitCode', 'signal', 'promptDigest', 'cacheKey'] as const) {
     const item = source[key];

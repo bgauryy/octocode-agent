@@ -45,7 +45,7 @@ test('pre-Start policy allows planning/coordination/read and blocks workspace, e
   const session = ctx('review-session');
   enterPlanMode(session);
   assert.equal(isPlanMode(session), true);
-  for (const allowed of ['plan', 'askUser', 'skill', 'claim', 'readMedia', 'web', 'localSearchCode']) {
+  for (const allowed of ['plan', 'askUser', 'skill', 'claim', 'readMedia', 'web', 'localSearch']) {
     assert.equal(planModeToolGate(allowed, session), undefined, `${allowed} remains available during review`);
   }
   assert.deepEqual(

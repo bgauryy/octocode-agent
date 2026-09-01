@@ -3,6 +3,7 @@ export type NativeContextFilterReason =
   | 'invalid'
   | 'unattributed'
   | 'duplicate'
+  | 'oversized'
   | 'terminal-status'
   | 'stale'
   | 'irrelevant-scope';
@@ -23,6 +24,7 @@ export interface NativeContextEventCandidate {
 export interface NativeContextFilterOptions {
   readonly now?: number;
   readonly maxAgeMs?: number;
+  readonly maxTextBytes?: number;
   readonly seenEventIds?: ReadonlySet<string> | readonly string[];
   readonly relevantScopes?: readonly string[];
 }
@@ -90,6 +92,10 @@ export function filterNativeContextEvent(
   const eventId = typeof candidate.eventId === 'string' ? candidate.eventId.trim() : '';
   const text = typeof candidate.text === 'string' ? candidate.text.trim() : '';
   if (!eventId || !text) return reject('invalid');
+  if (options.maxTextBytes !== undefined) {
+    if (!Number.isSafeInteger(options.maxTextBytes) || options.maxTextBytes < 1) return reject('invalid');
+    if (new TextEncoder().encode(text).byteLength > options.maxTextBytes) return reject('oversized');
+  }
 
   const envelope = parseEnvelope(text);
   const peer = envelope.get('peer')?.trim();

@@ -2,6 +2,8 @@
 
 Deterministic mocks and host-conformance utilities for Octocode flows. The package replaces ad-hoc test doubles for Pi tool and command registration, lifecycle events, terminal UI calls, scripted user dialogs, agent turns, browser callbacks, cancellation, and session restart/fork continuity. It also provides a runner for comparing production-host evidence, hashes normalized traces, and reports the first semantic divergence.
 
+See [the architecture guide](ARCHITECTURE.md) for ownership and dependency rules.
+
 ```ts
 import { createPiFlowHarness } from '@octocodeai/agent-testing';
 
@@ -50,12 +52,28 @@ Script queues fail when exhausted. Tool/command names fail on duplicate registra
 
 ## Cross-host conformance
 
-`CANONICAL_HOST_SCENARIOS` freezes the RFC's 14 shared scenarios: lifecycle, deterministic turns, streaming tools, policy denial, tool failures, cancellation, steering/follow-up, sessions, compaction, UI, transports, persistence recovery, Codex hooks, and plugin lifecycle.
+`CANONICAL_HOST_SCENARIOS` freezes the RFC's 14 production scenarios: lifecycle, deterministic turns, streaming tools, policy denial, tool failures, cancellation, steering/follow-up, sessions, compaction, UI, transports, persistence recovery, Codex hooks, and plugin lifecycle. Twelve are cross-host comparisons. Codex hooks and executable plugin lifecycle are explicitly native host coverage.
 
 `createCanonicalHostAdapter()` creates synthetic handlers for testing the comparison runner. A green result from two canonical handler tables is a runner self-test, not Pi/native parity evidence.
 
-`createProductionPiHostAdapter()` and `createProductionNativeHostAdapter()` invoke caller-supplied production entrypoints. The production suite covers lifecycle and registry projection first. It marks the other canonical scenarios as unsupported failures until each adapter invokes that scenario through both production compositions. `runCanonicalHostConformance()` always returns one result per canonical scenario; `runHostConformance()` accepts an explicit bounded subset.
+`createProductionPiHostAdapter()` accepts receipts from installed-Pi-SDK probes and
+`createProductionNativeHostAdapter()` accepts receipts from built-native probes.
+The adapters reject a receipt attributed to the wrong composition root and no
+longer expose Pi-shaped harness or no-op-runtime scenario drivers.
+`runCanonicalHostConformance()` always returns one result per canonical scenario;
+`runHostConformance()` accepts an explicit bounded subset. The mandatory production
+suite now reports 12 matched cross-host scenarios, two native host-specific scenarios
+covered, zero divergences, and zero unsupported scenarios.
 
-Each report identifies whether its baseline and candidate evidence is `synthetic` or `production`. Each scenario is `matched`, `diverged`, or `unsupported`. Unsupported coverage sets the report result to false and includes a reason for each host, so an incomplete adapter can't appear cutover-ready.
+Each report identifies whether its baseline and candidate evidence is `synthetic` or `production`. A scenario is `matched`, `covered`, `diverged`, or `unsupported`. `covered` means one explicitly named host produced attributed evidence without a peer comparison. Unsupported coverage sets the report result to false and includes a reason for each host, so an incomplete adapter can't appear cutover-ready.
 
-The runner normalizes sequence numbers, timestamps, request/session IDs, workspace paths, ANSI styling, errors, maps, and sets. Each scenario result includes separate SHA-256 trace and effect-ledger comparisons plus the first semantic divergence. `EffectLedger` rejects duplicate effect IDs and prevents model, tool, process, network, write, or message effects during shadow execution.
+The runner normalizes sequence numbers, timestamps, request/session IDs, workspace paths, ANSI styling, errors, maps, and sets. Each scenario result includes separate SHA-256 trace and effect-ledger comparisons plus the first semantic divergence. Bounded host observations remain visible and separately hashed, but never participate in semantic trace or effect comparison. This preserves the persistence evidence that Pi reports eight semantic entries while native retains twenty durable lifecycle entries; the shared restart assertion compares deterministic projection instead of discarding or fabricating entries. `EffectLedger` rejects duplicate effect IDs and prevents model, tool, process, network, write, or message effects during shadow execution.
+
+## Release closure
+
+`evaluateReleaseClosure()` is a fail-closed evaluator for the nine program gates
+defined in `DESIGN/LEFTOVERS.md`. It accepts evidence; it does not manufacture or
+sign it. Every gate needs exactly one passing receipt bound to the same clean
+commit and artifact digest, an independent reviewer, and a caller-verified
+signature. A missing or undersized canary yields `HOLD`; a breached canary abort
+metric yields `ROLLBACK`. Only complete evidence can yield `GO`.

@@ -74,6 +74,13 @@ describe('native settings page controller', () => {
     expect(page.headers['x-content-type-options']).toBe('nosniff');
     expect(page.headers['referrer-policy']).toBe('no-referrer');
     expect(page.headers['content-security-policy']).toContain("default-src 'none'");
+    expect(page.body).toContain('--octocode-background:#0b0f14');
+    expect(page.body).toContain('--octocode-background:#fcfcfd');
+    expect(page.body).not.toMatch(/--(?:bg|panel|line|text|muted|accent|ok):#[0-9a-f]{6}/iu);
+    expect(page.body).toContain('--octocode-font-sans:');
+    expect(page.body).toContain('--octocode-font-mono:');
+    expect(page.body).toContain('font:var(--octocode-font-size)/var(--octocode-line-height) var(--octocode-font-sans)');
+    expect(page.body).toContain('font-family:var(--octocode-font-mono)');
     for (const section of ['overview', 'runtime', 'appearance', 'models', 'hooks', 'plugins', 'commands', 'connections', 'skills', 'overrides', 'diagnostics']) {
       expect(page.body).toContain(`id=\"${section}\"`);
     }
@@ -376,7 +383,21 @@ describe('native settings page controller', () => {
   it('renders MCP and Skill controls and dispatches them through the typed capability authority', async () => {
     const mutate = vi.fn(async () => ({ ok: true as const, revision: 'cap-2' }));
     const capabilityControl = {
-      snapshot: () => ({ revision: 'cap-1', mcpServers: [{ name: 'docs', enabled: true, tools: [{ name: 'search', enabled: false }] }], skills: [{ name: 'research', enabled: true }] }),
+      snapshot: () => ({
+        revision: 'cap-1',
+        mcpServers: [{
+          name: 'docs',
+          enabled: true,
+          connectionState: 'connected' as const,
+          catalogState: 'ready' as const,
+          lastRefreshAt: 123,
+          knownCatalogNames: ['search'],
+          knownCatalogCount: 1,
+          knownCatalogNamesTruncated: false,
+          tools: [{ name: 'search', enabled: false }],
+        }],
+        skills: [{ name: 'research', enabled: true }],
+      }),
       mutate,
     };
     const { controller } = await harness(capabilityControl);
@@ -384,6 +405,9 @@ describe('native settings page controller', () => {
     const origin = new URL(opened.url!).origin;
     const page = await request(opened.url!);
     expect(page.body).toContain('docs');
+    expect(page.body).toContain('connected');
+    expect(page.body).toContain('catalog ready');
+    expect(page.body).not.toContain('no tools');
     expect(page.body).toContain('research');
     const headers = { origin, 'content-type': 'application/json', 'x-octocode-action-token': controller.diagnostics().actionToken };
     const response = await request(`${origin}/api/settings/mutate`, { method: 'POST', headers, body: JSON.stringify({ schemaVersion: 1, requestId: 'mcp-off', expectedRevision: 'cap-1', scope: 'capabilities', actions: [{ op: 'set-mcp-server-enabled', server: 'docs', enabled: false }] }) });

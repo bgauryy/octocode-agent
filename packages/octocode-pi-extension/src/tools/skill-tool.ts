@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseAgentSkill } from '@octocodeai/octocode-shared/agent-skills';
+import {
+  defaultAgentSkillSources,
+  discoverAgentSkillInventory,
+  type AgentSkillSourceDescriptor,
+} from '@octocodeai/octocode-shared/agent-skills';
 import type { ToolDefinition, ToolCallResult, PiTheme, PiContext, SkillInfo, TSchema } from '../types.js';
 import { getAssetPaths } from '../assets.js';
 import type { registerUniqueTool } from './octocode-tools.js';
@@ -39,84 +43,26 @@ function skillKey(name: string): string {
   return name.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-function scanSkillRoot(dir: string, source: string, out: Map<string, DiscoveredSkill>): void {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-
-    const skillDir = path.join(dir, entry.name);
-    const md = path.join(skillDir, 'SKILL.md');
-    if (!fs.existsSync(md)) continue;
-    let text = '';
-    try {
-      text = fs.readFileSync(md, 'utf8');
-    } catch {
-      continue;
-    }
-      const parsed = parseAgentSkill(text, entry.name);
-      if (!parsed.ok) continue;
-      const { name, description } = parsed.skill;
-    if (isPromptOwnedSkill(name)) continue;
-    const key = skillKey(name);
-    const existing = out.get(key);
-    // Pi is authoritative when it supplies a real SKILL.md path. When it only
-    // supplies prompt metadata, resolve the first concrete file from the shared
-    // precedence-ordered roots so the model-visible skill is actually loadable.
-    if (existing?.path) continue;
-    out.set(key, existing
-      ? {
-          ...existing,
-              description: existing.description || description,
-          path: md,
-          dir: skillDir,
-        }
-      : {
-          name,
-              description,
-          path: md,
-          dir: skillDir,
-          source,
-        });
-  }
-}
-
 export function skillDiscoveryRoots(cwd: string, home = os.homedir()): Array<{ dir: string; source: string }> {
-  const project = (rel: string, host: string): { dir: string; source: string } =>
-    ({ dir: path.join(cwd, ...rel.split('/')), source: host === 'agents' ? 'project' : `project:${host}` });
-  const user = (rel: string, host: string): { dir: string; source: string } =>
-    ({ dir: path.join(home, ...rel.split('/')), source: host === 'pi' ? 'user' : `user:${host}` });
-  return [
-    project('.agents/skills', 'agents'),
-    project('.claude/skills', 'claude'),
-    project('.cursor/skills', 'cursor'),
-    project('.codex/skills', 'codex'),
-    project('.agent/skills', 'agent'),
-    project('.octocode/skills', 'octocode'),
-    project('.pi/agent/skills', 'pi'),
-    project('.pi/skills', 'pi'),
-    user('.agents/skills', 'agents'),
-    user('.agent/skills', 'agent'),
-    user('.pi/agent/skills', 'pi'),
-    user('.pi/skills', 'pi'),
-    user('.claude/skills', 'claude'),
-    user('.cursor/skills', 'cursor'),
-    user('.codex/skills', 'codex'),
-    user('.octocode/skills', 'octocode'),
-  ];
+  return defaultAgentSkillSources(cwd, home).map((source) => ({
+    dir: source.root,
+    source: source.id,
+  }));
 }
 
 export function discoverAllSkills(cwd: string, piSkills?: SkillInfo[], home = os.homedir()): DiscoveredSkill[] {
   const found = new Map<string, DiscoveredSkill>();
+  const piMetadata = new Set<string>();
+  const piConcrete = new Set<string>();
   for (const skill of piSkills ?? []) {
     const name = skill.name?.trim();
     if (!name || isPromptOwnedSkill(name)) continue;
     const md = (skill as { path?: string; filePath?: string }).path
       ?? (skill as { path?: string; filePath?: string }).filePath ?? '';
-    found.set(skillKey(name), {
+    const key = skillKey(name);
+    piMetadata.add(key);
+    if (md) piConcrete.add(key);
+    found.set(key, {
       name,
       description: skill.description ?? '',
       path: md,
@@ -124,11 +70,67 @@ export function discoverAllSkills(cwd: string, piSkills?: SkillInfo[], home = os
       source: [skill.source, skill.scope].filter(Boolean).join('/') || 'pi',
     });
   }
-  for (const root of skillDiscoveryRoots(cwd, home)) scanSkillRoot(root.dir, root.source, found);
+  const sources: AgentSkillSourceDescriptor[] = defaultAgentSkillSources(cwd, home);
+  for (const [root, scope] of [
+    [path.join(home, '.octocode', 'skills'), 'user'],
+    [path.join(cwd, '.octocode', 'skills'), 'workspace'],
+  ] as const) {
+    sources.push({
+      id: `octocode:${scope}:${root}`,
+      vendor: 'octocode',
+      scope,
+      root,
+      precedence: sources.length,
+      defaultEnabled: true,
+    });
+  }
   try {
-    scanSkillRoot(getAssetPaths().skillsDir, 'bundled', found);
+    sources.push({
+      id: 'pi:bundled',
+      vendor: 'pi',
+      scope: 'user',
+      root: getAssetPaths().skillsDir,
+      precedence: sources.length,
+      defaultEnabled: true,
+    });
   } catch {
-
+    // A source-less development build simply has no bundled skill directory.
+  }
+  for (const skill of piSkills ?? []) {
+    const file = (skill as { path?: string; filePath?: string }).path
+      ?? (skill as { path?: string; filePath?: string }).filePath;
+    if (!file || path.basename(file) !== 'SKILL.md') continue;
+    const root = path.dirname(path.dirname(path.resolve(file)));
+    if (sources.some((source) => path.resolve(source.root) === root)) continue;
+    sources.push({
+      id: `pi:runtime:${root}`,
+      vendor: 'pi',
+      scope: 'user',
+      root,
+      precedence: sources.length,
+      defaultEnabled: true,
+    });
+  }
+  const inventory = discoverAgentSkillInventory(sources, () => true);
+  for (const entry of [...inventory.entries].sort((left, right) => left.precedence - right.precedence)) {
+    if (!entry.enabled || entry.parseStatus !== 'valid' || !entry.skill || isPromptOwnedSkill(entry.skill.name)) continue;
+    const key = skillKey(entry.skill.name);
+    const existing = found.get(key);
+    if (piConcrete.has(key)) continue;
+    const source = entry.source === 'pi:bundled'
+      ? 'bundled'
+      : entry.scope === 'workspace'
+        ? entry.vendor === 'agents' ? 'project' : `project:${entry.vendor}`
+        : entry.vendor === 'pi' ? 'user' : `user:${entry.vendor}`;
+    found.set(key, existing && piMetadata.has(key)
+      ? { ...existing, path: entry.skill.path, dir: entry.skill.dir }
+      : {
+          name: entry.skill.name,
+          description: entry.skill.description,
+          path: entry.skill.path,
+          dir: entry.skill.dir,
+          source,
+        });
   }
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 }

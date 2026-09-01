@@ -48,11 +48,17 @@ describe('production guidance contract', () => {
     expect(agents).not.toContain('$AWARENESS schema commands --compact');
     expect(read(resolve(PACKAGE_ROOT, 'docs/SKILLS.md'))).not.toContain('<command> --help --compact');
     const helpData = read(resolve(PACKAGE_ROOT, 'bin/cli-help-data.ts'));
-    expect(helpData).toContain('SIMPLE LOOP');
+    expect(helpData).toContain('ROUTINE LOOP');
     expect(helpData).toContain('DEFAULT POLICY');
-    expect(helpData).toContain('setup -> next -> inspect -> verify -> close');
+    expect(helpData).toContain('attend -> work start -> work end -> verify mark -> verify audit');
     expect(read(resolve(SKILL_ROOT, 'SKILL.md'))).toContain('references/octocode.md');
     expect(read(resolve(PACKAGE_ROOT, 'src/coordination/external-policy.ts'))).toContain('`npx octocode` for local, GitHub, and npm research');
+    expect(read(resolve(SKILL_ROOT, 'SKILL.md'))).toMatch(/## Reflect when it earns storage[\s\S]*reflect record/);
+    const octocodeReference = read(resolve(SKILL_ROOT, 'references/octocode.md'));
+    for (const tool of ['ghSearch', 'ghGetFileContent', 'ghSearchPullRequests', 'ghSearchIssues', 'ghSearchCommits', 'ghListReleases', 'ghSearchDiscussions', 'ghCloneRepo', 'npmSearch', 'localSearch', 'localAnalyzeGraph', 'localGetFileContent', 'lspGetSemantics']) {
+      expect(octocodeReference, `missing canonical tool ${tool}`).toContain(tool);
+    }
+    expect(octocodeReference).not.toMatch(/ghSearchCode|ghSearchRepos|ghViewRepoStructure|localSearchCode|localFindFiles|localViewStructure/);
   });
   it('routes every skill reference explicitly and removes mutating compatibility setup', () => {
     const skill = read(resolve(SKILL_ROOT, 'SKILL.md'));
@@ -180,7 +186,7 @@ describe('production guidance contract', () => {
     expect(read(resolve(PACKAGE_ROOT, 'bin/awareness.ts'))).not.toContain('docs show full-flow');
 
     for (const installDoc of [readme, guide]) {
-      expect(installDoc).toContain('npx @octocodeai/octocode-awareness init --compact');
+      expect(installDoc).toContain('npx @octocodeai/octocode-awareness maintenance init --compact');
       expect(installDoc).toContain('bundles only');
       expect(installDoc).not.toMatch(/<package>|npm install --global|npm root --global|node packages\/octocode-awareness\/out|node scripts\/awareness\.mjs|out\/skills\/octocode-skills/);
     }
@@ -333,14 +339,12 @@ describe('production guidance contract', () => {
     expect(hookGuides).toMatch(/PreCompact[\s\S]{0,240}(?:does not end|keeps)[\s\S]{0,80}session/i);
     expect(hookGuides).toMatch(/SessionEnd[\s\S]{0,240}(?:ends|marks)[\s\S]{0,80}session/i);
     expect(hookGuides).not.toMatch(/post-edit[^\n]*(ends|becomes)[^\n]*PENDING/i);
-
     const taskFlow = read(resolve(PACKAGE_ROOT, 'docs/SKILLS.md'));
     expect(taskFlow.indexOf('# run acceptance checks while presence remains active'))
       .toBeLessThan(taskFlow.indexOf('npx @octocodeai/octocode-awareness task submit'));
     expect(taskFlow.indexOf('npx @octocodeai/octocode-awareness task submit'))
       .toBeLessThan(taskFlow.indexOf('npx @octocodeai/octocode-awareness verify mark'));
   });
-
   it('makes fresh-agent install, activation, and hook ownership safe and executable', () => {
     const packageReadme = read(resolve(PACKAGE_ROOT, 'README.md'));
     const userGuide = read(resolve(PACKAGE_ROOT, 'docs/SKILLS.md'));
@@ -360,7 +364,7 @@ describe('production guidance contract', () => {
       expect(guide).not.toMatch(/npx octocode skill --add|npm root --global/);
     }
     expect(tooling).toContain('export OCTOCODE_AGENT_ID');
-    expect(skillLobby).toContain('npx @octocodeai/octocode-awareness setup --compact');
+    expect(skillLobby).toContain('npx @octocodeai/octocode-awareness attend');
     expect(skillLobby).toContain('scripts/install.mjs');
     for (const guide of [hooks, packageHooks]) {
       expect(guide).toMatch(/Claude[\s\S]{0,240}frontmatter/i);

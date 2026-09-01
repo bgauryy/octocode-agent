@@ -200,6 +200,12 @@ export function createNativeFilesystemExtensionsOptions(options: NativeFilesyste
     activatePlugin: async (candidate, writer) => {
       if (candidate.root === undefined) throw new RuntimeFailure('plugin', 'Filesystem plugin root is unavailable');
       for (const contribution of candidate.manifest.contributions) {
+        if (contribution.kind === 'tool') {
+          throw new RuntimeFailure(
+            'unsupported-capability',
+            `Filesystem plugin tool ${contribution.path} requires an executable activation API; declarative JSON cannot supply an executor`,
+          );
+        }
         const loaded = await readRequiredContained(candidate.root, contribution.path);
         const document = parseJson(loaded.bytes, loaded.realPath);
         const entries = Array.isArray(document) ? document : [document];

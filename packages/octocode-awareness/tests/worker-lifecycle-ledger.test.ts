@@ -28,7 +28,7 @@ function event(overrides: Partial<WorkerLifecycleEventInput> = {}): WorkerLifecy
     type: 'worker.spawn',
     redaction: 'sensitive',
     createdAt: '2026-08-28T12:00:00.000Z',
-    payload: { promptDigest: 'sha256:abc', capabilities: { maxTurns: 4, tools: ['localSearchCode'] } },
+    payload: { promptDigest: 'sha256:abc', capabilities: { maxTurns: 4, tools: ['localSearch'] } },
     ...overrides,
   };
 }
@@ -43,7 +43,7 @@ describe('worker lifecycle ledger', () => {
     const db = openOctocodeDb(dbPath);
     try {
       const first = appendWorkerLifecycleEvent(db, event());
-      const duplicate = appendWorkerLifecycleEvent(db, event({ payload: { capabilities: { tools: ['localSearchCode'], maxTurns: 4 }, promptDigest: 'sha256:abc' } }));
+      const duplicate = appendWorkerLifecycleEvent(db, event({ payload: { capabilities: { tools: ['localSearch'], maxTurns: 4 }, promptDigest: 'sha256:abc' } }));
       const second = appendWorkerLifecycleEvent(db, event({
         packetId: 'packet-2',
         type: 'worker.state',

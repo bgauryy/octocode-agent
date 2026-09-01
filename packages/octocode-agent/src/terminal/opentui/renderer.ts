@@ -2,6 +2,7 @@ import {
   BoxRenderable,
   CliRenderEvents,
   createCliRenderer,
+  decodePasteBytes,
   ScrollBoxRenderable,
   TabSelectRenderable,
   TabSelectRenderableEvents,
@@ -11,6 +12,7 @@ import {
 } from '@opentui/core';
 
 import {
+  ComposerPasteStore,
   WorkspaceFileCatalog,
   applyComposerSuggestion,
   commandSuggestions,
@@ -18,6 +20,11 @@ import {
   type ComposerTrigger,
   type NativeComposerSuggestion,
 } from '../../native-composer.js';
+import {
+  NativeComposerImageStore,
+  parseNativeDraggedImagePath,
+  type NativeImageInputResolver,
+} from '../../native-user-input.js';
 
 import {
   createInitialPresentationState,
@@ -38,6 +45,17 @@ import type { WidgetContract } from './widgets/contracts.js';
 import { sanitizeSingleLineText } from './widgets/sanitize.js';
 import { composerKeyBindings, resolveOpenTuiKeyAction } from './keymap.js';
 import { OPEN_TUI_THEMES } from './theme.js';
+import { NATIVE_DESIGN_CONTENT, NATIVE_DESIGN_LAYOUT, nativeColorEnabledFromEnvironment } from '../../presentation/design/tokens.js';
+import {
+  createOpenTuiStore,
+  selectActiveTurn,
+  selectDiscussAvailable,
+  selectInteractionGeneration,
+  selectInteractionType,
+  selectOpenTuiLayoutContext,
+  type OpenTuiStore,
+} from './state/view-store.js';
+import type { NativeWorkerOperationIntent } from '../../native-worker-operations.js';
 
 type RendererContext = Awaited<ReturnType<typeof createCliRenderer>>;
 
@@ -61,6 +79,9 @@ export interface OpenTuiRendererOptions {
   readonly cwd?: string;
   /** Injectable completion source for deterministic tests and alternate hosts. */
   readonly fileCatalog?: Pick<WorkspaceFileCatalog, 'search'>;
+  /** Capability-rooted resolver for binary paste and terminal-dropped image paths. */
+  readonly imageInput?: NativeImageInputResolver;
+  readonly workerOperation?: (intent: NativeWorkerOperationIntent) => void | Promise<void>;
 }
 
 async function bestEffortCleanup(
@@ -79,9 +100,10 @@ async function bestEffortCleanup(
 export function createOpenTuiRendererFacade(
   renderer: RendererContext,
   options: OpenTuiRendererOptions = {},
+  injectedStore?: OpenTuiStore,
 ): OpenTuiRendererFacade {
   const theme = OPEN_TUI_THEMES[renderer.themeMode === 'light' ? 'light' : 'dark'];
-  const colorEnabled = process.env.NO_COLOR === undefined || process.env.FORCE_COLOR !== undefined;
+  const colorEnabled = nativeColorEnabledFromEnvironment(process.env);
   const color = (role: keyof typeof theme.colors): string | undefined => (
     colorEnabled ? theme.colors[role] : undefined
   );
@@ -116,8 +138,8 @@ export function createOpenTuiRendererFacade(
     width: '100%',
     height: 2,
     options: [
-      { name: 'Activity', description: 'Tool and run activity', value: 'activity' },
-      { name: 'Context', description: 'Runtime context and status', value: 'context' },
+      { name: NATIVE_DESIGN_CONTENT.activityTab, description: 'Tool and run activity', value: 'activity' },
+      { name: NATIVE_DESIGN_CONTENT.contextTab, description: 'Runtime context and status', value: 'context' },
     ],
     showDescription: false,
     showUnderline: true,
@@ -153,11 +175,11 @@ export function createOpenTuiRendererFacade(
   const composer = new TextareaRenderable(renderer, {
     id: 'octocode-agent-composer',
     width: '100%',
-    height: 3,
-    minHeight: 3,
+    height: NATIVE_DESIGN_LAYOUT.composerRows,
+    minHeight: NATIVE_DESIGN_LAYOUT.composerRows,
     maxHeight: 6,
     wrapMode: 'word',
-    placeholder: 'Message Octocode Agent…',
+    placeholder: NATIVE_DESIGN_CONTENT.composerPlaceholder,
     keyBindings: [...composerKeyBindings()].reverse(),
     backgroundColor: color('surface'),
     focusedBackgroundColor: color('surfaceRaised'),
@@ -172,19 +194,109 @@ export function createOpenTuiRendererFacade(
     id: 'octocode-agent-composer-help',
     width: '100%',
     height: 1,
-    content: 'Enter newline · Ctrl/⌘+Enter send · Tab move focus · Esc cancel',
+    content: NATIVE_DESIGN_CONTENT.composerHelp,
     fg: color('muted'),
   });
+  const shortcutHelp = new TextRenderable(renderer, {
+    id: 'octocode-agent-shortcuts',
+    width: '100%',
+    height: 0,
+    visible: false,
+    content: NATIVE_DESIGN_CONTENT.shortcutHelp.join('\n'),
+    fg: color('text'),
+    bg: color('surfaceRaised'),
+  });
+  editor.add(shortcutHelp);
   editor.add(composer);
   editor.add(composerHelp);
+  const width = Math.max(1, renderer.width);
+  const height = Math.max(1, renderer.height);
+  const store = injectedStore ?? createOpenTuiStore({
+    viewport: { width, height },
+    initialPresentation: options.initialState,
+  });
+  store.getState().actions.resize(width, height);
+  const pasteStore = new ComposerPasteStore();
+  const imageStore = new NativeComposerImageStore();
+  const imageLoads = new AbortController();
+  let pendingImageLoads = 0;
+  let pendingImageSequence = 0;
+  const inputValidation = (message: string): void => {
+    options.events?.inputValidation?.(message);
+  };
+  const replaceComposerToken = (token: string, replacement: string): void => {
+    const current = composer.plainText;
+    const index = current.indexOf(token);
+    if (index < 0) return;
+    const next = `${current.slice(0, index)}${replacement}${current.slice(index + token.length)}`;
+    composer.replaceText(next);
+    composer.cursorOffset = index + replacement.length;
+  };
+  composer.onPaste = (event) => {
+    // Paste payloads are intercepted before TextareaRenderable mutates its
+    // buffer. Large content stays in the renderer-independent store and only a
+    // compact marker enters visual/Zustand draft state.
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.metadata?.kind === 'binary' || event.metadata?.mimeType?.startsWith('image/')) {
+      try {
+        if (options.imageInput === undefined) throw new Error('Image input is unavailable');
+        const image = options.imageInput.fromBinary(
+          event.bytes,
+          event.metadata?.mimeType,
+        );
+        composer.insertText(imageStore.add(image).marker);
+      } catch (error) {
+        composer.insertText('[image rejected]');
+        inputValidation(`Image attachment rejected · ${error instanceof Error ? error.message : 'invalid image'}`);
+      }
+      return;
+    }
+    const decoded = decodePasteBytes(event.bytes);
+    const imagePath = parseNativeDraggedImagePath(decoded);
+    if (imagePath !== undefined && options.imageInput !== undefined) {
+      const pending = `[image loading #${++pendingImageSequence}]`;
+      pendingImageLoads += 1;
+      composer.insertText(pending);
+      void options.imageInput.fromWorkspacePath(imagePath, imageLoads.signal)
+        .then((image) => replaceComposerToken(pending, imageStore.add(image).marker))
+        .catch((error: unknown) => {
+          const prepared = pasteStore.prepare(decoded);
+          replaceComposerToken(pending, prepared.displayText);
+          inputValidation(`Image attachment rejected · ${error instanceof Error ? error.message : 'invalid image'}`);
+        })
+        .finally(() => { pendingImageLoads -= 1; });
+      return;
+    }
+    const prepared = pasteStore.prepare(decoded);
+    composer.insertText(prepared.displayText);
+  };
   composer.onSubmit = () => {
-    const submitted = composer.plainText.trim();
-    if (submitted.length === 0) return;
+    // The toolkit textarea is the synchronous keystroke authority; its content
+    // callback can trail a native submit by one input tick. Zustand retains the
+    // serializable draft snapshot, but must not make submission drop fresh text.
+    const draft = composer.plainText;
+    if (draft.trim().length === 0 && imageStore.size === 0) return;
+    if (pendingImageLoads > 0) {
+      inputValidation('Wait for image attachment loading to finish');
+      return;
+    }
+    let submitted: ReturnType<NativeComposerImageStore['compose']>;
+    try {
+      submitted = imageStore.compose(pasteStore.expand(draft));
+    } catch (error) {
+      inputValidation(`Input was not submitted · ${error instanceof Error ? error.message : 'invalid input'}`);
+      return;
+    }
+    pasteStore.clear();
+    imageStore.clear();
     composer.clear();
-    options.events?.submitLine(submitted);
+    store.getState().actions.setComposerDraft('');
+    options.events?.submitInput(submitted);
   };
   const syncRailPane = (): void => {
     const contextSelected = railTabs.getSelectedIndex() === 1;
+    store.getState().actions.selectRailPane(contextSelected ? 'context' : 'activity');
     tools.visible = !contextSelected;
     sidebar.visible = contextSelected;
   };
@@ -195,16 +307,17 @@ export function createOpenTuiRendererFacade(
   syncRailPane();
 
   const applyResponsiveLayout = (nextWidth: number, nextHeight: number): void => {
-    const narrow = nextWidth < 72;
-    body.flexDirection = narrow ? 'column' : 'row';
-    rail.width = narrow ? '100%' : '42%';
-    const compactRailHeight = nextHeight < 24 ? 0 : Math.max(4, Math.floor(nextHeight / 3));
-    rail.visible = !narrow || compactRailHeight > 0;
-    rail.height = narrow ? compactRailHeight : '100%';
-    rail.maxHeight = narrow ? compactRailHeight : '100%';
+    store.getState().actions.resize(nextWidth, nextHeight);
+    const layout = selectOpenTuiLayoutContext(store.getState());
+    body.flexDirection = layout.narrow ? 'column' : 'row';
+    rail.width = layout.narrow ? '100%' : '42%';
+    const compactRailHeight = layout.short
+      ? NATIVE_DESIGN_LAYOUT.minimumActivityRows
+      : Math.max(NATIVE_DESIGN_LAYOUT.minimumActivityRows, Math.floor(nextHeight / 3));
+    rail.visible = layout.railVisible;
+    rail.height = layout.narrow ? compactRailHeight : '100%';
+    rail.maxHeight = layout.narrow ? compactRailHeight : '100%';
   };
-  const width = Math.max(1, renderer.width);
-  const height = Math.max(1, renderer.height);
   applyResponsiveLayout(width, height);
   let controller: SemanticWidgetController | undefined;
   const adapter = new OpenTuiSemanticAdapter(renderer, { header, transcript, tools, sidebar, editor, footer }, {
@@ -224,13 +337,12 @@ export function createOpenTuiRendererFacade(
     callbackFailure: options.events?.failure,
     nowMs: options.nowMs,
     interactionWidgetFactory: options.interactionWidgetFactory,
+    workerOperation: options.workerOperation,
   });
-  let previousWidth = width;
-  let previousHeight = height;
   let activeGeneration: number | undefined;
   let activeInteractionType: 'confirm' | 'select' | 'input' | 'editor' | undefined;
+  let activeDiscussAvailable = false;
   let activeTurn = false;
-  let semanticFocusedId: string | undefined;
   const fileCatalog = options.fileCatalog ?? new WorkspaceFileCatalog(options.cwd ?? process.cwd());
   let assist: ComposerAssistWidget | undefined;
   let assistTrigger: ComposerTrigger | undefined;
@@ -264,13 +376,15 @@ export function createOpenTuiRendererFacade(
     }
   };
   const applyActionPlaneLayout = (nextHeight: number): void => {
-    const actionHeight = Math.min(8, Math.max(1, nextHeight));
+    const actionHeight = Math.min(NATIVE_DESIGN_LAYOUT.maximumActionRows, Math.max(1, nextHeight));
     composer.visible = activeGeneration === undefined;
-    composer.height = activeGeneration === undefined ? 3 : 0;
+    composer.height = activeGeneration === undefined ? NATIVE_DESIGN_LAYOUT.composerRows : 0;
     composerHelp.visible = activeGeneration === undefined;
-    composerHelp.height = activeGeneration === undefined ? 1 : 0;
+    composerHelp.height = activeGeneration === undefined ? NATIVE_DESIGN_LAYOUT.composerHelpRows : 0;
     editor.height = activeGeneration === undefined ? 'auto' : actionHeight;
-    body.maxHeight = activeGeneration === undefined ? '100%' : Math.max(0, nextHeight - actionHeight - 4);
+    body.maxHeight = activeGeneration === undefined
+      ? '100%'
+      : Math.max(0, nextHeight - actionHeight - NATIVE_DESIGN_LAYOUT.fixedChromeRows);
   };
   const clearAssist = (): void => {
     assistRequest += 1;
@@ -357,15 +471,17 @@ export function createOpenTuiRendererFacade(
   };
   const focusComposer = (): void => {
     controller?.focusWidget(undefined);
-    semanticFocusedId = undefined;
+    store.getState().actions.focusSemantic(undefined);
     composer?.focus();
+    store.getState().actions.setCompactRailFocusOverride(false);
+    applyResponsiveLayout(Math.max(1, renderer.width), Math.max(1, renderer.height));
   };
   const syncLayout = (): void => {
     const nextWidth = Math.max(1, renderer.width);
     const nextHeight = Math.max(1, renderer.height);
-    if (nextWidth === previousWidth && nextHeight === previousHeight) return;
-    previousWidth = nextWidth;
-    previousHeight = nextHeight;
+    const previous = store.getState().view.viewport;
+    if (nextWidth === previous.width && nextHeight === previous.height) return;
+    store.getState().actions.resize(nextWidth, nextHeight);
     applyActionPlaneLayout(nextHeight);
     applyResponsiveLayout(nextWidth, nextHeight);
     assist?.resize(
@@ -383,23 +499,26 @@ export function createOpenTuiRendererFacade(
   const cycleFocus = (reverse: boolean): void => {
     if (!composer) return;
     const ids = [
-      ...(rail.visible ? [railTabs.id] : []),
+      railTabs.id,
       ...(controller?.getFocusableWidgetIds() ?? []),
     ];
     if (ids.length === 0) {
       focusComposer();
       return;
     }
-    if (semanticFocusedId === undefined) {
+    const focusedSemanticId = store.getState().view.focusedSemanticId;
+    if (focusedSemanticId === undefined) {
       const target = reverse ? ids.at(-1) : ids[0];
       if (target === railTabs.id) {
         controller?.focusWidget(undefined);
+        store.getState().actions.setCompactRailFocusOverride(true);
+        applyResponsiveLayout(Math.max(1, renderer.width), Math.max(1, renderer.height));
         railTabs.focus();
-        semanticFocusedId = target;
-      } else if (target !== undefined && controller?.focusWidget(target)) semanticFocusedId = target;
+        store.getState().actions.focusSemantic(target);
+      } else if (target !== undefined && controller?.focusWidget(target)) store.getState().actions.focusSemantic(target);
       return;
     }
-    const current = ids.indexOf(semanticFocusedId);
+    const current = ids.indexOf(focusedSemanticId);
     const next = current + (reverse ? -1 : 1);
     if (current < 0 || next < 0 || next >= ids.length) {
       focusComposer();
@@ -408,16 +527,37 @@ export function createOpenTuiRendererFacade(
     const target = ids[next];
     if (target === railTabs.id) {
       controller?.focusWidget(undefined);
+      store.getState().actions.setCompactRailFocusOverride(true);
+      applyResponsiveLayout(Math.max(1, renderer.width), Math.max(1, renderer.height));
       railTabs.focus();
-      semanticFocusedId = target;
-    } else if (target !== undefined && controller?.focusWidget(target)) semanticFocusedId = target;
+      store.getState().actions.focusSemantic(target);
+    } else if (target !== undefined && controller?.focusWidget(target)) store.getState().actions.focusSemantic(target);
   };
   const keyHandler = (key: KeyEvent): void => {
     const name = key.name.toLowerCase();
+    const shortcutKey = name === '?' || key.sequence === '?';
+    const escapeKey = name === 'escape' || name === 'esc' || key.sequence === '\u001b';
+    if (shortcutKey && activeGeneration === undefined && composer.plainText.length === 0) {
+      key.preventDefault();
+      const open = !store.getState().view.shortcutOverlayOpen;
+      store.getState().actions.setShortcutOverlayOpen(open);
+      shortcutHelp.visible = open;
+      shortcutHelp.height = open ? NATIVE_DESIGN_CONTENT.shortcutHelp.length : 0;
+      return;
+    }
+    if (store.getState().view.shortcutOverlayOpen && escapeKey) {
+      key.preventDefault();
+      store.getState().actions.setShortcutOverlayOpen(false);
+      shortcutHelp.visible = false;
+      shortcutHelp.height = 0;
+      composer.focus();
+      return;
+    }
     const action = resolveOpenTuiKeyAction(key, {
       assistOpen: assist !== undefined && activeGeneration === undefined,
       interaction: activeGeneration === undefined ? undefined : activeInteractionType,
-      semanticSurfaceFocused: semanticFocusedId !== undefined,
+      discussAvailable: activeGeneration !== undefined && activeDiscussAvailable,
+      semanticSurfaceFocused: store.getState().view.focusedSemanticId !== undefined,
       activeTurn,
     });
     if (assist === undefined && activeGeneration === undefined
@@ -449,6 +589,12 @@ export function createOpenTuiRendererFacade(
           queueMicrotask(() => controller?.handleNativeInteraction(generation, { type: 'key', key: name === 'c' ? 'ctrl+c' : 'escape' }));
         }
         return;
+      case 'interaction-discuss':
+        key.preventDefault();
+        if (activeGeneration !== undefined) {
+          controller?.handleNativeInteraction(activeGeneration, { type: 'discuss' });
+        }
+        return;
       case 'interrupt':
         key.preventDefault();
         options.events?.interrupt();
@@ -463,7 +609,7 @@ export function createOpenTuiRendererFacade(
         cycleFocus(action === 'focus-previous');
         return;
       case 'surface-navigate':
-        if (semanticFocusedId === railTabs.id) return;
+        if (store.getState().view.focusedSemanticId === railTabs.id) return;
         key.preventDefault();
         controller?.handleFocusedNavigation(name);
         return;
@@ -489,33 +635,36 @@ export function createOpenTuiRendererFacade(
   };
   renderer.keyInput.on('keypress', keyHandler);
   renderer.on(CliRenderEvents.RESIZE, syncLayout);
-  const composerChanged = (): void => refreshAssist(composer.plainText);
+  const composerChanged = (): void => {
+    store.getState().actions.setComposerDraft(composer.plainText);
+    refreshAssist(composer.plainText);
+  };
   composer.onContentChange = composerChanged;
 
   const facade: OpenTuiRendererFacade = {
     render(state) {
-      activeTurn = state.working === 'active';
-      activeGeneration = state.interaction !== undefined
-        && (state.interaction.status === 'pending' || state.interaction.status === 'validation')
-        ? state.interaction.generation
-        : undefined;
-      activeInteractionType = activeGeneration === undefined ? undefined : state.interaction?.request.type;
+      const projectedStoreState = { ...store.getState(), presentation: state };
+      activeTurn = selectActiveTurn(projectedStoreState);
+      activeGeneration = selectInteractionGeneration(projectedStoreState);
+      activeInteractionType = selectInteractionType(projectedStoreState);
+      activeDiscussAvailable = selectDiscussAvailable(projectedStoreState);
       applyActionPlaneLayout(Math.max(1, renderer.height));
       if (activeGeneration !== undefined) clearAssist();
       adapter.setInteractionGeneration(activeGeneration);
-      if (activeGeneration !== undefined && semanticFocusedId !== undefined) {
+      if (activeGeneration !== undefined && store.getState().view.focusedSemanticId !== undefined) {
         controller?.focusWidget(undefined);
-        semanticFocusedId = undefined;
+        store.getState().actions.focusSemantic(undefined);
       }
       syncLayout();
       controller?.render(state);
       collectAnnouncements();
-      if (semanticFocusedId !== undefined
-        && semanticFocusedId !== railTabs.id
-        && !controller?.getFocusableWidgetIds().includes(semanticFocusedId)) {
+      const focusedSemanticId = store.getState().view.focusedSemanticId;
+      if (focusedSemanticId !== undefined
+        && focusedSemanticId !== railTabs.id
+        && !controller?.getFocusableWidgetIds().includes(focusedSemanticId)) {
         focusComposer();
       }
-      if (activeGeneration === undefined && semanticFocusedId === undefined) composer?.focus();
+      if (activeGeneration === undefined && store.getState().view.focusedSemanticId === undefined) composer?.focus();
     },
     alternateOutput() {
       return [controller?.alternateOutput() ?? '', assist?.alternateOutput() ?? ''].filter(Boolean).join('\n\n');
@@ -534,7 +683,14 @@ export function createOpenTuiRendererFacade(
       await bestEffortCleanup([
         () => renderer.keyInput.off('keypress', keyHandler),
         () => renderer.off(CliRenderEvents.RESIZE, syncLayout),
-        () => { composer.onContentChange = undefined; composer.onSubmit = undefined; },
+        () => {
+          composer.onContentChange = undefined;
+          composer.onPaste = undefined;
+          composer.onSubmit = undefined;
+          pasteStore.clear();
+          imageStore.clear();
+          imageLoads.abort('terminal stopped');
+        },
         () => railTabs.off(TabSelectRenderableEvents.SELECTION_CHANGED, railSelectionChanged),
         () => railTabs.off(TabSelectRenderableEvents.ITEM_SELECTED, railSelectionChanged),
         clearAssist,
@@ -544,7 +700,7 @@ export function createOpenTuiRendererFacade(
       ]);
     },
   };
-  facade.render(options.initialState ?? createInitialPresentationState());
+  facade.render(injectedStore?.getState().presentation ?? options.initialState ?? createInitialPresentationState());
   return facade;
 }
 
@@ -553,10 +709,12 @@ export function createDefaultOpenTuiTerminal(options: {
   readonly cwd?: string;
   readonly alternateOutput?: boolean;
   readonly reducedMotion?: boolean;
+  readonly imageInput?: NativeImageInputResolver;
+  readonly workerOperation?: (intent: NativeWorkerOperationIntent) => void | Promise<void>;
 } = {}): OpenTuiTerminal {
   return createOpenTuiTerminal({
     inputOwnership: 'renderer',
-    async createRenderer(events) {
+    async createRenderer(events, store) {
       const renderer = await createCliRenderer({ exitOnCtrlC: false });
       let facade: OpenTuiRendererFacade;
       try {
@@ -568,7 +726,9 @@ export function createDefaultOpenTuiTerminal(options: {
             ? { alternateOutputSink: (text: string) => { process.stdout.write(`\r\n${text}\r\n`); } }
             : {}),
           reducedMotion: options.reducedMotion,
-        });
+          imageInput: options.imageInput,
+          workerOperation: options.workerOperation,
+        }, store);
       } catch (error) {
         try { renderer.destroy(); }
         catch (cleanupError) { throw new AggregateError([error, cleanupError], 'OpenTUI initialization and rollback failed'); }

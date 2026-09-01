@@ -2,7 +2,7 @@
 
 Load when changing schemas or interpreting stored entities.
 
-The advanced v1 schema lives in `awareness.sqlite3`; repository coordination also uses `.octocode/octocode.sqlite3` according to workspace policy. SQLite is canonical. Other generated `.octocode/` files are projections.
+The advanced v1 schema lives in `$OCTOCODE_HOME/agent/agent.sqlite3`. Repository coordination is isolated by workspace columns in that same global database. SQLite is canonical; generated `.octocode/` files are projections or authored artifacts.
 
 ```text
 plan -> task -> claim/run -> run_files (advisory)

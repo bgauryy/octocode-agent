@@ -11,18 +11,19 @@ use `node $OCTOCODE_CLI tools <name> --scheme`.
 
 | Document | Owns |
 |---|---|
+| [../ARCHITECTURE.md](../ARCHITECTURE.md) | Pi composition root, adapter ownership, dependency rules, and convergence limits. |
 | [TOOLS.md](TOOLS.md) | Complete tool inventory, routing rules, CLI schema lookup, and Awareness-as-CLI guidance. |
 | [OVERRIDES.md](OVERRIDES.md) | Branded-launcher native-tool suppression, direct-extension backstop, and replacement routes. |
 | [WHY_OCTOCODE.md](WHY_OCTOCODE.md) | Product positioning, capability profiles, and comparison with vanilla Pi. |
 
-### Media & FFmpeg
+### Media and FFmpeg
 
 | Document | Owns |
 |---|---|
 | [FFMPEG.md](FFMPEG.md) | Complete ffmpeg guide: discovery, exact argvs, `runFfmpeg` reference, routing, anti-patterns, 16 cookbook recipes, hardware encoding, screen capture, bundling, and capability matrix. |
 | [MEDIA_TOOL.md](MEDIA_TOOL.md) | RFC and routing contract for `readMedia` vs `media` (two-tool effect boundary). |
 
-### Agent coordination & subagents
+### Agent coordination and subagents
 
 | Document | Owns |
 |---|---|
@@ -31,7 +32,7 @@ use `node $OCTOCODE_CLI tools <name> --scheme`.
 | [SUBAGENTS.md](SUBAGENTS.md) | Spawn profiles, live control, durable peer communication, and isolation. |
 | [REFLECT.md](REFLECT.md) | Reflection and memory workflow as exposed through the harness. |
 
-### Runtime & TUI
+### Runtime and TUI
 
 | Document | Owns |
 |---|---|
@@ -41,11 +42,11 @@ use `node $OCTOCODE_CLI tools <name> --scheme`.
 | [SESSION_ARTIFACTS.md](SESSION_ARTIFACTS.md) | Where session files live (plans, screenshots, logs, compaction snapshots), manifest, and cleanup. |
 | [CRON.md](CRON.md) | Session job safety model, default jobs, and cron-style maintenance commands. |
 
-### Audit & decisions
+### Audit and decisions
 
 | Document | Owns |
 |---|---|
-| [AGENT_TOOL_AUDIT.md](AGENT_TOOL_AUDIT.md) | Tool-surface audit: direct palette ratings, Awareness signal value, follow-up priorities. |
+| [AGENT_TOOL_AUDIT.md](AGENT_TOOL_AUDIT.md) | Dated decision snapshot for palette ratings, Awareness signal value, and contract-size evidence. Current registries remain source-owned. |
 
 ---
 

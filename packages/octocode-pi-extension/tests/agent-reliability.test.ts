@@ -19,6 +19,7 @@ import {
   setAgentProcessFactoryForTests,
   isSubagentProcess,
   MAX_AGENT_RECORDS,
+  MAX_ACTIVE_AGENTS,
   DEFAULT_SPAWN_POLICY,
   DEFAULT_IDLE_REAP_MS,
   evaluateStepBudget,
@@ -59,7 +60,8 @@ test('extractDeltaSummary returns undefined for blank output and truncates long 
 // ─── Reliability guardrails (research-backed) ─────────────────────────────────
 
 test('fan-out warning threshold is small (~4) per structured-topology research', () => {
-  assert.equal(DEFAULT_SPAWN_POLICY.warningActiveAgents, 4);
+  assert.equal(DEFAULT_SPAWN_POLICY.warningActiveAgents, 3);
+  assert.equal(DEFAULT_SPAWN_POLICY.maxActiveAgents, MAX_ACTIVE_AGENTS);
   assert.ok(DEFAULT_SPAWN_POLICY.maxStepsPerWorker > 0);
 });
 
@@ -354,15 +356,15 @@ test('L1: ledger elapsed time is frozen for a terminal agent, not growing with w
   assert.equal(snapshotB, snapshotA, 'elapsed time for a terminal agent must not change after it finished');
 });
 
-test('M7: spawning beyond MAX_AGENT_RECORDS non-droppable agents throws', function () {
+test('M7: spawning beyond the root active-agent ceiling throws', function () {
   if (isSubagentProcess()) return;
 
   // Create a mock that keeps agents alive in 'running' state (non-droppable).
   const makePersistentMock = () => makeMockAgentProcess({ stdinThrows: false, exitImmediately: false });
   setAgentProcessFactoryForTests(() => makePersistentMock() as never);
 
-  // Fill the registry to the limit — all agents remain 'running' (non-droppable).
-  for (let i = 0; i < MAX_AGENT_RECORDS; i++) {
+  // Fill the active root-worker budget — all agents remain running.
+  for (let i = 0; i < MAX_ACTIVE_AGENTS; i++) {
     spawnRpcAgent({ task: `slot ${i}`, resourceMode: 'lean' });
   }
 
@@ -370,7 +372,7 @@ test('M7: spawning beyond MAX_AGENT_RECORDS non-droppable agents throws', functi
   assert.throws(
     () => spawnRpcAgent({ task: 'overflow', resourceMode: 'lean' }),
     /registry.*capacity|too many|at capacity/i,
-    'Expected hard-cap error when non-droppable agents exceed MAX_AGENT_RECORDS',
+    'Expected hard-cap error when root workers exceed MAX_ACTIVE_AGENTS',
   );
 });
 

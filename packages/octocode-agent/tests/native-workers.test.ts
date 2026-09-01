@@ -22,6 +22,15 @@ import {
   type NativeWorkerProcessSpec,
   type NativeGitProcessAdapter,
 } from '../src/native-workers.js';
+import type {
+  NativeWorkerMessageJournal,
+  NativeWorkerMessageStageInput,
+} from '../src/native-rust-worker-messages.js';
+import {
+  decodeNativeWorkerBootstrapPacketV1,
+  type NativeWorkerPromptCustomizationV1,
+} from '../src/native-worker-bootstrap.js';
+import type { NativeResolvedPortableCustomizationDescriptorV1 } from '../src/native-portable-customization.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -36,7 +45,8 @@ function eventLine(text: string, sequence = 1): string {
     event: {
       schemaVersion: 1, eventVersion: 1, id: `event-${sequence}`, type: 'message.delta', phase: 'notification',
       sessionId: 'worker-session', timestamp: sequence, cwd: '/tmp', mode: 'rpc',
-      trust: { workspace: 'trusted', managedOnly: false }, payload: { type: 'text', text },
+      trust: { workspace: 'trusted', managedOnly: false },
+      payload: { type: 'text', text, requestId: `request-${sequence}`, messageId: `message-${sequence}` },
     },
   })}\n`;
 }
@@ -47,6 +57,7 @@ class FakeProcess implements NativeWorkerProcessHandle {
   readonly stderr = new Readable({ read() {} });
   readonly exit;
   readonly writes: string[] = [];
+  readonly endInput = vi.fn(async () => undefined);
   readonly abort = vi.fn();
   readonly kill = vi.fn();
   readonly completion = deferred<NativeWorkerProcessResult>();
@@ -103,7 +114,14 @@ function spawnPacket(id: string, prompt = `task-${id}`): WorkerSpawnPacket {
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function fixture(options: { maxActive?: number; env?: NodeJS.ProcessEnv; envAllowlist?: string[] } = {}) {
+function fixture(options: {
+  maxActive?: number;
+  env?: NodeJS.ProcessEnv;
+  envAllowlist?: string[];
+  messageJournal?: NativeWorkerMessageJournal;
+  workerCustomization?: NativeResolvedPortableCustomizationDescriptorV1;
+  workerPromptCustomization?: NativeWorkerPromptCustomizationV1;
+} = {}) {
   const process = new FakeProcessAdapter();
   const ledger: WorkerLedgerEntry[] = [];
   const port = new NativeWorkerProcessPort({
@@ -113,6 +131,9 @@ function fixture(options: { maxActive?: number; env?: NodeJS.ProcessEnv; envAllo
     cwd: '/tmp',
     env: options.env,
     envAllowlist: options.envAllowlist,
+    messageJournal: options.messageJournal,
+    workerCustomization: options.workerCustomization,
+    workerPromptCustomization: options.workerPromptCustomization,
   });
   const supervisor = new WorkerSupervisor({
     port,
@@ -123,6 +144,94 @@ function fixture(options: { maxActive?: number; env?: NodeJS.ProcessEnv; envAllo
 }
 
 describe('native worker process port', () => {
+  it('acknowledges a staged worker message only after the matching child RPC response', async () => {
+    const staged: NativeWorkerMessageStageInput[] = [];
+    const allowStage = deferred<void>();
+    const ack = vi.fn(async () => undefined);
+    const release = vi.fn(async () => undefined);
+    const messageJournal: NativeWorkerMessageJournal = {
+      abandonSession: async () => ({ abandoned: 0 }),
+      stage: vi.fn(async (input) => {
+        staged.push(input);
+        await allowStage.promise;
+        return { message: {} as never, command: input.command, ack, release };
+      }),
+    };
+    const { process, supervisor } = fixture({ messageJournal });
+    const spawning = supervisor.spawn(spawnPacket('journaled'));
+    await tick();
+    process.processes[0]!.autoRespond = false;
+    allowStage.resolve();
+    await spawning;
+    await tick();
+
+    expect(staged.map(({ command }) => command)).toEqual([
+      { type: 'input.submit', text: 'task-journaled' },
+    ]);
+    expect(ack).not.toHaveBeenCalled();
+    const request = JSON.parse(process.processes[0]!.writes[0]!) as { requestId: string };
+    process.processes[0]!.stdout.push(`${JSON.stringify({ protocolVersion: 1, requestId: request.requestId, ok: true })}\n`);
+    await tick();
+    expect(ack).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
+
+    process.processes[0]!.complete({ code: 0, signal: null });
+    await supervisor.wait(workerId('journaled'));
+  });
+
+  it('releases the staged Rust message lease when the child exits without a response', async () => {
+    const ack = vi.fn(async () => undefined);
+    const release = vi.fn(async () => undefined);
+    const allowStage = deferred<void>();
+    const messageJournal: NativeWorkerMessageJournal = {
+      abandonSession: async () => ({ abandoned: 0 }),
+      stage: vi.fn(async (input) => {
+        await allowStage.promise;
+        return { message: {} as never, command: input.command, ack, release };
+      }),
+    };
+    const { process, port } = fixture({ messageJournal });
+    process.processes.length = 0;
+    const spawning = port.spawn(spawnPacket('release-on-exit'), new AbortController().signal);
+    await tick();
+    process.processes[0]!.autoRespond = false;
+    allowStage.resolve();
+    const handle = await spawning;
+    process.processes[0]!.complete({ code: 9, signal: null });
+
+    await expect(handle.completion).resolves.toMatchObject({ outcome: 'failed' });
+    expect(release).toHaveBeenCalledOnce();
+    expect(ack).not.toHaveBeenCalled();
+  });
+
+  it('releases unresolved prompt and cancel leases after graceful abort ends the child', async () => {
+    const allowFirstStage = deferred<void>();
+    let stageCount = 0;
+    const ack = vi.fn(async () => undefined);
+    const release = vi.fn(async () => undefined);
+    const messageJournal: NativeWorkerMessageJournal = {
+      abandonSession: async () => ({ abandoned: 0 }),
+      stage: vi.fn(async (input) => {
+        stageCount += 1;
+        if (stageCount === 1) await allowFirstStage.promise;
+        return { message: {} as never, command: input.command, ack, release };
+      }),
+    };
+    const { process, port } = fixture({ messageJournal });
+    const spawning = port.spawn(spawnPacket('release-on-abort'), new AbortController().signal);
+    await tick();
+    process.processes[0]!.autoRespond = false;
+    allowFirstStage.resolve();
+    const handle = await spawning;
+
+    await handle.abort('stop');
+    process.processes[0]!.complete({ code: null, signal: 'SIGTERM' });
+
+    await expect(handle.completion).resolves.toMatchObject({ outcome: 'aborted' });
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(ack).not.toHaveBeenCalled();
+  });
+
   it('captures structured completion through the core supervisor', async () => {
     const { process, supervisor } = fixture();
     await supervisor.spawn(spawnPacket('worker-1'));
@@ -181,6 +290,102 @@ describe('native worker process port', () => {
     expect(Object.isFrozen(process.specs[0]!.env)).toBe(true);
   });
 
+  it('does not propagate the retired API prompt environment transport', async () => {
+    const workerPromptCustomization: NativeWorkerPromptCustomizationV1 = {
+      schemaVersion: 1,
+      id: 'com.acme.prompt',
+      productPolicyOverlay: { mode: 'append', content: 'Use Acme terminology.' },
+    };
+    const { process, supervisor } = fixture({
+      env: { OCTOCODE_AGENT_API_PROMPT_V1: 'retired', OMIT: 'nope' },
+      workerPromptCustomization,
+    });
+
+    await supervisor.spawn(spawnPacket('worker-api-prompt'));
+    await tick();
+
+    expect(process.specs[0]!.env).not.toHaveProperty('OCTOCODE_AGENT_API_PROMPT_V1');
+    expect(process.specs[0]!.env).not.toHaveProperty('OMIT');
+    expect(decodeNativeWorkerBootstrapPacketV1(process.specs[0]!.bootstrap!))
+      .toMatchObject({ promptCustomization: workerPromptCustomization });
+  });
+
+  it('binds portable customization to the dedicated bootstrap frame and cache identity', async () => {
+    const workerCustomization: NativeResolvedPortableCustomizationDescriptorV1 = {
+      schemaVersion: 1,
+      id: 'com.acme.portable',
+      entrypoint: {
+        kind: 'module',
+        moduleUrl: 'file:///tmp/customization.mjs',
+        exportName: 'activate',
+        integrity: `sha256-${'a'.repeat(64)}`,
+      },
+      config: { enabled: true },
+      workerContributions: ['tool:review'],
+      manifestSha256: 'b'.repeat(64),
+    };
+    const withCustomization = fixture({ workerCustomization });
+    const withoutCustomization = fixture();
+    const packet = spawnPacket('portable-worker');
+
+    await withCustomization.supervisor.spawn(packet);
+    await withoutCustomization.supervisor.spawn(packet);
+    await tick();
+
+    const spec = withCustomization.process.specs[0]!;
+    const bootstrap = decodeNativeWorkerBootstrapPacketV1(spec.bootstrap!);
+    expect(spec.env.OCTOCODE_NATIVE_WORKER_BOOTSTRAP_FD).toBe('3');
+    expect(bootstrap).toMatchObject({
+      workerId: 'portable-worker',
+      correlationId: 'correlation-portable-worker',
+      promptSnapshotId: 'prompt-portable-worker',
+      customization: { manifestSha256: 'b'.repeat(64) },
+    });
+    expect(spec.cacheKey).not.toBe(withoutCustomization.process.specs[0]!.cacheKey);
+  });
+
+  it('keys portable worker processes by the complete resolved descriptor', async () => {
+    const base: NativeResolvedPortableCustomizationDescriptorV1 = {
+      schemaVersion: 1,
+      id: 'com.acme.portable',
+      entrypoint: {
+        kind: 'module', moduleUrl: 'file:///tmp/customization.mjs', exportName: 'activate',
+        integrity: `sha256-${'a'.repeat(64)}`,
+      },
+      config: { mode: 'one' },
+      workerContributions: [],
+      manifestSha256: 'b'.repeat(64),
+    };
+    const one = fixture({ workerCustomization: base });
+    const two = fixture({ workerCustomization: { ...base, config: { mode: 'two' } } });
+    const packet = spawnPacket('cache-identity');
+    await one.supervisor.spawn(packet);
+    await two.supervisor.spawn(packet);
+    await tick();
+    expect(one.process.specs[0]!.cacheKey).not.toBe(two.process.specs[0]!.cacheKey);
+  });
+
+  it('keys worker processes by the resolved worker working directory', async () => {
+    const left = fs.mkdtempSync('/tmp/octocode-worker-cache-left-');
+    const right = fs.mkdtempSync('/tmp/octocode-worker-cache-right-');
+    try {
+      const one = fixture();
+      const two = fixture();
+      const packet = spawnPacket('worktree-cache');
+      await one.port.spawn({
+        ...packet, workspace: { mode: 'worktree', path: left, baseRevision: 'fixture' },
+      }, new AbortController().signal);
+      await two.port.spawn({
+        ...packet, workspace: { mode: 'worktree', path: right, baseRevision: 'fixture' },
+      }, new AbortController().signal);
+      await tick();
+      expect(one.process.specs[0]!.cacheKey).not.toBe(two.process.specs[0]!.cacheKey);
+    } finally {
+      fs.rmSync(left, { recursive: true, force: true });
+      fs.rmSync(right, { recursive: true, force: true });
+    }
+  });
+
   it('forwards model credentials without forwarding legacy environment-based model discovery', async () => {
     const { process, supervisor } = fixture({
       env: {
@@ -202,6 +407,51 @@ describe('native worker process port', () => {
     expect(process.specs[0]!.env).not.toHaveProperty('OCTOCODE_MODEL_PROTOCOL');
     expect(process.specs[0]!.env).not.toHaveProperty('OCTOCODE_MODEL');
     expect(process.specs[0]!.env).not.toHaveProperty('OMIT');
+  });
+
+  it('never propagates worker authorization into a child process', async () => {
+    const process = new FakeProcessAdapter();
+    const port = new NativeWorkerProcessPort({
+      process,
+      command: '/usr/bin/node',
+      argvPrefix: ['/opt/agent.mjs'],
+      cwd: '/tmp',
+    });
+    const supervisor = new WorkerSupervisor({ port, maxActive: 1 });
+    const packet = {
+      ...spawnPacket('leaf-child'),
+      capabilities: { tools: [], models: [], maxTurns: 1 },
+    };
+
+    await supervisor.spawn(packet);
+    await tick();
+
+    expect(process.specs[0]).toMatchObject({
+      args: ['/opt/agent.mjs', '--mode', 'rpc', '--no-session'],
+      env: {
+        OCTOCODE_NATIVE_WORKER: '1',
+        OCTOCODE_NATIVE_WORKER_DEPTH: '1',
+        OCTOCODE_NATIVE_WORKER_MAX_DEPTH: '1',
+      },
+    });
+  });
+
+  it('rejects recursive worker capability at the configured depth cap', async () => {
+    const process = new FakeProcessAdapter();
+    const port = new NativeWorkerProcessPort({
+      process,
+      command: '/usr/bin/node',
+      argvPrefix: ['/opt/agent.mjs'],
+      cwd: '/tmp',
+      workerDepth: 0,
+      maxWorkerDepth: 1,
+    });
+
+    await expect(port.spawn({
+      ...spawnPacket('nested-cap'),
+      capabilities: { tools: ['worker'], models: [], maxTurns: 1 },
+    }, new AbortController().signal)).rejects.toThrow(/depth cap/i);
+    expect(process.specs).toHaveLength(0);
   });
 
   it('leaves bounded concurrency and queued cleanup solely to WorkerSupervisor', async () => {
@@ -256,6 +506,22 @@ describe('native worker process port', () => {
     expect(process.processes[1]!.kill).toHaveBeenCalledTimes(1);
     process.processes[1]!.complete({ code: null, signal: 'SIGKILL' });
     await expect(supervisor.wait(workerId('worker-2'))).resolves.toMatchObject({ outcome: 'killed' });
+  });
+
+  it('ends RPC input exactly once when wait joins a live worker', async () => {
+    const { process, supervisor } = fixture();
+    await supervisor.spawn(spawnPacket('join'));
+    await tick();
+
+    const first = supervisor.wait(workerId('join'));
+    const second = supervisor.wait(workerId('join'));
+    await tick();
+    expect(process.processes[0]!.endInput).toHaveBeenCalledOnce();
+    process.processes[0]!.complete({ code: 0, signal: null });
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ outcome: 'succeeded' }),
+      expect.objectContaining({ outcome: 'succeeded' }),
+    ]);
   });
 
   it('fails closed for worktree mode and resolves all waiters with one terminal ledger entry', async () => {

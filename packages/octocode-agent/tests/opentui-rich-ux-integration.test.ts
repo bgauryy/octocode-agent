@@ -132,7 +132,7 @@ describeNativeFfi('OpenTUI rich semantic integration', () => {
         header: root, transcript: root, tools: root, sidebar: root, editor: root, footer: root,
       });
       adapter.render(state('status', 'status.notifications', [
-        { id: 'warning', role: 'status', text: 'WARNING: Context nearly full' },
+        { id: 'warning', role: 'status', tone: 'warning', text: 'WARNING: Context nearly full' },
       ]));
       await setup.flush();
       expect(setup.captureCharFrame()).toContain('! WARNING: Context nearly full');

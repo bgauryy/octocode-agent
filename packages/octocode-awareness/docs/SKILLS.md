@@ -2,14 +2,14 @@
 
 Awareness gives supported coding hosts and custom agents one façade for plans, tasks,
 active file work, exclusive locks, verification, memory, messages, and handoffs. A
-workspace policy routes repository state locally and reusable memory globally.
+workspace columns isolate repository state inside one global agent database.
 
 ## Install
 
 Requires Node.js 22.13.0+ (`node:sqlite` without an experimental flag).
 
 ```bash
-npx @octocodeai/octocode-awareness init --compact
+npx @octocodeai/octocode-awareness maintenance init --compact
 ```
 
 The host or package manager owns installation of the bundled skill. Do not derive
@@ -27,12 +27,12 @@ build paths are maintainer implementation details, not an alternative agent runn
 
 ```bash
 export OCTOCODE_AGENT_ID="${OCTOCODE_AGENT_ID:-my-agent}"
-npx @octocodeai/octocode-awareness setup --compact
-npx @octocodeai/octocode-awareness next --workspace "$PWD" --query "current task"
+npx @octocodeai/octocode-awareness attend --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" --query "current task" --compact
 ```
 
-Follow `next`. Use `inspect`, `verify`, and `close` for the routine loop; load expert noun
-inventories only when the next action needs them.
+Follow `attend.next`. The routine loop is `attend` → `work start` → `work end`
+→ `verify mark` → `verify audit`; load expert noun inventories only when the next
+action needs them.
 
 ## Agent Activation Map
 
@@ -44,7 +44,7 @@ inventories only when the next action needs them.
 | Host hooks | Automate deterministic start/write/failure/stop/compact/session edges; never replace judgment. |
 | `.octocode/` | Discover authored plan docs and bounded generated snapshots when live SQLite is unavailable to a reader. |
 
-Agents should begin with `next`, not by reading `.octocode/`. A plan document may
+Agents should begin with `attend`, not by reading `.octocode/`. A plan document may
 explain intent; live state comes from `attend`, `query`, `memory recall`, or `docs show`.
 `.octocode/` query exports are read-only snapshots — never hand-edit them or read them as state.
 

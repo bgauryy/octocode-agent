@@ -42,6 +42,40 @@ function sse(events: readonly Record<string, unknown>[]): Response {
 }
 
 describe('native OpenAI Responses model port', () => {
+  it('maps ordered text and image parts without dropping bytes', async () => {
+    const completed = { type: 'response.completed', response: responseFixture(usageFixture), sequence_number: 1 };
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { input: unknown };
+      expect(body.input).toEqual([{ role: 'user', content: [
+        { type: 'input_text', text: 'before ' },
+        { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=' },
+        { type: 'input_text', text: ' after' },
+      ] }]);
+      return sse([completed]);
+    });
+    const port = createOpenAiCompatibleModelPort({
+      protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', apiKey: 'secret', defaultModel: 'gpt-5', fetch,
+    });
+    await port.run({ messages: [{
+      role: 'user', content: 'before  after', userInput: { schemaVersion: 1, parts: [
+        { type: 'text', text: 'before ' },
+        { type: 'image', mediaType: 'image/png', data: { encoding: 'base64', value: 'iVBORw0KGgo=' }, byteLength: 8 },
+        { type: 'text', text: ' after' },
+      ] },
+    }] }, { signal: new AbortController().signal });
+  });
+
+  it('fails closed before fetch when multimodal text and payload disagree', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const port = createOpenAiCompatibleModelPort({
+      protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', apiKey: 'secret', defaultModel: 'gpt-5', fetch,
+    });
+    await expect(port.run({ messages: [{
+      role: 'user', content: 'different', userInput: { schemaVersion: 1, parts: [{ type: 'text', text: 'actual' }] },
+    }] }, { signal: new AbortController().signal })).rejects.toThrow('does not match');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('defers credential validation until the first model request', async () => {
     const port = createOpenAiCompatibleModelPort({
       protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', apiKey: '', defaultModel: 'gpt-5',

@@ -1,0 +1,12 @@
+{
+  "name": "@octocodeai/agent-core-rust",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "cargo build --manifest-path Cargo.toml",
+    "lint": "cargo clippy --all-targets --manifest-path Cargo.toml -- -D warnings",
+    "test": "cargo test --manifest-path Cargo.toml",
+    "typecheck": "cargo check --all-targets --manifest-path Cargo.toml",
+    "verify": "yarn typecheck && yarn lint && yarn test && yarn build"
+  }
+}

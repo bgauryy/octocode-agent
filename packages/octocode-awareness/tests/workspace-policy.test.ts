@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
-import { selectCommand } from '../bin/cli-routing.js';
+import { selectCommand, UNKNOWN_COMMAND } from '../bin/cli-routing.js';
 import {
   DEFAULT_WORKSPACE_POLICY,
   hookCommandEnabled,
@@ -62,21 +62,13 @@ describe('workspace Awareness policy', () => {
 });
 
 describe('unified CLI facade', () => {
-  it('routes the small user-facing vocabulary to existing command owners', () => {
-    expect(selectCommand(['next'])).toEqual({ command: 'attend', rest: ['--compact'] });
-    expect(selectCommand(['inspect', 'workboard'])).toEqual({
-      command: 'query',
-      rest: ['--view', 'workboard', '--compact'],
+  it('rejects retired convenience aliases and keeps canonical noun/verb routes', () => {
+    for (const argv of [['setup'], ['next'], ['inspect', 'workboard'], ['verify'], ['close'], ['init'], ['refinement', 'list']]) {
+      expect(selectCommand(argv)).toEqual({ command: UNKNOWN_COMMAND, rest: argv });
+    }
+    expect(selectCommand(['verify', 'audit'])).toEqual({ command: 'audit-unverified', rest: [] });
+    expect(selectCommand(['work', 'end', '--run-id', 'run-1'])).toEqual({
+      command: 'work-command', rest: ['--action', 'end', '--run-id', 'run-1'],
     });
-    expect(selectCommand(['verify'])).toEqual({ command: 'audit-unverified', rest: ['--compact'] });
-    expect(selectCommand(['verify', '--workspace', '/repo'])).toEqual({
-      command: 'audit-unverified',
-      rest: ['--workspace', '/repo', '--compact'],
-    });
-    expect(selectCommand(['close', '--run-id', 'run-1'])).toEqual({
-      command: 'work-command',
-      rest: ['--action', 'end', '--run-id', 'run-1', '--compact'],
-    });
-    expect(selectCommand(['setup'])).toEqual({ command: 'workspace-policy', rest: [] });
   });
 });

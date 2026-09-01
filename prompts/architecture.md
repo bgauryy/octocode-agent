@@ -26,7 +26,7 @@ Read and follow the repository’s `AGENTS.md` before beginning. Read package-sp
 Dogfood Octocode throughout the investigation:
 
 - Use `npx octocode tools ...`
-- Use `localViewStructure`, `localFindFiles`, `localSearchCode`, and `localGetFileContent`
+- Use `localSearch` (`tree`/`files` for orientation; `text`/`structural` for matching) and `localGetFileContent`
 - Use `lspGetSemantics` to prove definitions, references, callers, callees, implementations, types, and reachability
 - Use AST/LSP evidence rather than relying only on text search
 - Inspect live schemas with:
@@ -39,7 +39,7 @@ Dogfood Octocode throughout the investigation:
 Use `npx octocode` for both local and external research:
 
 - **Local implementation:** use the local and LSP tools to trace source, tests, configuration ownership, imports, callers, runtime composition, generated boundaries, and dependency usage.
-- **External dependencies:** use `npmSearch` to resolve package metadata and source repositories; use `ghSearchRepos`, `ghViewRepoStructure`, `ghSearchCode`, `ghGetFileContent`, `ghSearchPullRequests`, `ghSearchIssues`, and `ghSearchCommits` to inspect upstream source, APIs, releases, changelogs, compatibility constraints, regressions, and relevant design decisions.
+- **External dependencies:** use `npmSearch` to resolve package metadata and source repositories; use `ghSearch` (`repositories`, `tree`, or `code`), `ghGetFileContent`, `ghSearchPullRequests`, `ghSearchIssues`, and `ghSearchCommits` to inspect upstream source, APIs, releases, changelogs, compatibility constraints, regressions, and relevant design decisions.
 - **External resources and prior art:** research official upstream repositories and primary documentation needed to validate provider protocols, runtime behavior, terminal/tooling contracts, security assumptions, and architectural comparisons.
 - **Version-aware evidence:** tie external conclusions to the dependency name, declared or resolved version when authorized to inspect it, upstream repository, tag/commit/release, and exact file, PR, issue, or documentation location.
 - **Evidence boundaries:** do not infer behavior from a package name, README summary, search result, or latest upstream `main` branch when the project uses another version. Distinguish verified version-specific behavior, current upstream behavior, and unresolved assumptions.
@@ -340,7 +340,7 @@ Perform real CLI smoke tests after rebuilding. At minimum inspect:
 npx octocode --help
 npx octocode context --compact
 npx octocode tools --json
-npx octocode tools localSearchCode lspGetSemantics --scheme
+npx octocode tools localSearch lspGetSemantics --scheme
 Also exercise the locally built octocode-agent entry point in each supported mode when practical.
 After implementation, use Octocode LSP again to inspect changed symbols, callers, references, implementations, and dependency direction.
 Do not claim success from compilation alone.

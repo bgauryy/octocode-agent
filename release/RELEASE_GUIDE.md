@@ -1,5 +1,11 @@
 # Release Guide
 
+> [!WARNING]
+> This file is a retained migration reference, not the release authority for
+> this checkout. The platform release guide belongs to the sibling `octocode`
+> monorepo. For this repository, use package manifests and `yarn verify`; update
+> platform publish order and cross-repository commands only in the owning repo.
+
 > Build, publish, and ship Octocode packages.
 
 ---
@@ -47,6 +53,8 @@ octocode (CLI)                                    ✅ publish
      shared plans/tasks, advisory file work, exclusive locks, hooks, and skills
 
 @octocodeai/pi-extension                          ✅ publish
+  ├─ @earendil-works/pi-coding-agent                  (optional peer + exact test host)
+  ├─ @earendil-works/pi-tui                           (runtime dep — Pi presentation adapter)
   ├─ @octocodeai/octocode-awareness                  (runtime dep — bridge + canonical skill)
   ├─ octocode                                        (runtime dep — bundled CLI + version)
   ├─ typebox                                         (optional peerDependency)
@@ -55,8 +63,12 @@ octocode (CLI)                                    ✅ publish
        the published extension needs nothing from npm for env/config.
 
 octocode-agent (branded launcher CLI)             ✅ publish  — the `npx octocode-agent` entry
-  ├─ @earendil-works/pi-coding-agent                  (runtime dep — Pi SDK host)
-  └─ @octocodeai/pi-extension                         (runtime dep — loaded in-process)
+  ├─ @octocodeai/agent-core                           (host-neutral runtime semantics)
+  ├─ @opentui/core                                    (native interactive renderer)
+  └─ packaged Rust services                           (durability + contained filesystem)
+
+Only `@octocodeai/pi-extension` may declare or import `@earendil-works/pi-*`.
+The native agent does not load, embed, or spawn Pi.
 
 octocode-mcp-vscode (VS Code extension)           ✅ publish  (separate release)
 
@@ -95,7 +107,7 @@ Must exist on npm **before** dependents. Publish in this order:
 ```
 
 > **Never published — bundled at build (devDependencies):**
-> `@octocodeai/octocode-tools-core` (esbuild → steps 3 & 4) and
+> `@octocodeai/octocode-tools-core` (esbuild → steps 3 and 4) and
 > `@octocodeai/config` (esbuild → octocode/mcp; inlined into pi-extension `dist/env.js` + skill `octocode-config.mjs`).  
 > `@octocodeai/octocode-core` EXTERNAL (sibling repo).  
 > **Every publishable package runs a prepack gate.** Dependency-bearing packages
@@ -128,8 +140,8 @@ yarn platforms:check
 yarn workspace @octocodeai/octocode-engine build:darwin-arm64
 ```
 
-> **Never** `yarn workspace @octocodeai/octocode-engine build` (host-only) and then publish —
-> the other five platform dirs will be empty.
+> **Never** run `yarn workspace @octocodeai/octocode-engine build` (host-only) and then publish.
+> That sequence leaves the other five platform directories empty.
 
 ### 2. TS packages
 
@@ -293,7 +305,7 @@ yarn install
 
 ---
 
-## Smoke Test After Publish
+## Smoke test after publish
 
 ```bash
 tmp=$(mktemp -d) && cd "$tmp" && npm init -y >/dev/null

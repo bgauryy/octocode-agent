@@ -1,5 +1,7 @@
 import {
   createEffectSet,
+  MAX_UI_INTERACTION_OPTIONS,
+  MAX_UI_WORKFLOW_STEPS,
   type ToolRegistry,
   type UiInteractionRequest,
   type UiInteractionResult,
@@ -89,13 +91,51 @@ type AskUserInput = {
   readonly timeoutMs?: number;
 };
 
+type AskQuestion = Omit<AskUserInput, 'timeoutMs'> & { readonly id: string };
+type AskWorkflowInput = {
+  readonly title?: string;
+  readonly instructions?: string;
+  readonly questions: readonly AskQuestion[];
+  readonly timeoutMs?: number;
+};
+
+const MAX_ASK_QUESTIONS = MAX_UI_WORKFLOW_STEPS;
+let nextAskWorkflowId = 1;
+
+function parseQuestion(value: unknown): AskQuestion | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const parsed = parseAskUserInput({ ...record, timeoutMs: undefined });
+  if (parsed === undefined || typeof record.id !== 'string' || !record.id.trim()) return undefined;
+  return { ...parsed, id: record.id };
+}
+
+function parseAskWorkflowInput(value: unknown): AskWorkflowInput | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  if (!Array.isArray(input.questions) || input.questions.length === 0 || input.questions.length > MAX_ASK_QUESTIONS) return undefined;
+  if (input.title !== undefined && typeof input.title !== 'string') return undefined;
+  if (input.instructions !== undefined && typeof input.instructions !== 'string') return undefined;
+  if (input.timeoutMs !== undefined && (typeof input.timeoutMs !== 'number' || !Number.isFinite(input.timeoutMs) || input.timeoutMs <= 0)) return undefined;
+  const questions = input.questions.map(parseQuestion);
+  if (questions.some((question) => question === undefined)) return undefined;
+  const ids = questions.map((question) => question!.id);
+  if (new Set(ids).size !== ids.length) return undefined;
+  return {
+    questions: questions as AskQuestion[],
+    ...(typeof input.title === 'string' ? { title: input.title } : {}),
+    ...(typeof input.instructions === 'string' ? { instructions: input.instructions } : {}),
+    ...(typeof input.timeoutMs === 'number' ? { timeoutMs: input.timeoutMs } : {}),
+  };
+}
+
 function parseAskUserInput(value: unknown): AskUserInput | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   const input = value as Record<string, unknown>;
   if ((input.type !== 'select' && input.type !== 'input' && input.type !== 'editor' && input.type !== 'confirm') || typeof input.question !== 'string') return undefined;
   if (input.initial !== undefined && typeof input.initial !== 'string') return undefined;
   if (input.timeoutMs !== undefined && (typeof input.timeoutMs !== 'number' || !Number.isFinite(input.timeoutMs) || input.timeoutMs <= 0)) return undefined;
-  if (input.type === 'select' && (!Array.isArray(input.options) || input.options.length === 0 || input.options.length > 100 || !input.options.every((option) => typeof option === 'string'))) return undefined;
+  if (input.type === 'select' && (!Array.isArray(input.options) || input.options.length === 0 || input.options.length > MAX_UI_INTERACTION_OPTIONS || !input.options.every((option) => typeof option === 'string'))) return undefined;
   if (input.type !== 'select' && input.options !== undefined) return undefined;
   return {
     type: input.type,
@@ -115,6 +155,42 @@ function interactionRequest(input: AskUserInput): UiInteractionRequest {
   }
 }
 
+async function runAskWorkflow(
+  input: AskWorkflowInput,
+  broker: NativeInteractionBroker,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const workflowId = `ask-${nextAskWorkflowId++}`;
+  const answers: { readonly id: string; readonly value: string | boolean }[] = [];
+  for (const [index, question] of input.questions.entries()) {
+    const workflow = {
+      workflowId,
+      questionId: question.id,
+      index,
+      total: input.questions.length,
+      ...(input.title === undefined ? {} : { title: input.title }),
+      ...(input.instructions === undefined ? {} : { instructions: input.instructions }),
+      allowDiscuss: true,
+    } as const;
+    const request = { ...interactionRequest(question), workflow } as UiInteractionRequest;
+    const result = await broker.interact(request, signal, input.timeoutMs);
+    if (result.status === 'discuss') {
+      return {
+        status: 'discuss',
+        question: { id: question.id, question: question.question },
+        answers,
+        remainingQuestionIds: input.questions.slice(index).map(({ id }) => id),
+      };
+    }
+    if (result.status !== 'accepted') return { status: result.status, answers };
+    if (typeof result.value !== 'string' && typeof result.value !== 'boolean') {
+      return { status: 'unsupported', reason: 'Renderer returned an invalid answer', answers };
+    }
+    answers.push({ id: question.id, value: result.value });
+  }
+  return { status: 'answered', answers };
+}
+
 export function registerNativeAskUserTool(
   registry: ToolRegistry,
   broker: NativeInteractionBroker,
@@ -122,17 +198,36 @@ export function registerNativeAskUserTool(
   registry.register({
     name: 'askUser',
     label: 'Ask user',
-    description: 'Ask the user to confirm, select an option, or enter single-line or multiline text.',
+    description: 'Ask one question or a bounded sequence. Workflows show one question at a time and let the user answer, discuss, or cancel.',
     schemaVersion: 1,
     inputSchema: {
       type: 'object',
-      required: ['type', 'question'],
+      anyOf: [
+        { required: ['type', 'question'] },
+        { required: ['questions'] },
+      ],
       properties: {
         type: { type: 'string', enum: ['select', 'input', 'editor', 'confirm'] },
         question: { type: 'string' },
-        options: { type: 'array', items: { type: 'string' } },
+        options: { type: 'array', minItems: 1, maxItems: MAX_UI_INTERACTION_OPTIONS, items: { type: 'string' } },
         initial: { type: 'string' },
         timeoutMs: { type: 'number' },
+        title: { type: 'string' },
+        instructions: { type: 'string' },
+        questions: {
+          type: 'array', minItems: 1, maxItems: MAX_ASK_QUESTIONS,
+          items: {
+            type: 'object', required: ['id', 'type', 'question'],
+            properties: {
+              id: { type: 'string' },
+              type: { type: 'string', enum: ['select', 'input', 'editor', 'confirm'] },
+              question: { type: 'string' },
+              options: { type: 'array', minItems: 1, maxItems: MAX_UI_INTERACTION_OPTIONS, items: { type: 'string' } },
+              initial: { type: 'string' },
+            },
+            additionalProperties: false,
+          },
+        },
       },
       additionalProperties: false,
     },
@@ -141,6 +236,10 @@ export function registerNativeAskUserTool(
     policy: { effects: createEffectSet('read'), trust: 'none', approval: 'never', plan: 'allowed' },
     presentation: { callLabel: 'Question', resultLabel: 'Answer' },
     async execute({ input, signal }) {
+      const workflow = parseAskWorkflowInput(input);
+      if (workflow !== undefined) {
+        return { ok: true, content: await runAskWorkflow(workflow, broker, signal), detailsVersion: 1 };
+      }
       const parsed = parseAskUserInput(input);
       if (parsed === undefined) {
         return { ok: false, content: { status: 'unsupported', reason: 'Invalid askUser input' }, category: 'validation', detailsVersion: 1 };

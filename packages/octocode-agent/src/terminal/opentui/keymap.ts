@@ -8,6 +8,7 @@ export type OpenTuiInteractionKind = 'confirm' | 'select' | 'input' | 'editor';
 export interface OpenTuiKeyContext {
   readonly assistOpen?: boolean;
   readonly interaction?: OpenTuiInteractionKind;
+  readonly discussAvailable?: boolean;
   readonly semanticSurfaceFocused?: boolean;
   readonly activeTurn?: boolean;
 }
@@ -18,6 +19,7 @@ export type OpenTuiKeyAction =
   | 'assist-navigate'
   | 'interaction-cancel'
   | 'interaction-filter'
+  | 'interaction-discuss'
   | 'interaction-navigate'
   | 'interrupt'
   | 'focus-composer'
@@ -69,6 +71,7 @@ export function resolveOpenTuiKeyAction(
   }
 
   if (context.interaction !== undefined) {
+    if (context.discussAvailable === true && key.ctrl === true && name === 'd') return 'interaction-discuss';
     if (isEscape(name) || isInterrupt(key, name)) return 'interaction-cancel';
     if (context.interaction === 'confirm'
       && ['y', 'n', 'left', 'right', 'arrowleft', 'arrowright', 'tab'].includes(name)) {

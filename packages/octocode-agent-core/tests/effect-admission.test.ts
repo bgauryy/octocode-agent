@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   InMemoryEffectLedger,
   RuntimeFailure,
+  assertEffectAdmissionReceipt,
   createEffectSet,
+  createEffectAdmissionReceipt,
+  effectAdmissionDigest,
   type EffectAdmissionReceipt,
 } from '../src/index.js';
 
@@ -43,6 +46,56 @@ describe('effect admission', () => {
         receipt: expect.objectContaining({ effects: ['network', 'write'] }),
       }),
     ]);
+  });
+
+  it('binds expiry and policy revision into a verified digest', () => {
+    const bound = createEffectAdmissionReceipt(
+      receipt({ path: 'src/output.ts', body: 'one' }),
+      { expiresAt: 100, policyRevision: 3 },
+    );
+
+    expect(bound).toMatchObject({
+      expiresAt: 100,
+      policyRevision: 3,
+      digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(effectAdmissionDigest(bound)).toBe(bound.digest);
+    expect(assertEffectAdmissionReceipt(bound)).toBe(bound);
+    expect(() => assertEffectAdmissionReceipt({ ...bound, digest: '0'.repeat(64) }))
+      .toThrow(/digest/i);
+  });
+
+  it('strictly rejects partial metadata, unknown fields, and expired first admission', async () => {
+    expect(() => assertEffectAdmissionReceipt({
+      ...receipt({ path: 'src/output.ts' }),
+      expiresAt: 100,
+    })).toThrow(/metadata/i);
+    expect(() => assertEffectAdmissionReceipt({
+      ...receipt({ path: 'src/output.ts' }),
+      unexpected: true,
+    })).toThrow(/field/i);
+
+    const ledger = new InMemoryEffectLedger(() => 100);
+    const expired = createEffectAdmissionReceipt(
+      receipt({ path: 'src/output.ts' }),
+      { expiresAt: 100, policyRevision: 1 },
+    );
+    await expect(ledger.begin('expired', expired)).rejects.toMatchObject({ category: 'conflict' });
+    expect(ledger.list()).toEqual([]);
+  });
+
+  it('never treats expiry as permission to replay an admitted effect', async () => {
+    let now = 99;
+    const ledger = new InMemoryEffectLedger(() => now);
+    const bound = createEffectAdmissionReceipt(
+      receipt({ path: 'src/output.ts' }),
+      { expiresAt: 100, policyRevision: 1 },
+    );
+    await expect(ledger.begin('crash-left', bound)).resolves.toBe('acquired');
+    now = 100;
+    await expect(ledger.begin('crash-left', bound)).resolves.toBe('started');
+    await ledger.settle('crash-left', 'uncertain');
+    await expect(ledger.begin('crash-left', bound)).resolves.toBe('uncertain');
   });
 
   it('keeps the first terminal effect outcome immutable', async () => {

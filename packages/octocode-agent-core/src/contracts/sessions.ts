@@ -1,11 +1,12 @@
 import type { BranchId, Revision, SessionEventId, SessionId } from './identity.js';
+import type { ModelToolResultV1 } from './artifacts.js';
 import type { ModelMessage, ModelToolCall } from './ports.js';
 export type SessionStoredEvent =
   | { readonly type: 'session.created'; readonly name?: string }
   | { readonly type: 'session.renamed'; readonly name: string }
   | { readonly type: 'message.appended'; readonly role: 'system' | 'user'; readonly content: string }
   | { readonly type: 'message.appended'; readonly role: 'assistant'; readonly content: string; readonly toolCalls?: readonly ModelToolCall[] }
-  | { readonly type: 'message.appended'; readonly role: 'tool'; readonly content: string; readonly toolCallId?: string }
+  | { readonly type: 'message.appended'; readonly role: 'tool'; readonly content: string; readonly toolCallId?: string; readonly result?: ModelToolResultV1 }
   | { readonly type: 'custom.appended'; readonly kind: string; readonly value: unknown }
   | { readonly type: 'branch.created'; readonly branchId: BranchId; readonly parentBranchId?: BranchId; readonly atEventId?: SessionEventId }
   | { readonly type: 'branch.selected'; readonly branchId: BranchId }

@@ -21,6 +21,19 @@
   "license": "MIT",
   "type": "module",
   "bin": "./out/octocode-agent.mjs",
+  "exports": {
+    "./api/v1": {
+      "types": "./out/api/v1.d.ts",
+      "import": "./out/api/v1.js",
+      "default": "./out/api/v1.js"
+    },
+    "./presentation/v1": {
+      "types": "./out/presentation/v1.d.ts",
+      "import": "./out/presentation/v1.js",
+      "default": "./out/presentation/v1.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "out/**",
     "docs/**",
@@ -43,6 +56,7 @@
     "@opentui/core": "0.5.8",
     "ai": "7.0.84",
     "ajv": "8.20.0",
+    "croner": "10.0.1",
     "octocode": "18.3.0",
     "web-tree-sitter": "0.25.10",
     "yaml": "2.9.0",

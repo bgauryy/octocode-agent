@@ -1,36 +1,161 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  createOctocodeToolRegistry,
-  executeOctocodeTool,
-  loadOctocodeCatalog,
-  octocodeCatalogCacheMetrics,
-  OctocodeFacadeError,
-  resetOctocodeCatalogCacheForTests,
-  type OctocodeCatalog,
-} from '../src/native-tools.js';
+import { createOctocodeToolRegistry, createDefaultOctocodeToolRegistry, executeOctocodeTool, loadOctocodeCatalog, octocodeCatalogCacheMetrics, OctocodeFacadeError, resetOctocodeCatalogCacheForTests, type OctocodeCatalog } from '../src/native-tools.js';
+import { createNodeNativeFileSystemPort } from '../src/native-file-tool.js';
 
 const catalog: OctocodeCatalog = {
   kind: 'octocode.toolCatalog.full',
   version: 1,
   toolCount: 2,
   tools: [
-    { name: 'localSearchCode', description: 'Search local code', category: 'Local Code', inputSchema: { type: 'object' } },
-    { name: 'ghSearchCode', description: 'Search GitHub code', category: 'GitHub', inputSchema: { type: 'object' } },
+    {
+      name: 'localSearch',
+      description: 'Search local code',
+      category: 'Local Code',
+      inputSchema: { type: 'object' },
+    },
+    {
+      name: 'ghSearch',
+      description: 'Search GitHub code',
+      category: 'GitHub',
+      inputSchema: { type: 'object' },
+    },
   ],
 };
 
 describe('native Octocode tool registry', () => {
+  it('registers the bounded native web base tool by default and honors delegated capabilities', async () => {
+    const run = vi.fn(async () =>
+      JSON.stringify({
+        kind: 'octocode.toolCatalog.full',
+        version: 1,
+        toolCount: 0,
+        tools: [],
+      }),
+    );
+    const registry = await createDefaultOctocodeToolRegistry({
+      run,
+      allowedTools: new Set(['web']),
+      web: {
+        lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+        fetch: vi.fn(),
+      },
+    });
+
+    expect(registry.list().map((tool) => tool.name)).toEqual(['web']);
+    expect(registry.get('web')?.policy).toMatchObject({
+      effects: ['network'],
+      trust: 'none',
+      approval: 'never',
+      plan: 'allowed',
+    });
+    expect(registry.get('web')?.policy.concurrency?.({})).toEqual({
+      lane: 'native-web',
+      maxActive: 4,
+    });
+  });
+
+  it('registers the canonical native file tool only when delegated', async () => {
+    const run = vi.fn(async () =>
+      JSON.stringify({
+        kind: 'octocode.toolCatalog.full',
+        version: 1,
+        toolCount: 0,
+        tools: [],
+      }),
+    );
+    const registry = await createDefaultOctocodeToolRegistry({
+      run,
+      allowedTools: new Set(['file']),
+      cwd: process.cwd(),
+      file: { fileSystem: createNodeNativeFileSystemPort(process.cwd()) },
+    });
+
+    expect(registry.list().map((tool) => tool.name)).toEqual(['file']);
+    expect(registry.get('file')?.policy.resolve?.({ operation: 'write', path: 'a.txt' })).toEqual({
+      effects: ['write'],
+      trust: 'workspace',
+      approval: 'on-request',
+    });
+  });
+
+  it('registers the approval-gated native bash base tool when delegated', async () => {
+    const run = vi.fn(async () =>
+      JSON.stringify({
+        kind: 'octocode.toolCatalog.full',
+        version: 1,
+        toolCount: 0,
+        tools: [],
+      }),
+    );
+    const registry = await createDefaultOctocodeToolRegistry({
+      run,
+      allowedTools: new Set(['bash']),
+    });
+
+    expect(registry.list().map((tool) => tool.name)).toEqual(['bash']);
+    expect(registry.get('bash')?.policy).toMatchObject({
+      effects: ['read', 'network', 'process', 'write'],
+      trust: 'workspace',
+      approval: 'on-request',
+      plan: 'forbidden',
+    });
+  });
+
+  it('registers the native FFmpeg tool with the filesystem capability when delegated', async () => {
+    const registry = await createDefaultOctocodeToolRegistry({
+      run: async () => JSON.stringify({ kind: 'octocode.toolCatalog.full', version: 1, toolCount: 0, tools: [] }),
+      allowedTools: new Set(['runFfmpeg']),
+      cwd: process.cwd(),
+      file: { fileSystem: createNodeNativeFileSystemPort(process.cwd()) },
+      ffmpeg: { resolveBinary: () => '/opt/tools/ffmpeg', process: { run: vi.fn() } },
+    });
+
+    expect(registry.list().map((tool) => tool.name)).toEqual(['runFfmpeg']);
+    expect(registry.get('runFfmpeg')?.policy).toMatchObject({
+      effects: ['read', 'process', 'write'], trust: 'workspace', approval: 'on-request', plan: 'forbidden',
+    });
+  });
+
+  it('treats octocode as a direct delegated facade without filtering its inner catalog', () => {
+    const registry = createOctocodeToolRegistry(catalog, vi.fn(), {
+      allowedTools: new Set(['octocode']),
+    });
+
+    expect(registry.list().map((tool) => tool.name)).toEqual(['octocode']);
+  });
+
+  it('registers the lowercase skill capability in a restricted registry', async () => {
+    const registry = await createDefaultOctocodeToolRegistry({
+      run: async () => JSON.stringify({
+        kind: 'octocode.toolCatalog.full', version: 1, toolCount: 0, tools: [],
+      }),
+      allowedTools: new Set(['skill']),
+    });
+
+    expect(registry.list().map((tool) => tool.name)).toEqual(['skill']);
+  });
+
   it('loads the complete catalog in one process call and reuses the bounded cache', async () => {
     resetOctocodeCatalogCacheForTests();
-    const run = vi.fn(async () => JSON.stringify({
-      kind: 'octocode.toolCatalog.full',
-      version: 1,
-      toolCount: 2,
-      tools: [
-        { name: 'zeta', description: 'Zeta', inputSchema: { type: 'object' } },
-        { name: 'alpha', description: 'Alpha', inputSchema: { type: 'object' } },
-      ],
-    }));
+    const run = vi.fn(async () =>
+      JSON.stringify({
+        kind: 'octocode.toolCatalog.full',
+        version: 1,
+        toolCount: 2,
+        tools: [
+          {
+            name: 'zeta',
+            description: 'Zeta',
+            inputSchema: { type: 'object' },
+          },
+          {
+            name: 'alpha',
+            description: 'Alpha',
+            inputSchema: { type: 'object' },
+          },
+        ],
+      }),
+    );
 
     const first = await loadOctocodeCatalog({ run, cacheKey: 'test' });
     const second = await loadOctocodeCatalog({ run, cacheKey: 'test' });
@@ -43,15 +168,41 @@ describe('native Octocode tool registry', () => {
 
   it('isolates cached catalogs by runner, workspace, and catalog-affecting environment', async () => {
     resetOctocodeCatalogCacheForTests();
-    const run = vi.fn(async (_args: readonly string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv }) => JSON.stringify({
-      kind: 'octocode.toolCatalog.full', version: 1, toolCount: 1,
-      tools: [{ name: `${options?.cwd}:${options?.env?.ENABLE_LOCAL}:${options?.env?.ENABLE_DISCUSSIONS}`, description: 'Scoped', inputSchema: { type: 'object' } }],
-    }));
+    const run = vi.fn(async (_args: readonly string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv }) =>
+      JSON.stringify({
+        kind: 'octocode.toolCatalog.full',
+        version: 1,
+        toolCount: 1,
+        tools: [
+          {
+            name: `${options?.cwd}:${options?.env?.ENABLE_LOCAL}:${options?.env?.ENABLE_DISCUSSIONS}`,
+            description: 'Scoped',
+            inputSchema: { type: 'object' },
+          },
+        ],
+      }),
+    );
 
-    const first = await loadOctocodeCatalog({ cwd: '/workspace/a', env: { ENABLE_LOCAL: 'true' }, run });
-    const repeated = await loadOctocodeCatalog({ cwd: '/workspace/a', env: { ENABLE_LOCAL: 'true' }, run });
-    const second = await loadOctocodeCatalog({ cwd: '/workspace/b', env: { ENABLE_LOCAL: 'false' }, run });
-    const discussions = await loadOctocodeCatalog({ cwd: '/workspace/a', env: { ENABLE_LOCAL: 'true', ENABLE_DISCUSSIONS: 'true' }, run });
+    const first = await loadOctocodeCatalog({
+      cwd: '/workspace/a',
+      env: { ENABLE_LOCAL: 'true' },
+      run,
+    });
+    const repeated = await loadOctocodeCatalog({
+      cwd: '/workspace/a',
+      env: { ENABLE_LOCAL: 'true' },
+      run,
+    });
+    const second = await loadOctocodeCatalog({
+      cwd: '/workspace/b',
+      env: { ENABLE_LOCAL: 'false' },
+      run,
+    });
+    const discussions = await loadOctocodeCatalog({
+      cwd: '/workspace/a',
+      env: { ENABLE_LOCAL: 'true', ENABLE_DISCUSSIONS: 'true' },
+      run,
+    });
 
     expect(run).toHaveBeenCalledTimes(3);
     expect(repeated).toBe(first);
@@ -61,7 +212,14 @@ describe('native Octocode tool registry', () => {
 
   it('bounds the process catalog cache with least-recently-used eviction', async () => {
     resetOctocodeCatalogCacheForTests();
-    const run = vi.fn(async () => JSON.stringify({ kind: 'octocode.toolCatalog.full', version: 1, toolCount: 0, tools: [] }));
+    const run = vi.fn(async () =>
+      JSON.stringify({
+        kind: 'octocode.toolCatalog.full',
+        version: 1,
+        toolCount: 0,
+        tools: [],
+      }),
+    );
     for (let index = 0; index < 32; index += 1) await loadOctocodeCatalog({ run, cacheKey: `key-${index}` });
     await loadOctocodeCatalog({ run, cacheKey: 'key-0' });
     await loadOctocodeCatalog({ run, cacheKey: 'key-32' });
@@ -70,16 +228,47 @@ describe('native Octocode tool registry', () => {
 
     expect(run).toHaveBeenCalledTimes(34);
     expect(octocodeCatalogCacheMetrics()).toEqual({
-      hits: 2, misses: 34, loads: 34, loadFailures: 0,
-      expirations: 0, evictions: 2, entries: 32, maxEntries: 32, ttlMs: 60_000,
+      hits: 2,
+      misses: 34,
+      loads: 34,
+      loadFailures: 0,
+      expirations: 0,
+      evictions: 2,
+      entries: 32,
+      maxEntries: 32,
+      ttlMs: 60_000,
     });
   });
 
   it.each([
     [{ kind: 'wrong', version: 1, toolCount: 0, tools: [] }, 'protocol kind'],
-    [{ kind: 'octocode.toolCatalog.full', version: 2, toolCount: 0, tools: [] }, 'protocol version'],
-    [{ kind: 'octocode.toolCatalog.full', version: 1, toolCount: 2, tools: [] }, 'tool count'],
-    [{ kind: 'octocode.toolCatalog.full', version: 1, toolCount: 1, tools: [{ name: 'unsafe', description: 'Unsafe' }] }, 'invalid schema'],
+    [
+      {
+        kind: 'octocode.toolCatalog.full',
+        version: 2,
+        toolCount: 0,
+        tools: [],
+      },
+      'protocol version',
+    ],
+    [
+      {
+        kind: 'octocode.toolCatalog.full',
+        version: 1,
+        toolCount: 2,
+        tools: [],
+      },
+      'tool count',
+    ],
+    [
+      {
+        kind: 'octocode.toolCatalog.full',
+        version: 1,
+        toolCount: 1,
+        tools: [{ name: 'unsafe', description: 'Unsafe' }],
+      },
+      'invalid schema',
+    ],
   ])('rejects catalog authority mismatches before registration: %s', async (payload, expected) => {
     resetOctocodeCatalogCacheForTests();
     const run = vi.fn(async () => JSON.stringify(payload));
@@ -91,42 +280,143 @@ describe('native Octocode tool registry', () => {
     expect(() => createOctocodeToolRegistry(payload as never, vi.fn())).toThrow(OctocodeFacadeError);
   });
 
-  it('normalizes the exact empty legacy catalog as a fail-closed no-capability sentinel', async () => {
+  it('rejects an unversioned empty catalog instead of accepting a compatibility shape', async () => {
     resetOctocodeCatalogCacheForTests();
-    const loaded = await loadOctocodeCatalog({ run: async () => JSON.stringify({ tools: [] }), cacheKey: 'empty-sentinel' });
-
-    expect(loaded).toEqual({ kind: 'octocode.toolCatalog.full', version: 1, toolCount: 0, tools: [] });
+    await expect(loadOctocodeCatalog({
+      run: async () => JSON.stringify({ tools: [] }),
+      cacheKey: 'unversioned-empty',
+    })).rejects.toMatchObject({ code: 'catalog-invalid' });
   });
 
   it('registers the live catalog and executes through the Octocode CLI boundary', async () => {
-    const execute = vi.fn(async (name: string, input: unknown) => ({ name, input, ok: true }));
+    const execute = vi.fn(async (name: string, input: unknown) => ({
+      name,
+      input,
+      ok: true,
+    }));
     const update = vi.fn(async (_event: { version: number; kind: string; message?: string }) => undefined);
     const registry = createOctocodeToolRegistry(catalog, execute);
-    expect(registry.list().map((tool) => tool.name)).toEqual(['awareness', 'ghSearchCode', 'localSearchCode', 'plan']);
+    expect(registry.list().map((tool) => tool.name)).toEqual(['awareness', 'octocode', 'plan']);
 
-    const tool = registry.get('localSearchCode')!;
-    expect(tool.policy.effects).toEqual(['read']);
+    const tool = registry.get('octocode')!;
+    expect(tool.policy.resolve?.({ action: 'call', tool: 'localSearch', input: {} })).toMatchObject({ effects: ['read'] });
     const result = await tool.execute({
-      input: { path: '/tmp', searchText: 'x' },
+      input: { action: 'call', tool: 'localSearch', input: { operation: 'text', path: '/tmp', searchText: 'x' } },
       callId: 'call:1' as never,
-      context: { sessionId: 's' as never, cwd: '/tmp', mode: 'headless', trust: { workspace: 'trusted', managedOnly: false }, signal: new AbortController().signal },
+      context: {
+        sessionId: 's' as never,
+        cwd: '/tmp',
+        mode: 'headless',
+        trust: { workspace: 'trusted', managedOnly: false },
+        signal: new AbortController().signal,
+      },
       signal: new AbortController().signal,
       update,
     });
-    expect(result).toMatchObject({ ok: true, content: { ok: true, name: 'localSearchCode' } });
-    expect(execute).toHaveBeenCalledWith('localSearchCode', { path: '/tmp', searchText: 'x' }, expect.any(AbortSignal));
+    expect(result).toMatchObject({
+      ok: true,
+      content: { tool: 'localSearch', content: { ok: true, name: 'localSearch' } },
+    });
+    expect(execute).toHaveBeenCalledWith('localSearch', { operation: 'text', path: '/tmp', searchText: 'x' }, expect.any(AbortSignal));
     expect(update.mock.calls.map(([event]) => event)).toEqual([
-      { version: 1, kind: 'status', message: 'Running localSearchCode' },
-      { version: 1, kind: 'status', message: 'Completed localSearchCode' },
+      { version: 1, kind: 'status', message: 'Running Octocode facade' },
+      { version: 1, kind: 'status', message: 'Completed Octocode facade' },
     ]);
+  });
+
+  it('assigns bounded shared lanes only to parallel-safe catalog research tools', () => {
+    const registry = createOctocodeToolRegistry(
+      {
+        kind: 'octocode.toolCatalog.full',
+        version: 1,
+        toolCount: 5,
+        tools: [
+          {
+            name: 'localSearch',
+            description: 'Search local code',
+            category: 'Local Code',
+            inputSchema: { type: 'object' },
+          },
+          {
+            name: 'lspGetSemantics',
+            description: 'Read local semantics',
+            category: 'Local Code',
+            inputSchema: { type: 'object' },
+          },
+          {
+            name: 'ghSearch',
+            description: 'Search GitHub code',
+            category: 'GitHub',
+            inputSchema: { type: 'object' },
+          },
+          {
+            name: 'npmSearch',
+            description: 'Search npm',
+            category: 'npm',
+            inputSchema: { type: 'object' },
+          },
+          {
+            name: 'ghCloneRepo',
+            description: 'Clone GitHub repository',
+            category: 'GitHub',
+            inputSchema: { type: 'object' },
+          },
+        ],
+      },
+      vi.fn(),
+    );
+
+    const facade = registry.get('octocode')!;
+    expect(facade.policy.concurrency?.({ action: 'call', tool: 'localSearch', input: {} })).toEqual({
+      lane: 'local-read',
+      maxActive: 4,
+    });
+    expect(facade.policy.concurrency?.({ action: 'call', tool: 'lspGetSemantics', input: {} })).toEqual({
+      lane: 'local-read',
+      maxActive: 4,
+    });
+    expect(facade.policy.concurrency?.({ action: 'call', tool: 'ghSearch', input: {} })).toEqual({
+      lane: 'network-research',
+      maxActive: 4,
+    });
+    expect(facade.policy.concurrency?.({ action: 'call', tool: 'npmSearch', input: {} })).toEqual({
+      lane: 'network-research',
+      maxActive: 4,
+    });
+    expect(facade.policy.concurrency?.({ action: 'call', tool: 'ghCloneRepo', input: {} })).toBeUndefined();
+    expect(facade.policy.resolve?.({ action: 'call', tool: 'ghCloneRepo', input: {} }).effects).toEqual(['network', 'process', 'write']);
+  });
+
+  it('classifies the current negotiated Octocode catalog names without adding trust to local reads', () => {
+    const currentNames = [
+      'localSearchCode', 'localFindFiles', 'localFindDeadCode',
+      'localGetFileContent', 'localViewStructure', 'lspGetSemantics',
+      'ghSearchCode', 'ghSearchRepos', 'ghViewRepoStructure',
+    ];
+    const registry = createOctocodeToolRegistry({
+      kind: 'octocode.toolCatalog.full',
+      version: 1,
+      toolCount: currentNames.length,
+      tools: currentNames.map((name) => ({ name, description: name, inputSchema: { type: 'object' } })),
+    }, vi.fn());
+    const facade = registry.get('octocode')!;
+    for (const name of currentNames.slice(0, 6)) {
+      expect(facade.policy.resolve?.({ action: 'call', tool: name, input: {} })).toMatchObject({ effects: ['read'] });
+    }
+    for (const name of currentNames.slice(6)) {
+      expect(facade.policy.resolve?.({ action: 'call', tool: name, input: {} })).toMatchObject({ effects: ['network'] });
+    }
+    expect(facade.description).toContain([...currentNames].sort().join(', '));
+    expect(facade.description).toContain('Never guess');
   });
 
   it('registers only the explicitly delegated worker capabilities', () => {
     const registry = createOctocodeToolRegistry(catalog, vi.fn(), {
-      allowedTools: new Set(['localSearchCode']),
+      allowedTools: new Set(['octocode']),
+      allowedOctocodeTools: new Set(['localSearch']),
     });
 
-    expect(registry.list().map((tool) => tool.name)).toEqual(['localSearchCode']);
+    expect(registry.list().map((tool) => tool.name)).toEqual(['octocode']);
   });
 
   it('emits a terminal status update when native execution fails or is cancelled', async () => {
@@ -137,30 +427,66 @@ describe('native Octocode tool registry', () => {
       throw new Error('stopped');
     });
 
-    await expect(registry.get('localSearchCode')!.execute({
-      input: {}, callId: 'call:1' as never,
-      context: { sessionId: 's' as never, cwd: '/tmp', mode: 'headless', trust: { workspace: 'trusted', managedOnly: false }, signal: controller.signal },
-      signal: controller.signal,
-      update,
-    })).rejects.toMatchObject({ code: 'execution-cancelled' });
-    expect(update).toHaveBeenLastCalledWith({ version: 1, kind: 'status', message: 'Cancelled localSearchCode' });
+    await expect(
+      registry.get('octocode')!.execute({
+        input: { action: 'call', tool: 'localSearch', input: {} },
+        callId: 'call:1' as never,
+        context: {
+          sessionId: 's' as never,
+          cwd: '/tmp',
+          mode: 'headless',
+          trust: { workspace: 'trusted', managedOnly: false },
+          signal: controller.signal,
+        },
+        signal: controller.signal,
+        update,
+      }),
+    ).rejects.toMatchObject({ code: 'execution-cancelled' });
+    expect(update).toHaveBeenLastCalledWith({
+      version: 1,
+      kind: 'status',
+      message: 'Cancelled Octocode facade',
+    });
   });
 
   it('validates authoritative output schemas before returning tool content', async () => {
-    const registry = createOctocodeToolRegistry({
-      kind: 'octocode.toolCatalog.full', version: 1, toolCount: 1,
-      tools: [{
-        name: 'validated', description: 'Validated output', inputSchema: { type: 'object' },
-        outputSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } },
-      }],
-    }, async () => ({ answer: 42 }));
+    const registry = createOctocodeToolRegistry(
+      {
+        kind: 'octocode.toolCatalog.full',
+        version: 1,
+        toolCount: 1,
+        tools: [
+          {
+            name: 'validated',
+            description: 'Validated output',
+            inputSchema: { type: 'object' },
+            outputSchema: {
+              type: 'object',
+              required: ['answer'],
+              properties: { answer: { type: 'string' } },
+            },
+          },
+        ],
+      },
+      async () => ({ answer: 42 }),
+    );
     const signal = new AbortController().signal;
 
-    await expect(registry.get('validated')!.execute({
-      input: {}, callId: 'call:output' as never,
-      context: { sessionId: 's' as never, cwd: '/tmp', mode: 'headless', trust: { workspace: 'trusted', managedOnly: false }, signal },
-      signal, update: async () => undefined,
-    })).rejects.toMatchObject({ code: 'output-invalid' });
+    await expect(
+      registry.get('octocode')!.execute({
+        input: { action: 'call', tool: 'validated', input: {} },
+        callId: 'call:output' as never,
+        context: {
+          sessionId: 's' as never,
+          cwd: '/tmp',
+          mode: 'headless',
+          trust: { workspace: 'trusted', managedOnly: false },
+          signal,
+        },
+        signal,
+        update: async () => undefined,
+      }),
+    ).rejects.toMatchObject({ code: 'output-invalid' });
   });
 
   it('returns typed failures without leaking sensitive executor details', async () => {
@@ -169,41 +495,65 @@ describe('native Octocode tool registry', () => {
     });
     const signal = new AbortController().signal;
 
-    await expect(registry.get('localSearchCode')!.execute({
-      input: {}, callId: 'call:redaction' as never,
-      context: { sessionId: 's' as never, cwd: '/tmp', mode: 'headless', trust: { workspace: 'trusted', managedOnly: false }, signal },
-      signal, update: async () => undefined,
-    })).rejects.toSatisfy((error: unknown) => error instanceof OctocodeFacadeError
-      && error.code === 'execution-failed'
-      && !error.message.includes('super-secret')
-      && !error.message.includes('bearer-secret')
-      && error.message.includes('[REDACTED]'));
+    await expect(
+      registry.get('octocode')!.execute({
+        input: { action: 'call', tool: 'localSearch', input: {} },
+        callId: 'call:redaction' as never,
+        context: {
+          sessionId: 's' as never,
+          cwd: '/tmp',
+          mode: 'headless',
+          trust: { workspace: 'trusted', managedOnly: false },
+          signal,
+        },
+        signal,
+        update: async () => undefined,
+      }),
+    ).rejects.toSatisfy((error: unknown) => error instanceof OctocodeFacadeError && error.code === 'execution-failed' && !error.message.includes('super-secret') && !error.message.includes('bearer-secret') && error.message.includes('[REDACTED]'));
   });
 
   it('fails closed on invalid execution JSON and forwards cancellation to the runner', async () => {
     const invalidRun = vi.fn(async () => 'not-json token=must-not-leak');
-    await expect(executeOctocodeTool('localSearchCode', {}, new AbortController().signal, { run: invalidRun }))
-      .rejects.toMatchObject({ code: 'execution-invalid' });
+    await expect(
+      executeOctocodeTool('localSearch', {}, new AbortController().signal, {
+        run: invalidRun,
+      }),
+    ).rejects.toMatchObject({ code: 'execution-invalid' });
 
     const controller = new AbortController();
     controller.abort();
     const cancelledRun = vi.fn(async () => '{}');
-    await expect(executeOctocodeTool('localSearchCode', {}, controller.signal, { run: cancelledRun }))
-      .rejects.toMatchObject({ code: 'execution-cancelled' });
+    await expect(
+      executeOctocodeTool('localSearch', {}, controller.signal, {
+        run: cancelledRun,
+      }),
+    ).rejects.toMatchObject({ code: 'execution-cancelled' });
     expect(cancelledRun).not.toHaveBeenCalled();
   });
 
   it('classifies remote catalog tools as network effects', () => {
     const registry = createOctocodeToolRegistry(catalog, async () => ({}));
-    expect(registry.get('ghSearchCode')?.policy.effects).toEqual(['network']);
+    expect(registry.get('octocode')?.policy.resolve?.({ action: 'call', tool: 'ghSearch', input: {} }).effects).toEqual(['network']);
   });
 
   it('classifies clone as network, process, and write effects because it creates a checkout', () => {
-    const registry = createOctocodeToolRegistry({
-      kind: 'octocode.toolCatalog.full', version: 1, toolCount: 1,
-      tools: [{ name: 'ghCloneRepo', description: 'Clone a GitHub repository', category: 'GitHub', inputSchema: { type: 'object' } }],
-    }, async () => ({}));
-    expect(registry.get('ghCloneRepo')?.policy).toMatchObject({
+    const registry = createOctocodeToolRegistry(
+      {
+        kind: 'octocode.toolCatalog.full',
+        version: 1,
+        toolCount: 1,
+        tools: [
+          {
+            name: 'ghCloneRepo',
+            description: 'Clone a GitHub repository',
+            category: 'GitHub',
+            inputSchema: { type: 'object' },
+          },
+        ],
+      },
+      async () => ({}),
+    );
+    expect(registry.get('octocode')?.policy.resolve?.({ action: 'call', tool: 'ghCloneRepo', input: {} })).toMatchObject({
       effects: ['network', 'process', 'write'],
       trust: 'workspace',
       approval: 'on-request',
@@ -214,7 +564,12 @@ describe('native Octocode tool registry', () => {
     const registry = createOctocodeToolRegistry(catalog, async () => ({}));
     expect(registry.get('plan')).toMatchObject({
       name: 'plan',
-      policy: { effects: ['read', 'write'], trust: 'workspace', approval: 'on-request', plan: 'allowed' },
+      policy: {
+        effects: ['read', 'write'],
+        trust: 'workspace',
+        approval: 'on-request',
+        plan: 'allowed',
+      },
     });
   });
 
@@ -222,7 +577,12 @@ describe('native Octocode tool registry', () => {
     const registry = createOctocodeToolRegistry(catalog, async () => ({}));
     expect(registry.get('awareness')).toMatchObject({
       name: 'awareness',
-      policy: { effects: ['read', 'write'], trust: 'workspace', approval: 'on-request', plan: 'allowed' },
+      policy: {
+        effects: ['read', 'write'],
+        trust: 'workspace',
+        approval: 'on-request',
+        plan: 'allowed',
+      },
     });
   });
 
@@ -236,16 +596,29 @@ describe('native Octocode tool registry', () => {
     await registry.get('plan')!.execute({
       input: { action: 'set', steps: ['Project runtime state'] },
       callId: 'plan:1' as never,
-      context: { sessionId: 'session-1' as never, cwd: '/workspace', mode: 'headless', trust: { workspace: 'trusted', managedOnly: false }, signal },
+      context: {
+        sessionId: 'session-1' as never,
+        cwd: '/workspace',
+        mode: 'headless',
+        trust: { workspace: 'trusted', managedOnly: false },
+        signal,
+      },
       signal,
       update: async () => undefined,
     });
 
-    expect(snapshots).toEqual([expect.objectContaining({
-      authority: 'runtime',
-      scope: { sessionId: 'session-1', workspace: '/workspace' },
-      revision: 1,
-      steps: [expect.objectContaining({ id: 'step:1:1', text: 'Project runtime state' })],
-    })]);
+    expect(snapshots).toEqual([
+      expect.objectContaining({
+        authority: 'runtime',
+        scope: { sessionId: 'session-1', workspace: '/workspace' },
+        revision: 1,
+        steps: [
+          expect.objectContaining({
+            id: 'step:1:1',
+            text: 'Project runtime state',
+          }),
+        ],
+      }),
+    ]);
   });
 });

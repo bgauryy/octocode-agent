@@ -1,5 +1,3 @@
-import { DatabaseSync } from './db-runtime.js';
-
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
 /**
@@ -382,9 +380,3 @@ export const FTS_SCHEMA_DDL = `
   CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
   USING fts5(memory_id UNINDEXED, task_context, observation, tags)
 `;
-
-export function tableExists(db: DatabaseSync, table: string): boolean {
-  return Boolean(db.prepare(
-    "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
-  ).get(table));
-}

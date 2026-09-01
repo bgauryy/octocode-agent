@@ -71,6 +71,7 @@ const ACCESSIBILITY_ROLES = new Set<WidgetAccessibilityMetadata['role']>([
   'textbox',
 ]);
 const LIVE_REGION_VALUES = new Set<WidgetAccessibilityMetadata['liveRegion']>(['off', 'polite', 'assertive']);
+const DESIGN_TONES = new Set(['info', 'success', 'warning', 'error', 'count']);
 
 function copyAccessibility(value: WidgetAccessibilityMetadata): WidgetAccessibilityMetadata {
   if (!ACCESSIBILITY_ROLES.has(value.role)) fail('accessibility.role is invalid');
@@ -108,11 +109,15 @@ function copyRegions(values: readonly WidgetRenderRegion[]): readonly WidgetRend
       fail(`render region ${index} has an invalid id`);
     }
     if (ids.has(region.id)) fail(`render region id '${region.id}' is duplicated`);
+    if (region.tone !== undefined && !DESIGN_TONES.has(region.tone)) {
+      fail(`render region '${region.id}' has an invalid tone`);
+    }
     ids.add(region.id);
     return Object.freeze({
       id: region.id,
       role: region.role,
       text: boundedText(region.text, `render region '${region.id}' text`, true),
+      ...(region.tone === undefined ? {} : { tone: region.tone }),
     });
   }));
 }

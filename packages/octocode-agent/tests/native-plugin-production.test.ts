@@ -29,11 +29,11 @@ describe('production plugin activation composition', () => {
     fs.mkdirSync(cwd, { recursive: true });
     fs.writeFileSync(path.join(pluginRoot, '.codex-plugin', 'plugin.json'), JSON.stringify({
       name: 'example', version: '1.0.0', octocode: {
-        apiVersion: '1', activationEvents: ['onSessionStart'], permissions: ['tools.register'],
-        contributes: { tools: ['./contributions/tools.json'] },
+        apiVersion: '1', activationEvents: ['onSessionStart'], permissions: ['commands.register'],
+        contributes: { commands: ['./contributions/commands.json'] },
       },
     }));
-    fs.writeFileSync(path.join(pluginRoot, 'contributions', 'tools.json'), JSON.stringify([{ id: 'search', description: 'projected' }]));
+    fs.writeFileSync(path.join(pluginRoot, 'contributions', 'commands.json'), JSON.stringify([{ id: 'search', description: 'projected' }]));
     const env = { OCTOCODE_HOME: path.join(root, 'octocode-home'), HOME: home };
     const storage = new FileSettingsStorage(path.join(agentDir(env), 'settings.json'));
     storage.commit('0', { workspaceTrust: { [cwd]: 'trusted' } });
@@ -54,7 +54,7 @@ describe('production plugin activation composition', () => {
       ...current.values,
       nativeExtensions: {
         reviewedHashes: { example: hash },
-        pluginGrants: { example: ['tools.register'] },
+        pluginGrants: { example: ['commands.register'] },
       },
     });
 
@@ -70,7 +70,7 @@ describe('production plugin activation composition', () => {
     });
     expect(activeProjection).toMatchObject({
       plugins: [{ id: 'example', active: true, review: 'approved' }],
-      contributions: [{ kind: 'tool', id: 'example:search', owner: 'example', value: { description: 'projected' } }],
+      contributions: [{ kind: 'command', id: 'example:search', owner: 'example', value: { description: 'projected' } }],
     });
     expect(active.snapshot()).toMatchObject({ plugins: [{ active: false, lifecycle: 'stopped' }], contributions: [], activeLeases: [] });
 

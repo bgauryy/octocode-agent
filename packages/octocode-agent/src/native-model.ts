@@ -1,5 +1,8 @@
 import {
   RuntimeFailure,
+  assertModelToolResultV1,
+  assertRuntimeUserInputV1,
+  runtimeUserInputText,
   type JsonSchema,
   type ModelMessage,
   type ModelPort,
@@ -57,7 +60,28 @@ export interface OpenAiCompatibleModelOptions extends SharedModelOptions {
 export interface AnthropicMessagesModelOptions extends SharedModelOptions {
   readonly maxOutputTokens?: number;
   readonly promptCaching?: boolean;
+  readonly promptCacheTtl?: '5m' | '1h';
   readonly sessionAffinityId?: string;
+}
+
+export type NativeModelProviderFamily = 'openai' | 'anthropic';
+
+/** Stable native signal that lets the core request compaction instead of blind retry. */
+export class NativeModelInputOverflowFailure extends RuntimeFailure {
+  override readonly name = 'NativeModelInputOverflowFailure';
+  readonly kind = 'input-overflow' as const;
+
+  constructor(readonly provider: NativeModelProviderFamily) {
+    super(
+      'provider',
+      'Model input exceeds the provider context window',
+      'unsafe',
+      true,
+      'public',
+      'operation',
+      'input-overflow',
+    );
+  }
 }
 
 type ResolvedAuth = { readonly apiKey?: string; readonly headers: Readonly<Record<string, string>> };
@@ -97,11 +121,92 @@ function toolNames(messages: readonly ModelMessage[]): ReadonlyMap<string, strin
   return names;
 }
 
-function aiMessages(request: ModelRequest, cacheAnthropic: boolean): AiModelMessage[] {
+function anthropicCacheControl(ttl: '5m' | '1h' | undefined): { readonly type: 'ephemeral'; readonly ttl?: '5m' | '1h' } {
+  return { type: 'ephemeral', ...(ttl === undefined ? {} : { ttl }) };
+}
+
+export interface NativeModelMessageTranslationOptions {
+  readonly protocol: Extract<NativeModelProtocol, 'openai-chat-completions' | 'openai-responses' | 'anthropic-messages'>;
+  readonly cacheAnthropic?: boolean;
+  readonly cacheTtl?: '5m' | '1h';
+}
+
+const TOOL_RESULT_TEXT_LIMIT = 1_048_576;
+
+function toolResultBytes(value: number): string {
+  return `${value} ${value === 1 ? 'byte' : 'bytes'}`;
+}
+
+function boundedToolResultText(lines: readonly string[]): string {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const value = lines.join('\n');
+  const bytes = encoder.encode(value);
+  return bytes.byteLength <= TOOL_RESULT_TEXT_LIMIT
+    ? value
+    : decoder.decode(bytes.subarray(0, TOOL_RESULT_TEXT_LIMIT));
+}
+
+function artifactUnavailableText(
+  artifact: ReturnType<typeof assertModelToolResultV1>['parts'][number] & { readonly type: 'artifact' },
+): string {
+  const value = artifact.artifact;
+  return `Artifact ${value.title ?? value.artifactId} (${value.mediaType}, ${toolResultBytes(value.byteLength)}) is available at workspace path ${value.path}; its bytes are not attached.`;
+}
+
+function translatedToolOutput(
+  message: Extract<ModelMessage, { readonly role: 'tool' }>,
+  protocol: NativeModelMessageTranslationOptions['protocol'],
+): Record<string, unknown> {
+  if (message.result === undefined) return { type: 'text', value: message.content };
+  const result = assertModelToolResultV1(message.result);
+  const supportsImages = protocol === 'openai-responses' || protocol === 'anthropic-messages';
+  if (!supportsImages) {
+    const lines = result.parts.map((part) => {
+      if (part.type === 'text') return part.text;
+      if (part.type === 'artifact') return artifactUnavailableText(part);
+      return `Image ${part.filename ?? 'unnamed image'} (${part.mediaType}, ${toolResultBytes(part.byteLength)}) was not attached because ${protocol} does not support image tool results.`;
+    });
+    return { type: 'text', value: boundedToolResultText(lines) };
+  }
+  const value = result.parts.map((part) => {
+    if (part.type === 'text') return { type: 'text' as const, text: part.text };
+    if (part.type === 'artifact') return { type: 'text' as const, text: artifactUnavailableText(part) };
+    return {
+      type: 'file' as const,
+      data: { type: 'data' as const, data: part.data.value },
+      mediaType: part.mediaType,
+      ...(part.filename === undefined ? {} : { filename: part.filename }),
+    };
+  });
+  return { type: 'content', value };
+}
+
+export function translateNativeModelMessages(
+  request: ModelRequest,
+  options: NativeModelMessageTranslationOptions,
+): AiModelMessage[] {
   const names = toolNames(request.messages);
   const messages: AiModelMessage[] = request.messages.flatMap((message) => {
     if (message.role === 'system') return [];
-    if (message.role === 'user') return { role: 'user', content: message.content };
+    if (message.role === 'user') {
+      if (message.userInput === undefined) return { role: 'user', content: message.content };
+      const input = assertRuntimeUserInputV1(message.userInput);
+      if (runtimeUserInputText(input) !== message.content) {
+        throw new RuntimeFailure('adapter-translation', 'User message text does not match its multimodal input');
+      }
+      return {
+        role: 'user',
+        content: input.parts.map((part) => part.type === 'text'
+          ? { type: 'text', text: part.text }
+          : {
+              type: 'file',
+              data: { type: 'data', data: part.data.value },
+              mediaType: part.mediaType,
+              ...(part.filename === undefined ? {} : { filename: part.filename }),
+            }),
+      } as AiModelMessage;
+    }
     if (message.role === 'assistant') {
       const content: Array<Record<string, unknown>> = [];
       if (message.content.length > 0) content.push({ type: 'text', text: message.content });
@@ -116,11 +221,11 @@ function aiMessages(request: ModelRequest, cacheAnthropic: boolean): AiModelMess
         type: 'tool-result',
         toolCallId: message.toolCallId,
         toolName: names.get(message.toolCallId ?? '') ?? 'unknown-tool',
-        output: { type: 'text', value: message.content },
+        output: translatedToolOutput(message, options.protocol),
       }],
     } as AiModelMessage;
   });
-  if (!cacheAnthropic || messages.length === 0) return messages;
+  if (options.cacheAnthropic !== true || messages.length === 0) return messages;
   let lastSystem = -1;
   let lastConversation = -1;
   for (let index = 0; index < messages.length; index += 1) {
@@ -131,24 +236,24 @@ function aiMessages(request: ModelRequest, cacheAnthropic: boolean): AiModelMess
     if (index >= 0) {
       messages[index] = {
         ...messages[index],
-        providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+        providerOptions: { anthropic: { cacheControl: anthropicCacheControl(options.cacheTtl) } },
       } as AiModelMessage;
     }
   }
   return messages;
 }
 
-function aiInstructions(request: ModelRequest, cacheAnthropic: boolean): SystemModelMessage[] | undefined {
+function aiInstructions(request: ModelRequest, cacheAnthropic: boolean, cacheTtl?: '5m' | '1h'): SystemModelMessage[] | undefined {
   const instructions: SystemModelMessage[] = request.messages
     .filter((message) => message.role === 'system')
     .map((message) => ({ role: 'system' as const, content: message.content }));
   if (instructions.length === 0) return undefined;
   if (cacheAnthropic) {
-    const last = instructions[instructions.length - 1]!;
-    instructions[instructions.length - 1] = {
+    const stablePrefix = instructions[0]!;
+    instructions[0] = {
       role: 'system',
-      content: last.content,
-      providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+      content: stablePrefix.content,
+      providerOptions: { anthropic: { cacheControl: anthropicCacheControl(cacheTtl) } },
     } as unknown as SystemModelMessage;
   }
   return instructions;
@@ -204,13 +309,13 @@ function providerToolInputSchema(schema: JsonSchema): JsonSchema {
   };
 }
 
-function aiTools(request: ModelRequest, cacheAnthropic: boolean): ToolSet | undefined {
+function aiTools(request: ModelRequest, cacheAnthropic: boolean, cacheTtl?: '5m' | '1h'): ToolSet | undefined {
   if (request.tools === undefined) return undefined;
   return Object.fromEntries(request.tools.map((tool, index) => [tool.name, {
     description: tool.description,
     inputSchema: jsonSchema(providerToolInputSchema(tool.inputSchema) as Parameters<typeof jsonSchema>[0]),
     ...(cacheAnthropic && index === request.tools!.length - 1
-      ? { providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } } }
+      ? { providerOptions: { anthropic: { cacheControl: anthropicCacheControl(cacheTtl) } } }
       : {}),
   }])) as ToolSet;
 }
@@ -248,7 +353,46 @@ function retryAfterMs(value: unknown, now = Date.now()): number | undefined {
   return Number.isFinite(date) ? Math.max(0, date - now) : undefined;
 }
 
-function providerFailure(error: unknown): RuntimeFailure {
+function inputOverflowEvidence(error: unknown): { readonly codes: string[]; readonly text: string } {
+  const codes: string[] = [];
+  const text: string[] = [];
+  const seen = new Set<object>();
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 4 || value === null || value === undefined) return;
+    if (typeof value === 'string') {
+      text.push(value);
+      try { visit(JSON.parse(value), depth + 1); } catch { /* Non-JSON provider text. */ }
+      return;
+    }
+    if (typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if ((key === 'code' || key === 'type') && typeof child === 'string') codes.push(child.toLowerCase());
+      if (key === 'message' || key === 'responseBody' || key === 'data' || key === 'error' || key === 'cause') {
+        visit(child, depth + 1);
+      }
+    }
+  };
+  visit(error, 0);
+  return { codes, text: text.join('\n').toLowerCase() };
+}
+
+function isInputOverflow(error: unknown, provider: NativeModelProviderFamily): boolean {
+  const evidence = inputOverflowEvidence(error);
+  if (evidence.codes.some((code) => [
+    'context_length_exceeded',
+    'context_window_exceeded',
+    'input_too_large',
+    'prompt_too_long',
+  ].includes(code))) return true;
+  const patterns = provider === 'openai'
+    ? [/maximum context length/, /context window[^\n]*(?:exceed|limit)/, /too many input tokens/]
+    : [/prompt is too long/, /input is too long/, /too many input tokens/, /input length[^\n]*context limit/, /exceeds?[^\n]*context window/];
+  return patterns.some((pattern) => pattern.test(evidence.text));
+}
+
+function providerFailure(error: unknown, provider: NativeModelProviderFamily): RuntimeFailure {
+  if (isInputOverflow(error, provider)) return new NativeModelInputOverflowFailure(provider);
   let source = error;
   for (let depth = 0; depth < 3; depth += 1) {
     const candidate = typeof source === 'object' && source !== null ? source as Record<string, unknown> : {};
@@ -357,17 +501,24 @@ interface VercelRunOptions {
   readonly maxOutputTokens?: number;
   readonly providerOptions?: Parameters<typeof streamText>[0]['providerOptions'];
   readonly cacheAnthropic?: boolean;
+  readonly anthropicCacheTtl?: '5m' | '1h';
   readonly stream?: boolean;
   readonly toolCallOrder?: ReadonlyMap<string, number>;
+  readonly providerFamily: NativeModelProviderFamily;
+  readonly protocol: NativeModelMessageTranslationOptions['protocol'];
 }
 
 async function runVercelModel(options: VercelRunOptions): Promise<ModelResponse> {
   try {
     const common = {
       model: options.model,
-      instructions: aiInstructions(options.request, options.cacheAnthropic === true),
-      messages: aiMessages(options.request, options.cacheAnthropic === true),
-      tools: aiTools(options.request, options.cacheAnthropic === true),
+      instructions: aiInstructions(options.request, options.cacheAnthropic === true, options.anthropicCacheTtl),
+      messages: translateNativeModelMessages(options.request, {
+        protocol: options.protocol,
+        cacheAnthropic: options.cacheAnthropic,
+        cacheTtl: options.anthropicCacheTtl,
+      }),
+      tools: aiTools(options.request, options.cacheAnthropic === true, options.anthropicCacheTtl),
       toolChoice: aiToolChoice(options.request),
       maxRetries: 0,
       abortSignal: options.signal,
@@ -414,7 +565,7 @@ async function runVercelModel(options: VercelRunOptions): Promise<ModelResponse>
   } catch (error) {
     if (options.signal.aborted) return { stop: 'cancelled', usage: { inputTokens: 0, outputTokens: 0 } };
     if (error instanceof RuntimeFailure) throw error;
-    throw providerFailure(error);
+    throw providerFailure(error, options.providerFamily);
   }
 }
 
@@ -450,6 +601,8 @@ export function createOpenAiCompatibleModelPort(options: OpenAiCompatibleModelOp
             },
           },
           stream: options.stream,
+          providerFamily: 'openai',
+          protocol: 'openai-responses',
         });
       }
       const providerName = request.model?.providerId ?? 'octocode-compatible';
@@ -482,6 +635,8 @@ export function createOpenAiCompatibleModelPort(options: OpenAiCompatibleModelOp
           : { [officialOpenAI ? 'openai' : providerName]: { promptCacheKey: options.promptCacheKey } },
         stream: options.stream,
         toolCallOrder,
+        providerFamily: 'openai',
+        protocol: 'openai-chat-completions',
       });
     },
   };
@@ -513,9 +668,12 @@ export function createAnthropicMessagesModelPort(options: AnthropicMessagesModel
         headers: auth.headers,
         maxOutputTokens: options.maxOutputTokens ?? 4_096,
         cacheAnthropic: options.promptCaching === true,
+        anthropicCacheTtl: options.promptCacheTtl,
         providerOptions: budgetTokens === undefined
           ? undefined
-          : { anthropic: { thinking: { type: 'enabled', budgetTokens } } },
+           : { anthropic: { thinking: { type: 'enabled', budgetTokens } } },
+        providerFamily: 'anthropic',
+        protocol: 'anthropic-messages',
       });
     },
   };

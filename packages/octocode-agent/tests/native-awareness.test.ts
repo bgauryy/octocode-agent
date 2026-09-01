@@ -22,7 +22,7 @@ function execution(input: unknown, overrides: { sessionId?: string; cwd?: string
 }
 
 describe('native Awareness tool', () => {
-  it('registers the owner catalog as a closed, conservatively gated action schema', () => {
+  it('registers the owner catalog as a closed schema with input-sensitive policy', () => {
     const registry = new ToolRegistry();
     registerNativeAwarenessTool(registry, { cwd: '/workspace' });
 
@@ -36,10 +36,71 @@ describe('native Awareness tool', () => {
         request: { type: 'object', additionalProperties: true },
       },
     });
-    expect(tool.policy).toEqual({
+    expect(tool.policy).toMatchObject({
       effects: ['read', 'write'], trust: 'workspace', approval: 'on-request', plan: 'allowed',
+      resolve: expect.any(Function),
     });
-    expect(tool.description).toContain('conservative write approval');
+    expect(tool.description).not.toContain('cannot vary');
+    expect(tool.description).not.toContain('conservative write approval');
+  });
+
+  it('classifies every owner-routable operation from its actual effect path', () => {
+    const registry = new ToolRegistry();
+    registerNativeAwarenessTool(registry, { cwd: '/workspace' });
+    const resolve = registry.get('awareness')!.policy.resolve!;
+    const readPolicy = { effects: ['read'], trust: 'none', approval: 'never' };
+    const mutationPolicy = { effects: ['read', 'write'], trust: 'workspace', approval: 'on-request' };
+    const representativeInputs: Record<string, { request?: Record<string, unknown>; policy: typeof readPolicy }> = {
+      // Owner recall records access counts for returned memories.
+      recall: { policy: mutationPolicy },
+      record: { policy: mutationPolicy },
+      reflect: { policy: mutationPolicy },
+      workspace_status: { policy: readPolicy },
+      refine_get: { policy: readPolicy },
+      verify_audit: { policy: readPolicy },
+      verify: { policy: mutationPolicy },
+      digest: { request: {}, policy: mutationPolicy },
+      forget: { request: {}, policy: mutationPolicy },
+      agent_signal: { request: { action: 'publish' }, policy: mutationPolicy },
+      file_lock: { request: { type: 'lock' }, policy: mutationPolicy },
+      mine_weakness: { policy: readPolicy },
+      export_harness: { policy: readPolicy },
+      attend: { policy: readPolicy },
+      query: { policy: readPolicy },
+      view: { policy: mutationPolicy },
+    };
+
+    expect(Object.keys(representativeInputs).sort()).toEqual([...ROUTABLE_OPERATIONS].sort());
+    for (const [action, expected] of Object.entries(representativeInputs)) {
+      expect(resolve({ action, request: expected.request ?? {} }), action).toEqual(expected.policy);
+    }
+  });
+
+  it('keeps read-only subactions approval-free and conditional mutations gated', () => {
+    const registry = new ToolRegistry();
+    registerNativeAwarenessTool(registry, { cwd: '/workspace' });
+    const resolve = registry.get('awareness')!.policy.resolve!;
+    const readPolicy = { effects: ['read'], trust: 'none', approval: 'never' };
+    const mutationPolicy = { effects: ['read', 'write'], trust: 'workspace', approval: 'on-request' };
+
+    expect(resolve({ action: 'digest', request: { dry_run: true } })).toEqual(readPolicy);
+    expect(resolve({ action: 'digest', request: { dry_run: true, export_doc: true } })).toEqual(mutationPolicy);
+    expect(resolve({ action: 'forget', request: { dry_run: true } })).toEqual(readPolicy);
+    expect(resolve({ action: 'forget', request: { dry_run: false } })).toEqual(mutationPolicy);
+    expect(resolve({ action: 'agent_signal', request: { action: 'list' } })).toEqual(readPolicy);
+    expect(resolve({ action: 'agent_signal', request: { action: 'list', mark_read: true } })).toEqual(mutationPolicy);
+    expect(resolve({ action: 'file_lock', request: { type: 'status' } })).toEqual(readPolicy);
+    expect(resolve({ action: 'file_lock', request: { type: 'renew' } })).toEqual(mutationPolicy);
+  });
+
+  it('fails policy resolution closed for malformed routed input', () => {
+    const registry = new ToolRegistry();
+    registerNativeAwarenessTool(registry, { cwd: '/workspace' });
+    const resolve = registry.get('awareness')!.policy.resolve!;
+
+    expect(() => resolve({ action: 'not-routable', request: {} })).toThrow('not routable');
+    expect(() => resolve({ action: 'file_lock', request: {} })).toThrow('requires request.type');
+    expect(() => resolve({ action: 'agent_signal', request: { action: 'invalid' } })).toThrow('requires request.action');
   });
 
   it('delegates to the package owner with cwd, session, and agent identity and closes its DB scope', async () => {

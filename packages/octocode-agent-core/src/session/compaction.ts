@@ -26,7 +26,7 @@ export interface CompactionSummary {
   readonly retainedEventIds: readonly SessionEventId[];
 }
 export interface CompactionSummarizer {
-  summarize(input: { readonly messages: readonly (ModelMessage & { readonly eventId: SessionEventId })[]; readonly reason: 'manual' | 'threshold' | 'overflow'; readonly attempt: number; readonly signal: AbortSignal }): Promise<CompactionSummary>;
+  summarize(input: { readonly messages: readonly (ModelMessage & { readonly eventId: SessionEventId })[]; readonly reason: 'manual' | 'threshold' | 'overflow'; readonly attempt: number; readonly context: readonly string[]; readonly signal: AbortSignal }): Promise<CompactionSummary>;
 }
 export interface DurableCompactionOptions {
   readonly store: SessionStore;
@@ -63,7 +63,7 @@ export class DurableCompactionService {
 
   cancel(id: SessionId, reason = 'Compaction cancelled'): void { this.#active.get(id)?.abort(reason); }
 
-  async compact(id: SessionId, reason: 'manual' | 'threshold' | 'overflow', outerSignal?: AbortSignal): Promise<CompactionSummary> {
+  async compact(id: SessionId, reason: 'manual' | 'threshold' | 'overflow', outerSignal?: AbortSignal, context: readonly string[] = []): Promise<CompactionSummary> {
     if (this.#active.has(id)) throw new RuntimeFailure('compaction', 'Compaction already active');
     const controller = new AbortController();
     const forwardAbort = (): void => controller.abort(outerSignal?.reason);
@@ -89,7 +89,7 @@ export class DurableCompactionService {
       await this.#append(id, loaded.projection.revision, { type: 'compaction.started', attemptId, sourceRevision, reason, attempt });
       for (; attempt <= this.#maxAttempts; attempt += 1) {
         try {
-          const result = await abortable(this.#summarizer.summarize({ messages: loaded.projection.modelContext, reason, attempt, signal: controller.signal }), controller.signal);
+          const result = await abortable(this.#summarizer.summarize({ messages: loaded.projection.modelContext, reason, attempt, context: Object.freeze([...context]), signal: controller.signal }), controller.signal);
           if (!result.summary.trim()) throw new RuntimeFailure('compaction', 'Compaction summary must not be empty', 'safe');
           const retained = [...new Set(result.retainedEventIds)];
           if (retained.some((eventId) => !sourceSet.has(eventId))) throw new RuntimeFailure('compaction', 'Compaction retained an unknown source event', 'safe');

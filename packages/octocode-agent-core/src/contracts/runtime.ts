@@ -1,7 +1,9 @@
 import type { RuntimeErrorData } from './errors.js';
 import type { RuntimeEvent } from './events.js';
+import type { ContextProjectionReceiptV1 } from './context-artifacts.js';
 import type { SessionId } from './identity.js';
-import type { ModelMessage } from './ports.js';
+import type { ModelMessage, ModelRequest } from './ports.js';
+import type { RuntimeUserInputV1 } from './user-input.js';
 
 export interface RuntimePlanPolicySnapshot {
   readonly authority: 'runtime';
@@ -17,12 +19,19 @@ export interface RuntimePlanStateUpdater {
   update(snapshot: RuntimePlanPolicySnapshot): void;
 }
 export interface RuntimeCompactionPort {
-  compact(input: { readonly reason: 'manual' | 'threshold' | 'overflow'; readonly messages: readonly ModelMessage[]; readonly signal: AbortSignal }): Promise<{ readonly summary: string; readonly messages: readonly ModelMessage[] }>;
+  compact(input: { readonly reason: 'manual' | 'threshold' | 'overflow'; readonly messages: readonly ModelMessage[]; readonly stablePrefix: readonly ModelMessage[]; readonly context: readonly string[]; readonly signal: AbortSignal }): Promise<{ readonly summary: string; readonly messages: readonly ModelMessage[]; readonly contextProjectionReceipt?: ContextProjectionReceiptV1 }>;
   cancel?(reason?: string): void | Promise<void>;
 }
 
+export interface RuntimeContextTokenMeterPort {
+  measure(request: ModelRequest, context: { readonly signal: AbortSignal }): number | Promise<number>;
+}
+
 export type RuntimeCommand =
-  | { readonly type: 'input.submit' | 'input.steer' | 'input.follow-up'; readonly text: string }
+  | ({ readonly type: 'input.submit' | 'input.steer' | 'input.follow-up' } & (
+      | { readonly text: string; readonly input?: never }
+      | { readonly input: RuntimeUserInputV1; readonly text?: never }
+    ))
   | { readonly type: 'input.cancel'; readonly reason?: string }
   | { readonly type: 'session.create'; readonly id?: string; readonly name?: string }
   | { readonly type: 'session.resume' | 'session.switch' | 'session.fork'; readonly id: string }
@@ -35,6 +44,7 @@ export type RuntimeCommand =
   | { readonly type: 'context.cancel-compaction' }
   | { readonly type: 'context.usage' }
   | { readonly type: 'context.append'; readonly eventId: string; readonly text: string; readonly provenance: 'peer-attributed-data' }
+  | { readonly type: 'tool.execute'; readonly operationId: string; readonly name: string; readonly input: unknown; readonly signal?: AbortSignal }
   | { readonly type: 'tools.list' }
   | { readonly type: 'tools.activate'; readonly name: string }
   | { readonly type: 'monitoring.snapshot' }
@@ -75,4 +85,4 @@ export interface MonitoringSnapshotV1 {
   readonly native?: NativeMonitoringContributionV1;
 }
 export interface RuntimeSnapshot { readonly schemaVersion: 1; readonly state: 'created' | 'starting' | 'ready' | 'running' | 'stopping' | 'stopped' | 'failed'; readonly sessionId: SessionId; readonly activeTurn: boolean; readonly model: { readonly providerId: string; readonly modelId: string } | null; readonly thinkingLevel: string | null; readonly usage: { readonly inputTokens: number; readonly outputTokens: number; readonly cachedInputTokens?: number; readonly cacheWriteInputTokens?: number }; readonly revision: number; }
-export interface AgentRuntime { start(): Promise<void>; submit(input: string): Promise<void>; cancel(reason?: string): Promise<void>; execute(command: RuntimeCommand): Promise<RuntimeCommandResult>; snapshot(): RuntimeSnapshot; subscribe(listener: (event: RuntimeEvent) => void): () => void; stop(): Promise<void>; }
+export interface AgentRuntime { start(): Promise<void>; submit(input: string | RuntimeUserInputV1): Promise<void>; cancel(reason?: string): Promise<void>; execute(command: RuntimeCommand): Promise<RuntimeCommandResult>; snapshot(): RuntimeSnapshot; subscribe(listener: (event: RuntimeEvent) => void): () => void; stop(): Promise<void>; }

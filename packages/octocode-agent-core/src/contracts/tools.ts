@@ -43,6 +43,10 @@ export interface JsonSchema {
 }
 export type ToolEffect = 'read' | 'network' | 'process' | 'write' | 'destructive';
 export type EffectSet = readonly [ToolEffect, ...ToolEffect[]];
+export interface ToolConcurrencyLane {
+  readonly lane: string;
+  readonly maxActive: number;
+}
 const TOOL_EFFECT_ORDER: readonly ToolEffect[] = ['read', 'network', 'process', 'write', 'destructive'];
 export function createEffectSet(...effects: readonly ToolEffect[]): EffectSet {
   const invalid = effects.find((effect) => !TOOL_EFFECT_ORDER.includes(effect));
@@ -52,7 +56,8 @@ export function createEffectSet(...effects: readonly ToolEffect[]): EffectSet {
   if (canonical.length === 0) throw new RuntimeFailure('validation', 'Tool effects require at least one capability');
   return Object.freeze(canonical) as unknown as EffectSet;
 }
-export interface ToolPolicyMetadata { readonly effects: EffectSet; readonly trust: 'none' | 'workspace' | 'managed'; readonly approval: 'never' | 'on-request' | 'always'; readonly plan: 'allowed' | 'forbidden' | 'required'; readonly lockTarget?: (input: unknown) => readonly string[]; }
+export interface ToolPolicyResolution { readonly effects: EffectSet; readonly trust: 'none' | 'workspace' | 'managed'; readonly approval: 'never' | 'on-request' | 'always'; }
+export interface ToolPolicyMetadata extends ToolPolicyResolution { readonly plan: 'allowed' | 'forbidden' | 'required'; readonly resolve?: (input: unknown) => ToolPolicyResolution; readonly lockTarget?: (input: unknown) => readonly string[]; readonly concurrency?: (input: unknown) => ToolConcurrencyLane | undefined; }
 export interface ToolExecutionUpdate { readonly version: 1; readonly kind: 'progress' | 'status' | 'details'; readonly message?: string; readonly value?: unknown; }
 export interface ExecutionContext { readonly sessionId: SessionId; readonly turnId?: TurnId; readonly cwd: string; readonly mode: RuntimeMode; readonly outputFormat?: RuntimeOutputFormat; readonly trust: TrustSnapshot; readonly signal: AbortSignal; }
 export interface ToolExecutionInput { readonly input: unknown; readonly callId: ToolCallId; readonly context: ExecutionContext; readonly signal: AbortSignal; readonly update: (update: ToolExecutionUpdate) => Promise<void>; }

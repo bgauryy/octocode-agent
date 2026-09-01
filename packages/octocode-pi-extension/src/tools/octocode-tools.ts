@@ -105,9 +105,19 @@ export function registerUniqueTool(
       `Octocode Pi extension tool name collision: ${toolDefinition.name}`,
     );
   }
-  registeredToolNames.add(toolDefinition.name);
+  if (typeof pi.registerTool !== 'function') {
+    throw new Error('Octocode Pi extension requires the host registerTool API');
+  }
   const description = DIRECT_TOOL_DESCRIPTIONS[toolDefinition.name] ?? toolDefinition.description;
   const parameters = compactSchemaValue(toolDefinition.parameters) as ToolDefinition['parameters'];
+  pi.registerTool(withOctocodeRender({
+    ...toolDefinition,
+    description,
+    parameters,
+    prepareArguments: (args: unknown) => prepareQueryEnvelope(toolDefinition.name, args),
+  }));
+
+  registeredToolNames.add(toolDefinition.name);
   let contracts = directToolContracts.get(registeredToolNames);
   if (!contracts) {
     contracts = new Map();
@@ -117,10 +127,4 @@ export function registerUniqueTool(
     descriptionChars: description.length,
     schemaChars: JSON.stringify(parameters).length,
   });
-  pi.registerTool?.(withOctocodeRender({
-    ...toolDefinition,
-    description,
-    parameters,
-    prepareArguments: (args: unknown) => prepareQueryEnvelope(toolDefinition.name, args),
-  }));
 }

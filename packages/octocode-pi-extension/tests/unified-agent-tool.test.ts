@@ -483,7 +483,7 @@ describe('plan Start enforcement', () => {
     const subagents = await import('../src/subagents.js');
     const config = subagents.SUBAGENT_REGISTRY.researcher;
     const originalTools = [...config.tools];
-    config.tools = ['web', 'localSearchCode'];
+    config.tools = ['web', 'localSearch'];
     try {
       const ctx = planContext('read-only-typed');
       enterPlanMode(ctx as never);

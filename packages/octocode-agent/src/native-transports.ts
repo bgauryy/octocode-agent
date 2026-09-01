@@ -6,7 +6,6 @@ import type {
   RpcProtocolError,
   RpcRequest,
   RpcResponse,
-  OpaqueRuntimeEvent,
   RuntimeEvent,
 } from "@octocodeai/agent-core";
 import {
@@ -104,12 +103,17 @@ function publicRuntimeEvent(event: RuntimeEvent, exposure: "safe" | "full" = "sa
       payload: { messageCount: Array.isArray(payload.messages) ? payload.messages.length : 0 },
     };
   }
-  const redact = (source: OpaqueRuntimeEvent, key: string): RuntimeEvent => ({
+  const redact = (source: RuntimeEvent, key: string): RuntimeEvent => ({
     ...source,
     payload: { ...payload, ...(key in payload ? { [key]: "[REDACTED]" } : {}) },
-  });
+  }) as RuntimeEvent;
   if (event.type === "input.received" || event.type === "input.transformed" || event.type === "input.handled" || event.type === "input.queued" || event.type === "input.rejected" || event.type === "context.appended") {
     return redact(event, "text");
+  }
+  if (event.type === "message.delta") {
+    if (payload.type === "thinking") return redact(event, "text");
+    if (payload.type === "tool-call") return redact(event, "input");
+    return event;
   }
   if (event.type === "tool.requested" || event.type === "permission.requested") return redact(event, "input");
   if (event.type === "tool.updated") return redact(event, "update");

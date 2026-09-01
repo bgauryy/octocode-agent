@@ -1575,7 +1575,7 @@ test('plan mode: /octocode-plan new blocks write tools until /octocode-plan off 
   assert.equal(isPlanMode(ctx), true);
   assert.deepEqual(planModeToolGate('edit', ctx), { block: true, reason: PLAN_MODE_BLOCK_REASON });
   assert.deepEqual(planModeToolGate('Write', ctx), { block: true, reason: PLAN_MODE_BLOCK_REASON });
-  assert.equal(planModeToolGate('localSearchCode', ctx), undefined, 'read tools stay available');
+  assert.equal(planModeToolGate('localSearch', ctx), undefined, 'read tools stay available');
   assert.ok(calls.status.some((s) => (s as { name: string }).name === 'octocode-plan-mode'), 'status chip shown');
   await handleOctocodePlanCommand('off', ctx, (_c, m) => calls.notify.push(m));
   assert.equal(isPlanMode(ctx), false);

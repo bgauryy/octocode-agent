@@ -75,7 +75,7 @@ Live schemas, catalogs, and plans are authoritative. Use Octocode contracts thro
 </capability_routing>`;
 
 const localTools = `<local_tools>
-Use Octocode local tools in cost order: localViewStructure/localFindFiles to orient, localSearchCode to locate, localGetFileContent to read, lspGetSemantics to prove relationships, and localFindDeadCode for candidates. Never substitute shell search/read commands.
+The negotiated Octocode facade catalog owns inner tool names. Call catalog before choosing and schema before the first call; never reuse an absent name. Orient, search, read exact slices, then use LSP for identity and callers. Never substitute shell search/read commands.
 - For Markdown, fetch a \`minify:"symbols"\` heading skeleton first, then choose the smallest exact region. Start text search in discovery mode; snippets are leads.
 - Use AST search for structure and LSP for identity, references, and callers. Re-anchor empty LSP results; dead-code candidates require LSP confirmation.
 - Reads are slices unless whole; paginate before absence claims and read small structured files whole.
@@ -84,6 +84,8 @@ Use Octocode local tools in cost order: localViewStructure/localFindFiles to ori
 
 const lifecycle = `<lifecycle>
 Close resources in their owning scope on success and error: locks, agents, surfaces, plans, scratch files, servers, sessions, handles, sockets, timers, and listeners. Before compaction, checkpoint the durable plan and verified learning; resume without repeating completed work.
+
+- Treat a crash-left \`started\` effect as terminal \`uncertain\`. Never re-execute it; report that the external effect may already have happened and require explicit reconciliation.
 
 Keep durable state truthful. Start before acting and complete only from observed evidence. Record consequential decisions, surprises, verification, and remaining work so another agent can continue without replaying the conversation.
 </lifecycle>`;

@@ -4,7 +4,7 @@
  * 1. `refinement set` accepts the zod-advertised plural `--files` (array), keeping `--file` working.
  * 2. `refinement get` accepts `--refinement-id` and narrows rows to it (zod refine_query parity).
  * 3. `work start --run-id ""` must error and never insert an empty-string run id.
- * 4. `refinement list` appears in the schema command registry (routing alias exists).
+ * 4. The schema command registry omits the removed `refinement list` alias.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -63,10 +63,10 @@ describe('refinement CLI drift', () => {
 		expect(refinements?.[0]?.refinement_id).toBe(id);
 	});
 
-	it('schema registry advertises refinement list', () => {
+	it('schema registry omits the removed refinement list alias', () => {
 		const r = run(dbPath, ['schema', 'commands', '--all', '--compact']);
 		expect(r.status, `stdout=${r.stdout}\nstderr=${r.stderr}`).toBe(0);
-		expect(r.stdout).toContain('refinement list');
+		expect(r.stdout).not.toContain('refinement list');
 	});
 });
 

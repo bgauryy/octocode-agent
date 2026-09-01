@@ -64,6 +64,47 @@ describe('LifecycleBus', () => {
     bus.subscribe({ id: 'bad', source: 'plugin', handler: async () => ({ kind: 'rewrite', payload: { value: 'bad' } as unknown as { value: number } }) });
     await expect(bus.dispatch({ schemaVersion: 1, eventVersion: 1, id: eventId('e'), type: 'input.received', phase: 'before', sessionId: sessionId('s'), timestamp: 1, cwd: '/', mode: 'headless', trust: { workspace: 'trusted', managedOnly: false }, payload: { value: 1 } })).rejects.toMatchObject({ category: 'validation' });
   });
+
+  it('rejects an invalid initial payload before invoking handlers', async () => {
+    const bus = new LifecycleBus<{ value: number }>({
+      eventType: 'input.received',
+      authority: ['observe'],
+      validate: (value): value is { value: number } =>
+        typeof value === 'object'
+        && value !== null
+        && typeof (value as { value?: unknown }).value === 'number',
+    });
+    let invoked = false;
+    bus.subscribe({
+      id: 'observer',
+      source: 'builtin',
+      handler: async () => { invoked = true; },
+    });
+
+    await expect(bus.dispatch({
+      schemaVersion: 1, eventVersion: 1, id: eventId('invalid-initial'), type: 'input.received', phase: 'before',
+      sessionId: sessionId('s'), timestamp: 1, cwd: '/', mode: 'headless',
+      trust: { workspace: 'trusted', managedOnly: false }, payload: { value: 'bad' } as unknown as { value: number },
+    })).rejects.toMatchObject({ category: 'validation' });
+    expect(invoked).toBe(false);
+  });
+
+  it('rejects aggregate lifecycle context beyond the event byte budget', async () => {
+    const bus = new LifecycleBus<{ value: number }>({
+      eventType: 'input.received',
+      authority: ['context'],
+      maxContextBytes: 5,
+      validate: (value): value is { value: number } => typeof value === 'object' && value !== null,
+    });
+    bus.subscribe({ id: 'first', source: 'managed', handler: async () => ({ kind: 'context', text: 'abc' }) });
+    bus.subscribe({ id: 'second', source: 'workspace', handler: async () => ({ kind: 'context', text: 'def' }) });
+
+    await expect(bus.dispatch({
+      schemaVersion: 1, eventVersion: 1, id: eventId('context-budget'), type: 'input.received', phase: 'before',
+      sessionId: sessionId('s'), timestamp: 1, cwd: '/', mode: 'headless',
+      trust: { workspace: 'trusted', managedOnly: false }, payload: { value: 1 },
+    })).rejects.toMatchObject({ category: 'validation' });
+  });
 });
 
 describe('PolicyChain', () => {
@@ -74,6 +115,7 @@ describe('PolicyChain', () => {
     chain.use('approval', async () => ({ effect: 'allow' }));
     const result = await chain.evaluate({ operation: 'tool.execute', trust: { workspace: 'trusted', managedOnly: false }, effects: ['write'], metadata: { call: toolCallId('c') } });
     expect(result.effect).toBe('deny');
+    expect(chain.revision).toBe(3);
     expect(result.receipts.map((receipt) => receipt.policy)).toEqual(['trust', 'peer-lock']);
   });
 });

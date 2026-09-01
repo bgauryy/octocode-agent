@@ -59,6 +59,143 @@ describe("canonical host scenario matrix", () => {
       expect(scenario.requirements.length).toBeGreaterThan(0);
       expect(scenario.input).toBeTypeOf("object");
     }
+    expect(
+      CANONICAL_HOST_SCENARIOS.find(
+        ({ id }) => id === "codex-hook-lifecycle",
+      )?.applicability,
+    ).toEqual({
+      kind: "host-specific",
+      host: "native",
+      reason: "reviewed Codex hook dispatch is a native host integration",
+    });
+  });
+
+  test("covers a typed host-specific scenario once without fabricating peer evidence", async () => {
+    const nativeOnly = CANONICAL_HOST_SCENARIOS.filter(
+      ({ id }) => id === "codex-hook-lifecycle",
+    );
+    const pi: HostConformanceAdapter = {
+      name: "pi",
+      hostKind: "pi",
+      evidence: "production",
+      supports: () => ({ supported: false, reason: "typed native-only scope" }),
+      async execute() {
+        throw new Error("Pi must not execute a native-only scenario");
+      },
+    };
+    const native: HostConformanceAdapter = {
+      name: "native",
+      hostKind: "native",
+      evidence: "production",
+      supports: () => ({ supported: true }),
+      async execute(_scenario, context) {
+        context.emit("hook.covered", { decision: true });
+        context.effect({
+          id: "hook:observed",
+          kind: "hook.execution",
+          effectful: false,
+        });
+        return {
+          observations: [{ kind: "hook.receipt", data: { reviewed: true } }],
+        };
+      },
+    };
+
+    const report = await runHostConformance({
+      baseline: pi,
+      candidate: native,
+      scenarios: nativeOnly,
+    });
+
+    expect(report.matched).toBe(true);
+    expect(report.summary).toEqual({
+      total: 1,
+      matched: 0,
+      covered: 1,
+      diverged: 0,
+      unsupported: 0,
+    });
+    expect(report.results[0]).toMatchObject({
+      scenarioId: "codex-hook-lifecycle",
+      matched: true,
+      status: "covered",
+      comparison: {
+        performed: false,
+        reason: "host-specific scenario",
+      },
+      coverage: {
+        host: "native",
+        role: "candidate",
+        trace: [{ sequence: 1, kind: "hook.covered", data: { decision: true } }],
+        effects: [
+          { id: "hook:observed", kind: "hook.execution", effectful: false },
+        ],
+        observations: [{ kind: "hook.receipt", data: { reviewed: true } }],
+      },
+    });
+    expect(report.results[0]?.trace).toMatchObject({ matched: true });
+    expect(report.results[0]?.effects).toMatchObject({ matched: true });
+  });
+
+  test.each([
+    ["missing", "pi", "pi", "No native adapter"],
+    ["ambiguous", "native", "native", "Multiple native adapters"],
+  ] as const)(
+    "marks a %s host-specific adapter selection unsupported",
+    async (_case, baselineKind, candidateKind, reason) => {
+      const adapter = (name: string, hostKind: "pi" | "native"): HostConformanceAdapter => ({
+        name,
+        hostKind,
+        evidence: "production",
+        async execute() {
+          throw new Error("unsupported selection must not execute");
+        },
+      });
+      const report = await runHostConformance({
+        baseline: adapter("baseline", baselineKind),
+        candidate: adapter("candidate", candidateKind),
+        scenarios: CANONICAL_HOST_SCENARIOS.filter(
+          ({ id }) => id === "codex-hook-lifecycle",
+        ),
+      });
+
+      expect(report.matched).toBe(false);
+      expect(report.results[0]).toMatchObject({
+        status: "unsupported",
+        unsupported: { candidate: expect.stringContaining(reason) },
+      });
+    },
+  );
+
+  test("marks a selected but unsupported host-specific adapter explicitly", async () => {
+    const adapter = (
+      name: string,
+      hostKind: "pi" | "native",
+      supported: boolean,
+    ): HostConformanceAdapter => ({
+      name,
+      hostKind,
+      evidence: "production",
+      supports: () => supported
+        ? { supported: true }
+        : { supported: false, reason: "fixture unavailable" },
+      async execute() {
+        throw new Error("unsupported adapter must not execute");
+      },
+    });
+    const report = await runHostConformance({
+      baseline: adapter("pi", "pi", true),
+      candidate: adapter("native", "native", false),
+      scenarios: CANONICAL_HOST_SCENARIOS.filter(
+        ({ id }) => id === "codex-hook-lifecycle",
+      ),
+    });
+
+    expect(report.matched).toBe(false);
+    expect(report.results[0]).toMatchObject({
+      status: "unsupported",
+      unsupported: { candidate: "fixture unavailable" },
+    });
   });
 
   test("self-tests the runner with synthetic handlers without claiming production parity", async () => {
@@ -530,6 +667,111 @@ describe("effect ledger", () => {
     expect(report.matched).toBe(true);
   });
 
+  test("preserves host observations without treating them as parity evidence", async () => {
+    const persistence = CANONICAL_HOST_SCENARIOS.find(
+      ({ id }) => id === "persistence-restart",
+    )!;
+    const adapter = (
+      name: string,
+      durableEntryCount: number,
+    ): HostConformanceAdapter => ({
+      name,
+      evidence: "production",
+      async execute() {
+        return {
+          events: [
+            {
+              kind: "persistence.restarted",
+              data: {
+                deterministicProjection: true,
+              },
+            },
+          ],
+          observations: [
+            {
+              kind: "persistence.durable-entry-count",
+              data: { count: durableEntryCount, recoveredCustomEntry: true },
+            },
+          ],
+        };
+      },
+    });
+
+    const report = await runHostConformance({
+      baseline: adapter("pi", 8),
+      candidate: adapter("native", 20),
+      scenarios: [persistence],
+    });
+
+    expect(report.matched).toBe(true);
+    expect(report.results[0]).toMatchObject({
+      status: "matched",
+      trace: { matched: true },
+      observations: {
+        baseline: [
+          {
+            kind: "persistence.durable-entry-count",
+            data: { count: 8, recoveredCustomEntry: true },
+          },
+        ],
+        candidate: [
+          {
+            kind: "persistence.durable-entry-count",
+            data: { count: 20, recoveredCustomEntry: true },
+          },
+        ],
+      },
+    });
+    expect(report.results[0]?.trace.baselineHash).toBe(
+      report.results[0]?.trace.candidateHash,
+    );
+    expect(report.results[0]?.observations.baselineHash).not.toBe(
+      report.results[0]?.observations.candidateHash,
+    );
+  });
+
+  test("rejects malformed or unbounded host observations", async () => {
+    const persistence = CANONICAL_HOST_SCENARIOS.find(
+      ({ id }) => id === "persistence-restart",
+    )!;
+    const baseline: HostConformanceAdapter = {
+      name: "baseline",
+      evidence: "production",
+      async execute() {
+        return { events: [{ kind: "persistence.restarted" }] };
+      },
+    };
+    const candidate = (
+      observations: readonly { kind: string; data?: unknown }[],
+    ): HostConformanceAdapter => ({
+      name: "candidate",
+      evidence: "production",
+      async execute() {
+        return {
+          events: [{ kind: "persistence.restarted" }],
+          observations,
+        };
+      },
+    });
+
+    await expect(
+      runHostConformance({
+        baseline,
+        candidate: candidate([{ kind: "Not valid" }]),
+        scenarios: [persistence],
+      }),
+    ).rejects.toThrow("kind is malformed");
+    await expect(
+      runHostConformance({
+        baseline,
+        candidate: candidate(
+          Array.from({ length: 257 }, () => ({ kind: "evidence.item" })),
+        ),
+        scenarios: [persistence],
+      }),
+    ).rejects.toThrow("count exceeds");
+  });
+
   test("reports unsupported production scenarios as failed coverage rather than skipped success", async () => {
     const production = (
       name: string,
@@ -558,6 +800,7 @@ describe("effect ledger", () => {
     expect(report.summary).toEqual({
       total: 1,
       matched: 0,
+      covered: 0,
       diverged: 0,
       unsupported: 1,
     });

@@ -25,7 +25,6 @@ export const KNOWN_FLAGS: Record<string, string[]> = {
   'status': ['workspace', 'artifact', 'limit'],
   'init': [],
   'awareness-config': ['action', 'hooks', 'notifications', 'verification_gate', 'session_capture', 'maintenance_reminders'],
-  'workspace-policy': ['workspace', 'repository_scope', 'memory_scope', 'hook_profile'],
   'self-test': [],
   'prune-stale-locks': ['older_than_minutes', 'expired_only', 'agent_id', 'target_file', 'workspace', 'artifact', 'dry_run'],
   'audit-unverified': ['agent_id', 'workspace', 'artifact', 'older_than_days', 'origin', 'before'],
@@ -162,7 +161,6 @@ export const COMMAND_ROUTES: Record<string, CommandRoute> = {
   'verify audit': { command: 'audit-unverified' },
   'refinement set': { command: 'refine-set' },
   'refinement get': { command: 'refine-get' },
-  'refinement list': { command: 'refine-get' },
   'refinement delete': { command: 'refine-delete' },
   'signal publish': { command: 'agent-signal', prepend: ['--action', 'publish'] },
   'signal list': { command: 'agent-signal', prepend: ['--action', 'list'] },
@@ -188,7 +186,7 @@ export const COMMAND_ROUTES: Record<string, CommandRoute> = {
   'config validate': { command: 'awareness-config', prepend: ['--action', 'validate'] },
 };
 
-export const SINGLE_COMMANDS = new Set(['init', 'query', 'attend', 'schema']);
+export const SINGLE_COMMANDS = new Set(['query', 'attend', 'schema']);
 export const UNKNOWN_COMMAND = '__unknown__';
 
 export function normalizeToken(value: string | undefined): string | undefined {
@@ -215,28 +213,6 @@ export function selectCommand(argv: string[]): { command: string | undefined; re
   }
 
   const second = normalizeToken(secondRaw);
-  if (first === 'next') {
-    return { command: 'attend', rest: [...(secondRaw ? [secondRaw, ...(thirdRaw ? [thirdRaw, ...tail] : tail)] : []), '--compact'] };
-  }
-  if (first === 'inspect') {
-    return {
-      command: 'query',
-      rest: [...(secondRaw ? ['--view', secondRaw] : ['--view', 'workboard']), ...(thirdRaw ? [thirdRaw, ...tail] : tail), '--compact'],
-    };
-  }
-  if (first === 'verify' && (!secondRaw || secondRaw.startsWith('-'))) {
-    return {
-      command: 'audit-unverified',
-      rest: [...(secondRaw ? [secondRaw, ...(thirdRaw ? [thirdRaw, ...tail] : tail)] : []), '--compact'],
-    };
-  }
-  if (first === 'close') {
-    return {
-      command: 'work-command',
-      rest: ['--action', 'end', ...(secondRaw ? [secondRaw, ...(thirdRaw ? [thirdRaw, ...tail] : tail)] : []), '--compact'],
-    };
-  }
-  if (first === 'setup') return { command: 'workspace-policy', rest: secondRaw ? [secondRaw, ...(thirdRaw ? [thirdRaw, ...tail] : tail)] : [] };
   if (first === 'hook' && second === 'run') {
     return { command: 'hook-run', rest: thirdRaw ? [thirdRaw, ...tail] : tail };
   }

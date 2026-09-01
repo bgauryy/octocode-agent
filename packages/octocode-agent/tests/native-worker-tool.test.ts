@@ -12,10 +12,15 @@ import {
 } from '@octocodeai/agent-core';
 import { createNativeWorkerTool } from '../src/native-worker-tool.js';
 import type { NativePlanWorkerOwnershipPort } from '../src/native-plan.js';
+import type { NativeWorkerDagSchedulerPort } from '../src/native-worker-dag-scheduler.js';
 
 const ids = ['worker-1', 'correlation-1', 'packet-1', 'packet-2', 'packet-3'];
 
-function harness(execute?: (command: WorkerCommand) => Promise<unknown>, planOwnership?: NativePlanWorkerOwnershipPort) {
+function harness(
+  execute?: (command: WorkerCommand) => Promise<unknown>,
+  planOwnership?: NativePlanWorkerOwnershipPort,
+  dependencyScheduler?: NativeWorkerDagSchedulerPort,
+) {
   const commands: WorkerCommand[] = [];
   const controller: WorkerController = {
     execute: vi.fn(async (command: WorkerCommand) => {
@@ -36,11 +41,13 @@ function harness(execute?: (command: WorkerCommand) => Promise<unknown>, planOwn
   const tool = createNativeWorkerTool({
     controller,
     promptSnapshotId: 'prompt:SECRET-SNAPSHOT',
-    allowedTools: ['localSearchCode', 'lspGetSemantics'],
+    allowedTools: ['octocode', 'localSearch', 'lspGetSemantics'],
+    allowedOctocodeTools: ['localSearch', 'lspGetSemantics'],
     allowedModels: [{ providerId: 'openai', modelId: 'gpt-test' }],
     defaultMaxTurns: 8,
     maxWaitMs: 100,
     ...(planOwnership === undefined ? {} : { planOwnership }),
+    ...(dependencyScheduler === undefined ? {} : { dependencyScheduler }),
     idFactory: () => ids[index++] ?? `generated-${index}`,
   });
   const abort = new AbortController();
@@ -61,6 +68,69 @@ function harness(execute?: (command: WorkerCommand) => Promise<unknown>, planOwn
 }
 
 describe('native worker tool', () => {
+  it('tells the root model that children are leaf-only', () => {
+    const { tool } = harness();
+    expect(tool.description).toContain('Root-only');
+    expect(tool.description).toContain('Children never receive this tool');
+  });
+
+  it('runs an admitted dependency schedule with immutable leaf-only packets', async () => {
+    let admittedPacket: ReturnType<Parameters<NativeWorkerDagSchedulerPort['run']>[0]['packet']> | undefined;
+    const dependencyScheduler: NativeWorkerDagSchedulerPort = {
+      run: vi.fn(async (request) => {
+        admittedPacket = request.packet(
+          { itemId: 'step:1:1', prompt: 'Build it', dependsOn: [] },
+          'dag-worker-1',
+        );
+        return {
+          graphId: 'plan-dag',
+          state: 'succeeded' as const,
+          items: [{ itemId: 'step:1:1', state: 'succeeded' as const }],
+        };
+      }),
+    };
+    const { call } = harness(undefined, undefined, dependencyScheduler);
+
+    await expect(call({
+      action: 'schedule',
+      tools: ['octocode'],
+      octocodeTools: ['localSearch'],
+      model: { providerId: 'openai', modelId: 'gpt-test' },
+      maxTurns: 5,
+      maxParallel: 2,
+    })).resolves.toMatchObject({
+      content: {
+        action: 'schedule',
+        schedule: { graphId: 'plan-dag', state: 'succeeded' },
+      },
+    });
+    expect(dependencyScheduler.run).toHaveBeenCalledWith(expect.objectContaining({
+      scope: { sessionId: 'session:one', workspace: '/trusted/workspace' },
+      maxParallel: 2,
+    }));
+    expect(admittedPacket).toMatchObject({
+      type: 'worker.spawn',
+      workerId: 'dag-worker-1',
+      prompt: 'Build it',
+      presentation: { planStepId: 'step:1:1' },
+      capabilities: {
+        tools: ['octocode'],
+        octocodeTools: ['localSearch'],
+        models: [{ providerId: 'openai', modelId: 'gpt-test' }],
+        maxTurns: 5,
+      },
+    });
+    expect(admittedPacket?.capabilities.tools).not.toContain('worker');
+    expect(Object.isFrozen(admittedPacket)).toBe(true);
+    expect(Object.isFrozen(admittedPacket?.capabilities)).toBe(true);
+  });
+
+  it('fails closed when dependency scheduling has no durable production binding', async () => {
+    const { call, commands } = harness();
+    await expect(call({ action: 'schedule' })).rejects.toThrow(/scheduling is unavailable/i);
+    expect(commands).toHaveLength(0);
+  });
+
   it('binds a worker to one plan step, exposes ownership, and releases without auto-completing on terminal success', async () => {
     const planOwnership: NativePlanWorkerOwnershipPort = {
       claim: vi.fn(async ({ planStepId, workerId }) => ({ planStepId, workerId, status: 'active' as const })),
@@ -114,9 +184,20 @@ describe('native worker tool', () => {
     expect(planOwnership.release).toHaveBeenCalledTimes(1);
   });
 
-  it('is a closed, process/on-request trusted-workspace tool that remains plan-allowed', () => {
+  it('resolves read actions without approval and retains network/process gates for mutations', () => {
     const { tool } = harness();
-    expect(tool.policy).toEqual({ effects: ['process'], trust: 'workspace', approval: 'on-request', plan: 'allowed' });
+    expect(tool.policy).toMatchObject({ effects: ['network', 'process'], trust: 'workspace', approval: 'on-request', plan: 'allowed' });
+    expect(tool.policy.concurrency?.({ action: 'spawn' })).toEqual({ lane: 'native-worker', maxActive: 4 });
+    expect(tool.policy.concurrency?.({ action: 'schedule' })).toEqual({ lane: 'native-worker', maxActive: 4 });
+    expect(tool.policy.concurrency?.({ action: 'wait' })).toEqual({ lane: 'native-worker', maxActive: 4 });
+    expect(tool.policy.concurrency?.({ action: 'abort' })).toEqual({ lane: 'native-worker', maxActive: 4 });
+    expect(tool.policy.concurrency?.({ action: 'send' })).toBeUndefined();
+    for (const action of ['list', 'status', 'wait']) {
+      expect(tool.policy.resolve?.({ action })).toEqual({ effects: ['read'], trust: 'none', approval: 'never' });
+    }
+    for (const action of ['spawn', 'schedule', 'send', 'steer', 'follow-up', 'abort', 'kill']) {
+      expect(tool.policy.resolve?.({ action })).toEqual({ effects: ['network', 'process'], trust: 'workspace', approval: 'on-request' });
+    }
     expect(tool.inputSchema).toMatchObject({ oneOf: expect.any(Array) });
     for (const branch of tool.inputSchema.oneOf as Array<Record<string, unknown>>) {
       expect(branch.additionalProperties).toBe(false);
@@ -128,7 +209,8 @@ describe('native worker tool', () => {
     const spawned = await call({
       action: 'spawn',
       task: 'Inspect the parser',
-      tools: ['localSearchCode'],
+      tools: ['octocode'],
+      octocodeTools: ['localSearch'],
       model: { providerId: 'openai', modelId: 'gpt-test' },
       maxTurns: 5,
     });
@@ -146,7 +228,7 @@ describe('native worker tool', () => {
         prompt: 'Inspect the parser',
         promptSnapshotId: 'prompt:SECRET-SNAPSHOT',
         workspace: { mode: 'shared' },
-        capabilities: { tools: ['localSearchCode'], models: [{ providerId: 'openai', modelId: 'gpt-test' }], maxTurns: 5 },
+        capabilities: { tools: ['octocode'], octocodeTools: ['localSearch'], models: [{ providerId: 'openai', modelId: 'gpt-test' }], maxTurns: 5 },
       },
     });
 
@@ -199,6 +281,7 @@ describe('native worker tool', () => {
     await expect(call({ action: 'spawn', task: '', command: 'rm -rf /' })).rejects.toThrow(/unknown field/i);
     await expect(call({ action: 'spawn', task: 'x'.repeat(16_385) })).rejects.toThrow(/task/i);
     await expect(call({ action: 'spawn', task: 'work', tools: ['bash'] })).rejects.toThrow(/not allowed/i);
+    await expect(call({ action: 'spawn', task: 'work', octocodeTools: ['localSearch'] })).rejects.toThrow(/requires the octocode facade/i);
     await expect(call({ action: 'spawn', task: 'work', model: { providerId: 'evil', modelId: 'shell' } })).rejects.toThrow(/not allowed/i);
     await expect(call({ action: 'spawn', task: 'work', maxTurns: 101 })).rejects.toThrow(/maxTurns/i);
     expect(commands).toHaveLength(0);

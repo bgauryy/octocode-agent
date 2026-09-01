@@ -38,11 +38,22 @@ export type CanonicalScenarioId =
   | "codex-hook-lifecycle"
   | "plugin-lifecycle";
 
+export type HostKind = "pi" | "native" | "generic";
+
+export type HostScenarioApplicability =
+  | Readonly<{ kind: "cross-host" }>
+  | Readonly<{
+      kind: "host-specific";
+      host: Exclude<HostKind, "generic">;
+      reason: string;
+    }>;
+
 export interface HostConformanceScenario<TInput = unknown> {
   id: string;
   title?: string;
   requirements?: readonly string[];
   input: TInput;
+  applicability?: HostScenarioApplicability;
 }
 
 export interface CanonicalHostConformanceScenario extends HostConformanceScenario<
@@ -51,6 +62,7 @@ export interface CanonicalHostConformanceScenario extends HostConformanceScenari
   id: CanonicalScenarioId;
   title: string;
   requirements: readonly string[];
+  applicability: HostScenarioApplicability;
 }
 
 function scenario(
@@ -58,12 +70,16 @@ function scenario(
   title: string,
   requirements: readonly string[],
   input: Readonly<Record<string, unknown>>,
+  applicability: HostScenarioApplicability = Object.freeze({
+    kind: "cross-host",
+  }),
 ): CanonicalHostConformanceScenario {
   return Object.freeze({
     id,
     title,
     requirements: Object.freeze([...requirements]),
     input: Object.freeze({ ...input }),
+    applicability: Object.freeze({ ...applicability }),
   });
 }
 
@@ -174,6 +190,11 @@ export const CANONICAL_HOST_SCENARIOS: readonly CanonicalHostConformanceScenario
       "Dispatch reviewed Codex hooks",
       ["hooks", "trust"],
       { compare: ["decision", "context", "rewrite"] },
+      {
+        kind: "host-specific",
+        host: "native",
+        reason: "reviewed Codex hook dispatch is a native host integration",
+      },
     ),
     scenario(
       "plugin-lifecycle",
@@ -188,6 +209,11 @@ export const CANONICAL_HOST_SCENARIOS: readonly CanonicalHostConformanceScenario
           "update",
           "resume",
         ],
+      },
+      {
+        kind: "host-specific",
+        host: "native",
+        reason: "transactional executable plugin lifecycle is a native host integration",
       },
     ),
   ]);
@@ -207,13 +233,56 @@ export interface HostExecutionContext {
   effect(effect: RecordedEffect): void;
 }
 
+/**
+ * Host-attributed evidence retained in the report but excluded from parity
+ * hashes. Use this for truthful implementation observations (for example, raw
+ * durable entry counts) that are not part of the canonical semantic contract.
+ */
+export interface HostConformanceObservation {
+  kind: string;
+  data?: unknown;
+}
+
+const MAX_HOST_OBSERVATIONS = 256;
+const MAX_HOST_OBSERVATION_BYTES = 1_048_576;
+const HOST_OBSERVATION_KIND = /^[a-z][a-z0-9.-]{0,127}$/u;
+
+function validateHostObservations(
+  values: readonly HostConformanceObservation[],
+): HostConformanceObservation[] {
+  if (values.length > MAX_HOST_OBSERVATIONS)
+    throw new Error(`Host observation count exceeds ${MAX_HOST_OBSERVATIONS}`);
+  let encodedBytes = 0;
+  return values.map((value) => {
+    if (!value || typeof value !== "object" || !HOST_OBSERVATION_KIND.test(value.kind))
+      throw new Error("Host observation kind is malformed");
+    let encoded: string;
+    try {
+      encoded = JSON.stringify(value);
+    } catch {
+      throw new Error("Host observation must be JSON serializable");
+    }
+    if (encoded === undefined)
+      throw new Error("Host observation must be JSON serializable");
+    encodedBytes += Buffer.byteLength(encoded, "utf8");
+    if (encodedBytes > MAX_HOST_OBSERVATION_BYTES)
+      throw new Error(
+        `Host observations exceed ${MAX_HOST_OBSERVATION_BYTES} encoded bytes`,
+      );
+    return value;
+  });
+}
+
 export interface HostExecutionReceipt {
   events?: readonly HostTraceEvent[];
   effects?: readonly RecordedEffect[];
+  observations?: readonly HostConformanceObservation[];
 }
 
 export interface HostConformanceAdapter {
   name: string;
+  /** Stable semantic host identity; display names never decide applicability. */
+  hostKind?: HostKind;
   /** Distinguishes runner fixtures from evidence captured at a production composition root. */
   evidence: "synthetic" | "production";
   supports?(scenario: HostConformanceScenario): HostScenarioSupport;
@@ -243,6 +312,7 @@ export function createCanonicalHostAdapter(
 ): HostConformanceAdapter {
   return {
     name,
+    hostKind: name === "pi" || name === "native" ? name : "generic",
     evidence: "synthetic",
     async execute(value, context) {
       const canonical = CANONICAL_HOST_SCENARIOS.find(
@@ -279,10 +349,30 @@ export type TraceComparison = ValueComparison;
 export interface ScenarioConformanceResult {
   scenarioId: string;
   matched: boolean;
-  status: "matched" | "diverged" | "unsupported";
+  status: "matched" | "covered" | "diverged" | "unsupported";
+  comparison?:
+    | { performed: true }
+    | { performed: false; reason: "host-specific scenario" };
   unsupported?: { baseline?: string; candidate?: string };
   trace: TraceComparison;
   effects: ValueComparison;
+  /** Preserved verbatim and deliberately excluded from trace/effect comparison. */
+  observations: {
+    baseline: readonly HostConformanceObservation[];
+    candidate: readonly HostConformanceObservation[];
+    baselineHash: string;
+    candidateHash: string;
+  };
+  coverage?: {
+    host: Exclude<HostKind, "generic">;
+    role: "baseline" | "candidate";
+    trace: readonly NormalizedHostTraceEvent[];
+    effects: unknown;
+    observations: readonly HostConformanceObservation[];
+    traceHash: string;
+    effectsHash: string;
+    observationsHash: string;
+  };
 }
 
 export interface HostConformanceReport {
@@ -295,6 +385,7 @@ export interface HostConformanceReport {
   summary: {
     total: number;
     matched: number;
+    covered: number;
     diverged: number;
     unsupported: number;
   };
@@ -559,9 +650,13 @@ async function executeAdapter(
   scenarioValue: HostConformanceScenario,
   ledger: EffectLedger,
   signal: AbortSignal,
-): Promise<HostTraceEvent[]> {
+): Promise<{
+  events: HostTraceEvent[];
+  observations: HostConformanceObservation[];
+}> {
   throwIfAborted(signal);
   const events: HostTraceEvent[] = [];
+  const observations: HostConformanceObservation[] = [];
   const context: HostExecutionContext = {
     signal,
     emit: (kind, data) =>
@@ -575,8 +670,11 @@ async function executeAdapter(
     const structured = receipt as HostExecutionReceipt;
     events.push(...(structured.events ?? []));
     for (const effect of structured.effects ?? []) ledger.record(effect);
+    observations.push(
+      ...validateHostObservations(structured.observations ?? []),
+    );
   }
-  return events;
+  return { events, observations };
 }
 
 export async function runHostConformance(options: {
@@ -594,6 +692,108 @@ export async function runHostConformance(options: {
   const results: ScenarioConformanceResult[] = [];
 
   for (const current of options.scenarios) {
+    const applicability = current.applicability ?? { kind: "cross-host" };
+    if (applicability.kind === "host-specific") {
+      const matching = [
+        { role: "baseline" as const, adapter: options.baseline, ledger: baselineLedger },
+        { role: "candidate" as const, adapter: options.candidate, ledger: candidateLedger },
+      ].filter(({ adapter }) => adapter.hostKind === applicability.host);
+      if (matching.length !== 1) {
+        const reason =
+          matching.length === 0
+            ? `No ${applicability.host} adapter was supplied for host-specific scenario`
+            : `Multiple ${applicability.host} adapters were supplied for host-specific scenario`;
+        results.push({
+          scenarioId: current.id,
+          matched: false,
+          status: "unsupported",
+          unsupported: { candidate: reason },
+          trace: compareValues([], []),
+          effects: compareValues([], []),
+          observations: {
+            baseline: [],
+            candidate: [],
+            baselineHash: hashNormalizedTrace([]),
+            candidateHash: hashNormalizedTrace([]),
+          },
+        });
+        continue;
+      }
+      const selected = matching[0]!;
+      const support = selected.adapter.supports?.(current) ?? {
+        supported: true as const,
+      };
+      if (!support.supported) {
+        results.push({
+          scenarioId: current.id,
+          matched: false,
+          status: "unsupported",
+          unsupported: { [selected.role]: support.reason },
+          trace: compareValues([], []),
+          effects: compareValues([], []),
+          observations: {
+            baseline: [],
+            candidate: [],
+            baselineHash: hashNormalizedTrace([]),
+            candidateHash: hashNormalizedTrace([]),
+          },
+        });
+        continue;
+      }
+      const effectStart = selected.ledger.effects.length;
+      const execution = await executeAdapter(
+        selected.adapter,
+        current,
+        selected.ledger,
+        signal,
+      );
+      const normalizedTrace = normalizeHostTrace(
+        execution.events,
+        options.normalization,
+      );
+      const normalizedEffects = normalizeValue(
+        selected.ledger.effects.slice(effectStart),
+        options.normalization ?? {},
+        { identities: new Map(), nextIdentity: 0 },
+      );
+      const emptyHash = hashNormalizedTrace([]);
+      results.push({
+        scenarioId: current.id,
+        matched: true,
+        status: "covered",
+        comparison: {
+          performed: false,
+          reason: "host-specific scenario",
+        },
+        // Pair-comparison fields remain neutral for backwards-compatible readers.
+        // The attributed evidence lives only in `coverage`; no peer trace is made up.
+        trace: compareValues([], []),
+        effects: compareValues([], []),
+        observations: {
+          baseline: selected.role === "baseline" ? execution.observations : [],
+          candidate: selected.role === "candidate" ? execution.observations : [],
+          baselineHash:
+            selected.role === "baseline"
+              ? hashNormalizedTrace(execution.observations)
+              : emptyHash,
+          candidateHash:
+            selected.role === "candidate"
+              ? hashNormalizedTrace(execution.observations)
+              : emptyHash,
+        },
+        coverage: {
+          host: applicability.host,
+          role: selected.role,
+          trace: normalizedTrace,
+          effects: normalizedEffects,
+          observations: execution.observations,
+          traceHash: hashNormalizedTrace(normalizedTrace),
+          effectsHash: hashNormalizedTrace(normalizedEffects),
+          observationsHash: hashNormalizedTrace(execution.observations),
+        },
+      });
+      continue;
+    }
     const baselineSupport = options.baseline.supports?.(current) ?? {
       supported: true as const,
     };
@@ -623,6 +823,12 @@ export async function runHostConformance(options: {
             : { supported: false, reason: candidateSupport.reason },
         ),
         effects: compareValues([], []),
+        observations: {
+          baseline: [],
+          candidate: [],
+          baselineHash: hashNormalizedTrace([]),
+          candidateHash: hashNormalizedTrace([]),
+        },
       });
       continue;
     }
@@ -635,7 +841,7 @@ export async function runHostConformance(options: {
     const executeOwned = async (
       adapter: HostConformanceAdapter,
       ledger: EffectLedger,
-    ): Promise<HostTraceEvent[]> => {
+    ): ReturnType<typeof executeAdapter> => {
       try {
         return await executeAdapter(
           adapter,
@@ -648,10 +854,10 @@ export async function runHostConformance(options: {
         throw error;
       }
     };
-    let baselineEvents: HostTraceEvent[];
-    let candidateEvents: HostTraceEvent[];
+    let baselineExecution: Awaited<ReturnType<typeof executeAdapter>>;
+    let candidateExecution: Awaited<ReturnType<typeof executeAdapter>>;
     try {
-      [baselineEvents, candidateEvents] = await Promise.all([
+      [baselineExecution, candidateExecution] = await Promise.all([
         executeOwned(options.baseline, baselineLedger),
         executeOwned(options.candidate, candidateLedger),
       ]);
@@ -672,8 +878,8 @@ export async function runHostConformance(options: {
       );
     }
     const trace = compareHostTraces(
-      normalizeHostTrace(baselineEvents, options.normalization),
-      normalizeHostTrace(candidateEvents, options.normalization),
+      normalizeHostTrace(baselineExecution.events, options.normalization),
+      normalizeHostTrace(candidateExecution.events, options.normalization),
     );
     const effects = compareValues(
       normalizeValue(baselineEffects, options.normalization ?? {}, {
@@ -690,8 +896,15 @@ export async function runHostConformance(options: {
       scenarioId: current.id,
       matched,
       status: matched ? "matched" : "diverged",
+      comparison: { performed: true },
       trace,
       effects,
+      observations: {
+        baseline: baselineExecution.observations,
+        candidate: candidateExecution.observations,
+        baselineHash: hashNormalizedTrace(baselineExecution.observations),
+        candidateHash: hashNormalizedTrace(candidateExecution.observations),
+      },
     });
   }
   return {
@@ -704,6 +917,7 @@ export async function runHostConformance(options: {
     summary: {
       total: results.length,
       matched: results.filter(({ status }) => status === "matched").length,
+      covered: results.filter(({ status }) => status === "covered").length,
       diverged: results.filter(({ status }) => status === "diverged").length,
       unsupported: results.filter(({ status }) => status === "unsupported")
         .length,

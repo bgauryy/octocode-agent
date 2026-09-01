@@ -140,6 +140,7 @@ describe('native Agent Skills and MCP capabilities', () => {
       listPrompts: async () => ({ prompts: [] }),
       getPrompt: async () => ({ messages: [] }),
       complete: async () => ({ completion: { values: [] } }),
+      request: async () => ({}),
       close: async () => undefined,
     };
     type Connect = NonNullable<Parameters<typeof registerNativeMcpTool>[1]['connect']>;
@@ -167,7 +168,7 @@ describe('native Agent Skills and MCP capabilities', () => {
       listTools: async () => ({ tools: [{ name: 'probe', inputSchema: { type: 'object' } }] }),
       callTool: async () => ({ isError: true, content: [{ type: 'text', text: 'try a different argument' }] }),
       listResources: async () => ({}), readResource: async () => ({}), listPrompts: async () => ({}),
-      getPrompt: async () => ({}), complete: async () => ({}), close: async () => undefined,
+      getPrompt: async () => ({}), complete: async () => ({}), request: async () => ({}), close: async () => undefined,
     };
     const registry = new ToolRegistry();
     registerNativeMcpTool(registry, { cwd: root, octocodeHome: path.join(root, 'home'), connect: async () => client });
@@ -207,7 +208,7 @@ describe('native Agent Skills and MCP capabilities', () => {
       : { tools: [{ name: 'zeta', inputSchema: { type: 'object' } }, { name: 'alpha', inputSchema: { type: 'object' } }], nextCursor: 'next' });
     const client: NativeMcpClient = {
       listTools, callTool: async () => ({}), listResources: async () => ({}), readResource: async () => ({}),
-      listPrompts: async () => ({}), getPrompt: async () => ({}), complete: async () => ({}), close: async () => undefined,
+      listPrompts: async () => ({}), getPrompt: async () => ({}), complete: async () => ({}), request: async () => ({}), close: async () => undefined,
     };
     const registry = new ToolRegistry();
     registerNativeMcpTool(registry, { cwd: root, octocodeHome: path.join(root, 'home'), connect: async () => client });
@@ -230,7 +231,7 @@ describe('native Agent Skills and MCP capabilities', () => {
     }));
     const client: NativeMcpClient = {
       listTools, callTool: async () => ({}), listResources: async () => ({}), readResource: async () => ({}),
-      listPrompts: async () => ({}), getPrompt: async () => ({}), complete: async () => ({}), close: async () => undefined,
+      listPrompts: async () => ({}), getPrompt: async () => ({}), complete: async () => ({}), request: async () => ({}), close: async () => undefined,
     };
     const registry = new ToolRegistry();
     registerNativeMcpTool(registry, { cwd: root, octocodeHome: path.join(root, 'home'), connect: async () => client, now: () => 100 });
@@ -291,6 +292,7 @@ describe('native Agent Skills and MCP capabilities', () => {
         : { prompts: [{ name: 'review' }], nextCursor: 'prompts-next' }),
       getPrompt: async ({ name }) => ({ description: name, messages: [] }),
       complete: async ({ argument }) => ({ completion: { values: [argument.value] } }),
+      request: async () => ({}),
       close: async () => undefined,
     };
     const registry = new ToolRegistry();

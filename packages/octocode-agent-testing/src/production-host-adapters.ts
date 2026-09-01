@@ -2,41 +2,88 @@ import type {
   CanonicalHostConformanceScenario,
   CanonicalScenarioId,
   HostConformanceAdapter,
+  HostExecutionReceipt,
   HostExecutionContext,
   HostScenarioSupport,
 } from "./host-conformance.js";
 
 const INITIAL_PRODUCTION_SCENARIO = "lifecycle-clean-start-stop";
-const COMPOSITION_DRIVER_EVIDENCE = "production-composition/synthetic-driver";
+const PI_SDK_LIFECYCLE_EVIDENCE = "production-composition/pi-sdk-lifecycle";
+const NATIVE_LIFECYCLE_EVIDENCE = "production-composition/native-lifecycle";
+const PI_SDK_SCENARIO_EVIDENCE = "production-composition/pi-sdk-scenarios";
+const NATIVE_SCENARIO_EVIDENCE = "production-composition/native-scenarios";
+
+type RegistryKind = "tools" | "commands" | "hooks";
+type RawHostRegistry = Readonly<Record<RegistryKind, readonly string[]>>;
+
+function applicabilitySupport(
+  scenario: CanonicalHostConformanceScenario,
+  host: "pi" | "native",
+): HostScenarioSupport | undefined {
+  return scenario.applicability.kind === "host-specific" &&
+    scenario.applicability.host !== host
+    ? {
+        supported: false,
+        reason: `${scenario.id} is explicitly scoped to the ${scenario.applicability.host} host: ${scenario.applicability.reason}`,
+      }
+    : undefined;
+}
 
 function productionSupport(
   host: string,
   scenarioId: string,
-  drivers: ProductionScenarioDrivers<unknown>,
+  lifecycleSupported: boolean,
+  probes: ProductionScenarioProbes,
   unsupportedReasons: ProductionScenarioUnsupportedReasons,
 ): HostScenarioSupport {
-  return scenarioId === INITIAL_PRODUCTION_SCENARIO ||
-    typeof drivers[scenarioId as CanonicalScenarioId] === "function"
+  return (scenarioId === INITIAL_PRODUCTION_SCENARIO && lifecycleSupported) ||
+    typeof probes[scenarioId as CanonicalScenarioId] === "function"
     ? { supported: true }
     : {
         supported: false,
         reason:
           unsupportedReasons[scenarioId as CanonicalScenarioId] ??
-          `${host} production composition has no executable ${scenarioId} driver`,
+          `${host} production composition has no executable ${scenarioId} probe`,
       };
 }
 
-export interface ProductionScenarioDriverInput<TSurface> {
+export interface ProductionScenarioProbeInput {
   readonly scenario: CanonicalHostConformanceScenario;
-  readonly context: HostExecutionContext;
-  readonly surface: TSurface;
+  readonly signal: AbortSignal;
 }
 
-export type ProductionScenarioDriver<TSurface> = (
-  input: ProductionScenarioDriverInput<TSurface>,
-) => void | Promise<void>;
-export type ProductionScenarioDrivers<TSurface> = Partial<
-  Record<CanonicalScenarioId, ProductionScenarioDriver<TSurface>>
+export type ProductionCompositionRoot =
+  | "installed-pi-sdk"
+  | "native-production-composition"
+  | "built-native";
+
+export interface ProductionScenarioReceipt {
+  readonly source: ProductionCompositionRoot;
+  readonly events: readonly {
+    readonly kind: string;
+    readonly data?: unknown;
+  }[];
+  readonly effects: readonly {
+    readonly id: string;
+    readonly kind: string;
+    readonly effectful: boolean;
+    readonly data?: unknown;
+  }[];
+  /**
+   * Host-attributed implementation evidence retained verbatim in the report.
+   * Observations never participate in semantic parity hashes.
+   */
+  readonly observations?: readonly {
+    readonly kind: string;
+    readonly data?: unknown;
+  }[];
+}
+
+export type ProductionScenarioProbe = (
+  input: ProductionScenarioProbeInput,
+) => ProductionScenarioReceipt | Promise<ProductionScenarioReceipt>;
+export type ProductionScenarioProbes = Partial<
+  Record<CanonicalScenarioId, ProductionScenarioProbe>
 >;
 export type ProductionScenarioUnsupportedReasons = Partial<
   Record<CanonicalScenarioId, string>
@@ -44,82 +91,116 @@ export type ProductionScenarioUnsupportedReasons = Partial<
 
 function recordRegistryProjection(
   context: HostExecutionContext,
-  identity: Readonly<Record<string, unknown>>,
-  registry: Readonly<Record<string, unknown>>,
+  registry: RawHostRegistry,
 ): void {
+  const registered = (["tools", "commands", "hooks"] as const).filter(
+    (kind) => registry[kind].length > 0,
+  );
+  if (registered.length !== 3)
+    throw new Error(
+      `Production lifecycle did not register every canonical registry: ${registered.join(", ")}`,
+    );
+  const projection = { schemaVersion: 1, registered };
   context.emit("host.started");
-  context.emit("registry.snapshot", { identity, registry });
+  context.emit("registry.snapshot", projection);
   context.effect({
     id: `${INITIAL_PRODUCTION_SCENARIO}:registry`,
     kind: "registry.projection",
     effectful: false,
-    data: { identity, registry },
+    data: projection,
   });
   context.emit("host.stopped");
 }
 
-export interface ProductionPiHarness<TPi> {
-  readonly pi: TPi;
-  readonly tools: ReadonlyMap<string, unknown>;
-  readonly commands: ReadonlyMap<string, unknown>;
-  readonly handlers: ReadonlyMap<string, readonly unknown[]>;
-  emit(event: string, data: unknown): Promise<unknown>;
+export interface ProductionPiLifecycleCapture {
+  readonly started: boolean;
+  readonly stopped: boolean;
+  readonly registry: RawHostRegistry;
 }
 
-/** Runs the supported Pi production composition with a synthetic scenario driver. */
-export function createProductionPiHostAdapter<TPi>(options: {
-  readonly hostVersion: string;
-  readonly createHarness: () => ProductionPiHarness<TPi>;
-  readonly activate: (pi: TPi) => Promise<void>;
-  readonly scenarioDrivers?: ProductionScenarioDrivers<
-    ProductionPiHarness<TPi>
-  >;
-  readonly unsupportedReasons?: ProductionScenarioUnsupportedReasons;
-}): HostConformanceAdapter {
-  const drivers = options.scenarioDrivers ?? {};
+function recordProductionReceipt(
+  context: HostExecutionContext,
+  receipt: ProductionScenarioReceipt,
+  expectedSources: readonly ProductionCompositionRoot[],
+): HostExecutionReceipt {
+  if (!expectedSources.includes(receipt.source))
+    throw new Error(
+      `Production probe must report ${expectedSources.join(" or ")}; received ${receipt.source}`,
+    );
+  if (receipt.events.length === 0)
+    throw new Error(
+      `Production ${expectedSources.join(" or ")} probe returned no events`,
+    );
+  for (const event of receipt.events) context.emit(event.kind, event.data);
+  for (const effect of receipt.effects) context.effect(effect);
   return {
-    name: `pi@${options.hostVersion} [${COMPOSITION_DRIVER_EVIDENCE}]`,
-    evidence: "synthetic",
+    observations: [
+      { kind: "production.probe-source", data: { source: receipt.source } },
+      ...(receipt.observations ?? []),
+    ],
+  };
+}
+
+/** Accepts only receipts captured through the installed Pi SDK composition root. */
+export function createProductionPiHostAdapter(options: {
+  readonly hostVersion: string;
+  readonly scenarioProbes?: ProductionScenarioProbes;
+  readonly unsupportedReasons?: ProductionScenarioUnsupportedReasons;
+  /** A receipt captured from Pi's installed SDK, never from a Pi-shaped harness. */
+  readonly captureLifecycle?: () => Promise<ProductionPiLifecycleCapture>;
+}): HostConformanceAdapter {
+  const probes = options.scenarioProbes ?? {};
+  const hasScenarioProbes = Object.keys(probes).length > 0;
+  return {
+    name: `pi@${options.hostVersion} [${
+      hasScenarioProbes ? PI_SDK_SCENARIO_EVIDENCE : PI_SDK_LIFECYCLE_EVIDENCE
+    }]`,
+    evidence: "production",
+    hostKind: "pi",
     supports: (scenario) =>
+      applicabilitySupport(
+        scenario as CanonicalHostConformanceScenario,
+        "pi",
+      ) ??
       productionSupport(
-        "Pi",
-        scenario.id,
-        drivers as ProductionScenarioDrivers<unknown>,
-        options.unsupportedReasons ?? {},
-      ),
+          "Pi",
+          scenario.id,
+          options.captureLifecycle !== undefined,
+          probes,
+          options.unsupportedReasons ?? {},
+        ),
     async execute(scenario, context) {
       if (
         !productionSupport(
           "Pi",
           scenario.id,
-          drivers as ProductionScenarioDrivers<unknown>,
+          options.captureLifecycle !== undefined,
+          probes,
           options.unsupportedReasons ?? {},
         ).supported
       )
         throw new Error(`Unsupported Pi scenario: ${scenario.id}`);
-      const harness = options.createHarness();
-      await options.activate(harness.pi);
-      const driver = drivers[scenario.id as CanonicalScenarioId];
-      if (driver) {
-        await driver({
-          scenario: scenario as CanonicalHostConformanceScenario,
-          context,
-          surface: harness,
-        });
-        await harness.emit("session_shutdown", { reason: "quit" });
+      if (
+        scenario.id === INITIAL_PRODUCTION_SCENARIO &&
+        options.captureLifecycle
+      ) {
+        const capture = await options.captureLifecycle();
+        if (!capture.started || !capture.stopped)
+          throw new Error(
+            "Pi SDK lifecycle capture did not observe both session_start and session_shutdown",
+          );
+        recordRegistryProjection(context, capture.registry);
         return;
       }
-      const registry = {
-        tools: [...harness.tools.keys()].sort(),
-        commands: [...harness.commands.keys()].sort(),
-        hooks: [...harness.handlers.keys()].sort(),
-      };
-      await harness.emit("session_shutdown", { reason: "quit" });
-      recordRegistryProjection(
-        context,
-        { composition: "@octocodeai/pi-extension", hostVersion: options.hostVersion },
-        registry,
-      );
+      const probe = probes[scenario.id as CanonicalScenarioId];
+      if (probe) {
+        const receipt = await probe({
+          scenario: scenario as CanonicalHostConformanceScenario,
+          signal: context.signal,
+        });
+        return recordProductionReceipt(context, receipt, ["installed-pi-sdk"]);
+      }
+      throw new Error(`Unsupported Pi scenario: ${scenario.id}`);
     },
   };
 }
@@ -129,9 +210,7 @@ export interface NativeProductionCapture {
   readonly commandNames: readonly string[];
 }
 
-function nativeRegistry(
-  capture: NativeProductionCapture,
-): Readonly<Record<string, unknown>> {
+function nativeRegistry(capture: NativeProductionCapture): RawHostRegistry {
   const widget = capture.events.find((event) => {
     if (typeof event !== "object" || event === null || Array.isArray(event))
       return false;
@@ -164,60 +243,64 @@ function nativeRegistry(
   };
 }
 
-/** Runs the native production composition with a synthetic lifecycle/runtime driver. */
-export function createProductionNativeHostAdapter<TDependencies>(options: {
-  readonly launch: (
-    argv: readonly string[],
-    dependencies: TDependencies,
-  ) => Promise<number>;
-  readonly createDependencies: (events: unknown[]) => TDependencies;
-  readonly commandNames: readonly string[];
-  readonly scenarioDrivers?: ProductionScenarioDrivers<NativeProductionCapture>;
+/** Accepts only receipts captured through the built native composition root. */
+export function createProductionNativeHostAdapter(options: {
+  readonly scenarioProbes?: ProductionScenarioProbes;
   readonly unsupportedReasons?: ProductionScenarioUnsupportedReasons;
+  /** A receipt captured from the native production composition, never a no-op runtime. */
+  readonly captureLifecycle?: () => Promise<NativeProductionCapture>;
 }): HostConformanceAdapter {
-  const drivers = options.scenarioDrivers ?? {};
+  const probes = options.scenarioProbes ?? {};
+  const hasScenarioProbes = Object.keys(probes).length > 0;
   return {
-    name: `native [${COMPOSITION_DRIVER_EVIDENCE}]`,
-    evidence: "synthetic",
+    name: `native [${
+      hasScenarioProbes ? NATIVE_SCENARIO_EVIDENCE : NATIVE_LIFECYCLE_EVIDENCE
+    }]`,
+    evidence: "production",
+    hostKind: "native",
     supports: (scenario) =>
+      applicabilitySupport(
+        scenario as CanonicalHostConformanceScenario,
+        "native",
+      ) ??
       productionSupport(
-        "Native",
-        scenario.id,
-        drivers as ProductionScenarioDrivers<unknown>,
-        options.unsupportedReasons ?? {},
-      ),
+          "Native",
+          scenario.id,
+          options.captureLifecycle !== undefined,
+          probes,
+          options.unsupportedReasons ?? {},
+        ),
     async execute(scenario, context) {
       if (
         !productionSupport(
           "Native",
           scenario.id,
-          drivers as ProductionScenarioDrivers<unknown>,
+          options.captureLifecycle !== undefined,
+          probes,
           options.unsupportedReasons ?? {},
         ).supported
       )
         throw new Error(`Unsupported native scenario: ${scenario.id}`);
-      const events: unknown[] = [];
-      const exitCode = await options.launch(
-        [],
-        options.createDependencies(events),
-      );
-      if (exitCode !== 0)
-        throw new Error(`Native production launcher exited with ${exitCode}`);
-      const capture = { events, commandNames: options.commandNames };
-      const driver = drivers[scenario.id as CanonicalScenarioId];
-      if (driver) {
-        await driver({
-          scenario: scenario as CanonicalHostConformanceScenario,
-          context,
-          surface: capture,
-        });
+      if (
+        scenario.id === INITIAL_PRODUCTION_SCENARIO &&
+        options.captureLifecycle
+      ) {
+        const capture = await options.captureLifecycle();
+        recordRegistryProjection(context, nativeRegistry(capture));
         return;
       }
-      recordRegistryProjection(
-        context,
-        { composition: "octocode-agent/native-launcher" },
-        nativeRegistry(capture),
-      );
+      const probe = probes[scenario.id as CanonicalScenarioId];
+      if (probe) {
+        const receipt = await probe({
+          scenario: scenario as CanonicalHostConformanceScenario,
+          signal: context.signal,
+        });
+        return recordProductionReceipt(context, receipt, [
+          "native-production-composition",
+          "built-native",
+        ]);
+      }
+      throw new Error(`Unsupported native scenario: ${scenario.id}`);
     },
   };
 }

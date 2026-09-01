@@ -18,11 +18,11 @@ Read and follow the repository and applicable package `AGENTS.md` files before b
 Dogfood Octocode throughout the investigation:
 
 - Use `npx octocode tools ...` and inspect live schemas with `npx octocode tools <name> --scheme`.
-- Use `localViewStructure`, `localFindFiles`, `localSearchCode`, and `localGetFileContent` for discovery and evidence.
+- Use `localSearch` (`tree`/`files` for orientation; `text`/`structural` for matching) and `localGetFileContent` for discovery and evidence.
 - Use `lspGetSemantics` for definitions, references, callers, callees, implementations, types, diagnostics, and reachability.
 - Use AST/LSP evidence rather than relying only on text search.
 - Use `npmSearch` to resolve external package metadata, versions, and source repositories.
-- Use `ghSearchRepos`, `ghViewRepoStructure`, `ghSearchCode`, `ghGetFileContent`, `ghSearchPullRequests`, `ghSearchIssues`, and `ghSearchCommits` to research Pi, OpenTUI, provider SDKs, protocol libraries, and other external dependencies in their upstream repositories.
+- Use `ghSearch` (`repositories`, `tree`, or `code`), `ghGetFileContent`, `ghSearchPullRequests`, `ghSearchIssues`, and `ghSearchCommits` to research Pi, OpenTUI, provider SDKs, protocol libraries, and other external dependencies in their upstream repositories.
 - Research official upstream source, documentation, releases, changelogs, compatibility policies, regressions, and design decisions whenever an external contract affects the parity verdict.
 - Tie every consequential external conclusion to the dependency name, project-used version when authorized to inspect it, upstream tag/commit/release, and exact source file, PR, issue, or documentation location.
 - Distinguish behavior proven for the project-used version from current upstream behavior. Never assume the latest upstream branch describes the installed or supported version.
@@ -37,18 +37,19 @@ Do not change production code during the audit. First produce the complete parit
 
 ## Sources of truth
 
-Inspect the complete current `DESIGN/` tree before evaluating code. Do not rely on filenames remembered from an older revision; discover the live tree first.
+Inspect the live completion ledger and package architecture documents before
+evaluating code. Do not rely on filenames remembered from an older revision.
 
-Use the authority rules in `DESIGN/README.md`:
+Use this authority order:
 
-1. `DESIGN/pi-coding-agent-removal/RFC.md` owns product scope, goals, non-goals, accepted decisions, and compatibility promises.
-2. `READINESS_AND_FEATURE_MATRIX.md` owns stable feature IDs and the complete target inventory.
-3. `SCHEMAS_AND_TYPES.md` owns canonical contracts and Pi mappings.
-4. `TEST_PLAN.md` and `KPI.md` own pass/fail rules and behavioral equivalence.
-5. `STATUS.md` owns current progress, not requirements.
-6. Root `DESIGN/*.md` documents refine implementation and verification but may not silently override the source RFC.
+1. Production code, executable schemas, manifests, and tests own observed behavior.
+2. Package `ARCHITECTURE.md` files own package boundaries and semantic contracts.
+3. `DESIGN/LEFTOVERS.md` owns unresolved decisions, completion gates, and release state.
+4. Dated evidence receipts preserve historical observations and never define current status.
 
-If documents disagree, mark the affected parity row `HOLD`, quote the conflicting requirements, identify the owning document, and request a design/RFC decision. Do not choose whichever requirement makes parity easier.
+If authorities disagree, mark the affected parity row `HOLD`, quote the conflict,
+identify the owner, and request a decision. Do not choose whichever requirement
+makes parity easier.
 
 Documentation may be stale. Record missing files, broken links, obsolete paths, contradictory status claims, and requirements that no longer match code, but do not silently substitute your own design.
 
@@ -78,7 +79,9 @@ Parity must be proven at the production composition boundary. Shared types, copi
 
 ## Phase 1 — Build the complete parity inventory
 
-Start with every stable feature ID in `READINESS_AND_FEATURE_MATRIX.md`. Do not sample. Create one ledger row for every current ID in these groups:
+Build the inventory from live registries, package architecture documents,
+production composition roots, public protocols, and tests. Do not sample. Assign
+one audit-local ID to every observed capability in these groups:
 
 - `R-*`: runtime and architecture
 - `T-*`: tools, commands, resources, transports, SDK/embed, shadow mode, and host selection
@@ -93,7 +96,7 @@ For each ID capture:
 
 | Field | Required evidence |
 |---|---|
-| Feature ID and requirement | Exact current design source |
+| Audit ID and requirement | Exact live owner or completion-ledger source |
 | Pi baseline owner | Real Pi-extension symbol, composition root, or host behavior |
 | Native owner | Real native/core symbol and composition root |
 | Baseline invocation | How the behavior is triggered on Pi |
@@ -110,7 +113,7 @@ For each ID capture:
 | Severity and impact | User, security, data, extension, or release consequence |
 | Required action | Test, implementation, design decision, documentation fix, or none |
 
-Do not collapse multiple feature IDs into a vague subsystem conclusion.
+Do not collapse multiple capabilities into a vague subsystem conclusion.
 
 ## Phase 2 — Map both real hosts
 

@@ -11,6 +11,7 @@ import {
   type SessionId,
   type SessionProjection,
 } from '@octocodeai/agent-core';
+import type { RuntimeUserInputV1 } from '@octocodeai/agent-core';
 
 export type NativeSessionTransitionReason = 'initial' | 'create' | 'resume' | 'switch' | 'fork' | 'navigate';
 
@@ -76,7 +77,7 @@ export class NativeSessionRuntimeRouter implements AgentRuntime {
     this.#started = true;
   }
 
-  async submit(input: string): Promise<void> {
+  async submit(input: string | RuntimeUserInputV1): Promise<void> {
     if (this.#transition !== null) throw new RuntimeFailure('conflict', 'Cannot submit while switching sessions');
     await this.#active.submit(input);
   }

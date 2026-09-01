@@ -5,7 +5,7 @@ parity oracle, `@octocodeai/pi-extension`. This is not the native `octocode-agen
 contract. The native product obtains live schemas and composes policy through its own
 runtime adapters.
 
-The 15 Octocode research tools are reached through the built-in `octocode` MCP server;
+The 13 Octocode research tools are reached through the built-in `octocode` MCP server;
 Pi-specific tools are implemented directly in `src/tools/`. Run
 `npx octocode tools <name> --scheme` before calling a research tool—the live schema is
 authoritative.
@@ -21,17 +21,17 @@ developer code map.
 
 The direct palette contains 17 extension-owned tools: 16 support tools and the guarded `bash` override. GitHub, local, LSP, and npm research tools are provided indirectly through the built-in `octocode` MCP server.
 
-| Family | Direct tools |
-|---|---|
-| Core | `file`, `bash` |
-| Browser and workers | `chromeDebug`, `agent` |
-| Media and web | `readMedia`, `media`, `runFfmpeg`, `web` |
-| MCP | `MCPTool` |
-| Dynamic capabilities | `callTool`, `skill` |
-| Planning and interaction | `plan`, `askUser`, `localServer` |
-| Awareness | `memory`, `lock`, `message` |
+| Family                   | Direct tools                             |
+| ------------------------ | ---------------------------------------- |
+| Core                     | `file`, `bash`                           |
+| Browser and workers      | `chromeDebug`, `agent`                   |
+| Media and web            | `readMedia`, `media`, `runFfmpeg`, `web` |
+| MCP                      | `MCPTool`                                |
+| Dynamic capabilities     | `callTool`, `skill`                      |
+| Planning and interaction | `plan`, `askUser`, `localServer`         |
+| Awareness                | `memory`, `lock`, `message`              |
 
-Every direct tool exposes only one top-level field, `queries`. Each query requires a non-empty `reasoning` string of at most 240 characters. A call accepts at most 100 queries, validates the full batch before side effects, executes in source order, stops on the first runtime failure, and keeps prior successful effects. Successful batches return a compact receipt index followed by every child content block—including images—in source order; the receipt never replaces model-visible results. One-query calls preserve the underlying result details and rendering contract.
+Every direct tool exposes a `queries` batch. Each query requires a non-empty `reasoning` string of at most 240 characters. A call accepts at most 100 queries and validates the full batch before side effects. Sequential mode executes in source order and stops on the first runtime failure. Tools that explicitly expose `queryRunType:"parallel"` overlap only their documented independent operations, run at most four queries concurrently by default, and still return results in source order. Successful batches return a compact receipt index followed by every child content block—including images—in source order; the receipt never replaces model-visible results. One-query calls preserve the underlying result details and rendering contract.
 
 ### Tool transcript UI contract
 
@@ -59,40 +59,42 @@ Session-scoped maintenance jobs are controlled by `/octocode-cron`; see [CRON.md
 
 ## Routing Guide
 
-| Task | Tool |
-|------|------|
-| Run shell commands, git, builds | `bash` |
-| Edit existing file (exact replacement) | `file` with `type:"edit"` |
-| Create / overwrite a file | `file` with `type:"write"` |
-| Delete a file or symbolic link | `file` with `type:"delete"` |
-| Search code across GitHub | `ghSearchCode` |
-| Read a file from GitHub | `ghGetFileContent` |
-| Browse a GitHub repo tree | `ghViewRepoStructure` |
-| Discover GitHub repos | `ghSearchRepos` |
-| Search pull requests | `ghSearchPullRequests` |
-| Search issues | `ghSearchIssues` |
-| Search commits | `ghSearchCommits` |
-| Clone repo for local reads | `ghCloneRepo` |
-| Search local files (text / AST) | `localSearchCode` |
-| Browse local directory tree | `localViewStructure` |
-| Find files by name/size/time | `localFindFiles` |
-| Read a local file or range | `localGetFileContent` |
-| Find dead-code candidates | `localFindDeadCode` |
-| Symbol identity, refs, callers, types | `lspGetSemantics` |
-| Resolve npm package to source | `npmSearch` |
-| See a local image / screenshot | `readMedia` with `type:"image"` |
-| Inspect video/audio metadata | `readMedia` with `type:"video"` / `"audio"`, `view:"metadata"` |
-| See a video frame/contact sheet or audio visualization | `readMedia` with the matching `view` |
-| Author an image or PDF | `media` with `type:"image"` / `"pdf"` |
-| Convert / clip / resize / gif / extract audio | `media` with `type:"convert"` / `"trim"` / `"gif"` / `"audio"` |
-| Single-shot Chrome DevTools call | `chromeDebug` |
-| Browser analysis routing | `agent` with `profile:"browser"` |
-| Multi-turn browser session | `agent` spawn, then wait/message/steer/abort/kill queries |
-| Spawn background Pi worker | `agent` with `type:"spawn"` |
-| Coordinate spawned workers | `agent` lifecycle queries |
-| Fetch a URL / web search | `web` |
-| List / call an external MCP server tool | `MCPTool` |
-| Add / remove / restart an MCP server (no agent restart) | `MCPTool` (action: add/remove/restart) |
+| Task                                                    | Tool                                                           |
+| ------------------------------------------------------- | -------------------------------------------------------------- |
+| Run shell commands, git, builds                         | `bash`                                                         |
+| Edit existing file (exact replacement)                  | `file` with `type:"edit"`                                      |
+| Create / overwrite a file                               | `file` with `type:"write"`                                     |
+| Delete a file or symbolic link                          | `file` with `type:"delete"`                                    |
+| Search code across GitHub                               | `ghSearch` with `operation:"code"`                            |
+| Read a file from GitHub                                 | `ghGetFileContent`                                             |
+| Browse a GitHub repo tree                               | `ghSearch` with `operation:"tree"`                            |
+| Discover GitHub repos                                   | `ghSearch` with `operation:"repositories"`                    |
+| Search pull requests                                    | `ghSearchPullRequests`                                         |
+| Search issues                                           | `ghSearchIssues`                                               |
+| Search commits                                          | `ghSearchCommits`                                              |
+| List releases                                           | `ghListReleases`                                               |
+| Search discussions                                      | `ghSearchDiscussions`                                          |
+| Clone repo for local reads                              | `ghCloneRepo`                                                  |
+| Search local files (text / AST)                         | `localSearch` with `operation:"text"` or `"structural"`      |
+| Browse local directory tree                             | `localSearch` with `operation:"tree"`                         |
+| Find files by name/size/time                            | `localSearch` with `operation:"files"`                        |
+| Read a local file or range                              | `localGetFileContent`                                          |
+| Find dead-code candidates                               | `localAnalyzeGraph` with `operation:"deadCode"`               |
+| Symbol identity, refs, callers, types                   | `lspGetSemantics`                                              |
+| Resolve npm package to source                           | `npmSearch`                                                    |
+| See a local image / screenshot                          | `readMedia` with `type:"image"`                                |
+| Inspect video/audio metadata                            | `readMedia` with `type:"video"` / `"audio"`, `view:"metadata"` |
+| See a video frame/contact sheet or audio visualization  | `readMedia` with the matching `view`                           |
+| Author an image or PDF                                  | `media` with `type:"image"` / `"pdf"`                          |
+| Convert / clip / resize / gif / extract audio           | `media` with `type:"convert"` / `"trim"` / `"gif"` / `"audio"` |
+| Single-shot Chrome DevTools call                        | `chromeDebug`                                                  |
+| Browser analysis routing                                | `agent` with `profile:"browser"`                               |
+| Multi-turn browser session                              | `agent` spawn, then wait/message/steer/abort/kill queries      |
+| Spawn background Pi worker                              | `agent` with `type:"spawn"`                                    |
+| Coordinate spawned workers                              | `agent` lifecycle queries                                      |
+| Fetch a URL / web search                                | `web`                                                          |
+| List / call an external MCP server tool                 | `MCPTool`                                                      |
+| Add / remove / restart an MCP server (no agent restart) | `MCPTool` (action: add/remove/restart)                         |
 
 > **Built-in `octocode` server.** The gateway resolves the pinned local `octocode-mcp`
 > package first and falls back to `npx -y octocode-mcp@latest`. You can't remove the
@@ -117,6 +119,7 @@ Session-scoped maintenance jobs are controlled by `/octocode-cron`; see [CRON.md
 ## Core Tools
 
 ### `bash`
+
 Execute shell commands in the current working directory. Octocode override of Pi’s built-in bash: same shell execution, plus path-guard on redirect/`tee`/`cp`/`mv` write targets and a small blocklist of catastrophic commands. Every call requires a non-empty `reasoning` field explaining why the command is necessary. Bash is the only direct tool that pages model-visible text: stdout + stderr is split losslessly into content blocks of at most 20,000 characters, with full stdout/stderr retained in renderer details. Collapsed UI shows the latest lines; expanded UI uses a bounded head/tail preview. Prefer `file` for ordinary mutations; use bash for builds, tests, package commands, and genuinely mechanical changes. Details: [OVERRIDES.md](./OVERRIDES.md).
 
 ### `file`
@@ -135,16 +138,16 @@ Every query requires one concise `reasoning`. Mixed batches reject duplicate pat
 
 All use the live `queries` schema reported by `npx octocode tools <name> --scheme`. Do not reuse remembered fields across catalog versions.
 
-| Tool | Key params | Notes |
-|------|-----------|-------|
-| `ghSearchCode` | `keywords`, `owner`, `repo`, `match`, `extension`, `path`, `page` | `match:"path"` for filenames; `match:"file"` for snippets |
-| `ghSearchRepos` | `keywords`, `language`, `stars`, `sort`, `concise` | Start `concise:true`; follow into `ghViewRepoStructure` |
-| `ghSearchPullRequests` | `keywordsToSearch`, `prNumber`, `owner`, `repo`, `state` | Search PRs or fetch one PR by number |
-| `ghSearchIssues` | `keywordsToSearch`, `issueNumber`, `owner`, `repo`, `state` | Search issues or fetch one issue by number |
-| `ghSearchCommits` | `owner`, `repo`, `path`, `since`, `until`, `base`, `head`, `includeDiff` | Search commit history or inspect a bounded comparison |
-| `ghGetFileContent` | `owner`, `repo`, `path`, `startLine`/`endLine`, `matchString`, `minify`, `branch` | `symbols` → anchor → `none` for edits |
-| `ghViewRepoStructure` | `owner`, `repo`, `path`, `maxDepth`, `branch` | Orient before fetching files |
-| `ghCloneRepo` | `owner`, `repo`, `branch`, `sparsePath` | Needs `ENABLE_CLONE`; use `sparsePath` to bound checkout |
+| Tool                   | Key params                                                                        | Notes                                                     |
+| ---------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `ghSearch` (`code`)    | `operation`, `keywords`, `owner`, `repo`, `match`, `extension`, `path`, `page`    | `match:"path"` for filenames; `match:"file"` for snippets |
+| `ghSearch` (`repositories`) | `operation`, `keywords`, `language`, `stars`, `sort`, `concise`             | Start `concise:true`; follow with `operation:"tree"`     |
+| `ghSearchPullRequests` | `keywordsToSearch`, `prNumber`, `owner`, `repo`, `state`                          | Search PRs or fetch one PR by number                      |
+| `ghSearchIssues`       | `keywordsToSearch`, `issueNumber`, `owner`, `repo`, `state`                       | Search issues or fetch one issue by number                |
+| `ghSearchCommits`      | `owner`, `repo`, `path`, `since`, `until`, `base`, `head`, `includeDiff`          | Search commit history or inspect a bounded comparison     |
+| `ghGetFileContent`     | `owner`, `repo`, `path`, `startLine`/`endLine`, `matchString`, `minify`, `branch` | `symbols` → anchor → `none` for edits                     |
+| `ghSearch` (`tree`)    | `operation`, `owner`, `repo`, `path`, `maxDepth`, `branch`                        | Orient before fetching files                              |
+| `ghCloneRepo`          | `owner`, `repo`, `branch`, `sparsePath`                                           | Needs `ENABLE_CLONE`; use `sparsePath` to bound checkout  |
 
 ---
 
@@ -152,22 +155,20 @@ All use the live `queries` schema reported by `npx octocode tools <name> --schem
 
 All accept absolute paths. Strip leading `@` if copied from a Pi file reference.
 
-| Tool | Key params | Notes |
-|------|-----------|-------|
-| `localViewStructure` | `path`, `maxDepth`, `page`, `limit` | Cheapest orientation step; use before any file read |
-| `localSearchCode` | `path`, `searchText`, `mode` plus mode-specific fields | Modes: `discovery` · `paginated` · `detailed` · `structural` (AST) |
-| `localFindFiles` | `path`, `names`, `pathPattern` plus metadata filters | Name/metadata filters; use when content doesn't matter |
-| `localGetFileContent` | `path`, `startLine`/`endLine`, `matchString`, `minify`, `fullContent` | `symbols` first for large files; `none` for edits/citations |
-| `localFindDeadCode` | `path`, `entrypoints`, `includeTests`, `excludeDir`, `maxFiles` | Candidate generator only; prove reachability with `lspGetSemantics` before deleting |
+| Tool                  | Key params                                                            | Notes                                                                               |
+| --------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `localSearch`         | `operation`, `path`, plus operation-specific fields                  | `text`, `structural`, `files`, and `tree` share one strict schema                    |
+| `localGetFileContent` | `path`, `startLine`/`endLine`, `matchString`, `minify`, `fullContent` | `symbols` first for large files; `none` for edits/citations                         |
+| `localAnalyzeGraph`   | `operation`, `path`, `entrypoints`, `includeTests`, `excludeDir`      | `deadCode` returns file candidates; prove symbol usage with `lspGetSemantics`        |
 
-**`localSearchCode` modes:**
+**`localSearch` operations:**
 
-| Mode | Use |
-|------|-----|
-| `discovery` | Paths only — cheapest; find candidates before reading |
-| `paginated` | Snippets with surrounding context |
-| `detailed` | Full context window |
+| Operation    | Use                                                                       |
+| ------------ | ------------------------------------------------------------------------- |
+| `text`       | Lexical or regex search with selectable result views                      |
 | `structural` | AST pattern (`pattern`) or rule (`rule`); captures feed `lspGetSemantics` |
+| `files`      | Path and metadata discovery without reading file contents                 |
+| `tree`       | Bounded directory orientation                                             |
 
 ---
 
@@ -177,25 +178,26 @@ All accept absolute paths. Strip leading `@` if copied from a Pi file reference.
 
 Symbol-level code intelligence. `lineHint` **must** come from a prior search result, `matchRanges`, or `documentSymbols` — never guessed.
 
-| Operation | When to use |
-|-----------|------------|
-| `definition` | Jump to declaration |
-| `references` | All usages of a symbol |
-| `callers` / `callees` | Call hierarchy one level |
-| `callHierarchy` | Full call graph (use `depth`) |
-| `hover` | Type info + docs at a location |
-| `documentSymbols` | All symbols in a file (no `lineHint` needed) |
-| `workspaceSymbol` | Fuzzy project-wide symbol search |
-| `typeDefinition` | Follow to type declaration |
-| `implementation` | Find interface implementations |
-| `supertypes` / `subtypes` | Type hierarchy |
-| `diagnostic` | File-level errors/warnings (no `lineHint` needed) |
+| Operation                 | When to use                                       |
+| ------------------------- | ------------------------------------------------- |
+| `definition`              | Jump to declaration                               |
+| `references`              | All usages of a symbol                            |
+| `callers` / `callees`     | Call hierarchy one level                          |
+| `callHierarchy`           | Full call graph (use `depth`)                     |
+| `hover`                   | Type info + docs at a location                    |
+| `documentSymbols`         | All symbols in a file (no `lineHint` needed)      |
+| `workspaceSymbol`         | Fuzzy project-wide symbol search                  |
+| `typeDefinition`          | Follow to type declaration                        |
+| `implementation`          | Find interface implementations                    |
+| `supertypes` / `subtypes` | Type hierarchy                                    |
+| `diagnostic`              | File-level errors/warnings (no `lineHint` needed) |
 
 ---
 
 ## Package Tool
 
 ### `npmSearch`
+
 Resolve npm package names → GitHub repo. Exact package name returns rich single result with `repository`. Keyword query returns paginated candidates. Follow `repository` into GitHub tools.
 
 ---
@@ -216,13 +218,13 @@ Worker assistant output and stderr are retained and returned without a transport
 
 Spawn profiles:
 
-| Profile | Use |
-|---|---|
-| `researcher` | Evidence gathering across web, GitHub, npm, local files, binaries, and LSP. |
-| `planner` | Dependency-ordered implementation plans, risks, verification strategy, and RFC handoffs. |
-| `architect` | Root-cause and architecture analysis with local tools and targeted shell checks. |
-| `browser` | Routed multi-turn Chrome DevTools work. |
-| `custom` | A clean worker with explicit tools, system prompt, and resource mode. |
+| Profile      | Use                                                                                      |
+| ------------ | ---------------------------------------------------------------------------------------- |
+| `researcher` | Evidence gathering across web, GitHub, npm, local files, binaries, and LSP.              |
+| `planner`    | Dependency-ordered implementation plans, risks, verification strategy, and RFC handoffs. |
+| `architect`  | Root-cause and architecture analysis with local tools and targeted shell checks.         |
+| `browser`    | Routed multi-turn Chrome DevTools work.                                                  |
+| `custom`     | A clean worker with explicit tools, system prompt, and resource mode.                    |
 
 ```text
 agent({queries:[{
@@ -272,6 +274,7 @@ The extension doesn't register a model-callable context tool. Automatic compacti
 A model-runtime `maximum output token limit` stop is different from context pressure: shorten or chunk the response, or write long output to a file and return a concise summary and path.
 
 ---
+
 ## Session artifact routing
 
 Every tool output that lands on disk is now routed into the **session artifact tree** under
@@ -279,15 +282,15 @@ Every tool output that lands on disk is now routed into the **session artifact t
 (`manifest.json`). The `session-key` is derived from `sessionManager.getSessionId()` (falls
 back to the session-file basename, then `process-<pid>`).
 
-| Producer slot | Path inside session tree | Notes |
-|---|---|---|
-| `plan` | `plan/plan.html`, `plan/plan.md`, `plan/state.json`, `plan/branches/*.json` | Primary plan artifacts and branch snapshots |
-| `browser` | `browser/port-<N>/session.json`, `browser/screenshots/*.png` | chromeDebug session metadata and screenshots |
-| `compaction` | `compaction/<timestamp>-<label>.md`, `compaction/latest.md` | Compaction checkpoint markdown |
-| `checkpoint-ref` | `checkpoint-ref.json` | Pointer to shadow-git store (stays at `~/.octocode/checkpoints/<cwd-hash>/`) |
-| `log` | `logs/error.txt` | Extension error/warning log |
-| `image` | `images/<name>-<ts>.png` | `media` fallback PNGs |
-| `export` | `export/latest-ref.json` | Pointer to the branded session HTML export |
+| Producer slot    | Path inside session tree                                                    | Notes                                                                        |
+| ---------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `plan`           | `plan/plan.html`, `plan/plan.md`, `plan/state.json`, `plan/branches/*.json` | Primary plan artifacts and branch snapshots                                  |
+| `browser`        | `browser/port-<N>/session.json`, `browser/screenshots/*.png`                | chromeDebug session metadata and screenshots                                 |
+| `compaction`     | `compaction/<timestamp>-<label>.md`, `compaction/latest.md`                 | Compaction checkpoint markdown                                               |
+| `checkpoint-ref` | `checkpoint-ref.json`                                                       | Pointer to shadow-git store (stays at `~/.octocode/checkpoints/<cwd-hash>/`) |
+| `log`            | `logs/error.txt`                                                            | Extension error/warning log                                                  |
+| `image`          | `images/<name>-<ts>.png`                                                    | `media` fallback PNGs                                                        |
+| `export`         | `export/latest-ref.json`                                                    | Pointer to the branded session HTML export                                   |
 
 All write operations are atomic (`O_EXCL` temp + rename) and use private permissions
 (`0o700` dirs, `0o600` files). A fallback path is used when the session artifact dir
@@ -333,17 +336,17 @@ See [`AWARENESS_AGENT_FLOW.md`](https://github.com/bgauryy/octocode-mcp/blob/mai
 
 ### CLI quick-reference
 
-| Command | Purpose |
-|------|---------|
-| `memory recall` | Retrieve durable lessons before risky/unfamiliar work; flags `judgment_required` when recall confidence is low |
-| `memory store` | Store verified root cause, decision, workaround, or gotcha |
-| `memory list\|forget\|delete\|prune` | Inspect or explicitly remove stale memories |
-| `status` | Show plans, tasks, locks, work presence, agents, messages, handoffs, checks, and memory counts |
-| `message send\|inbox\|list\|read\|prune` | Tiny coordination inbox |
-| `handoff add\|list\|clear` | Manual continuation notes for later agents |
-| `lock acquire\|release\|list` | Optional exclusive protection for sensitive paths |
-| `check audit` | List done tasks still needing check receipts |
-| `check mark` | Mark one exact owned task verified after its declared check; never batch another agent's work. |
+| Command                                  | Purpose                                                                                                        |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `memory recall`                          | Retrieve durable lessons before risky/unfamiliar work; flags `judgment_required` when recall confidence is low |
+| `memory store`                           | Store verified root cause, decision, workaround, or gotcha                                                     |
+| `memory list\|forget\|delete\|prune`     | Inspect or explicitly remove stale memories                                                                    |
+| `status`                                 | Show plans, tasks, locks, work presence, agents, messages, handoffs, checks, and memory counts                 |
+| `message send\|inbox\|list\|read\|prune` | Tiny coordination inbox                                                                                        |
+| `handoff add\|list\|clear`               | Manual continuation notes for later agents                                                                     |
+| `lock acquire\|release\|list`            | Optional exclusive protection for sensitive paths                                                              |
+| `check audit`                            | List done tasks still needing check receipts                                                                   |
+| `check mark`                             | Mark one exact owned task verified after its declared check; never batch another agent's work.                 |
 
 ## MCP Servers
 
@@ -351,6 +354,12 @@ See [`AWARENESS_AGENT_FLOW.md`](https://github.com/bgauryy/octocode-mcp/blob/mai
 It lists and calls tools, validates exact schemas internally, reads resources, gets prompts,
 and supports completion without registering each remote tool in Pi. `/mcp` opens the
 local, shared-theme connection and enablement manager.
+
+Set `queryRunType:"parallel"` to overlap status/read operations. Tool `call`
+entries may run in parallel only when they target distinct servers; same-server
+calls and mutating management actions fail preflight instead of racing. Parallel
+batches use the shared four-query concurrency cap. Omit the
+field for the default sequential, stop-on-first-error behavior.
 
 Call payloads are not character-capped. MCP text and image blocks remain model content;
 unsupported block types are preserved as lossless JSON text. When an MCP server emits only
@@ -389,11 +398,11 @@ counts, and degraded state. See [RUNTIME_STATE.md](./RUNTIME_STATE.md).
 The gateway merges one global definition file and one trusted project definition file.
 A project entry with the same server name wins.
 
-| Precedence | Scope | Path | Loaded when |
-|---|---|---|---|
-| 1 | Built-in | pinned local `octocode-mcp`, with `npx -y octocode-mcp@latest` fallback | Always as `octocode` |
-| 2 | Global | `$OCTOCODE_HOME/agent/mcp/servers.json` | If the file exists |
-| 3 | Workspace | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json` | Trusted workspaces only |
+| Precedence | Scope     | Path                                                                    | Loaded when             |
+| ---------- | --------- | ----------------------------------------------------------------------- | ----------------------- |
+| 1          | Built-in  | pinned local `octocode-mcp`, with `npx -y octocode-mcp@latest` fallback | Always as `octocode`    |
+| 2          | Global    | `$OCTOCODE_HOME/agent/mcp/servers.json`                                 | If the file exists      |
+| 3          | Workspace | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json`      | Trusted workspaces only |
 
 For an untrusted project config, the gateway records a skipped source and warning but never
 spawns a process. Run `MCPTool({queries:[{reasoning:"Inspect resolved MCP configuration.",action:"config"}]})`
@@ -404,17 +413,25 @@ to see the resolved servers, sources, and warnings.
 Use `MCPTool` for the managed path:
 
 ```js
-MCPTool({queries:[{reasoning:"Add the trusted documentation server.", action:"add",
-  server:"docs", scope:"project",
-  config:{command:"npx", args:["-y", "@acme/docs-mcp@latest"]}}]})
+MCPTool({
+  queries: [
+    {
+      reasoning: "Add the trusted documentation server.",
+      action: "add",
+      server: "docs",
+      scope: "project",
+      config: { command: "npx", args: ["-y", "@acme/docs-mcp@latest"] },
+    },
+  ],
+});
 ```
 
 `action:"add"|"remove"` manages these canonical targets:
 
-| Scope | Managed path | Gate |
-|---|---|---|
-| Workspace | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json` | Workspace trust; removal also requires interactive approval |
-| Global | `$OCTOCODE_HOME/agent/mcp/servers.json` | Adding an arbitrary local process requires interactive approval |
+| Scope     | Managed path                                                       | Gate                                                            |
+| --------- | ------------------------------------------------------------------ | --------------------------------------------------------------- |
+| Workspace | `$OCTOCODE_HOME/agent/workspaces/<workspace-key>/mcp/servers.json` | Workspace trust; removal also requires interactive approval     |
+| Global    | `$OCTOCODE_HOME/agent/mcp/servers.json`                            | Adding an arbitrary local process requires interactive approval |
 
 You can also edit any active path in the preceding table. The gateway watches existing
 active directories and re-reads config on calls, so changes apply without a restart.
@@ -451,15 +468,15 @@ also work). Each server entry:
 }
 ```
 
-| Field | Required | Notes |
-|---|---|---|
-| `command` | yes | Executable to spawn (stdio transport). |
-| `args` | no | Array of string arguments. |
-| `env` | no | Extra environment variables merged over the SDK's safe defaults. Ambient process secrets are not inherited. |
-| `cwd` | no | Working dir; relative paths resolve from the workspace and are path-guarded. |
-| `timeoutMs` | no | Per-request timeout, clamped `1000..120000` (default `30000`). |
-| `disabled` | no | `true` skips the server entirely. |
-| `description` | no | Human label shown in `list`/`config`. |
+| Field         | Required | Notes                                                                                                       |
+| ------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `command`     | yes      | Executable to spawn (stdio transport).                                                                      |
+| `args`        | no       | Array of string arguments.                                                                                  |
+| `env`         | no       | Extra environment variables merged over the SDK's safe defaults. Ambient process secrets are not inherited. |
+| `cwd`         | no       | Working dir; relative paths resolve from the workspace and are path-guarded.                                |
+| `timeoutMs`   | no       | Per-request timeout, clamped `1000..120000` (default `30000`).                                              |
+| `disabled`    | no       | `true` skips the server entirely.                                                                           |
+| `description` | no       | Human label shown in `list`/`config`.                                                                       |
 
 Server names must match `^[A-Za-z0-9_.-]{1,64}$`. A user entry named `octocode` overrides
 the built-in one (its `env` still gets the full-text + npm-cache defaults merged in).
@@ -468,33 +485,41 @@ the built-in one (its `env` still gets the full-text + npm-cache defaults merged
 
 `MCPTool` is a tool bridge, not a worker; it does no planning, memory, or synthesis.
 
-| Action | Purpose |
-|---|---|
-| `list` | List servers or one server's tools and schemas; refresh the private cache. |
-| `describe` | Return one exact current schema for explicit inspection. |
-| `call` | Invoke `server` + `tool` with `arguments`; load and validate the exact schema internally first. |
-| `resources` / `read-resource` | List resources/templates or read one URI. |
-| `prompts` / `get-prompt` / `complete` | List/get prompts or request argument completion. |
-| `enable` / `disable` | Store a global or workspace server/tool override in the shared database. |
-| `status` | Show configured and running servers; return schema mode and counters in structured details. |
-| `config` | Show resolved config sources and warnings. |
-| `restart` | Stop and relaunch one `server`; invalidate discovery freshness. |
-| `stop` | Stop one server or all servers; invalidate affected caches. |
-| `add` / `remove` | Manage trusted project or approved global config without restarting the agent. |
+| Action                                | Purpose                                                                                         |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `list`                                | List servers or one server's tools and schemas; refresh the private cache.                      |
+| `describe`                            | Return one exact current schema for explicit inspection.                                        |
+| `call`                                | Invoke `server` + `tool` with `arguments`; load and validate the exact schema internally first. |
+| `resources` / `read-resource`         | List resources/templates or read one URI.                                                       |
+| `prompts` / `get-prompt` / `complete` | List/get prompts or request argument completion.                                                |
+| `enable` / `disable`                  | Store a global or workspace server/tool override in the shared database.                        |
+| `status`                              | Show configured and running servers; return schema mode and counters in structured details.     |
+| `config`                              | Show resolved config sources and warnings.                                                      |
+| `restart`                             | Stop and relaunch one `server`; invalidate discovery freshness.                                 |
+| `stop`                                | Stop one server or all servers; invalidate affected caches.                                     |
+| `add` / `remove`                      | Manage trusted project or approved global config without restarting the agent.                  |
 
 ```js
-MCPTool({queries:[{reasoning:"Search the documentation.", action:"call",
-  server:"my-server", tool:"searchDocs",
-  arguments:{query:"retry policy"}}]})
+MCPTool({
+  queries: [
+    {
+      reasoning: "Search the documentation.",
+      action: "call",
+      server: "my-server",
+      tool: "searchDocs",
+      arguments: { query: "retry policy" },
+    },
+  ],
+});
 ```
 
 Calls fail closed before `client.callTool`:
 
-| Code | Meaning |
-|---|---|
-| `MCP_SCHEMA_INVALID` | Arguments failed local validation. Errors are bounded and include instance paths. |
+| Code                 | Meaning                                                                                             |
+| -------------------- | --------------------------------------------------------------------------------------------------- |
+| `MCP_SCHEMA_INVALID` | Arguments failed local validation. Errors are bounded and include instance paths.                   |
 | `SCHEMA_UNSUPPORTED` | The schema is too large, unserializable, uses an unsupported dialect, or cannot be compiled safely. |
-| `SCHEMA_UNAVAILABLE` | The server, tool, or current schema could not be discovered. |
+| `SCHEMA_UNAVAILABLE` | The server, tool, or current schema could not be discovered.                                        |
 
 Servers are spawned during best-effort initialization discovery and reused for the
 session. `stop` and `restart` recycle them; a later action reconnects on demand. Config
@@ -506,13 +531,13 @@ code and add only config you trust.
 
 ## Configuration
 
-| Variable | Effect |
-|----------|--------|
-| `OCTOCODE_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` | GitHub authentication (priority order) |
-| `GITHUB_API_URL` | GitHub Enterprise API base URL |
-| `ENABLE_LOCAL` | Set `false` to disable all local tools |
-| `ENABLE_CLONE` | Enables `ghCloneRepo` + `ghGetFileContent(type:"directory")` |
-| `OCTOCODE_CDP_DEBUG` | Set `1` to write CDP events to `~/.octocode/chrome-debug/port-<N>/cdp-events.jsonl` |
+| Variable                                       | Effect                                                                              |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `OCTOCODE_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` | GitHub authentication (priority order)                                              |
+| `GITHUB_API_URL`                               | GitHub Enterprise API base URL                                                      |
+| `ENABLE_LOCAL`                                 | Set `false` to disable all local tools                                              |
+| `ENABLE_CLONE`                                 | Enables `ghCloneRepo` + `ghGetFileContent(type:"directory")`                        |
+| `OCTOCODE_CDP_DEBUG`                           | Set `1` to write CDP events to `~/.octocode/chrome-debug/port-<N>/cdp-events.jsonl` |
 
 Loaded via `@octocodeai/config`. Run `npx @octocodeai/config --keys` to inspect active values.
 
@@ -538,6 +563,7 @@ scripts persisted under `getOctocodeHome()/dynamic-tools/`, executed in an isola
 subprocess — never registered as first-class Pi tools at runtime.
 
 ### Schema
+
 - `toolType` — logical capability name; the O(1) registry key (e.g. `parseCronExpression`).
 - `metadata` — runtime args **plus** reserved keys:
   - `intent` — what a new tool should do (used to generate a miss).
@@ -550,6 +576,7 @@ subprocess — never registered as first-class Pi tools at runtime.
   after approval) · `enhance`/`fix` (regenerate existing) · `list` · `delete`.
 
 ### Lifecycle
+
 1. **Resolve** — exact name (O(1)) → keyword/description fallback.
 2. **Reuse** — run the resolved tool in a sandboxed subprocess.
 3. **Propose** — on an `auto` miss, callTool does **not** silently generate. It returns a
@@ -560,13 +587,14 @@ subprocess — never registered as first-class Pi tools at runtime.
 5. **Maintain** — every call prunes unambiguous junk (missing / always-failing tools).
 
 ### Guardrails
+
 - **Triviality guard** — a tool must optimize the agent, not bloat it. If a one-line shell
   command already covers it (`date`, `uuidgen`, `base64`, `wc`, `shasum`, `jq`, …), creation
   is declined with the suggested command (override via `metadata._force:true`).
 - **Verification gate** — no green test → no registry entry. No stubs.
 - **Enforced sandbox (default)** — sandboxed tools run under the **Node permission model**
   (`--permission`): filesystem, network, and child processes are **denied by default** and
-  `process.env` is **scrubbed** to a minimal `PATH`. Declared capabilities are *enforced*,
+  `process.env` is **scrubbed** to a minimal `PATH`. Declared capabilities are _enforced_,
   not advisory — a tool that didn't declare `net`/`fs`/`exec` physically cannot use them
   (`net`→`--allow-net`, `exec`→`--allow-child-process`, `fs`→broad fs read/write). Native
   addons, workers, FFI, and the inspector are never granted. Plus a hard timeout and sha256
@@ -588,6 +616,7 @@ subprocess — never registered as first-class Pi tools at runtime.
   previous good tool, so there is never a soft-broken (stale-checksum) state.
 
 ### CRUD
+
 - Read: `mode:"list"`. Delete: `mode:"delete"` (with `toolType`). Update: `enhance`/`fix`.
 - Auto-maintenance prunes junk on every call; the `[MAINTAINED]` line reports pruned tools.
 
@@ -606,6 +635,7 @@ discovers it. **Skills orchestrate; `callTool` executes** — any executable hel
 ships should run through the callTool sandbox.
 
 ### Schema
+
 - `skillType` — skill/workflow name (lowercase `a-z`, `0-9`, hyphens); O(1) registry key.
 - `metadata` — reserved keys: `intent` (what the workflow does), `reason` (**required to
   create**), `_approveCreate` (approve in `auto` mode), `_force` (override triviality decline).
@@ -613,6 +643,7 @@ ships should run through the callTool sandbox.
   approval) · `enhance`/`fix` · `list` · `delete`.
 
 ### Lifecycle & guardrails (mirrors callTool)
+
 1. **Resolve** exact name (O(1)) → keyword fallback.
 2. **Reuse** — returns the `SKILL.md` path + `/skill:<name>` to follow.
 3. **Propose** — on an `auto` miss it does **not** silently author; it asks you to research
@@ -622,7 +653,7 @@ ships should run through the callTool sandbox.
    test gate, so lean on approval + rubric).
 5. **Maintain** — every call prunes broken skills (missing/invalid `SKILL.md`).
 
-- **Triviality guard** — a skill must be a *recurring multi-step workflow*, not a one-off a
+- **Triviality guard** — a skill must be a _recurring multi-step workflow_, not a one-off a
   single tool/bash/`callTool` covers (override via `metadata._force:true`).
 - **Mandatory reason** — every created skill records why it should exist.
 - **Discovery** — spawned subagents see a new skill immediately (their skill dirs re-scan per

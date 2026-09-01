@@ -354,16 +354,16 @@ describe('branded renderResult', () => {
 
 describe('buildOctocodeRenderCall', () => {
   it('produces branded title with theme colors', () => {
-    const c = buildOctocodeRenderCall('ghSearchCode', { queries: [{ keywords: ['useState'] }] }, stubTheme);
+    const c = buildOctocodeRenderCall('ghSearch', { queries: [{ operation: 'code', keywords: ['useState'] }] }, stubTheme);
     const lines = render(c);
-    expect(lines[0]).toContain('ghSearchCode');
+    expect(lines[0]).toContain('ghSearch');
     expect(lines[0]).toContain('useState');
   });
 
   it('handles empty queries gracefully', () => {
-    const c = buildOctocodeRenderCall('localViewStructure', { queries: [] }, stubTheme);
+    const c = buildOctocodeRenderCall('localSearch', { queries: [] }, stubTheme);
     const lines = render(c);
-    expect(lines[0]).toContain('localViewStructure');
+    expect(lines[0]).toContain('localSearch');
   });
 
   it('renders every nested Octocode query with its unlabeled reason on the next line', () => {
@@ -387,9 +387,9 @@ describe('buildOctocodeRenderCall', () => {
 // ─── buildToolCallSummary spot checks ────────────────────────────────────────
 
 describe('buildToolCallSummary', () => {
-  it('ghSearchCode: formats keywords and repo', () => {
-    const summary = buildToolCallSummary('ghSearchCode', {
-      queries: [{ keywords: ['renderCall'], owner: 'earendil', repo: 'pi' }],
+  it('ghSearch: formats keywords and repo', () => {
+    const summary = buildToolCallSummary('ghSearch', {
+      queries: [{ operation: 'code', keywords: ['renderCall'], owner: 'earendil', repo: 'pi' }],
     });
     expect(summary).toContain('renderCall');
     expect(summary).toContain('earendil/pi');

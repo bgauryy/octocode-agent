@@ -3,12 +3,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { revision } from '@octocodeai/agent-core';
+import type { NativeRustCoreObject } from '../src/native-rust-core.js';
 
 import {
   createNativeSettingsService,
   NATIVE_SETTING_DEFINITIONS,
 } from '../src/native-settings-service.js';
-import { FileSettingsStorage } from '../src/native-settings.js';
+import {
+  FileSettingsStorage,
+  NativeRustSettingsStorage,
+} from '../src/native-settings.js';
 
 async function harness(values: Record<string, unknown> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-native-settings-service-'));
@@ -18,10 +22,59 @@ async function harness(values: Record<string, unknown> = {}) {
 }
 
 describe('native settings service bridge', () => {
+  it('uses the Rust CAS owner and imports legacy JSON only into an empty store', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-native-rust-settings-'));
+    const legacy = new FileSettingsStorage(path.join(dir, 'settings.json'));
+    legacy.commit('0', { theme: 'octocode-light' });
+    let record: { revision: string; values: NativeRustCoreObject } = {
+      revision: '0',
+      values: {},
+    };
+    const core = {
+      settingsGet: async () => structuredClone(record),
+      settingsCompareAndSet: async (
+        _scope: string,
+        expectedRevision: string,
+        values: NativeRustCoreObject,
+      ) => {
+        if (record.revision !== expectedRevision) throw new Error('conflict');
+        record = {
+          revision: String(Number(record.revision) + 1),
+          values: structuredClone(values),
+        };
+        return structuredClone(record);
+      },
+    };
+    const storage = new NativeRustSettingsStorage(core, legacy);
+    const first = await storage.read();
+    expect(first).toEqual({
+      schemaVersion: 1,
+      revision: '1',
+      values: { theme: 'octocode-light' },
+    });
+
+    legacy.commit(legacy.read().revision, { theme: 'octocode-dark' });
+    expect(await storage.read()).toEqual(first);
+    await expect(storage.commit('0', {})).rejects.toThrow('conflict');
+
+    const settings = await createNativeSettingsService(storage);
+    const result = await settings.mutate({
+      protocolVersion: 1,
+      requestId: 'rust-theme',
+      action: 'set',
+      scope: 'global',
+      expectedRevision: settings.snapshot().revision,
+      payload: { key: 'theme', value: 'octocode-dark' },
+    });
+    expect(result.ok).toBe(true);
+    expect(record).toEqual({ revision: '2', values: { theme: 'octocode-dark' } });
+  });
+
   it('owns one typed registry with scope, validation, provenance, and application timing', async () => {
     expect(NATIVE_SETTING_DEFINITIONS.map((definition) => definition.key)).toEqual([
       'theme',
       'reducedMotion',
+      'compactionInputTokenThreshold',
       'defaultProvider',
       'defaultModel',
       'nativeExtensions',
@@ -39,6 +92,14 @@ describe('native settings service bridge', () => {
         scopes: ['global'],
         kind: { type: 'boolean' },
         defaultValue: true,
+        application: 'next-session',
+        visibility: 'public',
+      }),
+      expect.objectContaining({
+        key: 'compactionInputTokenThreshold',
+        scopes: ['global'],
+        kind: { type: 'integer', minimum: 4096, maximum: 2_000_000 },
+        defaultValue: 64_000,
         application: 'next-session',
         visibility: 'public',
       }),
@@ -61,6 +122,7 @@ describe('native settings service bridge', () => {
 
     const { settings } = await harness({ theme: 'octocode-light', reducedMotion: false, defaultModel: 'gpt-5.6' });
     expect(settings.snapshot().values).toEqual([
+      expect.objectContaining({ key: 'compactionInputTokenThreshold', value: 64_000, provenance: 'default', application: 'next-session' }),
       expect.objectContaining({ key: 'theme', value: 'octocode-light', provenance: 'global', application: 'next-session' }),
       expect.objectContaining({ key: 'reducedMotion', value: false, provenance: 'global', application: 'next-session' }),
       expect.objectContaining({ key: 'nativeExtensions', value: null, provenance: 'default', application: 'next-session' }),
@@ -140,8 +202,9 @@ describe('native settings service bridge', () => {
     });
 
     const snapshot = settings.snapshot();
-    expect(snapshot.definitions.map((definition) => definition.key)).toEqual(['theme', 'reducedMotion', 'nativeExtensions', 'defaultProvider', 'defaultModel']);
+    expect(snapshot.definitions.map((definition) => definition.key)).toEqual(['compactionInputTokenThreshold', 'theme', 'reducedMotion', 'nativeExtensions', 'defaultProvider', 'defaultModel']);
     expect(snapshot.values).toEqual([
+      expect.objectContaining({ key: 'compactionInputTokenThreshold', value: 64_000, stored: false, provenance: 'default' }),
       expect.objectContaining({ key: 'theme', value: 'octocode-dark', stored: false, provenance: 'default' }),
       expect.objectContaining({ key: 'reducedMotion', value: true, stored: false, provenance: 'default' }),
       expect.objectContaining({ key: 'nativeExtensions', value: null, stored: false, provenance: 'default' }),

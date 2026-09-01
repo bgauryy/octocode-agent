@@ -13,7 +13,7 @@ import { cmdGetMemory, cmdRefineGet, cmdRefineSet, cmdReflect, cmdTellMemory } f
 import { cmdAuditUnverified, cmdPreFlightIntent, cmdReleaseFileLock, cmdVerify, cmdWork } from './cli-work.js';
 import { cmdExportHarness, cmdForget, cmdMemoryLifecycle, cmdPlan, cmdRefineDelete, cmdTask } from './cli-plans.js';
 import { cmdAttend, cmdDeveloperReview, cmdDocStaleness, cmdDocsCatalog, cmdQuery } from './cli-repo.js';
-import { cmdAwarenessConfig, cmdWorkspacePolicy } from './cli-config.js';
+import { cmdAwarenessConfig } from './cli-config.js';
 import { parseStorageScope } from '../src/storage-scope.js';
 import { storageScopeForCommand } from '../src/workspace-policy.js';
 import { runCli as runCoordinationCli } from '../src/coordination/cli.js';
@@ -23,7 +23,7 @@ import { runCli as runCoordinationCli } from '../src/coordination/cli.js';
 export const rawArgv = process.argv.slice(2);
 
 // The root binary owns every Awareness capability. Shared-repository commands
-// are available under `coordination` to avoid ambiguity with the richer legacy
+// are available under `coordination` to avoid ambiguity with the established
 // plan/task/memory verbs, while the signal/status and peer channels keep their
 // concise direct forms for host integrations.
 const directCoordinationCommands = new Set(['guide', 'instructions', 'status', 'message', 'handoff', 'check']);
@@ -116,7 +116,6 @@ if (command === 'schema') {
 }
 
 if (command === 'awareness-config') process.exit(cmdAwarenessConfig(args, opts));
-if (command === 'workspace-policy') process.exit(cmdWorkspacePolicy(args, opts));
 
 if (command === 'hook-run') {
   // Hooks always write to the canonical store; a `--db` here was silently

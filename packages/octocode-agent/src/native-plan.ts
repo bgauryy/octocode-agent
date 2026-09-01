@@ -12,12 +12,21 @@ import {
   type ToolRegistry,
 } from '@octocodeai/agent-core';
 import { ensurePrivateDirectory, hardenPrivateFile } from './private-fs.js';
+import type { NativeRustWorkDagStore } from './native-rust-work-dag.js';
+import type {
+  NativeWorkerDagPlanClaim,
+  NativeWorkerDagPlanPort,
+  NativeWorkerDagSchedule,
+} from './native-worker-dag-scheduler.js';
 
 const PLAN_LOCK_ATTEMPTS = 100;
 const PLAN_LOCK_RETRY_MS = 5;
 const PLAN_LOCK_STALE_MS = 30_000;
 
-export type NativePlanAction = 'set' | 'propose' | 'clarify' | 'add' | 'start' | 'complete' | 'remove' | 'clear' | 'show';
+export type NativePlanAction =
+  | 'set' | 'propose' | 'clarify' | 'add' | 'start' | 'complete' | 'remove' | 'clear' | 'show'
+  | 'edit' | 'reorder' | 'dependency' | 'reopen'
+  | 'approve' | 'reject' | 'change-request' | 'review';
 export type NativePlanPhase = 'empty' | 'draft' | 'approved' | 'active' | 'complete';
 export type NativePlanStepStatus = 'todo' | 'doing' | 'done';
 
@@ -57,6 +66,48 @@ export interface NativePlanSnapshot {
   readonly steps: readonly NativePlanStep[];
   readonly decisions: readonly NativePlanDecision[];
 }
+
+export type NativePlanReviewIntent =
+  | {
+      readonly type: 'edit';
+      readonly stepId: string;
+      readonly text?: string;
+      readonly activeForm?: string | null;
+      readonly checkCommand?: string | null;
+    }
+  | { readonly type: 'reorder'; readonly stepIds: readonly string[] }
+  | { readonly type: 'dependency'; readonly stepId: string; readonly dependsOnStepIds: readonly string[] }
+  | { readonly type: 'reopen'; readonly stepId: string };
+
+export type NativePlanOperationIntent =
+  | (NativePlanReviewIntent & { readonly expectedRevision: number })
+  | { readonly type: 'approve'; readonly expectedRevision: number }
+  | { readonly type: 'reject' | 'change-request'; readonly expectedRevision: number; readonly feedback?: string }
+  | { readonly type: 'review'; readonly expectedRevision: number; readonly intents: readonly NativePlanReviewIntent[] };
+
+export type NativePlanReviewDiff =
+  | {
+      readonly type: 'step-edited';
+      readonly stepId: string;
+      readonly before: Pick<NativePlanStep, 'text' | 'activeForm' | 'checkCommand' | 'status'>;
+      readonly after: Pick<NativePlanStep, 'text' | 'activeForm' | 'checkCommand' | 'status'>;
+      readonly invalidatedStepIds: readonly string[];
+    }
+  | { readonly type: 'steps-reordered'; readonly beforeStepIds: readonly string[]; readonly afterStepIds: readonly string[] }
+  | {
+      readonly type: 'dependencies-changed';
+      readonly stepId: string;
+      readonly beforeStepIds: readonly string[];
+      readonly afterStepIds: readonly string[];
+      readonly invalidatedStepIds: readonly string[];
+    }
+  | {
+      readonly type: 'step-reopened';
+      readonly stepId: string;
+      readonly beforeStatus: NativePlanStepStatus;
+      readonly afterStatus: 'todo';
+      readonly invalidatedStepIds: readonly string[];
+    };
 
 /** Read-only projection consumed by runtime presentation ports. */
 export interface RuntimePlanSnapshot {
@@ -285,13 +336,13 @@ function parseStoredPlan(value: unknown, scope: PlanScope): NativePlanSnapshot {
     };
   });
   if (new Set(steps.map((step) => step.id)).size !== steps.length) throw new PlanOperationError('invalid-plan', 'Stored plan step IDs must be unique');
+  if (steps.filter((step) => step.status === 'doing').length > 4) throw new PlanOperationError('invalid-plan', 'Stored plan exceeds four concurrent active steps');
   try { validateGraph(steps); } catch { throw new PlanOperationError('invalid-plan', 'Stored plan dependency graph is invalid'); }
   for (const [position, step] of steps.entries()) {
     if ((step.dependsOn ?? []).some((dependency) => steps[dependency - 1]?.status !== 'done') && step.status !== 'todo') {
       throw new PlanOperationError('invalid-plan', `step ${position + 1} ran before its dependencies completed`);
     }
   }
-  if (steps.filter((step) => step.status === 'doing').length > 1) throw new PlanOperationError('invalid-plan', 'Stored plan has multiple active steps');
   if (input.phase === 'empty' ? steps.length !== 0 : steps.length === 0) throw new PlanOperationError('invalid-plan', 'Stored plan phase does not match its steps');
   if (input.phase === 'complete' && !steps.every((step) => step.status === 'done')) throw new PlanOperationError('invalid-plan', 'Complete plan contains unfinished steps');
   if (input.phase === 'active' && steps.every((step) => step.status === 'done')) throw new PlanOperationError('invalid-plan', 'Active plan contains only completed steps');
@@ -330,8 +381,12 @@ export class InMemoryPlanStore implements PlanStore {
 }
 
 /** Durable CAS bridge between native worker lifecycle and native plan steps. */
-export class NativePlanWorkerOwnership implements NativePlanWorkerOwnershipPort {
-  constructor(readonly store: PlanStore) {}
+export class NativePlanWorkerOwnership implements NativePlanWorkerOwnershipPort, NativeWorkerDagPlanPort {
+  constructor(
+    readonly store: PlanStore,
+    /** Durable scheduling mechanism; worker execution remains policy-owned by the caller. */
+    readonly dependencyWork?: Pick<NativeRustWorkDagStore, 'getGraph'>,
+  ) {}
 
   async claim(request: NativePlanWorkerOwnershipRequest): Promise<NativePlanWorkerOwnershipResult> {
     abortIfNeeded(request.signal);
@@ -341,7 +396,9 @@ export class NativePlanWorkerOwnership implements NativePlanWorkerOwnershipPort 
     if (selected < 0) throw new PlanOperationError('invalid-target', `Plan step ${request.planStepId} was not found`);
     const target = current.steps[selected]!;
     if (target.status !== 'todo') throw new PlanOperationError('active-step-exists', `Plan step ${request.planStepId} is already active or complete`);
-    if (current.steps.some((step) => step.status === 'doing')) throw new PlanOperationError('active-step-exists', 'Another plan step is already active');
+    if (current.steps.filter((step) => step.status === 'doing').length >= 4) {
+      throw new PlanOperationError('active-step-limit', 'At most four plan steps may be active concurrently');
+    }
     if (!(target.dependsOn ?? []).every((dependency) => current.steps[dependency - 1]?.status === 'done')) {
       throw new PlanOperationError('blocked-step', `Plan step ${request.planStepId} is blocked by dependencies`);
     }
@@ -366,6 +423,151 @@ export class NativePlanWorkerOwnership implements NativePlanWorkerOwnershipPort 
     });
     await this.store.save(request.scope, current.revision, immutable({ ...current, revision: current.revision + 1, phase: 'active', steps }), request.signal);
     return freeze({ planStepId: request.planStepId, workerId: request.workerId, status: 'released' as const });
+  }
+
+  async prepare(scope: PlanScope, signal: AbortSignal): Promise<NativeWorkerDagSchedule> {
+    abortIfNeeded(signal);
+    const current = await this.store.load(scope, signal);
+    if (current === undefined || current.phase !== 'active') {
+      throw new PlanOperationError('inactive-plan', 'Worker dependency scheduling requires an active plan');
+    }
+    if (this.dependencyWork === undefined) {
+      throw new PlanOperationError('unsupported-capability', 'Durable worker dependency scheduling is unavailable');
+    }
+    if (current.steps.length > 32) {
+      throw new PlanOperationError('invalid-plan', 'Worker dependency schedules support at most 32 steps');
+    }
+    if (current.steps.some((step) => step.checkCommand !== undefined)) {
+      throw new PlanOperationError('verification-required', 'Worker dependency scheduling cannot bypass host verification checks');
+    }
+    if (current.steps.some((step) => step.status === 'doing' && step.workerId === undefined)) {
+      throw new PlanOperationError('active-step-exists', 'A manually started plan step must finish before dependency scheduling');
+    }
+    const unfinishedIds = new Set(
+      current.steps
+        .filter((step) => step.status !== 'done')
+        .map((step) => step.id),
+    );
+    const definition = current.steps.flatMap((step, position) =>
+      step.status === 'done'
+        ? []
+        : [{
+            itemId: step.id,
+            prompt: step.text,
+            dependsOn: (step.dependsOn ?? [])
+              .map((dependency) => current.steps[dependency - 1]!.id)
+              .filter((dependency) => unfinishedIds.has(dependency)),
+            ordinal: position,
+          }],
+    );
+    const graphId = `plan:${createHash('sha256')
+      .update(JSON.stringify({ scope, definition }))
+      .digest('hex')}`;
+    return freeze({
+      graphId,
+      scope: { ...scope },
+      steps: definition.map(({ ordinal: _ordinal, ...step }) => step),
+    });
+  }
+
+  async claimItem(request: NativeWorkerDagPlanClaim): Promise<void> {
+    abortIfNeeded(request.signal);
+    if (this.dependencyWork === undefined) {
+      throw new PlanOperationError('unsupported-capability', 'Durable worker dependency scheduling is unavailable');
+    }
+    const [current, graph] = await Promise.all([
+      this.store.load(request.scope, request.signal),
+      this.dependencyWork.getGraph(request.graphId),
+    ]);
+    if (current === undefined || current.phase !== 'active' || graph === null) {
+      throw new PlanOperationError('inactive-plan', 'Worker dependency schedule is unavailable');
+    }
+    const durable = graph.items.find((item) => item.itemId === request.itemId);
+    if (
+      durable?.state !== 'claimed' ||
+      durable.ownerId !== request.workerId ||
+      durable.fencingToken !== request.fencingToken
+    ) {
+      throw new PlanOperationError('ownership-mismatch', 'Rust work claim does not match the worker packet binding');
+    }
+    const selected = current.steps.findIndex((step) => step.id === request.itemId);
+    if (selected < 0) throw new PlanOperationError('invalid-target', `Plan step ${request.itemId} was not found`);
+    const target = current.steps[selected]!;
+    if (target.status === 'done') throw new PlanOperationError('invalid-target', `Plan step ${request.itemId} is complete`);
+    if (!(target.dependsOn ?? []).every((dependency) => current.steps[dependency - 1]?.status === 'done')) {
+      throw new PlanOperationError('blocked-step', `Plan step ${request.itemId} is blocked by dependencies`);
+    }
+    if (target.status === 'doing' && target.workerId === request.workerId) return;
+    if (target.status === 'doing' && target.workerId === undefined) {
+      throw new PlanOperationError('active-step-exists', `Plan step ${request.itemId} is active without worker ownership`);
+    }
+    if (current.steps.filter((step) => step.status === 'doing').length >= 4) {
+      throw new PlanOperationError('active-step-limit', 'At most four plan steps may be active concurrently');
+    }
+    const steps = current.steps.map((step, position) =>
+      position === selected ? { ...step, status: 'doing' as const, workerId: request.workerId } : step,
+    );
+    await this.store.save(
+      request.scope,
+      current.revision,
+      immutable({ ...current, revision: current.revision + 1, phase: 'active', steps }),
+      request.signal,
+    );
+  }
+
+  async reconcile(request: {
+    readonly schedule: NativeWorkerDagSchedule;
+    readonly graph: import('./native-rust-core.js').NativeRustWorkGraph;
+    readonly signal: AbortSignal;
+  }): Promise<void> {
+    abortIfNeeded(request.signal);
+    const current = await this.store.load(request.schedule.scope, request.signal);
+    if (current === undefined) throw new PlanOperationError('inactive-plan', 'Worker dependency plan is unavailable');
+    if (
+      request.graph.graphId !== request.schedule.graphId ||
+      request.graph.items.length !== request.schedule.steps.length
+    ) {
+      throw new PlanOperationError('ownership-mismatch', 'Worker dependency graph does not match the active plan');
+    }
+    const scheduledIds = new Set(request.schedule.steps.map((step) => step.itemId));
+    if (
+      scheduledIds.size !== request.schedule.steps.length ||
+      request.schedule.steps.some((step) => !current.steps.some((candidate) => candidate.id === step.itemId)) ||
+      current.steps.some((step) => step.status !== 'done' && !scheduledIds.has(step.id))
+    ) {
+      throw new PlanOperationError('ownership-mismatch', 'Worker dependency schedule does not match unfinished plan steps');
+    }
+    const byId = new Map(request.graph.items.map((item) => [item.itemId, item] as const));
+    const steps = current.steps.map((step) => {
+      const item = byId.get(step.id);
+      if (item === undefined) {
+        if (step.status !== 'done') throw new PlanOperationError('ownership-mismatch', `Missing work item ${step.id}`);
+        return step;
+      }
+      if (item.state === 'succeeded') {
+        const { workerId: _workerId, ...unowned } = step;
+        return { ...unowned, status: 'done' as const };
+      }
+      if (item.state === 'claimed') {
+        if (item.ownerId === null) throw new PlanOperationError('ownership-mismatch', `Claimed work item ${step.id} lacks an owner`);
+        return { ...step, status: 'doing' as const, workerId: item.ownerId };
+      }
+      const { workerId: _workerId, ...unowned } = step;
+      return { ...unowned, status: 'todo' as const };
+    });
+    for (const [position, step] of steps.entries()) {
+      if ((step.dependsOn ?? []).some((dependency) => steps[dependency - 1]?.status !== 'done') && step.status !== 'todo') {
+        throw new PlanOperationError('invalid-plan', `Scheduled step ${position + 1} ran before its dependencies completed`);
+      }
+    }
+    const phase = steps.every((step) => step.status === 'done') ? 'complete' as const : 'active' as const;
+    if (JSON.stringify(steps) === JSON.stringify(current.steps) && phase === current.phase) return;
+    await this.store.save(
+      request.schedule.scope,
+      current.revision,
+      immutable({ ...current, revision: current.revision + 1, phase, steps }),
+      request.signal,
+    );
   }
 }
 
@@ -582,6 +784,239 @@ function questions(value: unknown): readonly { readonly prompt: string }[] {
   return value.map((question, index) => ({ prompt: text(record(question, `question ${index + 1}`).prompt, `question ${index + 1}.prompt`) }));
 }
 
+function revisionPrecondition(value: unknown, current: number, action: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new PlanOperationError('invalid-revision', `${action} expectedRevision must be a non-negative safe integer`);
+  }
+  if (value !== current) {
+    throw new PlanOperationError('stale-revision', `${action} expected revision ${String(value)} but current revision is ${current}`);
+  }
+  return value as number;
+}
+
+function stableStepId(value: unknown, label = 'stepId'): string {
+  const id = text(value, label);
+  if (id.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u.test(id)) {
+    throw new PlanOperationError('invalid-step-id', `${label} must be a stable plan step ID`);
+  }
+  return id;
+}
+
+function stableStepIds(value: unknown, label: string, allowEmpty = false): readonly string[] {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
+    throw new PlanOperationError('invalid-step-id', `${label} must be ${allowEmpty ? 'an' : 'a non-empty'} array of stable step IDs`);
+  }
+  const ids = value.map((entry, index) => stableStepId(entry, `${label}[${index}]`));
+  if (new Set(ids).size !== ids.length) throw new PlanOperationError('invalid-step-id', `${label} cannot contain duplicates`);
+  return ids;
+}
+
+function stepPosition(steps: readonly NativePlanStep[], stepId: string): number {
+  const position = steps.findIndex((step) => step.id === stepId);
+  if (position < 0) throw new PlanOperationError('invalid-target', `Plan step ${stepId} was not found`);
+  return position;
+}
+
+function dependencyIds(step: NativePlanStep, steps: readonly NativePlanStep[]): readonly string[] {
+  return (step.dependsOn ?? []).map((dependency) => steps[dependency - 1]!.id);
+}
+
+function affectedStepIds(steps: readonly NativePlanStep[], rootId: string): readonly string[] {
+  const affected = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const step of steps) {
+      if (affected.has(step.id)) continue;
+      if (dependencyIds(step, steps).some((dependency) => affected.has(dependency))) {
+        affected.add(step.id);
+        changed = true;
+      }
+    }
+  }
+  return steps.flatMap((step) => affected.has(step.id) ? [step.id] : []);
+}
+
+function invalidateAffected(
+  steps: readonly NativePlanStep[],
+  invalidatedStepIds: readonly string[],
+): readonly NativePlanStep[] {
+  const invalidated = new Set(invalidatedStepIds);
+  const owned = steps.find((step) => invalidated.has(step.id) && step.workerId !== undefined);
+  if (owned !== undefined) {
+    throw new PlanOperationError('worker-owned-step', `Release worker ${owned.workerId} before changing plan step ${owned.id}`);
+  }
+  return steps.map((step) => {
+    if (!invalidated.has(step.id)) return step;
+    const { receipt: _receipt, ...withoutReceipt } = step;
+    return { ...withoutReceipt, status: 'todo' as const };
+  });
+}
+
+function editPlanStep(
+  steps: readonly NativePlanStep[],
+  intent: Extract<NativePlanReviewIntent, { type: 'edit' }>,
+): { readonly steps: readonly NativePlanStep[]; readonly diff: NativePlanReviewDiff } {
+  const position = stepPosition(steps, intent.stepId);
+  const before = steps[position]!;
+  let after: NativePlanStep = before;
+  if (intent.text !== undefined) after = { ...after, text: text(intent.text, 'text') };
+  if (Object.hasOwn(intent, 'activeForm')) {
+    const { activeForm: _activeForm, ...base } = after;
+    after = intent.activeForm === null ? base : { ...base, activeForm: text(intent.activeForm, 'activeForm') };
+  }
+  if (Object.hasOwn(intent, 'checkCommand')) {
+    const { checkCommand: _checkCommand, ...base } = after;
+    after = intent.checkCommand === null ? base : { ...base, checkCommand: text(intent.checkCommand, 'checkCommand') };
+  }
+  if (after === before || JSON.stringify(after) === JSON.stringify(before)) {
+    throw new PlanOperationError('invalid-input', 'edit requires at least one changed typed field');
+  }
+  const invalidatedStepIds = affectedStepIds(steps, intent.stepId);
+  const changed = steps.map((step, index) => index === position ? after : step);
+  const invalidated = invalidateAffected(changed, invalidatedStepIds);
+  const view = (step: NativePlanStep): Pick<NativePlanStep, 'text' | 'activeForm' | 'checkCommand' | 'status'> => ({
+    text: step.text,
+    status: step.status,
+    ...(step.activeForm === undefined ? {} : { activeForm: step.activeForm }),
+    ...(step.checkCommand === undefined ? {} : { checkCommand: step.checkCommand }),
+  });
+  return {
+    steps: invalidated,
+    diff: {
+      type: 'step-edited',
+      stepId: intent.stepId,
+      before: view(before),
+      after: view(invalidated[position]!),
+      invalidatedStepIds,
+    },
+  };
+}
+
+function reorderPlanSteps(
+  steps: readonly NativePlanStep[],
+  intent: Extract<NativePlanReviewIntent, { type: 'reorder' }>,
+): { readonly steps: readonly NativePlanStep[]; readonly diff: NativePlanReviewDiff } {
+  const beforeStepIds = steps.map((step) => step.id);
+  if (intent.stepIds.length !== steps.length || intent.stepIds.some((id) => !beforeStepIds.includes(id))) {
+    throw new PlanOperationError('invalid-step-order', 'reorder stepIds must be an exact permutation of the current stable step IDs');
+  }
+  if (intent.stepIds.every((id, index) => beforeStepIds[index] === id)) {
+    throw new PlanOperationError('invalid-step-order', 'reorder must change the current step order');
+  }
+  const byId = new Map(steps.map((step) => [step.id, step] as const));
+  const dependencyIdsByStep = new Map(steps.map((step) => [step.id, dependencyIds(step, steps)] as const));
+  const nextIndex = new Map(intent.stepIds.map((id, index) => [id, index + 1] as const));
+  const reordered = intent.stepIds.map((id) => {
+    const step = byId.get(id)!;
+    const mapped = dependencyIdsByStep.get(id)!.map((dependency) => nextIndex.get(dependency)!);
+    const { dependsOn: _dependsOn, ...base } = step;
+    return mapped.length === 0 ? base : { ...base, dependsOn: mapped };
+  });
+  validateGraph(reordered);
+  return {
+    steps: reordered,
+    diff: { type: 'steps-reordered', beforeStepIds, afterStepIds: intent.stepIds },
+  };
+}
+
+function changePlanDependencies(
+  steps: readonly NativePlanStep[],
+  intent: Extract<NativePlanReviewIntent, { type: 'dependency' }>,
+): { readonly steps: readonly NativePlanStep[]; readonly diff: NativePlanReviewDiff } {
+  const position = stepPosition(steps, intent.stepId);
+  if (intent.dependsOnStepIds.includes(intent.stepId)) {
+    throw new PlanOperationError('invalid-dependencies', `Plan step ${intent.stepId} cannot depend on itself`);
+  }
+  const indexById = new Map(steps.map((step, index) => [step.id, index + 1] as const));
+  const unknown = intent.dependsOnStepIds.find((id) => !indexById.has(id));
+  if (unknown !== undefined) throw new PlanOperationError('invalid-dependencies', `Unknown dependency step ${unknown}`);
+  const beforeStepIds = dependencyIds(steps[position]!, steps);
+  const { dependsOn: _dependsOn, ...base } = steps[position]!;
+  const indexes = intent.dependsOnStepIds.map((id) => indexById.get(id)!);
+  const updated = steps.map((step, index) => index === position
+    ? indexes.length === 0 ? base : { ...base, dependsOn: indexes }
+    : step);
+  validateGraph(updated);
+  const invalidatedStepIds = affectedStepIds(updated, intent.stepId);
+  return {
+    steps: invalidateAffected(updated, invalidatedStepIds),
+    diff: {
+      type: 'dependencies-changed',
+      stepId: intent.stepId,
+      beforeStepIds,
+      afterStepIds: intent.dependsOnStepIds,
+      invalidatedStepIds,
+    },
+  };
+}
+
+function reopenPlanStep(
+  steps: readonly NativePlanStep[],
+  intent: Extract<NativePlanReviewIntent, { type: 'reopen' }>,
+): { readonly steps: readonly NativePlanStep[]; readonly diff: NativePlanReviewDiff } {
+  const position = stepPosition(steps, intent.stepId);
+  const beforeStatus = steps[position]!.status;
+  if (beforeStatus !== 'done') throw new PlanOperationError('invalid-target', `Plan step ${intent.stepId} is not complete`);
+  const invalidatedStepIds = affectedStepIds(steps, intent.stepId);
+  return {
+    steps: invalidateAffected(steps, invalidatedStepIds),
+    diff: { type: 'step-reopened', stepId: intent.stepId, beforeStatus, afterStatus: 'todo', invalidatedStepIds },
+  };
+}
+
+function parseReviewIntent(value: unknown, index: number): NativePlanReviewIntent {
+  const input = record(value, `intent ${index}`);
+  if (input.type === 'edit') {
+    assertClosed(input, ['type', 'stepId', 'text', 'activeForm', 'checkCommand'], `intent ${index}`);
+    const activeForm = input.activeForm === null ? null : optionalText(input.activeForm, `intent ${index}.activeForm`);
+    const checkCommand = input.checkCommand === null ? null : optionalText(input.checkCommand, `intent ${index}.checkCommand`);
+    return {
+      type: 'edit',
+      stepId: stableStepId(input.stepId, `intent ${index}.stepId`),
+      ...(input.text === undefined ? {} : { text: text(input.text, `intent ${index}.text`) }),
+      ...(input.activeForm === undefined ? {} : { activeForm }),
+      ...(input.checkCommand === undefined ? {} : { checkCommand }),
+    };
+  }
+  if (input.type === 'reorder') {
+    assertClosed(input, ['type', 'stepIds'], `intent ${index}`);
+    return { type: 'reorder', stepIds: stableStepIds(input.stepIds, `intent ${index}.stepIds`) };
+  }
+  if (input.type === 'dependency') {
+    assertClosed(input, ['type', 'stepId', 'dependsOnStepIds'], `intent ${index}`);
+    return {
+      type: 'dependency',
+      stepId: stableStepId(input.stepId, `intent ${index}.stepId`),
+      dependsOnStepIds: stableStepIds(input.dependsOnStepIds, `intent ${index}.dependsOnStepIds`, true),
+    };
+  }
+  if (input.type === 'reopen') {
+    assertClosed(input, ['type', 'stepId'], `intent ${index}`);
+    return { type: 'reopen', stepId: stableStepId(input.stepId, `intent ${index}.stepId`) };
+  }
+  throw new PlanOperationError('invalid-input', `Unsupported review intent type: ${String(input.type)}`);
+}
+
+function reviewIntents(value: unknown): readonly NativePlanReviewIntent[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 32) {
+    throw new PlanOperationError('invalid-input', 'review requires 1-32 typed intents');
+  }
+  return value.map((intent, index) => parseReviewIntent(intent, index + 1));
+}
+
+function applyReviewIntent(
+  steps: readonly NativePlanStep[],
+  intent: NativePlanReviewIntent,
+): { readonly steps: readonly NativePlanStep[]; readonly diff: NativePlanReviewDiff } {
+  switch (intent.type) {
+    case 'edit': return editPlanStep(steps, intent);
+    case 'reorder': return reorderPlanSteps(steps, intent);
+    case 'dependency': return changePlanDependencies(steps, intent);
+    case 'reopen': return reopenPlanStep(steps, intent);
+  }
+}
+
 function result(ok: boolean, content: Record<string, unknown>, category?: string): ToolResult {
   return { ok, content: freeze(content), detailsVersion: 1, ...(category === undefined ? {} : { category }) };
 }
@@ -597,6 +1032,14 @@ function actionLabel(action: NativePlanAction, index?: number): string {
     case 'remove': return `Removing step ${index ?? ''}`.trim();
     case 'clear': return 'Clearing plan';
     case 'show': return 'Reading plan';
+    case 'edit': return 'Editing plan step';
+    case 'reorder': return 'Reordering plan steps';
+    case 'dependency': return 'Changing plan dependencies';
+    case 'reopen': return 'Reopening plan step';
+    case 'approve': return 'Approving plan revision';
+    case 'reject': return 'Rejecting plan revision';
+    case 'change-request': return 'Requesting plan changes';
+    case 'review': return 'Reviewing plan changes';
   }
 }
 
@@ -614,7 +1057,12 @@ async function executePlan(
 ): Promise<ToolResult> {
   const params = record(execution.input, 'plan input');
   const action = params.action;
-  if (action !== 'set' && action !== 'propose' && action !== 'clarify' && action !== 'add' && action !== 'start' && action !== 'complete' && action !== 'remove' && action !== 'clear' && action !== 'show') {
+  if (
+    action !== 'set' && action !== 'propose' && action !== 'clarify' && action !== 'add' &&
+    action !== 'start' && action !== 'complete' && action !== 'remove' && action !== 'clear' && action !== 'show' &&
+    action !== 'edit' && action !== 'reorder' && action !== 'dependency' && action !== 'reopen' &&
+    action !== 'approve' && action !== 'reject' && action !== 'change-request' && action !== 'review'
+  ) {
     throw new PlanOperationError('invalid-input', `Unsupported plan action: ${String(action)}`);
   }
   const scope: PlanScope = { sessionId: String(execution.context.sessionId), workspace: execution.context.cwd };
@@ -657,6 +1105,12 @@ async function executePlan(
     if (hasCurrentPlan) publish(current);
     return success('shown');
   }
+  if (
+    action === 'edit' || action === 'reorder' || action === 'dependency' || action === 'reopen' ||
+    action === 'approve' || action === 'reject' || action === 'change-request' || action === 'review'
+  ) {
+    revisionPrecondition(params.expectedRevision, current.revision, action);
+  }
   if (hasWorkerOwnership && (action === 'clear' || action === 'set' || action === 'propose')) {
     throw new PlanOperationError('worker-owned-step', 'Release the active worker-owned plan step before replacing the plan');
   }
@@ -697,6 +1151,119 @@ async function executePlan(
     return success('clarified', plan);
   }
 
+  if (action === 'review') {
+    if (current.steps.length === 0) throw new PlanOperationError('invalid-input', 'review requires an existing plan');
+    let proposedSteps = current.steps;
+    const diff: NativePlanReviewDiff[] = [];
+    for (const intent of reviewIntents(params.intents)) {
+      const applied = applyReviewIntent(proposedSteps, intent);
+      proposedSteps = applied.steps;
+      diff.push(applied.diff);
+    }
+    const proposed = immutable({ ...current, steps: proposedSteps });
+    await execution.update({ version: 1, kind: 'details', value: { expectedRevision: current.revision, diff, proposed } });
+    await execution.update({ version: 1, kind: 'status', message: finishedLabel(action) });
+    return result(true, {
+      status: 'reviewed',
+      action,
+      expectedRevision: current.revision,
+      diff,
+      proposed,
+    });
+  }
+
+  if (action === 'approve') {
+    if (current.phase !== 'draft') throw new PlanOperationError('invalid-transition', `approve requires a draft plan, not ${current.phase}`);
+    const plan = await commit({ ...current, phase: 'approved' });
+    return success('approved', plan);
+  }
+
+  if (action === 'reject' || action === 'change-request') {
+    if (current.phase !== 'draft' && current.phase !== 'approved') {
+      throw new PlanOperationError('invalid-transition', `${action} requires a draft or approved plan, not ${current.phase}`);
+    }
+    const feedback = action === 'change-request'
+      ? text(params.feedback, 'feedback')
+      : optionalText(params.feedback, 'feedback');
+    const decisions = feedback === undefined
+      ? current.decisions
+      : [...current.decisions, {
+          question: action === 'reject' ? 'Plan review rejection' : 'Plan review change request',
+          answer: feedback,
+        }];
+    const plan = await commit({ ...current, phase: 'draft', decisions });
+    return success(action === 'reject' ? 'rejected' : 'changes-requested', plan, feedback === undefined ? {} : { feedback });
+  }
+
+  if (action === 'edit') {
+    const rawIntent: Record<string, unknown> = {
+      type: 'edit',
+      stepId: stableStepId(params.stepId),
+      ...(params.text === undefined ? {} : { text: text(params.text, 'text') }),
+      ...(params.activeForm === undefined ? {} : {
+        activeForm: params.activeForm === null ? null : text(params.activeForm, 'activeForm'),
+      }),
+      ...(params.checkCommand === undefined ? {} : {
+        checkCommand: params.checkCommand === null ? null : text(params.checkCommand, 'checkCommand'),
+      }),
+    };
+    const intent = parseReviewIntent(rawIntent, 1) as Extract<NativePlanReviewIntent, { type: 'edit' }>;
+    const applied = editPlanStep(current.steps, intent);
+    const plan = await commit({
+      ...current,
+      phase: current.phase === 'complete' ? 'active' : current.phase,
+      steps: applied.steps,
+    });
+    return success('edited', plan, {
+      stepId: intent.stepId,
+      invalidatedStepIds: applied.diff.type === 'step-edited' ? applied.diff.invalidatedStepIds : [],
+      diff: applied.diff,
+    });
+  }
+
+  if (action === 'reorder') {
+    const intent: Extract<NativePlanReviewIntent, { type: 'reorder' }> = {
+      type: 'reorder',
+      stepIds: stableStepIds(params.stepIds, 'stepIds'),
+    };
+    const applied = reorderPlanSteps(current.steps, intent);
+    const plan = await commit({ ...current, steps: applied.steps });
+    return success('reordered', plan, { diff: applied.diff });
+  }
+
+  if (action === 'dependency') {
+    const intent: Extract<NativePlanReviewIntent, { type: 'dependency' }> = {
+      type: 'dependency',
+      stepId: stableStepId(params.stepId),
+      dependsOnStepIds: stableStepIds(params.dependsOnStepIds, 'dependsOnStepIds', true),
+    };
+    const applied = changePlanDependencies(current.steps, intent);
+    const plan = await commit({
+      ...current,
+      phase: current.phase === 'complete' ? 'active' : current.phase,
+      steps: applied.steps,
+    });
+    return success('dependencies-changed', plan, {
+      stepId: intent.stepId,
+      invalidatedStepIds: applied.diff.type === 'dependencies-changed' ? applied.diff.invalidatedStepIds : [],
+      diff: applied.diff,
+    });
+  }
+
+  if (action === 'reopen') {
+    const intent: Extract<NativePlanReviewIntent, { type: 'reopen' }> = {
+      type: 'reopen',
+      stepId: stableStepId(params.stepId),
+    };
+    const applied = reopenPlanStep(current.steps, intent);
+    const plan = await commit({ ...current, phase: 'active', steps: applied.steps });
+    return success('reopened', plan, {
+      stepId: intent.stepId,
+      invalidatedStepIds: applied.diff.type === 'step-reopened' ? applied.diff.invalidatedStepIds : [],
+      diff: applied.diff,
+    });
+  }
+
   if (current.phase === 'draft') throw new PlanOperationError('approval-required', 'Draft plan requires explicit approval before execution');
   if (action === 'add') {
     const step = parseStep({ text: params.text, activeForm: params.activeForm, dependsOn: params.dependsOn, checkCommand: params.checkCommand }, current.steps.length + 1, current.steps.length + 1, current.revision + 1);
@@ -708,13 +1275,14 @@ async function executePlan(
 
   const targetIndex = existingIndex(params.index, action, current.steps);
   if (action === 'start') {
-    const active = current.steps.findIndex((step) => step.status === 'doing') + 1;
+    const active = current.steps.flatMap((step, position) => step.status === 'doing' ? [position + 1] : []);
     const runnable = current.steps.flatMap((step, position) => step.status === 'todo' && (step.dependsOn ?? []).every((dependency) => current.steps[dependency - 1]?.status === 'done') ? [position + 1] : []);
     const selected = targetIndex ?? (runnable.length === 1 ? runnable[0] : undefined);
     if (selected === undefined) throw new PlanOperationError('explicit-index-required', 'start requires an explicit index when zero or multiple steps are runnable');
-    if (active > 0 && active !== selected) throw new PlanOperationError('active-step-exists', `Step ${active} is already active`);
     const target = current.steps[selected - 1]!;
     if (target.status === 'done') throw new PlanOperationError('invalid-target', `Step ${selected} is already complete`);
+    if (target.status === 'doing') return success('already-started', current, { index: selected });
+    if (active.length >= 4) throw new PlanOperationError('active-step-limit', 'At most four plan steps may be active concurrently');
     if (!(target.dependsOn ?? []).every((dependency) => current.steps[dependency - 1]?.status === 'done')) throw new PlanOperationError('blocked-step', `Step ${selected} is blocked by dependencies`);
     const steps = current.steps.map((step, position) => position === selected - 1 ? { ...step, status: 'doing' as const } : step);
     const plan = await commit({ ...current, phase: 'active', steps });
@@ -772,15 +1340,24 @@ export function registerNativePlanTool(registry: ToolRegistry, options: NativePl
       type: 'object',
       required: ['action'],
       properties: {
-        action: { type: 'string', enum: ['set', 'propose', 'clarify', 'add', 'start', 'complete', 'remove', 'clear', 'show'] },
+        action: { type: 'string', enum: [
+          'set', 'propose', 'clarify', 'add', 'start', 'complete', 'remove', 'clear', 'show',
+          'edit', 'reorder', 'dependency', 'reopen', 'approve', 'reject', 'change-request', 'review',
+        ] },
         steps: { type: 'array' },
         text: { type: 'string' },
-        activeForm: { type: 'string' },
+        activeForm: { anyOf: [{ type: 'string' }, { type: 'null' }] },
         dependsOn: { type: 'array', items: { type: 'number' } },
-        checkCommand: { type: 'string' },
+        checkCommand: { anyOf: [{ type: 'string' }, { type: 'null' }] },
         index: { type: 'number' },
         receipt: { type: 'object' },
         questions: { type: 'array' },
+        expectedRevision: { type: 'integer', minimum: 0 },
+        stepId: { type: 'string' },
+        stepIds: { type: 'array', items: { type: 'string' } },
+        dependsOnStepIds: { type: 'array', items: { type: 'string' } },
+        feedback: { type: 'string' },
+        intents: { type: 'array' },
       },
       additionalProperties: false,
     },

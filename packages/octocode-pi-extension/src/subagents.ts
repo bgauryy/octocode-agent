@@ -203,7 +203,7 @@ export const SUBAGENT_REGISTRY = {
     tools: [
       'chromeDebug', // CDP execution — primary tool
       'web',         // CDP docs + web research
-      'MCPTool',     // octocode MCP server: localGetFileContent, localSearchCode, localViewStructure, etc.
+      'MCPTool',     // Octocode MCP server: localGetFileContent, localSearch, localAnalyzeGraph, etc.
       'write',       // durable handback artifacts assigned by the parent
     ],
     resourceMode: 'octocode' as ResourceMode,

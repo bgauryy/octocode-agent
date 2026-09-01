@@ -148,6 +148,18 @@ describe('built native provider, monitoring, and session resilience', () => {
         }),
       }),
     }));
+    expect(output).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        type: 'context.artifacts-projected',
+        payload: expect.objectContaining({
+          phase: 'initial',
+          sourceCount: expect.any(Number),
+          projectedCount: expect.any(Number),
+          droppedCount: expect.any(Number),
+          stablePrefixDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+      }),
+    }));
     expect(`${stdout}${stderr}`).not.toMatch(/loopback-key-must-stay-redacted/);
   });
 
@@ -185,7 +197,7 @@ describe('built native provider, monitoring, and session resilience', () => {
     expect(`${result.stdout}${result.stderr}`).not.toContain('fixture-key-must-stay-redacted');
   });
 
-  it('reclaims a dead built-host session lock but fails closed for a live owner', async () => {
+  it('uses packaged Rust persistence and resumes the session across processes without legacy file locks', async () => {
     const home = isolatedHome();
     const id = 'real-host-lock-session';
     const created = await rpc(home, [request('create', { type: 'session.create', id })]);
@@ -193,18 +205,15 @@ describe('built native provider, monitoring, and session resilience', () => {
     expect(created.lines).toContainEqual(expect.objectContaining({ requestId: 'create', ok: true }));
 
     const sessions = path.join(home, 'agent', 'sessions');
-    const lock = path.join(sessions, `${encodeURIComponent(id)}.json.lock`);
-    fs.writeFileSync(lock, JSON.stringify({ schemaVersion: 1, pid: 2_147_483_647, token: 'dead-owner', createdAt: 1 }), { mode: 0o600 });
-    const recovered = await rpc(home, [request('snapshot', { type: 'runtime.snapshot' })], ['--mode', 'rpc', '--session', id]);
-    expect(recovered.code).toBe(0);
-    expect(recovered.lines).toContainEqual(expect.objectContaining({ requestId: 'snapshot', ok: true }));
-    expect(fs.existsSync(lock)).toBe(false);
+    expect(fs.existsSync(sessions)).toBe(false);
+    expect(fs.existsSync(path.join(home, 'agent', 'core.sqlite3'))).toBe(true);
 
-    fs.writeFileSync(lock, JSON.stringify({ schemaVersion: 1, pid: process.pid, token: 'live-owner', createdAt: Date.now() }), { mode: 0o600 });
-    const blocked = await rpc(home, [request('snapshot-live', { type: 'runtime.snapshot' })], ['--mode', 'rpc', '--session', id]);
-    expect(blocked.code).not.toBe(0);
-    expect(`${blocked.stdout}${blocked.stderr}`).toMatch(/session|lock|conflict/i);
-    expect(JSON.parse(fs.readFileSync(lock, 'utf8'))).toMatchObject({ token: 'live-owner' });
-    expect(`${blocked.stdout}${blocked.stderr}`).not.toContain('fixture-key-must-stay-redacted');
-  });
+    const resumed = await rpc(home, [request('snapshot', { type: 'runtime.snapshot' })], ['--mode', 'rpc', '--session', id]);
+    expect(resumed.code).toBe(0);
+    expect(resumed.lines).toContainEqual(expect.objectContaining({
+      requestId: 'snapshot', ok: true,
+      data: expect.objectContaining({ sessionId: id }),
+    }));
+    expect(`${resumed.stdout}${resumed.stderr}`).not.toContain('fixture-key-must-stay-redacted');
+  }, 15_000);
 });

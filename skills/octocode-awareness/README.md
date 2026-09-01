@@ -35,8 +35,7 @@ the concise activation, discovery, coordination, and safety contract.
 ## Initialize
 
 ```bash
-npx @octocodeai/octocode-awareness setup --compact
-npx @octocodeai/octocode-awareness next --workspace "$PWD"
+npx @octocodeai/octocode-awareness attend --workspace "$PWD" --compact
 ```
 
 Explicit CLI use needs no global feature configuration. When enabling shell-hook
@@ -47,11 +46,12 @@ validate it. Configuration preferences never authorize hook installation.
 For the optional advanced workflow store:
 
 ```bash
-npx @octocodeai/octocode-awareness init --compact
+npx @octocodeai/octocode-awareness maintenance init --compact
 ```
 
 The host or package manager owns skill installation. Do not reconstruct destination
-paths or copy the bundled skill from an agent prompt. `init` is safe to repeat.
+paths or copy the bundled skill from an agent prompt. `maintenance init` is safe
+to repeat.
 
 This package bundles only the Awareness skill; install other workflow skills with
 `npx octocode skill --name <skill>` when needed.

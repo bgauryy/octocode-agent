@@ -476,11 +476,34 @@ describe("native noninteractive transports", () => {
     const safeWrites: string[] = [];
     vi.mocked(safe.runtime.submit).mockImplementation(async () => {
       safe.emit(event("input.received", { text: "PRIVATE PROMPT", source: "user" }));
+      safe.emit(event("message.delta", {
+        type: "thinking",
+        text: "PRIVATE THINKING",
+        requestId: "request:1",
+        messageId: "message:1",
+      }));
+      safe.emit(event("message.delta", {
+        type: "text",
+        text: "VISIBLE ANSWER",
+        requestId: "request:1",
+        messageId: "message:1",
+      }));
+      safe.emit(event("message.delta", {
+        type: "tool-call",
+        id: "call:model",
+        name: "probe",
+        input: { token: "PRIVATE MODEL INPUT" },
+        requestId: "request:1",
+        messageId: "message:1",
+      }));
       safe.emit(event("tool.requested", { callId: "call:1", name: "probe", input: { token: "PRIVATE TOKEN" } }));
       safe.emit(event("tool.ended", { callId: "call:1", name: "probe", result: { content: "PRIVATE RESULT" } }));
     });
     await runJsonTransport(safe.runtime, "hello", (value) => safeWrites.push(value));
-    expect(safeWrites.join("")).not.toMatch(/PRIVATE PROMPT|PRIVATE TOKEN|PRIVATE RESULT/);
+    expect(safeWrites.join("")).not.toMatch(
+      /PRIVATE PROMPT|PRIVATE THINKING|PRIVATE MODEL INPUT|PRIVATE TOKEN|PRIVATE RESULT/,
+    );
+    expect(safeWrites.join("")).toContain("VISIBLE ANSWER");
 
     const full = runtimeFixture();
     const fullWrites: string[] = [];

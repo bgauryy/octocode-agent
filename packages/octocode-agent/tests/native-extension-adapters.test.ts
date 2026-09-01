@@ -44,7 +44,7 @@ describe('native filesystem extension adapters', () => {
     expect(selected.plugins.map(({ manifest }) => manifest.id)).toEqual(['explicit-only']);
   });
 
-  it('discovers exact Codex hooks and declarative plugin contributions with hash review invalidation', async () => {
+  it('discovers exact Codex hooks, rejects inert declarative tools, and preserves hash review invalidation', async () => {
     const paths = fixture();
     const hookFile = path.join(paths.workspace, '.codex', 'hooks.json');
     fs.writeFileSync(hookFile, JSON.stringify({ hooks: { PreToolUse: [{ matcher: '^edit$', hooks: [{ type: 'command', command: 'check', timeout: 2 }] }] } }));
@@ -76,11 +76,7 @@ describe('native filesystem extension adapters', () => {
       pluginGrants: { example: ['tools.register'] },
     }));
     await controller.discover();
-    await expect(controller.activateEligible()).resolves.toEqual({ activated: ['example'], skipped: [] });
-    expect(controller.snapshot().contributions).toEqual([
-      expect.objectContaining({ kind: 'tool', id: 'example:search', owner: 'example' }),
-    ]);
-    controller.deactivate('example');
+    await expect(controller.activateEligible()).rejects.toThrow(/requires an executable activation API/);
     expect(controller.snapshot().contributions).toEqual([]);
 
     fs.writeFileSync(path.join(pluginRoot, 'contributions', 'tools.json'), JSON.stringify([{ id: 'search', description: 'changed' }]));

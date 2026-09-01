@@ -1,4 +1,5 @@
 import { RuntimeFailure } from '../contracts/errors.js';
+import { assertModelToolResultV1 } from '../contracts/artifacts.js';
 import { revision, type Revision, type SessionId } from '../contracts/identity.js';
 import type { SessionEvent, SessionLoadResult, SessionProjection, SessionRecord, SessionStore, SessionStoredEvent } from '../contracts/sessions.js';
 
@@ -27,6 +28,15 @@ const isModelToolCall = (value: unknown): boolean => isRecord(value)
   && typeof value['id'] === 'string'
   && typeof value['name'] === 'string';
 
+const isModelToolResultV1 = (value: unknown): boolean => {
+  try {
+    assertModelToolResultV1(value);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const isStoredEvent = (value: unknown): value is SessionStoredEvent => {
   if (!isRecord(value) || typeof value['type'] !== 'string') return false;
   switch (value['type']) {
@@ -46,8 +56,9 @@ const isStoredEvent = (value: unknown): value is SessionStoredEvent => {
           ));
       }
       if (value['role'] === 'tool') {
-        return hasShape(value, ['type', 'role', 'content'], ['toolCallId'])
-          && isOptionalString(value, 'toolCallId');
+        return hasShape(value, ['type', 'role', 'content'], ['toolCallId', 'result'])
+          && isOptionalString(value, 'toolCallId')
+          && (!Object.hasOwn(value, 'result') || isModelToolResultV1(value['result']));
       }
       return false;
     }
@@ -179,7 +190,13 @@ const project = (id: SessionId, events: readonly SessionEvent[], base: SessionPr
         if (stored.visibility === 'model') {
           if (event.role === 'assistant') modelContext.push({ eventId: stored.eventId, role: 'assistant', content: event.content, ...(event.toolCalls === undefined ? {} : { toolCalls: event.toolCalls }) });
           else if (event.role === 'tool') {
-            if (event.toolCallId !== undefined) modelContext.push({ eventId: stored.eventId, role: 'tool', content: event.content, toolCallId: event.toolCallId });
+            if (event.toolCallId !== undefined) modelContext.push({
+              eventId: stored.eventId,
+              role: 'tool',
+              content: event.content,
+              toolCallId: event.toolCallId,
+              ...(event.result === undefined ? {} : { result: event.result }),
+            });
           } else modelContext.push({ eventId: stored.eventId, role: event.role, content: event.content });
         }
         break;

@@ -78,8 +78,6 @@ unapproved denial.
 The Pi adapter connects to enabled servers during initialization and discovers their
 instructions and tools. Its private workspace catalog is stored under:
 
-The private workspace catalog is stored under:
-
 ```text
 $OCTOCODE_HOME/agent/mcp/workspaces/<workspace-digest>/
 ├── catalog.json

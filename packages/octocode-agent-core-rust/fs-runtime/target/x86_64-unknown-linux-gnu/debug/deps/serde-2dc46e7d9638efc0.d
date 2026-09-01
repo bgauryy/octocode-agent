@@ -1,0 +1,12 @@
+/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core-rust/fs-runtime/target/x86_64-unknown-linux-gnu/debug/deps/serde-2dc46e7d9638efc0.d: /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/bgaryy/code/octocode-agent/packages/octocode-agent-core-rust/fs-runtime/target/x86_64-unknown-linux-gnu/debug/build/serde-ccd53685a8effbbd/out/private.rs
+
+/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core-rust/fs-runtime/target/x86_64-unknown-linux-gnu/debug/deps/libserde-2dc46e7d9638efc0.rmeta: /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/bgaryy/code/octocode-agent/packages/octocode-agent-core-rust/fs-runtime/target/x86_64-unknown-linux-gnu/debug/build/serde-ccd53685a8effbbd/out/private.rs
+
+/Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core-rust/fs-runtime/target/x86_64-unknown-linux-gnu/debug/build/serde-ccd53685a8effbbd/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core-rust/fs-runtime/target/x86_64-unknown-linux-gnu/debug/build/serde-ccd53685a8effbbd/out

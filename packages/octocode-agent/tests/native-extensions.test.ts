@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createEffectSet,
   pluginId,
   revision,
+  ToolRegistry,
   type CodexHookConfiguration,
   type HookSourceDescriptor,
   type PluginCapabilityGrant,
@@ -163,6 +165,98 @@ describe('native extensions controller', () => {
       contributions: [],
       activeLeases: [],
     });
+  });
+
+  it('registers executable custom tools through the activation API with namespaced identity', async () => {
+    const execute = vi.fn(async () => ({ ok: true, content: { echoed: true }, detailsVersion: 1 }));
+    const controller = new NativeExtensionsController({
+      discoverHooks: async () => [],
+      discoverPlugins: async () => [plugin('api-tools')],
+      activatePlugin: async (_candidate, writer) => {
+        writer.addTool('echo', {
+          name: 'ignored-untrusted-name',
+          label: 'Echo',
+          description: 'Echo input',
+          schemaVersion: 1,
+          inputSchema: { type: 'object' },
+          outputSchema: { type: 'object' },
+          outputVersion: 1,
+          policy: { effects: createEffectSet('read'), trust: 'none', approval: 'never', plan: 'allowed' },
+          execute,
+        });
+      },
+    });
+    await controller.discover();
+    await controller.activate('api-tools');
+    const registry = new ToolRegistry();
+
+    expect(controller.registerTools(registry)).toEqual(['api-tools:echo']);
+    expect(registry.list().map(({ name, owner }) => ({ name, owner }))).toEqual([
+      { name: 'api-tools:echo', owner: 'plugin:api-tools' },
+    ]);
+    const signal = new AbortController().signal;
+    await expect(registry.get('api-tools:echo')!.execute({
+      input: {},
+      callId: 'call-1' as never,
+      context: {
+        sessionId: 'session-1' as never,
+        cwd: process.cwd(),
+        mode: 'headless',
+        trust: { workspace: 'trusted', managedOnly: false },
+        signal,
+      },
+      signal,
+      update: async () => undefined,
+    })).resolves.toMatchObject({ ok: true, content: { echoed: true } });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(controller.snapshot().activeLeases).toEqual([]);
+  });
+
+  it('removes published tools on disable and exposes reverse-order unload lifecycle', async () => {
+    const lifecycle: string[] = [];
+    const controller = new NativeExtensionsController({
+      discoverHooks: async () => [],
+      discoverPlugins: async () => [plugin('first'), plugin('second')],
+      activatePlugin: async (candidate, writer) => {
+        writer.addTool('echo', {
+          name: 'ignored',
+          label: 'Echo',
+          description: 'Echo input',
+          schemaVersion: 1,
+          inputSchema: { type: 'object' },
+          outputSchema: { type: 'object' },
+          outputVersion: 1,
+          policy: { effects: createEffectSet('read'), trust: 'none', approval: 'never', plan: 'allowed' },
+          execute: async () => ({ ok: true, content: { plugin: candidate.manifest.id }, detailsVersion: 1 }),
+        });
+      },
+      onLifecycle: (event) => lifecycle.push(`${event.pluginId}:${event.state}`),
+    });
+    await controller.discover();
+    await controller.activate('first');
+    await controller.activate('second');
+    const registry = new ToolRegistry();
+    controller.registerTools(registry);
+
+    controller.deactivateAll();
+
+    expect(registry.list()).toEqual([]);
+    expect(lifecycle.filter((entry) => entry.endsWith(':deactivating'))).toEqual([
+      'second:deactivating',
+      'first:deactivating',
+    ]);
+  });
+
+  it('fails closed when a declared plugin tool has no executable API implementation', async () => {
+    const controller = new NativeExtensionsController({
+      discoverHooks: async () => [],
+      discoverPlugins: async () => [plugin('inert')],
+      activatePlugin: async (_candidate, writer) => writer.add({ kind: 'tool', id: 'inert:tool', value: { label: 'Inert' } }),
+    });
+    await controller.discover();
+    await controller.activate('inert');
+
+    expect(() => controller.registerTools(new ToolRegistry())).toThrow(/requires an executor provided through the activation API/);
   });
 
   it('keeps discovery transactional so a failed catalog build can be retried cleanly', async () => {

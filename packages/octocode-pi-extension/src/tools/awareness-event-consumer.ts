@@ -35,6 +35,17 @@ const nonEmptyString = (value: unknown): string | undefined => (
   typeof value === 'string' && value.trim() ? value.trim() : undefined
 );
 
+function isPersistedPeerDelivery(entry: unknown, message: AwarenessPeerDelivery): boolean {
+  if (!entry || typeof entry !== 'object') return false;
+  const record = entry as Record<string, unknown>;
+  if (record['type'] !== 'custom_message' || record['customType'] !== message.customType) return false;
+  const details = record['details'];
+  if (!details || typeof details !== 'object') return false;
+  const receipt = details as Record<string, unknown>;
+  return receipt['eventId'] === message.details.eventId
+    && receipt['sequence'] === message.details.sequence;
+}
+
 const initialObservability = (consumerId: string): AwarenessEventObservability => ({
   consumerId,
   backlogDepth: 0,
@@ -86,7 +97,23 @@ export function registerAwarenessEventConsumer(pi: PiInstance, options: Register
         ...(options.maxEventsPerDrain ? { maxEventsPerDrain: options.maxEventsPerDrain } : {}),
         deliver: (message) => {
           if (!pi.sendMessage) throw new Error('Pi custom message delivery is unavailable');
-          pi.sendMessage(message, { triggerTurn: false, deliverAs: 'nextTurn' });
+          const readEntries = ctx.sessionManager?.getEntries ?? ctx.sessionManager?.getBranch;
+          if (!readEntries) {
+            throw new Error('Pi session persistence receipts are unavailable; Awareness event remains unacknowledged');
+          }
+
+          /*
+           * Pi 0.84.x sendMessage returns void and its runtime swallows asynchronous
+           * sendCustomMessage rejection. Avoid nextTurn (which is only an in-memory
+           * queue) and positively verify the event identity in the durable session
+           * ledger before allowing Awareness to advance its cursor.
+           */
+          const persisted = () => readEntries.call(ctx.sessionManager)
+            .some((entry) => isPersistedPeerDelivery(entry, message));
+          if (!persisted()) pi.sendMessage(message, { triggerTurn: false });
+          if (!persisted()) {
+            throw new Error('Pi custom message persistence was not confirmed; Awareness event remains unacknowledged');
+          }
           options.onDelivery?.(message, ctx);
         },
         onObservability: (stats) => options.onObservability?.(stats, ctx),

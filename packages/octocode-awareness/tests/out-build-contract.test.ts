@@ -67,7 +67,8 @@ describe('Awareness out build contract', () => {
     const bundledSkill = read('out/skills/octocode-awareness/SKILL.md');
     expect(bundledSkill).toContain('NOTICE → INSPECT → COORDINATE → VERIFY');
     expect(bundledSkill).toContain('## Start small');
-    expect(bundledSkill).toContain('npx @octocodeai/octocode-awareness setup --compact');
+    expect(bundledSkill).toContain('npx @octocodeai/octocode-awareness attend');
+    expect(bundledSkill).toContain('## Reflect when it earns storage');
     expect(bundledSkill).not.toMatch(/Haiku|Composer 2\.5/);
     expect(existsSync(resolve(PACKAGE_ROOT, 'dist'))).toBe(false);
 

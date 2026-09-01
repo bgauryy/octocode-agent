@@ -22,4 +22,9 @@ describe('host-neutral package boundary', () => {
     const violations = sourceFiles.flatMap((path) => forbidden.test(readFileSync(path, 'utf8')) ? [path] : []);
     expect(violations).toEqual([]);
   });
+
+  it('keeps blocked tool-call finalization behind one runtime owner', () => {
+    const kernel = readFileSync(join(packageRoot, 'src/runtime/kernel.ts'), 'utf8');
+    expect(kernel.match(/#emit\(["']tool\.blocked["']/g)).toHaveLength(1);
+  });
 });

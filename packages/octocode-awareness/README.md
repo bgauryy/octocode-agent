@@ -11,31 +11,29 @@ One local communication and coordination layer for coding agents sharing a works
 Requires Node 22.13 or newer.
 
 ```bash
-npx @octocodeai/octocode-awareness setup --compact
-npx @octocodeai/octocode-awareness next --workspace "$PWD"
+npx @octocodeai/octocode-awareness attend --workspace "$PWD" --compact
 ```
 
-`setup` defaults to repository coordination and global memory. CLI use needs no global
-configuration; configure it only for shell hooks. See [configuration](docs/CONFIGURATION.md).
+Durable state remains in the single default agent database. CLI use needs no
+global configuration; configure it only for shell hooks. See
+[configuration](docs/CONFIGURATION.md).
 For the optional advanced store:
 
 ```bash
-npx @octocodeai/octocode-awareness init --compact
+npx @octocodeai/octocode-awareness maintenance init --compact
 ```
 
 The package manager owns skill installation. This package bundles only Awareness.
 
 ## One shared external-agent surface
 
-In-process hosts import the same package contracts:
-
 ```bash
-npx @octocodeai/octocode-awareness setup --compact
-npx @octocodeai/octocode-awareness next --workspace "$PWD"
-npx @octocodeai/octocode-awareness inspect workboard --workspace "$PWD"
-npx @octocodeai/octocode-awareness verify --workspace "$PWD"
-npx @octocodeai/octocode-awareness close --run-id <id> --workspace "$PWD"
+export OCTOCODE_AGENT_ID="${OCTOCODE_AGENT_ID:-my-agent}"
+npx @octocodeai/octocode-awareness attend --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" --compact
 ```
+
+Follow `attend.next`. The routine loop is `work start` → `work end` →
+`verify mark` → `verify audit`; the [user guide](docs/SKILLS.md) owns exact flags.
 
 In-process hosts import the same contracts instead of recreating policy, flags, or JSON adapters:
 
@@ -53,18 +51,19 @@ import {
 `instructions export --format prompt` emits a raw prompt fragment;
 `--format agents-md` wraps the same policy in stable replacement markers; and
 `--format json` emits a machine-readable envelope. Export writes only to stdout.
-Callers own prompt injection or `AGENTS.md` replacement and should replace the
+Callers own prompt injection or `AGENTS.md` replacement and must replace the
 marked block rather than append duplicates.
 
-Workspace policy stores repository coordination under `<workspace>/.octocode/` and keeps
-reusable memory global by default. Configure it with `setup --repository-scope repo|global
---memory-scope repo|global --hook-profile guard|coordination|full`. `--db-scope` is a
-one-call override and `--db` selects an explicit path. See [storage scopes](docs/STORAGE_SCOPES.md).
+All durable coordination and memory use
+`$OCTOCODE_HOME/agent/agent.sqlite3` by default. Workspace isolation is logical
+through database scope columns. Repository `.octocode/` files are explicit
+exports or authored plan artifacts, not the live database. `--db` selects an
+explicit database for one call. See [storage scopes](docs/STORAGE_SCOPES.md).
 
-The same root binary also exposes reflection, query, session, digest, and maintenance workflows. Shared-ledger verbs use `coordination` when a name would otherwise be ambiguous.
+The same root binary also exposes reflection, query, session, digest, and maintenance workflows. Shared-ledger verbs use `coordination` when a name is ambiguous.
 
 Host hook installation is optional and separately approval-gated. Preview the exact
-project change, ask the user immediately before mutation, then install and verify:
+project change, request approval immediately before mutation, and then install and verify:
 
 ```bash
 npx @octocodeai/octocode-awareness hooks install --host <claude|codex|copilot|cursor|gemini|opencode> --profile coordination --project-dir . --dry-run

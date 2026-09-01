@@ -1,20 +1,26 @@
-import type { UiInteractionRequest, UiInteractionResult } from '@octocodeai/agent-core';
+import type {
+  UiInteractionRequest,
+  UiInteractionResult,
+} from "@octocodeai/agent-core";
+import type {
+  NativePresentationInputEvent,
+  NativePresentationInteractionRequest,
+} from "../../presentation/contracts.js";
+import { parseNativePresentationInteractionRequest } from "../../presentation/contracts.js";
 
 import type {
-  OpenTuiInputEvent,
   OpenTuiRendererEvents,
   OpenTuiRendererFacade,
   OpenTuiTerminal,
   OpenTuiTerminalDependencies,
   PresentationEvent,
-  PresentationInteractionRequest,
   PresentationState,
-  PresentationStore,
-} from './presentation.js';
+} from "./presentation.js";
+import type { OpenTuiStore } from "./state/view-store.js";
 
 interface PendingInteraction {
   readonly generation: number;
-  readonly request: PresentationInteractionRequest;
+  readonly request: NativePresentationInteractionRequest;
   readonly signal: AbortSignal;
   readonly onAbort: () => void;
   readonly resolve: (result: UiInteractionResult) => void;
@@ -22,26 +28,41 @@ interface PendingInteraction {
 
 function presentationInteractionRequest(
   request: UiInteractionRequest,
-): PresentationInteractionRequest | undefined {
+): NativePresentationInteractionRequest | undefined {
+  if (request.type === "custom") return undefined;
+  const workflow = request.workflow === undefined ? {} : { workflow: request.workflow };
+  let candidate: unknown;
   switch (request.type) {
-    case 'confirm': return { type: 'confirm', message: request.message };
-    case 'select': return request.options.length > 0 && request.options.length <= 100
-      ? { type: 'select', message: request.message, options: [...request.options] }
-      : undefined;
-    case 'input': return {
-      type: 'input',
-      message: request.message,
-      ...(request.initial === undefined ? {} : { initial: request.initial }),
-    };
-    case 'editor': return { type: 'editor', message: request.message, initial: request.initial };
-    case 'custom': return undefined;
+    case "confirm":
+      candidate = { type: "confirm", message: request.message, ...workflow };
+      break;
+    case "select":
+      candidate = { type: "select", message: request.message, options: request.options, ...workflow };
+      break;
+    case "input":
+      candidate = {
+        type: "input",
+        message: request.message,
+        ...workflow,
+        ...(request.initial === undefined ? {} : { initial: request.initial }),
+      };
+      break;
+    case "editor":
+      candidate = {
+        type: "editor",
+        message: request.message,
+        initial: request.initial,
+        ...workflow,
+      };
+      break;
   }
+  return parseNativePresentationInteractionRequest(candidate);
 }
 
 function abortedInteractionResult(reason: unknown): UiInteractionResult {
-  return typeof reason === 'string' && reason.toLowerCase().includes('timeout')
-    ? { status: 'timeout' }
-    : { status: 'cancelled' };
+  return typeof reason === "string" && reason.toLowerCase().includes("timeout")
+    ? { status: "timeout" }
+    : { status: "cancelled" };
 }
 
 /**
@@ -50,7 +71,7 @@ function abortedInteractionResult(reason: unknown): UiInteractionResult {
  * exactly one generation-scoped pending interaction.
  */
 export class OpenTuiTerminalController implements OpenTuiTerminal {
-  readonly inputOwnership: OpenTuiTerminal['inputOwnership'];
+  readonly inputOwnership: OpenTuiTerminal["inputOwnership"];
 
   private renderer?: OpenTuiRendererFacade;
   private unsubscribe?: () => void;
@@ -60,22 +81,35 @@ export class OpenTuiTerminalController implements OpenTuiTerminal {
   private inputQueue = Promise.resolve();
   private pendingRender?: PresentationState;
   private renderScheduled = false;
-  private readonly inputListeners = new Set<(
-    event: OpenTuiInputEvent,
-  ) => void | Promise<void>>();
+  private readonly inputListeners = new Set<
+    (event: NativePresentationInputEvent) => void | Promise<void>
+  >();
   private readonly failureListeners = new Set<(error: unknown) => void>();
   private pendingInteraction?: PendingInteraction;
 
   private readonly rendererEvents: OpenTuiRendererEvents = {
-    submitLine: (line) => this.enqueueInput({ type: 'line', line }),
+    submitInput: (input) => this.enqueueInput({ type: "input", input }),
+    inputValidation: (message) => {
+      this.store.getState().actions.accept({
+        type: "notification",
+        severity: "error",
+        message,
+      });
+    },
     resolveInteraction: (generation, result) => {
-      queueMicrotask(() => { this.settleInteraction(generation, result); });
+      queueMicrotask(() => {
+        this.settleInteraction(generation, result);
+      });
     },
     interrupt: () => {
       queueMicrotask(() => {
         const pending = this.pendingInteraction;
-        if (pending && this.settleInteraction(pending.generation, { status: 'cancelled' })) return;
-        this.enqueueInput({ type: 'interrupt' });
+        if (
+          pending &&
+          this.settleInteraction(pending.generation, { status: "cancelled" })
+        )
+          return;
+        this.enqueueInput({ type: "interrupt" });
       });
     },
     failure: (error) => {
@@ -85,53 +119,71 @@ export class OpenTuiTerminalController implements OpenTuiTerminal {
   };
 
   constructor(
-    private readonly dependencies: OpenTuiTerminalDependencies,
-    private readonly store: PresentationStore,
+    private readonly dependencies: OpenTuiTerminalDependencies<OpenTuiStore>,
+    private readonly store: OpenTuiStore,
   ) {
-    this.inputOwnership = dependencies.inputOwnership ?? 'external';
+    this.inputOwnership = dependencies.inputOwnership ?? "external";
   }
 
   async start(): Promise<void> {
     if (this.renderer) return;
-    if (this.destroyPromise) throw new Error('OpenTUI terminal has already stopped');
-    this.startPromise ??= this.dependencies.createRenderer(this.rendererEvents).then(async (created) => {
-      if (this.stopping) {
-        await created.destroy();
-        return;
-      }
-      this.renderer = created;
-      this.unsubscribe = this.store.subscribe((state, previous) => {
-        if (state.presentation === previous.presentation) return;
-        this.scheduleRender(state.presentation);
+    if (this.destroyPromise)
+      throw new Error("OpenTUI terminal has already stopped");
+    this.startPromise ??= this.dependencies
+      .createRenderer(this.rendererEvents, this.store)
+      .then(async (created) => {
+        if (this.stopping) {
+          await created.destroy();
+          return;
+        }
+        this.renderer = created;
+        this.unsubscribe = this.store.subscribe((state, previous) => {
+          if (state.presentation === previous.presentation) return;
+          this.scheduleRender(state.presentation);
+        });
       });
-    });
     await this.startPromise;
   }
 
   accept(event: PresentationEvent): void {
-    if (this.destroyPromise) throw new Error('OpenTUI terminal has already stopped');
-    this.store.getState().accept(event);
+    if (this.destroyPromise)
+      throw new Error("OpenTUI terminal has already stopped");
+    this.store.getState().actions.accept(event);
   }
 
-  interact(request: UiInteractionRequest, signal: AbortSignal): Promise<UiInteractionResult> {
-    if (this.destroyPromise) return Promise.resolve({ status: 'unsupported' });
+  interact(
+    request: UiInteractionRequest,
+    signal: AbortSignal,
+  ): Promise<UiInteractionResult> {
+    if (this.destroyPromise) return Promise.resolve({ status: "unsupported" });
     const presentationRequest = presentationInteractionRequest(request);
-    if (presentationRequest === undefined) return Promise.resolve({ status: 'unsupported' });
-    if (signal.aborted) return Promise.resolve(abortedInteractionResult(signal.reason));
+    if (presentationRequest === undefined)
+      return Promise.resolve({ status: "unsupported" });
+    if (signal.aborted)
+      return Promise.resolve(abortedInteractionResult(signal.reason));
     return new Promise<UiInteractionResult>((resolve) => {
       if (this.pendingInteraction) {
-        this.settleInteraction(this.pendingInteraction.generation, { status: 'cancelled' });
+        this.settleInteraction(this.pendingInteraction.generation, {
+          status: "cancelled",
+        });
       }
-      this.store.getState().accept({ type: 'interaction-requested', request: presentationRequest });
-      const generation = this.store.getState().presentation.interaction?.generation;
+      this.store
+        .getState()
+        .actions.accept({
+          type: "interaction-requested",
+          request: presentationRequest,
+        });
+      const generation =
+        this.store.getState().presentation.interaction?.generation;
       if (generation === undefined) {
-        resolve({ status: 'unsupported' });
+        resolve({ status: "unsupported" });
         return;
       }
-      const onAbort = () => this.settleInteraction(
-        generation,
-        abortedInteractionResult(signal.reason),
-      );
+      const onAbort = () =>
+        this.settleInteraction(
+          generation,
+          abortedInteractionResult(signal.reason),
+        );
       this.pendingInteraction = {
         generation,
         request: presentationRequest,
@@ -139,7 +191,7 @@ export class OpenTuiTerminalController implements OpenTuiTerminal {
         onAbort,
         resolve,
       };
-      signal.addEventListener('abort', onAbort, { once: true });
+      signal.addEventListener("abort", onAbort, { once: true });
       if (signal.aborted) onAbort();
     });
   }
@@ -148,42 +200,68 @@ export class OpenTuiTerminalController implements OpenTuiTerminal {
     const pending = this.pendingInteraction;
     if (pending === undefined) return false;
     const value = line.trim();
-    if (value === '/cancel') {
-      this.settleInteraction(pending.generation, { status: 'cancelled' });
+    if (value === "/cancel") {
+      this.settleInteraction(pending.generation, { status: "cancelled" });
+      return true;
+    }
+    if (value === "/discuss" && pending.request.workflow?.allowDiscuss === true) {
+      this.settleInteraction(pending.generation, { status: "discuss" });
       return true;
     }
     switch (pending.request.type) {
-      case 'confirm': {
+      case "confirm": {
         const answer = value.toLowerCase();
-        if (answer === 'yes' || answer === 'y') {
-          this.settleInteraction(pending.generation, { status: 'accepted', value: true });
-        } else if (answer === 'no' || answer === 'n') {
-          this.settleInteraction(pending.generation, { status: 'accepted', value: false });
+        if (answer === "yes" || answer === "y") {
+          this.settleInteraction(pending.generation, {
+            status: "accepted",
+            value: true,
+          });
+        } else if (answer === "no" || answer === "n") {
+          this.settleInteraction(pending.generation, {
+            status: "accepted",
+            value: false,
+          });
         } else {
-          this.store.getState().accept({ type: 'interaction-validation', message: 'Enter yes or no.' });
+          this.store
+            .getState()
+            .actions.accept({
+              type: "interaction-validation",
+              message: "Enter yes or no.",
+            });
         }
         return true;
       }
-      case 'select': {
+      case "select": {
         const numeric = /^\d+$/.test(value) ? Number(value) - 1 : -1;
-        const selected = numeric >= 0 && numeric < pending.request.options.length
-          ? pending.request.options[numeric]
-          : pending.request.options.find((option) => option === line);
-        if (selected === undefined) this.store.getState().accept({
-          type: 'interaction-validation',
-          message: `Choose 1-${pending.request.options.length} or enter an exact option.`,
-        });
-        else this.settleInteraction(pending.generation, { status: 'accepted', value: selected });
+        const selected =
+          numeric >= 0 && numeric < pending.request.options.length
+            ? pending.request.options[numeric]
+            : pending.request.options.find((option) => option === line);
+        if (selected === undefined)
+          this.store.getState().actions.accept({
+            type: "interaction-validation",
+            message: `Choose 1-${pending.request.options.length} or enter an exact option.`,
+          });
+        else
+          this.settleInteraction(pending.generation, {
+            status: "accepted",
+            value: selected,
+          });
         return true;
       }
-      case 'input':
-      case 'editor':
-        this.settleInteraction(pending.generation, { status: 'accepted', value: line });
+      case "input":
+      case "editor":
+        this.settleInteraction(pending.generation, {
+          status: "accepted",
+          value: line,
+        });
         return true;
     }
   }
 
-  subscribeInput(listener: (event: OpenTuiInputEvent) => void | Promise<void>): () => void {
+  subscribeInput(
+    listener: (event: NativePresentationInputEvent) => void | Promise<void>,
+  ): () => void {
     this.inputListeners.add(listener);
     return () => this.inputListeners.delete(listener);
   }
@@ -197,17 +275,23 @@ export class OpenTuiTerminalController implements OpenTuiTerminal {
     const pending = this.pendingInteraction;
     return pending === undefined
       ? false
-      : this.settleInteraction(pending.generation, { status: 'cancelled' });
+      : this.settleInteraction(pending.generation, { status: "cancelled" });
   }
 
   stop(): Promise<void> {
     if (this.destroyPromise) return this.destroyPromise;
     this.stopping = true;
     if (this.pendingInteraction) {
-      this.settleInteraction(this.pendingInteraction.generation, { status: 'cancelled' });
+      this.settleInteraction(this.pendingInteraction.generation, {
+        status: "cancelled",
+      });
     }
     this.destroyPromise = (async () => {
-      try { await this.startPromise; } catch { /* initialization already failed */ }
+      try {
+        await this.startPromise;
+      } catch {
+        /* initialization already failed */
+      }
       this.flushPendingRender();
       this.unsubscribe?.();
       this.unsubscribe = undefined;
@@ -224,42 +308,59 @@ export class OpenTuiTerminalController implements OpenTuiTerminal {
     return this.store.getState().presentation;
   }
 
-  private settleInteraction(generation: number, result: UiInteractionResult): boolean {
+  private settleInteraction(
+    generation: number,
+    result: UiInteractionResult,
+  ): boolean {
     const pending = this.pendingInteraction;
-    if (pending === undefined || pending.generation !== generation) return false;
-    const normalizedResult = result.status === 'accepted'
-      && pending.request.type === 'select'
-      && typeof result.value === 'string'
-      && /^choice-\d+$/u.test(result.value)
-      ? {
-          status: 'accepted' as const,
-          value: pending.request.options[Number(result.value.slice('choice-'.length)) - 1]
-            ?? result.value,
-        }
-      : result;
+    if (pending === undefined || pending.generation !== generation)
+      return false;
+    const normalizedResult =
+      result.status === "accepted" &&
+      pending.request.type === "select" &&
+      typeof result.value === "string" &&
+      /^choice-\d+$/u.test(result.value)
+        ? {
+            status: "accepted" as const,
+            value:
+              pending.request.options[
+                Number(result.value.slice("choice-".length)) - 1
+              ] ?? result.value,
+          }
+        : result;
     this.pendingInteraction = undefined;
-    pending.signal.removeEventListener('abort', pending.onAbort);
-    if (normalizedResult.status === 'accepted'
-      && (typeof normalizedResult.value === 'string' || typeof normalizedResult.value === 'boolean')) {
-      this.store.getState().accept({
-        type: 'interaction-resolved',
-        result: { status: 'accepted', value: normalizedResult.value },
+    pending.signal.removeEventListener("abort", pending.onAbort);
+    if (
+      normalizedResult.status === "accepted" &&
+      (typeof normalizedResult.value === "string" ||
+        typeof normalizedResult.value === "boolean")
+    ) {
+      this.store.getState().actions.accept({
+        type: "interaction-resolved",
+        result: { status: "accepted", value: normalizedResult.value },
       });
     } else {
-      const status = normalizedResult.status === 'accepted' ? 'unsupported' : normalizedResult.status;
-      this.store.getState().accept({ type: 'interaction-resolved', result: { status } });
+      const status =
+        normalizedResult.status === "accepted"
+          ? "unsupported"
+          : normalizedResult.status;
+      this.store
+        .getState()
+        .actions.accept({ type: "interaction-resolved", result: { status } });
     }
     pending.resolve(normalizedResult);
     return true;
   }
 
-  private enqueueInput(event: OpenTuiInputEvent): void {
-    this.inputQueue = this.inputQueue.then(async () => {
-      for (const listener of [...this.inputListeners]) await listener(event);
-    }).catch((error: unknown) => {
-      this.reportFailure(error);
-      void this.stop();
-    });
+  private enqueueInput(event: NativePresentationInputEvent): void {
+    this.inputQueue = this.inputQueue
+      .then(async () => {
+        for (const listener of [...this.inputListeners]) await listener(event);
+      })
+      .catch((error: unknown) => {
+        this.reportFailure(error);
+        void this.stop();
+      });
   }
 
   private scheduleRender(presentation: PresentationState): void {
@@ -276,8 +377,9 @@ export class OpenTuiTerminalController implements OpenTuiTerminal {
     const pending = this.pendingRender;
     this.pendingRender = undefined;
     if (pending === undefined || this.renderer === undefined) return;
-    try { this.renderer.render(pending); }
-    catch (error) {
+    try {
+      this.renderer.render(pending);
+    } catch (error) {
       this.reportFailure(error);
       if (!this.stopping) void this.stop();
     }
@@ -285,7 +387,11 @@ export class OpenTuiTerminalController implements OpenTuiTerminal {
 
   private reportFailure(error: unknown): void {
     for (const listener of [...this.failureListeners]) {
-      try { listener(error); } catch { /* Failure observers cannot hide the original failure. */ }
+      try {
+        listener(error);
+      } catch {
+        /* Failure observers cannot hide the original failure. */
+      }
     }
   }
 }

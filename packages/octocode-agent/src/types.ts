@@ -1,7 +1,7 @@
 import type { Readable, Writable } from 'node:stream';
 import type { AgentRuntime } from '@octocodeai/agent-core';
 import type { ParsedNativeArgs } from './native-launcher.js';
-import type { OpenTuiTerminal } from './terminal/opentui/presentation.js';
+import type { NativeInteractivePresentationPort } from './presentation/contracts.js';
 
 export interface SpawnResult { status: number | null; error?: Error; }
 export type SpawnFn = (command: string, args?: ReadonlyArray<string>, options?: { stdio?: string; env?: NodeJS.ProcessEnv }) => SpawnResult;
@@ -15,5 +15,5 @@ export interface LaunchDeps {
   cwd?: string;
   spawn?: SpawnFn;
   createRuntime?: (options: { env: NodeJS.ProcessEnv; cwd: string; args: ParsedNativeArgs }) => Promise<AgentRuntime>;
-  createTerminal?: () => OpenTuiTerminal;
+  createTerminal?: () => NativeInteractivePresentationPort;
 }

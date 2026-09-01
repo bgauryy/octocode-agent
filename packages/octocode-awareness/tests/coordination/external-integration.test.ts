@@ -51,8 +51,14 @@ describe('external-agent integration boundary', () => {
   });
 
   it('exports reusable prompt and AGENTS.md instruction blocks without touching files', () => {
-    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).toContain('setup --compact');
-    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).toContain('repository-owned commands');
+    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).toContain('attend`');
+    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).toContain('work start`');
+    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).toContain('work end`');
+    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).toContain('verify mark`');
+    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).toContain('verify audit`');
+    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).toContain('reflect record`');
+    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).not.toContain('Use `next`, `inspect`, `verify`, and `close`');
+    expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).toContain('global agent database and workspace-scoped columns');
     expect(EXTERNAL_AGENT_AWARENESS_INSTRUCTIONS).not.toContain('compatibility default is global');
     expect(execCli(['instructions', 'export'])).toEqual({
       code: 0,

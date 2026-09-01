@@ -1,16 +1,28 @@
 import {
   LifecycleBus,
   RuntimeFailure,
+  assertModelToolResultV1,
   revision,
   sessionEventId,
   type LifecycleDispatchResult,
   type ModelToolCall,
+  type ModelToolResultV1,
   type Revision,
   type RuntimeEvent,
   type SessionEvent,
   type SessionId,
   type SessionStore,
 } from '@octocodeai/agent-core';
+
+const durableModelToolResult = (value: unknown): ModelToolResultV1 | undefined => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const candidate = (value as Record<string, unknown>).content;
+  try {
+    return assertModelToolResultV1(candidate);
+  } catch {
+    return undefined;
+  }
+};
 
 /** Projects ordered runtime lifecycle events into the durable session stream. */
 export function createRuntimeEventPersister(options: {
@@ -25,6 +37,7 @@ export function createRuntimeEventPersister(options: {
   const assistantChunks: string[] = [];
   const assistantToolCalls: ModelToolCall[] = [];
   const pendingToolCalls = new Map<string, string>();
+  const runtimeToolCalls = new Set<string>();
   const requestedToolCalls = new Set<string>();
   const pendingLifecycleContext: string[] = [];
   let assistantMessageEnded = false;
@@ -90,11 +103,13 @@ export function createRuntimeEventPersister(options: {
   ): Promise<boolean> => {
     if (!pendingToolCalls.has(callId)) return false;
     pendingToolCalls.delete(callId);
+    const result = durableModelToolResult(content);
     await append(runtimeEvent, {
       type: 'message.appended',
       role: 'tool',
       toolCallId: callId,
       content: JSON.stringify(content) ?? 'null',
+      ...(result === undefined ? {} : { result }),
     }, 'model');
     return true;
   };
@@ -106,7 +121,7 @@ export function createRuntimeEventPersister(options: {
   const flushLifecycleContext = async (runtimeEvent: RuntimeEvent): Promise<void> => {
     if (pendingToolCalls.size > 0 || pendingLifecycleContext.length === 0) return;
     for (const context of pendingLifecycleContext.splice(0)) {
-      await append(runtimeEvent, { type: 'message.appended', role: 'system', content: context }, 'model');
+      await append(runtimeEvent, { type: 'message.appended', role: 'user', content: context }, 'model');
     }
   };
 
@@ -120,7 +135,16 @@ export function createRuntimeEventPersister(options: {
       const candidate = rewritten as Record<string, unknown>;
       if (typeof candidate.name !== 'string' || !candidate.name.trim()) throw new RuntimeFailure('validation', 'tool.requested lifecycle payload requires a non-empty name');
       if (!('input' in candidate)) throw new RuntimeFailure('validation', 'tool.requested lifecycle payload requires input');
-      lifecycleResult = { ...lifecycleResult, payload: { ...candidate, callId: original.callId } };
+      const origin = original.origin;
+      if (origin !== undefined && origin !== 'runtime') throw new RuntimeFailure('validation', 'tool.requested origin must be runtime when present');
+      lifecycleResult = {
+        ...lifecycleResult,
+        payload: {
+          ...candidate,
+          callId: original.callId,
+          ...(origin === undefined ? {} : { origin }),
+        },
+      };
     }
     runtimeEvent = lifecycleResult.payload === runtimeEvent.payload
       ? runtimeEvent
@@ -148,6 +172,18 @@ export function createRuntimeEventPersister(options: {
     }
 
     if (runtimeEvent.type === 'tool.requested' && typeof payload.callId === 'string') {
+      if (payload.origin === 'runtime') {
+        runtimeToolCalls.add(payload.callId);
+        const records: Array<{ event: SessionEvent['event']; visibility: SessionEvent['visibility'] }> = [
+          { event: { type: 'custom.appended', kind: runtimeEvent.type, value: runtimeEvent.payload }, visibility: 'diagnostics' },
+          ...lifecycleResult.context.map((text) => ({
+            event: { type: 'custom.appended' as const, kind: 'tool.lifecycle-context', value: { callId: payload.callId, text } },
+            visibility: 'diagnostics' as const,
+          })),
+        ];
+        await appendBatch(runtimeEvent, records);
+        return lifecycleResult;
+      }
       const call = assistantToolCalls.find((candidate) => candidate.id === payload.callId);
       if (!call) throw new RuntimeFailure('internal-invariant', `tool.requested has no buffered assistant call: ${payload.callId}`);
       const index = assistantToolCalls.indexOf(call);
@@ -158,6 +194,10 @@ export function createRuntimeEventPersister(options: {
     }
 
     if (runtimeEvent.type === 'tool.blocked' && typeof payload.callId === 'string') {
+      if (runtimeToolCalls.delete(payload.callId)) {
+        await append(runtimeEvent, { type: 'custom.appended', kind: runtimeEvent.type, value: runtimeEvent.payload }, 'diagnostics');
+        return lifecycleResult;
+      }
       if (assistantMessageEnded && assistantToolCalls.length > 0) await flushAssistant(runtimeEvent);
       await appendToolResult(runtimeEvent, payload.callId, {
         error: typeof payload.error === 'string' ? payload.error : 'Tool call blocked',
@@ -167,9 +207,14 @@ export function createRuntimeEventPersister(options: {
       return lifecycleResult;
     }
     if (runtimeEvent.type === 'tool.ended' && typeof payload.callId === 'string') {
+      if (runtimeToolCalls.delete(payload.callId)) {
+        await append(runtimeEvent, { type: 'custom.appended', kind: runtimeEvent.type, value: runtimeEvent.payload }, 'diagnostics');
+        return lifecycleResult;
+      }
       if (assistantMessageEnded && assistantToolCalls.length > 0) await flushAssistant(runtimeEvent);
       const appended = await appendToolResult(runtimeEvent, payload.callId, payload.result === undefined ? { error: payload.error } : payload.result);
       if (!appended) await append(runtimeEvent, { type: 'custom.appended', kind: runtimeEvent.type, value: runtimeEvent.payload }, 'diagnostics');
+      pendingLifecycleContext.push(...lifecycleResult.context);
       await flushLifecycleContext(runtimeEvent);
       return lifecycleResult;
     }
@@ -188,7 +233,7 @@ export function createRuntimeEventPersister(options: {
         throw new RuntimeFailure('validation', 'context.appended requires attributed peer context identity');
       }
       await appendBatch(runtimeEvent, [
-        { event: { type: 'message.appended', role: 'system', content: text }, visibility: 'model', causationId: eventId },
+        { event: { type: 'message.appended', role: 'user', content: text }, visibility: 'model', causationId: eventId },
         { event: { type: 'custom.appended', kind: 'native.context.event', value: { eventId, provenance: payload.provenance } }, visibility: 'internal', causationId: eventId },
       ]);
       return lifecycleResult;
@@ -198,13 +243,23 @@ export function createRuntimeEventPersister(options: {
       && typeof payload.text === 'string'
       ? payload.text
       : undefined;
+    if (modelVisibleInputText !== undefined) {
+      await appendBatch(runtimeEvent, [
+        ...lifecycleResult.context.map((content) => ({
+          event: { type: 'message.appended' as const, role: 'user' as const, content },
+          visibility: 'model' as const,
+        })),
+        { event: { type: 'message.appended', role: 'user', content: modelVisibleInputText }, visibility: 'model' },
+      ]);
+      return lifecycleResult;
+    }
     const storedEvent: SessionEvent['event'] = modelVisibleInputText !== undefined
       ? { type: 'message.appended', role: 'user', content: modelVisibleInputText }
       : { type: 'custom.appended', kind: runtimeEvent.type, value: runtimeEvent.payload };
     await append(
       runtimeEvent,
       storedEvent,
-      modelVisibleInputText !== undefined ? 'model' : 'diagnostics',
+      'diagnostics',
     );
     return lifecycleResult;
   };

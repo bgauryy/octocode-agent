@@ -71,7 +71,7 @@ test('each dial level maps to the spec thinking level and worker cap', async () 
     low: { thinking: 'low', workers: 1 },
     medium: { thinking: 'medium', workers: 2 },
     high: { thinking: 'high', workers: 4 },
-    ultra: { thinking: 'xhigh', workers: 8 },
+    ultra: { thinking: 'xhigh', workers: 4 },
   };
 
   for (const level of EFFORT_LEVELS) {
@@ -240,7 +240,7 @@ test('/octocode-dial with no args uses the picker and applies the choice', async
   await def.handler('', ctx);
 
   assert.deepEqual(fake.thinkingCalls, ['xhigh']);
-  assert.equal(env[DIAL_MAX_ACTIVE_ENV], '8');
+  assert.equal(env[DIAL_MAX_ACTIVE_ENV], '4');
   assert.equal(getDialLevel(), 'ultra');
   assert.match(notifications[0]!.message, /Effort dial: ultra/);
 });
@@ -275,4 +275,8 @@ test('argument completions offer the levels with preset descriptions', async () 
 
 test('DIAL_PRESETS covers exactly the four levels', () => {
   assert.deepEqual(Object.keys(DIAL_PRESETS).sort(), [...EFFORT_LEVELS].sort());
+  assert.ok(
+    Object.values(DIAL_PRESETS).every(({ maxActiveWorkers }) => maxActiveWorkers <= 4),
+    'no effort preset may exceed the cross-host root fan-out ceiling',
+  );
 });

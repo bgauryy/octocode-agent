@@ -19,14 +19,16 @@
     "test": "yarn workspaces foreach -At run test",
     "test:ffi": "yarn workspace octocode-agent test:ffi",
     "test:pack": "yarn workspace octocode-agent test:pack",
+    "test:production-conformance": "node --input-type=module -e \"import { spawnSync } from 'node:child_process'; const result = spawnSync(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', 'packages/octocode-agent-testing/tests/production-host-conformance.test.ts'], { stdio: 'inherit', env: { ...process.env, OCTOCODE_AGENT_REQUIRE_PRODUCTION_CONFORMANCE: '1' } }); process.exit(result.status ?? 1);\"",
     "test:pty": "yarn workspace octocode-agent test:pty",
     "test:pty:stream": "yarn workspace octocode-agent test:pty:stream",
     "test:pty:signals": "yarn workspace octocode-agent test:pty:signals",
     "test:performance": "yarn workspace octocode-agent test:performance",
     "test:performance:guarded": "yarn workspace octocode-agent test:performance:guarded",
     "test:quiet": "yarn workspaces foreach -At run test:quiet",
+    "test:rust-integration": "cargo build --locked --manifest-path packages/octocode-agent-core-rust/Cargo.toml --bins && cargo build --release --locked --manifest-path packages/octocode-agent-core-rust/Cargo.toml --bins && node --input-type=module -e \"import { existsSync } from 'node:fs'; import { resolve } from 'node:path'; if (process.platform === 'win32') throw new Error('Real Rust integration tests do not yet resolve Windows .exe paths; refusing to skip the release gate'); for (const relativeFile of ['debug/octocode-agent-core-rust', 'debug/octocode-agent-fs', 'release/octocode-agent-core-rust']) { const file = resolve('packages/octocode-agent-core-rust/target', relativeFile); if (!existsSync(file)) throw new Error('Required Rust integration binary is unavailable: ' + file); }\" && node node_modules/vitest/vitest.mjs run packages/octocode-agent/tests/native-rust-core.test.ts packages/octocode-agent/tests/native-rust-runtime.test.ts packages/octocode-agent/tests/native-rust-file-system.test.ts packages/octocode-agent/tests/native-rust-worker-messages.test.ts --maxWorkers=1",
     "typecheck": "yarn workspaces foreach -At run typecheck && yarn workspace octocode-agent typecheck:tests",
-    "verify": "yarn lint && yarn typecheck && yarn test && yarn test:ffi && yarn build && yarn test:pack && yarn test:pty && yarn test:pty:stream && yarn test:pty:signals && yarn test:performance:guarded"
+    "verify": "yarn lint && yarn typecheck && yarn test && yarn test:rust-integration && yarn test:ffi && yarn build && yarn test:pack && yarn test:production-conformance && yarn test:pty && yarn test:pty:stream && yarn test:pty:signals && yarn test:performance:guarded"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

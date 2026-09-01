@@ -16,15 +16,15 @@ On the first main-agent turn, the hook assembles either the eager `<mcp_catalog>
 
 ### Native Research Tools — 0 (removed — MCP-only)
 
-All 15 Octocode research tools (GitHub, local, LSP, npm) are **not registered as native Pi tools**. They are served via the built-in `octocode` MCP server through `MCPTool`, keeping their schemas out of Pi’s direct `tools[]` array.
+All 13 Octocode research tools (GitHub, local, graph, LSP, npm) are **not registered as native Pi tools**. They are served via the built-in `octocode` MCP server through `MCPTool`, keeping their schemas out of Pi’s direct `tools[]` array.
 
 **Call pattern:**
 ```js
-MCPTool({queries:[{reasoning:"Search remote code.", action:"call", server:"octocode", tool:"ghSearchCode",
-  arguments:{queries:[{reasoning:"Find candidate files.", keywords:["..."]}]}}]})
+MCPTool({queries:[{reasoning:"Search remote code.", action:"call", server:"octocode", tool:"ghSearch",
+  arguments:{queries:[{reasoning:"Find candidate files.", operation:"code", keywords:["..."]}]}}]})
 ```
 
-Available tools via `MCPTool server:"octocode"`: `ghSearchCode` · `ghSearchRepos` · `ghSearchPullRequests` · `ghSearchIssues` · `ghSearchCommits` · `ghGetFileContent` · `ghViewRepoStructure` · `ghCloneRepo` · `localSearchCode` · `localFindFiles` · `localFindDeadCode` · `localGetFileContent` · `localViewStructure` · `lspGetSemantics` · `npmSearch`
+Available tools via `MCPTool server:"octocode"`: `ghSearch` · `ghGetFileContent` · `ghSearchPullRequests` · `ghSearchIssues` · `ghSearchCommits` · `ghListReleases` · `ghSearchDiscussions` · `ghCloneRepo` · `npmSearch` · `localSearch` · `localGetFileContent` · `localAnalyzeGraph` · `lspGetSemantics`
 
 `warmMcpCatalog()` runs at `session_start`. The default first-turn prompt contains exact descriptions and input schemas for enabled tools from enabled MCP servers. Set `OCTOCODE_COMPACT_MCP=1` to consume/generate the concise cached `mcp.md` guide instead, with a deterministic schema-aware fallback. Calls always validate against the exact private catalog, so no prepare round trip is required.
 
@@ -73,9 +73,9 @@ and on `session_start`. Named in `DISABLED_BUILTIN_TOOL_NAMES`.
 | `read` | `localGetFileContent` (records read state for `file` edit stale-check) |
 | `edit` | `file` with `type:"edit"` |
 | `write` | `file` with `type:"write"` |
-| `grep` | `localSearchCode` |
-| `find` | `localFindFiles` |
-| `ls` | `localViewStructure` |
+| `grep` | `localSearch` with `operation:"text"` |
+| `find` | `localSearch` with `operation:"files"` |
+| `ls` | `localSearch` with `operation:"tree"` |
 
 ---
 
@@ -292,5 +292,5 @@ Resolved by `getAssetPaths()` in `src/assets.ts`.
 
 | | Per-turn `tools[]` definitions |
 |---|---|
-| Before | 15 native tool schemas — not prompt-cached, paid every turn |
+| Before | 13 native tool schemas — not prompt-cached, paid every turn |
 | After | 1 (`MCPTool`) — catalog lives in `<mcp_cached_catalog>` in system prompt (prompt-cached, paid once) |

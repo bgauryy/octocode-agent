@@ -83,9 +83,8 @@ it('--help exits 0', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('memory record');
     expect(r.stdout).toContain('octocode-awareness');
-    expect(r.stdout).toContain('FIRST RUN');
     expect(r.stdout).toContain('AGENT LOOP');
-    expect(r.stdout).toContain('SIMPLE LOOP');
+    expect(r.stdout).toContain('ROUTINE LOOP');
     expect(r.stdout).toContain('DEFAULT POLICY');
     expect(r.stdout).toContain('schema commands --compact');
     expect(r.stdout).toContain('Preview and ask immediately before a real install');
@@ -108,7 +107,7 @@ it('installed skill help resolves sibling bundled skills from the skill root', (
 it('no command prints the agent-instructions discovery guide', () => {
     const r = spawnSync(NODE, [SCRIPT], { encoding: 'utf8', timeout: 5000 });
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('FIRST RUN');
+    expect(r.stdout).toContain('ROUTINE LOOP');
     expect(r.stdout).toContain('AGENT LOOP');
     expect(Buffer.byteLength(r.stdout, 'utf8')).toBeLessThanOrEqual(3072);
     expect(r.stdout).not.toContain('<awareness-package>');
@@ -120,8 +119,8 @@ it('--help --compact returns a short agent guide', () => {
     expect(r.stdout).toMatch(/bundled-skills\(\d+\):/);
     expect(r.stdout).toContain('out/skills');
     expect(r.stdout).toContain('schema commands --compact');
-    expect(r.stdout).toContain('setup -> next -> inspect -> verify -> close');
-    expect(r.stdout).toContain('repository=repo, memory=global, hooks=coordination');
+    expect(r.stdout).toContain('attend -> work start -> work end -> verify mark -> verify audit');
+    expect(r.stdout).toContain('one global agent database, workspace-scoped rows, hooks=coordination');
     expect(r.stdout).toContain('attend|plan|task|work|verify|signal|memory|refinement');
     expect(r.stdout).toMatch(/exits: 0 ok/);
     expect(r.stdout).not.toContain('<awareness-package>');
@@ -270,11 +269,12 @@ it('schema list maps to canonical CLI commands', () => {
     expect(parsed.hint).toContain('minimum agent loop');
     expect(parsed.hint).toContain('Follow attend.next');
     expect(parsed.commands.core.attend).toEqual(['<direct>']);
-    expect(parsed.commands.core.setup).toEqual(['<direct>']);
-    expect(parsed.commands.core.next).toEqual(['<direct>']);
-    expect(parsed.commands.core.inspect).toEqual(['<direct>']);
-    expect(parsed.commands.core.verify).toEqual(expect.arrayContaining(['<direct>', 'audit', 'mark']));
-    expect(parsed.commands.core.close).toEqual(['<direct>']);
+    expect(parsed.commands.core.verify).toEqual(expect.arrayContaining(['audit', 'mark']));
+    expect(parsed.commands.core.verify).not.toContain('<direct>');
+    expect(parsed.commands.core).not.toHaveProperty('setup');
+    expect(parsed.commands.core).not.toHaveProperty('next');
+    expect(parsed.commands.core).not.toHaveProperty('inspect');
+    expect(parsed.commands.core).not.toHaveProperty('close');
     expect(parsed.commands.core.plan).toEqual(expect.arrayContaining(['create', 'status']));
     expect(parsed.commands.core.task).toContain('claim');
     expect(parsed.commands.core).not.toHaveProperty('wiki');
@@ -282,18 +282,17 @@ it('schema list maps to canonical CLI commands', () => {
     expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(2 * 1024);
   });
 
-  it('schema command supports direct noun forms and the former run placeholder', () => {
+  it('schema command supports direct noun forms and rejects the removed run placeholder', () => {
     const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');
     const direct = spawnSync(NODE, [schemaScript, 'schema', 'command', 'attend', '--compact'], { encoding: 'utf8', timeout: 5000 });
     const legacy = spawnSync(NODE, [schemaScript, 'schema', 'command', 'attend', 'run', '--compact'], { encoding: 'utf8', timeout: 5000 });
     expect(direct.status, direct.stderr || direct.stdout).toBe(0);
-    expect(legacy.status, legacy.stderr || legacy.stdout).toBe(0);
+    expect(legacy.status).toBe(1);
     const directSchema = JSON.parse(direct.stdout) as { 'x-cli-command': string; properties: Record<string, unknown> };
-    const legacySchema = JSON.parse(legacy.stdout) as { 'x-cli-command': string; properties: Record<string, unknown> };
+    const legacyError = JSON.parse(legacy.stdout) as { error: string };
     expect(directSchema['x-cli-command']).toBe('attend');
-    expect(legacySchema['x-cli-command']).toBe('attend');
+    expect(legacyError.error).toContain('Unknown or schema-less CLI command: attend run');
     expect(directSchema.properties).toHaveProperty('query');
-    expect(legacySchema.properties).toHaveProperty('query');
   });
   it('schema commands --examples restores recipe lines', () => {
     const schemaScript = resolve(PACKAGE_ROOT, 'skills/octocode-awareness/scripts/awareness.mjs');

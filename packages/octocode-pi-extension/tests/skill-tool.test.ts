@@ -144,6 +144,21 @@ test('discoverSkills skips directories without SKILL.md and missing roots withou
   assert.ok(!discoverSkills(cwd).some((s) => s.name === 'not-a-skill'));
 });
 
+test('discoverSkills uses canonical containment, symlink, and size defenses', () => {
+  const cwd = tmpWorkspace();
+  const root = path.join(cwd, '.agents', 'skills');
+  const outside = tmpWorkspace();
+  makeSkillDir(outside, 'escaped-skill', 'Must not escape the source root.');
+  fs.mkdirSync(root, { recursive: true });
+  fs.symlinkSync(path.join(outside, 'escaped-skill'), path.join(root, 'escaped-skill'), 'dir');
+  const oversized = makeSkillDir(root, 'oversized-skill', 'Too large.');
+  fs.appendFileSync(path.join(oversized, 'SKILL.md'), 'x'.repeat(600_000));
+
+  const names = discoverSkills(cwd).map((skill) => skill.name);
+  assert.ok(!names.includes('escaped-skill'));
+  assert.ok(!names.includes('oversized-skill'));
+});
+
 test('discoverSkills filters both Awareness aliases because coordination is prompt- and tool-owned in Pi', () => {
   const cwd = tmpWorkspace();
   const names = ['octocode-awareness', 'octocode-awareness'];

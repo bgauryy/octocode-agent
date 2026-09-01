@@ -294,18 +294,95 @@ describe('ordered Awareness event consumer', () => {
     expect(JSON.stringify(observations)).not.toContain('body');
   });
 
+  it('does not acknowledge when Pi returns before custom-message persistence is observable', async () => {
+    const fixture = fakeStore([peerEvent(1)]);
+    const handlers = new Map<string, Array<(event: unknown, ctx: PiContext) => Promise<void>>>();
+    const observations: unknown[] = [];
+    const pi = {
+      on: (event: string, handler: (event: unknown, ctx: PiContext) => Promise<void>) => {
+        handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+      },
+      // Pi 0.84.x returns void. Simulate its asynchronous persistence failing after return.
+      sendMessage: vi.fn(() => undefined),
+    } as unknown as PiInstance;
+    const ctx = {
+      cwd: workspace,
+      sessionManager: { getSessionId: () => 'session-1', getEntries: () => [] },
+    } as PiContext;
+
+    registerAwarenessEventConsumer(pi, {
+      openStore: () => fixture.store,
+      resolveExpectedAgentId: () => 'pi:session-1',
+      onObservability: (stats) => { observations.push(stats); },
+    });
+    await handlers.get('session_start')?.[0]?.({}, ctx);
+
+    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(fixture.acknowledgements).toEqual([]);
+    expect(fixture.cursor()).toBe(0);
+    expect(observations.at(-1)).toMatchObject({ backlogDepth: 1, lastAcknowledgedSequence: 0, errors: 1 });
+  });
+
+  it('reuses a persisted receipt after a crash before Awareness acknowledgment', async () => {
+    const fixture = fakeStore([peerEvent(1)]);
+    let rejectAck = true;
+    const store: AwarenessEventStore = {
+      ...fixture.store,
+      acknowledgeEvent: (params) => {
+        if (rejectAck) {
+          rejectAck = false;
+          throw new Error('crash before ack commit');
+        }
+        return fixture.store.acknowledgeEvent(params);
+      },
+    };
+    const handlers = new Map<string, Array<(event: unknown, ctx: PiContext) => Promise<void>>>();
+    const persistedEntries: unknown[] = [];
+    const sendMessage = vi.fn((message: unknown) => {
+      persistedEntries.push({ type: 'custom_message', ...(message as object) });
+    });
+    const pi = {
+      on: (event: string, handler: (event: unknown, ctx: PiContext) => Promise<void>) => {
+        handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+      },
+      sendMessage,
+    } as unknown as PiInstance;
+    const ctx = {
+      cwd: workspace,
+      sessionManager: { getSessionId: () => 'session-1', getEntries: () => persistedEntries },
+    } as PiContext;
+
+    registerAwarenessEventConsumer(pi, {
+      openStore: () => store,
+      resolveExpectedAgentId: () => 'pi:session-1',
+    });
+    await handlers.get('session_start')?.[0]?.({}, ctx);
+    await handlers.get('turn_end')?.[0]?.({}, ctx);
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(fixture.acknowledgements).toEqual([{ eventId: 'evt-1', decision: 'accept' }]);
+    expect(fixture.cursor()).toBe(1);
+  });
+
   it('registers bounded lifecycle wake points and emits body-free observability', async () => {
     const fixture = fakeStore([peerEvent(1)]);
     const handlers = new Map<string, Array<(event: unknown, ctx: PiContext) => Promise<void>>>();
     const sent: unknown[] = [];
     const statuses: unknown[] = [];
+    const persistedEntries: unknown[] = [];
     const pi = {
       on: (event: string, handler: (event: unknown, ctx: PiContext) => Promise<void>) => {
         handlers.set(event, [...(handlers.get(event) ?? []), handler]);
       },
-      sendMessage: (message: unknown, options: unknown) => { sent.push({ message, options }); },
+      sendMessage: (message: unknown, options: unknown) => {
+        sent.push({ message, options });
+        persistedEntries.push({ type: 'custom_message', ...(message as object) });
+      },
     } as unknown as PiInstance;
-    const ctx = { cwd: workspace, sessionManager: { getSessionId: () => 'session-1' } } as PiContext;
+    const ctx = {
+      cwd: workspace,
+      sessionManager: { getSessionId: () => 'session-1', getEntries: () => persistedEntries },
+    } as PiContext;
 
     registerAwarenessEventConsumer(pi, {
       openStore: () => fixture.store,
@@ -320,7 +397,7 @@ describe('ordered Awareness event consumer', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({
       message: { customType: 'octocode-peer-event', content: '[peer:peer-a; class:informational; authority:data]\nbody-1', display: false },
-      options: { triggerTurn: false, deliverAs: 'nextTurn' },
+      options: { triggerTurn: false },
     });
     expect(JSON.stringify(statuses)).not.toContain('body-1');
     expect(statuses.at(-1)).toMatchObject({ backlogDepth: 0, lastAcknowledgedSequence: 1, accepted: 1, held: 0, refused: 0, errors: 0 });

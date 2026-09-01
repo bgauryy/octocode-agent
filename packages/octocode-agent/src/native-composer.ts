@@ -31,6 +31,123 @@ const MAX_DISCOVERED_FILES = 5_000;
 const MAX_DEPTH = 12;
 const MAX_RESULTS = 50;
 
+const DEFAULT_PASTE_LINE_THRESHOLD = 10;
+const DEFAULT_PASTE_CHARACTER_THRESHOLD = 1_000;
+const DEFAULT_MAX_RETAINED_PASTE_BYTES = 4 * 1024 * 1024;
+const OSC_SEQUENCE = /(?:\u001b\]|\u009d)[\s\S]*?(?:\u0007|\u001b\\|\u009c|$)/gu;
+const TERMINAL_STRING_SEQUENCE =
+  /(?:\u001b[P_X^]|[\u0090\u0098\u009e\u009f])[\s\S]*?(?:\u001b\\|\u009c|$)/gu;
+const CSI_SEQUENCE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/gu;
+const ESC_SEQUENCE = /\u001b[ -/]*[0-~]/gu;
+const UNSAFE_PASTE_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu;
+const BIDI_FORMATTING = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u206f]/gu;
+
+export interface ComposerPasteStoreOptions {
+  readonly maxStoredBytes?: number;
+}
+
+export interface PreparedComposerPaste {
+  /** Safe text inserted into the renderer-owned composer view. */
+  readonly displayText: string;
+  /** Whether displayText is a view-only marker backed by retained content. */
+  readonly compacted: boolean;
+}
+
+interface RetainedComposerPaste {
+  readonly marker: string;
+  readonly content: string;
+  readonly bytes: number;
+}
+
+function sanitizeComposerPaste(value: string): string {
+  return value
+    .replace(OSC_SEQUENCE, '')
+    .replace(TERMINAL_STRING_SEQUENCE, '')
+    .replace(CSI_SEQUENCE, '')
+    .replace(ESC_SEQUENCE, '')
+    .replace(BIDI_FORMATTING, '')
+    .replace(/\r\n?/gu, '\n')
+    .replace(/[\u2028\u2029]/gu, '\n')
+    .replace(UNSAFE_PASTE_CONTROLS, '');
+}
+
+function occurrenceCount(value: string, token: string): number {
+  let count = 0;
+  let offset = 0;
+  while (offset <= value.length - token.length) {
+    const found = value.indexOf(token, offset);
+    if (found < 0) break;
+    count += 1;
+    offset = found + token.length;
+  }
+  return count;
+}
+
+/**
+ * Retains large composer pastes outside the visual draft while keeping submit
+ * lossless. Markers are display data only; unknown or duplicated markers stay
+ * literal so user-authored text cannot accidentally select retained content.
+ */
+export class ComposerPasteStore {
+  private readonly maxStoredBytes: number;
+  private readonly retained = new Map<string, RetainedComposerPaste>();
+  private nextId = 1;
+  private bytes = 0;
+
+  constructor(options: ComposerPasteStoreOptions = {}) {
+    const maxStoredBytes = options.maxStoredBytes ?? DEFAULT_MAX_RETAINED_PASTE_BYTES;
+    if (!Number.isSafeInteger(maxStoredBytes) || maxStoredBytes < 0) {
+      throw new RangeError('maxStoredBytes must be a non-negative safe integer.');
+    }
+    this.maxStoredBytes = maxStoredBytes;
+  }
+
+  get retainedBytes(): number {
+    return this.bytes;
+  }
+
+  prepare(raw: string): PreparedComposerPaste {
+    const content = sanitizeComposerPaste(raw);
+    const lineCount = content.split('\n').length;
+    const characterCount = Array.from(content).length;
+    const shouldCompact = lineCount > DEFAULT_PASTE_LINE_THRESHOLD
+      || characterCount > DEFAULT_PASTE_CHARACTER_THRESHOLD;
+    if (!shouldCompact) return Object.freeze({ displayText: content, compacted: false });
+
+    const bytes = new TextEncoder().encode(content).byteLength;
+    if (bytes > this.maxStoredBytes - this.bytes) {
+      return Object.freeze({ displayText: content, compacted: false });
+    }
+
+    const id = this.nextId;
+    const digest = createHash('sha256').update(content).digest('hex').slice(0, 12);
+    const detail = lineCount > DEFAULT_PASTE_LINE_THRESHOLD
+      ? `+${lineCount} lines`
+      : `${characterCount} chars`;
+    const marker = `[paste #${id}:${digest} ${detail}]`;
+    this.retained.set(marker, Object.freeze({ marker, content, bytes }));
+    this.nextId += 1;
+    this.bytes += bytes;
+    return Object.freeze({ displayText: marker, compacted: true });
+  }
+
+  expand(draft: string): string {
+    let expanded = draft;
+    for (const paste of this.retained.values()) {
+      if (occurrenceCount(expanded, paste.marker) === 1) {
+        expanded = expanded.replace(paste.marker, paste.content);
+      }
+    }
+    return expanded;
+  }
+
+  clear(): void {
+    this.retained.clear();
+    this.bytes = 0;
+    this.nextId = 1;
+  }
+}
+
 function safeCursor(value: string, cursor: number): number {
   return Number.isSafeInteger(cursor) ? Math.max(0, Math.min(value.length, cursor)) : value.length;
 }

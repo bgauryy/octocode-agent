@@ -50,16 +50,16 @@ describe('skill routing boundaries', () => {
     expect(text).toContain('npx @octocodeai/octocode-awareness');
     expect(text).not.toContain('npx -p @octocodeai/octocode-awareness octocode-awareness');
     expect(text).not.toContain('node packages/octocode-awareness/out/octocode-awareness.js');
-    expect(text).toContain('$OCTOCODE_HOME/agent/agent.sqlite3');
+    expect(text).toMatch(/Durable state uses[\s\S]*agent\.sqlite3[\s\S]*workspace columns isolate repositories/);
     expect(text).not.toMatch(/\.octocode\/(?:octocode|awareness|agent)\.sqlite3/);
     expect(text).not.toMatch(/octocode-awareness-lite|\/lite\b|Awareness Lite/);
     expect(text).toContain('Operating rules');
     expect(text).toContain('observed receipts');
     expect(text).toMatch(/skill decides.*CLI owns state changes/is);
-    expect(text).toContain('npx @octocodeai/octocode-awareness setup --compact');
+    expect(text).toContain('npx @octocodeai/octocode-awareness attend');
     expect(text).toContain('scripts/install.mjs');
     expect(text).toMatch(/ordinary overlap is advisory/i);
-    expect(text).toContain('schema discovery');
+    expect(text).toContain('config schema');
     expect(text).toContain('flow-matrix.md');
     expect(text).toContain('Load detail only when needed');
     expect(text).toContain('yarn workspace @octocodeai/octocode-awareness build');
@@ -90,7 +90,7 @@ describe('skill routing boundaries', () => {
     expect(text).toMatch(/query|queries/i);
     expect(text).toMatch(/plans\/tasks/i);
     expect(awarenessSkillFile('references/hooks.md')).toMatch(/do not choose tasks or replace\s+`attend`\/verify/i);
-    expect(text).toContain('schema discovery');
+    expect(text).toContain('config schema');
   });
 
   it('keeps held-out repository intent behavior distinct from near misses', () => {
@@ -150,7 +150,7 @@ describe('skill routing boundaries', () => {
 
     expect(combined).not.toMatch(/<package>|<awareness-package>|default for this monorepo/);
     expect(combined).not.toContain('package migration truth: `docs/DB.md`');
-    expect(readme).toContain('npx @octocodeai/octocode-awareness init --compact');
+    expect(readme).toContain('npx @octocodeai/octocode-awareness maintenance init --compact');
     expect(readme).not.toContain('npm root --global');
     expect(tooling).not.toContain('out/skills/octocode-skills');
     expect(octocode).toContain('references/agent-cheatsheet.md');

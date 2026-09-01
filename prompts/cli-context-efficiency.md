@@ -28,7 +28,7 @@ Dogfood Octocode throughout the investigation:
 
 - Use `npx octocode tools ...` for repository and external research.
 - Inspect live schemas with `npx octocode tools --json` and `npx octocode tools <tool-name> --scheme`.
-- Use `localViewStructure`, `localFindFiles`, `localSearchCode`, and `localGetFileContent` for local discovery and exact reads.
+- Use `localSearch` (`tree`/`files` for orientation; `text`/`structural` for matching) and `localGetFileContent` for local discovery and exact reads.
 - Use `lspGetSemantics` to prove definitions, references, callers, callees, implementations, types, and production reachability.
 - Treat search hits and dead-code results as candidates. Prove identity and reachability before making delete, duplication, or unused-cache claims.
 - Do not use bare `find`, `grep`, `rg`, `cat`, or `ls` when an Octocode tool covers the operation.
@@ -51,24 +51,21 @@ Do not change production code during the audit. First produce the complete evide
 Discover the live repository tree before relying on remembered paths. At minimum inspect:
 
 - `AGENTS.md`;
-- `DESIGN/README.md` and the current authoritative design documents it routes to;
-- `DESIGN/02-AGENT-RUNTIME-AND-TOOLS.md`;
-- `DESIGN/03-SESSIONS-AND-COMPACTION.md`;
-- `DESIGN/04-TUI-AND-SETTINGS.md`;
-- `DESIGN/06-CONFORMANCE-SECURITY-AND-OPERATIONS.md`;
-- `DESIGN/09-ARCHITECTURE-AND-FLOW.md`;
-- `DESIGN/pi-coding-agent-removal/RFC.md`;
-- `DESIGN/pi-coding-agent-removal/SCHEMAS_AND_TYPES.md`;
-- `DESIGN/pi-coding-agent-removal/TEST_PLAN.md`;
-- `DESIGN/pi-coding-agent-removal/KPI.md`;
-- `DESIGN/pi-coding-agent-removal/READINESS_AND_FEATURE_MATRIX.md`;
+- `DESIGN/LEFTOVERS.md` for current completion gates and open decisions;
 - `packages/octocode-agent-core/ARCHITECTURE.md`;
+- `packages/octocode-agent-core-rust/ARCHITECTURE.md`;
+- `packages/octocode-agent/ARCHITECTURE.md`;
+- the other package `ARCHITECTURE.md` files for their owned boundaries;
 - `packages/octocode-agent/` source, tests, and docs;
 - `packages/octocode-agent-core/` source and tests;
 - `packages/octocode-agent-testing/` conformance fixtures and effect ledger; and
 - `packages/octocode-pi-extension/` only where it supplies a supported baseline or shared contract.
 
-Use the authority rules in `DESIGN/README.md`. If authoritative documents conflict, assign the affected result `HOLD`, cite the conflict, and request a design decision. Status documents describe progress; they do not silently override requirements.
+Production code, executable contracts, tests, and package architecture documents
+own implemented behavior. `DESIGN/LEFTOVERS.md` owns open completion gates. Dated
+evidence preserves observations but does not override current behavior. If these
+authorities conflict, assign the affected result `HOLD`, cite the conflict, and
+request a decision.
 
 Do not assume the current code implements the target design. Build this evidence chain for every consequential conclusion:
 
@@ -532,7 +529,7 @@ After rebuilding, exercise the real CLI and live Octocode surface where applicab
 npx octocode --help
 npx octocode context --compact
 npx octocode tools --json
-npx octocode tools localSearchCode lspGetSemantics --scheme
+npx octocode tools localSearch lspGetSemantics --scheme
 ```
 
 Exercise the locally built `octocode-agent` in interactive, print, JSON, and RPC modes when those modes are affected. Re-run LSP queries on changed symbols and their callers after implementation. Do not claim success from compilation or unit tests alone.

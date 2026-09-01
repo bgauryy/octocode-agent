@@ -8,9 +8,12 @@ export type PolicyResult = PolicyDecision & { readonly receipts: readonly Policy
 
 export class PolicyChain {
   readonly #policies: { readonly name: string; readonly evaluate: (request: PolicyRequest) => Promise<PolicyDecision> }[] = [];
+  #revision = 0;
+  get revision(): number { return this.#revision; }
   use(name: string, evaluate: (request: PolicyRequest) => Promise<PolicyDecision>): void {
     if (this.#policies.some((policy) => policy.name === name)) throw new Error(`Duplicate policy: ${name}`);
     this.#policies.push({ name, evaluate });
+    this.#revision += 1;
   }
   async evaluate(request: PolicyRequest): Promise<PolicyResult> {
     const receipts: PolicyReceipt[] = [];

@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { workspaceAgentRoot } from '@octocodeai/octocode-shared/paths';
-import { authData, authProvidersData, completionScript, discoveryData, doctorData, fatalErrorReport, helpReport, main, modelsData, modelsReport, parseInvocation, runModelsCheck, runSurface, updateCommand } from '../src/launcher.js';
+import { authData, authProvidersData, completionScript, discoveryData, doctorData, fatalErrorReport, helpReport, main, modelsData, modelsReport, parseInvocation, runModelsCheck, runSurface, sessionsData, updateCommand } from '../src/launcher.js';
 import { FileSettingsStorage } from '../src/native-settings.js';
 
 describe('native launcher public surface', () => {
@@ -16,6 +16,64 @@ describe('native launcher public surface', () => {
     expect(parseInvocation(['-h'])).toMatchObject({ command: 'help', args: [] });
     expect(parseInvocation(['--version'])).toMatchObject({ command: 'version', args: [] });
     expect(parseInvocation(['-v'])).toMatchObject({ command: 'version', args: [] });
+  });
+
+  it.each([
+    ['run', '--help'],
+    ['run', '-h'],
+    ['serve', '--help'],
+    ['serve', '-h'],
+    ['acp', '--help'],
+    ['acp', '-h'],
+  ])('prints scoped %s help for %s without starting the runtime', async (command, flag) => {
+    const createRuntime = vi.fn(async () => {
+      throw new Error('help must not start the runtime');
+    });
+    const out = vi.fn();
+
+    await expect(main([command, flag], { createRuntime, out })).resolves.toBe(0);
+
+    expect(out).toHaveBeenCalledOnce();
+    expect(out).toHaveBeenCalledWith(expect.stringContaining(`Usage: octocode-agent ${command}`));
+    expect(createRuntime).not.toHaveBeenCalled();
+  });
+
+  it.each(['--help', '-h'])('prints config help for %s without reading configuration', async (flag) => {
+    const createRuntime = vi.fn(async () => {
+      throw new Error('help must not start the runtime');
+    });
+    const out = vi.fn();
+
+    await expect(main(['config', flag], { createRuntime, out })).resolves.toBe(0);
+
+    expect(out).toHaveBeenCalledOnce();
+    expect(out).toHaveBeenCalledWith(expect.stringContaining('Usage: octocode-agent config'));
+    expect(createRuntime).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['run', '--model', 'fixture/model', '--help'],
+    ['serve', '--allow-workers', '-h'],
+  ])('prints scoped %s help when the flag follows command options', async (...args) => {
+    const createRuntime = vi.fn(async () => {
+      throw new Error('runtime must not start for help');
+    });
+    const out = vi.fn();
+
+    await expect(main(args, { createRuntime, out })).resolves.toBe(0);
+    expect(out).toHaveBeenCalledWith(expect.stringContaining(`Usage: octocode-agent ${args[0]}`));
+    expect(createRuntime).not.toHaveBeenCalled();
+  });
+
+  it('preserves --help as literal run input after the option separator', async () => {
+    const createRuntime = vi.fn(async () => {
+      throw new Error('literal prompt reached the runtime');
+    });
+
+    await expect(main(['run', '--', '--help'], { createRuntime })).rejects.toThrow(
+      'literal prompt reached the runtime',
+    );
+    expect(createRuntime).toHaveBeenCalledOnce();
   });
 
   it('keeps completion and platform update paths native', () => {
@@ -361,6 +419,31 @@ describe('native launcher public surface', () => {
     expect(createRuntime).toHaveBeenCalled();
   });
 
+  it('lists sessions from the Rust durability index and closes the owned client', async () => {
+    const close = vi.fn(async () => undefined);
+    const sessionList = vi.fn(async ({ cwd }: { cwd: string }) => [{
+      sessionId: 'durable-session', revision: '4', cwd, parentSessionId: null, updatedAt: 42,
+    }]);
+
+    await expect(sessionsData({}, '/workspace', () => ({ sessionList, close }))).resolves.toEqual({
+      storage: 'rust',
+      sessions: [{ sessionId: 'durable-session', revision: '4', cwd: '/workspace', updatedAt: 42 }],
+    });
+    expect(sessionList).toHaveBeenCalledWith({ cwd: '/workspace', limit: 1_000 });
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('closes the Rust session client when durable discovery fails', async () => {
+    const failure = new Error('session index unavailable');
+    const close = vi.fn(async () => undefined);
+    const sessionList = vi.fn(async () => { throw failure; });
+
+    await expect(sessionsData({}, '/workspace', () => ({ sessionList, close }))).rejects.toThrow(
+      'Rust session operation failed',
+    );
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('maps the public plural skills command to the Octocode singular skill surface', () => {
     const spawn = vi.fn(() => ({ status: 0 } as never));
     expect(runSurface('skills', ['--help'], { spawn })).toBe(0);
@@ -369,12 +452,12 @@ describe('native launcher public surface', () => {
 
   it('delegates Awareness root commands without repeating the public surface noun', () => {
     const spawn = vi.fn(() => ({ status: 0 } as never));
-    expect(runSurface('awareness', ['next', '--workspace', '/workspace'], { spawn })).toBe(0);
+    expect(runSurface('awareness', ['attend', '--workspace', '/workspace'], { spawn })).toBe(0);
     expect(runSurface('memory', ['recall', '--query', 'task'], { spawn })).toBe(0);
     expect(spawn).toHaveBeenNthCalledWith(
       1,
       'npx',
-      ['@octocodeai/octocode-awareness', 'next', '--workspace', '/workspace'],
+      ['@octocodeai/octocode-awareness', 'attend', '--workspace', '/workspace'],
       expect.any(Object),
     );
     expect(spawn).toHaveBeenNthCalledWith(

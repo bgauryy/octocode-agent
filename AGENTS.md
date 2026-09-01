@@ -1,136 +1,163 @@
-# AGENTS.md — Octocode Monorepo
+# AGENTS.md — Octocode Agent monorepo
 
-Default agent guide for this repo (the agent-focused slice of the Octocode monorepo: native agent core + launcher + supported Pi adapter + coordination). Package exception: work in `packages/octocode-awareness` also reads [`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md). Internals: each package's `ARCHITECTURE.md` when present.
+This repository ships the host-neutral agent kernel, native CLI, packaged Rust
+services, supported Pi adapter, conformance tooling, shared contracts, and
+Awareness coordination. The closest `AGENTS.md` wins. Work under
+`packages/octocode-awareness` also follows its
+[package guide](packages/octocode-awareness/AGENTS.md).
 
-## Dogfood
+Read the owning package's `ARCHITECTURE.md` before changing a boundary.
 
-This monorepo is the platform. Use its shipped capabilities instead of host defaults.
+## Package ownership
 
-| Need | Use | Not |
+| Change | Start in | Also verify |
 |---|---|---|
-| Local code search / structure / files / content / binary / LSP | Octocode MCP **or** `npx octocode tools …` — all local tools below | bare `find` / `grep` / `rg` / `cat` / `ls` |
-| GitHub code, repos, PRs/commits, clone | same — all GitHub tools below | ad-hoc `gh` / raw API (except when Octocode is unavailable) |
-| npm lookup | `npmSearch` | ad-hoc registry curls |
-| Unified research workflow | `octocode-research` skill + the live tool catalog | hand-rolled multi-tool scripts |
-| Research / review / change flows | `octocode-research` skill | inventing search loops |
-| Shared-repo + cross-run memory | Awareness (`attend` / `work` / `memory` / `reflect`) | silent parallel edits |
-| After a package change | rebuild → real CLI / MCP / skill path | claim done from compile alone |
+| Runtime, lifecycle, policy, effects, sessions, compaction, workers, or host-neutral UI/RPC contracts | [`octocode-agent-core`](packages/octocode-agent-core) | Native and Pi conformance |
+| SQLite transactions, CAS, leases, fencing, indexes, durable queues, automations, or contained filesystem primitives | [`octocode-agent-core-rust`](packages/octocode-agent-core-rust) | Native Rust ports and real subprocess flows |
+| Providers, native tools, MCP, approvals, scheduler, worker processes, transports, or OpenTUI | [`octocode-agent`](packages/octocode-agent) | Built CLI and real-host flow |
+| Supported Pi hooks, prompt, tools, Skills, UI, or host adaptation | [`octocode-pi-extension`](packages/octocode-pi-extension) | Native/Pi scenarios |
+| Trace normalization, effect comparison, parity scenarios, or host fixtures | [`octocode-agent-testing`](packages/octocode-agent-testing) | Production packages never import it |
+| Cross-host paths, protocols, permissions, discovery, entities, or prompt fragments | [`octocode-shared`](packages/octocode-shared) | Every consuming host |
+| Plans, work, locks, messages, verification, memory, reflection, or coordination hooks | [`octocode-awareness`](packages/octocode-awareness) | Nested guide and real CLI |
 
-If dogfooding hurts, fix or record it — do not silently bypass.
+External packages remain separate. `@octocodeai/config` owns environment and
+Octocode-home loading. `octocode-tools-core`, `octocode-engine`, and
+`octocode-core` own research execution, search/LSP machinery, schemas,
+descriptions, and prompt text. `@octocodeai/mcp` and `octocode-mcp-vscode` own
+their interfaces.
 
-Method: Plan → TDD → `yarn workspace <pkg> test` → `yarn lint` → verify. No backward compat by default — refactor freely; add shims only when asked.
+## Boundary rules
 
-Access: `packages/*/src/`, `tests/`, `docs/` ✅ · `*.json`, `*.config.*`, `Cargo.toml`, `scripts/` ⚠️ ask · `.env*`, `node_modules/`, `dist/`, `out/`, `target/` ❌
+- Dependencies point inward: host composition -> adapters -> core contracts.
+  Agent core never imports a host package.
+- Only `packages/octocode-pi-extension` may declare or import
+  `@earendil-works/pi-*`. Native, core, Rust, shared, Awareness, and testing
+  code never import Pi directly.
+- Put semantic invariants in agent core. Put operating-system, SDK, protocol,
+  process, and UI behavior behind injected ports in the owning host.
+- Rust owns atomic durability, integrity, and contained filesystem primitives.
+  TypeScript owns orchestration, policy, validation, tool semantics, providers,
+  schedules, and child-process supervision.
+- Native production code must not import Pi or `agent-testing`. Production
+  packages must not import test-only conformance code.
+- Import the module or published subpath that owns a symbol. Do not use internal
+  wildcard barrels as dependency shortcuts.
+- Decode durable records and RPC envelopes with strict core parsers. Change
+  `AgentEventPayloadMap` and its versioned RPC validator together.
+- Keep OpenTUI values under
+  `packages/octocode-agent/src/terminal/opentui`. Controllers and renderers use
+  `packages/octocode-agent/src/presentation/contracts.ts`.
+- Use `@octocodeai/config` and shared path helpers. Never duplicate
+  `getOctocodeHome`, environment parsing, protected-key handling, or canonical
+  path resolution.
+- Generated `dist/`, `out/`, `target/`, SQLite, and `.octocode`
+  projections are not source. Change their owners and rebuild.
+- Refactor without compatibility shims unless the task explicitly requires
+  backward compatibility.
 
-## Architecture
+## Runtime safety invariants
 
-```
- AGENT     octocode-agent  ──composes──▶  @octocodeai/agent-core + native transports/OpenTUI
- CORE      @octocodeai/agent-core  ── owns ▶ host-neutral runtime, lifecycle, policy, session, settings, hooks/plugins contracts
- PI        @octocodeai/pi-extension  ── adapts ▶ supported Pi 0.84.2 host + bundles tools, CLIs, skills, prompt, Awareness wiring
- COORD     @octocodeai/octocode-awareness  (SQLite, zero npm runtime deps) ── used by ▶ harness + repo skill
- CONFIG    @octocodeai/config  (env/config loader, zero deps) ── consumed/bundled by ▶ harness and skills
- EXTERNAL  (npm, not in this workspace)  @octocodeai/config · @octocodeai/octocode-tools-core · @octocodeai/octocode-engine
-                                       @octocodeai/octocode-core · @octocodeai/mcp · octocode-mcp-vscode
-```
+- Tool order is schema validation -> input-sensitive policy -> trust/approval ->
+  effect admission -> bounded execution -> settlement -> events. Runtime
+  operations, automations, model calls, and worker commands use this boundary.
+- A crash-left `started` effect becomes `uncertain`; never replay it as if it
+  did not run. Preserve model call order even when admitted work overlaps.
+- `strict`, `default`, and trusted `allow-all` affect promptable approval
+  only. No mode bypasses schema, trust, managed policy, plan/lock rules,
+  capability ceilings, mandatory approval, or the effect ledger.
+- The model sees one compact `octocode` research facade. `file`, `bash`,
+  `web`, and `runFfmpeg` publish separate effects, trust, approval, limits,
+  cancellation, and concurrency metadata.
+- Native file changes and FFmpeg path authorization use the supervised Rust
+  filesystem service. Production fails closed without it; the Node adapter is a
+  test fixture. TypeScript owns file schemas/edit semantics and FFmpeg arguments,
+  progress, limits, and process supervision.
+- `MCPTool` owns negotiated discovery, calls, tasks, cancellation, elicitation,
+  provenance, and connection reuse. Global and per-server concurrency both apply;
+  connection recovery never replays a possibly committed call.
+- Sessions, effects, revisions, communication leases, and automation state use
+  the Rust actor. `--no-session` is in-memory. Compaction commits before live
+  context changes; resume reconstructs only committed state.
+- Context artifacts are typed data with provenance, trust, retention, digest,
+  and cache class. Generated summaries and memory never become hidden
+  instructions.
+- Only a root agent creates workers. Children are depth one, never receive the
+  worker capability, and become sealed at `wait`. Rust leases messages before
+  delivery and never blindly replays stranded leases.
+- TypeScript expands schedules and submits semantic actions through policy. Rust
+  atomically materializes, fences, leases, and settles runs; it never executes
+  arbitrary automation payloads.
+- The independent Pi extension remains supported but is not a native dependency.
+  Compare hosts through production adapters and normalized effect traces.
+- Awareness SQLite is coordination state, not repository truth. Ordinary file
+  presence is advisory; use exclusive locks only for unsafe non-mergeable work.
 
-This repo ships the native agent core, launcher, supported Pi adapter, test harness, and coordination layers. The config loader (`@octocodeai/config`), tool-execution brain (`octocode-tools-core`, `octocode-engine`, `octocode-core`), and the MCP / VS-Code interfaces are published from sibling repos. Never duplicate `getOctocodeHome` or `.env` parsing — use `@octocodeai/config`.
+## Research and dogfooding
 
-## Packages
+Use Octocode to build Octocode:
 
-Five workspace packages (plus one vendored CLI build when present). Prefer each package's `AGENTS.md` / `docs/` over guessing.
-
-| Package | npm name | What it does | Dig deeper |
-|---|---|---|---|
-| [`packages/octocode-agent-core`](packages/octocode-agent-core) | `@octocodeai/agent-core` | Host-neutral contracts and runtime kernel: tools/commands, lifecycle/policy, sessions/compaction, settings/models, hooks/plugins, RPC/UI ports, and conformance boundaries. It imports no Pi, OpenTUI, launcher, browser, or filesystem implementation types. | [architecture](packages/octocode-agent-core/ARCHITECTURE.md) · [README](packages/octocode-agent-core/README.md) |
-| [`packages/octocode-agent-testing`](packages/octocode-agent-testing) | `@octocodeai/agent-testing` | Deterministic Pi/native host mocks, normalized trace comparison, effect ledger, and shared conformance utilities. | [README](packages/octocode-agent-testing/README.md) |
-| [`packages/octocode-pi-extension`](packages/octocode-pi-extension) | `@octocodeai/pi-extension` | The Pi harness extension. Bundles the native tool set (from the external brain packages), the `octocode` + `octocode-awareness` CLIs, the system prompt, Awareness wiring, and launcher-consumed Octocode surface/profile helpers; sets `$OCTOCODE_CLI` and `$OCTOCODE_AWARENESS_CLI` at load. This is where the agent gets its tools, skills, prompt, and core runtime policy. | [docs index](packages/octocode-pi-extension/docs/README.md) · [TOOLS](packages/octocode-pi-extension/docs/TOOLS.md) · [AWARENESS flow](packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) · [REFLECT](packages/octocode-pi-extension/docs/REFLECT.md) · [OVERRIDES](packages/octocode-pi-extension/docs/OVERRIDES.md) |
-| [`packages/octocode-awareness`](packages/octocode-awareness) | `@octocodeai/octocode-awareness` | Shared-repo coordination + memory/hooks/reflection (SQLite, zero npm runtime deps). Owns plans/tasks/WORK, file locks, signals, verification, and reflection. Canonical skill source: repo-root `skills/octocode-awareness`. Local build lives in `packages/octocode-awareness/out/`: `out/index.js` (programmatic/library entry) + `out/octocode-awareness.js` (CLI binary). | [AGENTS](packages/octocode-awareness/AGENTS.md) · [docs index](packages/octocode-awareness/docs/README.md) · [HOW_IT_WORKS](packages/octocode-awareness/docs/HOW_IT_WORKS.md) |
-| [`packages/octocode-agent`](packages/octocode-agent) | `octocode-agent` | Branded native agent CLI. Composes agent core with OpenAI-compatible model transport, live Octocode tool schemas, transactional sessions/settings, print/JSON/RPC modes, and an OpenTUI terminal. It has no native Pi dependency. | [docs index](packages/octocode-agent/docs/README.md) |
-
-Config: `@octocodeai/config` is external to this checkout. `packages/octocode-pi-extension/src/env.ts` re-exports it for repo-time use; the extension build inlines it into `dist/env.js` and injects `octocode-config.mjs` into skill script directories.
-
-Octocode CLI: this checkout does not vendor the external `octocode` CLI. Wherever `$OCTO` appears below, use `OCTO='npx octocode'` (or a local build of the sibling `octocode` monorepo when you have one). Prefer the Octocode MCP tools for research; use the CLI for management tasks (`skill`, `lsp-server`, `auth`) and `context`/`tools` introspection.
-
-External (not in this workspace): `@octocodeai/octocode-tools-core` (tool runners / Octokit / security / providers), `@octocodeai/octocode-engine` (Rust/napi: search, minify, AST, LSP, secrets), `@octocodeai/octocode-core` (schemas, tool descriptions, system prompt text), `@octocodeai/mcp` (stdio MCP server), `octocode-mcp-vscode` (VS Code / multi-editor extension). Published from sibling repos, pulled in as npm deps by `@octocodeai/pi-extension`. Never hand-write tool guidance in interface packages.
-
-## Tools
-
-Full field-level reference: run `$OCTO tools <name> --scheme` for exact schemas. Live catalog: `$OCTO tools --json`.
-
-**Research catalog (15)** — dogfood these via MCP or local CLI:
-
-| Family | Tools | Role |
+| Need | Use | Avoid |
 |---|---|---|
-| GitHub | `ghSearchCode` · `ghSearchRepos` · `ghSearchPullRequests` · `ghSearchIssues` · `ghSearchCommits` · `ghGetFileContent` · `ghViewRepoStructure` · `ghCloneRepo` | Remote code/path search, repo discovery, PR/issue/commit research, file read, tree, clone (`ENABLE_CLONE` for clone) |
-| Package | `npmSearch` | npm package lookup + source repo |
-| Local | `localSearchCode` · `localViewStructure` · `localFindFiles` · `localFindDeadCode` · `localGetFileContent` | Text/regex/AST search, tree, find-by-meta, dead-code candidates, file read (`ENABLE_LOCAL=false` disables the family) |
-| LSP | `lspGetSemantics` | definition, references, callers/callees, symbols, types, diagnostics, … |
+| Local structure, content, search, graph analysis, or LSP | Octocode MCP or `npx octocode tools ...` | Bare `find`, `grep`, `rg`, `cat`, or `ls` |
+| GitHub repositories, code, issues, PRs, or commits | Octocode GitHub tools | Ad hoc API calls |
+| npm packages | `npmSearch` | Registry curls |
+| Research or change investigation | `octocode-research` plus live schemas | Invented search loops |
+| Shared work or cross-run context | Awareness | Silent overlapping edits |
 
-**Research flow**
+Run `npx octocode tools --json` for the live catalog and
+`npx octocode tools <name> --scheme` before assuming a name, count, or schema.
+Search and graph results are candidates. Prove symbol identity, callers, and
+reachability with `lspGetSemantics` before deleting code. Follow pagination,
+range, minification, and truncation hints until the required evidence is visible.
 
-- Use the `octocode-research` skill for research/review/change workflows, then call the catalog tools above with live schemas from `$OCTO tools <name> --scheme`.
-- For a deep, evidence-backed review of the native `octocode-agent` CLI implementation, follow [`prompts/architecture.md`](prompts/architecture.md). It defines the required design-to-runtime mapping, end-to-end flow tracing, finding format, TDD policy, and verification steps; repository and package `AGENTS.md` instructions still take precedence.
-- For an exhaustive feature-parity audit between the native CLI and the supported Pi adapter, follow [`prompts/pi-feature-parity.md`](prompts/pi-feature-parity.md). It requires a complete DESIGN feature-ID ledger, real-host scenario comparison, normalized traces, effect-ledger safety, supported Pi-version coverage, and an evidence-backed cutover verdict.
-- The current CLI has no unified search subcommand and the current catalog has no unified query tool; do not invent either route. Use `$OCTO context --compact` for the live protocol.
+### Research catalog (13)
 
-Evidence: search hits and `localFindDeadCode` results are **candidates**. Prove identity, references, callers, and reachability with `lspGetSemantics` before delete claims; relevance ordering is not proof.
+The supported Pi-facing catalog is `ghSearch`, `ghGetFileContent`,
+`ghSearchPullRequests`, `ghSearchIssues`, `ghSearchCommits`, `ghListReleases`,
+`ghSearchDiscussions`, `ghCloneRepo`, `npmSearch`, `localSearch`,
+`localAnalyzeGraph`, `localGetFileContent`, and `lspGetSemantics`. Treat this
+list as a documentation contract; use the live catalog for exact schemas.
 
-## Build and local run
+## Work and verify
 
-```bash
-yarn build · yarn test · yarn lint · yarn typecheck   # root: fan out to all workspaces
-yarn verify                               # root: full integration/release gate
-yarn workspace <pkg-name> verify          # focused per-package verification
-```
+Plan -> write a failing test -> implement -> focused test -> lint -> build ->
+exercise the real CLI/MCP/Skill path -> proportional release gate.
 
-Native-engine builds, platform checks, and version/pin sync scripts live in the sibling `octocode` monorepo, not here.
-
-Coverage target 90% (Vitest + v8). Rust/engine tests live in the sibling `octocode-engine` repo, not here.
-
-Local end-to-end (when changing a local package):
-
-```bash
-yarn workspace @octocodeai/octocode-awareness build
-yarn workspace @octocodeai/pi-extension build
-yarn workspace octocode-agent build
-OCTO='npx octocode'   # no vendored CLI in this checkout
-$OCTO --help
-$OCTO context --compact
-$OCTO tools --json
-$OCTO tools localSearchCode lspGetSemantics --scheme
-```
-
-After editing a local package, rebuild it (`yarn workspace <pkg> build`) before claiming done.
-
-## Awareness
-
-In Pi, use `plan` for session/shared execution; stable shared steps, ownership, dependencies, and observed check receipts are projected onto Awareness internally. Advisory file presence, agent registry lifecycle, and mutation-time peer-lock checks are automatic. Do not add manual status, presence, submit, or audit calls to routine solo work.
-
-Activate `octocode-awareness` only when live shared state can change the next action: peers/overlap, shared execution, unread messages, locks, verification debt, recovery, or relevant memory. No public status tool exists; use the Lite CLI for targeted diagnostics/recovery. Use `lock` only for exceptional non-mergeable state, `message` for needed peer coordination, and `memory` when verified learning may change the approach.
-
-`$OCTOCODE_AWARENESS_CLI` points to the bundled Lite diagnostics/recovery CLI; inspect its schema before using backend commands the reduced Pi tools do not expose. The full `octocode-awareness` package (attend / reflect / hooks) applies only when installed. Package work also reads [`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md).
-
-SQLite is canonical; never hand-edit generated files under `.octocode/` or `out/skills/`. Full lifecycle: [`docs/HOW_IT_WORKS.md`](packages/octocode-awareness/docs/HOW_IT_WORKS.md).
-
-## Docs and references
-
-| Area | Links |
+| Task | Command |
 |---|---|
-| Agent / Pi | [`packages/octocode-agent/docs/README.md`](packages/octocode-agent/docs/README.md) · [`PI_INTEGRATION.md`](packages/octocode-agent/docs/PI_INTEGRATION.md) · pi-extension [`docs/README.md`](packages/octocode-pi-extension/docs/README.md) · [TOOLS](packages/octocode-pi-extension/docs/TOOLS.md) · [AWARENESS flow](packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) · [REFLECT](packages/octocode-pi-extension/docs/REFLECT.md) · [OVERRIDES](packages/octocode-pi-extension/docs/OVERRIDES.md) |
-| Architecture audit | [`prompts/architecture.md`](prompts/architecture.md) — executable review prompt for validating the native CLI end-to-end with Octocode/LSP evidence, TDD, and real CLI verification. |
-| Pi feature parity | [`prompts/pi-feature-parity.md`](prompts/pi-feature-parity.md) — exhaustive real-host comparison of the native CLI and supported Pi adapter across every DESIGN feature ID, mode, scenario, and cutover gate. |
-| Awareness | [`packages/octocode-awareness/docs/README.md`](packages/octocode-awareness/docs/README.md) — [HOW_IT_WORKS](packages/octocode-awareness/docs/HOW_IT_WORKS.md) · [HOOKS](packages/octocode-awareness/docs/HOOKS.md) · [VERIFY](packages/octocode-awareness/docs/VERIFY.md) · [LOCKS](packages/octocode-awareness/docs/LOCKS.md) · [MEMORY_NAVIGATION](packages/octocode-awareness/docs/MEMORY_NAVIGATION.md) · [WIKI](packages/octocode-awareness/docs/WIKI.md) · [REFERENCES](packages/octocode-awareness/docs/REFERENCES.md) |
-| Skills | Repo skill source: [`skills/octocode-awareness`](skills/octocode-awareness) (synced into `packages/octocode-awareness/skills/` at build). Other Octocode skills (research, brainstorming, eval, prompt-optimizer, rfc-generator, roast, skills, subagent) are installed via `node $OCTOCODE_CLI skill --add`. |
+| Root build | `yarn build` |
+| Root tests | `yarn test` |
+| Root lint and types | `yarn lint` and `yarn typecheck` |
+| Full release gate | `NODE_OPTIONS=--experimental-ffi yarn verify` |
+| Package gate | `yarn workspace <package-name> verify` |
+| Rust tests | `cargo test --manifest-path packages/octocode-agent-core-rust/Cargo.toml` |
+| Native build | `yarn workspace octocode-agent build` |
+| Built native help | `node packages/octocode-agent/out/octocode-agent.mjs run --help` |
+| Live protocol/tools | `npx octocode context --compact` and `npx octocode tools --json` |
 
-Root `docs/` holds harness-wide topics only ([`docs/DISCOVERY.md`](docs/DISCOVERY.md): MCP catalog, skill tool, discovery inventory, context composition). Keep package internals package-local (`packages/*/docs`) or under Awareness docs; command inventories belong to `package.json`, binary help, and `$OCTO tools --json/--scheme`. Global docs (`OCTOCODE_MCP`, `CONFIGURATION`, `SECURITY`, `OCTOCODE_TOOLS`, `OCTOCODE_CLI`, `OQL_*`) and `release/RELEASE_GUIDE.md` live in the sibling `octocode` monorepo, not this repo. Run `$OCTO context` for the live agent protocol + tool playbook.
+After changing a package, rebuild it before claiming success. Compile-only
+evidence is insufficient for host, persistence, concurrency, packaging, or UI
+changes. Use real built flows for the changed boundary. Coverage target is 90%.
 
-## Config / env — single source
+Access defaults: edit `packages/*/src`, tests, and docs. Ask before changing
+manifests, configuration, `Cargo.toml`, or scripts. Never edit environment
+files, dependencies, generated output, Rust targets, generated Skills, or SQLite
+databases directly.
 
-All env/config loading flows through `@octocodeai/config`. Never reimplement:
+## External references
 
-- `getOctocodeHome(env?)` — `OCTOCODE_HOME` → platform default
-- `propagateOctocodeEnv({ cwd, trusted, env })` — global + project `.env` → `process.env`
-- `parseEnv(text)` · `loadOctocoderc(home?)` · `PROTECTED_KEYS`
+| Need | Source of truth |
+|---|---|
+| Current completion gates and open decisions | [`DESIGN/LEFTOVERS.md`](DESIGN/LEFTOVERS.md) |
+| Runtime contracts | [core architecture](packages/octocode-agent-core/ARCHITECTURE.md) |
+| Rust durability and filesystem services | [Rust architecture](packages/octocode-agent-core-rust/ARCHITECTURE.md) |
+| Native composition and operation | [native architecture](packages/octocode-agent/ARCHITECTURE.md) and [docs](packages/octocode-agent/docs/README.md) |
+| Terminal semantics and interaction | [terminal design system](packages/octocode-agent/docs/TERMINAL_DESIGN_SYSTEM.md) |
+| Parallel tools, MCP, and workers | [parallelism guide](packages/octocode-agent/docs/PARALLELISM_AND_WORKERS.md) |
+| Supported Pi adapter | [Pi architecture](packages/octocode-pi-extension/ARCHITECTURE.md) |
+| Shared contracts | [shared architecture](packages/octocode-shared/ARCHITECTURE.md) |
+| Awareness lifecycle | [Awareness guide](packages/octocode-awareness/docs/HOW_IT_WORKS.md) |
+| Discovery and MCP | [discovery](docs/DISCOVERY.md) and [MCP](docs/MCP.md) |
 
-Skills: `./octocode-config.mjs` (injected at build). Packages: `import { … } from '@octocodeai/config'` or the package-local re-export when one exists.
+Keep global Octocode CLI, configuration, security, OQL, and release docs in the
+sibling `octocode` monorepo. Keep package internals in their owning package.

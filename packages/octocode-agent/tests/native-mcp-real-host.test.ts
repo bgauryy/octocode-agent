@@ -22,7 +22,7 @@ function responseFixture(output: unknown[], usage = { input_tokens: 2, input_tok
   return { id: 'resp-fixture', created_at: 1, output_text: '', error: null, incomplete_details: null, instructions: null, metadata: null, model: 'fixture-model', object: 'response', output, parallel_tool_calls: true, temperature: null, tool_choice: 'auto', tools: [], top_p: null, status: 'completed', usage };
 }
 
-async function runFixture(disabled: boolean, approved = true) {
+async function runFixture(disabled: boolean, approved = true, parallel = false, task = false, discovery = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-mcp-real-host-'));
   roots.push(root);
   const home = path.join(root, 'home');
@@ -62,12 +62,33 @@ async function runFixture(disabled: boolean, approved = true) {
     const log = (line) => fs.appendFileSync(process.env.MCP_FIXTURE_LOG, line + '\\n');
     log('started:' + process.pid);
     process.on('exit', () => log('closed'));
-    const server = new McpServer({ name: 'real-host-fixture', version: '1.0.0' });
+    const server = new McpServer(
+      { name: 'real-host-fixture', version: '1.0.0' },
+      { capabilities: { tasks: { list: {}, cancel: {}, requests: { tools: { call: {} } } } } },
+    );
+    const task = {
+      taskId: 'built-task-1', status: 'working', ttl: 60000,
+      createdAt: '2026-08-31T00:00:00Z', lastUpdatedAt: '2026-08-31T00:00:00Z',
+    };
+    server.server.setRequestHandler('tasks/get', async () => task);
+    server.server.setRequestHandler('tasks/list', async () => ({ tasks: [task], nextCursor: 'opaque:next' }));
+    server.server.setRequestHandler('tasks/result', async () => ({
+      content: [{ type: 'text', text: 'built-task-result' }],
+      _meta: { 'io.modelcontextprotocol/related-task': { taskId: task.taskId } },
+    }));
+    server.server.setRequestHandler('tasks/cancel', async () => ({ ...task, status: 'cancelled' }));
+    let active = 0;
     server.registerTool('probe', {
       description: 'Deterministic probe',
       inputSchema: z.object({ message: z.string() }),
     }, async ({ message }, ctx) => {
       log('call:' + message);
+      if (message.startsWith('p')) {
+        active += 1;
+        log('active:' + active);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        active -= 1;
+      }
       const progressToken = ctx.mcpReq._meta?.progressToken;
       if (progressToken !== undefined) {
         log('progress');
@@ -92,6 +113,7 @@ async function runFixture(disabled: boolean, approved = true) {
     args: [serverFile],
     env: { MCP_FIXTURE_LOG: log },
     timeoutMs: 5_000,
+    maxConcurrentCalls: 2,
     ...(disabled ? { disabled: true } : {}),
   };
   fs.writeFileSync(config, JSON.stringify({ mcpServers: { fixture: fixtureServer } }));
@@ -106,11 +128,25 @@ async function runFixture(disabled: boolean, approved = true) {
     modelInputs.push(parsed.input ?? []);
     modelRequests += 1;
     observedToolResult ||= JSON.stringify(parsed.input ?? []).includes(
-      disabled ? 'Unknown or disabled MCP server' : approved ? 'mcp-result:hello' : 'Tool approval was denied',
+      discovery
+        ? 'toolCount'
+        : task
+        ? 'built-task-1'
+        : disabled
+          ? 'Unknown or disabled MCP server'
+          : approved
+            ? `mcp-result:${parallel ? 'p0' : 'hello'}`
+            : 'Tool approval was denied',
     );
     response.writeHead(200, { 'content-type': 'text/event-stream' });
     if (modelRequests === 1) {
-      const args = JSON.stringify({ action: 'call', server: 'fixture', tool: 'probe', arguments: { message: 'hello' } });
+      const args = JSON.stringify(discovery
+        ? { action: 'discover', server: 'fixture' }
+        : task
+        ? { action: 'task-get', server: 'fixture', taskId: 'built-task-1' }
+        : parallel
+          ? { action: 'parallel-call', calls: Array.from({ length: 8 }, (_, index) => ({ server: 'fixture', tool: 'probe', arguments: { message: `p${index}` } })) }
+          : { action: 'call', server: 'fixture', tool: 'probe', arguments: { message: 'hello' } });
       const item = { type: 'function_call', id: 'item-mcp', call_id: 'call-mcp', name: 'MCPTool', arguments: args, status: 'completed' };
       response.end(`data: ${JSON.stringify({ type: 'response.function_call_arguments.delta', delta: args, item_id: 'item-mcp', output_index: 0, sequence_number: 1 })}\n\ndata: ${JSON.stringify({ type: 'response.output_item.done', item, output_index: 0, sequence_number: 2 })}\n\ndata: ${JSON.stringify({ type: 'response.completed', response: responseFixture([item]), sequence_number: 3 })}\n\ndata: [DONE]\n\n`);
     } else {
@@ -158,6 +194,14 @@ async function runFixture(disabled: boolean, approved = true) {
 }
 
 describe('built native MCP execution', () => {
+  it('uses negotiated official MCP task requests through the built agent', async () => {
+    const result = await runFixture(false, true, false, true);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.observedToolResult).toBe(true);
+    expect(result.modelRequests).toBe(2);
+  }, 30_000);
+
   it('discovers, calls, observes, and closes a real stdio MCP server', async () => {
     const result = await runFixture(false);
     expect(result.code, result.stderr).toBe(0);
@@ -183,6 +227,28 @@ describe('built native MCP execution', () => {
     expect(new Set(correlated.map((event) => event.sessionId)).size).toBe(1);
     expect(new Set(correlated.map((event) => event.turnId)).size).toBe(1);
     expect(`${result.stdout}${result.stderr}`).not.toMatch(/model-secret-must-stay-private|\u0000/);
+  }, 20_000);
+
+  it('runs the explicit discovery phase through the built MCP client', async () => {
+    const result = await runFixture(false, true, false, false, true);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.observedToolResult, JSON.stringify(result.modelInputs)).toBe(true);
+    expect(result.log).toMatch(/started:\d+\nlist\nclosed\n/);
+    expect(result.log).not.toContain('call:');
+    const lines = result.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    expect(lines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: expect.objectContaining({ type: 'tool.updated', payload: expect.objectContaining({ name: 'MCPTool' }) }) }),
+      expect.objectContaining({ event: expect.objectContaining({ type: 'tool.ended', payload: expect.objectContaining({ name: 'MCPTool' }) }) }),
+    ]));
+  }, 20_000);
+
+  it('runs a real ordered parallel-call with the configured per-server cap', async () => {
+    const result = await runFixture(false, true, true);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.observedToolResult, JSON.stringify(result.modelInputs)).toBe(true);
+    expect([...result.log.matchAll(/active:(\d+)/g)].map((match) => Number(match[1]))).toContain(2);
+    expect([...result.log.matchAll(/active:(\d+)/g)].map((match) => Number(match[1]))).not.toContain(3);
+    expect([...result.log.matchAll(/call:p(\d+)/g)].map((match) => Number(match[1])).sort((left, right) => left - right)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   }, 20_000);
 
   it('fails closed when the configured MCP server is disabled without spawning it', async () => {

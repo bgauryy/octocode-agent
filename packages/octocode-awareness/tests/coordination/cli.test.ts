@@ -131,7 +131,7 @@ describe('runCli', () => {
   it('extracts hook write targets from common host payloads', () => {
     expect(extractHookTargetPaths({ toolName: 'Write', input: { path: 'src/a.ts' } })).toEqual(['src/a.ts']);
     expect(extractHookTargetPaths({ tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Update File: src/b.ts\n*** Move to: src/c.ts\n*** End Patch' } })).toEqual(['src/b.ts', 'src/c.ts']);
-    expect(extractHookTargetPaths({ toolName: 'localSearchCode', input: { path: 'src/not-write.ts' } })).toEqual([]);
+    expect(extractHookTargetPaths({ toolName: 'localSearch', input: { operation: 'text', path: 'src/not-write.ts' } })).toEqual([]);
   });
 
   it('extracts hook write targets from arrays, query payloads, and nested tool names', () => {

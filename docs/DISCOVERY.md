@@ -9,8 +9,10 @@ Both hosts use the Agent Skills parser from `@octocodeai/octocode-shared`. The n
 runtime exposes model-facing `skill` and `MCPTool` facades. The Pi adapter retains its
 host-specific persistent catalog and UI only for supported Pi use and parity comparison.
 
-Character and latency measurements below use the deterministic fixture documented in
-`.octocode/rfc/lazy-mcp-schema-hydration/KPI.md`; they don't estimate provider cost.
+The character and latency measurements in section 5 are a dated 2026-08-24
+observation from the deterministic lazy-schema fixture. Section 5 retains them as
+historical context, not as current release evidence, provider-token measurements,
+or provider-cost estimates.
 
 ---
 
@@ -118,7 +120,7 @@ current session's prompt suffix.
 
 ```js
 MCPTool({queries:[{reasoning:"Search code.", action:"call", server:"octocode",
-  tool:"ghSearchCode", arguments:{queries:[/* … */]}}]})
+  tool:"ghSearch", arguments:{queries:[/* … */]}}]})
 ```
 
 `call` discovers the current schema without invoking the remote tool, compiles, or reuses
@@ -134,9 +136,9 @@ agent restart; adding arbitrary server code requires trust and interactive appro
 
 ### TUI observability
 
-- Request row: `◇ localSearchCode · [text] "query" in path` (branded octocode
+- Request row: `◇ localSearch · [text] "query" in path` (branded octocode
   renderer) or `mcp <action> · <server>/<tool>` for other servers.
-- Response row: `✓ localSearchCode` collapsed; expand (ctrl+o) for the structured
+- Response row: `✓ localSearch` collapsed; expand (ctrl+o) for the structured
   result tree; errors render in error styling; in-flight shows `running…`.
 - Footer: MCP server/tool counts + per-turn prompt overhead live in the branded
   toolbar (`/octocode-status` → prompt budget lists every block's size).
@@ -233,8 +235,8 @@ harness surface:
   ],
   "mcp": {
     "sources":  [ { "scope": "built-in", "path": "…", "trusted": true }, … ],
-    "servers":  [ { "name": "octocode", "command": "…", "toolCount": 14,
-                    "tools": [ { "name": "ghSearchCode", "description": "…" }, … ] } ],
+    "servers":  [ { "name": "octocode", "command": "…", "toolCount": 13,
+                    "tools": [ { "name": "ghSearch", "description": "…" }, … ] } ],
     "warnings": [],
     "discoveredConfigs": [
       { "path": "$OCTOCODE_HOME/agent/mcp/servers.json", "host": "octocode", "scope": "user",
@@ -304,7 +306,8 @@ The accepted 12-tool large-schema fixture measures 202,888 eager catalog charact
 752 lazy index characters: a 99.63% reduction. Character count is canonical; it is not a
 provider-token or cost claim. A 200-sample local benchmark measured 1.61 ms snapshot-hit
 p95 versus 0.007 ms for in-memory index rendering, or 1.60 ms added harness latency.
-See the RFC KPI document for commands, environment, and all safety guardrails.
+These historical measurements do not replace current package tests, production
+conformance, or provider-reported cache-token evidence.
 
 These measurements exclude Pi's base prompt, workspace context, API `tools` definitions,
 and conditional prompt blocks. Native support-tool definitions ride in the API `tools`

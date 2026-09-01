@@ -8,12 +8,6 @@ import {
 } from '../src/awareness-config.js';
 import { ParsedArgs } from './cli-model.js';
 import { EmitOptions, emit } from './cli-routing.js';
-import {
-  DEFAULT_WORKSPACE_POLICY,
-  loadWorkspacePolicy,
-  parseWorkspacePolicy,
-  writeWorkspacePolicy,
-} from '../src/workspace-policy.js';
 
 const FEATURE_FLAGS: Record<keyof AwarenessFeatureConfig, string> = {
   hooks: 'hooks',
@@ -115,26 +109,5 @@ export function cmdAwarenessConfig(args: ParsedArgs, opts: EmitOptions): number 
     return emit({ ok: true, action, created: true, path, config }, 0, opts);
   } catch (error) {
     return emit({ ok: false, action, error: (error as Error).message }, 1, opts);
-  }
-}
-
-export function cmdWorkspacePolicy(args: ParsedArgs, opts: EmitOptions): number {
-  const workspace = args.workspace ? String(args.workspace) : process.cwd();
-  try {
-    const loaded = loadWorkspacePolicy(workspace);
-    const policy = parseWorkspacePolicy({
-      version: 1,
-      storage: {
-        repository: args.repository_scope ?? loaded.policy.storage.repository ?? DEFAULT_WORKSPACE_POLICY.storage.repository,
-        memory: args.memory_scope ?? loaded.policy.storage.memory ?? DEFAULT_WORKSPACE_POLICY.storage.memory,
-      },
-      hooks: {
-        profile: args.hook_profile ?? loaded.policy.hooks.profile ?? DEFAULT_WORKSPACE_POLICY.hooks.profile,
-      },
-    });
-    const path = writeWorkspacePolicy(workspace, policy);
-    return emit({ ok: true, action: 'setup', path, workspace, policy }, 0, opts);
-  } catch (error) {
-    return emit({ ok: false, action: 'setup', workspace, error: (error as Error).message }, 1, opts);
   }
 }

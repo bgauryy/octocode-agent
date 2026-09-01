@@ -7,6 +7,7 @@ import type { AgentRuntime, RuntimeCommand, RuntimeCommandResult } from '@octoco
 import { filterNativeContextEvent } from './native-context-filter.js';
 
 const DEFAULT_CONTEXT_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
+const DEFAULT_CONTEXT_MAX_BYTES = 16_000;
 
 export interface NativeCommunicationOptions {
   workspace: string;
@@ -42,6 +43,7 @@ export function withNativeSessionCommunication(
       }, {
         now: options.contextNow?.() ?? Date.now(),
         maxAgeMs: options.contextMaxAgeMs ?? DEFAULT_CONTEXT_MAX_AGE_MS,
+        maxTextBytes: DEFAULT_CONTEXT_MAX_BYTES,
       });
       if (filtered.decision === 'reject') return 'refuse';
       const result = await runtime.execute({

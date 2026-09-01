@@ -1,5 +1,3 @@
-
-
 export const AWARENESS_QUERY_VIEWS = [
   'all',
   'repo-profile',
@@ -19,7 +17,7 @@ export const AWARENESS_QUERY_VIEWS = [
   'developer-review',
 ] as const;
 
-export type AwarenessQueryView = typeof AWARENESS_QUERY_VIEWS[number];
+export type AwarenessQueryView = (typeof AWARENESS_QUERY_VIEWS)[number];
 export type AwarenessQueryFormat = 'json' | 'table' | 'csv' | 'markdown' | 'html';
 export type RepoContextMode = 'local' | 'share';
 
@@ -135,23 +133,6 @@ export interface MemoryDbRow {
 }
 
 export const VIEW_SET = new Set<string>(AWARENESS_QUERY_VIEWS);
-export const CSV_VIEWS = ['memories', 'gotchas', 'lessons', 'plans', 'tasks', 'runs', 'agents', 'locks', 'signals', 'refinements', 'files', 'activity', 'workboard'] as const;
-export interface ProjectionMarkdownBudget {
-  max_lines: number;
-  role: string;
-}
-
-export interface ProjectionMarkdownBudgetStatus extends ProjectionMarkdownBudget {
-  actual_lines: number;
-  within_budget: boolean;
-}
-
-export const PROJECTION_MARKDOWN_BUDGETS: Record<string, ProjectionMarkdownBudget> = {
-  'AGENTS.md': { max_lines: 80, role: 'agent start summary' },
-  'KNOWLEDGE.md': { max_lines: 200, role: 'bounded verified-knowledge leads' },
-};
-export const ATTEND_COMPACT_BUDGET = { max_lines: 40, max_json_bytes: 2 * 1024 };
-export const WORKBOARD_BUDGET = { max_rows_per_column: 10 };
 export const LESSON_LABELS = [
   'DECISION',
   'ARCHITECTURE',
@@ -187,12 +168,6 @@ export function normalizeFormat(format: string | null | undefined): AwarenessQue
   throw new Error('--format must be json, table, csv, markdown, or html');
 }
 
-export function normalizeMode(mode: string | null | undefined): RepoContextMode {
-  const normalized = (mode ?? 'local').trim().toLowerCase();
-  if (normalized === 'local' || normalized === 'share') return normalized;
-  throw new Error('--mode must be local or share');
-}
-
 export function limitOf(value: number | null | undefined, fallback = 50, max = 501): number {
   if (value == null || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(1, Math.floor(value)));
@@ -213,11 +188,7 @@ export function continuationFor(view: AwarenessQueryView, requestedLimit: number
   return `query ${view} reached the 500-row safety cap; narrow workspace, state, label, file, time, or text filters`;
 }
 
-export function boundedRows(
-  view: AwarenessQueryView,
-  probedRows: AwarenessQueryRow[],
-  requestedLimit: number,
-): QueryCompleteness {
+export function boundedRows(view: AwarenessQueryView, probedRows: AwarenessQueryRow[], requestedLimit: number): QueryCompleteness {
   if (view === 'workboard') {
     const columnTotals = new Map<string, number>();
     for (const row of probedRows) {

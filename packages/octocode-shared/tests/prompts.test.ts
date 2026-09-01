@@ -35,6 +35,20 @@ describe('shared prompts', () => {
     expect(prompt).toContain('live host capability catalog');
   });
 
+  it('forbids replaying crash-left effects whose outcome is unknown', () => {
+    const prompt = buildOctocodeSystemPrompt('<coordination>shared</coordination>');
+    expect(prompt).toContain('crash-left `started` effect');
+    expect(prompt).toContain('terminal `uncertain`');
+    expect(prompt).toContain('Never re-execute it');
+  });
+
+  it('uses the negotiated research catalog instead of stale inner tool names', () => {
+    const prompt = buildOctocodeSystemPrompt('<coordination>shared</coordination>');
+    expect(prompt).toContain('Call catalog before choosing and schema before the first call');
+    expect(prompt).toContain('never reuse an absent name');
+    expect(prompt).not.toContain('localSearch operation:');
+  });
+
   it('keeps plan goals bounded', () => {
     const prompt = buildPlanPrompt('x'.repeat(PLAN_PROMPT_MAX_GOAL + 1));
     expect(prompt).toContain(PLAN_PROMPT_TRUNCATION_MARKER);

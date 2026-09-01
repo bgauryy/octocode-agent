@@ -12,7 +12,11 @@ const SOURCE_ORDER: Record<LifecycleSource, number> = { managed: 0, builtin: 1, 
 export class LifecycleBus<T> {
   readonly #subscriptions: LifecycleSubscription<T>[] = [];
   readonly #active = new Set<string>();
-  constructor(readonly definition: { readonly eventType: AgentEventType; readonly authority: readonly EventAuthority[]; readonly validate: (payload: unknown) => payload is T; readonly recursion?: boolean }) {}
+  constructor(readonly definition: { readonly eventType: AgentEventType; readonly authority: readonly EventAuthority[]; readonly validate: (payload: unknown) => payload is T; readonly recursion?: boolean; readonly maxContextBytes?: number }) {
+    if (definition.maxContextBytes !== undefined && (!Number.isSafeInteger(definition.maxContextBytes) || definition.maxContextBytes <= 0)) {
+      throw new RuntimeFailure('validation', 'Lifecycle context byte budget must be a positive safe integer');
+    }
+  }
   subscribe(subscription: LifecycleSubscription<T>): () => void {
     if (this.#subscriptions.some(({ id }) => id === subscription.id)) throw new RuntimeFailure('validation', `Duplicate lifecycle handler: ${subscription.id}`);
     this.#subscriptions.push(subscription);
@@ -20,12 +24,14 @@ export class LifecycleBus<T> {
   }
   async dispatch(envelope: AgentEventEnvelope<AgentEventType, T>): Promise<LifecycleDispatchResult<T>> {
     if (envelope.type !== this.definition.eventType) throw new RuntimeFailure('validation', `Expected ${this.definition.eventType}, received ${envelope.type}`);
+    if (!this.definition.validate(envelope.payload)) throw new RuntimeFailure('validation', `Invalid initial payload for ${envelope.type}`);
     if (!this.definition.recursion && this.#active.has(envelope.type)) throw new RuntimeFailure('internal-invariant', `Recursive intercepting event: ${envelope.type}`);
     this.#active.add(envelope.type);
     let payload = envelope.payload as T;
     let aggregate: LifecycleDecision<T> = { kind: 'continue' };
     let suppressed = false;
     const context: string[] = [];
+    let contextBytes = 0;
     const receipts: LifecycleReceipt[] = [];
     const ordered = [...this.#subscriptions].sort((a, b) => SOURCE_ORDER[a.source] - SOURCE_ORDER[b.source] || (a.priority ?? 0) - (b.priority ?? 0) || (a.discoveryOrder ?? 0) - (b.discoveryOrder ?? 0) || (a.declarationOrder ?? 0) - (b.declarationOrder ?? 0) || a.id.localeCompare(b.id));
     try {
@@ -42,7 +48,14 @@ export class LifecycleBus<T> {
             } else if (decision.kind === 'deny') aggregate = decision;
             else if (decision.kind === 'stop' && aggregate.kind !== 'deny') aggregate = decision;
             else if (decision.kind === 'allow' && aggregate.kind !== 'deny' && aggregate.kind !== 'stop') aggregate = decision;
-            else if (decision.kind === 'context') context.push(decision.text);
+            else if (decision.kind === 'context') {
+              const bytes = new TextEncoder().encode(decision.text).byteLength;
+              if (this.definition.maxContextBytes !== undefined && contextBytes + bytes > this.definition.maxContextBytes) {
+                throw new RuntimeFailure('validation', `Lifecycle context exceeds ${this.definition.maxContextBytes} byte budget`);
+              }
+              contextBytes += bytes;
+              context.push(decision.text);
+            }
             else if (decision.kind === 'suppress') suppressed = true;
           }
           receipts.push({ handlerId: subscription.id, order, outcome: 'success', durationMs: Date.now() - started, decision: decision?.kind ?? 'continue' });

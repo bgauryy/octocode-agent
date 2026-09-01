@@ -16,7 +16,7 @@ Current owners:
 - Native prompt behavior: [`HEADLESS.md`](HEADLESS.md) and
   `packages/octocode-agent/src/native-prompt.ts`.
 - Pi adapter behavior: [`packages/octocode-pi-extension/docs`](../../octocode-pi-extension/docs/README.md).
-- Native cutover and extension-isolation gates: [`DESIGN/pi-coding-agent-removal`](../../../DESIGN/pi-coding-agent-removal/README.md).
+- Native cutover and extension-isolation gates: [`DESIGN/LEFTOVERS.md`](../../../DESIGN/LEFTOVERS.md).
 
 ## Independent extension boundary
 

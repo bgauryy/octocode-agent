@@ -4,8 +4,8 @@
  * Each scheme maps a debug need to: CDP domains to enable, evidence output prefixes,
  * finding rules, action rules, and a recipe function.
  *
- * MVP schemes have full implementations. Remaining schemes are stubs that point to
- * `scheme:"raw"` and the relevant CDP methods from the INTENTS_*.md knowledge base.
+ * Every named scheme has a concrete recipe; `raw` remains the explicit escape hatch
+ * for direct CDP methods from the INTENTS_*.md knowledge base.
  *
  * Sources:
  *   _skills/octocode-chrome-devtools/references/INTENTS_DEBUG.md
@@ -37,7 +37,7 @@ export const SCHEMES = [
   'live-page',
   'user-auth',
   'raw',
-  // Stubs
+  // Additional focused schemes
   'memory',
   'css-coverage',
   'js-coverage',
@@ -299,7 +299,7 @@ const debugRecipe: Recipe = async ({ session, params, screenshotDir, signal }) =
     findings.push({
       priority: 1,
       line: `[FINDING] EXCEPTION: ${desc.slice(0, 200)} at ${loc}`,
-      action: `[ACTION] search "${desc.slice(0, 60)}" in localSearchCode — exception at ${loc}`,
+      action: `[ACTION] run localSearch with operation:"text" for "${desc.slice(0, 60)}" — exception at ${loc}`,
     });
   });
 
@@ -310,7 +310,7 @@ const debugRecipe: Recipe = async ({ session, params, screenshotDir, signal }) =
     findings.push({
       priority: 4,
       line: `[FINDING] CONSOLE_ERROR: ${msg}`,
-      action: `[ACTION] search "${msg.slice(0, 60)}" in localSearchCode`,
+      action: `[ACTION] run localSearch with operation:"text" for "${msg.slice(0, 60)}"`,
     });
   });
 
@@ -1011,10 +1011,7 @@ const rawRecipe: Recipe = async ({ session, params }) => {
   return { evidenceLines: lines, details: { method, result } };
 };
 
-// ─── Stub factory ─────────────────────────────────────────────────────────────
-
-
-// ─── Stub implementations ─────────────────────────────────────────────────────
+// ─── Focused scheme implementations ───────────────────────────────────────────
 
 // Helper: evaluate JS expression that returns JSON
 async function evalJson<T>(session: CdpSession, expr: string): Promise<T | null> {
@@ -1693,8 +1690,6 @@ const fullAuditRecipe: Recipe = async ({ session, params, screenshotDir, signal 
   return { evidenceLines: lines, details: { findings } };
 };
 
-// All 15 stub schemes now have full implementations above.
-
 // ─── SCHEME_REGISTRY ──────────────────────────────────────────────────────────
 
 export const SCHEME_REGISTRY: Record<Scheme, SchemeEntry> = {
@@ -1764,7 +1759,7 @@ export const SCHEME_REGISTRY: Record<Scheme, SchemeEntry> = {
     recipe: rawRecipe,
   },
 
-  // ── Stubs ──────────────────────────────────────────────────────────────────
+  // ── Focused schemes ─────────────────────────────────────────────────────────
   memory: {
     domains: [],
     prefixes: ['[ACTION]'],

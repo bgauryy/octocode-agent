@@ -16,9 +16,8 @@ const MAX_DESCRIPTION_CHARS = 180;
 const MAX_PROMPT_DESCRIPTION_CHARS = 120;
 
 const PROMPT_OWNED_SKILLS = new Set([
-  // Pi owns Awareness through its prompt and tools. Hide the retired alias too:
-  // an old user install must not create a second coordination surface.
-  'octocode-awareness',
+  // Pi owns Awareness through its prompt and tools; a user-installed copy must
+  // not create a second coordination surface.
   'octocode-awareness',
 ]);
 

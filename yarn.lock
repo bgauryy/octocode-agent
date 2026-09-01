@@ -1762,6 +1762,12 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@octocodeai/agent-core-rust@workspace:packages/octocode-agent-core-rust":
+  version: 0.0.0-use.local
+  resolution: "@octocodeai/agent-core-rust@workspace:packages/octocode-agent-core-rust"
+  languageName: unknown
+  linkType: soft
+
 "@octocodeai/agent-core@npm:0.1.0, @octocodeai/agent-core@workspace:packages/octocode-agent-core":
   version: 0.0.0-use.local
   resolution: "@octocodeai/agent-core@workspace:packages/octocode-agent-core"
@@ -3933,6 +3939,13 @@ __metadata:
     object-assign: "npm:^4"
     vary: "npm:^1"
   checksum: 10c0/ab2bc57b8af8ef8476682a59647f7c55c1a7d406b559ac06119aa1c5f70b96d35036864d197b24cf86e228e4547231088f1f94ca05061dbb14d89cc0bc9d4cab
+  languageName: node
+  linkType: hard
+
+"croner@npm:10.0.1":
+  version: 10.0.1
+  resolution: "croner@npm:10.0.1"
+  checksum: 10c0/b1a022f8c786b19799e662e0f11686937e97133e386efa2859e316ba64b7a9c2ecd0d1500cdbe3157625ff7e9af8584c7d6e41c9a17db892c731f83be464bc92
   languageName: node
   linkType: hard
 
@@ -6153,6 +6166,7 @@ __metadata:
     "@vitest/coverage-v8": "npm:^4.1.11"
     ai: "npm:7.0.84"
     ajv: "npm:8.20.0"
+    croner: "npm:10.0.1"
     esbuild: "npm:^0.28.2"
     octocode: "npm:18.3.0"
     typescript: "npm:^5.9.3"

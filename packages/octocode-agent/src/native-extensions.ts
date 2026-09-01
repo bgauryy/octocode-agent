@@ -12,6 +12,9 @@ import {
   type PluginLease,
   type PluginLifecycleState,
   type PluginManifest,
+  type ToolDefinition,
+  type ToolEffect,
+  type ToolRegistry,
 } from '@octocodeai/agent-core';
 
 export interface NativeDiscoveredHook {
@@ -38,11 +41,20 @@ export interface NativeExtensionsOptions {
     candidate: NativeDiscoveredPlugin,
     contributions: NativePluginContributionWriter,
   ) => Promise<void>;
+  /** Observability boundary for lifecycle evidence; it cannot rewrite policy or state. */
+  readonly onLifecycle?: (event: Readonly<{
+    pluginId: string;
+    version: string;
+    state: PluginLifecycleState;
+    timestamp: number;
+    diagnostic?: string;
+  }>) => void;
   readonly now?: () => number;
 }
 
 export interface NativePluginContributionWriter {
   add(contribution: Omit<PluginContribution, 'owner'>): void;
+  addTool(id: string, definition: ToolDefinition): void;
 }
 
 export interface NativeExtensionsSnapshot {
@@ -73,6 +85,7 @@ export class NativeExtensionsController {
   readonly #plugins = new Map<string, NativeDiscoveredPlugin>();
   readonly #lifecycle = new Map<string, { state: PluginLifecycleState; diagnostic?: string }>();
   readonly #active = new Set<string>();
+  readonly #toolRegistries = new Map<ToolRegistry, Set<string>>();
   readonly #now: () => number;
   #discovered = false;
 
@@ -86,6 +99,7 @@ export class NativeExtensionsController {
       });
       if (event.state === 'ready') this.#active.add(event.pluginId);
       if (event.state === 'stopped') this.#active.delete(event.pluginId);
+      options.onLifecycle?.(event);
     });
   }
 
@@ -127,6 +141,17 @@ export class NativeExtensionsController {
     await this.#activator.activate(candidate.manifest, candidate.grant, (transaction) => (
       this.options.activatePlugin(candidate, {
         add: (contribution) => transaction.add({ ...contribution, owner: candidate.manifest.id }),
+        addTool: (id, definition) => {
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)) {
+            throw new RuntimeFailure('validation', `Plugin tool requires a safe id: ${id}`);
+          }
+          transaction.add({
+            kind: 'tool',
+            id: `${candidate.manifest.id}:${id}`,
+            owner: candidate.manifest.id,
+            value: definition,
+          });
+        },
       })
     ));
   }
@@ -164,6 +189,12 @@ export class NativeExtensionsController {
     if (!this.#active.has(id)) return;
     this.#leases.assertCanUnload(id);
     this.#activator.deactivate(id);
+    const owner = `plugin:${id}`;
+    for (const [registry, owners] of this.#toolRegistries) {
+      registry.unregisterOwner(owner);
+      owners.delete(owner);
+      if (owners.size === 0) this.#toolRegistries.delete(registry);
+    }
   }
 
   acquireLease(lease: PluginLease): void {
@@ -183,6 +214,58 @@ export class NativeExtensionsController {
 
   effectiveHooks(options: { readonly workspaceTrusted: boolean; readonly managedOnly: boolean }): readonly EffectiveHookGroup[] {
     return this.#hooks.effective(options.workspaceTrusted, options.managedOnly);
+  }
+
+  /** Materialize executable API-provided tool contributions into one runtime registry. */
+  registerTools(registry: ToolRegistry, allowedTools?: ReadonlySet<string>): readonly string[] {
+    this.#assertDiscovered();
+    if (this.#toolRegistries.has(registry)) throw new RuntimeFailure('plugin', 'Plugin tools are already registered in this runtime');
+    const pending = this.#contributions.list()
+      .filter((entry) => entry.kind === 'tool')
+      .map((entry) => {
+        if (!this.#active.has(entry.owner)) throw new RuntimeFailure('plugin', `Tool contribution owner is inactive: ${entry.owner}`);
+        const candidate = this.#plugins.get(entry.owner)!;
+        const definition = executableTool(entry.value, entry.id);
+        assertToolPermissions(candidate.grant.granted, definition.policy.effects, entry.id);
+        const name = entry.id.startsWith(`${entry.owner}:`) ? entry.id : `${entry.owner}:${entry.id}`;
+        return { entry, candidate, definition, name };
+      })
+      .filter(({ name }) => allowedTools === undefined || allowedTools.has(name));
+    const names = new Set<string>();
+    for (const item of pending) {
+      if (names.has(item.name) || registry.get(item.name) !== undefined) throw new RuntimeFailure('validation', `Duplicate registry identity: ${item.name}`);
+      names.add(item.name);
+    }
+    const owners = new Set<string>();
+    try {
+      for (const { entry, candidate, definition, name } of pending) {
+        const owner = `plugin:${entry.owner}`;
+        owners.add(owner);
+        registry.register({
+          ...definition,
+          name,
+          execute: async (input) => {
+            const operationId = String(input.callId);
+            this.acquireLease({
+              pluginId: entry.owner,
+              version: candidate.manifest.version,
+              hash: candidate.manifestHash,
+              contributionId: entry.id,
+              operationId,
+              acquiredAt: this.#now(),
+              cancelled: false,
+            });
+            try { return await definition.execute(input); }
+            finally { this.releaseLease(operationId); }
+          },
+        }, owner);
+      }
+    } catch (error) {
+      for (const owner of owners) registry.unregisterOwner(owner);
+      throw error;
+    }
+    this.#toolRegistries.set(registry, owners);
+    return Object.freeze([...names].sort());
   }
 
   snapshot(): NativeExtensionsSnapshot {
@@ -229,5 +312,26 @@ function assertUnique(values: readonly string[], kind: string): void {
   for (const value of values) {
     if (seen.has(value)) throw new RuntimeFailure('validation', `Duplicate discovered ${kind}: ${value}`);
     seen.add(value);
+  }
+}
+
+function executableTool(value: unknown, id: string): ToolDefinition {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new RuntimeFailure('validation', `Plugin tool ${id} must be an executable definition`);
+  const definition = value as Partial<ToolDefinition>;
+  if (typeof definition.execute !== 'function') throw new RuntimeFailure('unsupported-capability', `Plugin tool ${id} requires an executor provided through the activation API`);
+  if (typeof definition.label !== 'string' || typeof definition.description !== 'string') throw new RuntimeFailure('validation', `Plugin tool ${id} requires label and description`);
+  if (!Number.isSafeInteger(definition.schemaVersion) || !Number.isSafeInteger(definition.outputVersion)) throw new RuntimeFailure('validation', `Plugin tool ${id} requires integer schema versions`);
+  if (typeof definition.inputSchema !== 'object' || definition.inputSchema === null || typeof definition.outputSchema !== 'object' || definition.outputSchema === null) throw new RuntimeFailure('validation', `Plugin tool ${id} requires input and output schemas`);
+  if (typeof definition.policy !== 'object' || definition.policy === null || !Array.isArray(definition.policy.effects)) throw new RuntimeFailure('validation', `Plugin tool ${id} requires policy metadata`);
+  return definition as ToolDefinition;
+}
+
+function assertToolPermissions(granted: readonly string[], effects: readonly ToolEffect[], id: string): void {
+  const required = new Set<string>(['tools.register']);
+  if (effects.includes('network')) required.add('network.access');
+  if (effects.includes('process')) required.add('process.execute');
+  if (effects.includes('write') || effects.includes('destructive')) required.add('filesystem.write');
+  for (const permission of required) if (!granted.includes(permission)) {
+    throw new RuntimeFailure('trust', `Plugin tool ${id} requires granted permission ${permission}`);
   }
 }

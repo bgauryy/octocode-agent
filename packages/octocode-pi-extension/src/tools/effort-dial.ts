@@ -52,7 +52,7 @@ export const DIAL_PRESETS: Readonly<Record<EffortLevel, DialPreset>> = {
   low: { thinking: 'low', maxActiveWorkers: 1 },
   medium: { thinking: 'medium', maxActiveWorkers: 2 },
   high: { thinking: 'high', maxActiveWorkers: 4 },
-  ultra: { thinking: 'xhigh', maxActiveWorkers: 8 },
+  ultra: { thinking: 'xhigh', maxActiveWorkers: 4 },
 };
 
 /**

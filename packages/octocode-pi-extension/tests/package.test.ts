@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { beforeAll, test, vi } from 'vitest';
 import { Type } from 'typebox';
-import type { PiContext } from '../src/types.js';
+import type { PiContext, PiInstance } from '../src/types.js';
 import {
   MANAGED_BLOCK_END,
   MANAGED_BLOCK_START,
@@ -39,6 +39,7 @@ import {
   setAgentProcessFactoryForTests,
   normalizeWorkerOutput,
   evaluateWorkerRecoveryRisk,
+  getPiRegistryRegistrationReceipts,
 } from '../src/index.js';
 import { runAwarenessInProcess } from '../src/assets.js';
 import { applyCustomEditsToContent } from '../src/tools/edit-tool.js';
@@ -1205,7 +1206,9 @@ test('public direct palette is exactly 17 queries-only tools with bounded per-qu
     assert.equal(runType.default, 'sequential', `${name} defaults to safe one-by-one execution`);
     assert.deepEqual(
       runType.enum,
-      name === 'readMedia' || name === 'web' ? ['sequential', 'parallel'] : ['sequential'],
+      name === 'readMedia' || name === 'web' || name === 'MCPTool'
+        ? ['sequential', 'parallel']
+        : ['sequential'],
       `${name} advertises only execution modes its implementation supports`,
     );
     const queries = schema.properties?.['queries'] as {
@@ -1241,6 +1244,17 @@ test('public direct palette is exactly 17 queries-only tools with bounded per-qu
   ]) {
     assert.equal(tools.has(retired), false, `${retired} is retired without a public alias`);
   }
+});
+
+test('production composition records canonical receipts for every registered Pi tool and command', async () => {
+  const { pi, tools, commands } = await captureExtensions();
+  const receipts = getPiRegistryRegistrationReceipts(pi as unknown as PiInstance);
+  const toolNames = receipts.filter((receipt) => receipt.kind === 'tool').map((receipt) => receipt.name);
+  const commandNames = receipts.filter((receipt) => receipt.kind === 'command').map((receipt) => receipt.name);
+
+  assert.deepEqual(toolNames, [...tools.keys()].sort());
+  assert.deepEqual(commandNames, [...commands.keys()].sort());
+  assert.ok(receipts.every((receipt) => receipt.canonicalRegistered && receipt.hostRegistered));
 });
 
 test('all 16 public direct tools enter the shared query executor', async () => {
@@ -1312,6 +1326,67 @@ test('direct tool registration exposes the exact provider-contract subtotal', ()
   assert.equal(stats.descriptionChars, captured[0]!.description!.length);
   assert.equal(stats.schemaChars, JSON.stringify(captured[0]!.parameters).length);
   assert.equal(stats.totalChars, stats.descriptionChars + stats.schemaChars);
+});
+
+test('direct tool registration fails closed and records only host-accepted tools', () => {
+  const definition = {
+    name: 'demo',
+    label: 'Demo',
+    description: 'Demo direct tool.',
+    parameters: Type.Object({}),
+    execute: async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }),
+  };
+
+  const missingHostRegistration = new Set<string>();
+  assert.throws(
+    () => registerUniqueTool({}, missingHostRegistration, definition),
+    /registerTool/i,
+  );
+  assert.deepEqual([...missingHostRegistration], []);
+  assert.equal(getDirectToolContractStats(missingHostRegistration).tools, 0);
+
+  const rejectedHostRegistration = new Set<string>();
+  assert.throws(
+    () => registerUniqueTool(
+      { registerTool: () => { throw new Error('host rejected tool'); } },
+      rejectedHostRegistration,
+      definition,
+    ),
+    /host rejected tool/,
+  );
+  assert.deepEqual([...rejectedHostRegistration], []);
+  assert.equal(getDirectToolContractStats(rejectedHostRegistration).tools, 0);
+
+  registerUniqueTool({ registerTool: () => {} }, rejectedHostRegistration, definition);
+  assert.deepEqual([...rejectedHostRegistration], ['demo']);
+  assert.equal(getDirectToolContractStats(rejectedHostRegistration).tools, 1);
+});
+
+test('extension inventory matches runtime registrations for root and child with Chrome on and off', async () => {
+  const previousChild = process.env['OCTOCODE_PI_SUBAGENT'];
+  const previousChrome = process.env['OCTOCODE_CHROME_DEBUG'];
+  try {
+    for (const child of [false, true]) {
+      for (const chrome of [false, true]) {
+        if (child) process.env['OCTOCODE_PI_SUBAGENT'] = '1';
+        else delete process.env['OCTOCODE_PI_SUBAGENT'];
+        process.env['OCTOCODE_CHROME_DEBUG'] = chrome ? '1' : '0';
+
+        const { tools } = await captureExtensions();
+        const registeredSupportTools = [...tools.keys()].filter(name => name !== 'bash').sort();
+        assert.deepEqual(
+          [...listExtensionHarness().supportTools].sort(),
+          registeredSupportTools,
+          `inventory matches ${child ? 'child' : 'root'} runtime with Chrome ${chrome ? 'on' : 'off'}`,
+        );
+      }
+    }
+  } finally {
+    if (previousChild === undefined) delete process.env['OCTOCODE_PI_SUBAGENT'];
+    else process.env['OCTOCODE_PI_SUBAGENT'] = previousChild;
+    if (previousChrome === undefined) delete process.env['OCTOCODE_CHROME_DEBUG'];
+    else process.env['OCTOCODE_CHROME_DEBUG'] = previousChrome;
+  }
 });
 
 test('the removed unified-flow flag cannot restore retired tools', async () => {
@@ -2382,10 +2457,10 @@ test('research tools served via MCPTool — not registered as native Pi tools', 
   // bundled octocode MCP server through MCPTool, not as individually-registered
   // native Pi tools. This keeps the Pi tool palette lean (fewer tokens per turn).
   const nativeResearchTools = [
-    'ghSearchCode', 'ghSearchRepos', 'ghSearchPullRequests', 'ghSearchIssues',
-    'ghSearchCommits', 'ghGetFileContent', 'ghViewRepoStructure', 'ghCloneRepo',
-    'localSearchCode', 'localFindFiles', 'localFindDeadCode', 'localGetFileContent',
-    'localViewStructure', 'lspGetSemantics', 'npmSearch',
+    'ghSearch', 'ghGetFileContent', 'ghSearchPullRequests', 'ghSearchIssues',
+    'ghSearchCommits', 'ghListReleases', 'ghSearchDiscussions', 'ghCloneRepo',
+    'npmSearch', 'localSearch', 'localAnalyzeGraph', 'localGetFileContent',
+    'lspGetSemantics',
   ];
   for (const toolName of nativeResearchTools) {
     assert.equal(
@@ -2602,6 +2677,12 @@ test('applies Octocode Pi UI status and hidden thinking label', () => {
     getThinkingStatus({ model: { id: 'claude', reasoning: true } }, 'high'),
     'high'
   );
+});
+
+test('re-exports the extracted Octocode UI implementation from the package entrypoint', async () => {
+  const extensionUi = await import('../src/extension-ui.js');
+  assert.equal(applyOctocodeUi, extensionUi.applyOctocodeUi);
+  assert.equal(getThinkingStatus, extensionUi.getThinkingStatus);
 });
 
 test('Octocode metrics footer updates on session and turn lifecycle (single surface, no status dup)', async () => {
@@ -3485,14 +3566,14 @@ test('README and UI docs list every harness surface exposed by the extension', (
 });
 
 test('research tools are NOT registered as native Pi tools — served via MCPTool octocode server', async () => {
-  // MCPTool-first: 15 research tools stay out of the Pi palette to cut per-turn tokens.
+  // MCPTool-first: 13 research tools stay out of the Pi palette to cut per-turn tokens.
   // They are served through an MCPTool queries[] item with action:"call" and server:"octocode".
   const { tools } = await captureExtensions();
   const absent = [
-    'localViewStructure', 'localSearchCode', 'localGetFileContent', 'localFindFiles',
-    'localFindDeadCode', 'lspGetSemantics', 'ghSearchCode', 'ghGetFileContent',
-    'ghViewRepoStructure', 'ghSearchRepos', 'ghSearchPullRequests', 'ghSearchIssues',
-    'ghSearchCommits', 'ghCloneRepo', 'npmSearch',
+    'ghSearch', 'ghGetFileContent', 'ghSearchPullRequests', 'ghSearchIssues',
+    'ghSearchCommits', 'ghListReleases', 'ghSearchDiscussions', 'ghCloneRepo',
+    'npmSearch', 'localSearch', 'localAnalyzeGraph', 'localGetFileContent',
+    'lspGetSemantics',
   ];
   for (const name of absent) {
     assert.equal(tools.has(name), false, `${name} must not be a native Pi tool`);
@@ -3914,7 +3995,7 @@ test('evaluateSpawnPolicy warns about packet gaps, provider guidance, fan-out, a
     task: 'Goal: check docs\nScope: docs only',
     model: 'claude-haiku-4-5-20251001',
     tools: ['web', 'spawnAgent'],
-  }, 6);
+  }, 3);
 
   assert.equal(result.allowed, true);
   assert.ok(result.warnings.some((warning) => /fan-out/i.test(warning)));
@@ -4082,7 +4163,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
         model: 'sonnet:high',
         provider: 'guy-provider-anthropic',
         thinking: 'medium',
-        tools: ['localSearchCode', 'web', 'read', 'grep'],
+        tools: ['localSearch', 'web', 'read', 'grep'],
       },
       { cwd: '/repo' }
     );
@@ -4113,7 +4194,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
     assert.ok(spawned[0]!.args.includes('--exclude-tools'));
     assert.ok(spawned[0]!.args.includes('spawnAgent,AgentMessage,spawnSubagent'));
     assert.ok(spawned[0]!.args.includes('--tools'));
-    assert.ok(spawned[0]!.args.includes('localSearchCode,web,read,grep'));
+    assert.ok(spawned[0]!.args.includes('localSearch,web,read,grep'));
     assert.equal(spawned[0]!.options.cwd, '/repo');
     assert.match(
       spawned[0]!.proc.stdinWrites[0]!,
@@ -4180,7 +4261,7 @@ test('spawnAgent starts a lean RPC Pi process and AgentMessage can list/status/s
       && entry.model === 'sonnet:high'
       && entry.provider === 'guy-provider-anthropic'
       && entry.thinking === 'medium'
-      && entry.tools?.join(',') === 'localSearchCode,web,read,grep'
+      && entry.tools?.join(',') === 'localSearch,web,read,grep'
       && entry.result === 'docs are current'
       && entry.verification === 'inspected docs/a.md'
     ));
@@ -4747,7 +4828,7 @@ test('spawnSubagent starts researcher, planner, and architect with all Octocode 
     const researcherTools =
       researcherArgs![researcherArgs!.indexOf('--tools') + 1]!;
     assert.match(researcherTools, /MCPTool/);
-    assert.doesNotMatch(researcherTools, /ghSearchCode/, 'ghSearchCode served via MCPTool, not natively');
+    assert.doesNotMatch(researcherTools, /ghSearch/, 'ghSearch served via MCPTool, not natively');
     assert.doesNotMatch(researcherTools, /bash/);
 
     const plannerTools = plannerArgs![plannerArgs!.indexOf('--tools') + 1]!;
@@ -4887,13 +4968,17 @@ test('unified agent keeps non-browser profiles available when Chrome debug is di
   }
 });
 
-test('spawnAgent does not register recursively inside spawned workers', async () => {
+test('no agent-spawning facade registers recursively inside spawned workers', async () => {
   const previous = process.env['OCTOCODE_PI_SUBAGENT'];
   process.env['OCTOCODE_PI_SUBAGENT'] = '1';
   try {
     const { tools } = await captureExtensions();
     assert.equal(tools.has('spawnAgent'), false);
     assert.equal(tools.has('AgentMessage'), false);
+    assert.equal(tools.has('spawnSubagent'), false);
+    assert.equal(tools.has('agent'), false);
+    assert.equal(tools.has('browserAgent'), false);
+    assert.equal(tools.has('callTool'), false);
     assert.equal(
       tools.has('MCPTool'),
       true,
@@ -4927,7 +5012,7 @@ test('AgentMessage wait collects worker output and kill terminates stale workers
     spawned[0]!.emitStdout({
       type: 'tool_call',
       toolCallId: 'tool-1',
-      toolName: 'localSearchCode',
+      toolName: 'localSearch',
     });
     const runningStatus = await invokeExecute(messageTool, {
       action: 'status',
@@ -4935,17 +5020,17 @@ test('AgentMessage wait collects worker output and kill terminates stale workers
     });
     assert.match(
       (runningStatus.content[0] as { text: string }).text,
-      /tools: localSearchCode:running/
+      /tools: localSearch:running/
     );
     assert.equal(
       (runningStatus.details as { agent: { activeTool?: string } }).agent
         .activeTool,
-      'localSearchCode'
+      'localSearch'
     );
     spawned[0]!.emitStdout({
       type: 'tool_result',
       toolCallId: 'tool-1',
-      toolName: 'localSearchCode',
+      toolName: 'localSearch',
       isError: false,
     });
     spawned[0]!.emitStdout({
@@ -4967,7 +5052,7 @@ test('AgentMessage wait collects worker output and kill terminates stale workers
     );
     assert.match((waited.content[0] as { text: string }).text, /Agent turn completed/);
     assert.doesNotMatch((waited.content[0] as { text: string }).text, /Agent completed/);
-    assert.match((waited.content[0] as { text: string }).text, /tools: localSearchCode:done/);
+    assert.match((waited.content[0] as { text: string }).text, /tools: localSearch:done/);
     assert.match((waited.content[0] as { text: string }).text, /worker result/);
     assert.ok(spawned[0]!.stdinWrites[0]!.includes('produce output'));
     assert.equal(spawned[0]!.stdinWrites[0]!.includes('spawnAgent'), false);
@@ -5162,7 +5247,7 @@ test('evictStaleAgents removes oldest terminal agents when registry reaches MAX_
     const spawnTool = tools.get('spawnAgent')!;
     const messageTool = tools.get('AgentMessage')!;
 
-    // Spawn 50 agents (MAX_AGENT_RECORDS) and let them all exit
+    // Fill the historical registry without exceeding the four active-worker ceiling.
     const ids: string[] = [];
     for (let i = 0; i < 50; i++) {
       const r = await invokeExecute(
@@ -5171,9 +5256,6 @@ test('evictStaleAgents removes oldest terminal agents when registry reaches MAX_
         { cwd: '/repo' }
       );
       ids.push((r.details as { agent: { agentId: string } }).agent.agentId);
-    }
-    // Let first 40 exit (terminal) — keep last 10 running
-    for (let i = 0; i < 40; i++) {
       spawned[i]!.close(0);
     }
 

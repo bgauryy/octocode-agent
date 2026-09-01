@@ -15,6 +15,9 @@ import type { NativeHookCommandExecutor, NativeHookCommandResult } from './nativ
 type CodexEvent = 'SessionStart' | 'SessionEnd' | 'UserPromptSubmit' | 'PreToolUse' | 'PermissionRequest' | 'PostToolUse' | 'PreCompact' | 'PostCompact' | 'SubagentStart' | 'SubagentStop' | 'Stop';
 type CommandExecutor = Pick<NativeHookCommandExecutor, 'execute'>;
 type McpHandler = Extract<HookHandlerDefinition, { type: 'mcp_tool' }>;
+const DEFAULT_HOOK_CONTEXT_BYTES = 16 * 1024;
+const MAX_EVENT_HOOK_CONTEXT_BYTES = 64 * 1024;
+const CONTEXT_EVENTS = new Set<CodexEvent>(['UserPromptSubmit', 'PostToolUse', 'PreCompact']);
 
 export interface NativeHookMcpExecutor {
   execute(handler: McpHandler, input: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<NativeHookCommandResult>;
@@ -55,17 +58,17 @@ interface Mapping {
 }
 
 const MAPPINGS: readonly Mapping[] = Object.freeze([
-  { runtimeEvent: 'session.starting', codexEvent: 'SessionStart', authority: ['observe', 'context', 'stop'] },
+  { runtimeEvent: 'session.starting', codexEvent: 'SessionStart', authority: ['observe', 'stop'] },
   { runtimeEvent: 'session.stopping', codexEvent: 'SessionEnd', authority: ['observe'] },
   { runtimeEvent: 'input.received', codexEvent: 'UserPromptSubmit', authority: ['observe', 'context', 'rewrite', 'stop'] },
   { runtimeEvent: 'tool.requested', codexEvent: 'PreToolUse', authority: ['observe', 'rewrite', 'allow-deny'] },
   { runtimeEvent: 'permission.requested', codexEvent: 'PermissionRequest', authority: ['observe', 'allow-deny'] },
   { runtimeEvent: 'tool.ended', codexEvent: 'PostToolUse', authority: ['observe', 'context'] },
   { runtimeEvent: 'context.compaction-started', codexEvent: 'PreCompact', authority: ['observe', 'context', 'stop'] },
-  { runtimeEvent: 'context.compacted', codexEvent: 'PostCompact', authority: ['observe', 'context'] },
-  { runtimeEvent: 'worker.started', codexEvent: 'SubagentStart', authority: ['observe', 'context'] },
-  { runtimeEvent: 'worker.stopped', codexEvent: 'SubagentStop', authority: ['observe', 'context'] },
-  { runtimeEvent: 'agent.ended', codexEvent: 'Stop', authority: ['observe', 'context'] },
+  { runtimeEvent: 'context.compacted', codexEvent: 'PostCompact', authority: ['observe'] },
+  { runtimeEvent: 'worker.started', codexEvent: 'SubagentStart', authority: ['observe'] },
+  { runtimeEvent: 'worker.stopped', codexEvent: 'SubagentStop', authority: ['observe'] },
+  { runtimeEvent: 'agent.ended', codexEvent: 'Stop', authority: ['observe'] },
 ]);
 
 /** Installs reviewed hook subscriptions into the runtime-owned lifecycle buses. */
@@ -114,7 +117,12 @@ export function installNativeHookDispatcher(options: NativeHookDispatcherOptions
             }
             try {
               const result = await executeHandler(options, handler, codexInput(mapping.codexEvent, envelope, payload, options.dataExposure ?? 'decision'), owned.signal);
-              const translated = translateDecision(mapping.codexEvent, payload, result);
+              const translated = translateDecision(mapping.codexEvent, payload, result, {
+                sourceId: effective.source.id,
+                provenance: effective.source.provenance,
+                handlerIndex,
+                handler,
+              });
               receipt(options, mapping, effective.source.id, handlerIndex, 'executed', translated.reason);
               return translated.decision;
             } catch (error) {
@@ -177,16 +185,35 @@ function ensureBus(lifecycle: Map<RuntimeEvent['type'], LifecycleBus<unknown>>, 
   const bus = new LifecycleBus<unknown>({
     eventType: mapping.runtimeEvent,
     authority: mapping.authority,
+    ...(mapping.authority.includes('context') ? { maxContextBytes: MAX_EVENT_HOOK_CONTEXT_BYTES } : {}),
     validate: (payload): payload is unknown => validPayload(mapping.runtimeEvent, payload),
   });
   lifecycle.set(mapping.runtimeEvent, bus);
   return bus;
 }
 
+/** Reuses the native event authority and payload validator for programmatic hosts. */
+export function ensureNativeLifecycleBus(
+  lifecycle: Map<RuntimeEvent['type'], LifecycleBus<unknown>>,
+  event: RuntimeEvent['type'],
+): LifecycleBus<unknown> {
+  const mapping = MAPPINGS.find(({ runtimeEvent }) => runtimeEvent === event);
+  if (mapping === undefined)
+    throw new RuntimeFailure('validation', `Unsupported native lifecycle event ${event}`);
+  return ensureBus(lifecycle, mapping);
+}
+
 function validPayload(event: RuntimeEvent['type'], payload: unknown): boolean {
   if (!record(payload)) return false;
   if (event === 'tool.requested') return typeof payload.name === 'string' && payload.name.trim().length > 0 && 'input' in payload && typeof payload.callId === 'string';
+  if (event === 'permission.requested') return typeof payload.name === 'string' && payload.name.trim().length > 0 && 'input' in payload && typeof payload.callId === 'string' && record(payload.policy);
+  if (event === 'tool.ended') return typeof payload.name === 'string' && payload.name.trim().length > 0 && typeof payload.callId === 'string' && typeof payload.outcome === 'string';
   if (event === 'input.received') return typeof payload.text === 'string';
+  if (event === 'context.compaction-started' || event === 'context.compacted') {
+    return payload.reason === 'manual' || payload.reason === 'threshold' || payload.reason === 'overflow';
+  }
+  if (event === 'worker.started' || event === 'worker.stopped') return typeof payload.workerId === 'string' && payload.workerId.trim().length > 0;
+  if (event === 'agent.ended') return typeof payload.turnId === 'string' && payload.turnId.trim().length > 0 && typeof payload.stop === 'string';
   return true;
 }
 
@@ -224,10 +251,20 @@ function codexInput(
   }
   if (event === 'UserPromptSubmit') return Object.freeze({ ...base, prompt: payload.text });
   if (event === 'SubagentStart' || event === 'SubagentStop') return Object.freeze({ ...base, agent_id: payload.workerId, agent_type: payload.agentType ?? 'worker' });
-  return Object.freeze({ ...base, reason: payload.reason });
+  return Object.freeze({ ...base, reason: payload.stop });
 }
 
-function translateDecision(event: CodexEvent, payload: Record<string, unknown>, result: NativeHookCommandResult): { decision: LifecycleDecision<unknown>; reason?: string } {
+function translateDecision(
+  event: CodexEvent,
+  payload: Record<string, unknown>,
+  result: NativeHookCommandResult,
+  context: {
+    readonly sourceId: string;
+    readonly provenance: string;
+    readonly handlerIndex: number;
+    readonly handler: Exclude<HookHandlerDefinition, { type: 'unsupported' }>;
+  },
+): { decision: LifecycleDecision<unknown>; reason?: string } {
   const output = record(result.output) ? result.output : undefined;
   const specific = output !== undefined && record(output.hookSpecificOutput) ? output.hookSpecificOutput : undefined;
   if (event === 'PreToolUse' && specific !== undefined && 'updatedInput' in specific) {
@@ -242,7 +279,29 @@ function translateDecision(event: CodexEvent, payload: Record<string, unknown>, 
   if ((decision.kind === 'allow' || decision.kind === 'deny') && event === 'PermissionRequest') return { decision };
   if (decision.kind === 'deny' && event === 'PreToolUse') return { decision };
   if (decision.kind === 'stop' && (event === 'SessionStart' || event === 'UserPromptSubmit' || event === 'PreCompact')) return { decision };
-  if (decision.kind === 'context' && event !== 'SessionEnd' && event !== 'PreToolUse') return { decision };
+  if (decision.kind === 'context' && CONTEXT_EVENTS.has(event)) {
+    const configuredLimit = context.handler.type === 'command' ? context.handler.additionalContextLimit : undefined;
+    if (configuredLimit !== undefined && (!Number.isSafeInteger(configuredLimit) || configuredLimit <= 0)) {
+      throw new RuntimeFailure('validation', 'Hook additional context byte limit must be a positive safe integer');
+    }
+    const byteLimit = Math.min(configuredLimit ?? DEFAULT_HOOK_CONTEXT_BYTES, DEFAULT_HOOK_CONTEXT_BYTES);
+    if (Buffer.byteLength(decision.text) > byteLimit) {
+      throw new RuntimeFailure('validation', `Hook context exceeds ${byteLimit} byte limit`);
+    }
+    return {
+      decision: {
+        kind: 'context',
+        text: `<untrusted_hook_context encoding="json">\n${encodeJson({
+          authority: 'untrusted-data',
+          sourceId: context.sourceId,
+          provenance: context.provenance,
+          event,
+          handlerIndex: context.handlerIndex,
+          content: decision.text,
+        })}\n</untrusted_hook_context>`,
+      },
+    };
+  }
   if (decision.kind === 'continue' || decision.kind === 'no-decision') return { decision: { kind: 'continue' } };
   return { decision: { kind: 'continue' }, reason: 'decision-not-authorized' };
 }
@@ -252,3 +311,8 @@ function receipt(options: NativeHookDispatcherOptions, mapping: Mapping, sourceI
 }
 function asRecord(value: unknown, name: string): Record<string, unknown> { if (!record(value)) throw new RuntimeFailure('validation', `${name} must be an object`); return value; }
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
+function encodeJson(value: unknown): string {
+  return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, (character) => ({
+    '<': '\\u003c', '>': '\\u003e', '&': '\\u0026', '\u2028': '\\u2028', '\u2029': '\\u2029',
+  })[character]!);
+}

@@ -29,7 +29,7 @@ test('discovery snapshot inventories skills, native tools (sorted), and full MCP
     name: 'octocode',
     instructions: 'Research via tools.',
     text: 'octocode: 1 tool(s)',
-    tools: [{ name: 'localSearchCode', description: 'Search local code.', inputSchema: { type: 'object' } }],
+    tools: [{ name: 'localSearch', description: 'Search local code.', inputSchema: { type: 'object' } }],
   }]);
   const snapshot = await buildDiscoverySnapshot(ctx, { skills: SKILLS, nativeTools: ['write', 'bash', 'skill'] });
   assert.equal(snapshot.version, 1);
@@ -43,7 +43,7 @@ test('discovery snapshot inventories skills, native tools (sorted), and full MCP
   const octo = snapshot.mcp.servers.find((s) => s.name === 'octocode');
   assert.ok(octo, 'built-in octocode server inventoried');
   assert.equal(octo!.toolCount, 1);
-  assert.deepEqual(octo!.tools, [{ name: 'localSearchCode', description: 'Search local code.' }]);
+  assert.deepEqual(octo!.tools, [{ name: 'localSearch', description: 'Search local code.' }]);
   assert.ok(snapshot.mcp.sources.some((s) => s.scope === 'built-in'));
 });
 

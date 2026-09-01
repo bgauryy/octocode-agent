@@ -62,6 +62,8 @@ export interface WidgetRenderRegion {
   readonly id: string;
   readonly role: WidgetRenderRegionRole;
   readonly text: string;
+  /** Explicit meaning for color, marker, and alternate text; never inferred from prose. */
+  readonly tone?: NativeDesignTone;
 }
 
 export interface WidgetRenderState {
@@ -139,3 +141,4 @@ export class WidgetContractError extends Error {
     this.name = 'WidgetContractError';
   }
 }
+import type { NativeDesignTone } from '../../../presentation/design/semantics.js';

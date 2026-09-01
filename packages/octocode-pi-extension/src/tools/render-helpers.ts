@@ -270,7 +270,7 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
   if (toolName.startsWith('gh')) {
     const repo = [str(q.owner), str(q.repo)].filter(Boolean).join('/');
 
-    if (toolName === 'ghSearchCode') {
+    if (toolName === 'ghSearch' && q.operation === 'code') {
       const kw = arr(q.keywords).join(' ');
       const lang = str(q.language);
       const fn = str(q.filename);
@@ -283,7 +283,7 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       return parts.trim();
     }
 
-    if (toolName === 'ghSearchRepos') {
+    if (toolName === 'ghSearch' && q.operation === 'repositories') {
       const kw = arr(q.keywords).join(' ');
       const lang = str(q.language);
       return [kw ? `"${kw}"` : '', lang ? `lang:${lang}` : ''].filter(Boolean).join(' ').trim();
@@ -298,7 +298,7 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       return `${repo}${p ? `:${p}` : ''}${anchor}`.trim();
     }
 
-    if (toolName === 'ghViewRepoStructure') {
+    if (toolName === 'ghSearch' && q.operation === 'tree') {
       const p = str(q.path);
       return `${repo}${p && p !== '.' ? `/${p}` : ''}`.trim();
     }
@@ -327,11 +327,11 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
 
   // ── Local tools ───────────────────────────────────────────────────────────
   if (toolName.startsWith('local') || toolName === 'lspGetSemantics') {
-    if (toolName === 'localSearchCode') {
-      const kw = str(q.searchText ?? q.keywords);
+    if (toolName === 'localSearch' && (q.operation === 'text' || q.operation === 'structural')) {
+      const kw = str(q.searchText ?? q.pattern ?? q.rule ?? q.keywords);
       const p = str(q.path);
-      const mode = str(q.mode);
-      const modeTag = mode && mode !== 'paginated' ? `[${mode}] ` : '';
+      const mode = str(q.operation);
+      const modeTag = mode ? `[${mode}] ` : '';
       return `${modeTag}${kw ? `"${kw}"` : ''}${p ? ` in ${shortPath(p)}` : ''}`.trim();
     }
 
@@ -344,20 +344,20 @@ export function buildToolCallSummary(toolName: string, args: unknown): string {
       return (shortPath(p) + anchor).trim();
     }
 
-    if (toolName === 'localViewStructure') {
+    if (toolName === 'localSearch' && q.operation === 'tree') {
       const p = str(q.path);
       const depth = q.maxDepth != null ? ` depth:${q.maxDepth}` : '';
       return (shortPath(p) + depth).trim();
     }
 
-    if (toolName === 'localFindFiles') {
+    if (toolName === 'localSearch' && q.operation === 'files') {
       const p = str(q.path);
       const names = arr(q.names).join(', ');
       const pat = str(q.pathPattern);
       return `${shortPath(p)}${names ? ` [${names}]` : ''}${pat ? ` ${pat}` : ''}`.trim();
     }
 
-    if (toolName === 'localFindDeadCode') {
+    if (toolName === 'localAnalyzeGraph' && q.operation === 'deadCode') {
       const p = str(q.path);
       const entrypoints = arr(q.entrypoints).join(', ');
       return `${shortPath(p)}${entrypoints ? ` entries:[${entrypoints}]` : ''}`.trim();
@@ -426,24 +426,24 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
   const queryCount = results.length > 0 ? results.length : undefined;
 
   // Per-tool structured extraction
-  if (toolName === 'ghSearchCode' || toolName === 'ghSearchRepos') {
-    // data.items[] is the search result list; data.totalCount is the GH API total
+  if (toolName === 'ghSearch') {
     let total = 0;
-    let repos: string[] = [];
+    const repos: string[] = [];
     const previews: string[] = [];
     for (const r of results) {
       const data = (r.data ?? {}) as Record<string, unknown>;
-      if (typeof data.totalCount === 'number') total += data.totalCount;
-      else if (Array.isArray(data.items)) total += data.items.length;
-      if (Array.isArray(data.items)) {
-        for (const item of (data.items as Record<string, unknown>[]).slice(0, 3)) {
-          const repo = item.repository && typeof item.repository === 'object'
-            ? item.repository as Record<string, unknown>
-            : undefined;
-          const name = str(item.fullName ?? item.name ?? repo?.fullName ?? item.path);
-          if (toolName === 'ghSearchRepos' && name) repos.push(name);
+      const operation = str(data.operation);
+      const items = operation === 'repositories'
+        ? data.repositories
+        : operation === 'code' ? data.files : data.structure;
+      const rows = Array.isArray(items) ? items as Record<string, unknown>[] : [];
+      total += rows.length;
+      for (const item of rows.slice(0, 3)) {
+          const repository = item.repository && typeof item.repository === 'object'
+            ? item.repository as Record<string, unknown> : undefined;
+          const name = str(item.fullName ?? item.name ?? repository?.fullName ?? item.path);
+          if (operation === 'repositories' && name) repos.push(name);
           if (name) previews.push(previewText(name));
-        }
       }
     }
     return {
@@ -467,17 +467,6 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
     return { queryCount, paths: paths.slice(0, 4), previews: previews.slice(0, 2) };
   }
 
-  // Same shape for the GitHub and local structure browsers.
-  if (toolName === 'ghViewRepoStructure' || toolName === 'localViewStructure') {
-    let entryCount = 0;
-    for (const r of results) {
-      const data = (r.data ?? {}) as Record<string, unknown>;
-      if (typeof data.totalEntries === 'number') entryCount += data.totalEntries;
-      else if (Array.isArray(data.files)) entryCount += data.files.length;
-    }
-    return { queryCount, summary: entryCount > 0 ? `${entryCount} entries` : undefined };
-  }
-
   if (toolName === 'ghCloneRepo') {
     const paths: string[] = [];
     for (const r of results) {
@@ -488,18 +477,22 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
     return { queryCount, paths: paths.slice(0, 2) };
   }
 
-  if (toolName === 'localSearchCode') {
+  if (toolName === 'localSearch') {
     let matchCount = 0;
     let fileCount = 0;
+    let entryCount = 0;
     for (const r of results) {
       const data = (r.data ?? {}) as Record<string, unknown>;
-      if (typeof data.totalMatches === 'number') matchCount += data.totalMatches;
-      if (typeof data.totalFiles === 'number') fileCount += data.totalFiles;
-      else if (Array.isArray(data.matches)) matchCount += data.matches.length;
+      const stats = data.stats && typeof data.stats === 'object' ? data.stats as Record<string, unknown> : {};
+      if (typeof stats.totalOccurrences === 'number') matchCount += stats.totalOccurrences;
+      if (typeof stats.filesMatched === 'number') fileCount += stats.filesMatched;
+      if (Array.isArray(data.files)) entryCount += data.files.length;
+      if (Array.isArray(data.folders)) entryCount += data.folders.length;
     }
     const parts = [
       matchCount > 0 ? `${matchCount} matches` : '',
       fileCount > 0 ? `${fileCount} files` : '',
+      matchCount === 0 && entryCount > 0 ? `${entryCount} entries` : '',
     ].filter(Boolean);
     return { queryCount, summary: parts.join(', ') || undefined };
   }
@@ -524,14 +517,13 @@ export function buildResultStats(toolName: string, details: unknown): ResultStat
     };
   }
 
-  if (toolName === 'localFindFiles') {
-    let fileCount = 0;
+  if (toolName === 'localAnalyzeGraph') {
+    let resultCount = 0;
     for (const r of results) {
       const data = (r.data ?? {}) as Record<string, unknown>;
-      if (Array.isArray(data.entries)) fileCount += data.entries.length;
-      else if (typeof data.totalEntries === 'number') fileCount += data.totalEntries;
+      if (Array.isArray(data.results)) resultCount += data.results.length;
     }
-    return { queryCount, summary: fileCount > 0 ? `${fileCount} files` : undefined };
+    return { queryCount, summary: resultCount > 0 ? `${resultCount} candidates` : undefined };
   }
 
   if (toolName === 'lspGetSemantics') {

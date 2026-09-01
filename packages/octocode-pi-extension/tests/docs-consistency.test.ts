@@ -10,21 +10,19 @@ import {
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
 const OCTOCODE_RESEARCH_TOOL_NAMES = [
-  'ghSearchCode',
-  'ghSearchRepos',
+  'ghSearch',
+  'ghGetFileContent',
   'ghSearchPullRequests',
   'ghSearchIssues',
   'ghSearchCommits',
-  'ghGetFileContent',
-  'ghViewRepoStructure',
+  'ghListReleases',
+  'ghSearchDiscussions',
   'ghCloneRepo',
-  'localSearchCode',
-  'localFindFiles',
-  'localFindDeadCode',
-  'localGetFileContent',
-  'localViewStructure',
-  'lspGetSemantics',
   'npmSearch',
+  'localSearch',
+  'localAnalyzeGraph',
+  'localGetFileContent',
+  'lspGetSemantics',
 ] as const;
 const EXPECTED_BUNDLED_SKILLS = [
   'octocode-brainstorming',
@@ -164,7 +162,7 @@ test('browser skill uses the current host-neutral agent facade', () => {
   assert.doesNotMatch(skill, /\bPi\b|\bpi\s+-/);
 });
 
-test('agent-facing research inventories match the current 15-tool catalog', () => {
+test('agent-facing research inventories match the current 13-tool catalog', () => {
   const documents = [
     ['root AGENTS', readPackageFile('../../AGENTS.md')],
     ['README', readPackageFile('README.md')],
@@ -180,10 +178,10 @@ test('agent-facing research inventories match the current 15-tool catalog', () =
     assert.doesNotMatch(content, /OCTOCODE_UNIFIED_TASK_FLOW/, `${label} advertises a removed rollback flag`);
   }
 
-  assert.match(documents[0][1], /Research catalog \(15\)/);
-  assert.match(documents[1][1], /Octocode MCP research tools \(15\)/);
-  assert.match(documents[2][1], /All 15 Octocode research tools/);
-  assert.match(documents[3][1], /The 15 Octocode research tools/);
+  assert.match(documents[0][1], /Research catalog \(13\)/);
+  assert.match(documents[1][1], /Octocode MCP research tools \(13\)/);
+  assert.match(documents[2][1], /All 13 Octocode research tools/);
+  assert.match(documents[3][1], /The 13 Octocode research tools/);
   assert.doesNotMatch(documents[0][1], /\$OCTO search|`oqlSearch`/);
 });
 

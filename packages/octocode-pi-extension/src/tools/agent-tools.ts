@@ -213,11 +213,11 @@ const MAX_AGENT_VIEW_CHARS = 12_000;
 const HANDBACK_ARTIFACT_FILENAME = 'handback.md';
 /** Maximum number of simultaneously active (non-droppable) agent records. Hard limit enforced on spawn. */
 export const MAX_AGENT_RECORDS = 50;
+/** Cross-host root fan-out ceiling. Children never receive the agent facade. */
+export const MAX_ACTIVE_AGENTS = 4;
 export const DEFAULT_SPAWN_POLICY: SpawnPolicy = {
-  maxActiveAgents: MAX_AGENT_RECORDS,
-  // Research (DeepMind 180-config study) shows structured fan-out value plateaus around
-  // ~4 agents; warn early so the orchestrator keeps lanes small and coordination cheap.
-  warningActiveAgents: 4,
+  maxActiveAgents: MAX_ACTIVE_AGENTS,
+  warningActiveAgents: MAX_ACTIVE_AGENTS - 1,
   requiredPacketSections: REQUIRED_PACKET_SECTIONS,
   maxStepsPerWorker: 60,
 };
@@ -781,7 +781,10 @@ function readPositiveIntegerEnv(name: string): number | undefined {
 }
 
 function resolveSpawnPolicy(policy: SpawnPolicy): SpawnPolicy {
-  const maxActiveAgents = readPositiveIntegerEnv(SPAWN_POLICY_MAX_ACTIVE_ENV) ?? policy.maxActiveAgents;
+  const maxActiveAgents = Math.min(
+    readPositiveIntegerEnv(SPAWN_POLICY_MAX_ACTIVE_ENV) ?? policy.maxActiveAgents,
+    MAX_ACTIVE_AGENTS,
+  );
   const warningActiveAgents = readPositiveIntegerEnv(SPAWN_POLICY_WARNING_ACTIVE_ENV) ?? policy.warningActiveAgents;
   const maxStepsPerWorker = readPositiveIntegerEnv(SPAWN_POLICY_MAX_STEPS_ENV) ?? policy.maxStepsPerWorker;
   return {

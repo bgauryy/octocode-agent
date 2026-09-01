@@ -43,7 +43,7 @@ npx octocode tools --json
 npx octocode tools <tool-name> --scheme --json --compact
 ```
 
-- Use `localViewStructure`, `localFindFiles`, `localSearchCode`, and `localGetFileContent` for local orientation, discovery, and exact reads.
+- Use `localSearch` (`tree`/`files` for orientation; `text`/`structural` for matching) and `localGetFileContent` for local orientation, discovery, and exact reads.
 - Use `lspGetSemantics` to prove definitions, references, callers, callees, implementations, types, diagnostics, and reachability.
 - Use `npmSearch` and the GitHub tool family for upstream packages, repositories, code, issues, pull requests, commits, and exact files.
 - Read each live tool schema immediately before using it. Batch independent queries where supported, start concise, follow returned cursors exactly, and escalate only when the current evidence cannot answer the question.
@@ -62,9 +62,9 @@ Inspect at minimum:
 - `prompts/architecture.md`
 - `prompts/pi-feature-parity.md`
 - `prompts/cli-context-efficiency.md`
-- `DESIGN/README.md`
-- every current `DESIGN/*.md` requirement source and traceability ledger relevant to the audited feature
-- `DESIGN/pi-coding-agent-removal/` status, schemas, test plan, KPI, readiness, and evidence documents when they govern the current tree
+- `DESIGN/LEFTOVERS.md` for current completion gates and open decisions
+- package architecture and executable contracts for the audited feature
+- dated `DESIGN/pi-coding-agent-removal/evidence/` receipts only when historical comparison matters
 - `packages/octocode-agent/ARCHITECTURE.md` and relevant docs
 - `packages/octocode-agent-core/ARCHITECTURE.md`, contracts, runtime, events, sessions, settings, models, hooks, plugins, workers, and tests
 - `packages/octocode-agent-testing/` conformance utilities and real-host fixtures

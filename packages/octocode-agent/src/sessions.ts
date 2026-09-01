@@ -1,28 +1,41 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { parseSessionRecord, sessionId, type SessionRecord } from '@octocodeai/agent-core';
+import fs from "node:fs";
+import path from "node:path";
+import {
+  parseSessionRecord,
+  sessionId,
+  type SessionId,
+  type SessionRecord,
+} from "@octocodeai/agent-core";
 
-import { agentDir } from './settings.js';
+import { agentDir } from "./settings.js";
 
 export interface SessionFile {
-  key: string;
-  uuid: string;
+  sessionId: SessionId;
   cwd: string | null;
-  parentSessionId?: string;
+  parentSessionId?: SessionId;
   file: string;
   mtimeMs: number;
 }
 
-export type SessionNavigationDirection = 'parent' | 'child' | 'previous' | 'next';
+export type SessionNavigationDirection =
+  "parent" | "child" | "previous" | "next";
 
-export function nativeSessionsDir(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(agentDir(env), 'sessions');
+export function nativeSessionsDir(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return path.join(agentDir(env), "sessions");
 }
 
-function readSessionRecord(file: string, expectedId: string): SessionRecord | null {
+function readSessionRecord(
+  file: string,
+  expectedId: SessionId,
+): SessionRecord | null {
   for (const candidate of [file, `${file}.bak`]) {
     try {
-      return parseSessionRecord(JSON.parse(fs.readFileSync(candidate, 'utf8')) as unknown, sessionId(expectedId));
+      return parseSessionRecord(
+        JSON.parse(fs.readFileSync(candidate, "utf8")) as unknown,
+        expectedId,
+      );
     } catch {
       // Inventory may inspect the backup, but only the transactional store promotes it.
     }
@@ -34,28 +47,32 @@ function sessionCwd(record: SessionRecord): string | null {
   for (let index = record.events.length - 1; index >= 0; index -= 1) {
     const stored = record.events[index]?.event;
     if (
-      stored?.type === 'custom.appended'
-      && stored.kind === 'session.cwd'
-      && typeof stored.value === 'string'
-    ) return stored.value;
+      stored?.type === "custom.appended" &&
+      stored.kind === "session.cwd" &&
+      typeof stored.value === "string"
+    )
+      return stored.value;
   }
   return null;
 }
 
-function sessionParent(record: SessionRecord): string | undefined {
+function sessionParent(record: SessionRecord): SessionId | undefined {
   for (let index = record.events.length - 1; index >= 0; index -= 1) {
     const stored = record.events[index]?.event;
     if (
-      stored?.type === 'custom.appended'
-      && stored.kind === 'session.parent'
-      && typeof stored.value === 'string'
-      && stored.value.trim()
-    ) return stored.value;
+      stored?.type === "custom.appended" &&
+      stored.kind === "session.parent" &&
+      typeof stored.value === "string" &&
+      stored.value.trim()
+    )
+      return sessionId(stored.value);
   }
   return undefined;
 }
 
-export function listSessions(sessionsRoot: string = nativeSessionsDir()): SessionFile[] {
+export function listSessions(
+  sessionsRoot: string = nativeSessionsDir(),
+): SessionFile[] {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(sessionsRoot, { withFileTypes: true });
@@ -63,16 +80,21 @@ export function listSessions(sessionsRoot: string = nativeSessionsDir()): Sessio
     return [];
   }
 
-  const ids = new Set<string>();
+  const ids = new Set<SessionId>();
   for (const entry of entries) {
     if (!entry.isFile()) continue;
-    const encoded = entry.name.endsWith('.json.bak')
-      ? entry.name.slice(0, -'.json.bak'.length)
-      : entry.name.endsWith('.json') ? entry.name.slice(0, -'.json'.length) : null;
+    const encoded = entry.name.endsWith(".json.bak")
+      ? entry.name.slice(0, -".json.bak".length)
+      : entry.name.endsWith(".json")
+        ? entry.name.slice(0, -".json".length)
+        : null;
     if (encoded === null) continue;
-    let id: string;
-    try { id = decodeURIComponent(encoded); }
-    catch { continue; }
+    let id: SessionId;
+    try {
+      id = sessionId(decodeURIComponent(encoded));
+    } catch {
+      continue;
+    }
     ids.add(id);
   }
 
@@ -81,15 +103,21 @@ export function listSessions(sessionsRoot: string = nativeSessionsDir()): Sessio
     const file = path.join(sessionsRoot, `${encodeURIComponent(id)}.json`);
     const record = readSessionRecord(file, id);
     if (!record) continue;
-    const transactionFiles = [file, `${file}.bak`, `${file}.head`].filter((candidate) => fs.existsSync(candidate));
+    const transactionFiles = [file, `${file}.bak`, `${file}.head`].filter(
+      (candidate) => fs.existsSync(candidate),
+    );
     if (transactionFiles.length === 0) continue;
     let mtimeMs: number;
-    try { mtimeMs = Math.max(...transactionFiles.map((candidate) => fs.statSync(candidate).mtimeMs)); }
-    catch { continue; }
+    try {
+      mtimeMs = Math.max(
+        ...transactionFiles.map((candidate) => fs.statSync(candidate).mtimeMs),
+      );
+    } catch {
+      continue;
+    }
     const parentSessionId = sessionParent(record);
     sessions.push({
-      key: id,
-      uuid: id,
+      sessionId: id,
       cwd: sessionCwd(record),
       ...(parentSessionId === undefined ? {} : { parentSessionId }),
       file,
@@ -99,11 +127,17 @@ export function listSessions(sessionsRoot: string = nativeSessionsDir()): Sessio
   return sessions.sort((left, right) => right.mtimeMs - left.mtimeMs);
 }
 
-export function listProjectSessions(cwd: string, sessionsRoot?: string): SessionFile[] {
+export function listProjectSessions(
+  cwd: string,
+  sessionsRoot?: string,
+): SessionFile[] {
   return listSessions(sessionsRoot).filter((session) => session.cwd === cwd);
 }
 
-export function newestProjectSession(cwd: string, sessionsRoot?: string): SessionFile | null {
+export function newestProjectSession(
+  cwd: string,
+  sessionsRoot?: string,
+): SessionFile | null {
   return listProjectSessions(cwd, sessionsRoot)[0] ?? null;
 }
 
@@ -114,13 +148,21 @@ export function resolveSessionNavigation(
   sessionsRoot?: string,
 ): string | null {
   const available = listProjectSessions(cwd, sessionsRoot);
-  const index = available.findIndex(({ uuid }) => uuid === current);
+  const index = available.findIndex(({ sessionId }) => sessionId === current);
   if (index < 0) return null;
-  if (direction === 'parent') {
+  if (direction === "parent") {
     const parent = available[index]?.parentSessionId;
-    return parent !== undefined && available.some(({ uuid }) => uuid === parent) ? parent : null;
+    return parent !== undefined &&
+      available.some(({ sessionId }) => sessionId === parent)
+      ? parent
+      : null;
   }
-  if (direction === 'child') return available.find(({ parentSessionId }) => parentSessionId === current)?.uuid ?? null;
-  const target = direction === 'previous' ? available[index + 1] : available[index - 1];
-  return target?.uuid ?? null;
+  if (direction === "child")
+    return (
+      available.find(({ parentSessionId }) => parentSessionId === current)
+        ?.sessionId ?? null
+    );
+  const target =
+    direction === "previous" ? available[index + 1] : available[index - 1];
+  return target?.sessionId ?? null;
 }

@@ -18,7 +18,7 @@ function isWideCodePoint(codePoint: number): boolean {
 }
 
 export function terminalGraphemeWidth(value: string): number {
-  if (/\p{Extended_Pictographic}/u.test(value)) return 2;
+  if (/\p{Emoji_Presentation}/u.test(value) || value.includes('\ufe0f')) return 2;
   for (const character of value) {
     if (/\p{Mark}/u.test(character) || character === '\u200d'
       || character === '\ufe0e' || character === '\ufe0f') continue;

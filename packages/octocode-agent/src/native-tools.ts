@@ -1,19 +1,32 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import { createEffectSet, jsonSchemaError, ToolRegistry, type EffectSet, type JsonSchema } from '@octocodeai/agent-core';
+import { createEffectSet, jsonSchemaError, RuntimeFailure, ToolRegistry, type EffectSet, type JsonSchema } from '@octocodeai/agent-core';
 import { agentDbPath, closeOctocodeDb, ensurePrivateDirectory, getMcpEnablement, getSkillEnablement, listMcpOverrides, openOctocodeDb, setMcpServerEnabled, setMcpToolEnabled, setSkillEnabled } from '@octocodeai/octocode-awareness/mcp-state';
 import { defaultAgentSkillRoots, discoverAgentSkills, parseAgentSkill } from '@octocodeai/octocode-shared/agent-skills';
 import { agentHome, getOctocodeHome } from '@octocodeai/octocode-shared/paths';
 import path from 'node:path';
 import os from 'node:os';
 import { registerNativeAwarenessTool, type NativeAwarenessOptions } from './native-awareness.js';
+import { registerNativeFileTool, type NativeFileToolOptions } from './native-file-tool.js';
 import type { NativeInteractionBroker } from './native-interactions.js';
 import type { NativeHookMcpExecutor } from './native-hook-dispatcher.js';
 import { loadNativeMcpServers, registerNativeMcpTool, type NativeMcpElicitationRequest, type NativeMcpElicitationResult, type NativeMcpOptions, type NativeMcpSessionManager } from './native-mcp.js';
+import { createNativeMcpOAuthFlow, createNativeOsCredentialStore, nativeMcpOAuthCredentialStatus, openNativeApprovedOAuthUrl, revokeNativeMcpOAuthCredential } from './native-mcp-oauth.js';
 import { registerNativePlanTool, type NativePlanOptions } from './native-plan.js';
 import { listNativeSkillInventory, registerNativeSkillTool, type NativeSkillLifecycleResult, type NativeSkillMutationRequest, type NativeSkillOptions } from './native-skills.js';
 import type { NativeSettingsCapabilityControl } from './native-settings-page.js';
+import { registerNativeWebTool, type NativeWebToolOptions } from './native-web-tool.js';
+import { registerNativeBashTool, type NativeBashToolOptions } from './native-bash-tool.js';
+import { registerNativeFfmpegTool, type NativeFfmpegToolOptions } from './native-ffmpeg-tool.js';
+import { registerNativeBrowserDebugTool, type NativeBrowserDebugOptions } from './native-browser-debug.js';
+import { createNativeArtifactMediaTool, type NativeArtifactMediaToolOptions } from './native-artifact-media.js';
+import {
+  createNativeRewindTool,
+  isNativeCheckpointFileSystemPort,
+  type NativeCheckpointEventSink,
+} from './native-checkpoints.js';
+import { createNativeArtifactPreviewTool, type NativeArtifactPreviewToolOptions } from './native-artifact-preview-tool.js';
 
 export interface OctocodeCatalogTool {
   name: string;
@@ -30,33 +43,36 @@ export interface OctocodeCatalog {
   tools: readonly OctocodeCatalogTool[];
 }
 
-export type OctocodeFacadeErrorCode =
-  | 'catalog-invalid'
-  | 'execution-cancelled'
-  | 'execution-failed'
-  | 'execution-invalid'
-  | 'output-invalid';
+export type OctocodeFacadeErrorCode = 'catalog-invalid' | 'execution-cancelled' | 'execution-failed' | 'execution-invalid' | 'output-invalid';
 
 /** Stable, redacted failure exposed by the native Octocode facade. */
 export class OctocodeFacadeError extends Error {
-  constructor(readonly code: OctocodeFacadeErrorCode, message: string) {
+  constructor(
+    readonly code: OctocodeFacadeErrorCode,
+    message: string,
+  ) {
     super(message);
     this.name = 'OctocodeFacadeError';
   }
 }
 
 export type OctocodeToolExecutor = (name: string, input: unknown, signal: AbortSignal) => Promise<unknown>;
-export type OctocodeCommandRunner = (
-  args: readonly string[],
-  options?: { signal?: AbortSignal; cwd?: string; env?: NodeJS.ProcessEnv },
-) => Promise<string>;
+export type OctocodeCommandRunner = (args: readonly string[], options?: { signal?: AbortSignal; cwd?: string; env?: NodeJS.ProcessEnv }) => Promise<string>;
 
 const CATALOG_CACHE_TTL_MS = 60_000;
 const CATALOG_CACHE_MAX_ENTRIES = 32;
 const catalogCache = new Map<string, { expiresAt: number; value: Promise<OctocodeCatalog> }>();
-const catalogCacheCounters = { hits: 0, misses: 0, loads: 0, loadFailures: 0, expirations: 0, evictions: 0 };
+const catalogCacheCounters = {
+  hits: 0,
+  misses: 0,
+  loads: 0,
+  loadFailures: 0,
+  expirations: 0,
+  evictions: 0,
+};
 const runnerIds = new WeakMap<OctocodeCommandRunner, number>();
 const registryMcpManagers = new WeakMap<ToolRegistry, NativeMcpSessionManager>();
+const registryDisposers = new WeakMap<ToolRegistry, Array<() => Promise<void>>>();
 let nextRunnerId = 0;
 const MAX_COMPOSED_SKILL_FILES = 128;
 const MAX_COMPOSED_SKILL_BYTES = 2 * 1024 * 1024;
@@ -86,12 +102,7 @@ function assertOctocodeCatalog(value: unknown): asserts value is OctocodeCatalog
   }
   const names = new Set<string>();
   for (const candidate of value.tools) {
-    if (!isRecord(candidate)
-      || typeof candidate.name !== 'string' || candidate.name.length === 0
-      || typeof candidate.description !== 'string' || candidate.description.length === 0
-      || !isRecord(candidate.inputSchema)
-      || (candidate.outputSchema !== undefined && !isRecord(candidate.outputSchema))
-      || (candidate.category !== undefined && typeof candidate.category !== 'string')) {
+    if (!isRecord(candidate) || typeof candidate.name !== 'string' || candidate.name.length === 0 || typeof candidate.description !== 'string' || candidate.description.length === 0 || !isRecord(candidate.inputSchema) || (candidate.outputSchema !== undefined && !isRecord(candidate.outputSchema)) || (candidate.category !== undefined && typeof candidate.category !== 'string')) {
       throw catalogError('contains an invalid schema');
     }
     if (names.has(candidate.name)) throw catalogError(`contains a duplicate tool: ${candidate.name}`);
@@ -126,6 +137,7 @@ export interface NativeCapabilityCompositionOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly interactions: NativeInteractionBroker;
   readonly workspaceTrust: 'trusted' | 'untrusted' | 'unknown';
+  readonly onMcpCatalogInvalidated?: NativeMcpOptions['onCatalogInvalidated'];
 }
 
 export interface NativeCapabilityComposition {
@@ -146,31 +158,18 @@ function elicitationField(request: NativeMcpElicitationRequest): { key: string; 
   return { key, schema };
 }
 
-async function brokerElicitation(
-  broker: NativeInteractionBroker,
-  trust: NativeCapabilityCompositionOptions['workspaceTrust'],
-  request: NativeMcpElicitationRequest,
-): Promise<NativeMcpElicitationResult> {
+async function brokerElicitation(broker: NativeInteractionBroker, trust: NativeCapabilityCompositionOptions['workspaceTrust'], request: NativeMcpElicitationRequest): Promise<NativeMcpElicitationResult> {
   if (trust !== 'trusted') return { action: 'decline' };
   const field = elicitationField(request);
   if (!field) return { action: 'decline' };
   const signal = request.signal ?? new AbortController().signal;
-  const values = Array.isArray(field.schema.enum) && field.schema.enum.length >= 2 && field.schema.enum.length <= 100
-    && field.schema.enum.every((value) => typeof value === 'string') ? field.schema.enum as string[] : undefined;
-  const interaction = values
-    ? { type: 'select' as const, message: request.message, options: values }
-    : field.schema.type === 'boolean'
-      ? { type: 'confirm' as const, message: request.message }
-      : field.schema.type === 'string'
-        ? { type: 'input' as const, message: request.message }
-        : undefined;
+  const values = Array.isArray(field.schema.enum) && field.schema.enum.length >= 2 && field.schema.enum.length <= 100 && field.schema.enum.every((value) => typeof value === 'string') ? (field.schema.enum as string[]) : undefined;
+  const interaction = values ? { type: 'select' as const, message: request.message, options: values } : field.schema.type === 'boolean' ? { type: 'confirm' as const, message: request.message } : field.schema.type === 'string' ? { type: 'input' as const, message: request.message } : undefined;
   if (!interaction) return { action: 'decline' };
   const result = await broker.interact(interaction, signal);
   if (result.status === 'cancelled' || result.status === 'timeout') return { action: 'cancel' };
   if (result.status !== 'accepted') return { action: 'decline' };
-  if (interaction.type === 'confirm') return result.value === true
-    ? { action: 'accept', content: { [field.key]: true } }
-    : { action: 'decline' };
+  if (interaction.type === 'confirm') return result.value === true ? { action: 'accept', content: { [field.key]: true } } : { action: 'decline' };
   if (typeof result.value !== 'string' || (values && !values.includes(result.value))) return { action: 'decline' };
   return { action: 'accept', content: { [field.key]: result.value } };
 }
@@ -202,12 +201,13 @@ function copyBoundedSkill(source: string, target: string, name: string): string 
 
 function skillLifecycle(options: NativeCapabilityCompositionOptions, managedRoot: string) {
   const roots = defaultAgentSkillRoots(options.cwd, options.env.HOME ?? os.homedir(), options.env.OCTOCODE_HOME ?? getOctocodeHome(options.env));
-  const known = (name: string, source?: string): boolean => listNativeSkillInventory({
-    cwd: options.cwd,
-    homeDir: options.env.HOME ?? os.homedir(),
-    octocodeHome: options.env.OCTOCODE_HOME ?? getOctocodeHome(options.env),
-    workspaceTrusted: options.workspaceTrust === 'trusted',
-  }).entries.some((entry) => entry.name === name && (source === undefined || entry.source === source));
+  const known = (name: string, source?: string): boolean =>
+    listNativeSkillInventory({
+      cwd: options.cwd,
+      homeDir: options.env.HOME ?? os.homedir(),
+      octocodeHome: options.env.OCTOCODE_HOME ?? getOctocodeHome(options.env),
+      workspaceTrusted: options.workspaceTrust === 'trusted',
+    }).entries.some((entry) => entry.name === name && (source === undefined || entry.source === source));
   return {
     managedRoot,
     async mutate(request: NativeSkillMutationRequest): Promise<NativeSkillLifecycleResult> {
@@ -215,22 +215,54 @@ function skillLifecycle(options: NativeCapabilityCompositionOptions, managedRoot
       if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(name)) throw new Error('Skill lifecycle name is invalid');
       if (request.action === 'refresh') {
         const discovery = discoverAgentSkills(roots);
-        const revision = createHash('sha256').update(discovery.skills.map((skill) => `${skill.name}:${skill.path}`).join('\n')).digest('hex');
-        return { name, provenance: { scope: 'workspace', operation: 'refresh', count: discovery.skills.length, errors: discovery.errors.length, revision } };
+        const revision = createHash('sha256')
+          .update(discovery.skills.map((skill) => `${skill.name}:${skill.path}`).join('\n'))
+          .digest('hex');
+        return {
+          name,
+          provenance: {
+            scope: 'workspace',
+            operation: 'refresh',
+            count: discovery.skills.length,
+            errors: discovery.errors.length,
+            revision,
+          },
+        };
       }
       const target = path.join(managedRoot, name);
-      if ((request.action === 'enable' || request.action === 'disable')) {
+      if (request.action === 'enable' || request.action === 'disable') {
         if (!known(name, request.source)) throw new Error(`Unknown skill: ${name}`);
         const dbFile = agentDbPath(options.env);
         const db = openOctocodeDb(dbFile);
-        try { setSkillEnabled(db, options.cwd, name, request.action === 'enable', request.source); }
-        finally { closeOctocodeDb(dbFile); }
-        return { name, enabled: request.action === 'enable', provenance: { scope: 'workspace', operation: request.action, source: 'settings', revision: `sqlite:${options.cwd}:${name}` } };
+        try {
+          setSkillEnabled(db, options.cwd, name, request.action === 'enable', request.source);
+        } finally {
+          closeOctocodeDb(dbFile);
+        }
+        return {
+          name,
+          enabled: request.action === 'enable',
+          provenance: {
+            scope: 'workspace',
+            operation: request.action,
+            source: 'settings',
+            revision: `sqlite:${options.cwd}:${name}`,
+          },
+        };
       }
       if (request.action === 'remove') {
         if (!fs.existsSync(target)) throw new Error(`Skill is not installed in the managed workspace root: ${name}`);
         fs.rmSync(target, { recursive: true, force: false });
-        return { name, enabled: false, provenance: { scope: 'workspace', operation: 'remove', source: target, revision: 'removed' } };
+        return {
+          name,
+          enabled: false,
+          provenance: {
+            scope: 'workspace',
+            operation: 'remove',
+            source: target,
+            revision: 'removed',
+          },
+        };
       }
       if (!request.source) throw new Error(`Skill ${request.action} requires a source`);
       const workspace = fs.realpathSync(path.resolve(options.cwd));
@@ -245,10 +277,24 @@ function skillLifecycle(options: NativeCapabilityCompositionOptions, managedRoot
       try {
         const revision = copyBoundedSkill(source, stage, name);
         if (exists) fs.renameSync(target, backup);
-        try { fs.renameSync(stage, target); }
-        catch (error) { if (exists && fs.existsSync(backup)) fs.renameSync(backup, target); throw error; }
+        try {
+          fs.renameSync(stage, target);
+        } catch (error) {
+          if (exists && fs.existsSync(backup)) fs.renameSync(backup, target);
+          throw error;
+        }
         if (fs.existsSync(backup)) fs.rmSync(backup, { recursive: true, force: true });
-        return { name, enabled: true, provenance: { scope: 'workspace', operation: request.action, source, target, revision: `sha256:${revision}` } };
+        return {
+          name,
+          enabled: true,
+          provenance: {
+            scope: 'workspace',
+            operation: request.action,
+            source,
+            target,
+            revision: `sha256:${revision}`,
+          },
+        };
       } finally {
         if (fs.existsSync(stage)) fs.rmSync(stage, { recursive: true, force: true });
       }
@@ -269,18 +315,43 @@ export function createNativeCapabilityComposition(options: NativeCapabilityCompo
     throw new Error('Managed skill root must stay within the global agent home');
   }
   const lifecycle = skillLifecycle(options, managedRoot);
+  const oauthCredentialStore = createNativeOsCredentialStore();
   return {
-    mcp: { elicit: (request) => brokerElicitation(options.interactions, options.workspaceTrust, request) },
+    mcp: {
+      elicit: (request) => brokerElicitation(options.interactions, options.workspaceTrust, request),
+      oauth: {
+        createFlow: ({ serverName, serverUrl }) => createNativeMcpOAuthFlow({
+          serverName,
+          serverUrl,
+          credentialStore: oauthCredentialStore,
+          approve: async ({ serverOrigin, authorizationOrigin }) => {
+            if (options.workspaceTrust !== 'trusted') return false;
+            const result = await options.interactions.interact({
+              type: 'confirm',
+              message: `Authorize MCP server ${serverName} (${serverOrigin}) through ${authorizationOrigin}?`,
+            }, new AbortController().signal);
+            return result.status === 'accepted' && result.value === true;
+          },
+          openApprovedUrl: openNativeApprovedOAuthUrl,
+        }),
+        status: ({ serverName, serverUrl }) => nativeMcpOAuthCredentialStatus({ serverName, serverUrl, credentialStore: oauthCredentialStore }),
+        revoke: ({ serverName, serverUrl }) => revokeNativeMcpOAuthCredential({ serverName, serverUrl, credentialStore: oauthCredentialStore }),
+      },
+      ...(options.onMcpCatalogInvalidated === undefined ? {} : { onCatalogInvalidated: options.onMcpCatalogInvalidated }),
+    },
     skills: {
       lifecycle,
       workspaceTrusted: options.workspaceTrust === 'trusted',
       authorizeMutation: async (request) => {
         if (options.workspaceTrust !== 'trusted') return false;
         if (request.action === 'refresh') return true;
-        const result = await options.interactions.interact({
-          type: 'confirm',
-          message: `Allow skill ${request.action} for ${request.name ?? 'catalog'} in ${managedRoot}?`,
-        }, new AbortController().signal);
+        const result = await options.interactions.interact(
+          {
+            type: 'confirm',
+            message: `Allow skill ${request.action} for ${request.name ?? 'catalog'} in ${managedRoot}?`,
+          },
+          new AbortController().signal,
+        );
         return result.status === 'accepted' && result.value === true;
       },
     },
@@ -292,21 +363,44 @@ export function createNativeSettingsCapabilityControl(options: {
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly skills: NativeCapabilityComposition['skills'];
+  readonly mcpManager?: NativeMcpSessionManager;
+  readonly now?: () => number;
 }): NativeSettingsCapabilityControl {
   const scope = path.resolve(options.cwd);
+  const now = options.now ?? Date.now;
   const snapshot = () => {
     const dbFile = agentDbPath(options.env);
     const db = openOctocodeDb(dbFile);
     try {
       const servers = loadNativeMcpServers({ cwd: scope, env: options.env });
       const overrides = [...listMcpOverrides(db, '*').tools, ...listMcpOverrides(db, scope).tools];
-      const mcpServers = Object.keys(servers).sort().map((name) => ({
-        name,
-        enabled: getMcpEnablement(db, scope, name, undefined, servers[name]?.defaultEnabled ?? true),
-        source: servers[name]?.discovered?.host ?? 'octocode',
-        path: servers[name]?.provenance?.file,
-        tools: [...new Set(overrides.filter(({ serverKey }) => serverKey === name).map(({ toolName }) => toolName))].sort().map((tool) => ({ tool, name: tool, enabled: getMcpEnablement(db, scope, name, tool, true) })).map(({ name, enabled }) => ({ name, enabled })),
-      }));
+      const stableMcpServers = Object.keys(servers)
+        .sort()
+        .map((name) => ({
+          name,
+          enabled: getMcpEnablement(db, scope, name, undefined, servers[name]?.defaultEnabled ?? true),
+          source: servers[name]?.discovered?.host ?? 'octocode',
+          path: servers[name]?.provenance?.file,
+          overrideToolNames: [...new Set(overrides.filter(({ serverKey }) => serverKey === name).map(({ toolName }) => toolName))].sort(),
+        }));
+      const mcpServers = stableMcpServers.map(({ overrideToolNames, ...server }) => {
+        const live = options.mcpManager?.liveSnapshot(server.name, now()) ?? {
+          connectionState: 'disconnected' as const,
+          catalogState: 'not-loaded' as const,
+          knownCatalogNames: [],
+          knownCatalogCount: 0,
+          knownCatalogNamesTruncated: false,
+        };
+        const toolNames = [...new Set([...live.knownCatalogNames, ...overrideToolNames])].sort();
+        return {
+          ...server,
+          ...live,
+          tools: toolNames.map((name) => ({
+            name,
+            enabled: getMcpEnablement(db, scope, server.name, name, true),
+          })),
+        };
+      });
       const skills = listNativeSkillInventory({
         cwd: scope,
         homeDir: options.env.HOME ?? os.homedir(),
@@ -320,32 +414,62 @@ export function createNativeSettingsCapabilityControl(options: {
         vendor: entry.vendor,
         path: entry.path,
       }));
-      const revision = createHash('sha256').update(JSON.stringify({ mcpServers, skills })).digest('hex');
+      const revision = createHash('sha256').update(JSON.stringify({ mcpServers: stableMcpServers, skills })).digest('hex');
       return { revision, mcpServers, skills };
-    } finally { closeOctocodeDb(dbFile); }
+    } finally {
+      closeOctocodeDb(dbFile);
+    }
   };
   return {
     snapshot,
     async mutate({ requestId: _requestId, expectedRevision, action }) {
-      if (snapshot().revision !== expectedRevision) return { ok: false, revision: snapshot().revision, error: 'Capabilities changed; refresh and try again.' };
+      if (snapshot().revision !== expectedRevision)
+        return {
+          ok: false,
+          revision: snapshot().revision,
+          error: 'Capabilities changed; refresh and try again.',
+        };
       if (action.op === 'refresh-skills' || action.op === 'set-skill-enabled') {
         const lifecycle = options.skills.lifecycle;
         const authorizeMutation = options.skills.authorizeMutation;
-        if (!lifecycle || !authorizeMutation) return { ok: false, revision: expectedRevision, error: 'Skill mutation is unavailable.' };
-        const request: NativeSkillMutationRequest = action.op === 'refresh-skills'
-          ? { action: 'refresh', managedRoot: lifecycle.managedRoot }
-          : { action: action.enabled ? 'enable' : 'disable', name: action.name, source: action.source, managedRoot: lifecycle.managedRoot };
-        if (!await authorizeMutation(request)) return { ok: false, revision: expectedRevision, error: 'Skill mutation was not authorized.' };
+        if (!lifecycle || !authorizeMutation)
+          return {
+            ok: false,
+            revision: expectedRevision,
+            error: 'Skill mutation is unavailable.',
+          };
+        const request: NativeSkillMutationRequest =
+          action.op === 'refresh-skills'
+            ? { action: 'refresh', managedRoot: lifecycle.managedRoot }
+            : {
+                action: action.enabled ? 'enable' : 'disable',
+                name: action.name,
+                source: action.source,
+                managedRoot: lifecycle.managedRoot,
+              };
+        if (!(await authorizeMutation(request)))
+          return {
+            ok: false,
+            revision: expectedRevision,
+            error: 'Skill mutation was not authorized.',
+          };
         await lifecycle.mutate(request);
       } else {
         const current = snapshot();
-        if (!current.mcpServers.some(({ name }) => name === action.server)) return { ok: false, revision: current.revision, error: 'Unknown MCP server.' };
+        if (!current.mcpServers.some(({ name }) => name === action.server))
+          return {
+            ok: false,
+            revision: current.revision,
+            error: 'Unknown MCP server.',
+          };
         const dbFile = agentDbPath(options.env);
         const db = openOctocodeDb(dbFile);
         try {
           if (action.op === 'set-mcp-tool-enabled') setMcpToolEnabled(db, scope, action.server, action.tool, action.enabled);
           else setMcpServerEnabled(db, scope, action.server, action.enabled);
-        } finally { closeOctocodeDb(dbFile); }
+        } finally {
+          closeOctocodeDb(dbFile);
+        }
       }
       return { ok: true, revision: snapshot().revision };
     },
@@ -354,65 +478,288 @@ export function createNativeSettingsCapabilityControl(options: {
 
 function catalogCacheKey(run: OctocodeCommandRunner, cwd: string | undefined, env: NodeJS.ProcessEnv | undefined): string {
   let runnerId = runnerIds.get(run);
-  if (runnerId === undefined) { runnerId = ++nextRunnerId; runnerIds.set(run, runnerId); }
+  if (runnerId === undefined) {
+    runnerId = ++nextRunnerId;
+    runnerIds.set(run, runnerId);
+  }
   const effectiveEnv = env ?? process.env;
-  const catalogEnv = ['ENABLE_CLONE', 'ENABLE_DISCUSSIONS', 'ENABLE_LOCAL', 'ENABLE_RELEASES', 'OCTOCODE_HOME']
-    .map((key) => [key, effectiveEnv[key] ?? null]);
+  const catalogEnv = ['ENABLE_CLONE', 'ENABLE_DISCUSSIONS', 'ENABLE_LOCAL', 'ENABLE_RELEASES', 'OCTOCODE_HOME'].map((key) => [key, effectiveEnv[key] ?? null]);
   return JSON.stringify([runnerId, path.resolve(cwd ?? process.cwd()), catalogEnv]);
 }
 
 function effectsFor(tool: OctocodeCatalogTool): EffectSet {
   if (tool.name === 'ghCloneRepo') return createEffectSet('network', 'process', 'write');
-  return tool.category === 'GitHub' || tool.category === 'npm' || tool.name.startsWith('gh') || tool.name === 'npmSearch'
-    ? createEffectSet('network')
-    : createEffectSet('read');
+  if (LOCAL_READ_TOOLS.has(tool.name)) return createEffectSet('read');
+  if (NETWORK_RESEARCH_TOOLS.has(tool.name)) return createEffectSet('network');
+  return createEffectSet('network', 'process', 'write');
 }
 
-export function createOctocodeToolRegistry(catalog: OctocodeCatalog, execute: OctocodeToolExecutor, options: {
-  plan?: NativePlanOptions;
-  awareness?: NativeAwarenessOptions;
-  allowedTools?: ReadonlySet<string>;
-} = {}): ToolRegistry {
+const LOCAL_READ_TOOLS = new Set([
+  // Current catalog names.
+  'localSearchCode', 'localFindFiles', 'localFindDeadCode', 'localGetFileContent',
+  'localViewStructure', 'lspGetSemantics',
+  // Accepted only when an older negotiated catalog actually publishes them.
+  'localSearch', 'localAnalyzeGraph',
+]);
+const NETWORK_RESEARCH_TOOLS = new Set([
+  'ghSearchCode', 'ghSearchRepos', 'ghSearchPullRequests', 'ghSearchIssues',
+  'ghSearchCommits', 'ghGetFileContent', 'ghViewRepoStructure', 'npmSearch',
+  // Accepted only when an older negotiated catalog actually publishes it.
+  'ghSearch',
+]);
+const LOCAL_READ_LANE = Object.freeze({ lane: 'local-read', maxActive: 4 });
+const NETWORK_RESEARCH_LANE = Object.freeze({
+  lane: 'network-research',
+  maxActive: 4,
+});
+
+function concurrencyFor(tool: OctocodeCatalogTool) {
+  if (LOCAL_READ_TOOLS.has(tool.name)) return LOCAL_READ_LANE;
+  if (NETWORK_RESEARCH_TOOLS.has(tool.name)) {
+    return NETWORK_RESEARCH_LANE;
+  }
+  return undefined;
+}
+
+const OCTOCODE_PARALLEL_LANE = Object.freeze({ lane: 'octocode-parallel', maxActive: 1 });
+const OCTOCODE_MAX_CALLS = 8;
+const OCTOCODE_MAX_CONCURRENCY = 4;
+const OCTOCODE_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+const OCTOCODE_CALL_SCHEMA: JsonSchema = {
+  type: 'object', required: ['tool', 'input'], additionalProperties: false,
+  properties: { tool: { type: 'string', minLength: 1 }, input: {} },
+};
+const OCTOCODE_FACADE_INPUT_SCHEMA: JsonSchema = {
+  oneOf: [
+    {
+      type: 'object', required: ['action'], additionalProperties: false,
+      properties: { action: { const: 'catalog' } },
+    },
+    {
+      type: 'object', required: ['action', 'tool'], additionalProperties: false,
+      properties: { action: { const: 'schema' }, tool: { type: 'string', minLength: 1 } },
+    },
+    {
+      type: 'object', required: ['action', 'tool', 'input'], additionalProperties: false,
+      properties: { action: { const: 'call' }, tool: { type: 'string', minLength: 1 }, input: {} },
+    },
+    {
+      type: 'object', required: ['action', 'calls'], additionalProperties: false,
+      properties: {
+        action: { const: 'parallel' },
+        calls: { type: 'array', minItems: 1, maxItems: OCTOCODE_MAX_CALLS, items: OCTOCODE_CALL_SCHEMA },
+        maxConcurrency: { type: 'integer', minimum: 1, maximum: OCTOCODE_MAX_CONCURRENCY },
+      },
+    },
+  ],
+};
+
+interface OctocodeFacadeCall { readonly tool: OctocodeCatalogTool; readonly input: unknown }
+
+function executionInvalid(message: string): OctocodeFacadeError {
+  return new OctocodeFacadeError('execution-invalid', message);
+}
+
+function selectedTool(tools: ReadonlyMap<string, OctocodeCatalogTool>, name: unknown): OctocodeCatalogTool {
+  if (typeof name !== 'string' || name.length === 0) throw executionInvalid('Octocode tool name is invalid');
+  const tool = tools.get(name);
+  if (!tool) throw executionInvalid(`Octocode tool is unavailable: ${name}`);
+  return tool;
+}
+
+function selectedCalls(value: unknown, tools: ReadonlyMap<string, OctocodeCatalogTool>): readonly OctocodeFacadeCall[] {
+  if (!isRecord(value)) throw executionInvalid('Octocode facade input must be an object');
+  let calls: readonly OctocodeFacadeCall[];
+  if (value.action === 'call') calls = [{ tool: selectedTool(tools, value.tool), input: value.input }];
+  else {
+    if (value.action !== 'parallel' || !Array.isArray(value.calls) || value.calls.length < 1 || value.calls.length > OCTOCODE_MAX_CALLS) {
+      throw executionInvalid('Octocode parallel calls must contain 1-8 items');
+    }
+    calls = value.calls.map((call) => {
+      if (!isRecord(call)) throw executionInvalid('Octocode parallel call is invalid');
+      return { tool: selectedTool(tools, call.tool), input: call.input };
+    });
+  }
+  for (const call of calls) {
+    const invalid = jsonSchemaError(call.input, call.tool.inputSchema, '$.input');
+    if (invalid) throw executionInvalid(`Octocode tool ${call.tool.name} received invalid input: ${invalid}. Inspect it first with {"action":"schema","tool":"${call.tool.name}"}.`);
+  }
+  return calls;
+}
+
+function combinedEffects(calls: readonly OctocodeFacadeCall[]): EffectSet {
+  const selected = new Set(calls.flatMap(({ tool }) => [...effectsFor(tool)]));
+  return createEffectSet(...(['read', 'network', 'process', 'write', 'destructive'] as const).filter((effect) => selected.has(effect)));
+}
+
+function assertFacadeOutputBound(value: unknown): void {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined || Buffer.byteLength(serialized, 'utf8') > OCTOCODE_MAX_OUTPUT_BYTES) {
+    throw new OctocodeFacadeError('output-invalid', 'Octocode facade output exceeded its bounded JSON budget');
+  }
+}
+
+async function executeSelectedCall(call: OctocodeFacadeCall, execute: OctocodeToolExecutor, signal: AbortSignal): Promise<unknown> {
+  if (signal.aborted) throw new OctocodeFacadeError('execution-cancelled', `Cancelled Octocode tool ${call.tool.name}`);
+  const content = await execute(call.tool.name, call.input, signal);
+  if (signal.aborted) throw new OctocodeFacadeError('execution-cancelled', `Cancelled Octocode tool ${call.tool.name}`);
+  assertValidToolOutput(call.tool.name, content, call.tool.outputSchema);
+  assertFacadeOutputBound(content);
+  return content;
+}
+
+function createOctocodeAdmissionPool(limit: number) {
+  let active = 0;
+  const waiters: Array<{
+    readonly signal: AbortSignal;
+    readonly resolve: () => void;
+    readonly reject: (error: unknown) => void;
+    readonly cancelled: () => OctocodeFacadeError;
+    readonly onAbort: () => void;
+  }> = [];
+  const admit = (): void => {
+    while (active < limit && waiters.length > 0) {
+      const waiter = waiters.shift()!;
+      waiter.signal.removeEventListener('abort', waiter.onAbort);
+      if (waiter.signal.aborted) {
+        waiter.reject(waiter.cancelled());
+        continue;
+      }
+      active += 1;
+      waiter.resolve();
+    }
+  };
+  return async <T>(signal: AbortSignal, cancelled: () => OctocodeFacadeError, operation: () => Promise<T>): Promise<T> => {
+    await new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(cancelled());
+        return;
+      }
+      const waiter = {
+        signal,
+        resolve,
+        reject,
+        cancelled,
+        onAbort: () => {
+          const index = waiters.indexOf(waiter);
+          if (index >= 0) waiters.splice(index, 1);
+          reject(cancelled());
+        },
+      };
+      waiters.push(waiter);
+      signal.addEventListener('abort', waiter.onAbort, { once: true });
+      admit();
+    });
+    try {
+      if (signal.aborted) throw cancelled();
+      return await operation();
+    } finally {
+      active -= 1;
+      admit();
+    }
+  };
+}
+
+export function createOctocodeToolRegistry(
+  catalog: OctocodeCatalog,
+  execute: OctocodeToolExecutor,
+  options: {
+    plan?: NativePlanOptions;
+    awareness?: NativeAwarenessOptions;
+    /** Model-visible direct tools. The Octocode facade is one direct tool. */
+    allowedTools?: ReadonlySet<string>;
+    /** Optional inner Octocode catalog scope, independent of direct-tool delegation. */
+    allowedOctocodeTools?: ReadonlySet<string>;
+  } = {},
+): ToolRegistry {
   assertOctocodeCatalog(catalog);
   const registry = new ToolRegistry();
-  for (const tool of catalog.tools) {
-    if (options.allowedTools !== undefined && !options.allowedTools.has(tool.name)) continue;
-    const effects = effectsFor(tool);
-    const gated = effects.some((effect) => effect !== 'read');
-    registry.register({
-      name: tool.name,
-      label: tool.name,
-      description: tool.description,
-      schemaVersion: 1,
-      inputSchema: tool.inputSchema,
-      outputSchema: tool.outputSchema ?? {},
-      outputVersion: 1,
-      policy: {
-        effects,
-        trust: gated ? 'workspace' : 'none',
-        approval: gated ? 'on-request' : 'never',
-        plan: 'allowed',
+  const visibleTools: OctocodeCatalogTool[] = [...catalog.tools]
+    .filter((tool) => options.allowedOctocodeTools === undefined || options.allowedOctocodeTools.has(tool.name))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const toolsByName = new Map<string, OctocodeCatalogTool>(visibleTools.map((tool) => [tool.name, tool]));
+  const admitted = createOctocodeAdmissionPool(OCTOCODE_MAX_CONCURRENCY);
+  const executeAdmitted = (call: OctocodeFacadeCall, signal: AbortSignal) => admitted(
+    signal,
+    () => new OctocodeFacadeError('execution-cancelled', `Cancelled Octocode tool ${call.tool.name}`),
+    () => executeSelectedCall(call, execute, signal),
+  );
+  if (visibleTools.length > 0 && (options.allowedTools === undefined || options.allowedTools.has('octocode'))) {
+    registry.register(
+      {
+        name: 'octocode',
+        label: 'Octocode research',
+        description: `Use only this negotiated Octocode catalog: ${visibleTools.map(({ name }) => name).join(', ')}. Call action "catalog" when choosing a tool, action "schema" before its first call, or run 1-8 independent calls with at most four active. Never guess or reuse a tool name absent from this list.`,
+        schemaVersion: 1,
+        inputSchema: OCTOCODE_FACADE_INPUT_SCHEMA,
+        outputSchema: { type: 'object' },
+        outputVersion: 1,
+        policy: {
+          effects: createEffectSet('read'), trust: 'none', approval: 'never',
+          plan: 'allowed',
+          resolve: (value) => {
+            if (!isRecord(value) || (value.action !== 'call' && value.action !== 'parallel')) {
+              return { effects: createEffectSet('read'), trust: 'none', approval: 'never' };
+            }
+            const effects = combinedEffects(selectedCalls(value, toolsByName));
+            const gated = effects.some((effect) => effect !== 'read');
+            return { effects, trust: gated ? 'workspace' : 'none', approval: gated ? 'on-request' : 'never' };
+          },
+          concurrency: (value) => {
+            if (!isRecord(value)) return undefined;
+            if (value.action === 'parallel') return OCTOCODE_PARALLEL_LANE;
+            if (value.action !== 'call') return undefined;
+            return concurrencyFor(selectedTool(toolsByName, value.tool));
+          },
+        },
+        async execute(input) {
+          await input.update({ version: 1, kind: 'status', message: 'Running Octocode facade' });
+          try {
+            const facadeInputFailure = jsonSchemaError(input.input, OCTOCODE_FACADE_INPUT_SCHEMA, '$.input');
+            if (facadeInputFailure) throw executionInvalid(`Octocode facade input is invalid: ${facadeInputFailure}`);
+            if (!isRecord(input.input) || typeof input.input.action !== 'string') throw executionInvalid('Octocode facade action is invalid');
+            let content: unknown;
+            if (input.input.action === 'catalog') {
+              content = { kind: 'octocode.catalog', version: 1, tools: visibleTools.map(({ name, description, category }) => ({ name, description, ...(category === undefined ? {} : { category }) })) };
+            } else if (input.input.action === 'schema') {
+              const tool = selectedTool(toolsByName, input.input.tool);
+              content = { name: tool.name, description: tool.description, ...(tool.category === undefined ? {} : { category: tool.category }), inputSchema: tool.inputSchema, outputSchema: tool.outputSchema ?? {} };
+            } else if (input.input.action === 'call') {
+              const call = selectedCalls(input.input, toolsByName)[0]!;
+              content = { tool: call.tool.name, content: await executeAdmitted(call, input.signal) };
+            } else if (input.input.action === 'parallel') {
+              const calls = selectedCalls(input.input, toolsByName);
+              const requested = typeof input.input.maxConcurrency === 'number' && Number.isInteger(input.input.maxConcurrency)
+                ? input.input.maxConcurrency : OCTOCODE_MAX_CONCURRENCY;
+              if (requested < 1 || requested > OCTOCODE_MAX_CONCURRENCY) throw executionInvalid('Octocode maxConcurrency must be an integer from 1 to 4');
+              const results = new Array<{ tool: string; content: unknown }>(calls.length);
+              let cursor = 0;
+              let failure: unknown;
+              const worker = async (): Promise<void> => {
+                while (failure === undefined && cursor < calls.length) {
+                  const index = cursor++;
+                  const call = calls[index]!;
+                  try { results[index] = { tool: call.tool.name, content: await executeAdmitted(call, input.signal) }; }
+                  catch (error) { failure = error; }
+                }
+              };
+              await Promise.all(Array.from({ length: Math.min(requested, OCTOCODE_MAX_CONCURRENCY, calls.length) }, worker));
+              if (failure !== undefined) throw failure;
+              content = { results };
+            } else throw executionInvalid('Octocode facade action is invalid');
+            assertFacadeOutputBound(content);
+            await input.update({ version: 1, kind: 'status', message: 'Completed Octocode facade' });
+            return { ok: true, content, detailsVersion: 1 };
+          } catch (error) {
+            await input.update({ version: 1, kind: 'status', message: `${input.signal.aborted ? 'Cancelled' : 'Failed'} Octocode facade` });
+            if (input.signal.aborted) throw new OctocodeFacadeError('execution-cancelled', 'Cancelled Octocode facade');
+            if (error instanceof OctocodeFacadeError) throw error;
+            throw new OctocodeFacadeError('execution-failed', `Octocode facade failed: ${redactedErrorMessage(error)}`);
+          }
+        },
       },
-      async execute(input) {
-        await input.update({ version: 1, kind: 'status', message: `Running ${tool.name}` });
-        try {
-          const content = await execute(tool.name, input.input, input.signal);
-          if (input.signal.aborted) throw new OctocodeFacadeError('execution-cancelled', `Cancelled Octocode tool ${tool.name}`);
-          assertValidToolOutput(tool.name, content, tool.outputSchema);
-          await input.update({ version: 1, kind: 'status', message: `Completed ${tool.name}` });
-          return { ok: true, content, detailsVersion: 1 };
-        } catch (error) {
-          await input.update({
-            version: 1,
-            kind: 'status',
-            message: `${input.signal.aborted ? 'Cancelled' : 'Failed'} ${tool.name}`,
-          });
-          if (input.signal.aborted) throw new OctocodeFacadeError('execution-cancelled', `Cancelled Octocode tool ${tool.name}`);
-          if (error instanceof OctocodeFacadeError) throw error;
-          throw new OctocodeFacadeError('execution-failed', `Octocode tool ${tool.name} failed: ${redactedErrorMessage(error)}`);
-        }
-      },
-    }, 'octocode-catalog');
+      'octocode-catalog',
+    );
   }
   if (options.allowedTools === undefined || options.allowedTools.has('plan')) registerNativePlanTool(registry, options.plan);
   if (options.allowedTools === undefined || options.allowedTools.has('awareness')) {
@@ -421,37 +768,39 @@ export function createOctocodeToolRegistry(catalog: OctocodeCatalog, execute: Oc
   return registry;
 }
 
-function execOctocode(
-  args: readonly string[],
-  options: { signal?: AbortSignal; cwd?: string; env?: NodeJS.ProcessEnv } = {},
-): Promise<string> {
+function execOctocode(args: readonly string[], options: { signal?: AbortSignal; cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile('npx', ['octocode', ...args], {
-      encoding: 'utf8',
-      maxBuffer: 10 * 1024 * 1024,
-      ...(options.signal ? { signal: options.signal } : {}),
-      ...(options.cwd ? { cwd: options.cwd } : {}),
-      env: options.env ?? process.env,
-    }, (error, stdout, stderr) => {
-      if (error) {
-        const message = stderr.trim() || error.message;
-        reject(options.signal?.aborted
-          ? new OctocodeFacadeError('execution-cancelled', 'Octocode command was cancelled')
-          : new OctocodeFacadeError('execution-failed', `Octocode command failed: ${redactedErrorMessage(message)}`));
-        return;
-      }
-      resolve(stdout);
-    });
+    execFile(
+      'npx',
+      ['octocode', ...args],
+      {
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024,
+        ...(options.signal ? { signal: options.signal } : {}),
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+        env: options.env ?? process.env,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          const message = stderr.trim() || error.message;
+          reject(options.signal?.aborted ? new OctocodeFacadeError('execution-cancelled', 'Octocode command was cancelled') : new OctocodeFacadeError('execution-failed', `Octocode command failed: ${redactedErrorMessage(message)}`));
+          return;
+        }
+        resolve(stdout);
+      },
+    );
   });
 }
 
-export async function loadOctocodeCatalog(options: {
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-  run?: OctocodeCommandRunner;
-  cacheKey?: string;
-  now?: () => number;
-} = {}): Promise<OctocodeCatalog> {
+export async function loadOctocodeCatalog(
+  options: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    run?: OctocodeCommandRunner;
+    cacheKey?: string;
+    now?: () => number;
+  } = {},
+): Promise<OctocodeCatalog> {
   const run = options.run ?? execOctocode;
   const now = options.now ?? Date.now;
   const key = options.cacheKey ?? catalogCacheKey(run, options.cwd, options.env);
@@ -474,21 +823,21 @@ export async function loadOctocodeCatalog(options: {
   const load = (async (): Promise<OctocodeCatalog> => {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(await run(['tools', '--json', '--full'], {
-        cwd: options.cwd,
-        env: options.env,
-      }));
+      parsed = JSON.parse(
+        await run(['tools', '--json', '--full'], {
+          cwd: options.cwd,
+          env: options.env,
+        }),
+      );
     } catch (error) {
       if (error instanceof OctocodeFacadeError) throw error;
       throw catalogError(`could not be decoded: ${redactedErrorMessage(error)}`);
     }
-    // An exact empty legacy fixture grants no external capabilities and is therefore safe to normalize.
-    if (isRecord(parsed) && Array.isArray(parsed.tools) && parsed.tools.length === 0
-      && parsed.kind === undefined && parsed.version === undefined && parsed.toolCount === undefined) {
-      parsed = { kind: 'octocode.toolCatalog.full', version: 1, toolCount: 0, tools: [] };
-    }
     assertOctocodeCatalog(parsed);
-    return { ...parsed, tools: [...parsed.tools].sort((left, right) => left.name.localeCompare(right.name)) };
+    return {
+      ...parsed,
+      tools: [...parsed.tools].sort((left, right) => left.name.localeCompare(right.name)),
+    };
   })();
   while (catalogCache.size >= CATALOG_CACHE_MAX_ENTRIES) {
     const oldest = catalogCache.keys().next().value as string | undefined;
@@ -496,7 +845,10 @@ export async function loadOctocodeCatalog(options: {
     catalogCache.delete(oldest);
     catalogCacheCounters.evictions += 1;
   }
-  catalogCache.set(key, { expiresAt: currentTime + CATALOG_CACHE_TTL_MS, value: load });
+  catalogCache.set(key, {
+    expiresAt: currentTime + CATALOG_CACHE_TTL_MS,
+    value: load,
+  });
   void load.catch(() => {
     catalogCacheCounters.loadFailures += 1;
     if (catalogCache.get(key)?.value === load) catalogCache.delete(key);
@@ -504,8 +856,19 @@ export async function loadOctocodeCatalog(options: {
   return load;
 }
 
-export function octocodeCatalogCacheMetrics(): Readonly<typeof catalogCacheCounters & { entries: number; maxEntries: number; ttlMs: number }> {
-  return { ...catalogCacheCounters, entries: catalogCache.size, maxEntries: CATALOG_CACHE_MAX_ENTRIES, ttlMs: CATALOG_CACHE_TTL_MS };
+export function octocodeCatalogCacheMetrics(): Readonly<
+  typeof catalogCacheCounters & {
+    entries: number;
+    maxEntries: number;
+    ttlMs: number;
+  }
+> {
+  return {
+    ...catalogCacheCounters,
+    entries: catalogCache.size,
+    maxEntries: CATALOG_CACHE_MAX_ENTRIES,
+    ttlMs: CATALOG_CACHE_TTL_MS,
+  };
 }
 
 export function resetOctocodeCatalogCacheForTests(): void {
@@ -517,59 +880,149 @@ export async function executeOctocodeTool(
   name: string,
   input: unknown,
   signal: AbortSignal,
-  options: { cwd?: string; env?: NodeJS.ProcessEnv; run?: OctocodeCommandRunner } = {},
+  options: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    run?: OctocodeCommandRunner;
+  } = {},
 ): Promise<unknown> {
   if (signal.aborted) throw new OctocodeFacadeError('execution-cancelled', `Cancelled Octocode tool ${name}`);
-  const query = typeof input === 'object' && input !== null && 'queries' in input
-    ? (input as { queries: unknown }).queries
-    : input;
+  const query = typeof input === 'object' && input !== null && 'queries' in input ? (input as { queries: unknown }).queries : input;
   let encoded: string;
-  try { encoded = JSON.stringify(query); }
-  catch { throw new OctocodeFacadeError('execution-invalid', `Octocode tool ${name} input is not JSON-serializable`); }
+  try {
+    encoded = JSON.stringify(query);
+  } catch {
+    throw new OctocodeFacadeError('execution-invalid', `Octocode tool ${name} input is not JSON-serializable`);
+  }
   if (encoded === undefined) throw new OctocodeFacadeError('execution-invalid', `Octocode tool ${name} input is not JSON-serializable`);
   let stdout: string;
   try {
-    stdout = await (options.run ?? execOctocode)(
-      ['tools', name, '--queries', encoded, '--compact'],
-      { signal, cwd: options.cwd, env: options.env },
-    );
+    stdout = await (options.run ?? execOctocode)(['tools', name, '--queries', encoded, '--compact'], { signal, cwd: options.cwd, env: options.env });
   } catch (error) {
     if (signal.aborted) throw new OctocodeFacadeError('execution-cancelled', `Cancelled Octocode tool ${name}`);
     if (error instanceof OctocodeFacadeError) throw error;
     throw new OctocodeFacadeError('execution-failed', `Octocode tool ${name} failed: ${redactedErrorMessage(error)}`);
   }
   if (signal.aborted) throw new OctocodeFacadeError('execution-cancelled', `Cancelled Octocode tool ${name}`);
-  try { return JSON.parse(stdout) as unknown; }
-  catch { throw new OctocodeFacadeError('execution-invalid', `Octocode tool ${name} returned invalid JSON`); }
+  try {
+    return JSON.parse(stdout) as unknown;
+  } catch {
+    throw new OctocodeFacadeError('execution-invalid', `Octocode tool ${name} returned invalid JSON`);
+  }
 }
 
-export async function createDefaultOctocodeToolRegistry(options: {
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-  plan?: NativePlanOptions;
-  run?: OctocodeCommandRunner;
-  allowedTools?: ReadonlySet<string>;
-  mcp?: Omit<NativeMcpOptions, 'cwd' | 'env' | 'homeDir' | 'isEnabled'>;
-  skills?: Omit<NativeSkillOptions, 'cwd' | 'homeDir' | 'isEnabled'>;
-} = {}): Promise<ToolRegistry> {
+export async function createDefaultOctocodeToolRegistry(
+  options: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    plan?: NativePlanOptions;
+    run?: OctocodeCommandRunner;
+    allowedTools?: ReadonlySet<string>;
+    allowedOctocodeTools?: ReadonlySet<string>;
+    mcp?: Omit<NativeMcpOptions, 'cwd' | 'env' | 'homeDir' | 'isEnabled'>;
+    skills?: Omit<NativeSkillOptions, 'cwd' | 'homeDir' | 'isEnabled'>;
+    web?: NativeWebToolOptions;
+    bash?: NativeBashToolOptions;
+    file?: Omit<NativeFileToolOptions, 'workspace'>;
+    ffmpeg?: Omit<NativeFfmpegToolOptions, 'workspace' | 'fileSystem'>;
+    browserDebug?: NativeBrowserDebugOptions;
+    artifactMedia?: Omit<NativeArtifactMediaToolOptions, 'workspace' | 'fileSystem'>;
+    artifactPreview?: Omit<NativeArtifactPreviewToolOptions, 'fileSystem'>;
+    checkpointEvents?: NativeCheckpointEventSink;
+  } = {},
+): Promise<ToolRegistry> {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const env = options.env ?? process.env;
+  const checkpointFileSystem = options.file !== undefined && isNativeCheckpointFileSystemPort(options.file.fileSystem)
+    ? options.file.fileSystem
+    : undefined;
+  if (
+    options.checkpointEvents !== undefined &&
+    options.file?.checkpoints?.onEvent !== undefined &&
+    options.checkpointEvents !== options.file.checkpoints.onEvent
+  ) throw new RuntimeFailure('validation', 'Native checkpoint event sinks must have one ordering authority');
+  const checkpointEventSink = options.checkpointEvents ?? options.file?.checkpoints?.onEvent;
   const registry = createOctocodeToolRegistry(
-    await loadOctocodeCatalog({ cwd, env, ...(options.run ? { run: options.run } : {}) }),
-    (name, input, signal) => executeOctocodeTool(name, input, signal, { cwd, env, ...(options.run ? { run: options.run } : {}) }),
+    await loadOctocodeCatalog({
+      cwd,
+      env,
+      ...(options.run ? { run: options.run } : {}),
+    }),
+    (name, input, signal) =>
+      executeOctocodeTool(name, input, signal, {
+        cwd,
+        env,
+        ...(options.run ? { run: options.run } : {}),
+      }),
     {
       ...(options.plan === undefined ? {} : { plan: options.plan }),
       awareness: { cwd, env },
       ...(options.allowedTools === undefined ? {} : { allowedTools: options.allowedTools }),
+      ...(options.allowedOctocodeTools === undefined ? {} : { allowedOctocodeTools: options.allowedOctocodeTools }),
     },
   );
+  if (options.allowedTools === undefined || options.allowedTools.has('web')) registerNativeWebTool(registry, options.web);
+  if (options.allowedTools === undefined || options.allowedTools.has('browserDebug')) registerNativeBrowserDebugTool(registry, options.browserDebug);
+  if (options.allowedTools === undefined || options.allowedTools.has('bash')) registerNativeBashTool(registry, options.bash);
+  if (options.allowedTools === undefined || options.allowedTools.has('file')) {
+    if (options.file === undefined)
+      throw new RuntimeFailure('unsupported-capability', 'Native file tool requires a filesystem capability');
+    registerNativeFileTool(registry, {
+      workspace: cwd,
+      ...options.file,
+      ...(checkpointFileSystem === undefined
+        ? {}
+        : { checkpoints: checkpointEventSink === undefined ? {} : { onEvent: checkpointEventSink } }),
+    });
+  }
+  if (checkpointFileSystem !== undefined && (options.allowedTools === undefined || options.allowedTools.has('rewind'))) {
+    registry.register(createNativeRewindTool({
+      workspace: cwd,
+      fileSystem: checkpointFileSystem,
+      ...(checkpointEventSink === undefined
+        ? {}
+        : { onEvent: checkpointEventSink }),
+    }), 'native-rewind');
+  } else if (options.allowedTools?.has('rewind')) {
+    throw new RuntimeFailure('unsupported-capability', 'Native rewind tool requires the Rust checkpoint filesystem capability');
+  }
+  if (options.allowedTools === undefined || options.allowedTools.has('runFfmpeg')) {
+    if (options.file === undefined)
+      throw new RuntimeFailure('unsupported-capability', 'Native FFmpeg tool requires a filesystem capability');
+    registerNativeFfmpegTool(registry, {
+      workspace: cwd,
+      fileSystem: options.file.fileSystem,
+      env,
+      ...options.ffmpeg,
+    });
+  }
+  if (options.allowedTools === undefined || options.allowedTools.has('artifactMedia')) {
+    if (options.file === undefined)
+      throw new RuntimeFailure('unsupported-capability', 'Native artifact media tool requires a filesystem capability');
+    registry.register(createNativeArtifactMediaTool({
+      workspace: cwd,
+      fileSystem: options.file.fileSystem,
+      env,
+      ...options.artifactMedia,
+    }), 'native-artifact-media');
+  }
+  if (options.allowedTools === undefined || options.allowedTools.has('artifactPreview')) {
+    if (options.file === undefined)
+      throw new RuntimeFailure('unsupported-capability', 'Native artifact preview tool requires a filesystem capability');
+    const preview = createNativeArtifactPreviewTool({ fileSystem: options.file.fileSystem, ...options.artifactPreview });
+    registry.register(preview.tool, 'native-artifact-preview');
+    registryDisposers.set(registry, [...(registryDisposers.get(registry) ?? []), preview.close]);
+  }
   const stateDbPath = agentDbPath(env);
   const readState = <T>(read: (db: ReturnType<typeof openOctocodeDb>) => T): T => {
     const db = openOctocodeDb(stateDbPath);
-    try { return read(db); }
-    finally { closeOctocodeDb(stateDbPath); }
+    try {
+      return read(db);
+    } finally {
+      closeOctocodeDb(stateDbPath);
+    }
   };
-  if (options.allowedTools === undefined || options.allowedTools.has('Skill')) {
+  if (options.allowedTools === undefined || options.allowedTools.has('skill')) {
     registerNativeSkillTool(registry, {
       cwd,
       homeDir: env.HOME ?? os.homedir(),
@@ -592,14 +1045,24 @@ export async function createDefaultOctocodeToolRegistry(options: {
 
 export async function closeNativeToolRegistry(registry: ToolRegistry): Promise<void> {
   const manager = registryMcpManagers.get(registry);
-  if (!manager) return;
+  const disposers = registryDisposers.get(registry) ?? [];
   registryMcpManagers.delete(registry);
-  await manager.close();
+  registryDisposers.delete(registry);
+  await Promise.allSettled([
+    ...(manager ? [manager.close()] : []),
+    ...disposers.map((dispose) => dispose()),
+  ]);
+}
+
+export function nativeMcpManagerForRegistry(registry: ToolRegistry): NativeMcpSessionManager | undefined {
+  return registryMcpManagers.get(registry);
 }
 
 /** Resolve the hook executor owned by this registry's canonical MCP session manager. */
 export function createNativeHookMcpExecutor(registry: ToolRegistry): NativeHookMcpExecutor | undefined {
   const manager = registryMcpManagers.get(registry);
   if (!manager) return undefined;
-  return { execute: (handler, input, signal) => manager.executeHook(handler, input, signal) };
+  return {
+    execute: (handler, input, signal) => manager.executeHook(handler, input, signal),
+  };
 }

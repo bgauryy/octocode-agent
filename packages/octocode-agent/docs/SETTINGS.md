@@ -7,12 +7,15 @@ anchor when that section is present.
 ## Current capabilities
 
 The page shows a redacted, allowlisted view of runtime configuration. The shared
-registry defines four public global values:
+registry defines five public global values:
 
 - Theme.
 - Reduced motion, which defaults to static output.
 - Default provider.
 - Default model.
+- Compaction input-token threshold (4,096 through 2,000,000; default 64,000).
+  Automatic compaction compares this value with the latest provider request's
+  input-token occupancy, not cumulative billed input across the session.
 
 The launcher creates one canonical core settings registry/service and shares it
 with runtime model selection and this page. Successful changes apply to the next
@@ -37,6 +40,11 @@ The Connections section groups provider endpoints, MCP servers, MCP tools, and t
 MCP Tasks capability note. MCP Tasks appears as available only when a configured
 server negotiates that versioned capability; generic MCP connectivity does not
 imply task support.
+For the active native runtime, each MCP server also reports connection state,
+catalog state (`not-loaded`, `ready`, `stale`, or `empty`), last refresh, tool
+count, and a bounded sorted tool-name list. A server `tools/list_changed`
+notification marks the catalog stale immediately. Negotiated catalog changes don't
+change the Settings revision because they aren't persisted configuration.
 
 The **User configuration** section exports only portable public settings. Import and
 reset use the same optimistic, atomic settings service as CLI changes. Reset
@@ -82,12 +90,18 @@ the Pi credential. Pi `api_key` credentials remain request-time inputs; OAuth an
 cloud credential chains require dedicated native provider profiles.
 
 Provider entries may set `promptCaching.mode` to `auto`, `enabled`, or `disabled`.
-`auto` enables Anthropic's supported ephemeral system-prefix caching and uses an
-OpenAI prompt cache key only for the canonical OpenAI host. `enabled` explicitly
-enables the selected adapter's cache hint for compatible custom endpoints;
+`auto` enables cache hints only on the canonical Anthropic and OpenAI hosts.
+Anthropic uses ephemeral prefix caching with a five-minute TTL by default;
+OpenAI receives a stable prompt cache key. `enabled` explicitly enables the
+selected adapter's cache hint for compatible custom endpoints;
 `disabled` suppresses it. Model cost entries may also include numeric `cacheRead`
 and `cacheWrite` per-million prices. Discovery preserves unknown prices as unavailable.
 See [MONITORING.md](MONITORING.md) for normalized token and metric semantics.
+
+Compaction runs through the normal `compaction.started` decision hook before the
+summary request. A stop/deny decision aborts compaction. Ordered hook context is
+appended after the stable system-and-history prefix, which lets extensions customize
+the summary without destroying provider cache affinity across retries.
 
 ## Discovery sources
 

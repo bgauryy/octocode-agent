@@ -285,6 +285,7 @@ export class StatusNotificationsWidget extends OpenTuiWidget<StatusNotificationO
         : items.map((item) => ({
             id: `item-${item.order}`,
             role: 'option' as const,
+            tone: item.severity,
             text: this.renderItem(item),
           }))),
       {

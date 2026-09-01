@@ -1,6 +1,11 @@
 # Agent tool-surface audit
 
-Status: **accepted and implemented** (2026-08-25)
+Status: **accepted decision snapshot** (2026-08-25)
+
+This document records the evidence and decisions captured on that date. It is not
+the current registry contract. For current tool names, use `src/constants.ts`; for
+current schemas and descriptions, inspect the built catalog. Exact character counts
+below are historical measurements, not current release criteria.
 
 ## Outcome
 
@@ -50,13 +55,13 @@ The remaining tools each own a distinct effect or capability boundary. Scores us
 | Durable `memory` | 7/10 | 8/10 | Keep conditionally: only verified reusable learning. |
 | Generic automatic ledger-count signal | 2/10 | 3/10 | Remove: unrelated global counts distract the agent. |
 | Unread direct-message count | 6/10 | 8/10 | Keep narrowly: it is targeted, bounded, and routes to `message` inbox. |
-| Awareness skill/CLI diagnostics | 5/10 | 8/10 when needed | Keep off the default palette; load only for overlap, recovery, or deeper diagnosis. |
+| Awareness skill/CLI diagnostics | 5/10 | 8/10 when needed | Keep out of the default palette; load only for overlap, recovery, or deeper diagnosis. |
 
-## Contract efficiency
+## Captured contract-efficiency baseline
 
 Measured from the built extension by summing every direct tool's top-level description and serialized parameter schema:
 
-| Metric | Current budget |
+| Metric | 2026-08-25 baseline |
 |---|---:|
 | Direct tools | 16 |
 | Contract characters | 40,377 |
@@ -64,7 +69,7 @@ Measured from the built extension by summing every direct tool's top-level descr
 
 All public descriptions now come from one curated catalog. Registration recursively normalizes whitespace and caps every schema description at 180 characters. Tests enforce catalog coverage, a 360-character top-level cap, the 180-character schema cap, and a 45,000-character whole-palette budget.
 
-## Follow-up priority
+## Recorded follow-up priority
 
 No additional tool should be removed now. The next efficiency work should compress schemas rather than merge distinct effects, in this order:
 

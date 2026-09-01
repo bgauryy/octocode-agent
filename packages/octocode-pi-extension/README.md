@@ -1,11 +1,14 @@
 # @octocodeai/pi-extension
 
+See [the architecture guide](ARCHITECTURE.md) for Pi/core ownership,
+dependency rules, and current registry-convergence limits.
+
 <div align="center">
-<img src="../../../packages/assets/extension.png" width="640px" alt="Octocode + Pi">
+<img src="../../assets/extension.png" width="640px" alt="Octocode + Pi">
 </div>
 
 Octocode’s research tools, Awareness coordination, system prompt, skills,
-web providers, subagents, and launcher-consumed surface/profile specs as one Pi extension.
+web providers, subagents, and Pi-local surface/profile specifications as one Pi extension.
 It is the evidence-first, team-ready Pi harness profile: heavier than a single-purpose package,
 but built for repo-scale research, guarded edits, workers, MCP/browser/web, and verification.
 
@@ -38,7 +41,7 @@ The build bundles the Octocode workflow skills and invokes the installed Awarene
 
 | Surface | Count |
 |---|---:|
-| Octocode MCP research tools | 15 |
+| Octocode MCP research tools | 13 |
 | Pi support tools | 16 |
 | Guarded Pi builtin overrides | 1 (`bash`) |
 | Slash command entries | 24 |
@@ -52,10 +55,10 @@ presence, and identifiable mutation lock checks are automatic. `$OCTOCODE_AWAREN
 remains the Lite diagnostics/recovery surface. Canonical backend operations and
 SQLite data remain available without a parallel Pi tool catalog.
 
-The extension also owns Octocode surface/profile helpers (`buildSurfaceSpec`,
-`resolveAwarenessCli`, `loadProfile`, `profileToPiArgs`). `octocode-agent`
-imports those helpers directly and only executes the returned specs, so core
-policy stays here instead of drifting into launcher shims.
+The extension also owns Pi-local surface/profile helpers (`buildSurfaceSpec`,
+`resolveAwarenessCli`, `loadProfile`, `profileToPiArgs`). The native
+`octocode-agent` doesn't import these helpers or this package; native and Pi are
+sibling adapters that depend inward on agent core.
 
 ## Quick start
 
@@ -89,7 +92,7 @@ policy stays here instead of drifting into launcher shims.
 Routine solo work needs no Awareness start/finish ceremony. Use `plan` when sequencing
 helps; select shared scope only for persistent cross-agent execution. Shared Start
 projects stable steps onto Awareness tasks, and `plan.complete` records the check you
-actually ran before advancing. The harness automatically manages registry membership,
+ran before advancing. The harness automatically manages registry membership,
 advisory file presence, and peer-lock preflight for identifiable writes.
 
 Act on the bounded `<awareness_signal>` only when it can change the next action. Use an
@@ -101,7 +104,7 @@ Never verify another agent’s work or invent a receipt. See
 [docs/AWARENESS_AGENT_FLOW.md](docs/AWARENESS_AGENT_FLOW.md) and
 [docs/REFLECT.md](docs/REFLECT.md).
 
-## Octocode MCP research tools (15)
+## Octocode MCP research tools (13)
 
 These are available through `MCPTool`'s built-in `octocode` server. The gateway
 resolves the pinned local `octocode-mcp` package first and falls back to
@@ -110,8 +113,8 @@ instead of duplicating tool definitions in the harness:
 
 | Area | Tools |
 |---|---|
-| GitHub | `ghSearchCode`, `ghSearchRepos`, `ghSearchPullRequests`, `ghSearchIssues`, `ghSearchCommits`, `ghGetFileContent`, `ghViewRepoStructure`, `ghCloneRepo` |
-| Local | `localSearchCode`, `localFindFiles`, `localFindDeadCode`, `localGetFileContent`, `localViewStructure` |
+| GitHub | `ghSearch`, `ghSearchPullRequests`, `ghSearchIssues`, `ghSearchCommits`, `ghGetFileContent`, `ghListReleases`, `ghSearchDiscussions`, `ghCloneRepo` |
+| Local | `localSearch`, `localAnalyzeGraph`, `localGetFileContent` |
 | Semantics | `lspGetSemantics` |
 | Packages | `npmSearch` |
 
@@ -138,8 +141,8 @@ load and session start. Octocode research replaces reads/search; one `file` tool
 | `plan` | Own session/shared plans, stable task projection, and observed check receipts. |
 | `localServer` | Serve inspected/agent-authored static artifacts on loopback. |
 | `MCPTool` | MCP v2 gateway for stdio and Streamable HTTP; use `/mcp` for the local management UI. |
-| `askUser` | Ask the user a question via an interactive list picker or text input (falls back to inline prose on non-TUI hosts). |
-| `memory` | Recall/record/forget durable Awareness memory (first-class wrapper over the memory CLI). |
+| `askUser` | Request input through an interactive list picker or text input; non-TUI hosts use inline prose. |
+| `memory` | Recall, record, or forget durable Awareness memory through the memory CLI. |
 | `lock` | Acquire, wait for, or release exceptional exclusive file locks. |
 | `message` | Send/read cross-agent messages when peer coordination is needed. |
 | `readMedia` | Perceive local images, video frames/contact sheets, and audio metadata/waveforms without creating user artifacts. |
@@ -210,8 +213,8 @@ report-first wrappers over that CLI; see [docs/CRON.md](docs/CRON.md).
 ## Bundled skills (12)
 
 Pi discovers the npm-published, build-generated skill tree under `dist/skills/`,
-surfaced at runtime through the single `resources_discover` hook (no package-root
-`skills/` dir and no `pi.skills` entry, which would double-surface and trigger a
+surfaced at runtime through the single `resources_discover` hook. The package has no root
+`skills/` directory or `pi.skills` entry because either one double-surfaces skills and triggers a
 `[Skill conflicts]` notice). The build bundles the coding-agent Octocode skill set so every
 supported workflow is discoverable on init with zero setup:
 

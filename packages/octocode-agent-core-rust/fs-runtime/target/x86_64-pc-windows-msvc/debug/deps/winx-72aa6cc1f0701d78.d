@@ -1,0 +1,11 @@
+/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core-rust/fs-runtime/target/x86_64-pc-windows-msvc/debug/deps/winx-72aa6cc1f0701d78.d: /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/lib.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/cvt.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/file.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/ntdll.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/time.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/winapi_util/mod.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/winapi_util/file.rs
+
+/Users/bgaryy/code/octocode-agent/packages/octocode-agent-core-rust/fs-runtime/target/x86_64-pc-windows-msvc/debug/deps/libwinx-72aa6cc1f0701d78.rmeta: /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/lib.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/cvt.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/file.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/ntdll.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/time.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/winapi_util/mod.rs /Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/winapi_util/file.rs
+
+/Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/lib.rs:
+/Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/cvt.rs:
+/Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/file.rs:
+/Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/ntdll.rs:
+/Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/time.rs:
+/Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/winapi_util/mod.rs:
+/Users/bgaryy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winx-0.36.4/src/winapi_util/file.rs:

@@ -11,6 +11,7 @@ function header(overrides: Partial<HeaderSnapshot> = {}): HeaderSnapshot {
     title: 'Octocode',
     sessionId: 'session-123',
     modelId: 'openai/gpt-5.6',
+    version: '1.1.0',
     trust: 'trusted',
     working: 'idle',
     width: 120,
@@ -19,7 +20,7 @@ function header(overrides: Partial<HeaderSnapshot> = {}): HeaderSnapshot {
 }
 
 describe('HeaderWidget', () => {
-  it('renders one canonical, color-independent line with non-focusable region semantics', () => {
+  it('renders the full Octocode banner with runtime status and non-focusable region semantics', () => {
     const widget = new HeaderWidget('header-main', header());
     widget.mount();
     widget.activate();
@@ -34,13 +35,18 @@ describe('HeaderWidget', () => {
       accessibility: { role: 'banner', liveRegion: 'polite' },
     });
     expect(rendered.regions).toHaveLength(1);
+    expect(line).toContain('██████╗  ██████╗████████╗');
+    expect(line).toContain('v1.1.0');
+    expect(line).toContain('Your AI coding agent');
+    expect(line).toContain('BETA VERSION · for issues: https://github.com/bgauryy/octocode-agent/issues');
     expect(line).toContain('Octocode');
     expect(line).toContain('IDLE');
     expect(line).toContain('trust TRUSTED');
     expect(line).toContain('model openai/gpt-5.6');
     expect(line).toContain('session session-123');
-    expect(line).not.toContain('\n');
+    expect(line.split('\n')).toHaveLength(10);
     expect(line).not.toMatch(/\u001b/u);
+    expect(line.split('\n').every((bannerLine) => HeaderWidget.displayWidth(bannerLine) <= 120)).toBe(true);
   });
 
   it('drops lower-priority session and model details before trust and working state on narrow terminals', () => {
@@ -52,12 +58,14 @@ describe('HeaderWidget', () => {
     }));
 
     const line = widget.render().regions[0]?.text ?? '';
+    expect(line).toContain('🔍🐙 Octocode');
+    expect(line).not.toContain('██████╗');
     expect(line).toContain('trust TRUSTED');
     expect(line).toContain('IDLE');
     expect(line).not.toContain('session ');
     expect(line).not.toContain('model ');
     expect(line).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u);
-    expect(HeaderWidget.displayWidth(line)).toBeLessThanOrEqual(39);
+    expect(line.split('\n').every((bannerLine) => HeaderWidget.displayWidth(bannerLine) <= 39)).toBe(true);
   });
 
   it('truncates only at grapheme boundaries and respects terminal column width', () => {
@@ -67,7 +75,7 @@ describe('HeaderWidget', () => {
     }));
 
     const line = widget.render().regions[0]?.text ?? '';
-    expect(HeaderWidget.displayWidth(line)).toBeLessThanOrEqual(15);
+    expect(line.split('\n').every((bannerLine) => HeaderWidget.displayWidth(bannerLine) <= 15)).toBe(true);
     expect(line).not.toMatch(/\p{Mark}$/u);
     expect(line).not.toMatch(/\u200d$/u);
     expect(line).not.toMatch(/[\uD800-\uDBFF]$/u);
@@ -83,7 +91,7 @@ describe('HeaderWidget', () => {
 
     const visible = widget.render().regions[0]?.text ?? '';
     const alternate = widget.toPlainText();
-    expect(HeaderWidget.displayWidth(visible)).toBeLessThanOrEqual(12);
+    expect(visible.split('\n').every((bannerLine) => HeaderWidget.displayWidth(bannerLine) <= 12)).toBe(true);
     expect(alternate).toContain('A long canonical title');
     expect(alternate).toContain('provider/model-with-a-long-name');
     expect(alternate).toContain('session-with-a-long-id');
@@ -104,7 +112,7 @@ describe('HeaderWidget', () => {
     expect(text).toContain('model model');
     expect(text).not.toContain('forged title');
     expect(text).not.toContain('forged-device-command');
-    expect(text).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/u);
+    expect(text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/u);
     expect(() => new HeaderWidget('header-width', header({ width: 0 }))).toThrow(/width/i);
     expect(() => new HeaderWidget('header-authority', header({
       authority: 'agent' as HeaderSnapshot['authority'],
