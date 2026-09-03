@@ -136,6 +136,12 @@ function hydrationEntries(values: Readonly<Record<string, unknown>>): readonly [
   if (typeof values[REDUCED_MOTION_KEY] === 'boolean') {
     entries.push([REDUCED_MOTION_KEY, values[REDUCED_MOTION_KEY]]);
   }
+  const compactionThreshold = values[NATIVE_COMPACTION_THRESHOLD_KEY];
+  if (Number.isSafeInteger(compactionThreshold)
+    && (compactionThreshold as number) >= 4_096
+    && (compactionThreshold as number) <= 2_000_000) {
+    entries.push([NATIVE_COMPACTION_THRESHOLD_KEY, compactionThreshold]);
+  }
   const provider = values[DEFAULT_PROVIDER_KEY];
   if (typeof provider === 'string' && /^[A-Za-z0-9_.-]{1,200}$/.test(provider.trim())) {
     entries.push([DEFAULT_PROVIDER_KEY, provider.trim()]);

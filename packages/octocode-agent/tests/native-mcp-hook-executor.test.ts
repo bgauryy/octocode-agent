@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { closeOctocodeDb, agentDbPath, openOctocodeDb, setMcpServerEnabled, setMcpToolEnabled } from '@octocodeai/octocode-awareness/mcp-state';
+import { closeOctocodeDb, openOctocodeDb } from '@octocodeai/octocode-shared/db';
+import { setMcpServerEnabled, setMcpToolEnabled } from '@octocodeai/octocode-shared/mcp-state';
+import { agentDbPath } from '@octocodeai/octocode-shared/paths';
 import { createDefaultOctocodeToolRegistry, createNativeHookMcpExecutor } from '../src/native-tools.js';
 import type { NativeMcpClient } from '../src/native-mcp.js';
 

@@ -24,23 +24,35 @@ describe("WorkerProgressWidget", () => {
     const widget = new WorkerProgressWidget("worker-1", worker());
     const rendered = widget.render();
     expect(rendered.kind).toBe("worker.progress");
-    expect(rendered.regions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: "state",
-          tone: "info",
-          text: "● RUNNING",
-        }),
-        expect.objectContaining({
-          id: "identity",
-          text: "researcher",
-        }),
-        expect.objectContaining({
-          id: "elapsed",
-          tone: "count",
-          text: "Elapsed 42s",
-        }),
-      ]),
+    expect(rendered.regions).toEqual([
+      expect.objectContaining({
+        id: "summary",
+        tone: "info",
+        text: "● researcher · RUNNING · 42s",
+      }),
+    ]);
+    expect(widget.toPlainText()).not.toContain("architecture-audit");
+  });
+
+  it("emits each sanitized lifecycle transition once for append-only accessible output", () => {
+    const widget = new WorkerProgressWidget("worker-announcements", worker());
+    expect(widget.takeAnnouncements()).toEqual(["● researcher · RUNNING · 42s"]);
+    expect(widget.takeAnnouncements()).toEqual([]);
+
+    widget.update(worker({ state: "aborted", updatedAtMs: 44_000 }));
+    expect(widget.takeAnnouncements()).toEqual(["! researcher · ABORTED · 43s"]);
+    expect(widget.takeAnnouncements()).toEqual([]);
+    expect(JSON.stringify(widget.takeAnnouncements())).not.toContain("architecture-audit");
+  });
+
+  it("makes the subagent list position explicit without exposing identity", () => {
+    const widget = new WorkerProgressWidget(
+      "worker-list",
+      worker({ listPosition: 2, listTotal: 3 }),
+    );
+
+    expect(widget.render().regions[0]?.text).toBe(
+      "● Subagent 2/3 · researcher · RUNNING · 42s",
     );
     expect(widget.toPlainText()).not.toContain("architecture-audit");
   });
@@ -56,7 +68,9 @@ describe("WorkerProgressWidget", () => {
       `worker-${state}`,
       worker({ state }),
     );
-    expect(widget.render().regions[0]).toMatchObject({ tone, text });
+    expect(widget.render().regions[0]).toMatchObject({ tone });
+    expect(widget.render().regions[0]?.text).toContain(text.slice(0, 1));
+    expect(widget.render().regions[0]?.text).toContain(state.toUpperCase());
   });
 
   it("keeps credential-like worker identity private and rejects invalid timestamps", () => {

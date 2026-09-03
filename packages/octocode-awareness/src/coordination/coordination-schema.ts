@@ -2,10 +2,9 @@ import { CoordinationContinuity } from './coordination-continuity.js';
 
 export abstract class CoordinationSchema extends CoordinationContinuity {
   protected initializeSchema(): void {
-    // Every coordination table carries `workspace_path` so a single global store
-    // (~/.octocode/agent/agent.sqlite3) isolates repos by column rather than by
-    // file. locks/work_presence fold it into their composite primary keys; the
-    // rest scope through indexes + `WHERE workspace_path = ?` on every query.
+    // Every coordination table carries `workspace_path`. Repository scope uses
+    // .octocode/awareness.sqlite3; compatibility global scope keeps repositories
+    // isolated by this column. Locks/work presence include it in their keys.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS plans (
         plan_id TEXT PRIMARY KEY,

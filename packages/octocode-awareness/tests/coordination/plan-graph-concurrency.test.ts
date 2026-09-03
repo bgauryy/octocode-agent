@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openAwarenessStore, type AwarenessStore } from '../../src/coordination/index.js';
 
 let workspace: string;
+let dbPath: string;
 let aw: AwarenessStore;
 
 function projectionWorker(input: {
@@ -38,7 +39,7 @@ function projectionWorker(input: {
     workerData: {
       moduleUrl: new URL('../../out/index.js', import.meta.url).href,
       workspace,
-      dbPath: process.env.OCTOCODE_AGENT_DB_PATH,
+      dbPath,
       input,
     },
   });
@@ -62,13 +63,12 @@ function projectionWorker(input: {
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-plan-race-'));
-  process.env.OCTOCODE_AGENT_DB_PATH = join(workspace, 'agent.sqlite3');
-  aw = openAwarenessStore({ workspace });
+  dbPath = join(workspace, '.octocode', 'awareness.sqlite3');
+  aw = openAwarenessStore({ workspace, dbPath });
 });
 
 afterEach(async () => {
   aw.close();
-  delete process.env.OCTOCODE_AGENT_DB_PATH;
   await rm(workspace, { recursive: true, force: true });
 });
 

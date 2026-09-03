@@ -1,6 +1,6 @@
 {
   "name": "@octocodeai/agent-testing",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Deterministic Pi/native host conformance, UI, session, agent, and browser test utilities.",
   "keywords": [
     "octocode",
@@ -15,6 +15,9 @@
     "type": "git",
     "url": "git+https://github.com/bgauryy/octocode-agent.git",
     "directory": "packages/octocode-agent-testing"
+  },
+    "publishConfig": {
+    "access": "public"
   },
   "bugs": "https://github.com/bgauryy/octocode-agent/issues",
   "license": "MIT",
@@ -32,7 +35,6 @@
     "out/**",
     "README.md"
   ],
-  "private": true,
   "engines": {
     "node": ">=22.13.0"
   },

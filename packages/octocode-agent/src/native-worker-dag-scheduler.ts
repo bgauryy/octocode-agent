@@ -440,7 +440,7 @@ export class NativeWorkerDagScheduler implements NativeWorkerDagSchedulerPort {
             throw error;
           }
           const completion = this.#controller
-            .execute({ type: "wait", workerId: packet.workerId })
+            .execute({ type: "wait", workerId: packet.workerId, authority: packet.authority })
             .then((value) => terminal(value, packet));
           active.set(worker, { claim: ownership, packet, completion });
         }
@@ -533,6 +533,7 @@ export class NativeWorkerDagScheduler implements NativeWorkerDagSchedulerPort {
             await this.#controller.execute({
               type: "abort",
               workerId: entry.packet.workerId,
+              authority: entry.packet.authority,
               reason: "dependency schedule stopped",
             } satisfies WorkerCommand);
             await this.#work.fail(entry.claim, this.#now(), {

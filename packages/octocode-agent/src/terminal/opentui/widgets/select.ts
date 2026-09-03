@@ -379,7 +379,7 @@ export class SelectWidget extends OpenTuiWidget<SelectWidgetIntent> {
         : 'Arrows move; Home/End and PageUp/PageDown jump; Enter chooses; Esc/Ctrl-C cancels.',
     });
     if (this.currentSearchQuery) {
-      regions.push({ id: 'search', role: 'status', text: `Search: ${this.currentSearchQuery}` });
+      regions.push({ id: 'search', role: 'content', text: `Search: ${this.currentSearchQuery}` });
     }
     return regions;
   }

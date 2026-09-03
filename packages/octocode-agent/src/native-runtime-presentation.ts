@@ -1,10 +1,187 @@
-import type { RuntimeErrorData, RuntimeEvent } from "@octocodeai/agent-core";
+import { createHash } from "node:crypto";
+import type {
+  ModelMessage,
+  RuntimeErrorData,
+  RuntimeEvent,
+  SessionForkReceiptV1,
+  SessionStartedReceiptV1,
+} from "@octocodeai/agent-core";
 import type { NativePresentationEvent } from "./presentation/contracts.js";
+
+function workerNotificationKey(workerId: string): string {
+  return `worker:${createHash("sha256").update(workerId).digest("hex").slice(0, 12)}`;
+}
+
+function historyJson(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+function opaqueRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function boundedLifecycleLabel(value: unknown): string | undefined {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,159}$/u.test(value)
+    ? value
+    : undefined;
+}
+
+function skillInputSummary(value: unknown): string {
+  const input = opaqueRecord(value);
+  const summary: Record<string, string> = {};
+  for (const key of ["action", "name"] as const) {
+    const bounded = boundedLifecycleLabel(input?.[key]);
+    if (bounded !== undefined) summary[key] = bounded;
+  }
+  return JSON.stringify(summary);
+}
+
+function skillResultSummary(value: unknown): string {
+  const skills = opaqueRecord(value)?.skills;
+  const counts = new Map<string, number>();
+  if (Array.isArray(skills)) {
+    for (const item of skills) {
+      const scope = boundedLifecycleLabel(
+        opaqueRecord(opaqueRecord(item)?.provenance)?.scope,
+      );
+      if (scope === undefined) continue;
+      const sourceScope = `${scope.slice(0, 1).toUpperCase()}${scope.slice(1)}`;
+      counts.set(sourceScope, (counts.get(sourceScope) ?? 0) + 1);
+    }
+  }
+  return JSON.stringify({
+    skills: [...counts]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([sourceScope, count]) => ({ sourceScope, count })),
+  });
+}
+
+const WORKER_ACTIONS = new Set([
+  "spawn", "schedule", "list", "status", "wait", "send", "steer",
+  "follow-up", "abort", "kill",
+]);
+const WORKER_STATES = new Set([
+  "queued", "running", "succeeded", "failed", "aborting", "aborted",
+  "killing", "killed",
+]);
+
+function workerAction(value: unknown): string | undefined {
+  const action = opaqueRecord(value)?.action;
+  return typeof action === "string" && WORKER_ACTIONS.has(action)
+    ? action
+    : undefined;
+}
+
+function workerInputSummary(value: unknown): string {
+  const action = workerAction(value);
+  return JSON.stringify(action === undefined ? {} : { action });
+}
+
+function workerResultSummary(value: unknown): string {
+  const result = opaqueRecord(value);
+  const content = opaqueRecord(result?.content);
+  const worker = opaqueRecord(content?.worker);
+  const action = workerAction(content);
+  const stateValue = worker?.state;
+  const state = typeof stateValue === "string" && WORKER_STATES.has(stateValue)
+    ? stateValue
+    : undefined;
+  const status = result?.ok === true ? "success"
+    : result?.ok === false ? "error"
+      : undefined;
+  return JSON.stringify({
+    ...(action === undefined ? {} : { action }),
+    ...(state === undefined ? {} : { state }),
+    ...(status === undefined ? {} : { status }),
+  });
+}
+
+function sessionReceiptMessage(
+  receipt: SessionStartedReceiptV1 | SessionForkReceiptV1,
+): string {
+  const count = (value: number | "unknown", unit: string): string =>
+    value === "unknown" ? `${unit} unknown` : `${value} ${unit}`;
+  const state = receipt.state === "fresh" ? "Fresh"
+    : receipt.state === "resumed-empty" ? "Resumed empty"
+      : receipt.state === "resumed" ? "Resumed"
+        : receipt.state === "resumed-compacted" ? "Resumed compacted"
+          : receipt.state === "recovered-partially" ? "Partially recovered"
+            : "Forked";
+  const occupancy = receipt.contextOccupancy === "unknown"
+    ? "context occupancy unknown"
+    : `${receipt.contextOccupancy.used}/${receipt.contextOccupancy.limit} context tokens`;
+  const compaction = receipt.committedCompaction === "committed"
+    ? "compacted"
+    : receipt.committedCompaction === "none"
+      ? "not compacted"
+      : "compaction unknown";
+  return `${receipt.displayName} · ${receipt.shortPublicId} · ${state} · ${count(receipt.restoredVisibleMessageCount, "messages")} · ${count(receipt.retainedModelContextItemCount, "context items")} · ${occupancy} · ${compaction}`;
+}
+
+/** Rebuilds the visible transcript from retained model history without exposing system context. */
+export function presentationEventsForHistory(
+  messages: readonly ModelMessage[],
+): readonly NativePresentationEvent[] {
+  const events: NativePresentationEvent[] = [];
+  const toolNames = new Map<string, string>();
+  messages.forEach((message, index) => {
+    const messageId = `history:${index}`;
+    if (message.role === "system") return;
+    if (message.role === "user") {
+      if (message.content.trim()) {
+        events.push({ type: "user-message", text: message.content, messageId });
+      }
+      return;
+    }
+    if (message.role === "assistant") {
+      if (message.content.trim()) {
+        events.push(
+          { type: "message-started", messageId, role: "assistant" },
+          { type: "message-delta", messageId, role: "assistant", segment: "text", text: message.content },
+          { type: "message-ended", messageId, status: "complete" },
+        );
+      }
+      for (const call of message.toolCalls ?? []) {
+        toolNames.set(call.id, call.name);
+        const input = call.name === "worker"
+          ? workerInputSummary(call.input)
+          : historyJson(call.input);
+        events.push({
+          type: "tool-prepared",
+          callId: call.id,
+          name: call.name,
+          ...(input === undefined ? {} : { input }),
+        });
+      }
+      return;
+    }
+    const name = toolNames.get(message.toolCallId) ?? "tool";
+    events.push({
+      type: "tool-ended",
+      callId: message.toolCallId,
+      name,
+      result: name === "worker"
+        ? workerResultSummary(message.result)
+        : message.result === undefined
+          ? message.content
+          : historyJson(message.result),
+    });
+  });
+  return events;
+}
 
 /** Translates host-neutral runtime events into terminal presentation semantics. */
 export function presentationEvents(
   event: RuntimeEvent,
   activeTurnId?: string,
+  options: { readonly contextLimit?: number } = {},
 ): readonly NativePresentationEvent[] {
   const turn = event.turnId === undefined ? activeTurnId : String(event.turnId);
   const stringify = (value: unknown): string | undefined => {
@@ -53,6 +230,28 @@ export function presentationEvents(
       return [
         { type: "runtime-failed" },
         { type: "notification", severity: "error", message: event.payload.message },
+      ];
+    case "session.starting": {
+      const action = event.payload.reason === "resume"
+        ? "Resuming"
+        : event.payload.reason === "fork"
+          ? "Forking"
+          : "Opening";
+      return [{ type: "status-changed", name: "session", text: `${action} session…` }];
+    }
+    case "session.switching":
+      return [{ type: "status-changed", name: "session", text: "Switching sessions…" }];
+    case "session.started":
+      return [
+        { type: "session-replaced" },
+        { type: "status-changed", name: "session" },
+        { type: "notification", severity: "success", message: sessionReceiptMessage(event.payload) },
+      ];
+    case "session.forked":
+      return [
+        { type: "session-replaced" },
+        { type: "status-changed", name: "session" },
+        { type: "notification", severity: "success", message: sessionReceiptMessage(event.payload) },
       ];
     case "input.received":
       return [
@@ -168,25 +367,37 @@ export function presentationEvents(
         {
           type: "notification",
           severity,
-          message: `${workerId} · ${state.toUpperCase()}`,
+          message: `${agentType ?? "Subagent"} · ${state.toUpperCase()}`,
+          key: workerNotificationKey(workerId),
         },
       ];
     }
     case "permission.requested":
       return [
+        ...(event.payload.name === "skill"
+          ? [{
+              type: "tool-updated" as const,
+              callId: event.payload.callId,
+              name: "skill",
+              message: "approval-required",
+            }]
+          : []),
         {
           type: "notification",
           severity: "warning",
-          message: `Approval required · ${event.payload.name}`,
+          message: `Approval required · ${event.payload.name === "skill" ? "Agent Skill" : event.payload.name}`,
+          key: `approval:${event.payload.callId}`,
         },
       ];
     case "context.artifacts-projected": {
       const payload = event.payload;
+      const artifactLabel = payload.sourceCount === 1 ? "artifact" : "artifacts";
+      const phase = payload.phase === "compaction" ? "Context refreshed" : "Context ready";
       return [
         {
           type: "notification",
           severity: "info",
-          message: `Context artifacts projected · ${payload.phase} · ${payload.projectedCount}/${payload.sourceCount} kept · ${payload.droppedCount} dropped · ${payload.stablePrefixDigest}`,
+          message: `${phase} · ${payload.projectedCount} of ${payload.sourceCount} ${artifactLabel} available${payload.droppedCount === 0 ? "" : ` · ${payload.droppedCount} omitted`}`,
         },
       ];
     }
@@ -293,7 +504,13 @@ export function presentationEvents(
           ...(turn === undefined ? {} : { turnId: turn }),
           ...(payload.input === undefined
             ? {}
-            : { input: stringify(payload.input) }),
+            : {
+                input: payload.name === "skill"
+                  ? skillInputSummary(payload.input)
+                  : payload.name === "worker"
+                    ? workerInputSummary(payload.input)
+                    : stringify(payload.input),
+              }),
         },
       ];
     }
@@ -326,7 +543,7 @@ export function presentationEvents(
           callId,
           name,
           ...(typeof update?.message === "string"
-            ? { message: update.message }
+            ? { message: name === "worker" ? "Worker action in progress" : update.message }
             : {}),
           ...(typeof value?.current === "number" ||
           typeof value?.progress === "number"
@@ -344,12 +561,17 @@ export function presentationEvents(
     case "tool.blocked": {
       const payload = event.payload;
       const error = errorDetails(payload);
+       const message = payload.name === "skill"
+         ? `Skill action rejected by ${error.category === "permission" ? "permission" : "policy"}`
+         : payload.name === "worker"
+           ? `Worker action rejected by ${error.category === "permission" ? "permission" : "policy"}`
+         : error.message;
       return [
         {
           type: "tool-blocked",
           callId: payload.callId,
           name: payload.name,
-          message: error.message,
+          message,
           ...(error.category === undefined ? {} : { category: error.category }),
         },
       ];
@@ -365,11 +587,13 @@ export function presentationEvents(
             type: "tool-cancelled",
             callId,
             name,
-            ...(typeof payload.message === "string"
-              ? { message: payload.message }
-              : error.message === "Tool execution failed"
-                ? {}
-                : { message: error.message }),
+             ...(name === "worker"
+               ? { message: "Worker action cancelled" }
+               : typeof payload.message === "string"
+                 ? { message: payload.message }
+               : error.message === "Tool execution failed"
+                 ? {}
+                 : { message: error.message }),
           },
         ];
       }
@@ -378,8 +602,10 @@ export function presentationEvents(
         const result = typeof payload.result === "object" && payload.result !== null
           ? payload.result as Record<string, unknown>
           : undefined;
-        const message = payload.error === undefined
-          ? typeof payload.message === "string"
+         const message = name === "worker"
+           ? "Worker action failed"
+           : payload.error === undefined
+           ? typeof payload.message === "string"
             ? payload.message
             : typeof result?.message === "string"
               ? result.message
@@ -405,7 +631,13 @@ export function presentationEvents(
           name,
           ...(payload.result === undefined
             ? {}
-            : { result: stringify(payload.result) }),
+              : {
+                  result: name === "skill"
+                    ? skillResultSummary(payload.result)
+                    : name === "worker"
+                      ? workerResultSummary(payload.result)
+                      : stringify(payload.result),
+                }),
         },
       ];
     }
@@ -419,6 +651,10 @@ export function presentationEvents(
         typeof payload.outputTokens === "number"
           ? payload.outputTokens
           : undefined;
+      const currentContextTokens =
+        typeof payload.currentContextTokens === "number"
+          ? payload.currentContextTokens
+          : undefined;
       const cachedInputTokens =
         typeof payload.cachedInputTokens === "number"
           ? payload.cachedInputTokens
@@ -427,16 +663,79 @@ export function presentationEvents(
         typeof payload.cacheWriteInputTokens === "number"
           ? payload.cacheWriteInputTokens
           : undefined;
-      return inputTokens === undefined || outputTokens === undefined
-        ? []
-        : [
-            {
-              type: "status-changed",
-              name: "context.usage",
-              text: `${inputTokens} input · ${outputTokens} output${cachedInputTokens === undefined ? "" : ` · ${cachedInputTokens} cached`}${cacheWriteInputTokens === undefined ? "" : ` · ${cacheWriteInputTokens} cache write`} tokens`,
-            },
-          ];
+      if (inputTokens === undefined || outputTokens === undefined || currentContextTokens === undefined) return [];
+      const contextLimit = options.contextLimit;
+      if (
+        Number.isSafeInteger(contextLimit) &&
+        contextLimit! > 0 &&
+        currentContextTokens >= 0 &&
+        currentContextTokens <= contextLimit!
+      ) {
+        return [{
+          type: "context-usage-changed",
+          used: currentContextTokens,
+          limit: contextLimit!,
+          inputTokens,
+          outputTokens,
+          ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+          ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
+        }];
+      }
+      return [{
+        type: "status-changed",
+        name: "context.usage",
+        text: `${inputTokens} input · ${outputTokens} output${cachedInputTokens === undefined ? "" : ` · ${cachedInputTokens} cached`}${cacheWriteInputTokens === undefined ? "" : ` · ${cacheWriteInputTokens} cache write`} tokens`,
+      }];
     }
+    case "model.selected": {
+      const payload = opaqueRecord(event.payload);
+      const providerId = boundedLifecycleLabel(payload?.providerId);
+      const modelId = boundedLifecycleLabel(payload?.modelId);
+      return providerId === undefined || modelId === undefined
+        ? []
+        : [{
+            type: "notification",
+            severity: "success",
+            message: `Model selected · ${providerId}/${modelId}`,
+          }];
+    }
+    case "model.thinking-level-selected": {
+      const level = boundedLifecycleLabel(opaqueRecord(event.payload)?.level);
+      return level === undefined
+        ? []
+        : [{ type: "status-changed", name: "model.thinking", text: `Thinking level · ${level}` }];
+    }
+    case "provider.request-started":
+      return [{
+        type: "status-changed",
+        name: "provider",
+        text: `Waiting for model · attempt ${event.payload.attempt}/${event.payload.maxAttempts}`,
+      }];
+    case "provider.response-received":
+      return [{ type: "status-changed", name: "provider" }];
+    case "resources.discovering":
+      return [{
+        type: "status-changed",
+        name: "resources",
+        text: "Discovering tools, MCP servers, and Skills…",
+      }];
+    case "resources.discovered":
+      return [
+        { type: "status-changed", name: "resources" },
+        {
+          type: "notification",
+          severity: "success",
+          message: "Tools, MCP servers, and Skills ready",
+        },
+      ];
+    case "trust.resolving":
+      return [{ type: "status-changed", name: "trust", text: "Checking workspace trust…" }];
+    case "trust.resolved":
+      return [{ type: "status-changed", name: "trust" }];
+    case "settings.changed":
+      return [{ type: "notification", severity: "success", message: "Settings updated" }];
+    case "plugin.lifecycle":
+      return [{ type: "notification", severity: "info", message: "Extension state changed" }];
     case "ui.notification": {
       const payload = event.payload as Record<string, unknown>;
       if (payload.kind === "mcp.catalog-invalidated") {
@@ -538,10 +837,6 @@ export function presentationEvents(
         message: `Rewind completed · ${event.payload.recovery.path}`,
       }];
     case "runtime.stopped":
-    case "session.starting":
-    case "session.started":
-    case "session.switching":
-    case "session.forked":
     case "session.tree-changed":
     case "session.metadata-changed":
     case "session.stopping":
@@ -553,23 +848,13 @@ export function presentationEvents(
     case "agent.started":
     case "agent.settled":
     case "agent.ended":
-    case "model.selected":
-    case "model.thinking-level-selected":
-    case "provider.request-started":
-    case "provider.response-received":
     case "ui.interaction-requested":
     case "ui.interaction-resolved":
     case "ui.presentation-changed":
-    case "resources.discovering":
-    case "resources.discovered":
-    case "trust.resolving":
-    case "trust.resolved":
     case "prompt.assembling":
     case "prompt.assembled":
     case "context.preparing":
     case "agent.before-start":
-    case "settings.changed":
-    case "plugin.lifecycle":
       return [];
     default: {
       const unhandled: never = event;

@@ -1,6 +1,4 @@
 import fs from 'node:fs';
-import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { Readable } from 'node:stream';
 import {
   WorkerSupervisor,
@@ -13,14 +11,12 @@ import {
 } from '@octocodeai/agent-core';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  NativeWorkerWorktreePort,
   NativeWorkerProcessPort,
   createNodeNativeWorkerProcessAdapter,
   type NativeWorkerProcessAdapter,
   type NativeWorkerProcessHandle,
   type NativeWorkerProcessResult,
   type NativeWorkerProcessSpec,
-  type NativeGitProcessAdapter,
 } from '../src/native-workers.js';
 import type {
   NativeWorkerMessageJournal,
@@ -31,6 +27,7 @@ import {
   type NativeWorkerPromptCustomizationV1,
 } from '../src/native-worker-bootstrap.js';
 import type { NativeResolvedPortableCustomizationDescriptorV1 } from '../src/native-portable-customization.js';
+import { workerAuthorityFixture } from './worker-authority-fixture.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -97,13 +94,17 @@ class FakeProcessAdapter implements NativeWorkerProcessAdapter {
 }
 
 function spawnPacket(id: string, prompt = `task-${id}`): WorkerSpawnPacket {
+  const resolvedWorkerId = workerId(id);
+  const resolvedCorrelationId = correlationId(`correlation-${id}`);
+  const resolvedSessionId = sessionId('parent-session');
   return {
     schemaVersion: 1,
     type: 'worker.spawn',
     packetId: packetId(`spawn-${id}`),
-    workerId: workerId(id),
-    correlationId: correlationId(`correlation-${id}`),
-    sessionId: sessionId('parent-session'),
+    workerId: resolvedWorkerId,
+    correlationId: resolvedCorrelationId,
+    sessionId: resolvedSessionId,
+    authority: workerAuthorityFixture({ workerId: resolvedWorkerId, correlationId: resolvedCorrelationId, sessionId: resolvedSessionId }),
     redaction: 'sensitive',
     prompt,
     promptSnapshotId: `prompt-${id}`,
@@ -151,10 +152,12 @@ describe('native worker process port', () => {
     const release = vi.fn(async () => undefined);
     const messageJournal: NativeWorkerMessageJournal = {
       abandonSession: async () => ({ abandoned: 0 }),
+      openMailbox: async () => ({} as never),
+      listMailbox: async () => ({} as never),
       stage: vi.fn(async (input) => {
         staged.push(input);
         await allowStage.promise;
-        return { message: {} as never, command: input.command, ack, release };
+        return { message: {} as never, command: input.command, sequence: 1, markWritten: async () => undefined, extend: async () => undefined, ack, release, uncertain: async () => undefined, deadLetter: async () => undefined };
       }),
     };
     const { process, supervisor } = fixture({ messageJournal });
@@ -176,18 +179,21 @@ describe('native worker process port', () => {
     expect(release).not.toHaveBeenCalled();
 
     process.processes[0]!.complete({ code: 0, signal: null });
-    await supervisor.wait(workerId('journaled'));
+    await supervisor.wait(workerId('journaled'), spawnPacket('journaled').authority);
   });
 
-  it('releases the staged Rust message lease when the child exits without a response', async () => {
+  it('marks a written staged Rust message uncertain when the child exits without a response', async () => {
     const ack = vi.fn(async () => undefined);
     const release = vi.fn(async () => undefined);
+    const uncertain = vi.fn(async () => undefined);
     const allowStage = deferred<void>();
     const messageJournal: NativeWorkerMessageJournal = {
       abandonSession: async () => ({ abandoned: 0 }),
+      openMailbox: async () => ({} as never),
+      listMailbox: async () => ({} as never),
       stage: vi.fn(async (input) => {
         await allowStage.promise;
-        return { message: {} as never, command: input.command, ack, release };
+        return { message: {} as never, command: input.command, sequence: 1, markWritten: async () => undefined, extend: async () => undefined, ack, release, uncertain, deadLetter: async () => undefined };
       }),
     };
     const { process, port } = fixture({ messageJournal });
@@ -200,21 +206,25 @@ describe('native worker process port', () => {
     process.processes[0]!.complete({ code: 9, signal: null });
 
     await expect(handle.completion).resolves.toMatchObject({ outcome: 'failed' });
-    expect(release).toHaveBeenCalledOnce();
+    expect(uncertain).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
     expect(ack).not.toHaveBeenCalled();
   });
 
-  it('releases unresolved prompt and cancel leases after graceful abort ends the child', async () => {
+  it('marks written prompt and cancel leases uncertain after graceful abort ends the child', async () => {
     const allowFirstStage = deferred<void>();
     let stageCount = 0;
     const ack = vi.fn(async () => undefined);
     const release = vi.fn(async () => undefined);
+    const uncertain = vi.fn(async () => undefined);
     const messageJournal: NativeWorkerMessageJournal = {
       abandonSession: async () => ({ abandoned: 0 }),
+      openMailbox: async () => ({} as never),
+      listMailbox: async () => ({} as never),
       stage: vi.fn(async (input) => {
         stageCount += 1;
         if (stageCount === 1) await allowFirstStage.promise;
-        return { message: {} as never, command: input.command, ack, release };
+        return { message: {} as never, command: input.command, sequence: stageCount, markWritten: async () => undefined, extend: async () => undefined, ack, release, uncertain, deadLetter: async () => undefined };
       }),
     };
     const { process, port } = fixture({ messageJournal });
@@ -228,22 +238,77 @@ describe('native worker process port', () => {
     process.processes[0]!.complete({ code: null, signal: 'SIGTERM' });
 
     await expect(handle.completion).resolves.toMatchObject({ outcome: 'aborted' });
-    expect(release).toHaveBeenCalledTimes(2);
+    expect(uncertain).toHaveBeenCalledTimes(2);
+    expect(release).not.toHaveBeenCalled();
     expect(ack).not.toHaveBeenCalled();
+  });
+
+  it('preserves invocation order when concurrent durable staging resolves out of order', async () => {
+    const allowFirstSend = deferred<void>();
+    let stageCount = 0;
+    const messageJournal: NativeWorkerMessageJournal = {
+      abandonSession: async () => ({ abandoned: 0 }),
+      openMailbox: async () => ({} as never),
+      listMailbox: async () => ({} as never),
+      stage: vi.fn(async (input) => {
+        stageCount += 1;
+        if (stageCount === 2) await allowFirstSend.promise;
+        return {
+          message: {} as never,
+          command: input.command,
+          sequence: stageCount,
+          markWritten: async () => undefined,
+          extend: async () => undefined,
+          ack: async () => undefined,
+          release: async () => undefined,
+          uncertain: async () => undefined,
+          deadLetter: async () => undefined,
+        };
+      }),
+    };
+    const { process, port } = fixture({ messageJournal });
+    const handle = await port.spawn(spawnPacket('ordered-inputs'), new AbortController().signal);
+
+    const first = handle.send({
+      schemaVersion: 1, type: 'worker.steer', packetId: packetId('ordered-first'),
+      workerId: workerId('ordered-inputs'), correlationId: correlationId('correlation-ordered-inputs'),
+      sessionId: sessionId('parent-session'), authority: spawnPacket('ordered-inputs').authority, redaction: 'sensitive', text: 'first',
+    });
+    await tick();
+    const second = handle.send({
+      schemaVersion: 1, type: 'worker.follow-up', packetId: packetId('ordered-second'),
+      workerId: workerId('ordered-inputs'), correlationId: correlationId('correlation-ordered-inputs'),
+      sessionId: sessionId('parent-session'), authority: spawnPacket('ordered-inputs').authority, redaction: 'sensitive', text: 'second',
+    });
+    await tick();
+    allowFirstSend.resolve();
+    await Promise.all([first, second]);
+
+    expect(process.processes[0]!.writes.map((line) => JSON.parse(line).command)).toEqual([
+      { type: 'input.submit', text: 'task-ordered-inputs' },
+      { type: 'input.steer', text: 'first' },
+      { type: 'input.follow-up', text: 'second' },
+    ]);
+    process.processes[0]!.complete({ code: 0, signal: null });
   });
 
   it('captures structured completion through the core supervisor', async () => {
     const { process, supervisor } = fixture();
-    await supervisor.spawn(spawnPacket('worker-1'));
+    const packet = spawnPacket('worker-1');
+    await supervisor.spawn(packet);
+    expect(() => supervisor.status(packet.workerId, {
+      ...packet.authority,
+      ownershipGeneration: packet.authority.ownershipGeneration + 1,
+    })).toThrow('Worker authority does not match the owning spawn');
     await tick();
     process.processes[0]!.complete({ code: 0, signal: null });
 
-    await expect(supervisor.wait(workerId('worker-1'))).resolves.toMatchObject({
+    await expect(supervisor.wait(workerId('worker-1'), spawnPacket('worker-1').authority)).resolves.toMatchObject({
       outcome: 'succeeded',
       correlationId: 'correlation-worker-1',
       handback: { text: 'result-1', exitCode: 0, signal: null, events: [expect.any(Object)] },
     });
-    expect(supervisor.status(workerId('worker-1'))).toMatchObject({ state: 'succeeded' });
+    expect(supervisor.status(workerId('worker-1'), spawnPacket('worker-1').authority)).toMatchObject({ state: 'succeeded' });
   });
 
   it('reports process failure without exposing prompt, stderr, argv, or environment', async () => {
@@ -252,7 +317,7 @@ describe('native worker process port', () => {
     await tick();
     process.processes[0]!.complete({ code: 7, signal: null });
 
-    const terminal = await supervisor.wait(workerId('worker-1'));
+    const terminal = await supervisor.wait(workerId('worker-1'), spawnPacket('worker-1').authority);
     expect(terminal).toMatchObject({ outcome: 'failed', reason: 'Worker exited with code 7' });
     expect(JSON.stringify(terminal)).not.toContain('super-secret');
     expect(JSON.stringify(terminal)).not.toContain('OPENAI_API_KEY');
@@ -463,10 +528,10 @@ describe('native worker process port', () => {
     expect(process.processes).toHaveLength(1);
 
     process.processes[0]!.complete({ code: 0, signal: null });
-    await supervisor.wait(workerId('worker-1'));
+    await supervisor.wait(workerId('worker-1'), spawnPacket('worker-1').authority);
     await tick();
     expect(process.processes).toHaveLength(2);
-    expect(supervisor.status(workerId('worker-2'))).toMatchObject({ state: 'running' });
+    expect(supervisor.status(workerId('worker-2'), spawnPacket('worker-2').authority)).toMatchObject({ state: 'running' });
   });
 
   it('maps live input and graceful cancel before TERM, with force kill owned by core', async () => {
@@ -476,19 +541,19 @@ describe('native worker process port', () => {
     await supervisor.send({
       schemaVersion: 1, type: 'worker.send', packetId: packetId('send'),
       workerId: workerId('worker-1'), correlationId: correlationId('correlation-worker-1'),
-      sessionId: sessionId('parent-session'), redaction: 'sensitive', text: 'new turn',
+      sessionId: sessionId('parent-session'), authority: spawnPacket('worker-1').authority, redaction: 'sensitive', text: 'new turn',
     });
     await supervisor.steer({
       schemaVersion: 1, type: 'worker.steer', packetId: packetId('steer'),
       workerId: workerId('worker-1'), correlationId: correlationId('correlation-worker-1'),
-      sessionId: sessionId('parent-session'), redaction: 'sensitive', text: 'redirect',
+      sessionId: sessionId('parent-session'), authority: spawnPacket('worker-1').authority, redaction: 'sensitive', text: 'redirect',
     });
     await supervisor.followUp({
       schemaVersion: 1, type: 'worker.follow-up', packetId: packetId('follow-up'),
       workerId: workerId('worker-1'), correlationId: correlationId('correlation-worker-1'),
-      sessionId: sessionId('parent-session'), redaction: 'sensitive', text: 'next task',
+      sessionId: sessionId('parent-session'), authority: spawnPacket('worker-1').authority, redaction: 'sensitive', text: 'next task',
     });
-    await supervisor.abort(workerId('worker-1'), 'stop');
+    await supervisor.abort(workerId('worker-1'), spawnPacket('worker-1').authority, 'stop');
     expect(process.processes[0]!.abort).toHaveBeenCalledTimes(1);
     expect(process.processes[0]!.writes.map((line) => JSON.parse(line).command)).toEqual([
       { type: 'input.submit', text: 'task-worker-1' },
@@ -498,14 +563,14 @@ describe('native worker process port', () => {
       { type: 'input.cancel', reason: 'stop' },
     ]);
     process.processes[0]!.complete({ code: null, signal: 'SIGTERM' });
-    await expect(supervisor.wait(workerId('worker-1'))).resolves.toMatchObject({ outcome: 'aborted' });
+    await expect(supervisor.wait(workerId('worker-1'), spawnPacket('worker-1').authority)).resolves.toMatchObject({ outcome: 'aborted' });
 
     await supervisor.spawn(spawnPacket('worker-2'));
     await tick();
-    await supervisor.kill(workerId('worker-2'), 'force');
+    await supervisor.kill(workerId('worker-2'), spawnPacket('worker-2').authority, 'force');
     expect(process.processes[1]!.kill).toHaveBeenCalledTimes(1);
     process.processes[1]!.complete({ code: null, signal: 'SIGKILL' });
-    await expect(supervisor.wait(workerId('worker-2'))).resolves.toMatchObject({ outcome: 'killed' });
+    await expect(supervisor.wait(workerId('worker-2'), spawnPacket('worker-2').authority)).resolves.toMatchObject({ outcome: 'killed' });
   });
 
   it('ends RPC input exactly once when wait joins a live worker', async () => {
@@ -513,8 +578,8 @@ describe('native worker process port', () => {
     await supervisor.spawn(spawnPacket('join'));
     await tick();
 
-    const first = supervisor.wait(workerId('join'));
-    const second = supervisor.wait(workerId('join'));
+    const first = supervisor.wait(workerId('join'), spawnPacket('join').authority);
+    const second = supervisor.wait(workerId('join'), spawnPacket('join').authority);
     await tick();
     expect(process.processes[0]!.endInput).toHaveBeenCalledOnce();
     process.processes[0]!.complete({ code: 0, signal: null });
@@ -533,8 +598,8 @@ describe('native worker process port', () => {
 
     await supervisor.spawn(spawnPacket('worker-1'));
     await tick();
-    const first = supervisor.wait(workerId('worker-1'));
-    const second = supervisor.wait(workerId('worker-1'));
+    const first = supervisor.wait(workerId('worker-1'), spawnPacket('worker-1').authority);
+    const second = supervisor.wait(workerId('worker-1'), spawnPacket('worker-1').authority);
     process.processes[0]!.complete({ code: 0, signal: null });
     await expect(Promise.all([first, second])).resolves.toEqual([
       expect.objectContaining({ outcome: 'succeeded' }),
@@ -549,7 +614,7 @@ describe('native worker process port', () => {
     await tick();
     process.processes[0]!.stdout.push(eventLine('duplicate', 1));
     process.processes[0]!.complete({ code: 0, signal: null });
-    await expect(supervisor.wait(workerId('worker-1'))).resolves.toMatchObject({
+    await expect(supervisor.wait(workerId('worker-1'), spawnPacket('worker-1').authority)).resolves.toMatchObject({
       outcome: 'failed', reason: 'Worker RPC event sequence is invalid',
     });
     expect(process.processes[0]!.kill).toHaveBeenCalledTimes(1);
@@ -569,7 +634,7 @@ describe('native worker process port', () => {
     const send = supervisor.send({
       schemaVersion: 1, type: 'worker.send', packetId: packetId('send-malformed'),
       workerId: workerId('worker-1'), correlationId: correlationId('correlation-worker-1'),
-      sessionId: sessionId('parent-session'), redaction: 'sensitive', text: 'next',
+      sessionId: sessionId('parent-session'), authority: spawnPacket('worker-1').authority, redaction: 'sensitive', text: 'next',
     });
     await tick();
     const requestId = (JSON.parse(child.writes.at(-1)!) as { requestId: string }).requestId;
@@ -579,7 +644,7 @@ describe('native worker process port', () => {
     expect(child.kill).toHaveBeenCalledTimes(1);
     child.stdout.push(`${JSON.stringify(malformed(requestId))}\n`);
     child.complete({ code: 0, signal: null });
-    await expect(supervisor.wait(workerId('worker-1'))).resolves.toMatchObject({ outcome: 'failed' });
+    await expect(supervisor.wait(workerId('worker-1'), spawnPacket('worker-1').authority)).resolves.toMatchObject({ outcome: 'failed' });
     expect(child.kill).toHaveBeenCalledTimes(1);
     expect(ledger.filter((entry) => entry.type === 'worker.terminal' && entry.workerId === 'worker-1')).toHaveLength(1);
   });
@@ -593,7 +658,7 @@ describe('native worker process port', () => {
     child.stdout.push(`${JSON.stringify({ protocolVersion: 1, requestId: 'unknown-request', ok: true })}\n`);
     child.complete({ code: 0, signal: null });
 
-    await expect(supervisor.wait(workerId('worker-1'))).resolves.toMatchObject({
+    await expect(supervisor.wait(workerId('worker-1'), spawnPacket('worker-1').authority)).resolves.toMatchObject({
       outcome: 'failed', reason: 'Worker RPC response correlation is invalid',
     });
     expect(child.kill).toHaveBeenCalledTimes(1);
@@ -606,7 +671,7 @@ describe('native worker process port', () => {
       ...spawnPacket('worker-1'),
       capabilities: { tools: Array.from({ length: 129 }, (_, index) => `tool-${index}`), models: [], maxTurns: 1 },
     });
-    await expect(supervisor.wait(workerId('worker-1'))).resolves.toMatchObject({ outcome: 'failed' });
+    await expect(supervisor.wait(workerId('worker-1'), spawnPacket('worker-1').authority)).resolves.toMatchObject({ outcome: 'failed' });
     expect(process.processes).toHaveLength(0);
   });
 
@@ -621,108 +686,12 @@ describe('native worker process port', () => {
       promptDigest: 'digest',
       cacheKey: 'cache',
       ownershipToken: 'ownership-token',
+      containmentGeneration: 'containment-generation',
     });
     await handle.write('ping\n');
     let stdout = '';
     for await (const chunk of handle.stdout) stdout += chunk.toString();
     await expect(handle.exit).resolves.toMatchObject({ code: 0 });
     expect(stdout).toBe('ping\n');
-  });
-});
-
-describe('native worker worktree lifecycle', () => {
-  it('creates a contained worktree with non-shell git arguments and runs the worker there', async () => {
-    const calls: Array<{ cwd: string; args: readonly string[] }> = [];
-    const root = fs.mkdtempSync('/tmp/octocode-worker-tests-');
-    const target = `${root}/isolated`;
-    const physicalTarget = path.join(fs.realpathSync(root), 'isolated');
-    const git: NativeGitProcessAdapter = { run: vi.fn(async (cwd, args) => {
-      calls.push({ cwd, args });
-      if (args[0] === 'worktree' && args[1] === 'add') fs.mkdirSync(target, { recursive: true });
-      if (args[0] === 'status') return { stdout: '', stderr: '' };
-      return { stdout: '', stderr: '' };
-    }) };
-    const worktrees = new NativeWorkerWorktreePort({ repositoryRoot: '/tmp', worktreesRoot: root, git });
-    const process = new FakeProcessAdapter();
-    const supervisor = new WorkerSupervisor({
-      port: new NativeWorkerProcessPort({ process, command: '/usr/bin/node', cwd: '/tmp' }),
-      worktrees,
-      maxActive: 1,
-    });
-    const packet = { ...spawnPacket('isolated'), workspace: { mode: 'worktree' as const, path: target, baseRevision: 'HEAD' } };
-    await supervisor.spawn(packet);
-    await tick();
-    expect(calls[0]).toEqual({ cwd: fs.realpathSync('/tmp'), args: ['worktree', 'add', '--detach', physicalTarget, 'HEAD'] });
-    expect(process.specs[0]?.cwd).toBe(fs.realpathSync(target));
-    expect(calls.every(({ args }) => !args.includes('--shell'))).toBe(true);
-    process.processes[0]!.complete({ code: 0, signal: null });
-    await expect(supervisor.wait(packet.workerId)).resolves.toMatchObject({ outcome: 'succeeded' });
-  });
-
-  it('fails closed for escaping paths and dirty refresh/discard, retaining recoverable worktrees', async () => {
-    const git: NativeGitProcessAdapter = { run: vi.fn(async (_cwd, args) => {
-      if (args[0] === 'status') return { stdout: ' M changed.ts\n', stderr: '' };
-      return { stdout: '', stderr: '' };
-    }) };
-    const root = '/tmp/octocode-worker-contained';
-    fs.mkdirSync('/tmp/octocode-worker-contained/dirty', { recursive: true });
-    const worktrees = new NativeWorkerWorktreePort({ repositoryRoot: '/tmp', worktreesRoot: root, git });
-    await expect(worktrees.prepare({ ...spawnPacket('escape'), workspace: { mode: 'worktree', path: '/tmp/escape', baseRevision: 'HEAD' } }, new AbortController().signal)).rejects.toThrow('contained');
-    const dirty = { ...spawnPacket('dirty'), workspace: { mode: 'worktree' as const, path: `${root}/dirty`, baseRevision: 'HEAD' } };
-    await expect(worktrees.prepare(dirty, new AbortController().signal)).rejects.toThrow('dirty');
-    await expect(worktrees.recover({ path: `${root}/dirty`, action: 'discard' })).rejects.toThrow('dirty');
-    expect(git.run).not.toHaveBeenCalledWith(expect.anything(), expect.arrayContaining(['remove']));
-  });
-
-  it('rejects relative paths and non-existent targets reached through an escaping symlink ancestor', async () => {
-    const root = fs.mkdtempSync('/tmp/octocode-worker-root-');
-    const outside = fs.mkdtempSync('/tmp/octocode-worker-outside-');
-    fs.symlinkSync(outside, `${root}/link`, 'dir');
-    const git: NativeGitProcessAdapter = { run: vi.fn(async () => ({ stdout: '', stderr: '' })) };
-    const worktrees = new NativeWorkerWorktreePort({ repositoryRoot: '/tmp', worktreesRoot: root, git });
-    const signal = new AbortController().signal;
-    await expect(worktrees.prepare({
-      ...spawnPacket('relative'), workspace: { mode: 'worktree', path: 'relative/worktree', baseRevision: 'HEAD' },
-    }, signal)).rejects.toThrow('absolute');
-    await expect(worktrees.prepare({
-      ...spawnPacket('symlink'), workspace: { mode: 'worktree', path: `${root}/link/not-created`, baseRevision: 'HEAD' },
-    }, signal)).rejects.toThrow('contained');
-    expect(git.run).not.toHaveBeenCalled();
-  });
-
-  it('revalidates the worktree process cwd against the configured root before spawn', async () => {
-    const root = fs.mkdtempSync('/tmp/octocode-worker-cwd-root-');
-    const outside = fs.mkdtempSync('/tmp/octocode-worker-cwd-outside-');
-    const process = new FakeProcessAdapter();
-    const port = new NativeWorkerProcessPort({
-      process, command: '/usr/bin/node', cwd: '/tmp', worktreesRoot: root,
-    });
-    await expect(port.spawn({
-      ...spawnPacket('cwd-escape'), workspace: { mode: 'worktree', path: outside, baseRevision: 'HEAD' },
-    }, new AbortController().signal)).rejects.toThrow('contained');
-    expect(process.specs).toHaveLength(0);
-  });
-
-  it('creates and discards a real git worktree when launched from a repository subdirectory', async () => {
-    const repository = fs.mkdtempSync('/tmp/octocode-worker-repository-');
-    const worktreesRoot = fs.mkdtempSync('/tmp/octocode-worker-real-worktrees-');
-    const subdirectory = path.join(repository, 'nested', 'cwd');
-    fs.mkdirSync(subdirectory, { recursive: true });
-    execFileSync('git', ['init', '--quiet'], { cwd: repository, stdio: 'ignore' });
-    execFileSync('git', ['-c', 'user.name=Octocode Test', '-c', 'user.email=test@invalid', 'commit', '--quiet', '--allow-empty', '-m', 'fixture'], { cwd: repository, stdio: 'ignore' });
-    const target = path.join(worktreesRoot, 'worker');
-    const worktrees = new NativeWorkerWorktreePort({ repositoryRoot: subdirectory, worktreesRoot });
-    try {
-      await worktrees.prepare({
-        ...spawnPacket('real-subdirectory'), workspace: { mode: 'worktree', path: target, baseRevision: 'HEAD' },
-      }, new AbortController().signal);
-      expect(fs.statSync(target).isDirectory()).toBe(true);
-      expect(fs.existsSync(path.join(target, '.git'))).toBe(true);
-      await worktrees.recover({ path: target, action: 'discard' });
-      expect(fs.existsSync(target)).toBe(false);
-    } finally {
-      fs.rmSync(repository, { recursive: true, force: true });
-      fs.rmSync(worktreesRoot, { recursive: true, force: true });
-    }
   });
 });

@@ -1,15 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite';
 import {
   ROUTABLE_OPERATIONS,
+  connectDb,
+  resolveDbPath,
   runAwarenessToolOperation,
   type AwarenessToolOperation,
   type AwarenessToolOperationResult,
 } from '@octocodeai/octocode-awareness';
-import {
-  closeOctocodeDb,
-  agentDbPath,
-  openOctocodeDb,
-} from '@octocodeai/octocode-awareness/mcp-state';
 import { createEffectSet, type ToolPolicyResolution, type ToolRegistry } from '@octocodeai/agent-core';
 
 type AwarenessRunner = (
@@ -94,9 +91,9 @@ function resolveAwarenessPolicy(input: unknown): ToolPolicyResolution {
 
 export function registerNativeAwarenessTool(registry: ToolRegistry, options: NativeAwarenessOptions): void {
   const env = options.env ?? process.env;
-  const dbPath = options.dbPath ?? agentDbPath(env);
-  const openDb = options.openDb ?? openOctocodeDb;
-  const closeDb = options.closeDb ?? closeOctocodeDb;
+  const dbPath = resolveDbPath(options.dbPath, { scope: 'repo', workspace: options.cwd });
+  const openDb = options.openDb ?? connectDb;
+  const closeDb = options.closeDb;
   const run = options.run ?? runAwarenessToolOperation;
 
   registry.register({
@@ -125,12 +122,11 @@ export function registerNativeAwarenessTool(registry: ToolRegistry, options: Nat
       const operation = action as AwarenessToolOperation;
       const sessionId = String(execution.context.sessionId);
       const agentId = options.agentId?.trim() || env.OCTOCODE_AGENT_ID?.trim() || `native:${sessionId}`;
-      let opened = false;
+      let db: DatabaseSync | undefined;
       await execution.update({ version: 1, kind: 'status', message: `Running awareness ${operation}` });
       try {
         if (execution.signal.aborted) throw new Error('Awareness operation cancelled');
-        const db = openDb(dbPath);
-        opened = true;
+        db = openDb(dbPath);
         const result = run(db, operation, request, {
           cwd: execution.context.cwd || options.cwd,
           sessionId,
@@ -152,7 +148,10 @@ export function registerNativeAwarenessTool(registry: ToolRegistry, options: Nat
           detailsVersion: 1,
         };
       } finally {
-        if (opened) closeDb(dbPath);
+        if (db) {
+          if (closeDb) closeDb(dbPath);
+          else db.close();
+        }
       }
     },
   }, 'octocode-awareness');

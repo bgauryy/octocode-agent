@@ -5,6 +5,8 @@ import {
   runtimeUserInputFromText,
   runtimeUserInputText,
   type AgentRuntime,
+  type ModelMessage,
+  type RuntimeEvent,
   type RuntimeUserInputV1,
 } from '@octocodeai/agent-core';
 
@@ -13,7 +15,7 @@ import type { NativeInteractionBroker } from './native-interactions.js';
 import type { RuntimePlanSnapshot } from './native-plan.js';
 import type { NativeSettingsPageController } from './native-settings-page.js';
 import type { NativeWorkerOperationsController } from './native-worker-operations.js';
-import { presentationEvents } from './native-runtime-presentation.js';
+import { presentationEvents, presentationEventsForHistory } from './native-runtime-presentation.js';
 import type {
   NativeInteractivePresentationPort,
   NativePresentationChromeUpdate,
@@ -30,12 +32,21 @@ export interface NativeInteractiveControllerOptions {
   readonly interactions: NativeInteractionBroker;
   readonly input: Readable;
   readonly initialMessage?: string;
+  readonly resumedMessages?: readonly ModelMessage[];
+  readonly subscribeResumedMessages?: (
+    listener: (messages: readonly ModelMessage[]) => void,
+  ) => () => void;
+  readonly subscribeSupplementalRuntimeEvents?: (
+    listener: (event: RuntimeEvent) => void,
+  ) => () => void;
   readonly createLineReader?: (input: Readable) => AsyncIterable<string>;
   readonly currentPlan?: () => RuntimePlanSnapshot | undefined;
   readonly skills?: () => readonly NativeSkillSummary[];
   readonly signalSource?: NativeSignalSource;
   readonly settingsPage?: NativeSettingsPageController;
   readonly thinkingSupported?: boolean;
+  readonly contextLimit?: number;
+  readonly permissionMode?: "strict" | "default" | "allow-all";
   readonly version?: string;
   readonly workerOperations?: Pick<NativeWorkerOperationsController, 'open' | 'dispatch'>;
 }
@@ -50,11 +61,14 @@ export async function runNativeInteractiveController(
     interactions,
     input,
     initialMessage,
+    resumedMessages = [],
     currentPlan = () => undefined,
     skills = () => [],
     signalSource = process,
     settingsPage,
     thinkingSupported = false,
+    contextLimit,
+    permissionMode,
     version,
   } = options;
   const createLineReader = options.createLineReader
@@ -113,6 +127,7 @@ export async function runNativeInteractiveController(
       ...(snapshot.model?.modelId === undefined ? {} : { modelId: snapshot.model.modelId }),
       ...(snapshot.sessionId === undefined ? {} : { sessionId: String(snapshot.sessionId) }),
       ...(version === undefined ? {} : { version }),
+      ...(permissionMode === undefined ? {} : { permissionMode }),
       trust,
     };
     if (presentedChrome !== undefined
@@ -120,6 +135,7 @@ export async function runNativeInteractiveController(
       && presentedChrome.modelId === chrome.modelId
       && presentedChrome.sessionId === chrome.sessionId
       && presentedChrome.version === chrome.version
+      && presentedChrome.permissionMode === chrome.permissionMode
       && presentedChrome.trust === chrome.trust) return;
     presentedChrome = chrome;
     terminal.accept({ type: 'chrome-changed', chrome });
@@ -129,17 +145,27 @@ export async function runNativeInteractiveController(
     : (...args: Parameters<NonNullable<NativeInteractivePresentationPort['interact']>>) => terminal.interact!(...args);
   detachInteractions = interactions.attach(interactionHandler);
   terminal.accept({ type: 'interaction-handler-state', ready: terminal.interact !== undefined });
-  const unsubscribe = runtime.subscribe((event) => {
+  const presentRuntimeEvent = (event: RuntimeEvent): void => {
     presentChromeFacts(event.trust.workspace);
     if (event.type === 'turn.started') activeTurnId = event.payload.turnId;
-    for (const semantic of presentationEvents(event, activeTurnId)) terminal.accept(semantic);
+    for (const semantic of presentationEvents(event, activeTurnId, { contextLimit })) terminal.accept(semantic);
     if (event.type === 'turn.ended') activeTurnId = undefined;
-  });
+  };
+  const unsubscribe = runtime.subscribe(presentRuntimeEvent);
+  const detachSupplementalRuntimeEvents =
+    options.subscribeSupplementalRuntimeEvents?.(presentRuntimeEvent)
+    ?? (() => undefined);
   let detachInput: (() => void) | undefined;
   let detachFailure: (() => void) | undefined;
   let detachSignals: (() => void) | undefined;
+  let detachResumedMessages: (() => void) | undefined;
   try {
     presentChromeFacts('unknown');
+    for (const semantic of presentationEventsForHistory(resumedMessages)) terminal.accept(semantic);
+    detachResumedMessages = options.subscribeResumedMessages?.((messages) => {
+      terminal.accept({ type: 'transcript-cleared' });
+      for (const semantic of presentationEventsForHistory(messages)) terminal.accept(semantic);
+    });
     await runtime.start();
     if (initialMessage) submit(initialMessage);
     let finishNativeInput: (() => void) | undefined;
@@ -225,6 +251,7 @@ export async function runNativeInteractiveController(
     }
     return 0;
   } finally {
+    detachResumedMessages?.();
     let failure: unknown;
     try { await runtime.stop(); }
     catch (error) { failure = error; }
@@ -232,6 +259,7 @@ export async function runNativeInteractiveController(
       await Promise.allSettled([...submissions]);
       failure ??= submissionFailure;
       unsubscribe();
+      detachSupplementalRuntimeEvents();
       detachInput?.();
       detachFailure?.();
       detachSignals?.();

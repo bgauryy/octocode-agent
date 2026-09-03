@@ -63,6 +63,8 @@ describe('PresentationSurfaceWidget', () => {
     expect(state.capabilities).toEqual({ focusable: true, inputMode: 'keys' });
     for (const text of expected) expect(widget.alternateOutput()).toContain(text);
     expect(state.regions.map(({ id }) => id)).toEqual(['summary', 'content', 'viewport', 'help']);
+    expect(state.regions[0]?.role).toBe('content');
+    expect(state.regions[0]?.text).not.toMatch(/surface-1|revision/iu);
   });
 
   it('makes unknown progress explicit and never infers a completion claim', () => {

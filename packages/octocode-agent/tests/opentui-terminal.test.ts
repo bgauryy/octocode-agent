@@ -121,9 +121,11 @@ describe("OpenTUI presentation projection", () => {
       name: "lookup",
     });
     state = reducePresentation(state, {
-      type: "status-changed",
-      name: "context.usage",
-      text: "42%",
+      type: "context-usage-changed",
+      used: 42,
+      limit: 100,
+      inputTokens: 42,
+      outputTokens: 8,
     });
     state = reducePresentation(state, {
       type: "presentation-changed",
@@ -138,12 +140,245 @@ describe("OpenTUI presentation projection", () => {
       working: "idle",
       activeTurnId: undefined,
       statuses: {},
+      contextUsage: undefined,
     });
     expect(cleared.turns).toEqual(state.turns);
     expect(cleared.messages).toEqual(state.messages);
     expect(cleared.tools).toEqual(state.tools);
     expect(cleared.widgets).toEqual(state.widgets);
     expect(cleared.chrome).toEqual(state.chrome);
+  });
+
+  it("clears session-owned transcript state before hydrating another session", () => {
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: "user-message",
+      messageId: "session-a-message",
+      text: "from session A",
+    });
+    state = reducePresentation(state, {
+      type: "tool-started",
+      callId: "session-a-tool",
+      name: "lookup",
+    });
+
+    const cleared = reducePresentation(state, { type: "transcript-cleared" });
+
+    expect(cleared.messages).toEqual([]);
+    expect(cleared.turns).toEqual([]);
+    expect(cleared.tools).toEqual([]);
+    expect(cleared.workers).toEqual([]);
+    expect(cleared.notifications).toEqual([]);
+  });
+
+  it("clears old-generation statuses and notifications before retaining the new receipt", () => {
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: "status-changed",
+      name: "provider",
+      text: "Waiting for the old provider",
+    });
+    state = reducePresentation(state, {
+      type: "notification",
+      severity: "error",
+      message: "Old generation failed",
+    });
+
+    state = reducePresentation(state, { type: "session-replaced" });
+    state = reducePresentation(state, {
+      type: "notification",
+      severity: "success",
+      message: "Private session · abc12345 · Resumed",
+    });
+
+    expect(state.statuses).toEqual({});
+    expect(state.notifications).toEqual([
+      {
+        severity: "success",
+        message: "Private session · abc12345 · Resumed",
+      },
+    ]);
+  });
+
+  it("coalesces interleaved worker generations independently and preserves terminal failures", () => {
+    let state = createInitialPresentationState();
+    for (const event of [
+      { type: "notification", severity: "error", message: "Subagent · FAILED", key: "worker:alpha" },
+      { type: "notification", severity: "info", message: "Provider retrying" },
+      { type: "notification", severity: "success", message: "Subagent · SUCCEEDED", key: "worker:beta" },
+      { type: "notification", severity: "warning", message: "Subagent · ABORTED", key: "worker:beta" },
+    ] as const) {
+      state = reducePresentation(state, event);
+    }
+
+    expect(state.notifications).toEqual([
+      { severity: "error", message: "Subagent · FAILED", key: "worker:alpha" },
+      { severity: "info", message: "Provider retrying", key: "provider" },
+      { severity: "warning", message: "Subagent · ABORTED", key: "worker:beta" },
+    ]);
+
+    state = reducePresentation(state, {
+      type: "chrome-changed",
+      chrome: { authority: "runtime", title: "Octocode", trust: "trusted" },
+    });
+    state = reducePresentation(state, {
+      type: "worker-changed",
+      worker: { workerId: "alpha", state: "failed", timestamp: 1 },
+    });
+    expect(projectPresentationChrome(state, 40)?.footer.activitySummary).toEqual({
+      text: "Action failed · inspect Activity",
+      tone: "error",
+    });
+  });
+
+  it("retains the newest fifty notifications in burst order", () => {
+    let state = createInitialPresentationState();
+    for (let index = 0; index < 55; index += 1) {
+      state = reducePresentation(state, {
+        type: "notification",
+        severity: "info",
+        message: `Burst ${index}`,
+      });
+    }
+    expect(state.notifications).toHaveLength(50);
+    expect(state.notifications[0]?.message).toBe("Burst 5");
+    expect(state.notifications.at(-1)?.message).toBe("Burst 54");
+  });
+
+  it("projects authoritative context remaining and runtime facts into the footer", () => {
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: "chrome-changed",
+      chrome: {
+        authority: "runtime",
+        title: "Octocode",
+        modelId: "claude-sonnet-4-6",
+        trust: "trusted",
+        permissionMode: "default",
+      },
+    });
+    state = reducePresentation(state, {
+      type: "context-usage-changed",
+      used: 24_000,
+      limit: 200_000,
+      inputTokens: 24_000,
+      outputTokens: 1_500,
+      cachedInputTokens: 4_000,
+      cacheWriteInputTokens: 500,
+    });
+
+    expect(projectPresentationChrome(state, 160)?.footer).toMatchObject({
+      contextUsage: { used: 24_000, limit: 200_000 },
+      modelId: "claude-sonnet-4-6",
+      trust: "trusted",
+      permissionMode: "default",
+    });
+    expect(state.statuses["context.usage"]).toBe(
+      "24,000 input · 1,500 output · 4,000 cached · 500 cache write tokens",
+    );
+  });
+
+  it("keeps the active lifecycle phase visible in the persistent footer", () => {
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: "chrome-changed",
+      chrome: { authority: "runtime", title: "Octocode", trust: "trusted" },
+    });
+    state = reducePresentation(state, {
+      type: "status-changed",
+      name: "provider",
+      text: "Waiting for model · attempt 1/3",
+    });
+
+    expect(projectPresentationChrome(state, 120)?.footer.activitySummary).toEqual({
+      text: "Waiting for model · attempt 1/3",
+      tone: "info",
+    });
+  });
+
+  it("keeps the required action first when every footer priority overlaps", () => {
+    let state = reducePresentation(createInitialPresentationState(), {
+      type: "chrome-changed",
+      chrome: { authority: "runtime", title: "Octocode", trust: "trusted" },
+    });
+    for (const [name, text] of [
+      ["provider", "Waiting for model"],
+      ["trust", "Resolving trust"],
+      ["resources", "Discovering resources"],
+      ["session", "Switching session"],
+      ["context.compaction", "Compacting context"],
+    ] as const) {
+      state = reducePresentation(state, { type: "status-changed", name, text });
+    }
+    state = reducePresentation(state, {
+      type: "plan-changed",
+      plan: {
+        authority: "runtime",
+        planId: "plan-overlap",
+        scope: { sessionId: "session-overlap", workspace: "/workspace" },
+        revision: 1,
+        phase: "active",
+        steps: [{ id: "step-1", text: "Implement", status: "doing" }],
+      },
+    });
+    state = reducePresentation(state, {
+      type: "worker-changed",
+      worker: {
+        workerId: "worker-overlap",
+        state: "running",
+        active: 1,
+        queued: 1,
+        maxActive: 4,
+        timestamp: 1,
+      },
+    });
+    state = reducePresentation(state, {
+      type: "tool-started",
+      callId: "tool-running",
+      name: "search",
+    });
+    state = reducePresentation(state, {
+      type: "tool-prepared",
+      callId: "tool-blocked",
+      name: "write",
+    });
+    state = reducePresentation(state, {
+      type: "tool-blocked",
+      callId: "tool-blocked",
+      name: "write",
+      message: "policy blocked",
+    });
+    state = reducePresentation(state, {
+      type: "tool-prepared",
+      callId: "tool-failed",
+      name: "exec",
+    });
+    state = reducePresentation(state, {
+      type: "tool-failed",
+      callId: "tool-failed",
+      name: "exec",
+      message: "exit 1",
+      category: "tool-execution",
+    });
+    state = reducePresentation(state, {
+      type: "runtime-widgets-changed",
+      snapshots: {
+        statusNotifications: [
+          {
+            authority: "runtime",
+            slot: "permission",
+            id: "approval-overlap",
+            message: "Approval required for protected action",
+            lifecycle: "active",
+          },
+        ],
+      },
+    });
+
+    expect(projectPresentationChrome(state, 40)?.footer.activitySummary).toEqual({
+      text: "Approval required",
+      tone: "warning",
+    });
+    expect(projectPresentationChrome(state, 160)?.footer.activitySummary).toEqual({
+      text: "Approval required",
+      tone: "warning",
+    });
   });
 
   it("derives interaction mode from canonical interaction state without a chrome rewrite", () => {
@@ -361,6 +596,78 @@ describe("OpenTUI presentation projection", () => {
     await terminal.stop();
 
     expect(render).toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  it("settles an interrupted stream and concurrent shutdown race exactly once", async () => {
+    let releaseDestroy!: () => void;
+    const destroyGate = new Promise<void>((resolve) => {
+      releaseDestroy = resolve;
+    });
+    const destroy = vi.fn(async () => destroyGate);
+    const render = vi.fn();
+    const terminal = createOpenTuiTerminal({
+      createRenderer: async () => ({ destroy, render }),
+    });
+    await terminal.start();
+    terminal.accept({
+      type: "message-started",
+      messageId: "interrupted-stream",
+      role: "assistant",
+    });
+    for (let index = 0; index < 100; index += 1) {
+      terminal.accept({
+        type: "message-delta",
+        messageId: "interrupted-stream",
+        text: String(index % 10),
+      });
+    }
+
+    const first = terminal.stop();
+    const second = terminal.stop();
+    const third = terminal.stop();
+    expect(second).toBe(first);
+    expect(third).toBe(first);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(destroy).toHaveBeenCalledOnce();
+    releaseDestroy();
+    await Promise.all([first, second, third]);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+    expect(render).toHaveBeenCalledOnce();
+    expect(render.mock.calls[0]?.[0]).toMatchObject({
+      messages: [
+        expect.objectContaining({
+          id: "interrupted-stream",
+          status: "streaming",
+        }),
+      ],
+    });
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(() => terminal.accept({ type: "runtime-ready" })).toThrow(/stopped/i);
+  });
+
+  it("destroys a late renderer once when initialization races shutdown", async () => {
+    let resolveRenderer!: (renderer: {
+      destroy: () => Promise<void>;
+      render: () => void;
+    }) => void;
+    const destroy = vi.fn(async () => undefined);
+    const createRenderer = new Promise<{
+      destroy: () => Promise<void>;
+      render: () => void;
+    }>((resolve) => {
+      resolveRenderer = resolve;
+    });
+    const terminal = createOpenTuiTerminal({
+      createRenderer: async () => createRenderer,
+    });
+
+    const started = terminal.start();
+    const stopped = terminal.stop();
+    resolveRenderer({ destroy, render: () => undefined });
+    await Promise.all([started, stopped]);
+
     expect(destroy).toHaveBeenCalledOnce();
   });
 

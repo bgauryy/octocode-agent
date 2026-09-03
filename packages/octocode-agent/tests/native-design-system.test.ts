@@ -50,7 +50,9 @@ describe('native presentation design system', () => {
   it('owns shared responsive thresholds and interaction content', () => {
     expect(NATIVE_DESIGN_LAYOUT.wideColumns).toBeGreaterThanOrEqual(72);
     expect(NATIVE_DESIGN_LAYOUT.minimumActivityRows).toBeGreaterThan(0);
-    expect(NATIVE_DESIGN_CONTENT.composerPlaceholder).toMatch(/Octocode/u);
+    expect(NATIVE_DESIGN_CONTENT.composerPlaceholder).toBe('What should I work on?');
+    expect(NATIVE_DESIGN_CONTENT.composerHelp).toContain('› Ask Octocode');
+    expect(NATIVE_DESIGN_CONTENT.composerHelp).toContain('Enter send · Shift+Enter newline');
     expect(NATIVE_DESIGN_CONTENT.thinking).toBe('Thinking…');
     expect(NATIVE_DESIGN_CONTENT.shortcutOverlayKey).toBe('?');
   });

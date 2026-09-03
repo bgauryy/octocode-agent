@@ -310,7 +310,7 @@ export class PromptInputWidget extends OpenTuiWidget<PromptInputIntent> {
     }
     if (this.options.help) regions.push({ id: 'help', role: 'help', text: this.options.help });
     if (this.validationMessage) {
-      regions.push({ id: 'validation', role: 'status', text: this.validationMessage });
+      regions.push({ id: 'validation', role: 'status', tone: 'error', text: this.validationMessage });
     }
     return regions;
   }

@@ -1,11 +1,10 @@
 /**
- * db.ts — the single shared local SQLite store.
+ * db.ts — the Agent control and session-index SQLite store.
  *
- * One file, `<home>/agent/agent.sqlite3`, opened once per process and cached by
- * resolved path. It holds the agent/session-owned tables plus whatever local
- * coordination tables their owners create idempotently on the same connection
- * (e.g. Awareness's plans/tasks/locks). Every agent-owned module shares this
- * physical store while retaining explicit table ownership.
+ * The Agent control file, `<home>/agent/agent.sqlite3`, is opened once per process and cached by
+ * resolved path. It holds only Agent control and session-index tables. Awareness
+ * coordination uses its own workspace- or global-scope database and must never
+ * initialise coordination tables on this connection.
  *
  * The low-level `node:sqlite` runtime (warning-filtered `DatabaseSync`, BUSY
  * retry, WAL checkpoint) lives in sqlite.ts; version-gated journal selection in
@@ -43,7 +42,7 @@ export function assertAgentDatabaseIdentity(db: DatabaseSync): 'fresh' | 'agent'
 }
 
 /**
- * Open (or reuse) the shared local DB, apply connection PRAGMAs, and ensure the
+ * Open (or reuse) the Agent control DB, apply connection PRAGMAs, and ensure the
  * agent/session schema exists. This is the "init in process running" entry
  * point — call it once at startup; later callers get the cached connection.
  */

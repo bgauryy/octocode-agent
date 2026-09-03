@@ -11,6 +11,15 @@ lifecycle streams. It also provides an immutable dependency-work ledger whose
 claims and settlements are leased and fenced. On Unix the database file is
 forced to owner-only mode (`0600`).
 
+The actor's production database is the Agent-owned
+`$OCTOCODE_HOME/agent/core.sqlite3`. It is separate from Agent control data in
+`$OCTOCODE_HOME/agent/agent.sqlite3`, Awareness coordination in
+`<workspace>/.octocode/awareness.sqlite3` (or the explicitly selected global
+Awareness store), and CLI/MCP databases. Startup fails closed on a foreign
+database identity; it never initializes runtime tables in another owner's file.
+Worker lifecycle, mailbox, lease, and dependency-work durability are Agent
+runtime state, not Awareness state.
+
 The process uses strict JSON Lines over stdin/stdout:
 
 ```bash

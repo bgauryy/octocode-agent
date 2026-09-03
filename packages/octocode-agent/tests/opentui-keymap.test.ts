@@ -6,12 +6,16 @@ import {
 } from '../src/terminal/opentui/keymap.js';
 
 describe('OpenTUI keymap precedence', () => {
-  it('keeps multiline composer editing local and submits only with Ctrl/Meta-Enter', () => {
-    expect(composerKeyBindings()).toEqual(expect.arrayContaining([
-      { name: 'return', action: 'newline' },
-      { name: 'return', ctrl: true, action: 'submit' },
-      { name: 'return', meta: true, action: 'submit' },
+  it('submits with Enter and offers familiar modified-key newline aliases', () => {
+    const bindings = composerKeyBindings();
+    expect(bindings).toEqual(expect.arrayContaining([
+      { name: 'return', action: 'submit' },
+      { name: 'return', shift: true, action: 'newline' },
+      { name: 'return', ctrl: true, action: 'newline' },
+      { name: 'return', meta: true, action: 'newline' },
+      { name: 'j', ctrl: true, action: 'newline' },
     ]));
+    expect(bindings).not.toContainEqual({ name: 'return', action: 'newline' });
   });
 
   it('gives completion and modal controls precedence over global focus navigation', () => {

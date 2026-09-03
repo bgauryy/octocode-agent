@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initDb, tableColumns } from '../src/db.js';
 import { createPlan, getPlan, joinPlan, listPlans, registerPlanDocument, updatePlanStatus } from '../src/plans.js';
-import { activeTaskClaimForAgent, addTaskDependency, claimTask, createTask as createTaskBase, heartbeatTaskClaim, listTasks, releaseTaskClaim, submitTask } from '../src/tasks.js';
+import { activeTaskClaimForAgent, addTaskDependency, claimTask, createTask as createTaskBase, heartbeatTaskClaim, listTasks, releaseTaskClaim, retryTask, submitTask } from '../src/tasks.js';
 import type { CreateTaskParams } from '../src/tasks.js';
 import { preFlightIntent } from '../src/intents.js';
 function freshDb(): DatabaseSync {
@@ -22,6 +22,54 @@ function createTask(db: DatabaseSync, params: TestTaskParams) {
 }
 
 describe('plan and task collaboration', () => {
+it('keeps terminal plan states terminal while allowing idempotent status updates', () => {
+    const db = freshDb();
+    const workspace = mkdtempSync(join(tmpdir(), 'oc-plan-'));
+    try {
+      const { plan } = createPlan(db, {
+        name: 'Terminal lifecycle', objective: 'Keep completed plans closed.',
+        leadAgentId: 'lead', workspacePath: workspace,
+      });
+      expect(updatePlanStatus(db, { planId: plan.plan_id, status: 'COMPLETED', agentId: 'lead' }).status)
+        .toBe('COMPLETED');
+      expect(updatePlanStatus(db, { planId: plan.plan_id, status: 'COMPLETED', agentId: 'lead' }).status)
+        .toBe('COMPLETED');
+      expect(() => updatePlanStatus(db, { planId: plan.plan_id, status: 'ACTIVE', agentId: 'lead' }))
+        .toThrow(/terminal plan/i);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+it('reopens a failed task explicitly so its plan can make progress', () => {
+    const db = freshDb();
+    const workspace = mkdtempSync(join(tmpdir(), 'oc-plan-'));
+    try {
+      const { plan } = createPlan(db, {
+        name: 'Retry lifecycle', objective: 'Recover from failed verification.',
+        leadAgentId: 'lead', workspacePath: workspace,
+      });
+      const { task } = createTask(db, {
+        planId: plan.plan_id, title: 'Fix finding', reasoning: 'Verification failed.',
+        paths: ['src/a.ts'], createdBy: 'lead',
+      });
+      db.prepare("UPDATE awareness_tasks SET status = 'FAILED', completed_at = '2026-01-01T00:00:00Z' WHERE task_id = ?")
+        .run(task.task_id);
+
+      expect(() => retryTask(db, { taskId: task.task_id, agentId: 'worker' }))
+        .toThrow(/only lead agent lead/);
+      const retried = retryTask(db, { taskId: task.task_id, agentId: 'lead', message: 'apply verifier feedback' });
+      expect(retried.status).toBe('OPEN');
+      expect(retried.completed_at).toBeNull();
+      expect(() => retryTask(db, { taskId: task.task_id, agentId: 'lead' })).toThrow(/not FAILED/);
+      db.prepare("UPDATE awareness_tasks SET status = 'FAILED' WHERE task_id = ?").run(task.task_id);
+      updatePlanStatus(db, { planId: plan.plan_id, status: 'CANCELLED', agentId: 'lead' });
+      expect(() => retryTask(db, { taskId: task.task_id, agentId: 'lead' }))
+        .toThrow(/plan status is CANCELLED/);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 it('keeps durable tasks distinct from execution runs', () => {
     const db = freshDb();
     expect([...tableColumns(db, 'awareness_tasks')]).toEqual(expect.arrayContaining([

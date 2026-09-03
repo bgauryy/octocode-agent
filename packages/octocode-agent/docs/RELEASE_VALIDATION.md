@@ -10,6 +10,38 @@ checks source and test types, ordinary and FFI-enabled tests, all workspace
 builds, an isolated packed installation, credential-free discovery, and exact
 PTY restoration.
 
+For an isolated native-package change, and again before a native package release,
+run:
+
+```bash
+yarn workspace octocode-agent verify
+```
+
+The package gate performs all of the following checks:
+
+- Type-check production and test sources.
+- Run the FFI-enabled suite.
+- Build the JavaScript launcher and release Rust services.
+- Install the packed tar file and verify its public API and executable.
+- Exercise the OpenTUI PTY, command, stream, signal, restoration, and guarded
+  performance sensors.
+
+The command sensor launches the built terminal against an isolated model
+fixture and verifies `/help`, `/status`, plans, Skills, tools, clearing,
+compaction, thinking controls, follow-up messages, image attachment readiness,
+multiline paste compaction, and terminal restoration. Its timeout cleanup owns an
+isolated process group so failed runs don't leave agent or Rust service processes.
+
+Users run `npx octocode-agent` without setting `NODE_OPTIONS`. The published
+launcher enables the OpenTUI FFI requirement before it loads the terminal. The
+package's `test:opentui:ffi` script provides the corresponding cross-platform test
+wrapper for development; don't infer FFI coverage from a Vitest run that silently
+skips OpenTUI files.
+
+The repository gate doesn't invoke the package command sensor directly. Run both
+gates for a native package release until the repository manifest includes that
+sensor.
+
 The checked-in CI workflow repeats this gate on Linux and macOS. Repository
 branch protection must require both jobs before release.
 

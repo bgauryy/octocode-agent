@@ -39,11 +39,7 @@ import type { NativeInteractionEvent } from "./widget-controller.js";
 import type { NativeDesignTone } from "../../presentation/design/semantics.js";
 import { nativeColorEnabledFromEnvironment } from "../../presentation/design/tokens.js";
 import {
-  OCTOCODE_BETA_NOTICE,
   OCTOCODE_COMPACT_MARK,
-  OCTOCODE_TAGLINE,
-  OCTOCODE_WORDMARK,
-  octocodeWaveColor,
 } from "./branding/banner.js";
 
 type RendererContext = ConstructorParameters<typeof BoxRenderable>[0];
@@ -138,6 +134,7 @@ function semanticStatusLine(
   text: string,
   renderer: RendererContext,
   tone: NativeDesignTone = "info",
+  includeLabel = false,
 ): StyledText {
   const mode = themeMode(renderer);
   const colorMode = !nativeColorEnabledFromEnvironment(process.env)
@@ -145,11 +142,12 @@ function semanticStatusLine(
     : ("truecolor" as const);
   const resolved = resolveOpenTuiRole(tone, { mode, colorMode });
   const label = resolved.label.toUpperCase();
-  const hasVisibleCue = /^[\s>]*[i✓!×✗○◐#]\s/u.test(text);
-  const labelledText =
-    hasVisibleCue || new RegExp(`^${label}:\\s*`, "i").test(text)
-      ? text
-      : `${label}: ${text}`;
+  const hasVisibleCue = /^[\s>›]*[i✓!×✗○◐#◆•]\s/u.test(text);
+  const labelledText = includeLabel
+    && !hasVisibleCue
+    && !new RegExp(`^${label}:\\s*`, "i").test(text)
+      ? `${label}: ${text}`
+      : text;
   const value = hasVisibleCue
     ? labelledText
     : `${resolved.marker} ${labelledText}`;
@@ -182,23 +180,6 @@ function looksLikeDiff(value: string): boolean {
 function tableRows(
   state: WidgetRenderState,
 ): readonly (readonly string[])[] | undefined {
-  if (state.kind === "plan") {
-    return [
-      ["State", "Task"],
-      ...state.regions
-        .filter(({ role }) => role === "option")
-        .map(({ text }) => {
-          const match = /^\d+\.\s+\x5b([^\x5d]+)\x5d\s*(.*)$/u.exec(text);
-          return match ? [match[1] ?? "", match[2] ?? ""] : ["", text];
-        }),
-    ];
-  }
-  if (state.kind === "tool.progress" || state.kind === "worker.progress") {
-    return [
-      ["Field", "Value"],
-      ...state.regions.map(({ id, text }) => [id, text]),
-    ];
-  }
   const summary = state.regions.find(({ id }) => id === "summary")?.text ?? "";
   if (state.kind !== "presentation-surface" || !/key[- ]value/iu.test(summary))
     return undefined;
@@ -215,6 +196,12 @@ function tableRows(
   ];
 }
 
+function looksLikeFormattedMarkdown(value: string): boolean {
+  return /(?:```|^\s{0,3}#{1,6}\s|\*\*|__|\[[^\]]+\]\([^)]+\)|^\s*[-*+]\s|^\s*>\s)/mu.test(
+    value,
+  );
+}
+
 function richContentForState(
   state: WidgetRenderState,
 ): OpenTuiRichContent | undefined {
@@ -224,11 +211,7 @@ function richContentForState(
     // Plain transcript lines are already rendered synchronously by the semantic
     // TextRenderable. Mount Markdown only when it adds formatting value; doing so
     // also avoids a first-frame parser/layout gap for short unformatted messages.
-    if (
-      !/(?:```|^\s{0,3}#{1,6}\s|\*\*|__|\[[^\]]+\]\([^)]+\)|^\s*[-*+]\s|^\s*>\s)/mu.test(
-        content,
-      )
-    ) {
+    if (!looksLikeFormattedMarkdown(content)) {
       return undefined;
     }
     return {
@@ -263,7 +246,9 @@ function richContentForState(
       showLineNumbers: true,
       wrapMode: "char",
     };
-  return { kind: "markdown", id, content, streaming: false };
+  return looksLikeFormattedMarkdown(content)
+    ? { kind: "markdown", id, content, streaming: false }
+    : undefined;
 }
 
 function interactiveKind(kind: string): boolean {
@@ -281,6 +266,16 @@ function semanticText(
   richContent: boolean,
   renderer: RendererContext,
 ): StyledText {
+  if (!verboseSemantics && state.kind === "footer") {
+    const regions = state.regions.filter(({ text }) => text.trim().length > 0);
+    const chunks = regions.flatMap((region, index) => {
+      const line = region.role === "status" || region.tone !== undefined
+        ? semanticStatusLine(region.text, renderer, region.tone)
+        : t`${region.text}`;
+      return index === 0 ? line.chunks : [...t` · `.chunks, ...line.chunks];
+    });
+    return new StyledText(chunks);
+  }
   const statusRegions = state.regions.filter(
     (region) =>
       (region.role === "status" || region.tone !== undefined) &&
@@ -293,15 +288,33 @@ function semanticText(
       region.text.trim().length > 0 &&
       (!richContent || (region.role !== "content" && region.role !== "option")),
   );
+  if (state.kind === "transcript") {
+    const content = richContent
+      ? []
+      : state.regions.filter(
+          (region) => region.role === "content" && region.text.trim().length > 0,
+        );
+    const lines = [
+      ...content.map((region) => t`${region.text}`),
+      ...statusRegions.map((region) =>
+        semanticStatusLine(region.text, renderer, region.tone),
+      ),
+    ];
+    const chunks = lines.flatMap((line, index) =>
+      index === 0 ? line.chunks : [...t`\n`.chunks, ...line.chunks],
+    );
+    return new StyledText(chunks);
+  }
   const lines = verboseSemantics
     ? [
         t`${state.focused ? bold("▶ FOCUSED · ") : ""}${bold(state.accessibility.label)} ${dim(`[${state.accessibility.role}]`)}`,
         ...statusRegions.map((region) =>
-          semanticStatusLine(
-            `${region.role.toUpperCase()}: ${region.text}`,
-            renderer,
-            region.tone,
-          ),
+            semanticStatusLine(
+              `${region.role.toUpperCase()}: ${region.text}`,
+              renderer,
+              region.tone,
+              true,
+            ),
         ),
         ...otherRegions.map(
           (region) => t`${region.role.toUpperCase()}: ${region.text}`,
@@ -310,17 +323,17 @@ function semanticText(
           ? []
           : [t`${dim(state.accessibility.description)}`]),
       ]
-    : [
-        ...(state.kind === "header" || state.kind === "footer"
-          ? []
-          : [
-              t`${state.focused ? bold("▶ ") : ""}${bold(state.accessibility.label)}`,
-            ]),
-        ...statusRegions.map((region) =>
-          semanticStatusLine(region.text, renderer, region.tone),
-        ),
-        ...otherRegions.map((region) => t`${region.text}`),
-      ];
+    : state.regions
+        .filter(
+          (region) =>
+            region.text.trim().length > 0
+            && (!richContent || (region.role !== "content" && region.role !== "option")),
+        )
+        .map((region) =>
+          region.role === "status" || region.tone !== undefined
+            ? semanticStatusLine(region.text, renderer, region.tone)
+            : t`${region.text}`,
+        );
   const chunks = lines.flatMap((line, index) =>
     index === 0 ? line.chunks : [...t`\n`.chunks, ...line.chunks],
   );
@@ -332,37 +345,16 @@ function bannerText(
   renderer: RendererContext,
 ): StyledText {
   const lines = contentRegion(state).split("\n");
-  const hasFullWordmark = OCTOCODE_WORDMARK.every(
-    (line, index) => lines[index] === line,
-  );
   const style = richStyle(renderer);
   const chunks = lines.flatMap((line, row) => {
     const lineChunks =
-      hasFullWordmark && row < OCTOCODE_WORDMARK.length
-        ? [...line].map((character, column) =>
-            character === " "
-              ? t`${character}`.chunks[0]!
-              : fg(octocodeWaveColor(column, row, line.length))(character),
-          )
-        : line === OCTOCODE_COMPACT_MARK
+      line.startsWith(OCTOCODE_COMPACT_MARK)
           ? [
               style.accent === undefined
                 ? bold(t`${line}`.chunks[0]!)
                 : bold(fg(style.accent)(line)),
             ]
-          : line === OCTOCODE_TAGLINE || /^v\d/u.test(line)
-            ? [
-                style.muted === undefined
-                  ? dim(t`${line}`.chunks[0]!)
-                  : fg(style.muted)(line),
-              ]
-            : line === OCTOCODE_BETA_NOTICE
-              ? [
-                  style.warning === undefined
-                    ? bold(t`${line}`.chunks[0]!)
-                    : bold(fg(style.warning)(line)),
-                ]
-              : [t`${line}`.chunks[0]!];
+          : [t`${line}`.chunks[0]!];
     return row === 0 ? lineChunks : [...t`\n`.chunks, ...lineChunks];
   });
   return new StyledText(chunks);
@@ -586,20 +578,30 @@ export class OpenTuiSemanticAdapter implements WidgetRenderAdapter {
         : {}),
     });
     if (state.kind === "status.notifications" && this.statusActionsEnabled) {
-      const statusLines = state.regions.filter(
-        ({ role, text: value }) => role === "status" && value.trim().length > 0,
-      ).length;
-      const itemCount = state.regions.filter(
-        ({ role, text: value }) => role === "option" && value.trim().length > 0,
-      ).length;
+      const optionLines: { readonly index: number; readonly start: number; readonly end: number }[] = [];
+      let lineOffset = 0;
+      let optionIndex = 0;
+      for (const region of state.regions) {
+        if (region.text.trim().length === 0) continue;
+        const lineCount = region.text.split("\n").length;
+        if (region.role === "option") {
+          optionLines.push({
+            index: optionIndex++,
+            start: lineOffset,
+            end: lineOffset + lineCount,
+          });
+        }
+        lineOffset += lineCount;
+      }
       root.onMouse = (event) => {
         if (event.type !== "down") return;
-        const itemIndex = Math.floor(event.y - text.y) - statusLines;
-        if (itemIndex >= 0 && itemIndex < itemCount)
-          this.dispatchStatusItem?.(itemIndex);
+        const line = Math.floor(event.y - text.y);
+        const option = optionLines.find(({ start, end }) => line >= start && line < end);
+        if (option !== undefined) this.dispatchStatusItem?.(option.index);
       };
     }
 
+    root.add(text);
     const richContent = this.alternateOutput
       ? undefined
       : richContentForState(state);
@@ -607,7 +609,6 @@ export class OpenTuiSemanticAdapter implements WidgetRenderAdapter {
       richContent === undefined
         ? undefined
         : mountOpenTuiRichContent(this.renderer, root, richContent, style);
-    root.add(text);
     const control = this.addNativeControl(root, state);
     return {
       revision: state.revision,

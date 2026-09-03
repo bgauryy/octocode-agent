@@ -64,8 +64,8 @@ export const NATIVE_DESIGN_LAYOUT = Object.freeze({
 });
 
 export const NATIVE_DESIGN_CONTENT = Object.freeze({
-  composerPlaceholder: 'Message Octocode Agent…',
-  composerHelp: 'Enter newline · Ctrl/⌘+Enter send · Tab focus · ? shortcuts · Esc cancel',
+  composerPlaceholder: 'What should I work on?',
+  composerHelp: '› Ask Octocode  ·  Enter send · Shift+Enter newline · / commands · @ files',
   activityTab: 'Activity',
   contextTab: 'Context',
   thinking: 'Thinking…',
@@ -75,7 +75,8 @@ export const NATIVE_DESIGN_CONTENT = Object.freeze({
     'Shortcuts',
     'Tab / Shift-Tab  Move focus',
     'Left / Right     Change Activity or Context when its tabs are focused',
-    'Ctrl/⌘+Enter     Send message',
+    'Enter            Send message',
+    'Shift+Enter      Insert newline',
     'Esc              Close overlay or cancel the current action',
     'Ctrl-C           Interrupt active work',
     '?                Close this help',

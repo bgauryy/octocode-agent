@@ -144,6 +144,155 @@ export interface NativeRustCommunicationAbandonedRecord extends NativeRustCoreOb
 }
 export type NativeRustCommunicationAbandonPrefixResult =
   readonly NativeRustCommunicationAbandonedRecord[];
+export type NativeRustWorkerAuthority = NativeRustCoreObject;
+export interface NativeRustWorkerMailboxKey extends NativeRustCoreObject {
+  readonly authority: NativeRustWorkerAuthority;
+  readonly authorityDigest: string;
+  readonly mailboxGeneration: number;
+}
+export type NativeRustWorkerMailboxOpenInput = NativeRustWorkerMailboxKey & {
+  readonly createdAt: number;
+  readonly maxMessages?: number;
+  readonly maxBytes?: number;
+};
+export interface NativeRustWorkerMailboxEnqueueInput extends NativeRustWorkerMailboxKey {
+  readonly messageId: string;
+  readonly sender: string;
+  readonly recipient: string;
+  readonly commandKind: string;
+  readonly lane: "data" | "control";
+  readonly payload: NativeRustCoreObject;
+  readonly payloadDigest: string;
+  readonly availableAt: number;
+  readonly createdAt: number;
+}
+export interface NativeRustWorkerMailboxClaimInput extends NativeRustWorkerMailboxKey {
+  readonly consumerId: string;
+  readonly now: number;
+  readonly leaseMs: number;
+  readonly limit: number;
+}
+export interface NativeRustWorkerMailboxLeaseInput extends NativeRustWorkerMailboxKey {
+  readonly messageId: string;
+  readonly consumerId: string;
+  readonly leaseGeneration: number;
+  readonly now: number;
+}
+export interface NativeRustWorkerMailboxExtendInput extends NativeRustWorkerMailboxLeaseInput {
+  readonly leaseMs: number;
+}
+export interface NativeRustWorkerMailboxSettleInput extends NativeRustWorkerMailboxLeaseInput {
+  readonly outcomeDigest: string;
+  readonly tombstoneExpiresAt: number;
+}
+export interface NativeRustWorkerMailboxTerminalizeInput extends NativeRustWorkerMailboxSettleInput {
+  readonly state: "uncertain" | "dead-lettered";
+}
+export interface NativeRustWorkerMailboxListInput extends NativeRustWorkerMailboxKey {
+  readonly afterSequence: number;
+  readonly limit: number;
+}
+export interface NativeRustWorkerMailboxOpenResult extends NativeRustCoreObject {
+  readonly schemaVersion: 1;
+  readonly mailboxGeneration: number;
+  readonly nextSequence: number;
+  readonly sealed: boolean;
+  readonly idempotent: boolean;
+}
+export type NativeRustWorkerMailboxMutationResult = NativeRustCoreObject & {
+  readonly schemaVersion: 1;
+  readonly messageId: string;
+  readonly state: string;
+  readonly idempotent: boolean;
+  readonly sequence?: number;
+  readonly leaseGeneration?: number;
+  readonly pressure?: NativeRustCoreObject;
+};
+export interface NativeRustWorkerMailboxClaimRecord extends NativeRustCoreObject {
+  readonly schemaVersion: 1;
+  readonly messageId: string;
+  readonly sequence: number;
+  readonly sender: string;
+  readonly recipient: string;
+  readonly commandKind: string;
+  readonly lane: "data" | "control";
+  readonly payload: NativeRustCoreObject;
+  readonly payloadDigest: string;
+  readonly state: "leased";
+  readonly leaseOwner: string;
+  readonly leaseGeneration: number;
+  readonly leaseExpiresAt: number;
+}
+export type NativeRustWorkerMailboxClaimResult = readonly NativeRustWorkerMailboxClaimRecord[];
+export type NativeRustWorkerMailboxListResult = readonly NativeRustCoreObject[];
+
+export interface NativeRustWorkerWorktreeKey extends NativeRustCoreObject {
+  readonly authority: NativeRustWorkerAuthority;
+  readonly authorityDigest: string;
+  readonly worktreeGeneration: number;
+}
+export interface NativeRustWorkerWorktreeReserveInput extends NativeRustWorkerWorktreeKey {
+  readonly repositoryId: string;
+  readonly commonDirId: string;
+  readonly generatedPath: string;
+  readonly baseOid: string;
+  readonly currentHeadOid: string;
+  readonly privateRef: string;
+  readonly gitWorktreeId: string;
+  readonly lockTokenDigest: string;
+  readonly createdAt: number;
+}
+export type NativeRustWorkerWorktreeTransitionInput = NativeRustWorkerWorktreeKey & {
+  readonly expectedState: string;
+  readonly targetState: string;
+  readonly currentHeadOid?: string;
+  readonly lastCleanStatusDigest?: string;
+  readonly updatedAt: number;
+};
+export interface NativeRustWorkerWorktreeMutationResult extends NativeRustCoreObject {
+  readonly schemaVersion: 1;
+  readonly worktreeGeneration: number;
+  readonly state: string;
+  readonly idempotent: boolean;
+}
+export type NativeRustWorkerWorktreeGetResult = NativeRustCoreObject | null;
+
+export interface NativeRustWorkerHandoffKey extends NativeRustWorkerMailboxKey {
+  readonly handoffId: string;
+}
+export interface NativeRustWorkerHandoffOpenInput extends NativeRustWorkerHandoffKey {
+  readonly createdAt: number;
+}
+export interface NativeRustWorkerHandoffGenerationInput extends NativeRustWorkerHandoffKey {
+  readonly expectedGeneration: number;
+  readonly updatedAt: number;
+}
+export interface NativeRustWorkerHandoffTransitionInput extends NativeRustWorkerHandoffGenerationInput {
+  readonly expectedState: string;
+  readonly targetState: string;
+}
+export interface NativeRustWorkerHandoffSettleInput extends NativeRustWorkerHandoffKey {
+  readonly expectedGeneration: number;
+  readonly outcome: NativeRustCoreObject;
+  readonly outcomeDigest: string;
+  readonly receipt: NativeRustCoreObject;
+  readonly receiptDigest: string;
+  readonly settledAt: number;
+}
+export interface NativeRustWorkerHandoffAckInput extends NativeRustWorkerHandoffKey {
+  readonly receiptDigest: string;
+  readonly acknowledgedAt: number;
+}
+export type NativeRustWorkerHandoffMutationResult = NativeRustCoreObject & {
+  readonly schemaVersion: 1;
+  readonly handoffId: string;
+  readonly state?: string;
+  readonly generation?: number;
+  readonly receipt?: NativeRustCoreObject;
+  readonly receiptDigest?: string;
+  readonly acknowledgedAt?: number;
+  readonly idempotent: boolean;
+};
 export interface NativeRustSettingsRecord extends NativeRustCoreObject {
   readonly revision: string;
 }
@@ -558,6 +707,276 @@ function communicationReceipt(
       "Native data core communication receipt is malformed",
     );
   }
+}
+
+const workerAuthorityRequiredKeys = [
+  "schemaVersion",
+  "workerId",
+  "correlationId",
+  "rootAgentId",
+  "parentSessionId",
+  "workspaceId",
+  "workspaceGeneration",
+  "trustRevision",
+  "permissionMode",
+  "capabilityDigest",
+  "effectAdmissionId",
+  "ownershipGeneration",
+] as const;
+const workerAuthorityOptionalKeys = ["planId", "planRevision", "planStepId"] as const;
+
+function validWorkerAuthority(value: unknown): value is NativeRustWorkerAuthority {
+  if (!isObject(value)) return false;
+  const keys = Object.keys(value);
+  if (
+    keys.some(
+      (key) =>
+        !workerAuthorityRequiredKeys.includes(
+          key as (typeof workerAuthorityRequiredKeys)[number],
+        ) &&
+        !workerAuthorityOptionalKeys.includes(
+          key as (typeof workerAuthorityOptionalKeys)[number],
+        ),
+    ) ||
+    workerAuthorityRequiredKeys.some((key) => !keys.includes(key)) ||
+    value["schemaVersion"] !== 1 ||
+    !safeInteger(value["workspaceGeneration"]) ||
+    !safeInteger(value["ownershipGeneration"])
+  )
+    return false;
+  for (const key of [
+    "workerId",
+    "correlationId",
+    "rootAgentId",
+    "parentSessionId",
+    "workspaceId",
+    "trustRevision",
+    "permissionMode",
+    "capabilityDigest",
+    "effectAdmissionId",
+  ])
+    if (!validIdentifier(value[key])) return false;
+  if (value["planId"] !== undefined && !validIdentifier(value["planId"]))
+    return false;
+  if (
+    value["planRevision"] !== undefined &&
+    (!safeInteger(value["planRevision"]) || value["planId"] === undefined)
+  )
+    return false;
+  return !(
+    value["planStepId"] !== undefined &&
+    (!validIdentifier(value["planStepId"]) || value["planId"] === undefined)
+  );
+}
+
+function workerKey(
+  input: NativeRustCoreObject,
+  generationKey: "mailboxGeneration" | "worktreeGeneration",
+): boolean {
+  return (
+    validWorkerAuthority(input["authority"]) &&
+    validIdentifier(input["authorityDigest"]) &&
+    safeInteger(input[generationKey])
+  );
+}
+
+function exactRequiredOptionalKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    required.every((key) => keys.includes(key)) &&
+    keys.every((key) => required.includes(key) || optional.includes(key))
+  );
+}
+
+function assertWorkerInput(
+  input: NativeRustCoreObject,
+  generationKey: "mailboxGeneration" | "worktreeGeneration",
+  required: readonly string[],
+  optional: readonly string[] = [],
+): void {
+  if (
+    !workerKey(input, generationKey) ||
+    !exactRequiredOptionalKeys(input, required, optional)
+  )
+    throw new NativeRustCoreError("validation", "Native worker durability input is malformed");
+}
+
+function workerMailboxOpenResult(
+  value: NativeRustCoreJson,
+): NativeRustWorkerMailboxOpenResult {
+  if (
+    !isObject(value) ||
+    !exactKeys(value, [
+      "schemaVersion",
+      "mailboxGeneration",
+      "nextSequence",
+      "sealed",
+      "idempotent",
+    ]) ||
+    value["schemaVersion"] !== 1 ||
+    !safeInteger(value["mailboxGeneration"]) ||
+    !safeInteger(value["nextSequence"], 1) ||
+    typeof value["sealed"] !== "boolean" ||
+    typeof value["idempotent"] !== "boolean"
+  )
+    throw new NativeRustCoreError("protocol", "Worker mailbox open result is malformed");
+  return value as NativeRustWorkerMailboxOpenResult;
+}
+
+function workerMailboxMutationResult(
+  value: NativeRustCoreJson,
+): NativeRustWorkerMailboxMutationResult {
+  if (!isObject(value))
+    throw new NativeRustCoreError("protocol", "Worker mailbox mutation result is malformed");
+  const keys = Object.keys(value);
+  const allowed = [
+    "schemaVersion",
+    "messageId",
+    "sequence",
+    "state",
+    "idempotent",
+    "leaseGeneration",
+    "pressure",
+  ];
+  if (
+    keys.some((key) => !allowed.includes(key)) ||
+    ![4, 5, 6].includes(keys.length) ||
+    value["schemaVersion"] !== 1 ||
+    !validIdentifier(value["messageId"]) ||
+    !validIdentifier(value["state"]) ||
+    typeof value["idempotent"] !== "boolean" ||
+    (value["sequence"] !== undefined && !safeInteger(value["sequence"], 1)) ||
+    (value["leaseGeneration"] !== undefined &&
+      !safeInteger(value["leaseGeneration"], 1))
+  )
+    throw new NativeRustCoreError("protocol", "Worker mailbox mutation result is malformed");
+  if (value["pressure"] !== undefined) {
+    const pressure = value["pressure"];
+    if (
+      !isObject(pressure) ||
+      !exactKeys(pressure, ["messages", "bytes", "highWater"]) ||
+      !safeInteger(pressure["messages"]) ||
+      !safeInteger(pressure["bytes"]) ||
+      typeof pressure["highWater"] !== "boolean"
+    )
+      throw new NativeRustCoreError("protocol", "Worker mailbox pressure is malformed");
+  }
+  return value as NativeRustWorkerMailboxMutationResult;
+}
+
+function workerMailboxClaimResult(
+  value: NativeRustCoreJson,
+  limit: number,
+): NativeRustWorkerMailboxClaimResult {
+  if (!Array.isArray(value) || value.length > limit)
+    throw new NativeRustCoreError("protocol", "Worker mailbox claim result is malformed");
+  let previous = 0;
+  return value.map((entry) => {
+    if (
+      !isObject(entry) ||
+      !exactKeys(entry, [
+        "schemaVersion","messageId","sequence","sender","recipient","commandKind","lane",
+        "payload","payloadDigest","state","leaseOwner","leaseGeneration","leaseExpiresAt",
+      ]) ||
+      entry["schemaVersion"] !== 1 ||
+      !validIdentifier(entry["messageId"]) ||
+      !safeInteger(entry["sequence"], 1) ||
+      entry["sequence"] <= previous ||
+      !validIdentifier(entry["sender"]) ||
+      !validIdentifier(entry["recipient"]) ||
+      !validIdentifier(entry["commandKind"]) ||
+      !["data", "control"].includes(String(entry["lane"])) ||
+      !isObject(entry["payload"]) ||
+      !validIdentifier(entry["payloadDigest"]) ||
+      entry["state"] !== "leased" ||
+      !validIdentifier(entry["leaseOwner"]) ||
+      !safeInteger(entry["leaseGeneration"], 1) ||
+      !safeInteger(entry["leaseExpiresAt"])
+    )
+      throw new NativeRustCoreError("protocol", "Worker mailbox claim result is malformed");
+    previous = entry["sequence"];
+    return entry as NativeRustWorkerMailboxClaimRecord;
+  });
+}
+
+function workerMailboxListResult(
+  value: NativeRustCoreJson,
+  limit: number,
+): NativeRustWorkerMailboxListResult {
+  if (!Array.isArray(value) || value.length > limit)
+    throw new NativeRustCoreError("protocol", "Worker mailbox list result is malformed");
+  let previous = 0;
+  for (const entry of value) {
+    if (
+      !isObject(entry) ||
+      !exactKeys(entry, [
+        "schemaVersion","messageId","sequence","sender","recipient","commandKind","lane",
+        "payloadDigest","state","leaseGeneration","outcomeDigest","tombstoneExpiresAt",
+      ]) ||
+      entry["schemaVersion"] !== 1 ||
+      !validIdentifier(entry["messageId"]) ||
+      !safeInteger(entry["sequence"], 1) ||
+      entry["sequence"] <= previous ||
+      !validIdentifier(entry["sender"]) ||
+      !validIdentifier(entry["recipient"]) ||
+      !validIdentifier(entry["commandKind"]) ||
+      !["data", "control"].includes(String(entry["lane"])) ||
+      !validIdentifier(entry["payloadDigest"]) ||
+      !validIdentifier(entry["state"]) ||
+      !safeInteger(entry["leaseGeneration"]) ||
+      ![null, "string"].includes(
+        entry["outcomeDigest"] === null ? null : typeof entry["outcomeDigest"],
+      ) ||
+      (entry["tombstoneExpiresAt"] !== null && !safeInteger(entry["tombstoneExpiresAt"]))
+    )
+      throw new NativeRustCoreError("protocol", "Worker mailbox list result is malformed");
+    previous = entry["sequence"];
+  }
+  return value as NativeRustWorkerMailboxListResult;
+}
+
+function workerWorktreeMutationResult(value: NativeRustCoreJson): NativeRustWorkerWorktreeMutationResult {
+  if (!isObject(value) || !exactKeys(value, ["schemaVersion","worktreeGeneration","state","idempotent"])
+    || value["schemaVersion"] !== 1 || !safeInteger(value["worktreeGeneration"])
+    || !validIdentifier(value["state"]) || typeof value["idempotent"] !== "boolean")
+    throw new NativeRustCoreError("protocol", "Worker worktree mutation result is malformed");
+  return value as NativeRustWorkerWorktreeMutationResult;
+}
+
+function workerWorktreeGetResult(value: NativeRustCoreJson): NativeRustWorkerWorktreeGetResult {
+  if (value === null) return null;
+  if (!isObject(value) || !exactKeys(value, ["schemaVersion","worktreeGeneration","repositoryId",
+    "commonDirId","generatedPath","baseOid","currentHeadOid","privateRef","gitWorktreeId",
+    "lockTokenDigest","state","lastCleanStatusDigest"]) || value["schemaVersion"] !== 1
+    || !safeInteger(value["worktreeGeneration"])
+    || !["repositoryId", "commonDirId", "generatedPath", "baseOid", "currentHeadOid",
+      "privateRef", "gitWorktreeId", "lockTokenDigest", "state"].every((key) =>
+      validIdentifier(value[key]))
+    || (value["lastCleanStatusDigest"] !== null && !validIdentifier(value["lastCleanStatusDigest"])))
+    throw new NativeRustCoreError("protocol", "Worker worktree result is malformed");
+  return value as NativeRustCoreObject;
+}
+
+function workerHandoffMutationResult(value: NativeRustCoreJson): NativeRustWorkerHandoffMutationResult {
+  if (!isObject(value))
+    throw new NativeRustCoreError("protocol", "Worker handoff result is malformed");
+  const keys = Object.keys(value);
+  const allowed = ["schemaVersion","handoffId","state","generation","receipt","receiptDigest",
+    "acknowledgedAt","idempotent"];
+  if (keys.some((key) => !allowed.includes(key)) || ![4, 5, 7].includes(keys.length)
+    || value["schemaVersion"] !== 1 || !validIdentifier(value["handoffId"])
+    || typeof value["idempotent"] !== "boolean"
+    || (value["state"] !== undefined && !validIdentifier(value["state"]))
+    || (value["generation"] !== undefined && !safeInteger(value["generation"]))
+    || (value["receipt"] !== undefined && !isObject(value["receipt"]))
+    || (value["receiptDigest"] !== undefined && !validIdentifier(value["receiptDigest"]))
+    || (value["acknowledgedAt"] !== undefined && !safeInteger(value["acknowledgedAt"])))
+    throw new NativeRustCoreError("protocol", "Worker handoff result is malformed");
+  return value as NativeRustWorkerHandoffMutationResult;
 }
 
 function validSchedule(value: unknown): boolean {
@@ -1343,6 +1762,163 @@ export class NativeRustCoreClient {
       await this.#call("communication.abandonPrefix", input, signal),
       input.limit,
     );
+  }
+  async workerMailboxOpen(
+    input: NativeRustWorkerMailboxOpenInput,
+    signal?: AbortSignal,
+  ): Promise<NativeRustWorkerMailboxOpenResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration","createdAt"], ["maxMessages","maxBytes"]);
+    if (!safeInteger(input.createdAt) || (input.maxMessages !== undefined && !safeInteger(input.maxMessages, 1))
+      || (input.maxBytes !== undefined && !safeInteger(input.maxBytes, 1)))
+      throw new NativeRustCoreError("validation", "Worker mailbox open input is malformed");
+    return workerMailboxOpenResult(await this.#call("worker.mailbox.open", input, signal));
+  }
+  async workerMailboxEnqueue(
+    input: NativeRustWorkerMailboxEnqueueInput,
+    signal?: AbortSignal,
+  ): Promise<NativeRustWorkerMailboxMutationResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration",
+      "messageId","sender","recipient","commandKind","lane","payload","payloadDigest","availableAt","createdAt"]);
+    if (![input.messageId,input.sender,input.recipient,input.commandKind,input.payloadDigest].every(validIdentifier)
+      || !["data","control"].includes(input.lane) || !isObject(input.payload)
+      || !safeInteger(input.availableAt) || !safeInteger(input.createdAt))
+      throw new NativeRustCoreError("validation", "Worker mailbox enqueue input is malformed");
+    return workerMailboxMutationResult(await this.#call("worker.mailbox.enqueue", input, signal));
+  }
+  async workerMailboxClaim(
+    input: NativeRustWorkerMailboxClaimInput,
+    signal?: AbortSignal,
+  ): Promise<NativeRustWorkerMailboxClaimResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration",
+      "consumerId","now","leaseMs","limit"]);
+    if (!validIdentifier(input.consumerId) || !safeInteger(input.now) || !safeInteger(input.leaseMs, 1)
+      || input.leaseMs > 86_400_000 || !safeInteger(input.limit, 1) || input.limit > 100)
+      throw new NativeRustCoreError("validation", "Worker mailbox claim input is malformed");
+    return workerMailboxClaimResult(await this.#call("worker.mailbox.claim", input, signal), input.limit);
+  }
+  async workerMailboxExtend(
+    input: NativeRustWorkerMailboxExtendInput,
+    signal?: AbortSignal,
+  ): Promise<NativeRustWorkerMailboxMutationResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration",
+      "messageId","consumerId","leaseGeneration","now","leaseMs"]);
+    if (!validIdentifier(input.messageId) || !validIdentifier(input.consumerId)
+      || !safeInteger(input.leaseGeneration, 1) || !safeInteger(input.now)
+      || !safeInteger(input.leaseMs, 1) || input.leaseMs > 86_400_000)
+      throw new NativeRustCoreError("validation", "Worker mailbox extend input is malformed");
+    return workerMailboxMutationResult(await this.#call("worker.mailbox.extend", input, signal));
+  }
+  async workerMailboxRelease(
+    input: NativeRustWorkerMailboxLeaseInput,
+    signal?: AbortSignal,
+  ): Promise<NativeRustWorkerMailboxMutationResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration",
+      "messageId","consumerId","leaseGeneration","now"]);
+    if (!validIdentifier(input.messageId) || !validIdentifier(input.consumerId)
+      || !safeInteger(input.leaseGeneration, 1) || !safeInteger(input.now))
+      throw new NativeRustCoreError("validation", "Worker mailbox release input is malformed");
+    return workerMailboxMutationResult(await this.#call("worker.mailbox.release", input, signal));
+  }
+  async workerMailboxMarkWritten(
+    input: NativeRustWorkerMailboxLeaseInput,
+    signal?: AbortSignal,
+  ): Promise<NativeRustWorkerMailboxMutationResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration",
+      "messageId","consumerId","leaseGeneration","now"]);
+    if (!validIdentifier(input.messageId) || !validIdentifier(input.consumerId)
+      || !safeInteger(input.leaseGeneration, 1) || !safeInteger(input.now))
+      throw new NativeRustCoreError("validation", "Worker mailbox written input is malformed");
+    return workerMailboxMutationResult(await this.#call("worker.mailbox.markWritten", input, signal));
+  }
+  async workerMailboxAck(
+    input: NativeRustWorkerMailboxSettleInput,
+    signal?: AbortSignal,
+  ): Promise<NativeRustWorkerMailboxMutationResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration",
+      "messageId","consumerId","leaseGeneration","outcomeDigest","now","tombstoneExpiresAt"]);
+    if (!validIdentifier(input.messageId) || !validIdentifier(input.consumerId)
+      || !validIdentifier(input.outcomeDigest) || !safeInteger(input.leaseGeneration, 1)
+      || !safeInteger(input.now) || !safeInteger(input.tombstoneExpiresAt, input.now + 1))
+      throw new NativeRustCoreError("validation", "Worker mailbox acknowledgement input is malformed");
+    return workerMailboxMutationResult(await this.#call("worker.mailbox.ack", input, signal));
+  }
+  async workerMailboxTerminalize(
+    input: NativeRustWorkerMailboxTerminalizeInput,
+    signal?: AbortSignal,
+  ): Promise<NativeRustWorkerMailboxMutationResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration",
+      "messageId","consumerId","leaseGeneration","state","outcomeDigest","now","tombstoneExpiresAt"]);
+    if (!["uncertain","dead-lettered"].includes(input.state) || !validIdentifier(input.messageId)
+      || !validIdentifier(input.consumerId) || !validIdentifier(input.outcomeDigest)
+      || !safeInteger(input.leaseGeneration, 1) || !safeInteger(input.now)
+      || !safeInteger(input.tombstoneExpiresAt, input.now + 1))
+      throw new NativeRustCoreError("validation", "Worker mailbox terminal input is malformed");
+    return workerMailboxMutationResult(await this.#call("worker.mailbox.terminalize", input, signal));
+  }
+  async workerMailboxList(
+    input: NativeRustWorkerMailboxListInput,
+    signal?: AbortSignal,
+  ): Promise<NativeRustWorkerMailboxListResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration","afterSequence","limit"]);
+    if (!safeInteger(input.afterSequence) || !safeInteger(input.limit, 1) || input.limit > 100)
+      throw new NativeRustCoreError("validation", "Worker mailbox list input is malformed");
+    return workerMailboxListResult(await this.#call("worker.mailbox.list", input, signal), input.limit);
+  }
+  async workerWorktreeReserve(input: NativeRustWorkerWorktreeReserveInput, signal?: AbortSignal): Promise<NativeRustWorkerWorktreeMutationResult> {
+    assertWorkerInput(input, "worktreeGeneration", ["authority","authorityDigest","worktreeGeneration",
+      "repositoryId","commonDirId","generatedPath","baseOid","currentHeadOid","privateRef","gitWorktreeId","lockTokenDigest","createdAt"]);
+    if (![input.repositoryId,input.commonDirId,input.generatedPath,input.baseOid,input.currentHeadOid,
+      input.privateRef,input.gitWorktreeId,input.lockTokenDigest].every(validIdentifier) || !safeInteger(input.createdAt))
+      throw new NativeRustCoreError("validation", "Worker worktree reserve input is malformed");
+    return workerWorktreeMutationResult(await this.#call("worker.worktree.reserve", input, signal));
+  }
+  async workerWorktreeGet(input: NativeRustWorkerWorktreeKey, signal?: AbortSignal): Promise<NativeRustWorkerWorktreeGetResult> {
+    assertWorkerInput(input, "worktreeGeneration", ["authority","authorityDigest","worktreeGeneration"]);
+    return workerWorktreeGetResult(await this.#call("worker.worktree.get", input, signal));
+  }
+  async workerWorktreeTransition(input: NativeRustWorkerWorktreeTransitionInput, signal?: AbortSignal): Promise<NativeRustWorkerWorktreeMutationResult> {
+    assertWorkerInput(input, "worktreeGeneration", ["authority","authorityDigest","worktreeGeneration",
+      "expectedState","targetState","updatedAt"], ["currentHeadOid","lastCleanStatusDigest"]);
+    if (!validIdentifier(input.expectedState) || !validIdentifier(input.targetState) || !safeInteger(input.updatedAt)
+      || (input.currentHeadOid !== undefined && !validIdentifier(input.currentHeadOid))
+      || (input.lastCleanStatusDigest !== undefined && !validIdentifier(input.lastCleanStatusDigest)))
+      throw new NativeRustCoreError("validation", "Worker worktree transition input is malformed");
+    return workerWorktreeMutationResult(await this.#call("worker.worktree.transition", input, signal));
+  }
+  async workerHandoffOpen(input: NativeRustWorkerHandoffOpenInput, signal?: AbortSignal): Promise<NativeRustWorkerHandoffMutationResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration","handoffId","createdAt"]);
+    if (!validIdentifier(input.handoffId) || !safeInteger(input.createdAt))
+      throw new NativeRustCoreError("validation", "Worker handoff open input is malformed");
+    return workerHandoffMutationResult(await this.#call("worker.handoff.open", input, signal));
+  }
+  async workerHandoffSeal(input: NativeRustWorkerHandoffGenerationInput, signal?: AbortSignal): Promise<NativeRustWorkerHandoffMutationResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration","handoffId","expectedGeneration","updatedAt"]);
+    if (!validIdentifier(input.handoffId) || !safeInteger(input.expectedGeneration) || !safeInteger(input.updatedAt))
+      throw new NativeRustCoreError("validation", "Worker handoff seal input is malformed");
+    return workerHandoffMutationResult(await this.#call("worker.handoff.seal", input, signal));
+  }
+  async workerHandoffTransition(input: NativeRustWorkerHandoffTransitionInput, signal?: AbortSignal): Promise<NativeRustWorkerHandoffMutationResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration","handoffId",
+      "expectedGeneration","updatedAt","expectedState","targetState"]);
+    if (!validIdentifier(input.handoffId) || !safeInteger(input.expectedGeneration) || !safeInteger(input.updatedAt)
+      || !validIdentifier(input.expectedState) || !validIdentifier(input.targetState))
+      throw new NativeRustCoreError("validation", "Worker handoff transition input is malformed");
+    return workerHandoffMutationResult(await this.#call("worker.handoff.transition", input, signal));
+  }
+  async workerHandoffSettle(input: NativeRustWorkerHandoffSettleInput, signal?: AbortSignal): Promise<NativeRustWorkerHandoffMutationResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration","handoffId",
+      "expectedGeneration","outcome","outcomeDigest","receipt","receiptDigest","settledAt"]);
+    if (!validIdentifier(input.handoffId) || !safeInteger(input.expectedGeneration) || !isObject(input.outcome)
+      || !validIdentifier(input.outcomeDigest) || !isObject(input.receipt) || !validIdentifier(input.receiptDigest)
+      || !safeInteger(input.settledAt))
+      throw new NativeRustCoreError("validation", "Worker handoff settle input is malformed");
+    return workerHandoffMutationResult(await this.#call("worker.handoff.settle", input, signal));
+  }
+  async workerHandoffAck(input: NativeRustWorkerHandoffAckInput, signal?: AbortSignal): Promise<NativeRustWorkerHandoffMutationResult> {
+    assertWorkerInput(input, "mailboxGeneration", ["authority","authorityDigest","mailboxGeneration","handoffId","receiptDigest","acknowledgedAt"]);
+    if (!validIdentifier(input.handoffId) || !validIdentifier(input.receiptDigest) || !safeInteger(input.acknowledgedAt))
+      throw new NativeRustCoreError("validation", "Worker handoff acknowledgement input is malformed");
+    return workerHandoffMutationResult(await this.#call("worker.handoff.ack", input, signal));
   }
   async settingsGet(
     scope: string,

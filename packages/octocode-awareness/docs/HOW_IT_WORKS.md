@@ -6,10 +6,11 @@ receives hook automation, verifies work, records learning,
 and exits or hands off. Command recipes live in [SKILLS.md](SKILLS.md); host wiring
 lives in [HOOKS.md](HOOKS.md); schema detail lives in [DB.md](DB.md).
 
-Awareness is a coordination runtime over one global agent SQLite database. Workspace
-columns isolate repository state inside `$OCTOCODE_HOME/agent/agent.sqlite3`; repository
-`.octocode/` directories are not default agent storage. No server or broker is required.
-See [agent storage](STORAGE_SCOPES.md).
+Awareness is a coordination runtime over an Awareness-only SQLite database. It
+defaults to `<workspace>/.octocode/awareness.sqlite3`; global Awareness scope is
+an explicit opt-in at `$OCTOCODE_HOME/awareness/awareness.sqlite3`. Agent
+databases under `$OCTOCODE_HOME/agent/` have separate ownership and identities.
+No server or broker is required. See [storage scopes](STORAGE_SCOPES.md).
 
 ## Authority chain
 
@@ -18,12 +19,11 @@ Host starts
   -> AGENTS.md / CLAUDE.md        (entry + router; short and always loaded)
   -> Agent Skills                (policy + judgment; loaded when task matches)
   -> Awareness CLI / library     (control plane + executable contracts)
-  `-> $OCTOCODE_HOME/agent/
-       |-> agent.sqlite3         (one OCTA store with module-owned table families)
-       |    |-> plans, tasks, peers, messages, handoffs, locks, checks
-       |    `-> runs, files, verification, signals, refinements, sessions, memory
-       |-> workspaces/ + sessions/ + workers/ + logs/ + temporary artifacts
-       `-> optional repository query exports (read-only, only when requested)
+  `-> <workspace>/.octocode/
+       |-> awareness.sqlite3     (plans, tasks, work, locks, checks, coordination)
+       `-> optional query exports and authored plan documents
+
+$OCTOCODE_HOME/agent/ ----------> separate Agent control/runtime stores and artifacts
 
 Host hooks ---------------------> same package contracts and selected store (edge automation)
 ```
@@ -39,8 +39,9 @@ Each layer has one job:
    guidance when installed separately. Skills do not own live coordination state.
 3. **The Awareness CLI is the only agent-facing control plane for durable Awareness state.**
    It creates and changes plans, tasks, runs, file presence, locks, verification,
-   signals, refinements, sessions, memory, maintenance, and queries (with optional
-   read-only exports). CLI help and JSON schemas own exact flags and payloads.
+   signals, refinements, Awareness-specific session captures, memory,
+   maintenance, and queries (with optional read-only exports). CLI help and JSON
+   schemas own exact flags and payloads.
 4. **Host hooks automate deterministic edges.** They call the same library used by
    the CLI. They can register sessions, declare writes, heartbeat,
    roll back failed writes, finalize fallback runs, deliver changed context, and
@@ -53,8 +54,8 @@ Authority descends from current user instructions and current source/tests, to l
 SQLite state and fresh command evidence, to verified memory/signals, and finally to
 read-only query exports. A lower layer cannot override a higher one.
 
-Rows are isolated by normalized `workspace_path` and optional artifact/repo/ref scope
-inside the global agent database.
+Rows are isolated by normalized `workspace_path` and optional artifact/repo/ref
+scope within the selected Awareness database.
 
 The default agent surface is deliberately small: `attend`, `plan`, `task`, `work`,
 `verify`, `memory`, `signal`, and `query`. `schema commands --compact` groups
@@ -172,7 +173,7 @@ isolated.
 | Signal | publish -> deliver/read/ack -> resolve -> optional prune | Messages are coordination evidence, not authority or a task queue. |
 | Refinement | `open -> ongoing -> done` | Owned repo-fix follow-up; terminal closure requires a check receipt. Session handoffs are broadcast `kind=handoff` signals, not refinements. |
 | Memory | record `ACTIVE` -> supersede/expire/archive -> optional restore or reviewed forget | Recall is a ranked lead; replacement history is immutable. |
-| Session | register/start -> prompts/turns -> compact capture -> shutdown/end | PreCompact preserves the active session; end marks it inactive without success. |
+| Awareness session capture | register/start -> prompts/turns -> compact capture -> shutdown/end | This is coordination context, not an Agent runtime session; PreCompact preserves it and end marks it inactive without success. |
 | Query export | `query --format html/json/csv` writes a read-only `.octocode/` snapshot on request | SQLite is canonical; exports are never auto-generated and never read back as state; authored plan docs are preserved. |
 
 Task, WORK, and HOOK are run origins, not interchangeable queues:

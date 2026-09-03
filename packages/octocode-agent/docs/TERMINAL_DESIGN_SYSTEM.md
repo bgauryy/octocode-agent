@@ -19,6 +19,237 @@ Required actions displace informational content. The composer and action plane r
 visible at every supported terminal size. Activity remains reachable when the wide
 rail collapses.
 
+## Unified implementation contract
+
+This page is the single implementation contract for native terminal experience.
+The widget and workflow documents provide deeper reference material, but they must
+not define competing terminal behavior. When those documents and this page differ,
+update them to point here and follow this contract.
+
+The terminal uses one typed, sanitized semantic model and two projections:
+
+```text
+runtime and session facts
+  -> renderer-neutral semantic events
+  -> deterministic presentation reducer
+     -> OpenTUI visual projection
+     -> append-only accessible and alternate projection
+```
+
+Both projections use the same public identity, state, text, bounds, and redaction.
+The visual projection can use layout, color, and restrained motion. The accessible
+projection is line-oriented, append-only, non-animated, and free of cursor addressing,
+mouse modes, raw input, and alternate-screen control sequences.
+
+### Experience principles
+
+- Lead with the current outcome, required action, or blocker.
+- Use stable cards instead of adding a new line for every progress update.
+- Preserve the first transition, latest useful progress, required action, failure,
+  and terminal result.
+- Use plain labels, consistent field order, and progressive disclosure. Keep raw
+  arguments, opaque payloads, internal IDs, and private paths out of the UI.
+- Make motion optional. Motion never carries unique meaning, blinking is prohibited,
+  and reduced-motion mode renders static state.
+- Prefer demand-driven rendering. Sample replaceable progress at no more than four
+  visual updates per second; required actions and terminal outcomes bypass sampling.
+- Keep the composer, pending action, footer, and failure recovery visible before
+  decorative chrome.
+
+### Lifecycle identity and state
+
+Every replaceable lifecycle entry has the following semantic identity:
+
+```text
+session generation + lifecycle family + stable public operation identity + surface slot
+```
+
+The phase is state, not identity. Internal process IDs, database keys, MCP progress
+tokens, worker routing identities, and tool-call arguments are not public operation
+identities.
+
+Lifecycle state follows one monotonic progression:
+
+```text
+pending -> running -> input required -> succeeded | failed | cancelled | blocked
+```
+
+The reducer enforces these rules:
+
+- The first accepted transition establishes the card and its order.
+- Newer progress replaces intermediate progress and cannot move a counter backward.
+- Required actions, failures, and terminal results are immutable.
+- Progress received after terminal settlement is ignored and remains available only
+  to bounded diagnostics.
+- A session replacement increments the generation and clears entries owned by the
+  previous generation.
+- Cancellation and retry create explicit transitions. A retry never rewrites the
+  settled outcome of an earlier attempt.
+
+### Card anatomy
+
+Every lifecycle card follows the same reading order:
+
+1. Marker and textual state.
+2. Human-readable family and public identity.
+3. Safe action or target.
+4. Latest bounded progress or result.
+5. Required action and safe default, when applicable.
+6. Elapsed time only for running or settled work.
+
+Color, animation, and position can reinforce this order but cannot change it.
+Expanded content remains sanitized and bounded; it never reveals the raw source
+event.
+
+### Skill activity cards
+
+Skill discovery and mutation use a dedicated `skill.activity` semantic card. The
+generic presentation surface and generic tool card are not valid fallbacks for a
+known Skill lifecycle.
+
+The card exposes the following fields in order:
+
+| Field | Contract |
+|---|---|
+| Skill | Bounded public name, or `Catalog` for discovery |
+| Source | `Built in`, `User`, `Workspace`, or another validated public scope |
+| Action | Discover, enable, disable, refresh, install, update, or remove |
+| State | Pending, running, approval required, rejected, completed, failed, or cancelled |
+| Result | Bounded count, revision summary, policy explanation, or safe failure summary |
+
+Discovery bursts use one replaceable card per source scope. Activation,
+deactivation, refresh, policy rejection, completion, and failure remain distinct
+typed states. Every field passes control stripping, credential redaction, bidirectional
+text handling, grapheme-aware bounds, and alternate-output parity checks.
+
+### Session receipts
+
+Create, resume, switch, and fork emit one `session.receipt` only after the durable
+session transition commits. A receipt has a display name and separate short public
+identifier; it never uses a database key as presentation text.
+
+The receipt uses one of these mutually exclusive states:
+
+| State | Meaning |
+|---|---|
+| Fresh | A new session committed without restored history |
+| Resumed empty | A prior session committed with no restored visible messages |
+| Resumed | A prior session committed with visible history and no committed compaction |
+| Resumed compacted | A prior session committed with a committed compaction projection |
+| Recovered partially | Committed state loaded, but the runtime did not restore one or more supported projections |
+| Forked | A new lineage node committed from source state |
+
+Fields appear only when the runtime can prove them. They use `unknown` when omission
+creates ambiguity:
+
+- Restored visible-message count.
+- Retained model-context item count.
+- Current context occupancy and limit.
+- Committed compaction state.
+
+The receipt is row- and grapheme-bounded. It cannot contain storage paths, raw
+session keys, message bodies, model-context bodies, compaction summaries, or private
+recovery detail.
+
+### Notifications and footer
+
+Notifications use the lifecycle identity and reducer rules from this page. A
+replaceable progress update cannot displace a required action, failure, or terminal
+result. Activity preserves bounded sanitized history after the active notification
+settles.
+
+The footer is a deterministic summary, not an event log. When several operations
+overlap, it selects the first applicable state in this order:
+
+1. Approval or other required action.
+2. Failure or blocker.
+3. Compaction.
+4. Session transition.
+5. Resource or Skill discovery.
+6. Trust resolution.
+7. Provider request.
+8. Active worker and tool counts.
+9. Plan progress.
+
+Lower-priority detail remains available in Activity. Session replacement and action
+completion remove stale footer and notification state immediately.
+
+### MCP and worker lifecycle
+
+MCP and worker activity use the same monotonic lifecycle contract and sanitized dual
+projection.
+
+MCP coverage includes discovery, connection, tool start, progress, elicitation,
+cancellation, success, failure, reconnect, and catalog change. Progress is monotonic
+and stops after settlement. Reconnection never presents a possibly committed call as
+automatically replayed.
+
+Worker coverage includes spawn, running progress, addressed message delivery,
+follow-up, steering, graceful cancellation, forced termination, failure, completion,
+and cleanup. Completion racing cancellation settles once. Public cards do not expose
+prompts, capabilities, routing identities, process IDs, or private handback content.
+
+Normalized visual and alternate output must communicate the same public identity,
+state, safe action, bounded result, and required action. Pixel equality is not a
+requirement.
+
+### Input and accessibility
+
+Every pointer handler dispatches the same semantic command as a documented keyboard
+path. Tests compare the resulting intent, focus destination, cancellation behavior,
+and error behavior. No widget creates a keyboard trap.
+
+`--accessible` uses the append-only semantic projection. Status updates do not steal
+focus, animation is disabled, and reading order follows card anatomy. Snapshot tests
+do not substitute for task runs with supported assistive technology.
+
+Sensitive terminal input remains unavailable until one end-to-end contract proves
+all of the following surfaces:
+
+- Terminal echo and raw-mode behavior.
+- Paste, completion, redraw, scrollback, and cancellation.
+- Visual, accessible, transcript, history, log, and diagnostic output.
+- Restoration after normal exit, validation failure, signal, and renderer failure.
+
+Raw mode alone is not a masking contract. Until every surface passes, a sensitive
+input request fails closed with a safe explanation and next action.
+
+### Fault handling and restoration
+
+The native interactive controller is the single shutdown owner. Shutdown is bounded
+and idempotent. Application-owned async work settles or cancels before renderer
+destruction, and renderer destruction runs from `finally` even after initialization
+or presentation failure.
+
+Managed exit scenarios assert the before-and-after state of terminal modes, echo,
+cursor visibility and style, mouse tracking, focus reporting, bracketed paste,
+keyboard mode, color-scheme mode, alternate screen, title, child process groups,
+listeners, timers, and temporary resources. The matrix includes normal exit,
+initialization failure, renderer exception, interrupted stream, resize storm,
+shutdown race, `SIGINT`, and `SIGTERM`.
+
+`SIGKILL` is not catchable. The application does not promise in-process cleanup for
+it; a separate shell or watchdog scenario proves external terminal recovery.
+
+### Completion scenarios
+
+The Terminal UX workstream is complete only when all of the following scenarios have
+executable evidence:
+
+| Area | Required scenario evidence |
+|---|---|
+| Skill activity | Every discovery and mutation state, source scope, secret-shaped field, oversized field, burst, retry, cancellation, and narrow layout |
+| Session receipts | Create, empty resume, ordinary resume, compacted resume, partial recovery, switch, and fork with bounded privacy assertions |
+| Notifications | Two interleaved families, reordered progress, duplicate progress, retry, cancellation race, action preservation, session replacement, and terminal settlement |
+| MCP | Discovery through catalog replacement, including elicitation, cancellation, reconnect, visual output, and accessible output in a real PTY |
+| Workers | Spawn through cleanup, including messages, follow-up, steering, cancellation race, failure, completion, visual output, and accessible output in a real PTY |
+| Footer | Every pairwise priority overlap plus the full simultaneous overlap case |
+| Input | Every pointer action and keyboard equivalent, mouse interaction, focus destination, validation, cancellation, and error outcome |
+| Accessibility | Messages, tools, plans, approvals, workers, errors, resize, and exit as append-only task scenarios plus supported screen-reader runs |
+| Sensitive input | Fail-closed behavior until echo, history, paste, redraw, output, diagnostics, cancellation, and restoration all pass |
+| Faults | Renderer, process, stream, resize, initialization, and shutdown failures with exactly-once cleanup |
+| Restoration | Every managed exit path plus external recovery after uncatchable termination |
+
 ## State ownership
 
 The OpenTUI composition creates one vanilla Zustand store per renderer with two
@@ -113,6 +344,47 @@ matching words in user-visible prose.
 - Large multiline text paste may use a compact view marker. Submission expands the
   retained full text; truncation and compaction are presentation concerns only.
 
+## Event projection
+
+The native runtime projector converts lifecycle events into typed presentation
+events before OpenTUI receives them. The renderer never formats raw runtime event
+payloads directly.
+
+| Lifecycle family | Primary surface | Required user-visible state |
+|---|---|---|
+| Session start, resume, fork, and switch | Footer and notification | Opening, resuming, forking, switching, ready, or failed |
+| Provider request and response | Footer and Activity | Waiting for the model with bounded retry progress, then cleared on response |
+| Resource and trust discovery | Footer and Activity | Discovery or trust resolution in progress, then a bounded completion result |
+| Context usage and compaction | Context rail and footer | Occupancy, percentage remaining, token categories, and compaction phase |
+| Base tool and Octocode calls | Transcript and Activity | Human action, sanitized target, state, and bounded result |
+| MCP calls and Skills | Transcript and Activity | Server or Skill identity, safe operation summary, state, and bounded result |
+| Plans and workers | Dedicated widgets and Activity | Stable public identity, progress, blocking state, and available action |
+| Approvals and questions | Action plane | Exact safe action, supported decisions, and default consequence |
+| Settings and plugin lifecycle | Notification | Fixed bounded completion or failure text without opaque payloads |
+
+Lifecycle status uses a single priority order when several operations overlap:
+compaction, session transition, resource discovery, trust resolution, then provider
+request. Detailed history remains available in Activity; the footer doesn't become
+an event log.
+
+Assistant completion state remains visible. Failed messages use a `Failed` label,
+and interrupted messages use a `Cancelled` label. The projector removes hidden
+thinking text before transcript rendering; only the safe observable phase is
+eligible for display.
+
+Base-tool summaries use these public names:
+
+| Runtime tool | Public name | Summary focus |
+|---|---|---|
+| `file` | Files | Read, write, edit, or delete plus a sanitized path |
+| `bash` | Terminal | Bounded command summary and exit result |
+| `web` | Web | Search, fetch, or batch operation plus a sanitized target |
+| `runFfmpeg` | Media | Inspect or process plus a sanitized media target |
+| `octocode` | Code research | Catalog, schema, call, or parallel research action |
+
+MCP and Skill adapters follow the same rule: derive bounded semantic fields from
+validated input and never fall back to rendering the complete argument object.
+
 ## Interaction rules
 
 - `Tab` and `Shift-Tab` traverse focus.
@@ -136,6 +408,15 @@ matching words in user-visible prose.
 - Content wraps by grapheme. Primary content never requires horizontal scrolling.
 - Alternate output preserves the complete sanitized reading order independently of
   visual clipping.
+
+The detailed Context pane can show input, output, cache-read, and cache-write token
+counts. The compact footer uses the current context occupancy—not cumulative session
+usage—to calculate the percentage remaining.
+
+Session switching is a state replacement, not an append operation. The renderer
+clears the previous transcript and rehydrates the selected session. Resume after
+compaction reconstructs visible history from committed session messages while the
+model receives only the separately retained model context.
 
 ## Acceptance contract
 

@@ -25,11 +25,9 @@ let workspace: string;
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-external-'));
-  process.env.OCTOCODE_AGENT_DB_PATH = join(workspace, 'shared.sqlite3');
 });
 
 afterEach(async () => {
-  delete process.env.OCTOCODE_AGENT_DB_PATH;
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -37,7 +35,7 @@ describe('external-agent integration boundary', () => {
   it('owns the prompt fragment and shared database path', () => {
     expect(EXTERNAL_AGENT_AWARENESS_PROMPT).toContain('<awareness>');
     expect(EXTERNAL_AGENT_AWARENESS_PROMPT).toContain('coordination evidence');
-    expect(defaultDbPath(workspace)).toBe(join(workspace, 'shared.sqlite3'));
+    expect(defaultDbPath(workspace)).toBe(join(workspace, '.octocode', 'awareness.sqlite3'));
   });
 
   it('serves the same agent guidance through the CLI and advertises it in help', () => {

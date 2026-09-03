@@ -31,7 +31,7 @@ npx @octocodeai/octocode-awareness verify mark --agent-id "$OCTOCODE_AGENT_ID" -
 npx @octocodeai/octocode-awareness verify audit --agent-id "$OCTOCODE_AGENT_ID" --workspace "$PWD" --compact
 ```
 
-Durable state uses `$OCTOCODE_HOME/agent/agent.sqlite3`; workspace columns isolate repositories. Use `query <view>` for targeted reads. Hooks use the `coordination` profile by default. Use `--db` only for an explicit isolated path.
+Repository-scoped durable state uses `<workspace>/.octocode/awareness.sqlite3`. Optional global Awareness scope uses `$OCTOCODE_HOME/awareness/awareness.sqlite3`; it never uses the Agent control or runtime databases. Use `query <view>` for targeted reads. Hooks use the `coordination` profile by default. Use `--db` only for an explicit isolated path.
 
 ## Operating rules
 

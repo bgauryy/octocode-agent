@@ -1,17 +1,13 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  closeOctocodeDb,
-  listWorkerLifecycleEvents,
-  agentDbPath,
-  openOctocodeDb,
-} from '@octocodeai/octocode-awareness/mcp-state';
+import { connectDb, listWorkerLifecycleEvents, resolveDbPath } from '@octocodeai/octocode-awareness';
 import { WorkerSupervisor, correlationId, packetId, sessionId, workerId, type WorkerLedgerEntry, type WorkerSpawnPacket } from '@octocodeai/agent-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NativeAwarenessWorkerLedger } from '../src/native-worker-ledger.js';
 import { recoverNativeWorkerOrphans } from '../src/native-worker-recovery.js';
 import { NativeWorkerProcessPort, createNodeNativeWorkerProcessAdapter, type NativeWorkerProcessIdentity } from '../src/native-workers.js';
+import { workerAuthorityFixture } from './worker-authority-fixture.js';
 
 const roots: string[] = [];
 
@@ -25,32 +21,33 @@ describe('native worker restart recovery', () => {
     roots.push(root);
     const workspace = path.join(root, 'workspace');
     fs.mkdirSync(workspace);
-    const env = { OCTOCODE_HOME: path.join(root, 'home') };
-    const ledger = new NativeAwarenessWorkerLedger({ workspace, env, now: () => Date.parse('2026-08-28T12:00:00.000Z') });
+    const ledger = new NativeAwarenessWorkerLedger({ workspace, now: () => Date.parse('2026-08-28T12:00:00.000Z') });
     await ledger.append({
       schemaVersion: 1, type: 'worker.spawn', packetId: packetId('spawn-1'),
       workerId: workerId('worker-1'), correlationId: correlationId('correlation-1'), sessionId: sessionId('session-1'),
+      authority: workerAuthorityFixture({ workerId: workerId('worker-1'), correlationId: correlationId('correlation-1'), sessionId: sessionId('session-1') }),
       redaction: 'sensitive', prompt: 'private prompt', promptSnapshotId: 'prompt-digest', workspace: { mode: 'shared' },
       capabilities: { tools: [], models: [], maxTurns: 1 },
     });
     await ledger.append({
       schemaVersion: 1, type: 'worker.state', packetId: packetId('state-1'),
       workerId: workerId('worker-1'), correlationId: correlationId('correlation-1'), sessionId: sessionId('session-1'),
+      authority: workerAuthorityFixture({ workerId: workerId('worker-1'), correlationId: correlationId('correlation-1'), sessionId: sessionId('session-1') }),
       redaction: 'sensitive', state: 'running',
     });
 
-    const recovered = await recoverNativeWorkerOrphans({ workspace, sessionId: 'session-1', env, now: () => Date.parse('2026-08-28T12:05:00.000Z') });
+    const recovered = await recoverNativeWorkerOrphans({ workspace, sessionId: 'session-1', now: () => Date.parse('2026-08-28T12:05:00.000Z') });
     expect(recovered).toEqual([]);
     expect(JSON.stringify(recovered)).not.toContain('private prompt');
-    expect(await recoverNativeWorkerOrphans({ workspace, sessionId: 'session-1', env })).toEqual([]);
+    expect(await recoverNativeWorkerOrphans({ workspace, sessionId: 'session-1' })).toEqual([]);
 
-    const dbPath = agentDbPath(env);
-    const db = openOctocodeDb(dbPath);
+    const dbPath = resolveDbPath(undefined, { scope: 'repo', workspace });
+    const db = connectDb(dbPath);
     try {
       const events = listWorkerLifecycleEvents(db, { workspace, sessionId: 'session-1', limit: 20 });
       expect(events.map((event) => event.type)).toEqual(['worker.spawn', 'worker.state']);
     } finally {
-      closeOctocodeDb(dbPath);
+      db.close();
     }
   });
 
@@ -59,33 +56,47 @@ describe('native worker restart recovery', () => {
     roots.push(root);
     const workspace = path.join(root, 'workspace');
     fs.mkdirSync(workspace);
-    const env = { OCTOCODE_HOME: path.join(root, 'home') };
-    const ledger = new NativeAwarenessWorkerLedger({ workspace, env });
+    const ledger = new NativeAwarenessWorkerLedger({ workspace });
     await ledger.append({
       schemaVersion: 1, type: 'worker.terminal', packetId: packetId('terminal-1'),
       workerId: workerId('worker-1'), correlationId: correlationId('correlation-1'), sessionId: sessionId('session-1'),
+      authority: workerAuthorityFixture({ workerId: workerId('worker-1'), correlationId: correlationId('correlation-1'), sessionId: sessionId('session-1') }),
       redaction: 'sensitive', outcome: 'succeeded',
     });
-    expect(await recoverNativeWorkerOrphans({ workspace, sessionId: 'session-1', env })).toEqual([]);
+    expect(await recoverNativeWorkerOrphans({ workspace, sessionId: 'session-1' })).toEqual([]);
   });
 
   it('does not signal a reused PID whose durable identity no longer matches', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-worker-recovery-reuse-'));
     roots.push(root);
     const workspace = path.join(root, 'workspace'); fs.mkdirSync(workspace);
-    const env = { OCTOCODE_HOME: path.join(root, 'home') };
-    const ledger = new NativeAwarenessWorkerLedger({ workspace, env });
+    const ledger = new NativeAwarenessWorkerLedger({ workspace });
     const spawn: WorkerSpawnPacket = {
       schemaVersion: 1, type: 'worker.spawn', packetId: packetId('spawn-reuse'), workerId: workerId('worker-reuse'),
       correlationId: correlationId('correlation-reuse'), sessionId: sessionId('session-reuse'), redaction: 'sensitive',
+      authority: workerAuthorityFixture({ workerId: workerId('worker-reuse'), correlationId: correlationId('correlation-reuse'), sessionId: sessionId('session-reuse') }),
       prompt: 'work', promptSnapshotId: 'digest', workspace: { mode: 'shared' }, capabilities: { tools: [], models: [], maxTurns: 1 },
     };
-    const identity: NativeWorkerProcessIdentity = { pid: 4242, startToken: 'old', commandSha256: 'a'.repeat(64), ownershipTokenSha256: 'b'.repeat(64), verification: 'linux-proc' };
+    const identity: NativeWorkerProcessIdentity = {
+      schemaVersion: 1,
+      kind: 'posix-process-group',
+      pid: 4242,
+      processGroupId: 4242,
+      generation: 'generation-old',
+      startToken: 'old',
+      commandSha256: 'a'.repeat(64),
+      ownershipTokenSha256: 'b'.repeat(64),
+      verification: 'linux-proc',
+    };
     await ledger.append(spawn); await ledger.recordProcess(spawn, identity);
     const signal = vi.fn();
     const receipts = await recoverNativeWorkerOrphans({
-      workspace, sessionId: 'session-reuse', env,
-      process: { exists: () => true, signal, probe: () => ({ ...identity, startToken: 'new' }) },
+      workspace, sessionId: 'session-reuse',
+      containment: {
+        signal,
+        report: () => ({ identity, state: 'identity-replaced', members: [identity.pid] }),
+        wait: vi.fn(),
+      },
     });
     expect(signal).not.toHaveBeenCalled();
     expect(receipts).toEqual([expect.objectContaining({ termination: 'identity-replaced' })]);
@@ -95,8 +106,7 @@ describe('native worker restart recovery', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-worker-recovery-real-'));
     roots.push(root);
     const workspace = path.join(root, 'workspace'); fs.mkdirSync(workspace);
-    const env = { OCTOCODE_HOME: path.join(root, 'home') };
-    const durable = new NativeAwarenessWorkerLedger({ workspace, env });
+    const durable = new NativeAwarenessWorkerLedger({ workspace });
     let parentAlive = true;
     let childIdentity: NativeWorkerProcessIdentity | undefined;
     const ledger = { append: async (entry: WorkerLedgerEntry) => { if (parentAlive || entry.type !== 'worker.terminal') await durable.append(entry); } };
@@ -111,15 +121,16 @@ describe('native worker restart recovery', () => {
     const spawn: WorkerSpawnPacket = {
       schemaVersion: 1, type: 'worker.spawn', packetId: packetId('spawn-real'), workerId: workerId('worker-real'),
       correlationId: correlationId('correlation-real'), sessionId: sessionId('session-real'), redaction: 'sensitive',
+      authority: workerAuthorityFixture({ workerId: workerId('worker-real'), correlationId: correlationId('correlation-real'), sessionId: sessionId('session-real') }),
       prompt: 'stay alive', promptSnapshotId: 'digest', workspace: { mode: 'shared' }, capabilities: { tools: [], models: [], maxTurns: 1 },
     };
     await supervisor.spawn(spawn);
-    for (let index = 0; index < 100 && supervisor.status(spawn.workerId)?.state !== 'running'; index += 1) await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(supervisor.status(spawn.workerId)?.state).toBe('running');
+    for (let index = 0; index < 100 && supervisor.status(spawn.workerId, spawn.authority)?.state !== 'running'; index += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(supervisor.status(spawn.workerId, spawn.authority)?.state).toBe('running');
     expect(childIdentity).toBeDefined();
     parentAlive = false;
 
-    const receipts = await recoverNativeWorkerOrphans({ workspace, sessionId: 'session-real', env, termGraceMs: 500, killGraceMs: 500, pollMs: 10 });
+    const receipts = await recoverNativeWorkerOrphans({ workspace, sessionId: 'session-real', termGraceMs: 500, killGraceMs: 500, pollMs: 10 });
     // Under process-heavy suites the child can exit and its PID can be reused before
     // recovery probes it. Identity replacement is the required fail-closed result;
     // the assertion below still proves that the original child is no longer live.
@@ -132,12 +143,13 @@ describe('native worker restart recovery', () => {
       catch { break; }
     }
     expect(() => process.kill(childIdentity!.pid, 0)).toThrow();
-    const db = openOctocodeDb(agentDbPath(env));
+    const dbPath = resolveDbPath(undefined, { scope: 'repo', workspace });
+    const db = connectDb(dbPath);
     try {
       const events = listWorkerLifecycleEvents(db, { workspace, sessionId: 'session-real', limit: 20 });
       expect(events.map((event) => event.type)).toContain('worker.process');
       expect(events.filter((event) => event.type === 'worker.terminal')).toHaveLength(1);
       expect(JSON.stringify(events)).not.toContain('OCTOCODE_WORKER_OWNERSHIP_TOKEN');
-    } finally { closeOctocodeDb(agentDbPath(env)); }
+    } finally { db.close(); }
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "octocode-agent",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Native Octocode coding-agent runtime, transports, OpenTUI terminal, sessions, and settings — one branded command and no native Pi dependency.",
   "keywords": [
     "ai-coding",
@@ -14,10 +14,10 @@
   "homepage": "https://octocode.ai",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bgauryy/octocode-mcp.git",
+    "url": "git+https://github.com/bgauryy/octocode-agent.git",
     "directory": "packages/octocode-agent"
   },
-  "bugs": "https://github.com/bgauryy/octocode-mcp/issues",
+  "bugs": "https://github.com/bgauryy/octocode-agent/issues",
   "license": "MIT",
   "type": "module",
   "bin": "./out/octocode-agent.mjs",
@@ -80,21 +80,22 @@
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
     "test": "vitest run",
     "test:ffi": "node --experimental-ffi ../../node_modules/vitest/vitest.mjs run",
-    "test:opentui:ffi": "node --experimental-ffi ../../node_modules/vitest/vitest.mjs run opentui",
+    "test:opentui:ffi": "node scripts/run-opentui-tests.mjs",
     "test:pack": "node tests/package-install-smoke.mjs",
     "test:pty": "node tests/run-opentui-pty-smoke.mjs",
+    "test:pty:commands": "node tests/opentui-cli-command-smoke.mjs",
     "test:pty:stream": "node tests/run-opentui-pty-smoke.mjs opentui-pty-stream.mjs",
     "test:pty:signals": "node tests/opentui-cli-signal-smoke.mjs",
     "test:performance": "node --experimental-ffi --import tsx tests/opentui-performance.mjs",
     "test:performance:guarded": "OCTOCODE_TUI_MAX_FIRST_RENDER_MS=1000 OCTOCODE_TUI_MAX_STREAM_MS=2000 OCTOCODE_TUI_MAX_RESIZE_MS=1000 OCTOCODE_TUI_MAX_SHUTDOWN_MS=500 OCTOCODE_TUI_MAX_PEAK_RSS_BYTES=1073741824 node --experimental-ffi --import tsx tests/opentui-performance.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "verify": "yarn typecheck && yarn typecheck:tests && yarn test:ffi && yarn build && yarn test:pack && yarn test:pty && yarn test:pty:stream && yarn test:pty:signals && yarn test:performance:guarded",
+    "verify": "yarn typecheck && yarn typecheck:tests && yarn test:ffi && yarn build && yarn test:pack && yarn test:pty && yarn test:pty:commands && yarn test:pty:stream && yarn test:pty:signals && yarn test:performance:guarded",
     "check:no-native-pi": "node scripts/check-no-native-pi.mjs",
     "check:no-workspace": "node scripts/check-no-workspace-protocol.mjs",
     "sync:version:publish": "node scripts/sync-version.mjs",
     "prepack": "node scripts/check-no-workspace-protocol.mjs && yarn workspace @octocodeai/agent-core build && yarn workspace @octocodeai/octocode-shared build && yarn build && yarn check:no-native-pi",
-    "prepublishOnly": "node scripts/check-no-workspace-protocol.mjs"
+    "prepublishOnly": "node scripts/check-publish-native-artifacts.mjs && node scripts/check-no-workspace-protocol.mjs"
   },
   "publishConfig": {
     "access": "public"

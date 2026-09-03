@@ -12,7 +12,7 @@ describe('single-store convergence', () => {
   it('reports both memory modules inside one canonical database', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'store-convergence-'));
     roots.push(workspace);
-    const store = openAwareness({ workspace, dbPath: join(workspace, 'agent.sqlite3') });
+    const store = openAwareness({ workspace, dbPath: join(workspace, 'awareness.sqlite3') });
     const db = new DatabaseSync(store.dbPath);
     try {
       store.storeVerifiedMemory({ label: 'verified', text: 'Use one store', sourceDigest: 'sha256:source' });

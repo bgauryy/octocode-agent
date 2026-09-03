@@ -3,6 +3,7 @@ import {
   packetId,
   type WorkerCommand,
   type WorkerController,
+  type WorkerAuthorityV1,
   type WorkerPacket,
   type WorkerSnapshot,
   type WorkerState,
@@ -65,13 +66,16 @@ export class NativeWorkerOperationsError extends Error {
 
 interface PrivateWorkerBinding {
   readonly snapshot: WorkerSnapshot;
+  readonly authority: WorkerAuthorityV1;
   readonly presentation?: NativeWorkerPresentationMetadata;
 }
 
 export interface NativeWorkerOperationsOptions {
   readonly controller: WorkerController;
   readonly approveForceKill?: NativeForceKillApproval;
-  readonly presentationFor?: (workerId: string) => { readonly planStepId?: string; readonly taskLabel?: string } | undefined;
+  readonly presentationFor?: (workerId: string) => NativeWorkerPresentationMetadata | undefined;
+  /** Host-private authority lookup; authority is never reconstructed from the safe snapshot. */
+  readonly authorityFor: (workerId: string) => WorkerAuthorityV1 | undefined;
   readonly idFactory?: () => string;
   readonly now?: () => number;
 }
@@ -123,6 +127,7 @@ export class NativeWorkerOperationsController {
   readonly #controller: WorkerController;
   readonly #approveForceKill?: NativeForceKillApproval;
   readonly #presentationFor?: NativeWorkerOperationsOptions['presentationFor'];
+  readonly #authorityFor: NativeWorkerOperationsOptions['authorityFor'];
   readonly #idFactory: () => string;
   readonly #now: () => number;
   readonly #bindings = new Map<string, PrivateWorkerBinding>();
@@ -140,6 +145,7 @@ export class NativeWorkerOperationsController {
     this.#controller = options.controller;
     this.#approveForceKill = options.approveForceKill;
     this.#presentationFor = options.presentationFor;
+    this.#authorityFor = options.authorityFor;
     this.#idFactory = options.idFactory ?? randomUUID;
     this.#now = options.now ?? Date.now;
   }
@@ -162,7 +168,7 @@ export class NativeWorkerOperationsController {
     if (binding === undefined) throw new NativeWorkerOperationsError('not-found', `Worker ${id} is not in the current inbox generation`);
 
     if (intent.type === 'inspect') {
-      const value = await this.#execute({ type: 'status', workerId: binding.snapshot.workerId });
+      const value = await this.#execute({ type: 'status', workerId: binding.snapshot.workerId, authority: binding.authority });
       if (value === null) throw new NativeWorkerOperationsError('not-found', `Worker ${id} no longer exists`);
       const updated = this.#binding(normalizeSnapshot(value));
       this.#bindings.set(id, updated);
@@ -178,6 +184,7 @@ export class NativeWorkerOperationsController {
       await this.#execute({
         type: 'abort',
         workerId: binding.snapshot.workerId,
+        authority: binding.authority,
         ...(intent.reason === undefined ? {} : { reason: boundedText(intent.reason, 'reason', MAX_REASON_CHARS) }),
       });
       return this.#refresh();
@@ -196,6 +203,7 @@ export class NativeWorkerOperationsController {
       await this.#execute({
         type: 'kill',
         workerId: binding.snapshot.workerId,
+        authority: binding.authority,
         ...(intent.reason === undefined ? {} : { reason: boundedText(intent.reason, 'reason', MAX_REASON_CHARS) }),
       });
       return this.#refresh();
@@ -212,6 +220,7 @@ export class NativeWorkerOperationsController {
       correlationId: binding.snapshot.correlationId,
       sessionId: binding.snapshot.sessionId,
       redaction: 'internal',
+      authority: binding.authority,
       type: `worker.${intent.type}`,
       text,
     };
@@ -238,9 +247,18 @@ export class NativeWorkerOperationsController {
   }
 
   #binding(snapshot: WorkerSnapshot): PrivateWorkerBinding {
+    const authority = this.#authorityFor(String(snapshot.workerId));
+    if (
+      authority === undefined ||
+      authority.workerId !== snapshot.workerId ||
+      authority.correlationId !== snapshot.correlationId ||
+      authority.parentSessionId !== snapshot.sessionId
+    )
+      throw new NativeWorkerOperationsError('worker-operation', 'Worker authority is unavailable or stale');
     const presentation = this.#presentationFor?.(String(snapshot.workerId));
     return Object.freeze({
       snapshot,
+      authority,
       ...(presentation === undefined ? {} : { presentation: Object.freeze({ ...presentation }) }),
     });
   }

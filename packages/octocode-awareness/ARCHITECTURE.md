@@ -15,16 +15,18 @@ reflection, and recovery for coding agents. It remains independent of
 - `bin/` owns CLI parsing and presentation; domain behavior remains in `src/`.
 - The repository-root `skills/octocode-awareness/` directory is the canonical
   skill source. Package-local and installed mirrors are build output.
-- `@octocodeai/octocode-shared` owns shared database paths, control tables,
-  entities, and cross-host protocol fragments.
+- `@octocodeai/octocode-shared` owns Agent control-database paths and tables,
+  low-level SQLite utilities, shared entity types, and cross-host protocol
+  fragments. Shared types and utilities don't imply shared physical storage.
 
 ## Storage and process boundaries
 
-SQLite is canonical. All durable agent state uses
-`$OCTOCODE_HOME/agent/agent.sqlite3` by default, with logical workspace isolation
-inside that store. An explicit `--db` path creates an isolated override for one
-call. Files under `.octocode/` are plans, exports, and discovery pointers; they
-are not a second live database.
+SQLite is canonical. Repository coordination defaults to
+`<workspace>/.octocode/awareness.sqlite3`; explicit global scope uses
+`$OCTOCODE_HOME/awareness/awareness.sqlite3`. An explicit `--db` path creates an
+isolated override for one call. Agent control and Rust runtime databases remain
+separate under `$OCTOCODE_HOME/agent/`. Other files and databases under
+`.octocode/` retain their own owners.
 The package uses Node's built-in SQLite runtime and has no npm runtime
 dependencies of its own.
 
@@ -35,7 +37,7 @@ CLI, host hook, or in-process adapter
   -> coordination command dispatcher
   -> plans/tasks/work/locks/messages/verification/memory owner
   -> shared SQLite transaction primitives
-  -> one canonical agent database
+  -> the selected Awareness database
   -> compact result or explicit export
 ```
 

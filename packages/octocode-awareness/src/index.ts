@@ -85,6 +85,25 @@ export type {
 } from './memory-hardening.js';
 export { STORE_OWNERSHIP_V1, inspectStoreConvergence } from './store-ownership.js';
 export type { StoreConvergenceReportV1 } from './store-ownership.js';
+export { migrateLegacyMixedAwarenessStore } from './legacy-store-migration.js';
+export type {
+  LegacyStoreMigrationOptions,
+  LegacyStoreMigrationReceipt,
+} from './legacy-store-migration.js';
+export {
+  appendWorkerLifecycleEvent,
+  listWorkerLifecycleEvents,
+  MAX_WORKER_LIFECYCLE_PAYLOAD_BYTES,
+  MAX_WORKER_LIFECYCLE_REPLAY_LIMIT,
+} from './worker-lifecycle-ledger.js';
+export type {
+  AppendWorkerLifecycleEventResult,
+  ListWorkerLifecycleEventsOptions,
+  StoredWorkerLifecycleEvent,
+  WorkerLifecycleEventInput,
+  WorkerLifecycleJsonValue,
+  WorkerLifecycleRedaction,
+} from './worker-lifecycle-ledger.js';
 
 // Memory operations
 export { insertMemory, insertMemoryWithSimilarityGate, getMemory, bumpAccess, lexicalSearch, decayScore, findSimilarMemories, mineWeakness, forgetMemory, storeEmbedding, searchByEmbedding, loadMemoriesByIds } from './memory.js';
@@ -107,7 +126,7 @@ export { createPlan, getPlan, listPlans, joinPlan, registerPlanDocument, updateP
 export type { PlanStatus, PlanRecord, PlanDetail, PlanMemberRecord, PlanDocRecord, CreatePlanParams, JoinPlanParams, RegisterPlanDocParams } from './plans.js';
 export {
   createTask, getTask, listTasks, listReadyTasks, activeTaskClaimForAgent, addTaskDependency,
-  claimTask, heartbeatTaskClaim, submitTask, releaseTaskClaim,
+  claimTask, heartbeatTaskClaim, submitTask, releaseTaskClaim, retryTask,
 } from './tasks.js';
 export type { PlanTaskStatus, PlanTaskRecord, TaskClaimRecord, TaskRunRecord, CreateTaskParams, ClaimTaskResult } from './tasks.js';
 

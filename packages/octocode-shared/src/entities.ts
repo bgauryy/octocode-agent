@@ -6,9 +6,9 @@
  * ONCE and imported by every consumer (Awareness today; open to others).
  * Pure type declarations — no runtime, no dependencies.
  *
- * The shared database hosts both coordination shortcuts and the advanced
- * Awareness workflow. These unions therefore cover every state that can appear
- * in the canonical plans/tasks tables; individual commands may expose subsets.
+ * These are shared cross-host contracts for the Awareness-owned coordination
+ * database. Sharing the TypeScript shapes does not imply shared physical
+ * storage with the Agent control or runtime databases.
  */
 
 export const PLAN_STATUSES = ['OPEN', 'DONE', 'ABANDONED', 'DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED'] as const;

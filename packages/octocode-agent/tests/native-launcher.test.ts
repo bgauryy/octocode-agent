@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
-import { agentDbPath } from "@octocodeai/octocode-awareness/mcp-state";
+import { agentDbPath } from "@octocodeai/octocode-shared/paths";
 import {
   InMemorySessionStore,
   LifecycleBus,
@@ -15,6 +15,7 @@ import {
   sessionEventId,
   sessionId,
   type AgentRuntime,
+  type ModelMessage,
   type ModelPort,
   type ModelRequest,
   type RuntimeEvent,
@@ -49,6 +50,7 @@ import { nativeSessionsDir } from "../src/sessions.js";
 import { readBreadcrumb } from "../src/state.js";
 import { createOpenTuiTerminal } from "../src/terminal/opentui/create-terminal.js";
 import { createNodeNativeFileSystemPort } from "../src/native-file-tool.js";
+import { presentationEvents } from "../src/native-runtime-presentation.js";
 import {
   createInitialPresentationState,
   projectPresentationChrome,
@@ -69,6 +71,103 @@ function fakeRuntime(): AgentRuntime {
 }
 
 describe("native launcher", () => {
+  it("redacts private session names and reports the known context limit in startup receipts", async () => {
+    const cwd = fs.mkdtempSync(
+      path.join(os.tmpdir(), "octocode-native-private-receipt-workspace-"),
+    );
+    const events: RuntimeEvent[] = [];
+    const runtime = await createDefaultNativeRuntime({
+      env: {},
+      cwd,
+      args: parseNativeArgs([
+        "--no-session",
+        "--name",
+        "/Users/private token=secret-value",
+      ]),
+      tools: new ToolRegistry(),
+      model: {
+        run: async () => ({
+          stop: "complete",
+          usage: { inputTokens: 0, outputTokens: 0 },
+        }),
+      },
+    });
+    const detach = runtime.subscribe((event) => events.push(event));
+    try {
+      await runtime.start();
+      const receipt = events.find(({ type }) => type === "session.started");
+      expect(receipt?.payload).toMatchObject({
+        transition: "create",
+        state: "fresh",
+        displayName: "Private session",
+        restoredVisibleMessageCount: 0,
+        retainedModelContextItemCount: 0,
+        contextOccupancy: { used: "unknown" },
+      });
+      expect(JSON.stringify(receipt)).not.toContain("/Users/private");
+      expect(JSON.stringify(receipt)).not.toContain("secret-value");
+    } finally {
+      detach();
+      await runtime.stop();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reports partial recovery only when the durable session store restores a backup", async () => {
+    const home = fs.mkdtempSync(
+      path.join(os.tmpdir(), "octocode-native-recovered-receipt-"),
+    );
+    const cwd = fs.mkdtempSync(
+      path.join(os.tmpdir(), "octocode-native-recovered-receipt-workspace-"),
+    );
+    const env = { OCTOCODE_HOME: home };
+    const model: ModelPort = {
+      run: async () => ({
+        stop: "complete",
+        usage: { inputTokens: 1, outputTokens: 0 },
+      }),
+    };
+    const first = await createDefaultNativeRuntime({
+      env,
+      cwd,
+      args: parseNativeArgs(["--name", "Recovered session"]),
+      tools: new ToolRegistry(),
+      model,
+    });
+    const id = first.snapshot().sessionId;
+    await first.start();
+    await first.submit("newer durable turn");
+    await first.stop();
+
+    const recordPort = new FileSessionRecordPort(nativeSessionsDir(env));
+    expect(fs.existsSync(recordPort.backupPathFor(id))).toBe(true);
+    fs.writeFileSync(recordPort.pathFor(id), "{corrupt-primary");
+
+    const events: RuntimeEvent[] = [];
+    const resumed = await createDefaultNativeRuntime({
+      env,
+      cwd,
+      args: parseNativeArgs(["--session", id]),
+      tools: new ToolRegistry(),
+      model,
+    });
+    const detach = resumed.subscribe((event) => events.push(event));
+    try {
+      await resumed.start();
+      expect(
+        events.find(({ type }) => type === "session.started")?.payload,
+      ).toMatchObject({
+        transition: "resume",
+        state: "recovered-partially",
+      });
+    } finally {
+      detach();
+      await resumed.stop();
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("composes authoritative Octocode catalog cache metrics into monitoring snapshots", async () => {
     resetOctocodeCatalogCacheForTests();
     const home = fs.mkdtempSync(
@@ -734,7 +833,7 @@ describe("native launcher", () => {
     expect(terminal.accept).toHaveBeenCalledWith({
       type: "status-changed",
       name: "awareness.events",
-      text: "queue 2 · ack 7 · accepted 0 · held 1 · refused 0 · errors 0",
+      text: "2 queued · 1 held",
     });
     expect(terminal.accept).toHaveBeenCalledWith({
       type: "status-changed",
@@ -1204,7 +1303,9 @@ describe("native launcher", () => {
     );
     const env = { ...process.env, OCTOCODE_HOME: home };
     const workerProjections: unknown[] = [];
+    const resumedHistories: Array<readonly ModelMessage[]> = [];
     const requests: ModelRequest[] = [];
+    let presentation = createInitialPresentationState();
     const runtime = await createDefaultNativeRuntime({
       env,
       cwd,
@@ -1222,7 +1323,19 @@ describe("native launcher", () => {
       onWorkerProjection: (projection) => {
         workerProjections.push(projection);
       },
+      onResumedMessages: (messages) => {
+        resumedHistories.push(messages);
+        presentation = reducePresentation(presentation, {
+          type: "transcript-cleared",
+        });
+      },
     });
+    const detachPresentation = runtime.subscribe((event) => {
+      for (const semantic of presentationEvents(event)) {
+        presentation = reducePresentation(presentation, semantic);
+      }
+    });
+    await runtime.start();
     const initial = runtime.snapshot().sessionId;
     const created = sessionId("native:created-through-router");
     expect(workerProjections).toHaveLength(1);
@@ -1245,6 +1358,12 @@ describe("native launcher", () => {
     });
     expect(workerProjections).toHaveLength(2);
     expect(workerProjections[1]).not.toBe(workerProjections[0]);
+    expect(presentation.notifications).toContainEqual(
+      expect.objectContaining({
+        severity: "success",
+        message: expect.stringContaining("Created"),
+      }),
+    );
     await runtime.submit("new session turn");
     expect(
       requests
@@ -1276,6 +1395,10 @@ describe("native launcher", () => {
     expect(runtime.snapshot().sessionId).toBe(initial);
     expect(workerProjections).toHaveLength(3);
     expect(new Set(workerProjections).size).toBe(3);
+    expect(resumedHistories.at(-1)).toContainEqual(
+      expect.objectContaining({ role: "user", content: "old session turn" }),
+    );
+    detachPresentation();
     await runtime.stop();
   });
 
@@ -2682,7 +2805,7 @@ describe("native launcher", () => {
         stop: "complete",
         usage: { inputTokens: 3, outputTokens: 2 },
       });
-      emit("context.usage-changed", { inputTokens: 3, outputTokens: 2 });
+      emit("context.usage-changed", { inputTokens: 3, outputTokens: 2, currentContextTokens: 5 });
       emit("turn.ended", { turnId: "turn-1", stop: "complete" });
     });
     runtime.stop = vi.fn(async () => {
@@ -2715,6 +2838,7 @@ describe("native launcher", () => {
           title: "Octocode Agent",
           sessionId: id,
           modelId: "gpt-runtime",
+          permissionMode: "default",
           version: "1.5.0",
           trust: "unknown",
         },
@@ -2726,6 +2850,7 @@ describe("native launcher", () => {
           title: "Octocode Agent",
           sessionId: id,
           modelId: "gpt-runtime",
+          permissionMode: "default",
           version: "1.5.0",
           trust: "trusted",
         },
@@ -2767,7 +2892,8 @@ describe("native launcher", () => {
       {
         type: "notification",
         severity: "success",
-        message: "worker:research-1 · SUCCEEDED",
+        message: "Subagent · SUCCEEDED",
+        key: "worker:dff0a13fe986",
       },
       { type: "turn-started", turnId: "turn-1" },
       {
@@ -2806,6 +2932,7 @@ describe("native launcher", () => {
         name: "fetch",
         message: "stopped",
       },
+      { type: "status-changed", name: "provider" },
       {
         type: "status-changed",
         name: "context.usage",
@@ -2897,6 +3024,7 @@ describe("native launcher", () => {
     }));
     await store.append(id, revision("0"), events);
     const requests: ModelRequest[] = [];
+    let resumedMessages: readonly ModelMessage[] = [];
     const model: ModelPort = {
       run: async (request, context) => {
         requests.push(structuredClone(request));
@@ -2910,7 +3038,15 @@ describe("native launcher", () => {
       args: parseNativeArgs(["--session", id]),
       model,
       tools: new ToolRegistry(),
+      onResumedMessages: (messages) => {
+        resumedMessages = messages;
+      },
     });
+
+    expect(resumedMessages).toEqual([
+      { role: "user", content: "prior question" },
+      { role: "assistant", content: "prior answer" },
+    ]);
 
     expect(readBreadcrumb(home, "%7")).toMatchObject({
       sessionFile: path.join(
@@ -3104,11 +3240,13 @@ describe("native launcher", () => {
     });
 
     const resumedRequests: ModelRequest[] = [];
+    let resumedVisibleMessages: readonly ModelMessage[] = [];
     const resumed = await createDefaultNativeRuntime({
       env,
       cwd,
       args: parseNativeArgs(["--session", id]),
       tools: new ToolRegistry(),
+      onResumedMessages: (messages) => { resumedVisibleMessages = messages; },
       model: {
         run: async (request) => {
           resumedRequests.push(structuredClone(request));
@@ -3130,6 +3268,9 @@ describe("native launcher", () => {
         }),
         expect.objectContaining({ role: "user", content: "after compaction" }),
       ]),
+    );
+    expect(resumedVisibleMessages).toContainEqual(
+      expect.objectContaining({ role: "user", content: "large turn" }),
     );
   });
 

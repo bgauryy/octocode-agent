@@ -151,9 +151,17 @@ export class NativeSessionRuntimeRouter implements AgentRuntime {
   async #replace(previousSessionId: SessionId, projection: SessionProjection, reason: NativeSessionTransitionReason): Promise<RuntimeCommandResult> {
     let next: AgentRuntime | undefined;
     let detachNext: (() => void) | undefined;
+    const pendingEvents: RuntimeEvent[] = [];
+    let committed = false;
     try {
       next = await this.#createRuntime({ sessionId: projection.sessionId, projection, reason, previousSessionId });
-      detachNext = this.#forward(next);
+      detachNext = next.subscribe((event) => {
+        if (!committed) {
+          pendingEvents.push(event);
+          return;
+        }
+        this.#emit(event);
+      });
       if (this.#started) await next.start();
     } catch (error) {
       detachNext?.();
@@ -167,12 +175,30 @@ export class NativeSessionRuntimeRouter implements AgentRuntime {
     this.#active = next;
     this.#detachActive = detachNext;
     await this.#cleanup(previous);
-    this.#onTransition?.({ reason, previousSessionId, sessionId: projection.sessionId });
+    try {
+      this.#onTransition?.({ reason, previousSessionId, sessionId: projection.sessionId });
+    } catch {
+      /* Presentation transition observers cannot change a committed switch. */
+    }
+    committed = true;
+    for (const event of pendingEvents) {
+      this.#emit(event);
+    }
     return { ok: true, data: { sessionId: projection.sessionId, projection } };
   }
 
   #forward(runtime: AgentRuntime): () => void {
-    return runtime.subscribe((event) => { for (const listener of this.#listeners) listener(event); });
+    return runtime.subscribe((event) => this.#emit(event));
+  }
+
+  #emit(event: RuntimeEvent): void {
+    for (const listener of this.#listeners) {
+      try {
+        listener(event);
+      } catch {
+        /* Presentation observers cannot change committed session outcomes. */
+      }
+    }
   }
 
   async #cleanup(runtime: AgentRuntime): Promise<void> {

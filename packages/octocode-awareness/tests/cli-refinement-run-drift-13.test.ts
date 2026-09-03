@@ -33,7 +33,7 @@ describe('refinement CLI drift', () => {
 	beforeAll(() => {
 		root = mkdtempSync(join(tmpdir(), 'oc-refine-'));
 		writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'private-refine', version: '0.0.0', private: true }) + '\n');
-		dbPath = join(root, 'agent.sqlite3');
+		dbPath = join(root, 'awareness.sqlite3');
 	});
 	afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 
@@ -76,7 +76,7 @@ describe('empty run id defense', () => {
 	beforeAll(() => {
 		root = mkdtempSync(join(tmpdir(), 'oc-empty-run-id-'));
 		writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'private-work', version: '0.0.0', private: true }) + '\n');
-		dbPath = join(root, 'agent.sqlite3');
+		dbPath = join(root, 'awareness.sqlite3');
 	});
 	afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 

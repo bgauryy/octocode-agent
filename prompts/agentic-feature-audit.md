@@ -64,7 +64,6 @@ Inspect at minimum:
 - `prompts/cli-context-efficiency.md`
 - `DESIGN/LEFTOVERS.md` for current completion gates and open decisions
 - package architecture and executable contracts for the audited feature
-- dated `DESIGN/pi-coding-agent-removal/evidence/` receipts only when historical comparison matters
 - `packages/octocode-agent/ARCHITECTURE.md` and relevant docs
 - `packages/octocode-agent-core/ARCHITECTURE.md`, contracts, runtime, events, sessions, settings, models, hooks, plugins, workers, and tests
 - `packages/octocode-agent-testing/` conformance utilities and real-host fixtures

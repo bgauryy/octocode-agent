@@ -1,8 +1,9 @@
-# Octocode Awareness User Guide
+# Octocode Awareness user guide
 
-Awareness gives supported coding hosts and custom agents one façade for plans, tasks,
-active file work, exclusive locks, verification, memory, messages, and handoffs. A
-workspace columns isolate repository state inside one global agent database.
+Awareness gives supported coding hosts and custom agents one façade for plans,
+tasks, active file work, exclusive locks, verification, memory, messages, and
+handoffs. The default store is `<workspace>/.octocode/awareness.sqlite3`; it is
+separate from Agent runtime and control databases.
 
 ## Install
 
@@ -34,7 +35,7 @@ Follow `attend.next`. The routine loop is `attend` → `work start` → `work en
 → `verify mark` → `verify audit`; load expert noun inventories only when the next
 action needs them.
 
-## Agent Activation Map
+## Agent activation map
 
 | Surface | Job |
 |---|---|
@@ -67,7 +68,7 @@ judgment, destructive approvals, conflicts, memory truth, and final verification
 | Memory | Reusable verified learning; routine status does not belong here. |
 | Query export | Read-only `.octocode/` snapshot written on request via `query --format html/json/csv`. |
 
-## Operating Loop
+## Use the operating loop
 
 ### 1. Attend and choose
 
@@ -187,7 +188,7 @@ all fields are needed. Correct active facts with `--supersedes`; preview
 `memory forget` before deletion. Lexical FTS is always available. Semantic reranking
 requires `OCTOCODE_EMBED_CMD` and falls back safely when absent.
 
-## Compact Outputs
+## Compact outputs
 
 - `attend --compact` is a bounded lobby, tested at or below 2 KB.
 - Normal edits emit no Awareness context.
@@ -228,7 +229,7 @@ Prompt briefings and handoffs are deduplicated; stop debt is capped.
 
 See [HOOKS.md](HOOKS.md) for host differences.
 
-## Live Queries And Repo Context
+## Live queries and repository context
 
 ```bash
 npx @octocodeai/octocode-awareness query workboard --workspace "$PWD" --format table --limit 3
@@ -239,7 +240,7 @@ npx @octocodeai/octocode-awareness query all --workspace "$PWD" --format html \
 SQLite is canonical. Use `query --format html/json/csv` for snapshot exports. `attend` reports
 current state; `docs staleness` compares authored docs with source edit times.
 
-## Command Discovery
+## Command discovery
 
 Do not copy a static CLI reference into prompts or docs:
 

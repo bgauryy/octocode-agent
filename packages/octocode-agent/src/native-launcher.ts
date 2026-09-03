@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -34,9 +34,14 @@ import {
   type SessionEvent,
   type SessionEventId,
   type SessionId,
+  type SessionProjection,
+  type SessionForkReceiptV1,
+  type SessionStartedReceiptV1,
   type SessionStore,
   type ToolRegistry,
   type WorkerController,
+  type WorkerAuthorityV1,
+  type WorkerLedgerEntry,
   type CheckpointEventIngressPort,
 } from "@octocodeai/agent-core";
 import { NativeRustCoreClient } from "./native-rust-core.js";
@@ -64,6 +69,7 @@ import {
 import { NativeRustWorkerMessageJournal } from "./native-rust-worker-messages.js";
 import { NativeRustWorkDagStore } from "./native-rust-work-dag.js";
 import { NativeWorkerDagScheduler } from "./native-worker-dag-scheduler.js";
+import { createNativeWorkerAuthorityRoot } from "./native-worker-authority.js";
 import {
   NativeWorkerOperationsController,
   type NativeWorkerOperationIntent,
@@ -73,13 +79,10 @@ import {
   NativeRustSessionIndex,
   NativeRustSessionStore,
 } from "./native-rust-data-ports.js";
-import {
-  agentDbPath,
-  closeOctocodeDb,
-  getSkillEnablement,
-  openOctocodeDb,
-  recordSession,
-} from "@octocodeai/octocode-awareness/mcp-state";
+import { closeOctocodeDb, openOctocodeDb } from "@octocodeai/octocode-shared/db";
+import { getSkillEnablement } from "@octocodeai/octocode-shared/mcp-state";
+import { agentDbPath } from "@octocodeai/octocode-shared/paths";
+import { recordSession } from "@octocodeai/octocode-shared/schema";
 import {
   checkLockConflicts,
   type AwarenessEventObservability,
@@ -87,6 +90,11 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import { ensurePrivateDirectory } from "./private-fs.js";
+
+const nativeWorkerAuthorityRegistries = new WeakMap<
+  WorkerController,
+  Map<string, WorkerAuthorityV1>
+>();
 
 export function createNativeAwarenessAutomationExecutor(
   runtime: Pick<AgentRuntime, "execute">,
@@ -245,7 +253,10 @@ import {
   runRpcTransport,
 } from "./native-transports.js";
 import { withNativeSessionCommunication } from "./native-communications.js";
-import { createNativeSessionRuntimeRouter } from "./native-session-router.js";
+import {
+  createNativeSessionRuntimeRouter,
+  type NativeSessionTransitionReason,
+} from "./native-session-router.js";
 import { createRuntimeEventPersister } from "./native-runtime-session-projector.js";
 import { runNativeInteractiveController } from "./native-interactive-controller.js";
 
@@ -255,9 +266,15 @@ import { NativeAwarenessWorkerLedger } from "./native-worker-ledger.js";
 import { registerNativeWorkerTool } from "./native-worker-tool.js";
 import {
   NativeWorkerProcessPort,
-  NativeWorkerWorktreePort,
+  createNodeNativeGitProcessAdapter,
   createNodeNativeWorkerProcessAdapter,
 } from "./native-workers.js";
+import { NativeOwnedWorkerWorktreePort } from "./native-worker-worktrees.js";
+import {
+  NativeRustWorkerHandoffStore,
+  NativeRustWorkerWorktreeStore,
+} from "./native-rust-worker-lifecycle.js";
+import { createNativeWorkerHandoffPort } from "./native-worker-handoff-runtime.js";
 import {
   resolveNativeWorkerDepthPolicy,
   workerCapabilityTools,
@@ -337,10 +354,12 @@ export interface NativeLaunchDependencies {
     interactions: NativeInteractionBroker;
     onPlanSnapshot?: (snapshot: RuntimePlanSnapshot | undefined) => void;
     onAwarenessObservability?: (stats: AwarenessEventObservability) => void;
+    onResumedMessages?: (messages: readonly ModelMessage[]) => void;
     settings: NativeSettingsService;
     extensions: NativeExtensionsController;
     rustCoreClient?: NativeRustCoreClient;
     onWorkerProjection?: (projection: NativeWorkerTransportProjection) => void;
+    onSupplementalRuntimeEvent?: (event: RuntimeEvent) => void;
     onWorkerController?: (controller: WorkerController | undefined) => void;
     onMcpManager?: (manager: NativeMcpSessionManager | undefined) => void;
     authorizeWorkerProjection?: (
@@ -1039,6 +1058,85 @@ function nativePlanInteraction(
   };
 }
 
+function boundedSessionDisplayName(name: string | undefined): string {
+  const normalized = (name ?? "Workspace session")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const containsPrivatePath = /(?:^|[\s("'`])(?:~\/\S+|\/(?!\/)\S+|[A-Za-z]:[\\/]\S+)/u.test(normalized);
+  const containsSecretShape = /(?:\b(?:api[-_ ]?key|access[-_ ]?token|auth(?:orization)?[-_ ]?token|token|secret|password|passwd|credential|private[-_ ]?key)\b\s*(?:=|:)\s*\S+|\bbearer\s+\S+|\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b)/iu.test(normalized);
+  if (containsPrivatePath || containsSecretShape) return "Private session";
+  let safe = "";
+  for (const character of normalized) {
+    if (safe.length + character.length > 120) break;
+    safe += character;
+  }
+  return safe || "Workspace session";
+}
+
+async function canonicalWorkspaceIdentityPath(candidate: string): Promise<string> {
+  try {
+    return await fs.promises.realpath(candidate);
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error as { readonly code?: unknown }).code === "ENOENT"
+    ) {
+      return path.resolve(candidate);
+    }
+    throw error;
+  }
+}
+
+function nativeSessionReceipt(
+  projection: SessionProjection,
+  transition: "create" | "resume" | "switch" | "fork",
+  retainedModelContextItemCount: number,
+  contextLimit: number | null | undefined,
+  recoveredPartially: boolean,
+): SessionStartedReceiptV1 | SessionForkReceiptV1 {
+  const restoredVisibleMessageCount = Math.min(10_000_000, projection.transcript.length);
+  const retainedCount = Math.min(10_000_000, retainedModelContextItemCount);
+  const boundedContextLimit = typeof contextLimit === "number" &&
+      Number.isSafeInteger(contextLimit) &&
+      contextLimit > 0 &&
+      contextLimit <= 10_000_000
+    ? contextLimit
+    : undefined;
+  const facts = {
+    schemaVersion: 1 as const,
+    displayName: boundedSessionDisplayName(projection.name),
+    shortPublicId: createHash("sha256").update(String(projection.sessionId)).digest("hex").slice(0, 8),
+    restoredVisibleMessageCount,
+    retainedModelContextItemCount: retainedCount,
+    contextOccupancy: boundedContextLimit === undefined
+      ? "unknown" as const
+      : { used: "unknown" as const, limit: boundedContextLimit },
+    committedCompaction: projection.compaction === null ? "none" as const : "committed" as const,
+  };
+  if (transition === "fork") return { ...facts, transition, state: "forked" };
+  if (transition === "create") {
+    return {
+      ...facts,
+      transition,
+      state: "fresh",
+      restoredVisibleMessageCount: 0,
+      retainedModelContextItemCount: 0,
+      committedCompaction: "none",
+    };
+  }
+  const state = recoveredPartially
+    ? "recovered-partially" as const
+    : restoredVisibleMessageCount === 0
+      ? "resumed-empty" as const
+      : projection.compaction === null
+        ? "resumed" as const
+        : "resumed-compacted" as const;
+  return { ...facts, transition, state };
+}
+
 export async function createDefaultNativeRuntime(options: {
   env: NodeJS.ProcessEnv;
   cwd: string;
@@ -1048,11 +1146,13 @@ export async function createDefaultNativeRuntime(options: {
   interactions?: NativeInteractionBroker;
   onPlanSnapshot?: (snapshot: RuntimePlanSnapshot | undefined) => void;
   onAwarenessObservability?: (stats: AwarenessEventObservability) => void;
+  onResumedMessages?: (messages: readonly ModelMessage[]) => void;
   contextArtifacts?: NativeContextArtifactSources;
   onContextProjection?: (projection: ContextProjectionV1) => void;
   settings?: NativeSettingsService;
   extensions?: NativeExtensionsController;
   onWorkerProjection?: (projection: NativeWorkerTransportProjection) => void;
+  onSupplementalRuntimeEvent?: (event: RuntimeEvent) => void;
   onWorkerController?: (controller: WorkerController | undefined) => void;
   onMcpManager?: (manager: NativeMcpSessionManager | undefined) => void;
   authorizeWorkerProjection?: (
@@ -1060,6 +1160,8 @@ export async function createDefaultNativeRuntime(options: {
   ) => Promise<boolean>;
   /** Internal recursion guard: build exactly one immutable session runtime. */
   fixedSessionId?: SessionId;
+  /** Internal lifecycle identity for the immutable session runtime. */
+  sessionTransitionReason?: Exclude<NativeSessionTransitionReason, "initial" | "navigate">;
   /** Internal shared process handle for Rust-backed session runtimes. */
   rustCoreClient?: NativeRustCoreClient;
   /** Internal shared filesystem capability for the root runtime and its workers. */
@@ -1116,6 +1218,9 @@ export async function createDefaultNativeRuntime(options: {
                 breadcrumb?.sessionFile,
               ),
     );
+  const initialTransitionReason = options.args.session || options.args.continue
+    ? "resume" as const
+    : "create" as const;
   if (
     options.fixedSessionId === undefined &&
     !options.args.noSession &&
@@ -1142,6 +1247,7 @@ export async function createDefaultNativeRuntime(options: {
         planObserved: boolean;
         awareness?: AwarenessEventObservability;
         automations?: NativeAutomationCommandService;
+        resumedMessages?: readonly ModelMessage[];
       }
     >();
     let routedRuntime: AgentRuntime | undefined;
@@ -1156,6 +1262,8 @@ export async function createDefaultNativeRuntime(options: {
       if (candidate.planObserved) options.onPlanSnapshot?.(candidate.plan);
       if (candidate.awareness !== undefined)
         options.onAwarenessObservability?.(candidate.awareness);
+      if (candidate.resumedMessages !== undefined)
+        options.onResumedMessages?.(candidate.resumedMessages);
       if (candidate.automations !== undefined) {
         options.onAutomationService?.(candidate.automations);
         if (routedRuntime !== undefined) {
@@ -1170,7 +1278,7 @@ export async function createDefaultNativeRuntime(options: {
     const router = await createNativeSessionRuntimeRouter({
       controller,
       initialSessionId: activeSessionId,
-      createRuntime: async ({ sessionId: nextSessionId }) => {
+      createRuntime: async ({ sessionId: nextSessionId, reason }) => {
         const candidate: {
           committed: boolean;
           worker?: NativeWorkerTransportProjection;
@@ -1178,6 +1286,7 @@ export async function createDefaultNativeRuntime(options: {
           planObserved: boolean;
           awareness?: AwarenessEventObservability;
           automations?: NativeAutomationCommandService;
+          resumedMessages?: readonly ModelMessage[];
         } = {
           committed: false,
           planObserved: false,
@@ -1188,6 +1297,11 @@ export async function createDefaultNativeRuntime(options: {
             ...options,
             rustCoreClient,
             fixedSessionId: nextSessionId,
+            sessionTransitionReason: reason === "initial"
+              ? initialTransitionReason
+              : reason === "navigate"
+                ? "switch"
+                : reason,
             args: {
               ...options.args,
               session: String(nextSessionId),
@@ -1206,6 +1320,10 @@ export async function createDefaultNativeRuntime(options: {
               candidate.awareness = stats;
               if (candidate.committed)
                 options.onAwarenessObservability?.(stats);
+            },
+            onResumedMessages: (messages) => {
+              candidate.resumedMessages = messages;
+              if (candidate.committed) options.onResumedMessages?.(messages);
             },
             onAutomationService: (service) => {
               candidate.automations = service;
@@ -1589,9 +1707,13 @@ export async function createDefaultNativeRuntime(options: {
     rustCoreClient,
   );
   let storedRevision = revision("0");
+  let loadedSessionProjection: SessionProjection | undefined;
+  let loadedSessionRecoveredPartially = false;
+  let retainedModelContextItemCount = 0;
   let initialMessages: Parameters<
     typeof createRuntimeKernel
   >[0]["initialMessages"] = [];
+  let resumedMessages: ModelMessage[] = [];
   let initialContextEventIds: string[] = [];
   let initialContextProjectionReceipt: ContextProjectionReceiptV1 | undefined;
   let storedPrompt: NativePromptRecord | undefined;
@@ -1600,6 +1722,8 @@ export async function createDefaultNativeRuntime(options: {
   let activePrompt: NativePromptRecord | undefined;
   try {
     const loaded = await sessions.load(activeSessionId);
+    loadedSessionProjection = loaded.projection;
+    loadedSessionRecoveredPartially = loaded.recoveredPartially === true;
     storedRevision = loaded.projection.revision;
     storedPrompt = [...loaded.projection.customEntries]
       .reverse()
@@ -1639,6 +1763,13 @@ export async function createDefaultNativeRuntime(options: {
         : loaded.projection.modelContext.filter(({ eventId }) =>
             loaded.projection.compaction!.retainedEventIds.includes(eventId),
           );
+    const retainedModelMessages = repairInterruptedToolCalls(
+      retained.map(({ eventId: _eventId, ...message }) => message),
+    );
+    retainedModelContextItemCount = retainedModelMessages.length;
+    resumedMessages = repairInterruptedToolCalls(
+      loaded.projection.modelContext.map(({ eventId: _eventId, ...message }) => message),
+    );
     const assembledContext = await projectContextArtifacts(
       "initial",
       loaded.projection.compaction === null
@@ -1651,9 +1782,7 @@ export async function createDefaultNativeRuntime(options: {
     initialMessages = [
       { role: "system", content: nativePromptContent(activePrompt) },
       ...assembledContext.messages,
-      ...repairInterruptedToolCalls(
-        retained.map(({ eventId: _eventId, ...message }) => message),
-      ),
+      ...retainedModelMessages,
     ];
     initialContextProjectionReceipt = assembledContext.receipt;
     initialContextEventIds = loaded.projection.customEntries
@@ -1667,10 +1796,12 @@ export async function createDefaultNativeRuntime(options: {
           typeof (value as { eventId?: unknown }).eventId === "string",
       )
       .map(({ eventId }) => eventId);
-  } catch {
+  } catch (error) {
     // The transactional store reports corrupt state; do not silently overwrite it.
-    throw new Error(`Unable to load native session ${activeSessionId}`);
+    if (error instanceof RuntimeFailure) throw error;
+    throw new Error(`Unable to load native session ${activeSessionId}`, { cause: error });
   }
+  options.onResumedMessages?.(resumedMessages);
   const expectedWorkerPrompt =
     options.env.OCTOCODE_EXPECTED_PROMPT_SHA256?.trim();
   if (
@@ -1683,21 +1814,37 @@ export async function createDefaultNativeRuntime(options: {
     );
   }
   let workerSupervisor: WorkerSupervisor | undefined;
+  const workerAuthorities = new Map<string, WorkerAuthorityV1>();
   const workerDepthPolicy = resolveNativeWorkerDepthPolicy(options.env);
   if (workerDepthPolicy.canSpawn && options.tools === undefined) {
-    const workerLedger = new NativeAwarenessWorkerLedger({
+    const durableWorkerLedger = new NativeAwarenessWorkerLedger({
       workspace: options.cwd,
-      env: options.env,
     });
+    const workerLedger = {
+      async append(entry: WorkerLedgerEntry): Promise<void> {
+        if (entry.type === "worker.spawn")
+          workerAuthorities.set(String(entry.workerId), entry.authority);
+        await durableWorkerLedger.append(entry);
+      },
+      recordProcess: (
+        ...args: Parameters<NativeAwarenessWorkerLedger["recordProcess"]>
+      ) => durableWorkerLedger.recordProcess(...args),
+    };
     const workerMessageJournal =
       rustCoreClient === undefined
         ? undefined
         : new NativeRustWorkerMessageJournal(rustCoreClient);
+    const workerHandoff =
+      rustCoreClient === undefined || workerMessageJournal === undefined
+        ? undefined
+        : createNativeWorkerHandoffPort({
+            store: new NativeRustWorkerHandoffStore(rustCoreClient),
+            journal: workerMessageJournal,
+          });
     if (!options.args.noSession) {
       await recoverNativeWorkerOrphans({
         workspace: options.cwd,
         sessionId: String(activeSessionId),
-        env: options.env,
       });
       await workerMessageJournal?.abandonSession(String(activeSessionId));
     }
@@ -1733,7 +1880,8 @@ export async function createDefaultNativeRuntime(options: {
         argvPrefix: [entry],
         cwd: options.cwd,
         env: options.env,
-        parentAgentId: options.env.OCTOCODE_AGENT_ID,
+        parentAgentId:
+          options.env.OCTOCODE_AGENT_ID?.trim() || `native:${activeSessionId}`,
         workerDepth: workerDepthPolicy.depth,
         maxWorkerDepth: workerDepthPolicy.maxDepth,
         worktreesRoot: workerWorktreesRoot,
@@ -1742,6 +1890,7 @@ export async function createDefaultNativeRuntime(options: {
         ...(workerMessageJournal === undefined
           ? {}
           : { messageJournal: workerMessageJournal }),
+        ...(workerHandoff === undefined ? {} : { handoff: workerHandoff }),
         ...(options.workerCustomization === undefined
           ? {}
           : { workerCustomization: options.workerCustomization }),
@@ -1758,10 +1907,16 @@ export async function createDefaultNativeRuntime(options: {
             }),
       }),
       ledger: workerLedger,
-      worktrees: new NativeWorkerWorktreePort({
-        repositoryRoot: options.cwd,
-        worktreesRoot: workerWorktreesRoot,
-      }),
+      ...(rustCoreClient === undefined
+        ? {}
+        : {
+            worktrees: new NativeOwnedWorkerWorktreePort({
+              repositoryRoot: options.cwd,
+              worktreesRoot: workerWorktreesRoot,
+              store: new NativeRustWorkerWorktreeStore(rustCoreClient),
+              git: createNodeNativeGitProcessAdapter(),
+            }),
+          }),
       maxActive: workerDepthPolicy.maxActive,
       onProgress: async (progress) => emitWorkerProgress?.(progress),
       onStarted: async (snapshot) =>
@@ -1783,6 +1938,7 @@ export async function createDefaultNativeRuntime(options: {
         });
       },
     });
+    nativeWorkerAuthorityRegistries.set(workerSupervisor, workerAuthorities);
     options.onWorkerProjection?.(
       new NativeWorkerTransportProjection(workerSupervisor, {
         activeSessionId,
@@ -1791,6 +1947,13 @@ export async function createDefaultNativeRuntime(options: {
           tools: availableTools,
           models: [{ providerId, modelId: effectiveModel }],
           maxTurns: 16,
+        },
+        resolveAuthority: ({ sessionId, workerId, correlationId }) => {
+          const authority = workerAuthorities.get(String(workerId));
+          return authority?.parentSessionId === sessionId &&
+            authority.correlationId === correlationId
+            ? authority
+            : undefined;
         },
         authorize: async ({ command }) => {
           if (workspaceTrust !== "trusted") return false;
@@ -1828,7 +1991,22 @@ export async function createDefaultNativeRuntime(options: {
       allowedModels: [{ providerId, modelId: effectiveModel }],
       defaultModel: { providerId, modelId: effectiveModel },
       defaultMaxTurns: 16,
-      allowWorktree: true,
+      allowWorktree: rustCoreClient !== undefined,
+      ...(rustCoreClient === undefined
+        ? {}
+        : {
+            resolveWorktree: ({ workerId, sessionId, baseRevision }) => ({
+              mode: "worktree" as const,
+              path: path.join(
+                workerWorktreesRoot,
+                `requested-${createHash("sha256")
+                  .update(`${sessionId}\0${workerId}`)
+                  .digest("hex")
+                  .slice(0, 24)}`,
+              ),
+              baseRevision,
+            }),
+          }),
       planOwnership,
       ...(dependencyWork === undefined
         ? {}
@@ -1998,7 +2176,7 @@ export async function createDefaultNativeRuntime(options: {
     type: TType,
     payload: RuntimeEventPayload<TType>,
   ): Promise<void> => {
-    await persistRuntimeEvent({
+    const runtimeEvent = {
       schemaVersion: 1,
       eventVersion: 1,
       id: eventId(`native:${type}:${randomUUID()}`),
@@ -2012,7 +2190,9 @@ export async function createDefaultNativeRuntime(options: {
       model: { providerId, modelId: effectiveModel },
       trust: { workspace: workspaceTrust, managedOnly: false },
       payload,
-    } as RuntimeEvent);
+    } as RuntimeEvent;
+    await persistRuntimeEvent(runtimeEvent);
+    options.onSupplementalRuntimeEvent?.(runtimeEvent);
   };
   emitWorkerStarted = async (payload) =>
     persistWorkerLifecycle("worker.started", payload);
@@ -2168,8 +2348,39 @@ export async function createDefaultNativeRuntime(options: {
             },
           },
   });
+  const revisionGeneration = Number.parseInt(String(storedRevision), 10);
+  if (!Number.isSafeInteger(revisionGeneration) || revisionGeneration < 0)
+    throw new RuntimeFailure(
+      "persistence",
+      "Session revision cannot fence worker ownership",
+    );
+  const workerAuthorityRoot = await createNativeWorkerAuthorityRoot({
+    rootAgentId:
+      options.env.OCTOCODE_AGENT_ID?.trim() || `native:${activeSessionId}`,
+    workspaceRoot: options.cwd,
+    workspaceGeneration: Number.parseInt(
+      createHash("sha256")
+        .update(`${await canonicalWorkspaceIdentityPath(options.cwd)}\0${activeSessionId}`)
+        .digest("hex")
+        .slice(0, 12),
+      16,
+    ),
+    ownershipGeneration: revisionGeneration + 1,
+    canonicalizePath: canonicalWorkspaceIdentityPath,
+  });
   const runtime = createRuntimeKernel({
     sessionId: activeSessionId,
+    initialSessionReceipt: nativeSessionReceipt(
+      {
+        ...loadedSessionProjection!,
+        ...(options.args.name === undefined ? {} : { name: options.args.name }),
+      },
+      options.sessionTransitionReason ??
+        (String(loadedSessionProjection!.revision) === "0" ? "create" : "resume"),
+      retainedModelContextItemCount,
+      selectedModelLimits.context ?? undefined,
+      loadedSessionRecoveredPartially,
+    ),
     createTurnId: () => turnId(`turn:${randomUUID()}`),
     effectLedger:
       rustCoreClient === undefined
@@ -2184,12 +2395,12 @@ export async function createDefaultNativeRuntime(options: {
       : { maxIterations: workerCapabilities.maxTurns }),
     mode: runtimeMode,
     permissionMode: options.args.permissionMode,
+    workerAuthorityRoot,
     outputFormat: options.args.outputFormat,
     trust: { workspace: workspaceTrust, managedOnly: false },
     checkPeerLocks: async (targets) =>
       checkLockConflicts({
         workspace: options.cwd,
-        dbPath: agentDbPath(options.env),
         agentId:
           options.env.OCTOCODE_AGENT_ID?.trim() || `native:${process.pid}`,
         files: [...targets],
@@ -2356,7 +2567,14 @@ function nativeAwarenessStatus(
     stats.drainRefused > 0 ||
     stats.drainErrors > 0;
   if (!attention) return undefined;
-  return `queue ${stats.backlogDepth}${stats.backlogCapped ? "+" : ""} · ack ${stats.lastAcknowledgedSequence} · accepted ${stats.drainAccepted} · held ${stats.drainHeld} · refused ${stats.drainRefused} · errors ${stats.drainErrors}`;
+  return [
+    stats.backlogDepth > 0
+      ? `${stats.backlogDepth}${stats.backlogCapped ? "+" : ""} queued`
+      : undefined,
+    stats.drainHeld > 0 ? `${stats.drainHeld} held` : undefined,
+    stats.drainRefused > 0 ? `${stats.drainRefused} refused` : undefined,
+    stats.drainErrors > 0 ? `${stats.drainErrors} errors` : undefined,
+  ].filter((value): value is string => value !== undefined).join(" · ");
 }
 
 export function nativeEffectAllowed(
@@ -2587,6 +2805,11 @@ async function launchNativeAgentImplementation(
   let currentPlanSnapshot: RuntimePlanSnapshot | undefined;
   let planSnapshotObserved = false;
   let currentAwarenessObservability: AwarenessEventObservability | undefined;
+  let resumedMessages: readonly ModelMessage[] = [];
+  const resumedMessageListeners = new Set<(messages: readonly ModelMessage[]) => void>();
+  const supplementalRuntimeEventListeners = new Set<
+    (event: RuntimeEvent) => void
+  >();
   let presentAwarenessObservability:
     ((stats: AwarenessEventObservability) => void) | undefined;
   let workerProjection: NativeWorkerTransportProjection | undefined;
@@ -2611,6 +2834,9 @@ async function launchNativeAgentImplementation(
       onWorkerProjection: (projection) => {
         workerProjection = projection;
       },
+      onSupplementalRuntimeEvent: (event) => {
+        for (const listener of supplementalRuntimeEventListeners) listener(event);
+      },
       onWorkerController: (controller) => {
         workerController = controller;
       },
@@ -2624,6 +2850,10 @@ async function launchNativeAgentImplementation(
           }),
       ...(args.mode === "interactive"
         ? {
+            onResumedMessages: (messages: readonly ModelMessage[]) => {
+              resumedMessages = messages;
+              for (const listener of resumedMessageListeners) listener(messages);
+            },
             onPlanSnapshot: (snapshot: RuntimePlanSnapshot | undefined) => {
               planSnapshotObserved = true;
               currentPlanSnapshot = snapshot;
@@ -2682,8 +2912,10 @@ async function launchNativeAgentImplementation(
       : createNativeImageInputResolver({ cwd, fileSystem: rustFileSystem });
     const workerOperations = workerController === undefined
       ? undefined
-      : new NativeWorkerOperationsController({
+        : new NativeWorkerOperationsController({
           controller: workerController,
+          authorityFor: (workerId) =>
+            nativeWorkerAuthorityRegistries.get(workerController!)?.get(workerId),
           approveForceKill: async ({ workerId, state, consequence }) => {
             if (workspaceTrust !== "trusted") return false;
             const response = await interactions.interact(
@@ -2779,9 +3011,9 @@ async function launchNativeAgentImplementation(
           }),
         });
     const selectedInteractiveModel = runtime.snapshot().model;
-    const thinkingSupported =
-      selectedInteractiveModel != null &&
-      resolveNativeModelConfiguration({
+    const interactiveModelConfiguration = selectedInteractiveModel == null
+      ? undefined
+      : resolveNativeModelConfiguration({
         env,
         configuredProvider: selectedInteractiveModel.providerId,
         configuredModel: selectedInteractiveModel.modelId,
@@ -2791,7 +3023,16 @@ async function launchNativeAgentImplementation(
         home: env.HOME ?? path.dirname(getOctocodeHome(env)),
         octocodeHome: getOctocodeHome(env),
         workspaceTrusted: workspaceTrust === "trusted",
-      }).protocol === "anthropic-messages";
+      });
+    const thinkingSupported =
+      interactiveModelConfiguration?.protocol === "anthropic-messages";
+    const contextLimit = selectedInteractiveModel == null
+      ? undefined
+      : interactiveModelConfiguration?.catalog.models.find(
+          ({ providerId, id }) =>
+            providerId === selectedInteractiveModel.providerId &&
+            id === selectedInteractiveModel.modelId,
+        )?.limits.context;
     return await runNativeInteractiveController({
       runtime,
       terminal,
@@ -2804,6 +3045,15 @@ async function launchNativeAgentImplementation(
         ? {}
         : { createLineReader: dependencies.createLineReader }),
       currentPlan: () => currentPlanSnapshot,
+      resumedMessages,
+      subscribeResumedMessages: (listener) => {
+        resumedMessageListeners.add(listener);
+        return () => resumedMessageListeners.delete(listener);
+      },
+      subscribeSupplementalRuntimeEvents: (listener) => {
+        supplementalRuntimeEventListeners.add(listener);
+        return () => supplementalRuntimeEventListeners.delete(listener);
+      },
       ...(workerOperations === undefined ? {} : { workerOperations }),
       skills: () => {
         const dbFile = agentDbPath(env);
@@ -2827,6 +3077,8 @@ async function launchNativeAgentImplementation(
         : { signalSource: dependencies.signalSource }),
       settingsPage,
       thinkingSupported,
+      permissionMode: args.permissionMode,
+      ...(typeof contextLimit === "number" ? { contextLimit } : {}),
       ...(dependencies.version === undefined
         ? {}
         : { version: dependencies.version }),

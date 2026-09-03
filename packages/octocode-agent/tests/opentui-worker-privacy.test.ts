@@ -35,11 +35,7 @@ describe("WorkerProgressWidget privacy boundary", () => {
     const alternate = widget.toPlainText();
     const publicOutput = `${visual}\n${alternate}`;
 
-    expect(widget.render().regions.map(({ id }) => id)).toEqual([
-      "state",
-      "identity",
-      "elapsed",
-    ]);
+    expect(widget.render().regions.map(({ id }) => id)).toEqual(["summary"]);
     expect(publicOutput).toContain("researcher");
     expect(publicOutput).toContain("RUNNING");
     expect(publicOutput).toContain("42s");

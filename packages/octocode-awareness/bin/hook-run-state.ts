@@ -48,14 +48,14 @@ export function withHookDbRetry<T>(operation: () => T): T {
   }
 }
 
-export function hookRunStateDir(): string {
-  const stateDir = join(dirname(resolveDbPath(null)), 'hook-state', 'runs');
+export function hookRunStateDir(workspacePath = process.cwd()): string {
+  const stateDir = join(dirname(resolveDbPath(null, { scope: 'repo', workspace: workspacePath })), 'hook-state', 'runs');
   mkdirSync(stateDir, { recursive: true });
   return stateDir;
 }
 
-export function hookRunStateFile(key: string): string {
-  return join(hookRunStateDir(), `${key}.json`);
+export function hookRunStateFile(key: string, workspacePath = process.cwd()): string {
+  return join(hookRunStateDir(workspacePath), `${key}.json`);
 }
 
 export function processIsAlive(pid: number): boolean {
@@ -85,8 +85,8 @@ export function removeStaleHookRunStateLock(lockFile: string): boolean {
   }
 }
 
-export function withHookRunStateLock<T>(key: string, operation: () => T): T {
-  const lockFile = `${hookRunStateFile(key)}.lock`;
+export function withHookRunStateLock<T>(key: string, operation: () => T, workspacePath = process.cwd()): T {
+  const lockFile = `${hookRunStateFile(key, workspacePath)}.lock`;
   const deadline = Date.now() + HOOK_RUN_STATE_LOCK_TIMEOUT_MS;
   for (;;) {
     try {
@@ -114,9 +114,9 @@ export function withHookRunStateLock<T>(key: string, operation: () => T): T {
   }
 }
 
-export function readHookRunEntries(key: string): HookRunStateEntry[] {
+export function readHookRunEntries(key: string, workspacePath = process.cwd()): HookRunStateEntry[] {
   try {
-    const parsed = JSON.parse(readFileSync(hookRunStateFile(key), 'utf8')) as unknown;
+    const parsed = JSON.parse(readFileSync(hookRunStateFile(key, workspacePath), 'utf8')) as unknown;
     if (!Array.isArray(parsed)) return [];
     const cutoff = Date.now() - HOOK_RUN_STATE_TTL_MS;
     return parsed.filter((entry): entry is HookRunStateEntry => {
@@ -135,8 +135,8 @@ export function readHookRunEntries(key: string): HookRunStateEntry[] {
   }
 }
 
-export function writeHookRunEntries(key: string, entries: HookRunStateEntry[]): void {
-  const file = hookRunStateFile(key);
+export function writeHookRunEntries(key: string, entries: HookRunStateEntry[], workspacePath = process.cwd()): void {
+  const file = hookRunStateFile(key, workspacePath);
   if (entries.length === 0) {
     try { unlinkSync(file); } catch { /* already absent */ }
     return;
@@ -251,7 +251,7 @@ export function startOrAttachFallbackHookRun(
     return result;
   };
   const lockKey = hookAggregateLockKey(payload, cwd);
-  return lockKey ? withHookRunStateLock(lockKey, startOrAttach) : startOrAttach();
+  return lockKey ? withHookRunStateLock(lockKey, startOrAttach, cwd) : startOrAttach();
 }
 
 export function refreshFallbackVerificationPlan(
@@ -301,14 +301,14 @@ export function finalizeActiveFallbackHookRuns(
 export function recordHookRun(payload: Record<string, unknown>, files: string[], cwd: string, runId: string): void {
   const key = hookRunKey(payload, files, cwd);
   withHookRunStateLock(key, () => {
-    const entries = readHookRunEntries(key);
+    const entries = readHookRunEntries(key, cwd);
     entries.push({
       runId,
       files: files.map(file => resolveHookPath(file, cwd)),
       createdAt: new Date().toISOString(),
     });
-    writeHookRunEntries(key, entries.slice(-20));
-  });
+    writeHookRunEntries(key, entries.slice(-20), cwd);
+  }, cwd);
 }
 
 export function consumeHookRun(
@@ -319,7 +319,7 @@ export function consumeHookRun(
 ): string | null {
   const key = hookRunKey(payload, files, cwd);
   return withHookRunStateLock(key, () => {
-    const entries = readHookRunEntries(key);
+    const entries = readHookRunEntries(key, cwd);
     const activeEntries = entries.filter((entry) => {
       const activeFiles = new Set(listWork(database, {
         agentId: agentId(payload),
@@ -333,9 +333,9 @@ export function consumeHookRun(
     // Newest-first avoids a previously abandoned same-key event consuming the
     // post-edit for a later retry. Other live entries stay queued.
     const entry = activeEntries.pop() ?? null;
-    writeHookRunEntries(key, activeEntries);
+    writeHookRunEntries(key, activeEntries, cwd);
     return entry?.runId ?? null;
-  });
+  }, cwd);
 }
 
 export function activeRunForFiles(

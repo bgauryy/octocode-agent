@@ -10,13 +10,11 @@ let aw: AwarenessStore;
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-read-'));
-  process.env.OCTOCODE_AGENT_DB_PATH = join(workspace, 'agent.sqlite3');
   aw = openAwarenessStore({ workspace });
 });
 
 afterEach(async () => {
   aw.close();
-  delete process.env.OCTOCODE_AGENT_DB_PATH;
   await rm(workspace, { recursive: true, force: true });
 });
 

@@ -19,6 +19,8 @@ export interface WorkerProgressSnapshot {
   readonly maxActive?: number;
   readonly planStepId?: string;
   readonly taskLabel?: string;
+  readonly listPosition?: number;
+  readonly listTotal?: number;
   readonly startedAtMs: number;
   readonly updatedAtMs: number;
 }
@@ -54,6 +56,16 @@ function normalize(snapshot: WorkerProgressSnapshot): WorkerProgressSnapshot {
   ) {
     throw new Error("worker progress timestamps are invalid");
   }
+  if (
+    (snapshot.listPosition === undefined) !== (snapshot.listTotal === undefined) ||
+    (snapshot.listPosition !== undefined &&
+      (!Number.isSafeInteger(snapshot.listPosition) ||
+        !Number.isSafeInteger(snapshot.listTotal) ||
+        snapshot.listPosition < 1 ||
+        snapshot.listTotal! < snapshot.listPosition))
+  ) {
+    throw new Error("worker list position is invalid");
+  }
   return Object.freeze({
     authority: "runtime",
     workerId: safeLabel(snapshot.workerId, "worker id"),
@@ -63,6 +75,9 @@ function normalize(snapshot: WorkerProgressSnapshot): WorkerProgressSnapshot {
     state: snapshot.state,
     startedAtMs: snapshot.startedAtMs,
     updatedAtMs: snapshot.updatedAtMs,
+    ...(snapshot.listPosition === undefined
+      ? {}
+      : { listPosition: snapshot.listPosition, listTotal: snapshot.listTotal }),
   });
 }
 
@@ -92,6 +107,7 @@ function duration(startedAtMs: number, updatedAtMs: number): string {
 
 export class WorkerProgressWidget extends OpenTuiWidget {
   private snapshot: WorkerProgressSnapshot;
+  private readonly announcements: string[] = [];
 
   constructor(id: string, initial: WorkerProgressSnapshot) {
     super({
@@ -130,14 +146,23 @@ export class WorkerProgressWidget extends OpenTuiWidget {
       },
     });
     this.snapshot = normalize(initial);
+    this.announcements.push(this.toPlainText());
   }
 
   update(next: WorkerProgressSnapshot): void {
     const normalized = normalize(next);
     if (normalized.workerId !== this.snapshot.workerId)
       throw new Error("worker id cannot change");
+    const stateChanged = normalized.state !== this.snapshot.state;
     this.snapshot = normalized;
+    if (stateChanged) this.announcements.push(this.toPlainText());
     this.invalidate();
+  }
+
+  takeAnnouncements(): readonly string[] {
+    const pending = Object.freeze([...this.announcements]);
+    this.announcements.length = 0;
+    return pending;
   }
 
   override render(adapter?: WidgetRenderAdapter): WidgetRenderState {
@@ -145,33 +170,27 @@ export class WorkerProgressWidget extends OpenTuiWidget {
   }
 
   toPlainText(): string {
+    const position = this.snapshot.listPosition === undefined
+      ? ""
+      : `Subagent ${this.snapshot.listPosition}/${this.snapshot.listTotal} · `;
     const agentType =
       this.snapshot.agentType === undefined ? "" : `${this.snapshot.agentType} · `;
-    return `${marker(this.snapshot.state)} ${agentType}${this.snapshot.state.toUpperCase()} · ${duration(this.snapshot.startedAtMs, this.snapshot.updatedAtMs)}`;
+    return `${marker(this.snapshot.state)} ${position}${agentType}${this.snapshot.state.toUpperCase()} · ${duration(this.snapshot.startedAtMs, this.snapshot.updatedAtMs)}`;
   }
 
   protected renderRegions(): readonly WidgetRenderRegion[] {
+    const agentType = this.snapshot.agentType === undefined
+      ? "Worker"
+      : this.snapshot.agentType;
+    const position = this.snapshot.listPosition === undefined
+      ? ""
+      : `Subagent ${this.snapshot.listPosition}/${this.snapshot.listTotal} · `;
     return [
       {
-        id: "state",
+        id: "summary",
         role: "status",
         tone: tone(this.snapshot.state),
-        text: `${marker(this.snapshot.state)} ${this.snapshot.state.toUpperCase()}`,
-      },
-      ...(this.snapshot.agentType === undefined
-        ? []
-        : [
-            {
-              id: "identity",
-              role: "content" as const,
-              text: this.snapshot.agentType,
-            },
-          ]),
-      {
-        id: "elapsed",
-        role: "status",
-        tone: "count",
-        text: `Elapsed ${duration(this.snapshot.startedAtMs, this.snapshot.updatedAtMs)}`,
+        text: `${marker(this.snapshot.state)} ${position}${agentType} · ${this.snapshot.state.toUpperCase()} · ${duration(this.snapshot.startedAtMs, this.snapshot.updatedAtMs)}`,
       },
     ];
   }

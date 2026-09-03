@@ -5,6 +5,7 @@ import {
 } from "../contracts/artifacts.js";
 import {
   assertContextProjectionReceipt,
+  contextSha256,
   type ContextProjectionReceiptV1,
 } from "../contracts/context-artifacts.js";
 import {
@@ -35,6 +36,8 @@ import type {
   RuntimeEventPayload,
   RuntimeMode,
   RuntimeOutputFormat,
+  SessionForkReceiptV1,
+  SessionStartedReceiptV1,
   ToolCancelledPayload,
   TrustSnapshot,
 } from "../contracts/events.js";
@@ -58,7 +61,9 @@ import {
   type EffectSet,
   type ToolDefinition,
   type ToolExecutionUpdate,
+  type ToolAdmissionContextV1,
   type ToolConcurrencyLane,
+  type WorkerAuthorityRootV1,
   type ToolPolicyMetadata,
   type ToolPolicyResolution,
   type ToolEffect,
@@ -154,6 +159,8 @@ export interface RuntimeKernelOptions {
   readonly initialMessages?: readonly ModelMessage[];
   readonly initialContextEventIds?: readonly string[];
   readonly initialContextProjectionReceipt?: ContextProjectionReceiptV1;
+  /** Runtime-authoritative, already-sanitized receipt emitted once when this kernel becomes active. */
+  readonly initialSessionReceipt?: SessionStartedReceiptV1 | SessionForkReceiptV1;
   readonly tools?: ToolRegistry;
   readonly policy?: PolicyChain;
   readonly maxIterations?: number;
@@ -169,6 +176,8 @@ export interface RuntimeKernelOptions {
   readonly outputFormat?: RuntimeOutputFormat;
   readonly trust?: TrustSnapshot;
   readonly permissionMode?: PermissionMode;
+  /** Host-owned root used only to mint worker authority after tool effect admission. */
+  readonly workerAuthorityRoot?: WorkerAuthorityRootV1;
   /** Legacy construction-time fallback. Prefer planState for live policy. */ readonly planActive?: boolean;
   readonly planState?: RuntimePlanStateProvider;
   readonly approve?: (request: ToolGateRequest) => Promise<boolean>;
@@ -649,8 +658,27 @@ export class RuntimeKernel implements AgentRuntime {
   #providerRetries = 0;
   #providerCancellations = 0;
   readonly #initialContextProjectionReceipt?: ContextProjectionReceiptV1;
+  readonly #workerAuthorityRoot?: WorkerAuthorityRootV1;
   #initialContextProjectionReceiptEmitted = false;
   constructor(options: RuntimeKernelOptions) {
+    if (options.workerAuthorityRoot !== undefined) {
+      const authority = options.workerAuthorityRoot;
+      if (
+        typeof authority.rootAgentId !== "string" ||
+        authority.rootAgentId.trim().length === 0 ||
+        authority.rootAgentId.includes("\0") ||
+        typeof authority.workspaceId !== "string" ||
+        authority.workspaceId.trim().length === 0 ||
+        authority.workspaceId.includes("\0") ||
+        !Number.isSafeInteger(authority.workspaceGeneration) ||
+        authority.workspaceGeneration < 0 ||
+        !Number.isSafeInteger(authority.ownershipGeneration) ||
+        authority.ownershipGeneration < 0
+      ) {
+        throw new RuntimeFailure("validation", "Worker authority root is invalid");
+      }
+      this.#workerAuthorityRoot = Object.freeze({ ...authority });
+    }
     this.#options = options;
     this.#cwd = options.cwd ?? DEFAULT_RUNTIME_CWD;
     this.#now = options.now ?? DEFAULT_RUNTIME_NOW;
@@ -749,6 +777,12 @@ export class RuntimeKernel implements AgentRuntime {
     if (this.#state !== "created") return;
     this.#state = "starting";
     await this.#emit("runtime.ready", "notification", {});
+    if (this.#options.initialSessionReceipt !== undefined) {
+      const receipt = this.#options.initialSessionReceipt;
+      if (receipt.transition === "fork")
+        await this.#emit("session.forked", "notification", receipt);
+      else await this.#emit("session.started", "notification", receipt);
+    }
     if (
       this.#initialContextProjectionReceipt !== undefined &&
       !this.#initialContextProjectionReceiptEmitted
@@ -1838,7 +1872,10 @@ export class RuntimeKernel implements AgentRuntime {
     callId: ReturnType<typeof toolCallId>,
     effectKey: string,
     signal: AbortSignal,
-  ): Promise<ToolConcurrencyLane | undefined> {
+  ): Promise<{
+    readonly lane: ToolConcurrencyLane | undefined;
+    readonly admission: ToolAdmissionContextV1;
+  }> {
     const gate = await this.#gate(definition, call, callId, signal);
     if (!gate.allowed)
       throw new RuntimeFailure(gate.category === "policy" ? "approval" : gate.category, gate.reason);
@@ -1870,7 +1907,27 @@ export class RuntimeKernel implements AgentRuntime {
     }
     if (admission !== "acquired")
       throw new RuntimeFailure("conflict", `Effect ${callId} already has ledger state ${admission}`);
-    return lane;
+    if (receipt.digest === undefined)
+      throw new RuntimeFailure("internal-invariant", "Effect admission receipt is missing its digest");
+    const trust = gate.policy.trust;
+    const workerAuthorityRoot = this.#workerAuthorityRoot;
+    return {
+      lane,
+      admission: Object.freeze({
+        schemaVersion: 1,
+        effectAdmissionId: effectKey,
+        receiptDigest: receipt.digest,
+        trustRevision: contextSha256(
+          JSON.stringify({ managedOnly: trust.managedOnly, workspace: trust.workspace }),
+        ),
+        permissionMode: this.#options.permissionMode ?? "default",
+        policyRevision: gate.policyRevision,
+        planRevision: gate.policy.plan.revision,
+        ...(workerAuthorityRoot === undefined
+          ? {}
+          : { workerAuthorityRoot: Object.freeze({ ...workerAuthorityRoot }) }),
+      }),
+    };
   }
   async #invokeTool(
     definition: ToolDefinition,
@@ -1878,6 +1935,7 @@ export class RuntimeKernel implements AgentRuntime {
     callId: ReturnType<typeof toolCallId>,
     signal: AbortSignal,
     activeTurnId?: TurnId,
+    admission?: ToolAdmissionContextV1,
   ): Promise<ToolExecutionOutcome> {
     if (signal.aborted) return { kind: "cancelled-before-start" };
     try {
@@ -1903,6 +1961,7 @@ export class RuntimeKernel implements AgentRuntime {
           mode: this.#options.mode ?? "headless",
           ...(this.#options.outputFormat === undefined ? {} : { outputFormat: this.#options.outputFormat }),
           trust: this.#options.trust ?? defaultTrust,
+          ...(admission === undefined ? {} : { admission }),
           signal,
         },
         signal,
@@ -1937,9 +1996,9 @@ export class RuntimeKernel implements AgentRuntime {
       const definition = this.#options.tools?.get(requested.call.name);
       if (definition === undefined)
         throw new RuntimeFailure("unsupported-capability", `Unknown tool: ${requested.call.name}`);
-      await this.#admitToolEffect(definition, requested.call, callId, effectKey, signal);
+      const { admission } = await this.#admitToolEffect(definition, requested.call, callId, effectKey, signal);
       admitted = true;
-      const execution = await this.#invokeTool(definition, requested.call, callId, signal);
+      const execution = await this.#invokeTool(definition, requested.call, callId, signal, undefined, admission);
       if (execution.kind === "cancelled-before-start" || execution.kind === "aborted" || signal.aborted)
         throw new RuntimeFailure("cancelled", "Tool call cancelled during execution");
       if (execution.kind === "error") throw execution.error;
@@ -2442,7 +2501,10 @@ export class RuntimeKernel implements AgentRuntime {
         stop: result.stop,
         usage: result.usage,
       });
-      await this.#emit("context.usage-changed", "notification", this.#usage);
+      await this.#emit("context.usage-changed", "notification", {
+        ...this.#usage,
+        currentContextTokens: this.#latestProviderInputTokens + result.usage.outputTokens,
+      });
       if (signal.aborted) {
         await this.#emit("message.ended", "after", {
           requestId,
@@ -2597,6 +2659,7 @@ export class RuntimeKernel implements AgentRuntime {
         definition: ToolDefinition;
         effectKey: string;
         lane: ToolConcurrencyLane | undefined;
+        admission: ToolAdmissionContextV1;
       };
       const toolMessages: Array<ToolMessage | undefined> = new Array(
         preparedCalls.length,
@@ -2657,8 +2720,8 @@ export class RuntimeKernel implements AgentRuntime {
           }
           const effectKey = `${this.#options.sessionId}:${activeTurnId}:${callId}`;
           try {
-            const lane = await this.#admitToolEffect(definition, call, callId, effectKey, signal);
-            admittedCalls.push({ ...prepared, definition, effectKey, lane });
+            const admitted = await this.#admitToolEffect(definition, call, callId, effectKey, signal);
+            admittedCalls.push({ ...prepared, definition, effectKey, ...admitted });
           } catch (error) {
             const failure = error instanceof RuntimeFailure
               ? error
@@ -2688,8 +2751,9 @@ export class RuntimeKernel implements AgentRuntime {
         call,
         callId,
         definition,
+        admission,
       }: AdmittedCall): Promise<ToolExecutionOutcome> => {
-        return await this.#invokeTool(definition, call, callId, signal, activeTurnId);
+        return await this.#invokeTool(definition, call, callId, signal, activeTurnId, admission);
       };
       const executionOutcomes = new Map<number, ToolExecutionOutcome>();
       let parallelBatch: AdmittedCall[] = [];

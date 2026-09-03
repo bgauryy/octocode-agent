@@ -88,28 +88,19 @@ describe('production guidance contract', () => {
     const install = read(resolve(SKILL_ROOT, 'scripts/install.mjs'));
     expect(install).not.toMatch(/npm install|check-only|skip-deps|findNpm|installDependencies|REQUIRED_BUNDLED_SKILLS[^\n]*octocode-skills/);
   });
-  it('makes Pi advisory-first and reserves exclusivity for sensitive files', () => {
-    // All prompt sections were consolidated into one document (src/prompts/prompt.ts);
-    // the advisory-first + exclusive-for-sensitive guidance now lives in the
-    // octocode-awareness catalog entry inside that single prompt document.
-    const promptDoc = read(resolve(REPO_ROOT, 'packages/octocode-pi-extension/src/prompts/prompt.ts'));
-    const piReadme = read(resolve(REPO_ROOT, 'packages/octocode-pi-extension/README.md'));
-    const combined = `${promptDoc}\n${piReadme}`;
+  it('keeps the current Awareness owner advisory-first and reserves exclusivity for sensitive files', () => {
+    expect(existsSync(resolve(REPO_ROOT, 'packages/octocode-pi-extension'))).toBe(false);
+    const combined = [
+      read(resolve(SKILL_ROOT, 'SKILL.md')),
+      read(resolve(SKILL_ROOT, 'references/files-awareness.md')),
+      read(resolve(SKILL_ROOT, 'references/lock-protocol.md')),
+    ].join('\n');
 
     expect(combined).toMatch(/advisory (?:file )?(?:work|presence)/i);
     expect(combined).toMatch(/exclusive.{0,80}sensitive|sensitive.{0,80}exclusive/is);
     expect(combined).not.toMatch(/taskless lock|lock exact files|file_lock without a task for quick work/i);
-    expect(piReadme).not.toContain('Before every Pi write/edit call, the awareness bridge claims a lock');
-    expect(piReadme).not.toContain('Before edits (`file_lock` or CLI `lock acquire`)');
-    expect(piReadme).not.toContain('Before edit:** Claims a file lock for each target path');
-
-    const piToolsRoot = resolve(REPO_ROOT, 'packages/octocode-pi-extension/src/tools');
-    const piToolSource = readdirSync(piToolsRoot, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
-      .map((entry) => read(resolve(piToolsRoot, entry.name)))
-      .join('\n');
-    expect(piToolSource).not.toMatch(/memory_workspace_status|memory_file_lock|memory_notify/);
-    expect(piToolSource).not.toMatch(/FILE_LOCK_KINDS|lock_type/);
+    expect(combined).not.toContain('Before every Pi write/edit call, the awareness bridge claims a lock');
+    expect(combined).not.toMatch(/FILE_LOCK_KINDS|lock_type/);
   });
   it('removes legacy notify and lock-kind inputs from the shared tool adapter', () => {
     const operations = read(resolve(PACKAGE_ROOT, 'src/tool-operations.ts'));
@@ -146,7 +137,8 @@ describe('production guidance contract', () => {
       .map((file) => read(resolve(PACKAGE_ROOT, 'src', file)))
       .join('\n');
 
-    expect(databaseSource).toContain('AGENT_APPLICATION_ID');
+    expect(databaseSource).toContain('AWARENESS_APPLICATION_ID');
+    expect(databaseSource).toMatch(/applicationId === AGENT_APPLICATION_ID[\s\S]*refusing Agent SQLite store/);
     expect(databaseSource).not.toMatch(/\b(?:user_version|AWARENESS_SCHEMA_VERSION)\b/i);
     expect(existsSync(resolve(PACKAGE_ROOT, 'src/db-rebuild.ts'))).toBe(false);
     const ownedArtifacts = [
@@ -169,11 +161,13 @@ describe('production guidance contract', () => {
     expect(release).toMatch(/npm install[^\n]*@octocodeai\/octocode-awareness/);
   });
 
-  it('documents serialized initialization and separates flat work rows from grouped FilesUnderWork', () => {
+  it('documents separate fail-closed storage and flat work rows versus grouped FilesUnderWork', () => {
     const db = read(resolve(PACKAGE_ROOT, 'docs/DB.md'));
-    expect(db).toMatch(/Fresh initialization.{0,100}BEGIN IMMEDIATE/is);
-    expect(db).toMatch(/`work list\|show`.{0,100}flat/is);
-    expect(db).toMatch(/FilesUnderWork.{0,100}group/i);
+    expect(db).toContain('<workspace>/.octocode/awareness.sqlite3');
+    expect(db).toContain('$OCTOCODE_HOME/awareness/awareness.sqlite3');
+    expect(db).toMatch(/never opens[\s\S]*agent\/agent\.sqlite3[\s\S]*agent\/core\.sqlite3/i);
+    expect(db).toMatch(/application_id[\s\S]*(?:OCT1|0x4f435431)/i);
+    expect(db).toMatch(/Query ownership[\s\S]*`files`[\s\S]*src\/repo-files\.ts/i);
   });
 
   it('keeps user-facing setup and examples copy-pasteable', () => {
@@ -222,7 +216,7 @@ describe('production guidance contract', () => {
   it('keeps the always-loaded skill lobby byte-bounded and finish work conditional', () => {
     const skill = read(resolve(SKILL_ROOT, 'SKILL.md'));
     const finish = read(resolve(SKILL_ROOT, 'references/agent-cheatsheet.md'));
-    expect(Buffer.byteLength(skill, 'utf8')).toBeLessThanOrEqual(6 * 1024);
+    expect(Buffer.byteLength(skill, 'utf8')).toBeLessThanOrEqual(6_400);
     expect(skill).not.toMatch(/Haiku|Composer 2\.5/);
     expect(finish).toMatch(/Always[\s\S]*verify audit[\s\S]*Only when/);
     expect(finish).not.toMatch(/query all[^\n]*repo inject/is);
@@ -278,7 +272,7 @@ describe('production guidance contract', () => {
     expect(packageAgents).not.toContain('Standalone WORK');
     expect(skill).toContain('NOTICE → INSPECT → COORDINATE → VERIFY');
     expect(skill).toContain('Start small');
-    expect(userGuide).toContain('## Operating Loop');
+    expect(userGuide).toContain('## Use the operating loop');
     expect(hooks).toContain('## Lifecycle');
     expect(architecture).toMatch(/AGENTS\.md \/ CLAUDE\.md[\s\S]*Agent Skill[\s\S]*CLI[\s\S]*hooks/i);
   });

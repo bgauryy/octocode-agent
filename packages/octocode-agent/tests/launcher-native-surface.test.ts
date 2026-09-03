@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { workspaceAgentRoot } from '@octocodeai/octocode-shared/paths';
-import { authData, authProvidersData, completionScript, discoveryData, doctorData, fatalErrorReport, helpReport, main, modelsData, modelsReport, parseInvocation, runModelsCheck, runSurface, sessionsData, updateCommand } from '../src/launcher.js';
+import { authData, authProvidersData, completionScript, discoveryData, doctorData, fatalErrorReport, helpReport, main, modelsData, modelsReport, parseInvocation, ROOT_OPTIONS, runModelsCheck, runSurface, sessionsData, updateCommand } from '../src/launcher.js';
 import { FileSettingsStorage } from '../src/native-settings.js';
 
 describe('native launcher public surface', () => {
@@ -18,6 +18,61 @@ describe('native launcher public surface', () => {
     expect(parseInvocation(['-v'])).toMatchObject({ command: 'version', args: [] });
   });
 
+  it('lists every native runtime flag and alias in root help', () => {
+    const help = helpReport();
+    for (const option of ROOT_OPTIONS) {
+      expect(help, option.usage).toContain(option.usage);
+      for (const name of option.names) {
+        expect(completionScript('bash'), name).toContain(name);
+      }
+    }
+  });
+
+  it.each([
+    'setup',
+    'auth',
+    'models',
+    'discover',
+    'doctor',
+    'update',
+    'completion',
+    'help',
+    'version',
+  ])('prints scoped %s help instead of executing the command', async (command) => {
+    const out = vi.fn();
+    await expect(main([command, '--help'], { out })).resolves.toBe(0);
+    expect(out).toHaveBeenCalledOnce();
+    expect(out).toHaveBeenCalledWith(
+      expect.stringContaining(`Usage: octocode-agent ${command}`),
+    );
+  });
+
+  it('supports the conventional help <command> form', async () => {
+    const out = vi.fn();
+    await expect(main(['help', 'run'], { out })).resolves.toBe(0);
+    expect(out).toHaveBeenCalledWith(
+      expect.stringContaining('Usage: octocode-agent run'),
+    );
+  });
+
+  it('delegates help for nested tool and coordination command trees', async () => {
+    const spawn = vi.fn(() => ({ status: 0 } as never));
+    await expect(main(['help', 'tools'], { spawn })).resolves.toBe(0);
+    await expect(main(['help', 'awareness'], { spawn })).resolves.toBe(0);
+    expect(spawn).toHaveBeenNthCalledWith(
+      1,
+      'npx',
+      ['octocode', 'tools', '--help'],
+      expect.any(Object),
+    );
+    expect(spawn).toHaveBeenNthCalledWith(
+      2,
+      'npx',
+      ['@octocodeai/octocode-awareness', '--help'],
+      expect.any(Object),
+    );
+  });
+
   it.each([
     ['run', '--help'],
     ['run', '-h'],
@@ -26,6 +81,26 @@ describe('native launcher public surface', () => {
     ['acp', '--help'],
     ['acp', '-h'],
   ])('prints scoped %s help for %s without starting the runtime', async (command, flag) => {
+    const createRuntime = vi.fn(async () => {
+      throw new Error('help must not start the runtime');
+    });
+    const out = vi.fn();
+
+    await expect(main([command, flag], { createRuntime, out })).resolves.toBe(0);
+
+    expect(out).toHaveBeenCalledOnce();
+    expect(out).toHaveBeenCalledWith(expect.stringContaining(`Usage: octocode-agent ${command}`));
+    expect(createRuntime).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['sessions', '--help'],
+    ['sessions', '-h'],
+    ['resume', '--help'],
+    ['resume', '-h'],
+    ['session', '--help'],
+    ['session', '-h'],
+  ])('prints scoped %s help for %s without reading or starting a session', async (command, flag) => {
     const createRuntime = vi.fn(async () => {
       throw new Error('help must not start the runtime');
     });
@@ -49,6 +124,58 @@ describe('native launcher public surface', () => {
     expect(out).toHaveBeenCalledOnce();
     expect(out).toHaveBeenCalledWith(expect.stringContaining('Usage: octocode-agent config'));
     expect(createRuntime).not.toHaveBeenCalled();
+  });
+
+  it('uses the public settings catalog in config help and persists typed values', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-config-cli-'));
+    const env = { HOME: root, OCTOCODE_HOME: path.join(root, 'octocode') };
+    const helpOut = vi.fn();
+
+    await expect(main(['config', '--help'], { env, out: helpOut })).resolves.toBe(0);
+    for (const key of [
+      'theme',
+      'reducedMotion',
+      'compactionInputTokenThreshold',
+      'defaultProvider',
+      'defaultModel',
+    ]) {
+      expect(helpOut.mock.calls[0]?.[0], key).toContain(key);
+    }
+
+    await expect(main(['config', 'set', 'reducedMotion', 'false'], { env, out: vi.fn() })).resolves.toBe(0);
+    await expect(main(['config', 'set', 'compactionInputTokenThreshold', '80000'], { env, out: vi.fn() })).resolves.toBe(0);
+
+    const stored = new FileSettingsStorage(
+      path.join(env.OCTOCODE_HOME, 'agent', 'settings.json'),
+    ).read().values;
+    expect(stored).toMatchObject({
+      reducedMotion: false,
+      compactionInputTokenThreshold: 80_000,
+    });
+
+    const invalidOut = vi.fn();
+    await expect(main(['config', 'set', 'reducedMotion', 'yes'], { env, out: invalidOut })).resolves.toBe(2);
+    expect(invalidOut).toHaveBeenCalledWith(expect.stringContaining('settings validation'));
+    expect(new FileSettingsStorage(
+      path.join(env.OCTOCODE_HOME, 'agent', 'settings.json'),
+    ).read().values.reducedMotion).toBe(false);
+  });
+
+  it('keeps the settings reference aligned with the public config catalog', () => {
+    const settingsReference = fs.readFileSync(
+      new URL('../docs/SETTINGS.md', import.meta.url),
+      'utf8',
+    );
+    for (const key of [
+      'theme',
+      'reducedMotion',
+      'compactionInputTokenThreshold',
+      'defaultProvider',
+      'defaultModel',
+    ]) {
+      expect(settingsReference, key).toContain(`\`${key}\``);
+    }
+    expect(settingsReference).toContain('octocode-agent models --set openai/gpt-5');
   });
 
   it.each([
@@ -79,6 +206,9 @@ describe('native launcher public surface', () => {
   it('keeps completion and platform update paths native', () => {
     expect(completionScript('zsh')).toContain('sessions');
     expect(completionScript('zsh')).toContain('completion');
+    expect(completionScript('zsh')).toContain('--model');
+    expect(completionScript('bash')).toContain('--continue');
+    expect(completionScript('fish')).toContain('-l help');
     expect(updateCommand()).toEqual({ cmd: 'npm', args: ['install', '-g', 'octocode-agent@latest'] });
   });
 
@@ -95,7 +225,7 @@ describe('native launcher public surface', () => {
     expect(fatalErrorReport(
       new Error('Failed to initialize OpenTUI render library: OpenTUI native FFI is not available for this runtime yet'),
       'v26.4.0',
-    )).toBe('octocode-agent: OpenTUI is unavailable on v26.4.0. Re-run with NODE_OPTIONS=--experimental-ffi, or use --print for non-interactive output.');
+    )).toBe('octocode-agent: OpenTUI is unavailable on v26.4.0. Use Node.js 26.4 or later, or use --print for non-interactive output.');
   });
 
   it('reports the exact native model protocol boundary', () => {
@@ -417,6 +547,18 @@ describe('native launcher public surface', () => {
     const createRuntime = vi.fn(async () => { throw new Error('native composition reached'); });
     await expect(main(['resume', 's1'], { createRuntime })).rejects.toThrow('native composition reached');
     expect(createRuntime).toHaveBeenCalled();
+  });
+
+  it('allows resume options without misreading the first option as a session id', async () => {
+    const createRuntime = vi.fn(async () => { throw new Error('native composition reached'); });
+    await expect(main(['resume', '--allow-workers'], { createRuntime })).rejects.toThrow(
+      'native composition reached',
+    );
+    expect(createRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: expect.objectContaining({ continue: true, allowWorkers: true }),
+      }),
+    );
   });
 
   it('lists sessions from the Rust durability index and closes the owned client', async () => {

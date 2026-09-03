@@ -1,237 +1,362 @@
-# Octocode Agent leftovers
+# Octocode Agent completion plan
 
-Status: active completion ledger; reconciled 2026-09-01; release remains `HOLD`.
+Status: active. Release decision: `HOLD`.
 
-This file is the only live repository-level ledger for work remaining on the
-native Octocode Agent. Package architecture documents own implemented behavior
-and boundaries. Production code, executable contracts, and tests outrank this
-ledger when they disagree.
+This file is the only repository-level plan for unfinished Octocode Agent work.
+Architecture documents describe implemented behavior; tests and production code
+remain the source of truth. Do not add dated implementation reports or evidence
+documents under `DESIGN/`.
 
-The dated files under
-[`pi-coding-agent-removal/evidence/`](pi-coding-agent-removal/evidence/) are
-immutable observations. They preserve history but never define current status.
+## Completion contract
 
-## Product end state
+The release can move from `HOLD` only when all five workstreams meet their
+acceptance gates and the root release gate passes from a clean commit.
 
-Octocode ships a Pi-free native agent and an independently installed, supported
-Pi extension. Native packages, launchers, installers, update paths, and rollback
-artifacts must not import or execute Pi. The Pi extension may retain its pinned
-Pi dependencies inside its own package boundary.
+Every change must follow these rules:
 
-The dirty-tree candidate is substantial and locally verified, but it is not a
-release candidate. Do not publish, start a canary, declare migration complete,
-or remove rollback paths until every closure gate in this file passes.
+- Start with a failing test that represents observable behavior or a safety contract.
+- Put semantic invariants in the owning package instead of duplicating behavior in
+  adapters.
+- Keep hidden chain-of-thought, credentials, private worker prompts, and opaque
+  runtime payloads out of presentation and diagnostic output.
+- Exercise the real built CLI, native Rust services, persistence, and process
+  boundaries when the change affects them.
+- Record release evidence as CI artifacts or release records, not as additional
+  development documents in this repository.
+- Keep rollback possible until the final canary and observation gates pass.
 
-## Settled ownership
+The owning architecture references are:
 
-| Surface | Canonical owner |
+| Area | Source of truth |
 |---|---|
-| Runtime lifecycle, policy, effects, sessions, compaction, context, workers, and host-neutral contracts | [Agent core architecture](../packages/octocode-agent-core/ARCHITECTURE.md) |
-| SQLite transactions, revisions, effects, leases, fencing, communication, automation durability, and contained filesystem primitives | [Rust services architecture](../packages/octocode-agent-core-rust/ARCHITECTURE.md) |
-| Native providers, tools, MCP, approvals, scheduling, worker processes, transports, presentation, settings, and OpenTUI | [Native architecture](../packages/octocode-agent/ARCHITECTURE.md) |
-| Supported Pi adaptation and Pi-only compatibility behavior | [Pi extension architecture](../packages/octocode-pi-extension/ARCHITECTURE.md) |
-| Production conformance scenarios and normalized evidence | [Agent testing architecture](../packages/octocode-agent-testing/ARCHITECTURE.md) |
-| Shared paths, protocols, permissions, discovery shapes, and prompt fragments | [Shared architecture](../packages/octocode-shared/ARCHITECTURE.md) |
-| Plans, work, locks, messages, verification, memory, and coordination | [Awareness architecture](../packages/octocode-awareness/ARCHITECTURE.md) |
+| Runtime, sessions, context, compaction, policy, and effects | [Agent core architecture](../packages/octocode-agent-core/ARCHITECTURE.md) |
+| SQLite durability and contained filesystem services | [Rust services architecture](../packages/octocode-agent-core-rust/ARCHITECTURE.md) |
+| Native providers, tools, MCP, workers, settings, and OpenTUI | [Native architecture](../packages/octocode-agent/ARCHITECTURE.md) |
+| Terminal semantics and interaction | [Terminal design system](../packages/octocode-agent/docs/TERMINAL_DESIGN_SYSTEM.md) |
+| Widget composition, states, actions, and accessibility | [Widget design](WIDGETS.md) |
+| Ask, Plan, root-cause analysis, execution, and recovery flows | [Workflow design](WORKFLOWS.md) |
+| Workers and parallel execution | [Parallelism and workers](../packages/octocode-agent/docs/PARALLELISM_AND_WORKERS.md) |
+| Plans, work, locks, messages, and verification | [Awareness architecture](../packages/octocode-awareness/ARCHITECTURE.md) |
 
-These boundaries are settled:
+## Workstream 1: Terminal UX polish
 
-- Agent core is host-neutral and never imports native, Pi, OpenTUI, provider, or
-  filesystem implementations.
-- Rust owns atomic durability and contained filesystem primitives. TypeScript
-  owns semantic policy, validation, scheduling, tool behavior, and process
-  supervision.
-- The native model sees a compact Octocode research facade plus explicit native
-  base tools. Research implementation remains in the external Octocode packages.
-- Only a root agent creates workers. Children are depth-one leaves and never
-  receive worker-creation capability.
-- `settings.html` is the native human-facing configuration surface.
-- ACP is the editor interoperability protocol. Native JSONL RPC remains the
-  automation protocol.
-- Awareness owns coordination state, not repository or runtime truth.
+Goal: make every meaningful lifecycle state understandable, compact, accessible,
+and safe in both visual and alternate output.
 
-## Verified candidate capabilities
+### Skill activity
 
-Do not reimplement these capabilities. Extend their owning contracts or close
-the remaining evidence gates instead.
+- [x] Replace generic Skill mutation output with dedicated cards for discovery,
+  activation, deactivation, refresh, policy rejection, completion, and failure.
+- [x] Show the Skill name, source scope, safe action, state, and bounded result.
+- [x] Coalesce discovery bursts without hiding a terminal state or required action.
+- [x] Add secret-shaped and oversized input tests for every Skill summary path.
 
-- The native runtime composes OpenAI Chat, OpenAI Responses, Anthropic Messages,
-  and custom provider adapters behind one bounded loop.
-- Permission modes, trust, plans, locks, approvals, input-sensitive effects,
-  durable admission receipts, cancellation, and uncertain-effect settlement run
-  through the core policy boundary.
-- Native `file`, `bash`, `web`, and `runFfmpeg` tools publish separate capability,
-  approval, cancellation, and concurrency contracts. File mutation and FFmpeg
-  path authorization use the supervised Rust filesystem service.
-- Typed media and artifact results preserve bounded text, image, and workspace
-  artifact descriptors through provider translation, durable sessions, resume,
-  and fork. Native media authoring uses the supervised filesystem and FFmpeg
-  process boundaries.
-- Native browser diagnostics expose bounded target, DOM snapshot, screenshot,
-  console, and network operations for explicitly configured loopback Chrome
-  DevTools Protocol endpoints. The tool does not expose arbitrary evaluation,
-  cookies, storage, navigation, or input control.
-- Rust-backed edit checkpoints use a content-addressed, two-phase journal.
-  Native file mutations create checkpoints, and rewind remains a distinct,
-  digest-fenced effect with crash and drift recovery.
-- Artifact preview serves manifest-selected workspace files on an unguessable
-  loopback route with exact host, method, containment, digest, and response-header
-  checks. The tool receipt does not disclose the capability URL.
-- MCP discovery, connection reuse, ordered parallel calls, elicitation,
-  cancellation, provenance, and official Tasks requests are production-composed.
-- Durable sessions support create, resume, switch, fork, name, export, lineage
-  navigation, manual compaction, threshold compaction, and restart recovery.
-- Context artifacts preserve stable prompt prefixes and project plans, Skills,
-  memory leads, tool summaries, and committed compaction data as inspectable data.
-- Root-only workers, message leases, addressed communication, progress events,
-  restart recovery, and RPC/ACP projection are composed.
-- The worker inbox projects a bounded public view and supports generation-fenced
-  inspect, message, follow-up, steer, abort, and separately approved force-kill
-  actions through slash commands and OpenTUI.
-- Plan editing uses revision-preconditioned, stable-ID intents for editing,
-  reordering, dependencies, reopening, approval, rejection, change requests, and
-  review. Dependency and completion changes invalidate affected verification
-  receipts.
-- Streamable HTTP MCP supports origin-bound OAuth discovery, PKCE, loopback
-  callback validation, operating-system credential storage, redacted status, and
-  explicit revocation. Credentialed external-server proof remains a release gate.
-- Filesystem hooks, Codex-compatible command and MCP handlers, bounded async hook
-  ownership, reviewed plugins, transactional activation, rollback, leases, and
-  unload are composed.
-- Native settings mutations are revisioned, atomic, redacted, and shared across
-  runtime, CLI, and browser actions.
-- The renderer-neutral presentation port and semantic OpenTUI widgets cover
-  input, Ask, plans, workers, tools, status, notifications, and restoration.
-- The production conformance matrix reports 12 cross-host matches, two
-  native-specific covered scenarios, no divergence, and no unsupported scenario
-  in the current working tree.
+### Session receipts
 
-## Remaining work
+- [x] Show the session display name and a short public identifier after create,
+  resume, switch, and fork operations.
+- [x] Report restored visible-message count, retained model-context item count,
+  context-token occupancy, and committed compaction state when available.
+- [x] Distinguish a fresh session, an empty resumed session, a compacted session,
+  and a partially recovered session.
+- [x] Keep session receipts bounded and avoid exposing database keys, paths, or
+  private message content.
 
-Complete these groups in order. A later group cannot compensate for an earlier
-gate that remains open.
+### Notification quality
 
-### 1. Freeze the candidate
+- [x] Define deterministic coalescing keys for repeated provider, discovery, trust,
+  settings, plugin, worker, and compaction notifications.
+- [x] Coalesce repeated progress updates while preserving the first transition,
+  latest progress, terminal result, failure, and required action.
+- [x] Prevent stale notifications from surviving session replacement or action
+  completion.
+- [x] Test burst ordering, interleaving operations, cancellation, retries, and
+  narrow-terminal behavior.
 
-- Select one clean commit and record the exact working-tree policy.
-- Freeze environment versions, fixture hashes, held-out scenario hashes, and
-  privacy rules.
-- Reproduce the full build, package, Rust, native, Pi, and production-conformance
-  gates from that commit.
-- Record an independently reviewed canonical-before receipt without rewriting
-  older evidence.
+### MCP and worker lifecycle scenarios
 
-### 2. Close semantic and policy decisions
+- [x] Add real PTY scenarios for MCP discovery, connection, tool start, progress,
+  elicitation, cancellation, success, failure, reconnect, and catalog changes.
+- [x] Add real PTY scenarios for worker spawn, running progress, message delivery,
+  follow-up, steering, graceful cancellation, failure, completion, and cleanup.
+- [x] Verify that visual and alternate output expose the same sanitized lifecycle
+  meaning without raw arguments, internal worker IDs, or private prompts.
+- [x] Verify footer priority when MCP, workers, approvals, compaction, and provider
+  requests overlap.
 
-- Define which event payload fields are stable public protocol and which remain
-  adapter-private.
-- Formally accept the Octocode-owned runtime and provider architecture; remove
-  obsolete temporary ownership language.
-- Pin the supported ACP SDK/schema and MCP Tasks extension revisions with exact
-  conformance fixtures.
-- Select a pinned external Octocode tool boundary. It must provide authoritative
-  effects, lock targets, output schemas, executable identity, and version
-  negotiation so native code can remove name-based inference.
-- Finish effect-receipt digest, expiry, policy-revision, crash, concurrency,
-  retention, and cross-host semantics.
-- Finish the single settings-registry lifecycle and remove remaining direct
-  settings writers.
+### Accessibility and fault behavior
 
-### 3. Complete durability and context proof
+- [x] Test every pointer action through its keyboard equivalent and test supported
+  mouse interactions independently.
+- [x] Run screen-reader and `--accessible` task scenarios for messages, tools,
+  plans, approvals, workers, errors, resizing, and exit.
+- [x] Keep sensitive terminal fields fail-closed until a masked-input contract is
+  implemented and verified across echo, history, paste, redraw, output,
+  diagnostics, cancellation, and restoration paths.
+- [x] Inject renderer exceptions, process crashes, interrupted streams, resize
+  storms, and shutdown races.
+- [x] Prove terminal mode, cursor, paste mode, alternate screen, child processes,
+  and temporary resources return to their original state after every exit path.
 
-- Prove migration rollback, changing-source behavior, malformed input handling,
-  replay equality, stale writers, and byte-preserving projection.
-- Complete corruption, interrupted-write, partial-assistant, temporary-state,
-  pagination, and cross-platform fault matrices.
-- Prove overflow compaction, retained-reference validity, cancellation, restart,
-  retry bounds, and cache-stable rehydration against real provider requests.
+Acceptance gate:
 
-### 4. Complete runtime and integration proof
+- All lifecycle families have typed, bounded, and redacted presentation coverage.
+- Real PTY scenarios pass for commands, MCP, workers, images, multiline paste,
+  cancellation, faults, signals, resizing, and restoration.
+- Keyboard-only and assistive-output task sets pass on every supported terminal.
+- No hidden reasoning, credentials, private prompts, or raw lifecycle payloads
+  appear in visual, alternate, transcript, history, or diagnostic output.
 
-- Run credentialed provider, retry, cancellation, malformed-stream, cache-token,
-  latency, memory, and failure matrices.
-- Exercise Streamable HTTP and OAuth MCP servers, Tasks isolation, restart,
-  cancellation, elicitation, and catalog-change behavior through production
-  composition.
-- Complete Skill discovery, activation, refresh, policy, and compaction behavior
-  across native and Pi hosts.
-- Run the zero-bypass matrix across model calls, tools, hooks, plugins,
-  automations, MCP, RPC, ACP, and projected worker commands.
+## Workstream 2: Workers and orchestration
 
-### 5. Complete orchestration proof
+Goal: prove bounded worker execution and coordination across worktrees, processes,
+restarts, and failure boundaries.
 
-- Complete worktree create, refresh, retain, merge, discard, and crash recovery.
-- Run multi-process mailbox, handoff, dead-pipe, backpressure, cancellation,
-  orphan, restart, and process-cleanup matrices on supported platforms.
-- Prove that every worker and automation action remains bound to session, trust,
-  approval, capability, effect, and ownership state.
+Decision baseline:
+[Native Worker Orchestration, Isolation, and Handoff RFC](../.octocode/rfc/native-worker-orchestration-lifecycle/RFC.md).
+The design and foundational lifecycle implementation are complete; the remaining
+scenario matrix and release evidence stay open. Use the
+[implementation plan](../.octocode/rfc/native-worker-orchestration-lifecycle/IMPLEMENTATION.md)
+and [verification contract](../.octocode/rfc/native-worker-orchestration-lifecycle/KPI.md)
+to close the items in this workstream.
 
-### 6. Complete extension and configuration proof
+- Keep the current checkout as the default. Create a worktree only after an
+  explicit user or policy choice, and never present a worktree as a security
+  sandbox.
+- Require positive ownership, workspace identity, lock-token, and generation
+  checks before worktree reuse, refresh, discard, or cleanup. Retain without
+  mutation when any proof is missing or the checkout contains changes.
+- Stage integration in an owned clean worktree. Preview the result and require
+  explicit confirmation plus a final compare-and-swap check before changing the
+  user's checkout.
+- Use addressed, ordered, generation-fenced mailboxes with at-least-once claim,
+  idempotent command application, and exactly-once durable settlement. Mark an
+  ambiguous pipe write as uncertain instead of replaying it automatically.
+- Treat each worker and its descendants as one owned process containment unit.
+  Keep session, trust, permissions, capabilities, effects, plan ownership, and
+  communication leases in one immutable authority envelope.
 
-- Pin the Codex hook compatibility fixture and run the complete matcher, output,
-  timeout, cancellation, failure, and cross-host matrix.
-- Approve the formal plugin capability policy for filesystem, process, network,
-  MCP, model, secret, settings, and UI contributions.
-- Complete plugin update, restart, changed-hash, spoofing, partial-activation,
-  rollback, lease, residue, and secret-leak tests.
-- Complete Models, Hooks, Plugins, Skills, Connections, diagnostics, reset,
-  import, export, recovery, and native/Pi settings conformance.
-- Run browser CSP, origin, action-token, no-store, containment, accessibility,
-  responsive-layout, concurrent-write, and rollback tests from a packed install.
+### Worktree lifecycle
 
-### 7. Complete terminal and platform proof
+- [x] Verify create, retain-on-dirty, deterministic integration, explicit apply,
+  discard, and cleanup behavior.
+- [ ] Verify owned worktree reuse and refresh across repeated runs and restart.
+- [x] Cover dirty owned worktrees, conflicting worker changes, and detached or
+  advanced integration targets.
+- [ ] Cover dirty source trees, missing branches, partial merges, and process
+  crashes during create, integration, and discard.
+- [x] Prove that cleanup never deletes an unowned checkout or user change.
 
-- Approve the supported OpenTUI runtime and packaging route, including the Node
-  experimental-FFI policy.
-- Verify packaged native assets and startup, shutdown, signals, and exact terminal
-  restoration on every supported operating system and architecture.
-- Complete sustained streaming, Unicode, resize, paste, mouse, masked input,
-  alternate output, screen-reader, keyboard-only, cancellation, and fault tests.
-- Measure startup, first frame, frame duration, memory, and shutdown against the
-  accepted release thresholds.
+### Mailbox and handoff
 
-### 8. Canary, rollback, and close native Pi removal
+- [x] Run multi-process mailbox tests for ordering, addressed delivery, leases,
+  duplicate suppression, backpressure, and bounded retention.
+- [x] Verify one-shot seal, drain, terminalization, settlement, and acknowledgement
+  after worker completion against durable Rust state.
+- [ ] Verify handoff before completion, during active tools, and across crash or
+  restart at each handoff phase.
+- [x] Cover dead pipes, written-without-response uncertainty, generation fencing,
+  and refusal to replay possibly delivered messages after restart.
+- [ ] Cover stalled readers and abandoned leases across crash recovery.
 
-- Set quantitative shadow and canary thresholds, cohort rules, owners, observation
-  duration, abort conditions, and rollback criteria.
-- Produce signed before-and-after reliability, security, effects, performance,
-  session, terminal, and migration comparisons.
-- Rehearse rollback to the prior native artifact without losing durable sessions.
-- Pass clean installation, supported upgrade, dependency-tree, package-content,
-  and release-artifact checks.
-- Prove that native artifacts and release wiring contain no Pi dependency or
-  executable Pi path.
-- Pin and pass the independent Pi extension compatibility and publication matrix.
-- Complete the observation window before removing selectors, fallbacks, or
-  rollback artifacts.
+### Cancellation and ownership
 
-## Closure gates
+- [x] Verify graceful cancellation, forced termination, timeout escalation, orphan
+  detection, and descendant-process cleanup.
+- [x] Prove that only a root agent creates workers and every child remains a
+  depth-one leaf without worker-creation capability.
+- [x] Bind every worker action to the owning session, trust decision, permission
+  mode, capability ceiling, effect receipt, plan state, and communication lease.
+- [x] Reject stale, cross-session, cross-workspace, and ownership-mismatched
+  commands without changing worker state.
 
-| Gate | Current state | Required closure evidence |
-|---|---|---|
-| Local implementation | Verified candidate | Reproduce from the clean named commit |
-| Production conformance | Green in the working tree | Clean, frozen, independently attributed run |
-| Session and context integrity | Partial | Import, migration, corruption, overflow, crash, and replay corpus |
-| Security and effect safety | Partial | Complete zero-bypass, receipt, hook, plugin, and secret matrix |
-| Providers and MCP | Partial | Credentialed providers, HTTP/OAuth MCP, faults, and performance |
-| Workers and orchestration | Partial | DAG, worktree, multi-process, handoff, and platform cleanup corpus |
-| Settings and terminal | Partial | Packed browser, accessibility, PTY, and supported-platform matrix |
-| Native Pi isolation | Partial | Clean dependency, installation, upgrade, artifact, and rollback receipts |
-| Canary and observation | Not started | Thresholds, signed comparison, observation window, and approval |
+Acceptance gate:
 
-The release remains `HOLD` while any row is partial or not started. Package-local
-tests, source import cleanliness, or a dirty-tree conformance pass cannot substitute
-for a closure receipt.
+- Shared checkout remains the default, and every interface asks for confirmation
+  before worktree creation or integration. Worktree and operating-system sandbox
+  labels remain distinct in every interface.
+- The worktree matrix passes without data loss or unowned cleanup.
+- Multi-process messaging preserves ordering, fencing, and bounded delivery under
+  backpressure, restart, and crash injection.
+- One accessible orchestration surface exposes plan ownership, worker progress,
+  messages, cancellation, handoff, conflicts, and retained-resource recovery.
+- Every terminal worker state settles exactly once as completed, failed, cancelled,
+  or force-terminated.
+- No child process, lease, lock, worktree, or temporary resource remains after a
+  settled run.
 
-## Updating this ledger
+## Workstream 3: Durability
 
-- Add implementation detail to the owning package architecture or operational
-  guide, not this file.
-- Update this file only when a remaining gate changes state, an ownership decision
-  changes, or a new release blocker appears.
-- Link exact dated observations under
-  [`pi-coding-agent-removal/evidence/`](pi-coding-agent-removal/evidence/).
-- Never edit historical evidence to match later behavior.
-- Remove completed bullets instead of accumulating a second implementation history.
-- Do not add exact test totals, source sizes, or generated inventories. Link the
-  executable owner instead.
+Goal: prove that committed state survives faults and ambiguous operations without
+silent loss, duplicate effects, or unsafe replay.
+
+### Database and migration faults
+
+- [ ] Test malformed records, corrupted pages, missing indexes, incompatible schema
+  versions, interrupted migrations, rollback, and recovery from backups.
+- [ ] Verify fresh install, supported upgrade paths, repeated migration, and
+  downgrade refusal. Preserve bytes through export and import.
+- [ ] Test stale writers, compare-and-swap conflicts, fencing-token rollover,
+  concurrent readers, and process restart during transactions.
+
+### Session and response integrity
+
+- [ ] Cover partial assistant messages, interrupted provider streams, temporary
+  state, failed compaction commits, and restart faults between admission and
+  settlement.
+- [ ] Prove replay equality for committed messages, context artifacts, effects,
+  plans, worker messages, and automation state.
+- [ ] Preserve admitted effect order and mark crash-left started effects as
+  uncertain instead of replaying them.
+
+### Context and compaction
+
+- [ ] Test context-window overflow, repeated threshold compaction, manual compaction
+  during active work, cancellation, retries, and restart recovery.
+- [ ] Verify retained-reference validity, stable prompt prefixes, cache-read and
+  cache-write accounting, and bounded rehydration against real provider requests.
+- [ ] Prove that visible history, retained model context, summaries, and memory
+  projections remain distinct after resume, switch, fork, import, and export.
+
+Acceptance gate:
+
+- The corruption, migration, stale-writer, interrupted-write, and replay corpus
+  passes against the packaged Rust actor.
+- No committed record disappears, duplicates, or changes semantic order after
+  restart or migration.
+- Every uncertain effect remains fenced from automatic replay.
+- Compaction remains bounded and restart-safe. Cache behavior stays stable at and
+  beyond the configured context limit.
+
+## Workstream 4: Security
+
+Goal: prove that every execution route crosses the same validation, policy, trust,
+approval, effect, and settlement boundaries.
+
+### Zero-bypass matrix
+
+- [ ] Test model calls, base tools, Octocode tools, MCP, hooks, plugins,
+  automations, workers, RPC, and ACP through every permission mode.
+- [ ] Verify schema rejection, input-sensitive policy, trust, managed policy, plan
+  and lock rules, capability ceilings, mandatory approval, effect admission,
+  bounded execution, cancellation, and settlement.
+- [ ] Test direct calls, retries, fallback providers, restored sessions, scheduled
+  actions, worker commands, and protocol-originated requests.
+- [ ] Prove that `allow-all` bypasses only promptable approval and never bypasses a
+  mandatory boundary.
+
+### Secrets and spoofing
+
+- [ ] Inject credentials and secret-shaped values into settings, provider errors,
+  MCP results, tool arguments, plugin output, worker messages, session exports,
+  logs, notifications, and alternate output.
+- [ ] Test plugin identity spoofing, changed hashes, path substitution, manifest
+  confusion, stale activation leases, partial activation, and rollback residue.
+- [ ] Test MCP server identity changes, redirect confusion, origin confusion, OAuth
+  state mismatch, callback replay, credential revocation, and catalog replacement.
+
+### Capability and rollback safety
+
+- [ ] Approve explicit plugin capabilities for filesystem, process, network, MCP,
+  model, secret, settings, and UI contributions.
+- [ ] Verify least-privilege capability projection and rejection of undeclared or
+  escalated operations.
+- [ ] Test update, restart, rollback, failed rollback, and recovery without leaking
+  secrets or retaining unauthorized capability.
+
+Acceptance gate:
+
+- Every zero-bypass cell has an executable receipt and no unsupported silent skip.
+- Secret-shaped values remain absent from every user-visible, persisted, exported,
+  and diagnostic surface.
+- Spoofed, changed, stale, or capability-mismatched extensions fail closed.
+- Update and rollback restore the exact approved capability and secret state.
+
+## Workstream 5: Configuration
+
+Goal: make one revisioned settings registry authoritative across CLI, runtime,
+browser, sessions, and supported adapters.
+
+### Registry convergence
+
+- [ ] Inventory every settings reader, writer, default, environment override, and
+  compatibility source.
+- [ ] Move remaining direct writers behind the revisioned settings service and
+  remove duplicate parsing, validation, and redaction logic.
+- [ ] Define application timing for immediate, next-turn, next-session, and
+  restart-required settings.
+- [ ] Preserve protected keys, source provenance, revision preconditions, atomic
+  writes, and sanitized projections.
+
+### End-to-end settings surfaces
+
+- [ ] Test Models: discovery, selection, fallback order, credentials, health checks,
+  provider changes, and failure recovery.
+- [ ] Test Hooks: discovery, enablement, matcher behavior, timeout, cancellation,
+  output routing, failure, and compatibility fixtures.
+- [ ] Test Plugins: discovery, review, activation, update, rollback, restart,
+  capabilities, leases, and residue cleanup.
+- [ ] Test Skills: discovery, source trust, enablement, refresh, policy, session
+  projection, and compaction behavior.
+- [ ] Test Connections: MCP discovery, enablement, per-tool overrides, OAuth,
+  revocation, reconnect, and catalog changes.
+- [ ] Test diagnostics, reset, import, export, backup, recovery, and invalid input.
+
+### Concurrency and host consistency
+
+- [ ] Test concurrent CLI, browser, runtime, and process writers with stale
+  revisions and interrupted writes.
+- [ ] Verify that every surface observes the same effective value, provenance,
+  redaction, and application timing.
+- [ ] Run native and Pi-adapter conformance for shared settings without introducing
+  a native dependency on Pi.
+- [ ] Test packed browser security, accessibility, responsive layout, no-store
+  behavior, action tokens, rollback, and recovery.
+
+Acceptance gate:
+
+- One registry owns every public setting and no direct writer remains.
+- Models, Hooks, Plugins, Skills, Connections, diagnostics, reset, import, export,
+  backup, and recovery pass through CLI, browser, and runtime paths.
+- Concurrent writers settle through revisions without lost updates or partial
+  configuration.
+- Native and supported adapter projections agree on shared configuration semantics.
+
+## Execution order
+
+Complete the workstreams in this order:
+
+1. Terminal UX polish, because it defines the observable state required by later
+   end-to-end scenarios.
+2. Workers and orchestration. Durability and security tests need settled worker
+   lifecycle semantics.
+3. Durability. Security and configuration recovery rely on stable storage and
+   replay behavior.
+4. Security. The zero-bypass and rollback matrices depend on completed execution
+   and durability boundaries.
+5. Configuration, followed by the full cross-surface and packed-install matrix.
+
+Workstreams can prepare independent fixtures in parallel, but a later acceptance
+gate cannot compensate for an earlier failed gate.
+
+## Release gate
+
+Run focused tests during development. Before changing the release decision, run
+all of the following from a clean commit:
+
+```bash
+yarn workspace octocode-agent verify
+yarn verify
+cargo test --manifest-path packages/octocode-agent-core-rust/Cargo.toml
+```
+
+The final release record must also contain:
+
+- Packed-install results for every supported operating system and architecture.
+- Credentialed provider and MCP results. These results must include cancellation
+  and fault cases.
+- Assistive-technology and keyboard-only terminal results.
+- Durability, zero-bypass, secret-leak, configuration, and rollback matrices.
+- Canary thresholds, owners, stop conditions, observation duration, and outcome.
+
+Keep the decision at `HOLD` until every checkbox and acceptance gate is complete.

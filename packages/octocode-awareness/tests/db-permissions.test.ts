@@ -9,7 +9,7 @@ describe('Awareness database permissions', () => {
   it('repairs the memory directory and database to owner-only access', () => {
     const root = mkdtempSync(join(tmpdir(), 'awareness-permissions-'));
     const memory = join(root, 'memory');
-    const dbPath = join(memory, 'agent.sqlite3');
+    const dbPath = join(memory, 'awareness.sqlite3');
     try {
       const db = connectDb(dbPath);
       db.close();

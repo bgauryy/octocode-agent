@@ -7,20 +7,24 @@
  *   artifact is the optional workspace-local package/service/component slice.
  */
 import { resolve } from 'node:path';
-import { agentDbPath } from '@octocodeai/octocode-shared/paths';
 import { hardenSqliteFiles, preparePrivateSqlitePath } from '@octocodeai/octocode-shared/permissions';
 import { utcNow } from './helpers.js';
 import { journalModeForSqliteVersion } from './sqlite-runtime.js';
-import type { AwarenessStorageScope } from './storage-scope.js';
 import {
-  AGENT_HOST_EXTRA_RELATIONS,
+  AWARENESS_APPLICATION_ID,
+  awarenessDatabasePath,
+  type AwarenessStorageScope,
+} from './storage-scope.js';
+import {
+  AWARENESS_COORDINATION_RELATIONS,
   assertCanonicalRelationContract,
   assertCanonicalSchemaFingerprint,
   canonicalColumns,
 } from './db-introspection.js';
 import { initializeDb } from './db-init.js';
 import { AGENT_APPLICATION_ID } from '@octocodeai/octocode-shared/schema';
-import { initOctocodeSchema } from '@octocodeai/octocode-shared/schema';
+
+export { AWARENESS_APPLICATION_ID } from './storage-scope.js';
 
 // The low-level `node:sqlite` runtime — warning-filtered `DatabaseSync`, the
 // bounded BUSY retry, and the WAL checkpoint — is shared with Awareness.
@@ -55,10 +59,10 @@ export const _dbCache = new Map<string, DatabaseSync>();
 /** Resolve a DB path from an override arg or the default location. */
 export function resolveDbPath(
   dbArg?: string | null,
-  _options: { scope?: AwarenessStorageScope; workspace?: string } = {},
+  options: { scope?: AwarenessStorageScope; workspace?: string } = {},
 ): string {
   if (dbArg) return resolve(dbArg);
-  return agentDbPath();
+  return awarenessDatabasePath(options.workspace ?? process.cwd(), options.scope ?? 'repo');
 }
 
 // ─── Connection ───────────────────────────────────────────────────────────────
@@ -76,7 +80,7 @@ export function connectDb(dbPath: string): DatabaseSync {
     // read-only guard fail immediately with SQLITE_BUSY.
     db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_DEADLINE_MS}`);
     // Fail closed before journal mode, foreign-key state, or DDL can touch a
-    // foreign store. Canonical OCTA stores take a strict read-only fast path.
+    // foreign store. Canonical OCT1 stores take a strict read-only fast path.
     const schemaState = inspectSchemaState(db);
     const versionRow = db.prepare('SELECT sqlite_version() AS version').get() as { version: string };
     const journalMode = journalModeForSqliteVersion(versionRow.version);
@@ -86,9 +90,6 @@ export function connectDb(dbPath: string): DatabaseSync {
     withSqliteBusyRetry(() => db.exec(`PRAGMA journal_mode = ${journalMode}`));
     db.exec('PRAGMA foreign_keys = ON');
     initializeDb(db, schemaState);
-    initOctocodeSchema(db);
-    const identityAfterInit = db.prepare('PRAGMA application_id').get() as { application_id: number };
-    if (identityAfterInit.application_id === 0) db.exec(`PRAGMA application_id = ${AGENT_APPLICATION_ID}`);
     hardenSqliteFiles(dbPath);
     _db = db;
     return db;
@@ -103,7 +104,7 @@ export interface SchemaIdentity {
   relations: Array<{ name: string; type: string }>;
 }
 
-export type SchemaState = 'fresh' | 'agent-host' | 'canonical';
+export type SchemaState = 'fresh' | 'awareness-host' | 'canonical';
 
 export function readSchemaIdentity(db: DatabaseSync): SchemaIdentity {
   const application = db.prepare('PRAGMA application_id').get() as { application_id: number };
@@ -127,25 +128,32 @@ export function inspectSchemaState(db: DatabaseSync): SchemaState {
   const expected = new Set(canonicalColumns().keys());
   const relationNames = new Set(identity.relations.map(({ name }) => name));
   const canonicalCount = [...expected].filter((name) => relationNames.has(name)).length;
-  const knownAgentHost = identity.relations.every(({ name, type }) => (
-    type === 'table' && (expected.has(name) || name === 'memories_fts' || AGENT_HOST_EXTRA_RELATIONS.has(name))
+  const knownAwarenessHost = identity.relations.every(({ name, type }) => (
+    type === 'table' && (expected.has(name) || name === 'memories_fts' || AWARENESS_COORDINATION_RELATIONS.has(name))
   ));
-  if (identity.applicationId === AGENT_APPLICATION_ID || identity.applicationId === 0) {
+  if (identity.applicationId === AWARENESS_APPLICATION_ID || identity.applicationId === 0) {
     if (identity.relations.length === 0) return 'fresh';
-    if (!knownAgentHost) {
+    if (!knownAwarenessHost) {
       const names = identity.relations.map(({ name }) => name).join(', ');
-      throw new Error(`refusing unrecognized or unrelated agent SQLite store; relations: ${names}`);
+      throw new Error(`refusing unrecognized or unrelated Awareness SQLite store; relations: ${names}`);
     }
-    if (canonicalCount === 0) return 'agent-host';
+    if (canonicalCount === 0) return 'awareness-host';
     if (canonicalCount !== expected.size) {
-      throw new Error(`refusing partially initialized Awareness module (${canonicalCount}/${expected.size} relations)`);
+      // Historical OCT1 stores legitimately contain earlier subsets of the
+      // Awareness module. All existing relations have already been checked
+      // against the owner allowlist, so route them through the transactional,
+      // additive initializer instead of stranding valid coordination data.
+      return 'awareness-host';
     }
     assertCanonicalRelationContract(db, identity.relations);
     assertCanonicalSchemaFingerprint(db);
     return 'canonical';
   }
+  if (identity.applicationId === AGENT_APPLICATION_ID) {
+    throw new Error(`refusing Agent SQLite store; Awareness requires application_id ${AWARENESS_APPLICATION_ID}`);
+  }
   throw new Error(
-    `refusing foreign Awareness application_id ${identity.applicationId}; expected agent ${AGENT_APPLICATION_ID}`,
+    `refusing foreign Awareness application_id ${identity.applicationId}; expected ${AWARENESS_APPLICATION_ID}`,
   );
 }
 

@@ -27,7 +27,7 @@ describe('core branch coverage helpers', () => {
 
     const dir = mkdtempSync(join(tmpdir(), 'oc-db-utils-'));
     try {
-      const dbPath = join(dir, 'agent.sqlite3');
+      const dbPath = join(dir, 'awareness.sqlite3');
       const first = connectCachedDb(dbPath);
       const second = connectCachedDb(dbPath);
       expect(first).toBe(second);

@@ -80,6 +80,11 @@ describe("PlanWidget", () => {
     ]);
     expect(state.regions[3]?.text).toContain(">> CURRENT");
     expect(state.regions[3]?.text).toContain("2. [DOING]");
+    expect(state.regions[0]).toMatchObject({
+      role: "content",
+      text: "Plan · ACTIVE · 1/3 complete",
+    });
+    expect(state.regions[0]?.text).not.toMatch(/plan-1|revision/iu);
     expect(widget.toPlainText()).toContain(
       "Plan plan-1 — revision 3 — phase ACTIVE",
     );

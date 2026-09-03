@@ -54,7 +54,7 @@ paths or copy the bundled skill from an agent prompt. `maintenance init` is safe
 to repeat.
 
 This package bundles only the Awareness skill; install other workflow skills with
-`npx octocode skill --name <skill>` when needed.
+`octocode skill install <name>` when needed.
 
 Discovery is lazy — reach for an inventory only when the next action needs it:
 
@@ -71,6 +71,9 @@ npx @octocodeai/octocode-awareness docs list --compact
 | `scripts/hook-runner.mjs` | Shared host lifecycle implementation. |
 | `scripts/extract-hook-files.mjs` | Host payload path extraction. |
 | `scripts/hooks/*.sh` | Thin lifecycle wrappers. |
+
+`agents/openai.yaml` supplies the OpenAI skill interface metadata.
+`evals/trigger-cases.json` is the maintained activation regression corpus.
 
 These are generated artifacts — do not hand-edit. Maintainers regenerate them from
 `src/schema/*.ts` and `bin/*.ts`.

@@ -172,7 +172,7 @@ describe('full-loop host hook contracts', () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'awareness hook aggregation '));
       const workspace = join(memoryDir, 'workspace');
       mkdirSync(workspace, { recursive: true });
-      writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
+      writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'repo', memory: 'repo' }, hooks: { profile: 'full' } });
     const priorMemoryHome = process.env.OCTOCODE_AGENT_DIR;
     const priorAgentId = process.env.OCTOCODE_AGENT_ID;
     process.env.OCTOCODE_AGENT_DIR = memoryDir;
@@ -190,7 +190,7 @@ describe('full-loop host hook contracts', () => {
         expect(await runHookCommand('post-edit', payload, { host: 'claude' })).toBe(0);
       }
 
-      const database = connectDb(resolveDbPath(null));
+      const database = connectDb(resolveDbPath(null, { workspace }));
       expect(database.prepare("SELECT COUNT(*) AS count FROM task_runs WHERE origin = 'HOOK' AND status = 'ACTIVE'").get()).toEqual({ count: 1 });
       expect(database.prepare('SELECT COUNT(*) AS count FROM run_files WHERE ended_at IS NULL').get()).toEqual({ count: 5 });
       const activePlan = database.prepare("SELECT test_plan FROM task_runs WHERE origin = 'HOOK' AND status = 'ACTIVE'").get() as { test_plan: string };
@@ -284,7 +284,7 @@ describe('full-loop host hook contracts', () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'awareness failed hook '));
       const workspace = join(memoryDir, 'workspace');
       mkdirSync(workspace, { recursive: true });
-      writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
+      writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'repo', memory: 'repo' }, hooks: { profile: 'full' } });
     const priorMemoryHome = process.env.OCTOCODE_AGENT_DIR;
     const priorAgentId = process.env.OCTOCODE_AGENT_ID;
     process.env.OCTOCODE_AGENT_DIR = memoryDir;
@@ -304,7 +304,7 @@ describe('full-loop host hook contracts', () => {
         is_error: true,
       }), { host: 'claude' })).toBe(0);
 
-      const database = connectDb(resolveDbPath(null));
+      const database = connectDb(resolveDbPath(null, { workspace }));
       expect(database.prepare('SELECT COUNT(*) AS count FROM edit_log').get()).toEqual({ count: 0 });
       expect(database.prepare('SELECT COUNT(*) AS count FROM run_files').get()).toEqual({ count: 0 });
       expect(database.prepare('SELECT COUNT(*) AS count FROM task_runs').get()).toEqual({ count: 0 });
@@ -323,7 +323,7 @@ describe('full-loop host hook contracts', () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'awareness hook race '));
       const workspace = join(memoryDir, 'workspace');
       mkdirSync(workspace, { recursive: true });
-      writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
+      writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'repo', memory: 'repo' }, hooks: { profile: 'full' } });
     const priorMemoryHome = process.env.OCTOCODE_AGENT_DIR;
     const priorAgentId = process.env.OCTOCODE_AGENT_ID;
     process.env.OCTOCODE_AGENT_DIR = memoryDir;
@@ -341,7 +341,7 @@ describe('full-loop host hook contracts', () => {
         }),
       ]);
 
-      const database = connectDb(resolveDbPath(null));
+      const database = connectDb(resolveDbPath(null, { workspace }));
       expect(database.prepare("SELECT COUNT(*) AS count FROM task_runs WHERE origin = 'HOOK' AND status = 'ACTIVE'").get()).toEqual({ count: 1 });
       expect(database.prepare('SELECT COUNT(*) AS count FROM run_files WHERE ended_at IS NULL').get()).toEqual({ count: 2 });
       for (const [toolUseId, file] of [['race-a', 'src/a.ts'], ['race-b', 'src/b.ts']] as const) {
@@ -367,7 +367,7 @@ describe('full-loop host hook contracts', () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'awareness recursive stop '));
       const workspace = join(memoryDir, 'workspace');
       mkdirSync(workspace, { recursive: true });
-      writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
+      writeWorkspacePolicy(workspace, { version: 1, storage: { repository: 'repo', memory: 'repo' }, hooks: { profile: 'full' } });
     const priorMemoryHome = process.env.OCTOCODE_AGENT_DIR;
     const priorAgentId = process.env.OCTOCODE_AGENT_ID;
     process.env.OCTOCODE_AGENT_DIR = memoryDir;
@@ -383,7 +383,7 @@ describe('full-loop host hook contracts', () => {
       expect(await runHookCommand('stop-verify', JSON.stringify(stopPayload), { host: 'claude' })).toBe(2);
       await edit('continuation', 'src/continuation.ts');
       expect(await runHookCommand('stop-verify', JSON.stringify({ ...stopPayload, stop_hook_active: true }), { host: 'claude' })).toBe(2);
-      const database = connectDb(resolveDbPath(null));
+      const database = connectDb(resolveDbPath(null, { workspace }));
       expect(database.prepare("SELECT COUNT(*) AS count FROM task_runs WHERE origin = 'HOOK' AND status = 'PENDING'").get()).toEqual({ count: 2 });
       expect(await runHookCommand('stop-verify', JSON.stringify({ ...stopPayload, stop_hook_active: true }), { host: 'claude' })).toBe(0);
       expect(auditUnverified(database, { agentId: 'hook-recursive-agent', workspacePath: workspace }).count).toBe(2);

@@ -56,6 +56,7 @@ import {
   type OpenTuiStore,
 } from './state/view-store.js';
 import type { NativeWorkerOperationIntent } from '../../native-worker-operations.js';
+import { resolveOpenTuiRailWidth } from './layout-policy.js';
 
 type RendererContext = Awaited<ReturnType<typeof createCliRenderer>>;
 
@@ -122,12 +123,14 @@ export function createOpenTuiRendererFacade(
   const transcript = new BoxRenderable(renderer, {
     id: 'octocode-agent-transcript',
     flexGrow: 2,
+    minWidth: 0,
     flexDirection: 'column',
   });
   const rail = new ScrollBoxRenderable(renderer, {
     id: 'octocode-agent-rail',
     width: '42%',
     height: '100%',
+    flexShrink: 0,
     flexDirection: 'column',
     scrollY: true,
     stickyStart: 'top',
@@ -207,8 +210,8 @@ export function createOpenTuiRendererFacade(
     bg: color('surfaceRaised'),
   });
   editor.add(shortcutHelp);
-  editor.add(composer);
   editor.add(composerHelp);
+  editor.add(composer);
   const width = Math.max(1, renderer.width);
   const height = Math.max(1, renderer.height);
   const store = injectedStore ?? createOpenTuiStore({
@@ -303,14 +306,14 @@ export function createOpenTuiRendererFacade(
   const railSelectionChanged = (): void => syncRailPane();
   railTabs.on(TabSelectRenderableEvents.SELECTION_CHANGED, railSelectionChanged);
   railTabs.on(TabSelectRenderableEvents.ITEM_SELECTED, railSelectionChanged);
-  railTabs.setSelectedIndex(1);
+  railTabs.setSelectedIndex(0);
   syncRailPane();
 
   const applyResponsiveLayout = (nextWidth: number, nextHeight: number): void => {
     store.getState().actions.resize(nextWidth, nextHeight);
     const layout = selectOpenTuiLayoutContext(store.getState());
     body.flexDirection = layout.narrow ? 'column' : 'row';
-    rail.width = layout.narrow ? '100%' : '42%';
+    rail.width = layout.narrow ? '100%' : resolveOpenTuiRailWidth(nextWidth);
     const compactRailHeight = layout.short
       ? NATIVE_DESIGN_LAYOUT.minimumActivityRows
       : Math.max(NATIVE_DESIGN_LAYOUT.minimumActivityRows, Math.floor(nextHeight / 3));
@@ -650,6 +653,13 @@ export function createOpenTuiRendererFacade(
       activeDiscussAvailable = selectDiscussAvailable(projectedStoreState);
       applyActionPlaneLayout(Math.max(1, renderer.height));
       if (activeGeneration !== undefined) clearAssist();
+      const actionableStatus = state.runtimeWidgets?.statusNotifications?.some(
+        ({ action }) => action !== undefined,
+      ) === true;
+      if (actionableStatus && railTabs.getSelectedIndex() !== 1) {
+        railTabs.setSelectedIndex(1);
+        syncRailPane();
+      }
       adapter.setInteractionGeneration(activeGeneration);
       if (activeGeneration !== undefined && store.getState().view.focusedSemanticId !== undefined) {
         controller?.focusWidget(undefined);

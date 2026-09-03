@@ -2,6 +2,18 @@
 
 The native Octocode coding agent: one command, one update path, and no native Pi dependency.
 
+Run it without installing it globally:
+
+```bash
+npx octocode-agent
+```
+
+The launcher opens the interactive terminal by default and enables the Node.js
+FFI support required by OpenTUI automatically. Users don't need to set
+`NODE_OPTIONS`.
+
+To install the command globally and initialize managed configuration, run:
+
 ```bash
 npm install -g octocode-agent
 octocode-agent setup --fix
@@ -52,7 +64,10 @@ octocode-agent run --json ...    One-shot JSON events
 octocode-agent run --permissions strict|default|allow-all ...
 octocode-agent serve             Versioned JSONL RPC on stdio
 
-octocode-agent config get|set|list|sources
+octocode-agent config get <key>
+octocode-agent config set <key> <value>
+octocode-agent config list
+octocode-agent config sources
 octocode-agent setup [--fix] [--scope global|project|all]
 octocode-agent auth [login]
 octocode-agent models [--set provider/model|--check] [--json]
@@ -64,9 +79,11 @@ octocode-agent doctor
 octocode-agent update [platform]
 octocode-agent completion bash|zsh|fish
 octocode-agent tools|skills|memory|awareness
+octocode-agent help [command]
 ```
 
-Run `octocode-agent --help` for the installed command truth.
+Run `octocode-agent --help` for every top-level flag, or run
+`octocode-agent help <command>` for command-specific usage.
 See the [headless runtime guide](docs/HEADLESS.md) for prompt composition,
 protocol envelopes, caching, MCP, and Agent Skills behavior.
 See [parallel tools, MCP calls, and workers](docs/PARALLELISM_AND_WORKERS.md)
@@ -85,6 +102,36 @@ transcript stays on screen for continuity.
 `/compact` uses the launcher's durable compaction service. Manual and automatic
 compaction commit the validated summary projection before replacing live context.
 
+## Interactive terminal behavior
+
+The terminal keeps the conversation primary and projects operational state into
+bounded, readable surfaces:
+
+- The header shows the active mode, trust state, selected model, and session state.
+- The conversation surface distinguishes user messages, assistant messages,
+  failures, cancellations, safe thinking phases, tools, MCP calls, and Skills.
+  Dedicated surfaces show plans, approvals, compaction, and workers.
+- The Activity/Context rail shows detailed status and token usage on wide terminals.
+  Narrow terminals retain a prioritized one-line summary instead of discarding the
+  state.
+- The footer shows only the most relevant active lifecycle state and keyboard help.
+  Session changes, provider requests, resource discovery, trust resolution, and
+  compaction update it as events arrive.
+- Context details include input, output, cache-read, and cache-write token counts
+  when the provider reports them. The compact footer reports occupied context and
+  the percentage remaining.
+- Base tools use human-readable summaries such as the file path, command, URL, or
+  media target. Raw tool arguments and runtime payloads don't become transcript
+  content.
+- Session switching replaces the visible transcript with the selected session.
+  Resume after compaction restores committed visible history separately from the
+  retained model context.
+
+The terminal shows safe phases such as `Thinking…` and `Planning…`. It never shows
+hidden chain-of-thought, provider reasoning payloads, credentials, or private worker
+prompts. See the [terminal design system](docs/TERMINAL_DESIGN_SYSTEM.md) for the
+semantic and accessibility contract.
+
 Use `--model provider/model` on an interactive, `run`, or `serve` invocation to
 override the configured model for that process. Add one or more
 `--fallback-model provider/model` flags to opt into an ordered preflight chain.
@@ -94,7 +141,40 @@ and fails closed if none pass. It never changes providers implicitly. Run
 the report contains only sanitized readiness and failure categories, never secrets
 or provider response bodies.
 
+## Storage ownership
+
+The native Agent owns only `$OCTOCODE_HOME/agent/`:
+
+| Path | Owner and purpose |
+|---|---|
+| `$OCTOCODE_HOME/agent/agent.sqlite3` | Agent control, settings, discovery, and session indexes |
+| `$OCTOCODE_HOME/agent/core.sqlite3` | Rust-backed sessions, events, effects, lifecycle records, automations, worker communication, dependency-work ledgers, leases, revisions, and fencing |
+| `$OCTOCODE_HOME/agent/sessions/` | Agent session artifacts; the file fallback uses encoded `.json`, `.bak`, `.head`, and `.segments/` records, while Rust-backed sessions remain canonical in `core.sqlite3` |
+| `$OCTOCODE_HOME/agent/workspaces/` | Workspace-keyed Agent configuration and discovery artifacts |
+
+Awareness is a separate owner. Its default database is
+`<workspace>/.octocode/awareness.sqlite3`; an explicit global Awareness scope
+uses `$OCTOCODE_HOME/awareness/awareness.sqlite3`. The Agent never initializes
+Awareness tables in either Agent database, and Awareness never opens Agent
+control or runtime state. Other CLI/MCP databases under `.octocode/` remain with
+their own owners. See the [storage boundary](../octocode-awareness/docs/STORAGE_SCOPES.md)
+and [Awareness database contract](../octocode-awareness/docs/DB.md).
+
 ## Runtime configuration
+
+Configuration uses the following precedence, from highest to lowest:
+
+1. Session flags such as `--model` and `--permissions`.
+2. Native settings stored under `$OCTOCODE_HOME/agent/`.
+3. A trusted workspace Pi selection, then the Pi user selection, when native
+   settings don't select a model.
+4. The canonical OpenAI default.
+
+Session flags don't rewrite persistent settings. Use
+`octocode-agent models --set <provider/model>` to save provider and model
+atomically. Use `octocode-agent config get|set|list` for the other public
+settings. See the [settings reference](docs/SETTINGS.md) for keys, accepted
+values, defaults, and application timing.
 
 Model/provider discovery is file-backed. Environment variables supply credentials only:
 

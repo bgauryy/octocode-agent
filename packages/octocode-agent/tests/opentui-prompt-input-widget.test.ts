@@ -184,6 +184,7 @@ describe('PromptInputWidget', () => {
     expect(widget.render().regions.at(-1)).toEqual({
       id: 'validation',
       role: 'status',
+      tone: 'error',
       text: 'A value is required.',
     });
 

@@ -18,10 +18,8 @@ export interface ColumnInfo {
 
 export let _canonicalColumns: Map<string, ColumnInfo[]> | undefined;
 
-/** Relations owned by other modules inside the one agent database. */
-export const AGENT_HOST_EXTRA_RELATIONS = new Set([
-  'agent_schema_modules', 'octocode_meta', 'agent_sessions',
-  'mcp_server_overrides', 'mcp_tool_overrides', 'skill_overrides', 'mcp_catalog_state',
+/** Awareness relations owned by the coordination surface rather than SCHEMA_DDL. */
+export const AWARENESS_COORDINATION_RELATIONS = new Set([
   'plans', 'tasks', 'locks', 'memories', 'agents', 'work_presence', 'handoffs',
   'messages', 'message_receipts', 'event_outbox', 'event_consumers',
   'event_acknowledgements', 'authorization_receipts', 'capability_receipts',
@@ -125,7 +123,7 @@ export function assertCanonicalRelationContract(
   const actual = new Set(actualRows.map(({ name }) => name));
   const missing = [...expected].filter((name) => !actual.has(name));
   const unexpected = actualRows.filter(({ name, type }) => (
-    type !== 'table' || (!expected.has(name) && name !== 'memories_fts' && !AGENT_HOST_EXTRA_RELATIONS.has(name))
+    type !== 'table' || (!expected.has(name) && name !== 'memories_fts' && !AWARENESS_COORDINATION_RELATIONS.has(name))
   ));
   if (missing.length === 0 && unexpected.length === 0) return;
   const details = [

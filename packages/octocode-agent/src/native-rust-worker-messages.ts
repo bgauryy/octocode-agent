@@ -1,15 +1,30 @@
+import { createHash } from "node:crypto";
 import { safeValidateUIMessages, type UIMessage } from "ai";
 import { z } from "zod";
-import { RuntimeFailure } from "@octocodeai/agent-core";
+import {
+  RuntimeFailure,
+  type WorkerAuthorityV1,
+} from "@octocodeai/agent-core";
 import type {
-  NativeRustCommunicationClaimInput,
-  NativeRustCommunicationClaimResult,
   NativeRustCommunicationAbandonPrefixResult,
-  NativeRustCommunicationEnqueueInput,
-  NativeRustCommunicationMutationResult,
-  NativeRustCommunicationReceiptInput,
+  NativeRustCoreObject,
+  NativeRustWorkerAuthority,
+  NativeRustWorkerMailboxClaimInput,
+  NativeRustWorkerMailboxClaimResult,
+  NativeRustWorkerMailboxEnqueueInput,
+  NativeRustWorkerMailboxExtendInput,
+  NativeRustWorkerMailboxKey,
+  NativeRustWorkerMailboxLeaseInput,
+  NativeRustWorkerMailboxListInput,
+  NativeRustWorkerMailboxListResult,
+  NativeRustWorkerMailboxMutationResult,
+  NativeRustWorkerMailboxOpenInput,
+  NativeRustWorkerMailboxOpenResult,
+  NativeRustWorkerMailboxSettleInput,
+  NativeRustWorkerMailboxTerminalizeInput,
 } from "./native-rust-core.js";
-import { NativeRustCoreError } from "./native-rust-core.js";
+import { nativeWorkerAuthorityDigest } from "./native-worker-worktrees.js";
+export { nativeWorkerAuthorityDigest } from "./native-worker-worktrees.js";
 
 const identifierSchema = z
   .string()
@@ -56,36 +71,54 @@ export interface NativeWorkerMessageStageInput {
   readonly parentAgentId: string;
   readonly requestId: string;
   readonly command: NativeWorkerInputCommand;
+  readonly authority: WorkerAuthorityV1;
+  readonly authorityDigest?: string;
+  readonly mailboxGeneration: number;
+}
+
+export interface NativeWorkerMailboxAddress {
+  readonly authority: WorkerAuthorityV1;
+  readonly authorityDigest?: string;
+  readonly mailboxGeneration: number;
 }
 
 export interface NativeWorkerMessageLease {
   readonly message: NativeWorkerInputMessage;
   readonly command: NativeWorkerInputCommand;
-  ack(): Promise<void>;
+  readonly sequence: number;
+  readonly pressure?: {
+    readonly messages: number;
+    readonly bytes: number;
+    readonly highWater: boolean;
+  };
+  markWritten(): Promise<void>;
+  extend(): Promise<void>;
+  ack(outcomeDigest?: string): Promise<void>;
   release(): Promise<void>;
+  uncertain(outcomeDigest?: string): Promise<void>;
+  deadLetter(outcomeDigest?: string): Promise<void>;
 }
 
 export interface NativeWorkerMessageJournal {
   stage(
     input: NativeWorkerMessageStageInput,
   ): Promise<NativeWorkerMessageLease>;
+  openMailbox(address: NativeWorkerMailboxAddress): Promise<NativeRustWorkerMailboxOpenResult>;
+  listMailbox(address: NativeWorkerMailboxAddress): Promise<NativeRustWorkerMailboxListResult>;
   abandonSession(sessionId: string): Promise<{ readonly abandoned: number }>;
 }
 
 /** Narrow Rust queue surface, separated from process control for deterministic tests. */
 export interface NativeWorkerCommunicationCore {
-  communicationEnqueue(
-    input: NativeRustCommunicationEnqueueInput,
-  ): Promise<NativeRustCommunicationMutationResult>;
-  communicationClaim(
-    input: NativeRustCommunicationClaimInput,
-  ): Promise<NativeRustCommunicationClaimResult>;
-  communicationAck(
-    input: NativeRustCommunicationReceiptInput,
-  ): Promise<NativeRustCommunicationMutationResult>;
-  communicationRelease(
-    input: NativeRustCommunicationReceiptInput,
-  ): Promise<NativeRustCommunicationMutationResult>;
+  workerMailboxOpen(input: NativeRustWorkerMailboxOpenInput): Promise<NativeRustWorkerMailboxOpenResult>;
+  workerMailboxEnqueue(input: NativeRustWorkerMailboxEnqueueInput): Promise<NativeRustWorkerMailboxMutationResult>;
+  workerMailboxClaim(input: NativeRustWorkerMailboxClaimInput): Promise<NativeRustWorkerMailboxClaimResult>;
+  workerMailboxExtend(input: NativeRustWorkerMailboxExtendInput): Promise<NativeRustWorkerMailboxMutationResult>;
+  workerMailboxRelease(input: NativeRustWorkerMailboxLeaseInput): Promise<NativeRustWorkerMailboxMutationResult>;
+  workerMailboxMarkWritten(input: NativeRustWorkerMailboxLeaseInput): Promise<NativeRustWorkerMailboxMutationResult>;
+  workerMailboxAck(input: NativeRustWorkerMailboxSettleInput): Promise<NativeRustWorkerMailboxMutationResult>;
+  workerMailboxTerminalize(input: NativeRustWorkerMailboxTerminalizeInput): Promise<NativeRustWorkerMailboxMutationResult>;
+  workerMailboxList(input: NativeRustWorkerMailboxListInput): Promise<NativeRustWorkerMailboxListResult>;
   communicationAbandonPrefix(input: {
     readonly channelPrefix: string;
     readonly limit: number;
@@ -96,15 +129,29 @@ export interface NativeRustWorkerMessageJournalOptions {
   readonly consumerId?: string;
   readonly leaseMs?: number;
   readonly now?: () => number;
+  readonly tombstoneRetentionMs?: number;
+  readonly maxMessages?: number;
+  readonly maxBytes?: number;
 }
 
 const DEFAULT_LEASE_MS = 30_000;
+const DEFAULT_TOMBSTONE_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
 function safeIdentifier(value: string, label: string): string {
   const parsed = identifierSchema.safeParse(value);
   if (!parsed.success)
     throw new RuntimeFailure("validation", `${label} is invalid`);
   return parsed.data;
+}
+
+function nonnegativeInteger(value: number | undefined, label: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0)
+    throw new RuntimeFailure("validation", `${label} must be a non-negative integer`);
+  return Number(value);
+}
+
+function durableDigest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function positiveInteger(
@@ -155,6 +202,9 @@ export class NativeRustWorkerMessageJournal implements NativeWorkerMessageJourna
   readonly #core: NativeWorkerCommunicationCore;
   readonly #consumerId: string;
   readonly #leaseMs: number;
+  readonly #tombstoneRetentionMs: number;
+  readonly #maxMessages?: number;
+  readonly #maxBytes?: number;
   readonly #now: () => number;
 
   constructor(
@@ -171,7 +221,70 @@ export class NativeRustWorkerMessageJournal implements NativeWorkerMessageJourna
       DEFAULT_LEASE_MS,
       "Worker message leaseMs",
     );
+    this.#tombstoneRetentionMs = positiveInteger(
+      options.tombstoneRetentionMs,
+      DEFAULT_TOMBSTONE_RETENTION_MS,
+      "Worker message tombstone retention",
+    );
+    this.#maxMessages = options.maxMessages;
+    this.#maxBytes = options.maxBytes;
     this.#now = options.now ?? Date.now;
+  }
+
+  #address(input: NativeWorkerMailboxAddress): NativeRustWorkerMailboxKey {
+    return {
+      authority: input.authority as unknown as NativeRustWorkerAuthority,
+      authorityDigest:
+        input.authorityDigest ?? nativeWorkerAuthorityDigest(input.authority),
+      mailboxGeneration: nonnegativeInteger(
+        input.mailboxGeneration,
+        "Worker mailbox generation",
+      ),
+    };
+  }
+
+  async openMailbox(
+    address: NativeWorkerMailboxAddress,
+  ): Promise<NativeRustWorkerMailboxOpenResult> {
+    const now = this.#timestamp();
+    return await this.#core.workerMailboxOpen({
+      ...this.#address(address),
+      createdAt: now,
+      ...(this.#maxMessages === undefined
+        ? {}
+        : { maxMessages: this.#maxMessages }),
+      ...(this.#maxBytes === undefined ? {} : { maxBytes: this.#maxBytes }),
+    });
+  }
+
+  async listMailbox(
+    address: NativeWorkerMailboxAddress,
+  ): Promise<NativeRustWorkerMailboxListResult> {
+    const records: NativeRustWorkerMailboxListResult[number][] = [];
+    let afterSequence = 0;
+    for (;;) {
+      const page = await this.#core.workerMailboxList({
+        ...this.#address(address),
+        afterSequence,
+        limit: 100,
+      });
+      records.push(...page);
+      if (page.length < 100) return Object.freeze(records);
+      const next = page.at(-1)?.sequence;
+      if (!Number.isSafeInteger(next) || Number(next) <= afterSequence)
+        throw new RuntimeFailure('persistence', 'Worker mailbox pagination did not advance');
+      afterSequence = Number(next);
+    }
+  }
+
+  #timestamp(): number {
+    const value = this.#now();
+    if (!Number.isSafeInteger(value) || value < 0)
+      throw new RuntimeFailure(
+        "validation",
+        "Worker message timestamp is invalid",
+      );
+    return value;
   }
 
   async abandonSession(
@@ -193,6 +306,11 @@ export class NativeRustWorkerMessageJournal implements NativeWorkerMessageJourna
   async stage(
     input: NativeWorkerMessageStageInput,
   ): Promise<NativeWorkerMessageLease> {
+    if (input.authority === undefined || input.mailboxGeneration === undefined)
+      throw new RuntimeFailure(
+        "validation",
+        "Worker authority and mailbox generation are required",
+      );
     const workerId = safeIdentifier(input.workerId, "Worker id");
     const correlationId = safeIdentifier(
       input.correlationId,
@@ -204,12 +322,22 @@ export class NativeRustWorkerMessageJournal implements NativeWorkerMessageJourna
       "Parent agent id",
     );
     const requestId = safeIdentifier(input.requestId, "Worker request id");
-    const createdAt = this.#now();
-    if (!Number.isSafeInteger(createdAt) || createdAt < 0)
+    if (
+      String(input.authority.workerId) !== workerId ||
+      String(input.authority.correlationId) !== correlationId ||
+      String(input.authority.parentSessionId) !== sessionId ||
+      String(input.authority.rootAgentId) !== parentAgentId
+    )
       throw new RuntimeFailure(
         "validation",
-        "Worker message timestamp is invalid",
+        "Worker authority does not match the staged message",
       );
+    const address = this.#address({
+      authority: input.authority,
+      authorityDigest: input.authorityDigest,
+      mailboxGeneration: input.mailboxGeneration,
+    });
+    const createdAt = this.#timestamp();
     const candidate: NativeWorkerInputMessage = {
       id: requestId,
       role: "user",
@@ -237,27 +365,32 @@ export class NativeRustWorkerMessageJournal implements NativeWorkerMessageJourna
       );
     }
     const message = validated.data[0]!;
-    const channel = `worker-input:${sessionId}:${workerId}:${requestId}`;
-    try {
-      await this.#core.communicationEnqueue({
-        channel,
-        messageId: requestId,
-        availableAt: createdAt,
-        payload: {
-          schemaVersion: 1,
-          message,
-        } as unknown as NativeRustCommunicationEnqueueInput["payload"],
-      });
-    } catch (error) {
-      if (!(
-        error instanceof NativeRustCoreError &&
-        error.category === "remote" &&
-        error.code === "CONFLICT"
-      ))
-        throw error;
-    }
-    const claims = await this.#core.communicationClaim({
-      channel,
+    await this.#core.workerMailboxOpen({
+      ...address,
+      createdAt,
+      ...(this.#maxMessages === undefined
+        ? {}
+        : { maxMessages: this.#maxMessages }),
+      ...(this.#maxBytes === undefined ? {} : { maxBytes: this.#maxBytes }),
+    });
+    const payload = {
+      schemaVersion: 1,
+      message,
+    } as unknown as NativeRustCoreObject;
+    const staged = await this.#core.workerMailboxEnqueue({
+      ...address,
+      messageId: requestId,
+      sender: String(input.authority.rootAgentId),
+      recipient: workerId,
+      commandKind: input.command.type === "input.cancel" ? "cancel" : input.command.type,
+      lane: input.command.type === "input.cancel" ? "control" : "data",
+      payload,
+      payloadDigest: durableDigest(payload),
+      availableAt: createdAt,
+      createdAt,
+    });
+    const claims = await this.#core.workerMailboxClaim({
+      ...address,
       consumerId: this.#consumerId,
       now: createdAt,
       leaseMs: this.#leaseMs,
@@ -272,6 +405,7 @@ export class NativeRustWorkerMessageJournal implements NativeWorkerMessageJourna
         claims.length !== 1 ||
         !isObject(claimed) ||
         claimed["messageId"] !== requestId ||
+        claimed["sequence"] !== staged.sequence ||
         !isObject(claimed["payload"]) ||
         !Number.isSafeInteger(claimed["leaseGeneration"]) ||
         Number(claimed["leaseGeneration"]) < 1
@@ -319,34 +453,120 @@ export class NativeRustWorkerMessageJournal implements NativeWorkerMessageJourna
     } catch (error) {
       if (leaseGeneration !== undefined) {
         await this.#core
-          .communicationRelease({
-            channel,
+          .workerMailboxRelease({
+            ...address,
             messageId: requestId,
             consumerId: this.#consumerId,
             leaseGeneration,
+            now: this.#timestamp(),
           })
           .catch(() => undefined);
       }
       throw error;
     }
     const receipt = {
-      channel,
+      ...address,
       messageId: requestId,
       consumerId: this.#consumerId,
       leaseGeneration,
     };
+    const pressure = staged.pressure as
+      | { readonly messages: number; readonly bytes: number; readonly highWater: boolean }
+      | undefined;
+    let written = false;
     let settled = false;
     return Object.freeze({
       message: durableMessage,
       command: durableCommand,
-      ack: async (): Promise<void> => {
+      sequence: Number(staged.sequence),
+      ...(pressure === undefined ? {} : { pressure }),
+      markWritten: async (): Promise<void> => {
+        if (settled)
+          throw new RuntimeFailure("persistence", "Worker message is already terminal");
+        await this.#core.workerMailboxMarkWritten({
+          ...receipt,
+          now: this.#timestamp(),
+        });
+        written = true;
+      },
+      extend: async (): Promise<void> => {
+        if (settled)
+          throw new RuntimeFailure("persistence", "Worker message is already terminal");
+        if (written)
+          throw new RuntimeFailure(
+            "persistence",
+            "Written worker messages cannot extend a delivery lease",
+          );
+        await this.#core.workerMailboxExtend({
+          ...receipt,
+          now: this.#timestamp(),
+          leaseMs: this.#leaseMs,
+        });
+      },
+      ack: async (outcomeDigest?: string): Promise<void> => {
         if (settled) return;
-        await this.#core.communicationAck(receipt);
+        if (!written)
+          throw new RuntimeFailure(
+            "persistence",
+            "Worker message must be marked written before acknowledgement",
+          );
+        const now = this.#timestamp();
+        await this.#core.workerMailboxAck({
+          ...receipt,
+          outcomeDigest:
+            outcomeDigest ?? durableDigest({ messageId: requestId, state: "acknowledged" }),
+          now,
+          tombstoneExpiresAt: now + this.#tombstoneRetentionMs,
+        });
         settled = true;
       },
       release: async (): Promise<void> => {
         if (settled) return;
-        await this.#core.communicationRelease(receipt);
+        if (written)
+          throw new RuntimeFailure(
+            "persistence",
+            "Written worker messages cannot return to pending",
+          );
+        await this.#core.workerMailboxRelease({
+          ...receipt,
+          now: this.#timestamp(),
+        });
+        settled = true;
+      },
+      uncertain: async (outcomeDigest?: string): Promise<void> => {
+        if (settled) return;
+        if (!written)
+          throw new RuntimeFailure(
+            "persistence",
+            "Only written worker messages can become uncertain",
+          );
+        const now = this.#timestamp();
+        await this.#core.workerMailboxTerminalize({
+          ...receipt,
+          state: "uncertain",
+          outcomeDigest:
+            outcomeDigest ?? durableDigest({ messageId: requestId, state: "uncertain" }),
+          now,
+          tombstoneExpiresAt: now + this.#tombstoneRetentionMs,
+        });
+        settled = true;
+      },
+      deadLetter: async (outcomeDigest?: string): Promise<void> => {
+        if (settled) return;
+        if (written)
+          throw new RuntimeFailure(
+            "persistence",
+            "Written worker messages must become uncertain, not dead-lettered",
+          );
+        const now = this.#timestamp();
+        await this.#core.workerMailboxTerminalize({
+          ...receipt,
+          state: "dead-lettered",
+          outcomeDigest:
+            outcomeDigest ?? durableDigest({ messageId: requestId, state: "dead-lettered" }),
+          now,
+          tombstoneExpiresAt: now + this.#tombstoneRetentionMs,
+        });
         settled = true;
       },
     });

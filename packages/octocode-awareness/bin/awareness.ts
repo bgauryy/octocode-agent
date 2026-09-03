@@ -121,7 +121,7 @@ if (command === 'hook-run') {
   // Hooks always write to the canonical store; a `--db` here was silently
   // ignored (edits would land in the real DB regardless), which is a footgun.
   // Fail loudly instead of misleading the caller.
-  if (globalDb || globalDbScope) die('hook run ignores --db and --db-scope: hooks always use the canonical store. Remove the flag, or set OCTOCODE_AGENT_DIR to relocate the store.');
+  if (globalDb || globalDbScope) die('hook run ignores --db and --db-scope: hooks use the payload workspace Awareness store. Remove the flag.');
   process.exit(await runHookCommand(String(args._[0] ?? 'help')));
 }
 

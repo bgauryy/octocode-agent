@@ -10,6 +10,7 @@ import {
   isAllowedConfigKey,
   isOctocodeTheme,
   listSettings,
+  parseConfigSettingValue,
   readSettings,
 } from '../src/settings.js';
 
@@ -68,9 +69,15 @@ describe('ensureOctocodeThemeSetting', () => {
 });
 
 describe('config key allowlist', () => {
-  it('allows native theme writes', () => {
-    expect(ALLOWED_CONFIG_KEYS).toContain('theme');
-    expect(isAllowedConfigKey('theme')).toBe(true);
+  it('matches every public native setting', () => {
+    expect(ALLOWED_CONFIG_KEYS).toEqual([
+      'theme',
+      'reducedMotion',
+      'compactionInputTokenThreshold',
+      'defaultProvider',
+      'defaultModel',
+    ]);
+    for (const key of ALLOWED_CONFIG_KEYS) expect(isAllowedConfigKey(key)).toBe(true);
   });
 
   it('still rejects non-contract keys', () => {
@@ -82,12 +89,28 @@ describe('config key allowlist', () => {
     const dir = tmpDir();
     fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({
       theme: 'octocode-dark',
+      reducedMotion: false,
+      compactionInputTokenThreshold: 80_000,
       defaultModel: 'gpt-5.6',
       apiKey: 'must-never-render',
       arbitrary: { nested: true },
     }));
 
-    expect(listSettings(dir)).toEqual({ theme: 'octocode-dark', defaultModel: 'gpt-5.6' });
+    expect(listSettings(dir)).toEqual({
+      theme: 'octocode-dark',
+      reducedMotion: false,
+      compactionInputTokenThreshold: 80_000,
+      defaultModel: 'gpt-5.6',
+    });
     expect(readSettings(dir)).toMatchObject({ apiKey: 'must-never-render', arbitrary: { nested: true } });
+  });
+
+  it('parses boolean and integer CLI values for the typed registry', () => {
+    expect(parseConfigSettingValue('reducedMotion', 'true')).toBe(true);
+    expect(parseConfigSettingValue('reducedMotion', 'false')).toBe(false);
+    expect(parseConfigSettingValue('reducedMotion', 'yes')).toBe('yes');
+    expect(parseConfigSettingValue('compactionInputTokenThreshold', '64000')).toBe(64_000);
+    expect(parseConfigSettingValue('compactionInputTokenThreshold', '64k')).toBe('64k');
+    expect(parseConfigSettingValue('theme', 'octocode-light')).toBe('octocode-light');
   });
 });

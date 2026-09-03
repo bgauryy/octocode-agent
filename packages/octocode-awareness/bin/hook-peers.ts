@@ -16,8 +16,8 @@ import type { WorkPeer } from '../src/types.js';
 import { INTERNAL_HOOK_HOST, agentId, agentName, artifact, resolveHookPath, workspace } from './hook-payload.js';
 import { overlapChangeSignal } from './hook-signals.js';
 
-export function peerStateDir(): string {
-  const stateDir = join(dirname(resolveDbPath(null)), 'hook-state', 'peers');
+export function peerStateDir(workspacePath = process.cwd()): string {
+  const stateDir = join(dirname(resolveDbPath(null, { scope: 'repo', workspace: workspacePath })), 'hook-state', 'peers');
   mkdirSync(stateDir, { recursive: true });
   return stateDir;
 }
@@ -51,7 +51,7 @@ export function emitPeerDelta(
   const targetSet = new Set(files.map(file => resolveHookPath(file, cwd)));
   const peers = allPeers.filter(peer => peer.agent_id !== agentId(payload) && targetSet.has(peer.file_path));
   const key = peerStateKey(payload, files, cwd);
-  const stateFile = join(peerStateDir(), `${key}.txt`);
+  const stateFile = join(peerStateDir(cwd), `${key}.txt`);
   const fingerprint = peerFingerprint(peers);
   let previous: string | null = null;
   try { previous = readFileSync(stateFile, 'utf8').trim(); } catch { /* first delivery */ }

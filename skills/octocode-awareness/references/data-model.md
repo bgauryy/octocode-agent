@@ -2,7 +2,7 @@
 
 Load when changing schemas or interpreting stored entities.
 
-The advanced v1 schema lives in `$OCTOCODE_HOME/agent/agent.sqlite3`. Repository coordination is isolated by workspace columns in that same global database. SQLite is canonical; generated `.octocode/` files are projections or authored artifacts.
+The Awareness schema lives in `<workspace>/.octocode/awareness.sqlite3` by default, or `$OCTOCODE_HOME/awareness/awareness.sqlite3` for explicit global scope. SQLite is canonical. Agent control and runtime databases are separate owners, and other `.octocode/` databases or generated files are not Awareness state.
 
 ```text
 plan -> task -> claim/run -> run_files (advisory)

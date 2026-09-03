@@ -103,12 +103,13 @@ list: [--workspace <repo>] [--status <status>] [--limit <1-200>] [--full]
 show/join/doc/status: --plan-id <id>; join also --agent-id <id>; doc uses --agent-id <member> --path docs/NOTE.md --title <text>; status uses --agent-id <lead> --status DRAFT|ACTIVE|PAUSED|COMPLETED|CANCELLED
 example: npx @octocodeai/octocode-awareness plan create --name "Release" --objective "Ship safely" --lead-agent-id agent --workspace "$PWD" --compact
 schema: npx @octocodeai/octocode-awareness schema json-schema plan --compact`,
-  'task-command': `usage: npx @octocodeai/octocode-awareness task create|list|ready|show|claim|heartbeat|submit|release|depend [options]
+  'task-command': `usage: npx @octocodeai/octocode-awareness task create|list|ready|show|claim|heartbeat|submit|release|retry|depend [options]
 create: --plan-id <id> --title <text> --reasoning <text> --acceptance <text> --path <workspace-relative>... --agent-id <id> [--depends-on <task-id>]... [--priority <-1000..1000>] [--lease-minutes <1..60>] [--test-plan <text>]
 list/ready: [--plan-id <id>] [--workspace <repo>] [--status <s>] [--limit <1-200>] [--full]
 show: --task-id <id>
 claim: --task-id <id> --agent-id <id>; or --next --plan-id <id> --agent-id <id>. Returns run_id for lock/submit/verify; exit 2 only when another live claimant owns it.
 heartbeat/submit/release: --task-id <id> --run-id <id> --agent-id <id>; submit optionally --message <text>; release optionally --blocked-reason <text>
+retry: --task-id <failed-task> --agent-id <id> [--message <text>]
 depend: --task-id <id> --depends-on <task-id>...
 example: npx @octocodeai/octocode-awareness task ready --plan-id plan_123 --compact
 schema: npx @octocodeai/octocode-awareness schema json-schema task --compact`,
@@ -125,7 +126,7 @@ note: on overlap, inspect work show and signal if edits interact; never surprise
 schema: npx @octocodeai/octocode-awareness schema json-schema work --compact`,
   'hook-run': `usage: octocode-awareness hook run <pre-edit|post-edit|stop-verify|notify-deliver|session-compact|session-end> < hook-payload.json
 payload: host JSON on stdin; common fields are cwd/workspace, session_id, tool_name, and tool_input/path
-store: hook run intentionally rejects --db; set OCTOCODE_AGENT_DIR to select the hook database`,
+store: hook run intentionally rejects --db; payload workspace selects <workspace>/.octocode/awareness.sqlite3`,
   'hooks-install': hooksInstallUsage(),
   'schema': `usage: npx @octocodeai/octocode-awareness schema commands|list|command <noun> [action]|json-schema <name>|example <name>|validate <name> <json-file|->
 examples:
@@ -133,12 +134,12 @@ examples:
   npx @octocodeai/octocode-awareness schema command memory recall --compact
   npx @octocodeai/octocode-awareness schema json-schema query --compact`,
   'init': `usage: npx @octocodeai/octocode-awareness maintenance init [--db <path>]
-example: npx @octocodeai/octocode-awareness maintenance init --db "$OCTOCODE_HOME/agent/agent.sqlite3" --compact`,
+example: npx @octocodeai/octocode-awareness maintenance init --db-scope global --compact`,
   'self-test': `usage: npx @octocodeai/octocode-awareness maintenance self-test
 example: npx @octocodeai/octocode-awareness maintenance self-test --compact`,
   'awareness-config': `usage: npx @octocodeai/octocode-awareness config show|init|validate [options]
 init flags: --hooks <true|false> --notifications <true|false> --verification-gate <true|false> --session-capture <true|false> --maintenance-reminders <true|false>
-note: config init requires every answer and refuses to overwrite; config validate checks ~/.octocode/awareness.json
+note: config init requires every answer and refuses to overwrite; config validate checks the resolved Awareness config
 schema: npx @octocodeai/octocode-awareness schema json-schema awareness_config --compact`,
 };
 

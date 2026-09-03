@@ -53,10 +53,12 @@ import type { NativeRustCoreClient } from "./native-rust-core.js";
 import { markSetupDone } from "./state.js";
 import {
   ALLOWED_CONFIG_KEYS,
+  PUBLIC_CONFIG_SETTINGS,
   agentDir,
   getSetting,
   isAllowedConfigKey,
   listSettings,
+  parseConfigSettingValue,
   readDefaultModel,
   readSettings,
 } from "./settings.js";
@@ -176,38 +178,124 @@ export function parseInvocation(
 }
 export function helpReport(): string {
   return [
-    "Octocode Agent — native coding runtime",
+    "Octocode Agent — native interactive coding agent",
     "",
-    "Usage: octocode-agent [command] [options] [prompt]",
+    "Starts an interactive session by default. Use -p/--print or run for one-shot output.",
+    "",
+    "Usage: octocode-agent [options] [prompt]",
+    "       octocode-agent [command] [options]",
     "",
     "Commands:",
-    "  run <prompt>             Run once in print mode",
-    "  serve                    Run versioned JSONL RPC on stdio",
-    "  acp                      Serve ACP v1 on stdio for editors",
-    "  config get|set|list|sources Inspect native settings",
-    "  setup [--fix] [--scope global|project|all]",
+    "  run [prompt]             Run once and exit",
+    "  serve                    Serve versioned JSONL RPC on stdio",
+    "  acp                      Serve ACP v1 for editor integrations",
+    "  config                   Inspect or change native settings",
+    "  setup [options]",
     "                           Inspect or initialize managed discovery files",
-    "  auth                     Configure credentials",
-    "  models [--set p/m|--check] Inspect, select, or verify the default model",
+    "  auth                     Inspect credentials or open login",
+    "  models                   Inspect, select, or verify the model",
     "  discover [surface]       Inspect model, MCP, and Skill sources",
-    "  sessions|resume|session  Inspect, import, or resume native sessions",
-    "  sessions import-pi <source> <destination-id> --policy <file> --installation-id <id>",
-    "  update [platform]        Update the installed native agent",
+    "  sessions                 List or import durable sessions",
+    "  resume                   Continue the latest or a named session",
+    "  session                  Open a session with explicit options",
+    "  update [platform]        Update the installed platform package",
     "  doctor                   Check runtime, credentials, and managed discovery",
-    "  tools|skills             Open the Octocode tool surface",
-    "  memory|awareness         Open coordination diagnostics",
-    "  completion <shell>       Print shell completion",
+    "  tools | skills           Open Octocode tool and Skill surfaces",
+    "  memory | awareness       Open coordination and memory surfaces",
+    "  completion <shell>       Print bash, zsh, or fish completion",
+    "  help [command]           Display root or command help",
+    "  version                  Display version information",
     "",
-    "Modes: --print, --mode json, --mode rpc",
-    "Models: --model provider/model; repeat --fallback-model provider/model for explicit health-checked fallback",
-    "Sessions: --no-session, -c|--continue, --session <id>, -n|--name <name>",
-    "Permissions: --permissions strict|default|allow-all (default: default)",
-    "Workers: --allow-workers explicitly authorizes bounded worker processes in a trusted workspace",
-    "Terminal: --accessible enables verbose linear semantics for assistive output",
+    "Options:",
+    ...ROOT_OPTIONS.map(({ usage, description }) =>
+      `  ${usage.padEnd(44)}${description}`,
+    ),
+    "",
+    "Examples:",
+    "  npx octocode-agent",
+    "  npx octocode-agent \"Explain this repository\"",
+    "  npx octocode-agent -c",
+    "  npx octocode-agent run --json \"Review this change\"",
   ].join("\n");
 }
-type HelpCommand = Extract<Command, "config" | "run" | "serve" | "acp">;
+interface RootOption {
+  readonly usage: string;
+  readonly names: readonly string[];
+  readonly description: string;
+}
+export const ROOT_OPTIONS: readonly RootOption[] = Object.freeze([
+  { usage: "-p, --print", names: ["-p", "--print"], description: "Print one response and exit" },
+  { usage: "--mode <text|json|rpc>", names: ["--mode"], description: "Select text, JSON event, or RPC output" },
+  { usage: "--json", names: ["--json"], description: "Machine-readable command output; JSONL for run" },
+  { usage: "--model <provider/model>", names: ["--model"], description: "Select the model for this session" },
+  { usage: "--fallback-model <provider/model>", names: ["--fallback-model"], description: "Add a health-checked fallback; repeatable" },
+  { usage: "--no-session", names: ["--no-session"], description: "Disable durable session persistence" },
+  { usage: "-c, --continue", names: ["-c", "--continue"], description: "Continue the latest project session" },
+  { usage: "--session <id>", names: ["--session"], description: "Resume a specific durable session" },
+  { usage: "-n, --name <name>", names: ["-n", "--name"], description: "Set the session display name" },
+  { usage: "--permissions <strict|default|allow-all>", names: ["--permissions"], description: "Select approval policy (default: default)" },
+  { usage: "--allow-workers", names: ["--allow-workers"], description: "Authorize bounded subagent processes" },
+  { usage: "--accessible", names: ["--accessible"], description: "Enable verbose linear terminal semantics" },
+  { usage: "-h, --help", names: ["-h", "--help"], description: "Display help" },
+  { usage: "-v, --version", names: ["-v", "--version"], description: "Display version information" },
+]);
+type HelpCommand = Extract<
+  Command,
+  | "config"
+  | "setup"
+  | "auth"
+  | "models"
+  | "discover"
+  | "doctor"
+  | "sessions"
+  | "resume"
+  | "session"
+  | "update"
+  | "completion"
+  | "run"
+  | "serve"
+  | "acp"
+  | "help"
+  | "version"
+>;
+const HELP_COMMANDS = new Set<HelpCommand>([
+  "config",
+  "setup",
+  "auth",
+  "models",
+  "discover",
+  "doctor",
+  "sessions",
+  "resume",
+  "session",
+  "update",
+  "completion",
+  "run",
+  "serve",
+  "acp",
+  "help",
+  "version",
+]);
+function isHelpCommand(command: Command | string | undefined): command is HelpCommand {
+  return HELP_COMMANDS.has(command as HelpCommand);
+}
 export function commandHelpReport(command: HelpCommand): string {
+  if (command === "help") {
+    return [
+      "Octocode Agent help — command reference",
+      "",
+      "Usage: octocode-agent help [command]",
+      "       octocode-agent [command] --help",
+    ].join("\n");
+  }
+  if (command === "version") {
+    return [
+      "Octocode Agent version — build information",
+      "",
+      "Usage: octocode-agent version",
+      "       octocode-agent --version",
+    ].join("\n");
+  }
   if (command === "config") {
     return [
       "Octocode Agent config — native settings",
@@ -216,15 +304,124 @@ export function commandHelpReport(command: HelpCommand): string {
       "       octocode-agent config set <key> <value>",
       "       octocode-agent config list",
       "       octocode-agent config sources",
+      "",
+      "Settings:",
+      ...PUBLIC_CONFIG_SETTINGS.map(
+        ({ key, value, description }) =>
+          `  ${`${key} <${value}>`.padEnd(49)}${description}`,
+      ),
+      "",
+      "Use models --set <provider/model> to change provider and model atomically.",
+      "Changes apply to the next session. CLI runtime flags override stored settings.",
+      "",
+      "Options:",
+      "  --json  Emit machine-readable output",
+    ].join("\n");
+  }
+  if (command === "setup") {
+    return [
+      "Octocode Agent setup — managed discovery files",
+      "",
+      "Usage: octocode-agent setup [--fix] [--scope <global|project|all>]",
+      "",
+      "Options:",
+      "  --fix                           Create missing managed files and directories",
+      "  --scope <global|project|all>    Select the configuration scope (default: global)",
+      "  --json                          Emit machine-readable inspection output",
+    ].join("\n");
+  }
+  if (command === "auth") {
+    return [
+      "Octocode Agent auth — model credentials",
+      "",
+      "Usage: octocode-agent auth",
+      "       octocode-agent auth login",
+      "",
+      "Options:",
+      "  --json  Emit machine-readable credential status",
+    ].join("\n");
+  }
+  if (command === "models") {
+    return [
+      "Octocode Agent models — model selection and health",
+      "",
+      "Usage: octocode-agent models [--json]",
+      "       octocode-agent models --set <provider/model>",
+      "       octocode-agent models --check [--json]",
+      "",
+      "Options:",
+      "  --set <provider/model>  Persist the default model",
+      "  --check                 Verify the effective model configuration",
+      "  --json                  Emit machine-readable output",
+    ].join("\n");
+  }
+  if (command === "discover") {
+    return [
+      "Octocode Agent discover — configuration inventory",
+      "",
+      "Usage: octocode-agent discover [models|mcp|skills] [--json]",
+      "",
+      "Options:",
+      "  --json  Emit machine-readable inventory data",
+    ].join("\n");
+  }
+  if (command === "doctor") {
+    return [
+      "Octocode Agent doctor — runtime and configuration health",
+      "",
+      "Usage: octocode-agent doctor [--json]",
+      "",
+      "Options:",
+      "  --json  Emit machine-readable health checks",
+    ].join("\n");
+  }
+  if (command === "sessions") {
+    return [
+      "Octocode Agent sessions — durable session history",
+      "",
+      "Usage: octocode-agent sessions",
+      "       octocode-agent sessions import-pi <source> <destination-id> --policy <file> --installation-id <id>",
+      "",
+      "Options:",
+      "  --policy <file>          Signed migration policy for import-pi",
+      "  --installation-id <id>   Installation cohort identity for import-pi",
+      "  --json                    Emit machine-readable output",
     ].join("\n");
   }
   const sharedOptions = [
-    "  --model provider/model",
-    "  --fallback-model provider/model  Repeat for explicit health-checked fallback",
-    "  --no-session | -c, --continue | --session <id> | -n, --name <name>",
-    "  --permissions strict|default|allow-all  Select HITL approval policy (default: default)",
-    "  --allow-workers                  Authorize bounded workers in a trusted workspace",
+    "  -p, --print                         Print one response and exit",
+    "  --mode <text|json|rpc>              Select noninteractive output mode",
+    "  --model <provider/model>            Select the model",
+    "  --fallback-model <provider/model>   Add a fallback; repeatable and requires --model",
+    "  --no-session                        Disable durable persistence",
+    "  -c, --continue                      Continue the latest project session",
+    "  --session <id>                      Resume a specific session",
+    "  -n, --name <name>                   Set the session display name",
+    "  --permissions <strict|default|allow-all>",
+    "  --allow-workers                     Authorize bounded workers in a trusted workspace",
+    "  --accessible                        Enable verbose linear terminal semantics",
   ];
+  if (command === "resume") {
+    return [
+      "Octocode Agent resume — continue a durable session",
+      "",
+      "Usage: octocode-agent resume [session-id] [options]",
+      "       octocode-agent resume              Continue this terminal's latest project session",
+      "",
+      "Options:",
+      ...sharedOptions,
+    ].join("\n");
+  }
+  if (command === "session") {
+    return [
+      "Octocode Agent session — open the interactive agent with explicit session options",
+      "",
+      "Usage: octocode-agent session [options]",
+      "",
+      "Options:",
+      ...sharedOptions,
+    ].join("\n");
+  }
   if (command === "run") {
     return [
       "Octocode Agent run — one-shot print mode",
@@ -247,6 +444,20 @@ export function commandHelpReport(command: HelpCommand): string {
       ...sharedOptions,
     ].join("\n");
   }
+  if (command === "update") {
+    return [
+      "Octocode Agent update — update the installed agent",
+      "",
+      "Usage: octocode-agent update [platform]",
+    ].join("\n");
+  }
+  if (command === "completion") {
+    return [
+      "Octocode Agent completion — shell completion script",
+      "",
+      "Usage: octocode-agent completion <bash|zsh|fish>",
+    ].join("\n");
+  }
   return [
     "Octocode Agent acp — ACP v1 server for editors",
     "",
@@ -262,7 +473,7 @@ export function fatalErrorReport(
   const message =
     error instanceof Error ? error.message : "Unknown fatal error";
   if (message.includes("OpenTUI native FFI is not available")) {
-    return `octocode-agent: OpenTUI is unavailable on ${nodeVersion}. Re-run with NODE_OPTIONS=--experimental-ffi, or use --print for non-interactive output.`;
+    return `octocode-agent: OpenTUI is unavailable on ${nodeVersion}. Use Node.js 26.4 or later, or use --print for non-interactive output.`;
   }
   return `octocode-agent: ${message}`;
 }
@@ -346,7 +557,7 @@ export async function runConfigSet(
     action: "set",
     scope: "global",
     expectedRevision: settings.snapshot().revision,
-    payload: { key, value },
+      payload: { key, value: parseConfigSettingValue(key, value) },
   });
   if (!result.ok) {
     out(`settings ${result.error.category}: ${result.error.message}`);
@@ -758,13 +969,26 @@ export function doctorReport(
 export function completionScript(shell: string): string | null {
   const commands =
     "run serve acp config setup auth models discover sessions resume session update doctor completion tools skills memory awareness version help";
-  if (shell === "bash") return `complete -W "${commands}" octocode-agent`;
-  if (shell === "zsh") return `compctl -k '(${commands})' octocode-agent`;
-  if (shell === "fish")
-    return commands
+  const options = ROOT_OPTIONS.flatMap(({ names }) => names).join(" ");
+  if (shell === "bash")
+    return `complete -W "${commands} ${options}" octocode-agent`;
+  if (shell === "zsh")
+    return `compctl -k '(${commands} ${options})' octocode-agent`;
+  if (shell === "fish") {
+    const commandCompletions = commands
       .split(" ")
       .map((command) => `complete -c octocode-agent -f -a ${command}`)
       .join("\n");
+    const optionCompletions = options
+      .split(" ")
+      .map((option) =>
+        option.startsWith("--")
+          ? `complete -c octocode-agent -l ${option.slice(2)}`
+          : `complete -c octocode-agent -s ${option.slice(1)}`,
+      )
+      .join("\n");
+    return `${commandCompletions}\n${optionCompletions}`;
+  }
   return null;
 }
 export async function launchAgent(
@@ -1101,10 +1325,7 @@ export async function main(
     optionBoundary === -1 ? invocation.args.length : optionBoundary,
   );
   if (
-    (invocation.command === "config" ||
-      invocation.command === "run" ||
-      invocation.command === "serve" ||
-      invocation.command === "acp") &&
+    isHelpCommand(invocation.command) &&
     commandOptions.some((value) => value === "--help" || value === "-h")
   ) {
     out(commandHelpReport(invocation.command));
@@ -1112,7 +1333,19 @@ export async function main(
   }
   switch (invocation.command) {
     case "help":
-      out(helpReport());
+      if (
+        invocation.args[0] === "tools" ||
+        invocation.args[0] === "skills" ||
+        invocation.args[0] === "memory" ||
+        invocation.args[0] === "awareness"
+      ) {
+        return runSurface(invocation.args[0], ["--help"], deps);
+      }
+      out(
+        isHelpCommand(invocation.args[0])
+          ? commandHelpReport(invocation.args[0])
+          : helpReport(),
+      );
       return 0;
     case "version":
       out(
@@ -1218,9 +1451,9 @@ export async function main(
     }
     case "resume":
       return launchAgent(
-        invocation.args[0]
+        invocation.args[0] && !invocation.args[0].startsWith("-")
           ? ["--session", invocation.args[0], ...invocation.args.slice(1)]
-          : ["--continue"],
+          : ["--continue", ...invocation.args],
         deps,
       );
     case "session":

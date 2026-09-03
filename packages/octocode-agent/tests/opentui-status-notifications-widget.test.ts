@@ -27,9 +27,12 @@ describe('StatusNotificationsWidget', () => {
     const state = widget.render();
     expect(state.regions.map((region) => region.id)).toEqual(['summary', 'item-1', 'item-2', 'help']);
     const text = state.regions.map((region) => region.text).join('\n');
-    expect(text).toContain('ℹ [INFO] agent/research');
-    expect(text).toContain('! [WARNING] permission/write');
-    expect(text).toContain('Esc back · Ctrl-C cancel/exit');
+    expect(text).toContain('ℹ Info · Researching widget behavior');
+    expect(text).toContain('! Warning · Write approval needed');
+    expect(text).not.toContain('agent/research');
+    expect(text).not.toContain('permission/write');
+    expect(text).toContain('Enter action · Esc back');
+    expect(text).not.toContain('Ctrl-C cancel/exit');
   });
 
   it('derives polite or assertive urgency from lifecycle and deduplicates updates', () => {

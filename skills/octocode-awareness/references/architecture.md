@@ -6,19 +6,19 @@ Load when changing store ownership, host composition, or policy routing. This re
 
 ```text
 agent CLI     -> npx @octocodeai/octocode-awareness ┐
-host tools/hooks -> package API                     ├-> shared dispatcher -> global agent.sqlite3
-other integrations -> package API                   ┘                        (rows scoped by workspace_path)
+host tools/hooks -> package API                     ├-> shared dispatcher -> awareness.sqlite3
+other integrations -> package API                   ┘                        (repo or global scope)
 ```
 
-The CLI and in-process API call `dispatchAwarenessCommand`; neither host owns a second command mapping. Awareness tables are `plans`, `tasks`, `locks`, `work_presence`, `handoffs`, `memories`, `agents`, `messages`, and `message_receipts`. Octocode control tables coexist in the file under `@octocodeai/octocode-shared` ownership.
+The CLI and in-process API call `dispatchAwarenessCommand`; neither host owns a second command mapping. Awareness owns its coordination, planning, work, lock, delivery, memory, session, and worker-observation tables. Shared TypeScript entity contracts do not imply shared physical storage.
 
-The global agent database stores all durable state. `workspace_path` isolates repository rows, and `--db <path>` selects an explicit isolated store.
+Repository scope resolves to `<workspace>/.octocode/awareness.sqlite3`; optional global scope resolves to `$OCTOCODE_HOME/awareness/awareness.sqlite3`. `--db <path>` selects an explicit isolated store. Agent control (`agent.sqlite3`) and Rust runtime (`core.sqlite3`) remain separate Agent-owned databases under `$OCTOCODE_HOME/agent/`.
 
 ## Advanced plane
 
 The same package CLI owns attend/workboard, plan runs, signals, refinements, sessions, reflection, query exports, and maintenance. Stores initialize lazily; use `maintenance init` only when an explicit initialization check is needed.
 
-Every Git worktree has a distinct normalized `workspace_path` inside the shared database.
+Every Git worktree has its own repository-scoped file by default and still records a normalized `workspace_path` for row-level identity and explicit/global stores.
 
 The CLI boundary uses canonical root nouns. Use `workspace status` for store health, `query <view>` for targeted inspection, and inspect the matching live schema before acting.
 

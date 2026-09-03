@@ -7,15 +7,19 @@ anchor when that section is present.
 ## Current capabilities
 
 The page shows a redacted, allowlisted view of runtime configuration. The shared
-registry defines five public global values:
+registry defines the following public global settings:
 
-- Theme.
-- Reduced motion, which defaults to static output.
-- Default provider.
-- Default model.
-- Compaction input-token threshold (4,096 through 2,000,000; default 64,000).
-  Automatic compaction compares this value with the latest provider request's
-  input-token occupancy, not cumulative billed input across the session.
+| Key | Accepted value | Default | Application |
+|---|---|---|---|
+| `theme` | `octocode-dark` or `octocode-light` | `octocode-dark` | Next session |
+| `reducedMotion` | `true` or `false` | `true` | Next session |
+| `compactionInputTokenThreshold` | Integer from `4096` through `2000000` | `64000` | Next session |
+| `defaultProvider` | Provider ID | None | Next session |
+| `defaultModel` | Model ID | None | Next session |
+
+Automatic compaction compares `compactionInputTokenThreshold` with the latest
+provider request's input-token occupancy, not cumulative billed input across the
+session.
 
 The launcher creates one canonical core settings registry/service and shares it
 with runtime model selection and this page. Successful changes apply to the next
@@ -51,11 +55,45 @@ reset use the same optimistic, atomic settings service as CLI changes. Reset
 removes registered settings but preserves unrelated legacy keys without exposing
 their values.
 
-`octocode-agent config list` returns only the public CLI allowlist. Unknown legacy
-keys and their values remain in storage but do not appear in command output.
-`config set` uses the same typed service as the page. `models --set` commits provider
-and model together in one optimistic transaction, so neither half is published when
-validation or persistence fails.
+## Command-line configuration
+
+Use the following commands for scripts and terminal configuration:
+
+```bash
+octocode-agent config get theme
+octocode-agent config set theme octocode-light
+octocode-agent config set reducedMotion false
+octocode-agent config set compactionInputTokenThreshold 80000
+octocode-agent config list
+octocode-agent config sources
+octocode-agent models --set openai/gpt-5
+```
+
+`config get`, `config set`, and `config list` use the same five-setting public
+catalog as the registry and settings page. The CLI parses Boolean and integer
+values before registry validation. Invalid values fail without changing storage.
+`config list` returns stored public values; defaults remain available through the
+registry and settings page. Unknown legacy keys and their values remain in
+storage but don't appear in command output.
+
+Use `models --set` to change provider and model together. It commits both values
+in one optimistic transaction, so neither half is published when validation or
+persistence fails. `config set defaultProvider` and
+`config set defaultModel` remain available for focused automation, but each
+changes only one key.
+
+Configuration uses the following precedence, from highest to lowest:
+
+1. Session flags such as `--model` and `--permissions`.
+2. Native persisted settings.
+3. A trusted workspace Pi model selection, then the Pi user selection, when
+   native settings don't select a model.
+4. The canonical OpenAI default.
+
+Credentials are separate from model selection. Provider-specific configured
+credential variables take precedence, followed by `OCTOCODE_MODEL_API_KEY`,
+then `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for the selected protocol. Custom
+provider definitions can also resolve request-time credentials or headers.
 
 Runtime model selection resolves through the core `ModelCatalog`. Canonical OpenAI
 and Anthropic entries form the base source. Native and Pi-compatible
@@ -134,8 +172,8 @@ nothing to the effective runtime.
 When native settings do not select a model, the launcher follows Pi's global
 `~/.pi/agent/settings.json` selection and a trusted workspace `.pi/settings.json`
 override. If a provider was renamed, a stale provider ID is accepted only when
-the selected model ID resolves to exactly one enabled Pi provider. Environment
-model overrides remain highest precedence.
+the selected model ID resolves to exactly one enabled Pi provider. The `--model`
+session flag remains highest precedence.
 
 For Pi-selected providers, the launcher reads the exact provider credential from
 `~/.pi/agent/auth.json` before falling back to the provider's `apiKey` in

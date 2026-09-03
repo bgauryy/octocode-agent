@@ -28,7 +28,7 @@ function runScript(script: string, args: string[], payload: unknown, env: Record
     if (typeof payloadWorkspace === 'string' && payloadWorkspace.startsWith(tmpdir())) {
         writeWorkspacePolicy(payloadWorkspace, {
             version: 1,
-            storage: { repository: 'global', memory: 'global' },
+            storage: { repository: 'repo', memory: 'repo' },
             hooks: { profile: 'full' },
         });
     }
@@ -36,7 +36,7 @@ function runScript(script: string, args: string[], payload: unknown, env: Record
         input: JSON.stringify(payload),
         encoding: 'utf8',
         timeout: 5000,
-        cwd,
+        cwd: cwd ?? (typeof payloadWorkspace === 'string' ? payloadWorkspace : undefined),
         env: { ...process.env, OCTOCODE_HOOK_PROFILE: 'full', ...withEnabledAwarenessConfig(env) },
     });
 }
@@ -59,7 +59,7 @@ it('allows two agents to declare ordinary work on the same file without locks', 
 
       expect(first.status, first.stderr).toBe(0);
       expect(second.status, second.stderr).toBe(0);
-      const db = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const db = new DatabaseSync(join(workspace, '.octocode', 'awareness.sqlite3'));
       expect((db.prepare('SELECT COUNT(*) AS count FROM run_files WHERE ended_at IS NULL').get() as { count: number }).count).toBe(2);
       expect((db.prepare('SELECT COUNT(*) AS count FROM awareness_locks').get() as { count: number }).count).toBe(0);
       expect(db.prepare('SELECT host, event, status FROM hook_receipts').all()).toEqual([
@@ -94,7 +94,7 @@ it('blocks shell edits when another run holds sensitive exclusive work', () => {
     const workspace = resolve(memoryHome, 'repo');
     mkdirSync(workspace, { recursive: true });
     try {
-      const db = connectDb(join(memoryHome, 'agent.sqlite3'));
+      const db = connectDb(join(workspace, '.octocode', 'awareness.sqlite3'));
       const exclusive = startWork(db, {
         agentId: 'sensitive-agent',
         workspacePath: workspace,
@@ -123,7 +123,7 @@ it('attaches shell edits to exactly one claimed TASK run', () => {
     const workspace = resolve(memoryHome, 'repo');
     mkdirSync(workspace, { recursive: true });
     try {
-      const db = connectDb(join(memoryHome, 'agent.sqlite3'));
+      const db = connectDb(join(workspace, '.octocode', 'awareness.sqlite3'));
       const plan = createPlan(db, {
         name: 'Shell task hooks',
         objective: 'Keep hook edits on the claim',
@@ -149,7 +149,7 @@ it('attaches shell edits to exactly one claimed TASK run', () => {
         expect(runScript(HOOK_RUNNER, ['post-edit'], payload, env).status).toBe(0);
       }
 
-      const inspect = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const inspect = new DatabaseSync(join(workspace, '.octocode', 'awareness.sqlite3'));
       expect((inspect.prepare('SELECT COUNT(*) AS count FROM task_runs').get() as { count: number }).count).toBe(1);
       expect((inspect.prepare('SELECT COUNT(*) AS count FROM task_claims').get() as { count: number }).count).toBe(1);
       expect((inspect.prepare('SELECT COUNT(*) AS count FROM run_files WHERE run_id = ? AND ended_at IS NULL').get(claim.run.run_id) as { count: number }).count).toBe(2);
@@ -164,7 +164,7 @@ it('keeps an explicit WORK run active across shell edits', () => {
     const workspace = resolve(memoryHome, 'repo');
     mkdirSync(workspace, { recursive: true });
     try {
-      const db = connectDb(join(memoryHome, 'agent.sqlite3'));
+      const db = connectDb(join(workspace, '.octocode', 'awareness.sqlite3'));
       const explicit = startWork(db, {
         agentId: 'work-agent',
         workspacePath: workspace,
@@ -185,7 +185,7 @@ it('keeps an explicit WORK run active across shell edits', () => {
         expect(runScript(HOOK_RUNNER, ['post-edit'], payload, env).status).toBe(0);
       }
 
-      const inspect = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const inspect = new DatabaseSync(join(workspace, '.octocode', 'awareness.sqlite3'));
       expect(inspect.prepare('SELECT origin, status FROM task_runs WHERE run_id = ?').get(explicit.run.run_id)).toMatchObject({ origin: 'WORK', status: 'ACTIVE' });
       expect((inspect.prepare('SELECT COUNT(*) AS count FROM run_files WHERE run_id = ? AND ended_at IS NULL').get(explicit.run.run_id) as { count: number }).count).toBe(1);
       inspect.close();
@@ -213,7 +213,7 @@ it('runs the harness guard before declaring file work', () => {
 
       expect(result.status).toBe(2);
       expect(result.stderr).toContain('editing the skill itself is gated');
-      const inspect = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const inspect = new DatabaseSync(join(skillRoot, '.octocode', 'awareness.sqlite3'));
       expect((inspect.prepare('SELECT COUNT(*) AS count FROM task_runs').get() as { count: number }).count).toBe(0);
       expect(inspect.prepare('SELECT event, status FROM hook_receipts').get()).toMatchObject({ event: 'pre-edit', status: 'success' });
       inspect.close();
@@ -326,7 +326,7 @@ it('registers hook agents before checking mailbox delivery', () => {
     const workspace = resolve(memoryHome, 'repo');
     mkdirSync(workspace, { recursive: true });
     try {
-      const dbPath = join(memoryHome, 'agent.sqlite3');
+      const dbPath = join(workspace, '.octocode', 'awareness.sqlite3');
       const database = connectDb(dbPath);
       insertMemory(database, {
         agentId: 'memory-agent',

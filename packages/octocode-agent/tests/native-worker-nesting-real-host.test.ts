@@ -5,11 +5,7 @@ import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  agentDbPath,
-  closeOctocodeDb,
-  openOctocodeDb,
-} from '@octocodeai/octocode-awareness/mcp-state';
+import { connectDb, resolveDbPath } from '@octocodeai/octocode-awareness';
 import { FileSettingsStorage } from '../src/native-settings.js';
 import {
   probeNativeWorkerProcessIdentity,
@@ -44,10 +40,10 @@ function processIdentities(rows: readonly LifecycleRow[]): NativeWorkerProcessId
     .map(({ payload_json }) => JSON.parse(payload_json) as NativeWorkerProcessIdentity);
 }
 
-function lifecycleRows(home: string, _workspace: string): LifecycleRow[] {
-  const dbPath = agentDbPath({ OCTOCODE_HOME: home });
+function lifecycleRows(_home: string, workspace: string): LifecycleRow[] {
+  const dbPath = resolveDbPath(undefined, { scope: 'repo', workspace });
   if (!fs.existsSync(dbPath)) return [];
-  const db = openOctocodeDb(dbPath);
+  const db = connectDb(dbPath);
   try {
     return db.prepare(`
       SELECT event_type, payload_json
@@ -58,7 +54,7 @@ function lifecycleRows(home: string, _workspace: string): LifecycleRow[] {
     if (error instanceof Error && /no such table/u.test(error.message)) return [];
     throw error;
   } finally {
-    closeOctocodeDb(dbPath);
+    db.close();
   }
 }
 
@@ -372,7 +368,10 @@ function expectCleanTermination(result: ScenarioResult, expectedWorkers: number)
     .filter(({ event_type }) => event_type === 'worker.terminal')
     .map(({ payload_json }) => JSON.parse(payload_json) as { outcome?: unknown });
   expect(terminal).toHaveLength(expectedWorkers);
-  expect(terminal.every(({ outcome }) => outcome === 'succeeded')).toBe(true);
+  expect(
+    terminal.every(({ outcome }) => outcome === 'succeeded'),
+    `terminal=${JSON.stringify(terminal)}`,
+  ).toBe(true);
 }
 
 describe('built native root-only workers', () => {

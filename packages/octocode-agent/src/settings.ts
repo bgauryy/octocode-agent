@@ -26,14 +26,44 @@ export function readSettings(dir: string): Record<string, unknown> {
 
 // ── Generic settings surface (config get|set|list) ──────────────────────────────
 
-/** Keys `config set` is allowed to write through the native settings adapter. */
-export const ALLOWED_CONFIG_KEYS = ['defaultProvider', 'defaultModel', 'theme'] as const;
-
 /** Theme name the launcher enforces for Octocode-branded sessions. */
 export const DEFAULT_OCTOCODE_THEME = 'octocode-dark';
 export const OCTOCODE_THEME_NAMES = [DEFAULT_OCTOCODE_THEME, 'octocode-light'] as const;
 export type OctocodeThemeName = (typeof OCTOCODE_THEME_NAMES)[number];
-export type AllowedConfigKey = (typeof ALLOWED_CONFIG_KEYS)[number];
+
+/** Public persistent settings exposed by `config get|set|list`. */
+export const PUBLIC_CONFIG_SETTINGS = Object.freeze([
+  {
+    key: 'theme',
+    value: 'octocode-dark|octocode-light',
+    description: 'Terminal and settings-page color theme',
+  },
+  {
+    key: 'reducedMotion',
+    value: 'true|false',
+    description: 'Use static terminal transitions',
+  },
+  {
+    key: 'compactionInputTokenThreshold',
+    value: '4096..2000000',
+    description: 'Input-token occupancy that triggers compaction',
+  },
+  {
+    key: 'defaultProvider',
+    value: 'provider-id',
+    description: 'Default model provider',
+  },
+  {
+    key: 'defaultModel',
+    value: 'model-id',
+    description: 'Default model within the selected provider',
+  },
+] as const);
+
+export type AllowedConfigKey = (typeof PUBLIC_CONFIG_SETTINGS)[number]['key'];
+export const ALLOWED_CONFIG_KEYS: readonly AllowedConfigKey[] = Object.freeze(
+  PUBLIC_CONFIG_SETTINGS.map(({ key }) => key),
+);
 
 export function isOctocodeTheme(value: unknown): value is OctocodeThemeName {
   return typeof value === 'string' && (OCTOCODE_THEME_NAMES as readonly string[]).includes(value);
@@ -41,6 +71,19 @@ export function isOctocodeTheme(value: unknown): value is OctocodeThemeName {
 
 export function isAllowedConfigKey(key: string): key is AllowedConfigKey {
   return (ALLOWED_CONFIG_KEYS as readonly string[]).includes(key);
+}
+
+/** Parse a CLI string into the typed value consumed by the settings registry. */
+export function parseConfigSettingValue(key: AllowedConfigKey, value: string): unknown {
+  if (key === 'reducedMotion') {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  }
+  if (key === 'compactionInputTokenThreshold') {
+    return /^(?:0|[1-9]\d*)$/.test(value) ? Number(value) : value;
+  }
+  return value;
 }
 
 /** Read one key from settings.json (undefined when unset). */

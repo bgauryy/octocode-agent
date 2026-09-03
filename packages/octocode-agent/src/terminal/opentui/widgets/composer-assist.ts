@@ -313,7 +313,7 @@ export class ComposerAssistWidget extends OpenTuiWidget<ComposerAssistIntent, Co
   protected renderRegions(): readonly WidgetRenderRegion[] {
     const heading = `${this.snapshotValue.mode === 'command' ? 'Commands' : 'Files'} · ${this.snapshotValue.state.toUpperCase()} · filter: ${this.filterQueryValue || '(empty)'}`;
     const regions: WidgetRenderRegion[] = [
-      { id: 'summary', role: 'status', text: this.fit(heading) },
+      { id: 'summary', role: 'content', text: this.fit(heading) },
     ];
     if (this.snapshotValue.state !== 'ready') {
       regions.push({ id: 'state', role: this.snapshotValue.state === 'error' ? 'status' : 'content', text: this.fit(stateAnnouncement(this.snapshotValue)) });

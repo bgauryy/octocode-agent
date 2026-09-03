@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { initDb } from '../src/db.js';
-import { AGENT_APPLICATION_ID } from '@octocodeai/octocode-shared/schema';
+import { AWARENESS_APPLICATION_ID } from '../src/db-runtime.js';
 
 const ADVANCED_TABLES = [
   'awareness_agents', 'delivery_state', 'edit_log', 'harness_log', 'hook_receipts',
@@ -11,7 +11,7 @@ const ADVANCED_TABLES = [
 ] as const;
 
 describe('advanced Awareness database contract', () => {
-  it('creates every advanced module entity with an exact, healthy agent schema', () => {
+  it('creates every advanced module entity with an exact, healthy Awareness schema', () => {
     const db = new DatabaseSync(':memory:');
     db.exec('PRAGMA foreign_keys = ON');
     initDb(db);
@@ -25,7 +25,7 @@ describe('advanced Awareness database contract', () => {
     ).all().map((row) => (row as { name: string }).name));
 
     expect(tables).toEqual([...ADVANCED_TABLES].sort());
-    expect(db.prepare('PRAGMA application_id').get()).toEqual({ application_id: AGENT_APPLICATION_ID });
+    expect(db.prepare('PRAGMA application_id').get()).toEqual({ application_id: AWARENESS_APPLICATION_ID });
     expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     expect([...indexes]).toEqual(expect.arrayContaining([

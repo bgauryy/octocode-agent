@@ -14,6 +14,7 @@ import { runPreEditLockGate,type HookHost } from './hooks.js';
 import { isEmbeddingEnabled,openAwarenessStore } from './index.js';
 import { parseStorageScope } from '../storage-scope.js';
 import { storageScopeForCommand } from '../workspace-policy.js';
+import { migrateLegacyMixedAwarenessStore } from '../legacy-store-migration.js';
 
 interface ParsedArgs {
   command?: string;
@@ -98,6 +99,7 @@ const CLI_ONLY_ACTION_FLAGS: Readonly<Record<string, Readonly<Record<string, rea
     install: ['host', 'project-dir', 'cli', 'dry-run'],
     'pre-edit': ['host', 'agent-id', 'event-json'],
   },
+  maintenance: { 'migrate-legacy': ['source', 'target'] },
   memory: {
     store: ['label', 'text', 'tags'],
     'store-verified': ['label', 'text', 'source-digest', 'scope', 'verified-at', 'valid-until', 'importance', 'tags'],
@@ -231,6 +233,10 @@ export function runCli(argv: string[], io: { write?: (chunk: string) => void } =
 
 function runCliInner(argv: string[], write: (chunk: string) => void): number {
   const parsed = parseArgs(argv);
+  if (parsed.command === 'maintenance' && parsed.action === 'migrate-legacy' && parsed.flags.has('help')) {
+    write('usage: octocode-awareness coordination maintenance migrate-legacy [--source <agent.sqlite3>] [--target <awareness.sqlite3>]\nexample: octocode-awareness coordination maintenance migrate-legacy --source "$OCTOCODE_HOME/agent/agent.sqlite3" --target "$OCTOCODE_HOME/awareness/awareness.sqlite3"\n');
+    return 0;
+  }
   if (!parsed.command || hasHelpFlag(parsed)) {
     write(`${usage()}\n`);
     return 0;
@@ -282,6 +288,15 @@ function runCliInner(argv: string[], write: (chunk: string) => void): number {
       default:
         throw new Error('hooks action must be install or pre-edit');
     }
+  }
+
+  if (parsed.command === 'maintenance') {
+    if (parsed.action !== 'migrate-legacy') throw new Error('maintenance action must be migrate-legacy');
+    print(migrateLegacyMixedAwarenessStore({
+      sourcePath: getFlag(parsed.flags, 'source'),
+      targetPath: getFlag(parsed.flags, 'target') ?? getFlag(parsed.flags, 'db'),
+    }));
+    return 0;
   }
 
   const commandWorkspace = getFlag(parsed.flags, 'workspace') ?? process.cwd();

@@ -1,14 +1,11 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { agentDbPath } from '@octocodeai/octocode-shared/paths';
-import { initOctocodeSchema } from '@octocodeai/octocode-shared/schema';
-import { openAwarenessStore } from '../src/coordination/index.js';
-import { connectDb } from '../src/db-runtime.js';
-import { initializeDb } from '../src/db-init.js';
 import { DatabaseSync } from 'node:sqlite';
-import { AGENT_APPLICATION_ID } from '@octocodeai/octocode-shared/schema';
+import { afterEach, describe, expect, it } from 'vitest';
+import { AGENT_APPLICATION_ID, initOctocodeSchema } from '@octocodeai/octocode-shared/schema';
+import { openAwarenessStore } from '../src/coordination/index.js';
+import { AWARENESS_APPLICATION_ID, connectDb } from '../src/db-runtime.js';
 
 const roots: string[] = [];
 
@@ -16,72 +13,107 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe('unified global agent database', () => {
-  it('places both Awareness surfaces in one agent-owned database', () => {
-    const home = mkdtempSync(join(tmpdir(), 'octocode-unified-agent-home-'));
-    roots.push(home);
-    const env = { HOME: home, OCTOCODE_HOME: home };
-    const dbPath = agentDbPath(env);
+function relationNames(db: DatabaseSync): string[] {
+  return (db.prepare(`SELECT name FROM sqlite_schema
+    WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
+    ORDER BY name`).all() as Array<{ name: string }>).map(({ name }) => name);
+}
 
-    const coordination = openAwarenessStore({ workspace: join(home, 'workspace'), dbPath });
-    coordination.createPlan({ title: 'Coordination plan' });
-    coordination.close();
+describe('strict Awareness database separation', () => {
+  it('creates an advanced Awareness store with the historical OCT1 identity only', () => {
+    const root = mkdtempSync(join(tmpdir(), 'octocode-awareness-advanced-'));
+    roots.push(root);
+    const dbPath = join(root, 'awareness.sqlite3');
 
-    const advanced = connectDb(dbPath);
-    expect(advanced.prepare("SELECT COUNT(*) AS count FROM plans").get()).toEqual({ count: 1 });
-    expect(advanced.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='awareness_plans'").get())
-      .toEqual({ name: 'awareness_plans' });
-    expect(advanced.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
-    advanced.close();
+    const db = connectDb(dbPath);
+    expect(db.prepare('PRAGMA application_id').get())
+      .toEqual({ application_id: AWARENESS_APPLICATION_ID });
+    expect(relationNames(db)).toContain('awareness_plans');
+    expect(relationNames(db)).not.toContain('agent_sessions');
+    expect(relationNames(db)).not.toContain('octocode_meta');
+    db.close();
   });
 
-  it('supports advanced-first then coordination opening without table collisions', () => {
-    const home = mkdtempSync(join(tmpdir(), 'octocode-unified-agent-reverse-'));
-    roots.push(home);
-    const dbPath = agentDbPath({ HOME: home, OCTOCODE_HOME: home });
+  it('creates coordination state in the same Awareness identity without Agent relations', () => {
+    const root = mkdtempSync(join(tmpdir(), 'octocode-awareness-coordination-'));
+    roots.push(root);
+    const dbPath = join(root, 'awareness.sqlite3');
 
-    connectDb(dbPath).close();
-    const coordination = openAwarenessStore({ workspace: join(home, 'workspace'), dbPath });
-    const plan = coordination.createPlan({ title: 'Reverse-open plan' });
+    const coordination = openAwarenessStore({ workspace: join(root, 'workspace'), dbPath });
+    coordination.createPlan({ title: 'Separated plan' });
     coordination.close();
 
     const db = new DatabaseSync(dbPath);
-    expect(db.prepare('SELECT title FROM plans WHERE plan_id = ?').get(plan.planId))
-      .toEqual({ title: 'Reverse-open plan' });
-    expect(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='awareness_plans'").get())
-      .toEqual({ name: 'awareness_plans' });
-    expect(db.prepare('PRAGMA application_id').get()).toEqual({ application_id: AGENT_APPLICATION_ID });
-    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    expect(db.prepare('PRAGMA application_id').get())
+      .toEqual({ application_id: AWARENESS_APPLICATION_ID });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM plans').get()).toEqual({ count: 1 });
+    expect(relationNames(db)).not.toContain('agent_sessions');
+    expect(relationNames(db)).not.toContain('octocode_meta');
     db.close();
   });
 
-  it('installs Awareness into an existing agent-host connection', () => {
-    const db = new DatabaseSync(':memory:');
-    initOctocodeSchema(db);
+  it('transactionally upgrades a recognized historical Awareness schema', () => {
+    const root = mkdtempSync(join(tmpdir(), 'octocode-awareness-legacy-'));
+    roots.push(root);
+    const dbPath = join(root, 'awareness.sqlite3');
+    const legacy = connectDb(dbPath);
+    legacy.exec('PRAGMA foreign_keys = OFF');
+    legacy.exec(`
+      DROP TABLE awareness_memories;
+      DROP TABLE awareness_plans;
+      DROP TABLE awareness_tasks;
+      DROP TABLE awareness_locks;
+      DROP TABLE awareness_agents;
+    `);
+    legacy.close();
 
-    initializeDb(db);
-
-    expect(db.prepare('PRAGMA application_id').get()).toEqual({ application_id: AGENT_APPLICATION_ID });
-    expect(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='agent_sessions'").get())
-      .toEqual({ name: 'agent_sessions' });
-    expect(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name='awareness_plans'").get())
-      .toEqual({ name: 'awareness_plans' });
-    expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
-    db.close();
+    const upgraded = connectDb(dbPath);
+    expect(upgraded.prepare('PRAGMA application_id').get())
+      .toEqual({ application_id: AWARENESS_APPLICATION_ID });
+    expect(relationNames(upgraded)).toEqual(expect.arrayContaining([
+      'awareness_memories',
+      'awareness_plans',
+      'awareness_tasks',
+      'awareness_locks',
+      'awareness_agents',
+    ]));
+    upgraded.close();
   });
 
-  it('refuses a foreign application database without adding agent tables', () => {
-    const home = mkdtempSync(join(tmpdir(), 'octocode-foreign-db-'));
-    roots.push(home);
-    const dbPath = join(home, 'foreign.sqlite3');
+  it.each([
+    ['advanced opener', (dbPath: string, _workspace: string) => connectDb(dbPath).close()],
+    ['coordination opener', (dbPath: string, workspace: string) => openAwarenessStore({ workspace, dbPath }).close()],
+  ])('rejects an Agent database through the %s without changing it', (_label, open) => {
+    const root = mkdtempSync(join(tmpdir(), 'octocode-agent-store-'));
+    roots.push(root);
+    const dbPath = join(root, 'agent.sqlite3');
+    const agent = new DatabaseSync(dbPath);
+    initOctocodeSchema(agent);
+    agent.exec(`PRAGMA application_id = ${AGENT_APPLICATION_ID}`);
+    const before = relationNames(agent);
+    expect(agent.prepare('PRAGMA application_id').get()).toEqual({ application_id: AGENT_APPLICATION_ID });
+    agent.close();
+
+    expect(() => open(dbPath, join(root, 'workspace'))).toThrow(/Agent SQLite store|application_id/);
+
+    const inspect = new DatabaseSync(dbPath);
+    expect(inspect.prepare('PRAGMA application_id').get()).toEqual({ application_id: AGENT_APPLICATION_ID });
+    expect(relationNames(inspect)).toEqual(before);
+    inspect.close();
+  });
+
+  it('refuses an unrelated database without changing its schema or identity', () => {
+    const root = mkdtempSync(join(tmpdir(), 'octocode-foreign-db-'));
+    roots.push(root);
+    const dbPath = join(root, 'foreign.sqlite3');
     const foreign = new DatabaseSync(dbPath);
     foreign.exec('CREATE TABLE cli_owned(value TEXT); PRAGMA application_id = 12345');
     foreign.close();
 
-    expect(() => openAwarenessStore({ workspace: home, dbPath })).toThrow(/foreign SQLite application_id/);
+    expect(() => openAwarenessStore({ workspace: root, dbPath })).toThrow(/foreign Awareness application_id/);
     const inspect = new DatabaseSync(dbPath);
-    expect(inspect.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all())
-      .toEqual([{ name: 'cli_owned' }]);
+    expect(inspect.prepare('PRAGMA application_id').get()).toEqual({ application_id: 12345 });
+    expect(relationNames(inspect)).toEqual(['cli_owned']);
     inspect.close();
   });
 });

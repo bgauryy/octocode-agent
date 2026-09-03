@@ -59,14 +59,13 @@ export interface OctocodeBannerInput {
 
 /** Pure, width-safe native projection of the canonical Octocode startup banner. */
 export function renderOctocodeBannerLines(input: OctocodeBannerInput): readonly string[] {
-  const brandLines = input.width < OCTOCODE_WORDMARK_WIDTH
-    ? [fitLine(OCTOCODE_COMPACT_MARK, input.width)]
-    : OCTOCODE_WORDMARK;
+  const identity = [
+    OCTOCODE_COMPACT_MARK,
+    ...(input.version === undefined ? [] : [`v${input.version}`]),
+    OCTOCODE_TAGLINE,
+  ].join(' · ');
   return Object.freeze([
-    ...brandLines,
-    ...(input.version === undefined ? [] : [fitLine(`v${input.version}`, input.width)]),
-    fitLine(OCTOCODE_TAGLINE, input.width),
-    fitLine(OCTOCODE_BETA_NOTICE, input.width),
+    fitLine(identity, input.width),
     fitLine(input.statusLine, input.width),
   ]);
 }

@@ -518,9 +518,9 @@ export class PlanWidget extends OpenTuiWidget {
     return [
       {
         id: "summary",
-        role: "status",
+        role: "content",
         text: fitTerminalText(
-          `Plan ${this.snapshot.planId} · revision ${this.snapshot.revision} · phase ${this.snapshot.phase.toUpperCase()} · ${completedCount(this.snapshot)}/${total} complete`,
+          `Plan · ${this.snapshot.phase.toUpperCase()} · ${completedCount(this.snapshot)}/${total} complete`,
           this.widthColumns,
         ),
       },

@@ -3,6 +3,8 @@ import { correlationId, packetId, sessionId, workerId } from '@octocodeai/agent-
 import type {
   CorrelationId,
   SessionId,
+  WorkerAuthorityV1,
+  WorkerId,
   WorkerCommand,
   WorkerController,
   WorkerPacket,
@@ -21,13 +23,28 @@ const MAX_MODELS = 64;
 const MAX_TURNS = 1_000;
 const RECURSIVE_TOOLS = new Set(['worker', 'spawnAgent', 'spawnSubagent', 'AgentMessage']);
 
+type NativeWorkerProjectionSpawnPacket = Omit<WorkerSpawnPacket, 'authority'>;
+type NativeWorkerProjectionPacket = Omit<WorkerPacket, 'authority'>;
+export type NativeWorkerProjectionCommand =
+  | { readonly type: 'spawn'; readonly packet: NativeWorkerProjectionSpawnPacket }
+  | { readonly type: 'list' }
+  | {
+      readonly type: 'status' | 'wait' | 'abort' | 'kill';
+      readonly workerId: WorkerId;
+      readonly reason?: string;
+    }
+  | {
+      readonly type: 'send' | 'steer' | 'follow-up';
+      readonly packet: NativeWorkerProjectionPacket;
+    };
+
 export interface NativeWorkerProjectionRequest {
   readonly protocolVersion: 1;
   readonly projection: 'worker';
   readonly requestId: string;
   readonly sessionId: SessionId;
   readonly correlationId?: CorrelationId;
-  readonly command: WorkerCommand;
+  readonly command: NativeWorkerProjectionCommand;
 }
 
 export type NativeWorkerProjectionResponse =
@@ -49,6 +66,12 @@ export interface NativeWorkerProjectionOptions {
   readonly activeSessionId: SessionId;
   readonly promptSnapshotId: string;
   readonly capabilities: WorkerSpawnPacket['capabilities'];
+  readonly resolveAuthority: (request: {
+    readonly sessionId: SessionId;
+    readonly workerId: WorkerId;
+    readonly correlationId: CorrelationId;
+    readonly commandType: Exclude<WorkerCommand['type'], 'list' | 'shutdown'>;
+  }) => WorkerAuthorityV1 | undefined;
   readonly authorize?: (request: NativeWorkerProjectionAuthorizationRequest) => Promise<boolean>;
 }
 
@@ -82,7 +105,7 @@ function bounded(value: unknown, label: string, max = MAX_ID_CHARS): string {
   return value;
 }
 
-function parsePacket(value: unknown, expected: WorkerPacketType): WorkerSpawnPacket | Extract<WorkerCommand, { type: 'send' | 'steer' | 'follow-up' }>['packet'] {
+function parsePacket(value: unknown, expected: WorkerPacketType): NativeWorkerProjectionSpawnPacket | NativeWorkerProjectionPacket {
   if (!isRecord(value)) throw new Error('worker packet must be an object');
   const common = ['schemaVersion', 'type', 'packetId', 'workerId', 'correlationId', 'sessionId', 'redaction'];
   const input = expected === 'worker.spawn' ? [...common, 'prompt', 'promptSnapshotId', 'workspace', 'capabilities'] : [...common, 'text'];
@@ -98,7 +121,7 @@ function parsePacket(value: unknown, expected: WorkerPacketType): WorkerSpawnPac
     redaction: value['redaction'] as WorkerSpawnPacket['redaction'],
   };
   if (expected !== 'worker.spawn') {
-    return { ...base, type: expected, text: bounded(value['text'], 'worker text', MAX_TEXT_CHARS) } as Extract<WorkerCommand, { type: 'send' | 'steer' | 'follow-up' }>['packet'];
+    return { ...base, type: expected, text: bounded(value['text'], 'worker text', MAX_TEXT_CHARS) } as NativeWorkerProjectionPacket;
   }
   if (!isRecord(value['workspace'])) throw new Error('worker workspace must be an object');
   const workspaceValue = value['workspace'];
@@ -134,12 +157,12 @@ function parsePacket(value: unknown, expected: WorkerPacketType): WorkerSpawnPac
 
 type WorkerPacketType = 'worker.spawn' | 'worker.send' | 'worker.steer' | 'worker.follow-up';
 
-function parseWorkerCommand(value: unknown): WorkerCommand {
+function parseWorkerCommand(value: unknown): NativeWorkerProjectionCommand {
   if (!isRecord(value) || typeof value['type'] !== 'string') throw new Error('worker command must be an object');
   switch (value['type']) {
     case 'spawn':
       closed(value, ['type', 'packet'], 'worker command');
-      return { type: 'spawn', packet: parsePacket(value['packet'], 'worker.spawn') as WorkerSpawnPacket };
+      return { type: 'spawn', packet: parsePacket(value['packet'], 'worker.spawn') as NativeWorkerProjectionSpawnPacket };
     case 'list':
       closed(value, ['type'], 'worker command');
       return { type: 'list' };
@@ -213,13 +236,13 @@ function workerProjection(value: unknown): Record<string, unknown> | undefined {
   };
 }
 
-function identity(command: WorkerCommand): Pick<WorkerSpawnPacket, 'sessionId' | 'correlationId'> | undefined {
+function identity(command: NativeWorkerProjectionCommand): Pick<WorkerSpawnPacket, 'sessionId' | 'correlationId'> | undefined {
   if (command.type === 'spawn') return command.packet;
   if (command.type === 'send' || command.type === 'steer' || command.type === 'follow-up') return command.packet;
   return undefined;
 }
 
-function recursive(packet: WorkerSpawnPacket): boolean {
+function recursive(packet: NativeWorkerProjectionSpawnPacket): boolean {
   return packet.capabilities.tools.some((tool) => RECURSIVE_TOOLS.has(tool));
 }
 
@@ -231,18 +254,24 @@ function success(requestId: string, data: Record<string, unknown>): NativeWorker
   return { protocolVersion: 1, projection: 'worker', requestId, ok: true, data };
 }
 
-function mutating(command: WorkerCommand): boolean {
+function mutating(command: NativeWorkerProjectionCommand | WorkerCommand): boolean {
   return command.type === 'spawn' || command.type === 'send' || command.type === 'steer'
     || command.type === 'follow-up' || command.type === 'abort' || command.type === 'kill';
 }
 
-function withinCapabilities(packet: WorkerSpawnPacket, options: NativeWorkerProjectionOptions): boolean {
+function withinCapabilities(packet: NativeWorkerProjectionSpawnPacket, options: NativeWorkerProjectionOptions): boolean {
   if (packet.promptSnapshotId !== options.promptSnapshotId) return false;
   if (packet.capabilities.maxTurns > options.capabilities.maxTurns) return false;
   const tools = new Set(options.capabilities.tools);
   if (packet.capabilities.tools.some((tool) => !tools.has(tool))) return false;
   const models = new Set(options.capabilities.models.map((model) => `${model.providerId}\0${model.modelId}`));
   return packet.capabilities.models.every((model) => models.has(`${model.providerId}\0${model.modelId}`));
+}
+
+function carriesCallerAuthority(command: NativeWorkerProjectionCommand): boolean {
+  if ('authority' in (command as unknown as Record<string, unknown>)) return true;
+  return 'packet' in command
+    && 'authority' in (command.packet as unknown as Record<string, unknown>);
 }
 
 /** Session-bound transport projection; core WorkerSupervisor remains lifecycle authority. */
@@ -252,6 +281,7 @@ export class NativeWorkerTransportProjection {
   async execute(request: NativeWorkerProjectionRequest): Promise<NativeWorkerProjectionResponse> {
     if (request.protocolVersion !== 1 || !request.requestId.trim()) return failure(request.requestId, 'validation', 'Invalid worker projection request');
     if (request.sessionId !== this.options.activeSessionId) return failure(request.requestId, 'correlation', 'Worker projection session does not match the active runtime');
+    if (carriesCallerAuthority(request.command)) return failure(request.requestId, 'validation', 'Caller-supplied worker authority is forbidden');
     const commandIdentity = identity(request.command);
     if (commandIdentity !== undefined && (commandIdentity.sessionId !== request.sessionId || commandIdentity.correlationId !== request.correlationId)) {
       return failure(request.requestId, 'correlation', 'Worker command identity does not match its transport scope');
@@ -262,7 +292,6 @@ export class NativeWorkerTransportProjection {
     if (request.command.type === 'spawn' && !withinCapabilities(request.command.packet, this.options)) {
       return failure(request.requestId, 'capability', 'Worker spawn exceeds the active runtime capability envelope');
     }
-    if (request.command.type === 'shutdown') return failure(request.requestId, 'validation', 'Transport clients cannot shut down the shared worker supervisor');
     try {
       if (request.command.type === 'list') {
         const listed = await this.controller.execute(request.command);
@@ -271,34 +300,76 @@ export class NativeWorkerTransportProjection {
           : [];
         return success(request.requestId, { action: 'list', workers });
       }
-      if (request.command.type === 'spawn') {
-        if (!await this.#authorize(request.command)) return failure(request.requestId, 'approval', 'Worker process operation was not approved');
-        const result = await this.controller.execute(request.command);
+      const command = this.#trustedCommand(request);
+      if (command === undefined)
+        return failure(request.requestId, 'approval', 'Trusted worker authority is unavailable');
+      if (command.type === 'spawn') {
+        if (!await this.#authorize(command)) return failure(request.requestId, 'approval', 'Worker process operation was not approved');
+        const result = await this.controller.execute(command);
         return success(request.requestId, { action: 'spawn', worker: workerProjection(result) ?? null });
       }
-      if (request.command.type === 'send' || request.command.type === 'steer' || request.command.type === 'follow-up') {
-        if (!await this.#authorize(request.command)) return failure(request.requestId, 'approval', 'Worker process operation was not approved');
-        await this.controller.execute(request.command);
-        return success(request.requestId, { action: request.command.type, acknowledged: true });
+      if (command.type === 'send' || command.type === 'steer' || command.type === 'follow-up') {
+        if (!await this.#authorize(command)) return failure(request.requestId, 'approval', 'Worker process operation was not approved');
+        await this.controller.execute(command);
+        return success(request.requestId, { action: command.type, acknowledged: true });
       }
-      if (!('workerId' in request.command)) return failure(request.requestId, 'validation', 'Worker command is not addressable');
-      const status = await this.controller.execute({ type: 'status', workerId: request.command.workerId });
+      if (!('workerId' in command)) return failure(request.requestId, 'validation', 'Worker command is not addressable');
+      const status = await this.controller.execute({ type: 'status', workerId: command.workerId, authority: command.authority });
       if (!isRecord(status) || status['sessionId'] !== request.sessionId || status['correlationId'] !== request.correlationId) {
         return failure(request.requestId, 'correlation', 'Worker does not match its transport scope');
       }
-      if (request.command.type === 'status') {
+      if (command.type === 'status') {
         return success(request.requestId, { action: 'status', worker: workerProjection(status) ?? null });
       }
-      if (mutating(request.command) && !await this.#authorize(request.command)) return failure(request.requestId, 'approval', 'Worker process operation was not approved');
-      const result = await this.controller.execute(request.command);
-      if (request.command.type === 'wait') {
+      if (mutating(command) && !await this.#authorize(command)) return failure(request.requestId, 'approval', 'Worker process operation was not approved');
+      const result = await this.controller.execute(command);
+      if (command.type === 'wait') {
         const snapshot = { ...status, terminal: result as WorkerTerminalPacket, state: isRecord(result) && typeof result['outcome'] === 'string' ? result['outcome'] : status['state'] } as unknown as WorkerSnapshot;
         return success(request.requestId, { action: 'wait', worker: workerProjection(snapshot) ?? null });
       }
-      return success(request.requestId, { action: request.command.type, acknowledged: true });
+      return success(request.requestId, { action: command.type, acknowledged: true });
     } catch {
       return failure(request.requestId, 'worker', 'Worker operation failed');
     }
+  }
+
+  #trustedCommand(
+    request: NativeWorkerProjectionRequest,
+  ): WorkerCommand | undefined {
+    const projected = request.command;
+    if (projected.type === 'list') return projected;
+    const worker = 'packet' in projected
+      ? projected.packet.workerId
+      : projected.workerId;
+    const correlation = 'packet' in projected
+      ? projected.packet.correlationId
+      : request.correlationId;
+    if (correlation === undefined) return undefined;
+    const authority = this.options.resolveAuthority({
+      sessionId: request.sessionId,
+      workerId: worker,
+      correlationId: correlation,
+      commandType: projected.type,
+    });
+    if (
+      authority === undefined ||
+      authority.workerId !== worker ||
+      authority.correlationId !== correlation ||
+      authority.parentSessionId !== request.sessionId
+    )
+      return undefined;
+    if (projected.type === 'spawn')
+      return { type: 'spawn', packet: { ...projected.packet, authority } };
+    if ('packet' in projected)
+      return { type: projected.type, packet: { ...projected.packet, authority } };
+    if (projected.type === 'status' || projected.type === 'wait')
+      return { type: projected.type, workerId: projected.workerId, authority };
+    return {
+      type: projected.type,
+      workerId: projected.workerId,
+      authority,
+      ...(projected.reason === undefined ? {} : { reason: projected.reason }),
+    };
   }
 
   async #authorize(command: WorkerCommand): Promise<boolean> {

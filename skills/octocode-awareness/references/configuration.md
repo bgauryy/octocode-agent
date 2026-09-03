@@ -4,7 +4,11 @@ Load when choosing storage scope, hook policy, identity, or repository ownership
 
 ## Storage and automation
 
-Durable state uses `$OCTOCODE_HOME/agent/agent.sqlite3`; workspace columns isolate repositories. `--db` is only for an explicit isolated path. Inspect global hook automation with `config show --compact`. Never copy config parsing: the runtime uses `@octocodeai/config` and `OCTOCODE_HOME`.
+Repository scope stores durable coordination in `<workspace>/.octocode/awareness.sqlite3`. Global scope stores it in `$OCTOCODE_HOME/awareness/awareness.sqlite3`. `--db` is only for an explicit isolated path and wins over scope defaults. Neither default is `$OCTOCODE_HOME/agent/agent.sqlite3` (Agent control/index) or `$OCTOCODE_HOME/agent/core.sqlite3` (Agent runtime durability). Inspect hook automation with `config show --compact`. Never copy config parsing: the runtime uses `@octocodeai/config` and `OCTOCODE_HOME`.
+
+Other files under `<workspace>/.octocode/`, including Octocode research databases and generated projections, retain their own owners. Do not merge, rename, delete, or infer Awareness state from them.
+
+For a recognized old mixed store, run `coordination maintenance migrate-legacy`; it copies all Awareness workspaces to global Awareness scope, refuses a nonempty target, and preserves the Agent source. Never migrate by opening the Agent database as Awareness.
 
 ## Identity and trust
 

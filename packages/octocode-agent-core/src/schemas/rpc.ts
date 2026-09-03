@@ -77,6 +77,108 @@ function isNonNegativeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
+const isBoundedSessionCount = (value: unknown): value is number | "unknown" =>
+  value === "unknown" ||
+  (isNonNegativeInteger(value) && (value as number) <= 10_000_000);
+
+function isBoundedSessionDisplayName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    [...value].length <= 120 &&
+    !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(value)
+  );
+}
+
+function isSessionContextOccupancy(value: unknown): boolean {
+  if (value === "unknown") return true;
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["used", "limit"]) ||
+    !Object.hasOwn(value, "used") ||
+    !Object.hasOwn(value, "limit") ||
+    !isBoundedSessionCount(value.used) ||
+    !isBoundedSessionCount(value.limit)
+  ) {
+    return false;
+  }
+  return (
+    typeof value.used !== "number" ||
+    typeof value.limit !== "number" ||
+    value.used <= value.limit
+  );
+}
+
+function isSessionReceipt(type: unknown, value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "schemaVersion",
+      "transition",
+      "displayName",
+      "shortPublicId",
+      "state",
+      "restoredVisibleMessageCount",
+      "retainedModelContextItemCount",
+      "contextOccupancy",
+      "committedCompaction",
+    ]) ||
+    value.schemaVersion !== 1 ||
+    !isBoundedSessionDisplayName(value.displayName) ||
+    typeof value.shortPublicId !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9_-]{3,23}$/u.test(value.shortPublicId) ||
+    !isBoundedSessionCount(value.restoredVisibleMessageCount) ||
+    !isBoundedSessionCount(value.retainedModelContextItemCount) ||
+    !isSessionContextOccupancy(value.contextOccupancy) ||
+    (value.committedCompaction !== "none" &&
+      value.committedCompaction !== "committed" &&
+      value.committedCompaction !== "unknown")
+  ) {
+    return false;
+  }
+
+  if (type === "session.forked") {
+    return value.transition === "fork" && value.state === "forked";
+  }
+  if (type !== "session.started") return false;
+  if (value.transition === "create") {
+    if (value.state !== "fresh") return false;
+  } else if (value.transition === "resume" || value.transition === "switch") {
+    if (
+      value.state !== "resumed-empty" &&
+      value.state !== "resumed" &&
+      value.state !== "resumed-compacted" &&
+      value.state !== "recovered-partially"
+    ) {
+      return false;
+    }
+  } else {
+    return false;
+  }
+
+  if (value.state === "fresh" || value.state === "resumed-empty") {
+    if (value.restoredVisibleMessageCount !== 0) return false;
+  } else if (value.state === "resumed" || value.state === "resumed-compacted") {
+    if (
+      typeof value.restoredVisibleMessageCount !== "number" ||
+      value.restoredVisibleMessageCount === 0
+    ) {
+      return false;
+    }
+  }
+  if (value.state === "resumed-compacted") {
+    return value.committedCompaction === "committed";
+  }
+  if (
+    value.state === "fresh" ||
+    value.state === "resumed-empty" ||
+    value.state === "resumed"
+  ) {
+    return value.committedCompaction === "none";
+  }
+  return true;
+}
+
 function isUsage(value: unknown): boolean {
   return (
     isRecord(value) &&
@@ -88,6 +190,26 @@ function isUsage(value: unknown): boolean {
     ]) &&
     isNonNegativeInteger(value.inputTokens) &&
     isNonNegativeInteger(value.outputTokens) &&
+    (value.cachedInputTokens === undefined ||
+      isNonNegativeInteger(value.cachedInputTokens)) &&
+    (value.cacheWriteInputTokens === undefined ||
+      isNonNegativeInteger(value.cacheWriteInputTokens))
+  );
+}
+
+function isContextUsage(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      "inputTokens",
+      "outputTokens",
+      "currentContextTokens",
+      "cachedInputTokens",
+      "cacheWriteInputTokens",
+    ]) &&
+    isNonNegativeInteger(value.inputTokens) &&
+    isNonNegativeInteger(value.outputTokens) &&
+    isNonNegativeInteger(value.currentContextTokens) &&
     (value.cachedInputTokens === undefined ||
       isNonNegativeInteger(value.cachedInputTokens)) &&
     (value.cacheWriteInputTokens === undefined ||
@@ -122,6 +244,9 @@ function isMappedEventPayload(type: unknown, payload: unknown): boolean {
       hasOnlyKeys(payload, ["message"]) &&
       typeof payload.message === "string"
     );
+  }
+  if (type === "session.started" || type === "session.forked") {
+    return isSessionReceipt(type, payload);
   }
   if (type === "session.starting" || type === "session.stopping") {
     return (
@@ -487,7 +612,7 @@ function isMappedEventPayload(type: unknown, payload: unknown): boolean {
       typeof payload.message === "string"
     );
   }
-  if (type === "context.usage-changed") return isUsage(payload);
+  if (type === "context.usage-changed") return isContextUsage(payload);
   if (
     type === "checkpoint.prepared" ||
     type === "checkpoint.recovered" ||

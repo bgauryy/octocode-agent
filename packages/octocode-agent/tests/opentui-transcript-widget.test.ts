@@ -44,10 +44,10 @@ describe('TranscriptWidget', () => {
     });
     expect(state.capabilities).toEqual({ focusable: true, inputMode: 'keys' });
     expect(state.regions.find(({ id }) => id === 'messages')?.text).toBe(
-      'user: Run the checks\nassistant: Running them now.',
+      '› Run the checks\n\n◆ Octocode\n  Running them now.',
     );
     expect(state.regions.find(({ id }) => id === 'activity')?.text).toBe(
-      'assistant: Thinking…',
+      '◆ Octocode · Thinking…',
     );
     expect(widget.alternateOutput()).toBe(
       '[turn=turn-1 message=user-1 status=complete] user: Run the checks\n'
@@ -146,6 +146,27 @@ describe('TranscriptWidget', () => {
       politeness: 'polite',
       text: 'Assistant message completed.',
     }]);
+  });
+
+  it('shows cancelled and failed outcomes in the visible conversation', () => {
+    const widget = activeWidget([
+      {
+        id: 'assistant-error',
+        role: 'assistant',
+        status: 'error',
+        segments: [{ kind: 'text', text: 'The check did not finish.' }],
+      },
+      {
+        id: 'assistant-cancelled',
+        role: 'assistant',
+        status: 'cancelled',
+        segments: [{ kind: 'text', text: 'Stopped before editing.' }],
+      },
+    ]);
+
+    const text = widget.render().regions.find(({ id }) => id === 'messages')?.text;
+    expect(text).toContain('◆ Octocode · Failed');
+    expect(text).toContain('◆ Octocode · Cancelled');
   });
 
   it('owns a concrete render method and forwards its state through the adapter', () => {

@@ -85,7 +85,7 @@ describe('source CLI regressions', () => {
       });
       expect(result.status).toBe(1);
       expect(String(result.parsed?.['error'])).toContain('--db expects a path');
-      expect(existsSync(join(dir, 'agent.sqlite3'))).toBe(false);
+      expect(existsSync(join(dir, 'awareness.sqlite3'))).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

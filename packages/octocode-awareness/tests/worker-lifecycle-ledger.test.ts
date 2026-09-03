@@ -4,18 +4,17 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   appendWorkerLifecycleEvent,
-  closeOctocodeDb,
+  connectDb,
   listWorkerLifecycleEvents,
-  openOctocodeDb,
   type WorkerLifecycleEventInput,
-} from '../src/mcp-state.js';
+} from '../src/index.js';
 
 const directories: string[] = [];
 
 function fixturePath(): string {
   const directory = mkdtempSync(join(tmpdir(), 'awareness-worker-ledger-'));
   directories.push(directory);
-  return join(directory, 'agent.sqlite3');
+  return join(directory, 'awareness.sqlite3');
 }
 
 function event(overrides: Partial<WorkerLifecycleEventInput> = {}): WorkerLifecycleEventInput {
@@ -40,7 +39,7 @@ afterEach(() => {
 describe('worker lifecycle ledger', () => {
   it('appends ordered correlated events and treats an identical packet as idempotent', () => {
     const dbPath = fixturePath();
-    const db = openOctocodeDb(dbPath);
+    const db = connectDb(dbPath);
     try {
       const first = appendWorkerLifecycleEvent(db, event());
       const duplicate = appendWorkerLifecycleEvent(db, event({ payload: { capabilities: { tools: ['localSearch'], maxTurns: 4 }, promptDigest: 'sha256:abc' } }));
@@ -59,25 +58,25 @@ describe('worker lifecycle ledger', () => {
         sessionId: 'session-1',
       })).toEqual([first.event, second.event]);
     } finally {
-      closeOctocodeDb(dbPath);
+      db.close();
     }
   });
 
   it('rejects reuse of a packet id with divergent envelope or payload data', () => {
     const dbPath = fixturePath();
-    const db = openOctocodeDb(dbPath);
+    const db = connectDb(dbPath);
     try {
       appendWorkerLifecycleEvent(db, event());
       expect(() => appendWorkerLifecycleEvent(db, event({ workerId: 'worker-2' }))).toThrow(/packetId.*different/i);
       expect(() => appendWorkerLifecycleEvent(db, event({ payload: { promptDigest: 'sha256:different' } }))).toThrow(/packetId.*different/i);
     } finally {
-      closeOctocodeDb(dbPath);
+      db.close();
     }
   });
 
   it('requires workspace and session scope while supporting indexed replay filters', () => {
     const dbPath = fixturePath();
-    const db = openOctocodeDb(dbPath);
+    const db = connectDb(dbPath);
     try {
       const events = [
         event({ packetId: 'a-1', workerId: 'worker-a', correlationId: 'corr-a' }),
@@ -97,28 +96,29 @@ describe('worker lifecycle ledger', () => {
         workspace: '/workspace/repository-a', sessionId: 'session-1', type: 'worker.state',
       }).map(({ packetId }) => packetId)).toEqual(['a-2']);
     } finally {
-      closeOctocodeDb(dbPath);
+      db.close();
     }
   });
 
   it('replays committed events after the SQLite connection restarts', () => {
     const dbPath = fixturePath();
-    appendWorkerLifecycleEvent(openOctocodeDb(dbPath), event());
-    closeOctocodeDb(dbPath);
+    const initial = connectDb(dbPath);
+    appendWorkerLifecycleEvent(initial, event());
+    initial.close();
 
-    const reopened = openOctocodeDb(dbPath);
+    const reopened = connectDb(dbPath);
     try {
       expect(listWorkerLifecycleEvents(reopened, {
         workspace: '/workspace/repository-a', sessionId: 'session-1',
       })).toMatchObject([{ packetId: 'packet-1', payload: { promptDigest: 'sha256:abc' } }]);
     } finally {
-      closeOctocodeDb(dbPath);
+      reopened.close();
     }
   });
 
   it('rejects malformed, oversized, non-JSON, and secret-like durable content', () => {
     const dbPath = fixturePath();
-    const db = openOctocodeDb(dbPath);
+    const db = connectDb(dbPath);
     try {
       expect(() => appendWorkerLifecycleEvent(db, event({ createdAt: 'not-a-date' }))).toThrow(/createdAt/);
       expect(() => appendWorkerLifecycleEvent(db, event({ redaction: 'unsafe' as 'public' }))).toThrow(/redaction/);
@@ -135,13 +135,13 @@ describe('worker lifecycle ledger', () => {
         workspace: '/workspace/repository-a', sessionId: 'session-1', limit: 0,
       })).toThrow(/limit/);
     } finally {
-      closeOctocodeDb(dbPath);
+      db.close();
     }
   });
 
   it('fails closed when persisted payload bytes are malformed', () => {
     const dbPath = fixturePath();
-    const db = openOctocodeDb(dbPath);
+    const db = connectDb(dbPath);
     try {
       appendWorkerLifecycleEvent(db, event());
       db.prepare('UPDATE worker_lifecycle_events SET payload_json = ? WHERE packet_id = ?').run('{', 'packet-1');
@@ -149,7 +149,7 @@ describe('worker lifecycle ledger', () => {
         workspace: '/workspace/repository-a', sessionId: 'session-1',
       })).toThrow(/malformed payload.*packet-1/i);
     } finally {
-      closeOctocodeDb(dbPath);
+      db.close();
     }
   });
 });

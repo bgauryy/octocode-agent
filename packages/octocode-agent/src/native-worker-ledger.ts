@@ -1,14 +1,13 @@
 import { createHash } from 'node:crypto';
-import type { WorkerLedgerEntry, WorkerLedgerPort } from '@octocodeai/agent-core';
+import type { WorkerAuthorityV1, WorkerLedgerEntry, WorkerLedgerPort } from '@octocodeai/agent-core';
 import type { WorkerSpawnPacket } from '@octocodeai/agent-core';
 import type { NativeWorkerProcessIdentity } from './native-workers.js';
 import {
   appendWorkerLifecycleEvent,
-  closeOctocodeDb,
-  agentDbPath,
-  openOctocodeDb,
+  connectDb,
+  resolveDbPath,
   type WorkerLifecycleJsonValue,
-} from '@octocodeai/octocode-awareness/mcp-state';
+} from '@octocodeai/octocode-awareness';
 
 const MAX_DURABLE_HANDBACK_BYTES = 4 * 1024 * 1024;
 
@@ -37,9 +36,10 @@ function boundedHandback(value: unknown): WorkerLifecycleJsonValue | undefined {
 }
 
 function durablePayload(entry: WorkerLedgerEntry): WorkerLifecycleJsonValue {
+  const authority = durableAuthority(entry.authority);
   switch (entry.type) {
     case 'worker.spawn':
-      return {
+      return { authority,
         promptSha256: digest(entry.prompt),
         promptBytes: Buffer.byteLength(entry.prompt),
         promptSnapshotId: entry.promptSnapshotId,
@@ -55,12 +55,12 @@ function durablePayload(entry: WorkerLedgerEntry): WorkerLifecycleJsonValue {
     case 'worker.send':
     case 'worker.steer':
     case 'worker.follow-up':
-      return { textSha256: digest(entry.text), textBytes: Buffer.byteLength(entry.text) };
+      return { authority, textSha256: digest(entry.text), textBytes: Buffer.byteLength(entry.text) };
     case 'worker.state':
-      return { state: entry.state };
+      return { authority, state: entry.state };
     case 'worker.terminal': {
       const handback = boundedHandback(entry.handback);
-      return {
+      return { authority,
         outcome: entry.outcome,
         ...(entry.reason === undefined ? {} : { reason: entry.reason }),
         ...(handback === undefined ? {} : { handback }),
@@ -69,13 +69,33 @@ function durablePayload(entry: WorkerLedgerEntry): WorkerLifecycleJsonValue {
   }
 }
 
+function durableAuthority(authority: WorkerAuthorityV1): WorkerLifecycleJsonValue {
+  return {
+    schemaVersion: 1,
+    workerId: authority.workerId,
+    correlationId: authority.correlationId,
+    rootAgentId: authority.rootAgentId,
+    parentSessionId: authority.parentSessionId,
+    workspaceId: authority.workspaceId,
+    workspaceGeneration: authority.workspaceGeneration,
+    trustRevision: authority.trustRevision,
+    permissionMode: authority.permissionMode,
+    capabilityDigest: authority.capabilityDigest,
+    ...(authority.planId === undefined ? {} : { planId: authority.planId }),
+    ...(authority.planRevision === undefined ? {} : { planRevision: authority.planRevision }),
+    ...(authority.planStepId === undefined ? {} : { planStepId: authority.planStepId }),
+    effectAdmissionId: authority.effectAdmissionId,
+    ownershipGeneration: authority.ownershipGeneration,
+    digest: digest(JSON.stringify(authority)),
+  };
+}
+
 export interface NativeAwarenessWorkerLedgerOptions {
   readonly workspace: string;
-  readonly env?: NodeJS.ProcessEnv;
   readonly now?: () => number;
 }
 
-/** Persists the core worker ledger in Awareness without storing raw prompts or queued input. */
+/** Publishes a redacted Awareness projection; Rust remains the authoritative worker store. */
 export class NativeAwarenessWorkerLedger implements WorkerLedgerPort {
   readonly #workspace: string;
   readonly #dbPath: string;
@@ -83,12 +103,12 @@ export class NativeAwarenessWorkerLedger implements WorkerLedgerPort {
 
   constructor(options: NativeAwarenessWorkerLedgerOptions) {
     this.#workspace = options.workspace;
-    this.#dbPath = agentDbPath(options.env);
+    this.#dbPath = resolveDbPath(undefined, { scope: 'repo', workspace: options.workspace });
     this.#now = options.now ?? Date.now;
   }
 
   async append(entry: WorkerLedgerEntry): Promise<void> {
-    const db = openOctocodeDb(this.#dbPath);
+    const db = connectDb(this.#dbPath);
     try {
       appendWorkerLifecycleEvent(db, {
         packetId: entry.packetId,
@@ -102,12 +122,12 @@ export class NativeAwarenessWorkerLedger implements WorkerLedgerPort {
         payload: durablePayload(entry),
       });
     } finally {
-      closeOctocodeDb(this.#dbPath);
+      db.close();
     }
   }
 
   async recordProcess(entry: WorkerSpawnPacket, identity: NativeWorkerProcessIdentity): Promise<void> {
-    const db = openOctocodeDb(this.#dbPath);
+    const db = connectDb(this.#dbPath);
     try {
       appendWorkerLifecycleEvent(db, {
         packetId: `process:${entry.packetId}`,
@@ -119,7 +139,11 @@ export class NativeAwarenessWorkerLedger implements WorkerLedgerPort {
         redaction: 'internal',
         createdAt: new Date(this.#now()).toISOString(),
         payload: {
+          schemaVersion: identity.schemaVersion,
+          kind: identity.kind,
           pid: identity.pid,
+          processGroupId: identity.processGroupId,
+          generation: identity.generation,
           startToken: identity.startToken,
           commandSha256: identity.commandSha256,
           ownershipTokenSha256: identity.ownershipTokenSha256,
@@ -127,7 +151,7 @@ export class NativeAwarenessWorkerLedger implements WorkerLedgerPort {
         },
       });
     } finally {
-      closeOctocodeDb(this.#dbPath);
+      db.close();
     }
   }
 }

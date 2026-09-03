@@ -43,6 +43,7 @@ export interface NativePresentationChromeUpdate {
   readonly modelId?: string;
   readonly version?: string;
   readonly trust: "trusted" | "untrusted" | "unknown";
+  readonly permissionMode?: "strict" | "default" | "allow-all";
 }
 
 type NativePresentationWorkflowAware = {
@@ -222,6 +223,16 @@ export type NativePresentationEvent =
   | { type: "runtime-stopping" }
   | { type: "runtime-failed" }
   | { type: "context-cleared" }
+  | { type: "transcript-cleared" }
+  | {
+      type: "context-usage-changed";
+      used: number;
+      limit: number;
+      inputTokens: number;
+      outputTokens: number;
+      cachedInputTokens?: number;
+      cacheWriteInputTokens?: number;
+    }
   | { type: "chrome-changed"; chrome: NativePresentationChromeUpdate }
   | { type: "turn-started"; turnId: string }
   | {
@@ -326,10 +337,12 @@ export type NativePresentationEvent =
   | { type: "worker-changed"; worker: NativePresentationWorkerUpdate }
   | { type: "worker-inbox-changed"; inbox: NativeWorkerInboxSnapshot }
   | { type: "status-changed"; name: string; text?: string }
+  | { type: "session-replaced" }
   | {
       type: "notification";
       severity: NativePresentationNotificationSeverity;
       message: string;
+      key?: string;
     }
   | {
       type: "presentation-changed";

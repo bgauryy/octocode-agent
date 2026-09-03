@@ -184,7 +184,7 @@ describeNativeFfi("held-out OpenTUI viewport acceptance matrix", () => {
       expect(alternate).toContain("researcher");
       expect(alternate).toContain("plan-held-out");
       expect(alternate).toContain("Approve protected action?");
-      expect(alternate).toContain("context.compaction: running");
+      expect(alternate).toContain("Context · running");
       expect(alternate).toContain("Context usage is critical");
       const overflowingInitialLines = initialFrame.split("\n")
         .map((line) => ({ line, width: terminalDisplayWidth(line) }))

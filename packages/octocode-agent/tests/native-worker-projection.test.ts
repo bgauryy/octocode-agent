@@ -11,11 +11,26 @@ import {
   createNativeWorkerEditorProjection,
   NativeWorkerTransportProjection,
   toNativeWorkerEditorUpdate,
+  type NativeWorkerProjectionCommand,
 } from '../src/native-worker-projection.js';
 
 const session = sessionId('session-1');
 const correlation = correlationId('correlation-1');
 const id = workerId('worker-1');
+const trustedAuthority = {
+  schemaVersion: 1 as const,
+  workerId: id,
+  correlationId: correlation,
+  rootAgentId: 'root-1',
+  parentSessionId: session,
+  workspaceId: 'workspace-1',
+  workspaceGeneration: 1,
+  trustRevision: 'trust-1',
+  permissionMode: 'default' as const,
+  capabilityDigest: 'capabilities-1',
+  effectAdmissionId: 'effect-1',
+  ownershipGeneration: 1,
+};
 
 function controller(execute: (command: WorkerCommand) => Promise<unknown>): WorkerController {
   return { execute: vi.fn(execute) };
@@ -29,6 +44,7 @@ function createProjection(
     activeSessionId: session,
     promptSnapshotId: 'digest',
     capabilities: { tools: ['read'], models: [{ providerId: 'openai', modelId: 'gpt-5' }], maxTurns: 4 },
+    resolveAuthority: () => trustedAuthority,
     authorize: async () => true,
     ...options,
   });
@@ -171,7 +187,7 @@ describe('native worker transport projection', () => {
     };
     const execute = vi.fn(async () => snapshot);
     const authorize = vi.fn(async () => true);
-    const command: WorkerCommand = {
+    const command: NativeWorkerProjectionCommand = {
       type: 'spawn',
       packet: {
         schemaVersion: 1, type: 'worker.spawn', packetId: packetId('spawn-approved'), workerId: id,
@@ -183,12 +199,63 @@ describe('native worker transport projection', () => {
       protocolVersion: 1, projection: 'worker', requestId: 'approved', sessionId: session, correlationId: correlation, command,
     });
     expect(response).toMatchObject({ projection: 'worker', ok: true, data: { action: 'spawn' } });
+    const trustedCommand = {
+      type: 'spawn',
+      packet: { ...command.packet, authority: trustedAuthority },
+    };
     expect(authorize).toHaveBeenCalledWith({
       sessionId: session,
-      command,
+      command: trustedCommand,
       policy: { effect: 'process', trust: 'workspace', approval: 'on-request' },
     });
-    expect(execute).toHaveBeenCalledWith(command);
+    expect(execute).toHaveBeenCalledWith(trustedCommand);
+  });
+
+  it('rejects raw caller authority and retrieves the trusted authority', async () => {
+    const execute = vi.fn(async (command: WorkerCommand) => {
+      if (command.type === 'status') return {
+        workerId: id,
+        correlationId: correlation,
+        sessionId: session,
+        state: 'running',
+        queueDepth: 0,
+        capabilities: { tools: [], models: [], maxTurns: 1 },
+      };
+      return undefined;
+    });
+    const resolveAuthority = vi.fn(() => trustedAuthority);
+    const transport = createProjection(execute, { resolveAuthority });
+    const forged = { ...trustedAuthority, ownershipGeneration: 99 };
+    const rejected = await transport.execute({
+      protocolVersion: 1,
+      projection: 'worker',
+      requestId: 'forged-authority',
+      sessionId: session,
+      correlationId: correlation,
+      command: {
+        type: 'abort',
+        workerId: id,
+        authority: forged,
+      } as unknown as NativeWorkerProjectionCommand,
+    });
+    expect(rejected).toMatchObject({ ok: false, error: { category: 'validation' } });
+    expect(resolveAuthority).not.toHaveBeenCalled();
+
+    const accepted = await transport.execute({
+      protocolVersion: 1,
+      projection: 'worker',
+      requestId: 'trusted-authority',
+      sessionId: session,
+      correlationId: correlation,
+      command: { type: 'abort', workerId: id, reason: 'stop' },
+    });
+    expect(accepted).toMatchObject({ ok: true, data: { acknowledged: true } });
+    expect(execute).toHaveBeenLastCalledWith({
+      type: 'abort',
+      workerId: id,
+      reason: 'stop',
+      authority: trustedAuthority,
+    });
   });
 
   it('uses the guarded transport projection as the editor command and event boundary', async () => {

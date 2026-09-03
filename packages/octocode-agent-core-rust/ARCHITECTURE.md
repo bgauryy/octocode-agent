@@ -16,6 +16,15 @@ The native launcher discovers packaged binaries beside the built launcher,
 supervises their lifetime, correlates responses, and fails closed when a required
 service is unavailable.
 
+The SQLite actor uses the Agent-owned
+`$OCTOCODE_HOME/agent/core.sqlite3`. It doesn't open the Agent control database
+at `$OCTOCODE_HOME/agent/agent.sqlite3`, the workspace Awareness database at
+`<workspace>/.octocode/awareness.sqlite3`, the optional global Awareness
+database, or any CLI/MCP database. The launcher and actor reject a foreign store
+identity before runtime schema writes. Worker lifecycle and communication
+durability in `core.sqlite3` remain Agent-owned even when workers coordinate
+through Awareness.
+
 ## Durability flow
 
 ```text
@@ -47,6 +56,10 @@ Rust stores canonical records but doesn't decide their meaning. TypeScript owns
 settings validation and redaction, lifecycle semantics, communication
 acknowledgement policy, schedule expansion, automation execution, and public
 projection.
+
+The executable Rust schema and protocol modules are the durable entity
+inventory. Documentation intentionally avoids a fixed table count because
+runtime entities evolve with versioned protocol methods.
 
 ## Filesystem flow
 

@@ -1,5 +1,6 @@
 import type { SessionId, ToolCallId, TurnId } from './identity.js';
 import type { RuntimeMode, RuntimeOutputFormat, TrustSnapshot } from './events.js';
+import type { PermissionMode } from './permissions.js';
 import { RuntimeFailure } from './errors.js';
 
 export interface JsonSchema {
@@ -59,7 +60,23 @@ export function createEffectSet(...effects: readonly ToolEffect[]): EffectSet {
 export interface ToolPolicyResolution { readonly effects: EffectSet; readonly trust: 'none' | 'workspace' | 'managed'; readonly approval: 'never' | 'on-request' | 'always'; }
 export interface ToolPolicyMetadata extends ToolPolicyResolution { readonly plan: 'allowed' | 'forbidden' | 'required'; readonly resolve?: (input: unknown) => ToolPolicyResolution; readonly lockTarget?: (input: unknown) => readonly string[]; readonly concurrency?: (input: unknown) => ToolConcurrencyLane | undefined; }
 export interface ToolExecutionUpdate { readonly version: 1; readonly kind: 'progress' | 'status' | 'details'; readonly message?: string; readonly value?: unknown; }
-export interface ExecutionContext { readonly sessionId: SessionId; readonly turnId?: TurnId; readonly cwd: string; readonly mode: RuntimeMode; readonly outputFormat?: RuntimeOutputFormat; readonly trust: TrustSnapshot; readonly signal: AbortSignal; }
+export interface WorkerAuthorityRootV1 {
+  readonly rootAgentId: string;
+  readonly workspaceId: string;
+  readonly workspaceGeneration: number;
+  readonly ownershipGeneration: number;
+}
+export interface ToolAdmissionContextV1 {
+  readonly schemaVersion: 1;
+  readonly effectAdmissionId: string;
+  readonly receiptDigest: string;
+  readonly trustRevision: string;
+  readonly permissionMode: PermissionMode;
+  readonly policyRevision: number;
+  readonly planRevision: number;
+  readonly workerAuthorityRoot?: WorkerAuthorityRootV1;
+}
+export interface ExecutionContext { readonly sessionId: SessionId; readonly turnId?: TurnId; readonly cwd: string; readonly mode: RuntimeMode; readonly outputFormat?: RuntimeOutputFormat; readonly trust: TrustSnapshot; /** Present for runtime-invoked tools after effect admission. Direct adapter tests may omit it. */ readonly admission?: ToolAdmissionContextV1; readonly signal: AbortSignal; }
 export interface ToolExecutionInput { readonly input: unknown; readonly callId: ToolCallId; readonly context: ExecutionContext; readonly signal: AbortSignal; readonly update: (update: ToolExecutionUpdate) => Promise<void>; }
 export interface ToolResult { readonly ok: boolean; readonly content: unknown; readonly detailsVersion: number; readonly category?: string; }
 export interface ToolDefinition { readonly name: string; readonly label: string; readonly description: string; readonly schemaVersion: number; readonly inputSchema: JsonSchema; readonly outputSchema: JsonSchema; readonly outputVersion: number; readonly policy: ToolPolicyMetadata; readonly presentation?: { readonly callLabel?: string; readonly resultLabel?: string }; execute(input: ToolExecutionInput): Promise<ToolResult>; }

@@ -4,7 +4,7 @@ import type { SessionEvent, SessionLoadResult, SessionRecord, SessionRecordPort,
 import { extendSessionProjection, parseSessionRecord, projectSession } from './store.js';
 
 export class TransactionalSessionStore implements SessionStore {
-  readonly #cache = new Map<SessionId, { readonly record: SessionRecord; readonly projection: SessionLoadResult['projection']; readonly eventIds: ReadonlySet<string> }>();
+  readonly #cache = new Map<SessionId, { readonly record: SessionRecord; readonly projection: SessionLoadResult['projection']; readonly eventIds: ReadonlySet<string>; readonly recoveredPartially: boolean }>();
   constructor(readonly port: SessionRecordPort) {}
   async append(id: SessionId, expectedRevision: Revision, events: readonly SessionEvent[]): Promise<Revision> {
     const state = await this.#loadState(id);
@@ -29,28 +29,45 @@ export class TransactionalSessionStore implements SessionStore {
       this.#cache.delete(id);
       await this.#loadState(id);
     } else {
-      this.#cache.set(id, { record, projection, eventIds: new Set([...eventIds, ...events.map(({ eventId }) => String(eventId))]) });
+      this.#cache.set(id, {
+        record,
+        projection,
+        eventIds: new Set([...eventIds, ...events.map(({ eventId }) => String(eventId))]),
+        recoveredPartially: state?.recoveredPartially ?? false,
+      });
     }
     return nextRevision;
   }
   async load(id: SessionId): Promise<SessionLoadResult> {
     const state = await this.#loadState(id);
-    return state === null ? { events: [], projection: projectSession(id, []) } : { events: state.record.events, projection: state.projection };
+    return state === null
+      ? { events: [], projection: projectSession(id, []) }
+      : {
+          events: state.record.events,
+          projection: state.projection,
+          ...(state.recoveredPartially ? { recoveredPartially: true } : {}),
+        };
   }
-  async #loadState(id: SessionId): Promise<{ readonly record: SessionRecord; readonly projection: SessionLoadResult['projection']; readonly eventIds: ReadonlySet<string> } | null> {
+  async #loadState(id: SessionId): Promise<{ readonly record: SessionRecord; readonly projection: SessionLoadResult['projection']; readonly eventIds: ReadonlySet<string>; readonly recoveredPartially: boolean } | null> {
     const cached = this.#cache.get(id);
     if (cached && this.port.readRevision && await this.port.readRevision(id) === cached.record.revision) return cached;
-    const record = await this.#readRecord(id);
-    if (record === null) { this.#cache.delete(id); return null; }
-    const projection = projectSession(id, record.events, { allowGaps: record.schemaVersion === 2, revision: record.revision });
-    const state = { record, projection, eventIds: new Set(record.events.map(({ eventId }) => String(eventId))) };
+    const loaded = await this.#readRecord(id);
+    if (loaded === null) { this.#cache.delete(id); return null; }
+    const projection = projectSession(id, loaded.record.events, { allowGaps: loaded.record.schemaVersion === 2, revision: loaded.record.revision });
+    const state = {
+      record: loaded.record,
+      projection,
+      eventIds: new Set(loaded.record.events.map(({ eventId }) => String(eventId))),
+      recoveredPartially: loaded.recoveredPartially,
+    };
     this.#cache.set(id, state);
     return state;
   }
-  async #readRecord(id: SessionId): Promise<SessionRecord | null> {
+  async #readRecord(id: SessionId): Promise<{ readonly record: SessionRecord; readonly recoveredPartially: boolean } | null> {
     const raw = await this.port.read(id); if (raw === null) return null;
     let value: unknown; try { value = JSON.parse(raw.content); } catch { throw new RuntimeFailure('session-corruption', 'Session record is not valid JSON', 'unsafe', true, 'sensitive'); }
     const record = parseSessionRecord(value, id);
-    projectSession(id, record.events, { allowGaps: record.schemaVersion === 2, revision: record.revision }); return record;
+    projectSession(id, record.events, { allowGaps: record.schemaVersion === 2, revision: record.revision });
+    return { record, recoveredPartially: raw.recovered };
   }
 }

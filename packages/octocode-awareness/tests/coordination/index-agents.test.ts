@@ -4,20 +4,18 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openAwarenessStore, type AwarenessStore } from '../../src/coordination/index.js';
-import { recordSession } from '@octocodeai/octocode-shared/schema';
+import { AWARENESS_APPLICATION_ID } from '../../src/db-runtime.js';
 
 let workspace: string;
 let aw: AwarenessStore;
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-lite-'));
-  process.env.OCTOCODE_AGENT_DB_PATH = join(workspace, 'agent.sqlite3');
   aw = openAwarenessStore({ workspace });
 });
 
 afterEach(async () => {
   aw.close();
-  delete process.env.OCTOCODE_AGENT_DB_PATH;
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -45,7 +43,7 @@ describe('agent naming', () => {
     expect(aw.joinAgent({ agentId: 'named', name: 'Alice' }).name).toBe('Alice');
   });
 
-  it('creates the shared agent/session tables in the same file as lite tables', () => {
+  it('creates only Awareness tables with the OCT1 identity', () => {
     const raw = new DatabaseSync(aw.dbPath);
     try {
       const names = raw
@@ -54,21 +52,20 @@ describe('agent naming', () => {
         .map((r) => (r as { name: string }).name);
       expect(names).toEqual(expect.arrayContaining([
         'plans', 'tasks', 'locks', 'work_presence', 'handoffs', 'memories', 'agents', 'messages', 'message_receipts',
-        'octocode_meta', 'agent_sessions', 'mcp_server_overrides', 'mcp_tool_overrides', 'skill_overrides', 'mcp_catalog_state',
       ]));
-      // and the shared recordSession() works on the very same file.
-      recordSession(raw, { sessionId: 'sess-1', workspacePath: workspace, cwd: workspace });
-      const row = raw.prepare('SELECT * FROM agent_sessions WHERE session_id = ?').get('sess-1') as {
-        workspace_path: string;
-      };
-      expect(row.workspace_path).toBe(workspace);
+      expect(names).not.toEqual(expect.arrayContaining([
+        'octocode_meta', 'agent_sessions', 'mcp_server_overrides',
+        'mcp_tool_overrides', 'skill_overrides', 'mcp_catalog_state',
+      ]));
+      expect(raw.prepare('PRAGMA application_id').get())
+        .toEqual({ application_id: AWARENESS_APPLICATION_ID });
     } finally {
       raw.close();
     }
   });
 });
 
-describe('AwarenessStore cross-workspace isolation (single global file)', () => {
+describe('AwarenessStore cross-workspace isolation in an explicit Awareness file', () => {
   let root: string;
   let dbPath: string;
   let repoA: string;
@@ -78,8 +75,7 @@ describe('AwarenessStore cross-workspace isolation (single global file)', () => 
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'aw-lite-iso-'));
-    // ONE shared db file, two distinct workspaces — the global-store model.
-    dbPath = join(root, 'agent.sqlite3');
+    dbPath = join(root, 'awareness.sqlite3');
     repoA = join(root, 'repo-a');
     repoB = join(root, 'repo-b');
     a = openAwarenessStore({ workspace: repoA, dbPath });

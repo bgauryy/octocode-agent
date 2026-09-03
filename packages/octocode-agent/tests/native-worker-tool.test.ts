@@ -4,22 +4,57 @@ import {
   packetId,
   sessionId,
   workerId,
+  type ToolAdmissionContextV1,
   type ToolExecutionInput,
   type WorkerCommand,
   type WorkerController,
   type WorkerSnapshot,
   type WorkerTerminalPacket,
 } from '@octocodeai/agent-core';
-import { createNativeWorkerTool } from '../src/native-worker-tool.js';
+import {
+  createNativeWorkerTool,
+  type NativeWorkerToolOptions,
+} from '../src/native-worker-tool.js';
 import type { NativePlanWorkerOwnershipPort } from '../src/native-plan.js';
 import type { NativeWorkerDagSchedulerPort } from '../src/native-worker-dag-scheduler.js';
 
 const ids = ['worker-1', 'correlation-1', 'packet-1', 'packet-2', 'packet-3'];
+const admission: ToolAdmissionContextV1 = {
+  schemaVersion: 1,
+  effectAdmissionId: 'effect:worker:1',
+  receiptDigest: 'receipt:worker:1',
+  trustRevision: 'trust:1',
+  permissionMode: 'default',
+  policyRevision: 1,
+  planRevision: 1,
+  workerAuthorityRoot: {
+    rootAgentId: 'root:1',
+    workspaceId: 'workspace:1',
+    workspaceGeneration: 1,
+    ownershipGeneration: 1,
+  },
+};
+const terminalAuthority = {
+  schemaVersion: 1 as const,
+  workerId: workerId('worker-1'),
+  correlationId: correlationId('correlation-1'),
+  rootAgentId: 'root:1',
+  parentSessionId: sessionId('session:one'),
+  workspaceId: 'workspace:1',
+  workspaceGeneration: 1,
+  trustRevision: 'trust:1',
+  permissionMode: 'default' as const,
+  capabilityDigest: 'capabilities:1',
+  planRevision: 1,
+  effectAdmissionId: 'effect:worker:1',
+  ownershipGeneration: 1,
+};
 
 function harness(
   execute?: (command: WorkerCommand) => Promise<unknown>,
   planOwnership?: NativePlanWorkerOwnershipPort,
   dependencyScheduler?: NativeWorkerDagSchedulerPort,
+  overrides: Partial<NativeWorkerToolOptions> = {},
 ) {
   const commands: WorkerCommand[] = [];
   const controller: WorkerController = {
@@ -49,9 +84,14 @@ function harness(
     ...(planOwnership === undefined ? {} : { planOwnership }),
     ...(dependencyScheduler === undefined ? {} : { dependencyScheduler }),
     idFactory: () => ids[index++] ?? `generated-${index}`,
+    ...overrides,
   });
   const abort = new AbortController();
-  const call = (input: unknown, selectedSession = 'session:one') => tool.execute({
+  const call = (
+    input: unknown,
+    selectedSession = 'session:one',
+    admitted: ToolAdmissionContextV1 | null = admission,
+  ) => tool.execute({
     input,
     callId: 'call:one' as never,
     context: {
@@ -59,6 +99,7 @@ function harness(
       cwd: '/trusted/workspace',
       mode: 'headless',
       trust: { workspace: 'trusted', managedOnly: false },
+      ...(admitted === null ? {} : { admission: admitted }),
       signal: abort.signal,
     },
     signal: abort.signal,
@@ -119,6 +160,11 @@ describe('native worker tool', () => {
         models: [{ providerId: 'openai', modelId: 'gpt-test' }],
         maxTurns: 5,
       },
+      authority: {
+        rootAgentId: 'root:1',
+        workspaceId: 'workspace:1',
+        effectAdmissionId: 'effect:worker:1',
+      },
     });
     expect(admittedPacket?.capabilities.tools).not.toContain('worker');
     expect(Object.isFrozen(admittedPacket)).toBe(true);
@@ -139,6 +185,7 @@ describe('native worker tool', () => {
     const terminal: WorkerTerminalPacket = {
       schemaVersion: 1, type: 'worker.terminal', packetId: packetId('terminal'), workerId: workerId('worker-1'),
       correlationId: correlationId('correlation-1'), sessionId: sessionId('session:one'), redaction: 'sensitive', outcome: 'succeeded',
+      authority: terminalAuthority,
     };
     const { call } = harness(async (command) => {
       if (command.type === 'spawn') return { workerId: command.packet.workerId, correlationId: command.packet.correlationId, sessionId: command.packet.sessionId, state: 'queued', queueDepth: 0, capabilities: command.packet.capabilities } satisfies WorkerSnapshot;
@@ -215,7 +262,7 @@ describe('native worker tool', () => {
       maxTurns: 5,
     });
     expect(spawned).toMatchObject({ ok: true, content: { action: 'spawn', worker: { workerId: 'worker-1', correlationId: 'correlation-1', state: 'queued' } } });
-    expect(commands[0]).toEqual({
+    expect(commands[0]).toMatchObject({
       type: 'spawn',
       packet: {
         schemaVersion: 1,
@@ -229,11 +276,16 @@ describe('native worker tool', () => {
         promptSnapshotId: 'prompt:SECRET-SNAPSHOT',
         workspace: { mode: 'shared' },
         capabilities: { tools: ['octocode'], octocodeTools: ['localSearch'], models: [{ providerId: 'openai', modelId: 'gpt-test' }], maxTurns: 5 },
+        authority: {
+          rootAgentId: 'root:1',
+          workspaceId: 'workspace:1',
+          effectAdmissionId: 'effect:worker:1',
+        },
       },
     });
 
     await call({ action: 'steer', workerId: 'worker-1', text: 'Focus on callers' });
-    expect(commands[1]).toEqual({
+    expect(commands[1]).toMatchObject({
       type: 'steer',
       packet: {
         schemaVersion: 1,
@@ -244,6 +296,82 @@ describe('native worker tool', () => {
         sessionId: 'session:one',
         redaction: 'sensitive',
         text: 'Focus on callers',
+      },
+    });
+    if (commands[0]?.type !== 'spawn' || commands[1]?.type !== 'steer')
+      throw new Error('expected spawn then steer');
+    expect(commands[1].packet.authority).toBe(commands[0].packet.authority);
+  });
+
+  it('fails closed without admitted host authority and rejects model authority', async () => {
+    const { call, commands } = harness();
+    await expect(
+      call({ action: 'spawn', task: 'work' }, 'session:one', null),
+    ).rejects.toThrow(/admission/i);
+    await expect(
+      call({ action: 'spawn', task: 'work', authority: terminalAuthority }),
+    ).rejects.toThrow(/unknown field/i);
+    expect(commands).toHaveLength(0);
+  });
+
+  it('rejects a control command after the host ownership generation changes', async () => {
+    const { call, commands } = harness();
+    await call({ action: 'spawn', task: 'work' });
+    await expect(
+      call(
+        { action: 'status', workerId: 'worker-1' },
+        'session:one',
+        {
+          ...admission,
+          workerAuthorityRoot: {
+            ...admission.workerAuthorityRoot!,
+            ownershipGeneration: 2,
+          },
+        },
+      ),
+    ).rejects.toThrow(/stale/i);
+    expect(commands).toHaveLength(1);
+  });
+
+  it('accepts only a host-resolved worktree identity', async () => {
+    const resolveWorktree = vi.fn(({ baseRevision }) => ({
+      mode: 'worktree' as const,
+      path: '/host/worktrees/worker-1',
+      baseRevision,
+    }));
+    const { call, commands } = harness(undefined, undefined, undefined, {
+      allowWorktree: true,
+      resolveWorktree,
+    });
+    await expect(
+      call({
+        action: 'spawn',
+        task: 'work',
+        workspace: {
+          mode: 'worktree',
+          path: '/caller/path',
+          baseRevision: 'HEAD',
+        },
+      }),
+    ).rejects.toThrow(/unknown field/i);
+    await call({
+      action: 'spawn',
+      task: 'work',
+      workspace: { mode: 'worktree', baseRevision: 'HEAD' },
+    });
+    expect(resolveWorktree).toHaveBeenCalledWith({
+      workerId: 'worker-1',
+      sessionId: 'session:one',
+      baseRevision: 'HEAD',
+    });
+    expect(commands[0]).toMatchObject({
+      type: 'spawn',
+      packet: {
+        workspace: {
+          mode: 'worktree',
+          path: '/host/worktrees/worker-1',
+          baseRevision: 'HEAD',
+        },
       },
     });
   });
@@ -257,6 +385,7 @@ describe('native worker tool', () => {
       correlationId: correlationId('correlation-1'),
       sessionId: sessionId('session:one'),
       redaction: 'secret',
+      authority: terminalAuthority,
       outcome: 'succeeded',
       handback: { secret: 'DO-NOT-RENDER' },
       reason: 'SECRET-REASON',
@@ -272,7 +401,16 @@ describe('native worker tool', () => {
       ? { action, workerId: 'worker-1', text: 'message' }
       : { action, workerId: 'worker-1', ...(action === 'wait' ? { timeoutMs: 50 } : {}), ...(action === 'abort' || action === 'kill' ? { reason: 'stop' } : {}) };
     const result = await call(input);
-    expect(commands.at(-1)?.type).toBe(action);
+    const command = commands.at(-1);
+    expect(command?.type).toBe(action);
+    if (command?.type === 'send' || command?.type === 'steer' || command?.type === 'follow-up')
+      expect(command.packet.authority).toBe(
+        (commands[0] as Extract<WorkerCommand, { type: 'spawn' }>).packet.authority,
+      );
+    else if (command?.type === 'status' || command?.type === 'wait' || command?.type === 'abort' || command?.type === 'kill')
+      expect(command.authority).toBe(
+        (commands[0] as Extract<WorkerCommand, { type: 'spawn' }>).packet.authority,
+      );
     expect(JSON.stringify(result)).not.toMatch(/DO-NOT-RENDER|SECRET-REASON|SECRET-SNAPSHOT|SECRET-TOOL/);
   });
 
@@ -318,6 +456,7 @@ describe('native worker tool', () => {
         correlationId: correlationId('correlation-1'),
         sessionId: sessionId('session:one'),
         redaction: 'sensitive',
+        authority: terminalAuthority,
         outcome: 'succeeded',
         handback: { summary: 'Implemented worker lifecycle', text: longText, secret: 'NEVER-PUBLIC', env: { TOKEN: 'NEVER' } },
       } satisfies WorkerTerminalPacket;

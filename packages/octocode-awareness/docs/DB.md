@@ -1,156 +1,139 @@
-# Awareness databases
+# Awareness database
 
-Awareness uses one global agent database at
-`$OCTOCODE_HOME/agent/agent.sqlite3`. Coordination, continuity, control, sessions,
-and advanced workflow modules own distinct table families in that physical store.
-[STORAGE_SCOPES.md](STORAGE_SCOPES.md) defines placement, overrides, and artifacts.
+Awareness owns coordination state in an Awareness-only SQLite database. The
+workspace default is `<workspace>/.octocode/awareness.sqlite3`; callers can
+explicitly select `$OCTOCODE_HOME/awareness/awareness.sqlite3` for global
+Awareness scope. [STORAGE_SCOPES.md](STORAGE_SCOPES.md) defines placement,
+overrides, artifacts, and legacy migration.
 
-The agent owns only `$OCTOCODE_HOME/agent/`. Databases and configuration elsewhere
-under `$OCTOCODE_HOME` can belong to the Octocode CLI or MCP server and must not be
-opened as the agent database. Repository `.octocode/` directories are not default
-agent storage. SQLite remains authoritative; explicit exports are read surfaces.
+The normal Awareness store opener never opens
+`$OCTOCODE_HOME/agent/agent.sqlite3` or
+`$OCTOCODE_HOME/agent/core.sqlite3`. Those files belong to the Agent. The
+explicit legacy migration reader can open a recognized mixed `agent.sqlite3`
+read-only as a migration source; it never treats that file as an Awareness
+target. A database owned by the Octocode CLI, an MCP server, or another
+`.octocode/` consumer is also outside this package's authority.
 
-## Coordination table contract
+## Entity ownership
 
-`src/coordination/coordination-schema.ts` owns the shared coordination and
-continuity DDL. Its fifteen primary entities are:
+Awareness owns collaboration entities such as:
 
-- coordination: `plans`, `tasks`, `locks`, `work_presence`, `handoffs`, `memories`,
-  `agents`, `messages`, `message_receipts`;
-- continuity: `event_outbox`, `event_consumers`, `event_acknowledgements`,
-  `pending_interactions`, `authorization_receipts`, `capability_receipts`.
+- plans, plan membership, tasks, dependencies, claims, and task runs;
+- advisory file work, exclusive locks, and verification receipts;
+- agents, messages, delivery state, signals, and coordination handoffs;
+- memories and references, refinements, reflection, and maintenance records;
+- Awareness hook receipts, Awareness-specific session captures, and the
+  redacted `worker_lifecycle_events` coordination projection.
 
-The store also initializes eighteen advanced-compatible auxiliary relations and six
-Octocode control relations. `tests/database-shared-contract.test.ts` asserts the exact
-39-table application set, hot-path indexes, integrity, and foreign keys.
+These records describe coordination. The worker projection is not the Agent's
+authoritative worker mailbox, worktree/handoff ledger, process state, or
+dependency ledger. Agent runtime sessions, effects, lifecycle records,
+automation leases, and fencing state belong in
+`$OCTOCODE_HOME/agent/core.sqlite3`; Agent control/index data belongs in
+`$OCTOCODE_HOME/agent/agent.sqlite3`.
 
-Entity operations are split by domain under `src/coordination/`: plans/tasks and plan
-graphs; lock/work/handoff/check state; memory/agent/message operations; continuity;
-schema/dispatch; and host adapters. This domain split avoids both one giant store file
-and one tiny file per SQL statement.
+Don't copy table totals into prose. The executable relation contract changes as
+entities evolve:
 
-## Advanced Awareness table contract
+- `src/coordination/coordination-schema.ts` owns the coordination DDL.
+- `src/db-schema.ts` owns advanced Awareness tables, indexes, and optional FTS
+  DDL.
+- `src/db-introspection.ts` derives the expected relation set and schema
+  fingerprint.
+- `tests/database-shared-contract.test.ts` and
+  `tests/database-advanced-contract.test.ts` assert the executable schema.
 
-`src/db-schema.ts` owns all advanced table, index, and optional FTS DDL. The complete
-agent database has one application identity:
-
-```text
-application_id = 0x4f435441  # ASCII OCTA
-```
-
-The application ID distinguishes agent state from unrelated CLI, MCP, and foreign
-SQLite files. Module fingerprints distinguish each executable table contract, and
-`agent_schema_modules` records their versions without assigning a second database
-identity.
-
-The advanced database layer is split by responsibility:
-
-- `db-runtime.ts` opens connections, classifies stores, chooses journal mode,
-  applies retry bounds, and exposes cached connections.
-- `db-init.ts` serializes first initialization and creates the contract.
-- `db-schema.ts` contains the executable DDL.
-- `db-introspection.ts` derives the expected relation set and fingerprint.
-- `db-maintenance.ts` owns FTS index rebuild, memory-reference bookkeeping, and
-  expired-lock eviction. It is not the query/filter layer — that's `repo-scope.ts`
-  (shared parameterized scoping helpers) and the `repo-*.ts` row builders.
-- `db.ts` is the public barrel.
-
-Its 23 application tables are validated exactly by
-`tests/database-advanced-contract.test.ts`; optional `memories_fts` and its SQLite
-shadow tables are validated separately.
+Use `schema commands --compact` and `schema json-schema <name>` for public CLI
+and entity contracts. Treat those schemas and the executable DDL as authoritative
+when this page and implementation diverge.
 
 ## Query ownership
 
-The 16 live views are enumerated once by `AWARENESS_QUERY_VIEWS` in `repo-model.ts`.
-`repo-query.ts` dispatches them to focused row-builder modules:
+`AWARENESS_QUERY_VIEWS` in `src/repo-model.ts` enumerates live views.
+`src/repo-query.ts` dispatches them to focused row builders:
 
 | Views | Owner |
 |---|---|
-| `repo-profile`, `files`, `activity` | `repo-files.ts` |
-| `memories`, `gotchas`, `lessons`, `plans`, `tasks`, `runs` | `repo-plans.ts` |
-| `locks`, `agents`, `signals`, `refinements`, `developer-review` | `repo-coordination.ts` |
-| `workboard` | `repo-workboard.ts` |
-| `all` | `repo-query.ts` fan-out with bounded section completeness |
+| `repo-profile`, `files`, `activity` | `src/repo-files.ts` |
+| `memories`, `gotchas`, `lessons`, `plans`, `tasks`, `runs` | `src/repo-plans.ts` |
+| `locks`, `agents`, `signals`, `refinements`, `developer-review` | `src/repo-coordination.ts` |
+| `workboard` | `src/repo-workboard.ts` |
+| `all` | `src/repo-query.ts` bounded fan-out |
 
-Formatting is isolated in `repo-formats.ts`, scoping in `repo-scope.ts`, and writes in
-`repo-projection.ts`. `tests/query-contract-matrix.test.ts` executes every view through
-JSON, table, CSV, Markdown, and HTML—80 view/format combinations.
+Formatting lives in `src/repo-formats.ts`, scoping in `src/repo-scope.ts`, and
+explicit export writes in `src/repo-projection.ts`. Query exports are read-only
+snapshots; Awareness never reads them back as canonical state.
 
-## Startup contract
+## Fail-closed database identity
 
-Startup accepts only an empty store or an OCTA agent store containing recognized
-module relations. Any foreign application ID, unknown relation, partial module, or
-changed module DDL is rejected before agent DDL writes application data. This
-fail-closed boundary prevents the package from guessing ownership or reshaping a
-CLI or MCP database.
+Agent and Awareness databases have distinct application identities and expected
+relation sets. An Awareness open accepts an empty database or a recognized
+Awareness database. It rejects:
 
-Fresh initialization runs under `BEGIN IMMEDIATE`. A second process that opens
-the same empty path waits on the bounded SQLite busy retry, reclassifies the
-store after acquiring the write lock, and observes the completed contract. The
-application ID is written only after DDL, indexes, optional FTS, fingerprint,
-integrity, and foreign-key checks succeed.
+| Store | `PRAGMA application_id` | ASCII |
+|---|---:|---|
+| Agent control/index | `0x4f435441` | `OCTA` |
+| Agent Rust runtime | `0x4f434147` | `OCAG` |
+| Awareness coordination | `0x4f435431` | `OCT1` |
 
-`initDb(db)` rejects caller-owned transactions because it must own that complete
-serialization boundary. `connectDb(path)` is the normal file-backed entry point.
+- an Agent control or Agent runtime identity;
+- a CLI, MCP, or other foreign application identity;
+- an identity-free database with unrecognized relations;
+- a drifted Awareness schema with unknown or incompatible relations; and
+- unexpected application tables, views, indexes, or triggers.
+
+Recognized historical Awareness relation subsets are upgraded additively in one
+transaction. Identity validation happens before schema writes. Initialization
+assigns the Awareness identity only after DDL, indexes, optional FTS,
+fingerprint, integrity, and foreign-key checks succeed. It must never relabel a
+populated database to make it appear compatible.
+
+Fresh initialization runs under a write transaction so concurrent first opens
+serialize. A waiting process reclassifies the database after acquiring the lock;
+it doesn't assume the file is still empty.
 
 ## SQLite runtime safety
 
-The embedded SQLite library version controls journal selection:
+The embedded SQLite version controls journal selection. Runtime builds known to
+be safe can use WAL for concurrent readers and writers; other builds use rollback
+journaling. Both paths use a bounded busy timeout and retry deadline.
 
-- Runtime builds known to be safe use WAL for concurrent readers and writers.
-- Other builds use rollback journaling.
+Every returned connection enables foreign keys. Initialization and canonical
+opens enforce:
 
-This is a runtime capability check, not a database contract number. Both paths
-set a bounded busy timeout and use the same retry deadline around journal mode
-and first initialization.
-
-Foreign keys are enabled on every returned connection. Initialization briefly
-disables connection-local enforcement while creating the complete empty
-contract, then restores it before returning.
-
-## Integrity and fingerprint checks
-
-The canonical fingerprint covers tables, named indexes, views, triggers, and
-the optional `memories_fts` virtual table. SQLite-generated internal objects and
-FTS shadow tables are excluded.
-
-Initialization and canonical opens enforce:
-
-- the complete expected relation set;
-- no unexpected application relations;
-- normalized DDL equality;
-- `PRAGMA integrity_check`;
+- the complete expected Awareness relation set;
+- no Agent-owned or otherwise unexpected application relations;
+- normalized DDL and schema-fingerprint equality;
+- `PRAGMA integrity_check`; and
 - `PRAGMA foreign_key_check`.
 
-An exact module fingerprint means a DDL edit is a contract change. Coordinate such
-a change explicitly; don't add another physical agent database or a numeric field
-that allows two definitions to coexist.
-
-## FTS
-
-FTS5 is optional because the embedded SQLite build may omit it. When available,
-`memories_fts` is created from `FTS_SCHEMA_DDL` and rebuilt from the empty
-canonical memory tables during initialization. Search helpers detect its
-presence at runtime and retain non-FTS behavior when unavailable.
+FTS5 is optional because the embedded SQLite build can omit it. When present,
+the executable DDL and introspection modules own its virtual table and generated
+shadow-table treatment.
 
 ## Operational checks
 
-Database-facing CLI results have one shape per action. `work list|show` returns
-flat work rows for direct inspection; Attend's `FilesUnderWork` groups those
-rows for coordination summaries.
-
-Use the package CLI and tests rather than editing the database manually:
+Use the Awareness CLI and package tests rather than editing a database manually:
 
 ```bash
+npx @octocodeai/octocode-awareness maintenance init --workspace "$PWD" --compact
+npx @octocodeai/octocode-awareness workspace status --workspace "$PWD" --compact
 yarn workspace @octocodeai/octocode-awareness test
 yarn workspace @octocodeai/octocode-awareness test:smoke
 yarn workspace @octocodeai/octocode-awareness lint
 ```
 
-The concurrency contract is covered by `tests/concurrent-init.test.ts`. Schema
-identity, drift rejection, idempotence, FTS behavior, and delivery-state helpers
-are covered by `tests/schema.test.ts`.
+For an explicit file, use an Awareness-specific name:
 
-If a store is rejected, preserve it for inspection and point Awareness at a new
-path. Automatic transformation of an unrecognized store is intentionally
-outside the runtime contract.
+```bash
+npx @octocodeai/octocode-awareness maintenance init --db /absolute/path/awareness.sqlite3 --compact
+```
+
+For an old mixed Agent/Awareness database, use the explicit relocation command
+documented in [STORAGE_SCOPES.md](STORAGE_SCOPES.md); don't point an Awareness
+opener at the mixed source.
+
+If identity or fingerprint validation rejects a store, preserve it for
+inspection. Don't rerun initialization against an Agent, CLI, MCP, unknown, or
+mixed database, and don't change `PRAGMA application_id` manually. Follow the
+migration procedure in [STORAGE_SCOPES.md](STORAGE_SCOPES.md).

@@ -1,6 +1,5 @@
-import { agentDbPath } from '@octocodeai/octocode-shared/paths';
 import { randomUUID } from 'node:crypto';
-import type { AwarenessStorageScope } from '../storage-scope.js';
+import { awarenessDatabasePath, type AwarenessStorageScope } from '../storage-scope.js';
 
 // ─── Full public surface for in-process external hosts ────────────────────────
 // Hosts that embed Awareness as a library instead of spawning the `cli.js`
@@ -165,8 +164,8 @@ export function required(value: string | undefined | null, name: string): string
 }
 
 /** Resolve shared coordination storage at repository or global level. */
-export function defaultDbPath(_workspace: string, _scope: AwarenessStorageScope = 'global'): string {
-  return agentDbPath();
+export function defaultDbPath(workspace: string, scope: AwarenessStorageScope = 'repo'): string {
+  return awarenessDatabasePath(workspace, scope);
 }
 
 export function planFromRow(row: PlanRow): Plan {

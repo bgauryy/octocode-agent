@@ -3,6 +3,29 @@
 `octocode-agent` is the native host adapter and composition package. It depends
 inward on `@octocodeai/agent-core`; core never imports this package.
 
+## Storage boundary
+
+The native composition root keeps two Agent-owned persistence layers under
+`$OCTOCODE_HOME/agent/`. `agent.sqlite3` stores control, discovery, settings,
+and session index data. `core.sqlite3` is the Rust actor's runtime store for
+sessions and events, effects, lifecycle records, automations, worker
+communication and dependency-work ledgers, leases, revisions, and fencing.
+Per-session and other Agent artifacts remain under `agent/sessions/` and the
+other documented Agent directories.
+
+Awareness is not an Agent database module. Workspace Awareness defaults to
+`<workspace>/.octocode/awareness.sqlite3`; explicit global Awareness uses
+`$OCTOCODE_HOME/awareness/awareness.sqlite3`. Native adapters can consume
+Awareness through its public contracts, but they must not attach, initialize, or
+migrate Awareness relations in `agent.sqlite3` or `core.sqlite3`. Other CLI and
+MCP databases have separate owners. Database identity checks fail closed before
+schema writes when a path belongs to another owner. See the
+[storage ownership matrix](../octocode-awareness/docs/STORAGE_SCOPES.md).
+The native `WorkerLedgerPort` may publish a bounded, redacted lifecycle
+projection to the workspace Awareness database; the Rust runtime database
+remains authoritative for worker mailboxes, worktrees, handoffs, leases, and
+recovery fencing.
+
 ## Ownership
 
 - `native-launcher.ts` is the native composition root for sessions, settings,

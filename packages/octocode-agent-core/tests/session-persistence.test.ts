@@ -134,6 +134,23 @@ const typedToolResult: ModelToolResultV1 = {
   ],
 };
 describe("transactional persistence and migration", () => {
+  it("preserves a durable partial-recovery receipt through projection loading", async () => {
+    const port = new RecordPort();
+    const first = new TransactionalSessionStore(port);
+    await first.append(sessionId("s"), revision("0"), [
+      make(1, { type: "session.created" }),
+    ]);
+    await first.append(sessionId("s"), revision("1"), [
+      make(2, { type: "session.renamed", name: "newer" }),
+    ]);
+    port.content = null;
+
+    const recovered = await new TransactionalSessionStore(port).load(sessionId("s"));
+
+    expect(recovered.recoveredPartially).toBe(true);
+    expect(recovered.projection.revision).toBe(revision("1"));
+  });
+
   it("preserves versioned tool results through durable restart and legacy string projection", async () => {
     const port = new RecordPort();
     const firstStore = new TransactionalSessionStore(port);

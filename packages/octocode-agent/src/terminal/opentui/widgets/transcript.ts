@@ -78,7 +78,16 @@ const TRANSCRIPT_INSTRUCTIONS: WidgetAgentInstructions = {
   ],
 };
 
-function roleLabel(role: TranscriptMessageRole): string { return role; }
+function technicalRoleLabel(role: TranscriptMessageRole): string { return role; }
+
+function displayRole(role: TranscriptMessageRole): string {
+  switch (role) {
+    case 'user': return '› You';
+    case 'assistant': return '◆ Octocode';
+    case 'tool': return '• Tool';
+    case 'system': return '! System';
+  }
+}
 
 function announcementRole(role: TranscriptMessageRole): string {
   return role === 'assistant' ? 'Assistant'
@@ -185,14 +194,38 @@ function hasThinking(message: TranscriptMessage): boolean {
   return message.segments.some(({ kind }) => kind === 'thinking');
 }
 
-function contentLine(message: TranscriptMessage): string {
-  return `${roleLabel(message.role)}: ${visibleText(message)}`;
+function technicalContentLine(message: TranscriptMessage): string {
+  return `${technicalRoleLabel(message.role)}: ${visibleText(message)}`;
+}
+
+function visibleOutcome(status: TranscriptMessageStatus): string {
+  return status === 'error'
+    ? ' · Failed'
+    : status === 'cancelled'
+      ? ' · Cancelled'
+      : '';
+}
+
+function displayMessage(message: TranscriptMessage): string {
+  const text = visibleText(message);
+  if (message.role === 'user') {
+    const body = text
+      .split('\n')
+      .map((line, index) => `${index === 0 ? '› ' : '  '}${line}`)
+      .join('\n');
+    return body || '›';
+  }
+  const body = text
+    .split('\n')
+    .map((line) => `  ${line}`)
+    .join('\n');
+  return `${displayRole(message.role)}${visibleOutcome(message.status)}${body.length === 0 ? '' : `\n${body}`}`;
 }
 
 function alternateLine(message: TranscriptMessage): string {
   const turn = message.turnId === undefined ? 'unscoped' : message.turnId;
   const thoughtStatus = hasThinking(message) ? ' [thinking]' : '';
-  return `[turn=${turn} message=${message.id} status=${message.status}] ${contentLine(message)}${thoughtStatus}`;
+  return `[turn=${turn} message=${message.id} status=${message.status}] ${technicalContentLine(message)}${thoughtStatus}`;
 }
 
 export class TranscriptWidget extends OpenTuiWidget<TranscriptWidgetAction> {
@@ -251,10 +284,10 @@ export class TranscriptWidget extends OpenTuiWidget<TranscriptWidgetAction> {
   protected renderRegions(): readonly WidgetRenderRegion[] {
     const activity = this.messages
       .filter((message) => message.status === 'streaming' && hasThinking(message))
-      .map((message) => `${roleLabel(message.role)}: Thinking…`)
+      .map((message) => `${displayRole(message.role)} · Thinking…`)
       .join('\n');
     return [
-      { id: 'messages', role: 'content', text: boundedPlainText(this.messages.map(contentLine).join('\n')) },
+      { id: 'messages', role: 'content', text: boundedPlainText(this.messages.map(displayMessage).join('\n\n')) },
       ...(activity.length === 0 ? [] : [{ id: 'activity', role: 'status' as const, text: boundedPlainText(activity) }]),
     ];
   }

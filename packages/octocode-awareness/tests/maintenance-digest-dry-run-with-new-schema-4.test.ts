@@ -120,7 +120,7 @@ describe('digest — dry_run with new schema', () => {
   it('checkpoint and digest complete on the runtime-safe file journal', () => {
     const dir = mkdtempSync(join(tmpdir(), 'oc-wal-'));
     try {
-      const dbPath = join(dir, 'agent.sqlite3');
+      const dbPath = join(dir, 'awareness.sqlite3');
       const db = connectDb(dbPath);
       const mode = db.prepare('PRAGMA journal_mode').get() as { journal_mode: string };
       const sqliteVersion = (db.prepare('SELECT sqlite_version() AS version').get() as { version: string }).version;

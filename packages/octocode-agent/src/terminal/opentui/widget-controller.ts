@@ -27,6 +27,12 @@ import {
 } from "./widgets/presentation-surface.js";
 import { PromptInputWidget } from "./widgets/prompt-input.js";
 import { SelectWidget } from "./widgets/select.js";
+import {
+  SkillActivityWidget,
+  type SkillActivityAction,
+  type SkillActivitySnapshot,
+  type SkillActivityState,
+} from "./widgets/skill-activity.js";
 import { StatusNotificationsWidget } from "./widgets/status-notifications.js";
 import {
   ToolProgressWidget,
@@ -181,6 +187,124 @@ function parsedRecord(
   }
 }
 
+function recordString(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function recordStrings(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): readonly string[] {
+  const value = record?.[key];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+const SKILL_ACTIVITY_ACTIONS: ReadonlySet<string> = new Set([
+  "list",
+  "discover",
+  "enable",
+  "disable",
+  "refresh",
+  "install",
+  "update",
+  "remove",
+]);
+
+function skillAction(row: PresentationToolRow): SkillActivityAction | undefined {
+  if (row.name !== "skill") return undefined;
+  const action = recordString(parsedRecord(row.input), "action")?.toLowerCase();
+  if (action === undefined || !SKILL_ACTIVITY_ACTIONS.has(action)) return undefined;
+  return action === "list" ? "discover" : action as SkillActivityAction;
+}
+
+function skillState(row: PresentationToolRow): SkillActivityState {
+  if (row.status === "pending") return "pending";
+  if (row.status === "running")
+    return row.progress?.message === "approval-required" ? "approval-required" : "running";
+  if (row.status === "blocked") return "rejected";
+  if (row.status === "success") return "completed";
+  if (row.status === "cancelled") return "cancelled";
+  return "failed";
+}
+
+function closesSkillDiscoveryGeneration(row: PresentationToolRow): boolean {
+  const state = skillState(row);
+  return state !== "pending" && state !== "running";
+}
+
+function skillDiscoveredCount(row: PresentationToolRow): number | undefined {
+  const skills = parsedRecord(row.result)?.skills;
+  if (!Array.isArray(skills)) return undefined;
+  let count = 0;
+  for (const item of skills) {
+    const record = typeof item === "object" && item !== null && !Array.isArray(item)
+      ? item as Record<string, unknown>
+      : undefined;
+    if (typeof record?.count === "number" && Number.isSafeInteger(record.count) && record.count >= 0)
+      count += record.count;
+    else count += 1;
+  }
+  return count;
+}
+
+function skillSnapshot(
+  row: PresentationToolRow,
+  action: SkillActivityAction,
+  operationId: string,
+): SkillActivitySnapshot {
+  const input = parsedRecord(row.input);
+  const state = skillState(row);
+  const name = action === "discover" || action === "refresh"
+    ? "Catalog"
+    : recordString(input, "name") ?? "Catalog";
+  const sourceScope = action === "discover"
+    ? "All sources"
+    : "Managed";
+  const discovered = skillDiscoveredCount(row);
+  const result = state === "approval-required"
+    ? "Approval required to continue"
+    : state === "pending"
+      ? "Waiting to start"
+      : state === "running"
+        ? "In progress"
+        : state === "rejected"
+          ? "Skill action rejected by policy"
+          : state === "cancelled"
+            ? "Skill action cancelled"
+            : state === "failed"
+              ? "Skill action failed"
+              : action === "discover" && discovered !== undefined
+                ? `${discovered} ${discovered === 1 ? "Skill" : "Skills"} discovered`
+                : `${action.slice(0, 1).toUpperCase()}${action.slice(1)} completed`;
+  return {
+    authority: "runtime",
+    operationId,
+    name,
+    sourceScope,
+    action,
+    state,
+    result,
+  };
+}
+
+function skillCoalescingKey(
+  row: PresentationToolRow,
+  action: SkillActivityAction,
+  skillDiscoveryGenerationByCallId: ReadonlyMap<string, string>,
+): string {
+  return action === "discover"
+    ? closesSkillDiscoveryGeneration(row)
+      ? `discover:terminal:${row.callId}`
+      : skillDiscoveryGenerationByCallId.get(row.callId) ?? `discover:call:${row.callId}`
+    : `call:${row.callId}`;
+}
+
 function toolPresentation(row: PresentationToolRow): {
   readonly label?: string;
   readonly input?: string;
@@ -188,6 +312,80 @@ function toolPresentation(row: PresentationToolRow): {
 } {
   const input = parsedRecord(row.input);
   const result = parsedRecord(row.result);
+  if (row.name === "file") {
+    const operation = recordString(input, "operation");
+    const path = recordString(input, "path");
+    const action = operation === "read" ? "Read"
+      : operation === "write" ? "Write"
+        : operation === "edit" ? "Edit"
+          : operation === "delete" ? "Delete"
+            : "Open";
+    const bytes = typeof result?.bytes === "number" ? result.bytes : undefined;
+    return {
+      label: "Files",
+      input: path === undefined ? row.input : `${action} ${path}`,
+      result: bytes === undefined ? row.result : `${bytes.toLocaleString("en-US")} bytes${path === undefined ? "" : ` · ${path}`}`,
+    };
+  }
+  if (row.name === "bash") {
+    const command = recordString(input, "command");
+    const exitCode = typeof result?.exitCode === "number" ? result.exitCode : undefined;
+    return {
+      label: "Terminal",
+      input: command === undefined ? row.input : `Run ${command}`,
+      result: exitCode === undefined
+        ? row.result
+        : `Exited ${exitCode}${result?.truncated === true ? " · output truncated" : ""}`,
+    };
+  }
+  if (row.name === "web") {
+    const query = recordString(input, "query");
+    const url = recordString(input, "url");
+    const batch = Array.isArray(input?.queries) ? input.queries.length : undefined;
+    return {
+      label: "Web",
+      input: query !== undefined
+        ? `Search the web · ${query}`
+        : url !== undefined
+          ? `Fetch ${url}`
+          : batch === undefined
+            ? row.input
+            : `Run ${batch} web requests`,
+      result: row.result,
+    };
+  }
+  if (row.name === "runFfmpeg") {
+    const binary = recordString(input, "binary") ?? "ffmpeg";
+    const inputs = recordStrings(input, "inputs");
+    const outputs = recordStrings(input, "outputs");
+    const target = outputs[0] ?? inputs[0];
+    const durationMs = typeof result?.durationMs === "number" ? result.durationMs : undefined;
+    return {
+      label: "Media",
+      input: target === undefined
+        ? `Run ${binary}`
+        : `${binary === "ffprobe" ? "Inspect" : "Process"} media · ${target}`,
+      result: durationMs === undefined ? row.result : `Completed in ${durationMs}ms`,
+    };
+  }
+  if (row.name === "octocode") {
+    const action = recordString(input, "action");
+    const tool = recordString(input, "tool");
+    const calls = Array.isArray(input?.calls) ? input.calls.length : undefined;
+    return {
+      label: "Code research",
+      input: action === "catalog"
+        ? "List research tools"
+        : action === "schema" && tool !== undefined
+          ? `Inspect research schema · ${tool}`
+          : action === "call" && tool !== undefined
+            ? `Run research · ${tool}`
+            : action === "parallel" && calls !== undefined
+              ? `Run ${calls} research calls`
+              : row.input,
+      result: row.result,
+    };
+  }
   if (row.name === "skill") {
     const action = input?.action;
     const skillName = typeof input?.name === "string" ? input.name : undefined;
@@ -199,10 +397,18 @@ function toolPresentation(row: PresentationToolRow): {
       input:
         action === "load" && skillName
           ? `Load ${skillName}`
+          : action === "read" && skillName
+            ? `Read ${skillName}`
           : action === "list"
             ? "List discovered skills"
-            : row.input,
-      result: skills === undefined ? row.result : `${skills} skills discovered`,
+            : "Use Agent Skill",
+      result: skills !== undefined
+        ? `${skills} skills discovered`
+        : action === "load"
+          ? "Skill loaded"
+          : action === "read"
+            ? "Skill details available"
+            : undefined,
     };
   }
   if (row.name === "plan")
@@ -285,6 +491,21 @@ function notificationLifecycle(
       return "warning";
     case "error":
       return "error";
+  }
+}
+
+function statusDisplayName(name: string): string {
+  switch (name) {
+    case "awareness.events":
+      return "Coordination";
+    case "context.compaction":
+      return "Context";
+    default:
+      return name
+        .split(/[._-]+/u)
+        .filter(Boolean)
+        .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+        .join(" ");
   }
 }
 
@@ -422,6 +643,12 @@ export class SemanticWidgetController {
   private transcript?: TranscriptWidget;
   private readonly tools = new Map<string, ToolProgressWidget>();
   private readonly toolWidgetIds = new Map<string, string>();
+  private readonly skills = new Map<string, SkillActivityWidget>();
+  private readonly skillWidgetIds = new Map<string, string>();
+  private readonly skillDiscoveryGenerationByCallId = new Map<string, string>();
+  private openSkillDiscoveryGeneration?: string;
+  private nextSkillDiscoveryGeneration = 1;
+  private nextSkillWidgetId = 1;
   private focusableToolWidgetId?: string;
   private nextToolWidgetId = 1;
   private readonly workers = new Map<string, WorkerProgressWidget>();
@@ -469,6 +696,7 @@ export class SemanticWidgetController {
   render(state: PresentationState): void {
     this.presentationState = state;
     this.renderTranscript(state);
+    this.renderSkills(state);
     this.renderTools(state);
     this.renderWorkers(state);
     this.renderWorkerInbox(state);
@@ -694,6 +922,7 @@ export class SemanticWidgetController {
     const sections: string[] = [];
     if (this.header) sections.push(this.header.toPlainText());
     if (this.transcript) sections.push(this.transcript.alternateOutput());
+    for (const widget of this.skills.values()) sections.push(widget.toPlainText());
     for (const widget of this.tools.values())
       sections.push(widget.toPlainText({ expanded: true }));
     for (const widget of this.workers.values())
@@ -734,6 +963,22 @@ export class SemanticWidgetController {
           text,
         });
       }
+    }
+    for (const widget of this.workers.values()) {
+      for (const text of widget.takeAnnouncements()) {
+        announcements.push({
+          source: `worker:${widget.id}`,
+          politeness: "polite",
+          text,
+        });
+      }
+    }
+    for (const text of this.workerInbox?.takeAnnouncements() ?? []) {
+      announcements.push({
+        source: "worker-inbox",
+        politeness: "polite",
+        text,
+      });
     }
     for (const text of this.header?.takeAnnouncements() ?? []) {
       announcements.push({ source: "header", politeness: "polite", text });
@@ -779,6 +1024,10 @@ export class SemanticWidgetController {
     this.host.destroy();
     this.tools.clear();
     this.toolWidgetIds.clear();
+    this.skills.clear();
+    this.skillWidgetIds.clear();
+    this.skillDiscoveryGenerationByCallId.clear();
+    this.openSkillDiscoveryGeneration = undefined;
     this.workers.clear();
     this.workerWidgetIds.clear();
     this.focusableToolWidgetId = undefined;
@@ -821,16 +1070,17 @@ export class SemanticWidgetController {
   private renderTools(state: PresentationState): void {
     const rows =
       state.runtimeWidgets?.plan === undefined
-        ? state.tools
+        ? state.tools.filter((row) => skillAction(row) === undefined)
         : state.tools.filter(({ name }) => name !== "plan");
-    const liveIds = new Set(rows.map(({ callId }) => callId));
+    const genericRows = rows.filter((row) => skillAction(row) === undefined);
+    const liveIds = new Set(genericRows.map(({ callId }) => callId));
     for (const [callId, widget] of this.tools) {
       if (liveIds.has(callId)) continue;
       this.host.remove(widget);
       this.tools.delete(callId);
       this.toolWidgetIds.delete(callId);
     }
-    for (const row of rows) {
+    for (const row of genericRows) {
       const snapshot = toolSnapshot(row, this.viewport.reducedMotion === true);
       let widget = this.tools.get(row.callId);
       if (!widget) {
@@ -847,7 +1097,7 @@ export class SemanticWidgetController {
       widget.render(this.adapter);
     }
     const focusable =
-      [...rows]
+      [...genericRows]
         .reverse()
         .find(
           ({ status }) =>
@@ -855,11 +1105,82 @@ export class SemanticWidgetController {
             status === "running" ||
             status === "blocked" ||
             status === "error",
-        ) ?? rows.at(-1);
+        ) ?? genericRows.at(-1);
     this.focusableToolWidgetId =
       focusable === undefined
         ? undefined
         : this.toolWidgetIds.get(focusable.callId);
+  }
+
+  private renderSkills(state: PresentationState): void {
+    const rows = state.tools.flatMap((row) => {
+      const action = skillAction(row);
+      return action === undefined ? [] : [{ row, action }];
+    });
+    this.reconcileSkillDiscoveryGenerations(rows);
+    const liveKeys = new Set(rows.map(({ row, action }) =>
+      skillCoalescingKey(row, action, this.skillDiscoveryGenerationByCallId)));
+    for (const [key, widget] of this.skills) {
+      if (liveKeys.has(key)) continue;
+      this.host.remove(widget);
+      this.skills.delete(key);
+      this.skillWidgetIds.delete(key);
+    }
+    for (const { row, action } of rows) {
+      const key = skillCoalescingKey(
+        row,
+        action,
+        this.skillDiscoveryGenerationByCallId,
+      );
+      let widget = this.skills.get(key);
+      if (!widget) {
+        const widgetId = this.skillWidgetIds.get(key) ?? `skill-${this.nextSkillWidgetId++}`;
+        this.skillWidgetIds.set(key, widgetId);
+        widget = new SkillActivityWidget(widgetId, skillSnapshot(row, action, widgetId));
+        this.skills.set(key, widget);
+        this.host.register(widget);
+      } else {
+        widget.update(skillSnapshot(row, action, widget.id));
+      }
+      widget.render(this.adapter);
+    }
+  }
+
+  private reconcileSkillDiscoveryGenerations(
+    rows: readonly {
+      readonly row: PresentationToolRow;
+      readonly action: SkillActivityAction;
+    }[],
+  ): void {
+    const liveDiscoveryCallIds = new Set(rows.flatMap(({ row, action }) =>
+      action === "discover" ? [row.callId] : []));
+    for (const callId of this.skillDiscoveryGenerationByCallId.keys()) {
+      if (!liveDiscoveryCallIds.has(callId))
+        this.skillDiscoveryGenerationByCallId.delete(callId);
+    }
+    if (
+      this.openSkillDiscoveryGeneration !== undefined &&
+      ![...this.skillDiscoveryGenerationByCallId.values()].includes(
+        this.openSkillDiscoveryGeneration,
+      )
+    )
+      this.openSkillDiscoveryGeneration = undefined;
+
+    for (const { row, action } of rows) {
+      if (action !== "discover") continue;
+      let generation = this.skillDiscoveryGenerationByCallId.get(row.callId);
+      if (generation === undefined) {
+        generation = this.openSkillDiscoveryGeneration ??
+          `discover:all:${this.nextSkillDiscoveryGeneration++}`;
+        this.skillDiscoveryGenerationByCallId.set(row.callId, generation);
+        this.openSkillDiscoveryGeneration = generation;
+      }
+      if (
+        generation === this.openSkillDiscoveryGeneration &&
+        closesSkillDiscoveryGeneration(row)
+      )
+        this.openSkillDiscoveryGeneration = undefined;
+    }
   }
 
   private renderWorkers(state: PresentationState): void {
@@ -870,7 +1191,7 @@ export class SemanticWidgetController {
       this.workers.delete(workerId);
       this.workerWidgetIds.delete(workerId);
     }
-    for (const row of state.workers) {
+    for (const [index, row] of state.workers.entries()) {
       const snapshot: WorkerProgressSnapshot = {
         authority: "runtime",
         workerId: row.workerId,
@@ -886,6 +1207,8 @@ export class SemanticWidgetController {
           row.state === "running"
             ? Math.max(row.updatedAtMs, this.readClock())
             : row.updatedAtMs,
+        listPosition: index + 1,
+        listTotal: state.workers.length,
       };
       let widget = this.workers.get(row.workerId);
       if (!widget) {
@@ -1051,7 +1374,7 @@ export class SemanticWidgetController {
         authority: "runtime",
         slot: "system",
         id: uniqueId(`status:${name}`),
-        message: `${name}: ${text}`,
+        message: `${statusDisplayName(name)} · ${text}`,
         lifecycle: "active",
       });
     }
@@ -1077,7 +1400,11 @@ export class SemanticWidgetController {
       desired.push({
         authority: "runtime",
         slot: "system",
-        id: uniqueId(`notification:${signature}:${occurrence}`),
+        id: uniqueId(
+          notification.key === undefined
+            ? `notification:${signature}:${occurrence}`
+            : `notification-key:${notification.key}`,
+        ),
         message: notification.message,
         lifecycle: notificationLifecycle(notification.severity),
       });

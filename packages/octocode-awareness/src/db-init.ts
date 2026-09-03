@@ -9,7 +9,7 @@ import {
   SchemaState,
   withSqliteBusyRetry,
 } from './db-runtime.js';
-import { AGENT_APPLICATION_ID } from '@octocodeai/octocode-shared/schema';
+import { AWARENESS_APPLICATION_ID } from './storage-scope.js';
 import { FTS_SCHEMA_DDL, SCHEMA_DDL, SCHEMA_INDEX_DDL } from './db-schema.js';
 import { hasFts, rebuildFts } from './db-maintenance.js';
 
@@ -24,8 +24,8 @@ export function initializeDb(db: DatabaseSync, knownState?: SchemaState): void {
     assertDatabaseIntegrity(db);
     return;
   }
-  if (state === 'agent-host') {
-    initializeAgentModule(db);
+  if (state === 'awareness-host') {
+    initializeAwarenessModule(db);
     return;
   }
   if (db.isTransaction) {
@@ -65,10 +65,10 @@ export function initializeFreshDb(db: DatabaseSync): void {
   assertCanonicalRelationContract(db);
   assertCanonicalSchemaFingerprint(db);
   assertDatabaseIntegrity(db);
-  db.exec(`PRAGMA application_id = ${AGENT_APPLICATION_ID}`);
+  db.exec(`PRAGMA application_id = ${AWARENESS_APPLICATION_ID}`);
 }
 
-export function initializeAgentModule(db: DatabaseSync): void {
+export function initializeAwarenessModule(db: DatabaseSync): void {
   if (db.isTransaction) {
     throw new Error('cannot initialize the Awareness module inside a caller-owned transaction');
   }
@@ -77,7 +77,7 @@ export function initializeAgentModule(db: DatabaseSync): void {
     withSqliteBusyRetry(() => db.exec('BEGIN IMMEDIATE'));
     began = true;
     const lockedState = inspectSchemaState(db);
-    if (lockedState === 'agent-host') {
+    if (lockedState === 'awareness-host') {
       db.exec(SCHEMA_DDL);
       db.exec(SCHEMA_INDEX_DDL);
       try { db.exec(FTS_SCHEMA_DDL); } catch { /* FTS5 is optional. */ }
@@ -88,7 +88,7 @@ export function initializeAgentModule(db: DatabaseSync): void {
     assertCanonicalRelationContract(db);
     assertCanonicalSchemaFingerprint(db);
     assertDatabaseIntegrity(db);
-    db.exec(`PRAGMA application_id = ${AGENT_APPLICATION_ID}`);
+    db.exec(`PRAGMA application_id = ${AWARENESS_APPLICATION_ID}`);
     db.exec('COMMIT');
     began = false;
   } catch (error) {

@@ -111,12 +111,58 @@ export const AGENT_EVENT_TYPES = Object.freeze([
 ] as const);
 export type AgentEventType = (typeof AGENT_EVENT_TYPES)[number];
 
+export type SessionReceiptTransitionV1 =
+  | "create"
+  | "resume"
+  | "switch"
+  | "fork";
+export type SessionReceiptStateV1 =
+  | "fresh"
+  | "resumed-empty"
+  | "resumed"
+  | "resumed-compacted"
+  | "recovered-partially"
+  | "forked";
+export type SessionReceiptKnownCountV1 = number | "unknown";
+export interface SessionReceiptFactsV1 {
+  readonly schemaVersion: 1;
+  readonly displayName: string;
+  readonly shortPublicId: string;
+  readonly restoredVisibleMessageCount: SessionReceiptKnownCountV1;
+  readonly retainedModelContextItemCount: SessionReceiptKnownCountV1;
+  readonly contextOccupancy:
+    | "unknown"
+    | {
+        readonly used: SessionReceiptKnownCountV1;
+        readonly limit: SessionReceiptKnownCountV1;
+      };
+  readonly committedCompaction: "none" | "committed" | "unknown";
+}
+export type SessionStartedReceiptV1 = SessionReceiptFactsV1 &
+  (
+    | { readonly transition: "create"; readonly state: "fresh" }
+    | {
+        readonly transition: "resume" | "switch";
+        readonly state:
+          | "resumed-empty"
+          | "resumed"
+          | "resumed-compacted"
+          | "recovered-partially";
+      }
+  );
+export type SessionForkReceiptV1 = SessionReceiptFactsV1 & {
+  readonly transition: "fork";
+  readonly state: "forked";
+};
+
 export interface AgentEventPayloadMap {
   readonly "runtime.ready": Record<string, never>;
   readonly "runtime.stopping": Record<string, never>;
   readonly "runtime.stopped": Record<string, never>;
   readonly "runtime.failed": { readonly message: string };
   readonly "session.starting": { readonly reason?: string };
+  readonly "session.started": SessionStartedReceiptV1;
+  readonly "session.forked": SessionForkReceiptV1;
   readonly "session.stopping": { readonly reason?: string };
   readonly "input.received": {
     readonly text: string;
@@ -289,6 +335,8 @@ export interface AgentEventPayloadMap {
   readonly "context.usage-changed": {
     readonly inputTokens: number;
     readonly outputTokens: number;
+    /** Current context occupancy after the latest provider response; unlike cumulative billing totals. */
+    readonly currentContextTokens: number;
     readonly cachedInputTokens?: number;
     readonly cacheWriteInputTokens?: number;
   };
@@ -318,6 +366,8 @@ export const AGENT_EVENT_PAYLOAD_TYPES = Object.freeze(
     "runtime.stopped",
     "runtime.failed",
     "session.starting",
+    "session.started",
+    "session.forked",
     "session.stopping",
     "input.received",
     "input.queued",

@@ -15,7 +15,7 @@ import {
   type ToolDefinition,
 } from "@octocodeai/agent-core";
 import { openAwareness } from "@octocodeai/octocode-awareness";
-import { agentDbPath } from "@octocodeai/octocode-awareness/mcp-state";
+import { agentDbPath } from "@octocodeai/octocode-shared/paths";
 import {
   createDefaultNativeRuntime,
   parseNativeArgs,

@@ -112,7 +112,7 @@ describe('native Awareness tool', () => {
     registerNativeAwarenessTool(registry, {
       cwd: '/configured',
       env: { OCTOCODE_AGENT_ID: 'native-agent' },
-      dbPath: '/state/agent.sqlite3',
+      dbPath: '/state/awareness.sqlite3',
       openDb,
       closeDb,
       run,
@@ -122,11 +122,11 @@ describe('native Awareness tool', () => {
       action: 'workspace_status', request: { compact: true },
     }, { cwd: '/runtime-workspace', sessionId: 'session-native' }));
 
-    expect(openDb).toHaveBeenCalledWith('/state/agent.sqlite3');
+    expect(openDb).toHaveBeenCalledWith('/state/awareness.sqlite3');
     expect(run).toHaveBeenCalledWith(db, 'workspace_status', { compact: true }, {
       cwd: '/runtime-workspace', sessionId: 'session-native', agentId: 'native-agent',
     });
-    expect(closeDb).toHaveBeenCalledWith('/state/agent.sqlite3');
+    expect(closeDb).toHaveBeenCalledWith('/state/awareness.sqlite3');
     expect(result).toEqual({
       ok: true,
       content: { operation: 'workspace_status', exitCode: 0, payload: { peers: 2 } },
@@ -146,7 +146,7 @@ describe('native Awareness tool', () => {
       openDb: () => db,
       closeDb,
       run,
-      dbPath: '/state/agent.sqlite3',
+      dbPath: '/state/awareness.sqlite3',
     });
     const tool = registry.get('awareness')!;
 
@@ -174,5 +174,20 @@ describe('native Awareness tool', () => {
 
     await registry.get('awareness')!.execute(execution({ action: 'query', request: {} }, { sessionId: 'session-2' }));
     expect(run.mock.calls[0]?.[3]).toMatchObject({ agentId: 'native:session-2', sessionId: 'session-2' });
+  });
+
+  it('defaults to the workspace-owned Awareness database', async () => {
+    const registry = new ToolRegistry();
+    const openDb = vi.fn(() => ({} as never));
+    registerNativeAwarenessTool(registry, {
+      cwd: '/workspace/project',
+      openDb,
+      closeDb: () => undefined,
+      run: () => ({ exitCode: 0, payload: {} }),
+    });
+
+    await registry.get('awareness')!.execute(execution({ action: 'query', request: {} }));
+
+    expect(openDb).toHaveBeenCalledWith('/workspace/project/.octocode/awareness.sqlite3');
   });
 });

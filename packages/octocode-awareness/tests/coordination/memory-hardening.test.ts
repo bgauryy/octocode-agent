@@ -12,7 +12,7 @@ describe('verified memory hardening', () => {
   it('requires provenance, filters expired entries, and explains recall', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'memory-hardening-'));
     roots.push(workspace);
-    const aw = openAwarenessStore({ workspace, dbPath: join(workspace, 'agent.sqlite3') });
+    const aw = openAwarenessStore({ workspace, dbPath: join(workspace, 'awareness.sqlite3') });
     try {
       const active = aw.storeVerifiedMemory({ label: 'build', text: 'Run workspace verify', sourceDigest: 'sha256:docs', verifiedAt: '2026-08-26T00:00:00.000Z', validUntil: '2026-09-01T00:00:00.000Z', importance: 8 });
       aw.storeVerifiedMemory({ label: 'old', text: 'Old command', sourceDigest: 'sha256:old', verifiedAt: '2026-08-01T00:00:00.000Z', validUntil: '2026-08-20T00:00:00.000Z' });
@@ -25,7 +25,7 @@ describe('verified memory hardening', () => {
   it('blocks secret-like content before persistence', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'memory-secret-'));
     roots.push(workspace);
-    const aw = openAwarenessStore({ workspace, dbPath: join(workspace, 'agent.sqlite3') });
+    const aw = openAwarenessStore({ workspace, dbPath: join(workspace, 'awareness.sqlite3') });
     try {
       expect(() => aw.storeVerifiedMemory({ label: 'credential', text: 'api_key=supersecretvalue', sourceDigest: 'sha256:x' })).toThrow(/secret-like/);
       expect(() => aw.storeMemory({ label: 'credential', text: 'access_token=supersecretvalue' })).toThrow(/secret-like/);
@@ -36,7 +36,7 @@ describe('verified memory hardening', () => {
   it('never promotes an ordinary row to verified recall through labels or tags', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'memory-unverified-'));
     roots.push(workspace);
-    const aw = openAwarenessStore({ workspace, dbPath: join(workspace, 'agent.sqlite3') });
+    const aw = openAwarenessStore({ workspace, dbPath: join(workspace, 'awareness.sqlite3') });
     try {
       aw.storeMemory({ label: 'VERIFIED', text: 'unverified assertion', tags: ['verified', 'source:fake'] });
       expect(aw.recallMemory({ query: 'assertion' })).toHaveLength(1);
@@ -54,7 +54,7 @@ describe('verified memory hardening', () => {
     roots.push(workspace);
     const previous = process.env['OCTOCODE_EMBED_CMD'];
     delete process.env['OCTOCODE_EMBED_CMD'];
-    const aw = openAwarenessStore({ workspace, dbPath: join(workspace, 'agent.sqlite3') });
+    const aw = openAwarenessStore({ workspace, dbPath: join(workspace, 'awareness.sqlite3') });
     try {
       const common = { verifiedAt: '2026-08-26T00:00:00.000Z', validUntil: '2026-09-01T00:00:00.000Z' };
       aw.storeVerifiedMemory({ label: 'migration', text: 'sqlite migration transaction', sourceDigest: 'eval:fresh:migration', ...common });

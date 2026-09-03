@@ -2,15 +2,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { WorkerAuthorityV1 } from "@octocodeai/agent-core";
 import {
   NativeRustWorkerMessageJournal,
+  nativeWorkerAuthorityDigest,
   type NativeWorkerCommunicationCore,
 } from "../src/native-rust-worker-messages.js";
 import {
   NativeRustCoreClient,
   NativeRustCoreError,
-  type NativeRustCommunicationClaimResult,
   type NativeRustCoreObject,
+  type NativeRustWorkerMailboxClaimResult,
 } from "../src/native-rust-core.js";
 
 const roots: string[] = [];
@@ -22,29 +24,70 @@ afterEach(() => {
 
 function coreFixture(overrides: Partial<NativeWorkerCommunicationCore> = {}) {
   let payload: NativeRustCoreObject | undefined;
+  let messageId = "request-1";
   const core: NativeWorkerCommunicationCore = {
-    communicationEnqueue: vi.fn(async (input) => {
+    workerMailboxOpen: vi.fn(async (input) => ({
+      schemaVersion: 1,
+      mailboxGeneration: input.mailboxGeneration,
+      nextSequence: 1,
+      sealed: false,
+      idempotent: false,
+    } as const)),
+    workerMailboxEnqueue: vi.fn(async (input) => {
       payload = input.payload;
-      return { enqueued: true };
+      messageId = input.messageId;
+      return {
+        schemaVersion: 1,
+        messageId,
+        sequence: 1,
+        state: "pending",
+        idempotent: false,
+        pressure: { messages: 1, bytes: 100, highWater: false },
+      } as const;
     }),
-    communicationClaim: vi.fn(async (input) => [
+    workerMailboxClaim: vi.fn(async (input) => [
       {
-        messageId: String(
-          (payload?.["message"] as { readonly id?: unknown } | undefined)?.id,
-        ),
+        schemaVersion: 1,
+        messageId,
+        sequence: 1,
+        sender: "parent-1",
+        recipient: "worker-1",
+        commandKind: "input.follow-up",
+        lane: "data",
         payload: payload ?? {},
-        availableAt: input.now,
-        leaseUntil: input.now + input.leaseMs,
+        payloadDigest: "payload-digest",
+        state: "leased",
+        leaseOwner: input.consumerId,
         leaseGeneration: 1,
+        leaseExpiresAt: input.now + input.leaseMs,
       },
-    ]),
-    communicationAck: vi.fn(async () => ({ acknowledged: true })),
-    communicationRelease: vi.fn(async () => ({ released: true })),
+    ] as const),
+    workerMailboxExtend: vi.fn(async (input) => ({ schemaVersion: 1, messageId: input.messageId, state: "leased", idempotent: false, leaseGeneration: input.leaseGeneration } as const)),
+    workerMailboxRelease: vi.fn(async (input) => ({ schemaVersion: 1, messageId: input.messageId, state: "pending", idempotent: false } as const)),
+    workerMailboxMarkWritten: vi.fn(async (input) => ({ schemaVersion: 1, messageId: input.messageId, state: "written", idempotent: false, leaseGeneration: input.leaseGeneration } as const)),
+    workerMailboxAck: vi.fn(async (input) => ({ schemaVersion: 1, messageId: input.messageId, state: "acknowledged", idempotent: false } as const)),
+    workerMailboxTerminalize: vi.fn(async (input) => ({ schemaVersion: 1, messageId: input.messageId, state: input.state, idempotent: false } as const)),
+    workerMailboxList: vi.fn(async () => []),
     communicationAbandonPrefix: vi.fn(async () => []),
     ...overrides,
   };
   return core;
 }
+
+const authority = {
+  schemaVersion: 1,
+  workerId: "worker-1",
+  correlationId: "correlation-1",
+  rootAgentId: "parent-1",
+  parentSessionId: "session-1",
+  workspaceId: "workspace-1",
+  workspaceGeneration: 1,
+  trustRevision: "trust-1",
+  permissionMode: "default",
+  capabilityDigest: "capability-1",
+  effectAdmissionId: "effect-1",
+  ownershipGeneration: 1,
+} as unknown as WorkerAuthorityV1;
 
 const input = {
   workerId: "worker-1",
@@ -56,6 +99,8 @@ const input = {
     type: "input.follow-up" as const,
     text: "inspect the failing flow",
   },
+  authority,
+  mailboxGeneration: 1,
 };
 
 describe("native Rust worker message journal", () => {
@@ -67,7 +112,7 @@ describe("native Rust worker message journal", () => {
     import.meta.dirname,
     "../../octocode-agent-core-rust/target/debug/octocode-agent-core-rust",
   );
-  const binary = fs.existsSync(releaseBinary) ? releaseBinary : debugBinary;
+  const binary = fs.existsSync(debugBinary) ? debugBinary : releaseBinary;
 
   it("stages a validated AI SDK UIMessage and acknowledges its Rust lease", async () => {
     const core = coreFixture();
@@ -95,12 +140,13 @@ describe("native Rust worker message journal", () => {
       },
       parts: [{ type: "text", text: "inspect the failing flow" }],
     });
-    expect(core.communicationEnqueue).toHaveBeenCalledOnce();
-    expect(core.communicationClaim).toHaveBeenCalledOnce();
+    expect(core.workerMailboxEnqueue).toHaveBeenCalledOnce();
+    expect(core.workerMailboxClaim).toHaveBeenCalledOnce();
 
+    await lease.markWritten();
     await lease.ack();
 
-    expect(core.communicationAck).toHaveBeenCalledWith(
+    expect(core.workerMailboxAck).toHaveBeenCalledWith(
       expect.objectContaining({
         messageId: "request-1",
         consumerId: "process-parent-1",
@@ -108,7 +154,7 @@ describe("native Rust worker message journal", () => {
       }),
     );
     await lease.ack();
-    expect(core.communicationAck).toHaveBeenCalledOnce();
+    expect(core.workerMailboxAck).toHaveBeenCalledOnce();
   });
 
   it("deterministically abandons stranded session messages without replaying them", async () => {
@@ -136,7 +182,7 @@ describe("native Rust worker message journal", () => {
       limit: 1_000,
     });
     expect(abandon).toHaveBeenCalledOnce();
-    expect(core.communicationClaim).not.toHaveBeenCalled();
+    expect(core.workerMailboxClaim).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -175,6 +221,7 @@ describe("native Rust worker message journal", () => {
 
       expect(lease.message.metadata.commandType).toBe(commandType);
       expect(lease.message.parts).toEqual([{ type: "text", text }]);
+      await lease.markWritten();
       await lease.ack();
     },
   );
@@ -195,7 +242,7 @@ describe("native Rust worker message journal", () => {
     ]);
     expect(lease.message.metadata.commandType).toBe("input.cancel");
     await lease.release();
-    expect(core.communicationRelease).toHaveBeenCalledWith(
+    expect(core.workerMailboxRelease).toHaveBeenCalledWith(
       expect.objectContaining({
         messageId: "request-cancel",
         leaseGeneration: 1,
@@ -203,44 +250,78 @@ describe("native Rust worker message journal", () => {
     );
   });
 
+  it("enforces written versus pre-write terminal settlement", async () => {
+    const core = coreFixture();
+    const journal = new NativeRustWorkerMessageJournal(core, { now: () => 2_500 });
+    const written = await journal.stage(input);
+    await written.markWritten();
+    await expect(written.release()).rejects.toThrow(/cannot return to pending/i);
+    await written.uncertain("unknown-outcome");
+    expect(core.workerMailboxTerminalize).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "uncertain", outcomeDigest: "unknown-outcome" }),
+    );
+
+    const pending = await journal.stage({ ...input, requestId: "request-dead" });
+    await pending.deadLetter("invalid-command");
+    expect(core.workerMailboxTerminalize).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "dead-lettered", outcomeDigest: "invalid-command" }),
+    );
+  });
+
   it("fails closed when Rust returns a malformed or mismatched AI message", async () => {
     const core = coreFixture({
-      communicationClaim: vi.fn(async () => [
+      workerMailboxClaim: vi.fn(async () => [
         {
+          schemaVersion: 1,
           messageId: "request-1",
+          sequence: 1,
+          sender: "parent-1",
+          recipient: "worker-1",
+          commandKind: "input.follow-up",
+          lane: "data",
           payload: {
             schemaVersion: 1,
             message: { id: "request-1", role: "tool", parts: [] },
           },
-          availableAt: 1_000,
-          leaseUntil: 31_000,
+          payloadDigest: "payload-digest",
+          state: "leased",
+          leaseOwner: "native-worker-process:1",
           leaseGeneration: 1,
+          leaseExpiresAt: 31_000,
         },
-      ]),
+      ] as unknown as NativeRustWorkerMailboxClaimResult),
     });
     const journal = new NativeRustWorkerMessageJournal(core, {
       now: () => 1_000,
     });
 
     await expect(journal.stage(input)).rejects.toThrow(/message envelope/i);
-    expect(core.communicationRelease).toHaveBeenCalledOnce();
+    expect(core.workerMailboxRelease).toHaveBeenCalledOnce();
   });
 
   it.each([undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
     "fails closed when Rust returns invalid lease generation %s",
     async (leaseGeneration) => {
       const core = coreFixture({
-        communicationClaim: vi.fn(
+        workerMailboxClaim: vi.fn(
           async () =>
             [
               {
+                schemaVersion: 1,
                 messageId: "request-1",
+                sequence: 1,
+                sender: "parent-1",
+                recipient: "worker-1",
+                commandKind: "input.follow-up",
+                lane: "data",
                 payload: {},
-                availableAt: 1_000,
-                leaseUntil: 31_000,
+                payloadDigest: "payload-digest",
+                state: "leased",
+                leaseOwner: "native-worker-process:1",
                 ...(leaseGeneration === undefined ? {} : { leaseGeneration }),
+                leaseExpiresAt: 31_000,
               },
-            ] as unknown as NativeRustCommunicationClaimResult,
+            ] as unknown as NativeRustWorkerMailboxClaimResult,
         ),
       });
 
@@ -249,15 +330,15 @@ describe("native Rust worker message journal", () => {
           input,
         ),
       ).rejects.toThrow(/claim is malformed/i);
-      expect(core.communicationAck).not.toHaveBeenCalled();
-      expect(core.communicationRelease).not.toHaveBeenCalled();
+      expect(core.workerMailboxAck).not.toHaveBeenCalled();
+      expect(core.workerMailboxRelease).not.toHaveBeenCalled();
     },
   );
 
   it("propagates stale lease receipt conflicts without marking the lease settled", async () => {
     const stale = new NativeRustCoreError("remote", "stale", "CONFLICT");
     const core = coreFixture({
-      communicationAck: vi.fn(async () => {
+      workerMailboxAck: vi.fn(async () => {
         throw stale;
       }),
     });
@@ -265,16 +346,17 @@ describe("native Rust worker message journal", () => {
       now: () => 1_000,
     }).stage(input);
 
+    await lease.markWritten();
     await expect(lease.ack()).rejects.toBe(stale);
     await expect(lease.ack()).rejects.toBe(stale);
-    expect(core.communicationAck).toHaveBeenCalledTimes(2);
-    expect(core.communicationAck).toHaveBeenLastCalledWith(
+    expect(core.workerMailboxAck).toHaveBeenCalledTimes(2);
+    expect(core.workerMailboxAck).toHaveBeenLastCalledWith(
       expect.objectContaining({ leaseGeneration: 1 }),
     );
   });
 
   it.skipIf(!fs.existsSync(binary))(
-    "abandons a stranded AI message after a real Rust process restart without replay",
+    "does not replay a written AI message after a real Rust process restart",
     async () => {
       const root = fs.mkdtempSync(
         path.join(os.tmpdir(), "octocode-worker-message-restart-"),
@@ -303,7 +385,8 @@ describe("native Rust worker message journal", () => {
         },
         parts: [{ type: "text", text: "inspect the failing flow" }],
       });
-      // Simulate a crash: close the owning process without ack or release.
+      await staged.markWritten();
+      // Simulate a crash after the worker stdin write but before acknowledgement.
       await firstClient.close();
 
       const secondClient = new NativeRustCoreClient({
@@ -317,11 +400,19 @@ describe("native Rust worker message journal", () => {
           leaseMs: 100,
         });
         await expect(
-          secondJournal.abandonSession("session-1"),
-        ).resolves.toEqual({ abandoned: 1 });
+          secondJournal.listMailbox({ authority, mailboxGeneration: 1 }),
+        ).resolves.toEqual([
+          expect.objectContaining({
+            messageId: "request-restart",
+            sequence: 1,
+            state: "written",
+          }),
+        ]);
         await expect(
-          secondClient.communicationClaim({
-            channel: "worker-input:session-1:worker-1:request-restart",
+          secondClient.workerMailboxClaim({
+            authority: authority as unknown as NativeRustCoreObject,
+            authorityDigest: nativeWorkerAuthorityDigest(authority),
+            mailboxGeneration: 1,
             consumerId: "verification",
             now: 1_202,
             leaseMs: 1_000,
@@ -330,6 +421,41 @@ describe("native Rust worker message journal", () => {
         ).resolves.toEqual([]);
       } finally {
         await secondClient.close();
+      }
+    },
+  );
+
+  it.skipIf(!fs.existsSync(binary))(
+    "reserves the control lane when the real Rust data mailbox is backpressured",
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "octocode-worker-pressure-"));
+      roots.push(root);
+      const client = new NativeRustCoreClient({
+        binaryPath: binary,
+        dbPath: path.join(root, "core.sqlite3"),
+      });
+      try {
+        const journal = new NativeRustWorkerMessageJournal(client, {
+          now: () => 3_000,
+          consumerId: "pressure-consumer",
+          maxMessages: 1,
+          maxBytes: 100_000,
+        });
+        const first = await journal.stage({ ...input, requestId: "pressure-1" });
+        expect(first.pressure).toMatchObject({ messages: 1, highWater: true });
+        await expect(
+          journal.stage({ ...input, requestId: "pressure-2" }),
+        ).rejects.toMatchObject({ code: "BACKPRESSURED" });
+        const cancel = await journal.stage({
+          ...input,
+          requestId: "pressure-cancel",
+          command: { type: "input.cancel", reason: "stop now" },
+        });
+        expect(cancel.command).toEqual({ type: "input.cancel", reason: "stop now" });
+        await cancel.release();
+        await first.release();
+      } finally {
+        await client.close();
       }
     },
   );

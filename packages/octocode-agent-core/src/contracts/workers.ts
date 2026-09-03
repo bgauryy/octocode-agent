@@ -1,4 +1,5 @@
 import type { RedactionClass } from "./errors.js";
+import type { PermissionMode } from "./permissions.js";
 import type {
   CorrelationId,
   PacketId,
@@ -23,6 +24,24 @@ export interface WorkerPresentationMetadata {
   readonly taskLabel?: string;
 }
 
+export interface WorkerAuthorityV1 {
+  readonly schemaVersion: 1;
+  readonly workerId: WorkerId;
+  readonly correlationId: CorrelationId;
+  readonly rootAgentId: string;
+  readonly parentSessionId: SessionId;
+  readonly workspaceId: string;
+  readonly workspaceGeneration: number;
+  readonly trustRevision: string;
+  readonly permissionMode: PermissionMode;
+  readonly capabilityDigest: string;
+  readonly planId?: string;
+  readonly planRevision?: number;
+  readonly planStepId?: string;
+  readonly effectAdmissionId: string;
+  readonly ownershipGeneration: number;
+}
+
 interface WorkerPacketEnvelope {
   readonly schemaVersion: 1;
   readonly packetId: PacketId;
@@ -30,6 +49,7 @@ interface WorkerPacketEnvelope {
   readonly correlationId: CorrelationId;
   readonly sessionId: SessionId;
   readonly redaction: RedactionClass;
+  readonly authority: WorkerAuthorityV1;
 }
 
 export interface WorkerSpawnPacket extends WorkerPacketEnvelope {
@@ -102,7 +122,11 @@ export interface WorkerLedgerPort {
 }
 
 export interface WorkerWorktreePort {
-  prepare(packet: WorkerSpawnPacket, signal: AbortSignal): Promise<void>;
+  /** Resolve caller input to the host-owned worktree identity used thereafter. */
+  prepare(
+    packet: WorkerSpawnPacket,
+    signal: AbortSignal,
+  ): Promise<WorkerSpawnPacket>;
   release(
     packet: WorkerSpawnPacket,
     terminal: WorkerTerminalPacket,
@@ -132,6 +156,7 @@ export type WorkerCommand =
   | {
       readonly type: "status" | "wait" | "abort" | "kill";
       readonly workerId: WorkerId;
+      readonly authority: WorkerAuthorityV1;
       readonly reason?: string;
     }
   | {

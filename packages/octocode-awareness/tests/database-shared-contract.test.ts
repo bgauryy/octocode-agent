@@ -4,25 +4,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openAwarenessStore } from '../src/coordination/index.js';
+import { AWARENESS_APPLICATION_ID } from '../src/db-runtime.js';
 
-const SHARED_TABLES = [
-  'agent_schema_modules', 'agent_sessions', 'agents', 'authorization_receipts',
+const AWARENESS_TABLES = [
+  'agents', 'authorization_receipts',
   'awareness_agents', 'awareness_locks', 'awareness_memories', 'awareness_plans', 'awareness_tasks', 'capability_receipts',
   'delivery_state', 'edit_log', 'event_acknowledgements', 'event_consumers',
   'event_outbox', 'handoffs', 'harness_log', 'hook_receipts', 'locks',
-  'mcp_catalog_state', 'mcp_server_overrides', 'mcp_tool_overrides', 'memories',
-  'memory_refs', 'message_receipts', 'messages', 'octocode_meta',
+  'memories', 'memory_refs', 'message_receipts', 'messages',
   'pending_interactions', 'plan_docs', 'plan_members', 'plans', 'refinements',
-  'run_files', 'run_log', 'sessions', 'signal_reads', 'signals', 'skill_overrides',
+  'run_files', 'run_log', 'sessions', 'signal_reads', 'signals',
   'task_claims', 'task_dependencies', 'task_events', 'task_paths', 'task_runs',
   'tasks', 'work_presence',
 ] as const;
 
-describe('shared Awareness database contract', () => {
-  it('creates every coordination, continuity, control, and auxiliary entity', () => {
+describe('Awareness database contract', () => {
+  it('creates every Awareness entity without Agent control relations', () => {
     const dir = mkdtempSync(join(tmpdir(), 'awareness-shared-contract-'));
     chmodSync(dir, 0o755);
-    const dbPath = join(dir, 'agent.sqlite3');
+    const dbPath = join(dir, 'awareness.sqlite3');
     const store = openAwarenessStore({ workspace: dir, dbPath });
     store.close();
     expect(statSync(dir).mode & 0o777).toBe(0o700);
@@ -31,12 +31,15 @@ describe('shared Awareness database contract', () => {
     try {
       const tables = db.prepare(
         "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-      ).all().map((row) => (row as { name: string }).name);
+      ).all().map((row) => (row as { name: string }).name)
+        .filter((name) => !name.startsWith('memories_fts'));
       const indexes = new Set(db.prepare(
         "SELECT name FROM sqlite_schema WHERE type = 'index' AND name NOT LIKE 'sqlite_%'",
       ).all().map((row) => (row as { name: string }).name));
 
-      expect(tables).toEqual([...SHARED_TABLES].sort());
+      expect(tables).toEqual([...AWARENESS_TABLES].sort());
+      expect(db.prepare('PRAGMA application_id').get())
+        .toEqual({ application_id: AWARENESS_APPLICATION_ID });
       expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
       expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
       expect([...indexes]).toEqual(expect.arrayContaining([

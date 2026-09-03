@@ -365,7 +365,7 @@ export class EditorWidget extends OpenTuiWidget<EditorWidgetIntent> {
       },
       {
         id: 'cursor',
-        role: 'status',
+        role: 'help',
         text: `Line ${position.line + 1}, column ${position.column + 1}${selection ? `; ${selection.end - selection.start} graphemes selected` : ''}`,
       },
       {
@@ -379,7 +379,7 @@ export class EditorWidget extends OpenTuiWidget<EditorWidgetIntent> {
     }
     if (this.options.help) regions.push({ id: 'help', role: 'help', text: this.options.help });
     if (this.validationMessage) {
-      regions.push({ id: 'validation', role: 'status', text: this.validationMessage });
+      regions.push({ id: 'validation', role: 'status', tone: 'error', text: this.validationMessage });
     }
     return regions;
   }

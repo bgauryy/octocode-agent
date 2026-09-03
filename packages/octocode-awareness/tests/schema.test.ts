@@ -11,7 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { getDeliveryFingerprint, initDb, setDeliveryFingerprint, tableColumns } from '../src/db.js';
-import { AGENT_APPLICATION_ID } from '@octocodeai/octocode-shared/schema';
+import { AWARENESS_APPLICATION_ID } from '../src/db-runtime.js';
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function freshDb(): DatabaseSync {
     const db = new DatabaseSync(':memory:');
@@ -238,10 +238,10 @@ describe('delivery_state table column names', () => {
 });
 
 describe('canonical schema identity', () => {
-  it('uses the one agent application identity', () => {
+  it('uses the historical Awareness application identity', () => {
     const db = freshDb();
     expect(db.prepare('PRAGMA application_id').get())
-      .toEqual({ application_id: AGENT_APPLICATION_ID });
+      .toEqual({ application_id: AWARENESS_APPLICATION_ID });
   });
 
   it('rejects an extra application relation on the canonical fast path', () => {

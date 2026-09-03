@@ -8,21 +8,17 @@ let workspace: string;
 let aw: AwarenessStore;
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'aw-lite-'));
-  // Redirect the shared global store to a per-test file so tests stay isolated
-  // and never touch the real ~/.octocode.
-  process.env.OCTOCODE_AGENT_DB_PATH = join(workspace, 'agent.sqlite3');
   aw = openAwarenessStore({ workspace });
 });
 afterEach(async () => {
   aw.close();
-  delete process.env.OCTOCODE_AGENT_DB_PATH;
   await rm(workspace, { recursive: true, force: true });
 });
 describe('AwarenessStore', () => {
   it('creates a local sqlite database and reports status', () => {
     const status = aw.status();
     expect(status.workspace).toBe(workspace);
-    expect(status.dbPath).toBe(join(workspace, 'agent.sqlite3'));
+    expect(status.dbPath).toBe(join(workspace, '.octocode', 'awareness.sqlite3'));
     expect(status).toMatchObject({
       plans: 0,
       activePlans: 0,

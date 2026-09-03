@@ -32,6 +32,9 @@ export interface FooterSnapshot {
   readonly widthColumns: number;
   readonly keyHints: readonly FooterKeyHint[];
   readonly contextUsage?: FooterContextUsage;
+  readonly modelId?: string;
+  readonly trust?: "trusted" | "untrusted" | "unknown";
+  readonly permissionMode?: "strict" | "default" | "allow-all";
   readonly activitySummary?: {
     readonly text: string;
     readonly tone: "info" | "success" | "warning" | "error" | "count";
@@ -136,7 +139,8 @@ function usagePercent(usage: FooterContextUsage): number {
 function contextText(usage: FooterContextUsage | undefined): string {
   if (usage === undefined) return "Context: unavailable";
   const threshold = contextThreshold(usage).toUpperCase();
-  return `Context: ${threshold} ${usagePercent(usage)}% (${usage.used}/${usage.limit})`;
+  const usedPercent = usagePercent(usage);
+  return `Context: ${threshold} ${usedPercent}% (${usage.used}/${usage.limit}) · ${Math.max(0, 100 - usedPercent)}% left`;
 }
 
 function normalizeSnapshot(snapshot: FooterSnapshot): FooterSnapshot {
@@ -225,6 +229,17 @@ function normalizeSnapshot(snapshot: FooterSnapshot): FooterSnapshot {
           ),
           tone: snapshot.activitySummary.tone,
         });
+  const modelId = snapshot.modelId === undefined
+    ? undefined
+    : safeSingleLine(snapshot.modelId, "model", 160);
+  const trust = snapshot.trust;
+  if (trust !== undefined && trust !== "trusted" && trust !== "untrusted" && trust !== "unknown") {
+    throw new Error("footer trust state is invalid");
+  }
+  const permissionMode = snapshot.permissionMode;
+  if (permissionMode !== undefined && permissionMode !== "strict" && permissionMode !== "default" && permissionMode !== "allow-all") {
+    throw new Error("footer permission mode is invalid");
+  }
 
   return Object.freeze({
     authority: "runtime",
@@ -233,6 +248,9 @@ function normalizeSnapshot(snapshot: FooterSnapshot): FooterSnapshot {
     widthColumns: snapshot.widthColumns,
     keyHints: Object.freeze(keyHints),
     ...(contextUsage === undefined ? {} : { contextUsage }),
+    ...(modelId === undefined ? {} : { modelId }),
+    ...(trust === undefined ? {} : { trust }),
+    ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(activitySummary === undefined ? {} : { activitySummary }),
   });
 }
@@ -244,6 +262,9 @@ function sameSnapshot(left: FooterSnapshot, right: FooterSnapshot): boolean {
     left.widthColumns !== right.widthColumns ||
     left.contextUsage?.used !== right.contextUsage?.used ||
     left.contextUsage?.limit !== right.contextUsage?.limit ||
+    left.modelId !== right.modelId ||
+    left.trust !== right.trust ||
+    left.permissionMode !== right.permissionMode ||
     left.activitySummary?.text !== right.activitySummary?.text ||
     left.activitySummary?.tone !== right.activitySummary?.tone ||
     left.keyHints.length !== right.keyHints.length
@@ -325,10 +346,12 @@ export class FooterWidget extends OpenTuiWidget {
   }
 
   toPlainText(): string {
+    const runtimeFacts = this.runtimeFacts();
     return [
       `Mode: ${this.snapshot.activeMode}`,
       `Connection: ${this.snapshot.connection.toUpperCase()}`,
       contextText(this.snapshot.contextUsage),
+      ...(runtimeFacts === undefined ? [] : [`Runtime: ${runtimeFacts}`]),
       ...(this.snapshot.activitySummary === undefined
         ? []
         : [`Activity: ${this.snapshot.activitySummary.text}`]),
@@ -342,6 +365,7 @@ export class FooterWidget extends OpenTuiWidget {
   protected renderRegions(): readonly WidgetRenderRegion[] {
     const separatorWidth = 3;
     const connection = `Connection: ${this.snapshot.connection.toUpperCase()}`;
+    const runtimeFacts = this.runtimeFacts();
     if (
       isNarrowOpenTuiLayout(this.snapshot.widthColumns) &&
       this.snapshot.activitySummary !== undefined
@@ -372,7 +396,7 @@ export class FooterWidget extends OpenTuiWidget {
       { id: "mode", role: "content", text: mode },
       {
         id: "connection",
-        role: "status",
+        role: "content",
         text: fitTerminalText(
           connection,
           this.snapshot.widthColumns -
@@ -397,9 +421,12 @@ export class FooterWidget extends OpenTuiWidget {
               text: this.snapshot.activitySummary.text,
             },
           ]),
+      ...(runtimeFacts === undefined
+        ? []
+        : [{ id: "runtime", role: "content" as const, text: runtimeFacts }]),
       {
         id: "context",
-        role: "status",
+        role: "content",
         text: contextText(this.snapshot.contextUsage),
       },
       ...this.snapshot.keyHints.map((hint, index) => ({
@@ -425,5 +452,20 @@ export class FooterWidget extends OpenTuiWidget {
       });
     }
     return regions;
+  }
+
+  private runtimeFacts(): string | undefined {
+    const parts = [
+      this.snapshot.modelId === undefined ? undefined : `model ${this.snapshot.modelId}`,
+      this.snapshot.trust === undefined
+        ? undefined
+        : this.snapshot.trust === "trusted"
+          ? "workspace ✓"
+          : `workspace ${this.snapshot.trust}`,
+      this.snapshot.permissionMode === undefined
+        ? undefined
+        : `perm ${this.snapshot.permissionMode}`,
+    ].filter((value): value is string => value !== undefined);
+    return parts.length === 0 ? undefined : parts.join(" · ");
   }
 }

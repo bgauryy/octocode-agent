@@ -4,9 +4,9 @@
  * Single source of truth for where Octocode keeps its state. Everything lives
  * under the Octocode home (`~/.octocode` by default):
  *
- *   <home>/agent/agent.sqlite3                    the shared agent DB
- *   <home>/agent/sessions/<sessionId>/            per-session artifacts
- *       compaction/   plans/   logs/   db/
+ *   <home>/agent/agent.sqlite3                    Agent control/index DB
+ *   <home>/agent/sessions/                        Agent session artifacts
+ *   <home>/agent/workspaces/<workspace-key>/      workspace-keyed Agent files
  *
  * Product-home resolution is NEVER reimplemented — it delegates to
  * `@octocodeai/config` (`OCTOCODE_HOME` → platform default). The
@@ -22,7 +22,7 @@ export const AGENT_DB_FILENAME = 'agent.sqlite3';
 /** Env var that pins the agent DB file, overriding the agent-root default. */
 export const OCTOCODE_AGENT_DB_PATH_ENV = 'OCTOCODE_AGENT_DB_PATH';
 
-/** Per-session artifact buckets written under `<home>/agent/sessions/<id>/`. */
+/** Reserved per-session artifact buckets under `<home>/agent/sessions/<id>/`. */
 export type SessionArtifact = 'compaction' | 'plans' | 'logs' | 'db';
 
 /**
@@ -64,7 +64,7 @@ export function agentDbPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(agentHome(env), AGENT_DB_FILENAME);
 }
 
-/** Root that holds every session's artifact directory. */
+/** Root for Agent session artifacts and flat fallback session records. */
 export function sessionsRoot(env: NodeJS.ProcessEnv = process.env): string {
   return join(agentHome(env), 'sessions');
 }

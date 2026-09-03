@@ -358,8 +358,13 @@ export class PresentationSurfaceWidget extends OpenTuiWidget {
     return [
       {
         id: 'summary',
-        role: 'status',
-        text: fitTerminalText(`Presentation ${this.snapshot.id} · revision ${this.snapshot.revision} · ${kindLabel(this.snapshot.payload.kind)}${title === undefined ? '' : ` · ${title}`}`, this.widthColumns),
+        role: 'content',
+        text: fitTerminalText(
+          title === undefined
+            ? kindLabel(this.snapshot.payload.kind)
+            : `${title} · ${kindLabel(this.snapshot.payload.kind)}`,
+          this.widthColumns,
+        ),
       },
       {
         id: 'content',
@@ -368,8 +373,8 @@ export class PresentationSurfaceWidget extends OpenTuiWidget {
       },
       {
         id: 'viewport',
-        role: 'status',
-        text: `Rows ${lines.length === 0 ? 0 : this.currentScrollOffset + 1}–${end} of ${lines.length} · READ ONLY`,
+        role: 'help',
+        text: `Rows ${lines.length === 0 ? 0 : this.currentScrollOffset + 1}–${end} of ${lines.length} · Read only`,
       },
       { id: 'help', role: 'help', text: '↑/↓ row · PgUp/PgDn viewport · Home/End bounds · no actions' },
     ];

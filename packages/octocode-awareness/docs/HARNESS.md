@@ -1,18 +1,20 @@
-# Awareness Harness Invariants
+# Awareness harness invariants
 
 Maintainer contract for the CLI, runtime library, host hooks, bundled skill, and
 read-only query exports. Architecture narrative lives in [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 
-## Canonical Boundaries
+## Canonical boundaries
 
-- Global SQLite is operational truth. `.octocode/` holds read-only query exports; plan folders
-  contain narrative only.
+- The selected Awareness SQLite database is operational truth. Workspace scope
+  defaults to `.octocode/awareness.sqlite3`; adjacent exports and plan folders
+  aren't live state.
+- Agent databases and worker/runtime ledgers are outside Awareness ownership.
 - `schema commands` and JSON schemas own the public command contract.
 - Canonical code and Zod contracts live in `src/**` and `bin/**`.
 - Canonical skill guidance lives in package-local `skills/octocode-awareness/**`.
 - Build outputs and `.agents/skills/**` are regenerated, never hand-edited.
 
-## Execution Invariants
+## Execution invariants
 
 1. A plan task has at most one leased claim/run.
 2. A task claim or explicit `work start` is a reusable work-unit boundary; a host
@@ -28,7 +30,7 @@ read-only query exports. Architecture narrative lives in [HOW_IT_WORKS.md](HOW_I
 8. Hook infrastructure failures warn/fail open except real exclusive conflicts,
    harness guard denial, and supported stop verification gates.
 
-## Context Invariants
+## Context invariants
 
 - Successful ordinary hooks are silent.
 - Peer and briefing delivery is fingerprinted; unchanged content is not repeated.
@@ -37,7 +39,7 @@ read-only query exports. Architecture narrative lives in [HOW_IT_WORKS.md](HOW_I
 - Signals remain unread until explicitly acknowledged; delivery dedupe is separate.
 - Session handoffs are content-deduped.
 
-## Homeostatic And Token Invariants
+## Homeostatic and token invariants
 
 - Token pressure is regulated: stable state stays silent; changed state emits only
   the next decision packet; detail remains queryable outside the prompt.
@@ -61,7 +63,7 @@ equivalent event.
 installation surfaces, platform limitations, runtime-health semantics, and the Pi
 in-process exception. Do not duplicate that matrix here.
 
-## Self-Improvement Boundary
+## Self-improvement boundary
 
 ```text
 reflect -> mine weakness -> export proposal -> human/user approval
@@ -72,7 +74,7 @@ reflect -> mine weakness -> export proposal -> human/user approval
 Harness source edits require `OCTOCODE_ALLOW_HARNESS_APPLY=1` and a safe non-main
 branch.
 
-## Verification Matrix
+## Verification matrix
 
 ```bash
 yarn workspace @octocodeai/octocode-awareness typecheck
@@ -81,7 +83,7 @@ yarn workspace @octocodeai/octocode-awareness build
 yarn workspace @octocodeai/octocode-awareness test:smoke
 ```
 
-Migration tests must cover generation-1 execution tables, generation-2
-`files_json`/typed locks, generation-3 normalized run files/exclusive locks, and
-the canonical OCTA/v1 identity. Hook tests must replay equivalent shell/in-process
-events. Output tests must enforce byte/detail caps, not only row counts.
+Migration tests must cover legacy execution tables, normalized run files and
+exclusive locks, mixed Agent/Awareness stores, and the distinct current
+Awareness identity. Hook tests must replay equivalent shell/in-process events.
+Output tests must enforce byte/detail caps, not only row counts.

@@ -4,8 +4,10 @@ import {
   RuntimeKernel,
   ToolRegistry,
   assertRuntimeUserInputV1,
+  eventId,
   sessionId,
   type ModelRequest,
+  type RuntimeEvent,
 } from '@octocodeai/agent-core';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -95,5 +97,74 @@ describe('native interactive multimodal routing', () => {
       content: 'inspect  please',
       userInput: input,
     });
+  });
+
+  it('projects supplemental persisted worker lifecycle events into the live terminal', async () => {
+    const id = sessionId('s-native-worker-events');
+    const runtime = new RuntimeKernel({
+      sessionId: id,
+      cwd: '/workspace',
+      trust: { workspace: 'trusted', managedOnly: false },
+      approve: async () => true,
+      tools: new ToolRegistry(),
+      model: { run: async () => ({ stop: 'complete', text: '', usage: { inputTokens: 0, outputTokens: 0 } }) },
+    });
+    let inputListener: ((event: NativePresentationInputEvent) => void | Promise<void>) | undefined;
+    let supplementalListener: ((event: RuntimeEvent) => void) | undefined;
+    const accept = vi.fn();
+    const terminal: NativeInteractivePresentationPort = {
+      inputOwnership: 'renderer',
+      start: vi.fn(async () => undefined),
+      accept,
+      acceptInput: () => false,
+      subscribeInput: (listener) => {
+        inputListener = listener;
+        return () => { inputListener = undefined; };
+      },
+      subscribeFailure: () => () => undefined,
+      cancelInteraction: () => false,
+      snapshot: () => ({ working: 'idle' }),
+      stop: vi.fn(async () => undefined),
+    };
+    const controller = runNativeInteractiveController({
+      runtime,
+      terminal,
+      interactions: { attach: () => () => undefined, interact: async () => ({ status: 'unsupported' }) },
+      input: new PassThrough(),
+      signalSource: { on: vi.fn(), off: vi.fn() },
+      subscribeSupplementalRuntimeEvents: (listener) => {
+        supplementalListener = listener;
+        return () => { supplementalListener = undefined; };
+      },
+    });
+    await vi.waitFor(() => expect(supplementalListener).toBeTypeOf('function'));
+    const event = (type: RuntimeEvent['type'], payload: unknown): RuntimeEvent => ({
+      schemaVersion: 1,
+      eventVersion: 1,
+      id: eventId(`supplemental:${type}`),
+      type,
+      phase: 'after',
+      sessionId: id,
+      timestamp: 10,
+      cwd: '/workspace',
+      mode: 'interactive',
+      outputFormat: 'text',
+      trust: { workspace: 'trusted', managedOnly: false },
+      payload,
+    } as RuntimeEvent);
+    supplementalListener!(event('worker.started', { workerId: 'private-worker-id', state: 'running' }));
+    supplementalListener!(event('worker.progress', {
+      workerId: 'private-worker-id', state: 'running', active: 1, queued: 0, maxActive: 4,
+    }));
+    supplementalListener!(event('worker.stopped', {
+      workerId: 'private-worker-id', state: 'succeeded', terminal: { outcome: 'succeeded' },
+    }));
+    await vi.waitFor(() => expect(accept).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'worker-changed', worker: expect.objectContaining({ state: 'succeeded' }),
+    })));
+    expect(JSON.stringify(accept.mock.calls)).not.toContain('terminal');
+    await inputListener!({ type: 'interrupt' });
+    await expect(controller).resolves.toBe(0);
+    expect(supplementalListener).toBeUndefined();
   });
 });

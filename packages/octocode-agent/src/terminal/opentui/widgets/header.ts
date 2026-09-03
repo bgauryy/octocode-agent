@@ -223,7 +223,6 @@ export class HeaderWidget extends OpenTuiWidget {
     ];
     const optionals = [
       ...(this.snapshot.modelId === undefined ? [] : [`model ${this.snapshot.modelId}`]),
-      ...(this.snapshot.sessionId === undefined ? [] : [`session ${this.snapshot.sessionId}`]),
     ];
     let segments = [...required];
     for (const optional of optionals) {

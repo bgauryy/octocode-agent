@@ -1,29 +1,11 @@
 /**
- * Published bridge for runtime capability enablement state (MCP + skills).
+ * Legacy published subpath retained only for the Awareness-owned worker
+ * lifecycle projection. Agent control state, paths, permissions, and MCP/skill
+ * overrides are owned by `@octocodeai/octocode-shared` and are deliberately not
+ * re-exported from Awareness.
  *
- * Awareness owns the zero-runtime-dependency SQLite package boundary; the
- * implementation remains in octocode-shared so the schema and precedence rules
- * have one source.
+ * New consumers should import these lifecycle symbols from the package root.
  */
-export {
-  MCP_GLOBAL_SCOPE,
-  getMcpEnablement,
-  getSkillEnablement,
-  listMcpOverrides,
-  listSkillOverrides,
-  normalizeSkillKey,
-  setMcpServerEnabled,
-  setMcpToolEnabled,
-  setSkillEnabled,
-  type McpServerOverride,
-  type McpToolOverride,
-  type SkillOverride,
-} from '@octocodeai/octocode-shared/mcp-state';
-export { openOctocodeDb } from '@octocodeai/octocode-shared/db';
-export { closeOctocodeDb } from '@octocodeai/octocode-shared/db';
-export { agentDbPath } from '@octocodeai/octocode-shared/paths';
-export { recordSession } from '@octocodeai/octocode-shared/schema';
-export { ensurePrivateDirectory, hardenPrivateFile, PRIVATE_DIRECTORY_MODE, PRIVATE_FILE_MODE } from '@octocodeai/octocode-shared/permissions';
 export {
   appendWorkerLifecycleEvent,
   listWorkerLifecycleEvents,

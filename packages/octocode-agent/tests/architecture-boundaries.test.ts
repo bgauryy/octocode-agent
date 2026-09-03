@@ -55,6 +55,16 @@ describe("native package architecture", () => {
     expect(aggregateSharedImports).toEqual([]);
   });
 
+  it("does not route Agent database APIs through the Awareness package", () => {
+    const ownershipViolations = sourceFiles.flatMap((path) =>
+      source(path).includes("@octocodeai/octocode-awareness/mcp-state")
+        ? [display(path)]
+        : [],
+    );
+
+    expect(ownershipViolations).toEqual([]);
+  });
+
   it("keeps the OpenTUI dependency graph acyclic", () => {
     const tuiRoot = join(sourceRoot, "terminal", "opentui");
     const tuiFiles = sourceFiles.filter((path) =>

@@ -9,13 +9,15 @@ it('publishes the complete shared feature and entity inventory', () => {
   const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8');
   for (const feature of [
     'Status', 'Plans', 'Tasks', 'Work presence', 'Locks', 'Checks', 'Messages',
-    'Agents', 'Handoffs', 'Memory', 'Hooks', 'Schema', 'Host composition', 'Runtime workflows',
+    'Agents', 'Handoffs', 'Memory', 'Hooks', 'Schema', 'Host composition', 'Coordination workflows',
   ]) expect(readme).toContain(`| ${feature} |`);
-  for (const table of [
-    'plans', 'tasks', 'locks', 'work_presence', 'handoffs', 'memories', 'agents',
-    'messages', 'message_receipts', 'octocode_meta', 'agent_sessions',
-    'mcp_server_overrides', 'mcp_tool_overrides', 'skill_overrides', 'mcp_catalog_state',
-  ]) expect(readme).toContain(`\`${table}\``);
+  for (const entity of [
+    'plans', 'tasks', 'claims', 'work presence', 'locks', 'verification',
+    'messages', 'handoffs', 'signals', 'memory',
+  ]) expect(readme.toLowerCase()).toContain(entity);
+  expect(readme).toContain('.octocode/awareness.sqlite3');
+  expect(readme).toContain('$OCTOCODE_HOME/awareness/awareness.sqlite3');
+  expect(readme).toMatch(/Agent control and runtime databases[\s\S]*separate/i);
   expect(readme).toContain('@octocodeai/octocode-awareness');
   expect(readme).toContain('octocode-awareness');
   expect(readme).not.toMatch(/octocode-awareness-lite|\/lite\b|Awareness Lite/);

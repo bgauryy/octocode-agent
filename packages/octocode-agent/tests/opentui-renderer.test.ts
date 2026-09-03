@@ -6,7 +6,6 @@ import {
   ScrollBoxRenderable,
   SelectRenderable,
   TabSelectRenderable,
-  TextAttributes,
   TextRenderable,
   TextareaRenderable,
 } from "@opentui/core";
@@ -214,7 +213,7 @@ describeNativeFfi(
       setup.renderer.destroy();
     });
 
-    it("uses a multiline composer with explicit Ctrl/Meta-Enter submission", async () => {
+    it("submits with Enter and inserts newlines with modified Enter", async () => {
       const setup = await createTestRenderer({ width: 80, height: 24 });
       const submitted: string[] = [];
       const facade = createOpenTuiRendererFacade(setup.renderer, {
@@ -230,23 +229,44 @@ describeNativeFfi(
       expect(composer).toBeInstanceOf(TextareaRenderable);
 
       setup.mockInput.typeText("first");
-      setup.mockInput.pressKey(KeyCodes.RETURN);
+      composer.handleKeyPress({ name: "return", shift: true } as Parameters<
+        typeof composer.handleKeyPress
+      >[0]);
       setup.mockInput.typeText("second");
       await setup.flush();
       expect(composer.plainText).toBe("first\nsecond");
       expect(submitted).toEqual([]);
 
-      composer.handleKeyPress({ name: "return", ctrl: true } as Parameters<
+      composer.handleKeyPress({ name: "return" } as Parameters<
         typeof composer.handleKeyPress
       >[0]);
       await setup.flush();
       expect(submitted).toEqual(["first\nsecond"]);
       expect(composer.plainText).toBe("");
 
-      setup.mockInput.typeText("meta");
-      setup.mockInput.pressKey(KeyCodes.RETURN, { meta: true });
+      setup.mockInput.typeText("more");
+      composer.handleKeyPress({ name: "return", ctrl: true } as Parameters<
+        typeof composer.handleKeyPress
+      >[0]);
+      setup.mockInput.typeText("detail");
       await setup.flush();
-      expect(submitted).toEqual(["first\nsecond", "meta"]);
+      expect(composer.plainText).toBe("more\ndetail");
+      expect(submitted).toEqual(["first\nsecond"]);
+      await facade.destroy();
+      setup.renderer.destroy();
+    });
+
+    it("presents one conversational composer with truthful keyboard guidance", async () => {
+      const setup = await createTestRenderer({ width: 80, height: 24 });
+      const facade = createOpenTuiRendererFacade(setup.renderer);
+      await setup.flush();
+
+      const frame = setup.captureCharFrame();
+      expect(frame).toContain("› Ask Octocode");
+      expect(frame).toContain("What should I work on?");
+      expect(frame).toContain("Enter send · Shift+Enter newline");
+      expect(frame).not.toContain("Message Octocode Agent");
+
       await facade.destroy();
       setup.renderer.destroy();
     });
@@ -275,7 +295,7 @@ describeNativeFfi(
       );
       expect(composer.plainText).not.toContain("😀é line");
 
-      composer.handleKeyPress({ name: "return", ctrl: true } as Parameters<
+      composer.handleKeyPress({ name: "return" } as Parameters<
         typeof composer.handleKeyPress
       >[0]);
       await setup.flush();
@@ -324,7 +344,7 @@ describeNativeFfi(
       expect(composer.plainText).toMatch(/^\[image #1:[a-f0-9]{12} pasted-image\.png · PNG · \d+ B\]$/u);
       expect(composer.plainText).not.toContain(png.toString("base64"));
 
-      composer.handleKeyPress({ name: "return", ctrl: true } as Parameters<
+      composer.handleKeyPress({ name: "return" } as Parameters<
         typeof composer.handleKeyPress
       >[0]);
       await setup.flush();
@@ -402,7 +422,7 @@ describeNativeFfi(
       expect(composer.plainText).toContain("example.png · PNG");
       expect(composer.plainText).not.toContain("/workspace");
 
-      composer.handleKeyPress({ name: "return", ctrl: true } as Parameters<
+      composer.handleKeyPress({ name: "return" } as Parameters<
         typeof composer.handleKeyPress
       >[0]);
       await setup.flush();
@@ -442,14 +462,19 @@ describeNativeFfi(
         "octocode-agent-composer",
       ) as TextareaRenderable;
       expect(tabs).toBeInstanceOf(TabSelectRenderable);
+      expect(tabs.getSelectedIndex()).toBe(0);
+      expect(tools.visible).toBe(true);
+      expect(sidebar.visible).toBe(false);
+
+      tabs.setSelectedIndex(1);
+      tabs.selectCurrent();
+      await setup.flush();
       expect(tools.visible).toBe(false);
       expect(sidebar.visible).toBe(true);
 
       tabs.setSelectedIndex(0);
       tabs.selectCurrent();
       await setup.flush();
-      expect(tools.visible).toBe(true);
-      expect(sidebar.visible).toBe(false);
 
       await setup.mockInput.typeText("/pl");
       await setup.flush();
@@ -457,6 +482,61 @@ describeNativeFfi(
       await setup.flush();
       expect(composer.plainText).toBe("/plan ");
       expect(tabs.getSelectedIndex()).toBe(0);
+      await facade.destroy();
+      setup.renderer.destroy();
+    });
+
+    it("keeps wide-terminal chrome compact, human, and conversation-first", async () => {
+      const setup = await createTestRenderer({ width: 240, height: 56 });
+      const state = {
+        ...createInitialPresentationState(),
+        ready: true,
+        chrome: {
+          authority: "runtime" as const,
+          title: "Octocode Agent",
+          sessionId: "native:internal-session-id",
+          modelId: "provider/model",
+          trust: "unknown" as const,
+          connection: "connected" as const,
+        },
+        statuses: { "awareness.events": "13 refused" },
+        notifications: [
+          {
+            severity: "info" as const,
+            message: "Context ready · 1 of 1 artifact available",
+          },
+        ],
+      };
+      const facade = createOpenTuiRendererFacade(setup.renderer, {
+        initialState: state,
+      });
+      facade.render(state);
+      await setup.flush();
+
+      const rail = setup.renderer.root.findDescendantById(
+        "octocode-agent-rail",
+      ) as ScrollBoxRenderable;
+      const tabs = setup.renderer.root.findDescendantById(
+        "octocode-agent-rail-tabs",
+      ) as TabSelectRenderable;
+      expect(rail.width).toBe(56);
+      expect(tabs.getSelectedIndex()).toBe(0);
+
+      tabs.setSelectedIndex(1);
+      tabs.selectCurrent();
+      await setup.flush();
+      const frame = setup.captureCharFrame();
+      expect(frame).not.toContain("██████╗");
+      expect(frame).not.toContain("system/presentation-");
+      expect(frame).not.toContain("awareness.events");
+      expect(frame).not.toContain("a".repeat(64));
+      expect(frame).toContain("Coordination · 13 refused");
+      expect(
+        frame
+          .split("\n")
+          .filter((line) => /Mode:|Connection:|Context:/u.test(line)),
+      ).toHaveLength(1);
+
       await facade.destroy();
       setup.renderer.destroy();
     });
@@ -730,6 +810,105 @@ describeNativeFfi(
       statusSetup.renderer.destroy();
     });
 
+    it("dispatches the same semantic outcomes for every pointer handler and keyboard path", async () => {
+      const runConfirm = async (method: "keyboard" | "pointer") => {
+        const setup = await createTestRenderer({
+          width: 80,
+          height: 30,
+          footerHeight: 0,
+          useMouse: true,
+          enableMouseMovement: true,
+        });
+        const outcomes: unknown[] = [];
+        const facade = createOpenTuiRendererFacade(setup.renderer, {
+          events: {
+            submitInput: () => undefined,
+            interrupt: () => undefined,
+            resolveInteraction: (generation, result) =>
+              outcomes.push({ generation, result }),
+          },
+        });
+        facade.render(
+          reducePresentation(createInitialPresentationState(), {
+            type: "interaction-requested",
+            request: { type: "confirm", message: "Proceed?" },
+          }),
+        );
+        await setup.flush();
+        const confirm = setup.renderer.root.findDescendantById(
+          "interaction-1-confirm",
+        ) as SelectRenderable;
+        if (method === "pointer") {
+          await setup.mockMouse.click(confirm.x + 2, confirm.y);
+        } else {
+          setup.mockInput.pressKey(KeyCodes.ARROW_RIGHT);
+          setup.mockInput.pressKey(KeyCodes.RETURN);
+        }
+        await setup.flush();
+        await setup.waitFor(() => outcomes.length > 0);
+        await facade.destroy();
+        setup.renderer.destroy();
+        return outcomes;
+      };
+
+      const runStatus = async (method: "keyboard" | "pointer") => {
+        const setup = await createTestRenderer({
+          width: 80,
+          height: 20,
+          footerHeight: 0,
+          useMouse: true,
+          enableMouseMovement: true,
+        });
+        const outcomes: unknown[] = [];
+        const facade = createOpenTuiRendererFacade(setup.renderer, {
+          statusAction: (invocation) => {
+            outcomes.push(invocation);
+          },
+        });
+        facade.render(
+          reducePresentation(createInitialPresentationState(), {
+            type: "runtime-widgets-changed",
+            snapshots: {
+              statusNotifications: [
+                {
+                  authority: "runtime",
+                  slot: "system",
+                  id: "retry",
+                  message: "Provider failed",
+                  lifecycle: "error",
+                  action: { id: "retry-provider", label: "Retry provider" },
+                },
+              ],
+            },
+          }),
+        );
+        await setup.flush();
+        if (method === "pointer") {
+          const statusText = setup.renderer.root.findDescendantById(
+            "status-notifications-semantics",
+          ) as TextRenderable;
+          await setup.mockMouse.click(statusText.x + 2, statusText.y + 1);
+        } else {
+          setup.mockInput.pressKey(KeyCodes.TAB);
+          setup.mockInput.pressKey(KeyCodes.TAB);
+          setup.mockInput.pressKey(KeyCodes.TAB);
+          setup.mockInput.pressKey(KeyCodes.RETURN);
+        }
+        await setup.flush();
+        await setup.waitFor(() => outcomes.length > 0);
+        await facade.destroy();
+        setup.renderer.destroy();
+        return outcomes;
+      };
+
+      await expect(runConfirm("pointer")).resolves.toEqual(
+        await runConfirm("keyboard"),
+      );
+      await expect(runStatus("pointer")).resolves.toEqual(
+        await runStatus("keyboard"),
+      );
+    });
+
     it("preserves a normalized semantic frame across clock and terminal capability variants", async () => {
       const clock = new ManualClock();
       clock.setTime(1_000);
@@ -801,6 +980,86 @@ describeNativeFfi(
       setup.renderer.destroy();
     });
 
+    it("keeps normalized visual and alternate projections aligned and private", async () => {
+      const setup = await createTestRenderer({ width: 160, height: 96 });
+      const facade = createOpenTuiRendererFacade(setup.renderer, {
+        alternateOutput: true,
+      });
+      let state = reducePresentation(createInitialPresentationState(), {
+        type: "message-started",
+        messageId: "privacy-message",
+        role: "assistant",
+      });
+      state = reducePresentation(state, {
+        type: "message-delta",
+        messageId: "privacy-message",
+        text: "Public result api_key=secret-shaped-value",
+      });
+      state = reducePresentation(state, {
+        type: "tool-prepared",
+        callId: "privacy-tool",
+        name: "search-files",
+        input: "token=tool-secret-value",
+      });
+      state = reducePresentation(state, {
+        type: "tool-started",
+        callId: "privacy-tool",
+        name: "search-files",
+      });
+      state = reducePresentation(state, {
+        type: "worker-changed",
+        worker: {
+          workerId: "private-worker-route",
+          agentType: "reviewer",
+          state: "running",
+          taskLabel: "private prompt api_key=worker-secret-value",
+          timestamp: 1_000,
+        },
+      });
+      state = reducePresentation(state, {
+        type: "runtime-widgets-changed",
+        snapshots: {
+          statusNotifications: [
+            {
+              authority: "runtime",
+              slot: "permission",
+              id: "privacy-approval",
+              message: "Approval required for safe action",
+              lifecycle: "active",
+            },
+          ],
+        },
+      });
+      facade.render(state);
+      await setup.flush();
+
+      const visual = setup.captureCharFrame();
+      const alternate = facade.alternateOutput?.() ?? "";
+      for (const publicText of [
+        "Public result api_key=[REDACTED]",
+        "search-files",
+        "reviewer",
+        "RUNNING",
+      ]) {
+        expect(visual).toContain(publicText);
+        expect(alternate).toContain(publicText);
+      }
+      expect(alternate).toContain("Approval required for safe action");
+      for (const privateText of [
+        "secret-shaped-value",
+        "tool-secret-value",
+        "private-worker-route",
+        "private prompt",
+        "worker-secret-value",
+      ]) {
+        expect(visual).not.toContain(privateText);
+        expect(alternate).not.toContain(privateText);
+      }
+
+      await facade.destroy();
+      setup.renderer.destroy();
+    });
+
     it.each([
       { width: 20, height: 6 },
       { width: 71, height: 18 },
@@ -843,7 +1102,7 @@ describeNativeFfi(
     );
 
     it("materializes typed surfaces, merged statuses, and explicit output drains", async () => {
-      const setup = await createTestRenderer({ width: 64, height: 22 });
+      const setup = await createTestRenderer({ width: 80, height: 24 });
       const facade = createOpenTuiRendererFacade(setup.renderer);
       let state = createInitialPresentationState();
       state = reducePresentation(state, {
@@ -894,9 +1153,11 @@ describeNativeFfi(
       ).toBeUndefined();
       const alternate = facade.alternateOutput?.() ?? "";
       expect(alternate).toContain("Audit");
-      expect(alternate).toContain("model: ready");
+      expect(alternate).toContain("Model · ready");
       expect(alternate).toContain("Context nearly full");
       expect(alternate).toContain("Agent complete");
+      const frame = setup.captureCharFrame();
+      expect(frame).not.toMatch(/Runtime presentation|Status and notifications|INFO:|CONTENT:|revision/iu);
       expect(facade.drainAnnouncements?.()).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -965,7 +1226,7 @@ describeNativeFfi(
       expect(facade.alternateOutput?.()).toContain("Row 1");
       setup.mockInput.pressKey(KeyCodes.END);
       await setup.flush();
-      expect(surface.scrollTop).toBeGreaterThan(0);
+      expect(setup.captureCharFrame()).toContain("Row 30");
       state = reducePresentation(state, {
         type: "presentation-changed",
         property: "working",
@@ -1018,14 +1279,12 @@ describeNativeFfi(
       ) as TextRenderable;
       const frame = setup.captureCharFrame();
       expect(frame).toContain("Accessible hello");
+      expect(frame).toContain("◆ Octocode");
       expect(frame).toContain("Name");
       expect(frame).not.toMatch(/\[(banner|log|region|status)\]/u);
       expect(frame).not.toContain("CONTENT:");
-      expect(
-        semanticTranscript.chunks.some(
-          ({ attributes }) => ((attributes ?? 0) & TextAttributes.BOLD) !== 0,
-        ),
-      ).toBe(true);
+      expect(frame).not.toContain("Scrollable chronological messages");
+      expect(semanticTranscript.plainText).not.toContain("Conversation");
       const input = setup.renderer.root.findDescendantById(
         "interaction-1-input",
       );
@@ -1067,6 +1326,34 @@ describeNativeFfi(
         setup.renderer.root.findDescendantById("interaction-1-input"),
       ).toBeInstanceOf(InputRenderable);
       expect(setup.captureCharFrame()).toContain("Accessible name");
+
+      await facade.destroy();
+      setup.renderer.destroy();
+    });
+
+    it("keeps alternate-output conversation visuals free of semantic debug chrome", async () => {
+      const setup = await createTestRenderer({ width: 80, height: 24 });
+      const facade = createOpenTuiRendererFacade(setup.renderer, {
+        alternateOutput: true,
+      });
+      let state = reducePresentation(createInitialPresentationState(), {
+        type: "message-started",
+        messageId: "assistant-1",
+        role: "assistant",
+      });
+      state = reducePresentation(state, {
+        type: "message-delta",
+        messageId: "assistant-1",
+        text: "A natural response.",
+      });
+      facade.render(state);
+      await setup.flush();
+
+      const frame = setup.captureCharFrame();
+      expect(frame).toContain("◆ Octocode");
+      expect(frame).toContain("A natural response.");
+      expect(frame).not.toContain("CONTENT:");
+      expect(frame).not.toContain("Scrollable chronological messages");
 
       await facade.destroy();
       setup.renderer.destroy();

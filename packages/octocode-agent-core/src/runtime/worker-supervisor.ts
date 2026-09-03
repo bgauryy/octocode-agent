@@ -1,6 +1,11 @@
 import { RuntimeFailure } from "../contracts/errors.js";
-import { packetId, type WorkerId } from "../contracts/identity.js";
+import {
+  packetId,
+  type PacketId,
+  type WorkerId,
+} from "../contracts/identity.js";
 import type {
+  WorkerAuthorityV1,
   WorkerHandle,
   WorkerCommand,
   WorkerController,
@@ -36,6 +41,23 @@ interface WorkerRecord {
   joining?: Promise<void>;
 }
 
+interface PacketAttempt {
+  readonly fingerprint: string;
+  readonly outcome: Promise<unknown>;
+}
+
+const canonicalize = (value: unknown): string => {
+  if (value === undefined) return "undefined";
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value))
+    return `[${value.map((entry) => canonicalize(entry)).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalize(record[key])}`)
+    .join(",")}}`;
+};
+
 export interface WorkerSupervisorOptions {
   readonly port: WorkerPort;
   readonly ledger?: WorkerLedgerPort;
@@ -58,6 +80,7 @@ const isTerminal = (state: WorkerState): boolean =>
 
 export class WorkerSupervisor implements WorkerController {
   readonly #records = new Map<WorkerId, WorkerRecord>();
+  readonly #packetAttempts = new Map<PacketId, PacketAttempt>();
   readonly #queue: WorkerRecord[] = [];
   readonly #port: WorkerPort;
   readonly #ledger?: WorkerLedgerPort;
@@ -102,60 +125,92 @@ export class WorkerSupervisor implements WorkerController {
         "Worker supervisor is shutting down",
       );
     this.#validateSpawn(packet);
-    if (packet.workspace.mode === "worktree" && this.#worktrees === undefined)
-      throw new RuntimeFailure(
-        "unsupported-capability",
-        "Worker worktree isolation is unavailable",
-      );
-    if (this.#records.has(packet.workerId))
-      throw new RuntimeFailure(
-        "conflict",
-        `Duplicate worker: ${packet.workerId}`,
-      );
-    packet = this.#snapshotSpawn(packet);
-    let resolve!: (terminal: WorkerTerminalPacket) => void;
-    let reject!: (error: RuntimeFailure) => void;
-    const completion = new Promise<WorkerTerminalPacket>((accept, fail) => {
-      resolve = accept;
-      reject = fail;
+    return this.#once(packet.packetId, packet, async () => {
+      if (packet.workspace.mode === "worktree" && this.#worktrees === undefined)
+        throw new RuntimeFailure(
+          "unsupported-capability",
+          "Worker worktree isolation is unavailable",
+        );
+      if (this.#records.has(packet.workerId))
+        throw new RuntimeFailure(
+          "conflict",
+          `Duplicate worker: ${packet.workerId}`,
+        );
+      const controller = new AbortController();
+      const requested = this.#snapshotSpawn(packet);
+      if (requested.workspace.mode === "worktree") {
+        const prepared = await this.#worktrees?.prepare(
+          requested,
+          controller.signal,
+        );
+        if (prepared === undefined)
+          throw new RuntimeFailure(
+            "validation",
+            "Worker worktree preparation returned no owned identity",
+          );
+        this.#validatePreparedSpawn(requested, prepared);
+        packet = this.#snapshotSpawn(prepared);
+      } else packet = requested;
+      let resolve!: (terminal: WorkerTerminalPacket) => void;
+      let reject!: (error: RuntimeFailure) => void;
+      const completion = new Promise<WorkerTerminalPacket>((accept, fail) => {
+        resolve = accept;
+        reject = fail;
+      });
+      void completion.catch(() => undefined);
+      const record: WorkerRecord = {
+        spawn: packet,
+        controller,
+        pending: [],
+        completion,
+        resolve,
+        reject,
+        state: "queued",
+        occupiesSlot: false,
+        ledgerTail: Promise.resolve(),
+      };
+      this.#records.set(packet.workerId, record);
+      this.#queue.push(record);
+      try {
+        await this.#append(record, packet);
+        await this.#recordState(record, "queued");
+        await this.#notifyProgress(record, "queued");
+      } catch (error) {
+        this.#records.delete(packet.workerId);
+        this.#removeQueued(record);
+        if (packet.workspace.mode === "worktree") {
+          try {
+            await this.#worktrees?.release(
+              packet,
+              this.#terminal(record, "failed", "Worker admission failed"),
+            );
+          } catch {
+            /* The host retains worktrees when safe release cannot be proven. */
+          }
+        }
+        throw error;
+      }
+      const snapshot = this.#snapshot(record);
+      this.#pump();
+      return snapshot;
     });
-    void completion.catch(() => undefined);
-    const record: WorkerRecord = {
-      spawn: packet,
-      controller: new AbortController(),
-      pending: [],
-      completion,
-      resolve,
-      reject,
-      state: "queued",
-      occupiesSlot: false,
-      ledgerTail: Promise.resolve(),
-    };
-    this.#records.set(packet.workerId, record);
-    this.#queue.push(record);
-    try {
-      await this.#append(record, packet);
-      await this.#recordState(record, "queued");
-      await this.#notifyProgress(record, "queued");
-    } catch (error) {
-      this.#records.delete(packet.workerId);
-      this.#removeQueued(record);
-      throw error;
-    }
-    const snapshot = this.#snapshot(record);
-    this.#pump();
-    return snapshot;
   }
 
   list(): readonly WorkerSnapshot[] {
     return [...this.#records.values()].map((record) => this.#snapshot(record));
   }
-  status(id: WorkerId): WorkerSnapshot | null {
+  status(id: WorkerId, authority: WorkerAuthorityV1): WorkerSnapshot | null {
     const record = this.#records.get(id);
-    return record === undefined ? null : this.#snapshot(record);
+    if (record === undefined) return null;
+    this.#authorize(record, authority);
+    return this.#snapshot(record);
   }
-  async wait(id: WorkerId): Promise<WorkerTerminalPacket> {
+  async wait(
+    id: WorkerId,
+    authority: WorkerAuthorityV1,
+  ): Promise<WorkerTerminalPacket> {
     const record = this.#require(id);
+    this.#authorize(record, authority);
     record.joinRequested = true;
     await this.#join(record);
     return record.completion;
@@ -178,14 +233,14 @@ export class WorkerSupervisor implements WorkerController {
       case "list":
         return this.list();
       case "status":
-        return this.status(command.workerId);
+        return this.status(command.workerId, command.authority);
       case "wait":
-        return this.wait(command.workerId);
+        return this.wait(command.workerId, command.authority);
       case "abort":
-        await this.abort(command.workerId, command.reason);
+        await this.abort(command.workerId, command.authority, command.reason);
         return undefined;
       case "kill":
-        await this.kill(command.workerId, command.reason);
+        await this.kill(command.workerId, command.authority, command.reason);
         return undefined;
       case "send":
         await this.send(command.packet);
@@ -202,8 +257,13 @@ export class WorkerSupervisor implements WorkerController {
     }
   }
 
-  async abort(id: WorkerId, reason = "aborted"): Promise<void> {
+  async abort(
+    id: WorkerId,
+    authority: WorkerAuthorityV1,
+    reason = "aborted",
+  ): Promise<void> {
     const record = this.#require(id);
+    this.#authorize(record, authority);
     if (record.finalizing !== undefined) {
       await record.finalizing;
       return;
@@ -230,8 +290,13 @@ export class WorkerSupervisor implements WorkerController {
     }
   }
 
-  async kill(id: WorkerId, reason = "killed"): Promise<void> {
+  async kill(
+    id: WorkerId,
+    authority: WorkerAuthorityV1,
+    reason = "killed",
+  ): Promise<void> {
     const record = this.#require(id);
+    this.#authorize(record, authority);
     if (record.finalizing !== undefined) {
       await record.finalizing;
       return;
@@ -271,7 +336,9 @@ export class WorkerSupervisor implements WorkerController {
       (record) => !isTerminal(record.state),
     );
     await Promise.all(
-      pending.map((record) => this.abort(record.spawn.workerId, reason)),
+      pending.map((record) =>
+        this.abort(record.spawn.workerId, record.spawn.authority, reason),
+      ),
     );
     const remaining = pending.filter((record) => !isTerminal(record.state));
     if (remaining.length > 0) {
@@ -288,7 +355,9 @@ export class WorkerSupervisor implements WorkerController {
         await Promise.all(
           remaining
             .filter((record) => !isTerminal(record.state))
-            .map((record) => this.kill(record.spawn.workerId, reason)),
+            .map((record) =>
+              this.kill(record.spawn.workerId, record.spawn.authority, reason),
+            ),
         );
     }
     await Promise.all(pending.map((record) => record.completion));
@@ -313,8 +382,6 @@ export class WorkerSupervisor implements WorkerController {
     if (isTerminal(record.state)) return;
     let handle: WorkerHandle;
     try {
-      if (record.spawn.workspace.mode === "worktree")
-        await this.#worktrees?.prepare(record.spawn, record.controller.signal);
       handle = await this.#port.spawn(record.spawn, record.controller.signal);
     } catch {
       await this.#finalize(
@@ -400,12 +467,12 @@ export class WorkerSupervisor implements WorkerController {
   ): Promise<void> {
     if (packet.type !== expected)
       throw new RuntimeFailure("validation", `Expected ${expected} packet`);
+    this.#validateAuthority(packet.authority, packet);
     const record = this.#require(packet.workerId);
-    if (!this.#matches(record, packet))
-      throw new RuntimeFailure(
-        "validation",
-        "Worker packet correlation does not match spawn packet",
-      );
+    this.#authorize(record, packet.authority);
+    const prior = this.#packetAttempts.get(packet.packetId);
+    if (prior !== undefined)
+      return this.#retry<void>(packet.packetId, packet, prior);
     if (record.finalizing !== undefined)
       throw new RuntimeFailure(
         "conflict",
@@ -425,20 +492,25 @@ export class WorkerSupervisor implements WorkerController {
         "conflict",
         `Worker ${record.spawn.workerId} is not accepting input`,
       );
-    const immutable = Object.freeze({ ...packet });
-    await this.#append(record, immutable);
-    if (record.handle === undefined || record.state !== "running") {
-      record.pending.push(immutable);
-      return;
-    }
-    try {
-      await record.handle.send(immutable);
-    } catch {
-      await this.#finalize(
-        record,
-        this.#terminal(record, "failed", "Worker transport failed"),
-      );
-    }
+    await this.#once(packet.packetId, packet, async () => {
+      const immutable = Object.freeze({
+        ...packet,
+        authority: this.#snapshotAuthority(packet.authority),
+      });
+      await this.#append(record, immutable);
+      if (record.handle === undefined || record.state !== "running") {
+        record.pending.push(immutable);
+        return;
+      }
+      try {
+        await record.handle.send(immutable);
+      } catch {
+        await this.#finalize(
+          record,
+          this.#terminal(record, "failed", "Worker transport failed"),
+        );
+      }
+    });
   }
 
   async #recordState(record: WorkerRecord, state: WorkerState): Promise<void> {
@@ -456,6 +528,7 @@ export class WorkerSupervisor implements WorkerController {
       correlationId: record.spawn.correlationId,
       sessionId: record.spawn.sessionId,
       redaction: record.spawn.redaction,
+      authority: record.spawn.authority,
       state,
     };
     try {
@@ -524,6 +597,7 @@ export class WorkerSupervisor implements WorkerController {
       correlationId: record.spawn.correlationId,
       sessionId: record.spawn.sessionId,
       redaction: record.spawn.redaction,
+      authority: record.spawn.authority,
       outcome,
       reason,
     };
@@ -531,12 +605,16 @@ export class WorkerSupervisor implements WorkerController {
 
   #matches(
     record: WorkerRecord,
-    packet: Pick<WorkerPacket, "workerId" | "correlationId" | "sessionId">,
+    packet: Pick<
+      WorkerPacket,
+      "workerId" | "correlationId" | "sessionId" | "authority"
+    >,
   ): boolean {
     return (
       packet.workerId === record.spawn.workerId &&
       packet.correlationId === record.spawn.correlationId &&
-      packet.sessionId === record.spawn.sessionId
+      packet.sessionId === record.spawn.sessionId &&
+      this.#sameAuthority(packet.authority, record.spawn.authority)
     );
   }
 
@@ -613,6 +691,7 @@ export class WorkerSupervisor implements WorkerController {
       packet.promptSnapshotId.length === 0
     )
       throw new RuntimeFailure("validation", "Malformed worker spawn packet");
+    this.#validateAuthority(packet.authority, packet);
     if (
       !Number.isSafeInteger(packet.capabilities.maxTurns) ||
       packet.capabilities.maxTurns < 1
@@ -702,10 +781,137 @@ export class WorkerSupervisor implements WorkerController {
           });
     return Object.freeze({
       ...packet,
+      authority: this.#snapshotAuthority(packet.authority),
       capabilities,
       workspace,
       ...(presentation === undefined ? {} : { presentation }),
     });
+  }
+
+  #validatePreparedSpawn(
+    requested: WorkerSpawnPacket,
+    prepared: WorkerSpawnPacket,
+  ): void {
+    this.#validateSpawn(prepared);
+    const withoutWorkspace = ({
+      workspace: _workspace,
+      ...packet
+    }: WorkerSpawnPacket): Omit<WorkerSpawnPacket, "workspace"> => packet;
+    if (
+      prepared.workspace.mode !== "worktree" ||
+      canonicalize(withoutWorkspace(prepared)) !==
+        canonicalize(withoutWorkspace(requested))
+    )
+      throw new RuntimeFailure(
+        "conflict",
+        "Worker worktree preparation changed immutable spawn authority",
+      );
+  }
+
+  #validateAuthority(
+    authority: WorkerAuthorityV1,
+    envelope: Pick<
+      WorkerSpawnPacket,
+      "workerId" | "correlationId" | "sessionId"
+    >,
+  ): void {
+    const value = authority as unknown;
+    if (typeof value !== "object" || value === null)
+      throw new RuntimeFailure("validation", "Worker authority is missing");
+    const record = value as Record<string, unknown>;
+    const allowed = new Set([
+      "schemaVersion",
+      "workerId",
+      "correlationId",
+      "rootAgentId",
+      "parentSessionId",
+      "workspaceId",
+      "workspaceGeneration",
+      "trustRevision",
+      "permissionMode",
+      "capabilityDigest",
+      "planId",
+      "planRevision",
+      "planStepId",
+      "effectAdmissionId",
+      "ownershipGeneration",
+    ]);
+    const validString = (candidate: unknown): candidate is string =>
+      typeof candidate === "string" && candidate.trim().length > 0;
+    const validGeneration = (candidate: unknown): candidate is number =>
+      Number.isSafeInteger(candidate) && Number(candidate) >= 0;
+    if (
+      !Object.keys(record).every((key) => allowed.has(key)) ||
+      record.schemaVersion !== 1 ||
+      record.workerId !== envelope.workerId ||
+      record.correlationId !== envelope.correlationId ||
+      record.parentSessionId !== envelope.sessionId ||
+      !validString(record.rootAgentId) ||
+      !validString(record.workspaceId) ||
+      !validGeneration(record.workspaceGeneration) ||
+      !validString(record.trustRevision) ||
+      (record.permissionMode !== "strict" &&
+        record.permissionMode !== "default" &&
+        record.permissionMode !== "allow-all") ||
+      !validString(record.capabilityDigest) ||
+      !validString(record.effectAdmissionId) ||
+      !validGeneration(record.ownershipGeneration) ||
+      (record.planId !== undefined && !validString(record.planId)) ||
+      (record.planRevision !== undefined &&
+        !validGeneration(record.planRevision)) ||
+      (record.planStepId !== undefined && !validString(record.planStepId)) ||
+      (record.planId === undefined &&
+        (record.planRevision !== undefined || record.planStepId !== undefined))
+    )
+      throw new RuntimeFailure("validation", "Malformed worker authority");
+  }
+
+  #snapshotAuthority(authority: WorkerAuthorityV1): WorkerAuthorityV1 {
+    return Object.freeze({ ...authority });
+  }
+
+  #sameAuthority(
+    left: WorkerAuthorityV1 | undefined,
+    right: WorkerAuthorityV1,
+  ): boolean {
+    return left !== undefined && canonicalize(left) === canonicalize(right);
+  }
+
+  #authorize(record: WorkerRecord, authority: WorkerAuthorityV1): void {
+    this.#validateAuthority(authority, record.spawn);
+    if (!this.#sameAuthority(authority, record.spawn.authority))
+      throw new RuntimeFailure(
+        "conflict",
+        "Worker authority does not match the owning spawn",
+      );
+  }
+
+  #retry<T>(
+    id: PacketId,
+    packet: WorkerSpawnPacket | WorkerPacket,
+    prior: PacketAttempt,
+  ): Promise<T> {
+    if (prior.fingerprint !== canonicalize(packet))
+      throw new RuntimeFailure(
+        "conflict",
+        `Worker packet ${id} was retried with changed content`,
+      );
+    return prior.outcome as Promise<T>;
+  }
+
+  #once<T>(
+    id: PacketId,
+    packet: WorkerSpawnPacket | WorkerPacket,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const prior = this.#packetAttempts.get(id);
+    if (prior !== undefined) return this.#retry<T>(id, packet, prior);
+    const outcome = operation();
+    this.#packetAttempts.set(id, {
+      fingerprint: canonicalize(packet),
+      outcome,
+    });
+    return outcome;
   }
 
   async #append(record: WorkerRecord, entry: WorkerLedgerEntry): Promise<void> {

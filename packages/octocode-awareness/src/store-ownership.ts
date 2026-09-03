@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 export const STORE_OWNERSHIP_V1 = Object.freeze({
   version: 1 as const,
-  database: 'agent/agent.sqlite3',
+  database: '<workspace>/.octocode/awareness.sqlite3',
   tables: {
     plans: { owner: 'coordination-plan-domain', adapters: ['coordination'] },
     awareness_plans: { owner: 'advanced-plan-domain', adapters: ['awareness-ledger'] },
@@ -29,7 +29,7 @@ const hasTable = (db: DatabaseSync, table: string): boolean => Boolean(db.prepar
 ).get(table));
 const countWhenPresent = (db: DatabaseSync, table: string, sql: string): number => hasTable(db, table) ? count(db, sql) : 0;
 
-/** Read-only ownership report for the two memory table families in the unified store. */
+/** Read-only ownership report for the two Awareness memory table families. */
 export function inspectStoreConvergence(db: DatabaseSync): StoreConvergenceReportV1 {
   const coordinationPlans = countWhenPresent(db, 'plans', 'SELECT COUNT(*) AS count FROM plans');
   const advancedPlans = countWhenPresent(db, 'awareness_plans', 'SELECT COUNT(*) AS count FROM awareness_plans');

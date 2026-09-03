@@ -122,6 +122,7 @@ export class WorkerOperationsWidget extends OpenTuiWidget<WorkerOperationsWidget
   private viewportRows: number;
   private selectedIndex = 0;
   private scrollOffset = 0;
+  private readonly announcements: string[] = [];
 
   constructor(id: string, snapshot: NativeWorkerInboxSnapshot, options: WorkerOperationsWidgetOptions = {}) {
     super({
@@ -143,6 +144,7 @@ export class WorkerOperationsWidget extends OpenTuiWidget<WorkerOperationsWidget
     const selected = this.snapshotValue.selectedWorkerId;
     if (selected !== undefined) this.selectedIndex = this.snapshotValue.workers.findIndex(({ workerId }) => workerId === selected);
     this.revealSelection();
+    this.announcements.push(this.summaryAnnouncement());
   }
 
   get selectedWorkerId(): string | undefined {
@@ -160,7 +162,14 @@ export class WorkerOperationsWidget extends OpenTuiWidget<WorkerOperationsWidget
     this.snapshotValue = next;
     this.selectedIndex = selected === undefined ? 0 : Math.max(0, next.workers.findIndex(({ workerId }) => workerId === selected));
     this.revealSelection();
+    this.announcements.push(this.summaryAnnouncement());
     this.invalidate();
+  }
+
+  takeAnnouncements(): readonly string[] {
+    const result = Object.freeze([...this.announcements]);
+    this.announcements.length = 0;
+    return result;
   }
 
   resize(widthColumns: number, viewportRows: number): void {
@@ -180,6 +189,11 @@ export class WorkerOperationsWidget extends OpenTuiWidget<WorkerOperationsWidget
     return lines.join('\n');
   }
 
+  private summaryAnnouncement(): string {
+    const count = this.snapshotValue.workers.length;
+    return `Worker inbox — generation ${this.snapshotValue.generation} — ${count} ${count === 1 ? 'worker' : 'workers'}`;
+  }
+
   protected renderRegions(): readonly WidgetRenderRegion[] {
     const end = Math.min(this.snapshotValue.workers.length, this.scrollOffset + this.viewportRows);
     const visible = this.snapshotValue.workers.slice(this.scrollOffset, end);
@@ -187,8 +201,8 @@ export class WorkerOperationsWidget extends OpenTuiWidget<WorkerOperationsWidget
     return [
       {
         id: 'summary',
-        role: 'status',
-        text: fitTerminalText(`Worker inbox · generation ${this.snapshotValue.generation} · ${this.snapshotValue.workers.length} workers`, this.widthColumns),
+        role: 'content',
+        text: fitTerminalText(`Workers · ${this.snapshotValue.workers.length}`, this.widthColumns),
       },
       ...visible.map((entry, visibleIndex) => {
         const index = this.scrollOffset + visibleIndex;

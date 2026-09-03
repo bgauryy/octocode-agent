@@ -28,7 +28,7 @@ describe("ToolProgressWidget", () => {
     const rendered = widget.render();
     const text = rendered.regions.map((region) => region.text).join("\n");
 
-    expect(text).toContain("[RUNNING]");
+    expect(text).toContain("RUNNING");
     expect(text).toContain("localSearch");
     expect(text).not.toContain("call-42");
     expect(text).toContain("in progress");
@@ -45,7 +45,8 @@ describe("ToolProgressWidget", () => {
         .render()
         .regions.map((region) => region.text)
         .join("\n"),
-    ).toContain("call call-42");
+    ).not.toContain("call call-42");
+    expect(widget.toPlainText({ expanded: true })).toContain("(call-42)");
   });
 
   it.each([

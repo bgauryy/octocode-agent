@@ -332,23 +332,10 @@ export class ToolProgressWidget extends OpenTuiWidget {
       this.snapshot.outcome ?? fallbackOutcome(this.snapshot.status);
     return [
       {
-        id: "status",
+        id: "summary",
         role: "status",
         tone: toolStatusTone(this.snapshot.status),
-        text: `${presentation.glyph} [${presentation.word}]`,
-      },
-      {
-        id: "identity",
-        role: "content",
-        text: this.expanded
-          ? `${this.displayName()} · call ${this.snapshot.callId}`
-          : this.displayName(),
-      },
-      {
-        id: "progress",
-        role: "status",
-        tone: "count",
-        text: this.progressText(),
+        text: `${presentation.glyph} ${this.displayName()} · ${presentation.word} · ${this.progressText()}`,
       },
       ...(this.snapshot.inputSummary === undefined
         ? []

@@ -10,8 +10,127 @@ const PROTOCOL_VERSION: i64 = 1;
 pub const MAX_PROTOCOL_FRAME_BYTES: usize = 1024 * 1024;
 const MIN_SESSION_PAGE_RESULT_BYTES: usize = 128;
 const MAX_SESSION_PAGE_RESULT_BYTES: usize = MAX_PROTOCOL_FRAME_BYTES - 1024;
-const DATABASE_SCHEMA_VERSION: i64 = 6;
+const DATABASE_SCHEMA_VERSION: i64 = 7;
+const AGENT_DATABASE_APPLICATION_ID: i64 = 0x4f434147;
+const AGENT_DATABASE_RELATIONS: [&str; 15] = [
+    "sessions",
+    "session_events",
+    "effects",
+    "communications",
+    "settings",
+    "lifecycle_events",
+    "automations",
+    "automation_runs",
+    "work_graphs",
+    "work_items",
+    "work_dependencies",
+    "worker_mailboxes",
+    "worker_mailbox_messages",
+    "worker_worktrees",
+    "worker_handoffs",
+];
 const TERMINAL_EFFECT_STATES: [&str; 4] = ["committed", "failed", "cancelled", "uncertain"];
+const DEFAULT_WORKER_MAILBOX_MAX_MESSAGES: i64 = 256;
+const DEFAULT_WORKER_MAILBOX_MAX_BYTES: i64 = 4 * 1024 * 1024;
+const WORKER_MAILBOX_CONTROL_RESERVE_MESSAGES: i64 = 16;
+const WORKER_MAILBOX_CONTROL_RESERVE_BYTES: i64 = 256 * 1024;
+const MAX_WORKER_IDENTIFIER_BYTES: usize = 512;
+const MAX_WORKER_AUTHORITY_BYTES: usize = 16 * 1024;
+const WORKER_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS worker_mailboxes (
+  workspace_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  worker_id TEXT NOT NULL,
+  mailbox_generation INTEGER NOT NULL CHECK (mailbox_generation >= 0),
+  authority_json TEXT NOT NULL,
+  authority_digest TEXT NOT NULL,
+  next_sequence INTEGER NOT NULL DEFAULT 1 CHECK (next_sequence > 0),
+  sealed INTEGER NOT NULL DEFAULT 0 CHECK (sealed IN (0,1)),
+  max_messages INTEGER NOT NULL CHECK (max_messages BETWEEN 1 AND 256),
+  max_bytes INTEGER NOT NULL CHECK (max_bytes BETWEEN 1 AND 4194304),
+  created_at INTEGER NOT NULL CHECK (created_at >= 0),
+  updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+  PRIMARY KEY (workspace_id, session_id, worker_id, mailbox_generation)
+);
+CREATE TABLE IF NOT EXISTS worker_mailbox_messages (
+  workspace_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  worker_id TEXT NOT NULL,
+  mailbox_generation INTEGER NOT NULL,
+  message_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL CHECK (sequence > 0),
+  sender TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  command_kind TEXT NOT NULL,
+  lane TEXT NOT NULL CHECK (lane IN ('data','control')),
+  payload_json TEXT,
+  payload_digest TEXT NOT NULL,
+  payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
+  effect_admission_id TEXT NOT NULL,
+  authority_digest TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending','leased','written','acknowledged','uncertain','dead-lettered')),
+  available_at INTEGER NOT NULL CHECK (available_at >= 0),
+  lease_owner TEXT,
+  last_lease_owner TEXT,
+  lease_generation INTEGER NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+  lease_expires_at INTEGER,
+  outcome_digest TEXT,
+  tombstone_expires_at INTEGER,
+  created_at INTEGER NOT NULL CHECK (created_at >= 0),
+  updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+  PRIMARY KEY (workspace_id, session_id, worker_id, mailbox_generation, message_id),
+  UNIQUE (workspace_id, session_id, worker_id, mailbox_generation, sequence),
+  FOREIGN KEY (workspace_id, session_id, worker_id, mailbox_generation)
+    REFERENCES worker_mailboxes(workspace_id, session_id, worker_id, mailbox_generation)
+    ON DELETE CASCADE,
+  CHECK ((state IN ('leased','written')) = (lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS worker_mailbox_claim_idx ON worker_mailbox_messages(
+  workspace_id, session_id, worker_id, mailbox_generation, state, available_at, sequence
+);
+CREATE TABLE IF NOT EXISTS worker_worktrees (
+  workspace_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  worker_id TEXT NOT NULL,
+  worktree_generation INTEGER NOT NULL CHECK (worktree_generation >= 0),
+  authority_json TEXT NOT NULL,
+  authority_digest TEXT NOT NULL,
+  repository_id TEXT NOT NULL,
+  common_dir_id TEXT NOT NULL,
+  generated_path TEXT NOT NULL,
+  base_oid TEXT NOT NULL,
+  current_head_oid TEXT NOT NULL,
+  private_ref TEXT NOT NULL,
+  git_worktree_id TEXT NOT NULL,
+  lock_token_digest TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('requested','preparing','active','ready-to-integrate','integrating','integrated','conflict-retained','retained','discarding','discarded','recovery-needed')),
+  last_clean_status_digest TEXT,
+  created_at INTEGER NOT NULL CHECK (created_at >= 0),
+  updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+  PRIMARY KEY (workspace_id, session_id, worker_id, worktree_generation),
+  UNIQUE (generated_path),
+  UNIQUE (git_worktree_id)
+);
+CREATE TABLE IF NOT EXISTS worker_handoffs (
+  handoff_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  worker_id TEXT NOT NULL,
+  mailbox_generation INTEGER NOT NULL CHECK (mailbox_generation >= 0),
+  authority_json TEXT NOT NULL,
+  authority_digest TEXT NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+  state TEXT NOT NULL CHECK (state IN ('open','sealing','draining','terminalizing','handed-off','uncertain')),
+  outcome_json TEXT,
+  outcome_digest TEXT,
+  receipt_json TEXT,
+  receipt_digest TEXT,
+  acknowledged_at INTEGER,
+  created_at INTEGER NOT NULL CHECK (created_at >= 0),
+  updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+  UNIQUE (workspace_id, session_id, worker_id, mailbox_generation)
+);
+"#;
 
 #[derive(Debug, Deserialize)]
 pub struct Request {
@@ -69,6 +188,13 @@ impl ActorError {
         }
     }
 
+    fn backpressured(message: impl Into<String>) -> Self {
+        Self {
+            code: "BACKPRESSURED",
+            message: message.into(),
+        }
+    }
+
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             code: "NOT_FOUND",
@@ -92,6 +218,15 @@ impl ActorError {
 }
 
 type ActorResult<T> = Result<T, ActorError>;
+#[derive(Clone)]
+struct WorkerAuthority {
+    encoded: String,
+    digest: String,
+    workspace_id: String,
+    session_id: String,
+    worker_id: String,
+    effect_admission_id: String,
+}
 type AutomationDefinitionRecord = (
     i64,
     String,
@@ -105,6 +240,57 @@ type AutomationDefinitionRecord = (
     i64,
     i64,
 );
+type WorkerMailboxExistingMessage = (
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    i64,
+    i64,
+    String,
+);
+type WorkerMailboxClaimRow = (
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+);
+type WorkerMailboxSettlementRow = (String, i64, Option<String>, Option<i64>, String);
+type WorkerMailboxLeaseReplayRow = (String, Option<String>, Option<String>, i64, Option<i64>);
+type WorkerWorktreeRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+);
+type WorkerHandoffSettlementRow = (
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+type WorkerHandoffAckRow = (String, String, String, Option<String>, Option<i64>);
 
 fn required_str<'a>(params: &'a Value, key: &str) -> ActorResult<&'a str> {
     params
@@ -127,6 +313,141 @@ fn required_non_negative_i64(params: &Value, key: &str) -> ActorResult<i64> {
         return Err(ActorError::invalid(format!("{key} must be non-negative")));
     }
     Ok(value)
+}
+
+fn bounded_worker_str<'a>(params: &'a Value, key: &str) -> ActorResult<&'a str> {
+    let value = required_str(params, key)?;
+    if value.len() > MAX_WORKER_IDENTIFIER_BYTES {
+        return Err(ActorError::invalid(format!(
+            "{key} must be at most {MAX_WORKER_IDENTIFIER_BYTES} bytes"
+        )));
+    }
+    Ok(value)
+}
+
+fn worker_authority(input: &Value) -> ActorResult<WorkerAuthority> {
+    let authority = input
+        .get("authority")
+        .ok_or_else(|| ActorError::invalid("authority is required"))?;
+    reject_unknown_keys(
+        authority,
+        &[
+            "schemaVersion",
+            "workerId",
+            "correlationId",
+            "rootAgentId",
+            "parentSessionId",
+            "workspaceId",
+            "workspaceGeneration",
+            "trustRevision",
+            "permissionMode",
+            "capabilityDigest",
+            "planId",
+            "planRevision",
+            "planStepId",
+            "effectAdmissionId",
+            "ownershipGeneration",
+        ],
+    )?;
+    if required_i64(authority, "schemaVersion")? != 1 {
+        return Err(ActorError::invalid("authority.schemaVersion must be 1"));
+    }
+    for key in [
+        "workerId",
+        "correlationId",
+        "rootAgentId",
+        "parentSessionId",
+        "workspaceId",
+        "trustRevision",
+        "permissionMode",
+        "capabilityDigest",
+        "effectAdmissionId",
+    ] {
+        bounded_worker_str(authority, key)?;
+    }
+    required_non_negative_i64(authority, "workspaceGeneration")?;
+    required_non_negative_i64(authority, "ownershipGeneration")?;
+    if let Some(plan_id) = authority.get("planId") {
+        if plan_id
+            .as_str()
+            .filter(|v| !v.is_empty() && v.len() <= MAX_WORKER_IDENTIFIER_BYTES)
+            .is_none()
+        {
+            return Err(ActorError::invalid("authority.planId is invalid"));
+        }
+    }
+    if authority.get("planRevision").is_some() {
+        required_non_negative_i64(authority, "planRevision")?;
+        if authority.get("planId").is_none() {
+            return Err(ActorError::invalid(
+                "authority.planRevision requires planId",
+            ));
+        }
+    }
+    if let Some(step) = authority.get("planStepId") {
+        if step
+            .as_str()
+            .filter(|v| !v.is_empty() && v.len() <= MAX_WORKER_IDENTIFIER_BYTES)
+            .is_none()
+            || authority.get("planId").is_none()
+        {
+            return Err(ActorError::invalid(
+                "authority.planStepId requires a valid planId",
+            ));
+        }
+    }
+    let encoded = serde_json::to_string(authority)
+        .map_err(|_| ActorError::invalid("authority is not serializable"))?;
+    if encoded.len() > MAX_WORKER_AUTHORITY_BYTES {
+        return Err(ActorError::invalid("authority is too large"));
+    }
+    let digest = bounded_worker_str(input, "authorityDigest")?.to_owned();
+    Ok(WorkerAuthority {
+        encoded,
+        digest,
+        workspace_id: bounded_worker_str(authority, "workspaceId")?.to_owned(),
+        session_id: bounded_worker_str(authority, "parentSessionId")?.to_owned(),
+        worker_id: bounded_worker_str(authority, "workerId")?.to_owned(),
+        effect_admission_id: bounded_worker_str(authority, "effectAdmissionId")?.to_owned(),
+    })
+}
+
+fn legal_worker_worktree_transition(from: &str, to: &str) -> bool {
+    matches!(
+        (from, to),
+        ("requested", "preparing")
+            | ("preparing", "active")
+            | ("preparing", "retained")
+            | ("active", "ready-to-integrate")
+            | ("active", "retained")
+            | ("active", "discarding")
+            | ("ready-to-integrate", "integrating")
+            | ("ready-to-integrate", "retained")
+            | ("ready-to-integrate", "discarding")
+            | ("integrating", "integrated")
+            | ("integrating", "conflict-retained")
+            | ("conflict-retained", "integrating")
+            | ("conflict-retained", "retained")
+            | ("conflict-retained", "discarding")
+            | ("retained", "active")
+            | ("retained", "discarding")
+            | ("discarding", "discarded")
+            | (_, "recovery-needed")
+            | ("recovery-needed", "retained")
+            | ("recovery-needed", "active")
+            | ("recovery-needed", "discarded")
+    )
+}
+
+fn legal_worker_handoff_transition(from: &str, to: &str) -> bool {
+    matches!(
+        (from, to),
+        ("sealing", "draining")
+            | ("draining", "terminalizing")
+            | ("draining", "uncertain")
+            | ("terminalizing", "uncertain")
+            | ("uncertain", "terminalizing")
+    )
 }
 
 fn validate_schedule(schedule: &Value) -> ActorResult<()> {
@@ -258,8 +579,46 @@ fn database_version(connection: &Connection) -> ActorResult<i64> {
     db(connection.pragma_query_value(None, "user_version", |row| row.get(0)))
 }
 
+fn database_application_id(connection: &Connection) -> ActorResult<i64> {
+    db(connection.pragma_query_value(None, "application_id", |row| row.get(0)))
+}
+
+fn validate_database_identity(connection: &Connection) -> ActorResult<i64> {
+    let application_id = database_application_id(connection)?;
+    if application_id != 0 && application_id != AGENT_DATABASE_APPLICATION_ID {
+        return Err(ActorError::invalid(
+            "Database is not an Octocode Agent store",
+        ));
+    }
+    if application_id == 0 {
+        let mut statement = db(connection.prepare(
+            "SELECT name FROM sqlite_schema
+             WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'",
+        ))?;
+        let names = db(statement.query_map([], |row| row.get::<_, String>(0)))?;
+        for name in names {
+            let name = db(name)?;
+            if !AGENT_DATABASE_RELATIONS.contains(&name.as_str()) {
+                return Err(ActorError::invalid(
+                    "Database is not an Octocode Agent store",
+                ));
+            }
+        }
+    }
+    Ok(application_id)
+}
+
+fn claim_database_identity(connection: &mut Connection) -> ActorResult<()> {
+    let transaction = db(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
+    validate_database_identity(&transaction)?;
+    db(transaction.pragma_update(None, "application_id", AGENT_DATABASE_APPLICATION_ID))?;
+    db(transaction.commit())
+}
+
 fn migrate_one(connection: &mut Connection, expected: i64) -> ActorResult<i64> {
     let transaction = db(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
+    validate_database_identity(&transaction)?;
+    db(transaction.pragma_update(None, "application_id", AGENT_DATABASE_APPLICATION_ID))?;
     let current: i64 = db(transaction.pragma_query_value(None, "user_version", |row| row.get(0)))?;
     if current != expected {
         db(transaction.commit())?;
@@ -395,6 +754,10 @@ fn migrate_one(connection: &mut Connection, expected: i64) -> ActorResult<i64> {
             ))?;
             6
         }
+        6 => {
+            db(transaction.execute_batch(WORKER_SCHEMA_SQL))?;
+            7
+        }
         _ => return Err(ActorError::internal()),
     };
     db(transaction.pragma_update(None, "user_version", next))?;
@@ -410,6 +773,7 @@ impl Actor {
     pub fn open(path: impl AsRef<Path>) -> ActorResult<Self> {
         let path = path.as_ref();
         let mut connection = db(Connection::open(path))?;
+        validate_database_identity(&connection)?;
         harden_database_permissions(path)?;
         db(connection.busy_timeout(Duration::from_secs(5)))?;
         db_with_startup_retry(|| connection.pragma_update(None, "journal_mode", "WAL"))?;
@@ -422,9 +786,10 @@ impl Actor {
         }
         if version == 0 {
             db_with_startup_retry(|| {
-                connection.execute_batch(
-                "BEGIN IMMEDIATE;
-                 CREATE TABLE IF NOT EXISTS sessions (
+                let transaction =
+                    connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                transaction.execute_batch(
+                "CREATE TABLE IF NOT EXISTS sessions (
                    session_id TEXT PRIMARY KEY,
                    revision INTEGER NOT NULL CHECK (revision >= 0),
                    cwd TEXT,
@@ -530,14 +895,18 @@ impl Actor {
                  );
                  CREATE INDEX IF NOT EXISTS work_claim_idx
                    ON work_items(graph_id, state, lease_expires_at, ordinal);
-                   PRAGMA user_version = 6;
-                  COMMIT;",
-            )
+                  PRAGMA user_version = 6;",
+                )?;
+                transaction.pragma_update(None, "application_id", AGENT_DATABASE_APPLICATION_ID)?;
+                transaction.commit()
             })?;
-            version = DATABASE_SCHEMA_VERSION;
+            version = database_version(&connection)?;
         }
         while version < DATABASE_SCHEMA_VERSION {
             version = migrate_one(&mut connection, version)?;
+        }
+        if database_application_id(&connection)? == 0 {
+            claim_database_identity(&mut connection)?;
         }
         Ok(Self { connection })
     }
@@ -580,6 +949,23 @@ impl Actor {
             "communication.ack" => self.communication_ack(params),
             "communication.release" => self.communication_release(params),
             "communication.abandonPrefix" => self.communication_abandon_prefix(params),
+            "worker.mailbox.open" => self.worker_mailbox_open(params),
+            "worker.mailbox.enqueue" => self.worker_mailbox_enqueue(params),
+            "worker.mailbox.claim" => self.worker_mailbox_claim(params),
+            "worker.mailbox.extend" => self.worker_mailbox_extend(params),
+            "worker.mailbox.release" => self.worker_mailbox_release(params),
+            "worker.mailbox.markWritten" => self.worker_mailbox_mark_written(params),
+            "worker.mailbox.ack" => self.worker_mailbox_ack(params),
+            "worker.mailbox.terminalize" => self.worker_mailbox_terminalize(params),
+            "worker.mailbox.list" => self.worker_mailbox_list(params),
+            "worker.worktree.reserve" => self.worker_worktree_reserve(params),
+            "worker.worktree.get" => self.worker_worktree_get(params),
+            "worker.worktree.transition" => self.worker_worktree_transition(params),
+            "worker.handoff.open" => self.worker_handoff_open(params),
+            "worker.handoff.seal" => self.worker_handoff_seal(params),
+            "worker.handoff.transition" => self.worker_handoff_transition(params),
+            "worker.handoff.settle" => self.worker_handoff_settle(params),
+            "worker.handoff.ack" => self.worker_handoff_ack(params),
             "settings.get" => self.settings_get(params),
             "settings.compareAndSet" => self.settings_compare_and_set(params),
             "lifecycle.append" => self.lifecycle_append(params),
@@ -991,6 +1377,1350 @@ impl Actor {
         ))?;
         db(transaction.commit())?;
         Ok(Value::String(target.into()))
+    }
+
+    fn worker_mailbox_open(&mut self, input: &Value) -> ActorResult<Value> {
+        reject_unknown_keys(
+            input,
+            &[
+                "authority",
+                "authorityDigest",
+                "mailboxGeneration",
+                "createdAt",
+                "maxMessages",
+                "maxBytes",
+            ],
+        )?;
+        let authority = worker_authority(input)?;
+        let generation = required_non_negative_i64(input, "mailboxGeneration")?;
+        let created_at = required_non_negative_i64(input, "createdAt")?;
+        let max_messages = input
+            .get("maxMessages")
+            .map(|_| required_i64(input, "maxMessages"))
+            .transpose()?
+            .unwrap_or(DEFAULT_WORKER_MAILBOX_MAX_MESSAGES);
+        let max_bytes = input
+            .get("maxBytes")
+            .map(|_| required_i64(input, "maxBytes"))
+            .transpose()?
+            .unwrap_or(DEFAULT_WORKER_MAILBOX_MAX_BYTES);
+        if !(1..=DEFAULT_WORKER_MAILBOX_MAX_MESSAGES).contains(&max_messages)
+            || !(1..=DEFAULT_WORKER_MAILBOX_MAX_BYTES).contains(&max_bytes)
+        {
+            return Err(ActorError::invalid("mailbox bounds exceed durable limits"));
+        }
+        let transaction = db(self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate))?;
+        let existing: Option<(String, String, i64, i64, i64, i64)> = db(transaction
+            .query_row(
+                "SELECT authority_json,authority_digest,next_sequence,sealed,max_messages,max_bytes
+                 FROM worker_mailboxes WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND mailbox_generation=?4",
+                params![authority.workspace_id,authority.session_id,authority.worker_id,generation],
+                |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
+            )
+            .optional())?;
+        if let Some((encoded, digest, next_sequence, sealed, stored_messages, stored_bytes)) =
+            existing
+        {
+            if encoded != authority.encoded
+                || digest != authority.digest
+                || stored_messages != max_messages
+                || stored_bytes != max_bytes
+            {
+                return Err(ActorError::conflict(
+                    "Mailbox identity has different authority or bounds",
+                ));
+            }
+            db(transaction.commit())?;
+            return Ok(json!({
+                "schemaVersion":1,"mailboxGeneration":generation,"nextSequence":next_sequence,
+                "sealed":sealed != 0,"idempotent":true
+            }));
+        }
+        db(transaction.execute(
+            "INSERT INTO worker_mailboxes(workspace_id,session_id,worker_id,mailbox_generation,
+             authority_json,authority_digest,next_sequence,sealed,max_messages,max_bytes,created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,1,0,?7,?8,?9,?9)",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,generation,
+                authority.encoded,authority.digest,max_messages,max_bytes,created_at],
+        ))?;
+        db(transaction.commit())?;
+        Ok(json!({
+            "schemaVersion":1,"mailboxGeneration":generation,"nextSequence":1,
+            "sealed":false,"idempotent":false
+        }))
+    }
+
+    fn worker_mailbox_enqueue(&mut self, input: &Value) -> ActorResult<Value> {
+        reject_unknown_keys(
+            input,
+            &[
+                "authority",
+                "authorityDigest",
+                "mailboxGeneration",
+                "messageId",
+                "sender",
+                "recipient",
+                "commandKind",
+                "lane",
+                "payload",
+                "payloadDigest",
+                "availableAt",
+                "createdAt",
+            ],
+        )?;
+        let authority = worker_authority(input)?;
+        let generation = required_non_negative_i64(input, "mailboxGeneration")?;
+        let message_id = bounded_worker_str(input, "messageId")?;
+        let sender = bounded_worker_str(input, "sender")?;
+        let recipient = bounded_worker_str(input, "recipient")?;
+        let command_kind = bounded_worker_str(input, "commandKind")?;
+        let lane = required_str(input, "lane")?;
+        if lane != "data" && lane != "control" {
+            return Err(ActorError::invalid("lane must be data or control"));
+        }
+        if lane == "control" && !matches!(command_kind, "cancel" | "seal") {
+            return Err(ActorError::invalid(
+                "control lane is reserved for cancel and seal",
+            ));
+        }
+        let payload = input
+            .get("payload")
+            .ok_or_else(|| ActorError::invalid("payload is required"))?;
+        let payload_json = serde_json::to_string(payload)
+            .map_err(|_| ActorError::invalid("payload is not serializable"))?;
+        let payload_bytes = i64::try_from(payload_json.len())
+            .map_err(|_| ActorError::invalid("payload is too large"))?;
+        if payload_bytes > DEFAULT_WORKER_MAILBOX_MAX_BYTES {
+            return Err(ActorError::invalid("payload exceeds mailbox byte limit"));
+        }
+        let payload_digest = bounded_worker_str(input, "payloadDigest")?;
+        let available_at = required_non_negative_i64(input, "availableAt")?;
+        let created_at = required_non_negative_i64(input, "createdAt")?;
+        let transaction = db(self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate))?;
+        let mailbox: Option<(String,String,i64,i64,i64,i64)> = db(transaction.query_row(
+            "SELECT authority_json,authority_digest,next_sequence,sealed,max_messages,max_bytes
+             FROM worker_mailboxes WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND mailbox_generation=?4",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,generation],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
+        ).optional())?;
+        let Some((stored_authority, stored_digest, next_sequence, sealed, max_messages, max_bytes)) =
+            mailbox
+        else {
+            return Err(ActorError::not_found("Worker mailbox does not exist"));
+        };
+        if stored_authority != authority.encoded || stored_digest != authority.digest {
+            return Err(ActorError::conflict("Worker mailbox authority is stale"));
+        }
+        let existing: Option<WorkerMailboxExistingMessage> = db(transaction.query_row(
+            "SELECT sequence,state,sender,recipient,command_kind,lane,payload_digest,payload_json,
+             available_at,created_at,authority_digest
+             FROM worker_mailbox_messages WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3
+               AND mailbox_generation=?4 AND message_id=?5",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,generation,message_id],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,
+                row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?,row.get(10)?)),
+        ).optional())?;
+        if let Some((
+            sequence,
+            state,
+            old_sender,
+            old_recipient,
+            old_kind,
+            old_lane,
+            old_digest,
+            old_payload,
+            old_available,
+            old_created,
+            old_authority,
+        )) = existing
+        {
+            if old_sender != sender
+                || old_recipient != recipient
+                || old_kind != command_kind
+                || old_lane != lane
+                || old_digest != payload_digest
+                || old_payload
+                    .as_deref()
+                    .is_some_and(|value| value != payload_json)
+                || old_available != available_at
+                || old_created != created_at
+                || old_authority != authority.digest
+            {
+                return Err(ActorError::conflict(
+                    "Message identity has different content",
+                ));
+            }
+            db(transaction.commit())?;
+            return Ok(json!({
+                "schemaVersion":1,"messageId":message_id,"sequence":sequence,"state":state,"idempotent":true
+            }));
+        }
+        if sealed != 0 {
+            return Err(ActorError::conflict("Worker mailbox is sealed"));
+        }
+        let (queued_messages, queued_bytes, data_messages, data_bytes): (i64, i64, i64, i64) =
+            db(transaction.query_row(
+                "SELECT COUNT(*),COALESCE(SUM(payload_bytes),0),
+              COALESCE(SUM(CASE WHEN lane='data' THEN 1 ELSE 0 END),0),
+              COALESCE(SUM(CASE WHEN lane='data' THEN payload_bytes ELSE 0 END),0)
+             FROM worker_mailbox_messages
+             WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND mailbox_generation=?4
+               AND state IN ('pending','leased','written')",
+                params![
+                    authority.workspace_id,
+                    authority.session_id,
+                    authority.worker_id,
+                    generation
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ))?;
+        let full = if lane == "control" {
+            queued_messages >= max_messages + WORKER_MAILBOX_CONTROL_RESERVE_MESSAGES
+                || queued_bytes
+                    .checked_add(payload_bytes)
+                    .is_none_or(|v| v > max_bytes + WORKER_MAILBOX_CONTROL_RESERVE_BYTES)
+        } else {
+            data_messages >= max_messages
+                || data_bytes
+                    .checked_add(payload_bytes)
+                    .is_none_or(|v| v > max_bytes)
+        };
+        if full {
+            return Err(ActorError::backpressured(
+                "Worker mailbox is full; retry after delivery progress",
+            ));
+        }
+        let next = next_sequence
+            .checked_add(1)
+            .ok_or_else(|| ActorError::conflict("Mailbox sequence exhausted"))?;
+        db(transaction.execute(
+            "INSERT INTO worker_mailbox_messages(workspace_id,session_id,worker_id,mailbox_generation,
+             message_id,sequence,sender,recipient,command_kind,lane,payload_json,payload_digest,payload_bytes,
+             effect_admission_id,authority_digest,state,available_at,created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,'pending',?16,?17,?17)",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,generation,message_id,
+                next_sequence,sender,recipient,command_kind,lane,payload_json,payload_digest,payload_bytes,
+                authority.effect_admission_id,authority.digest,available_at,created_at],
+        ))?;
+        db(transaction.execute(
+            "UPDATE worker_mailboxes SET next_sequence=?5,updated_at=?6
+             WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND mailbox_generation=?4",
+            params![
+                authority.workspace_id,
+                authority.session_id,
+                authority.worker_id,
+                generation,
+                next,
+                created_at
+            ],
+        ))?;
+        db(transaction.commit())?;
+        let after_messages = queued_messages + 1;
+        let after_bytes = queued_bytes + payload_bytes;
+        Ok(json!({
+            "schemaVersion":1,"messageId":message_id,"sequence":next_sequence,"state":"pending",
+            "idempotent":false,"pressure":{"messages":after_messages,"bytes":after_bytes,
+            "highWater":after_messages * 4 >= max_messages * 3 || after_bytes * 4 >= max_bytes * 3}
+        }))
+    }
+
+    fn worker_mailbox_claim(&mut self, input: &Value) -> ActorResult<Value> {
+        reject_unknown_keys(
+            input,
+            &[
+                "authority",
+                "authorityDigest",
+                "mailboxGeneration",
+                "consumerId",
+                "now",
+                "leaseMs",
+                "limit",
+            ],
+        )?;
+        let authority = worker_authority(input)?;
+        let generation = required_non_negative_i64(input, "mailboxGeneration")?;
+        let consumer = bounded_worker_str(input, "consumerId")?;
+        let now = required_non_negative_i64(input, "now")?;
+        let lease_ms = required_i64(input, "leaseMs")?;
+        let limit = required_i64(input, "limit")?;
+        if !(1..=86_400_000).contains(&lease_ms) || !(1..=100).contains(&limit) {
+            return Err(ActorError::invalid(
+                "leaseMs or limit is outside durable bounds",
+            ));
+        }
+        let lease_until = now
+            .checked_add(lease_ms)
+            .ok_or_else(|| ActorError::invalid("lease deadline overflow"))?;
+        let transaction = db(self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate))?;
+        let stored: Option<(String, String)> = db(transaction
+            .query_row(
+                "SELECT authority_json,authority_digest FROM worker_mailboxes
+             WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND mailbox_generation=?4",
+                params![
+                    authority.workspace_id,
+                    authority.session_id,
+                    authority.worker_id,
+                    generation
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional())?;
+        if stored.as_ref() != Some(&(authority.encoded.clone(), authority.digest.clone())) {
+            return Err(if stored.is_some() {
+                ActorError::conflict("Worker mailbox authority is stale")
+            } else {
+                ActorError::not_found("Worker mailbox does not exist")
+            });
+        }
+        let rows: Vec<WorkerMailboxClaimRow> = {
+            let mut statement = db(transaction.prepare(
+                "SELECT message_id,sequence,sender,recipient,command_kind,lane,payload_json,payload_digest,lease_generation
+                 FROM worker_mailbox_messages WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3
+                   AND mailbox_generation=?4 AND available_at<=?5
+                   AND (state='pending' OR (state='leased' AND lease_expires_at<=?5))
+                 ORDER BY sequence ASC LIMIT ?6"))?;
+            let mapped = db(statement.query_map(
+                params![
+                    authority.workspace_id,
+                    authority.session_id,
+                    authority.worker_id,
+                    generation,
+                    now,
+                    limit
+                ],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            ))?;
+            let mut rows = Vec::new();
+            for row in mapped {
+                rows.push(db(row)?);
+            }
+            rows
+        };
+        let mut claimed = Vec::new();
+        for (
+            message_id,
+            sequence,
+            sender,
+            recipient,
+            kind,
+            lane,
+            payload_json,
+            payload_digest,
+            old_generation,
+        ) in rows
+        {
+            let lease_generation = old_generation
+                .checked_add(1)
+                .ok_or_else(|| ActorError::conflict("Message lease generation exhausted"))?;
+            let changed = db(transaction.execute(
+                "UPDATE worker_mailbox_messages SET state='leased',lease_owner=?6,last_lease_owner=?6,lease_generation=?7,
+                 lease_expires_at=?8,updated_at=?9 WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3
+                 AND mailbox_generation=?4 AND message_id=?5
+                 AND (state='pending' OR (state='leased' AND lease_expires_at<=?9))",
+                params![authority.workspace_id,authority.session_id,authority.worker_id,generation,message_id,
+                    consumer,lease_generation,lease_until,now],
+            ))?;
+            if changed != 1 {
+                return Err(ActorError::conflict(
+                    "Message claim changed during transaction",
+                ));
+            }
+            let payload: Value =
+                serde_json::from_str(&payload_json).map_err(|_| ActorError::internal())?;
+            claimed.push(json!({
+                "schemaVersion":1,"messageId":message_id,"sequence":sequence,"sender":sender,
+                "recipient":recipient,"commandKind":kind,"lane":lane,"payload":payload,
+                "payloadDigest":payload_digest,"state":"leased","leaseOwner":consumer,
+                "leaseGeneration":lease_generation,"leaseExpiresAt":lease_until
+            }));
+        }
+        db(transaction.commit())?;
+        Ok(Value::Array(claimed))
+    }
+
+    fn worker_mailbox_lease_mutation(
+        &mut self,
+        input: &Value,
+        operation: &str,
+    ) -> ActorResult<Value> {
+        let allowed = match operation {
+            "extend" => vec![
+                "authority",
+                "authorityDigest",
+                "mailboxGeneration",
+                "messageId",
+                "consumerId",
+                "leaseGeneration",
+                "now",
+                "leaseMs",
+            ],
+            "release" | "written" => vec![
+                "authority",
+                "authorityDigest",
+                "mailboxGeneration",
+                "messageId",
+                "consumerId",
+                "leaseGeneration",
+                "now",
+            ],
+            _ => return Err(ActorError::internal()),
+        };
+        reject_unknown_keys(input, &allowed)?;
+        let authority = worker_authority(input)?;
+        let generation = required_non_negative_i64(input, "mailboxGeneration")?;
+        let message_id = bounded_worker_str(input, "messageId")?;
+        let consumer = bounded_worker_str(input, "consumerId")?;
+        let lease_generation = required_non_negative_i64(input, "leaseGeneration")?;
+        let now = required_non_negative_i64(input, "now")?;
+        let transaction = db(self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate))?;
+        let authority_matches: bool = db(transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM worker_mailboxes WHERE workspace_id=?1 AND session_id=?2
+             AND worker_id=?3 AND mailbox_generation=?4 AND authority_json=?5 AND authority_digest=?6)",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,generation,
+                authority.encoded,authority.digest], |row| row.get(0)))?;
+        if !authority_matches {
+            return Err(ActorError::conflict("Worker mailbox authority is stale"));
+        }
+        let target = match operation {
+            "release" => "pending",
+            "written" => "written",
+            _ => "leased",
+        };
+        let requested_lease_until = if operation == "extend" {
+            let lease_ms = required_i64(input, "leaseMs")?;
+            if !(1..=86_400_000).contains(&lease_ms) {
+                return Err(ActorError::invalid("leaseMs is outside durable bounds"));
+            }
+            Some(
+                now.checked_add(lease_ms)
+                    .ok_or_else(|| ActorError::invalid("lease deadline overflow"))?,
+            )
+        } else {
+            None
+        };
+        let replay: Option<WorkerMailboxLeaseReplayRow> = db(transaction
+            .query_row(
+                "SELECT state,lease_owner,last_lease_owner,lease_generation,lease_expires_at
+                 FROM worker_mailbox_messages WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3
+                   AND mailbox_generation=?4 AND message_id=?5 AND authority_digest=?6",
+                params![authority.workspace_id,authority.session_id,authority.worker_id,generation,
+                    message_id,authority.digest],
+                |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+            )
+            .optional())?;
+        let is_replay =
+            replay.is_some_and(|(state, owner, last_owner, stored_generation, expiry)| {
+                stored_generation == lease_generation
+                    && match operation {
+                        "extend" => {
+                            matches!(state.as_str(), "leased" | "written")
+                                && owner.as_deref() == Some(consumer)
+                                && expiry == requested_lease_until
+                        }
+                        "release" => state == "pending" && last_owner.as_deref() == Some(consumer),
+                        "written" => state == "written" && owner.as_deref() == Some(consumer),
+                        _ => false,
+                    }
+            });
+        if is_replay {
+            db(transaction.commit())?;
+            return Ok(
+                json!({"schemaVersion":1,"messageId":message_id,"state":target,
+                "leaseGeneration":lease_generation,"idempotent":true}),
+            );
+        }
+        let changed = if operation == "extend" {
+            let lease_until = requested_lease_until.ok_or_else(ActorError::internal)?;
+            db(transaction.execute(
+                "UPDATE worker_mailbox_messages SET lease_expires_at=?10,updated_at=?9
+                 WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND mailbox_generation=?4
+                   AND message_id=?5 AND authority_digest=?6 AND lease_owner=?7 AND lease_generation=?8
+                   AND state IN ('leased','written') AND lease_expires_at>?9",
+                params![authority.workspace_id,authority.session_id,authority.worker_id,generation,message_id,
+                    authority.digest,consumer,lease_generation,now,lease_until],
+            ))?
+        } else {
+            db(transaction.execute(
+                "UPDATE worker_mailbox_messages SET state=?10,
+                   lease_owner=CASE WHEN ?10='pending' THEN NULL ELSE lease_owner END,
+                   lease_expires_at=CASE WHEN ?10='pending' THEN NULL ELSE lease_expires_at END,updated_at=?9
+                 WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND mailbox_generation=?4
+                   AND message_id=?5 AND authority_digest=?6 AND lease_owner=?7 AND lease_generation=?8
+                   AND state='leased' AND lease_expires_at>?9",
+                params![authority.workspace_id,authority.session_id,authority.worker_id,generation,message_id,
+                    authority.digest,consumer,lease_generation,now,target],
+            ))?
+        };
+        if changed != 1 {
+            let replay: Option<WorkerMailboxLeaseReplayRow> = db(
+                transaction
+                    .query_row(
+                        "SELECT state,lease_owner,last_lease_owner,lease_generation,lease_expires_at
+                         FROM worker_mailbox_messages WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3
+                           AND mailbox_generation=?4 AND message_id=?5 AND authority_digest=?6",
+                        params![authority.workspace_id,authority.session_id,authority.worker_id,generation,
+                            message_id,authority.digest],
+                        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+                    )
+                    .optional(),
+            )?;
+            let idempotent =
+                replay.is_some_and(|(state, owner, last_owner, stored_generation, expiry)| {
+                    stored_generation == lease_generation
+                        && match operation {
+                            "extend" => {
+                                matches!(state.as_str(), "leased" | "written")
+                                    && owner.as_deref() == Some(consumer)
+                                    && expiry == requested_lease_until
+                            }
+                            "release" => {
+                                state == "pending" && last_owner.as_deref() == Some(consumer)
+                            }
+                            "written" => state == "written" && owner.as_deref() == Some(consumer),
+                            _ => false,
+                        }
+                });
+            if idempotent {
+                db(transaction.commit())?;
+                return Ok(
+                    json!({"schemaVersion":1,"messageId":message_id,"state":target,
+                    "leaseGeneration":lease_generation,"idempotent":true}),
+                );
+            }
+            return Err(ActorError::conflict(
+                "Message lease is expired or fencing receipt is stale",
+            ));
+        }
+        db(transaction.commit())?;
+        Ok(
+            json!({"schemaVersion":1,"messageId":message_id,"state":target,
+                "leaseGeneration":lease_generation,"idempotent":false}),
+        )
+    }
+
+    fn worker_mailbox_extend(&mut self, input: &Value) -> ActorResult<Value> {
+        self.worker_mailbox_lease_mutation(input, "extend")
+    }
+    fn worker_mailbox_release(&mut self, input: &Value) -> ActorResult<Value> {
+        self.worker_mailbox_lease_mutation(input, "release")
+    }
+    fn worker_mailbox_mark_written(&mut self, input: &Value) -> ActorResult<Value> {
+        self.worker_mailbox_lease_mutation(input, "written")
+    }
+
+    fn worker_mailbox_settle(
+        &mut self,
+        input: &Value,
+        requested_terminal: Option<&str>,
+    ) -> ActorResult<Value> {
+        let mut allowed = vec![
+            "authority",
+            "authorityDigest",
+            "mailboxGeneration",
+            "messageId",
+            "consumerId",
+            "leaseGeneration",
+            "outcomeDigest",
+            "now",
+            "tombstoneExpiresAt",
+        ];
+        if requested_terminal.is_none() {
+            allowed.push("state");
+        }
+        reject_unknown_keys(input, &allowed)?;
+        let authority = worker_authority(input)?;
+        let generation = required_non_negative_i64(input, "mailboxGeneration")?;
+        let message_id = bounded_worker_str(input, "messageId")?;
+        let consumer = bounded_worker_str(input, "consumerId")?;
+        let lease_generation = required_non_negative_i64(input, "leaseGeneration")?;
+        let outcome_digest = bounded_worker_str(input, "outcomeDigest")?;
+        let now = required_non_negative_i64(input, "now")?;
+        let expires = required_non_negative_i64(input, "tombstoneExpiresAt")?;
+        if expires <= now {
+            return Err(ActorError::invalid("tombstoneExpiresAt must be after now"));
+        }
+        let terminal = match requested_terminal {
+            Some(terminal) => terminal,
+            None => required_str(input, "state")?,
+        };
+        if !matches!(terminal, "acknowledged" | "uncertain" | "dead-lettered") {
+            return Err(ActorError::invalid("terminal message state is invalid"));
+        }
+        let transaction = db(self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate))?;
+        let authority_matches: bool = db(transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM worker_mailboxes WHERE workspace_id=?1 AND session_id=?2
+             AND worker_id=?3 AND mailbox_generation=?4 AND authority_json=?5 AND authority_digest=?6)",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,generation,
+                authority.encoded,authority.digest], |row| row.get(0)))?;
+        if !authority_matches {
+            return Err(ActorError::conflict("Worker mailbox authority is stale"));
+        }
+        let existing: Option<WorkerMailboxSettlementRow> = db(transaction
+            .query_row(
+                "SELECT state,lease_generation,outcome_digest,tombstone_expires_at,authority_digest
+             FROM worker_mailbox_messages WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3
+               AND mailbox_generation=?4 AND message_id=?5",
+                params![
+                    authority.workspace_id,
+                    authority.session_id,
+                    authority.worker_id,
+                    generation,
+                    message_id
+                ],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional())?;
+        let Some((state, stored_generation, stored_outcome, stored_expiry, stored_authority)) =
+            existing
+        else {
+            return Err(ActorError::not_found("Worker message does not exist"));
+        };
+        if stored_authority != authority.digest {
+            return Err(ActorError::conflict("Worker message authority is stale"));
+        }
+        if state == terminal {
+            if stored_generation == lease_generation
+                && stored_outcome.as_deref() == Some(outcome_digest)
+                && stored_expiry == Some(expires)
+            {
+                db(transaction.commit())?;
+                return Ok(
+                    json!({"schemaVersion":1,"messageId":message_id,"state":terminal,"idempotent":true}),
+                );
+            }
+            return Err(ActorError::conflict(
+                "Terminal message receipt has different content",
+            ));
+        }
+        let required_state = if terminal == "acknowledged" || terminal == "uncertain" {
+            "written"
+        } else {
+            "leased"
+        };
+        let changed = db(transaction.execute(
+            "UPDATE worker_mailbox_messages SET state=?10,payload_json=NULL,lease_owner=NULL,lease_expires_at=NULL,
+             outcome_digest=?11,tombstone_expires_at=?12,updated_at=?9
+             WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND mailbox_generation=?4
+               AND message_id=?5 AND authority_digest=?6 AND lease_owner=?7 AND lease_generation=?8
+               AND state=?13 AND lease_expires_at>?9",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,generation,message_id,
+                authority.digest,consumer,lease_generation,now,terminal,outcome_digest,expires,required_state],
+        ))?;
+        if changed != 1 {
+            return Err(ActorError::conflict(
+                "Message lease is expired or fencing receipt is stale",
+            ));
+        }
+        db(transaction.commit())?;
+        Ok(json!({"schemaVersion":1,"messageId":message_id,"state":terminal,"idempotent":false}))
+    }
+
+    fn worker_mailbox_ack(&mut self, input: &Value) -> ActorResult<Value> {
+        self.worker_mailbox_settle(input, Some("acknowledged"))
+    }
+    fn worker_mailbox_terminalize(&mut self, input: &Value) -> ActorResult<Value> {
+        self.worker_mailbox_settle(input, None)
+    }
+
+    fn worker_mailbox_list(&self, input: &Value) -> ActorResult<Value> {
+        reject_unknown_keys(
+            input,
+            &[
+                "authority",
+                "authorityDigest",
+                "mailboxGeneration",
+                "afterSequence",
+                "limit",
+            ],
+        )?;
+        let authority = worker_authority(input)?;
+        let generation = required_non_negative_i64(input, "mailboxGeneration")?;
+        let after = required_non_negative_i64(input, "afterSequence")?;
+        let limit = required_i64(input, "limit")?;
+        if !(1..=100).contains(&limit) {
+            return Err(ActorError::invalid("limit must be between 1 and 100"));
+        }
+        let stored: Option<(String,String)> = db(self.connection.query_row(
+            "SELECT authority_json,authority_digest FROM worker_mailboxes WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND mailbox_generation=?4",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,generation],
+            |row| Ok((row.get(0)?,row.get(1)?)),
+        ).optional())?;
+        if stored.as_ref() != Some(&(authority.encoded.clone(), authority.digest.clone())) {
+            return Err(if stored.is_some() {
+                ActorError::conflict("Worker mailbox authority is stale")
+            } else {
+                ActorError::not_found("Worker mailbox does not exist")
+            });
+        }
+        let mut statement = db(self.connection.prepare(
+            "SELECT message_id,sequence,sender,recipient,command_kind,lane,payload_digest,state,
+             lease_generation,outcome_digest,tombstone_expires_at FROM worker_mailbox_messages
+             WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND mailbox_generation=?4 AND sequence>?5
+             ORDER BY sequence ASC LIMIT ?6"))?;
+        let mapped = db(statement.query_map(
+            params![
+                authority.workspace_id,
+                authority.session_id,
+                authority.worker_id,
+                generation,
+                after,
+                limit
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                ))
+            },
+        ))?;
+        let mut values = Vec::new();
+        for row in mapped {
+            let (
+                id,
+                sequence,
+                sender,
+                recipient,
+                kind,
+                lane,
+                digest,
+                state,
+                lease_generation,
+                outcome,
+                expires,
+            ) = db(row)?;
+            values.push(json!({"schemaVersion":1,"messageId":id,"sequence":sequence,"sender":sender,
+                "recipient":recipient,"commandKind":kind,"lane":lane,"payloadDigest":digest,"state":state,
+                "leaseGeneration":lease_generation,"outcomeDigest":outcome,"tombstoneExpiresAt":expires}));
+        }
+        Ok(Value::Array(values))
+    }
+
+    fn worker_worktree_reserve(&mut self, input: &Value) -> ActorResult<Value> {
+        reject_unknown_keys(
+            input,
+            &[
+                "authority",
+                "authorityDigest",
+                "worktreeGeneration",
+                "repositoryId",
+                "commonDirId",
+                "generatedPath",
+                "baseOid",
+                "currentHeadOid",
+                "privateRef",
+                "gitWorktreeId",
+                "lockTokenDigest",
+                "createdAt",
+            ],
+        )?;
+        let authority = worker_authority(input)?;
+        let generation = required_non_negative_i64(input, "worktreeGeneration")?;
+        let repository_id = bounded_worker_str(input, "repositoryId")?;
+        let common_dir_id = bounded_worker_str(input, "commonDirId")?;
+        let generated_path = bounded_worker_str(input, "generatedPath")?;
+        let base_oid = bounded_worker_str(input, "baseOid")?;
+        let current_head_oid = bounded_worker_str(input, "currentHeadOid")?;
+        let private_ref = bounded_worker_str(input, "privateRef")?;
+        let git_worktree_id = bounded_worker_str(input, "gitWorktreeId")?;
+        let lock_token_digest = bounded_worker_str(input, "lockTokenDigest")?;
+        let created_at = required_non_negative_i64(input, "createdAt")?;
+        let transaction = db(self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate))?;
+        let exact: Option<bool> = db(transaction.query_row(
+            "SELECT authority_json=?5 AND authority_digest=?6 AND repository_id=?7 AND common_dir_id=?8
+               AND generated_path=?9 AND base_oid=?10 AND current_head_oid=?11 AND private_ref=?12
+               AND git_worktree_id=?13 AND lock_token_digest=?14 AND created_at=?15
+             FROM worker_worktrees WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND worktree_generation=?4",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,generation,authority.encoded,
+                authority.digest,repository_id,common_dir_id,generated_path,base_oid,current_head_oid,
+                private_ref,git_worktree_id,lock_token_digest,created_at],
+            |row| row.get(0),
+        ).optional())?;
+        if let Some(exact) = exact {
+            if !exact {
+                return Err(ActorError::conflict(
+                    "Worktree identity has different ownership content",
+                ));
+            }
+            let state: String = db(transaction.query_row(
+                "SELECT state FROM worker_worktrees WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND worktree_generation=?4",
+                params![authority.workspace_id,authority.session_id,authority.worker_id,generation], |row| row.get(0)))?;
+            db(transaction.commit())?;
+            return Ok(
+                json!({"schemaVersion":1,"worktreeGeneration":generation,"state":state,"idempotent":true}),
+            );
+        }
+        match transaction.execute(
+            "INSERT INTO worker_worktrees(workspace_id,session_id,worker_id,worktree_generation,
+             authority_json,authority_digest,repository_id,common_dir_id,generated_path,base_oid,current_head_oid,
+             private_ref,git_worktree_id,lock_token_digest,state,created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'requested',?15,?15)",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,generation,authority.encoded,
+                authority.digest,repository_id,common_dir_id,generated_path,base_oid,current_head_oid,
+                private_ref,git_worktree_id,lock_token_digest,created_at],
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(detail, _)) if detail.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE => {
+                return Err(ActorError::conflict("Worktree path or Git identity is already owned"));
+            }
+            Err(_) => return Err(ActorError::internal()),
+        }
+        db(transaction.commit())?;
+        Ok(
+            json!({"schemaVersion":1,"worktreeGeneration":generation,"state":"requested","idempotent":false}),
+        )
+    }
+
+    fn worker_worktree_get(&self, input: &Value) -> ActorResult<Value> {
+        reject_unknown_keys(
+            input,
+            &["authority", "authorityDigest", "worktreeGeneration"],
+        )?;
+        let authority = worker_authority(input)?;
+        let generation = required_non_negative_i64(input, "worktreeGeneration")?;
+        let row: Option<WorkerWorktreeRow> = db(self.connection.query_row(
+            "SELECT authority_json,authority_digest,repository_id,common_dir_id,generated_path,base_oid,
+             current_head_oid,private_ref,git_worktree_id,lock_token_digest,last_clean_status_digest,state
+             FROM worker_worktrees WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND worktree_generation=?4",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,generation],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,
+                row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?,row.get(10)?,row.get(11)?)),
+        ).optional())?;
+        let Some((
+            encoded,
+            digest,
+            repository,
+            common,
+            path,
+            base,
+            head,
+            private_ref,
+            git_id,
+            lock,
+            clean,
+            state,
+        )) = row
+        else {
+            return Ok(Value::Null);
+        };
+        if encoded != authority.encoded || digest != authority.digest {
+            return Err(ActorError::conflict("Worktree authority is stale"));
+        }
+        Ok(
+            json!({"schemaVersion":1,"worktreeGeneration":generation,"repositoryId":repository,
+            "commonDirId":common,"generatedPath":path,"baseOid":base,"currentHeadOid":head,
+            "privateRef":private_ref,"gitWorktreeId":git_id,"lockTokenDigest":lock,"state":state,
+            "lastCleanStatusDigest":clean}),
+        )
+    }
+
+    fn worker_worktree_transition(&mut self, input: &Value) -> ActorResult<Value> {
+        reject_unknown_keys(
+            input,
+            &[
+                "authority",
+                "authorityDigest",
+                "worktreeGeneration",
+                "expectedState",
+                "targetState",
+                "currentHeadOid",
+                "lastCleanStatusDigest",
+                "updatedAt",
+            ],
+        )?;
+        let authority = worker_authority(input)?;
+        let generation = required_non_negative_i64(input, "worktreeGeneration")?;
+        let expected = required_str(input, "expectedState")?;
+        let target = required_str(input, "targetState")?;
+        if !legal_worker_worktree_transition(expected, target) {
+            return Err(ActorError::invalid("Illegal worktree transition"));
+        }
+        let head = input
+            .get("currentHeadOid")
+            .map(|_| bounded_worker_str(input, "currentHeadOid"))
+            .transpose()?;
+        let clean = input
+            .get("lastCleanStatusDigest")
+            .map(|_| bounded_worker_str(input, "lastCleanStatusDigest"))
+            .transpose()?;
+        let updated_at = required_non_negative_i64(input, "updatedAt")?;
+        let transaction = db(self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate))?;
+        let current: Option<(String,String,String,String,Option<String>)> = db(transaction.query_row(
+            "SELECT authority_json,authority_digest,state,current_head_oid,last_clean_status_digest
+             FROM worker_worktrees WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND worktree_generation=?4",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,generation],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+        ).optional())?;
+        let Some((encoded, digest, state, stored_head, stored_clean)) = current else {
+            return Err(ActorError::not_found("Worker worktree does not exist"));
+        };
+        if encoded != authority.encoded || digest != authority.digest {
+            return Err(ActorError::conflict("Worktree authority is stale"));
+        }
+        if state == target {
+            if head.is_none_or(|v| v == stored_head)
+                && clean.is_none_or(|v| Some(v) == stored_clean.as_deref())
+            {
+                db(transaction.commit())?;
+                return Ok(
+                    json!({"schemaVersion":1,"worktreeGeneration":generation,"state":state,"idempotent":true}),
+                );
+            }
+            return Err(ActorError::conflict(
+                "Worktree transition replay has different content",
+            ));
+        }
+        if state != expected {
+            return Err(ActorError::conflict("Worktree state changed"));
+        }
+        let changed = db(transaction.execute(
+            "UPDATE worker_worktrees SET state=?7,current_head_oid=COALESCE(?8,current_head_oid),
+             last_clean_status_digest=COALESCE(?9,last_clean_status_digest),updated_at=?10
+             WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND worktree_generation=?4
+               AND authority_json=?5 AND authority_digest=?6 AND state=?11",
+            params![
+                authority.workspace_id,
+                authority.session_id,
+                authority.worker_id,
+                generation,
+                authority.encoded,
+                authority.digest,
+                target,
+                head,
+                clean,
+                updated_at,
+                expected
+            ],
+        ))?;
+        if changed != 1 {
+            return Err(ActorError::conflict(
+                "Worktree transition lost its generation fence",
+            ));
+        }
+        db(transaction.commit())?;
+        Ok(
+            json!({"schemaVersion":1,"worktreeGeneration":generation,"state":target,"idempotent":false}),
+        )
+    }
+
+    fn worker_handoff_open(&mut self, input: &Value) -> ActorResult<Value> {
+        reject_unknown_keys(
+            input,
+            &[
+                "authority",
+                "authorityDigest",
+                "mailboxGeneration",
+                "handoffId",
+                "createdAt",
+            ],
+        )?;
+        let authority = worker_authority(input)?;
+        let mailbox_generation = required_non_negative_i64(input, "mailboxGeneration")?;
+        let handoff_id = bounded_worker_str(input, "handoffId")?;
+        let created_at = required_non_negative_i64(input, "createdAt")?;
+        let transaction = db(self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate))?;
+        let mailbox: Option<(String,String)> = db(transaction.query_row(
+            "SELECT authority_json,authority_digest FROM worker_mailboxes WHERE workspace_id=?1 AND session_id=?2 AND worker_id=?3 AND mailbox_generation=?4",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,mailbox_generation],
+            |row| Ok((row.get(0)?,row.get(1)?)),
+        ).optional())?;
+        if mailbox.as_ref() != Some(&(authority.encoded.clone(), authority.digest.clone())) {
+            return Err(if mailbox.is_some() {
+                ActorError::conflict("Handoff authority is stale")
+            } else {
+                ActorError::not_found("Worker mailbox does not exist")
+            });
+        }
+        let existing: Option<(String,String,String,i64,i64,i64)> = db(transaction.query_row(
+            "SELECT authority_json,authority_digest,state,generation,mailbox_generation,created_at
+             FROM worker_handoffs WHERE handoff_id=?1",
+            [handoff_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
+        ).optional())?;
+        if let Some((
+            encoded,
+            digest,
+            state,
+            generation,
+            stored_mailbox_generation,
+            stored_created_at,
+        )) = existing
+        {
+            if encoded != authority.encoded
+                || digest != authority.digest
+                || stored_mailbox_generation != mailbox_generation
+                || stored_created_at != created_at
+            {
+                return Err(ActorError::conflict(
+                    "Handoff identity has different authority or generation",
+                ));
+            }
+            db(transaction.commit())?;
+            return Ok(
+                json!({"schemaVersion":1,"handoffId":handoff_id,"state":state,"generation":generation,"idempotent":true}),
+            );
+        }
+        match transaction.execute(
+            "INSERT INTO worker_handoffs(handoff_id,workspace_id,session_id,worker_id,mailbox_generation,
+             authority_json,authority_digest,generation,state,created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,0,'open',?8,?8)",
+            params![handoff_id,authority.workspace_id,authority.session_id,authority.worker_id,
+                mailbox_generation,authority.encoded,authority.digest,created_at],
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(detail, _)) if detail.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE => {
+                return Err(ActorError::conflict("Mailbox already has a handoff"));
+            }
+            Err(_) => return Err(ActorError::internal()),
+        }
+        db(transaction.commit())?;
+        Ok(
+            json!({"schemaVersion":1,"handoffId":handoff_id,"state":"open","generation":0,"idempotent":false}),
+        )
+    }
+
+    fn worker_handoff_seal(&mut self, input: &Value) -> ActorResult<Value> {
+        reject_unknown_keys(
+            input,
+            &[
+                "authority",
+                "authorityDigest",
+                "mailboxGeneration",
+                "handoffId",
+                "expectedGeneration",
+                "updatedAt",
+            ],
+        )?;
+        let authority = worker_authority(input)?;
+        let mailbox_generation = required_non_negative_i64(input, "mailboxGeneration")?;
+        let handoff_id = bounded_worker_str(input, "handoffId")?;
+        let expected_generation = required_non_negative_i64(input, "expectedGeneration")?;
+        let updated_at = required_non_negative_i64(input, "updatedAt")?;
+        let transaction = db(self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate))?;
+        let current: Option<(String,String,String,i64)> = db(transaction.query_row(
+            "SELECT authority_json,authority_digest,state,generation FROM worker_handoffs WHERE handoff_id=?1
+             AND workspace_id=?2 AND session_id=?3 AND worker_id=?4 AND mailbox_generation=?5",
+            params![handoff_id,authority.workspace_id,authority.session_id,authority.worker_id,mailbox_generation],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+        ).optional())?;
+        let Some((encoded, digest, state, generation)) = current else {
+            return Err(ActorError::not_found("Worker handoff does not exist"));
+        };
+        if encoded != authority.encoded || digest != authority.digest {
+            return Err(ActorError::conflict("Handoff authority is stale"));
+        }
+        if state == "sealing" && generation == expected_generation + 1 {
+            db(transaction.commit())?;
+            return Ok(
+                json!({"schemaVersion":1,"handoffId":handoff_id,"state":state,"generation":generation,"idempotent":true}),
+            );
+        }
+        if state != "open" || generation != expected_generation {
+            return Err(ActorError::conflict("Handoff generation or state is stale"));
+        }
+        let next = generation
+            .checked_add(1)
+            .ok_or_else(|| ActorError::conflict("Handoff generation exhausted"))?;
+        let sealed = db(transaction.execute(
+            "UPDATE worker_mailboxes SET sealed=1,updated_at=?5 WHERE workspace_id=?1 AND session_id=?2
+             AND worker_id=?3 AND mailbox_generation=?4 AND authority_json=?6 AND authority_digest=?7",
+            params![authority.workspace_id,authority.session_id,authority.worker_id,mailbox_generation,
+                updated_at,authority.encoded,authority.digest],
+        ))?;
+        if sealed != 1 {
+            return Err(ActorError::conflict(
+                "Mailbox authority changed before sealing",
+            ));
+        }
+        db(transaction.execute("UPDATE worker_handoffs SET state='sealing',generation=?2,updated_at=?3 WHERE handoff_id=?1",
+            params![handoff_id,next,updated_at]))?;
+        db(transaction.commit())?;
+        Ok(
+            json!({"schemaVersion":1,"handoffId":handoff_id,"state":"sealing","generation":next,"idempotent":false}),
+        )
+    }
+
+    fn worker_handoff_transition(&mut self, input: &Value) -> ActorResult<Value> {
+        reject_unknown_keys(
+            input,
+            &[
+                "authority",
+                "authorityDigest",
+                "mailboxGeneration",
+                "handoffId",
+                "expectedGeneration",
+                "expectedState",
+                "targetState",
+                "updatedAt",
+            ],
+        )?;
+        let authority = worker_authority(input)?;
+        let mailbox_generation = required_non_negative_i64(input, "mailboxGeneration")?;
+        let handoff_id = bounded_worker_str(input, "handoffId")?;
+        let expected_generation = required_non_negative_i64(input, "expectedGeneration")?;
+        let expected = required_str(input, "expectedState")?;
+        let target = required_str(input, "targetState")?;
+        if !legal_worker_handoff_transition(expected, target) {
+            return Err(ActorError::invalid("Illegal handoff transition"));
+        }
+        let updated_at = required_non_negative_i64(input, "updatedAt")?;
+        let next = expected_generation
+            .checked_add(1)
+            .ok_or_else(|| ActorError::conflict("Handoff generation exhausted"))?;
+        let transaction = db(self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate))?;
+        let changed = db(transaction.execute(
+            "UPDATE worker_handoffs SET state=?10,generation=?9,updated_at=?11 WHERE handoff_id=?1
+             AND workspace_id=?2 AND session_id=?3 AND worker_id=?4 AND mailbox_generation=?5
+             AND authority_json=?6 AND authority_digest=?7 AND state=?8 AND generation=?12",
+            params![
+                handoff_id,
+                authority.workspace_id,
+                authority.session_id,
+                authority.worker_id,
+                mailbox_generation,
+                authority.encoded,
+                authority.digest,
+                expected,
+                next,
+                target,
+                updated_at,
+                expected_generation
+            ],
+        ))?;
+        if changed != 1 {
+            let replay: Option<(String, i64, String, String)> = db(transaction
+                .query_row(
+                    "SELECT state,generation,authority_json,authority_digest FROM worker_handoffs
+                     WHERE handoff_id=?1 AND workspace_id=?2 AND session_id=?3 AND worker_id=?4 AND mailbox_generation=?5",
+                    params![handoff_id,authority.workspace_id,authority.session_id,authority.worker_id,mailbox_generation],
+                    |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+                )
+                .optional())?;
+            if replay.is_some_and(|(state, generation, encoded, digest)| {
+                state == target
+                    && generation == next
+                    && encoded == authority.encoded
+                    && digest == authority.digest
+            }) {
+                db(transaction.commit())?;
+                return Ok(
+                    json!({"schemaVersion":1,"handoffId":handoff_id,"state":target,
+                    "generation":next,"idempotent":true}),
+                );
+            }
+            return Err(ActorError::conflict(
+                "Handoff generation, authority, or state is stale",
+            ));
+        }
+        db(transaction.commit())?;
+        Ok(
+            json!({"schemaVersion":1,"handoffId":handoff_id,"state":target,"generation":next,"idempotent":false}),
+        )
+    }
+
+    fn worker_handoff_settle(&mut self, input: &Value) -> ActorResult<Value> {
+        reject_unknown_keys(
+            input,
+            &[
+                "authority",
+                "authorityDigest",
+                "mailboxGeneration",
+                "handoffId",
+                "expectedGeneration",
+                "outcome",
+                "outcomeDigest",
+                "receipt",
+                "receiptDigest",
+                "settledAt",
+            ],
+        )?;
+        let authority = worker_authority(input)?;
+        let mailbox_generation = required_non_negative_i64(input, "mailboxGeneration")?;
+        let handoff_id = bounded_worker_str(input, "handoffId")?;
+        let expected_generation = required_non_negative_i64(input, "expectedGeneration")?;
+        let outcome = input
+            .get("outcome")
+            .ok_or_else(|| ActorError::invalid("outcome is required"))?;
+        let receipt = input
+            .get("receipt")
+            .ok_or_else(|| ActorError::invalid("receipt is required"))?;
+        let outcome_json = serde_json::to_string(outcome)
+            .map_err(|_| ActorError::invalid("outcome is not serializable"))?;
+        let receipt_json = serde_json::to_string(receipt)
+            .map_err(|_| ActorError::invalid("receipt is not serializable"))?;
+        if outcome_json.len() + receipt_json.len() > MAX_PROTOCOL_FRAME_BYTES / 2 {
+            return Err(ActorError::invalid("handoff settlement is too large"));
+        }
+        let outcome_digest = bounded_worker_str(input, "outcomeDigest")?;
+        let receipt_digest = bounded_worker_str(input, "receiptDigest")?;
+        let settled_at = required_non_negative_i64(input, "settledAt")?;
+        let transaction = db(self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate))?;
+        let current: Option<WorkerHandoffSettlementRow> = db(transaction.query_row(
+            "SELECT authority_json,authority_digest,state,generation,outcome_json,outcome_digest,receipt_json,receipt_digest
+             FROM worker_handoffs WHERE handoff_id=?1 AND workspace_id=?2 AND session_id=?3 AND worker_id=?4 AND mailbox_generation=?5",
+            params![handoff_id,authority.workspace_id,authority.session_id,authority.worker_id,mailbox_generation],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?)),
+        ).optional())?;
+        let Some((
+            encoded,
+            digest,
+            state,
+            generation,
+            old_outcome,
+            old_outcome_digest,
+            old_receipt,
+            old_receipt_digest,
+        )) = current
+        else {
+            return Err(ActorError::not_found("Worker handoff does not exist"));
+        };
+        if encoded != authority.encoded || digest != authority.digest {
+            return Err(ActorError::conflict("Handoff authority is stale"));
+        }
+        if state == "handed-off" {
+            if old_outcome.as_deref() == Some(&outcome_json)
+                && old_outcome_digest.as_deref() == Some(outcome_digest)
+                && old_receipt.as_deref() == Some(&receipt_json)
+                && old_receipt_digest.as_deref() == Some(receipt_digest)
+            {
+                let receipt: Value =
+                    serde_json::from_str(&receipt_json).map_err(|_| ActorError::internal())?;
+                db(transaction.commit())?;
+                return Ok(
+                    json!({"schemaVersion":1,"handoffId":handoff_id,"state":state,"generation":generation,
+                    "receipt":receipt,"receiptDigest":receipt_digest,"idempotent":true}),
+                );
+            }
+            return Err(ActorError::conflict(
+                "Handoff is already settled with different content",
+            ));
+        }
+        if !matches!(state.as_str(), "terminalizing" | "uncertain")
+            || generation != expected_generation
+        {
+            return Err(ActorError::conflict("Handoff generation or state is stale"));
+        }
+        let next = generation
+            .checked_add(1)
+            .ok_or_else(|| ActorError::conflict("Handoff generation exhausted"))?;
+        db(transaction.execute(
+            "UPDATE worker_handoffs SET state='handed-off',generation=?2,outcome_json=?3,outcome_digest=?4,
+             receipt_json=?5,receipt_digest=?6,updated_at=?7 WHERE handoff_id=?1",
+            params![handoff_id,next,outcome_json,outcome_digest,receipt_json,receipt_digest,settled_at],
+        ))?;
+        db(transaction.commit())?;
+        Ok(
+            json!({"schemaVersion":1,"handoffId":handoff_id,"state":"handed-off","generation":next,
+            "receipt":receipt,"receiptDigest":receipt_digest,"idempotent":false}),
+        )
+    }
+
+    fn worker_handoff_ack(&mut self, input: &Value) -> ActorResult<Value> {
+        reject_unknown_keys(
+            input,
+            &[
+                "authority",
+                "authorityDigest",
+                "mailboxGeneration",
+                "handoffId",
+                "receiptDigest",
+                "acknowledgedAt",
+            ],
+        )?;
+        let authority = worker_authority(input)?;
+        let mailbox_generation = required_non_negative_i64(input, "mailboxGeneration")?;
+        let handoff_id = bounded_worker_str(input, "handoffId")?;
+        let receipt_digest = bounded_worker_str(input, "receiptDigest")?;
+        let acknowledged_at = required_non_negative_i64(input, "acknowledgedAt")?;
+        let transaction = db(self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate))?;
+        let current: Option<WorkerHandoffAckRow> = db(transaction.query_row(
+            "SELECT authority_json,authority_digest,state,receipt_digest,acknowledged_at FROM worker_handoffs
+             WHERE handoff_id=?1 AND workspace_id=?2 AND session_id=?3 AND worker_id=?4 AND mailbox_generation=?5",
+            params![handoff_id,authority.workspace_id,authority.session_id,authority.worker_id,mailbox_generation],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+        ).optional())?;
+        let Some((encoded, digest, state, stored_receipt, old_ack)) = current else {
+            return Err(ActorError::not_found("Worker handoff does not exist"));
+        };
+        if encoded != authority.encoded
+            || digest != authority.digest
+            || state != "handed-off"
+            || stored_receipt.as_deref() != Some(receipt_digest)
+        {
+            return Err(ActorError::conflict(
+                "Handoff receipt or authority is stale",
+            ));
+        }
+        if let Some(old_ack) = old_ack {
+            if old_ack != acknowledged_at {
+                return Err(ActorError::conflict(
+                    "Handoff acknowledgement has different content",
+                ));
+            }
+            db(transaction.commit())?;
+            return Ok(
+                json!({"schemaVersion":1,"handoffId":handoff_id,"acknowledgedAt":old_ack,"idempotent":true}),
+            );
+        }
+        db(transaction.execute(
+            "UPDATE worker_handoffs SET acknowledged_at=?2,updated_at=?2 WHERE handoff_id=?1",
+            params![handoff_id, acknowledged_at],
+        ))?;
+        db(transaction.commit())?;
+        Ok(
+            json!({"schemaVersion":1,"handoffId":handoff_id,"acknowledgedAt":acknowledged_at,"idempotent":false}),
+        )
     }
 
     fn communication_enqueue(&mut self, input: &Value) -> ActorResult<Value> {
@@ -2292,6 +4022,105 @@ mod tests {
         }
     }
 
+    fn worker_authority() -> Value {
+        json!({
+            "schemaVersion":1,
+            "workerId":"worker-1",
+            "correlationId":"correlation-1",
+            "rootAgentId":"root-1",
+            "parentSessionId":"session-1",
+            "workspaceId":"workspace-1",
+            "workspaceGeneration":1,
+            "trustRevision":"trust-1",
+            "permissionMode":"default",
+            "capabilityDigest":"capability-1",
+            "effectAdmissionId":"effect-1",
+            "ownershipGeneration":1
+        })
+    }
+
+    #[test]
+    fn database_identity_is_agent_owned_and_rejects_foreign_stores() {
+        const EXPECTED_AGENT_APPLICATION_ID: i64 = 0x4f434147;
+
+        let root = tempdir().unwrap();
+        let fresh_path = root.path().join("fresh.sqlite3");
+        let actor = Actor::open(&fresh_path).unwrap();
+        let fresh_application_id: i64 = actor
+            .connection
+            .pragma_query_value(None, "application_id", |row| row.get(0))
+            .unwrap();
+        assert_eq!(fresh_application_id, EXPECTED_AGENT_APPLICATION_ID);
+        drop(actor);
+
+        let legacy_path = root.path().join("legacy.sqlite3");
+        let actor = Actor::open(&legacy_path).unwrap();
+        let legacy_version = database_version(&actor.connection).unwrap();
+        actor
+            .connection
+            .pragma_update(None, "application_id", 0)
+            .unwrap();
+        drop(actor);
+        let upgraded = Actor::open(&legacy_path).unwrap();
+        let upgraded_application_id: i64 = upgraded
+            .connection
+            .pragma_query_value(None, "application_id", |row| row.get(0))
+            .unwrap();
+        assert_eq!(upgraded_application_id, EXPECTED_AGENT_APPLICATION_ID);
+        assert_eq!(
+            database_version(&upgraded.connection).unwrap(),
+            legacy_version
+        );
+        drop(upgraded);
+
+        let foreign_path = root.path().join("foreign.sqlite3");
+        let foreign = Connection::open(&foreign_path).unwrap();
+        foreign
+            .pragma_update(None, "application_id", 0x1234_i64)
+            .unwrap();
+        drop(foreign);
+        match Actor::open(&foreign_path) {
+            Err(error) => {
+                assert_eq!(error.code, "INVALID_REQUEST");
+                assert_eq!(error.message, "Database is not an Octocode Agent store");
+            }
+            Ok(_) => panic!("foreign database was accepted as Agent state"),
+        }
+        let foreign = Connection::open(&foreign_path).unwrap();
+        let foreign_application_id: i64 = foreign
+            .pragma_query_value(None, "application_id", |row| row.get(0))
+            .unwrap();
+        let agent_tables: i64 = foreign
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(foreign_application_id, 0x1234);
+        assert_eq!(agent_tables, 0);
+
+        let unidentified_path = root.path().join("unidentified.sqlite3");
+        let unidentified = Connection::open(&unidentified_path).unwrap();
+        unidentified
+            .execute("CREATE TABLE awareness_state(value TEXT)", [])
+            .unwrap();
+        drop(unidentified);
+        match Actor::open(&unidentified_path) {
+            Err(error) => assert_eq!(error.code, "INVALID_REQUEST"),
+            Ok(_) => panic!("identity-free foreign database was accepted as Agent state"),
+        }
+        let unidentified = Connection::open(&unidentified_path).unwrap();
+        let agent_tables: i64 = unidentified
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(agent_tables, 0);
+    }
+
     #[test]
     fn session_cas_replay_and_restart_are_durable() {
         let root = tempdir().unwrap();
@@ -2654,8 +4483,7 @@ mod tests {
         let connection = Connection::open(&path).unwrap();
         connection
             .execute_batch(
-                "CREATE TABLE marker(value TEXT);
-                 CREATE TABLE sessions (
+                "CREATE TABLE sessions (
                    session_id TEXT PRIMARY KEY,
                    revision INTEGER NOT NULL CHECK (revision >= 0),
                    cwd TEXT,
@@ -3556,6 +5384,374 @@ mod tests {
             json!({"graphId":"migrated","ownerId":"owner","now":1,"leaseMs":1,"limit":1}),
         );
         assert_eq!(claim[0]["itemId"], json!("ready"));
+    }
+
+    #[test]
+    fn worker_mailbox_is_addressed_bounded_fenced_and_restart_safe() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("actor.sqlite3");
+        let authority = worker_authority();
+        let mut actor = Actor::open(&path).unwrap();
+        let mailbox = json!({
+            "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+            "createdAt":1,"maxMessages":1,"maxBytes":1024
+        });
+        assert_eq!(
+            result(&mut actor, "worker.mailbox.open", mailbox.clone())["nextSequence"],
+            json!(1)
+        );
+        let enqueue = json!({
+            "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+            "messageId":"message-1","sender":"root-1","recipient":"worker-1",
+            "commandKind":"input","lane":"data","payload":{"text":"hello"},
+            "payloadDigest":"payload-1","availableAt":1,"createdAt":1
+        });
+        let first = result(&mut actor, "worker.mailbox.enqueue", enqueue.clone());
+        assert_eq!(first["sequence"], json!(1));
+        assert_eq!(first["idempotent"], json!(false));
+        assert_eq!(
+            result(&mut actor, "worker.mailbox.enqueue", enqueue.clone())["idempotent"],
+            json!(true)
+        );
+        let mut changed = enqueue.clone();
+        changed["payloadDigest"] = json!("different");
+        match actor.handle(request(2, "worker.mailbox.enqueue", changed)) {
+            Response::Err { error, .. } => assert_eq!(error.code, "CONFLICT"),
+            _ => panic!("changed duplicate message succeeded"),
+        }
+        let mut full = enqueue.clone();
+        full["messageId"] = json!("message-2");
+        full["payloadDigest"] = json!("payload-2");
+        match actor.handle(request(3, "worker.mailbox.enqueue", full)) {
+            Response::Err { error, .. } => assert_eq!(error.code, "BACKPRESSURED"),
+            _ => panic!("full data lane accepted another message"),
+        }
+        let mut control = enqueue.clone();
+        control["messageId"] = json!("cancel-1");
+        control["payloadDigest"] = json!("payload-cancel");
+        control["commandKind"] = json!("cancel");
+        control["lane"] = json!("control");
+        assert_eq!(
+            result(&mut actor, "worker.mailbox.enqueue", control)["sequence"],
+            json!(2)
+        );
+        let claim = result(
+            &mut actor,
+            "worker.mailbox.claim",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                "consumerId":"delivery-1","now":2,"leaseMs":10,"limit":1
+            }),
+        );
+        let generation = claim[0]["leaseGeneration"].as_i64().unwrap();
+        result(
+            &mut actor,
+            "worker.mailbox.markWritten",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                "messageId":"message-1","consumerId":"delivery-1",
+                "leaseGeneration":generation,"now":3
+            }),
+        );
+        let acknowledged = result(
+            &mut actor,
+            "worker.mailbox.ack",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                "messageId":"message-1","consumerId":"delivery-1","leaseGeneration":generation,
+                "outcomeDigest":"outcome-1","now":4,"tombstoneExpiresAt":100
+            }),
+        );
+        assert_eq!(acknowledged["state"], json!("acknowledged"));
+        assert_eq!(
+            result(
+                &mut actor,
+                "worker.mailbox.ack",
+                json!({
+                    "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                    "messageId":"message-1","consumerId":"delivery-1","leaseGeneration":generation,
+                    "outcomeDigest":"outcome-1","now":4,"tombstoneExpiresAt":100
+                })
+            )["idempotent"],
+            json!(true)
+        );
+        drop(actor);
+        let mut actor = Actor::open(&path).unwrap();
+        let messages = result(
+            &mut actor,
+            "worker.mailbox.list",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                "afterSequence":0,"limit":10
+            }),
+        );
+        assert_eq!(messages[0]["state"], json!("acknowledged"));
+    }
+
+    #[test]
+    fn worker_worktree_reservation_and_transitions_are_authority_generation_fenced() {
+        let root = tempdir().unwrap();
+        let mut actor = Actor::open(root.path().join("actor.sqlite3")).unwrap();
+        let authority = worker_authority();
+        let reserve = json!({
+            "authority":authority,"authorityDigest":"authority-1","worktreeGeneration":1,
+            "repositoryId":"repo-1","commonDirId":"common-1","generatedPath":"session-1/worker-1/1",
+            "baseOid":"base","currentHeadOid":"base","privateRef":"refs/octocode/workers/session-1/worker-1/1",
+            "gitWorktreeId":"git-worktree-1","lockTokenDigest":"lock-1","createdAt":1
+        });
+        assert_eq!(
+            result(&mut actor, "worker.worktree.reserve", reserve.clone())["state"],
+            json!("requested")
+        );
+        assert_eq!(
+            result(&mut actor, "worker.worktree.reserve", reserve)["idempotent"],
+            json!(true)
+        );
+        let preparing = result(
+            &mut actor,
+            "worker.worktree.transition",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","worktreeGeneration":1,
+                "expectedState":"requested","targetState":"preparing","updatedAt":2
+            }),
+        );
+        assert_eq!(preparing["state"], json!("preparing"));
+        match actor.handle(request(
+            4,
+            "worker.worktree.transition",
+            json!({
+                "authority":authority,"authorityDigest":"wrong","worktreeGeneration":1,
+                "expectedState":"preparing","targetState":"active","updatedAt":3
+            }),
+        )) {
+            Response::Err { error, .. } => assert_eq!(error.code, "CONFLICT"),
+            _ => panic!("wrong authority transitioned worktree"),
+        }
+        assert_eq!(
+            result(
+                &mut actor,
+                "worker.worktree.get",
+                json!({
+                    "authority":authority,"authorityDigest":"authority-1","worktreeGeneration":1
+                })
+            )["state"],
+            json!("preparing")
+        );
+    }
+
+    #[test]
+    fn worker_mailbox_release_extend_written_and_uncertain_transitions_are_strict() {
+        let root = tempdir().unwrap();
+        let mut actor = Actor::open(root.path().join("actor.sqlite3")).unwrap();
+        let authority = worker_authority();
+        result(
+            &mut actor,
+            "worker.mailbox.open",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,"createdAt":0
+            }),
+        );
+        result(
+            &mut actor,
+            "worker.mailbox.enqueue",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                "messageId":"message-1","sender":"root-1","recipient":"worker-1","commandKind":"input",
+                "lane":"data","payload":{"n":1},"payloadDigest":"payload-1","availableAt":0,"createdAt":0
+            }),
+        );
+        let first = result(
+            &mut actor,
+            "worker.mailbox.claim",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                "consumerId":"delivery","now":0,"leaseMs":5,"limit":1
+            }),
+        );
+        let released = json!({
+            "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+            "messageId":"message-1","consumerId":"delivery",
+            "leaseGeneration":first[0]["leaseGeneration"],"now":1
+        });
+        result(&mut actor, "worker.mailbox.release", released.clone());
+        assert_eq!(
+            result(&mut actor, "worker.mailbox.release", released)["idempotent"],
+            json!(true)
+        );
+        let second = result(
+            &mut actor,
+            "worker.mailbox.claim",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                "consumerId":"delivery","now":2,"leaseMs":5,"limit":1
+            }),
+        );
+        let generation = second[0]["leaseGeneration"].as_i64().unwrap();
+        assert!(generation > first[0]["leaseGeneration"].as_i64().unwrap());
+        let extended = json!({
+            "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+            "messageId":"message-1","consumerId":"delivery","leaseGeneration":generation,
+            "now":3,"leaseMs":10
+        });
+        result(&mut actor, "worker.mailbox.extend", extended.clone());
+        assert_eq!(
+            result(&mut actor, "worker.mailbox.extend", extended)["idempotent"],
+            json!(true)
+        );
+        let written = json!({
+            "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+            "messageId":"message-1","consumerId":"delivery","leaseGeneration":generation,"now":4
+        });
+        result(&mut actor, "worker.mailbox.markWritten", written.clone());
+        assert_eq!(
+            result(&mut actor, "worker.mailbox.markWritten", written)["idempotent"],
+            json!(true)
+        );
+        assert_eq!(
+            result(
+                &mut actor,
+                "worker.mailbox.claim",
+                json!({
+                    "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                    "consumerId":"other","now":100,"leaseMs":5,"limit":1
+                })
+            ),
+            json!([])
+        );
+        let terminal = json!({
+            "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+            "messageId":"message-1","consumerId":"delivery","leaseGeneration":generation,
+            "state":"uncertain","outcomeDigest":"unknown-1","now":5,"tombstoneExpiresAt":100
+        });
+        assert_eq!(
+            result(&mut actor, "worker.mailbox.terminalize", terminal.clone())["state"],
+            json!("uncertain")
+        );
+        assert_eq!(
+            result(&mut actor, "worker.mailbox.terminalize", terminal)["idempotent"],
+            json!(true)
+        );
+    }
+
+    #[test]
+    fn worker_handoff_is_sealed_one_shot_and_receipt_idempotent() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("actor.sqlite3");
+        let authority = worker_authority();
+        let mut actor = Actor::open(&path).unwrap();
+        result(
+            &mut actor,
+            "worker.mailbox.open",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,"createdAt":1
+            }),
+        );
+        let opened = result(
+            &mut actor,
+            "worker.handoff.open",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                "handoffId":"handoff-1","createdAt":2
+            }),
+        );
+        assert_eq!(opened["generation"], json!(0));
+        let sealed = result(
+            &mut actor,
+            "worker.handoff.seal",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                "handoffId":"handoff-1","expectedGeneration":0,"updatedAt":3
+            }),
+        );
+        assert_eq!(sealed["state"], json!("sealing"));
+        match actor.handle(request(8, "worker.mailbox.enqueue", json!({
+            "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+            "messageId":"late","sender":"root-1","recipient":"worker-1","commandKind":"input",
+            "lane":"data","payload":{},"payloadDigest":"late-digest","availableAt":3,"createdAt":3
+        }))) {
+            Response::Err { error, .. } => assert_eq!(error.code, "CONFLICT"),
+            _ => panic!("sealed mailbox accepted a new message"),
+        }
+        let mut generation = sealed["generation"].as_i64().unwrap();
+        for (expected, target) in [("sealing", "draining"), ("draining", "terminalizing")] {
+            let transition = json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                "handoffId":"handoff-1","expectedGeneration":generation,
+                "expectedState":expected,"targetState":target,"updatedAt":generation + 4
+            });
+            let moved = result(&mut actor, "worker.handoff.transition", transition.clone());
+            assert_eq!(
+                result(&mut actor, "worker.handoff.transition", transition)["idempotent"],
+                json!(true)
+            );
+            generation = moved["generation"].as_i64().unwrap();
+        }
+        let settle = json!({
+            "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+            "handoffId":"handoff-1","expectedGeneration":generation,
+            "outcome":{"state":"completed"},"outcomeDigest":"outcome-1",
+            "receipt":{"summary":"done"},"receiptDigest":"receipt-1","settledAt":10
+        });
+        let receipt = result(&mut actor, "worker.handoff.settle", settle.clone());
+        assert_eq!(receipt["state"], json!("handed-off"));
+        assert_eq!(
+            result(&mut actor, "worker.handoff.settle", settle)["idempotent"],
+            json!(true)
+        );
+        let acknowledged = result(
+            &mut actor,
+            "worker.handoff.ack",
+            json!({
+                "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                "handoffId":"handoff-1","receiptDigest":"receipt-1","acknowledgedAt":11
+            }),
+        );
+        assert_eq!(acknowledged["acknowledgedAt"], json!(11));
+        drop(actor);
+        let mut actor = Actor::open(&path).unwrap();
+        assert_eq!(
+            result(
+                &mut actor,
+                "worker.handoff.ack",
+                json!({
+                    "authority":authority,"authorityDigest":"authority-1","mailboxGeneration":1,
+                    "handoffId":"handoff-1","receiptDigest":"receipt-1","acknowledgedAt":11
+                })
+            )["idempotent"],
+            json!(true)
+        );
+    }
+
+    #[test]
+    fn version_six_database_migrates_worker_lifecycle_tables_transactionally() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("actor.sqlite3");
+        let actor = Actor::open(&path).unwrap();
+        actor
+            .connection
+            .execute_batch(
+                "DROP TABLE worker_handoffs; DROP TABLE worker_worktrees;
+             DROP TABLE worker_mailbox_messages; DROP TABLE worker_mailboxes;
+             PRAGMA user_version = 6;",
+            )
+            .unwrap();
+        drop(actor);
+        let mut migrated = Actor::open(&path).unwrap();
+        assert_eq!(
+            result(&mut migrated, "health", json!({}))["databaseSchemaVersion"],
+            json!(7)
+        );
+        assert_eq!(
+            result(
+                &mut migrated,
+                "worker.mailbox.open",
+                json!({
+                    "authority":worker_authority(),"authorityDigest":"authority-1",
+                    "mailboxGeneration":1,"createdAt":1
+                })
+            )["nextSequence"],
+            json!(1)
+        );
     }
 
     #[test]

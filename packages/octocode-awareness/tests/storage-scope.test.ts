@@ -22,25 +22,25 @@ afterEach(() => {
 });
 
 describe('Awareness storage scope', () => {
-  it('keeps the legacy repository path discoverable but routes live state globally', () => {
+  it('uses the repository Awareness database by default', () => {
     const workspace = resolve('/tmp/awareness-workspace');
     const home = mkdtempSync(join(tmpdir(), 'awareness-agent-home-'));
     process.env.OCTOCODE_HOME = home;
-    expect(repoDatabasePath(workspace, 'agent.sqlite3'))
-      .toBe(join(workspace, '.octocode', 'agent.sqlite3'));
+    expect(repoDatabasePath(workspace, 'awareness.sqlite3'))
+      .toBe(join(workspace, '.octocode', 'awareness.sqlite3'));
     expect(defaultDbPath(workspace, 'repo'))
-      .toBe(join(home, 'agent', 'agent.sqlite3'));
+      .toBe(join(workspace, '.octocode', 'awareness.sqlite3'));
     expect(resolveDbPath(null, { scope: 'repo', workspace }))
-      .toBe(join(home, 'agent', 'agent.sqlite3'));
+      .toBe(join(workspace, '.octocode', 'awareness.sqlite3'));
     rmSync(home, { recursive: true, force: true });
   });
 
-  it('uses the one agent-global default and preserves explicit path precedence', () => {
+  it('uses a distinct global Awareness path and preserves explicit path precedence', () => {
     const home = mkdtempSync(join(tmpdir(), 'awareness-agent-home-'));
     process.env.OCTOCODE_HOME = home;
     try {
       expect(resolveDbPath(null, { scope: 'global', workspace: '/tmp/repo' }))
-        .toBe(join(home, 'agent', 'agent.sqlite3'));
+        .toBe(join(home, 'awareness', 'awareness.sqlite3'));
       expect(resolveDbPath('./explicit.sqlite3', { scope: 'repo', workspace: '/tmp/repo' }))
         .toBe(resolve('./explicit.sqlite3'));
     } finally {
@@ -49,7 +49,7 @@ describe('Awareness storage scope', () => {
   });
 
   it('validates CLI storage scope values', () => {
-    expect(parseStorageScope(undefined)).toBe('global');
+    expect(parseStorageScope(undefined)).toBe('repo');
     expect(parseStorageScope('repo')).toBe('repo');
     expect(parseStorageScope('global')).toBe('global');
     expect(() => parseStorageScope('workspace')).toThrow('--db-scope must be repo or global');
@@ -60,7 +60,7 @@ describe('Awareness storage scope', () => {
       .toEqual({ dbPath: null, dbScope: 'repo', filtered: ['maintenance', 'init'] });
   });
 
-  it('routes coordination CLI state to the global agent database', () => {
+  it('routes coordination CLI state to the repository Awareness database', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'awareness-repo-scope-'));
     const home = mkdtempSync(join(tmpdir(), 'awareness-agent-home-'));
     process.env.OCTOCODE_HOME = home;
@@ -70,10 +70,10 @@ describe('Awareness storage scope', () => {
         ['status', '--workspace', workspace],
         { write: (chunk) => { stdout += chunk; } },
       )).toBe(0);
-      const dbPath = join(home, 'agent', 'agent.sqlite3');
+      const dbPath = join(workspace, '.octocode', 'awareness.sqlite3');
       expect(existsSync(dbPath)).toBe(true);
       expect(JSON.parse(stdout)).toMatchObject({ dbPath, workspace });
-      expect(existsSync(join(workspace, '.octocode', 'agent.sqlite3'))).toBe(false);
+      expect(existsSync(join(home, 'agent', 'agent.sqlite3'))).toBe(false);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
@@ -90,7 +90,7 @@ describe('Awareness storage scope', () => {
         { write: (chunk) => { stdout += chunk; } },
       )).toBe(0);
       expect(JSON.parse(stdout)).toMatchObject({ dbPath });
-      expect(existsSync(join(workspace, '.octocode', 'agent.sqlite3'))).toBe(false);
+      expect(existsSync(join(workspace, '.octocode', 'awareness.sqlite3'))).toBe(false);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

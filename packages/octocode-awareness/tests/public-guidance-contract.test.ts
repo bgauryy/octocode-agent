@@ -12,7 +12,7 @@ const markdownFiles = (root: string): string[] => readdirSync(root, { withFileTy
     : entry.name.endsWith('.md') ? [resolve(root, entry.name)] : []);
 
 describe('public Awareness guidance', () => {
-  it('teaches only canonical commands and one global database', () => {
+  it('teaches canonical commands and separate Awareness storage', () => {
     const retiredProse = /\bRun `(setup|next|inspect|verify|close|init|refinement list)`/;
     const guides = [
       resolve(PACKAGE_ROOT, 'README.md'),
@@ -34,7 +34,9 @@ describe('public Awareness guidance', () => {
     expect('Run `refinement list`.').toMatch(retiredProse);
     expect(guides).not.toContain('.octocode/octocode.sqlite3');
     expect(guides).toContain('maintenance init');
+    expect(guides).toContain('.octocode/awareness.sqlite3');
+    expect(guides).toContain('OCTOCODE_HOME/awareness/awareness.sqlite3');
     expect(guides).toContain('agent/agent.sqlite3');
-    expect(guides).toContain('workspace columns');
+    expect(guides).toMatch(/Agent (?:control|databases?).{0,120}separate/is);
   });
 });

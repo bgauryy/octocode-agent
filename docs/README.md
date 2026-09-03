@@ -23,5 +23,5 @@ Package ownership and implementation details stay with each package.
 | Shared contracts | [Architecture](../packages/octocode-shared/ARCHITECTURE.md) | [README](../packages/octocode-shared/README.md) |
 
 [`DESIGN/LEFTOVERS.md`](../DESIGN/LEFTOVERS.md) is the only live repository-level
-completion ledger. Dated files under `DESIGN/pi-coding-agent-removal/evidence/`
-are immutable receipts, not current operating documentation.
+completion plan. Keep implementation detail in the owning package architecture or
+operational guide instead of adding development evidence under `DESIGN/`.

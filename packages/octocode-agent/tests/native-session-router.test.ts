@@ -23,8 +23,14 @@ class FakeRuntime implements AgentRuntime {
   readonly commands: RuntimeCommand[] = [];
   readonly submissions: string[] = [];
   readonly listeners = new Set<(event: RuntimeEvent) => void>();
+  startEvent: RuntimeEvent | undefined;
   constructor(readonly id: SessionId, readonly projection: SessionProjection) {}
-  async start() { this.started += 1; }
+  async start() {
+    this.started += 1;
+    if (this.startEvent !== undefined) {
+      for (const listener of this.listeners) listener(this.startEvent);
+    }
+  }
   async submit(input: string) { this.submissions.push(input); }
   async cancel() {}
   async execute(command: RuntimeCommand): Promise<RuntimeCommandResult> { this.commands.push(command); return { ok: true, data: this.id }; }
@@ -138,5 +144,55 @@ describe('native session runtime router', () => {
     expect(router.snapshot().sessionId).toBe(beta);
     expect(controller.current()).toBe(beta);
     expect(cleanupErrors).toEqual([active.stopError]);
+  });
+
+  it('publishes replacement startup events only after the transition commits', async () => {
+    const store = new InMemorySessionStore();
+    const controller = new SessionController(store, () => 10);
+    const alpha = sessionId('ordered-alpha');
+    const beta = sessionId('ordered-beta');
+    await controller.create(alpha, 'Alpha');
+    await controller.create(beta, 'Beta');
+    await controller.resume(alpha);
+    const order: string[] = [];
+    const router = await createNativeSessionRuntimeRouter({
+      controller,
+      initialSessionId: alpha,
+      createRuntime: async ({ sessionId: id, projection }) => {
+        const runtime = new FakeRuntime(id, projection);
+        if (id === beta) {
+          runtime.startEvent = {
+            type: 'session.started',
+            payload: {} as never,
+          } as unknown as RuntimeEvent;
+        }
+        return runtime;
+      },
+      onTransition: () => {
+        order.push('transition');
+        throw new Error('transition observer failed');
+      },
+    });
+    router.subscribe((event) => order.push(event.type));
+    await router.start();
+
+    await expect(router.execute({ type: 'session.switch', id: beta })).resolves.toMatchObject({ ok: true });
+
+    expect(order).toEqual(['transition', 'session.started']);
+  });
+
+  it('keeps a committed transition successful when a presentation observer throws', async () => {
+    const { router, controller, beta } = await harness();
+    router.subscribe(() => {
+      throw new Error('presentation observer failed');
+    });
+    await router.start();
+
+    await expect(router.execute({ type: 'session.switch', id: beta })).resolves.toMatchObject({
+      ok: true,
+      data: { sessionId: beta },
+    });
+    expect(router.snapshot().sessionId).toBe(beta);
+    expect(controller.current()).toBe(beta);
   });
 });

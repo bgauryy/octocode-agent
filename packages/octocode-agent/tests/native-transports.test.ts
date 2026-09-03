@@ -25,6 +25,7 @@ import type {
   NativeSignalSource,
 } from "../src/native-signal-scope.js";
 import { NativeWorkerTransportProjection } from "../src/native-worker-projection.js";
+import { workerAuthorityFixture } from "./worker-authority-fixture.js";
 
 function signalFixture(): NativeSignalSource & {
   emit(signal: NativeProcessSignal): void;
@@ -688,6 +689,7 @@ describe("native noninteractive transports", () => {
         activeSessionId: sessionId("session-1"),
         promptSnapshotId: "digest",
         capabilities: { tools: [], models: [], maxTurns: 1 },
+        resolveAuthority: () => workerAuthorityFixture({ workerId: workerId("worker-1"), correlationId: correlationId("correlation-1"), sessionId: sessionId("session-1") }),
       },
     );
 
@@ -745,6 +747,7 @@ describe("native noninteractive transports", () => {
     expect(workerExecute).toHaveBeenCalledWith({
       type: "status",
       workerId: "worker-1",
+      authority: workerAuthorityFixture({ workerId: workerId("worker-1"), correlationId: correlationId("correlation-1"), sessionId: sessionId("session-1") }),
     });
   });
 
@@ -755,9 +758,11 @@ describe("native noninteractive transports", () => {
     const secondExecute = vi.fn(async () => []);
     const first = new NativeWorkerTransportProjection({ execute: vi.fn(async () => []) } as WorkerController, {
       activeSessionId: sessionId("session-1"), promptSnapshotId: "first", capabilities: { tools: [], models: [], maxTurns: 1 },
+      resolveAuthority: () => workerAuthorityFixture({ sessionId: sessionId("session-1") }),
     });
     const second = new NativeWorkerTransportProjection({ execute: secondExecute } as WorkerController, {
       activeSessionId: sessionId("session-2"), promptSnapshotId: "second", capabilities: { tools: [], models: [], maxTurns: 1 },
+      resolveAuthority: () => workerAuthorityFixture({ sessionId: sessionId("session-2") }),
     });
     let current = first;
     const run = runRpcTransport(fixture.runtime, { input, output }, { getWorkerProjection: () => current });
@@ -813,6 +818,7 @@ describe("native noninteractive transports", () => {
         activeSessionId: sessionId("session-1"),
         promptSnapshotId: "digest",
         capabilities: { tools: [], models: [], maxTurns: 1 },
+        resolveAuthority: () => workerAuthorityFixture({ sessionId: sessionId("session-1") }),
       },
     );
     const run = runRpcTransport(

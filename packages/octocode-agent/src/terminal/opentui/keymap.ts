@@ -45,15 +45,18 @@ function isInterrupt(key: KeyLike, name: string): boolean {
   return key.ctrl === true && name === 'c';
 }
 
-/** Canonical multiline composer bindings: Enter edits; Ctrl/Meta-Enter submits. */
+/** Familiar chat composer bindings: Enter sends; modified Enter edits multiline. */
 export function composerKeyBindings(): TextareaKeyBinding[] {
   return [
-    { name: 'return', action: 'newline' },
-    { name: 'enter', action: 'newline' },
-    { name: 'return', ctrl: true, action: 'submit' },
-    { name: 'enter', ctrl: true, action: 'submit' },
-    { name: 'return', meta: true, action: 'submit' },
-    { name: 'enter', meta: true, action: 'submit' },
+    { name: 'return', action: 'submit' },
+    { name: 'enter', action: 'submit' },
+    { name: 'return', shift: true, action: 'newline' },
+    { name: 'enter', shift: true, action: 'newline' },
+    { name: 'return', ctrl: true, action: 'newline' },
+    { name: 'enter', ctrl: true, action: 'newline' },
+    { name: 'return', meta: true, action: 'newline' },
+    { name: 'enter', meta: true, action: 'newline' },
+    { name: 'j', ctrl: true, action: 'newline' },
   ];
 }
 

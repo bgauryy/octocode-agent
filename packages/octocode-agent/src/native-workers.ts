@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { execFile, execFileSync, spawn as spawnChildProcess } from 'node:child_process';
-import { once } from 'node:events';
+import { execFile } from 'node:child_process';
 import {
   RuntimeFailure,
   packetId,
@@ -15,10 +14,10 @@ import {
   type WorkerSpawnPacket,
   type WorkerTerminalOutcome,
   type WorkerTerminalPacket,
-  type WorkerWorktreePort,
 } from '@octocodeai/agent-core';
 import type {
   NativeWorkerInputCommand,
+  NativeWorkerMessageLease,
   NativeWorkerMessageJournal,
 } from './native-rust-worker-messages.js';
 import {
@@ -27,22 +26,19 @@ import {
   type NativeWorkerPromptCustomizationV1,
 } from './native-worker-bootstrap.js';
 import type { NativeResolvedPortableCustomizationDescriptorV1 } from './native-portable-customization.js';
+import type { NativeWorkerHandoffPort } from './native-worker-handoff-runtime.js';
+import {
+  captureNativeProcessContainment,
+  createNodeNativeProcessContainmentPort,
+  probeNativeProcessContainment,
+  sameNativeProcessContainment,
+  type NativeProcessContainmentIdentity,
+  type NativeProcessContainmentPort,
+} from './native-worker-containment.js';
 
 export interface NativeGitProcessResult { readonly stdout: string; readonly stderr: string }
 export interface NativeGitProcessAdapter {
   run(cwd: string, args: readonly string[], signal?: AbortSignal): Promise<NativeGitProcessResult>;
-}
-
-export type NativeWorkerWorktreeRecovery =
-  | { readonly path: string; readonly action: 'retain' }
-  | { readonly path: string; readonly action: 'discard' }
-  | { readonly path: string; readonly action: 'refresh'; readonly baseRevision: string };
-
-export interface NativeWorkerWorktreePortOptions {
-  readonly repositoryRoot: string;
-  readonly worktreesRoot: string;
-  readonly git?: NativeGitProcessAdapter;
-  readonly release?: (terminal: WorkerTerminalPacket) => 'retain' | 'discard';
 }
 
 export interface NativeWorkerProcessSpec {
@@ -54,17 +50,12 @@ export interface NativeWorkerProcessSpec {
   readonly promptDigest: string;
   readonly cacheKey: string;
   readonly ownershipToken: string;
+  readonly containmentGeneration: string;
   /** One closed bootstrap frame delivered over inherited descriptor 3. */
   readonly bootstrap?: Uint8Array;
 }
 
-export interface NativeWorkerProcessIdentity {
-  readonly pid: number;
-  readonly startToken: string;
-  readonly commandSha256: string;
-  readonly ownershipTokenSha256: string;
-  readonly verification: 'linux-proc' | 'darwin-ps';
-}
+export type NativeWorkerProcessIdentity = NativeProcessContainmentIdentity;
 
 export interface NativeWorkerProcessResult {
   readonly code: number | null;
@@ -116,6 +107,7 @@ export interface NativeWorkerProcessPortOptions {
   readonly messageJournal?: NativeWorkerMessageJournal;
   readonly workerCustomization?: NativeResolvedPortableCustomizationDescriptorV1;
   readonly workerPromptCustomization?: NativeWorkerPromptCustomizationV1;
+  readonly handoff?: NativeWorkerHandoffPort;
 }
 
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -193,115 +185,20 @@ export function createNodeNativeGitProcessAdapter(): NativeGitProcessAdapter {
   };
 }
 
-/** Safe native lifecycle for explicit, contained git worktrees. */
-export class NativeWorkerWorktreePort implements WorkerWorktreePort {
-  readonly #repositoryRoot: string;
-  readonly #worktreesRoot: string;
-  readonly #git: NativeGitProcessAdapter;
-  readonly #releasePolicy: (terminal: WorkerTerminalPacket) => 'retain' | 'discard';
-
-  constructor(options: NativeWorkerWorktreePortOptions) {
-    this.#repositoryRoot = canonicalDirectory(options.repositoryRoot);
-    const worktreesRoot = path.resolve(safeString(options.worktreesRoot, 'Worker worktrees root'));
-    fs.mkdirSync(worktreesRoot, { recursive: true });
-    this.#worktreesRoot = fs.realpathSync(worktreesRoot);
-    this.#git = options.git ?? createNodeNativeGitProcessAdapter();
-    this.#releasePolicy = options.release ?? (() => 'retain');
-  }
-
-  async prepare(packet: WorkerSpawnPacket, signal: AbortSignal): Promise<void> {
-    if (packet.workspace.mode !== 'worktree') return;
-    if (signal.aborted) throw new RuntimeFailure('cancelled', 'Worker worktree preparation was cancelled');
-    const target = containedPath(this.#worktreesRoot, packet.workspace.path);
-    const revision = safeString(packet.workspace.baseRevision, 'Worker base revision');
-    if (!fs.existsSync(target)) {
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      await this.#git.run(this.#repositoryRoot, ['worktree', 'add', '--detach', target, revision], signal);
-      return;
-    }
-    await this.#assertClean(target, signal);
-    await this.#git.run(target, ['checkout', '--detach', revision], signal);
-  }
-
-  async release(packet: WorkerSpawnPacket, terminal: WorkerTerminalPacket): Promise<void> {
-    if (packet.workspace.mode !== 'worktree') return;
-    if (this.#releasePolicy(terminal) === 'discard') await this.recover({ path: packet.workspace.path, action: 'discard' });
-  }
-
-  async recover(request: NativeWorkerWorktreeRecovery): Promise<void> {
-    const target = containedPath(this.#worktreesRoot, request.path);
-    if (request.action === 'retain') return;
-    if (!fs.existsSync(target)) return;
-    await this.#assertClean(target);
-    if (request.action === 'refresh') {
-      await this.#git.run(target, ['checkout', '--detach', safeString(request.baseRevision, 'Worker base revision')]);
-      return;
-    }
-    await this.#git.run(this.#repositoryRoot, ['worktree', 'remove', '--force', target]);
-  }
-
-  async #assertClean(target: string, signal?: AbortSignal): Promise<void> {
-    const status = await this.#git.run(target, ['status', '--porcelain=v1', '--untracked-files=all'], signal);
-    if (status.stdout.trim()) throw new RuntimeFailure('conflict', 'Worker worktree is dirty or conflicted and was retained');
-  }
-}
-
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function linuxProcessIdentity(pid: number, ownershipToken: string): NativeWorkerProcessIdentity | undefined {
-  try {
-    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const close = stat.lastIndexOf(')');
-    if (close < 0) return undefined;
-    const fields = stat.slice(close + 2).trim().split(/\s+/);
-    const startToken = fields[19];
-    const command = fs.readFileSync(`/proc/${pid}/cmdline`).toString('utf8');
-    const environ = fs.readFileSync(`/proc/${pid}/environ`).toString('utf8').split('\0');
-    if (!startToken || !command || !environ.includes(`OCTOCODE_WORKER_OWNERSHIP_TOKEN=${ownershipToken}`)) return undefined;
-    return { pid, startToken, commandSha256: sha256(command), ownershipTokenSha256: sha256(ownershipToken), verification: 'linux-proc' };
-  } catch { return undefined; }
+export function captureNativeWorkerProcessIdentity(
+  pid: number,
+  ownershipToken: string,
+  generation = sha256(ownershipToken),
+): NativeWorkerProcessIdentity | undefined {
+  return captureNativeProcessContainment(pid, ownershipToken, generation);
 }
 
-function darwinProcessIdentity(pid: number, ownershipToken: string, tokenIsDigest = false): NativeWorkerProcessIdentity | undefined {
-  try {
-    const output = execFileSync('/bin/ps', ['-ww', '-p', String(pid), '-o', 'lstart=', '-o', 'command='], { encoding: 'utf8' }).trim();
-    const match = /^(.{24})\s+(.+)$/.exec(output);
-    if (!match) return undefined;
-    return { pid, startToken: match[1]!, commandSha256: sha256(match[2]!), ownershipTokenSha256: tokenIsDigest ? ownershipToken : sha256(ownershipToken), verification: 'darwin-ps' };
-  } catch { return undefined; }
-}
-
-export function captureNativeWorkerProcessIdentity(pid: number, ownershipToken: string): NativeWorkerProcessIdentity | undefined {
-  if (!Number.isSafeInteger(pid) || pid < 1 || !ownershipToken) return undefined;
-  if (process.platform === 'linux') return linuxProcessIdentity(pid, ownershipToken);
-  if (process.platform === 'darwin') return darwinProcessIdentity(pid, ownershipToken);
-  return undefined;
-}
-
-export function probeNativeWorkerProcessIdentity(identity: NativeWorkerProcessIdentity): NativeWorkerProcessIdentity | undefined {
-  if (identity.verification === 'linux-proc') {
-    try {
-      const stat = fs.readFileSync(`/proc/${identity.pid}/stat`, 'utf8');
-      const close = stat.lastIndexOf(')');
-      if (close < 0) return undefined;
-      const startToken = stat.slice(close + 2).trim().split(/\s+/)[19];
-      const command = fs.readFileSync(`/proc/${identity.pid}/cmdline`).toString('utf8');
-      const token = fs.readFileSync(`/proc/${identity.pid}/environ`).toString('utf8').split('\0')
-        .find((value) => value.startsWith('OCTOCODE_WORKER_OWNERSHIP_TOKEN='))?.slice('OCTOCODE_WORKER_OWNERSHIP_TOKEN='.length);
-      if (!startToken || !command || !token) return undefined;
-      return { pid: identity.pid, startToken, commandSha256: sha256(command), ownershipTokenSha256: sha256(token), verification: 'linux-proc' };
-    } catch { return undefined; }
-  }
-  if (identity.verification === 'darwin-ps') return darwinProcessIdentity(identity.pid, identity.ownershipTokenSha256, true);
-  return undefined;
-}
-
-export function sameNativeWorkerProcess(left: NativeWorkerProcessIdentity, right: NativeWorkerProcessIdentity): boolean {
-  return left.pid === right.pid && left.startToken === right.startToken && left.commandSha256 === right.commandSha256
-    && left.ownershipTokenSha256 === right.ownershipTokenSha256 && left.verification === right.verification;
-}
+export const probeNativeWorkerProcessIdentity = probeNativeProcessContainment;
+export const sameNativeWorkerProcess = sameNativeProcessContainment;
 
 function capabilityEnvironment(packet: WorkerSpawnPacket): {
   tools: string;
@@ -354,6 +251,7 @@ function terminalPacket(
     correlationId: spawn.correlationId,
     sessionId: spawn.sessionId,
     redaction: spawn.redaction,
+    authority: spawn.authority,
     outcome,
     ...(handback === undefined ? {} : { handback }),
     ...(reason === undefined ? {} : { reason }),
@@ -361,44 +259,30 @@ function terminalPacket(
 }
 
 /** Creates the low-level Node adapter used by NativeWorkerProcessPort. */
-export function createNodeNativeWorkerProcessAdapter(): NativeWorkerProcessAdapter {
+export function createNodeNativeWorkerProcessAdapter(
+  containment: NativeProcessContainmentPort = createNodeNativeProcessContainmentPort(),
+): NativeWorkerProcessAdapter {
   return {
     spawn(spec) {
-      const child = spawnChildProcess(spec.command, [...spec.args], {
+      const child = containment.spawn({
+        command: spec.command,
+        args: spec.args,
         cwd: spec.cwd,
-        env: { ...spec.env },
-        shell: false,
-        stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
-      });
-      const bootstrap = child.stdio[3];
-      if (bootstrap == null || typeof (bootstrap as NodeJS.WritableStream).write !== 'function') {
-        child.kill('SIGKILL');
-        throw new RuntimeFailure('adapter-compatibility', 'Native worker bootstrap pipe is unavailable');
-      }
-      bootstrap.on('error', () => undefined);
-      (bootstrap as NodeJS.WritableStream).end(Buffer.from(spec.bootstrap ?? []));
-      const exit = new Promise<NativeWorkerProcessResult>((resolve, reject) => {
-        child.once('error', reject);
-        child.once('close', (code, signal) => resolve({ code, signal }));
+        env: spec.env,
+        ownershipToken: spec.ownershipToken,
+        generation: spec.containmentGeneration,
+        bootstrap: spec.bootstrap,
       });
       return {
-        ...(child.pid === undefined ? {} : { pid: child.pid }),
-        ...(child.pid === undefined ? {} : { identity: captureNativeWorkerProcessIdentity(child.pid, spec.ownershipToken) }),
+        pid: child.pid,
+        identity: child.identity,
         stdout: child.stdout,
         stderr: child.stderr,
-        exit,
-        async write(line) {
-          if (child.stdin.destroyed || !child.stdin.writable) throw new RuntimeFailure('adapter-compatibility', 'Native worker stdin is unavailable');
-          if (!child.stdin.write(line, 'utf8')) await once(child.stdin, 'drain');
-        },
-        async endInput() {
-          if (child.stdin.destroyed || child.stdin.writableEnded) return;
-          await new Promise<void>((resolve, reject) => {
-            child.stdin.end((error?: Error | null) => error ? reject(error) : resolve());
-          });
-        },
-        abort: () => { child.kill('SIGTERM'); },
-        kill: () => { child.kill('SIGKILL'); },
+        exit: child.exit,
+        write: (line) => child.write(line),
+        endInput: () => child.endInput(),
+        abort: () => containment.signal(child.identity, 'SIGTERM'),
+        kill: () => containment.signal(child.identity, 'SIGKILL'),
       };
     },
   };
@@ -425,6 +309,7 @@ export class NativeWorkerProcessPort implements WorkerPort {
   readonly #messageJournal?: NativeWorkerMessageJournal;
   readonly #workerCustomization?: NativeResolvedPortableCustomizationDescriptorV1;
   readonly #workerPromptCustomization?: NativeWorkerPromptCustomizationV1;
+  readonly #handoff?: NativeWorkerHandoffPort;
 
   constructor(options: NativeWorkerProcessPortOptions) {
     this.#process = options.process;
@@ -449,6 +334,7 @@ export class NativeWorkerProcessPort implements WorkerPort {
     this.#messageJournal = options.messageJournal;
     this.#workerCustomization = options.workerCustomization;
     this.#workerPromptCustomization = options.workerPromptCustomization;
+    this.#handoff = options.handoff;
   }
 
   async spawn(packet: WorkerSpawnPacket, signal: AbortSignal): Promise<WorkerHandle> {
@@ -498,7 +384,9 @@ export class NativeWorkerProcessPort implements WorkerPort {
     env.OCTOCODE_WORKER_ALLOWED_MODELS = capabilities.models;
     env.OCTOCODE_WORKER_MAX_TURNS = capabilities.maxTurns;
     const ownershipToken = randomUUID();
+    const containmentGeneration = randomUUID();
     env.OCTOCODE_WORKER_OWNERSHIP_TOKEN = ownershipToken;
+    env.OCTOCODE_WORKER_CONTAINMENT_GENERATION = containmentGeneration;
     const bootstrapPacket: NativeWorkerBootstrapPacketV1 = {
       schemaVersion: 1,
       type: 'native.worker.bootstrap',
@@ -521,6 +409,7 @@ export class NativeWorkerProcessPort implements WorkerPort {
       promptDigest,
       cacheKey,
       ownershipToken,
+      containmentGeneration,
       bootstrap: encodeNativeWorkerBootstrapPacketV1(bootstrapPacket),
     });
     const processHandle = this.#process.spawn(spec);
@@ -542,6 +431,7 @@ export class NativeWorkerProcessPort implements WorkerPort {
     let protocolFailure: string | undefined;
     let requestSequence = 0;
     const pending = new Map<string, { resolve(response: RpcResponse): void; reject(error: Error): void }>();
+    let deliveryTail: Promise<void> = Promise.resolve();
     let journalTail: Promise<void> = Promise.resolve();
     let journalFailure: string | undefined;
 
@@ -565,29 +455,66 @@ export class NativeWorkerProcessPort implements WorkerPort {
     };
     const request = async (command: NativeWorkerInputCommand): Promise<{ written: Promise<void>; response: Promise<RpcResponse> }> => {
       const requestId = `native-worker:${packet.workerId}:${++requestSequence}`;
-      const lease = await this.#messageJournal?.stage({
-        workerId: String(packet.workerId),
-        correlationId: String(packet.correlationId),
-        sessionId: String(packet.sessionId),
-        parentAgentId: this.#parentAgentId,
-        requestId,
-        command,
-      });
-      const deliveryCommand = lease?.command ?? command;
+      let lease: NativeWorkerMessageLease | undefined;
+      let leaseState: 'leased' | 'written' | 'released' = 'leased';
       let resolve!: (response: RpcResponse) => void;
       let reject!: (error: Error) => void;
       const rpcResponse = new Promise<RpcResponse>((accept, decline) => { resolve = accept; reject = decline; });
-      pending.set(requestId, { resolve, reject });
-      const written = processHandle.write(`${JSON.stringify({ protocolVersion: 1, requestId, command: deliveryCommand })}\n`).catch((error: unknown) => {
+      const deliver = async (): Promise<void> => {
+        lease = await this.#messageJournal!.stage({
+          workerId: String(packet.workerId),
+          correlationId: String(packet.correlationId),
+          sessionId: String(packet.sessionId),
+          parentAgentId: this.#parentAgentId,
+          requestId,
+          command,
+          authority: packet.authority,
+          mailboxGeneration: packet.authority.ownershipGeneration,
+        });
+        const deliveryCommand = lease?.command ?? command;
+        pending.set(requestId, { resolve, reject });
+        try {
+          await processHandle.write(`${JSON.stringify({ protocolVersion: 1, requestId, command: deliveryCommand })}\n`);
+          await lease.markWritten();
+          leaseState = 'written';
+        } catch (error) {
+          if (leaseState === 'leased') {
+            await lease.release().catch(() => undefined);
+            leaseState = 'released';
+          }
+          throw error;
+        }
+      };
+      let rawWrite: Promise<void>;
+      if (this.#messageJournal === undefined) {
+        pending.set(requestId, { resolve, reject });
+        rawWrite = processHandle.write(`${JSON.stringify({ protocolVersion: 1, requestId, command })}\n`);
+      } else {
+        rawWrite = deliveryTail.then(deliver);
+      }
+      const written = rawWrite.catch((error: unknown) => {
         pending.delete(requestId);
         reject(error instanceof Error ? error : new Error('Native worker RPC write failed'));
         throw error;
       });
+      if (this.#messageJournal !== undefined) deliveryTail = written.catch(() => undefined);
       const response = rpcResponse.then(async (value) => {
-        if (lease !== undefined) await settleJournal(() => lease.ack(), 'Worker message acknowledgement failed');
+        const stagedLease = lease;
+        if (stagedLease !== undefined) await settleJournal(
+          () => stagedLease.ack(sha256(JSON.stringify(value))),
+          'Worker message acknowledgement failed',
+        );
         return value;
       }, async (error: unknown) => {
-        if (lease !== undefined) await settleJournal(() => lease.release(), 'Worker message release failed');
+        const stagedLease = lease;
+        if (stagedLease !== undefined && leaseState === 'written') await settleJournal(
+          () => stagedLease.uncertain(sha256(error instanceof Error ? error.message : String(error))),
+          'Worker message uncertainty settlement failed',
+        );
+        else if (stagedLease !== undefined && leaseState === 'leased') await settleJournal(
+          () => stagedLease.release(),
+          'Worker message release failed',
+        );
         throw error;
       });
       return { written, response };
@@ -657,11 +584,26 @@ export class NativeWorkerProcessPort implements WorkerPort {
         promptDigest,
         cacheKey,
       });
-      if (captured.exceeded) return terminalPacket(packet, 'failed', `Worker output exceeded ${this.#maxOutputBytes} bytes`, handback);
-      if (protocolFailure !== undefined) return terminalPacket(packet, 'failed', protocolFailure, handback);
-      if (requestedOutcome !== undefined) return terminalPacket(packet, requestedOutcome, requestedOutcome, handback);
-      if (processResult.code === 0) return terminalPacket(packet, 'succeeded', undefined, handback);
-      return terminalPacket(packet, 'failed', processResult.code === null ? 'Worker terminated unexpectedly' : `Worker exited with code ${processResult.code}`, handback);
+      const terminal = captured.exceeded
+        ? terminalPacket(packet, 'failed', `Worker output exceeded ${this.#maxOutputBytes} bytes`, handback)
+        : protocolFailure !== undefined
+          ? terminalPacket(packet, 'failed', protocolFailure, handback)
+          : requestedOutcome !== undefined
+            ? terminalPacket(packet, requestedOutcome, requestedOutcome, handback)
+            : processResult.code === 0
+              ? terminalPacket(packet, 'succeeded', undefined, handback)
+              : terminalPacket(packet, 'failed', processResult.code === null ? 'Worker terminated unexpectedly' : `Worker exited with code ${processResult.code}`, handback);
+      try {
+        await this.#handoff?.settle(packet, terminal);
+      } catch {
+        return terminalPacket(
+          packet,
+          'failed',
+          'Worker handoff settlement failed',
+          handback,
+        );
+      }
+      return terminal;
     })();
 
     return Object.freeze({

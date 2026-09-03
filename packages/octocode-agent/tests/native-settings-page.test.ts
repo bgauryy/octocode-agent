@@ -107,6 +107,7 @@ describe('native settings page controller', () => {
       settings: {
         defaultProvider: { value: 'openai', editable: true, application: 'next session' },
         defaultModel: { value: 'gpt-5.6', editable: true, application: 'next session' },
+        compactionInputTokenThreshold: { value: 64_000, editable: true, application: 'next session' },
       },
       credentials: { modelApiKeyConfigured: true },
     });
@@ -132,6 +133,9 @@ describe('native settings page controller', () => {
     expect(page.body).toContain('@media(prefers-reduced-motion:reduce)');
     expect(page.body).toContain('id="motion-form"');
     expect(page.body).toContain("key:'reducedMotion'");
+    expect(page.body).toContain('id="compaction-form"');
+    expect(page.body).toContain('aria-describedby="compaction-help"');
+    expect(page.body).toContain("key:'compactionInputTokenThreshold'");
     expect(page.body).toContain("setAttribute('aria-current','location')");
     expect(page.body).toContain('target.focus({preventScroll:true})');
 
@@ -234,6 +238,49 @@ describe('native settings page controller', () => {
     });
     expect(response.status).toBe(200);
     expect(storage.read().values).toMatchObject({ reducedMotion: false });
+    await controller.close();
+  });
+
+  it('persists and validates the typed compaction threshold', async () => {
+    const { controller, storage } = await harness();
+    const opened = await controller.open('agent-context');
+    const origin = new URL(opened.url!).origin;
+    const mutationUrl = `${origin}/api/settings/mutate`;
+    const token = controller.diagnostics().actionToken;
+    const snapshot = JSON.parse((await request(`${origin}/api/settings`)).body) as { revision: string };
+    const headers = {
+      origin,
+      'content-type': 'application/json',
+      'x-octocode-action-token': token,
+    };
+    const accepted = await request(mutationUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        schemaVersion: 1,
+        requestId: 'compaction-threshold',
+        expectedRevision: snapshot.revision,
+        scope: 'global',
+        actions: [{ op: 'set', key: 'compactionInputTokenThreshold', value: 80_000 }],
+      }),
+    });
+    expect(accepted.status).toBe(200);
+    expect(storage.read().values).toMatchObject({ compactionInputTokenThreshold: 80_000 });
+
+    const revision = (JSON.parse(accepted.body) as { revision: string }).revision;
+    const rejected = await request(mutationUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        schemaVersion: 1,
+        requestId: 'bad-compaction-threshold',
+        expectedRevision: revision,
+        scope: 'global',
+        actions: [{ op: 'set', key: 'compactionInputTokenThreshold', value: 4_095 }],
+      }),
+    });
+    expect(rejected.status).toBe(400);
+    expect(storage.read().values).toMatchObject({ compactionInputTokenThreshold: 80_000 });
     await controller.close();
   });
 

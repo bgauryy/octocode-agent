@@ -4,6 +4,7 @@ import {
   sessionId,
   workerId,
   type WorkerController,
+  type WorkerAuthorityV1,
   type WorkerSnapshot,
 } from '@octocodeai/agent-core';
 import {
@@ -47,7 +48,12 @@ function harness(initial: WorkerSnapshot[] = [worker('worker-1')]) {
     }
     return undefined;
   });
-  return { controller: { execute } satisfies WorkerController, execute };
+  const authorityFor = (id: string): WorkerAuthorityV1 | undefined => {
+    const snapshot = workers.find((entry) => String(entry.workerId) === id);
+    if (snapshot === undefined) return undefined;
+    return { schemaVersion: 1, workerId: snapshot.workerId, correlationId: snapshot.correlationId, rootAgentId: 'root', parentSessionId: snapshot.sessionId, workspaceId: 'workspace', workspaceGeneration: 1, trustRevision: 'trust', permissionMode: 'default', capabilityDigest: 'capability', effectAdmissionId: 'effect', ownershipGeneration: 1 };
+  };
+  return { controller: { execute } satisfies WorkerController, execute, authorityFor };
 }
 
 describe('NativeWorkerOperationsController', () => {
@@ -63,8 +69,8 @@ describe('NativeWorkerOperationsController', () => {
         handback: { text: 'private handback' },
       },
     });
-    const { controller, execute } = harness([raw]);
-    const operations = new NativeWorkerOperationsController({ controller, now: () => 100 });
+    const { controller, execute, authorityFor } = harness([raw]);
+    const operations = new NativeWorkerOperationsController({ controller, authorityFor, now: () => 100 });
 
     const snapshot = await operations.open();
     expect(execute).toHaveBeenCalledWith({ type: 'list' });
@@ -85,8 +91,8 @@ describe('NativeWorkerOperationsController', () => {
   });
 
   it('keeps inspect and refresh read-only while rejecting stale generations clearly', async () => {
-    const { controller, execute } = harness();
-    const operations = new NativeWorkerOperationsController({ controller, now: () => 200 });
+    const { controller, execute, authorityFor } = harness();
+    const operations = new NativeWorkerOperationsController({ controller, authorityFor, now: () => 200 });
     await operations.open();
 
     const inspected = await operations.dispatch({ type: 'inspect', expectedGeneration: 1, workerId: 'worker-1' });
@@ -108,9 +114,10 @@ describe('NativeWorkerOperationsController', () => {
   });
 
   it('sends typed input actions through the bound worker identity and refreshes after each action', async () => {
-    const { controller, execute } = harness();
+    const { controller, execute, authorityFor } = harness();
     const operations = new NativeWorkerOperationsController({
       controller,
+      authorityFor,
       now: () => 300,
       idFactory: (() => {
         let id = 0;
@@ -135,12 +142,12 @@ describe('NativeWorkerOperationsController', () => {
 
   it('keeps graceful abort ordinary and force kill behind a separate approval gate', async () => {
     const approveForceKill = vi.fn(async () => false);
-    const { controller, execute } = harness();
-    const operations = new NativeWorkerOperationsController({ controller, approveForceKill });
+    const { controller, execute, authorityFor } = harness();
+    const operations = new NativeWorkerOperationsController({ controller, authorityFor, approveForceKill });
     await operations.open();
 
     await operations.dispatch({ type: 'abort', expectedGeneration: 1, workerId: 'worker-1', reason: 'stop safely' });
-    expect(execute).toHaveBeenCalledWith({ type: 'abort', workerId: 'worker-1', reason: 'stop safely' });
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'abort', workerId: 'worker-1', reason: 'stop safely' }));
 
     await expect(operations.dispatch({ type: 'kill', expectedGeneration: 2, workerId: 'worker-1', reason: 'force stop' }))
       .rejects.toMatchObject({ category: 'approval-denied' } satisfies Partial<NativeWorkerOperationsError>);
@@ -153,8 +160,8 @@ describe('NativeWorkerOperationsController', () => {
   });
 
   it('fails closed when force-kill approval is unavailable', async () => {
-    const { controller, execute } = harness();
-    const operations = new NativeWorkerOperationsController({ controller });
+    const { controller, execute, authorityFor } = harness();
+    const operations = new NativeWorkerOperationsController({ controller, authorityFor });
     await operations.open();
     await expect(operations.dispatch({ type: 'kill', expectedGeneration: 1, workerId: 'worker-1' }))
       .rejects.toMatchObject({ category: 'approval-required' } satisfies Partial<NativeWorkerOperationsError>);

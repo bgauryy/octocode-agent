@@ -1,7 +1,13 @@
-import { fatalErrorReport, main } from './launcher.js';
+import { fileURLToPath } from "node:url";
+
+import { runWithInteractiveFfi } from "./cli-bootstrap.js";
+import { fatalErrorReport, main } from "./launcher.js";
 
 try {
-  process.exitCode = await main(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  process.exitCode = await runWithInteractiveFfi(argv, () => main(argv), {
+    entrypoint: fileURLToPath(import.meta.url),
+  });
 } catch (error) {
   process.stderr.write(`${fatalErrorReport(error)}\n`);
   process.exitCode = 1;

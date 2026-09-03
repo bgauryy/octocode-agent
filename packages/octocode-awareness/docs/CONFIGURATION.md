@@ -3,9 +3,8 @@
 Awareness has two separate configurations:
 
 - An optional `<workspace>/.octocode/awareness.json` selects logical
-  coordination/memory scope behavior and the hook profile. Scope settings don't
-  select a repository database; durable state remains in the default global
-  agent database unless the caller supplies an explicit override.
+  coordination/memory behavior and the hook profile. Durable state defaults to
+  `<workspace>/.octocode/awareness.sqlite3`.
 - `$OCTOCODE_HOME/awareness.json` controls global automatic-feature preferences.
 
 Awareness reads global automatic-feature preferences from
@@ -64,11 +63,11 @@ other than `1`. The bundled skill includes the machine-readable
 
 The file does not disable explicit CLI operations, evidence rules, database integrity,
 or only one half of the mutation guard/presence pair. Existing environment kill switches
-remain supported and take precedence when disabling automation. `--db-scope repo|global`
-overrides logical scope behavior for one call; it doesn't select a repository
-database. `OCTOCODE_HOME`, `OCTOCODE_AGENT_DIR`, and
-`OCTOCODE_AGENT_DB_PATH` resolve global locations, and `--db` selects an explicit
-database path for one call.
+remain supported and take precedence when disabling automation. `--db-scope
+repo|global` selects the workspace or optional global Awareness database for one
+call. Global Awareness resolves under `$OCTOCODE_HOME/awareness/`, while `--db`
+selects an explicit Awareness database path. Agent-specific directory and
+database overrides don't redirect Awareness.
 See [storage scopes](STORAGE_SCOPES.md).
 
 Hook profiles are `guard`, `coordination`, and `full`. Host support, event mappings,

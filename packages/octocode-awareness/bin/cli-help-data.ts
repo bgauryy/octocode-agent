@@ -14,12 +14,13 @@ export const HELP = `  🐙 Octocode Awareness
   LEARNING  reflect record only after a verified reusable lesson, recurring failure, or owned follow-up
 
   DEFAULT POLICY
-    database                → $OCTOCODE_HOME/agent/agent.sqlite3
-    isolation               → workspace_path columns
+    database                → <workspace>/.octocode/awareness.sqlite3
+    global scope            → $OCTOCODE_HOME/awareness/awareness.sqlite3
     hooks                    → coordination profile (edit guards + stop verification)
 
   EXPERT COMMANDS
     attend · plan · task · work · verify · signal · memory record/recall · refinement · query · reflect
+    coordination maintenance migrate-legacy     relocate a recognized legacy mixed store
     schema commands --compact                  compact command map
     schema command <noun> [action]             exact fields
     <noun> [action] --help                     focused usage
@@ -108,7 +109,7 @@ export const COMMAND_DISPLAY: Record<string, string> = {
   'self-test': 'maintenance self-test',
   'reflect': 'reflect record',
   'plan-command': 'plan create|list|show|join|doc|status',
-  'task-command': 'task create|list|ready|show|claim|heartbeat|submit|release|depend',
+  'task-command': 'task create|list|ready|show|claim|heartbeat|submit|release|retry|depend',
   'work-command': 'work start|touch|end|list|show',
   'hook-run': 'hook run',
   'hooks-install': 'hooks install|check|remove',

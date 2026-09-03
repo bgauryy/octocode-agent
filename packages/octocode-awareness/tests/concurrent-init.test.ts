@@ -40,7 +40,7 @@ function openConcurrently(dbPath: string, count: number): Promise<Array<{ code: 
 describe('concurrent database initialization', () => {
   it('serializes first open so every process observes one complete contract', { timeout: 60_000 }, async () => {
     const root = mkdtempSync(join(tmpdir(), 'octocode-awareness-concurrent-init-'));
-    const dbPath = join(root, 'agent.sqlite3');
+    const dbPath = join(root, 'awareness.sqlite3');
     try {
       const results = await openConcurrently(dbPath, 8);
       expect(
@@ -49,7 +49,7 @@ describe('concurrent database initialization', () => {
       ).toEqual(results.map(() => 0));
 
       const database = new DatabaseSync(dbPath);
-      expect(database.prepare('PRAGMA application_id').get()).toEqual({ application_id: 0x4f435441 });
+      expect(database.prepare('PRAGMA application_id').get()).toEqual({ application_id: 0x4f435431 });
       expect(database.prepare("SELECT name FROM sqlite_schema WHERE name='awareness_memories'").get())
         .toEqual({ name: 'awareness_memories' });
       database.close();

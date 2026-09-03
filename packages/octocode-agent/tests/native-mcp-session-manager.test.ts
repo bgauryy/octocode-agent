@@ -20,11 +20,11 @@ function fixtureRoot(server: Record<string, unknown> = {}): string {
   return root;
 }
 
-const execution = (input: unknown, cwd: string) => ({
+const execution = (input: unknown, cwd: string, signal = new AbortController().signal) => ({
   input,
   callId: 'call:1' as never,
-  context: { sessionId: 's' as never, cwd, mode: 'headless' as const, trust: { workspace: 'trusted' as const, managedOnly: false }, signal: new AbortController().signal },
-  signal: new AbortController().signal,
+  context: { sessionId: 's' as never, cwd, mode: 'headless' as const, trust: { workspace: 'trusted' as const, managedOnly: false }, signal },
+  signal,
   update: async () => undefined,
 });
 
@@ -119,6 +119,85 @@ describe('native MCP session manager', () => {
 
     expect(connect).toHaveBeenCalledTimes(2);
     await manager.close();
+  });
+
+  it('evicts a connection after a catalog transport failure without replaying the failed request', async () => {
+    const root = fixtureRoot();
+    const firstListTools = vi.fn()
+      .mockResolvedValueOnce({ tools: [{ name: 'probe', inputSchema: { type: 'object' } }], ttlMs: 60_000 })
+      .mockRejectedValue(new Error('stdio connection closed'));
+    const secondListTools = vi.fn(async () => ({
+      tools: [{ name: 'probe', inputSchema: { type: 'object' } }],
+      ttlMs: 60_000,
+    }));
+    const firstClose = vi.fn(async () => undefined);
+    const first = fakeClient({ listTools: firstListTools, close: firstClose });
+    const second = fakeClient({ listTools: secondListTools });
+    const connect = vi.fn()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    const registry = new ToolRegistry();
+    const manager = registerNativeMcpTool(registry, {
+      cwd: root,
+      octocodeHome: path.join(root, 'home'),
+      connect,
+    });
+    const tool = registry.get('MCPTool')!;
+
+    await expect(tool.execute(execution({ action: 'discover', server: 'fixture' }, root))).resolves.toMatchObject({
+      content: { phase: 'discovered' },
+    });
+    await expect(tool.execute(execution({ action: 'refresh', server: 'fixture' }, root)))
+      .rejects.toThrow('stdio connection closed');
+    await expect(tool.execute(execution({ action: 'refresh', server: 'fixture' }, root))).resolves.toMatchObject({
+      ok: true,
+    });
+
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(firstListTools).toHaveBeenCalledTimes(2);
+    expect(secondListTools).toHaveBeenCalledTimes(1);
+    await manager.close();
+    expect(firstClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a healthy shared connection owned when catalog refresh is cancelled', async () => {
+    const root = fixtureRoot();
+    let reportRefreshStarted!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      reportRefreshStarted = resolve;
+    });
+    const neverCompletes = new Promise<never>(() => undefined);
+    const listTools = vi.fn()
+      .mockResolvedValueOnce({ tools: [{ name: 'probe', inputSchema: { type: 'object' } }], ttlMs: 60_000 })
+      .mockImplementationOnce(() => {
+        reportRefreshStarted();
+        return neverCompletes;
+      })
+      .mockResolvedValue({ tools: [{ name: 'probe', inputSchema: { type: 'object' } }], ttlMs: 60_000 });
+    const close = vi.fn(async () => undefined);
+    const client = fakeClient({ listTools, close });
+    const connect = vi.fn(async () => client);
+    const registry = new ToolRegistry();
+    const manager = registerNativeMcpTool(registry, {
+      cwd: root,
+      octocodeHome: path.join(root, 'home'),
+      connect,
+    });
+    const tool = registry.get('MCPTool')!;
+
+    await tool.execute(execution({ action: 'discover', server: 'fixture' }, root));
+    const cancellation = new AbortController();
+    const refresh = tool.execute(execution({ action: 'refresh', server: 'fixture' }, root, cancellation.signal));
+    await refreshStarted;
+    cancellation.abort('cancel refresh');
+    await expect(refresh).rejects.toMatchObject({ category: 'cancelled' });
+
+    await expect(tool.execute(execution({ action: 'refresh', server: 'fixture' }, root))).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(connect).toHaveBeenCalledTimes(1);
+    await manager.close();
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it('overlaps same-server MCP calls only when the server declares a bounded concurrency above one', async () => {

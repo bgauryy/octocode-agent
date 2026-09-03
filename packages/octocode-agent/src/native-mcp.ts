@@ -245,6 +245,8 @@ const MAX_LIVE_MCP_CATALOG_NAMES = 100;
 
 export class NativeMcpSessionManager {
   readonly #connections = new Map<string, Promise<NativeMcpClient>>();
+  readonly #clients = new Map<string, NativeMcpClient>();
+  readonly #retiredClients = new Set<NativeMcpClient>();
   readonly #connectionStates = new Map<string, 'connecting' | 'connected'>();
   readonly #catalogs = new Map<string, NativeMcpCatalog>();
   readonly #invalidatedCatalogs = new Set<string>();
@@ -268,11 +270,13 @@ export class NativeMcpSessionManager {
     this.#connectionStates.set(name, 'connecting');
     const connection = this.connect(name, config, signal).then((client) => {
       this.#connectionStates.set(name, 'connected');
+      this.#clients.set(name, client);
       const previousOnClose = client.onclose;
       client.onclose = () => {
         previousOnClose?.();
         if (this.#connections.get(name) !== connection) return;
         this.#connections.delete(name);
+        this.#clients.delete(name);
         this.#connectionStates.delete(name);
         this.#invalidatedCatalogs.add(name);
       };
@@ -292,11 +296,21 @@ export class NativeMcpSessionManager {
       return client;
     }).catch((error: unknown) => {
       if (this.#connections.get(name) === connection) this.#connections.delete(name);
+      this.#clients.delete(name);
       this.#connectionStates.delete(name);
       throw error;
     });
     this.#connections.set(name, connection);
     return withMcpCancellation(connection, signal, `MCP connection cancelled for ${name}`);
+  }
+
+  evictFailedConnection(name: string, client: NativeMcpClient): void {
+    if (this.#clients.get(name) !== client) return;
+    this.#retiredClients.add(client);
+    this.#clients.delete(name);
+    this.#connections.delete(name);
+    this.#connectionStates.delete(name);
+    this.#invalidatedCatalogs.add(name);
   }
 
   catalog(name: string, now: number): Array<Record<string, unknown>> | undefined {
@@ -361,12 +375,18 @@ export class NativeMcpSessionManager {
     this.#catalogs.clear();
     this.#invalidatedCatalogs.clear();
     this.#connectionStates.clear();
+    this.#clients.clear();
     const connections = [...this.#connections.values()];
+    const retiredClients = [...this.#retiredClients];
     this.#connections.clear();
+    this.#retiredClients.clear();
     this.#closePromise = (async () => {
       await this.#taskWrites;
       const clients = await Promise.all(connections.map((connection) => connection.catch(() => undefined)));
-      const uniqueClients = new Set(clients.filter((client): client is NativeMcpClient => client !== undefined));
+      const uniqueClients = new Set([
+        ...retiredClients,
+        ...clients.filter((client): client is NativeMcpClient => client !== undefined),
+      ]);
       await Promise.all([...uniqueClients].map((client) => client.close().catch(() => undefined)));
     })();
     return this.#closePromise;
@@ -1115,11 +1135,20 @@ export function registerNativeMcpTool(registry: ToolRegistry, options: NativeMcp
     const seenCursors = new Set<string>();
     let minimumTtlMs = Number.POSITIVE_INFINITY;
     for (let page = 0; page < MAX_MCP_CATALOG_PAGES; page += 1) {
-      const result = boundedMcpRecord(await withMcpCancellation(
-        client.listTools(cursor === undefined ? undefined : { cursor }, requestOptions),
-        requestOptions.signal,
-        `MCP tools listing cancelled for ${server}`,
-      ), 'MCP tools catalog transport response', MAX_MCP_TRANSPORT_BYTES);
+      let listed: unknown;
+      try {
+        listed = await withMcpCancellation(
+          client.listTools(cursor === undefined ? undefined : { cursor }, requestOptions),
+          requestOptions.signal,
+          `MCP tools listing cancelled for ${server}`,
+        );
+      } catch (error) {
+        if (!(error instanceof RuntimeFailure && error.category === 'cancelled')) {
+          manager.evictFailedConnection(server, client);
+        }
+        throw error;
+      }
+      const result = boundedMcpRecord(listed, 'MCP tools catalog transport response', MAX_MCP_TRANSPORT_BYTES);
       const pageTtlMs = Number.isSafeInteger(result.ttlMs) && (result.ttlMs as number) >= 0 ? result.ttlMs as number : catalogTtlMs;
       minimumTtlMs = Math.min(minimumTtlMs, pageTtlMs);
       appendMcpCatalogItems(accumulator, result.tools, 'tools');

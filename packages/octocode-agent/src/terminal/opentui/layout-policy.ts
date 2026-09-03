@@ -8,6 +8,12 @@ const SEMANTIC_SURFACE_LAYOUT = Object.freeze({
   wideWidthRatio: 0.66,
 });
 
+const WIDE_RAIL_LAYOUT = Object.freeze({
+  minimumWidthColumns: 30,
+  maximumWidthColumns: 56,
+  widthRatio: 0.35,
+});
+
 export interface OpenTuiLayoutViewport {
   readonly widthColumns: number;
   readonly heightRows: number;
@@ -27,6 +33,18 @@ function positiveDimension(value: number, name: string): number {
 
 export function isNarrowOpenTuiLayout(widthColumns: number): boolean {
   return positiveDimension(widthColumns, 'terminal width') < NATIVE_DESIGN_LAYOUT.wideColumns;
+}
+
+/** Keep the inspector useful without allowing it to displace the conversation. */
+export function resolveOpenTuiRailWidth(widthColumns: number): number {
+  const width = positiveDimension(widthColumns, 'terminal width');
+  return Math.min(
+    WIDE_RAIL_LAYOUT.maximumWidthColumns,
+    Math.max(
+      WIDE_RAIL_LAYOUT.minimumWidthColumns,
+      Math.floor(width * WIDE_RAIL_LAYOUT.widthRatio),
+    ),
+  );
 }
 
 export function resolveOpenTuiSurfaceViewport(

@@ -20,7 +20,7 @@ function header(overrides: Partial<HeaderSnapshot> = {}): HeaderSnapshot {
 }
 
 describe('HeaderWidget', () => {
-  it('renders the full Octocode banner with runtime status and non-focusable region semantics', () => {
+  it('renders compact persistent chrome with runtime status and non-focusable region semantics', () => {
     const widget = new HeaderWidget('header-main', header());
     widget.mount();
     widget.activate();
@@ -35,16 +35,17 @@ describe('HeaderWidget', () => {
       accessibility: { role: 'banner', liveRegion: 'polite' },
     });
     expect(rendered.regions).toHaveLength(1);
-    expect(line).toContain('██████╗  ██████╗████████╗');
+    expect(line).toContain('🔍🐙 Octocode · v1.1.0 · Your AI coding agent');
     expect(line).toContain('v1.1.0');
     expect(line).toContain('Your AI coding agent');
-    expect(line).toContain('BETA VERSION · for issues: https://github.com/bgauryy/octocode-agent/issues');
     expect(line).toContain('Octocode');
     expect(line).toContain('IDLE');
     expect(line).toContain('trust TRUSTED');
     expect(line).toContain('model openai/gpt-5.6');
-    expect(line).toContain('session session-123');
-    expect(line.split('\n')).toHaveLength(10);
+    expect(line).not.toContain('session session-123');
+    expect(line).not.toContain('██████╗');
+    expect(line).not.toContain('BETA VERSION');
+    expect(line.split('\n')).toHaveLength(2);
     expect(line).not.toMatch(/\u001b/u);
     expect(line.split('\n').every((bannerLine) => HeaderWidget.displayWidth(bannerLine) <= 120)).toBe(true);
   });
@@ -97,6 +98,7 @@ describe('HeaderWidget', () => {
     expect(alternate).toContain('session-with-a-long-id');
     expect(alternate).toContain('trust TRUSTED');
     expect(alternate).toContain('IDLE');
+    expect(alternate).toContain('BETA VERSION');
   });
 
   it('strips terminal controls, collapses multiline values, and rejects invalid bounds or authority', () => {

@@ -29,6 +29,7 @@ import type {
   NativeProcessSignal,
   NativeSignalSource,
 } from "../src/native-signal-scope.js";
+import { workerAuthorityFixture } from "./worker-authority-fixture.js";
 
 function runtimeEvent(type: RuntimeEvent["type"], payload: RuntimeEvent["payload"]): RuntimeEvent {
   return {
@@ -88,6 +89,7 @@ describe("native ACP adapter", () => {
         packet: {
           schemaVersion: 1, type: "worker.spawn", packetId: packetId("spawn-permission"), workerId: workerId("worker-permission"),
           correlationId: correlationId("correlation-permission"), sessionId: sessionId("permission-session"), redaction: "sensitive",
+          authority: workerAuthorityFixture({ workerId: workerId("worker-permission"), correlationId: correlationId("correlation-permission"), sessionId: sessionId("permission-session") }),
           prompt: "private worker prompt", promptSnapshotId: "digest", workspace: { mode: "shared" },
           capabilities: { tools: [], models: [], maxTurns: 1 },
         },
@@ -535,6 +537,7 @@ describe("native ACP adapter", () => {
     const projection = new NativeWorkerTransportProjection({ execute }, {
       activeSessionId: sessionId("closing-session"), promptSnapshotId: "digest",
       capabilities: { tools: [], models: [], maxTurns: 1 }, authorize: async () => true,
+      resolveAuthority: () => workerAuthorityFixture({ sessionId: sessionId("closing-session") }),
     });
     const adapter = createAgentRuntimeAcpAdapter({ createRuntime: async () => runtime, workerProjection: () => projection });
     const connection = client({ name: "test-client" }).connect(adapter.app);
@@ -563,6 +566,7 @@ describe("native ACP adapter", () => {
     } satisfies AgentRuntime;
     const projection = (execute: typeof executeFirst, activeSessionId: string) => new NativeWorkerTransportProjection({ execute }, {
       activeSessionId: sessionId(activeSessionId), promptSnapshotId: "digest", capabilities: { tools: [], models: [], maxTurns: 1 }, authorize: async () => true,
+      resolveAuthority: () => workerAuthorityFixture({ sessionId: sessionId(activeSessionId) }),
     });
     let current = projection(executeFirst, "dynamic-session");
     const adapter = createAgentRuntimeAcpAdapter({ createRuntime: async () => runtime, workerProjection: () => current });

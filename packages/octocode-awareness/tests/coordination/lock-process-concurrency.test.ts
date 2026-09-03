@@ -94,7 +94,7 @@ function lockProcess(workspace: string, dbPath: string, agentId: string, filePat
 describe('coordination lock process concurrency', () => {
   it('atomically grants one owner and reports conflicts to every competing process', { timeout: 60_000 }, async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'aw-lock-process-race-'));
-    const dbPath = join(workspace, 'agent.sqlite3');
+    const dbPath = join(workspace, 'awareness.sqlite3');
     const filePath = 'src/shared.ts';
     let contenders: ReturnType<typeof lockProcess>[] = [];
 

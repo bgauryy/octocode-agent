@@ -37,6 +37,18 @@ function event(type: AgentEventType, mode: RuntimeMode) {
   const payload =
     type === "runtime.failed"
       ? { message: "failed" }
+      : type === "session.started" || type === "session.forked"
+        ? {
+            schemaVersion: 1,
+            transition: type === "session.forked" ? "fork" : "resume",
+            displayName: "Workspace session",
+            shortPublicId: "a1b2c3d4",
+            state: type === "session.forked" ? "forked" : "resumed",
+            restoredVisibleMessageCount: 2,
+            retainedModelContextItemCount: 2,
+            contextOccupancy: { used: 512, limit: 4_096 },
+            committedCompaction: "none",
+          }
       : type === "session.starting" || type === "session.stopping"
         ? { reason: "test" }
         : type === "input.received"
@@ -188,8 +200,8 @@ function event(type: AgentEventType, mode: RuntimeMode) {
                                                             durationMs: 1,
                                                             stop: "complete",
                                                             usage: {
-                                                              inputTokens: 0,
-                                                              outputTokens: 0,
+                                                                 inputTokens: 0,
+                                                                 outputTokens: 0,
                                                             },
                                                           }
                                                         : type ===
@@ -201,10 +213,11 @@ function event(type: AgentEventType, mode: RuntimeMode) {
                                                             }
                                                           : type ===
                                                               "context.usage-changed"
-                                                            ? {
-                                                                inputTokens: 0,
-                                                                outputTokens: 0,
-                                                              }
+                                                             ? {
+                                                                 inputTokens: 0,
+                                                                 outputTokens: 0,
+                                                                 currentContextTokens: 0,
+                                                               }
                                                             : {};
   return {
     schemaVersion: 1 as const,
@@ -266,13 +279,17 @@ describe("RPC event contract alignment", () => {
 
     for (const type of AGENT_EVENT_TYPES) {
       for (const mode of RUNTIME_MODES) {
-        expect(
-          parseRpcEvent({
+        let parsed;
+        try {
+          parsed = parseRpcEvent({
             protocolVersion: 1,
             sequence: 1,
             event: event(type, mode),
-          }).event,
-        ).toMatchObject({ type, mode });
+          }).event;
+        } catch (error) {
+          throw new Error(`valid fixture rejected for ${type}/${mode}`, { cause: error });
+        }
+        expect(parsed).toMatchObject({ type, mode });
       }
     }
   });
@@ -444,13 +461,17 @@ describe("RPC event contract alignment", () => {
   it("rejects malformed payloads for every mapped event payload type", () => {
     for (const type of AGENT_EVENT_PAYLOAD_TYPES) {
       const valid = event(type, "rpc");
-      expect(
-        parseRpcEvent({
+      let parsed;
+      try {
+        parsed = parseRpcEvent({
           protocolVersion: 1,
           sequence: 1,
           event: valid,
-        }).event,
-      ).toMatchObject({ type });
+        }).event;
+      } catch (error) {
+        throw new Error(`mapped fixture rejected for ${type}`, { cause: error });
+      }
+      expect(parsed).toMatchObject({ type });
       expect(() =>
         parseRpcEvent({
           protocolVersion: 1,
@@ -459,6 +480,120 @@ describe("RPC event contract alignment", () => {
         }),
       ).toThrow(/event payload/i);
     }
+  });
+
+  it("strictly validates bounded, redacted session transition receipts", () => {
+    const started = event("session.started", "rpc");
+    const forked = event("session.forked", "rpc");
+    expect(
+      parseRpcEvent({ protocolVersion: 1, sequence: 1, event: started }).event
+        .payload,
+    ).toEqual(started.payload);
+    expect(
+      parseRpcEvent({ protocolVersion: 1, sequence: 2, event: forked }).event
+        .payload,
+    ).toEqual(forked.payload);
+
+    const validStartedStates = [
+      {
+        ...started.payload,
+        transition: "create",
+        state: "fresh",
+        restoredVisibleMessageCount: 0,
+      },
+      {
+        ...started.payload,
+        state: "resumed-empty",
+        restoredVisibleMessageCount: 0,
+      },
+      {
+        ...started.payload,
+        state: "resumed-compacted",
+        committedCompaction: "committed",
+      },
+      {
+        ...started.payload,
+        state: "recovered-partially",
+        restoredVisibleMessageCount: "unknown",
+        retainedModelContextItemCount: "unknown",
+        contextOccupancy: "unknown",
+        committedCompaction: "unknown",
+      },
+      { ...started.payload, transition: "switch" },
+    ];
+    for (const payload of validStartedStates) {
+      expect(() =>
+        parseRpcEvent({
+          protocolVersion: 1,
+          sequence: 2,
+          event: { ...started, payload },
+        }),
+      ).not.toThrow();
+    }
+
+    for (const payload of [
+      { ...started.payload, schemaVersion: 2 },
+      { ...started.payload, transition: "fork" },
+      { ...started.payload, state: "fresh" },
+      { ...started.payload, displayName: "x".repeat(121) },
+      { ...started.payload, displayName: "unsafe\nname" },
+      { ...started.payload, shortPublicId: "raw/storage/session/key" },
+      { ...started.payload, restoredVisibleMessageCount: -1 },
+      { ...started.payload, retainedModelContextItemCount: 1.5 },
+      { ...started.payload, contextOccupancy: { used: 5, limit: 4 } },
+      { ...started.payload, committedCompaction: "pending" },
+      { ...started.payload, storagePath: "/private/session.json" },
+      { ...started.payload, messageBody: "secret" },
+      { ...started.payload, compactionSummary: "secret" },
+    ]) {
+      expect(() =>
+        parseRpcEvent({
+          protocolVersion: 1,
+          sequence: 3,
+          event: { ...started, payload },
+        }),
+      ).toThrow(/event payload/i);
+    }
+
+    expect(() =>
+      parseRpcEvent({
+        protocolVersion: 1,
+        sequence: 4,
+        event: {
+          ...forked,
+          payload: { ...forked.payload, transition: "resume" },
+        },
+      }),
+    ).toThrow(/event payload/i);
+  });
+
+  it("keeps provider billing usage distinct from current context usage", () => {
+    const provider = event("provider.response-received", "rpc");
+    expect(() =>
+      parseRpcEvent({
+        protocolVersion: 1,
+        sequence: 1,
+        event: {
+          ...provider,
+          payload: {
+            ...provider.payload,
+            usage: { inputTokens: 1, outputTokens: 1, currentContextTokens: 2 },
+          },
+        },
+      }),
+    ).toThrow(/event payload/i);
+
+    const context = event("context.usage-changed", "rpc");
+    expect(() =>
+      parseRpcEvent({
+        protocolVersion: 1,
+        sequence: 2,
+        event: {
+          ...context,
+          payload: { inputTokens: 1, outputTokens: 1 },
+        },
+      }),
+    ).toThrow(/event payload/i);
   });
 
   it("rejects checkpoint event payloads that expose absolute paths, content, or unversioned fields", () => {

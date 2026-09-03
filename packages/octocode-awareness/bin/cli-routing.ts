@@ -151,6 +151,7 @@ export const COMMAND_ROUTES: Record<string, CommandRoute> = {
   'task heartbeat': { command: 'task-command', prepend: ['--action', 'heartbeat'] },
   'task submit': { command: 'task-command', prepend: ['--action', 'submit'] },
   'task release': { command: 'task-command', prepend: ['--action', 'release'] },
+  'task retry': { command: 'task-command', prepend: ['--action', 'retry'] },
   'task depend': { command: 'task-command', prepend: ['--action', 'depend'] },
   'work start': { command: 'work-command', prepend: ['--action', 'start'] },
   'work touch': { command: 'work-command', prepend: ['--action', 'touch'] },

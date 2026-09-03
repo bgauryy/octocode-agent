@@ -33,7 +33,7 @@ function runHook(
   memoryHome: string,
   cwd: string,
 ) {
-  writeWorkspacePolicy(cwd, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
+  writeWorkspacePolicy(cwd, { version: 1, storage: { repository: 'repo', memory: 'repo' }, hooks: { profile: 'full' } });
   return spawnSync(process.execPath, [TSX_CLI, SOURCE_RUNNER, command], {
     cwd,
     env: hookEnv(memoryHome),
@@ -49,7 +49,7 @@ function runHookAsync(
   memoryHome: string,
   cwd: string,
 ): Promise<{ code: number | null; stderr: string }> {
-  writeWorkspacePolicy(cwd, { version: 1, storage: { repository: 'global', memory: 'global' }, hooks: { profile: 'full' } });
+  writeWorkspacePolicy(cwd, { version: 1, storage: { repository: 'repo', memory: 'repo' }, hooks: { profile: 'full' } });
   return new Promise((resolveResult, reject) => {
     const child = spawn(process.execPath, [TSX_CLI, SOURCE_RUNNER, command], {
       cwd,
@@ -65,8 +65,8 @@ function runHookAsync(
   });
 }
 
-function stateJsonFiles(memoryHome: string): string[] {
-  const stateDir = join(memoryHome, 'hook-state', 'runs');
+function stateJsonFiles(workspace: string): string[] {
+  const stateDir = join(workspace, '.octocode', 'hook-state', 'runs');
   return readdirSync(stateDir).filter((file) => file.endsWith('.json'));
 }
 
@@ -92,7 +92,7 @@ describe('shell hook correlation state', () => {
       const first = runHook('pre-edit', payload, memoryHome, workspace);
       expect(first.status, first.stderr).toBe(0);
 
-      const dbPath = join(memoryHome, 'agent.sqlite3');
+      const dbPath = join(workspace, '.octocode', 'awareness.sqlite3');
       const db = new DatabaseSync(dbPath);
       const firstRun = db.prepare('SELECT run_id FROM task_runs').get() as { run_id: string };
       const now = new Date().toISOString();
@@ -108,7 +108,7 @@ describe('shell hook correlation state', () => {
       const inspect = new DatabaseSync(dbPath);
       expect((inspect.prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status = 'ACTIVE'").get() as { c: number }).c).toBe(0);
       expect((inspect.prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status = 'PENDING'").get() as { c: number }).c).toBe(2);
-      expect(stateJsonFiles(memoryHome)).toHaveLength(0);
+      expect(stateJsonFiles(workspace)).toHaveLength(0);
       inspect.close();
     } finally {
       rmSync(memoryHome, { recursive: true, force: true });
@@ -124,8 +124,8 @@ describe('shell hook correlation state', () => {
       const first = runHook('pre-edit', payload, memoryHome, workspace);
       expect(first.status, first.stderr).toBe(0);
 
-      const stateDir = join(memoryHome, 'hook-state', 'runs');
-      const [stateFile] = stateJsonFiles(memoryHome);
+      const stateDir = join(workspace, '.octocode', 'hook-state', 'runs');
+      const [stateFile] = stateJsonFiles(workspace);
       const entries = JSON.parse(readFileSync(join(stateDir, stateFile!), 'utf8')) as Array<Record<string, unknown>>;
       entries[0]!['createdAt'] = '2000-01-01T00:00:00.000Z';
       writeFileSync(join(stateDir, stateFile!), JSON.stringify(entries));
@@ -135,10 +135,10 @@ describe('shell hook correlation state', () => {
       const post = runHook('post-edit', payload, memoryHome, workspace);
       expect(post.status, post.stderr).toBe(0);
 
-      const db = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const db = new DatabaseSync(join(workspace, '.octocode', 'awareness.sqlite3'));
       expect((db.prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status = 'ACTIVE'").get() as { c: number }).c).toBe(1);
       expect((db.prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status = 'PENDING'").get() as { c: number }).c).toBe(1);
-      expect(stateJsonFiles(memoryHome)).toHaveLength(0);
+      expect(stateJsonFiles(workspace)).toHaveLength(0);
       db.close();
     } finally {
       rmSync(memoryHome, { recursive: true, force: true });
@@ -156,7 +156,7 @@ describe('shell hook correlation state', () => {
       )));
       for (const start of starts) expect(start.code, start.stderr).toBe(0);
 
-      const before = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const before = new DatabaseSync(join(workspace, '.octocode', 'awareness.sqlite3'));
       expect((before.prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status = 'ACTIVE'").get() as { c: number }).c).toBe(3);
       before.close();
 
@@ -165,13 +165,13 @@ describe('shell hook correlation state', () => {
       )));
       for (const finish of finishes) expect(finish.code, finish.stderr).toBe(0);
 
-      const after = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const after = new DatabaseSync(join(workspace, '.octocode', 'awareness.sqlite3'));
       expect(
         (after.prepare("SELECT COUNT(*) AS c FROM task_runs WHERE status = 'PENDING'").get() as { c: number }).c,
         finishes.map((finish) => finish.stderr).filter(Boolean).join('\n'),
       ).toBe(3);
       expect((after.prepare("SELECT COUNT(*) AS c FROM run_files WHERE ended_at IS NULL").get() as { c: number }).c).toBe(0);
-      expect(stateJsonFiles(memoryHome)).toHaveLength(0);
+      expect(stateJsonFiles(workspace)).toHaveLength(0);
       after.close();
     } finally {
       rmSync(memoryHome, { recursive: true, force: true });

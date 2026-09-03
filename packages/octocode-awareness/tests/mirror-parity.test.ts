@@ -35,7 +35,7 @@ function listFiles(root: string): string[] {
   const out: string[] = [];
   function walk(dir: string): void {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === 'node_modules' || entry.name === '.DS_Store' || entry.name === 'octocode-config.mjs') continue;
+      if (entry.name === 'node_modules' || entry.name === '.octocode' || entry.name === '.DS_Store' || entry.name === 'octocode-config.mjs') continue;
       const abs = resolve(dir, entry.name);
       if (entry.isDirectory()) {
         walk(abs);

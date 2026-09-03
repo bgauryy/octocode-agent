@@ -1,14 +1,12 @@
 import type { AgentRecord,AgentStatus,CheckAudit,CheckStatus,HandoffNote,LiteMessage,Lock,LockWaitResult,MemoryItem,Plan,PlanGraphResult,PlanStatus,PruneResult,SourceStep,Task,TaskStatus,WorkPresence } from '@octocodeai/octocode-shared/entities';
-import { initOctocodeSchema } from '@octocodeai/octocode-shared/schema';
-import { AGENT_APPLICATION_ID } from '@octocodeai/octocode-shared/schema';
-import { assertAgentDatabaseIdentity } from '@octocodeai/octocode-shared/db';
 import { DatabaseSync,withSqliteBusyRetry } from '@octocodeai/octocode-shared/sqlite';
 import { journalModeForSqliteVersion } from '@octocodeai/octocode-shared/sqlite-version';
 import { hardenSqliteFiles,preparePrivateSqlitePath } from '@octocodeai/octocode-shared/permissions';
 import { resolve } from 'node:path';
 import { defaultDbPath,type AwarenessOptions,type AwarenessSchema } from './coordination-shared.js';
 import { parseAgentEventEnvelopeV1, type AgentEventEnvelopeV1 } from '../continuity-contracts.js';
-import { SCHEMA_DDL, SCHEMA_INDEX_DDL } from '../db-schema.js';
+import { initializeDb } from '../db-init.js';
+import { inspectSchemaState } from '../db-runtime.js';
 import type { MemoryEvaluationCorpusV1,MemoryEvaluationReportV1,MemoryRecallModeV1 } from '../memory-hardening.js';
 import type { VerifiedMemoryV1 } from './coordination-memory-agents.js';
 
@@ -27,13 +25,12 @@ export abstract class CoordinationBase {
       // DB, and without it concurrent writers hit SQLITE_BUSY immediately and
       // silently lose records (verified: 40 parallel `task add` → 9 failures).
       this.db.exec('PRAGMA busy_timeout = 5000');
-      assertAgentDatabaseIdentity(this.db);
+      const schemaState = inspectSchemaState(this.db);
       const version = (this.db.prepare('SELECT sqlite_version() AS version').get() as { version: string }).version;
       withSqliteBusyRetry(() => this.db.exec(`PRAGMA journal_mode = ${journalModeForSqliteVersion(version)}`));
       this.db.exec('PRAGMA foreign_keys = ON');
       this.initializeSchema();
-      initOctocodeSchema(this.db);
-      this.db.exec(SCHEMA_DDL);
+      initializeDb(this.db, schemaState === 'fresh' ? 'awareness-host' : schemaState);
       this.db.exec(`
         INSERT INTO awareness_plans(
           plan_id, name, objective, lead_agent_id, status, workspace_path,
@@ -59,8 +56,6 @@ export abstract class CoordinationBase {
         WHERE p.source_kind = 'awareness-ledger'
         ON CONFLICT(task_id) DO NOTHING;
       `);
-      this.db.exec(SCHEMA_INDEX_DDL);
-      this.db.exec(`PRAGMA application_id = ${AGENT_APPLICATION_ID}`);
       hardenSqliteFiles(this.dbPath);
     } catch (error) {
       this.db.close();

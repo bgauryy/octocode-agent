@@ -7,8 +7,9 @@ native, Pi, and Awareness. It is not an agent runtime or a UI composition root.
 
 - `paths.ts` owns canonical Octocode home and agent-state paths by composing
   `@octocodeai/config`.
-- `db.ts`, `schema.ts`, `sqlite.ts`, and `sqlite-version.ts` own the shared local
-  SQLite connection, identity, control tables, and version checks.
+- `db.ts`, `schema.ts`, `sqlite.ts`, and `sqlite-version.ts` own Agent control
+  database connections, identity, control tables, and version checks. They do
+  not own Awareness relations or Rust runtime durability.
 - `entities.ts`, `permissions.ts`, and `protocols.ts` own cross-host data and
   permission shapes.
 - `mcp-discovery.ts` and `mcp-state.ts` own persistent MCP discovery and override
@@ -23,7 +24,7 @@ native, Pi, and Awareness. It is not an agent runtime or a UI composition root.
 | Layer | Modules | Consumers |
 |---|---|---|
 | Paths and configuration | `paths.ts` and `@octocodeai/config` | Native, Pi, and Awareness composition roots |
-| SQLite control data | `db.ts`, `schema.ts`, `sqlite.ts`, `sqlite-version.ts` | Shared discovery and control-state adapters |
+| Agent SQLite control data | `db.ts`, `schema.ts`, `sqlite.ts`, `sqlite-version.ts` | Shared discovery and Agent control-state adapters |
 | Cross-host contracts | `entities.ts`, `permissions.ts`, `protocols.ts` | Host adapters and coordination packages |
 | Discovery and prompts | `mcp-discovery.ts`, `mcp-state.ts`, `agent-skills.ts`, `prompts/` | Native and Pi projections |
 
@@ -35,8 +36,13 @@ native, Pi, and Awareness. It is not an agent runtime or a UI composition root.
   `@octocodeai/config`.
 - Export deliberate public subpaths. Internal consumers import the owning
   subpath instead of the aggregate package root.
-- Keep database control tables separate from host session stores and Awareness
-  domain relations.
+- Keep `$OCTOCODE_HOME/agent/agent.sqlite3` control tables separate from the
+  Rust runtime store at `$OCTOCODE_HOME/agent/core.sqlite3` and Awareness domain
+  relations at `<workspace>/.octocode/awareness.sqlite3` or the explicitly
+  selected `$OCTOCODE_HOME/awareness/awareness.sqlite3`.
+- Fail closed on foreign database identities and unexpected relations before
+  writing schema. Shared helpers must not relabel or migrate another owner's
+  database.
 
 Pi still contains a compatibility MCP discovery implementation under
 `packages/octocode-pi-extension/src/tools/`. Treat it as convergence debt; new

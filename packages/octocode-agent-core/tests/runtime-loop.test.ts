@@ -888,7 +888,7 @@ describe("bounded model/tool loop", () => {
           stop: "complete",
           usage: {
             inputTokens: request * 2,
-            outputTokens: request,
+            outputTokens: request + 1,
             cachedInputTokens: request + 2,
             cacheWriteInputTokens: request,
           },
@@ -912,7 +912,7 @@ describe("bounded model/tool loop", () => {
 
     expect(kernel.snapshot().usage).toEqual({
       inputTokens: 6,
-      outputTokens: 3,
+      outputTokens: 5,
       cachedInputTokens: 7,
       cacheWriteInputTokens: 3,
     });
@@ -923,13 +923,15 @@ describe("bounded model/tool loop", () => {
     ).toEqual([
       {
         inputTokens: 2,
-        outputTokens: 1,
+        outputTokens: 2,
+        currentContextTokens: 4,
         cachedInputTokens: 3,
         cacheWriteInputTokens: 1,
       },
       {
         inputTokens: 6,
-        outputTokens: 3,
+        outputTokens: 5,
+        currentContextTokens: 7,
         cachedInputTokens: 7,
         cacheWriteInputTokens: 3,
       },
@@ -1004,6 +1006,36 @@ describe("bounded model/tool loop", () => {
       providerId: "openai",
       modelId: "gpt-initial",
     });
+  });
+
+  it("emits one bounded session receipt when the kernel becomes active", async () => {
+    const events: RuntimeEvent[] = [];
+    const kernel = new RuntimeKernel({
+      sessionId: sessionId("s-session-receipt"),
+      initialSessionReceipt: {
+        schemaVersion: 1,
+        transition: "resume",
+        state: "resumed-compacted",
+        displayName: "Terminal polish",
+        shortPublicId: "abc12345",
+        restoredVisibleMessageCount: 4,
+        retainedModelContextItemCount: 3,
+        contextOccupancy: "unknown",
+        committedCompaction: "committed",
+      },
+      model: { run: async () => ({ stop: "complete", usage: { inputTokens: 1, outputTokens: 1 } }) },
+      emit: async (event) => { events.push(event); },
+    });
+
+    await kernel.start();
+    await kernel.start();
+
+    expect(events.map(({ type }) => type)).toEqual(["runtime.ready", "session.started"]);
+    expect(events[1]?.payload).toEqual(expect.objectContaining({
+      displayName: "Terminal polish",
+      shortPublicId: "abc12345",
+      state: "resumed-compacted",
+    }));
   });
 
   it("emits one bounded initial context projection receipt before turn input", async () => {

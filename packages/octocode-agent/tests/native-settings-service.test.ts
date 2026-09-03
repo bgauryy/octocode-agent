@@ -13,6 +13,7 @@ import {
   FileSettingsStorage,
   NativeRustSettingsStorage,
 } from '../src/native-settings.js';
+import { ALLOWED_CONFIG_KEYS } from '../src/settings.js';
 
 async function harness(values: Record<string, unknown> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-native-settings-service-'));
@@ -79,6 +80,9 @@ describe('native settings service bridge', () => {
       'defaultModel',
       'nativeExtensions',
     ]);
+    expect(NATIVE_SETTING_DEFINITIONS
+      .filter(({ visibility }) => visibility === 'public')
+      .map(({ key }) => key)).toEqual(ALLOWED_CONFIG_KEYS);
     expect(NATIVE_SETTING_DEFINITIONS).toEqual([
       expect.objectContaining({
         key: 'theme',
@@ -120,15 +124,27 @@ describe('native settings service bridge', () => {
       expect.objectContaining({ key: 'nativeExtensions', kind: { type: 'object' }, visibility: 'never-render' }),
     ]);
 
-    const { settings } = await harness({ theme: 'octocode-light', reducedMotion: false, defaultModel: 'gpt-5.6' });
+    const { storage, settings } = await harness({
+      theme: 'octocode-light',
+      reducedMotion: false,
+      compactionInputTokenThreshold: 80_000,
+      defaultModel: 'gpt-5.6',
+    });
     expect(settings.snapshot().values).toEqual([
-      expect.objectContaining({ key: 'compactionInputTokenThreshold', value: 64_000, provenance: 'default', application: 'next-session' }),
+      expect.objectContaining({ key: 'compactionInputTokenThreshold', value: 80_000, provenance: 'global', application: 'next-session' }),
       expect.objectContaining({ key: 'theme', value: 'octocode-light', provenance: 'global', application: 'next-session' }),
       expect.objectContaining({ key: 'reducedMotion', value: false, provenance: 'global', application: 'next-session' }),
       expect.objectContaining({ key: 'nativeExtensions', value: null, provenance: 'default', application: 'next-session' }),
       expect.objectContaining({ key: 'defaultProvider', value: null, provenance: 'default', application: 'next-session' }),
       expect.objectContaining({ key: 'defaultModel', value: 'gpt-5.6', provenance: 'global', application: 'next-session' }),
     ]);
+
+    const restarted = await createNativeSettingsService(storage);
+    expect(restarted.snapshot().values).toContainEqual(expect.objectContaining({
+      key: 'compactionInputTokenThreshold',
+      value: 80_000,
+      provenance: 'global',
+    }));
   });
 
   it('reviews hashes and grants capabilities through typed redacted transactions', async () => {

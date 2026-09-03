@@ -174,3 +174,39 @@ export function releaseTaskClaim(
   }
   return getTask(db, params.taskId)!;
 }
+
+/** Explicitly reopen a task after failed verification; ordinary release handles active runs. */
+export function retryTask(
+  db: DatabaseSync,
+  params: { taskId: string; agentId: string; message?: string },
+): PlanTaskRecord {
+  const agentId = required(params.agentId, 'agent id');
+  const now = utcNow();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const task = db.prepare(`SELECT t.status, p.lead_agent_id, p.status AS plan_status
+      FROM awareness_tasks t JOIN awareness_plans p ON p.plan_id = t.plan_id
+      WHERE t.task_id = ?`)
+      .get(params.taskId) as { status: string; lead_agent_id: string; plan_status: string } | undefined;
+    if (!task) throw new Error(`task not found: ${params.taskId}`);
+    if (task.lead_agent_id !== agentId) {
+      throw new Error(`only lead agent ${task.lead_agent_id} can retry failed task ${params.taskId}`);
+    }
+    if (task.plan_status !== 'ACTIVE') {
+      throw new Error(`cannot retry task ${params.taskId} while plan status is ${task.plan_status}`);
+    }
+    if (task.status !== 'FAILED') {
+      throw new Error(`task ${params.taskId} is not FAILED: status=${task.status}`);
+    }
+    const claim = db.prepare('SELECT 1 FROM task_claims WHERE task_id = ?').get(params.taskId);
+    if (claim) throw new Error(`task ${params.taskId} still has an active claim`);
+    db.prepare("UPDATE awareness_tasks SET status = 'OPEN', updated_at = ?, completed_at = NULL WHERE task_id = ?")
+      .run(now, params.taskId);
+    event(db, params.taskId, null, agentId, 'RELEASED', params.message?.trim() || 'failed task reopened', now);
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction did not open */ }
+    throw error;
+  }
+  return getTask(db, params.taskId)!;
+}

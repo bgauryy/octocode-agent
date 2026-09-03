@@ -795,6 +795,112 @@ describe("native Rust data-core bridge", () => {
     await client.close();
   });
 
+  it("uses strict addressed worker mailbox, worktree, and handoff envelopes", async () => {
+    const child = new FixtureChild();
+    const client = bridge(child);
+    const authority = {
+      schemaVersion: 1,
+      workerId: "worker-1",
+      correlationId: "correlation-1",
+      rootAgentId: "root-1",
+      parentSessionId: "session-1",
+      workspaceId: "workspace-1",
+      workspaceGeneration: 1,
+      trustRevision: "trust-1",
+      permissionMode: "default",
+      capabilityDigest: "capability-1",
+      effectAdmissionId: "effect-1",
+      ownershipGeneration: 1,
+    } as const;
+    child.onRequest = (request) => {
+      if (request.method === "worker.mailbox.open") {
+        child.respond(request, {
+          schemaVersion: 1,
+          mailboxGeneration: 1,
+          nextSequence: 1,
+          sealed: false,
+          idempotent: false,
+        });
+      } else if (request.method === "worker.worktree.reserve") {
+        child.respond(request, {
+          schemaVersion: 1,
+          worktreeGeneration: 1,
+          state: "reserved",
+          idempotent: false,
+        });
+      } else {
+        child.respond(request, {
+          schemaVersion: 1,
+          handoffId: "handoff-1",
+          state: "open",
+          generation: 0,
+          idempotent: false,
+        });
+      }
+    };
+
+    await expect(client.workerMailboxOpen({
+      authority,
+      authorityDigest: "authority-digest",
+      mailboxGeneration: 1,
+      createdAt: 10,
+    })).resolves.toMatchObject({ mailboxGeneration: 1, nextSequence: 1 });
+    await expect(client.workerWorktreeReserve({
+      authority,
+      authorityDigest: "authority-digest",
+      worktreeGeneration: 1,
+      repositoryId: "repository-1",
+      commonDirId: "common-dir-1",
+      generatedPath: "/workspace/.octocode/worktrees/worker-1",
+      baseOid: "base-oid",
+      currentHeadOid: "head-oid",
+      privateRef: "refs/octocode/worker-1",
+      gitWorktreeId: "git-worktree-1",
+      lockTokenDigest: "lock-digest",
+      createdAt: 10,
+    })).resolves.toMatchObject({ state: "reserved", worktreeGeneration: 1 });
+    await expect(client.workerHandoffOpen({
+      authority,
+      authorityDigest: "authority-digest",
+      mailboxGeneration: 1,
+      handoffId: "handoff-1",
+      createdAt: 10,
+    })).resolves.toMatchObject({ state: "open", generation: 0 });
+    expect(child.requests.map((request) => request.method)).toEqual([
+      "worker.mailbox.open",
+      "worker.worktree.reserve",
+      "worker.handoff.open",
+    ]);
+    child.closeOnEnd = true;
+    await client.close();
+  });
+
+  it("fails closed on malformed worker mailbox responses", async () => {
+    const child = new FixtureChild();
+    const client = bridge(child);
+    child.onRequest = (request) => child.respond(request, {
+      schemaVersion: 1,
+      mailboxGeneration: 1,
+      nextSequence: 1,
+      sealed: false,
+      idempotent: false,
+      injected: true,
+    });
+    await expect(client.workerMailboxOpen({
+      authority: {
+        schemaVersion: 1, workerId: "worker-1", correlationId: "correlation-1",
+        rootAgentId: "root-1", parentSessionId: "session-1", workspaceId: "workspace-1",
+        workspaceGeneration: 1, trustRevision: "trust-1", permissionMode: "default",
+        capabilityDigest: "capability-1", effectAdmissionId: "effect-1", ownershipGeneration: 1,
+      },
+      authorityDigest: "authority-digest",
+      mailboxGeneration: 1,
+      createdAt: 10,
+    })).rejects.toMatchObject({ category: "protocol" });
+    child.closeOnEnd = true;
+    await client.close();
+  });
+
   it.each([
     ["invalid JSON", "{not-json}\n"],
     ["malformed envelope", '{"schemaVersion":1,"id":"x","ok":true}\n'],

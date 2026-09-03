@@ -10,6 +10,7 @@ import {
   type ToolExecutionInput,
   type ToolRegistry,
   type WorkerCapabilities,
+  type WorkerAuthorityV1,
   type WorkerCommand,
   type WorkerController,
   type WorkerId,
@@ -22,12 +23,16 @@ import type {
   PlanScope,
 } from "./native-plan.js";
 import type { NativeWorkerDagSchedulerPort } from "./native-worker-dag-scheduler.js";
+import {
+  assertNativeWorkerAuthorityContext,
+  mintNativeWorkerAuthority,
+  requireNativeWorkerAdmission,
+} from "./native-worker-authority.js";
 
 const MAX_TASK_CHARS = 16_384;
 const MAX_TEXT_CHARS = 8_192;
 const MAX_REASON_CHARS = 512;
 const MAX_ID_CHARS = 128;
-const MAX_PATH_CHARS = 4_096;
 const MAX_REVISION_CHARS = 256;
 const MAX_TOOLS = 32;
 const MAX_TURNS = 100;
@@ -49,7 +54,6 @@ type WorkspaceInput =
   | { readonly mode: "shared" }
   | {
       readonly mode: "worktree";
-      readonly path: string;
       readonly baseRevision: string;
     };
 
@@ -66,6 +70,11 @@ export interface NativeWorkerToolOptions {
   readonly maxWaitMs?: number;
   /** Worktrees are rejected unless the native host explicitly declares support here. */
   readonly allowWorktree?: boolean;
+  readonly resolveWorktree?: (request: {
+    readonly workerId: WorkerId;
+    readonly sessionId: SessionId;
+    readonly baseRevision: string;
+  }) => Extract<WorkerSpawnPacket["workspace"], { mode: "worktree" }>;
   /** Test seam. Generated values remain internal and are never accepted from model input. */
   readonly idFactory?: () => string;
   /** Optional native-plan bridge. Shared Awareness ownership remains independent. */
@@ -78,6 +87,7 @@ interface WorkerBinding {
   readonly workerId: WorkerId;
   readonly correlationId: ReturnType<typeof correlationId>;
   readonly sessionId: SessionId;
+  readonly authority: WorkerAuthorityV1;
   readonly planStepId?: string;
   ownershipStatus?: "active" | "released";
 }
@@ -135,10 +145,9 @@ const workspaceSchema: JsonSchema = {
       type: "object",
       properties: {
         mode: { const: "worktree" },
-        path: stringSchema(MAX_PATH_CHARS),
         baseRevision: stringSchema(MAX_REVISION_CHARS),
       },
-      required: ["mode", "path", "baseRevision"],
+      required: ["mode", "baseRevision"],
       additionalProperties: false,
     },
   ],
@@ -382,10 +391,9 @@ function parseWorkspace(
       "validation",
       "Worktree worker isolation is unavailable",
     );
-  assertOnly(value, ["mode", "path", "baseRevision"]);
+  assertOnly(value, ["mode", "baseRevision"]);
   return {
     mode: "worktree",
-    path: boundedString(value["path"], "workspace.path", MAX_PATH_CHARS),
     baseRevision: boundedString(
       value["baseRevision"],
       "workspace.baseRevision",
@@ -759,6 +767,35 @@ export function createNativeWorkerTool(
     );
   const bindings = new Map<string, WorkerBinding>();
 
+  const resolveWorkspace = (
+    workspace: WorkspaceInput | undefined,
+    id: WorkerId,
+    session: SessionId,
+  ): WorkerSpawnPacket["workspace"] => {
+    if (workspace === undefined || workspace.mode === "shared")
+      return { mode: "shared" };
+    if (options.resolveWorktree === undefined)
+      throw new NativeWorkerToolError(
+        "validation",
+        "Host-owned worktree resolution is unavailable",
+      );
+    const resolved = options.resolveWorktree({
+      workerId: id,
+      sessionId: session,
+      baseRevision: workspace.baseRevision,
+    });
+    if (
+      resolved.mode !== "worktree" ||
+      resolved.path.trim().length === 0 ||
+      resolved.baseRevision.trim().length === 0
+    )
+      throw new NativeWorkerToolError(
+        "validation",
+        "Host-owned worktree resolution returned an invalid identity",
+      );
+    return Object.freeze({ ...resolved });
+  };
+
   const planScope = (request: ToolExecutionInput): PlanScope => ({
     sessionId: String(request.context.sessionId),
     workspace: request.context.cwd,
@@ -795,6 +832,7 @@ export function createNativeWorkerTool(
   const execute = async (
     request: ToolExecutionInput,
   ): Promise<Record<string, unknown>> => {
+    const admission = requireNativeWorkerAdmission(request.context.admission);
     const input = parseInput(request.input, {
       allowWorktree: options.allowWorktree === true,
       maxWaitMs,
@@ -856,6 +894,14 @@ export function createNativeWorkerTool(
           packet: (step, generatedWorkerId) => {
             const scheduledWorkerId = workerId(generatedWorkerId);
             const scheduledCorrelationId = correlationId(idFactory());
+            const authority = mintNativeWorkerAuthority({
+              admission,
+              sessionId: request.context.sessionId,
+              workerId: scheduledWorkerId,
+              correlationId: scheduledCorrelationId,
+              capabilities,
+              planStepId: step.itemId,
+            });
             return Object.freeze({
               schemaVersion: 1,
               type: "worker.spawn",
@@ -864,9 +910,14 @@ export function createNativeWorkerTool(
               correlationId: scheduledCorrelationId,
               sessionId: request.context.sessionId,
               redaction: "sensitive",
+              authority,
               prompt: step.prompt,
               promptSnapshotId,
-              workspace: input.workspace ?? { mode: "shared" as const },
+              workspace: resolveWorkspace(
+                input.workspace,
+                scheduledWorkerId,
+                request.context.sessionId,
+              ),
               capabilities: Object.freeze({
                 ...capabilities,
                 tools: Object.freeze([...capabilities.tools]),
@@ -925,17 +976,8 @@ export function createNativeWorkerTool(
         !allowedModels.has(`${model.providerId}\0${model.modelId}`)
       )
         throw new NativeWorkerToolError("validation", "Model is not allowed");
-      const binding: WorkerBinding = {
-        workerId: workerId(idFactory()),
-        correlationId: correlationId(idFactory()),
-        sessionId: request.context.sessionId,
-        ...(input.planStepId === undefined
-          ? {}
-          : {
-              planStepId: input.planStepId,
-              ownershipStatus: "active" as const,
-            }),
-      };
+      const spawnedWorkerId = workerId(idFactory());
+      const spawnedCorrelationId = correlationId(idFactory());
       const capabilities: WorkerCapabilities = {
         tools: [...tools],
         ...(input.octocodeTools === undefined
@@ -943,6 +985,28 @@ export function createNativeWorkerTool(
           : { octocodeTools: [...input.octocodeTools] }),
         models: model === undefined ? [] : [{ ...model }],
         maxTurns: input.maxTurns ?? defaultMaxTurns,
+      };
+      const authority = mintNativeWorkerAuthority({
+        admission,
+        sessionId: request.context.sessionId,
+        workerId: spawnedWorkerId,
+        correlationId: spawnedCorrelationId,
+        capabilities,
+        ...(input.planStepId === undefined
+          ? {}
+          : { planStepId: input.planStepId }),
+      });
+      const binding: WorkerBinding = {
+        workerId: spawnedWorkerId,
+        correlationId: spawnedCorrelationId,
+        sessionId: request.context.sessionId,
+        authority,
+        ...(input.planStepId === undefined
+          ? {}
+          : {
+              planStepId: input.planStepId,
+              ownershipStatus: "active" as const,
+            }),
       };
       const packet: WorkerSpawnPacket = Object.freeze({
         schemaVersion: 1,
@@ -952,9 +1016,14 @@ export function createNativeWorkerTool(
         correlationId: binding.correlationId,
         sessionId: binding.sessionId,
         redaction: "sensitive",
+        authority,
         prompt: input.task!,
         promptSnapshotId,
-        workspace: input.workspace ?? { mode: "shared" as const },
+        workspace: resolveWorkspace(
+          input.workspace,
+          binding.workerId,
+          binding.sessionId,
+        ),
         capabilities: Object.freeze({
           ...capabilities,
           tools: Object.freeze([...capabilities.tools]),
@@ -1062,6 +1131,11 @@ export function createNativeWorkerTool(
       return { action: "list", workers };
     }
     const binding = requireBinding(input.workerId!, request.context.sessionId);
+    assertNativeWorkerAuthorityContext(
+      binding.authority,
+      admission,
+      request.context.sessionId,
+    );
     let command: WorkerCommand;
     if (
       input.action === "send" ||
@@ -1072,17 +1146,25 @@ export function createNativeWorkerTool(
         schemaVersion: 1,
         type: `worker.${input.action}`,
         packetId: packetId(idFactory()),
-        ...binding,
+        workerId: binding.workerId,
+        correlationId: binding.correlationId,
+        sessionId: binding.sessionId,
         redaction: "sensitive",
+        authority: binding.authority,
         text: input.text!,
       });
       command = { type: input.action, packet };
     } else if (input.action === "status" || input.action === "wait")
-      command = { type: input.action, workerId: binding.workerId };
+      command = {
+        type: input.action,
+        workerId: binding.workerId,
+        authority: binding.authority,
+      };
     else
       command = {
         type: input.action,
         workerId: binding.workerId,
+        authority: binding.authority,
         ...(input.reason === undefined ? {} : { reason: input.reason }),
       };
     try {

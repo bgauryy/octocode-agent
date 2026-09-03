@@ -10,10 +10,10 @@ Docs in this directory belong to the branded native launcher package. Keep nativ
 | [PARALLELISM_AND_WORKERS.md](PARALLELISM_AND_WORKERS.md) | Bounded tool and parallel MCP concurrency, packaged Rust messaging, root-only worker authorization, leaf children, joins, and verification. |
 | [ACP.md](ACP.md) | ACP stdio lifecycle, cancellation, signal, and stop-reason semantics. |
 | [SETTINGS.md](SETTINGS.md) | Native `/settings` usage, security boundary, editable values, and current limits. |
-| [TERMINAL_DESIGN_SYSTEM.md](TERMINAL_DESIGN_SYSTEM.md) | Shared terminal/browser tokens, Zustand view-state ownership, semantic content, responsive behavior, keyboard rules, and UX acceptance criteria. |
+| [TERMINAL_DESIGN_SYSTEM.md](TERMINAL_DESIGN_SYSTEM.md) | Shared terminal/browser tokens, Zustand view-state ownership, event-to-surface projection, safe-thinking states, tool summaries, worker summaries, responsive footer behavior, keyboard rules, and UX acceptance criteria. |
 | [MONITORING.md](MONITORING.md) | Safe metrics snapshot, provider correlation/timing, cache semantics, and native adapter boundaries. |
 | [PERMISSIONS_AND_CONTEXT.md](PERMISSIONS_AND_CONTEXT.md) | Permission modes, HITL invariants, context artifacts, cache-stable assembly, compaction, skills, memory, and session-document summaries. |
-| [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) | Packed-install, platform, assistive-output, performance, canary, and rollback evidence. |
+| [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) | Package and repository gates, packed-install, real-command PTY, platform, assistive-output, performance, canary, and rollback evidence. |
 | [PI_INTEGRATION.md](PI_INTEGRATION.md) | Historical launcher-to-Pi boundary and current parity-oracle role. |
 | [pi-fork.md](pi-fork.md) | Supported Pi fork workflow and compatibility constraints. |
 | [coding-agent-failure-modes.md](coding-agent-failure-modes.md) | Research inventory of common coding-agent failures. |

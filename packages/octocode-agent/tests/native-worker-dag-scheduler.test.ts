@@ -25,6 +25,7 @@ import {
   type NativeWorkerDagSchedule,
   type NativeWorkerDagWorkPort,
 } from "../src/native-worker-dag-scheduler.js";
+import { workerAuthorityFixture } from "./worker-authority-fixture.js";
 
 const roots: string[] = [];
 
@@ -47,13 +48,17 @@ function packet(
   step: NativeWorkerDagSchedule["steps"][number],
   id: string,
 ): WorkerSpawnPacket {
+  const resolvedWorkerId = workerId(id);
+  const resolvedCorrelationId = correlationId(`correlation-${id}`);
+  const resolvedSessionId = sessionId(scope.sessionId);
   return Object.freeze({
     schemaVersion: 1,
     type: "worker.spawn",
     packetId: packetId(`packet-${id}`),
-    workerId: workerId(id),
-    correlationId: correlationId(`correlation-${id}`),
-    sessionId: sessionId(scope.sessionId),
+    workerId: resolvedWorkerId,
+    correlationId: resolvedCorrelationId,
+    sessionId: resolvedSessionId,
+    authority: workerAuthorityFixture({ workerId: resolvedWorkerId, correlationId: resolvedCorrelationId, sessionId: resolvedSessionId }),
     redaction: "sensitive",
     prompt: step.prompt,
     promptSnapshotId: "prompt-snapshot",
@@ -89,6 +94,7 @@ function controller(order: string[]): WorkerController {
           workerId: spawned.workerId,
           correlationId: spawned.correlationId,
           sessionId: spawned.sessionId,
+          authority: spawned.authority,
           redaction: "sensitive",
           outcome: "succeeded",
         };
@@ -393,6 +399,7 @@ describe("NativeWorkerDagScheduler", () => {
           workerId: spawned!.workerId,
           correlationId: spawned!.correlationId,
           sessionId: spawned!.sessionId,
+          authority: spawned!.authority,
           redaction: "sensitive",
           outcome: "succeeded",
         });

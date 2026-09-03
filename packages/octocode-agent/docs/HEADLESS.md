@@ -276,5 +276,7 @@ oracle.
 
 ## Verification
 
-The implementation receipt and remaining limitations are recorded in the
-[headless runtime evaluation](../../../DESIGN/pi-coding-agent-removal/evidence/headless-runtime-eval-2026-08-28.md).
+Run the package and repository gates in the
+[release validation guide](RELEASE_VALIDATION.md). The active cross-package work
+and remaining acceptance gates live in the
+[completion plan](../../../DESIGN/LEFTOVERS.md).

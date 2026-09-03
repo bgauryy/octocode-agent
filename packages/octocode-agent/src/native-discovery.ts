@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
-import { agentDbPath, closeOctocodeDb, getMcpEnablement, getSkillEnablement, openOctocodeDb } from '@octocodeai/octocode-awareness/mcp-state';
+import { closeOctocodeDb, openOctocodeDb } from '@octocodeai/octocode-shared/db';
+import { getMcpEnablement, getSkillEnablement } from '@octocodeai/octocode-shared/mcp-state';
 import { discoverMcpSystem, repositoryDirectories } from '@octocodeai/octocode-shared/agent-skills';
-import { getOctocodeHome } from '@octocodeai/octocode-shared/paths';
+import { agentDbPath, getOctocodeHome } from '@octocodeai/octocode-shared/paths';
 
 import { loadNativeMcpServers } from './native-mcp.js';
 import { resolveNativeModelConfiguration } from './native-provider-registry.js';

@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { forgetMemory, archiveMemories, restoreMemories } from '../src/memory.js';
 import { deleteRefinement } from '../src/refinements.js';
 import { countPlans, createPlan, getPlan, joinPlan, listPlans, registerPlanDocument, updatePlanStatus, type PlanStatus } from '../src/plans.js';
-import { addTaskDependency, claimTask, createTask, getTask, heartbeatTaskClaim, countReadyTasks, countTasks, listReadyTasks, listTasks, releaseTaskClaim, submitTask, type PlanTaskStatus } from '../src/tasks.js';
+import { addTaskDependency, claimTask, createTask, getTask, heartbeatTaskClaim, countReadyTasks, countTasks, listReadyTasks, listTasks, releaseTaskClaim, retryTask, submitTask, type PlanTaskStatus } from '../src/tasks.js';
 import { exportHarness } from '../src/maintenance.js';
 import { normalizeWorkspacePath } from '../src/git.js';
 import { ParsedArgs } from './cli-model.js';
@@ -194,6 +194,15 @@ export function cmdTask(db: DatabaseSync, args: ParsedArgs, dbPath: string, opts
     }
     const task = getTask(db, taskId);
     if (opts.compact) return emit({ ok: true, task_id: taskId, status: task?.status, dependency_count: task?.dependencies.length }, 0, opts);
+    return emit({ db_path: dbPath, task }, 0, opts);
+  }
+  if (action === 'retry') {
+    const task = retryTask(db, {
+      taskId,
+      agentId,
+      message: args['message'] ? String(args['message']) : undefined,
+    });
+    if (opts.compact) return emit({ ok: true, task_id: taskId, status: task.status }, 0, opts);
     return emit({ db_path: dbPath, task }, 0, opts);
   }
   const leaseMinutes = args['lease_minutes'] == null ? undefined : Number(args['lease_minutes']);

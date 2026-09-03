@@ -116,7 +116,7 @@ export function createPlan(
         plan_id: planId,
       primary_doc: 'PLAN.md',
       supporting_docs_dir: 'docs',
-      live_task_state: 'agent.sqlite3',
+      live_task_state: '.octocode/awareness.sqlite3',
     }, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
 
     db.exec('BEGIN IMMEDIATE');
@@ -252,6 +252,12 @@ export function updatePlanStatus(
   if (!plan) throw new Error(`plan not found: ${params.planId}`);
   if (plan.lead_agent_id !== params.agentId) {
     throw new Error(`only lead agent ${plan.lead_agent_id} can change plan status`);
+  }
+  if (
+    (plan.status === 'COMPLETED' || plan.status === 'CANCELLED') &&
+    params.status !== plan.status
+  ) {
+    throw new Error(`terminal plan ${params.planId} cannot transition from ${plan.status} to ${params.status}`);
   }
   const now = utcNow();
   db.exec('BEGIN IMMEDIATE');

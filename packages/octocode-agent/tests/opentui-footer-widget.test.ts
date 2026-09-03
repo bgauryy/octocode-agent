@@ -75,6 +75,7 @@ describe("FooterWidget", () => {
     expect(text).toContain("Mode: chat");
     expect(text).toContain("Connection: CONNECTED");
     expect(text).toContain("Context: WARNING 82% (82/100)");
+    expect(text).toContain("18% left");
     expect(text).toContain("Ctrl+C Cancel");
     expect(regions.find((region) => region.id === "keys")?.role).toBe("help");
     expect(text).not.toMatch(/cost|\$/i);

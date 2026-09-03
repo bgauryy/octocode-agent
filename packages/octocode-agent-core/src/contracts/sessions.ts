@@ -18,7 +18,12 @@ export type SessionStoredEvent =
   | { readonly type: 'opaque.imported'; readonly source: string; readonly contentHash: string; readonly record: unknown };
 export interface SessionEvent { readonly schemaVersion: 1; readonly sessionId: SessionId; readonly eventId: SessionEventId; readonly revision: Revision; readonly sequence: number; readonly timestamp: number; readonly visibility: 'model' | 'transcript' | 'diagnostics' | 'internal'; readonly parentEventId?: SessionEventId; readonly causationId?: string; readonly event: SessionStoredEvent; }
 export interface SessionProjection { readonly sessionId: SessionId; readonly revision: Revision; readonly name?: string; readonly transcript: readonly { readonly eventId: SessionEventId; readonly role: string; readonly content: string }[]; readonly modelContext: readonly (ModelMessage & { readonly eventId: SessionEventId })[]; readonly customEntries: readonly { readonly eventId: SessionEventId; readonly kind: string; readonly value: unknown }[]; readonly branches: readonly { readonly id: BranchId; readonly parentId?: BranchId }[]; readonly selectedBranch?: BranchId; readonly compaction: { readonly attemptId: string; readonly sourceRevision: Revision; readonly summary: string; readonly retainedEventIds: readonly SessionEventId[]; readonly sourceEventIds: readonly SessionEventId[]; readonly projectionVersion: 1 } | null; readonly compactionAttempt: { readonly state: 'running' | 'retrying' | 'failed' | 'cancelled' | 'compacted'; readonly attemptId: string; readonly sourceRevision: Revision; readonly attempt: number; readonly reason?: string } | null; readonly artifacts: readonly { readonly id: string; readonly uri: string }[]; }
-export interface SessionLoadResult { readonly events: readonly SessionEvent[]; readonly projection: SessionProjection; }
+export interface SessionLoadResult {
+  readonly events: readonly SessionEvent[];
+  readonly projection: SessionProjection;
+  /** True only when durability restored an older valid record after the primary could not be used. */
+  readonly recoveredPartially?: boolean;
+}
 export interface SessionStore { append(id: SessionId, expectedRevision: Revision, events: readonly SessionEvent[]): Promise<Revision>; load(id: SessionId): Promise<SessionLoadResult>; }
 export type SessionRecord =
   | { readonly schemaVersion: 1; readonly sessionId: SessionId; readonly revision: Revision; readonly events: readonly SessionEvent[] }

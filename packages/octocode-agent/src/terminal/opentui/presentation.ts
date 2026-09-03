@@ -148,9 +148,11 @@ export interface PresentationState {
   readonly workers: readonly PresentationWorkerRow[];
   readonly workerInbox?: NativeWorkerInboxSnapshot;
   readonly statuses: Readonly<Record<string, string>>;
+  readonly contextUsage?: { readonly used: number; readonly limit: number };
   readonly notifications: readonly {
     severity: NativePresentationNotificationSeverity;
     message: string;
+    key?: string;
   }[];
   readonly widgets: Readonly<Record<string, NativePresentationWidget>>;
   readonly interactionHandler: "required" | "ready";
@@ -324,7 +326,14 @@ export function projectPresentationChrome(
     plan === undefined
       ? undefined
       : `Plan ${plan.steps.filter(({ status }) => status === "done").length}/${plan.steps.length}`;
+  const lifecycleStatus = state.statuses["context.compaction"] !== undefined
+    ? "Compacting context"
+    : state.statuses.session
+      ?? state.statuses.resources
+      ?? state.statuses.trust
+      ?? state.statuses.provider;
   const activityParts = [
+    lifecycleStatus,
     workerAggregate !== undefined && workerAggregate.maxActive !== undefined
       ? `${workerAggregate.active ?? activeWorkers}/${workerAggregate.maxActive} subagent${(workerAggregate.active ?? activeWorkers) === 1 ? "" : "s"} active`
       : activeWorkers > 0
@@ -337,9 +346,6 @@ export function projectPresentationChrome(
       ? `${activeTools} tool${activeTools === 1 ? "" : "s"} running`
       : undefined,
     planProgress,
-    state.statuses["context.compaction"] === undefined
-      ? undefined
-      : "Compacting context",
   ].filter((value): value is string => value !== undefined);
   const activitySummary = approvalRequired
     ? { text: "Approval required", tone: "warning" as const }
@@ -372,6 +378,14 @@ export function projectPresentationChrome(
       connection: chrome.connection,
       widthColumns: Math.min(1_000, Math.max(20, viewportWidth)),
       keyHints,
+      ...(state.contextUsage === undefined
+        ? {}
+        : { contextUsage: state.contextUsage }),
+      ...(chrome.modelId === undefined ? {} : { modelId: chrome.modelId }),
+      trust: chrome.trust,
+      ...(chrome.permissionMode === undefined
+        ? {}
+        : { permissionMode: chrome.permissionMode }),
       ...(activitySummary === undefined ? {} : { activitySummary }),
     },
   };
@@ -542,6 +556,14 @@ function replaceTool(
   row: PresentationToolRow,
 ): PresentationState {
   const existing = state.tools.findIndex(({ callId }) => callId === row.callId);
+  if (
+    existing >= 0 &&
+    (state.tools[existing]!.status === "success" ||
+      state.tools[existing]!.status === "error" ||
+      state.tools[existing]!.status === "blocked" ||
+      state.tools[existing]!.status === "cancelled")
+  )
+    return state;
   const tools =
     existing < 0
       ? [...state.tools, row].slice(-MAX_PRESENTATION_TOOLS)
@@ -558,6 +580,34 @@ function updateTool(
   const existing = state.tools.find(
     ({ callId: candidate }) => candidate === callId,
   );
+  if (
+    existing !== undefined &&
+    (existing.status === "success" ||
+      existing.status === "error" ||
+      existing.status === "blocked" ||
+      existing.status === "cancelled")
+  )
+    return state;
+  if (existing?.progress !== undefined && update.progress !== undefined) {
+    const previous = existing.progress;
+    const next = update.progress;
+    if (
+      (previous.current !== undefined &&
+        next.current !== undefined &&
+        next.current < previous.current) ||
+      (previous.total !== undefined &&
+        next.total !== undefined &&
+        next.total < previous.total)
+    )
+      return state;
+    if (
+      next.message === previous.message &&
+      next.current === previous.current &&
+      next.total === previous.total &&
+      (update.status === undefined || update.status === existing.status)
+    )
+      return state;
+  }
   return replaceTool(state, {
     callId,
     name: name ?? existing?.name ?? "tool",
@@ -570,11 +620,44 @@ function updateTool(
   });
 }
 
+function clearToolApproval(state: PresentationState, callId: string): PresentationState {
+  const key = `approval:${callId}`;
+  const notifications = state.notifications.filter((notification) => notification.key !== key);
+  return notifications.length === state.notifications.length ? state : { ...state, notifications };
+}
+
+function derivedNotificationKey(message: string): string | undefined {
+  if (/^Provider\b/u.test(message)) return "provider";
+  if (/^(?:Tools, MCP servers, and Skills|MCP tool catalog)\b/u.test(message)) return "discovery";
+  if (/^Settings\b/u.test(message)) return "settings";
+  if (/^Extension\b/u.test(message)) return "plugin";
+  if (/^Context compact/u.test(message)) return "compaction";
+  return undefined;
+}
+
 export function reducePresentation(
   state: PresentationState,
   event: PresentationEvent,
 ): PresentationState {
   switch (event.type) {
+    case "transcript-cleared":
+      return {
+        ...state,
+        activeTurnId: undefined,
+        turns: [],
+        messages: [],
+        tools: [],
+        workers: [],
+        workerInbox: undefined,
+        notifications: [],
+      };
+    case "session-replaced":
+      return {
+        ...state,
+        statuses: {},
+        contextUsage: undefined,
+        notifications: [],
+      };
     case "context-cleared":
       return {
         ...state,
@@ -585,6 +668,7 @@ export function reducePresentation(
             ([name]) => name !== "context.usage",
           ),
         ),
+        contextUsage: undefined,
         interaction: undefined,
       };
     case "runtime-ready":
@@ -732,19 +816,19 @@ export function reducePresentation(
         },
       });
     case "tool-result":
-      return updateTool(state, event.callId, event.name, {
+      return clearToolApproval(updateTool(state, event.callId, event.name, {
         status: "success",
         ...(event.result === undefined
           ? {}
           : { result: boundedText(event.result) }),
-      });
+      }), event.callId);
     case "tool-ended":
       if (
         state.tools.find(({ callId }) => callId === event.callId)?.status ===
         "blocked"
       )
-        return state;
-      return event.error === undefined
+        return clearToolApproval(state, event.callId);
+      return clearToolApproval(event.error === undefined
         ? updateTool(state, event.callId, event.name, {
             status: "success",
             ...(event.result === undefined
@@ -759,30 +843,30 @@ export function reducePresentation(
                 ? {}
                 : { category: event.category }),
             },
-          });
+          }), event.callId);
     case "tool-failed":
-      return updateTool(state, event.callId, event.name, {
+      return clearToolApproval(updateTool(state, event.callId, event.name, {
         status: "error",
         error: {
           message: boundedText(event.message),
           ...(event.category === undefined ? {} : { category: event.category }),
         },
-      });
+      }), event.callId);
     case "tool-blocked":
-      return updateTool(state, event.callId, event.name, {
+      return clearToolApproval(updateTool(state, event.callId, event.name, {
         status: "blocked",
         error: {
           message: boundedText(event.message),
           ...(event.category === undefined ? {} : { category: event.category }),
         },
-      });
+      }), event.callId);
     case "tool-cancelled":
-      return updateTool(state, event.callId, event.name, {
+      return clearToolApproval(updateTool(state, event.callId, event.name, {
         status: "cancelled",
         ...(event.message === undefined
           ? {}
           : { error: { message: boundedText(event.message) } }),
-      });
+      }), event.callId);
     case "interaction-handler-state": {
       const interactionHandler = event.ready ? "ready" : "required";
       return state.interactionHandler === interactionHandler
@@ -927,19 +1011,49 @@ export function reducePresentation(
       ) return state;
       return { ...state, workerInbox: copyWorkerInboxSnapshot(event.inbox) };
     case "notification":
-      return {
+      {
+        const key = event.key ?? derivedNotificationKey(event.message);
+        const replacement = {
+          severity: event.severity,
+          message: event.message,
+          ...(key === undefined ? {} : { key }),
+        };
+        const existingIndex = key === undefined
+          ? -1
+          : state.notifications.findIndex((notification) => notification.key === key);
+        return {
         ...state,
-        notifications: [
-          ...state.notifications,
-          { severity: event.severity, message: event.message },
-        ].slice(-50),
+        notifications: existingIndex < 0
+          ? [...state.notifications, replacement].slice(-50)
+          : state.notifications.map((notification, index) =>
+              index === existingIndex ? replacement : notification,
+            ),
       };
+      }
     case "status-changed": {
       const statuses = { ...state.statuses };
       if (event.text == null) delete statuses[event.name];
       else statuses[event.name] = event.text;
       return { ...state, statuses };
     }
+    case "context-usage-changed":
+      return {
+        ...state,
+        contextUsage: { used: event.used, limit: event.limit },
+        statuses: {
+          ...state.statuses,
+          "context.usage": [
+            `${event.inputTokens.toLocaleString("en-US")} input`,
+            `${event.outputTokens.toLocaleString("en-US")} output`,
+            ...(event.cachedInputTokens === undefined
+              ? []
+              : [`${event.cachedInputTokens.toLocaleString("en-US")} cached`]),
+            ...(event.cacheWriteInputTokens === undefined
+              ? []
+              : [`${event.cacheWriteInputTokens.toLocaleString("en-US")} cache write`]),
+          ].join(" · ") + " tokens",
+        },
+      };
     case "presentation-changed": {
       if (event.property === "working") {
         const working = event.value;

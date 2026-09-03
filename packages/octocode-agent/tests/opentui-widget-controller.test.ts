@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -95,6 +97,17 @@ function withRuntimeWidgets(state: PresentationState): PresentationState {
 }
 
 describe("SemanticWidgetController", () => {
+  it("keeps Skill discovery coalescing keys independent of lifecycle phase", () => {
+    const source = readFileSync(
+      new URL("../src/terminal/opentui/widget-controller.ts", import.meta.url),
+      "utf8",
+    );
+    const keyPath = /function skillCoalescingKey\([\s\S]*?^\}/mu.exec(source)?.[0];
+
+    expect(keyPath).toContain("skillDiscoveryGenerationByCallId.get(row.callId)");
+    expect(keyPath).not.toMatch(/skillState|\.status|\bstate\b/u);
+  });
+
   it("projects transcript, tools, and only runtime-authoritative chrome snapshots", () => {
     const adapter = new RecordingAdapter();
     const controller = new SemanticWidgetController(adapter, {
@@ -209,6 +222,257 @@ describe("SemanticWidgetController", () => {
     expect(state.tools[0]?.result).toContain('"alpha"');
   });
 
+  it("humanizes native base-tool actions instead of leading with raw JSON", () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter);
+    let state = createInitialPresentationState();
+    const calls = [
+      ["file-call", "file", { operation: "edit", path: "src/app.ts", oldText: "a", newText: "b" }],
+      ["bash-call", "bash", { command: "yarn test" }],
+      ["web-call", "web", { query: "terminal UX" }],
+      ["media-call", "runFfmpeg", { binary: "ffprobe", inputs: ["demo.mp4"], args: ["-show_format"] }],
+      ["research-call", "octocode", { action: "call", tool: "localSearchCode", input: {} }],
+    ] as const;
+    for (const [callId, name, input] of calls) {
+      state = reducePresentation(state, {
+        type: "tool-requested",
+        callId,
+        name,
+        input: JSON.stringify(input),
+      });
+    }
+
+    controller.render(state);
+    const rendered = JSON.stringify([...adapter.states.values()]);
+    expect(rendered).toContain("Edit src/app.ts");
+    expect(rendered).toContain("Terminal");
+    expect(rendered).toContain("Run yarn test");
+    expect(rendered).toContain("Search the web · terminal UX");
+    expect(rendered).toContain("Inspect media · demo.mp4");
+    expect(rendered).toContain("Run research · localSearchCode");
+    expect(rendered).not.toContain('\\"operation\\":\\"edit\\"');
+  });
+
+  it("routes Skill lifecycle rows to dedicated bounded cards while retaining generic Skill reads", () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter);
+    let state = createInitialPresentationState();
+    state = reducePresentation(state, {
+      type: "tool-requested",
+      callId: "skill-enable-secret-internal-id",
+      name: "skill",
+      input: JSON.stringify({
+        action: "enable",
+        name: "research",
+        source: "/Users/private/skill",
+        token: "secret-value",
+      }),
+    });
+    state = reducePresentation(state, {
+      type: "tool-updated",
+      callId: "skill-enable-secret-internal-id",
+      name: "skill",
+      message: "approval-required",
+    });
+    state = reducePresentation(state, {
+      type: "tool-requested",
+      callId: "skill-read",
+      name: "skill",
+      input: JSON.stringify({ action: "read", name: "research", file: "/private/details.md" }),
+    });
+    controller.render(state);
+
+    const kinds = [...adapter.states.values()].map(({ kind }) => kind);
+    expect(kinds).toContain("skill.activity");
+    expect(kinds).toContain("tool.progress");
+    const skill = [...adapter.states.values()].find(({ kind }) => kind === "skill.activity");
+    expect(skill?.regions).toEqual([
+      expect.objectContaining({ id: "skill", text: "Skill: research" }),
+      expect.objectContaining({ id: "source", text: "Source: Managed" }),
+      expect.objectContaining({ id: "action", text: "Action: Enable" }),
+      expect.objectContaining({ id: "state", text: "State: ? APPROVAL REQUIRED" }),
+      expect.objectContaining({ id: "result", text: "Result: Approval required to continue" }),
+    ]);
+    const output = controller.alternateOutput();
+    expect(output).not.toContain("skill-enable-secret-internal-id");
+    expect(output).not.toContain("/Users/private");
+    expect(output).not.toContain("secret-value");
+    expect(output).not.toContain("/private/details.md");
+  });
+
+  it("keeps distinct non-discovery Skill operations separate", () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter);
+    let state = createInitialPresentationState();
+    for (const callId of ["enable-one", "enable-two"]) {
+      state = reducePresentation(state, {
+        type: "tool-requested",
+        callId,
+        name: "skill",
+        input: JSON.stringify({ action: "enable", name: "research" }),
+      });
+      state = reducePresentation(state, {
+        type: "tool-started",
+        callId,
+        name: "skill",
+      });
+    }
+
+    controller.render(state);
+    expect(
+      [...adapter.states.values()].filter(({ kind }) => kind === "skill.activity"),
+    ).toHaveLength(2);
+  });
+
+  it("keeps completed Skill discovery stable against late progress without dropping protected outcomes", () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter);
+    let state = createInitialPresentationState();
+    for (const callId of ["discover-old", "discover-latest"]) {
+      state = reducePresentation(state, {
+        type: "tool-requested",
+        callId,
+        name: "skill",
+        input: JSON.stringify({ action: "list" }),
+      });
+      state = reducePresentation(state, {
+        type: "tool-started",
+        callId,
+        name: "skill",
+      });
+    }
+    state = reducePresentation(state, {
+      type: "tool-requested",
+      callId: "discover-rejected",
+      name: "skill",
+      input: JSON.stringify({ action: "list" }),
+    });
+    state = reducePresentation(state, {
+      type: "tool-blocked",
+      callId: "discover-rejected",
+      name: "skill",
+      message: "private policy details /Users/private",
+      category: "policy",
+    });
+    state = reducePresentation(state, {
+      type: "tool-requested",
+      callId: "discover-approval-required",
+      name: "skill",
+      input: JSON.stringify({ action: "list" }),
+    });
+    state = reducePresentation(state, {
+      type: "tool-updated",
+      callId: "discover-approval-required",
+      name: "skill",
+      message: "approval-required",
+    });
+    state = reducePresentation(state, {
+      type: "tool-requested",
+      callId: "discover-complete",
+      name: "skill",
+      input: JSON.stringify({ action: "list" }),
+    });
+    state = reducePresentation(state, {
+      type: "tool-result",
+      callId: "discover-complete",
+      name: "skill",
+      result: JSON.stringify({
+        skills: [
+          { name: "one", provenance: { scope: "workspace", path: "/private/one" } },
+          { name: "two", provenance: { scope: "workspace", token: "secret-value" } },
+        ],
+      }),
+    });
+
+    controller.render(state);
+    const completed = [...adapter.states.values()].find(({ regions }) =>
+      regions.some(({ text }) => text === "Result: 2 Skills discovered"),
+    );
+    expect(completed).toBeDefined();
+
+    state = reducePresentation(state, {
+      type: "tool-started",
+      callId: "discover-complete",
+      name: "skill",
+    });
+    controller.render(state);
+
+    const cards = [...adapter.states.values()].filter(({ kind }) => kind === "skill.activity");
+    expect(cards).toHaveLength(4);
+    expect(cards.some(({ regions }) =>
+      regions.some(({ text }) => text === "State: ! REJECTED"),
+    )).toBe(true);
+    expect(cards.some(({ regions }) =>
+      regions.some(({ text }) => text === "State: ? APPROVAL REQUIRED"),
+    )).toBe(true);
+    expect(cards).toContainEqual(completed);
+    expect(cards.some(({ regions }) =>
+      regions.some(({ text }) => text === "State: ◐ RUNNING"),
+    )).toBe(true);
+
+    state = reducePresentation(state, {
+      type: "tool-requested",
+      callId: "discover-next-generation",
+      name: "skill",
+      input: JSON.stringify({ action: "list" }),
+    });
+    state = reducePresentation(state, {
+      type: "tool-started",
+      callId: "discover-next-generation",
+      name: "skill",
+    });
+    controller.render(state);
+
+    const nextGeneration = [...adapter.states.values()].filter(
+      ({ kind }) => kind === "skill.activity",
+    );
+    expect(nextGeneration).toHaveLength(5);
+    expect(nextGeneration).toContainEqual(completed);
+    expect(nextGeneration.some(({ regions }) =>
+      regions.some(({ text }) => text === "State: ◐ RUNNING"),
+    )).toBe(true);
+    expect(controller.alternateOutput()).not.toContain("/private");
+    expect(controller.alternateOutput()).not.toContain("secret-value");
+  });
+
+  it("preserves every terminal outcome when concurrent Skill discoveries settle differently", () => {
+    const adapter = new RecordingAdapter();
+    const controller = new SemanticWidgetController(adapter);
+    let state = createInitialPresentationState();
+    for (const callId of ["discover-success", "discover-failure"]) {
+      state = reducePresentation(state, {
+        type: "tool-requested",
+        callId,
+        name: "skill",
+        input: JSON.stringify({ action: "list" }),
+      });
+      state = reducePresentation(state, { type: "tool-started", callId, name: "skill" });
+    }
+    controller.render(state);
+    expect([...adapter.states.values()].filter(({ kind }) => kind === "skill.activity")).toHaveLength(1);
+
+    state = reducePresentation(state, {
+      type: "tool-result",
+      callId: "discover-success",
+      name: "skill",
+      result: JSON.stringify({ skills: [{ name: "safe" }] }),
+    });
+    controller.render(state);
+    state = reducePresentation(state, {
+      type: "tool-failed",
+      callId: "discover-failure",
+      name: "skill",
+      message: "safe discovery failure",
+      category: "process",
+    });
+    controller.render(state);
+
+    const cards = [...adapter.states.values()].filter(({ kind }) => kind === "skill.activity");
+    expect(cards).toHaveLength(2);
+    expect(cards.some(({ regions }) => regions.some(({ text }) => text === "State: ✓ COMPLETED"))).toBe(true);
+    expect(cards.some(({ regions }) => regions.some(({ text }) => text === "State: ✗ FAILED"))).toBe(true);
+  });
+
   it("projects stable worker lifecycle rows into dedicated Activity widgets", () => {
     const adapter = new RecordingAdapter();
     const controller = new SemanticWidgetController(
@@ -236,11 +500,10 @@ describe("SemanticWidgetController", () => {
     expect(running?.regions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: "state",
+          id: "summary",
           tone: "info",
-          text: "● RUNNING",
+          text: "● Subagent 1/1 · researcher · RUNNING · 4s",
         }),
-        expect.objectContaining({ id: "elapsed", text: "Elapsed 4s" }),
       ]),
     );
     const compactFooter = [...adapter.states.values()].find(
@@ -253,6 +516,11 @@ describe("SemanticWidgetController", () => {
         text: expect.stringContaining("1 subagent"),
       }),
     ]);
+    expect(controller.drainAnnouncements()).toContainEqual({
+      source: "worker:worker-1",
+      politeness: "polite",
+      text: "● Subagent 1/1 · researcher · RUNNING · 4s",
+    });
 
     state = reducePresentation(state, {
       type: "worker-changed",
@@ -272,7 +540,7 @@ describe("SemanticWidgetController", () => {
     );
     expect(completed?.regions[0]).toMatchObject({
       tone: "success",
-      text: "✓ SUCCEEDED",
+      text: "✓ Subagent 1/1 · researcher · SUCCEEDED · 5s",
     });
     expect(
       [...adapter.states.values()].find(({ kind }) => kind === "footer")
@@ -281,6 +549,12 @@ describe("SemanticWidgetController", () => {
       expect.arrayContaining([expect.objectContaining({ id: "activity" })]),
     );
     expect(controller.alternateOutput()).not.toContain("worker:one");
+    expect(controller.drainAnnouncements()).toContainEqual({
+      source: "worker:worker-1",
+      politeness: "polite",
+      text: "✓ Subagent 1/1 · researcher · SUCCEEDED · 5s",
+    });
+    expect(controller.drainAnnouncements()).toEqual([]);
   });
 
   it("keeps worker-card details private while retaining aggregate footer capacity", () => {
@@ -314,7 +588,10 @@ describe("SemanticWidgetController", () => {
     );
     expect(worker?.regions).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: "state", text: "○ QUEUED" }),
+        expect.objectContaining({
+          id: "summary",
+          text: "○ Subagent 1/1 · Worker · QUEUED · 0s",
+        }),
       ]),
     );
     expect(worker?.regions.some(({ id }) => id === "assignment" || id === "capacity")).toBe(false);
@@ -477,7 +754,7 @@ describe("SemanticWidgetController", () => {
     ).toBe(false);
     const alternate = controller.alternateOutput();
     expect(alternate).toContain("Generic text");
-    expect(alternate).toContain("model: ready");
+    expect(alternate).toContain("Model · ready");
     expect(alternate).toContain("Provider failed");
     expect(alternate).toContain("Structured remains");
     expect(controller.drainAnnouncements()).toEqual(
@@ -492,6 +769,30 @@ describe("SemanticWidgetController", () => {
         }),
       ]),
     );
+  });
+
+  it("coalesces lifecycle families deterministically and clears stale approvals and sessions", () => {
+    let state = createInitialPresentationState();
+    state = reducePresentation(state, { type: "notification", severity: "warning", message: "Provider request failed · attempt 1/3" });
+    state = reducePresentation(state, { type: "notification", severity: "success", message: "Settings updated" });
+    state = reducePresentation(state, { type: "notification", severity: "warning", message: "Provider request failed · attempt 2/3" });
+    expect(state.notifications.map(({ message }) => message)).toEqual([
+      "Provider request failed · attempt 2/3",
+      "Settings updated",
+    ]);
+
+    state = reducePresentation(state, {
+      type: "notification",
+      severity: "warning",
+      message: "Approval required · Agent Skill",
+      key: "approval:call-skill",
+    });
+    state = reducePresentation(state, { type: "tool-started", callId: "call-skill", name: "skill" });
+    state = reducePresentation(state, { type: "tool-result", callId: "call-skill", name: "skill", result: "done" });
+    expect(state.notifications.some(({ key }) => key === "approval:call-skill")).toBe(false);
+
+    state = reducePresentation(state, { type: "session-replaced" });
+    expect(state.notifications).toEqual([]);
   });
 
   it("keeps transient notification chrome recent while alternate output retains history", () => {
@@ -540,6 +841,12 @@ describe("SemanticWidgetController", () => {
     controller.render(state);
     const inbox = [...adapter.states.values()].find(({ kind }) => kind === "worker-operations");
     expect(inbox).toBeDefined();
+    expect(controller.drainAnnouncements()).toContainEqual({
+      source: "worker-inbox",
+      politeness: "polite",
+      text: "Worker inbox — generation 7 — 1 worker",
+    });
+    expect(controller.drainAnnouncements()).toEqual([]);
     expect(controller.alternateOutput()).toContain("Force kill (approval required)");
     expect(controller.focusWidget(inbox!.id)).toBe(true);
     expect(controller.handleFocusedNavigation("enter")).toBe(true);

@@ -78,6 +78,20 @@ describe('WorkerOperationsWidget', () => {
     expect(instance.selectedWorkerId).toBe('worker-2');
   });
 
+  it('announces each accepted inbox generation once with only bounded public state', () => {
+    const instance = widget();
+    expect(instance.takeAnnouncements()).toEqual([
+      'Worker inbox — generation 3 — 2 workers',
+    ]);
+    expect(instance.takeAnnouncements()).toEqual([]);
+
+    instance.update(snapshot({ generation: 4, capturedAt: 200 }));
+    expect(instance.takeAnnouncements()).toEqual([
+      'Worker inbox — generation 4 — 2 workers',
+    ]);
+    expect(instance.takeAnnouncements()).toEqual([]);
+  });
+
   it('never renders private worker process or prompt fields smuggled into a snapshot', () => {
     const poisoned = {
       ...snapshot(),
@@ -93,5 +107,8 @@ describe('WorkerOperationsWidget', () => {
     } as unknown as NativeWorkerInboxSnapshot;
     const output = widget(poisoned).toPlainText();
     expect(output).not.toMatch(/1234|secret task prompt|bash|private thought|PRIVATE_ASSIGNMENT|PRIVATE_PLAN_STEP|capabilit|reasoning/iu);
+    expect(widget(poisoned).takeAnnouncements().join('\n')).not.toMatch(
+      /1234|secret task prompt|bash|private thought|PRIVATE_ASSIGNMENT|PRIVATE_PLAN_STEP|capabilit|reasoning/iu,
+    );
   });
 });

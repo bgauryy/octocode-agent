@@ -1,4 +1,4 @@
-# The Self-Improving Repo
+# The self-improving repository
 
 Octocode Awareness treats the repository as a living-system metaphor: a shared
 workspace can sense pressure, coordinate action, verify outcomes, retain useful
@@ -17,7 +17,7 @@ Its purpose is not to accumulate the most memories, tasks, skills, or generated 
 It keeps observable workspace pressures inside useful ranges while preserving
 evidence, user authority, and current source/tests.
 
-## Why Homeostasis
+## Why homeostasis
 
 Homeostasis is dynamic regulation within a viable range, not a fixed equilibrium.
 A healthy controller notices deviation, chooses a bounded correction, and measures
@@ -35,7 +35,7 @@ comparison and remeasurement, “homeostasis” is branding rather than a contro
 Biology motivates the question; source, schemas, tests, and measured artifacts
 decide whether the software answer works.
 
-## Where Awareness Sits
+## Where Awareness sits
 
 ```text
 Agent = Model + Harness
@@ -48,7 +48,7 @@ weights. Better artifacts are the outcome to measure. A memory or skill change i
 not improvement until a later task demonstrates better behavior without a safety,
 quality, or token regression.
 
-## Control Contract
+## Control contract
 
 Homeostasis needs measured variables, sensors, bounded actuators, feedback, and
 guards. Biology supplies vocabulary; local runtime contracts and tests establish
@@ -68,7 +68,7 @@ Targets are ranges, not immortal constants. A busy migration may justify more
 coordination detail; a routine edit should stay nearly silent. Any target change is
 a reviewed product decision, not a drive invented by the system.
 
-## The Four Coupled Loops
+## The four coupled loops
 
 1. **Work:** sense live state, choose a Task or standalone Work, declare every edited
    path, coordinate overlap, act, verify.
@@ -83,13 +83,14 @@ These loops are event-driven. Awareness has no background mind, daemon, survival
 goal, or self-directed purpose. Optional hooks are reflexes around host events, not
 an autonomous agent.
 
-## One Organ, Qualified
+## One organ, qualified
 
-“Awareness belongs to the repo” means compatible agents using the same canonical
-database home and normalized workspace can share Plans, Tasks, file presence,
-signals, verification, and memory. This supports one agent across sessions and many
-agents across hosts on the same machine. It is not network replication or a claim
-that every host automatically loads the skill or generated files.
+“Awareness belongs to the repo” means compatible agents using the same selected
+Awareness database and normalized workspace can share plans, tasks, file
+presence, signals, verification, and memory. Workspace scope uses the repository
+database; global Awareness scope is an explicit opt-in. This is not network
+replication or a claim that every host automatically loads the skill or generated
+files.
 
 The layers have distinct jobs:
 
@@ -103,12 +104,12 @@ The layers have distinct jobs:
 | `.octocode/` | Optional query exports and authored plan narrative. |
 | Human + tests | Authorize risky changes and decide whether the loop improved artifacts. |
 
-## Non-Claims
+## Non-claims
 
 - “Living” does not mean sentient, conscious, emotional, or entitled to persist.
 - A `transactive_map` is a diagnostic map of current shared-state participants and
   sources, not proof of expertise or a complete “who knows what” model.
-- Recording a lesson does not guarantee retrieval, application, or improvement.
+- A recorded lesson can still go unretrieved, unapplied, or unimproved.
 - Homeostasis does not authorize automatic deletion, policy edits, weight updates,
   cross-machine synchronization, or invented CLI commands.
 - Skills reduce context only when triggering is precise and conditional references

@@ -279,7 +279,7 @@ export class StatusNotificationsWidget extends OpenTuiWidget<StatusNotificationO
   protected renderRegions(): readonly WidgetRenderRegion[] {
     const items = this.items;
     return [
-      { id: 'summary', role: 'status', text: `Status and notifications — ${items.length} item${items.length === 1 ? '' : 's'}` },
+      { id: 'summary', role: 'content', text: `Notifications · ${items.length} item${items.length === 1 ? '' : 's'}` },
       ...(items.length === 0
         ? [{ id: 'empty', role: 'status' as const, text: 'No active notifications.' }]
         : items.map((item) => ({
@@ -291,7 +291,7 @@ export class StatusNotificationsWidget extends OpenTuiWidget<StatusNotificationO
       {
         id: 'help',
         role: 'help',
-        text: '↑/↓ navigate · Home/End jump · Enter action · Esc back · Ctrl-C cancel/exit',
+        text: '↑/↓ navigate · Home/End jump · Enter action · Esc back',
       },
     ];
   }
@@ -343,7 +343,8 @@ export class StatusNotificationsWidget extends OpenTuiWidget<StatusNotificationO
     const presentation = PRESENTATION[item.severity];
     const marker = item.key === this.selectedKey ? '>' : ' ';
     const action = item.action === undefined ? '' : ` · action: ${item.action.label}`;
-    return `${marker} ${presentation.glyph} [${presentation.word}] ${item.slot}/${item.id}: ${item.message}${action}`;
+    const severity = `${presentation.word.slice(0, 1)}${presentation.word.slice(1).toLowerCase()}`;
+    return `${marker} ${presentation.glyph} ${severity} · ${item.message}${action}`;
   }
 
   private isCancelKey(key: string): boolean {

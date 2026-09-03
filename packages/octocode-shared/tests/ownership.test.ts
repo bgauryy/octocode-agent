@@ -7,13 +7,10 @@ function source(relative: string): string {
 }
 
 describe('shared-definition ownership', () => {
-  it('keeps consumer prompt modules as adapters instead of policy copies', () => {
-    const piPrompt = source('../../octocode-pi-extension/src/prompts/prompt.ts');
-    const piPlan = source('../../octocode-pi-extension/src/prompts/plan-prompt.ts');
-    expect(piPrompt).not.toContain('const authority =');
-    expect(piPrompt).toContain('@octocodeai/octocode-shared/prompts');
-    expect(piPlan).not.toContain('[PLAN MODE]');
-    expect(piPlan).toContain('@octocodeai/octocode-shared/prompts');
+  it('keeps the native prompt module as an adapter instead of a policy copy', () => {
+    const nativePrompt = source('../../octocode-agent/src/native-prompt.ts');
+    expect(nativePrompt).not.toContain('const authority =');
+    expect(nativePrompt).toContain('@octocodeai/octocode-shared/prompts');
   });
 
   it('keeps persisted Awareness records in the shared entity module', () => {
@@ -25,12 +22,8 @@ describe('shared-definition ownership', () => {
     expect(tasks).toContain('@octocodeai/octocode-shared/entities');
   });
 
-  it('keeps permission and prompt-mode unions out of host adapters', () => {
-    const approval = source('../../octocode-pi-extension/src/tools/approval.ts');
-    const piTypes = source('../../octocode-pi-extension/src/types.ts');
+  it('keeps prompt-mode policy out of the native host adapter', () => {
     const nativePrompt = source('../../octocode-agent/src/native-prompt.ts');
-    expect(approval).not.toContain("export type PermissionLevel =");
-    expect(piTypes).not.toContain("export type PromptMode =");
     expect(nativePrompt).not.toContain("OCTOCODE_PROMPT_MODE = 'octocode-first'");
   });
 });

@@ -14,10 +14,9 @@ Requires Node 22.13 or newer.
 npx @octocodeai/octocode-awareness attend --workspace "$PWD" --compact
 ```
 
-Durable state remains in the single default agent database. CLI use needs no
-global configuration; configure it only for shell hooks. See
-[configuration](docs/CONFIGURATION.md).
-For the optional advanced store:
+Durable coordination defaults to `<workspace>/.octocode/awareness.sqlite3`.
+CLI use needs no global configuration; configure it only for shell hooks. See
+[configuration](docs/CONFIGURATION.md). To initialize the workspace store:
 
 ```bash
 npx @octocodeai/octocode-awareness maintenance init --compact
@@ -54,11 +53,12 @@ import {
 Callers own prompt injection or `AGENTS.md` replacement and must replace the
 marked block rather than append duplicates.
 
-All durable coordination and memory use
-`$OCTOCODE_HOME/agent/agent.sqlite3` by default. Workspace isolation is logical
-through database scope columns. Repository `.octocode/` files are explicit
-exports or authored plan artifacts, not the live database. `--db` selects an
-explicit database for one call. See [storage scopes](docs/STORAGE_SCOPES.md).
+All durable coordination and memory use the workspace-owned
+`.octocode/awareness.sqlite3` by default. `--db-scope global` explicitly selects
+`$OCTOCODE_HOME/awareness/awareness.sqlite3`; `--db` selects an isolated
+Awareness database for one call. Agent control and runtime databases under
+`$OCTOCODE_HOME/agent/` are separate and must never contain Awareness tables.
+See [storage scopes](docs/STORAGE_SCOPES.md).
 
 The same root binary also exposes reflection, query, session, digest, and maintenance workflows. Shared-ledger verbs use `coordination` when a name is ambiguous.
 
@@ -87,27 +87,20 @@ npx @octocodeai/octocode-awareness hooks check --host <claude|codex|copilot|curs
 | Memory | Store, lexical/optional semantic recall, list, reindex, forget, and dry-run-first pruning. Memory is a lead, not evidence. |
 | Hooks | Optional host pre-edit lock gate; dry-run installation first. In-process hosts use the same package contracts. |
 | Schema | Machine-readable command and entity contracts so hosts do not guess flags or payloads. |
-| Host composition | Native host tools may compose registry, presence, and mutation-time conflict checks over the same dispatcher and DB. |
-| Runtime workflows | Attend/workboard, signals, refinements, sessions, reflection, query exports, digests, and maintenance from the same root CLI. |
+| Host composition | Native host tools may compose registry, presence, and mutation-time conflict checks over the same Awareness dispatcher and store. |
+| Coordination workflows | Attend/workboard, signals, refinements, Awareness session captures, reflection, query exports, digests, and maintenance from the same root CLI. |
 
 Operational CLI results are JSON; `--help` and `docs show` intentionally emit text/Markdown. Mutation results preserve the entity and may add a typed `next` action. `status` filters expired leases without mutating stored rows; cleanup is explicit.
 
 ## Database entities
 
-The shared host database owns fifteen coordination and continuity tables:
-`plans`, `tasks`, `locks`, `work_presence`, `handoffs`, `memories`, `agents`,
-`messages`, `message_receipts`, `event_outbox`, `event_consumers`,
-`event_acknowledgements`, `pending_interactions`, `authorization_receipts`, and
-`capability_receipts`.
-
-It also co-locates eighteen advanced-compatible auxiliary tables (`sessions`,
-`memory_refs`, `plan_members`, `plan_docs`, `task_paths`, `task_dependencies`,
-`task_claims`, `task_events`, `task_runs`, `run_files`, `delivery_state`,
-`hook_receipts`, `run_log`, `refinements`, `signals`, `signal_reads`, `edit_log`,
-and `harness_log`) plus six control tables owned by `@octocodeai/octocode-shared`:
-`octocode_meta`, `agent_sessions`, `mcp_server_overrides`, `mcp_tool_overrides`,
-`skill_overrides`, and `mcp_catalog_state`. See [docs/DB.md](docs/DB.md) for both
-local-store contracts and their query owners.
+Awareness owns plans, tasks, claims, work presence, locks, verification,
+coordination messages and handoffs, signals, memory, and related collaboration
+records. It does not own Agent sessions, effects, runtime lifecycle, automation,
+or authoritative worker runtime ledgers. Awareness does own the redacted
+`worker_lifecycle_events` coordination projection. Table totals are intentionally omitted; the executable DDL
+and schema tests are the durable inventory. See [docs/DB.md](docs/DB.md) for
+entity ownership, schema authorities, and fail-closed identity checks.
 
 ## Agent rules
 

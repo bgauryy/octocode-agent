@@ -20,7 +20,7 @@ function runScript(script: string, args: string[], payload: unknown, env: Record
     if (typeof payloadWorkspace === 'string' && payloadWorkspace.startsWith(tmpdir())) {
         writeWorkspacePolicy(payloadWorkspace, {
             version: 1,
-            storage: { repository: 'global', memory: 'global' },
+            storage: { repository: 'repo', memory: 'repo' },
             hooks: { profile: 'full' },
         });
     }
@@ -28,24 +28,30 @@ function runScript(script: string, args: string[], payload: unknown, env: Record
         input: JSON.stringify(payload),
         encoding: 'utf8',
         timeout: 5000,
-        cwd,
+        cwd: cwd ?? (typeof payloadWorkspace === 'string' ? payloadWorkspace : undefined),
         env: { ...process.env, OCTOCODE_HOOK_PROFILE: 'full', ...withEnabledAwarenessConfig(env) },
     });
 }
-function runHookWrapper(name: string, payload: unknown, env: Record<string, string | undefined> = {}, cwd?: string) {
+function runHookWrapper(
+    name: string,
+    payload: unknown,
+    env: Record<string, string | undefined> = {},
+    cwd?: string,
+    hooksDir = HOOKS_DIR,
+) {
     const payloadWorkspace = (payload as { workspace?: unknown })?.workspace;
     if (typeof payloadWorkspace === 'string' && payloadWorkspace.startsWith(tmpdir())) {
         writeWorkspacePolicy(payloadWorkspace, {
             version: 1,
-            storage: { repository: 'global', memory: 'global' },
+            storage: { repository: 'repo', memory: 'repo' },
             hooks: { profile: 'full' },
         });
     }
-    return spawnSync(resolve(HOOKS_DIR, name), [], {
+    return spawnSync(resolve(hooksDir, name), [], {
         input: JSON.stringify(payload),
         encoding: 'utf8',
         timeout: 5000,
-        cwd,
+        cwd: cwd ?? (typeof payloadWorkspace === 'string' ? payloadWorkspace : undefined),
         env: { ...process.env, ...withEnabledAwarenessConfig(env) },
     });
 }
@@ -56,7 +62,7 @@ it('signals periodic maintenance pressure without embedding details or mutating 
     const workspace = resolve(memoryHome, 'repo');
     mkdirSync(workspace, { recursive: true });
     try {
-      const dbPath = join(memoryHome, 'agent.sqlite3');
+      const dbPath = join(workspace, '.octocode', 'awareness.sqlite3');
       const database = connectDb(dbPath);
       const inserted = insertMemory(database, {
         agentId: 'old-agent',
@@ -112,7 +118,7 @@ it('prefers explicit payload agent ids over shared session ids', () => {
       );
       expect(result.status).toBe(0);
 
-      const db = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const db = new DatabaseSync(join(workspace, '.octocode', 'awareness.sqlite3'));
       expect(db.prepare(`SELECT rf.file_path, tr.agent_id
         FROM run_files rf JOIN task_runs tr ON tr.run_id = rf.run_id`).get()).toMatchObject({
         file_path: resolve(realpathSync(workspace), 'src/sub.ts'),
@@ -140,7 +146,7 @@ it('declares flat file_path hook payloads even when toolName is absent', () => {
       );
       expect(result.status).toBe(0);
 
-      const db = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const db = new DatabaseSync(join(workspace, '.octocode', 'awareness.sqlite3'));
       expect(db.prepare(`SELECT rf.file_path, tr.agent_id
         FROM run_files rf JOIN task_runs tr ON tr.run_id = rf.run_id`).get()).toMatchObject({
         file_path: resolve(realpathSync(workspace), 'src/cursor.ts'),
@@ -168,7 +174,7 @@ it('declares mixed root file_path payloads even when input contains unrelated me
       );
       expect(result.status).toBe(0);
 
-      const db = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const db = new DatabaseSync(join(workspace, '.octocode', 'awareness.sqlite3'));
       expect(db.prepare(`SELECT rf.file_path, tr.agent_id
         FROM run_files rf JOIN task_runs tr ON tr.run_id = rf.run_id`).get()).toMatchObject({
         file_path: resolve(realpathSync(workspace), 'src/mixed.ts'),
@@ -194,7 +200,7 @@ it('post-edit keeps one correlated same-agent aggregate until Stop finalizes it'
       expect(runScript(HOOK_RUNNER, ['pre-edit'], first, env).status).toBe(0);
       expect(runScript(HOOK_RUNNER, ['pre-edit'], second, env).status).toBe(0);
 
-      const db = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const db = new DatabaseSync(join(workspace, '.octocode', 'awareness.sqlite3'));
       expect((db.prepare('SELECT COUNT(*) AS count FROM run_files WHERE ended_at IS NULL').get() as { count: number }).count).toBe(1);
       expect((db.prepare("SELECT COUNT(*) AS count FROM task_runs WHERE origin = 'HOOK' AND status = 'ACTIVE'").get() as { count: number }).count).toBe(1);
 
@@ -226,10 +232,10 @@ it('stores shell hook run correlation in per-key files', () => {
       expect(runScript(HOOK_RUNNER, ['pre-edit'], first, env).status).toBe(0);
       expect(runScript(HOOK_RUNNER, ['pre-edit'], second, env).status).toBe(0);
 
-      const stateDir = join(memoryHome, 'hook-state', 'runs');
+      const stateDir = join(workspace, '.octocode', 'hook-state', 'runs');
       const stateFiles = readdirSync(stateDir).filter((file) => file.endsWith('.json'));
       expect(stateFiles).toHaveLength(2);
-      expect(existsSync(join(memoryHome, 'hook-state', 'shell-hook-tasks.json'))).toBe(false);
+      expect(existsSync(join(workspace, '.octocode', 'hook-state', 'shell-hook-tasks.json'))).toBe(false);
 
       expect(runScript(HOOK_RUNNER, ['post-edit'], first, env).status).toBe(0);
       expect(readdirSync(stateDir).filter((file) => file.endsWith('.json'))).toHaveLength(1);
@@ -257,7 +263,7 @@ describe('hook wrapper scripts', () => {
       const pre = runHookWrapper('pre-edit.sh', payload, env, workspace);
       expect(pre.status, pre.stderr).toBe(0);
 
-      const db = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const db = new DatabaseSync(join(workspace, '.octocode', 'awareness.sqlite3'));
       expect(db.prepare(`SELECT rf.file_path, tr.agent_id
         FROM run_files rf JOIN task_runs tr ON tr.run_id = rf.run_id WHERE rf.ended_at IS NULL`).get()).toMatchObject({
         file_path: resolve(realpathSync(workspace), 'src/wrapped.ts'),
@@ -281,21 +287,28 @@ describe('hook wrapper scripts', () => {
 
   it('pre-edit.sh guards before presence without a second host hook', () => {
     const memoryHome = mkdtempSync(join(tmpdir(), 'octocode-wrapper-guard-first-'));
+    const guardedSkillRoot = join(memoryHome, 'octocode-awareness');
+    const guardedScripts = join(guardedSkillRoot, 'scripts');
+    const guardedHooks = join(guardedScripts, 'hooks');
+    mkdirSync(guardedHooks, { recursive: true });
+    cpSync(join(SKILL_ROOT, 'scripts', 'hook-runner.mjs'), join(guardedScripts, 'hook-runner.mjs'));
+    cpSync(join(HOOKS_DIR, 'pre-edit.sh'), join(guardedHooks, 'pre-edit.sh'));
     try {
       const result = runHookWrapper(
         'pre-edit.sh',
-        { tool_name: 'Edit', workspace: SKILL_ROOT, tool_input: { file_path: 'SKILL.md' } },
+        { tool_name: 'Edit', workspace: guardedSkillRoot, tool_input: { file_path: 'SKILL.md' } },
         {
           OCTOCODE_AGENT_DIR: memoryHome,
           OCTOCODE_AGENT_ID: 'guarded-wrapper-agent',
           OCTOCODE_SKILL_ROOT: undefined,
           OCTOCODE_ALLOW_HARNESS_APPLY: undefined,
         },
-        SKILL_ROOT,
+        guardedSkillRoot,
+        guardedHooks,
       );
       expect(result.status).toBe(2);
       expect(result.stderr).toContain('editing the skill itself is gated');
-      const inspect = new DatabaseSync(join(memoryHome, 'agent.sqlite3'));
+      const inspect = new DatabaseSync(join(guardedSkillRoot, '.octocode', 'awareness.sqlite3'));
       expect((inspect.prepare('SELECT COUNT(*) AS count FROM task_runs').get() as { count: number }).count).toBe(0);
       expect(inspect.prepare('SELECT event, status FROM hook_receipts').get()).toMatchObject({ event: 'pre-edit', status: 'success' });
       inspect.close();
