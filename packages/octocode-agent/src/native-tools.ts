@@ -919,6 +919,7 @@ export async function createDefaultOctocodeToolRegistry(
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     plan?: NativePlanOptions;
+    observeRuntime?: NativeAwarenessOptions['observeRuntime'];
     run?: OctocodeCommandRunner;
     allowedTools?: ReadonlySet<string>;
     allowedOctocodeTools?: ReadonlySet<string>;
@@ -959,7 +960,7 @@ export async function createDefaultOctocodeToolRegistry(
       }),
     {
       ...(options.plan === undefined ? {} : { plan: options.plan }),
-      awareness: { cwd, env },
+      awareness: { cwd, env, ...(options.observeRuntime === undefined ? {} : { observeRuntime: options.observeRuntime }) },
       ...(options.allowedTools === undefined ? {} : { allowedTools: options.allowedTools }),
       ...(options.allowedOctocodeTools === undefined ? {} : { allowedOctocodeTools: options.allowedOctocodeTools }),
     },

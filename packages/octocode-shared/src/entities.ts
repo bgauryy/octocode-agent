@@ -11,17 +11,13 @@
  * storage with the Agent control or runtime databases.
  */
 
-export const PLAN_STATUSES = ['OPEN', 'DONE', 'ABANDONED', 'DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED'] as const;
-export const TASK_STATUSES = ['OPEN', 'CLAIMED', 'IN_PROGRESS', 'BLOCKED', 'VERIFY', 'DONE', 'FAILED', 'CANCELLED'] as const;
+export const PLAN_STATUSES = ['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED'] as const;
+export const TASK_STATUSES = ['OPEN', 'IN_PROGRESS', 'BLOCKED', 'VERIFY', 'DONE', 'FAILED', 'CANCELLED'] as const;
 export type PlanStatus = (typeof PLAN_STATUSES)[number];
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 export type CheckStatus = 'SUCCESS' | 'FAILED';
 export type AgentStatus = 'ACTIVE' | 'IDLE' | 'LEFT';
 
-export const AWARENESS_PLAN_STATUSES = ['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED'] as const;
-export const AWARENESS_TASK_STATUSES = ['OPEN', 'IN_PROGRESS', 'BLOCKED', 'VERIFY', 'DONE', 'FAILED', 'CANCELLED'] as const;
-export type AwarenessPlanStatus = (typeof AWARENESS_PLAN_STATUSES)[number];
-export type PlanTaskStatus = (typeof AWARENESS_TASK_STATUSES)[number];
 export type PlanMemberRole = 'LEAD' | 'CONTRIBUTOR';
 
 export interface PlanRecord {
@@ -29,10 +25,14 @@ export interface PlanRecord {
   name: string;
   objective: string;
   lead_agent_id: string;
-  status: AwarenessPlanStatus;
+  status: PlanStatus;
   workspace_path: string;
   artifact: string | null;
   doc_dir: string;
+  source_kind: string | null;
+  source_key: string | null;
+  rfc_path: string | null;
+  rfc_revision: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -91,12 +91,18 @@ export interface PlanTaskRecord {
   title: string;
   reasoning: string;
   acceptance_criteria: string;
-  status: PlanTaskStatus;
+  status: TaskStatus;
   priority: number;
   created_by: string;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  run_id: string | null;
+  run_status: TaskRunRecord['status'] | null;
+  run_updated_at: string | null;
+  verification: { agent_id: string; message: string; created_at: string } | null;
+  source_step_key: string | null;
+  check_command: string | null;
   paths: string[];
   dependencies: string[];
   claim: TaskClaimRecord | null;
@@ -190,6 +196,8 @@ export interface Task {
   verifiedBy: string | null;
   verificationMessage: string | null;
   sourceStepKey: string | null;
+  /** The active or most recently submitted run that owns this task's completion fence. */
+  runId: string | null;
 }
 
 export interface PlanGraphResult {
@@ -199,14 +207,16 @@ export interface PlanGraphResult {
 
 export interface Lock {
   filePath: string;
+  runId: string;
   agentId: string;
   reason: string;
   acquiredAt: string;
-  expiresAt: string;
+  expiresAt: string | null;
 }
 
 export interface WorkPresence {
   filePath: string;
+  runId: string;
   agentId: string;
   reason: string;
   startedAt: string;
@@ -223,9 +233,18 @@ export interface HandoffNote {
   clearedAt: string | null;
 }
 
+export interface PendingVerification {
+  runId: string;
+  taskId: string | null;
+  agentId: string;
+  testPlan: string;
+  rationale: string;
+  createdAt: string;
+}
+
 export interface CheckAudit {
   ok: boolean;
-  pending: Task[];
+  pending: PendingVerification[];
   pendingCount: number;
   filters: {
     agentId: string | null;

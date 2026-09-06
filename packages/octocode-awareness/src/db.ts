@@ -1,9 +1,0 @@
-/** Public database API. */
-export { DatabaseSync, resolveDbPath, connectDb, checkpointWal, connectCachedDb, getDb, getDeliveryFingerprint, setDeliveryFingerprint } from './db-runtime.js';
-export { initDb } from './db-init.js';
-export { tableColumns } from './db-introspection.js';
-export { hasFts, ftsTermsForRow, rebuildFts, referenceKind, replaceMemoryReferences, evictExpiredLocks } from './db-maintenance.js';
-export type { DeliveryFingerprintKey } from './db-runtime.js';
-export type { EvictExpiredLocksResult } from './db-maintenance.js';
-export { parseStorageScope, repoDatabasePath } from './storage-scope.js';
-export type { AwarenessStorageScope } from './storage-scope.js';

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ROUTABLE_OPERATIONS } from '@octocodeai/octocode-awareness';
+import { ROUTABLE_OPERATIONS, resolveDbPath } from '@octocodeai/octocode-awareness';
 import { ToolRegistry } from '@octocodeai/agent-core';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { registerNativeAwarenessTool } from '../src/native-awareness.js';
 
@@ -22,6 +25,17 @@ function execution(input: unknown, overrides: { sessionId?: string; cwd?: string
 }
 
 describe('native Awareness tool', () => {
+  it('opens the same default home store as the Awareness CLI', async () => {
+    const registry = new ToolRegistry();
+    const openDb = vi.fn(() => ({} as never));
+    registerNativeAwarenessTool(registry, {
+      cwd: '/workspace', openDb, closeDb: vi.fn(),
+      run: () => ({ exitCode: 0, payload: { ok: true } }),
+    });
+    await registry.get('awareness')!.execute(execution({ action: 'workspace_status', request: {} }));
+    expect(openDb).toHaveBeenCalledWith(resolveDbPath(null, { workspace: '/workspace' }));
+  });
+
   it('registers the owner catalog as a closed schema with input-sensitive policy', () => {
     const registry = new ToolRegistry();
     registerNativeAwarenessTool(registry, { cwd: '/workspace' });
@@ -176,18 +190,25 @@ describe('native Awareness tool', () => {
     expect(run.mock.calls[0]?.[3]).toMatchObject({ agentId: 'native:session-2', sessionId: 'session-2' });
   });
 
-  it('defaults to the workspace-owned Awareness database', async () => {
-    const registry = new ToolRegistry();
-    const openDb = vi.fn(() => ({} as never));
-    registerNativeAwarenessTool(registry, {
-      cwd: '/workspace/project',
-      openDb,
-      closeDb: () => undefined,
-      run: () => ({ exitCode: 0, payload: {} }),
-    });
+  it('respects an explicitly selected repository storage policy', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'native-awareness-policy-'));
+    mkdirSync(join(workspace, '.octocode'));
+    writeFileSync(join(workspace, '.octocode', 'awareness.json'), JSON.stringify({
+      version: 1, storage: { repository: 'repo', memory: 'repo' }, hooks: { profile: 'coordination' },
+    }));
+    try {
+      const registry = new ToolRegistry();
+      const openDb = vi.fn(() => ({} as never));
+      registerNativeAwarenessTool(registry, {
+        cwd: workspace,
+        openDb,
+        closeDb: () => undefined,
+        run: () => ({ exitCode: 0, payload: {} }),
+      });
 
-    await registry.get('awareness')!.execute(execution({ action: 'query', request: {} }));
+      await registry.get('awareness')!.execute(execution({ action: 'query', request: {} }));
 
-    expect(openDb).toHaveBeenCalledWith('/workspace/project/.octocode/awareness.sqlite3');
+      expect(openDb).toHaveBeenCalledWith(join(workspace, '.octocode', 'awareness.sqlite3'));
+    } finally { rmSync(workspace, { recursive: true, force: true }); }
   });
 });

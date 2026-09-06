@@ -6,6 +6,7 @@ import {
   appendWorkerLifecycleEvent,
   connectDb,
   resolveDbPath,
+  storageScopeForCommand,
   type WorkerLifecycleJsonValue,
 } from '@octocodeai/octocode-awareness';
 
@@ -103,7 +104,7 @@ export class NativeAwarenessWorkerLedger implements WorkerLedgerPort {
 
   constructor(options: NativeAwarenessWorkerLedgerOptions) {
     this.#workspace = options.workspace;
-    this.#dbPath = resolveDbPath(undefined, { scope: 'repo', workspace: options.workspace });
+    this.#dbPath = resolveDbPath(undefined, { scope: storageScopeForCommand('coordination', options.workspace), workspace: options.workspace });
     this.#now = options.now ?? Date.now;
   }
 

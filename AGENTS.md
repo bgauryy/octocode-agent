@@ -1,10 +1,10 @@
 # AGENTS.md — Octocode Agent monorepo
 
 This repository ships the host-neutral agent kernel, native CLI, packaged Rust
-services, supported Pi adapter, conformance tooling, shared contracts, and
-Awareness coordination. The closest `AGENTS.md` wins. Work under
-`packages/octocode-awareness` also follows its
-[package guide](packages/octocode-awareness/AGENTS.md).
+services, supported Pi adapter, conformance tooling, and shared contracts.
+Awareness coordination lives in the sibling
+[`bgauryy/octocode` repository](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness).
+The closest `AGENTS.md` wins.
 
 Read the owning package's `ARCHITECTURE.md` before changing a boundary.
 
@@ -18,7 +18,7 @@ Read the owning package's `ARCHITECTURE.md` before changing a boundary.
 | Supported Pi hooks, prompt, tools, Skills, UI, or host adaptation | [`octocode-pi-extension`](packages/octocode-pi-extension) | Native/Pi scenarios |
 | Trace normalization, effect comparison, parity scenarios, or host fixtures | [`octocode-agent-testing`](packages/octocode-agent-testing) | Production packages never import it |
 | Cross-host paths, protocols, permissions, discovery, entities, or prompt fragments | [`octocode-shared`](packages/octocode-shared) | Every consuming host |
-| Plans, work, locks, messages, verification, memory, reflection, or coordination hooks | [`octocode-awareness`](packages/octocode-awareness) | Nested guide and real CLI |
+| Plans, work, locks, messages, verification, memory, reflection, or coordination hooks | [`@octocodeai/octocode-awareness`](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness) | Package guide and real CLI |
 
 External packages remain separate. `@octocodeai/config` owns environment and
 Octocode-home loading. `octocode-tools-core`, `octocode-engine`, and
@@ -156,7 +156,7 @@ databases directly.
 | Parallel tools, MCP, and workers | [parallelism guide](packages/octocode-agent/docs/PARALLELISM_AND_WORKERS.md) |
 | Supported Pi adapter | [Pi architecture](packages/octocode-pi-extension/ARCHITECTURE.md) |
 | Shared contracts | [shared architecture](packages/octocode-shared/ARCHITECTURE.md) |
-| Awareness lifecycle | [Awareness guide](packages/octocode-awareness/docs/HOW_IT_WORKS.md) |
+| Awareness lifecycle | [Awareness guide](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/HOW_IT_WORKS.md) |
 | Discovery and MCP | [discovery](docs/DISCOVERY.md) and [MCP](docs/MCP.md) |
 
 Keep global Octocode CLI, configuration, security, OQL, and release docs in the

@@ -1,10 +1,18 @@
 import os from 'node:os';
+import fs from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { correlationId, packetId, sessionId, workerId, type WorkerSpawnPacket, type WorkerTerminalPacket } from '@octocodeai/agent-core';
 import { connectDb, listWorkerLifecycleEvents, resolveDbPath } from '@octocodeai/octocode-awareness';
 import { NativeAwarenessWorkerLedger } from '../src/native-worker-ledger.js';
 import { workerAuthorityFixture } from './worker-authority-fixture.js';
+
+let testHome: string;
+beforeEach(() => {
+  testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-ledger-home-'));
+  vi.stubEnv('OCTOCODE_HOME', testHome);
+});
+afterEach(() => { vi.unstubAllEnvs(); fs.rmSync(testHome, { recursive: true, force: true }); });
 
 describe('native Awareness worker ledger adapter', () => {
   it('persists the redacted process-group identity and ownership generation for restart fencing', async () => {
@@ -30,7 +38,7 @@ describe('native Awareness worker ledger adapter', () => {
       verification: 'linux-proc',
     });
 
-    const dbPath = resolveDbPath(undefined, { scope: 'repo', workspace });
+    const dbPath = resolveDbPath(undefined, { workspace });
     const db = connectDb(dbPath);
     try {
       const [event] = listWorkerLifecycleEvents(db, { workspace, sessionId: 'session:process' });
@@ -71,7 +79,7 @@ describe('native Awareness worker ledger adapter', () => {
     await ledger.append(spawn);
     await ledger.append(terminal);
 
-    const dbPath = resolveDbPath(undefined, { scope: 'repo', workspace });
+    const dbPath = resolveDbPath(undefined, { workspace });
     const db = connectDb(dbPath);
     try {
       const events = listWorkerLifecycleEvents(db, { workspace, sessionId: 'session:1' });
@@ -103,7 +111,7 @@ describe('native Awareness worker ledger adapter', () => {
       handback: { text },
     });
 
-    const dbPath = resolveDbPath(undefined, { scope: 'repo', workspace });
+    const dbPath = resolveDbPath(undefined, { workspace });
     const db = connectDb(dbPath);
     try {
       const [event] = listWorkerLifecycleEvents(db, {

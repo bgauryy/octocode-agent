@@ -3,8 +3,11 @@ import {
   ROUTABLE_OPERATIONS,
   connectDb,
   resolveDbPath,
+  storageScopeForCommand,
   runAwarenessToolOperation,
   type AwarenessToolOperation,
+  type AwarenessToolOperationContext,
+  type RuntimeObservation,
   type AwarenessToolOperationResult,
 } from '@octocodeai/octocode-awareness';
 import { createEffectSet, type ToolPolicyResolution, type ToolRegistry } from '@octocodeai/agent-core';
@@ -13,7 +16,7 @@ type AwarenessRunner = (
   db: DatabaseSync,
   operation: AwarenessToolOperation,
   request: Record<string, unknown>,
-  context: { agentId?: string | null; cwd?: string | null; sessionId?: string | null },
+  context: AwarenessToolOperationContext,
 ) => AwarenessToolOperationResult;
 
 export interface NativeAwarenessOptions {
@@ -24,6 +27,7 @@ export interface NativeAwarenessOptions {
   readonly openDb?: (dbPath: string) => DatabaseSync;
   readonly closeDb?: (dbPath: string) => void;
   readonly run?: AwarenessRunner;
+  readonly observeRuntime?: () => RuntimeObservation;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -91,7 +95,7 @@ function resolveAwarenessPolicy(input: unknown): ToolPolicyResolution {
 
 export function registerNativeAwarenessTool(registry: ToolRegistry, options: NativeAwarenessOptions): void {
   const env = options.env ?? process.env;
-  const dbPath = resolveDbPath(options.dbPath, { scope: 'repo', workspace: options.cwd });
+  const dbPath = resolveDbPath(options.dbPath, { scope: storageScopeForCommand('coordination', options.cwd), workspace: options.cwd });
   const openDb = options.openDb ?? connectDb;
   const closeDb = options.closeDb;
   const run = options.run ?? runAwarenessToolOperation;
@@ -131,6 +135,7 @@ export function registerNativeAwarenessTool(registry: ToolRegistry, options: Nat
           cwd: execution.context.cwd || options.cwd,
           sessionId,
           agentId,
+          ...(operation === 'attend' && options.observeRuntime !== undefined ? { runtimeObservation: options.observeRuntime() } : {}),
         });
         const content = { operation, exitCode: result.exitCode, payload: result.payload };
         if (result.exitCode !== 0) {

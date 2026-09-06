@@ -3,15 +3,21 @@ import os from 'node:os';
 import path from 'node:path';
 import { connectDb, listWorkerLifecycleEvents, resolveDbPath } from '@octocodeai/octocode-awareness';
 import { WorkerSupervisor, correlationId, packetId, sessionId, workerId, type WorkerLedgerEntry, type WorkerSpawnPacket } from '@octocodeai/agent-core';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NativeAwarenessWorkerLedger } from '../src/native-worker-ledger.js';
 import { recoverNativeWorkerOrphans } from '../src/native-worker-recovery.js';
 import { NativeWorkerProcessPort, createNodeNativeWorkerProcessAdapter, type NativeWorkerProcessIdentity } from '../src/native-workers.js';
 import { workerAuthorityFixture } from './worker-authority-fixture.js';
 
 const roots: string[] = [];
+beforeEach(() => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-recovery-home-'));
+  roots.push(testHome);
+  vi.stubEnv('OCTOCODE_HOME', testHome);
+});
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -41,7 +47,7 @@ describe('native worker restart recovery', () => {
     expect(JSON.stringify(recovered)).not.toContain('private prompt');
     expect(await recoverNativeWorkerOrphans({ workspace, sessionId: 'session-1' })).toEqual([]);
 
-    const dbPath = resolveDbPath(undefined, { scope: 'repo', workspace });
+    const dbPath = resolveDbPath(undefined, { workspace });
     const db = connectDb(dbPath);
     try {
       const events = listWorkerLifecycleEvents(db, { workspace, sessionId: 'session-1', limit: 20 });
@@ -143,7 +149,7 @@ describe('native worker restart recovery', () => {
       catch { break; }
     }
     expect(() => process.kill(childIdentity!.pid, 0)).toThrow();
-    const dbPath = resolveDbPath(undefined, { scope: 'repo', workspace });
+    const dbPath = resolveDbPath(undefined, { workspace });
     const db = connectDb(dbPath);
     try {
       const events = listWorkerLifecycleEvents(db, { workspace, sessionId: 'session-real', limit: 20 });

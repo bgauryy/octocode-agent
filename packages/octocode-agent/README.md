@@ -157,8 +157,8 @@ Awareness is a separate owner. Its default database is
 uses `$OCTOCODE_HOME/awareness/awareness.sqlite3`. The Agent never initializes
 Awareness tables in either Agent database, and Awareness never opens Agent
 control or runtime state. Other CLI/MCP databases under `.octocode/` remain with
-their own owners. See the [storage boundary](../octocode-awareness/docs/STORAGE_SCOPES.md)
-and [Awareness database contract](../octocode-awareness/docs/DB.md).
+their own owners. See the [storage boundary](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/STORAGE_SCOPES.md)
+and [Awareness database contract](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/DB.md).
 
 ## Runtime configuration
 

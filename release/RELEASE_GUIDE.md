@@ -157,11 +157,11 @@ yarn workspace octocode                        build:dev   # rebuilds tools-core
 
 Build order: `@octocodeai/octocode-engine` → `@octocodeai/octocode-tools-core` → `octocode-mcp` / `octocode`
 
-### 3. Awareness (runtime + canonical skill)
+### 3. Awareness (runtime + canonical skill, sibling `octocode` workspace)
 
 ```bash
-yarn workspace @octocodeai/octocode-awareness build
-yarn workspace @octocodeai/octocode-awareness pack:check
+(cd ../octocode && yarn workspace @octocodeai/octocode-awareness build)
+(cd ../octocode && yarn workspace @octocodeai/octocode-awareness pack:check)
 ```
 
 The build bundles Zod into the standalone schema script, refreshes
@@ -249,8 +249,8 @@ node packages/octocode-pi-extension/scripts/check-no-workspace-protocol.mjs
 node packages/octocode-agent/scripts/check-no-workspace-protocol.mjs
 
 # Awareness has no runtime deps; verify its clean isolated artifact before Pi:
-yarn workspace @octocodeai/octocode-awareness build
-yarn workspace @octocodeai/octocode-awareness pack:check
+(cd ../octocode && yarn workspace @octocodeai/octocode-awareness build)
+(cd ../octocode && yarn workspace @octocodeai/octocode-awareness pack:check)
 
 # Full test + lint gate:
 yarn verify
@@ -285,9 +285,9 @@ done
 npm publish packages/octocode-mcp --access public --provenance --ignore-scripts
 npm publish packages/octocode    --access public --provenance
 
-# ── Awareness runtime + canonical skills ───────────────────────────
+# ── Awareness runtime + canonical skills (sibling `octocode` workspace) ──
 # Keep lifecycle scripts enabled: prepack builds and verifies the isolated artifact.
-npm publish packages/octocode-awareness --access public --provenance
+(cd ../octocode && npm publish packages/octocode-awareness --access public --provenance)
 
 # ── Pi extension ────────────────────────────────────────────────────
 npm publish packages/octocode-pi-extension --access public --provenance

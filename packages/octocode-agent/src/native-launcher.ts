@@ -1,3 +1,4 @@
+import { createNativePhysiology } from './native-physiology.js';
 import { createHash, randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { isDeepStrictEqual } from "node:util";
@@ -8,6 +9,7 @@ import {
   LiveRuntimePlanState,
   LifecycleBus,
   PolicyChain,
+  resolveModelInputBudget,
   RuntimeFailure,
   SessionController,
   eventId,
@@ -1501,9 +1503,24 @@ export async function createDefaultNativeRuntime(options: {
     workspaceTrust,
     onMcpCatalogInvalidated: (notice) => publishMcpCatalogInvalidated?.(notice),
   });
+  const physiology = createNativePhysiology({
+    initialModel: { providerId, modelId: effectiveModel },
+    resolveInputLimit: (model) => {
+      const limits = modelConfiguration.catalog.models.find(
+        candidate => candidate.providerId === model.providerId && candidate.id === model.modelId,
+      )?.limits;
+      try {
+        return resolveModelInputBudget(limits);
+      } catch {
+        // An invalid or absent catalog limit is unknown telemetry, never a stale budget.
+        return undefined;
+      }
+    },
+  });
   const tools =
     options.tools ??
     (await createDefaultOctocodeToolRegistry({
+      observeRuntime: () => physiology.snapshot(),
       cwd: options.cwd,
       env: options.env,
       ...capabilityComposition,
@@ -2425,7 +2442,9 @@ export async function createDefaultNativeRuntime(options: {
     initialContextEventIds,
     initialContextProjectionReceipt,
     stablePrefixMessageCount: initialMessages[0]?.role === "system" ? 1 : 0,
-    modelLimits: selectedModelLimits,
+    resolveModelLimits: (model) => modelConfiguration.catalog.models.find(
+      candidate => candidate.providerId === model?.providerId && candidate.id === model.modelId,
+    )?.limits,
     contextTokenMeter: nativeContextTokenMeter,
     compactionInputTokenThreshold: compactionInputTokenThreshold,
     compaction: {
@@ -2489,7 +2508,15 @@ export async function createDefaultNativeRuntime(options: {
         : () =>
             "Thinking controls are not supported by the active OpenAI-compatible adapter",
     monitoring: { snapshot: () => ({ cache: octocodeCatalogCacheMetrics() }) },
-    emit: persistRuntimeEvent,
+    emit: async (event) => {
+      try {
+        await persistRuntimeEvent(event);
+        physiology.observe(event);
+      } catch (error) {
+        physiology.invalidateUnpersistedReceipt(event);
+        throw error;
+      }
+    },
     registerCheckpointEventIngress: (ingress) => {
       if (checkpointEventIngress !== undefined)
         throw new RuntimeFailure("internal-invariant", "Checkpoint event ingress was bound more than once");

@@ -68,7 +68,7 @@ Inspect at minimum:
 - `packages/octocode-agent-core/ARCHITECTURE.md`, contracts, runtime, events, sessions, settings, models, hooks, plugins, workers, and tests
 - `packages/octocode-agent-testing/` conformance utilities and real-host fixtures
 - `packages/octocode-pi-extension/` architecture, prompts, tools, skills, Awareness wiring, settings, session artifacts, subagents, orchestration, hooks, plugins, and tests
-- `packages/octocode-awareness/AGENTS.md`, architecture/docs, canonical skill source, storage schema, CLI/library boundary, and tests when Awareness is in scope
+- the sibling `octocode` repository's `packages/octocode-awareness/AGENTS.md`, architecture/docs, canonical skill source, storage schema, CLI/library boundary, and tests when Awareness is in scope
 
 The three existing prompts are specialized authorities, not optional background:
 

@@ -74,6 +74,15 @@ it remains below the hard model input budget. At or above that hard budget it
 fails before provider admission. Provider-reported input overflow still receives
 one compact-and-retry attempt and requires request-size progress.
 
+Hosts with model selection inject `resolveModelLimits` from their effective model
+catalog. Core resolves and validates the active model's limits at each context
+preflight; a smaller selected model cannot inherit the launch model's larger
+input budget. Hosts with a fixed model may supply static `modelLimits` instead.
+An unknown dynamic limit remains unknown rather than falling back to stale limits.
+`resolveModelInputBudget` is the shared derivation for core preflight and native
+telemetry: model context capacity minus output reserve and the safety margin.
+A host's observation of this value does not replace core admission.
+
 ## Event contract flow
 
 Core uses one canonical runtime lifecycle vocabulary. Explicit projectors adapt

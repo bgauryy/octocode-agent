@@ -19,7 +19,7 @@ Package ownership and implementation details stay with each package.
 | Agent testing | [Architecture](../packages/octocode-agent-testing/ARCHITECTURE.md) | [README](../packages/octocode-agent-testing/README.md) |
 | Native agent | [Architecture](../packages/octocode-agent/ARCHITECTURE.md) | [Index](../packages/octocode-agent/docs/README.md) |
 | Pi extension | [Architecture](../packages/octocode-pi-extension/ARCHITECTURE.md) | [Index](../packages/octocode-pi-extension/docs/README.md) |
-| Awareness | [Architecture](../packages/octocode-awareness/ARCHITECTURE.md) | [Index](../packages/octocode-awareness/docs/README.md) |
+| Awareness | [Architecture](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/ARCHITECTURE.md) | [Index](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/README.md) |
 | Shared contracts | [Architecture](../packages/octocode-shared/ARCHITECTURE.md) | [README](../packages/octocode-shared/README.md) |
 
 [`DESIGN/LEFTOVERS.md`](../DESIGN/LEFTOVERS.md) is the only live repository-level

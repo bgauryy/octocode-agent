@@ -14,7 +14,7 @@ import {
   type SessionStore,
   type ToolDefinition,
 } from "@octocodeai/agent-core";
-import { openAwareness } from "@octocodeai/octocode-awareness";
+import { openAwarenessStore } from "@octocodeai/octocode-awareness";
 import { agentDbPath } from "@octocodeai/octocode-shared/paths";
 import {
   createDefaultNativeRuntime,
@@ -151,7 +151,7 @@ export function createNativePolicyDenialProbe(root: string): ProductionScenarioP
     fs.mkdirSync(workspace, { recursive: true });
     fs.writeFileSync(lockedPath, "peer owned\n");
 
-    const awareness = openAwareness({ workspace, dbPath: awarenessDb });
+    const awareness = openAwarenessStore({ workspace, dbPath: awarenessDb });
     awareness.acquireLock({
       filePath: lockedPath,
       agentId: "production-peer",

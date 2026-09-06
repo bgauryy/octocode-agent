@@ -13,14 +13,15 @@ communication and dependency-work ledgers, leases, revisions, and fencing.
 Per-session and other Agent artifacts remain under `agent/sessions/` and the
 other documented Agent directories.
 
-Awareness is not an Agent database module. Workspace Awareness defaults to
-`<workspace>/.octocode/awareness.sqlite3`; explicit global Awareness uses
-`$OCTOCODE_HOME/awareness/awareness.sqlite3`. Native adapters can consume
+Awareness is not an Agent database module. Awareness defaults to
+`$OCTOCODE_HOME/awareness/awareness.sqlite3`; an explicit workspace policy or
+`--db-scope repo` selects `<workspace>/.octocode/awareness.sqlite3`, and
+`--db <path>` has highest precedence. Native adapters can consume
 Awareness through its public contracts, but they must not attach, initialize, or
 migrate Awareness relations in `agent.sqlite3` or `core.sqlite3`. Other CLI and
 MCP databases have separate owners. Database identity checks fail closed before
 schema writes when a path belongs to another owner. See the
-[storage ownership matrix](../octocode-awareness/docs/STORAGE_SCOPES.md).
+[storage ownership matrix](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/STORAGE_SCOPES.md).
 The native `WorkerLedgerPort` may publish a bounded, redacted lifecycle
 projection to the workspace Awareness database; the Rust runtime database
 remains authoritative for worker mailboxes, worktrees, handoffs, leases, and
@@ -44,6 +45,9 @@ recovery fencing.
 - `native-provider-registry.ts` is the model composition boundary. It composes the
   canonical, persisted-settings, and environment model sources into the core
   `ModelCatalog`; runtime selection is validated against that effective catalog.
+  Context preflight resolves limits from the active catalog model on each
+  admission, including after model selection, instead of retaining the launch
+  model's limits.
   `native-model.ts` maps core model requests onto the Vercel AI SDK and its
   official OpenAI, Anthropic, and OpenAI-compatible providers; those SDKs own
   provider wire formats. External credentialed provider conformance remains a

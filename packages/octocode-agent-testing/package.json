@@ -16,7 +16,7 @@
     "url": "git+https://github.com/bgauryy/octocode-agent.git",
     "directory": "packages/octocode-agent-testing"
   },
-    "publishConfig": {
+  "publishConfig": {
     "access": "public"
   },
   "bugs": "https://github.com/bgauryy/octocode-agent/issues",

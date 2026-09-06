@@ -16,7 +16,7 @@
 
 1. **[`octocode-agent`](packages/octocode-agent)** — the native editor and launcher. It composes `@octocodeai/agent-core`, native transports, sessions, settings, and OpenTUI.
 2. **[`@octocodeai/pi-extension`](packages/octocode-pi-extension)** — the independently supported Pi adapter and cross-host conformance reference. Native agent/core and native release artifacts do not depend on it.
-3. **[`@octocodeai/octocode-awareness`](packages/octocode-awareness)** — the shared coordination, hooks, and memory runtime used by supported coding hosts.
+3. **[`@octocodeai/octocode-awareness`](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness)** — the shared coordination, hooks, and memory runtime used by supported coding hosts.
 
 > **The native editor runs the product loop.** The migration keeps Pi as a supported
 > comparison toggle instead of a dependency or fallback of `octocode-agent`.
@@ -154,7 +154,7 @@ The same root `octocode-awareness` binary adds attend, reflection, projections, 
 and maintenance over the configured Awareness database. Hosts use the same command and schema
 contracts instead of maintaining a second coordination ledger.
 
-➡️ [`packages/octocode-awareness`](packages/octocode-awareness) · [HOW_IT_WORKS](packages/octocode-awareness/docs/HOW_IT_WORKS.md)
+➡️ [`@octocodeai/octocode-awareness`](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness) · [HOW_IT_WORKS](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/HOW_IT_WORKS.md)
 
 ---
 
@@ -352,10 +352,10 @@ Yarn 4 workspaces monorepo (`packages/*`), Node ≥ 26.4 for root development an
 | [`packages/octocode-agent-testing`](packages/octocode-agent-testing) | `@octocodeai/agent-testing` | Deterministic host mocks and cross-host conformance evidence. | [architecture](packages/octocode-agent-testing/ARCHITECTURE.md) |
 | [`packages/octocode-agent`](packages/octocode-agent) | `octocode-agent` | Native editor, transports, sessions, settings, and OpenTUI adapter. | [architecture](packages/octocode-agent/ARCHITECTURE.md) · [docs](packages/octocode-agent/docs/README.md) |
 | [`packages/octocode-pi-extension`](packages/octocode-pi-extension) | `@octocodeai/pi-extension` | Independently supported Pi adapter and conformance reference. | [architecture](packages/octocode-pi-extension/ARCHITECTURE.md) · [docs](packages/octocode-pi-extension/docs/README.md) |
-| [`packages/octocode-awareness`](packages/octocode-awareness) | `@octocodeai/octocode-awareness` | SQLite coordination, memory, hooks, reflection, and recovery. | [architecture](packages/octocode-awareness/ARCHITECTURE.md) · [docs](packages/octocode-awareness/docs/README.md) |
+| [`@octocodeai/octocode-awareness`](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness) | `@octocodeai/octocode-awareness` | SQLite coordination, memory, hooks, reflection, and recovery. | [architecture](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/ARCHITECTURE.md) · [docs](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/README.md) |
 | [`packages/octocode-shared`](packages/octocode-shared) | `@octocodeai/octocode-shared` | Shared paths, entities, protocols, database control data, discovery, and prompts. | [architecture](packages/octocode-shared/ARCHITECTURE.md) |
 
-Agent guides: [`AGENTS.md`](AGENTS.md) (repo) · [`packages/octocode-awareness/AGENTS.md`](packages/octocode-awareness/AGENTS.md) (package). Internals: each package's `ARCHITECTURE.md` where present.
+Agent guides: [`AGENTS.md`](AGENTS.md) (repo) · [Awareness package guide](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/AGENTS.md). Internals: each package's `ARCHITECTURE.md` where present.
 
 ---
 
@@ -375,7 +375,6 @@ yarn verify       # full integration/release gate, including pack, PTY, and perf
 For focused development, per-package verification remains available:
 
 ```bash
-yarn workspace @octocodeai/octocode-awareness verify
 yarn workspace @octocodeai/pi-extension verify
 yarn workspace octocode-agent verify
 ```
@@ -384,7 +383,6 @@ Local end-to-end after changing a local package — **rebuild in dependency orde
 exercise the real CLI / harness path (don't claim done from a compile alone):
 
 ```bash
-yarn workspace @octocodeai/octocode-awareness build
 yarn workspace @octocodeai/pi-extension build
 yarn workspace octocode-agent build
 ```
@@ -393,10 +391,9 @@ yarn workspace octocode-agent build
 target ≥ 90% branch (Vitest + v8). No backward-compat by default — refactor freely; add shims
 only when asked.
 
-**Build outputs (do not hand-edit):** `packages/octocode-awareness/out/**` (separate CLI +
-import-only library/schema API + bundled skills), extension `dist/**`, and any
-`.agents/skills/**` / `out/skills/**` mirrors. Edit source in `src/**`, `bin/**`, and the
-    canonical skill under `skills/octocode-awareness/**`, then rebuild.
+**Build outputs (do not hand-edit):** extension `dist/**`, and any `.agents/skills/**` /
+`out/skills/**` mirrors. Awareness output and its canonical skill live in the sibling
+[`bgauryy/octocode` repository](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness).
 
 ---
 
@@ -446,8 +443,9 @@ Native headless behavior and remaining limits are documented in
 
 The native prompt includes the canonical Awareness coordination fragment. The Pi adapter
 injects equivalent host-specific instructions for parity. External agents can install
-`octocode-awareness` from the canonical repo-root source
-[`skills/octocode-awareness`](skills/octocode-awareness). Other workflow skills remain
+`octocode-awareness` from the package-owned source
+[`packages/octocode-awareness/skills/octocode-awareness`](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/skills/octocode-awareness).
+The published Awareness CLI includes the skill, references, and standalone runners. Other workflow skills remain
 installable with `npx octocode skill --add`.
 
 ### Test surface
@@ -468,7 +466,7 @@ installable with `npx octocode skill --add`.
 | Architecture audit | [Native CLI implementation review prompt](prompts/architecture.md) |
 | Documentation quality | [Documentation audit and ratings](docs/DOCUMENTATION_AUDIT.md) |
 | Harness (Pi extension) | [docs index](packages/octocode-pi-extension/docs/README.md) · [TOOLS](packages/octocode-pi-extension/docs/TOOLS.md) · [AWARENESS flow](packages/octocode-pi-extension/docs/AWARENESS_AGENT_FLOW.md) · [REFLECT](packages/octocode-pi-extension/docs/REFLECT.md) · [OVERRIDES](packages/octocode-pi-extension/docs/OVERRIDES.md) |
-| Awareness | [docs index](packages/octocode-awareness/docs/README.md) · [HOW_IT_WORKS](packages/octocode-awareness/docs/HOW_IT_WORKS.md) · [HOOKS](packages/octocode-awareness/docs/HOOKS.md) · [VERIFY](packages/octocode-awareness/docs/VERIFY.md) · [LOCKS](packages/octocode-awareness/docs/LOCKS.md) · [MEMORY_NAVIGATION](packages/octocode-awareness/docs/MEMORY_NAVIGATION.md) |
+| Awareness | [docs index](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/README.md) · [HOW_IT_WORKS](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/HOW_IT_WORKS.md) · [HOOKS](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/HOOKS.md) · [VERIFY](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/VERIFY.md) · [LOCKS](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/LOCKS.md) · [MEMORY_NAVIGATION](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/MEMORY_NAVIGATION.md) |
 | Platform | Website **[octocode.ai](https://octocode.ai)** · [Pi](https://github.com/earendil-works/pi) |
 
 > The full Octocode platform — MCP server, the `octocode` CLI, the Rust engine, and the VS Code

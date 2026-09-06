@@ -10,7 +10,7 @@ import {
   type RuntimeCommand,
   type RuntimeSnapshot,
 } from '@octocodeai/agent-core';
-import { openAwareness, type AwarenessEventStore, type InboundDecision, type OutboxEventV1 } from '@octocodeai/octocode-awareness';
+import { openAwarenessStore, type AwarenessEventStore, type InboundDecision, type OutboxEventV1 } from '@octocodeai/octocode-awareness';
 import { withNativeSessionCommunication } from '../src/native-communications.js';
 
 const workspace = '/work/repo';
@@ -43,6 +43,7 @@ describe('native session communication bridge', () => {
     const events = [peerEvent(1)];
     let cursor = 0;
     const acknowledgements: Array<{ eventId: string; decision: InboundDecision }> = [];
+    const reads: Array<{ messageId: string; agentId: string }> = [];
     const store: AwarenessEventStore = {
       listEvents: ({ limit }) => events.filter((event) => event.sequence > cursor).slice(0, limit),
       acknowledgeEvent: ({ eventId, decision }) => {
@@ -52,6 +53,7 @@ describe('native session communication bridge', () => {
         return { sequence: cursor, decision, duplicate: false };
       },
       getConsumerCursor: () => cursor,
+      markMessageRead: ({ messageId, agentId }) => { reads.push({ messageId, agentId }); },
       close: vi.fn(),
     };
     const execute = vi.fn(async (command: RuntimeCommand) => ({ ok: true as const, data: command }));
@@ -83,12 +85,14 @@ describe('native session communication bridge', () => {
       provenance: 'peer-attributed-data',
     });
     expect(acknowledgements).toEqual([{ eventId: 'evt-1', decision: 'accept' }]);
+    expect(reads).toEqual([{ messageId: 'msg-1', agentId: 'native:parent-session' }]);
   });
 
   it('refuses stale peer context before it reaches model history', async () => {
     const events = [peerEvent(1)];
     let cursor = 0;
     const acknowledgements: Array<{ eventId: string; decision: InboundDecision }> = [];
+    const reads: Array<{ messageId: string; agentId: string }> = [];
     const store: AwarenessEventStore = {
       listEvents: ({ limit }) => events.filter((event) => event.sequence > cursor).slice(0, limit),
       acknowledgeEvent: ({ eventId, decision }) => {
@@ -97,6 +101,7 @@ describe('native session communication bridge', () => {
         return { sequence: cursor, decision, duplicate: false };
       },
       getConsumerCursor: () => cursor,
+      markMessageRead: ({ messageId, agentId }) => { reads.push({ messageId, agentId }); },
       close: vi.fn(),
     };
     const execute = vi.fn(async () => ({ ok: true as const }));
@@ -119,6 +124,7 @@ describe('native session communication bridge', () => {
 
     expect(execute).not.toHaveBeenCalled();
     expect(acknowledgements).toEqual([{ eventId: 'evt-1', decision: 'refuse' }]);
+    expect(reads).toEqual([]);
   });
 
   it('delivers adversarial attributed peer text as provenance-visible untrusted user context', async () => {
@@ -126,6 +132,7 @@ describe('native session communication bridge', () => {
     const events = [peerEvent(1, injected), peerEvent(2, 'x'.repeat(16_001))];
     let cursor = 0;
     const decisions: InboundDecision[] = [];
+    const reads: Array<{ messageId: string; agentId: string }> = [];
     const store: AwarenessEventStore = {
       listEvents: ({ limit }) => events.filter((event) => event.sequence > cursor).slice(0, limit),
       acknowledgeEvent: ({ eventId, decision }) => {
@@ -134,6 +141,7 @@ describe('native session communication bridge', () => {
         return { sequence: cursor, decision, duplicate: false };
       },
       getConsumerCursor: () => cursor,
+      markMessageRead: ({ messageId, agentId }) => { reads.push({ messageId, agentId }); },
       close: vi.fn(),
     };
     const requests: ModelRequest[] = [];
@@ -174,6 +182,7 @@ describe('native session communication bridge', () => {
       (message) => message.content.includes('x'.repeat(16_001)),
     )).toBe(false);
     expect(decisions).toEqual(['accept', 'refuse']);
+    expect(reads).toEqual([{ messageId: 'msg-1', agentId: 'native:parent-session' }]);
   });
 
   it('runs a real SQLite parent-child handoff through the headless session bridge', async () => {
@@ -181,7 +190,7 @@ describe('native session communication bridge', () => {
     const dbPath = path.join(root, 'awareness.sqlite');
     const liveWorkspace = path.join(root, 'workspace');
     fs.mkdirSync(liveWorkspace);
-    const awareness = openAwareness({ workspace: liveWorkspace, dbPath });
+    const awareness = openAwarenessStore({ workspace: liveWorkspace, dbPath });
     try {
       awareness.sendMessage({
         fromAgentId: 'child-agent',
@@ -206,7 +215,7 @@ describe('native session communication bridge', () => {
       workspace: liveWorkspace,
       sessionId: 'parent-session',
       agentId: 'native:parent-session',
-      openStore: (openedWorkspace) => openAwareness({ workspace: openedWorkspace, dbPath }),
+      openStore: (openedWorkspace) => openAwarenessStore({ workspace: openedWorkspace, dbPath }),
     });
 
     await wrapped.start();
@@ -215,16 +224,56 @@ describe('native session communication bridge', () => {
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({
       type: 'context.append',
+      eventId: expect.stringMatching(/^evt_ntf_/),
       text: '[peer:child-agent; class:handoff; authority:data]\nchild verification complete',
       provenance: 'peer-attributed-data',
     });
-    const verify = openAwareness({ workspace: liveWorkspace, dbPath });
+    const verify = openAwarenessStore({ workspace: liveWorkspace, dbPath });
     try {
-      expect(verify.listEvents({ consumerId: 'native-session:parent-session' })).toHaveLength(0);
-      expect(verify.getConsumerCursor('native-session:parent-session')).toBeGreaterThan(0);
+      expect(verify.listMessages({ agentId: 'native:parent-session', includeRead: false })).toEqual([]);
+      expect(verify.listMessages({ agentId: 'native:parent-session', includeRead: true }))
+        .toMatchObject([{ messageId: expect.stringMatching(/^ntf_/), readAt: expect.any(String) }]);
     } finally {
       verify.close();
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('does not record a signal read receipt when context persistence fails', async () => {
+    const reads: string[] = [];
+    const event = peerEvent(1, 'verification complete');
+    let cursor = 0;
+    const acknowledgements: Array<{ eventId: string; decision: InboundDecision }> = [];
+    const store: AwarenessEventStore = {
+      listEvents: ({ limit }) => cursor === 0 ? [event].slice(0, limit) : [],
+      acknowledgeEvent: ({ eventId, decision }) => {
+        acknowledgements.push({ eventId, decision });
+        cursor = 1;
+        return { sequence: 1, decision, duplicate: eventId !== event.eventId };
+      },
+      getConsumerCursor: () => cursor,
+      close: vi.fn(),
+      markMessageRead: ({ messageId }) => { reads.push(messageId); },
+    };
+    const runtime: AgentRuntime = {
+      start: vi.fn(async () => undefined),
+      submit: vi.fn(async () => undefined),
+      cancel: vi.fn(async () => undefined),
+      execute: vi.fn(async () => ({ ok: false as const, error: { message: 'context unavailable' } })),
+      snapshot: () => ({ state: 'ready' }) as RuntimeSnapshot,
+      subscribe: () => () => undefined,
+      stop: vi.fn(async () => undefined),
+    };
+    const wrapped = withNativeSessionCommunication(runtime, {
+      workspace,
+      sessionId: 'parent-session',
+      agentId: 'native:parent-session',
+      openStore: () => store,
+      contextNow: () => Date.parse('2026-08-28T00:01:00.000Z'),
+    });
+
+    await wrapped.start();
+    expect(reads).toEqual([]);
+    expect(acknowledgements).toEqual([]);
   });
 });

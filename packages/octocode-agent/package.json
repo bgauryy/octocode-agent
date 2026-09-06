@@ -52,7 +52,7 @@
     "@ai-sdk/openai-compatible": "3.0.40",
     "@modelcontextprotocol/client": "2.0.0",
     "@octocodeai/config": "18.0.1",
-    "@octocodeai/octocode-awareness": "1.4.0",
+    "@octocodeai/octocode-awareness": "1.5.0",
     "@opentui/core": "0.5.8",
     "ai": "7.0.84",
     "ajv": "8.20.0",

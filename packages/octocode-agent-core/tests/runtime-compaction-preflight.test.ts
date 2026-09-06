@@ -3,6 +3,7 @@ import {
   ModelContextOverflowError,
   RuntimeFailure,
   RuntimeKernel,
+  resolveModelInputBudget,
   sessionId,
   type ModelMessage,
   type ModelRequest,
@@ -12,6 +13,22 @@ const stablePrompt: ModelMessage = {
   role: "system",
   content: "immutable product policy",
 };
+
+describe('model input budget derivation', () => {
+  it('shares the admission limit after output reserve and safety margin', () => {
+    expect(resolveModelInputBudget({ context: 100, output: 10 }, 10)).toBe(80);
+    expect(resolveModelInputBudget({ context: 100, output: null })).toBe(95);
+    expect(resolveModelInputBudget({ context: null, output: 10 })).toBeUndefined();
+  });
+
+  it.each([-1, Number.NaN, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects an invalid public safety margin (%s)',
+    safetyMarginTokens => {
+      expect(() => resolveModelInputBudget({ context: 100, output: 10 }, safetyMarginTokens))
+        .toThrow(RuntimeFailure);
+    },
+  );
+});
 
 describe("runtime context preflight and overflow compaction", () => {
   it("compacts a model-aware over-budget request before provider admission and preserves the stable prefix", async () => {
@@ -291,5 +308,36 @@ describe("runtime context preflight and overflow compaction", () => {
     });
     expect(calls).toBe(1);
     expect(compact).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('selected model input limits', () => {
+  it('uses the selected model budget on each admission and never keeps the launch budget', async () => {
+    const run = vi.fn(async () => ({ stop: 'complete' as const, usage: { inputTokens: 80, outputTokens: 1 } }));
+    const compact = vi.fn(async ({ messages }: { messages: readonly ModelMessage[] }) => ({ summary: 'unchanged', messages }));
+    const kernel = new RuntimeKernel({
+      sessionId: sessionId('switch-model-budget'), initialModel: { providerId: 'p', modelId: 'large' },
+      modelLimits: { context: 1000, output: 10 },
+      resolveModelLimits: model => ({ context: model?.modelId === 'small' ? 100 : 1000, output: 10 }),
+      compactionSafetyMarginTokens: 10, compactionSoftLimitRatio: 1,
+      contextTokenMeter: { measure: async () => 80 }, compaction: { compact }, model: { run },
+    });
+    await kernel.submit('fits large');
+    expect(run).toHaveBeenCalledTimes(1);
+    await expect(kernel.execute({ type: 'model.select', providerId: 'p', modelId: 'small' })).resolves.toMatchObject({ ok: true });
+    await expect(kernel.submit('must not reach small provider')).rejects.toMatchObject({ category: 'model' });
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an invalid dynamically resolved limit before provider admission', async () => {
+    const run = vi.fn(async () => ({ stop: 'complete' as const, usage: { inputTokens: 1, outputTokens: 1 } }));
+    const kernel = new RuntimeKernel({ sessionId: sessionId('invalid-resolved-limit'), model: { run },
+      resolveModelLimits: () => ({ context: Number.NaN, output: 10 }),
+      contextTokenMeter: { measure: async () => 1 },
+    });
+    await expect(kernel.submit('do not call provider')).rejects.toMatchObject({ category: 'validation' });
+    expect(run).not.toHaveBeenCalled();
   });
 });

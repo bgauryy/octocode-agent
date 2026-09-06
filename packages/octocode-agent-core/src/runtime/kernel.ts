@@ -147,6 +147,8 @@ export interface RuntimeKernelOptions {
   readonly compactionInputTokenThreshold?: number;
   readonly stablePrefixMessageCount?: number;
   readonly modelLimits?: ModelDefinition["limits"];
+  /** Resolve limits for the active model at preflight; undefined means unknown, never the previous model's limits. */
+  readonly resolveModelLimits?: (model: RuntimeSnapshot["model"]) => ModelDefinition["limits"] | undefined;
   readonly contextTokenMeter?: RuntimeContextTokenMeterPort;
   readonly compactionSafetyMarginTokens?: number;
   readonly compactionSoftLimitRatio?: number;
@@ -213,6 +215,27 @@ const TURN_DEADLINE_EXCEEDED = Symbol("turn-deadline-exceeded");
 const DEFAULT_RUNTIME_CWD = "";
 const DEFAULT_RUNTIME_NOW = Date.now;
 const MAX_PARALLEL_TOOL_CALLS = 4;
+
+/**
+ * The largest measured request core may admit for known model limits. Hosts may
+ * expose this value as observation, but admission remains in RuntimeKernel.
+ */
+export function resolveModelInputBudget(
+  limits: ModelDefinition["limits"] | undefined,
+  safetyMarginTokens?: number,
+): number | undefined {
+  validateModelLimits(limits);
+  if (safetyMarginTokens !== undefined &&
+    (!Number.isSafeInteger(safetyMarginTokens) || safetyMarginTokens < 0)) {
+    throw new RuntimeFailure("validation", "Model context safety margin must be a non-negative safe integer");
+  }
+  const contextLimit = limits?.context;
+  if (contextLimit === null || contextLimit === undefined) return undefined;
+  const outputReserve = limits?.output ?? 0;
+  const safetyMargin =
+    safetyMarginTokens ?? Math.ceil(contextLimit * DEFAULT_CONTEXT_SAFETY_RATIO);
+  return Math.max(1, contextLimit - outputReserve - safetyMargin);
+}
 const UTF8_ENCODER = new TextEncoder();
 const utf8Bytes = (value: string): number =>
   UTF8_ENCODER.encode(value).byteLength;
@@ -621,6 +644,14 @@ function effectFailureSettlement(
     ? "uncertain"
     : "failed";
 }
+function validateModelLimits(limits: ModelDefinition["limits"] | undefined): void {
+  for (const [name, value] of Object.entries(limits ?? {})) {
+    if (value !== null && (!Number.isSafeInteger(value) || value <= 0)) {
+      throw new RuntimeFailure("validation", `Model ${name} limit must be a positive integer or null`);
+    }
+  }
+}
+
 export class RuntimeKernel implements AgentRuntime {
   readonly #listeners = new Set<(event: RuntimeEvent) => void>();
   readonly #options: RuntimeKernelOptions;
@@ -742,14 +773,7 @@ export class RuntimeKernel implements AgentRuntime {
         "Compaction soft-limit ratio must be greater than zero and at most one",
       );
     }
-    for (const [name, value] of Object.entries(options.modelLimits ?? {})) {
-      if (value !== null && (!Number.isSafeInteger(value) || value <= 0)) {
-        throw new RuntimeFailure(
-          "validation",
-          `Model ${name} limit must be a positive integer or null`,
-        );
-      }
-    }
+    validateModelLimits(options.modelLimits);
     if (
       options.maxIterations !== undefined &&
       (!Number.isSafeInteger(options.maxIterations) ||
@@ -1231,20 +1255,18 @@ export class RuntimeKernel implements AgentRuntime {
     readonly hardLimitTokens?: number;
   } | null {
     const absoluteThreshold = this.#options.compactionInputTokenThreshold;
-    const contextLimit = this.#options.modelLimits?.context;
-    if (contextLimit === null || contextLimit === undefined) {
+    const limits = this.#options.resolveModelLimits === undefined
+      ? this.#options.modelLimits
+      : this.#options.resolveModelLimits(this.#model);
+    const hardLimitTokens = resolveModelInputBudget(
+      limits,
+      this.#options.compactionSafetyMarginTokens,
+    );
+    if (hardLimitTokens === undefined) {
       return absoluteThreshold === undefined
         ? null
         : { triggerTokens: absoluteThreshold };
     }
-    const outputReserve = this.#options.modelLimits?.output ?? 0;
-    const safetyMargin =
-      this.#options.compactionSafetyMarginTokens ??
-      Math.ceil(contextLimit * DEFAULT_CONTEXT_SAFETY_RATIO);
-    const hardLimitTokens = Math.max(
-      1,
-      contextLimit - outputReserve - safetyMargin,
-    );
     const softLimitTokens = Math.max(
       1,
       Math.floor(

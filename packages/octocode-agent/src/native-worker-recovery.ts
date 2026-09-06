@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { appendWorkerLifecycleEvent, connectDb, listWorkerLifecycleEvents, resolveDbPath, type StoredWorkerLifecycleEvent } from '@octocodeai/octocode-awareness';
+import { appendWorkerLifecycleEvent, connectDb, listWorkerLifecycleEvents, resolveDbPath, storageScopeForCommand, type StoredWorkerLifecycleEvent } from '@octocodeai/octocode-awareness';
 import {
   createNodeNativeProcessContainmentPort,
   type NativeProcessContainmentIdentity,
@@ -101,7 +101,7 @@ async function terminateOwnedProcess(identity: NativeProcessContainmentIdentity,
 /** Reconciles durable nonterminal workers and signals only a revalidated owned process identity. */
 export async function recoverNativeWorkerOrphans(options: NativeWorkerRecoveryOptions): Promise<readonly NativeWorkerOrphanReceipt[]> {
   const workspace = path.resolve(options.workspace);
-  const dbPath = resolveDbPath(undefined, { scope: 'repo', workspace });
+  const dbPath = resolveDbPath(undefined, { scope: storageScopeForCommand('coordination', workspace), workspace });
   const db = connectDb(dbPath);
   const termGraceMs = duration(options.termGraceMs, 1_000, 'termGraceMs');
   const killGraceMs = duration(options.killGraceMs, 1_000, 'killGraceMs');
