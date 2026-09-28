@@ -22,7 +22,7 @@ Dogfood Octocode throughout the investigation:
 - Use `lspGetSemantics` for definitions, references, callers, callees, implementations, types, diagnostics, and reachability.
 - Use AST/LSP evidence rather than relying only on text search.
 - Use `npmSearch` to resolve external package metadata, versions, and source repositories.
-- Use `ghSearch` (`repositories`, `tree`, or `code`), `ghGetFileContent`, `ghSearchPullRequests`, `ghSearchIssues`, and `ghSearchCommits` to research Pi, OpenTUI, provider SDKs, protocol libraries, and other external dependencies in their upstream repositories.
+- Use `ghSearch` (`repositories`, `tree`, or `code`), `ghGetFileContent`, `ghSearchHistory`, and `ghGetHistoryItem` to research Pi, OpenTUI, provider SDKs, protocol libraries, and other external dependencies in their upstream repositories.
 - Research official upstream source, documentation, releases, changelogs, compatibility policies, regressions, and design decisions whenever an external contract affects the parity verdict.
 - Tie every consequential external conclusion to the dependency name, project-used version when authorized to inspect it, upstream tag/commit/release, and exact source file, PR, issue, or documentation location.
 - Distinguish behavior proven for the project-used version from current upstream behavior. Never assume the latest upstream branch describes the installed or supported version.

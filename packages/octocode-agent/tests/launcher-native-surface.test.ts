@@ -2,13 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { workspaceAgentRoot } from '@octocodeai/octocode-shared/paths';
+import { workspaceAgentRoot } from '@octocodeai/agent-contracts/paths';
 import { authData, authProvidersData, completionScript, discoveryData, doctorData, fatalErrorReport, helpReport, main, modelsData, modelsReport, parseInvocation, ROOT_OPTIONS, runModelsCheck, runSurface, sessionsData, updateCommand } from '../src/launcher.js';
 import { FileSettingsStorage } from '../src/native-settings.js';
 
 describe('native launcher public surface', () => {
   it('preserves the command inventory in help and parsing', () => {
-    for (const command of ['setup', 'auth', 'models', 'discover', 'sessions', 'resume', 'session', 'update', 'config', 'doctor', 'completion', 'run', 'serve', 'acp', 'tools', 'skills', 'memory', 'awareness']) {
+    for (const command of ['setup', 'auth', 'models', 'discover', 'sessions', 'resume', 'session', 'update', 'config', 'doctor', 'completion', 'run', 'serve', 'acp', 'tools', 'skills']) {
       expect(parseInvocation([command]).command).toBe(command);
       expect(helpReport()).toContain(command);
     }
@@ -55,20 +55,12 @@ describe('native launcher public surface', () => {
     );
   });
 
-  it('delegates help for nested tool and coordination command trees', async () => {
+  it('delegates help for nested tool command trees', async () => {
     const spawn = vi.fn(() => ({ status: 0 } as never));
     await expect(main(['help', 'tools'], { spawn })).resolves.toBe(0);
-    await expect(main(['help', 'awareness'], { spawn })).resolves.toBe(0);
-    expect(spawn).toHaveBeenNthCalledWith(
-      1,
+    expect(spawn).toHaveBeenCalledWith(
       'npx',
       ['octocode', 'tools', '--help'],
-      expect.any(Object),
-    );
-    expect(spawn).toHaveBeenNthCalledWith(
-      2,
-      'npx',
-      ['@octocodeai/octocode-awareness', '--help'],
       expect.any(Object),
     );
   });
@@ -590,24 +582,6 @@ describe('native launcher public surface', () => {
     const spawn = vi.fn(() => ({ status: 0 } as never));
     expect(runSurface('skills', ['--help'], { spawn })).toBe(0);
     expect(spawn).toHaveBeenCalledWith('npx', ['octocode', 'skill', '--help'], expect.any(Object));
-  });
-
-  it('delegates Awareness root commands without repeating the public surface noun', () => {
-    const spawn = vi.fn(() => ({ status: 0 } as never));
-    expect(runSurface('awareness', ['attend', '--workspace', '/workspace'], { spawn })).toBe(0);
-    expect(runSurface('memory', ['recall', '--query', 'task'], { spawn })).toBe(0);
-    expect(spawn).toHaveBeenNthCalledWith(
-      1,
-      'npx',
-      ['@octocodeai/octocode-awareness', 'attend', '--workspace', '/workspace'],
-      expect.any(Object),
-    );
-    expect(spawn).toHaveBeenNthCalledWith(
-      2,
-      'npx',
-      ['@octocodeai/octocode-awareness', 'memory', 'recall', '--query', 'task'],
-      expect.any(Object),
-    );
   });
 
   it('forwards machine-readable output flags to delegated tool and skill surfaces', async () => {

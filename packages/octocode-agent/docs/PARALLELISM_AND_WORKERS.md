@@ -33,7 +33,7 @@ available capabilities and normal trust and effect policy.
 
 Worker capabilities have two independent scopes. `tools` selects model-visible
 direct tools such as `octocode`, `file`, `bash`, `web`, `skill`, `MCPTool`,
-`awareness`, and `plan`. Optional `octocodeTools` narrows the research operations
+and `plan`. Optional `octocodeTools` narrows the research operations
 inside the `octocode` facade. Omitting `octocodeTools` keeps the parent's permitted
 catalog; it does not remove the facade. The default leaf set contains every
 available leaf-safe direct tool and never contains `worker`.

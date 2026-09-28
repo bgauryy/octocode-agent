@@ -16,7 +16,6 @@ import {
   expandNativeAutomationCandidates,
   type NativeAutomationSemanticExecutor,
 } from "../src/native-automation-scheduler.js";
-import { createNativeAwarenessAutomationExecutor } from "../src/native-launcher.js";
 
 function definition(
   overrides: Partial<AutomationDefinition> = {},
@@ -288,26 +287,6 @@ describe("native automation schedule expansion", () => {
 });
 
 describe("NativeAutomationScheduler", () => {
-  it("routes awareness automation through the canonical runtime tool boundary", async () => {
-    const execute = vi.fn(async () => ({
-      ok: true,
-      data: { ok: true, content: { status: "ok" }, detailsVersion: 1 },
-    }));
-    const executor = createNativeAwarenessAutomationExecutor({ execute } as never);
-
-    await expect(executor.execute({
-      definition: definition(),
-      claim: { runId: "run-1" },
-      signal: new AbortController().signal,
-    } as never)).resolves.toEqual({ status: "ok" });
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
-      type: "tool.execute",
-      operationId: "automation:run-1",
-      name: "awareness",
-      input: { action: "workspace_status", request: {} },
-    }));
-  });
-
   it("lets two pollers race while the durable store admits exactly one claim", async () => {
     const store = new FakeAutomationStore(
       definition({ schedule: { kind: "once", at: 10 } }),

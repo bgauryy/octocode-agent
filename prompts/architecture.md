@@ -39,7 +39,7 @@ Dogfood Octocode throughout the investigation:
 Use `npx octocode` for both local and external research:
 
 - **Local implementation:** use the local and LSP tools to trace source, tests, configuration ownership, imports, callers, runtime composition, generated boundaries, and dependency usage.
-- **External dependencies:** use `npmSearch` to resolve package metadata and source repositories; use `ghSearch` (`repositories`, `tree`, or `code`), `ghGetFileContent`, `ghSearchPullRequests`, `ghSearchIssues`, and `ghSearchCommits` to inspect upstream source, APIs, releases, changelogs, compatibility constraints, regressions, and relevant design decisions.
+- **External dependencies:** use `npmSearch` to resolve package metadata and source repositories; use `ghSearch` (`repositories`, `tree`, or `code`), `ghGetFileContent`, `ghSearchHistory`, and `ghGetHistoryItem` to inspect upstream source, PRs, issues, commits, releases, changelogs, compatibility constraints, regressions, and relevant design decisions.
 - **External resources and prior art:** research official upstream repositories and primary documentation needed to validate provider protocols, runtime behavior, terminal/tooling contracts, security assumptions, and architectural comparisons.
 - **Version-aware evidence:** tie external conclusions to the dependency name, declared or resolved version when authorized to inspect it, upstream repository, tag/commit/release, and exact file, PR, issue, or documentation location.
 - **Evidence boundaries:** do not infer behavior from a package name, README summary, search result, or latest upstream `main` branch when the project uses another version. Distinguish verified version-specific behavior, current upstream behavior, and unresolved assumptions.

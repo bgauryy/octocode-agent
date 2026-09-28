@@ -185,7 +185,7 @@ function completeUsage(inputTokens = 12) {
 
 /**
  * Drives the canonical five-state compaction matrix through native production
- * composition. Canonical events deliberately match Pi semantics; native-only
+ * composition. Canonical events stay host-neutral; native-only
  * durability, projection, prompt-prefix, and cache evidence stays observational.
  */
 export function createNativeCompactionProbe(root: string): ProductionScenarioProbe {

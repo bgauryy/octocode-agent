@@ -69,7 +69,7 @@ try {
   run('npm', ['install', '--prefix', installRoot, '--no-audit', '--no-fund', tarball]);
   const installedPackageRoot = join(installRoot, 'node_modules', 'octocode-agent');
   const manifest = JSON.parse(await readFile(join(installedPackageRoot, 'package.json'), 'utf8'));
-  for (const name of ['@octocodeai/agent-core', '@octocodeai/octocode-shared']) {
+  for (const name of ['@octocodeai/agent-core', '@octocodeai/agent-contracts']) {
     if (manifest.dependencies?.[name] || manifest.optionalDependencies?.[name] || manifest.peerDependencies?.[name]) {
       throw new Error(`packed manifest exposes unpublished runtime dependency ${name}`);
     }
@@ -81,7 +81,7 @@ try {
     const source = await readFile(declaration, 'utf8');
     for (const forbidden of [
       '@octocodeai/agent-core',
-      '@octocodeai/octocode-shared',
+      '@octocodeai/agent-contracts',
       'native-launcher',
       'native-customization',
       'presentation/contracts',

@@ -12,7 +12,7 @@ import {
   type AgentSkillInventoryEntry,
   type AgentSkillInventoryResult,
   type AgentSkillSourceDescriptor,
-} from '@octocodeai/octocode-shared/agent-skills';
+} from '@octocodeai/agent-contracts/agent-skills';
 
 export interface NativeSkillOptions {
   cwd: string;

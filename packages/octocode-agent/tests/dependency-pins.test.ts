@@ -27,7 +27,7 @@ describe('protocol dependency pins', () => {
   it('keeps unpublished workspace implementations build-time only', () => {
     const manifestPath = fileURLToPath(new URL('../package.json', import.meta.url));
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as PackageManifest;
-    const unpublished = ['@octocodeai/agent-core', '@octocodeai/octocode-shared'];
+    const unpublished = ['@octocodeai/agent-core', '@octocodeai/agent-contracts'];
 
     for (const name of unpublished) {
       expect(manifest.dependencies ?? {}).not.toHaveProperty(name);

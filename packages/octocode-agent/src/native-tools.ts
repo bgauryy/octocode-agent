@@ -2,15 +2,14 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { createEffectSet, jsonSchemaError, RuntimeFailure, ToolRegistry, type EffectSet, type JsonSchema } from '@octocodeai/agent-core';
-import { closeOctocodeDb, openOctocodeDb } from '@octocodeai/octocode-shared/db';
-import { getMcpEnablement, getSkillEnablement, listMcpOverrides, setMcpServerEnabled, setMcpToolEnabled, setSkillEnabled } from '@octocodeai/octocode-shared/mcp-state';
-import { agentDbPath } from '@octocodeai/octocode-shared/paths';
-import { ensurePrivateDirectory } from '@octocodeai/octocode-shared/permissions';
-import { defaultAgentSkillRoots, discoverAgentSkills, parseAgentSkill } from '@octocodeai/octocode-shared/agent-skills';
-import { agentHome, getOctocodeHome } from '@octocodeai/octocode-shared/paths';
+import { closeOctocodeDb, openOctocodeDb } from '@octocodeai/agent-contracts/db';
+import { getMcpEnablement, getSkillEnablement, listMcpOverrides, setMcpServerEnabled, setMcpToolEnabled, setSkillEnabled } from '@octocodeai/agent-contracts/mcp-state';
+import { agentDbPath } from '@octocodeai/agent-contracts/paths';
+import { ensurePrivateDirectory } from '@octocodeai/agent-contracts/permissions';
+import { defaultAgentSkillRoots, discoverAgentSkills, parseAgentSkill } from '@octocodeai/agent-contracts/agent-skills';
+import { agentHome, getOctocodeHome } from '@octocodeai/agent-contracts/paths';
 import path from 'node:path';
 import os from 'node:os';
-import { registerNativeAwarenessTool, type NativeAwarenessOptions } from './native-awareness.js';
 import { registerNativeFileTool, type NativeFileToolOptions } from './native-file-tool.js';
 import type { NativeInteractionBroker } from './native-interactions.js';
 import type { NativeHookMcpExecutor } from './native-hook-dispatcher.js';
@@ -507,8 +506,8 @@ const LOCAL_READ_TOOLS = new Set([
 const NETWORK_RESEARCH_TOOLS = new Set([
   'ghSearchCode', 'ghSearchRepos', 'ghSearchPullRequests', 'ghSearchIssues',
   'ghSearchCommits', 'ghGetFileContent', 'ghViewRepoStructure', 'npmSearch',
-  // Accepted only when an older negotiated catalog actually publishes it.
-  'ghSearch',
+  // Pi-facing catalog names.
+  'ghSearch', 'ghSearchHistory', 'ghGetHistoryItem', 'ghCloneRepo',
 ]);
 const LOCAL_READ_LANE = Object.freeze({ lane: 'local-read', maxActive: 4 });
 const NETWORK_RESEARCH_LANE = Object.freeze({
@@ -668,7 +667,6 @@ export function createOctocodeToolRegistry(
   execute: OctocodeToolExecutor,
   options: {
     plan?: NativePlanOptions;
-    awareness?: NativeAwarenessOptions;
     /** Model-visible direct tools. The Octocode facade is one direct tool. */
     allowedTools?: ReadonlySet<string>;
     /** Optional inner Octocode catalog scope, independent of direct-tool delegation. */
@@ -765,9 +763,6 @@ export function createOctocodeToolRegistry(
     );
   }
   if (options.allowedTools === undefined || options.allowedTools.has('plan')) registerNativePlanTool(registry, options.plan);
-  if (options.allowedTools === undefined || options.allowedTools.has('awareness')) {
-    registerNativeAwarenessTool(registry, options.awareness ?? { cwd: process.cwd() });
-  }
   return registry;
 }
 
@@ -919,7 +914,6 @@ export async function createDefaultOctocodeToolRegistry(
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     plan?: NativePlanOptions;
-    observeRuntime?: NativeAwarenessOptions['observeRuntime'];
     run?: OctocodeCommandRunner;
     allowedTools?: ReadonlySet<string>;
     allowedOctocodeTools?: ReadonlySet<string>;
@@ -960,7 +954,6 @@ export async function createDefaultOctocodeToolRegistry(
       }),
     {
       ...(options.plan === undefined ? {} : { plan: options.plan }),
-      awareness: { cwd, env, ...(options.observeRuntime === undefined ? {} : { observeRuntime: options.observeRuntime }) },
       ...(options.allowedTools === undefined ? {} : { allowedTools: options.allowedTools }),
       ...(options.allowedOctocodeTools === undefined ? {} : { allowedOctocodeTools: options.allowedOctocodeTools }),
     },

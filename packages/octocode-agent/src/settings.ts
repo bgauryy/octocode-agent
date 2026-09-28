@@ -2,7 +2,7 @@
  * Native Octocode settings filesystem adapter.
  */
 import path from 'node:path';
-import { getOctocodeHome } from '@octocodeai/octocode-shared/paths';
+import { getOctocodeHome } from '@octocodeai/agent-contracts/paths';
 import { FileSettingsStorage } from './native-settings.js';
 
 export function agentDir(env: NodeJS.ProcessEnv = process.env): string {

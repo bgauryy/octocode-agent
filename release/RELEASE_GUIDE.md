@@ -17,9 +17,7 @@ npm install graph (what a user gets)              publish? build input?
 ─────────────────────────────────────────────────────────────────────
 @octocodeai/config                                ❌ NOT published — zero-dep internal
   └─ (none — Node builtins only)                     env/config loader. Bundled by esbuild
-                                                     into octocode/octocode-mcp, inlined into
-                                                     @octocodeai/pi-extension (dist/env.js +
-                                                     skill octocode-config.mjs). devDependency
+                                                     into octocode/octocode-mcp. devDependency
                                                      everywhere. Users never install it.
 
 @octocodeai/octocode-engine                       ✅ publish
@@ -47,20 +45,12 @@ octocode (CLI)                                    ✅ publish
   ├─ @inquirer/prompts, @octokit/*, octokit, node-cache, open, zod
   └─ @octocodeai/octocode-tools-core + @octocodeai/config  ← BUNDLED by esbuild (devDeps), NOT runtime deps
 
-@octocodeai/octocode-awareness                    ✅ publish
-  └─ (none — Node builtins only; Zod is bundled into the CLI, which serves
-     schemas dynamically: `schema json-schema|example|validate`)
-     shared plans/tasks, advisory file work, exclusive locks, hooks, and skills
-
 @octocodeai/pi-extension                          ✅ publish
-  ├─ @earendil-works/pi-coding-agent                  (optional peer + exact test host)
-  ├─ @earendil-works/pi-tui                           (runtime dep — Pi presentation adapter)
-  ├─ @octocodeai/octocode-awareness                  (runtime dep — bridge + canonical skill)
-  ├─ octocode                                        (runtime dep — bundled CLI + version)
-  ├─ typebox                                         (optional peerDependency)
-  └─ @octocodeai/config  ← BUNDLED (devDep): inlined into dist/env.js AND copied into
-       each skill's scripts/ as octocode-config.mjs at build time. NOT a runtime dep —
-       the published extension needs nothing from npm for env/config.
+  ├─ @earendil-works/pi-ai, pi-coding-agent, pi-tui   (peerDependencies — provided by Pi)
+  ├─ typebox                                         (peerDependency)
+  ├─ @modelcontextprotocol/client                    (runtime dep — MCP client)
+  ├─ chrome-launcher                                 (runtime dep — `browser` tool)
+  └─ octocode-mcp 19.1.0                             (runtime dep — built-in research server)
 
 octocode-agent (branded launcher CLI)             ✅ publish  — the `npx octocode-agent` entry
   ├─ @octocodeai/agent-core                           (host-neutral runtime semantics)
@@ -101,18 +91,16 @@ Must exist on npm **before** dependents. Publish in this order:
 2. @octocodeai/octocode-engine                           (root loader)
 3. @octocodeai/mcp                                       (MCP server)
 4. octocode                                              (CLI)
-5. @octocodeai/octocode-awareness                        (coordination runtime + skills)
-6. @octocodeai/pi-extension                              (Pi harness; consumes Awareness)
-7. octocode-mcp-vscode                                   (VS Code — separate release)
+5. @octocodeai/pi-extension                              (Pi harness)
+6. octocode-mcp-vscode                                   (VS Code — separate release)
 ```
 
 > **Never published — bundled at build (devDependencies):**
 > `@octocodeai/octocode-tools-core` (esbuild → steps 3 and 4) and
-> `@octocodeai/config` (esbuild → octocode/mcp; inlined into pi-extension `dist/env.js` + skill `octocode-config.mjs`).  
+> `@octocodeai/config` (esbuild → octocode/mcp).  
 > `@octocodeai/octocode-core` EXTERNAL (sibling repo).  
 > **Every publishable package runs a prepack gate.** Dependency-bearing packages
-> reject unpinned `workspace:` refs. Awareness builds and verifies an isolated
-> zero-dependency tarball, including every schema command. Pin first with
+> reject unpinned `workspace:` refs. Pin first with
 > `yarn sync:version:publish`.
 
 ---
@@ -157,42 +145,16 @@ yarn workspace octocode                        build:dev   # rebuilds tools-core
 
 Build order: `@octocodeai/octocode-engine` → `@octocodeai/octocode-tools-core` → `octocode-mcp` / `octocode`
 
-### 3. Awareness (runtime + canonical skill, sibling `octocode` workspace)
+### 3. Pi extension
 
 ```bash
-(cd ../octocode && yarn workspace @octocodeai/octocode-awareness build)
-(cd ../octocode && yarn workspace @octocodeai/octocode-awareness pack:check)
+yarn workspace @octocodeai/pi-extension build      # tsc → dist/
 ```
 
-The build bundles Zod into the standalone schema script, refreshes
-`out/skills/`, and keeps npm runtime dependencies at zero. `pack:check` validates
-one skill tree, no source maps, package entrypoints, maintenance self-test, and all
-schema examples from an isolated copy with no ancestor `node_modules`.
+The package ships `dist/`, `subagents/`, and `themes/`. It bundles no skills and no
+Octocode CLI; research comes from the `octocode-mcp` runtime dependency.
 
-### 4. Pi extension (harness + skills)
-
-```bash
-yarn workspace @octocodeai/pi-extension build      # runs scripts/build.mjs
-```
-
-`scripts/build.mjs` assembles a **self-contained** `dist/`:
-
-| Output | From | Notes |
-|--------|------|-------|
-| `dist/system/APPEND_SYSTEM.md` | `docs/PI/APPEND_SYSTEM.md` | the harness system prompt |
-| `out/skills/` | root `skills/` | minus `octocode`, `octocode-awareness`, `octocode-stats`, and retired names (`skills/scripts/sync.mjs` `SKIPPED_SKILLS`) |
-| `dist/env.js` | `@octocodeai/config` source | **inlined** — the loader itself, not a re-export |
-| `out/skills/<skill>/scripts/octocode-config.mjs` | `@octocodeai/config` source | **copied into every skill with a `scripts/` dir** (`injectConfigIntoSkills`) so skills load env standalone |
-| `dist/web.js` | `src/web.js` | the `web` search/fetch tool |
-| `dist/bin/` | `octocode`'s `out/` | bundled CLI |
-| `dist/awareness/scripts/` + `schema.json` | root awareness scripts | memory tools + file-lock hooks |
-
-**Key point — `@octocodeai/config` is a build-time (dev) dependency only.** The build inlines it into `dist/env.js` and injects `octocode-config.mjs` into skill `scripts/` dirs, so nothing resolves `@octocodeai/config` from npm at runtime and it need not be published *for pi-extension*. (It is still published for `octocode`/`@octocodeai/mcp`, which externalize declared deps — see Publish Order step 1.)
-
-- **Which skills use it:** only `octocode-brainstorming` (its `serper-search.mjs` / `tavily-search.mjs`) imports `./octocode-config.mjs` (with a local `.env` fallback). The other skills receive the copy but don't import it — harmless and future-proof.
-- Build fails loudly if the config-loader source, bundled CLI, prompt, or any skill is missing.
-
-Verify: `yarn workspace @octocodeai/pi-extension verify` (lint + tests + build).
+Verify: `yarn workspace @octocodeai/pi-extension lint` and `yarn workspace @octocodeai/pi-extension test` (unit + end-to-end).
 
 ---
 
@@ -245,12 +207,7 @@ node release/sync-packages-version.mjs --pin-for-publish
 # also runs this automatically on prepack/prepublishOnly — this is the manual pre-check):
 node packages/octocode-mcp/scripts/check-no-workspace-protocol.mjs
 node packages/octocode/scripts/check-no-workspace-protocol.mjs
-node packages/octocode-pi-extension/scripts/check-no-workspace-protocol.mjs
 node packages/octocode-agent/scripts/check-no-workspace-protocol.mjs
-
-# Awareness has no runtime deps; verify its clean isolated artifact before Pi:
-(cd ../octocode && yarn workspace @octocodeai/octocode-awareness build)
-(cd ../octocode && yarn workspace @octocodeai/octocode-awareness pack:check)
 
 # Full test + lint gate:
 yarn verify
@@ -285,10 +242,6 @@ done
 npm publish packages/octocode-mcp --access public --provenance --ignore-scripts
 npm publish packages/octocode    --access public --provenance
 
-# ── Awareness runtime + canonical skills (sibling `octocode` workspace) ──
-# Keep lifecycle scripts enabled: prepack builds and verifies the isolated artifact.
-(cd ../octocode && npm publish packages/octocode-awareness --access public --provenance)
-
 # ── Pi extension ────────────────────────────────────────────────────
 npm publish packages/octocode-pi-extension --access public --provenance
 
@@ -309,7 +262,7 @@ yarn install
 
 ```bash
 tmp=$(mktemp -d) && cd "$tmp" && npm init -y >/dev/null
-npm install octocode @octocodeai/mcp @octocodeai/octocode-awareness
+npm install octocode @octocodeai/mcp
 
 # Engine resolves + loads:
 node --input-type=module -e "
@@ -322,8 +275,6 @@ test ! -e node_modules/@octocodeai/octocode-tools-core && echo "✅ tools-core b
 
 npx octocode --version
 npx octocode-mcp --help
-npx @octocodeai/octocode-awareness schema list --compact
-npx @octocodeai/octocode-awareness maintenance self-test --compact
 ```
 
 ---

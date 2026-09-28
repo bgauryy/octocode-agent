@@ -45,7 +45,7 @@ describe("native package architecture", () => {
 
   it("imports shared contracts through their owning published subpaths", () => {
     const aggregateSharedImports = sourceFiles.flatMap((path) =>
-      /(?:from\s+|import\s*\()(['"])@octocodeai\/octocode-shared\1/u.test(
+      /(?:from\s+|import\s*\()(['"])@octocodeai\/octocode-agent-contracts\1/u.test(
         source(path),
       )
         ? [display(path)]
@@ -55,9 +55,9 @@ describe("native package architecture", () => {
     expect(aggregateSharedImports).toEqual([]);
   });
 
-  it("does not route Agent database APIs through the Awareness package", () => {
+  it("does not depend on the removed Awareness package", () => {
     const ownershipViolations = sourceFiles.flatMap((path) =>
-      source(path).includes("@octocodeai/octocode-awareness/mcp-state")
+      source(path).includes("@octocodeai/octocode-awareness")
         ? [display(path)]
         : [],
     );

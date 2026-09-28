@@ -92,8 +92,7 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
 
 /**
  * Drives the host-specific native plugin contract through the production
- * controller and real ToolRegistry. Pi is deliberately not imitated here: its
- * public SDK has no equivalent transactional lifecycle.
+ * controller and real ToolRegistry.
  */
 export function createNativePluginLifecycleProbe(_root: string): ProductionScenarioProbe {
   return async ({ scenario, signal }) => {

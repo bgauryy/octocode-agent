@@ -35,7 +35,7 @@ describe('native prompt composition', () => {
     const message = buildNativeSystemMessage(cwd);
     expect(message.role).toBe('system');
     expect(message.content).toContain('<authority>');
-    expect(message.content).toContain('<awareness>');
+    expect(message.content).not.toMatch(/awareness/i);
     expect(message.content).toContain(`<runtime_context encoding="json">\n${JSON.stringify({ cwd })}`);
     expect(message.content).toContain('Use this exact cwd for local tool paths');
     expect(message.content.indexOf('root instructions')).toBeLessThan(message.content.indexOf('package instructions'));

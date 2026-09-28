@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { workspaceAgentRoot } from '@octocodeai/octocode-shared/paths';
+import { workspaceAgentRoot } from '@octocodeai/agent-contracts/paths';
 import { ToolRegistry } from '@octocodeai/agent-core';
 import { listNativeSkillInventory, listNativeSkillSummaries, registerNativeSkillTool } from '../src/native-skills.js';
 

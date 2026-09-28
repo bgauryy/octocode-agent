@@ -36,7 +36,6 @@ The owning architecture references are:
 | Widget composition, states, actions, and accessibility | [Widget design](WIDGETS.md) |
 | Ask, Plan, root-cause analysis, execution, and recovery flows | [Workflow design](WORKFLOWS.md) |
 | Workers and parallel execution | [Parallelism and workers](../packages/octocode-agent/docs/PARALLELISM_AND_WORKERS.md) |
-| Plans, work, locks, messages, and verification | [Awareness architecture](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/ARCHITECTURE.md) |
 
 ## Workstream 1: Terminal UX polish
 

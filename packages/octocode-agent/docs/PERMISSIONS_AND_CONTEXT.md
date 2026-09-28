@@ -70,7 +70,6 @@ the normal permission/effect pipeline applies, and the Rust filesystem service p
 the bounded atomic replacement after approval. It does not mutate the hidden compaction
 record, and compaction never writes an arbitrary workspace document by itself.
 
-Skills and Awareness memory use the same separation. Skill instructions are reviewed
-and read through the contained `skill` facade; their metadata does not grant tools.
-Memory remains owned by Awareness and enters model context only as a provenance-bearing
-data artifact. Rust may store opaque records but never decides their semantic authority.
+Skills use the same separation. Skill instructions are reviewed and read through the
+contained `skill` facade; their metadata does not grant tools. Rust may store opaque
+records but never decides their semantic authority.

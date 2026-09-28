@@ -13,24 +13,15 @@ communication and dependency-work ledgers, leases, revisions, and fencing.
 Per-session and other Agent artifacts remain under `agent/sessions/` and the
 other documented Agent directories.
 
-Awareness is not an Agent database module. Awareness defaults to
-`$OCTOCODE_HOME/awareness/awareness.sqlite3`; an explicit workspace policy or
-`--db-scope repo` selects `<workspace>/.octocode/awareness.sqlite3`, and
-`--db <path>` has highest precedence. Native adapters can consume
-Awareness through its public contracts, but they must not attach, initialize, or
-migrate Awareness relations in `agent.sqlite3` or `core.sqlite3`. Other CLI and
-MCP databases have separate owners. Database identity checks fail closed before
-schema writes when a path belongs to another owner. See the
-[storage ownership matrix](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/STORAGE_SCOPES.md).
-The native `WorkerLedgerPort` may publish a bounded, redacted lifecycle
-projection to the workspace Awareness database; the Rust runtime database
-remains authoritative for worker mailboxes, worktrees, handoffs, leases, and
-recovery fencing.
+Other CLI and MCP databases have separate owners. Database identity checks fail
+closed before schema writes when a path belongs to another owner. The Rust
+runtime database is authoritative for worker mailboxes, worktrees, handoffs,
+leases, and recovery fencing.
 
 ## Ownership
 
 - `native-launcher.ts` is the native composition root for sessions, settings,
-  models, tools, policy, Awareness, extensions, and transports.
+  models, tools, policy, extensions, and transports.
   It parses `--permissions strict|default|allow-all` and passes the selected mode
   into core; it does not decide approval semantics. Registered tools publish a
   static capability ceiling, and any input-sensitive resolver may only narrow that
@@ -111,14 +102,12 @@ recovery fencing.
   runtime-owned lifecycle buses. Persisted extension policy is fail-closed:
   missing review/grant state grants nothing; exact reviewed hashes and complete
   explicit capability grants are required before transactional activation.
-- `native-workers.ts` owns child-process control,
-  `native-worker-recovery.ts` reconciles orphaned durable ledger entries, and
+- `native-workers.ts` owns child-process control, and
   `native-worker-projection.ts` exposes strict worker commands through the same
   bounded JSONL RPC writer as ordinary runtime RPC. Mutating projections are
   bound to the active session/prompt/capability ceiling and require trusted,
-  on-request process approval. Recovery persists and revalidates OS process
-  identity before signalling an owned orphan.
-  Restart reconciliation also atomically abandons session-scoped stranded worker
+  on-request process approval. The Rust store remains the authoritative worker
+  ledger. Restart reconciliation also atomically abandons session-scoped stranded worker
   communication leases. It never replays input whose delivery state is unknown.
   Core additionally rejects spawn packets that delegate the `worker` tool and
   rejects Octocode capability subsets unless the compact `octocode` facade is
@@ -139,10 +128,8 @@ recovery fencing.
   leaking artifact IDs or bodies. Core emits `context.artifacts-projected` once
   after initial context becomes usable and after a committed compaction projection
   replaces live context.
-- `native-prompt.ts` composes the stable product and Awareness policy with
-  hierarchical repository instructions. `native-communications.ts` separately
-  consumes live, session-scoped Awareness events and projects validated context
-  into the runtime. The static prompt is not the coordination data plane.
+- `native-prompt.ts` composes the stable product policy with hierarchical
+  repository instructions.
 - `native-automation-scheduler.ts` owns schedule expansion, polling,
   heartbeats, retries, misfire behavior, and semantic execution.
   `native-rust-automations.ts` adapts the scheduler to atomic Rust definition,
@@ -177,7 +164,7 @@ recovery fencing.
   automation definitions, run claims, heartbeats, and settlements use the same
   actor. `OCTOCODE_AGENT_RUST_CORE_BIN` and `OCTOCODE_AGENT_RUST_CORE_DB` accept
   absolute paths as explicit development overrides. Provider, MCP, policy,
-  projection, settings-service, Awareness semantics, UI, and transport ownership remain in
+  projection, settings-service, UI, and transport ownership remain in
   their TypeScript ports. `--no-session` always remains in-memory.
 - `native-pi-session-import.ts` owns the read-only compatibility decoder for the
   pinned Pi v3 JSONL session format. It validates a frozen source snapshot,
@@ -253,7 +240,7 @@ recovery fencing.
   draft. OpenTUI displays a digest marker and expands the exact retained text at
   submission; unknown or repeated markers remain literal, and retained-cap overflow
   stays inline instead of truncating user data.
-- `@octocodeai/octocode-shared` owns shared paths, protocols, prompt fragments,
+- `@octocodeai/agent-contracts` owns shared paths, protocols, prompt fragments,
   entities, and discovery helpers. Native code imports its published subpaths
   instead of recreating policy or importing the aggregate package root.
 
@@ -267,7 +254,7 @@ environment + registered settings + model sources
   -> native settings/model resolution
   -> selected provider, model, trust, permissions, and capability ceiling
 
-shared product policy + Awareness policy
+shared product policy
   -> native-prompt product component
 runtime cwd
   -> runtime-context component
@@ -418,7 +405,7 @@ OpenTUI also defines one adapter-private event family:
 additional event updates OpenTUI runtime-widget snapshots only and must not cross
 back into the native presentation contract or core lifecycle vocabulary.
 
-The launcher composes the ports and can publish runtime-owned plan or Awareness
+The launcher composes the ports and can publish runtime-owned plan
 projections. It must not mutate the OpenTUI store directly. The controller uses
 the native projector and contract; a new renderer implements only
 `presentation/contracts.ts` and doesn't import OpenTUI modules.
@@ -549,7 +536,7 @@ a lifecycle hook or change runtime decisions.
 - The Rust actor also exposes revisioned settings, leased communication queues,
   lifecycle streams, the automation ledger, and dependency-work graphs. The
   launcher adopts these only through strict conformance ports; settings
-  validation and redaction, Awareness acknowledgement, scheduling, worker
+  validation and redaction, scheduling, worker
   execution, and semantic execution stay in their owners. Dependency schedules
   are explicitly model-driven: the root invokes `worker.schedule` for the active
   plan. A fencing-token takeover terminalizes the abandoned item as uncertain

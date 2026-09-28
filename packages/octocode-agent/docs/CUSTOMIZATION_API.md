@@ -204,7 +204,7 @@ Configure a product-policy overlay with one of three modes:
 
 All three modes preserve the runtime-context and repository-instruction
 envelopes. In particular, `replace` does not replace repository instructions,
-Awareness context, runtime safety context, or context artifacts.
+runtime safety context, or context artifacts.
 
 The launcher resolves the overlay before it creates the durable prompt record.
 The resolved product policy therefore participates in the prompt digest, resume
@@ -428,7 +428,7 @@ These constraints are deliberate and aren't backlog defects:
   5 even though it is outside the supported threat model.
 - Custom tools are additive and cannot replace native tools.
 - Product-policy `replace` cannot remove runtime safety, repository instruction,
-  Awareness, or durable context envelopes.
+  or durable context envelopes.
 - Redacted events omit free-form and unknown nested fields by default. Expanding
   the allowlist requires a versioned privacy review and adversarial tests.
 

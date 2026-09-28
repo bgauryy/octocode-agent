@@ -38,7 +38,7 @@ export type CanonicalScenarioId =
   | "codex-hook-lifecycle"
   | "plugin-lifecycle";
 
-export type HostKind = "pi" | "native" | "generic";
+export type HostKind = "native" | "generic";
 
 export type HostScenarioApplicability =
   | Readonly<{ kind: "cross-host" }>
@@ -116,7 +116,7 @@ export const CANONICAL_HOST_SCENARIOS: readonly CanonicalHostConformanceScenario
       "policy-denial-matrix",
       "Deny mutations before effects",
       ["policy", "security"],
-      { denials: ["plan", "trust", "approval", "peer-lock"] },
+      { denials: ["plan", "trust", "approval"] },
     ),
     scenario(
       "tool-failure-matrix",
@@ -305,14 +305,14 @@ export type CanonicalScenarioHandlers = Record<
   CanonicalScenarioHandler
 >;
 
-/** Adapt a Pi or native structural surface without importing either production package. */
+/** Adapt a structural host surface from canonical handlers without importing production packages. */
 export function createCanonicalHostAdapter(
   name: string,
   handlers: CanonicalScenarioHandlers,
 ): HostConformanceAdapter {
   return {
     name,
-    hostKind: name === "pi" || name === "native" ? name : "generic",
+    hostKind: name === "native" ? "native" : "generic",
     evidence: "synthetic",
     async execute(value, context) {
       const canonical = CANONICAL_HOST_SCENARIOS.find(

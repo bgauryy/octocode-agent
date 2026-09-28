@@ -34,7 +34,7 @@ const PUBLISHED_DEP_FIELDS = [
 const UNPUBLISHED_RUNTIME_PACKAGES = new Set([
   '@octocodeai/octocode-tools-core',
   '@octocodeai/agent-core',
-  '@octocodeai/octocode-shared',
+  '@octocodeai/agent-contracts',
 ]);
 
 const offenders = [];

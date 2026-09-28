@@ -5,12 +5,7 @@ import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
-import { connectDb, resolveDbPath } from '@octocodeai/octocode-awareness';
 import { FileSettingsStorage } from '../src/native-settings.js';
-import {
-  probeNativeWorkerProcessIdentity,
-  type NativeWorkerProcessIdentity,
-} from '../src/native-workers.js';
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
 const builtCli = path.join(packageRoot, 'out', 'octocode-agent.mjs');
@@ -19,54 +14,13 @@ const roots: Array<{ root: string; home: string; workspace: string }> = [];
 const rootProcesses = new Set<ChildProcess>();
 const secret = 'nested-worker-secret-must-stay-private';
 
-interface LifecycleRow {
-  event_type: string;
-  payload_json: string;
-}
-
 interface ScenarioResult {
   code: number | null;
   stdout: string;
   stderr: string;
   requestsByActor: ReadonlyMap<string, number>;
   toolsByActor: ReadonlyMap<string, readonly string[]>;
-  lifecycle: readonly LifecycleRow[];
   peakConcurrentChildren: number;
-}
-
-function processIdentities(rows: readonly LifecycleRow[]): NativeWorkerProcessIdentity[] {
-  return rows
-    .filter(({ event_type }) => event_type === 'worker.process')
-    .map(({ payload_json }) => JSON.parse(payload_json) as NativeWorkerProcessIdentity);
-}
-
-function lifecycleRows(_home: string, workspace: string): LifecycleRow[] {
-  const dbPath = resolveDbPath(undefined, { scope: 'repo', workspace });
-  if (!fs.existsSync(dbPath)) return [];
-  const db = connectDb(dbPath);
-  try {
-    return db.prepare(`
-      SELECT event_type, payload_json
-      FROM worker_lifecycle_events
-      ORDER BY sequence ASC
-    `).all() as unknown as LifecycleRow[];
-  } catch (error) {
-    if (error instanceof Error && /no such table/u.test(error.message)) return [];
-    throw error;
-  } finally {
-    db.close();
-  }
-}
-
-async function terminateVerifiedWorkers(home: string, workspace: string): Promise<void> {
-  for (const identity of processIdentities(lifecycleRows(home, workspace))) {
-    if (probeNativeWorkerProcessIdentity(identity) === undefined) continue;
-    try {
-      process.kill(identity.pid, 'SIGKILL');
-    } catch {
-      // The verified process exited between the identity probe and the signal.
-    }
-  }
 }
 
 afterEach(async () => {
@@ -77,7 +31,6 @@ afterEach(async () => {
     child.exitCode === null && child.signalCode === null ? once(child, 'close') : Promise.resolve(),
   ));
   rootProcesses.clear();
-  for (const fixture of roots) await terminateVerifiedWorkers(fixture.home, fixture.workspace);
   for (const { root } of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -348,7 +301,6 @@ async function runScenario(leafCheck: boolean, rustCore = false, parallel = fals
       stderr,
       requestsByActor,
       toolsByActor,
-      lifecycle: lifecycleRows(home, workspace),
       peakConcurrentChildren,
     };
   } finally {
@@ -357,21 +309,10 @@ async function runScenario(leafCheck: boolean, rustCore = false, parallel = fals
   }
 }
 
-function expectCleanTermination(result: ScenarioResult, expectedWorkers: number): void {
+function expectCleanTermination(result: ScenarioResult): void {
   expect(result.code, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);
   expect(result.stderr).toBe('');
   expect(`${result.stdout}${result.stderr}`).not.toContain(secret);
-  const identities = processIdentities(result.lifecycle);
-  expect(identities).toHaveLength(expectedWorkers);
-  for (const identity of identities) expect(probeNativeWorkerProcessIdentity(identity)).toBeUndefined();
-  const terminal = result.lifecycle
-    .filter(({ event_type }) => event_type === 'worker.terminal')
-    .map(({ payload_json }) => JSON.parse(payload_json) as { outcome?: unknown });
-  expect(terminal).toHaveLength(expectedWorkers);
-  expect(
-    terminal.every(({ outcome }) => outcome === 'succeeded'),
-    `terminal=${JSON.stringify(terminal)}`,
-  ).toBe(true);
 }
 
 describe('built native root-only workers', () => {
@@ -379,7 +320,7 @@ describe('built native root-only workers', () => {
     expect(fs.existsSync(builtCli)).toBe(true);
     const result = await runScenario(false);
 
-    expectCleanTermination(result, 1);
+    expectCleanTermination(result);
     expect(result.requestsByActor.get('root')).toBe(3);
     expect(result.requestsByActor.get('child')).toBe(1);
   }, 15_000);
@@ -388,21 +329,20 @@ describe('built native root-only workers', () => {
     expect(fs.existsSync(builtCli)).toBe(true);
     const result = await runScenario(true);
 
-    expectCleanTermination(result, 1);
+    expectCleanTermination(result);
     expect(result.requestsByActor.get('root')).toBe(3);
     expect(result.requestsByActor.get('child')).toBe(2);
     expect(result.requestsByActor.get('grandchild')).toBeUndefined();
     expect([...result.toolsByActor.get('child')!].sort()).toEqual([
-      'MCPTool', 'awareness', 'bash', 'file', 'octocode', 'plan', 'skill', 'web',
+      'MCPTool', 'bash', 'file', 'octocode', 'plan', 'skill', 'web',
     ].sort());
-    expect(JSON.stringify(result.lifecycle)).not.toMatch(/CHILD_START|GRANDCHILD_START/);
   }, 25_000);
 
   it('runs two real leaf workers concurrently within the root worker bound', async () => {
     expect(fs.existsSync(builtCli)).toBe(true);
     const result = await runScenario(true, false, true);
 
-    expectCleanTermination(result, 2);
+    expectCleanTermination(result);
     expect(result.peakConcurrentChildren).toBe(2);
     expect(result.peakConcurrentChildren).toBeLessThanOrEqual(4);
     expect(result.requestsByActor.get('root')).toBe(5);
@@ -416,7 +356,7 @@ describe('built native root-only workers', () => {
     expect(fs.existsSync(builtCli)).toBe(true);
     const result = await runScenario(false, true);
 
-    expectCleanTermination(result, 1);
+    expectCleanTermination(result);
     expect(result.requestsByActor.get('root')).toBe(3);
     expect(result.requestsByActor.get('child')).toBe(1);
   }, 20_000);

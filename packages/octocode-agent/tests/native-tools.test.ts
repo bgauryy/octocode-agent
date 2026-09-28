@@ -296,7 +296,7 @@ describe('native Octocode tool registry', () => {
     }));
     const update = vi.fn(async (_event: { version: number; kind: string; message?: string }) => undefined);
     const registry = createOctocodeToolRegistry(catalog, execute);
-    expect(registry.list().map((tool) => tool.name)).toEqual(['awareness', 'octocode', 'plan']);
+    expect(registry.list().map((tool) => tool.name)).toEqual(['octocode', 'plan']);
 
     const tool = registry.get('octocode')!;
     expect(tool.policy.resolve?.({ action: 'call', tool: 'localSearch', input: {} })).toMatchObject({ effects: ['read'] });
@@ -573,17 +573,9 @@ describe('native Octocode tool registry', () => {
     });
   });
 
-  it('registers the unified Awareness facade from native registry composition', () => {
+  it('does not register an Awareness tool', () => {
     const registry = createOctocodeToolRegistry(catalog, async () => ({}));
-    expect(registry.get('awareness')).toMatchObject({
-      name: 'awareness',
-      policy: {
-        effects: ['read', 'write'],
-        trust: 'workspace',
-        approval: 'on-request',
-        plan: 'allowed',
-      },
-    });
+    expect(registry.get('awareness')).toBeUndefined();
   });
 
   it('forwards the native plan snapshot sink through registry composition', async () => {

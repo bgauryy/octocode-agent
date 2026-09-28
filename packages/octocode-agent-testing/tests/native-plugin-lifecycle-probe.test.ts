@@ -48,22 +48,22 @@ describe("native production plugin lifecycle probe", () => {
     ]));
   });
 
-  it("records native-only production coverage without fabricating a Pi peer trace", async () => {
+  it("records native-only production coverage without fabricating a peer trace", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "octocode-plugin-coverage-"));
     roots.push(root);
     const scenario = CANONICAL_HOST_SCENARIOS.find(({ id }) => id === "plugin-lifecycle")!;
-    const pi: HostConformanceAdapter = {
-      name: "pi-without-transactional-plugins",
-      hostKind: "pi",
+    const reference: HostConformanceAdapter = {
+      name: "reference-without-transactional-plugins",
+      hostKind: "generic",
       evidence: "production",
-      supports: () => ({ supported: false, reason: "Pi SDK is host-inapplicable" }),
-      execute: async () => { throw new Error("Pi plugin lifecycle must not execute"); },
+      supports: () => ({ supported: false, reason: "reference host is inapplicable" }),
+      execute: async () => { throw new Error("reference plugin lifecycle must not execute"); },
     };
     const native = createProductionNativeHostAdapter({
       scenarioProbes: { "plugin-lifecycle": createNativePluginLifecycleProbe(root) },
     });
 
-    const report = await runHostConformance({ baseline: pi, candidate: native, scenarios: [scenario] });
+    const report = await runHostConformance({ baseline: reference, candidate: native, scenarios: [scenario] });
 
     expect(report.summary).toEqual({ total: 1, matched: 0, covered: 1, diverged: 0, unsupported: 0 });
     expect(report.matched).toBe(true);

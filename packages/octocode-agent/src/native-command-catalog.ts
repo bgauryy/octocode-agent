@@ -42,7 +42,7 @@ export const PI_COMMAND_PARITY: readonly PiCommandParityRow[] = Object.freeze([
     piName: "octocode-tasks",
     status: "BLOCKED",
     reason:
-      "Pi tasks includes Awareness verification beyond native plan presentation.",
+      "Pi tasks includes verification beyond native plan presentation.",
   },
   {
     piName: "octocode-skills",

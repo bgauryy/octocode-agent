@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { workspaceAgentRoot } from '@octocodeai/octocode-shared/paths';
+import { workspaceAgentRoot } from '@octocodeai/agent-contracts/paths';
 
 import { helpReport, main } from '../src/launcher.js';
 

@@ -13,7 +13,7 @@
     "node": ">=26.4.0"
   },
   "scripts": {
-    "build": "yarn workspaces foreach -At run build",
+    "build": "yarn workspaces foreach -A --topological-dev run build",
     "lint": "yarn workspaces foreach -At run lint",
     "lint:fix": "yarn workspaces foreach -At run lint:fix",
     "test": "yarn workspaces foreach -At run test",
@@ -43,8 +43,5 @@
   "private": true,
   "workspaces": [
     "packages/*"
-  ],
-  "resolutions": {
-    "@octocodeai/octocode-awareness": "portal:../octocode/packages/octocode-awareness"
-  }
+  ]
 }

@@ -12,7 +12,7 @@ import {
 } from "./support/native-policy-failure-cancellation-probes.js";
 
 describe("native production policy conformance probe", () => {
-  test("proves plan, trust, approval, and real peer-lock denials before effects", async () => {
+  test("proves plan, trust, and approval denials before effects", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "octocode-native-policy-probe-"));
     const ambientDbPath = process.env.OCTOCODE_AGENT_DB_PATH;
     try {
@@ -42,14 +42,6 @@ describe("native production policy conformance probe", () => {
             callId: "probe-policy-3",
           },
         },
-        {
-          kind: "policy.denied",
-          data: {
-            boundary: "peer-lock",
-            blocked: true,
-            callId: "probe-policy-4",
-          },
-        },
       ]);
       expect(receipt.effects).toEqual([]);
       expect(process.env.OCTOCODE_AGENT_DB_PATH).toBe(ambientDbPath);
@@ -63,7 +55,6 @@ describe("native production policy conformance probe", () => {
               "plan-policy",
               "trust",
               "approval",
-              "peer-lock",
             ]),
           },
         },

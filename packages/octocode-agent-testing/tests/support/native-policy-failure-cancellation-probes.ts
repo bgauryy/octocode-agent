@@ -14,8 +14,6 @@ import {
   type SessionStore,
   type ToolDefinition,
 } from "@octocodeai/agent-core";
-import { openAwarenessStore } from "@octocodeai/octocode-awareness";
-import { agentDbPath } from "@octocodeai/octocode-shared/paths";
 import {
   createDefaultNativeRuntime,
   parseNativeArgs,
@@ -23,12 +21,11 @@ import {
 import { createRuntimeEventPersister } from "../../../octocode-agent/src/native-runtime-session-projector.js";
 import type { ProductionScenarioProbe } from "../../src/production-host-adapters.js";
 
-const POLICY_BOUNDARIES = ["plan", "trust", "approval", "peer-lock"] as const;
+const POLICY_BOUNDARIES = ["plan", "trust", "approval"] as const;
 type PolicyBoundary = (typeof POLICY_BOUNDARIES)[number];
 
 function policyTool(
   boundary: PolicyBoundary,
-  lockTarget: string,
   executed: () => void,
 ): ToolDefinition {
   const common = {
@@ -76,25 +73,13 @@ function policyTool(
       },
     };
   }
-  if (boundary === "approval") {
-    return {
-      ...common,
-      policy: {
-        effects: createEffectSet("write"),
-        trust: "none",
-        approval: "always",
-        plan: "allowed",
-      },
-    };
-  }
   return {
     ...common,
     policy: {
-      effects: createEffectSet("read"),
+      effects: createEffectSet("write"),
       trust: "none",
-      approval: "never",
+      approval: "always",
       plan: "allowed",
-      lockTarget: () => [lockTarget],
     },
   };
 }
@@ -129,9 +114,8 @@ function policyModel(tools: ReadonlyMap<PolicyBoundary, string>): ModelPort {
 }
 
 /**
- * Drives all four deny-first gates through the native production runtime.
- * The peer-lock case uses the real Awareness store and native conflict checker;
- * the receipt is emitted only after every executor remains untouched and the
+ * Drives the plan, trust, and approval deny-first gates through the native
+ * production runtime. The receipt is emitted only after every executor remains untouched and the
  * runtime has returned to idle.
  */
 export function createNativePolicyDenialProbe(root: string): ProductionScenarioProbe {
@@ -141,29 +125,18 @@ export function createNativePolicyDenialProbe(root: string): ProductionScenarioP
 
     const home = path.join(root, "policy-home");
     const workspace = path.join(root, "policy-workspace");
-    const lockedPath = path.join(workspace, "locked.txt");
     const nativeEnv = {
       OCTOCODE_HOME: home,
       OCTOCODE_AGENT_ID: "production-native",
     };
-    const awarenessDb = agentDbPath(nativeEnv);
     fs.mkdirSync(home, { recursive: true });
     fs.mkdirSync(workspace, { recursive: true });
-    fs.writeFileSync(lockedPath, "peer owned\n");
-
-    const awareness = openAwarenessStore({ workspace, dbPath: awarenessDb });
-    awareness.acquireLock({
-      filePath: lockedPath,
-      agentId: "production-peer",
-      reason: "production conformance peer-lock",
-      ttlSeconds: 60,
-    });
 
     const registry = new ToolRegistry();
     const toolNames = new Map<PolicyBoundary, string>();
     let executions = 0;
     for (const boundary of POLICY_BOUNDARIES) {
-      const definition = policyTool(boundary, lockedPath, () => {
+      const definition = policyTool(boundary, () => {
         executions += 1;
       });
       registry.register(definition, "production-conformance");
@@ -196,8 +169,7 @@ export function createNativePolicyDenialProbe(root: string): ProductionScenarioP
         ended.length !== POLICY_BOUNDARIES.length ||
         !categories.includes("plan-policy") ||
         !categories.includes("trust") ||
-        !categories.includes("approval") ||
-        !categories.includes("peer-lock")
+        !categories.includes("approval")
       ) {
         throw new Error(
           `Native deny-first probe failed: executions=${executions} state=${runtime.snapshot().state} categories=${categories.join(",")}`,
@@ -224,7 +196,6 @@ export function createNativePolicyDenialProbe(root: string): ProductionScenarioP
     } finally {
       unsubscribe();
       await runtime.stop().catch(() => undefined);
-      awareness.close();
     }
   };
 }

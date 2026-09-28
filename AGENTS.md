@@ -1,9 +1,7 @@
 # AGENTS.md — Octocode Agent monorepo
 
 This repository ships the host-neutral agent kernel, native CLI, packaged Rust
-services, supported Pi adapter, conformance tooling, and shared contracts.
-Awareness coordination lives in the sibling
-[`bgauryy/octocode` repository](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness).
+services, an independent Pi extension, conformance tooling, and shared contracts.
 The closest `AGENTS.md` wins.
 
 Read the owning package's `ARCHITECTURE.md` before changing a boundary.
@@ -12,13 +10,12 @@ Read the owning package's `ARCHITECTURE.md` before changing a boundary.
 
 | Change | Start in | Also verify |
 |---|---|---|
-| Runtime, lifecycle, policy, effects, sessions, compaction, workers, or host-neutral UI/RPC contracts | [`octocode-agent-core`](packages/octocode-agent-core) | Native and Pi conformance |
+| Runtime, lifecycle, policy, effects, sessions, compaction, workers, or host-neutral UI/RPC contracts | [`octocode-agent-core`](packages/octocode-agent-core) | Native conformance |
 | SQLite transactions, CAS, leases, fencing, indexes, durable queues, automations, or contained filesystem primitives | [`octocode-agent-core-rust`](packages/octocode-agent-core-rust) | Native Rust ports and real subprocess flows |
 | Providers, native tools, MCP, approvals, scheduler, worker processes, transports, or OpenTUI | [`octocode-agent`](packages/octocode-agent) | Built CLI and real-host flow |
-| Supported Pi hooks, prompt, tools, Skills, UI, or host adaptation | [`octocode-pi-extension`](packages/octocode-pi-extension) | Native/Pi scenarios |
-| Trace normalization, effect comparison, parity scenarios, or host fixtures | [`octocode-agent-testing`](packages/octocode-agent-testing) | Production packages never import it |
-| Cross-host paths, protocols, permissions, discovery, entities, or prompt fragments | [`octocode-shared`](packages/octocode-shared) | Every consuming host |
-| Plans, work, locks, messages, verification, memory, reflection, or coordination hooks | [`@octocodeai/octocode-awareness`](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness) | Package guide and real CLI |
+| Pi extension tools, prompt, MCP loader, subagents, or UI | [`octocode-pi-extension`](packages/octocode-pi-extension) | Its unit and end-to-end tests |
+| Trace normalization, effect comparison, conformance scenarios, or host fixtures | [`octocode-agent-testing`](packages/octocode-agent-testing) | Production packages never import it |
+| Cross-host paths, protocols, permissions, discovery, entities, or prompt fragments | [`octocode-agent-contracts`](packages/octocode-agent-contracts) | Every consuming host |
 
 External packages remain separate. `@octocodeai/config` owns environment and
 Octocode-home loading. `octocode-tools-core`, `octocode-engine`, and
@@ -31,7 +28,7 @@ their interfaces.
 - Dependencies point inward: host composition -> adapters -> core contracts.
   Agent core never imports a host package.
 - Only `packages/octocode-pi-extension` may declare or import
-  `@earendil-works/pi-*`. Native, core, Rust, shared, Awareness, and testing
+  `@earendil-works/pi-*`. Native, core, Rust, shared, and testing
   code never import Pi directly.
 - Put semantic invariants in agent core. Put operating-system, SDK, protocol,
   process, and UI behavior behind injected ports in the owning host.
@@ -87,10 +84,8 @@ their interfaces.
 - TypeScript expands schedules and submits semantic actions through policy. Rust
   atomically materializes, fences, leases, and settles runs; it never executes
   arbitrary automation payloads.
-- The independent Pi extension remains supported but is not a native dependency.
-  Compare hosts through production adapters and normalized effect traces.
-- Awareness SQLite is coordination state, not repository truth. Ordinary file
-  presence is advisory; use exclusive locks only for unsafe non-mergeable work.
+- The independent Pi extension remains supported but is not a native dependency,
+  and it does not depend on agent-core, agent-contracts, or `@octocodeai/config`.
 
 ## Research and dogfooding
 
@@ -102,7 +97,6 @@ Use Octocode to build Octocode:
 | GitHub repositories, code, issues, PRs, or commits | Octocode GitHub tools | Ad hoc API calls |
 | npm packages | `npmSearch` | Registry curls |
 | Research or change investigation | `octocode-research` plus live schemas | Invented search loops |
-| Shared work or cross-run context | Awareness | Silent overlapping edits |
 
 Run `npx octocode tools --json` for the live catalog and
 `npx octocode tools <name> --scheme` before assuming a name, count, or schema.
@@ -110,18 +104,14 @@ Search and graph results are candidates. Prove symbol identity, callers, and
 reachability with `lspGetSemantics` before deleting code. Follow pagination,
 range, minification, and truncation hints until the required evidence is visible.
 
-### Research catalog (13)
+### Research catalog (10)
 
 The supported Pi-facing catalog is `ghSearch`, `ghGetFileContent`,
-`ghSearchPullRequests`, `ghSearchIssues`, `ghSearchCommits`, `ghListReleases`,
-`ghSearchDiscussions`, `ghCloneRepo`, `npmSearch`, `localSearch`,
-`localAnalyzeGraph`, `localGetFileContent`, and `lspGetSemantics`. Treat this
-list as a documentation contract; use the live catalog for exact schemas.
+`ghSearchHistory`, `ghGetHistoryItem`, `ghCloneRepo`, `npmSearch`, `localSearch`,
+`localAnalyzeGraph`, `localGetFileContent`, and `lspGetSemantics`. Use the live
+catalog for exact schemas.
 
 ## Work and verify
-
-Plan -> write a failing test -> implement -> focused test -> lint -> build ->
-exercise the real CLI/MCP/Skill path -> proportional release gate.
 
 | Task | Command |
 |---|---|
@@ -154,9 +144,8 @@ databases directly.
 | Native composition and operation | [native architecture](packages/octocode-agent/ARCHITECTURE.md) and [docs](packages/octocode-agent/docs/README.md) |
 | Terminal semantics and interaction | [terminal design system](packages/octocode-agent/docs/TERMINAL_DESIGN_SYSTEM.md) |
 | Parallel tools, MCP, and workers | [parallelism guide](packages/octocode-agent/docs/PARALLELISM_AND_WORKERS.md) |
-| Supported Pi adapter | [Pi architecture](packages/octocode-pi-extension/ARCHITECTURE.md) |
-| Shared contracts | [shared architecture](packages/octocode-shared/ARCHITECTURE.md) |
-| Awareness lifecycle | [Awareness guide](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/HOW_IT_WORKS.md) |
+| Pi extension | [Pi extension README](packages/octocode-pi-extension/README.md) |
+| Shared contracts | [shared architecture](packages/octocode-agent-contracts/ARCHITECTURE.md) |
 | Discovery and MCP | [discovery](docs/DISCOVERY.md) and [MCP](docs/MCP.md) |
 
 Keep global Octocode CLI, configuration, security, OQL, and release docs in the

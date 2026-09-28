@@ -31,9 +31,8 @@ means readers cannot safely use it as an implementation authority.
 | Agent testing | 9/10 | [Testing architecture](../packages/octocode-agent-testing/ARCHITECTURE.md) | The dirty-tree mandatory matrix covers all canonical scenarios; a clean candidate and external release matrices remain. |
 | Native agent | 9/10 | [Native architecture](../packages/octocode-agent/ARCHITECTURE.md) and [parallelism guide](../packages/octocode-agent/docs/PARALLELISM_AND_WORKERS.md) | The renderer-neutral port is defined; alternate-renderer real-host evidence remains incomplete. |
 | Rust native services | 9/10 | [Rust architecture](../packages/octocode-agent-core-rust/ARCHITECTURE.md) | Cross-platform release evidence remains separate from the process-boundary reference. |
-| Pi extension | 8/10 | [Pi architecture](../packages/octocode-pi-extension/ARCHITECTURE.md) | Canonical registry composition is live, but complete event, effect, settings, and receipt parity remains open. |
-| Awareness | 9/10 | [Awareness architecture](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/ARCHITECTURE.md) | The large reference set needs periodic command/schema drift checks. |
-| Shared contracts | 8/10 | [Shared architecture](../packages/octocode-shared/ARCHITECTURE.md) | Public subpath ownership is documented, but API reference remains source-first. |
+| Pi extension | 8/10 | [Pi extension README](../packages/octocode-pi-extension/README.md) | The small extension is documented in one README; there is no separate architecture reference. |
+| Shared contracts | 8/10 | [Shared architecture](../packages/octocode-agent-contracts/ARCHITECTURE.md) | Public subpath ownership is documented, but API reference remains source-first. |
 | Discovery and MCP | 9/10 | [`docs/DISCOVERY.md`](DISCOVERY.md), [`docs/MCP.md`](MCP.md), and the [native concurrency guide](../packages/octocode-agent/docs/PARALLELISM_AND_WORKERS.md) | Runtime schemas remain the exact field-level authority. |
 | Release documentation | 4/10 | [`release/RELEASE_GUIDE.md`](../release/RELEASE_GUIDE.md) | The guide belongs to the sibling platform repository and is retained here only as a migration pointer. |
 

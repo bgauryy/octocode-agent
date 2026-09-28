@@ -2,8 +2,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { createProductionPiScenarioSuite } from "@octocodeai/pi-extension";
-
 import { CANONICAL_HOST_SCENARIOS } from "../src/host-conformance.js";
 import { createNativeUiSemanticsProbe } from "./support/native-ui-semantics-probe.js";
 
@@ -15,7 +13,7 @@ afterEach(() => {
 });
 
 describe("native UI semantics production probe", () => {
-  test("uses native presentation and interaction composition while preserving the Pi semantic trace", async () => {
+  test("uses native presentation and interaction composition while emitting the canonical semantic trace", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "octocode-native-ui-"));
     roots.push(root);
     const scenario = CANONICAL_HOST_SCENARIOS.find(
@@ -104,28 +102,5 @@ describe("native UI semantics production probe", () => {
         signal: new AbortController().signal,
       }),
     ).rejects.toThrow(/interactive and headless/u);
-  });
-
-  test("matches the installed Pi SDK semantic receipt exactly", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "octocode-ui-parity-"));
-    roots.push(root);
-    const scenario = CANONICAL_HOST_SCENARIOS.find(
-      ({ id }) => id === "ui-semantics",
-    )!;
-    const piProbe =
-      createProductionPiScenarioSuite(root).scenarioProbes["ui-semantics"];
-    if (!piProbe)
-      throw new Error("Installed Pi UI production probe is missing");
-    const pi = await piProbe({
-      scenario,
-      signal: new AbortController().signal,
-    });
-    const native = await createNativeUiSemanticsProbe(root)({
-      scenario,
-      signal: new AbortController().signal,
-    });
-
-    expect(native.events).toEqual(pi.events);
-    expect(native.effects).toEqual(pi.effects);
   });
 });

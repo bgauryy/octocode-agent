@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { getOctocodeHome } from '@octocodeai/octocode-shared/paths';
+import { getOctocodeHome } from '@octocodeai/agent-contracts/paths';
 import { markSetupDone } from './state.js';
 import { AUTH_PROVIDERS, type AuthProvider } from './auth-providers.js';
 import {

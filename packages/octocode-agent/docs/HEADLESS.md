@@ -69,13 +69,10 @@ Close standard input to drain pending commands and stop the runtime.
 
 ## Prompt and cache behavior
 
-Every native session starts with the shared Octocode policy, the stable Awareness
-policy, and applicable repository instructions. The
+Every native session starts with the shared Octocode policy and applicable
+repository instructions. The
 launcher reads `AGENTS.md`, or `CLAUDE.md` as a fallback, from the repository root
 through the working directory. Outer instructions precede more-specific ones.
-Live coordination does not come from that static prompt fragment. The native
-session consumes validated Awareness events from the shared SQLite store and
-projects accepted context into the running session.
 
 This is the native product prompt path. The Pi adapter has a separate host-specific
 prompt composition used only by supported Pi sessions and parity comparison; it is not
@@ -127,7 +124,7 @@ force one catalog refresh before failing.
 ## Tools, MCP, and skills
 
 The native model receives one `octocode` research facade; the native `file`,
-`bash`, `web`, and `runFfmpeg` base tools; and the `plan`, `awareness`, `skill`,
+`bash`, `web`, and `runFfmpeg` base tools; and the `plan`, `skill`,
 `MCPTool`, and `askUser` facades. `octocode` lists compact catalog metadata,
 returns one exact underlying schema on demand, runs one validated call, or runs
 1–8 independent calls with at most four active. Delegated workers retain the
@@ -160,14 +157,12 @@ Native base tools apply these boundaries:
 | `web` | Fetches public HTTP and HTTPS content or searches the public web with DNS and redirect revalidation, response bounds, and private-address blocking. | Declares a network effect, needs neither workspace trust nor approval, and allows at most four active calls. |
 | `runFfmpeg` | Runs `ffmpeg` or `ffprobe` without a shell. File operands must be declared as exact `{{input:N}}` or `{{output:N}}` arguments. Rust authorizes each contained regular input or prospective output; TypeScript owns argv roles, binary discovery, process groups, stream bounds, progress, timeout, cancellation, and result encoding. Protocol and device inputs fail closed. | Reads declare read/process; outputs add write. Calls require workspace trust and on-request approval, are forbidden in plan mode, and use one dedicated process lane. |
 
-The default native direct registry is `octocode`, `plan`, `awareness`, `web`,
+The default native direct registry is `octocode`, `plan`, `web`,
 `bash`, `file`, `runFfmpeg`, `skill`, and `MCPTool`. The launcher adds `askUser`.
 A trusted root may add `worker`; children are leaves and never receive it.
 Reviewed API plugins can add namespaced custom tools. `octocode` is the compact
-facade over the indirect 15-tool research catalog; `awareness` owns memory, lock,
-message, verification, and coordination actions. These consolidations are
-intentional, so the native palette does not duplicate Pi's `callTool`, `memory`,
-`lock`, or `message` names.
+facade over the indirect 15-tool research catalog. This consolidation is
+intentional, so the native palette does not duplicate Pi's `callTool` name.
 
 Pi-only higher-level media names (`readMedia` and `media`) and host helpers
 (`chromeDebug` and `localServer`) are not advertised as native core tools. Their
@@ -220,8 +215,8 @@ claims, and applies the definition's retry policy. It dispatches only registered
 semantic action names and versions; durable payloads never become arbitrary code.
 
 Interactive sessions expose `/automations list`, `/automations run <id>`, and
-`/automations cancel <id> <revision>`. The installed launcher registers only
-the `awareness.status@1` semantic executor. There is no top-level
+`/automations cancel <id> <revision>`. The installed launcher registers no
+semantic executors. There is no top-level
 `octocode-agent automations` command. Cancellation uses the listed revision and
 fails on stale state. A run that might have produced an external effect but
 cannot prove its outcome settles as `uncertain` and is not replayed as success.

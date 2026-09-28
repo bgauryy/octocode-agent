@@ -77,7 +77,7 @@ export interface NativeWorkerToolOptions {
   }) => Extract<WorkerSpawnPacket["workspace"], { mode: "worktree" }>;
   /** Test seam. Generated values remain internal and are never accepted from model input. */
   readonly idFactory?: () => string;
-  /** Optional native-plan bridge. Shared Awareness ownership remains independent. */
+  /** Optional native-plan bridge. */
   readonly planOwnership?: NativePlanWorkerOwnershipPort;
   /** Runs a complete plan DAG inside this admitted worker-tool lifecycle. */
   readonly dependencyScheduler?: NativeWorkerDagSchedulerPort;

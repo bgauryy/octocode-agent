@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
-import { agentDbPath } from "@octocodeai/octocode-shared/paths";
+import { agentDbPath } from "@octocodeai/agent-contracts/paths";
 import {
   InMemorySessionStore,
   LifecycleBus,
@@ -230,7 +230,7 @@ describe("native launcher", () => {
     expect(
       nativeEffectAllowed({
         effects: createEffectSet("write"),
-        operation: "tool:awareness",
+        operation: "tool:plan",
       }),
     ).toBe(true);
     expect(
@@ -278,7 +278,7 @@ describe("native launcher", () => {
     expect(
       nativeEffectAllowed({
         effects: createEffectSet("read", "destructive"),
-        operation: "tool:awareness",
+        operation: "tool:plan",
       }),
     ).toBe(false);
     expect(
@@ -775,69 +775,6 @@ describe("native launcher", () => {
     expect(terminal.accept).toHaveBeenCalledWith({
       type: "worker-inbox-changed",
       inbox: expect.objectContaining({ authority: "runtime", workers: [] }),
-    });
-  });
-
-  it("replays current Awareness delivery health into Zustand and clears recovered attention", async () => {
-    const input = new PassThrough();
-    input.end("/exit\n");
-    const runtime = fakeRuntime();
-    const terminal = {
-      inputOwnership: "external" as const,
-      start: vi.fn(async () => undefined),
-      accept: vi.fn(),
-      stop: vi.fn(async () => undefined),
-      snapshot: vi.fn(() => createInitialPresentationState()),
-    };
-
-    await expect(
-      launchNativeAgent([], {
-        createRuntime: async ({ onAwarenessObservability }) => {
-          onAwarenessObservability?.({
-            consumerId: "native-session:session-1",
-            backlogDepth: 2,
-            backlogCapped: false,
-            lastAcknowledgedSequence: 7,
-            accepted: 3,
-            held: 1,
-            refused: 0,
-            errors: 0,
-            drainAccepted: 0,
-            drainHeld: 1,
-            drainRefused: 0,
-            drainErrors: 0,
-          });
-          runtime.start = vi.fn(async () => {
-            onAwarenessObservability?.({
-              consumerId: "native-session:session-1",
-              backlogDepth: 0,
-              backlogCapped: false,
-              lastAcknowledgedSequence: 9,
-              accepted: 5,
-              held: 1,
-              refused: 0,
-              errors: 0,
-              drainAccepted: 2,
-              drainHeld: 0,
-              drainRefused: 0,
-              drainErrors: 0,
-            });
-          });
-          return runtime;
-        },
-        createTerminal: () => terminal,
-        stdin: input,
-      }),
-    ).resolves.toBe(0);
-
-    expect(terminal.accept).toHaveBeenCalledWith({
-      type: "status-changed",
-      name: "awareness.events",
-      text: "2 queued · 1 held",
-    });
-    expect(terminal.accept).toHaveBeenCalledWith({
-      type: "status-changed",
-      name: "awareness.events",
     });
   });
 

@@ -78,7 +78,7 @@ octocode-agent session [args]
 octocode-agent doctor
 octocode-agent update [platform]
 octocode-agent completion bash|zsh|fish
-octocode-agent tools|skills|memory|awareness
+octocode-agent tools|skills
 octocode-agent help [command]
 ```
 
@@ -152,13 +152,7 @@ The native Agent owns only `$OCTOCODE_HOME/agent/`:
 | `$OCTOCODE_HOME/agent/sessions/` | Agent session artifacts; the file fallback uses encoded `.json`, `.bak`, `.head`, and `.segments/` records, while Rust-backed sessions remain canonical in `core.sqlite3` |
 | `$OCTOCODE_HOME/agent/workspaces/` | Workspace-keyed Agent configuration and discovery artifacts |
 
-Awareness is a separate owner. Its default database is
-`<workspace>/.octocode/awareness.sqlite3`; an explicit global Awareness scope
-uses `$OCTOCODE_HOME/awareness/awareness.sqlite3`. The Agent never initializes
-Awareness tables in either Agent database, and Awareness never opens Agent
-control or runtime state. Other CLI/MCP databases under `.octocode/` remain with
-their own owners. See the [storage boundary](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/STORAGE_SCOPES.md)
-and [Awareness database contract](https://github.com/bgauryy/octocode/tree/main/packages/octocode-awareness/docs/DB.md).
+Other CLI/MCP databases under `.octocode/` remain with their own owners.
 
 ## Runtime configuration
 

@@ -71,8 +71,8 @@ import {
 import {
   getOctocodeHome,
   workspaceAgentRoot,
-} from "@octocodeai/octocode-shared/paths";
-import { repositoryDirectories } from "@octocodeai/octocode-shared/agent-skills";
+} from "@octocodeai/agent-contracts/paths";
+import { repositoryDirectories } from "@octocodeai/agent-contracts/agent-skills";
 import type { LaunchDeps, SpawnFn } from "./types.js";
 
 const require = createRequire(import.meta.url);
@@ -96,9 +96,7 @@ type Command =
   | "acp"
   | "launch"
   | "tools"
-  | "skills"
-  | "memory"
-  | "awareness";
+  | "skills";
 export interface ParsedInvocation {
   command: Command;
   args: string[];
@@ -168,8 +166,6 @@ export function parseInvocation(
     "acp",
     "tools",
     "skills",
-    "memory",
-    "awareness",
   ]);
   const first = filtered[0];
   return first && commands.has(first as Command)
@@ -201,7 +197,6 @@ export function helpReport(): string {
     "  update [platform]        Update the installed platform package",
     "  doctor                   Check runtime, credentials, and managed discovery",
     "  tools | skills           Open Octocode tool and Skill surfaces",
-    "  memory | awareness       Open coordination and memory surfaces",
     "  completion <shell>       Print bash, zsh, or fish completion",
     "  help [command]           Display root or command help",
     "  version                  Display version information",
@@ -968,7 +963,7 @@ export function doctorReport(
 }
 export function completionScript(shell: string): string | null {
   const commands =
-    "run serve acp config setup auth models discover sessions resume session update doctor completion tools skills memory awareness version help";
+    "run serve acp config setup auth models discover sessions resume session update doctor completion tools skills version help";
   const options = ROOT_OPTIONS.flatMap(({ names }) => names).join(" ");
   if (shell === "bash")
     return `complete -W "${commands} ${options}" octocode-agent`;
@@ -1056,20 +1051,13 @@ export async function serveAcp(deps: LaunchDeps = {}): Promise<number> {
   return await connection.exitCode;
 }
 export function runSurface(
-  command: "tools" | "skills" | "memory" | "awareness",
+  command: "tools" | "skills",
   args: readonly string[],
   deps: LaunchDeps = {},
 ): number {
   const spawn: SpawnFn = deps.spawn ?? spawnSync;
-  const packageName =
-    command === "memory" || command === "awareness"
-      ? "@octocodeai/octocode-awareness"
-      : "octocode";
-  const downstreamArgs =
-    command === "awareness"
-      ? [...args]
-      : [command === "skills" ? "skill" : command, ...args];
-  const result = spawn("npx", [packageName, ...downstreamArgs], {
+  const downstreamArgs = [command === "skills" ? "skill" : command, ...args];
+  const result = spawn("npx", ["octocode", ...downstreamArgs], {
     stdio: "inherit",
     env: deps.env ?? process.env,
   });
@@ -1335,9 +1323,7 @@ export async function main(
     case "help":
       if (
         invocation.args[0] === "tools" ||
-        invocation.args[0] === "skills" ||
-        invocation.args[0] === "memory" ||
-        invocation.args[0] === "awareness"
+        invocation.args[0] === "skills"
       ) {
         return runSurface(invocation.args[0], ["--help"], deps);
       }
@@ -1500,8 +1486,6 @@ export async function main(
       return serveAcp(deps);
     case "tools":
     case "skills":
-    case "memory":
-    case "awareness":
       return runSurface(
         invocation.command,
         invocation.json ? [...invocation.args, "--json"] : invocation.args,

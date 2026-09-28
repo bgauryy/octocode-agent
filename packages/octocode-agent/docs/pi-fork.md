@@ -6,8 +6,8 @@ installed `@octocodeai/pi-extension` package and the fork's own Pi host command.
 ## Scope
 
 A Pi fork can change Pi-owned behavior such as its model loop, sessions, built-in commands,
-or TUI. The Octocode extension continues to own its Pi adapter, tools, prompt integration,
-skills, settings projection, and Awareness wiring.
+or TUI. The Octocode extension continues to own its tools, prompt section, MCP loader,
+skill directories, and subagents.
 
 The native `octocode-agent` package is outside this workflow. Do not add a Pi fork, the Pi
 extension, or Pi-specific environment variables to its dependencies or launcher.
@@ -23,15 +23,15 @@ documented extension mechanism.
 
 ## Compatibility requirements
 
-The extension fails closed on unsupported Pi versions. Its supported version is defined by
-`packages/octocode-pi-extension/package.json` and enforced by
-`packages/octocode-pi-extension/src/adapters/pi-host-compatibility.ts`.
+The extension declares the Pi packages (`@earendil-works/pi-*`) as peer dependencies and
+performs no host-version check at runtime; its tested Pi version is the dev dependency in
+`packages/octocode-pi-extension/package.json`.
 
 Before using a fork with the extension:
 
-1. Match or explicitly update the supported Pi version.
+1. Keep the fork's extension API compatible with that tested Pi version.
 2. Build `@octocodeai/pi-extension`.
-3. Run the Pi-host compatibility and extension test suites.
+3. Run the extension's unit and end-to-end tests.
 4. Load the built extension through the actual Pi extension loader.
 5. Exercise startup, registration, one turn, tool execution, session resume, compaction, and shutdown.
 

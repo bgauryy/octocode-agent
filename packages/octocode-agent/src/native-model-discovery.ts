@@ -9,8 +9,8 @@ import {
   type ModelSourceContribution,
   type ModelSourceDescriptor,
 } from '@octocodeai/agent-core';
-import { workspaceAgentRoot } from '@octocodeai/octocode-shared/paths';
-import { repositoryDirectories } from '@octocodeai/octocode-shared/agent-skills';
+import { workspaceAgentRoot } from '@octocodeai/agent-contracts/paths';
+import { repositoryDirectories } from '@octocodeai/agent-contracts/agent-skills';
 
 export interface NativeDiscoveredModelSource {
   readonly descriptor: ModelSourceDescriptor;

@@ -18,7 +18,7 @@ function canonicalHandlers(suffix = ""): CanonicalScenarioHandlers {
       (_scenario, context) => {
         context.emit("scenario.started", {
           scenario: scenario.id,
-          cwd: suffix ? "/native/workspace" : "/pi/workspace",
+          cwd: suffix ? "/native/workspace" : "/reference/workspace",
           timestamp: suffix ? 99 : 10,
         });
         context.effect({
@@ -74,13 +74,13 @@ describe("canonical host scenario matrix", () => {
     const nativeOnly = CANONICAL_HOST_SCENARIOS.filter(
       ({ id }) => id === "codex-hook-lifecycle",
     );
-    const pi: HostConformanceAdapter = {
-      name: "pi",
-      hostKind: "pi",
+    const reference: HostConformanceAdapter = {
+      name: "reference",
+      hostKind: "generic",
       evidence: "production",
       supports: () => ({ supported: false, reason: "typed native-only scope" }),
       async execute() {
-        throw new Error("Pi must not execute a native-only scenario");
+        throw new Error("reference must not execute a native-only scenario");
       },
     };
     const native: HostConformanceAdapter = {
@@ -102,7 +102,7 @@ describe("canonical host scenario matrix", () => {
     };
 
     const report = await runHostConformance({
-      baseline: pi,
+      baseline: reference,
       candidate: native,
       scenarios: nativeOnly,
     });
@@ -138,12 +138,12 @@ describe("canonical host scenario matrix", () => {
   });
 
   test.each([
-    ["missing", "pi", "pi", "No native adapter"],
+    ["missing", "generic", "generic", "No native adapter"],
     ["ambiguous", "native", "native", "Multiple native adapters"],
   ] as const)(
     "marks a %s host-specific adapter selection unsupported",
     async (_case, baselineKind, candidateKind, reason) => {
-      const adapter = (name: string, hostKind: "pi" | "native"): HostConformanceAdapter => ({
+      const adapter = (name: string, hostKind: "generic" | "native"): HostConformanceAdapter => ({
         name,
         hostKind,
         evidence: "production",
@@ -170,7 +170,7 @@ describe("canonical host scenario matrix", () => {
   test("marks a selected but unsupported host-specific adapter explicitly", async () => {
     const adapter = (
       name: string,
-      hostKind: "pi" | "native",
+      hostKind: "generic" | "native",
       supported: boolean,
     ): HostConformanceAdapter => ({
       name,
@@ -184,7 +184,7 @@ describe("canonical host scenario matrix", () => {
       },
     });
     const report = await runHostConformance({
-      baseline: adapter("pi", "pi", true),
+      baseline: adapter("reference", "generic", true),
       candidate: adapter("native", "native", false),
       scenarios: CANONICAL_HOST_SCENARIOS.filter(
         ({ id }) => id === "codex-hook-lifecycle",
@@ -200,9 +200,9 @@ describe("canonical host scenario matrix", () => {
 
   test("self-tests the runner with synthetic handlers without claiming production parity", async () => {
     const report = await runCanonicalHostConformance({
-      baseline: createCanonicalHostAdapter("pi", canonicalHandlers()),
+      baseline: createCanonicalHostAdapter("reference", canonicalHandlers()),
       candidate: createCanonicalHostAdapter("native", canonicalHandlers()),
-      normalization: { workspaceRoots: ["/pi/workspace", "/native/workspace"] },
+      normalization: { workspaceRoots: ["/reference/workspace", "/native/workspace"] },
     });
 
     expect(report.matched).toBe(true);
@@ -240,7 +240,7 @@ describe("canonical host scenario matrix", () => {
   });
 
   test("rejects scenario ids outside the canonical inventory", async () => {
-    const adapter = createCanonicalHostAdapter("pi", canonicalHandlers());
+    const adapter = createCanonicalHostAdapter("reference", canonicalHandlers());
     await expect(
       adapter.execute(
         { id: "invented", input: {} },
@@ -310,14 +310,14 @@ describe("trace normalization and comparison", () => {
     const baseline = normalizeHostTrace([
       {
         kind: "session.started",
-        data: { sessionId: "pi-session", requestId: "pi-request" },
+        data: { sessionId: "reference-session", requestId: "reference-request" },
       },
       {
         kind: "session.child",
         data: {
-          sessionId: "pi-child",
-          parentId: "pi-session",
-          requestId: "pi-request",
+          sessionId: "reference-child",
+          parentId: "reference-session",
+          requestId: "reference-request",
         },
       },
     ]);
@@ -361,13 +361,13 @@ describe("trace normalization and comparison", () => {
     const baseline = normalizeHostTrace([
       {
         kind: "turn.started",
-        sessionId: "pi-session",
-        requestId: "pi-request",
+        sessionId: "reference-session",
+        requestId: "reference-request",
       },
       {
         kind: "turn.finished",
-        sessionId: "pi-session",
-        requestId: "pi-request",
+        sessionId: "reference-session",
+        requestId: "reference-request",
       },
     ]);
     const mismatched = normalizeHostTrace([
@@ -393,7 +393,7 @@ describe("trace normalization and comparison", () => {
     const baseline = normalizeHostTrace([
       {
         kind: "ui.widget",
-        data: { id: "tool-output", requestId: "pi-request" },
+        data: { id: "tool-output", requestId: "reference-request" },
       },
     ]);
     const candidate = normalizeHostTrace([
@@ -415,8 +415,8 @@ describe("trace normalization and comparison", () => {
 
   test("normalizes logical roots without erasing containment-relevant path suffixes", () => {
     const baseline = normalizeHostTrace(
-      [{ kind: "file.selected", data: { path: "/pi/workspace/src/a.ts" } }],
-      { workspaceRoots: ["/pi/workspace"] },
+      [{ kind: "file.selected", data: { path: "/reference/workspace/src/a.ts" } }],
+      { workspaceRoots: ["/reference/workspace"] },
     );
     const equivalent = normalizeHostTrace(
       [{ kind: "file.selected", data: { path: "/native/workspace/src/a.ts" } }],
@@ -506,7 +506,7 @@ describe("trace normalization and comparison", () => {
       },
     });
     const report = await runHostConformance({
-      baseline: adapter("pi", "ok"),
+      baseline: adapter("reference", "ok"),
       candidate: adapter("native", "different"),
       scenarios: [CANONICAL_HOST_SCENARIOS[1]!],
     });
@@ -559,7 +559,7 @@ describe("effect ledger", () => {
       },
     });
     const report = await runHostConformance({
-      baseline: adapter("pi", "projection"),
+      baseline: adapter("reference", "projection"),
       candidate: adapter("native", "different"),
       scenarios: [CANONICAL_HOST_SCENARIOS[0]!],
     });
@@ -579,17 +579,17 @@ describe("effect ledger", () => {
 
     await expect(
       runHostConformance({
-        baseline: adapter("pi"),
+        baseline: adapter("reference"),
         candidate: adapter("native"),
         scenarios: [CANONICAL_HOST_SCENARIOS[0]!],
       }),
-    ).rejects.toThrow(/duplicate external effect.*shared-effect.*pi.*native/i);
+    ).rejects.toThrow(/duplicate external effect.*shared-effect.*reference.*native/i);
   });
 
   test("aborts before invoking adapters when the signal is already cancelled", async () => {
     const controller = new AbortController();
     controller.abort(new Error("stop now"));
-    const adapter = createCanonicalHostAdapter("pi", canonicalHandlers());
+    const adapter = createCanonicalHostAdapter("reference", canonicalHandlers());
     await expect(
       runHostConformance({
         baseline: adapter,
@@ -603,7 +603,7 @@ describe("effect ledger", () => {
   test("aborts the sibling production run when one adapter fails", async () => {
     let candidateSignal: AbortSignal | undefined;
     const baseline: HostConformanceAdapter = {
-      name: "pi",
+      name: "reference",
       evidence: "production",
       async execute() {
         throw new Error("baseline failed");
@@ -636,10 +636,10 @@ describe("effect ledger", () => {
 
   test("accepts legacy event arrays and structured adapter receipts", async () => {
     const baseline: HostConformanceAdapter = {
-      name: "pi",
+      name: "reference",
       evidence: "synthetic",
       async execute() {
-        return [{ kind: "same", data: { cwd: "/pi" } }];
+        return [{ kind: "same", data: { cwd: "/reference" } }];
       },
     };
     const candidate: HostConformanceAdapter = {
@@ -662,7 +662,7 @@ describe("effect ledger", () => {
       },
       candidate,
       scenarios: [CANONICAL_HOST_SCENARIOS[0]!],
-      normalization: { workspaceRoots: ["/pi", "/native"] },
+      normalization: { workspaceRoots: ["/reference", "/native"] },
     });
     expect(report.matched).toBe(true);
   });
@@ -698,7 +698,7 @@ describe("effect ledger", () => {
     });
 
     const report = await runHostConformance({
-      baseline: adapter("pi", 8),
+      baseline: adapter("reference", 8),
       candidate: adapter("native", 20),
       scenarios: [persistence],
     });
@@ -791,7 +791,7 @@ describe("effect ledger", () => {
       },
     });
     const report = await runHostConformance({
-      baseline: production("pi", true),
+      baseline: production("reference", true),
       candidate: production("native", false),
       scenarios: [CANONICAL_HOST_SCENARIOS[1]!],
     });

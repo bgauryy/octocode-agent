@@ -5,13 +5,12 @@ core contracts, records normalized evidence, and never owns production behavior.
 
 ## Ownership
 
-- `src/index.ts` owns deterministic Pi-shaped host mocks, scripted interactions,
-  durable test state, normalized traces, and the test effect ledger.
+- `src/index.ts` re-exports the public conformance and release-closure surface.
 - `src/host-conformance.ts` owns the canonical scenario IDs, comparison rules,
   scenario applicability, trace hashing, bounded observations, divergence
   reporting, and unsupported-result semantics.
-- `src/production-host-adapters.ts` owns test-only adapters that invoke
-  caller-supplied native and Pi production entrypoints.
+- `src/production-host-adapters.ts` owns the test-only adapter that invokes
+  caller-supplied native production entrypoints.
 - `src/release-closure.ts` owns the fail-closed, test-only evaluator for signed
   completion receipts. It can report `GO`, `HOLD`, or `ROLLBACK`; it never
   creates evidence or changes production rollout state.
@@ -30,7 +29,8 @@ canonical scenario from the 14-scenario matrix
 Core owns runtime event schemas. This package records and compares them; it does
 not redefine them. Synthetic adapters validate the comparison machinery only.
 Cross-host production parity is green only when both real composition roots return
-correctly attributed evidence for the same scenario. Host-specific coverage follows
+correctly attributed evidence for the same scenario; the package currently ships
+only the native production adapter. Host-specific coverage follows
 the explicit applicability contract. Unsupported is a failing coverage result, not
 a neutral skip.
 
@@ -39,13 +39,12 @@ and effect evidence. A host-specific scenario executes exactly one named host,
 records attributed coverage, and never fabricates an empty or matching peer trace.
 Observations preserve bounded host facts verbatim but do not change parity. For
 persistence restart, the semantic event asserts deterministic projection while
-observations retain Pi's eight entries and native's twenty ordered lifecycle entries.
+observations retain native's ordered lifecycle entries.
 
 ## Dependency rules
 
 - Production packages must not import this package.
-- This package must not import Pi SDK packages. It receives real Pi evidence
-  through production probes exported by `@octocodeai/pi-extension`.
+- This package must not import Pi SDK packages or the Pi extension package.
 - Synthetic handlers test the conformance runner, not host parity.
 - A cross-host production scenario passes only when both adapters exercise the real
   composition path and produce matching trace and effect-ledger evidence. An
@@ -58,8 +57,8 @@ observations retain Pi's eight entries and native's twenty ordered lifecycle ent
   be converted to synthetic success.
 
 The current production support matrix is executable in
-`tests/production-host-conformance.test.ts`: 12 cross-host scenarios match, two
-native host-specific scenarios are covered, and none diverge or remain unsupported.
+`tests/production-host-conformance.test.ts`: the native adapter supports and
+executes all 14 canonical scenarios through the built CLI and production composition.
 Program-level completion gates live in
 [`DESIGN/LEFTOVERS.md`](../../DESIGN/LEFTOVERS.md).
 The release-closure evaluator requires exactly one independently reviewed,

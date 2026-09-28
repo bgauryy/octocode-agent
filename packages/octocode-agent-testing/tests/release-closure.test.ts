@@ -52,7 +52,7 @@ describe("release closure evaluator", () => {
 
     expect(result.decision).toBe("HOLD");
     expect(result.blockers).toContain("candidate:dirty");
-    expect(result.blockers.filter((value) => value.startsWith("missing:"))).toHaveLength(7);
+    expect(result.blockers.filter((value) => value.startsWith("missing:"))).toHaveLength(6);
   });
 
   it("accepts only one clean candidate with independent, signed receipts and a passing canary", () => {
@@ -63,7 +63,7 @@ describe("release closure evaluator", () => {
       verifySignature: () => true,
     });
 
-    expect(result).toEqual({ decision: "GO", blockers: [], closedGates: 9, totalGates: 9 });
+    expect(result).toEqual({ decision: "GO", blockers: [], closedGates: 8, totalGates: 8 });
   });
 
   it("holds mismatched, self-reviewed, unsupported, or unverifiable evidence", () => {
@@ -142,7 +142,7 @@ describe("release closure evaluator", () => {
     });
 
     expect(result.decision).toBe("HOLD");
-    expect(result.blockers.filter((value) => value.startsWith("signature:"))).toHaveLength(9);
+    expect(result.blockers.filter((value) => value.startsWith("signature:"))).toHaveLength(8);
   });
 
   it("rejects malformed evidence and failed execution independently", () => {
@@ -159,7 +159,7 @@ describe("release closure evaluator", () => {
     });
 
     expect(result.decision).toBe("HOLD");
-    expect(result.closedGates).toBe(6);
+    expect(result.closedGates).toBe(5);
     expect(result.blockers).toEqual(expect.arrayContaining([
       `shape:${values[0]!.gate}`,
       `failed:${values[1]!.gate}`,

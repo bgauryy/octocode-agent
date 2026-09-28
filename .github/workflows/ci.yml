@@ -42,8 +42,7 @@ jobs:
       - run: corepack enable && corepack install --global yarn@4.9.1
       - run: yarn install --immutable
       - run: yarn workspace @octocodeai/agent-core build
-      - run: yarn workspace @octocodeai/octocode-shared build
-      - run: yarn workspace @octocodeai/octocode-awareness build
+      - run: yarn workspace @octocodeai/agent-contracts build
       - run: yarn workspace octocode-agent build
       - uses: actions/upload-artifact@v4
         with:
@@ -69,7 +68,6 @@ jobs:
           pattern: native-*
           path: .native-artifacts
           merge-multiple: true
-      - run: yarn workspace @octocodeai/octocode-awareness build
       - run: yarn test:pack
         env:
           OCTOCODE_AGENT_NATIVE_ARTIFACTS_DIR: ${{ github.workspace }}/.native-artifacts

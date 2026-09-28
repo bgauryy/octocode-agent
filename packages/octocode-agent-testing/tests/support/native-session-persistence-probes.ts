@@ -129,7 +129,7 @@ async function seedPersistenceSession(
 /**
  * Exercises the production SessionController over the native Rust session and
  * navigation ports. Parent navigation is the native conversation-tree rewind
- * boundary; the probe never substitutes Pi's separate file-checkpoint feature.
+ * boundary; the probe never substitutes a separate file-checkpoint feature.
  */
 export function createNativeSessionLifecycleProbe(
   root: string,
@@ -214,7 +214,7 @@ export function createNativeSessionLifecycleProbe(
 /**
  * Commits through one Rust process and reloads through a distinct process. The
  * semantic projection is parity evidence; the complete ordered descriptor list
- * remains a lossless host observation and is never normalized to Pi's count.
+ * remains a lossless host observation and is never normalized to a fixed count.
  */
 export function createNativePersistenceRestartProbe(
   root: string,

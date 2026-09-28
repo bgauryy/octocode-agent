@@ -6,8 +6,8 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import { Client, StreamableHTTPClientTransport, specTypeSchemas, type Progress, type Transport } from '@modelcontextprotocol/client';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { RuntimeFailure, createEffectSet, jsonSchemaError, type HookDecision, type JsonSchema, type ToolRegistry } from '@octocodeai/agent-core';
-import { discoverMcpSystem, repositoryDirectories } from '@octocodeai/octocode-shared/agent-skills';
-import { getOctocodeHome, workspaceAgentRoot } from '@octocodeai/octocode-shared/paths';
+import { discoverMcpSystem, repositoryDirectories } from '@octocodeai/agent-contracts/agent-skills';
+import { getOctocodeHome, workspaceAgentRoot } from '@octocodeai/agent-contracts/paths';
 import type { NativeMcpOAuthFlow } from './native-mcp-oauth.js';
 
 const MAX_CONFIG_BYTES = 1024 * 1024;

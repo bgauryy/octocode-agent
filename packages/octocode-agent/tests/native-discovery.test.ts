@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { agentDbPath, workspaceAgentRoot } from '@octocodeai/octocode-shared/paths';
+import { agentDbPath, workspaceAgentRoot } from '@octocodeai/agent-contracts/paths';
 
 import { buildNativeDiscoverySnapshot } from '../src/native-discovery.js';
 

@@ -6,7 +6,6 @@ export const RELEASE_CLOSURE_GATES = Object.freeze([
   "providers-mcp",
   "workers-orchestration",
   "settings-terminal",
-  "native-pi-isolation",
   "canary-observation",
 ] as const);
 

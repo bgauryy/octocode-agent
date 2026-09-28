@@ -108,8 +108,8 @@ function validateScenario(input: Readonly<Record<string, unknown>>): void {
 }
 
 /**
- * Exercise native UI production components while emitting only Pi's canonical
- * cross-host semantic events. Native renderer evidence remains observation-only.
+ * Exercise native UI production components while emitting only canonical
+ * semantic events. Native renderer evidence remains observation-only.
  */
 export function createNativeUiSemanticsProbe(
   cwd: string,

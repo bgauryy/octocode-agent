@@ -52,7 +52,6 @@
     "@ai-sdk/openai-compatible": "3.0.40",
     "@modelcontextprotocol/client": "2.0.0",
     "@octocodeai/config": "18.0.1",
-    "@octocodeai/octocode-awareness": "1.5.0",
     "@opentui/core": "0.5.8",
     "ai": "7.0.84",
     "ajv": "8.20.0",
@@ -64,8 +63,8 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@octocodeai/agent-contracts": "0.1.0",
     "@octocodeai/agent-core": "0.1.0",
-    "@octocodeai/octocode-shared": "0.1.0",
     "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "^4.1.11",
     "esbuild": "^0.28.2",
@@ -94,7 +93,7 @@
     "check:no-native-pi": "node scripts/check-no-native-pi.mjs",
     "check:no-workspace": "node scripts/check-no-workspace-protocol.mjs",
     "sync:version:publish": "node scripts/sync-version.mjs",
-    "prepack": "node scripts/check-no-workspace-protocol.mjs && yarn workspace @octocodeai/agent-core build && yarn workspace @octocodeai/octocode-shared build && yarn build && yarn check:no-native-pi",
+    "prepack": "node scripts/check-no-workspace-protocol.mjs && yarn workspace @octocodeai/agent-core build && yarn workspace @octocodeai/agent-contracts build && yarn build && yarn check:no-native-pi",
     "prepublishOnly": "node scripts/check-publish-native-artifacts.mjs && node scripts/check-no-workspace-protocol.mjs"
   },
   "publishConfig": {

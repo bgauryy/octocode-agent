@@ -1,102 +1,76 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import {
-  APPROVED_PI_HOST_VERSION,
-  captureProductionPiLifecycle,
-} from "@octocodeai/pi-extension";
 import { describe, expect, it, vi } from "vitest";
 import { CANONICAL_HOST_SCENARIOS } from "../src/host-conformance.js";
-import {
-  createProductionNativeHostAdapter,
-  createProductionPiHostAdapter,
-} from "../src/production-host-adapters.js";
+import { createProductionNativeHostAdapter } from "../src/production-host-adapters.js";
 
 const scenario = (id: string) =>
   CANONICAL_HOST_SCENARIOS.find((value) => value.id === id)!;
 
+const executionContext = () => ({
+  signal: new AbortController().signal,
+  emit: vi.fn(),
+  effect: vi.fn(),
+});
+
 describe("production host adapter receipts", () => {
-  it("accepts lifecycle evidence only after the real Pi SDK observes start and shutdown", async () => {
-    const root = fs.mkdtempSync(
-      path.join(os.tmpdir(), "octocode-pi-sdk-lifecycle-"),
-    );
-    const lifecycle = vi.fn(() => captureProductionPiLifecycle(root));
-    const adapter = createProductionPiHostAdapter({
-      hostVersion: APPROVED_PI_HOST_VERSION,
+  it("projects native lifecycle registries from runtime events and command names", async () => {
+    const lifecycle = vi.fn(async () => ({
+      events: [
+        { type: "runtime-ready" },
+        {
+          type: "presentation-changed",
+          property: "widget",
+          value: { id: "native-command-output", items: ["read"] },
+        },
+        { type: "runtime-stopping" },
+      ],
+      commandNames: ["zeta", "alpha"],
+    }));
+    const adapter = createProductionNativeHostAdapter({
       captureLifecycle: lifecycle,
     });
-    const context = {
-      signal: new AbortController().signal,
-      emit: vi.fn(),
-      effect: vi.fn(),
-    };
+    const context = executionContext();
 
-    try {
-      expect(adapter.evidence).toBe("production");
-      await adapter.execute(scenario("lifecycle-clean-start-stop"), context);
-      expect(lifecycle).toHaveBeenCalledOnce();
-      expect(context.emit.mock.calls.map(([kind]) => kind)).toEqual([
-        "host.started",
-        "registry.snapshot",
-        "host.stopped",
-      ]);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  }, 30_000);
+    expect(adapter.evidence).toBe("production");
+    expect(adapter.hostKind).toBe("native");
+    await adapter.execute(scenario("lifecycle-clean-start-stop"), context);
+    expect(lifecycle).toHaveBeenCalledOnce();
+    expect(context.emit.mock.calls.map(([kind]) => kind)).toEqual([
+      "host.started",
+      "registry.snapshot",
+      "host.stopped",
+    ]);
+  });
 
   it("advertises only scenarios backed by an explicit real-host receipt", async () => {
-    const piProbe = vi.fn(async () => ({
-      source: "installed-pi-sdk" as const,
-      events: [{ kind: "model.turn", data: { text: "pi" } }],
-      effects: [],
-    }));
     const nativeProbe = vi.fn(async () => ({
       source: "native-production-composition" as const,
       events: [{ kind: "model.turn", data: { text: "native" } }],
       effects: [],
     }));
-    const pi = createProductionPiHostAdapter({
-      hostVersion: "0.84.2",
-      scenarioProbes: { "deterministic-model-turn": piProbe },
-    });
     const native = createProductionNativeHostAdapter({
       scenarioProbes: { "deterministic-model-turn": nativeProbe },
     });
 
-    expect(pi.supports?.(scenario("deterministic-model-turn"))).toEqual({
-      supported: true,
-    });
     expect(native.supports?.(scenario("deterministic-model-turn"))).toEqual({
       supported: true,
-    });
-    expect(pi.supports?.(scenario("streaming-tool-flow"))).toMatchObject({
-      supported: false,
     });
     expect(native.supports?.(scenario("streaming-tool-flow"))).toMatchObject({
       supported: false,
     });
-    const context = {
-      signal: new AbortController().signal,
-      emit: vi.fn(),
-      effect: vi.fn(),
-    };
-    await pi.execute(scenario("deterministic-model-turn"), context);
+    const context = executionContext();
     await native.execute(scenario("deterministic-model-turn"), context);
-    expect(piProbe).toHaveBeenCalledOnce();
     expect(nativeProbe).toHaveBeenCalledOnce();
     expect(context.emit.mock.calls).toContainEqual([
       "model.turn",
-      { text: "pi" },
+      { text: "native" },
     ]);
   });
 
   it("fails closed when a production probe reports the wrong composition root", async () => {
-    const adapter = createProductionPiHostAdapter({
-      hostVersion: "0.84.2",
+    const adapter = createProductionNativeHostAdapter({
       scenarioProbes: {
         "deterministic-model-turn": async () => ({
-          source: "built-native",
+          source: "foreign-host" as never,
           events: [{ kind: "model.turn" }],
           effects: [],
         }),
@@ -104,20 +78,15 @@ describe("production host adapter receipts", () => {
     });
 
     await expect(
-      adapter.execute(scenario("deterministic-model-turn"), {
-        signal: new AbortController().signal,
-        emit: vi.fn(),
-        effect: vi.fn(),
-      }),
-    ).rejects.toThrow("installed-pi-sdk");
+      adapter.execute(scenario("deterministic-model-turn"), executionContext()),
+    ).rejects.toThrow("native-production-composition or built-native");
   });
 
   it("returns non-comparable observations separately from emitted parity events", async () => {
-    const adapter = createProductionPiHostAdapter({
-      hostVersion: "0.84.2",
+    const adapter = createProductionNativeHostAdapter({
       scenarioProbes: {
         "persistence-restart": async () => ({
-          source: "installed-pi-sdk",
+          source: "native-production-composition",
           events: [
             {
               kind: "persistence.restarted",
@@ -128,17 +97,13 @@ describe("production host adapter receipts", () => {
           observations: [
             {
               kind: "persistence.durable-entry-count",
-              data: { count: 8 },
+              data: { count: 20 },
             },
           ],
         }),
       },
     });
-    const context = {
-      signal: new AbortController().signal,
-      emit: vi.fn(),
-      effect: vi.fn(),
-    };
+    const context = executionContext();
 
     const result = await adapter.execute(
       scenario("persistence-restart"),
@@ -152,43 +117,24 @@ describe("production host adapter receipts", () => {
       observations: [
         {
           kind: "production.probe-source",
-          data: { source: "installed-pi-sdk" },
+          data: { source: "native-production-composition" },
         },
         {
           kind: "persistence.durable-entry-count",
-          data: { count: 8 },
+          data: { count: 20 },
         },
       ],
     });
   });
 
-  it("rejects incomplete Pi lifecycle capture and unsupported direct execution", async () => {
-    const context = {
-      signal: new AbortController().signal,
-      emit: vi.fn(),
-      effect: vi.fn(),
-    };
-    const incomplete = createProductionPiHostAdapter({
-      hostVersion: APPROVED_PI_HOST_VERSION,
-      captureLifecycle: async () => ({
-        started: true,
-        stopped: false,
-        registry: { tools: [], commands: [], hooks: [] },
-      }),
-    });
-    const unsupportedPi = createProductionPiHostAdapter({
-      hostVersion: APPROVED_PI_HOST_VERSION,
-    });
+  it("rejects unsupported direct execution", async () => {
     const unsupportedNative = createProductionNativeHostAdapter({});
 
     await expect(
-      incomplete.execute(scenario("lifecycle-clean-start-stop"), context),
-    ).rejects.toThrow(/both session_start and session_shutdown/u);
-    await expect(
-      unsupportedPi.execute(scenario("streaming-tool-flow"), context),
-    ).rejects.toThrow(/Unsupported Pi scenario/u);
-    await expect(
-      unsupportedNative.execute(scenario("streaming-tool-flow"), context),
+      unsupportedNative.execute(
+        scenario("streaming-tool-flow"),
+        executionContext(),
+      ),
     ).rejects.toThrow(/Unsupported native scenario/u);
   });
 
@@ -199,11 +145,7 @@ describe("production host adapter receipts", () => {
         commandNames: ["zeta", "alpha"],
       }),
     });
-    const context = {
-      signal: new AbortController().signal,
-      emit: vi.fn(),
-      effect: vi.fn(),
-    };
+    const context = executionContext();
 
     await expect(
       adapter.execute(scenario("lifecycle-clean-start-stop"), context),

@@ -112,7 +112,7 @@ Most of these are *harness* problems, not model problems — which is the entire
 | A2 plausible-but-wrong · B3 no verification | **"Proof = exact read, runtime output, or passing test"; verify-before-conclude**; record only verified claims |
 | A3 hallucination | Research engine grounds claims in real code/files; "memories are leads, re-verify against current code" |
 | A4 context loss · B1 context rot | Autonomous **compact/clear/handoff** tools; lean tool surface; concise prompt; the prompt-optimizer skill audits bloat |
-| A5 reward hacking | Awareness file-locks + honesty rules; "never bank unverified claims"; **no fallbacks/rigid special-casing** rule |
+| A5 reward hacking | Honesty rules; "never bank unverified claims"; **no fallbacks/rigid special-casing** rule |
 | B4 over-engineering | `<how_to_build>` reuse-first ladder; "add fallbacks only where a real path needs one; deduplicate; remove dead code" |
 | B5 no memory | Persistent shared **memory store** (recall before work, record after) |
 | C1–C3 injection / secrets / unsafe exec | **SSRF-hardened `web` tool**; protected-key allowlist + values-never-logged; `.env` trust-gating; tokens via `auth login`, not `.env` |

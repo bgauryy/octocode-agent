@@ -8,9 +8,7 @@ import type {
 } from "./host-conformance.js";
 
 const INITIAL_PRODUCTION_SCENARIO = "lifecycle-clean-start-stop";
-const PI_SDK_LIFECYCLE_EVIDENCE = "production-composition/pi-sdk-lifecycle";
 const NATIVE_LIFECYCLE_EVIDENCE = "production-composition/native-lifecycle";
-const PI_SDK_SCENARIO_EVIDENCE = "production-composition/pi-sdk-scenarios";
 const NATIVE_SCENARIO_EVIDENCE = "production-composition/native-scenarios";
 
 type RegistryKind = "tools" | "commands" | "hooks";
@@ -18,7 +16,7 @@ type RawHostRegistry = Readonly<Record<RegistryKind, readonly string[]>>;
 
 function applicabilitySupport(
   scenario: CanonicalHostConformanceScenario,
-  host: "pi" | "native",
+  host: "native",
 ): HostScenarioSupport | undefined {
   return scenario.applicability.kind === "host-specific" &&
     scenario.applicability.host !== host
@@ -53,7 +51,6 @@ export interface ProductionScenarioProbeInput {
 }
 
 export type ProductionCompositionRoot =
-  | "installed-pi-sdk"
   | "native-production-composition"
   | "built-native";
 
@@ -112,12 +109,6 @@ function recordRegistryProjection(
   context.emit("host.stopped");
 }
 
-export interface ProductionPiLifecycleCapture {
-  readonly started: boolean;
-  readonly stopped: boolean;
-  readonly registry: RawHostRegistry;
-}
-
 function recordProductionReceipt(
   context: HostExecutionContext,
   receipt: ProductionScenarioReceipt,
@@ -138,70 +129,6 @@ function recordProductionReceipt(
       { kind: "production.probe-source", data: { source: receipt.source } },
       ...(receipt.observations ?? []),
     ],
-  };
-}
-
-/** Accepts only receipts captured through the installed Pi SDK composition root. */
-export function createProductionPiHostAdapter(options: {
-  readonly hostVersion: string;
-  readonly scenarioProbes?: ProductionScenarioProbes;
-  readonly unsupportedReasons?: ProductionScenarioUnsupportedReasons;
-  /** A receipt captured from Pi's installed SDK, never from a Pi-shaped harness. */
-  readonly captureLifecycle?: () => Promise<ProductionPiLifecycleCapture>;
-}): HostConformanceAdapter {
-  const probes = options.scenarioProbes ?? {};
-  const hasScenarioProbes = Object.keys(probes).length > 0;
-  return {
-    name: `pi@${options.hostVersion} [${
-      hasScenarioProbes ? PI_SDK_SCENARIO_EVIDENCE : PI_SDK_LIFECYCLE_EVIDENCE
-    }]`,
-    evidence: "production",
-    hostKind: "pi",
-    supports: (scenario) =>
-      applicabilitySupport(
-        scenario as CanonicalHostConformanceScenario,
-        "pi",
-      ) ??
-      productionSupport(
-          "Pi",
-          scenario.id,
-          options.captureLifecycle !== undefined,
-          probes,
-          options.unsupportedReasons ?? {},
-        ),
-    async execute(scenario, context) {
-      if (
-        !productionSupport(
-          "Pi",
-          scenario.id,
-          options.captureLifecycle !== undefined,
-          probes,
-          options.unsupportedReasons ?? {},
-        ).supported
-      )
-        throw new Error(`Unsupported Pi scenario: ${scenario.id}`);
-      if (
-        scenario.id === INITIAL_PRODUCTION_SCENARIO &&
-        options.captureLifecycle
-      ) {
-        const capture = await options.captureLifecycle();
-        if (!capture.started || !capture.stopped)
-          throw new Error(
-            "Pi SDK lifecycle capture did not observe both session_start and session_shutdown",
-          );
-        recordRegistryProjection(context, capture.registry);
-        return;
-      }
-      const probe = probes[scenario.id as CanonicalScenarioId];
-      if (probe) {
-        const receipt = await probe({
-          scenario: scenario as CanonicalHostConformanceScenario,
-          signal: context.signal,
-        });
-        return recordProductionReceipt(context, receipt, ["installed-pi-sdk"]);
-      }
-      throw new Error(`Unsupported Pi scenario: ${scenario.id}`);
-    },
   };
 }
 

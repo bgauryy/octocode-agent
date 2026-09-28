@@ -1,4 +1,3 @@
-import { createNativePhysiology } from './native-physiology.js';
 import { createHash, randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { isDeepStrictEqual } from "node:util";
@@ -9,7 +8,6 @@ import {
   LiveRuntimePlanState,
   LifecycleBus,
   PolicyChain,
-  resolveModelInputBudget,
   RuntimeFailure,
   SessionController,
   eventId,
@@ -22,7 +20,6 @@ import {
   contextProjectionReceipt,
   assertCheckpointEventPayloadV1,
   type AgentRuntime,
-  type AutomationJson,
   type ContextProjectionV1,
   type ContextProjectionPhase,
   type ContextProjectionReceiptV1,
@@ -60,10 +57,7 @@ import {
   type NativeImageInputResolver,
 } from "./native-user-input.js";
 import { NativeRustAutomationStore } from "./native-rust-automations.js";
-import {
-  NativeAutomationScheduler,
-  type NativeAutomationSemanticExecutor,
-} from "./native-automation-scheduler.js";
+import { NativeAutomationScheduler } from "./native-automation-scheduler.js";
 import {
   bindNativeRuntimeAutomations,
   type NativeAutomationCommandService,
@@ -81,14 +75,10 @@ import {
   NativeRustSessionIndex,
   NativeRustSessionStore,
 } from "./native-rust-data-ports.js";
-import { closeOctocodeDb, openOctocodeDb } from "@octocodeai/octocode-shared/db";
-import { getSkillEnablement } from "@octocodeai/octocode-shared/mcp-state";
-import { agentDbPath } from "@octocodeai/octocode-shared/paths";
-import { recordSession } from "@octocodeai/octocode-shared/schema";
-import {
-  checkLockConflicts,
-  type AwarenessEventObservability,
-} from "@octocodeai/octocode-awareness";
+import { closeOctocodeDb, openOctocodeDb } from "@octocodeai/agent-contracts/db";
+import { getSkillEnablement } from "@octocodeai/agent-contracts/mcp-state";
+import { agentDbPath } from "@octocodeai/agent-contracts/paths";
+import { recordSession } from "@octocodeai/agent-contracts/schema";
 import fs from "node:fs";
 import path from "node:path";
 import { ensurePrivateDirectory } from "./private-fs.js";
@@ -97,57 +87,6 @@ const nativeWorkerAuthorityRegistries = new WeakMap<
   WorkerController,
   Map<string, WorkerAuthorityV1>
 >();
-
-export function createNativeAwarenessAutomationExecutor(
-  runtime: Pick<AgentRuntime, "execute">,
-): NativeAutomationSemanticExecutor {
-  return {
-    execute: async ({ definition, claim, signal }) => {
-      const result = await runtime.execute({
-        type: "tool.execute",
-        operationId: `automation:${claim.runId}`,
-        name: "awareness",
-        input: {
-          action: "workspace_status",
-          request:
-            typeof definition.action.payload === "object" &&
-            definition.action.payload !== null &&
-            !Array.isArray(definition.action.payload)
-              ? definition.action.payload
-              : {},
-        },
-        signal,
-      });
-      if (!result.ok)
-        throw new RuntimeFailure(
-          result.error.category,
-          result.error.message,
-          result.error.retry,
-          result.error.userVisible,
-          result.error.redaction,
-          result.error.terminalEffect,
-          result.error.safeCause,
-          result.error.retryAfterMs,
-        );
-      if (
-        typeof result.data !== "object" ||
-        result.data === null ||
-        Array.isArray(result.data)
-      )
-        throw new RuntimeFailure(
-          "tool-execution",
-          "Awareness automation returned an invalid tool result",
-        );
-      const toolResult = result.data as { ok?: unknown; content?: unknown };
-      if (toolResult.ok !== true)
-        throw new RuntimeFailure(
-          "tool-execution",
-          "Awareness automation execution failed",
-        );
-      return toolResult.content as AutomationJson;
-    },
-  };
-}
 
 import {
   createNativeProviderModelPort,
@@ -248,13 +187,12 @@ import {
 } from "./sessions.js";
 import { agentDir } from "./settings.js";
 import { readBreadcrumb, terminalId, writeBreadcrumb } from "./state.js";
-import { getOctocodeHome } from "@octocodeai/octocode-shared/paths";
+import { getOctocodeHome } from "@octocodeai/agent-contracts/paths";
 import {
   runJsonTransport,
   runPrintTransport,
   runRpcTransport,
 } from "./native-transports.js";
-import { withNativeSessionCommunication } from "./native-communications.js";
 import {
   createNativeSessionRuntimeRouter,
   type NativeSessionTransitionReason,
@@ -264,7 +202,6 @@ import { runNativeInteractiveController } from "./native-interactive-controller.
 
 export { createRuntimeEventPersister } from "./native-runtime-session-projector.js";
 
-import { NativeAwarenessWorkerLedger } from "./native-worker-ledger.js";
 import { registerNativeWorkerTool } from "./native-worker-tool.js";
 import {
   NativeWorkerProcessPort,
@@ -285,7 +222,6 @@ import {
   NativeWorkerTransportProjection,
   type NativeWorkerProjectionAuthorizationRequest,
 } from "./native-worker-projection.js";
-import { recoverNativeWorkerOrphans } from "./native-worker-recovery.js";
 import type { NativeInteractivePresentationPort } from "./presentation/contracts.js";
 
 export interface ParsedNativeArgs {
@@ -355,7 +291,6 @@ export interface NativeLaunchDependencies {
     args: ParsedNativeArgs;
     interactions: NativeInteractionBroker;
     onPlanSnapshot?: (snapshot: RuntimePlanSnapshot | undefined) => void;
-    onAwarenessObservability?: (stats: AwarenessEventObservability) => void;
     onResumedMessages?: (messages: readonly ModelMessage[]) => void;
     settings: NativeSettingsService;
     extensions: NativeExtensionsController;
@@ -1147,7 +1082,6 @@ export async function createDefaultNativeRuntime(options: {
   tools?: ToolRegistry;
   interactions?: NativeInteractionBroker;
   onPlanSnapshot?: (snapshot: RuntimePlanSnapshot | undefined) => void;
-  onAwarenessObservability?: (stats: AwarenessEventObservability) => void;
   onResumedMessages?: (messages: readonly ModelMessage[]) => void;
   contextArtifacts?: NativeContextArtifactSources;
   onContextProjection?: (projection: ContextProjectionV1) => void;
@@ -1247,7 +1181,6 @@ export async function createDefaultNativeRuntime(options: {
         worker?: NativeWorkerTransportProjection;
         plan?: RuntimePlanSnapshot;
         planObserved: boolean;
-        awareness?: AwarenessEventObservability;
         automations?: NativeAutomationCommandService;
         resumedMessages?: readonly ModelMessage[];
       }
@@ -1262,8 +1195,6 @@ export async function createDefaultNativeRuntime(options: {
       if (candidate.worker !== undefined)
         options.onWorkerProjection?.(candidate.worker);
       if (candidate.planObserved) options.onPlanSnapshot?.(candidate.plan);
-      if (candidate.awareness !== undefined)
-        options.onAwarenessObservability?.(candidate.awareness);
       if (candidate.resumedMessages !== undefined)
         options.onResumedMessages?.(candidate.resumedMessages);
       if (candidate.automations !== undefined) {
@@ -1286,7 +1217,6 @@ export async function createDefaultNativeRuntime(options: {
           worker?: NativeWorkerTransportProjection;
           plan?: RuntimePlanSnapshot;
           planObserved: boolean;
-          awareness?: AwarenessEventObservability;
           automations?: NativeAutomationCommandService;
           resumedMessages?: readonly ModelMessage[];
         } = {
@@ -1317,11 +1247,6 @@ export async function createDefaultNativeRuntime(options: {
               candidate.planObserved = true;
               candidate.plan = snapshot;
               if (candidate.committed) options.onPlanSnapshot?.(snapshot);
-            },
-            onAwarenessObservability: (stats) => {
-              candidate.awareness = stats;
-              if (candidate.committed)
-                options.onAwarenessObservability?.(stats);
             },
             onResumedMessages: (messages) => {
               candidate.resumedMessages = messages;
@@ -1503,24 +1428,9 @@ export async function createDefaultNativeRuntime(options: {
     workspaceTrust,
     onMcpCatalogInvalidated: (notice) => publishMcpCatalogInvalidated?.(notice),
   });
-  const physiology = createNativePhysiology({
-    initialModel: { providerId, modelId: effectiveModel },
-    resolveInputLimit: (model) => {
-      const limits = modelConfiguration.catalog.models.find(
-        candidate => candidate.providerId === model.providerId && candidate.id === model.modelId,
-      )?.limits;
-      try {
-        return resolveModelInputBudget(limits);
-      } catch {
-        // An invalid or absent catalog limit is unknown telemetry, never a stale budget.
-        return undefined;
-      }
-    },
-  });
   const tools =
     options.tools ??
     (await createDefaultOctocodeToolRegistry({
-      observeRuntime: () => physiology.snapshot(),
       cwd: options.cwd,
       env: options.env,
       ...capabilityComposition,
@@ -1669,23 +1579,7 @@ export async function createDefaultNativeRuntime(options: {
           ownerId:
             options.env.OCTOCODE_AGENT_ID?.trim() ||
             `native:${activeSessionId}`,
-          executors: new Map([
-            [
-              "awareness.status@1",
-              {
-                execute: (input) => {
-                  if (automationRuntime === undefined)
-                    throw new RuntimeFailure(
-                      "internal-invariant",
-                      "Automation runtime executor is not bound",
-                    );
-                  return createNativeAwarenessAutomationExecutor(
-                    automationRuntime,
-                  ).execute(input);
-                },
-              },
-            ],
-          ]),
+          executors: new Map(),
         });
   if (automationScheduler !== undefined)
     options.onAutomationService?.(automationScheduler);
@@ -1834,18 +1728,11 @@ export async function createDefaultNativeRuntime(options: {
   const workerAuthorities = new Map<string, WorkerAuthorityV1>();
   const workerDepthPolicy = resolveNativeWorkerDepthPolicy(options.env);
   if (workerDepthPolicy.canSpawn && options.tools === undefined) {
-    const durableWorkerLedger = new NativeAwarenessWorkerLedger({
-      workspace: options.cwd,
-    });
     const workerLedger = {
       async append(entry: WorkerLedgerEntry): Promise<void> {
         if (entry.type === "worker.spawn")
           workerAuthorities.set(String(entry.workerId), entry.authority);
-        await durableWorkerLedger.append(entry);
       },
-      recordProcess: (
-        ...args: Parameters<NativeAwarenessWorkerLedger["recordProcess"]>
-      ) => durableWorkerLedger.recordProcess(...args),
     };
     const workerMessageJournal =
       rustCoreClient === undefined
@@ -1859,10 +1746,6 @@ export async function createDefaultNativeRuntime(options: {
             journal: workerMessageJournal,
           });
     if (!options.args.noSession) {
-      await recoverNativeWorkerOrphans({
-        workspace: options.cwd,
-        sessionId: String(activeSessionId),
-      });
       await workerMessageJournal?.abandonSession(String(activeSessionId));
     }
     const entry = process.argv[1];
@@ -1882,7 +1765,6 @@ export async function createDefaultNativeRuntime(options: {
       "web",
       "skill",
       "MCPTool",
-      "awareness",
       "plan",
     ].filter((name) => availableTools.includes(name));
     const workerWorktreesRoot = path.join(
@@ -1902,8 +1784,6 @@ export async function createDefaultNativeRuntime(options: {
         workerDepth: workerDepthPolicy.depth,
         maxWorkerDepth: workerDepthPolicy.maxDepth,
         worktreesRoot: workerWorktreesRoot,
-        onProcessStarted: (packet, identity) =>
-          workerLedger.recordProcess(packet, identity),
         ...(workerMessageJournal === undefined
           ? {}
           : { messageJournal: workerMessageJournal }),
@@ -2415,13 +2295,9 @@ export async function createDefaultNativeRuntime(options: {
     workerAuthorityRoot,
     outputFormat: options.args.outputFormat,
     trust: { workspace: workspaceTrust, managedOnly: false },
-    checkPeerLocks: async (targets) =>
-      checkLockConflicts({
-        workspace: options.cwd,
-        agentId:
-          options.env.OCTOCODE_AGENT_ID?.trim() || `native:${process.pid}`,
-        files: [...targets],
-      }).length === 0,
+    // Native sessions have no peer-lock service, so no peer can hold a target;
+    // lock targets are still recorded on the effect ledger.
+    checkPeerLocks: async () => true,
     approve: async (request) => {
       if (
         request.name === "worker" &&
@@ -2509,13 +2385,7 @@ export async function createDefaultNativeRuntime(options: {
             "Thinking controls are not supported by the active OpenAI-compatible adapter",
     monitoring: { snapshot: () => ({ cache: octocodeCatalogCacheMetrics() }) },
     emit: async (event) => {
-      try {
-        await persistRuntimeEvent(event);
-        physiology.observe(event);
-      } catch (error) {
-        physiology.invalidateUnpersistedReceipt(event);
-        throw error;
-      }
+      await persistRuntimeEvent(event);
     },
     registerCheckpointEventIngress: (ingress) => {
       if (checkpointEventIngress !== undefined)
@@ -2525,20 +2395,10 @@ export async function createDefaultNativeRuntime(options: {
     model: withNativeActivePlanContext(modelPort, planStore, planScope),
   });
   automationRuntime = runtime;
-  const agentId =
-    options.env.OCTOCODE_AGENT_ID?.trim() || `native:${activeSessionId}`;
-  const communicated = withNativeSessionCommunication(runtime, {
-    workspace: options.cwd,
-    sessionId: String(activeSessionId),
-    agentId,
-    ...(options.onAwarenessObservability === undefined
-      ? {}
-      : { onObservability: options.onAwarenessObservability }),
-  });
   let unbindAutomations = (): void => undefined;
   const composed: AgentRuntime = {
     start: async () => {
-      await communicated.start();
+      await runtime.start();
       if (automationScheduler !== undefined) {
         if (automationRuntime === undefined)
           throw new RuntimeFailure(
@@ -2548,17 +2408,17 @@ export async function createDefaultNativeRuntime(options: {
         automationScheduler.start();
       }
     },
-    submit: (input) => communicated.submit(input),
-    cancel: (reason) => communicated.cancel(reason),
-    execute: (command) => communicated.execute(command),
-    snapshot: () => communicated.snapshot(),
-    subscribe: (listener) => communicated.subscribe(listener),
+    submit: (input) => runtime.submit(input),
+    cancel: (reason) => runtime.cancel(reason),
+    execute: (command) => runtime.execute(command),
+    snapshot: () => runtime.snapshot(),
+    subscribe: (listener) => runtime.subscribe(listener),
     stop: async () => {
       try {
         await automationScheduler?.stop();
       } finally {
         unbindAutomations();
-        await communicated.stop();
+        await runtime.stop();
       }
     },
   };
@@ -2585,25 +2445,6 @@ export async function createDefaultNativeRuntime(options: {
   };
 }
 
-function nativeAwarenessStatus(
-  stats: AwarenessEventObservability,
-): string | undefined {
-  const attention =
-    stats.backlogDepth > 0 ||
-    stats.drainHeld > 0 ||
-    stats.drainRefused > 0 ||
-    stats.drainErrors > 0;
-  if (!attention) return undefined;
-  return [
-    stats.backlogDepth > 0
-      ? `${stats.backlogDepth}${stats.backlogCapped ? "+" : ""} queued`
-      : undefined,
-    stats.drainHeld > 0 ? `${stats.drainHeld} held` : undefined,
-    stats.drainRefused > 0 ? `${stats.drainRefused} refused` : undefined,
-    stats.drainErrors > 0 ? `${stats.drainErrors} errors` : undefined,
-  ].filter((value): value is string => value !== undefined).join(" · ");
-}
-
 export function nativeEffectAllowed(
   request: {
     readonly effects: EffectSet;
@@ -2628,7 +2469,6 @@ export function nativeEffectAllowed(
           request.operation === "tool:bash")) ||
       (effect === "write" &&
         (request.operation === "tool:plan" ||
-          request.operation === "tool:awareness" ||
           request.operation === "tool:MCPTool" ||
           request.operation === "tool:bash" ||
           request.operation === "tool:file")) ||
@@ -2831,14 +2671,11 @@ async function launchNativeAgentImplementation(
     ((snapshot: RuntimePlanSnapshot | undefined) => void) | undefined;
   let currentPlanSnapshot: RuntimePlanSnapshot | undefined;
   let planSnapshotObserved = false;
-  let currentAwarenessObservability: AwarenessEventObservability | undefined;
   let resumedMessages: readonly ModelMessage[] = [];
   const resumedMessageListeners = new Set<(messages: readonly ModelMessage[]) => void>();
   const supplementalRuntimeEventListeners = new Set<
     (event: RuntimeEvent) => void
   >();
-  let presentAwarenessObservability:
-    ((stats: AwarenessEventObservability) => void) | undefined;
   let workerProjection: NativeWorkerTransportProjection | undefined;
   let workerController: WorkerController | undefined;
   let mcpManager: NativeMcpSessionManager | undefined;
@@ -2885,14 +2722,6 @@ async function launchNativeAgentImplementation(
               planSnapshotObserved = true;
               currentPlanSnapshot = snapshot;
               presentPlanSnapshot?.(snapshot);
-            },
-          }
-        : {}),
-      ...(args.mode === "interactive"
-        ? {
-            onAwarenessObservability: (stats: AwarenessEventObservability) => {
-              currentAwarenessObservability = stats;
-              presentAwarenessObservability?.(stats);
             },
           }
         : {}),
@@ -2982,16 +2811,6 @@ async function launchNativeAgentImplementation(
     presentPlanSnapshot = (plan) =>
       terminal.accept({ type: "plan-changed", plan: plan ?? null });
     if (planSnapshotObserved) presentPlanSnapshot(currentPlanSnapshot);
-    presentAwarenessObservability = (stats) =>
-      terminal.accept({
-        type: "status-changed",
-        name: "awareness.events",
-        ...(nativeAwarenessStatus(stats) === undefined
-          ? {}
-          : { text: nativeAwarenessStatus(stats) }),
-      });
-    if (currentAwarenessObservability !== undefined)
-      presentAwarenessObservability(currentAwarenessObservability);
     const settingsPage = dependencies.createSettingsPage
       ? dependencies.createSettingsPage({
           env,

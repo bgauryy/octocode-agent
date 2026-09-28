@@ -56,7 +56,6 @@ describe("compact Octocode facade", () => {
   it("registers one model-facing facade while retaining native base tools", () => {
     const registry = createOctocodeToolRegistry(catalog, vi.fn());
     expect(registry.list().map(({ name }) => name)).toEqual([
-      "awareness",
       "octocode",
       "plan",
     ]);

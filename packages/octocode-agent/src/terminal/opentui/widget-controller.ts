@@ -496,8 +496,6 @@ function notificationLifecycle(
 
 function statusDisplayName(name: string): string {
   switch (name) {
-    case "awareness.events":
-      return "Coordination";
     case "context.compaction":
       return "Context";
     default:

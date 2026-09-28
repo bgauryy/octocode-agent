@@ -82,5 +82,5 @@ lean context, or sandboxed trust.
 - [ ] Does it **reuse-first**, avoid speculative fallbacks, and remove dead code? (#10)
 
 ## How Octocode implements these
-The octocode-agent harness bakes most of these in — operating model (orient→research→prove→act→verify), proof rule, read-only awareness locks, autonomous compaction, lean tools, persistent memory, the no-fallback/anti-bloat prompt rule, and an SSRF-hardened `web` tool with protected-key/never-log env. See the mapping table in
+The octocode-agent harness bakes most of these in — operating model (orient→research→prove→act→verify), proof rule, autonomous compaction, lean tools, the no-fallback/anti-bloat prompt rule, and an SSRF-hardened `web` tool with protected-key/never-log env. See the mapping table in
 [`coding-agent-failure-modes.md`](https://github.com/bgauryy/octocode-mcp/blob/main/packages/octocode-agent/docs/coding-agent-failure-modes.md#what-this-means-for-a-harness-how-octocode-addresses-each).

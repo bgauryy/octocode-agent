@@ -52,7 +52,7 @@ Only configure trusted servers. Secret values remain in `servers.json`; generate
 
 ## Discovery and token-efficient guidance
 
-The native host and Pi adapter have separate discovery lifecycles.
+The native host and the Pi extension have separate discovery lifecycles.
 
 ### Native host
 
@@ -73,27 +73,13 @@ server. It verifies process startup, tool listing, and calling, progress, correl
 result delivery, the final model turn, cleanup, redaction, disabled-server denial, and
 unapproved denial.
 
-### Pi adapter
+### Pi extension
 
-The Pi adapter connects to enabled servers during initialization and discovers their
-instructions and tools. Its private workspace catalog is stored under:
-
-```text
-$OCTOCODE_HOME/agent/mcp/workspaces/<workspace-digest>/
-├── catalog.json
-└── mcp.md
-```
-
-By default, the first agent system prompt receives every enabled server/tool name, description, and exact input schema from `catalog.json`; `mcp.md` is ignored. Setting `OCTOCODE_COMPACT_MCP=1` opts into the compact flow: a matching `catalog.json` plus validated `mcp.md` is consumed immediately, while a cold or changed catalog is discovered and compiled before the first turn. The generated response must cover every exact server/tool name or it is rejected; a deterministic schema-aware generator is the fallback.
-
-In compact mode the generated guide keeps tool purpose and the invocation-critical parts of the input schema—required fields, types, enums, defaults, constraints, and parameter relationships—without injecting raw schemas. Exact schemas remain in `catalog.json` and are validated internally immediately before a call. Resources, templates, and prompts remain available through explicit `MCPTool` operations but are not added to the tool-focused startup catalog.
-
-Pi interactive sessions report discovery progress and whether the prompt uses the exact
-or compact catalog. The Pi `/mcp` command shows the active mode, artifact paths, and
-whether a post-start mutation requires `/new` to refresh model routing.
-
-Pi configuration changes invalidate and refresh the catalog and guide automatically.
-Catalog and guide files use private permissions on POSIX systems.
+The independent Pi extension has its own, smaller MCP loader: it merges `mcpServers`
+files from `~/.octocode/mcp.json`, `~/.pi/agent/mcp.json`, `<project>/.mcp.json`, and
+`<project>/.pi/mcp.json`, and exposes each server's tools as native Pi tools loaded on
+demand through its `mcp` tool. See
+[`packages/octocode-pi-extension/README.md`](../packages/octocode-pi-extension/README.md#mcp-configuration).
 
 ## Enablement state and `/settings`
 
@@ -103,11 +89,8 @@ and overrides. Use `/settings connections` for MCP controls. The center shows
 managed definitions plus collision-safe, read-only foreign definitions; imported
 servers and tools are disabled by default.
 
-Pi MCP definitions load from `.pi/mcp.json` and `.pi/agent/mcp.json` at user
-and workspace scopes. Claude, Cursor, Codex, `.agent`, and `.agents` files at
-the same scopes enter the read-only compatibility inventory. The complete
-section-by-section UI, persistence, security, refresh, and limitation reference
-is [`packages/octocode-pi-extension/docs/SETTINGS.md`](../packages/octocode-pi-extension/docs/SETTINGS.md).
+Pi, Claude, Cursor, Codex, `.agent`, and `.agents` files at user and workspace
+scopes enter the read-only compatibility inventory.
 
 Enablement overrides are stored in Octocode's shared SQLite database, not copied into JSON definitions. Workspace overrides take precedence over global overrides, then the file's `disabled` default. A disabled tool remains visible in the manager so it can be re-enabled, but it is absent from agent guidance and blocked at execution.
 
@@ -119,11 +102,6 @@ The native `MCPTool` supports status and capability inspection; tool description
 calls; resource listing and reads; prompt listing and retrieval; argument completion;
 and durable task get/result/cancel operations. Server and tool enablement is a
 settings mutation, not a model-callable lifecycle action.
-
-The Pi adapter discovers enabled tools during initialization; there is no
-model-callable tool-list action. Its `MCPTool` additionally owns Pi-specific
-configuration and lifecycle operations, including enablement and server restart,
-stop, add, and remove operations.
 
 The client automatically follows paginated list responses and reacts to MCP list-change signals. Request cancellation and configured timeouts propagate through the client.
 

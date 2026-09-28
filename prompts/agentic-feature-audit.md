@@ -67,8 +67,7 @@ Inspect at minimum:
 - `packages/octocode-agent/ARCHITECTURE.md` and relevant docs
 - `packages/octocode-agent-core/ARCHITECTURE.md`, contracts, runtime, events, sessions, settings, models, hooks, plugins, workers, and tests
 - `packages/octocode-agent-testing/` conformance utilities and real-host fixtures
-- `packages/octocode-pi-extension/` architecture, prompts, tools, skills, Awareness wiring, settings, session artifacts, subagents, orchestration, hooks, plugins, and tests
-- the sibling `octocode` repository's `packages/octocode-awareness/AGENTS.md`, architecture/docs, canonical skill source, storage schema, CLI/library boundary, and tests when Awareness is in scope
+- `packages/octocode-pi-extension/` architecture, prompts, tools, skills, settings, session artifacts, subagents, orchestration, hooks, plugins, and tests
 
 The three existing prompts are specialized authorities, not optional background:
 
@@ -125,7 +124,6 @@ Create one supplemental `AF-*` audit ID for every audited capability not already
 | `AF-DATA-*` | entities, schemas, database/storage, transactions, migrations |
 | `AF-MEM-*` | working, session, project, durable, and shared memory |
 | `AF-AGT-*` | subagents, workers, teams, handoffs, and communication |
-| `AF-AWR-*` | Awareness, coordination, locks, signals, verification, reflection |
 | `AF-HOST-*` | local/remote hosting, background work, environments, artifacts |
 | `AF-UI-*` | TUI, headless modes, transports, accessibility, interaction |
 | `AF-SEC-*` | trust, permissions, sandboxing, effects, secrets, isolation |
@@ -178,7 +176,7 @@ For every load-bearing component identify:
 - startup, update, cancellation, recovery, and shutdown behavior;
 - tests that can fail when real composition is broken.
 
-Audit the entity and data model, not only TypeScript names. Include user/account when applicable, workspace/project/repository/worktree, host/environment, runtime, session/thread, branch/leaf, turn/message/item/event, prompt fragment/snapshot, model/provider, tool/call/result/effect, command, skill, hook, plugin, worker/subagent/team, task/plan, agent identity, capability/grant, approval/policy receipt, artifact, memory, Awareness plan/task/lock/signal/message/verification/reflection, cache entry, usage, telemetry, and migration.
+Audit the entity and data model, not only TypeScript names. Include user/account when applicable, workspace/project/repository/worktree, host/environment, runtime, session/thread, branch/leaf, turn/message/item/event, prompt fragment/snapshot, model/provider, tool/call/result/effect, command, skill, hook, plugin, worker/subagent/team, task/plan, agent identity, capability/grant, approval/policy receipt, artifact, memory, cache entry, usage, telemetry, and migration.
 
 For each entity prove:
 
@@ -207,14 +205,13 @@ Trace at minimum:
 6. normal tool call, streamed tool update, malformed arguments, policy block, approval denial, execution failure, persistence failure, retry, and cancellation;
 7. steer, follow-up, pause, interrupt, signal, broken pipe, disconnect, reconnect, and shutdown;
 8. subagent/worker spawn, progress, communication, completion, failure, cancellation, resume, and cleanup;
-9. Awareness plan/task coordination, peer overlap, locks, messages/signals, verification debt, reflection, and recovered work;
-10. memory creation, review, retrieval, injection, update, conflict, expiry, forgetting, export, and deletion;
-11. skill/rule/instruction discovery, activation, lazy load, scope change, compaction, and resume;
-12. hook/plugin discovery, review, grant, activation, event interception, update, unload, and crash recovery;
-13. MCP connection, discovery, schema change, progress, elicitation/approval, task polling, reconnect, and shutdown when supported;
-14. local hosted/background/cloud task creation, environment setup, repository checkout, artifact return, follow-up, handoff, and cancellation when supported;
-15. model/provider selection, capability mismatch, authentication failure, streaming, retry, rate limit, fallback when authorized, usage, and cache hit/miss;
-16. clean install, upgrade, schema migration, downgrade/rollback, and uninstall/data-retention behavior.
+9. memory creation, review, retrieval, injection, update, conflict, expiry, forgetting, export, and deletion;
+10. skill/rule/instruction discovery, activation, lazy load, scope change, compaction, and resume;
+11. hook/plugin discovery, review, grant, activation, event interception, update, unload, and crash recovery;
+12. MCP connection, discovery, schema change, progress, elicitation/approval, task polling, reconnect, and shutdown when supported;
+13. local hosted/background/cloud task creation, environment setup, repository checkout, artifact return, follow-up, handoff, and cancellation when supported;
+14. model/provider selection, capability mismatch, authentication failure, streaming, retry, rate limit, fallback when authorized, usage, and cache hit/miss;
+15. clean install, upgrade, schema migration, downgrade/rollback, and uninstall/data-retention behavior.
 
 For every flow record:
 
@@ -271,7 +268,7 @@ Detect doom loops, repeated identical requests, oscillating edits, repeated sear
 
 ## Phase 5 — Audit tools, MCP, and tool efficiency
 
-Inventory every built-in, external Octocode, MCP, browser/media, session, settings, worker, communication, memory, Awareness, and host-management tool. Record name, description, schema, result shape, permission/effect class, availability gate, modes, provenance, and owner.
+Inventory every built-in, external Octocode, MCP, browser/media, session, settings, worker, communication, memory, and host-management tool. Record name, description, schema, result shape, permission/effect class, availability gate, modes, provenance, and owner.
 
 For every tool prove:
 
@@ -281,7 +278,7 @@ For every tool prove:
 - preparation is deterministic and effect-free;
 - runtime validation occurs before policy and execution;
 - actual effects match the declared classification;
-- trust, managed policy, plan policy, peer locks, hooks, approval, adapter restrictions, and effect admission run in the canonical order;
+- trust, managed policy, plan policy, hooks, approval, adapter restrictions, and effect admission run in the canonical order;
 - progress and terminal results are correlated, bounded, redacted, and persisted exactly once;
 - cancellation, timeout, partial output, pagination, truncation, reconnect, and retry have explicit semantics;
 - large results return concise decisive data, completeness state, stable handles, and opaque continuation cursors;
@@ -294,7 +291,7 @@ Do not call a tool “efficient” because its prose is short. Compare complete 
 
 ## Phase 6 — Audit instructions, prompts, rules, skills, hooks, and plugins
 
-Treat all instruction-bearing artifacts as production code. Inventory system/developer/runtime prompts, AGENTS files, host instructions, model-specific fragments, tool instructions, output contracts, skills, prompt templates, commands, rules, hook outputs, plugin contributions, memory injection, session summaries, Awareness context, and remotely retrieved instructions.
+Treat all instruction-bearing artifacts as production code. Inventory system/developer/runtime prompts, AGENTS files, host instructions, model-specific fragments, tool instructions, output contracts, skills, prompt templates, commands, rules, hook outputs, plugin contributions, memory injection, session summaries, and remotely retrieved instructions.
 
 For every source record provenance, authority, trust, scope, trigger, placement, priority, visibility, byte/token cost, cacheability, invalidation, compaction behavior, and resumed-session behavior.
 
@@ -316,7 +313,7 @@ Evaluate prompts and descriptions on realistic and held-out scenarios. Measure b
 
 ## Phase 7 — Audit context management, retrieval, compaction, and caching
 
-Construct the context manifest for every supported mode and representative turn. Include system/developer/user instructions, AGENTS/rules, skills, tool schemas, MCP resources, semantic/code maps, session history, compaction summaries, memory, Awareness state, retrieved evidence, images/artifacts, tool results, and pending agent communications.
+Construct the context manifest for every supported mode and representative turn. Include system/developer/user instructions, AGENTS/rules, skills, tool schemas, MCP resources, semantic/code maps, session history, compaction summaries, memory, retrieved evidence, images/artifacts, tool results, and pending agent communications.
 
 For each source verify relevance, freshness, authority, trust, order, visibility, deduplication, byte/token budget, retention, invalidation, and whether it is stable-prefix or dynamic-tail data.
 
@@ -330,7 +327,7 @@ Require:
 - before/after continuation equivalence on deterministic tasks, not merely a plausible summary;
 - session, branch, workspace, user, host, provider, model, schema, trust, and policy isolation for cached state.
 
-Inventory every cache: prompt/provider cache, tool schema/catalog, MCP connection/catalog, file/search/LSP/semantic result, instruction/skill discovery, model catalog, settings/config, session projection, compaction, browser connection, host environment/snapshot, memory retrieval, and Awareness projection.
+Inventory every cache: prompt/provider cache, tool schema/catalog, MCP connection/catalog, file/search/LSP/semantic result, instruction/skill discovery, model catalog, settings/config, session projection, compaction, browser connection, host environment/snapshot, and memory retrieval.
 
 For each cache record owner, key, value, scope, TTL/retention, invalidation triggers, concurrency/single-flight, negative caching, storage, data sensitivity, corruption behavior, fallback, observability, and test coverage.
 
@@ -409,12 +406,12 @@ Verify:
 - changed code, dependencies, settings, permissions, and time-sensitive facts invalidate or downgrade stale entries;
 - users can inspect, correct, disable, export, and delete applicable memory;
 - secrets, raw prompts, sensitive tool output, and cross-tenant data cannot leak through memory;
-- resume, fork, compaction, subagents, hosted runs, and Awareness use explicit memory inheritance rules;
+- resume, fork, compaction, subagents, and hosted runs use explicit memory inheritance rules;
 - memory improves held-out task success or reduces repeated work without unacceptable context, latency, safety, or privacy regression.
 
-If Octocode intentionally uses explicit Awareness memory instead of automatic opaque memory, evaluate that design on control, relevance, provenance, recall, and operational cost rather than assuming automatic memory is superior.
+If Octocode intentionally uses explicit memory instead of automatic opaque memory, evaluate that design on control, relevance, provenance, recall, and operational cost rather than assuming automatic memory is superior.
 
-## Phase 11 — Audit subagents, workers, communication, and Awareness
+## Phase 11 — Audit subagents, workers, and communication
 
 Inventory all worker/subagent/team/orchestration capabilities: spawn, list, inspect, wait, message, follow-up, interrupt, cancel, resume, close, handoff, nesting, background execution, worktree/VM isolation, role/model/tool restrictions, artifacts, and synthesis.
 
@@ -433,24 +430,9 @@ Prove:
 - failed, lost, or restarted workers have explicit retry/resume/reconciliation behavior;
 - duplicate work, consensus theater, status spam, and context-amplifying delegation are detected.
 
-Audit Awareness as the shared-repository coordination and reusable-memory system it actually is. Trace its plan/task projection, agent lifecycle/presence, overlap detection, locks, signals/messages, verification receipts and debt, recovery, memory, reflection, SQLite state, CLI/library/skill interfaces, and Pi/native wiring.
-
-Verify that Awareness:
-
-- activates only when shared state can change the next action;
-- does not impose manual ceremony on routine solo work;
-- keeps SQLite canonical and generated projections derived;
-- distinguishes advisory coordination from enforced policy/effect admission;
-- prevents or surfaces overlapping non-mergeable work;
-- provides targeted diagnostics and recovery without inventing nonexistent public tools;
-- records verification truthfully and never converts an unrun check into a receipt;
-- stores only durable, evidence-backed learning that can change future work;
-- expires or revises stale coordination and memory state;
-- survives process interruption and concurrent agents without corrupting plans, locks, messages, or receipts.
-
 ## Phase 12 — Audit security, permissions, effects, and isolation
 
-Create one ordered pre-effect policy map covering workspace trust, managed policy, plan/read-only mode, file/path containment, secret rules, peer locks, hooks, user approval, adapter restrictions, sandbox/network policy, and effect-ledger admission.
+Create one ordered pre-effect policy map covering workspace trust, managed policy, plan/read-only mode, file/path containment, secret rules, hooks, user approval, adapter restrictions, sandbox/network policy, and effect-ledger admission.
 
 Verify fail-closed behavior for ambiguous or malformed high-risk requests, exact permission/resource matching, symlink and path traversal, shell composition, environment inheritance, MCP/plugin/tool provenance, prompt injection, remote agent messages, memory poisoning, artifact links, and hosted-run credentials.
 
@@ -604,19 +586,18 @@ Return, in order:
 11. Session, persistence, resume, migration, recovery, and hosting matrix.
 12. Memory taxonomy, lifecycle, trust, retrieval, and deletion matrix.
 13. Subagent/worker/team communication and isolation matrix.
-14. Awareness coordination, storage, verification, memory, and recovery matrix.
-15. Security/policy/effect/isolation matrix.
-16. OpenCode/Pi/Cursor/Codex/Claude Code capability matrix with versioned evidence.
-17. Shared-scenario results, normalized trace hashes, and first divergences.
-18. Findings ordered by severity.
-19. Missing tests, evaluations, telemetry, budgets, and product decisions.
-20. Prioritized remediation plan with dependency-safe work packages.
-21. If authorized: changes made, files changed, tests/benchmarks run, before/after evidence, and remaining risks.
+14. Security/policy/effect/isolation matrix.
+15. OpenCode/Pi/Cursor/Codex/Claude Code capability matrix with versioned evidence.
+16. Shared-scenario results, normalized trace hashes, and first divergences.
+17. Findings ordered by severity.
+18. Missing tests, evaluations, telemetry, budgets, and product decisions.
+19. Prioritized remediation plan with dependency-safe work packages.
+20. If authorized: changes made, files changed, tests/benchmarks run, before/after evidence, and remaining risks.
 
 End with direct answers:
 
 - Is every current Octocode agentic feature represented by a canonical or supplemental feature ID with production-path evidence?
-- Does one component own each runtime, tool, instruction, session, data, memory, agent, Awareness, and hosting invariant?
+- Does one component own each runtime, tool, instruction, session, data, memory, agent, and hosting invariant?
 - Is the agent loop bounded, cancellable, retry-safe, terminal exactly once, and clean after every exit path?
 - Are tools discoverable, schema-valid, permissioned, effect-safe, paginated, and efficient on real tasks?
 - Are instructions trustworthy, scoped, conflict-resolved, compactable, resumable, and measurable?
@@ -626,7 +607,6 @@ End with direct answers:
 - Do sessions resume, fork, import, recover, and compact without state or context drift?
 - Is memory explicit about provenance, scope, review, staleness, retrieval, privacy, and deletion—and does it measurably help?
 - Can subagents/workers communicate, isolate work, recover, and terminate without scope expansion, overwrite, duplicate work, or context explosion?
-- Does Awareness improve shared work without corrupt state, false verification, stale locks, or solo-work ceremony?
 - Are local/background/hosted flows reproducible, secure, resumable, observable, artifact-complete, and cleaned up?
 - Which competitor capabilities are genuinely better patterns, which are intentional product differences, and which remain unknown?
 - Which claims are proven, unproven, undefined, or blocked by authority?
