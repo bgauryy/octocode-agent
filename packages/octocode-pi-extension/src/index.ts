@@ -3,6 +3,7 @@ import { registerAskUser } from './ask.js';
 import { BrowserTool, registerBrowserTool } from './browser.js';
 import { registerCompaction } from './compaction.js';
 import { FileGuard, registerFileTool } from './file-tool.js';
+import { mcpToolName } from './mcp-config.js';
 import { describeServers, McpHub, registerMcpLoader } from './mcp.js';
 import { octocodePrompt } from './prompt.js';
 import { registerSkills } from './skills.js';
@@ -11,6 +12,8 @@ import { packageVersion, registerUi, updateStatus } from './ui.js';
 import { registerWebTool } from './web.js';
 
 const PROMPT_MCP_WAIT_MS = 10_000;
+/** Octocode's file reader; while it is active it stands in for Pi's read. */
+const OCTOCODE_READ_TOOL = mcpToolName('octocode', 'localGetFileContent');
 
 /**
  * Octocode for Pi. Everything here builds on Pi's own tools, skills, sessions
@@ -68,10 +71,13 @@ export default function octocode(pi: ExtensionAPI): void {
     // replace read once they are connected.
     // The prompt and the read replacement use the same snapshot, so the prompt never names a tool that is gone.
     const ready = [...hub.servers.values()].filter((server) => server.status === 'ready').map((server) => server.name);
-    const octocodeReady = ready.includes('octocode');
-    const replaced = new Set(['edit', 'write', ...(octocodeReady ? ['read'] : [])]);
     const current = pi.getActiveTools();
-    const next = [...new Set([...current, ...hub.takePendingActivation()])].filter((name) => !replaced.has(name));
+    const candidates = [...new Set([...current, ...hub.takePendingActivation()])];
+    // Replace Pi's tools only with replacements that are actually active: a `--tools` allowlist or
+    // `--exclude-tools` may leave out `file` or Octocode's reader, and the agent must never lose editing or reading.
+    const octocodeReady = ready.includes('octocode') && candidates.includes(OCTOCODE_READ_TOOL);
+    const replaced = new Set([...(candidates.includes('file') ? ['edit', 'write'] : []), ...(octocodeReady ? ['read'] : [])]);
+    const next = candidates.filter((name) => !replaced.has(name));
     if (octocodeReady && current.includes('read')) readReplaced = true;
     else if (!octocodeReady && readReplaced) {
       // Octocode disconnected after replacing read: without this the agent could not read files at all.

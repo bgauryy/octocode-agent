@@ -7,6 +7,7 @@ import type { Usage } from '@earendil-works/pi-ai';
 import { parseFrontmatter, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
 import { Type } from 'typebox';
+import { preview } from './render.js';
 import { capOutput, isRecord } from './util.js';
 
 /** Set in child processes so a subagent cannot spawn further subagents. */
@@ -85,10 +86,16 @@ export function buildAgentArgs(task: string, profile: AgentProfile | undefined, 
   const chosenModel = model ?? profile?.model;
   if (chosenModel) args.push('--model', chosenModel);
   if (profile?.tools) args.push('--tools', profile.tools);
-  if (profile?.excludeTools) args.push('--exclude-tools', profile.excludeTools);
+  if (profile?.excludeTools) args.push('--exclude-tools', expandExcludes(profile.excludeTools));
   if (profile?.prompt) args.push('--append-system-prompt', profile.prompt);
   args.push(task);
   return args;
+}
+
+/** Excluding `file` makes a profile read-only, so Pi's own edit and write must go too. */
+export function expandExcludes(excludeTools: string): string {
+  const names = excludeTools.split(',').map((name) => name.trim()).filter(Boolean);
+  return [...new Set(names.includes('file') ? [...names, 'edit', 'write'] : names)].join(',');
 }
 
 interface RunDetails {
@@ -167,7 +174,7 @@ export function registerAgentTool(pi: ExtensionAPI, getProfiles: () => Map<strin
       if (isPartial) return new Text(theme.fg('dim', (details?.activity ?? []).map((line) => `  ${line}`).join('\n') || '  starting…'), 0, 0);
       if (context.isError) return new Text(theme.fg('error', `✗ ${expanded ? body : (body.split('\n')[0] ?? '')}`), 0, 0);
       const summary = theme.fg('success', `✓ ${details?.profile ?? 'agent'} · ${details?.toolCalls ?? 0} tool calls · ${details?.seconds ?? 0}s`);
-      return new Text(expanded ? `${summary}\n${body}` : summary, 0, 0);
+      return new Text(`${summary}\n${preview(body, theme, expanded, { max: 3 })}`, 0, 0);
     },
   });
 }

@@ -4,6 +4,7 @@ import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionContext } from '@e
 import { Type } from 'typebox';
 import { expandEnv, loadMcpServers, mcpToolName, type McpServerConfig } from './mcp-config.js';
 import { annotationPrefix, createMcpClient } from './mcp-host.js';
+import { callLine, preview, queriesSummary, resultText, textComponent } from './render.js';
 import { capOutput, errorMessage, isRecord, textResult, withTimeout } from './util.js';
 
 const CONNECT_TIMEOUT_MS = 30_000;
@@ -134,6 +135,9 @@ export class McpHub {
         description: clip(`[${server} MCP] ${annotationPrefix(tool)}${entry.description}`, 1024),
         parameters: Type.Unsafe<Record<string, unknown>>({ type: 'object', properties: {}, ...(tool.inputSchema as object) }),
         execute: async (_id, params, signal, onUpdate) => textOrMedia(await callRemote(client, tool, params, signal, onUpdate)),
+        renderCall: (args, theme, context) => textComponent(context, [callLine(theme, `${server} ${tool.name}`), ...queriesSummary(args, theme)].join('\n')),
+        renderResult: (result, { expanded, isPartial }, theme, context) =>
+          textComponent(context, isPartial ? theme.fg('muted', resultText(result) || 'working…') : preview(resultText(result), theme, expanded, { color: context.isError ? 'error' : 'toolOutput' })),
       });
       return entry;
     });
@@ -239,6 +243,13 @@ export function registerMcpLoader(pi: ExtensionAPI, hub: McpHub): void {
       server: Type.Optional(Type.String({ description: 'Load every tool of this server' })),
       query: Type.Optional(Type.String({ description: 'Keywords describing the capability you need' })),
     }),
+    renderCall(args, theme, context) {
+      const detail = args.server ? `server ${args.server}` : args.query ? `"${args.query}"` : 'list servers';
+      return textComponent(context, callLine(theme, 'mcp', theme.fg('accent', detail)));
+    },
+    renderResult(result, { expanded }, theme, context) {
+      return textComponent(context, preview(resultText(result), theme, expanded, { max: 4, color: context.isError ? 'error' : 'toolOutput' }));
+    },
     async execute(_id, params) {
       await hub.ready(15_000);
       if (!params.server && !params.query) return textResult(describeServers(hub));

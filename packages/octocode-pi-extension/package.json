@@ -34,6 +34,7 @@
     "dist/**",
     "themes/**",
     "subagents/**",
+    "docs/**",
     "README.md",
     "LICENSE"
   ],

@@ -1,4 +1,14 @@
-import { compact, type ContextEditEntryDraft, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { RetryPolicy, SimpleStreamOptions } from '@earendil-works/pi-ai';
+import { buildCompaction, pickCompactionModel, summaryInputTokens, type SummaryRuntime } from './compaction-summary.js';
+import {
+  getAgentDir,
+  SettingsManager,
+  type CompactionResult,
+  type ContextEditEntryDraft,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type SessionBeforeCompactEvent,
+} from '@earendil-works/pi-coding-agent';
 import type { FileGuard } from './file-tool.js';
 import { isRecord } from './util.js';
 
@@ -8,16 +18,6 @@ export const KEEP_RECENT_RESULTS = 12;
 export const TRIM_STEP = 10;
 export const TRIM_ABOVE_CHARS = 3_000;
 export const TRIM_KEEP_CHARS = 1_200;
-
-export const COMPACTION_FOCUS = [
-  'Octocode continuation priorities:',
-  "- Keep the user's requests, constraints and preferences verbatim.",
-  '- List every file created or changed and what changed in it.',
-  '- Keep exact error messages, failing test names, and the commands that build/test/verify the work.',
-  '- Record decisions with their reasons, subagent results, and anything ruled out.',
-  '- State what is in progress and the precise next step.',
-  '- Drop exploration that led nowhere unless it rules something out.',
-].join('\n');
 
 /** Subagent reports are distilled, expensive to regenerate results: never trimmed. */
 const KEEP_VERBATIM_TOOLS = new Set(['agent']);
@@ -75,23 +75,76 @@ export function registerCompaction(pi: ExtensionAPI, guard: FileGuard): void {
     return trims.length > 0 ? { entries: [...event.entries, ...trims] } : undefined;
   });
 
-  pi.on('session_before_compact', async (event, ctx) => {
-    const model = ctx.model;
-    if (!model) return undefined;
-    try {
-      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-      if (!auth.ok) return undefined;
-      const focus = event.customInstructions ? `${COMPACTION_FOCUS}\n\nUser focus: ${event.customInstructions}` : COMPACTION_FOCUS;
-      const headers = Object.fromEntries(Object.entries(auth.headers ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
-      const compaction = await compact(event.preparation, model, auth.apiKey, headers, focus, event.signal, ctx.thinkingLevel);
-      return { compaction };
-    } catch {
-      // A cancelled compaction stays cancelled; any other failure falls back to Pi's default summarizer.
-      return event.signal.aborted ? { cancel: true } : undefined;
-    }
-  });
+  pi.on('session_before_compact', async (event, ctx) => octocodeCompaction(event, ctx));
 
   // File contents read before compaction, or on another branch, are no longer in context: require fresh reads.
   pi.on('session_compact', async () => guard.reset());
   pi.on('session_tree', async () => guard.reset());
+}
+
+/** What an extension can reproduce of Pi's own request settings: retries and transport timeouts. */
+export interface CompactionRequestSettings {
+  retry: RetryPolicy;
+  request: Pick<SimpleStreamOptions, 'timeoutMs' | 'maxRetries' | 'maxRetryDelayMs'> & { websocketConnectTimeoutMs?: number };
+}
+
+/** Read the user's retry and timeout settings the way Pi does, so the summary call behaves like Pi's own. */
+export function compactionRequestSettings(settings: SettingsManager): CompactionRequestSettings {
+  const provider = settings.getProviderRetrySettings();
+  const idle = settings.getHttpIdleTimeoutMs();
+  const websocketConnectTimeoutMs = settings.getWebSocketConnectTimeoutMs();
+  return {
+    retry: settings.getRetrySettings(),
+    request: {
+      timeoutMs: provider.timeoutMs ?? (idle === 0 ? 2_147_483_647 : idle),
+      ...(provider.maxRetries !== undefined ? { maxRetries: provider.maxRetries } : {}),
+      ...(provider.maxRetryDelayMs !== undefined ? { maxRetryDelayMs: provider.maxRetryDelayMs } : {}),
+      ...(websocketConnectTimeoutMs !== undefined ? { websocketConnectTimeoutMs } : {}),
+    },
+  };
+}
+
+function loadRequestSettings(ctx: ExtensionContext): CompactionRequestSettings | undefined {
+  try {
+    return compactionRequestSettings(SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() }));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Octocode's compaction on Pi's preparation and request path. The summary uses Octocode's prompt and, when one
+ * fits, a cheaper small-tier model of the same provider; requests go through the model registry (request-time
+ * auth: API key, headers, per-token base URL, provider env) with the user's retry policy and timeouts.
+ * Fallbacks: small model → session model → Pi's default summarizer. A cancelled compaction stays cancelled.
+ */
+export async function octocodeCompaction(event: SessionBeforeCompactEvent, ctx: ExtensionContext): Promise<{ compaction: CompactionResult } | { cancel: true } | undefined> {
+  const current = ctx.model;
+  if (!current) return undefined;
+  const settings = loadRequestSettings(ctx);
+  const runtime: SummaryRuntime = {
+    stream: (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options),
+    signal: event.signal,
+    ...(settings ? { retry: settings.retry, request: settings.request } : {}),
+    callbacks: {
+      onRetryScheduled: (attempt, maxAttempts, delayMs) => {
+        if (ctx.hasUI) ctx.ui.setWorkingMessage(`Compaction retry ${attempt}/${maxAttempts} in ${Math.ceil(delayMs / 1000)}s…`);
+      },
+      onRetryFinished: () => {
+        if (ctx.hasUI) ctx.ui.setWorkingMessage();
+      },
+    },
+  };
+  const choice = pickCompactionModel(current, ctx.modelRegistry.getAvailable(), summaryInputTokens(event.preparation));
+  const attempts = choice.model === current ? [current] : [choice.model, current];
+  for (const model of attempts) {
+    try {
+      // Thinking follows the session only on the session model; small-model summaries run without it.
+      const compaction = await buildCompaction(event.preparation, event.branchEntries, model, { ...runtime, ...(model === current && ctx.thinkingLevel ? { thinkingLevel: ctx.thinkingLevel } : {}) }, event.customInstructions);
+      return { compaction };
+    } catch {
+      if (event.signal.aborted) return { cancel: true };
+    }
+  }
+  return undefined;
 }

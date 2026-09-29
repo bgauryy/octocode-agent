@@ -19,8 +19,8 @@ pi -e npm:@octocodeai/pi-extension
 | **Web & browser** | `web` fetches a URL as readable text or searches the web (Tavily / Serper / Exa with an API key, DuckDuckGo otherwise). `browser` drives Chrome over CDP: navigate, snapshot with numbered elements, click, type, evaluate, screenshot, console. |
 | **askUser** | Multiple-choice questions (1–4 per call) in an inline dialog with a free-text answer on every question. |
 | **Prompt** | A short Octocode section appended to Pi's system prompt: investigate before changing, smallest complete change, verify for real, act on reversible choices, ask only when it matters, research routing (overriding Pi's generic bash-for-files rule), and delegation with each profile's description. Subagents get a variant without askUser or delegation. The section is rebuilt only when the set of ready MCP servers changes. |
-| **Compaction** | Old, large tool results are trimmed before each model call (in steps, so the prompt cache survives), and compaction summaries keep requests, changed files, exact errors, verification commands and the next step. |
-| **UI** | Static banner, terminal title, working indicator, MCP status in the footer, `/mcp` and `/octocode` commands. |
+| **Compaction** | Old, large tool results are trimmed before each model call (in steps, so the prompt cache survives). Compaction summaries use a structured handoff prompt (user intent and verbatim user messages, constraints, work flow, files, errors, verification, decisions and rejected approaches, pending tasks, current work, next step), written by a cheaper small model of the same provider when one fits, with fallback to the session model and then to Pi's default. See [docs/COMPACTION.md](docs/COMPACTION.md). |
+| **UI** | Static banner, terminal title, working indicator, MCP status in the footer, `/mcp` and `/octocode` commands. Every tool renders compactly like Pi's built-ins: a one-line call, a short result preview, full output on ctrl+o. `file` shows each change's reasoning under it, with +/- counts and inline diffs. |
 
 ## MCP configuration
 
@@ -71,6 +71,7 @@ Subagents start with `--no-session` and this extension only, and cannot spawn fu
 | `TAVILY_API_KEY` / `SERPER_API_KEY` / `EXA_API_KEY` | Web search provider (first one set wins; DuckDuckGo otherwise) |
 | `OCTOCODE_CHROME_PORT` | Chrome remote-debugging port to attach to (default `9222`); the browser tool opens (and later closes) its own tab there. A headless Chrome is launched when nothing listens |
 | `OCTOCODE_BROWSER_HEADLESS=0` | Show the launched Chrome window |
+| `OCTOCODE_COMPACTION_MODEL` | Model for compaction summaries: `provider/id`, or `current` for the session model (default: a cheaper small model of the same provider when one fits) |
 
 ## Development
 
@@ -81,4 +82,4 @@ yarn workspace @octocodeai/pi-extension lint
 pi --no-extensions -e packages/octocode-pi-extension/dist/index.js
 ```
 
-Source map: `src/index.ts` (wiring), `files.ts`, `mcp.ts` + `mcp-config.ts`, `skills.ts`, `subagents.ts`, `web.ts`, `browser.ts` + `browser-cdp.ts`, `ask.ts` + `ask-dialog.ts`, `prompt.ts`, `compaction.ts`, `ui.ts`.
+Source map: `src/index.ts` (wiring), `files.ts`, `mcp.ts` + `mcp-config.ts`, `skills.ts`, `subagents.ts`, `web.ts`, `browser.ts` + `browser-cdp.ts`, `ask.ts` + `ask-dialog.ts`, `prompt.ts`, `compaction.ts` + `compaction-summary.ts` + `compaction-prompt.ts`, `ui.ts`.

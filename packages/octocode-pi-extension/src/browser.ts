@@ -2,6 +2,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { StringEnum } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
 import { openBrowser, type BrowserSession } from './browser-cdp.js';
+import { callLine, preview, resultText, textComponent } from './render.js';
 import { capOutput, textResult } from './util.js';
 
 const ACTIONS = ['navigate', 'snapshot', 'click', 'type', 'press', 'evaluate', 'screenshot', 'console', 'close'] as const;
@@ -62,13 +63,22 @@ export function registerBrowserTool(pi: ExtensionAPI, browser: BrowserTool): voi
     executionMode: 'sequential',
     parameters: Type.Object({
       action: StringEnum(ACTIONS),
-      url: Type.Optional(Type.String()),
+      url: Type.Optional(Type.String({ description: 'URL for navigate' })),
       ref: Type.Optional(Type.Number({ description: 'Element number from snapshot' })),
-      text: Type.Optional(Type.String()),
+      text: Type.Optional(Type.String({ description: 'Text for type (replaces the field value)' })),
       submit: Type.Optional(Type.Boolean({ description: 'Press Enter after typing' })),
       key: Type.Optional(Type.String({ description: 'Key for press, e.g. Enter, Tab, Escape' })),
       expression: Type.Optional(Type.String({ description: 'JavaScript expression for evaluate' })),
     }),
+    renderCall(args, theme, context) {
+      const target = args.url ?? (args.ref !== undefined ? `[${args.ref}]` : undefined) ?? args.key ?? (args.expression ? args.expression.split('\n')[0]!.slice(0, 80) : undefined);
+      const typed = args.action === 'type' && args.text ? ` ${theme.fg('muted', JSON.stringify(args.text.slice(0, 60)))}` : '';
+      return textComponent(context, callLine(theme, 'browser', `${theme.fg('accent', args.action ?? '')}${target ? ` ${theme.fg('mdLink', target)}` : ''}${typed}`));
+    },
+    renderResult(result, { expanded }, theme, context) {
+      // Screenshots are drawn by Pi from the image content; snapshots collapse to the title and URL.
+      return textComponent(context, preview(resultText(result).replace(/^\[image\]$/m, ''), theme, expanded, { max: 3, color: context.isError ? 'error' : 'toolOutput' }));
+    },
     async execute(_id, params) {
       if (params.action === 'close') {
         await browser.close();

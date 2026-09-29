@@ -1,6 +1,7 @@
 // Minimal stdio MCP server used by the end-to-end test.
 import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
 const server = new McpServer({ name: 'echo', version: '1.0.0' }, { instructions: 'Echo test server.' });
@@ -26,6 +27,11 @@ server.registerTool(
     server.registerTool('late', { description: 'Added after startup', inputSchema: z.object({}) }, async () => ({ content: [{ type: 'text', text: 'late tool works' }] }));
     return { content: [{ type: 'text', text: 'grown' }] };
   },
+);
+server.registerTool(
+  'localGetFileContent',
+  { description: 'Read files (stand-in for Octocode)', inputSchema: z.object({ queries: z.array(z.object({ path: z.string() })) }) },
+  async ({ queries }) => ({ content: [{ type: 'text', text: queries.map((query) => readFileSync(query.path, 'utf8')).join('\n') }] }),
 );
 server.registerTool(
   'exit',

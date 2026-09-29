@@ -4,8 +4,12 @@ import path from 'node:path';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { afterEach, describe, expect, it } from 'vitest';
 import { formatAnswers } from '../src/ask.js';
-import { KEEP_RECENT_RESULTS, planToolResultTrims, TRIM_STEP } from '../src/compaction.js';
-import { FileGuard, formatOutcomes, readPaths, resolvePath } from '../src/file-tool.js';
+import { compactionPrompt, SUMMARY_SECTIONS, summaryLooksComplete } from '../src/compaction-prompt.js';
+import { collectFileLists, pickCompactionModel, stripAnalysis } from '../src/compaction-summary.js';
+import { initTheme, SettingsManager } from '@earendil-works/pi-coding-agent';
+import { compactionRequestSettings, KEEP_RECENT_RESULTS, planToolResultTrims, TRIM_STEP } from '../src/compaction.js';
+import { diffStats, FileGuard, formatOutcomes, querySize, readPaths, registerFileTool, resolvePath } from '../src/file-tool.js';
+import { preview, queriesSummary } from '../src/render.js';
 import { builtInServers, expandEnv, loadMcpServers, mcpToolName, parseMcpServers } from '../src/mcp-config.js';
 import { clip, rank, toContent, type McpToolEntry } from '../src/mcp.js';
 import { octocodePrompt } from '../src/prompt.js';
@@ -147,6 +151,65 @@ describe('compaction', () => {
     expect(text).toMatch(/were trimmed/);
   });
 
+  it('applies the user retry policy and transport timeouts to the summary request', () => {
+    const custom = compactionRequestSettings(SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 5, baseDelayMs: 10, provider: { timeoutMs: 1_234, maxRetries: 1 } } }));
+    expect(custom.retry).toMatchObject({ enabled: true, maxRetries: 5, baseDelayMs: 10 });
+    expect(custom.request).toMatchObject({ timeoutMs: 1_234, maxRetries: 1 });
+    const unlimited = compactionRequestSettings(SettingsManager.inMemory({ httpIdleTimeoutMs: 0 }));
+    expect(unlimited.request.timeoutMs).toBe(2_147_483_647);
+    expect(unlimited.retry.enabled).toBe(true);
+  });
+
+  it('picks the strongest cheaper small-tier model of the same provider that fits', () => {
+    const model = (provider: string, id: string, input: number, contextWindow = 400_000, maxTokens = 32_000) =>
+      ({ provider, id, cost: { input, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens }) as never;
+    const opus = model('anthropic', 'claude-opus-5-5', 5);
+    const catalog = [
+      opus,
+      model('anthropic', 'claude-3-haiku', 0.25),
+      model('anthropic', 'claude-haiku-4-5', 1),
+      model('anthropic', 'claude-haiku-9', 0.5, 50_000), // too small a window
+      model('openai', 'gpt-6-luna', 0.1),
+      model('minimax', 'MiniMax-M3', 0.3),
+    ];
+    const pick = (current: never, needed = 100_000, override?: string) => pickCompactionModel(current, catalog, needed, override ?? '');
+    expect(pick(opus)).toMatchObject({ reason: 'small', model: { id: 'claude-haiku-4-5' } });
+    const gpt = model('openai', 'gpt-6', 2);
+    expect(pickCompactionModel(gpt, [...catalog, gpt], 100_000, '')).toMatchObject({ model: { id: 'gpt-6-luna' } });
+    expect(pick(model('minimax', 'MiniMax-M4', 1))).toMatchObject({ reason: 'current' }); // "MiniMax" is not a mini model
+    expect(pick(opus, 500_000)).toMatchObject({ reason: 'current' }); // input larger than every small window
+    expect(pick(model('local', 'llama', 0))).toMatchObject({ reason: 'current' }); // unknown price: keep the session model
+    expect(pick(opus, 100_000, 'current')).toMatchObject({ reason: 'current', model: { id: 'claude-opus-5-5' } });
+    expect(pick(opus, 100_000, 'openai/gpt-6-luna')).toMatchObject({ reason: 'override', model: { id: 'gpt-6-luna' } });
+  });
+
+  it('builds a structured prompt that keeps intent, flow and follow-ups', () => {
+    const prompt = compactionPrompt({ update: false, userFocus: 'the auth bug' });
+    for (const section of SUMMARY_SECTIONS) expect(prompt).toContain(`## ${section}`);
+    expect(prompt).toMatch(/verbatim/);
+    expect(prompt).toContain('focus on: the auth bug');
+    expect(prompt).not.toContain('previous-summary');
+    expect(compactionPrompt({ update: true })).toContain('<previous-summary>');
+    const complete = SUMMARY_SECTIONS.map((section) => `## ${section}\nx`).join('\n');
+    expect(summaryLooksComplete(complete)).toBe(true);
+    expect(summaryLooksComplete('## User Intent\nonly this')).toBe(false);
+    expect(stripAnalysis(`<analysis>scratch</analysis>\n<summary>\n${complete}\n</summary>`)).toBe(complete);
+    expect(stripAnalysis('plain text')).toBe('plain text');
+  });
+
+  it('tracks files from Octocode tools and earlier Octocode checkpoints', () => {
+    const preparation = {
+      fileOps: { read: new Set(['a.ts']), written: new Set<string>(), edited: new Set(['b.ts']) },
+      messagesToSummarize: [
+        { role: 'assistant', content: [{ type: 'toolCall', name: 'file', arguments: { queries: [{ path: 'c.ts' }, { path: 'a.ts' }] } }] },
+        { role: 'assistant', content: [{ type: 'toolCall', name: 'octocode_localGetFileContent', arguments: { queries: [{ path: 'd.ts' }] } }] },
+      ],
+      turnPrefixMessages: [],
+    } as never;
+    const previous = { type: 'compaction', fromHook: true, details: { readFiles: ['old-read.ts'], modifiedFiles: ['old-edit.ts'] } };
+    expect(collectFileLists(preparation, [previous])).toEqual({ readFiles: ['d.ts', 'old-read.ts'], modifiedFiles: ['a.ts', 'b.ts', 'c.ts', 'old-edit.ts'] });
+  });
+
   it('never trims subagent reports', () => {
     const results = Array.from({ length: KEEP_RECENT_RESULTS + TRIM_STEP }, (_, index) => entry(index, 10_000));
     results[0]!.message = { ...results[0]!.message, toolName: 'agent' } as typeof results[0]['message'];
@@ -184,7 +247,7 @@ describe('subagents', () => {
     const profile = parseProfile('reviewer', '---\nexcludeTools: file\n---\nReview.');
     expect(profile.excludeTools).toBe('file');
     expect(buildAgentArgs('Review X', profile, undefined, '/ext/index.js')).toEqual([
-      '--mode', 'json', '--no-session', '--no-extensions', '-e', '/ext/index.js', '--exclude-tools', 'file', '--append-system-prompt', 'Review.', 'Review X',
+      '--mode', 'json', '--no-session', '--no-extensions', '-e', '/ext/index.js', '--exclude-tools', 'file,edit,write', '--append-system-prompt', 'Review.', 'Review X',
     ]);
   });
 
@@ -289,3 +352,53 @@ describe('misc', () => {
     expect(partial).toMatch(/declined to answer the remaining questions/);
   });
 });
+
+describe('tool rendering', () => {
+  const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text, italic: (text: string) => text } as never;
+  const hint = () => 'ctrl+o to expand';
+
+  it('shows each file change with its reasoning, size, outcome and a capped diff', () => {
+    initTheme('dark');
+    let tool: { renderCall: Function; renderResult: Function } | undefined;
+    registerFileTool({ registerTool: (definition: never) => (tool = definition), on: () => undefined } as never, new FileGuard());
+    const args = {
+      queries: [
+        { reasoning: 'Fix the off-by-one in the loop', type: 'edit', path: 'src/a.ts', edits: [{ oldText: 'a', newText: 'b' }, { oldText: 'c', newText: 'd' }] },
+        { reasoning: 'Add the missing test', type: 'write', path: 'test/a.test.ts', content: 'one\ntwo' },
+      ],
+    };
+    const call = tool!.renderCall(args, theme, { lastComponent: undefined }).render(120).join('\n');
+    expect(call).toMatch(/edit src\/a\.ts · 2 edits/);
+    expect(call).toContain('↳ Fix the off-by-one in the loop');
+    expect(call).toMatch(/write test\/a\.test\.ts · 2 lines/);
+    expect(call).toContain('↳ Add the missing test');
+    const diff = Array.from({ length: 30 }, (_, index) => `+${index} added line ${index}`).join('\n');
+    const result = { content: [], details: { outcomes: [{ type: 'edit', path: 'src/a.ts', reasoning: '', ok: true, message: 'ok', diff }, { type: 'write', path: 'test/a.test.ts', reasoning: '', ok: false, message: 'has not been read' }] } };
+    const collapsed = tool!.renderResult(result, { expanded: false, isPartial: false }, theme, { lastComponent: undefined, isError: false }).render(120).join('\n');
+    expect(collapsed).toMatch(/✓ edit src\/a\.ts \+30 -0/);
+    expect(collapsed).toMatch(/18 more diff lines/);
+    expect(collapsed).toMatch(/✗ write test\/a\.test\.ts has not been read/);
+    const expanded = tool!.renderResult(result, { expanded: true, isPartial: false }, theme, { lastComponent: undefined, isError: false }).render(120).join('\n');
+    expect(expanded).toContain('added line 29');
+    expect(expanded).not.toMatch(/more diff lines/);
+  });
+
+  it('counts diff lines and sizes queries', () => {
+    expect(diffStats('+1 a\n-2 b\n-3 c\n 4 d')).toEqual({ added: 1, removed: 2 });
+    expect(querySize({ type: 'edit', edits: [{}] })).toBe(' · 1 edit');
+    expect(querySize({ type: 'delete' })).toBe('');
+  });
+
+  it('collapses long output with an expand hint and shows everything when expanded', () => {
+    const text = Array.from({ length: 20 }, (_, index) => `line ${index}`).join('\n');
+    expect(preview(text, theme, false, { hint })).toBe(`${Array.from({ length: 6 }, (_, index) => `line ${index}`).join('\n')}\n… 14 more lines (ctrl+o to expand)`);
+    expect(preview(text, theme, true, { hint }).split('\n')).toHaveLength(20);
+    expect(preview('x'.repeat(1_000), theme, false, { hint }).length).toBeLessThan(300);
+  });
+
+  it('summarizes batched research queries with their targets and goals', () => {
+    const lines = queriesSummary({ queries: [{ path: 'src/index.ts' }, { owner: 'o', repo: 'r', keywords: ['auth', 'token'], reasoning: 'Find the token check' }] }, theme);
+    expect(lines).toEqual(['  src/index.ts', '  o/r auth token', '    ↳ Find the token check']);
+  });
+});
+

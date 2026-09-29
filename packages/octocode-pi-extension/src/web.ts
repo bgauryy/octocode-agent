@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
+import { callLine, preview, resultText, textComponent } from './render.js';
 import { capOutput, errorMessage, isRecord, textResult } from './util.js';
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
@@ -163,6 +164,13 @@ export function registerWebTool(pi: ExtensionAPI): void {
       query: Type.Optional(Type.String({ description: 'Web search query' })),
       maxResults: Type.Optional(Type.Number({ description: 'Search results to return (default 8)' })),
     }),
+    renderCall(args, theme, context) {
+      const detail = args.url ? theme.fg('mdLink', args.url) : args.query ? `${theme.fg('muted', 'search')} ${theme.fg('accent', `"${args.query}"`)}` : '';
+      return textComponent(context, callLine(theme, 'web', detail));
+    },
+    renderResult(result, { expanded }, theme, context) {
+      return textComponent(context, preview(resultText(result), theme, expanded, { color: context.isError ? 'error' : 'toolOutput' }));
+    },
     async execute(_id, params, signal) {
       if (params.url) return textResult(capOutput(await fetchUrl(params.url, signal)));
       if (!params.query) throw new Error('Provide url or query.');

@@ -8,8 +8,8 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
-import { Text } from '@earendil-works/pi-tui';
 import { Type, type Static } from 'typebox';
+import { callLine, expandHint, preview, reasoningLine, resultText, textComponent } from './render.js';
 import { errorMessage, isRecord } from './util.js';
 
 /**
@@ -72,7 +72,7 @@ const QuerySchema = Type.Object({
   type: Type.Unsafe<'edit' | 'write' | 'delete'>({
     type: 'string',
     enum: ['edit', 'write', 'delete'],
-    description: 'edit: exact replacements in an existing file; write: create or fully replace a file; delete: remove a file',
+    description: 'edit: exact replacements in an existing file; write: create or fully replace a file; delete: remove a file (irreversible; only when the task requires it)',
   }),
   path: Type.String({ description: 'File path, relative to the working directory or absolute' }),
   edits: Type.Optional(
@@ -124,6 +124,30 @@ async function runQuery(query: FileQuery, index: number, id: string, guard: File
   }
 }
 
+/** Diff lines shown per file before expanding. */
+const DIFF_PREVIEW_LINES = 12;
+
+/** Size hint for a query in the call line: how many replacements, or how long the new content is. */
+export function querySize(query: { type?: string; edits?: unknown[]; content?: string } | undefined): string {
+  if (query?.type === 'edit' && Array.isArray(query.edits) && query.edits.length > 0) return ` · ${query.edits.length} edit${query.edits.length === 1 ? '' : 's'}`;
+  if (query?.type === 'write' && typeof query.content === 'string') {
+    const lines = query.content.split('\n').length;
+    return ` · ${lines} line${lines === 1 ? '' : 's'}`;
+  }
+  return '';
+}
+
+/** Added and removed line counts of a Pi diff (lines prefixed with + / -, not the file headers). */
+export function diffStats(diff: string): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.split('\n')) {
+    if (/^\+(?!\+\+ )/.test(line)) added++;
+    else if (/^-(?!-- )/.test(line)) removed++;
+  }
+  return { added, removed };
+}
+
 export function formatOutcomes(outcomes: QueryOutcome[]): string {
   return outcomes.map((outcome, index) => `${index + 1}. ${outcome.ok ? 'OK' : 'FAILED'} ${outcome.type} ${outcome.path}: ${outcome.message}`).join('\n');
 }
@@ -158,19 +182,29 @@ export function registerFileTool(pi: ExtensionAPI, guard: FileGuard): void {
       if (outcomes.every((outcome) => !outcome.ok)) throw new Error(formatOutcomes(outcomes));
       return { content: [{ type: 'text', text: formatOutcomes(outcomes) }], details: { outcomes } };
     },
-    renderCall(args, theme) {
+    renderCall(args, theme, context) {
       const queries = Array.isArray(args.queries) ? args.queries : [];
-      const lines = queries.map((query) => `  ${theme.fg('accent', query.type ?? '?')} ${theme.fg('mdCode', query.path ?? '')} ${theme.fg('dim', query.reasoning ?? '')}`);
-      return new Text([theme.fg('toolTitle', theme.bold('file')), ...lines].join('\n'), 0, 0);
-    },
-    renderResult(result, { expanded }, theme) {
-      const outcomes = (isRecord(result.details) && Array.isArray(result.details['outcomes']) ? result.details['outcomes'] : []) as QueryOutcome[];
-      if (outcomes.length === 0) return new Text(result.content.map((part) => (part.type === 'text' ? theme.fg('error', part.text) : '')).join('\n'), 0, 0);
-      const lines = outcomes.flatMap((outcome) => {
-        const head = `${outcome.ok ? theme.fg('success', '✓') : theme.fg('error', '✗')} ${outcome.type} ${theme.fg('mdCode', outcome.path)}${outcome.ok ? '' : ` ${theme.fg('error', outcome.message)}`}`;
-        return expanded && outcome.diff ? [head, renderDiff(outcome.diff)] : [head];
+      const lines = queries.flatMap((query) => {
+        const why = reasoningLine(theme, query?.reasoning, '    ');
+        return [`  ${theme.fg('accent', query?.type ?? '…')} ${theme.fg('mdCode', query?.path ?? '')}${theme.fg('dim', querySize(query))}`, ...(why ? [why] : [])];
       });
-      return new Text(lines.join('\n'), 0, 0);
+      return textComponent(context, [callLine(theme, 'file', theme.fg('muted', queries.length > 1 ? `${queries.length} changes` : '')), ...lines].join('\n'));
+    },
+    renderResult(result, { expanded }, theme, context) {
+      const outcomes = (isRecord(result.details) && Array.isArray(result.details['outcomes']) ? result.details['outcomes'] : []) as QueryOutcome[];
+      if (outcomes.length === 0) return textComponent(context, preview(resultText(result), theme, expanded, { color: 'error' }));
+      const lines = outcomes.flatMap((outcome) => {
+        const stats = outcome.diff ? diffStats(outcome.diff) : undefined;
+        const counts = stats ? ` ${theme.fg('toolDiffAdded', `+${stats.added}`)} ${theme.fg('toolDiffRemoved', `-${stats.removed}`)}` : '';
+        const head = `${outcome.ok ? theme.fg('success', '✓') : theme.fg('error', '✗')} ${outcome.type} ${theme.fg('mdCode', outcome.path)}${outcome.ok ? counts : ` ${theme.fg('error', outcome.message)}`}`;
+        if (!outcome.ok || !outcome.diff) return [head];
+        // Like Pi's edit tool, diffs show inline; long ones are capped until expanded.
+        const diff = renderDiff(outcome.diff).split('\n');
+        const shown = expanded ? diff : diff.slice(0, DIFF_PREVIEW_LINES);
+        const more = diff.length - shown.length;
+        return [head, ...shown, ...(more > 0 ? [`${theme.fg('muted', `… ${more} more diff lines (`)}${expandHint()}${theme.fg('muted', ')')}`] : [])];
+      });
+      return textComponent(context, lines.join('\n'));
     },
   });
 

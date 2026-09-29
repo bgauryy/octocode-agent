@@ -31,6 +31,7 @@ export function octocodePrompt(input: PromptInputs): string {
       ]
     : ['- Read files with `read`; search with rg/grep/find in bash. Use `web` (or the `gh` CLI in bash when available) for GitHub and npm lookups.'];
   if (otherServers.length > 0) research.push(`- Other MCP servers are connected (${otherServers.join(', ')}); \`mcp\` lists and loads their tools.`);
+  research.push('- Search before reading and read only the ranges you need; large dumps crowd out the context you need later.');
   research.push('- When an available skill matches the task, read its SKILL.md and follow it.');
 
   const asking = input.canDelegate
@@ -57,9 +58,11 @@ export function octocodePrompt(input: PromptInputs): string {
     '- Investigate before you claim or change anything: read the code, trace callers of shared behavior, and follow the conventions already in the repository.',
     '- Make the smallest complete change the task needs (code, tests, docs) and nothing unrelated. Keep existing user changes intact.',
     '- Verify with the fastest real check (typecheck, focused tests, running the command) and report the command and its result. Only say a check passed if you ran it; name what you could not verify.',
+    '- Never weaken or delete tests, skip checks, or special-case inputs to make a check pass; fix the code or report the failure.',
     '- When something fails, find the root cause instead of suppressing the error, and change your hypothesis before retrying.',
     `- Make reasonable, reversible choices yourself and state the assumption. ${asking}`,
     '- Run independent tool calls in parallel; run dependent calls in order.',
+    '- Keep going until the task is done or you are blocked; do not stop at a plan or hand back work you can finish yourself.',
     '',
     '# Research',
     ...research,

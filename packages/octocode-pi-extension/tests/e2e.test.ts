@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createFauxCore, fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt, getCurrentTools, type TranscriptContext } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { SUMMARY_SECTIONS } from '../src/compaction-prompt.js';
 import octocode from '../src/index.js';
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'echo-mcp.mjs');
@@ -30,28 +31,34 @@ function snapshot(context: TranscriptContext): Turn {
 type Reply = ReturnType<typeof fauxAssistantMessage>;
 
 /** A real Pi agent session running the Octocode extension against a scripted model. */
-async function startSession(mcpServers: Record<string, unknown>) {
+async function startSession(mcpServers: Record<string, unknown>, options: { tools?: string[]; settings?: Record<string, unknown>; agentSettings?: Record<string, unknown>; models?: Array<{ id: string; inputCost: number; maxTokens: number }> } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'octocode-e2e-'));
   const cwd = path.join(root, 'project');
   const home = path.join(root, 'home');
   fs.mkdirSync(cwd, { recursive: true });
   fs.mkdirSync(home, { recursive: true });
+  const agentDir = path.join(root, 'agent');
+  fs.mkdirSync(agentDir, { recursive: true });
+  if (options.agentSettings) fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify(options.agentSettings));
   const originalHome = process.env['HOME'];
+  const originalAgentDir = process.env['PI_CODING_AGENT_DIR'];
   process.env['HOME'] = home; // keep the developer's own MCP config out of the test
+  process.env['PI_CODING_AGENT_DIR'] = agentDir; // and their Pi settings
   fs.writeFileSync(path.join(cwd, '.mcp.json'), JSON.stringify({ mcpServers }));
   const turns: Turn[] = [];
-  const faux = createFauxCore({ provider: 'faux', models: [{ id: 'faux-1', contextWindow: 200_000, maxTokens: 4_096 }] });
+  const models = options.models ?? [{ id: 'faux-1', inputCost: 0, maxTokens: 4_096 }];
+  const faux = createFauxCore({ provider: 'faux', models: models.map(({ id, maxTokens }) => ({ id, contextWindow: 200_000, maxTokens })) as never });
   const provider: ExtensionFactory = (pi) => {
     pi.registerProvider('faux', {
       name: 'Faux',
       api: faux.api,
       baseUrl: 'http://127.0.0.1:0',
       apiKey: 'test',
-      models: faux.models.map((model) => ({ ...model, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })),
+      models: faux.models.map((model, index) => ({ ...model, cost: { input: models[index]!.inputCost, output: 0, cacheRead: 0, cacheWrite: 0 } })),
       streamSimple: faux.streamSimple,
     } as never);
   };
-  const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+  const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, ...options.settings });
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir: path.join(root, 'agent'),
@@ -66,7 +73,7 @@ async function startSession(mcpServers: Record<string, unknown>) {
     noContextFiles: true,
   });
   await resourceLoader.reload();
-  const { session } = await createAgentSession({ cwd, agentDir: path.join(root, 'agent'), resourceLoader, settingsManager, sessionManager: SessionManager.inMemory(cwd) });
+  const { session } = await createAgentSession({ cwd, agentDir: path.join(root, 'agent'), resourceLoader, settingsManager, sessionManager: SessionManager.inMemory(cwd), ...(options.tools ? { tools: options.tools } : {}) });
   await session.bindExtensions({ mode: 'json', shutdownHandler: () => undefined } as never);
   await session.setModel(session.modelRuntime.getModel('faux', 'faux-1')!);
   const run = async (prompt: string, replies: Array<(turn: Turn) => Reply>) => {
@@ -83,9 +90,11 @@ async function startSession(mcpServers: Record<string, unknown>) {
   const dispose = async () => {
     await session.dispose?.();
     process.env['HOME'] = originalHome;
+    if (originalAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];
+    else process.env['PI_CODING_AGENT_DIR'] = originalAgentDir;
     fs.rmSync(root, { recursive: true, force: true });
   };
-  return { cwd, session, run, dispose };
+  return { cwd, session, faux, run, dispose };
 }
 
 const calls = (...toolCalls: ReturnType<typeof fauxToolCall>[]) => () => fauxAssistantMessage(toolCalls, { stopReason: 'toolUse' });
@@ -168,6 +177,12 @@ describe('with other MCP servers and Octocode disabled', () => {
     for (const name of ['edit', 'write', 'echo_shout']) expect(turn.tools).not.toContain(name);
   });
 
+  it('keeps Pi read while Octocode is not the one providing a reader', async () => {
+    // echo has localGetFileContent too, but only Octocode's reader replaces read, and only once active.
+    const turn = (await s.run('hi', [say('ok')])).at(-1)!;
+    expect(turn.tools).toContain('read');
+  });
+
   it('guards writes: new files are fine, unread existing files are refused, read-then-write works', async () => {
     fs.writeFileSync(path.join(s.cwd, 'existing.txt'), 'original\n');
     const turns = await s.run('write files', [
@@ -186,7 +201,7 @@ describe('with other MCP servers and Octocode disabled', () => {
     const turns = await s.run('use echo', [calls(fauxToolCall('mcp', { server: 'echo' })), calls(fauxToolCall('echo_shout', { text: 'hi' }), fauxToolCall('echo_fail', {})), say('done')]);
     const [load, call, final] = turns.slice(-3);
     expect(load!.tools).not.toContain('echo_shout');
-    expect(call!.lastResults[0]!.text).toMatch(/Loaded 5 tool/);
+    expect(call!.lastResults[0]!.text).toMatch(/Loaded 6 tool/);
     expect(final!.lastResults).toEqual([
       { toolName: 'echo_shout', isError: false, text: 'HI' },
       { toolName: 'echo_fail', isError: true, text: 'boom' },
@@ -237,3 +252,126 @@ describe('when the Octocode server goes away', () => {
     expect(after.systemPrompt).toContain('Read files with `read`');
   }, 60_000);
 });
+
+describe('compaction', () => {
+  let s: Awaited<ReturnType<typeof startSession>>;
+  const OCTOCODE_MARKER = 'You write context checkpoints for a coding agent';
+  const textOf = (context: TranscriptContext) =>
+    [
+      String((context as { systemPrompt?: string }).systemPrompt ?? ''),
+      ...context.messages.map((message) => (Array.isArray(message.content) ? message.content.map((part) => ('text' in part ? part.text : '')).join('') : String(message.content ?? ''))),
+    ].join('\n');
+  const fullSummary = (label: string) =>
+    `<analysis>private notes</analysis>\n<summary>\n${SUMMARY_SECTIONS.map((section) => `## ${section}\n${label} ${section.toLowerCase()}`).join('\n\n')}\n</summary>`;
+  const compactionEntries = () => s.session.sessionManager.getEntries().filter((entry) => entry.type === 'compaction') as Array<{ fromHook?: boolean; summary: string; details?: Record<string, unknown> }>;
+  interface SummaryCall {
+    model: string;
+    octocode: boolean;
+    prefix: boolean;
+    text: string;
+  }
+  /** Answers every summary request (history and split-turn prefix) through `reply`, recording each call. */
+  const script = (reply: (call: SummaryCall, index: number) => ReturnType<typeof fauxAssistantMessage>) => {
+    const log: SummaryCall[] = [];
+    s.faux.setResponses(
+      Array.from({ length: 10 }, () => (context: TranscriptContext, _options: unknown, _state: unknown, model: { id: string }) => {
+        const text = textOf(context);
+        const call = { model: model.id, octocode: text.includes(OCTOCODE_MARKER), prefix: text.includes('is the beginning of a turn whose later messages') || text.includes('Later messages are stored separately'), text };
+        log.push(call);
+        return reply(call, log.length - 1);
+      }),
+    );
+    return log;
+  };
+
+  beforeAll(async () => {
+    s = await startSession(
+      { octocode: { disabled: true } },
+      {
+        // A priced session model plus a cheaper small-tier model of the same provider.
+        models: [
+          { id: 'faux-1', inputCost: 3, maxTokens: 32_000 },
+          { id: 'faux-haiku', inputCost: 1, maxTokens: 16_000 },
+        ],
+        // Session: small keep window so a short history compacts. User settings (read from the agent dir): fast retries.
+        settings: { compaction: { enabled: false, keepRecentTokens: 50 } },
+        agentSettings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 } },
+      },
+    );
+  }, 60_000);
+  afterAll(() => s.dispose());
+
+  it('summarizes on the small model with the structured Octocode prompt, retrying transient errors per user settings', async () => {
+    fs.writeFileSync(path.join(s.cwd, 'notes.txt'), 'hello\n');
+    await s.run('Please read notes.txt and create todo.txt', [
+      calls(fauxToolCall('read', { path: 'notes.txt' })),
+      calls(fauxToolCall('file', { queries: [{ reasoning: 'create', type: 'write', path: 'todo.txt', content: 'x' }] })),
+      say(`Done. ${'detail '.repeat(300)}`),
+    ]);
+    await s.run('Now keep going with the plan', [say(`More work. ${'detail '.repeat(300)}`)]);
+    let failed = false;
+    const log = script((call) => {
+      if (call.octocode && !call.prefix && !failed) {
+        failed = true;
+        return fauxAssistantMessage('', { stopReason: 'error', errorMessage: '503 overloaded' });
+      }
+      return fauxAssistantMessage(call.prefix ? '<summary>## Turn Request\nprefix</summary>' : fullSummary('small'));
+    });
+    await s.session.compact('keep the notes');
+    const history = log.filter((call) => call.octocode && !call.prefix);
+    expect(history.map((call) => call.model)).toEqual(['faux-haiku', 'faux-haiku']); // one transient failure, one retry
+    expect(history[1]!.text).toContain('Please read notes.txt and create todo.txt'); // user messages reach the prompt verbatim
+    expect(history[1]!.text).toContain('focus on: keep the notes');
+    const entry = compactionEntries().at(-1)!;
+    expect(entry.fromHook).toBe(true);
+    expect(entry.details).toMatchObject({ summaryModel: 'faux/faux-haiku', readFiles: ['notes.txt'], modifiedFiles: ['todo.txt'] });
+    expect(entry.summary).toContain('## Next Step');
+    expect(entry.summary).not.toContain('private notes'); // the analysis scratchpad is dropped
+    expect(entry.summary).toMatch(/<read-files>\nnotes\.txt\n<\/read-files>[\s\S]*<modified-files>\ntodo\.txt\n<\/modified-files>/);
+  }, 60_000);
+
+  it('requires fresh reads after compaction', async () => {
+    const turns = await s.run('overwrite', [calls(fauxToolCall('file', { queries: [{ reasoning: 'replace', type: 'write', path: 'notes.txt', content: 'x' }] })), say('done')]);
+    expect(turns.at(-1)!.lastResults[0]!.text).toMatch(/has not been read/);
+  }, 60_000);
+
+  it('moves to the session model when the small model drifts from the format, merging the previous checkpoint', async () => {
+    await s.run('more', [say(`Even more. ${'detail '.repeat(300)}`)]);
+    const log = script((call) => fauxAssistantMessage(call.prefix ? '<summary>## Turn Request\nprefix</summary>' : call.model === 'faux-haiku' ? 'a short summary' : fullSummary('session')));
+    await s.session.compact();
+    const history = log.filter((call) => call.octocode && !call.prefix);
+    expect(history.map((call) => call.model)).toEqual(['faux-haiku', 'faux-1']);
+    expect(history[1]!.text).toContain('<previous-summary>');
+    expect(history[1]!.text).toContain('Keep everything from the previous summary');
+    const entry = compactionEntries().at(-1)!;
+    expect(entry.details).toMatchObject({ summaryModel: 'faux/faux-1' });
+    // Files from the earlier Octocode checkpoint are carried forward (Pi only carries its own).
+    expect(entry.details!['modifiedFiles']).toEqual(expect.arrayContaining(['todo.txt']));
+  }, 60_000);
+
+  it('hands over to Pi default summarizer when Octocode summaries fail', async () => {
+    await s.run('more', [say(`Even more. ${'detail '.repeat(300)}`)]);
+    const log = script((call) =>
+      call.octocode ? fauxAssistantMessage('', { stopReason: 'error', errorMessage: 'invalid request: bad schema' }) : fauxAssistantMessage('## Goal\nDefault summary'),
+    );
+    await s.session.compact();
+    expect(log.filter((call) => call.octocode).length).toBeGreaterThanOrEqual(2); // small model, then session model; not retried
+    expect(compactionEntries().at(-1)!.fromHook).not.toBe(true);
+    expect(compactionEntries().at(-1)!.summary).toContain('Default summary');
+  }, 60_000);
+});
+
+describe('with a tool allowlist that leaves out file', () => {
+  let s: Awaited<ReturnType<typeof startSession>>;
+  beforeAll(async () => {
+    s = await startSession({ octocode: { disabled: true } }, { tools: ['read', 'bash', 'edit', 'write'] });
+  }, 60_000);
+  afterAll(() => s.dispose());
+
+  it('keeps Pi edit and write, so the agent can still change files', async () => {
+    const turn = (await s.run('hi', [say('ok')])).at(-1)!;
+    expect(turn.tools).toEqual(expect.arrayContaining(['read', 'bash', 'edit', 'write']));
+    expect(turn.tools).not.toContain('file');
+  });
+});
+
